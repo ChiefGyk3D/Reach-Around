@@ -1,0 +1,887 @@
+{
+  "$defs": {
+    "Creator": {
+      "additionalProperties": false,
+      "properties": {
+        "avatar": {
+          "anyOf": [
+            {
+              "maxLength": 2048,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Avatar"
+        },
+        "favicon": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Favicon"
+        },
+        "header": {
+          "default": "compact",
+          "enum": [
+            "compact",
+            "centered",
+            "hero"
+          ],
+          "title": "Header",
+          "type": "string"
+        },
+        "name": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Name",
+          "type": "string"
+        },
+        "socials": {
+          "items": {
+            "$ref": "#/$defs/Social"
+          },
+          "title": "Socials",
+          "type": "array"
+        },
+        "title": {
+          "anyOf": [
+            {
+              "maxLength": 80,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Title"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "title": "Creator",
+      "type": "object"
+    },
+    "Crypto": {
+      "additionalProperties": false,
+      "properties": {
+        "coins": {
+          "items": {
+            "$ref": "#/$defs/CryptoCoin"
+          },
+          "maxItems": 12,
+          "minItems": 1,
+          "title": "Coins",
+          "type": "array"
+        },
+        "id": {
+          "pattern": "^[a-z0-9][a-z0-9-]{0,39}$",
+          "title": "Id",
+          "type": "string"
+        },
+        "note": {
+          "anyOf": [
+            {
+              "maxLength": 300,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Note"
+        },
+        "title": {
+          "anyOf": [
+            {
+              "maxLength": 200,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Title"
+        }
+      },
+      "required": [
+        "coins",
+        "id"
+      ],
+      "title": "Crypto",
+      "type": "object"
+    },
+    "CryptoCoin": {
+      "additionalProperties": false,
+      "properties": {
+        "address": {
+          "title": "Address",
+          "type": "string"
+        },
+        "coin": {
+          "enum": [
+            "btc",
+            "xmr",
+            "eth",
+            "sol",
+            "other"
+          ],
+          "title": "Coin",
+          "type": "string"
+        },
+        "label": {
+          "anyOf": [
+            {
+              "maxLength": 60,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Label"
+        },
+        "name": {
+          "anyOf": [
+            {
+              "maxLength": 40,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Name"
+        },
+        "network": {
+          "anyOf": [
+            {
+              "maxLength": 40,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Network"
+        },
+        "qr": {
+          "anyOf": [
+            {
+              "maxLength": 512,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Qr"
+        }
+      },
+      "required": [
+        "address",
+        "coin"
+      ],
+      "title": "CryptoCoin",
+      "type": "object"
+    },
+    "Divider": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "pattern": "^[a-z0-9][a-z0-9-]{0,39}$",
+          "title": "Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "title": "Divider",
+      "type": "object"
+    },
+    "Features": {
+      "additionalProperties": false,
+      "description": "Which data-collecting features the site uses.",
+      "properties": {
+        "click_tracking": {
+          "default": true,
+          "title": "Click Tracking",
+          "type": "boolean"
+        },
+        "kit_gate": {
+          "default": false,
+          "title": "Kit Gate",
+          "type": "boolean"
+        }
+      },
+      "title": "Features",
+      "type": "object"
+    },
+    "FontStack": {
+      "additionalProperties": false,
+      "description": "System font stacks or font files that ship with the instance.",
+      "properties": {
+        "body": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Body"
+        },
+        "heading": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Heading"
+        }
+      },
+      "title": "FontStack",
+      "type": "object"
+    },
+    "Image": {
+      "additionalProperties": false,
+      "properties": {
+        "alt": {
+          "maxLength": 300,
+          "minLength": 1,
+          "title": "Alt",
+          "type": "string"
+        },
+        "id": {
+          "pattern": "^[a-z0-9][a-z0-9-]{0,39}$",
+          "title": "Id",
+          "type": "string"
+        },
+        "link": {
+          "anyOf": [
+            {
+              "maxLength": 2048,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Link"
+        },
+        "src": {
+          "maxLength": 2048,
+          "minLength": 1,
+          "title": "Src",
+          "type": "string"
+        }
+      },
+      "required": [
+        "alt",
+        "id",
+        "src"
+      ],
+      "title": "Image",
+      "type": "object"
+    },
+    "Link": {
+      "additionalProperties": false,
+      "properties": {
+        "affiliate": {
+          "default": false,
+          "title": "Affiliate",
+          "type": "boolean"
+        },
+        "featured": {
+          "default": false,
+          "title": "Featured",
+          "type": "boolean"
+        },
+        "icon": {
+          "anyOf": [
+            {
+              "pattern": "^[a-z0-9][a-z0-9-]{0,39}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Icon"
+        },
+        "id": {
+          "pattern": "^[a-z0-9][a-z0-9-]{0,39}$",
+          "title": "Id",
+          "type": "string"
+        },
+        "image": {
+          "anyOf": [
+            {
+              "maxLength": 2048,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Image"
+        },
+        "image_alt": {
+          "default": "",
+          "maxLength": 120,
+          "title": "Image Alt",
+          "type": "string"
+        },
+        "show_from": {
+          "anyOf": [
+            {
+              "format": "date",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Show From"
+        },
+        "show_until": {
+          "anyOf": [
+            {
+              "format": "date",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Show Until"
+        },
+        "subtitle": {
+          "anyOf": [
+            {
+              "maxLength": 500,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Subtitle"
+        },
+        "title": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Title",
+          "type": "string"
+        },
+        "url": {
+          "maxLength": 2048,
+          "title": "Url",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "title",
+        "url"
+      ],
+      "title": "Link",
+      "type": "object"
+    },
+    "Privacy": {
+      "additionalProperties": false,
+      "description": "Retention periods and optional creator-supplied wording.",
+      "properties": {
+        "contact": {
+          "anyOf": [
+            {
+              "maxLength": 200,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Contact"
+        },
+        "intro": {
+          "anyOf": [
+            {
+              "maxLength": 2000,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Intro"
+        },
+        "lead_retention_days": {
+          "default": 365,
+          "maximum": 3650,
+          "minimum": 1,
+          "title": "Lead Retention Days",
+          "type": "integer"
+        },
+        "retention_days": {
+          "default": 90,
+          "maximum": 3650,
+          "minimum": 1,
+          "title": "Retention Days",
+          "type": "integer"
+        }
+      },
+      "title": "Privacy",
+      "type": "object"
+    },
+    "Robots": {
+      "additionalProperties": false,
+      "properties": {
+        "ai_crawlers": {
+          "default": "allow",
+          "enum": [
+            "allow",
+            "block"
+          ],
+          "title": "Ai Crawlers",
+          "type": "string"
+        },
+        "allow_all": {
+          "default": true,
+          "title": "Allow All",
+          "type": "boolean"
+        },
+        "block": {
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 100,
+          "title": "Block",
+          "type": "array"
+        },
+        "noindex_paths": {
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 50,
+          "title": "Noindex Paths",
+          "type": "array"
+        },
+        "sitemap": {
+          "const": false,
+          "default": false,
+          "title": "Sitemap",
+          "type": "boolean"
+        }
+      },
+      "title": "Robots",
+      "type": "object"
+    },
+    "Section": {
+      "additionalProperties": false,
+      "properties": {
+        "collapsed": {
+          "default": true,
+          "title": "Collapsed",
+          "type": "boolean"
+        },
+        "id": {
+          "pattern": "^[a-z0-9][a-z0-9-]{0,39}$",
+          "title": "Id",
+          "type": "string"
+        },
+        "layout": {
+          "default": "list",
+          "enum": [
+            "list",
+            "grid",
+            "cards"
+          ],
+          "title": "Layout",
+          "type": "string"
+        },
+        "links": {
+          "items": {
+            "$ref": "#/$defs/Link"
+          },
+          "title": "Links",
+          "type": "array"
+        },
+        "subtitle": {
+          "anyOf": [
+            {
+              "maxLength": 500,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Subtitle"
+        },
+        "title": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Title",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "links",
+        "title"
+      ],
+      "title": "Section",
+      "type": "object"
+    },
+    "Social": {
+      "additionalProperties": false,
+      "properties": {
+        "icon": {
+          "pattern": "^[a-z0-9][a-z0-9-]{0,39}$",
+          "title": "Icon",
+          "type": "string"
+        },
+        "name": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Name",
+          "type": "string"
+        },
+        "url": {
+          "maxLength": 2048,
+          "title": "Url",
+          "type": "string"
+        }
+      },
+      "required": [
+        "icon",
+        "name",
+        "url"
+      ],
+      "title": "Social",
+      "type": "object"
+    },
+    "Tab": {
+      "additionalProperties": false,
+      "properties": {
+        "blocks": {
+          "items": {
+            "oneOf": [
+              {
+                "$ref": "#/$defs/Link"
+              },
+              {
+                "$ref": "#/$defs/Section"
+              },
+              {
+                "$ref": "#/$defs/Text"
+              },
+              {
+                "$ref": "#/$defs/Image"
+              },
+              {
+                "$ref": "#/$defs/Crypto"
+              },
+              {
+                "$ref": "#/$defs/Divider"
+              }
+            ]
+          },
+          "title": "Blocks",
+          "type": "array"
+        },
+        "id": {
+          "pattern": "^[a-z0-9][a-z0-9-]{0,39}$",
+          "title": "Id",
+          "type": "string"
+        },
+        "layout": {
+          "default": "list",
+          "enum": [
+            "list",
+            "grid",
+            "cards"
+          ],
+          "title": "Layout",
+          "type": "string"
+        },
+        "page_title": {
+          "anyOf": [
+            {
+              "maxLength": 80,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Page Title"
+        },
+        "title": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Title",
+          "type": "string"
+        }
+      },
+      "required": [
+        "blocks",
+        "id",
+        "title"
+      ],
+      "title": "Tab",
+      "type": "object"
+    },
+    "Text": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "pattern": "^[a-z0-9][a-z0-9-]{0,39}$",
+          "title": "Id",
+          "type": "string"
+        },
+        "markdown": {
+          "maxLength": 5000,
+          "minLength": 1,
+          "title": "Markdown",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "markdown"
+      ],
+      "title": "Text",
+      "type": "object"
+    },
+    "Theme": {
+      "additionalProperties": false,
+      "properties": {
+        "background": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Background"
+        },
+        "background_dim": {
+          "default": 0.0,
+          "maximum": 0.9,
+          "minimum": 0.0,
+          "title": "Background Dim",
+          "type": "number"
+        },
+        "button_style": {
+          "default": "rounded",
+          "enum": [
+            "pill",
+            "rounded",
+            "square"
+          ],
+          "title": "Button Style",
+          "type": "string"
+        },
+        "colors": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "title": "Colors",
+          "type": "object"
+        },
+        "column_width": {
+          "default": "35rem",
+          "title": "Column Width",
+          "type": "string"
+        },
+        "fonts": {
+          "$ref": "#/$defs/FontStack",
+          "default": {
+            "body": null,
+            "heading": null
+          }
+        },
+        "mascot": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Mascot"
+        },
+        "mode": {
+          "default": "auto",
+          "enum": [
+            "auto",
+            "light",
+            "dark"
+          ],
+          "title": "Mode",
+          "type": "string"
+        },
+        "radius": {
+          "default": "0.5rem",
+          "title": "Radius",
+          "type": "string"
+        }
+      },
+      "title": "Theme",
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "creator": {
+      "$ref": "#/$defs/Creator"
+    },
+    "disclosure": {
+      "anyOf": [
+        {
+          "maxLength": 2000,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Disclosure"
+    },
+    "features": {
+      "$ref": "#/$defs/Features",
+      "default": {
+        "click_tracking": true,
+        "kit_gate": false
+      }
+    },
+    "privacy": {
+      "$ref": "#/$defs/Privacy",
+      "default": {
+        "contact": null,
+        "intro": null,
+        "lead_retention_days": 365,
+        "retention_days": 90
+      }
+    },
+    "robots": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Robots"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "tabs": {
+      "items": {
+        "$ref": "#/$defs/Tab"
+      },
+      "minItems": 1,
+      "title": "Tabs",
+      "type": "array"
+    },
+    "theme": {
+      "$ref": "#/$defs/Theme",
+      "default": {
+        "background": null,
+        "background_dim": 0.0,
+        "button_style": "rounded",
+        "colors": {},
+        "column_width": "35rem",
+        "fonts": {
+          "body": null,
+          "heading": null
+        },
+        "mascot": null,
+        "mode": "auto",
+        "radius": "0.5rem"
+      }
+    },
+    "timezone": {
+      "default": "America/New_York",
+      "title": "Timezone",
+      "type": "string"
+    },
+    "title_template": {
+      "anyOf": [
+        {
+          "maxLength": 200,
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Title Template"
+    },
+    "version": {
+      "const": 1,
+      "title": "Version",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "creator",
+    "tabs",
+    "version"
+  ],
+  "title": "Reach Around site config",
+  "type": "object"
+}

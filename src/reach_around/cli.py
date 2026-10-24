@@ -10,7 +10,7 @@ from pathlib import Path
 
 from jinja2 import TemplateError
 
-from reach_around import __version__
+from reach_around import __version__, edit_cli
 from reach_around.config import ConfigError, load_site_config
 from reach_around.preview import PreviewError, serve
 from reach_around.site.build import build_site, manifest_json
@@ -47,6 +47,7 @@ def _parser() -> argparse.ArgumentParser:
     serve.add_argument("--host", default="127.0.0.1", help="loopback address to bind")
     serve.add_argument("--port", type=int, default=8000, help="port (default 8000)")
     serve.add_argument("--overrides", type=Path, help=_OVERRIDES_HELP)
+    edit_cli.register(commands)
     return parser
 
 
@@ -120,6 +121,8 @@ def main(argv: list[str] | None = None) -> int:
         return _build(args.config, args.out, args.overrides, args.manifest)
     if args.command == "serve":
         return _serve(args.config, args.host, args.port, args.overrides)
+    if args.command in edit_cli.COMMANDS:
+        return edit_cli.run(args)
     parser.print_help()
     return 2
 
