@@ -337,6 +337,7 @@ def test_default_theme_builds_the_same_page_as_before(tmp_path: Path) -> None:
         load_site_config(ROOT / "examples" / "instance" / "site.yaml"),
         example,
         today=TODAY,
+        assets_dir=ROOT / "examples" / "instance",
     )
     golden = ROOT / "tests" / "site" / "golden"
     assert (example / "static" / "theme.css").read_bytes() == (

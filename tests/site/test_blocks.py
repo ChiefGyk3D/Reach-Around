@@ -52,8 +52,16 @@ def without_click_script(text: str) -> str:
     return _CLICK_SCRIPT.sub("", text)
 
 
+def make_assets(root: Path) -> Path:
+    """An instance folder holding the image files the test configs name."""
+    for name in ("img/a.png", "img/b.png"):
+        (root / name).parent.mkdir(parents=True, exist_ok=True)
+        (root / name).write_bytes(b"\x89PNG synthetic")
+    return root
+
+
 def built(cfg: SiteConfig, out: Path) -> str:
-    build_site(cfg, out, today=TODAY)
+    build_site(cfg, out, today=TODAY, assets_dir=make_assets(out.parent / "inst"))
     return (out / "index.html").read_text(encoding="utf-8")
 
 
@@ -364,7 +372,7 @@ def test_relative_image_is_resolved_against_the_page_root(tmp_path: Path) -> Non
             ],
         }
     )
-    build_site(cfg, tmp_path / "out", today=TODAY)
+    build_site(cfg, tmp_path / "out", today=TODAY, assets_dir=make_assets(tmp_path))
     page = (tmp_path / "out" / "b" / "index.html").read_text()
     assert 'src="../img/a.png"' in page
 

@@ -3,7 +3,8 @@ version: 1
 timezone: America/New_York
 creator:
   name: Example Creator
-  avatar: https://example.com/avatar.png
+  avatar: media/mascot.svg
+  favicon: media/mascot.svg
   socials:
     - name: Example Video
       url: https://video.example.com/@example
@@ -17,6 +18,8 @@ creator:
     - name: Example Chat
       url: https://chat.example.invalid/example
       icon: chat
+theme:
+  mascot: media/mascot.svg
 disclosure: This page uses affiliate links. Example Creator may earn a commission.
 tabs:
   - id: start-here
@@ -27,6 +30,7 @@ tabs:
         subtitle: The main site
         url: https://example.com/
         icon: link
+        featured: true
       - id: gear-picks
         title: Gear Picks
         subtitle: Things used on the show

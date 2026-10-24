@@ -10,7 +10,7 @@
 {% endmacro %}
 {% macro avatar(creator, size) %}
 {% if creator.avatar %}
-<img class="avatar" src="{{ creator.avatar }}" alt="" width="{{ size }}" height="{{ size }}" referrerpolicy="no-referrer">
+<img class="avatar" src="{{ creator.avatar if ':' in creator.avatar else root ~ creator.avatar }}" alt="" width="{{ size }}" height="{{ size }}" referrerpolicy="no-referrer">
 {% endif %}
 {% endmacro %}
 {% if creator.header == "hero" %}
@@ -30,9 +30,11 @@
 {% else %}
 <header class="site-header header-compact">
 <div class="header-row">
-{{ avatar(creator, 48) }}
+{{ avatar(creator, 56) }}
+<div class="header-text">
 <h1>{{ creator.name }}</h1>
-</div>
 {{ socials(creator) }}
+</div>
+</div>
 </header>
 {% endif %}

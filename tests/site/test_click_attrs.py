@@ -17,7 +17,9 @@ ATTR = re.compile(r'([a-zA-Z-]+)="([^"]*)"')
 
 
 def build(out: Path) -> dict[str, str]:
-    manifest = build_site(load_site_config(EXAMPLE), out, today=TODAY)
+    manifest = build_site(
+        load_site_config(EXAMPLE), out, today=TODAY, assets_dir=EXAMPLE.parent
+    )
     return manifest.links
 
 

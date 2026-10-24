@@ -122,6 +122,10 @@ def _token_sets() -> dict[str, dict[str, RGB]]:
     for name, light, dark in pairs:
         sets["light"][name] = _hex_to_rgb(light)
         sets["dark"][name] = _hex_to_rgb(dark)
+    # Brand colors are one value for both modes: --ra-color-name: #rrggbb;
+    for name, value in re.findall(r"--ra-color-([a-z-]+):\s*(#[0-9a-fA-F]{6});", root):
+        for mode in sets:
+            sets[mode][name] = _hex_to_rgb(value)
     return sets
 
 
@@ -134,18 +138,23 @@ def test_contrast_helper_matches_known_values() -> None:
 @pytest.mark.parametrize("mode", ["light", "dark"])
 def test_contrast_of_default_token_pairs_meets_aa(mode: str) -> None:
     tokens = _token_sets()[mode]
-    assert {"bg", "surface", "text", "accent", "border"} <= set(tokens), tokens
+    needed = {"bg", "surface", "text", "accent", "on-accent", "border"}
+    assert needed <= set(tokens), tokens
     bg, surface = tokens["bg"], tokens["surface"]
-    text, accent = tokens["text"], tokens["accent"]
-    muted = _mix(text, bg, 0.68)  # --ra-color-muted: 68% text over bg
+    text, accent, on_accent = tokens["text"], tokens["accent"], tokens["on-accent"]
+    muted = _mix(text, bg, 0.72)  # --ra-color-muted: 72% text over bg
+    # --ra-color-link: the accent in dark mode, 45% accent over black in light.
+    link = accent if mode == "dark" else _mix(accent, (0.0, 0.0, 0.0), 0.45)
     for ground in (bg, surface):
         assert contrast(text, ground) >= 4.5, "text"
         assert contrast(muted, ground) >= 4.5, "muted text"
-        assert contrast(accent, ground) >= 4.5, "accent as link text"
-    # Text on the accent fill (active tab, hovered social icon) is the bg color.
-    assert contrast(bg, accent) >= 4.5, "text on the accent fill"
-    # UI components: the focus ring and the accent against the page (large text).
-    assert contrast(accent, bg) >= 3, "focus ring"
+        assert contrast(link, ground) >= 4.5, "link text"
+    # Text on the accent fill (tab bar, link buttons) is the on-accent color.
+    assert contrast(on_accent, accent) >= 4.5, "text on the accent fill"
+    subtitle = _mix(on_accent, accent, 0.85)  # --ra-color-on-accent-muted
+    assert contrast(subtitle, accent) >= 4.5, "subtitle on the accent fill"
+    # UI components: the focus ring against the page (large text).
+    assert contrast(link, bg) >= 3, "focus ring"
     assert contrast(tokens["border"], bg) >= 1.2, "border is at least visible"
 
 
@@ -172,7 +181,7 @@ def test_both_presets_validate_and_build(name: str, tmp_path: Path) -> None:
     assert theme.colors, "a preset must set colors"
     config = load_site_config(_preset_config(preset, tmp_path))
     out = tmp_path / "out"
-    build_site(config, out, today=TODAY)
+    build_site(config, out, today=TODAY, assets_dir=EXAMPLE.parent)
     css = (out / "static" / "theme.css").read_text()
     assert "--ra-color-bg" in css and "--ra-color-accent" in css
     assert (out / "index.html").is_file()
@@ -185,7 +194,8 @@ def test_presets_meet_text_contrast(name: str) -> None:
     for ground in ("bg", "surface"):
         assert contrast(colors["text"], colors[ground]) >= 4.5, ground
     assert contrast(colors["accent"], colors["bg"]) >= 4.5
-    assert contrast(colors["bg"], colors["accent"]) >= 4.5
+    assert "on_accent" in colors, "a preset must set the text color on its accent"
+    assert contrast(colors["on_accent"], colors["accent"]) >= 4.5
 
 
 # --- icons ------------------------------------------------------------------
@@ -242,7 +252,7 @@ def test_icon_notice_names_source_and_license() -> None:
 
 def _build_example(tmp_path: Path) -> Path:
     out = tmp_path / "out"
-    build_site(load_site_config(EXAMPLE), out, today=TODAY)
+    build_site(load_site_config(EXAMPLE), out, today=TODAY, assets_dir=EXAMPLE.parent)
     return out
 
 

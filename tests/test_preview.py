@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 import http.client
 import inspect
+import shutil
 import socket
 import threading
 import time
@@ -20,6 +21,7 @@ EXAMPLE = Path(__file__).resolve().parents[1] / "examples" / "instance" / "site.
 def config(tmp_path: Path) -> Path:
     path = tmp_path / "site.yaml"
     path.write_text(EXAMPLE.read_text())
+    shutil.copytree(EXAMPLE.parent / "media", tmp_path / "media")
     return path
 
 

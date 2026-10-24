@@ -28,6 +28,7 @@ from urllib.parse import unquote, urlsplit
 
 import reach_around.site as _site_package
 from reach_around.config import ConfigError, load_site_config
+from reach_around.site.assets import referenced_assets
 from reach_around.site.build import build_site
 from reach_around.site.overrides import OverridesError, check_overrides_dir
 from reach_around.site.visibility import today_in
@@ -74,6 +75,11 @@ def _watched_files(
     """Snapshot (mtime, size) of the config, the overrides and package files."""
     package = Path(_site_package.__file__).resolve().parent
     paths = [config]
+    try:
+        names = referenced_assets(load_site_config(config))
+    except (ConfigError, OSError):
+        names = []  # the build reports a broken config; just keep watching it
+    paths.extend(config.parent / name for name in names)
     if overrides is not None:
         paths.extend(p for p in overrides.rglob("*") if p.is_file())
     for sub in ("templates", "static"):
@@ -325,6 +331,7 @@ class Preview:
                 today=today,
                 protect=[self.config],
                 overrides=self.overrides,
+                assets_dir=self.config.parent,
             )
         except (ConfigError, ValueError, OSError) as exc:
             shutil.rmtree(new_root, ignore_errors=True)

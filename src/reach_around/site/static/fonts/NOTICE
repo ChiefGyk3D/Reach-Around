@@ -1,0 +1,11 @@
+Jost (variable weight, Latin subset)
+
+Copyright 2020 The Jost Project Authors (https://github.com/indestructible-type)
+Licensed under the SIL Open Font License, Version 1.1; the full text is in
+OFL.txt in this folder. The file is jost-latin-wght-normal.woff2 from the
+Fontsource package @fontsource-variable/jost, which repackages the upstream
+font without changes to the glyphs.
+
+It is served from this site, never from a font host, so a visitor's browser
+contacts no one else. To use a different font, set theme.fonts.body to a
+system stack or to a font file in your instance folder.

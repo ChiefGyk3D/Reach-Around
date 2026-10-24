@@ -15,10 +15,11 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from reach_around.site.theme import (
     COLOR_KEYS,
-    DEFAULT_FONT_BODY,
+    DEFAULT_COLUMN_WIDTH,
     check_background,
     check_color,
     check_font,
+    check_image_path,
     check_length,
 )
 
@@ -30,7 +31,7 @@ class _Model(BaseModel):
 class FontStack(_Model):
     """System font stacks or font files that ship with the instance."""
 
-    body: str = DEFAULT_FONT_BODY
+    body: str | None = None
     heading: str | None = None
 
     @field_validator("body", "heading")
@@ -43,7 +44,8 @@ class Theme(_Model):
     colors: dict[str, str] = Field(default_factory=dict)
     fonts: FontStack = FontStack()
     background: str | None = None
-    column_width: str = "36rem"
+    mascot: str | None = None
+    column_width: str = DEFAULT_COLUMN_WIDTH
     radius: str = "0.5rem"
     button_style: Literal["pill", "rounded", "square"] = "rounded"
     mode: Literal["auto", "light", "dark"] = "auto"
@@ -66,6 +68,11 @@ class Theme(_Model):
     @classmethod
     def _background_is_safe(cls, value: str | None) -> str | None:
         return None if value is None else check_background(value)
+
+    @field_validator("mascot")
+    @classmethod
+    def _mascot_is_local(cls, value: str | None) -> str | None:
+        return None if value is None else check_image_path(value)
 
     @field_validator("column_width", "radius")
     @classmethod

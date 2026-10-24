@@ -21,6 +21,7 @@ from typing import Any
 from jinja2 import Environment
 
 from reach_around.config.models import Block, Link, Section, SiteConfig, Tab
+from reach_around.site.assets import collect_assets
 from reach_around.site.overrides import (
     load_custom_css,
     make_environment,
@@ -133,16 +134,24 @@ def _manifest_json(manifest: BuildManifest) -> str:
     return json.dumps({"links": manifest.links}, sort_keys=True, indent=2) + "\n"
 
 
+# Packaged subfolders of static/ and the file endings each one publishes.
+_STATIC_FOLDERS: dict[str, tuple[str, ...]] = {
+    "icons": (".svg",),
+    "fonts": (".woff2", "OFL.txt"),
+}
+
+
 def _static_files() -> dict[Path, bytes]:
     root = resources.files("reach_around.site") / "static"
     files: dict[Path, bytes] = {}
     for item in sorted(root.iterdir(), key=lambda i: i.name):
         if item.is_file():
             files[Path("static") / item.name] = item.read_bytes()
-        elif item.name == "icons":
-            for icon in sorted(item.iterdir(), key=lambda i: i.name):
-                if icon.is_file() and icon.name.endswith(".svg"):
-                    files[Path("static") / "icons" / icon.name] = icon.read_bytes()
+        elif item.name in _STATIC_FOLDERS:
+            wanted = _STATIC_FOLDERS[item.name]
+            for child in sorted(item.iterdir(), key=lambda i: i.name):
+                if child.is_file() and child.name.endswith(wanted):
+                    files[Path("static") / item.name / child.name] = child.read_bytes()
     return files
 
 
@@ -188,6 +197,7 @@ def build_site(
     today: date,
     protect: Iterable[Path] = (),
     overrides: Path | None = None,
+    assets_dir: Path | None = None,
 ) -> BuildManifest:
     """Write the site for ``today`` into ``out_dir`` and return the manifest.
 
@@ -195,6 +205,9 @@ def build_site(
     leaves a stale page behind. ``protect`` lists paths (the config file) that
     ``out_dir`` must not be or contain. ``overrides`` is an optional directory
     with ``templates/`` and ``custom.css`` (see ``reach_around.site.overrides``).
+    ``assets_dir`` is the instance directory: the files the config names (avatar,
+    favicon, theme images, font files, image blocks) are copied from it to the
+    same relative path in ``out_dir``. It is required when the config names any.
     """
     shown = [list(visible_blocks(tab.blocks, today)) for tab in config.tabs]
     manifest = _manifest(shown)
@@ -208,6 +221,10 @@ def build_site(
         ).items()
     }
     files.update(_static_files())
+    for rel, data in collect_assets(config, assets_dir).items():
+        if rel in files:
+            raise ValueError(f"{rel} would overwrite a file the build writes itself")
+        files[rel] = data
     if not config.features.click_tracking:
         files.pop(Path("static") / "click.js", None)
     files[Path("static") / "theme.css"] = theme_css(config.theme).encode("utf-8")

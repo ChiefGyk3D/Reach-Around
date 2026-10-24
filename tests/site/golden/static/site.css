@@ -6,33 +6,52 @@
    config's theme section) overrides only the properties a creator changes.
    Raw color values appear in :root and nowhere else.
 
-   Colors come as light-dark(light, dark) pairs, so the page follows the
-   visitor's setting and the theme's `mode` (which sets color-scheme). */
+   The look is a dark page with carbon-fiber texture, a giant faded mascot
+   behind a narrow centered column, an accent-colored tab bar and pill links.
+   The mascot, the page background, the avatar and the favicon are slots a
+   creator fills in the config; this file ships none of them.
+
+   Colors come as light-dark(light, dark) pairs. The page is dark unless the
+   theme's `mode` says light. */
+@font-face {
+  font-family: "Jost";
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url("fonts/jost-latin-wght-normal.woff2") format("woff2");
+}
+
 :root {
-  color-scheme: light dark;
+  color-scheme: dark;
   interpolate-size: allow-keywords;
 
-  /* Colors: the five the theme section sets. */
-  --ra-color-bg: light-dark(#f1eee9, #141210);
-  --ra-color-surface: light-dark(#ffffff, #211e1b);
-  --ra-color-text: light-dark(#1c1916, #f3eee7);
-  --ra-color-accent: light-dark(#b03a00, #ff8a3c);
-  --ra-color-border: light-dark(#d6cfc5, #3a3530);
+  /* Colors: the six the theme section sets. The accent and the text on it are
+     the same in light and dark, so a button keeps its brand look. */
+  --ra-color-bg: light-dark(#f4f1ec, #0e0e0e);
+  --ra-color-surface: light-dark(#ffffff, #1b1b1b);
+  --ra-color-text: light-dark(#1a1a1a, #ffffff);
+  --ra-color-accent: #fbb03b;
+  --ra-color-on-accent: #1a1a1a;
+  --ra-color-border: light-dark(#d6d1c8, #333333);
 
-  /* Colors: derived from the five, so a retheme follows without extra work. */
-  --ra-color-on-accent: var(--ra-color-bg);
-  --ra-color-muted: color-mix(in srgb, var(--ra-color-text) 68%, var(--ra-color-bg));
-  --ra-color-raised: color-mix(in srgb, var(--ra-color-text) 5%, var(--ra-color-surface));
+  /* Colors: derived from the six, so a retheme follows without extra work. */
+  --ra-color-link: light-dark(color-mix(in srgb, var(--ra-color-accent) 45%, #000000), var(--ra-color-accent));
+  --ra-color-on-accent-muted: color-mix(in srgb, var(--ra-color-on-accent) 85%, var(--ra-color-accent));
+  --ra-color-accent-edge: color-mix(in srgb, var(--ra-color-accent) 72%, #000000);
+  --ra-color-chip: color-mix(in srgb, var(--ra-color-on-accent) 90%, var(--ra-color-accent));
+  --ra-color-muted: color-mix(in srgb, var(--ra-color-text) 72%, var(--ra-color-bg));
+  --ra-color-raised: color-mix(in srgb, var(--ra-color-text) 6%, var(--ra-color-surface));
   --ra-color-highlight: color-mix(in srgb, var(--ra-color-text) 8%, transparent);
   --ra-color-accent-soft: color-mix(in srgb, var(--ra-color-accent) 15%, var(--ra-color-surface));
-  --ra-color-glow: color-mix(in srgb, var(--ra-color-accent) 20%, transparent);
-  --ra-color-grain: color-mix(in srgb, var(--ra-color-text) 2%, transparent);
-  --ra-color-edge: color-mix(in srgb, var(--ra-color-text) 38%, transparent);
-  --ra-shadow-color: light-dark(rgb(70 45 20 / 0.18), rgb(0 0 0 / 0.55));
+  --ra-color-glow: color-mix(in srgb, var(--ra-color-text) 7%, transparent);
+  --ra-color-grain: color-mix(in srgb, var(--ra-color-text) 3%, transparent);
+  --ra-color-grain-deep: color-mix(in srgb, #000000 30%, transparent);
+  --ra-color-edge: color-mix(in srgb, var(--ra-color-on-accent) 45%, transparent);
+  --ra-shadow-color: light-dark(rgb(70 45 20 / 0.22), rgb(0 0 0 / 0.6));
 
-  /* Fonts: system stacks only. */
-  --ra-font-body: system-ui, sans-serif;
-  --ra-font-heading: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
+  /* Fonts: Jost is served from this site; the rest are system fallbacks. */
+  --ra-font-body: "Jost", system-ui, sans-serif;
+  --ra-font-heading: var(--ra-font-body);
 
   /* Type scale: a 1.25 ratio from 1rem. */
   --ra-text-xs: 0.8rem;
@@ -52,13 +71,16 @@
   --ra-space-5: 1.5rem;
   --ra-space-6: 2.5rem;
   --ra-tap: 2.75rem;
+  --ra-gutter: 1rem;
 
   /* Shape and layout. */
-  --ra-column-width: 36rem;
+  --ra-column-width: 35rem;
   --ra-radius: 0.5rem;
-  --ra-button-radius: var(--ra-radius);
-  --ra-card-radius: min(calc(var(--ra-button-radius) * 1.5), 1.75rem);
-  --ra-tab-radius: min(var(--ra-button-radius), 1.5rem);
+  --ra-button-radius: 2.25rem;
+  --ra-card-radius: min(calc(var(--ra-radius) * 2), 1.75rem);
+  --ra-tab-radius: 0;
+  --ra-avatar-radius: 50%;
+  --ra-thumb: 2.75rem;
 
   /* Depth. */
   --ra-shadow-card:
@@ -67,12 +89,15 @@
   --ra-shadow-lift:
     inset 0 1px 0 var(--ra-color-highlight), 0 2px 4px var(--ra-shadow-color),
     0 16px 30px -14px var(--ra-shadow-color);
+  --ra-shadow-pill: 0 3px 12px var(--ra-shadow-color);
 
-  /* Background artwork: set --ra-bg-image from the theme's background. */
+  /* Image slots: filled from the config, empty here. --ra-bg-image is the
+     full-bleed page background; --ra-mascot-image is the giant faded mascot. */
   --ra-bg-image: none;
-  --ra-bg-image-opacity: 0.1;
-  --ra-bg-image-size: min(92vw, 60rem);
-  --ra-bg-image-position: center bottom;
+  --ra-mascot-image: none;
+  --ra-mascot-opacity: 0.12;
+  --ra-mascot-size: cover;
+  --ra-mascot-position: center;
 
   /* Motion. */
   --ra-duration: 180ms;
@@ -93,32 +118,42 @@ body {
   line-height: var(--ra-line-height);
   color: var(--ra-color-text);
   background-color: var(--ra-color-bg);
+  /* Carbon-fiber weave: two crossing hatches, a soft center light on top. */
   background-image:
-    radial-gradient(64rem 30rem at 50% -10rem, var(--ra-color-glow), transparent 70%),
-    repeating-linear-gradient(135deg, var(--ra-color-grain) 0 1px, transparent 1px 5px);
+    var(--ra-bg-image),
+    radial-gradient(70rem 40rem at 50% 0, var(--ra-color-glow), transparent 70%),
+    repeating-linear-gradient(45deg, var(--ra-color-grain) 0 2px, transparent 2px 4px),
+    repeating-linear-gradient(-45deg, var(--ra-color-grain-deep) 0 2px, transparent 2px 4px);
+  background-size: cover, auto, auto, auto;
+  background-position: center, center, 0 0, 0 0;
+  background-repeat: no-repeat, no-repeat, repeat, repeat;
+  background-attachment: fixed;
   overflow-wrap: break-word;
 }
+/* The giant faded mascot: one fixed layer behind everything. */
 body::before {
   content: "";
   position: fixed;
   inset: 0;
   z-index: -1;
   pointer-events: none;
-  background-image: var(--ra-bg-image);
+  background-image: var(--ra-mascot-image);
   background-repeat: no-repeat;
-  background-position: var(--ra-bg-image-position);
-  background-size: var(--ra-bg-image-size);
-  opacity: var(--ra-bg-image-opacity);
+  background-position: var(--ra-mascot-position);
+  background-size: var(--ra-mascot-size);
+  opacity: var(--ra-mascot-opacity);
 }
 
+/* The column: tab bar flush to its top, everything else inset by the gutter. */
 main {
   display: flex;
   flex-direction: column;
   min-height: 100vh;
   max-width: var(--ra-column-width);
   margin: 0 auto;
-  padding: var(--ra-space-4) var(--ra-space-4) var(--ra-space-5);
+  padding: 0 0 var(--ra-space-5);
 }
+main > :not(.tabs) { padding-inline: var(--ra-gutter); }
 .blocks { flex: 1 0 auto; align-content: start; }
 
 h1, h2, h3 {
@@ -129,9 +164,9 @@ h1, h2, h3 {
 }
 p { margin: 0 0 var(--ra-space-3); text-wrap: pretty; }
 ul { list-style: none; margin: 0; padding: 0; }
-a { color: var(--ra-color-accent); text-underline-offset: 0.2em; }
+a { color: var(--ra-color-link); text-underline-offset: 0.2em; }
 a:focus-visible, summary:focus-visible, button:focus-visible {
-  outline: 3px solid var(--ra-color-accent);
+  outline: 3px solid var(--ra-color-link);
   outline-offset: 3px;
 }
 
@@ -151,7 +186,7 @@ a:focus-visible, summary:focus-visible, button:focus-visible {
   top: -4rem;
   z-index: 10;
   padding: var(--ra-space-3) var(--ra-space-4);
-  border-radius: var(--ra-tab-radius);
+  border-radius: var(--ra-button-radius);
   background-color: var(--ra-color-accent);
   color: var(--ra-color-on-accent);
   font-weight: 700;
@@ -190,7 +225,8 @@ a:focus-visible, summary:focus-visible, button:focus-visible {
 .icon-rss { -webkit-mask-image: url("icons/rss.svg"); mask-image: url("icons/rss.svg"); }
 .icon-link { -webkit-mask-image: url("icons/link.svg"); mask-image: url("icons/link.svg"); }
 
-/* Header. */
+
+/* Header: avatar at the left, the name beside it, the social icons below the name. */
 .site-header {
   display: flex;
   flex-direction: column;
@@ -202,21 +238,22 @@ a:focus-visible, summary:focus-visible, button:focus-visible {
 .site-header h1 {
   margin: 0;
   font-size: var(--ra-text-xl);
+  font-weight: 500;
 }
 .avatar {
-  border-radius: 50%;
+  border-radius: var(--ra-avatar-radius);
   object-fit: cover;
   aspect-ratio: 1;
   max-width: 100%;
   height: auto;
   background-color: var(--ra-color-surface);
-  box-shadow:
-    0 0 0 3px var(--ra-color-bg), 0 0 0 5px var(--ra-color-accent),
-    0 14px 30px -10px var(--ra-color-glow);
+  box-shadow: 0 0 0 1px var(--ra-color-border);
 }
 .header-compact { align-items: stretch; text-align: left; padding-top: var(--ra-space-4); }
-.header-row { display: flex; align-items: center; gap: var(--ra-space-4); }
-.header-row h1 { font-size: var(--ra-text-lg); }
+.header-row { display: flex; align-items: flex-start; gap: var(--ra-space-3); }
+.header-row .avatar { flex: none; }
+.header-text { display: flex; flex-direction: column; gap: var(--ra-space-1); min-width: 0; }
+.header-row h1 { font-size: var(--ra-text-lg); padding-top: var(--ra-space-1); }
 .header-hero { padding-top: var(--ra-space-4); }
 .header-hero .hero-card {
   display: flex;
@@ -237,76 +274,81 @@ a:focus-visible, summary:focus-visible, button:focus-visible {
   display: flex;
   flex-wrap: wrap;
   justify-content: center;
-  gap: var(--ra-space-2);
+  align-items: center;
+  gap: var(--ra-space-1);
 }
-.header-compact .socials { justify-content: flex-start; }
+.header-compact .socials { justify-content: flex-start; margin-left: calc(var(--ra-space-2) * -1); }
 .social {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   min-width: var(--ra-tap);
   min-height: var(--ra-tap);
-  padding: 0 var(--ra-space-3);
-  border: 1px solid var(--ra-color-border);
-  border-radius: min(var(--ra-button-radius), var(--ra-tap));
-  background-color: var(--ra-color-surface);
-  box-shadow: var(--ra-shadow-card);
   color: var(--ra-color-text);
   font-size: var(--ra-text-sm);
-  font-weight: 600;
+  font-weight: 500;
   text-decoration: none;
-  transition: transform var(--ra-duration) var(--ra-ease), background-color var(--ra-duration), color var(--ra-duration), border-color var(--ra-duration);
+  transition: transform var(--ra-duration) var(--ra-ease), color var(--ra-duration);
 }
-.social .icon { width: 1.4rem; height: 1.4rem; }
+.social .icon { width: 1.6rem; height: 1.6rem; }
+.social-label {
+  padding: var(--ra-space-1) var(--ra-space-3);
+  border: 1px solid var(--ra-color-border);
+  border-radius: 999px;
+}
 
-/* Tab bar: a scrollable track with an edge cue where more tabs hide. */
-.tabs { margin: var(--ra-space-2) 0 var(--ra-space-4); }
+/* Tab bar: accent bar flush to the top of the column, uppercase labels. It
+   scrolls sideways when the tabs do not fit, with an edge cue where more hide. */
+.tabs { margin: 0 0 var(--ra-space-3); }
 .tabs ul {
   display: flex;
-  gap: var(--ra-space-1);
-  width: fit-content;
-  max-width: 100%;
-  margin: 0 auto;
-  padding: var(--ra-space-1);
+  width: 100%;
+  margin: 0;
+  padding: 0;
   overflow-x: auto;
   overscroll-behavior-x: contain;
   scrollbar-width: none;
   scroll-snap-type: x proximity;
-  border: 1px solid var(--ra-color-border);
-  border-radius: calc(var(--ra-tab-radius) + var(--ra-space-1));
-  background-color: var(--ra-color-surface);
+  border-radius: var(--ra-tab-radius);
+  background-color: var(--ra-color-accent);
   background-image:
-    linear-gradient(to right, var(--ra-color-surface) 30%, transparent),
-    linear-gradient(to left, var(--ra-color-surface) 30%, transparent),
+    linear-gradient(to right, var(--ra-color-accent) 30%, transparent),
+    linear-gradient(to left, var(--ra-color-accent) 30%, transparent),
     radial-gradient(farthest-side at 0 50%, var(--ra-color-edge), transparent),
     radial-gradient(farthest-side at 100% 50%, var(--ra-color-edge), transparent);
   background-repeat: no-repeat;
   background-position: left center, right center, left center, right center;
   background-size: 2.5rem 100%, 2.5rem 100%, 0.9rem 100%, 0.9rem 100%;
   background-attachment: local, local, scroll, scroll;
-  box-shadow: var(--ra-shadow-card);
+  box-shadow: var(--ra-shadow-pill);
 }
 .tabs ul::-webkit-scrollbar { display: none; }
-.tabs li { flex: 0 0 auto; scroll-snap-align: center; }
+.tabs li { flex: 1 0 auto; scroll-snap-align: center; }
 .tabs a {
   display: flex;
   align-items: center;
-  min-height: var(--ra-tap);
+  justify-content: center;
+  min-height: 3rem;
   padding: 0 var(--ra-space-4);
   border-radius: var(--ra-tab-radius);
-  color: var(--ra-color-muted);
-  font-weight: 600;
-  text-decoration: none;
-  white-space: nowrap;
-  transition: background-color var(--ra-duration), color var(--ra-duration);
-}
-.tabs a[aria-current="page"] {
-  background-color: var(--ra-color-accent);
   color: var(--ra-color-on-accent);
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  text-decoration: none;
+  text-transform: uppercase;
+  white-space: nowrap;
+  transition: background-color var(--ra-duration);
+}
+.tabs a:focus-visible { outline-color: var(--ra-color-on-accent); outline-offset: -4px; }
+.tabs a[aria-current="page"] {
+  background-color: var(--ra-color-accent-edge);
+  box-shadow: inset 0 -3px 0 var(--ra-color-on-accent);
+  font-weight: 700;
 }
 
-/* Link cards. */
-.blocks { display: flex; flex-direction: column; gap: var(--ra-space-3); }
+/* Link buttons: full-width accent pills. The thumbnail slot sits at the left,
+   the three-dot glyph at the right, and the text stays centered between them. */
+.blocks { display: flex; flex-direction: column; gap: var(--ra-space-4); }
 .blocks.layout-grid, .blocks.layout-cards, .section-links.layout-grid, .section-links.layout-cards { display: grid; }
 .blocks.layout-grid, .section-links.layout-grid { grid-template-columns: repeat(auto-fill, minmax(10rem, 1fr)); gap: var(--ra-space-3); }
 .blocks.layout-cards, .section-links.layout-cards { grid-template-columns: repeat(auto-fill, minmax(15rem, 1fr)); gap: var(--ra-space-3); }
@@ -315,40 +357,64 @@ a:focus-visible, summary:focus-visible, button:focus-visible {
 .section-links { display: flex; flex-direction: column; gap: var(--ra-space-2); }
 
 a.link {
-  display: flex;
+  display: grid;
+  grid-template-columns: var(--ra-thumb) minmax(0, 1fr) var(--ra-thumb);
   align-items: center;
-  gap: var(--ra-space-3);
-  min-height: calc(var(--ra-tap) + var(--ra-space-3));
+  column-gap: var(--ra-space-2);
+  min-height: 4rem;
   height: 100%;
-  padding: var(--ra-space-3) var(--ra-space-4);
-  border: 1px solid var(--ra-color-border);
-  border-radius: var(--ra-card-radius);
-  background-color: var(--ra-color-surface);
-  box-shadow: var(--ra-shadow-card);
-  color: var(--ra-color-text);
+  padding: var(--ra-space-2) var(--ra-space-3);
+  border: 1px solid var(--ra-color-accent-edge);
+  border-radius: var(--ra-button-radius);
+  background-color: var(--ra-color-accent);
+  box-shadow: var(--ra-shadow-pill);
+  color: var(--ra-color-on-accent);
+  text-align: center;
   text-decoration: none;
-  transition: transform var(--ra-duration) var(--ra-ease), box-shadow var(--ra-duration) var(--ra-ease), border-color var(--ra-duration), background-color var(--ra-duration);
+  transition: transform var(--ra-duration) var(--ra-ease), box-shadow var(--ra-duration) var(--ra-ease), filter var(--ra-duration);
+}
+/* The three-dot glyph: drawn, not marked up, and only a visual cue. */
+a.link::after {
+  content: "";
+  grid-column: 3;
+  grid-row: 1;
+  justify-self: center;
+  width: 0.3rem;
+  height: 1.2rem;
+  background-image:
+    radial-gradient(circle at 50% 12%, var(--ra-color-on-accent-muted) 0.13rem, transparent 0.15rem),
+    radial-gradient(circle at 50% 50%, var(--ra-color-on-accent-muted) 0.13rem, transparent 0.15rem),
+    radial-gradient(circle at 50% 88%, var(--ra-color-on-accent-muted) 0.13rem, transparent 0.15rem);
 }
 .link-chip {
   display: grid;
-  flex: none;
+  grid-column: 1;
+  grid-row: 1;
   place-items: center;
-  width: 2.75rem;
-  height: 2.75rem;
-  border-radius: min(var(--ra-button-radius), 50%);
-  background-color: var(--ra-color-accent-soft);
+  width: var(--ra-thumb);
+  height: var(--ra-thumb);
+  border-radius: 50%;
+  background-color: var(--ra-color-chip);
   color: var(--ra-color-accent);
 }
-.link-text { flex: 1; min-width: 0; }
+.link-text { grid-column: 2; grid-row: 1; min-width: 0; }
 .link-title {
   display: block;
   font-size: var(--ra-text-md);
-  font-weight: 700;
+  font-weight: 500;
   line-height: 1.25;
   overflow-wrap: anywhere;
   text-wrap: balance;
 }
-.link-subtitle, .section-subtitle {
+.link-subtitle {
+  display: block;
+  margin-top: var(--ra-space-1);
+  color: var(--ra-color-on-accent-muted);
+  font-size: var(--ra-text-sm);
+  line-height: 1.3;
+  overflow-wrap: anywhere;
+}
+.section-subtitle {
   display: block;
   margin-top: var(--ra-space-1);
   color: var(--ra-color-muted);
@@ -356,27 +422,37 @@ a.link {
   line-height: 1.35;
   overflow-wrap: anywhere;
 }
-.layout-grid a.link { flex-direction: column; justify-content: center; text-align: center; min-height: 7rem; }
-.layout-grid a.link .link-text { flex: 0 1 auto; }
+/* The highlighted top link: taller, no border, no dots. */
+a.link-featured {
+  min-height: 4.5rem;
+  border-color: transparent;
+}
+a.link-featured::after { display: none; }
+a.link-featured .link-title { font-size: var(--ra-text-lg); }
+
+/* Grid and card layouts stack the content instead of using the pill row. */
+.layout-grid a.link, .layout-cards a.link {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: var(--ra-space-2);
+  border-radius: var(--ra-card-radius);
+}
+.layout-grid a.link::after, .layout-cards a.link::after { display: none; }
+.layout-grid a.link { min-height: 7rem; }
 .layout-cards a.link { padding: var(--ra-space-5) var(--ra-space-4); }
-.layout-cards .link-title { font-size: var(--ra-text-lg); font-family: var(--ra-font-heading); }
+.layout-cards .link-title { font-size: var(--ra-text-lg); }
 
 @media (hover: hover) {
-  .social:hover {
-    transform: translateY(-2px);
-    border-color: var(--ra-color-accent);
-    background-color: var(--ra-color-accent);
-    color: var(--ra-color-on-accent);
-  }
-  .tabs a:not([aria-current="page"]):hover { background-color: var(--ra-color-raised); color: var(--ra-color-text); }
+  .social:hover { transform: translateY(-2px); color: var(--ra-color-accent); }
+  .tabs a:not([aria-current="page"]):hover { background-color: var(--ra-color-accent-edge); }
   a.link:hover {
     transform: translateY(-2px);
-    border-color: var(--ra-color-accent);
-    background-color: var(--ra-color-raised);
     box-shadow: var(--ra-shadow-lift);
+    filter: brightness(1.06);
   }
 }
-a.link:active, .social:active { transform: translateY(0) scale(0.985); box-shadow: var(--ra-shadow-card); }
+a.link:active, .social:active { transform: translateY(0) scale(0.985); }
 
 /* Collapsible sections: native details, rotating chevron, smooth open and close. */
 .section {
@@ -415,7 +491,7 @@ a.link:active, .social:active { transform: translateY(0) scale(0.985); box-shado
 .section[open] > summary::after { transform: rotate(-135deg) translate(-2px, -2px); }
 .section > .section-subtitle { margin: calc(var(--ra-space-2) * -1) 0 var(--ra-space-3); padding: 0 var(--ra-space-4); }
 .section .section-links { padding: 0 var(--ra-space-3) var(--ra-space-3); }
-.section a.link { background-color: var(--ra-color-raised); box-shadow: none; }
+.section a.link { box-shadow: none; }
 .section[open] .section-links { animation: ra-reveal 260ms var(--ra-ease) both; }
 @supports selector(::details-content) {
   .section[open] .section-links { animation: none; }

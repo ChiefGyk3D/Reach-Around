@@ -97,13 +97,16 @@ disclosure: Some links are affiliate links.
 | Field | Type | Default | Constraints |
 | --- | --- | --- | --- |
 | `name` | Title | required | |
-| `avatar` | HTTPS URL | none | |
+| `avatar` | HTTPS URL or local image path | none | A relative path such as `media/avatar.png` is copied from the instance directory to the same path in the site. |
+| `favicon` | local image path | none | The browser tab icon. Same rules as a local `avatar`; an https URL is refused. |
+| `header` | `compact`, `centered`, `hero` | `compact` | See [layouts and headers](#blocks-layouts-and-headers). |
 | `socials` | list of Social | empty list | |
 
 ```yaml
 creator:
   name: Example Creator
-  avatar: https://example.com/avatar.png
+  avatar: media/avatar.png
+  favicon: media/favicon.png
 ```
 
 ### `creator.socials[]` (`Social`)
@@ -288,6 +291,7 @@ theme:
     body: Georgia, "Times New Roman", serif
     heading: fonts/heading.woff2
   background: media/background.webp
+  mascot: media/mascot.svg
   column_width: 40rem
   radius: 1rem
   button_style: pill
@@ -302,14 +306,15 @@ tabs:
 
 | Key | Type | Default | Notes |
 | --- | --- | --- | --- |
-| `colors` | map | empty | Keys: `bg`, `text`, `accent`, `surface`, `border`. Any other key is refused. |
-| `fonts.body` | string | `system-ui, sans-serif` | A system font stack or a font file path. |
+| `colors` | map | empty | Keys: `bg`, `text`, `accent`, `on_accent` (text on the accent fill), `surface`, `border`. Any other key is refused. |
+| `fonts.body` | string | Jost, shipped with the engine | A system font stack or a font file path. |
 | `fonts.heading` | string | same as body | Same rules as `fonts.body`. |
-| `background` | string | none | An `https://` URL or a relative image path. |
-| `column_width` | length | `36rem` | `px`, `rem`, `em`, `ch`, `%` or `vw`. |
-| `radius` | length | `0.5rem` | Corner radius for link buttons. |
-| `button_style` | `pill`, `rounded`, `square` | `rounded` | `rounded` uses `radius`. |
-| `mode` | `auto`, `light`, `dark` | `auto` | `auto` follows the visitor's setting. |
+| `background` | string | none | The full-bleed page background, drawn under the carbon-fiber texture. A relative image path (preferred) or an `https://` URL. |
+| `mascot` | string | none | The giant faded image behind the column. A relative image path only. |
+| `column_width` | length | `35rem` (560 px) | `px`, `rem`, `em`, `ch`, `%` or `vw`. |
+| `radius` | length | `0.5rem` | Base corner radius for cards and sections. |
+| `button_style` | `pill`, `rounded`, `square` | `rounded` | `rounded` is the 36 px pill radius, `pill` is fully round, `square` has no radius. |
+| `mode` | `auto`, `light`, `dark` | `auto` | `auto` is the stylesheet's own choice, which is dark. `light` forces the light palette. |
 
 ### What is accepted
 

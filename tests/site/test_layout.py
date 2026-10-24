@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import functools
 import os
+import re
 import threading
 from collections.abc import Iterator
 from datetime import date
@@ -58,7 +59,12 @@ def base_url(tmp_path_factory: pytest.TempPathFactory) -> Iterator[str]:
     config_path = work / "site.yaml"
     config_path.write_text(yaml.safe_dump(raw))
     out = work / "out"
-    build_site(load_site_config(config_path), out, today=TODAY)
+    build_site(
+        load_site_config(config_path),
+        out,
+        today=TODAY,
+        assets_dir=EXAMPLE.parent,
+    )
     handler = functools.partial(_Quiet, directory=str(out))
     server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -185,15 +191,94 @@ def test_section_opens_and_chevron_rotates(browser: Browser, base_url: str) -> N
     page.context.close()
 
 
-def test_dark_and_light_follow_the_visitor(browser: Browser, base_url: str) -> None:
+def test_the_page_is_dark_whatever_the_visitor_prefers(
+    browser: Browser, base_url: str
+) -> None:
     schemes: tuple[Literal["light", "dark"], ...] = ("light", "dark")
-    colors: dict[str, str] = {}
+    colors: set[str] = set()
     for scheme in schemes:
         context = browser.new_context(color_scheme=scheme)
         page = context.new_page()
         page.goto(base_url)
-        colors[scheme] = page.evaluate(
-            "() => getComputedStyle(document.body).backgroundColor"
+        colors.add(
+            page.evaluate("() => getComputedStyle(document.body).backgroundColor")
         )
         context.close()
-    assert colors["light"] != colors["dark"]
+    assert colors == {"rgb(14, 14, 14)"}
+
+
+def _rgb(text: str) -> tuple[int, int, int]:
+    nums = [int(n) for n in re.findall(r"\d+", text)[:3]]
+    return nums[0], nums[1], nums[2]
+
+
+def _ratio(a: tuple[int, int, int], b: tuple[int, int, int]) -> float:
+    def lum(c: tuple[int, int, int]) -> float:
+        lin = [
+            (v / 255) / 12.92
+            if v / 255 <= 0.04045
+            else (((v / 255) + 0.055) / 1.055) ** 2.4
+            for v in c
+        ]
+        return 0.2126 * lin[0] + 0.7152 * lin[1] + 0.0722 * lin[2]
+
+    hi, lo = sorted((lum(a), lum(b)), reverse=True)
+    return (hi + 0.05) / (lo + 0.05)
+
+
+def test_tab_bar_is_flush_to_the_top_of_the_column(
+    browser: Browser, base_url: str
+) -> None:
+    for width in (1440, 390):
+        page = _open(browser, base_url, width)
+        bar = page.locator(".tabs ul").bounding_box()
+        main = page.locator("main").bounding_box()
+        assert bar is not None and main is not None
+        assert bar["y"] == 0
+        assert abs(bar["x"] - main["x"]) <= 1 and abs(bar["width"] - main["width"]) <= 1
+        assert (
+            page.evaluate(
+                "() => getComputedStyle(document.querySelector('.tabs a'))"
+                ".textTransform"
+            )
+            == "uppercase"
+        )
+        page.context.close()
+
+
+def test_link_buttons_are_orange_pills_with_dark_text_that_pass_aa(
+    browser: Browser, base_url: str
+) -> None:
+    page = _open(browser, base_url, 1440)
+    style = page.evaluate(
+        """() => {
+          const el = document.querySelector('a.link:not(.link-featured)');
+          const s = getComputedStyle(el);
+          return [s.backgroundColor, s.color, s.borderTopLeftRadius, s.width];
+        }"""
+    )
+    background, color, radius, _width = style
+    assert _rgb(background) == (0xFB, 0xB0, 0x3B)
+    assert _ratio(_rgb(color), _rgb(background)) >= 4.5
+    assert radius == "36px"
+    bar = page.evaluate(
+        "() => { const s = getComputedStyle(document.querySelector('.tabs ul'));"
+        " const a = getComputedStyle(document.querySelector('.tabs a'));"
+        " return [s.backgroundColor, a.color]; }"
+    )
+    assert _ratio(_rgb(bar[1]), _rgb(bar[0])) >= 4.5
+    page.context.close()
+
+
+def test_jost_is_the_rendered_font_and_loads_from_this_site(
+    browser: Browser, base_url: str
+) -> None:
+    context = browser.new_context(viewport={"width": 390, "height": 800})
+    page = context.new_page()
+    fonts: list[str] = []
+    page.on("response", lambda r: fonts.append(r.url) if ".woff2" in r.url else None)
+    page.goto(base_url)
+    page.wait_for_load_state("networkidle")
+    assert page.evaluate("() => document.fonts.check('16px Jost')")
+    assert fonts and all(u.startswith(base_url) for u in fonts)
+    context.close()

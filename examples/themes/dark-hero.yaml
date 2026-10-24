@@ -6,6 +6,7 @@ colors:
   surface: "#211e1b"
   text: "#f3eee7"
   accent: "#ff8a3c"
+  on_accent: "#1a1a1a"
   border: "#3a3530"
 fonts:
   body: "system-ui, sans-serif"

@@ -23,13 +23,25 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from reach_around.config.theme import Theme
 
-COLOR_KEYS: tuple[str, ...] = ("bg", "text", "accent", "surface", "border")
+COLOR_KEYS: tuple[str, ...] = (
+    "bg",
+    "text",
+    "accent",
+    "on_accent",
+    "surface",
+    "border",
+)
+
+# Folders the build writes itself; an instance file may not live inside them.
+RESERVED_FOLDERS: frozenset[str] = frozenset({"static", "privacy"})
 
 DEFAULT_FONT_BODY = "system-ui, sans-serif"
+DEFAULT_COLUMN_WIDTH = "35rem"
 
 ALLOWED_PROPERTIES: frozenset[str] = frozenset(
-    {f"--ra-color-{key}" for key in COLOR_KEYS}
+    {f"--ra-color-{key.replace('_', '-')}" for key in COLOR_KEYS}
     | {
+        "--ra-mascot-image",
         "--ra-font-body",
         "--ra-font-heading",
         "--ra-bg-image",
@@ -137,11 +149,11 @@ def check_color(value: str) -> str:
 
 
 def check_length(value: str) -> str:
-    """Return ``value`` if it is a plain length such as ``560px`` or ``36rem``."""
+    """Return ``value`` if it is a plain length such as ``560px`` or ``35rem``."""
     check_css_value(value)
     if not _LENGTH.match(value):
         raise ValueError(
-            "must be a length such as 560px, 36rem, 40em, 60ch, 90% or 100vw, "
+            "must be a length such as 560px, 35rem, 40em, 60ch, 90% or 100vw, "
             f"not {value[:40]!r}"
         )
     return value
@@ -199,6 +211,23 @@ def check_font(value: str) -> str:
     return value
 
 
+def check_image_path(value: str) -> str:
+    """Return ``value`` if it is a relative image path inside the instance.
+
+    This is the check for the slots that must stay same-origin (the mascot and
+    the favicon): no scheme, no ``//``, no ``..``, no absolute path, and not in
+    a folder the build writes itself.
+    """
+    check_css_value(value)
+    _check_asset_path(value, _IMAGE_EXTENSIONS, "image")
+    if value.split("/", 1)[0] in RESERVED_FOLDERS:
+        raise ValueError(
+            "must not be inside a folder the build writes itself "
+            f"({', '.join(sorted(RESERVED_FOLDERS))}), not {value[:40]!r}"
+        )
+    return value
+
+
 def check_background(value: str) -> str:
     """Return ``value`` if it is an https URL or a relative image path."""
     check_css_value(value)
@@ -208,7 +237,7 @@ def check_background(value: str) -> str:
         return value
     if _is_remote(value) or ":" in value:
         raise ValueError("background must be an https URL or a relative asset path")
-    return _check_asset_path(value, _IMAGE_EXTENSIONS, "background image")
+    return check_image_path(value)
 
 
 def _family_list(value: str) -> str:
@@ -234,10 +263,11 @@ def theme_css(theme: Theme) -> str:
 
     for key in COLOR_KEYS:
         if key in theme.colors:
-            declarations[f"--ra-color-{key}"] = check_color(theme.colors[key])
+            name = key.replace("_", "-")
+            declarations[f"--ra-color-{name}"] = check_color(theme.colors[key])
 
     for slot, value in (("body", theme.fonts.body), ("heading", theme.fonts.heading)):
-        if value is None or (slot == "body" and value == DEFAULT_FONT_BODY):
+        if value is None:
             continue
         check_font(value)
         if _font_kind(value) == "file":
@@ -254,9 +284,11 @@ def theme_css(theme: Theme) -> str:
         else:
             declarations[f"--ra-font-{slot}"] = _family_list(value)
 
+    if theme.mascot is not None:
+        declarations["--ra-mascot-image"] = _css_url(check_image_path(theme.mascot))
     if theme.background is not None:
         declarations["--ra-bg-image"] = _css_url(check_background(theme.background))
-    if theme.column_width != "36rem":
+    if theme.column_width != DEFAULT_COLUMN_WIDTH:
         declarations["--ra-column-width"] = check_length(theme.column_width)
     if theme.radius != "0.5rem":
         declarations["--ra-radius"] = check_length(theme.radius)

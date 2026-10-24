@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Start Here - Example Creator</title>
+<link rel="icon" href="media/mascot.svg">
 <link rel="stylesheet" href="static/site.css">
 <link rel="stylesheet" href="static/theme.css">
 <script src="static/click.js" defer></script>
@@ -11,12 +12,18 @@
 <body>
 <a class="skip-link" href="#content">Skip to links</a>
 <main id="content">
+<nav class="tabs" aria-label="Pages">
+<ul>
+<li><a href="./" aria-current="page">Start Here</a></li>
+<li><a href="./events/">Events</a></li>
+</ul>
+</nav>
 <header class="site-header header-compact">
 <div class="header-row">
-<img class="avatar" src="https://example.com/avatar.png" alt="" width="48" height="48" referrerpolicy="no-referrer">
+<img class="avatar" src="media/mascot.svg" alt="" width="56" height="56" referrerpolicy="no-referrer">
 
+<div class="header-text">
 <h1>Example Creator</h1>
-</div>
 <ul class="socials">
 <li><a class="social" href="https://video.example.com/@example" rel="noopener noreferrer"><span class="icon icon-youtube" aria-hidden="true"></span><span class="sr-only">Example Video</span></a></li>
 <li><a class="social" href="https://feed.example.com/rss" rel="noopener noreferrer"><span class="icon icon-rss" aria-hidden="true"></span><span class="sr-only">Example Feed</span></a></li>
@@ -24,15 +31,11 @@
 <li><a class="social" href="https://chat.example.invalid/example" rel="noopener noreferrer"><span class="social-label">Example Chat</span></a></li>
 </ul>
 
+</div>
+</div>
 </header>
-<nav class="tabs" aria-label="Pages">
-<ul>
-<li><a href="./" aria-current="page">Start Here</a></li>
-<li><a href="./events/">Events</a></li>
-</ul>
-</nav>
 <ul class="blocks layout-list">
-<li class="block block-link"><a class="link" href="https://example.com/" ping="/e/c/home-page" data-link-id="home-page" rel="noopener noreferrer">
+<li class="block block-link"><a class="link link-featured" href="https://example.com/" ping="/e/c/home-page" data-link-id="home-page" rel="noopener noreferrer">
 <span class="link-chip" aria-hidden="true"><span class="icon icon-link"></span></span><span class="link-text">
 <span class="link-title">Example Home Page</span>
 <span class="link-subtitle">The main site</span></span>

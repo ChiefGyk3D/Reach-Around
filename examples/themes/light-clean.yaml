@@ -4,6 +4,7 @@ colors:
   surface: "#ffffff"
   text: "#16202b"
   accent: "#1d4ed8"
+  on_accent: "#ffffff"
   border: "#d3dbe5"
 fonts:
   body: "system-ui, sans-serif"

@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Example mascot">
+  <title>Example mascot</title>
+  <!-- A synthetic placeholder drawn for this repository. It is not a real logo. -->
+  <ellipse cx="256" cy="470" rx="150" ry="22" fill="#000000" opacity="0.25"/>
+  <path d="M256 40c-92 0-150 70-150 170 0 70 22 120 22 170 0 52 50 86 128 86s128-34 128-86c0-50 22-100 22-170C406 110 348 40 256 40z" fill="#5b6470"/>
+  <path d="M256 150c-60 0-96 50-96 120 0 70 28 150 96 150s96-80 96-150c0-70-36-120-96-120z" fill="#f2f4f7"/>
+  <circle cx="212" cy="140" r="26" fill="#ffffff"/>
+  <circle cx="300" cy="140" r="26" fill="#ffffff"/>
+  <circle cx="216" cy="144" r="11" fill="#1a1a1a"/>
+  <circle cx="296" cy="144" r="11" fill="#1a1a1a"/>
+  <path d="M232 176h48l-24 40z" fill="#fbb03b"/>
+  <path d="M170 452c-30 0-52-14-52-30 0-14 22-26 54-26 24 0 40 12 40 28 0 16-18 28-42 28z" fill="#fbb03b"/>
+  <path d="M342 452c30 0 52-14 52-30 0-14-22-26-54-26-24 0-40 12-40 28 0 16 18 28 42 28z" fill="#fbb03b"/>
+</svg>

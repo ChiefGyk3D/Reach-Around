@@ -113,6 +113,64 @@ Fonts are a system font stack or a font file inside your instance folder.
 A font on someone else's server is refused. See
 [`theme` in the config reference](config.md#theme) for every key.
 
+## Your own images: avatar, favicon, background, mascot
+
+The engine ships no artwork. Four image slots are config keys, and each takes
+a file that lives in your instance folder (the folder that holds `site.yaml`):
+
+| Config key | What it draws |
+| --- | --- |
+| `creator.avatar` | The small round picture beside your name. |
+| `creator.favicon` | The browser tab icon. |
+| `theme.background` | The full-bleed page background, fixed, under the texture. |
+| `theme.mascot` | The giant faded image behind the column, fixed in place. |
+
+```
+my-page/
+  site.yaml
+  media/
+    avatar.png
+    favicon.svg
+    background.jpg
+    mascot.svg
+```
+
+```yaml
+creator:
+  avatar: media/avatar.png
+  favicon: media/favicon.svg
+theme:
+  background: media/background.jpg
+  mascot: media/mascot.svg
+```
+
+Rules: a relative path with no `..`, no leading `/` and no scheme; the file
+ends in `.png`, `.jpg`, `.jpeg`, `.webp`, `.avif`, `.gif` or `.svg` (`.ico` is
+not accepted); the path does not start with `static/` or `privacy/`. The build
+copies only the files you name, to the same relative path in the output, so
+the page loads them from its own origin and the security headers stay as they
+are. A missing file, a symlink or a file over 8 MiB stops the build. An https
+URL is still accepted for `creator.avatar` and `theme.background`, but it
+tells that host about every visitor; use a local file. `favicon` and `mascot`
+refuse a URL.
+
+The mascot is faint on purpose (`--ra-mascot-opacity: 0.12`). If your image
+is already faded, raise it in `custom.css`:
+
+```css
+:root { --ra-mascot-opacity: 0.6; --ra-mascot-position: left center; }
+```
+
+`examples/instance/media/mascot.svg` is a synthetic placeholder drawn for this
+repository. Build the example with `--config examples/instance/site.yaml` to
+see every slot filled. Brand colors are tokens too: set `theme.colors.accent`
+(default `#FBB03B`), `on_accent` (`#1A1A1A`, the text on the accent), `bg`
+(`#0E0E0E`) and `text` (`#FFFFFF`). The font is Jost, shipped with the engine
+under its OFL license; set `theme.fonts.body` to change it.
+
+A link with `featured: true` becomes the taller highlighted pill; use it once,
+for the top link.
+
 ## Layer 3: layouts and the header
 
 `layout` is `list` (default), `grid` or `cards`. Put it on a tab to lay out
@@ -259,5 +317,5 @@ residual risk in the CSP page).
 - No `check` or `validate` command; use `build`.
 - Template variables and CSS class names are read from the code, not a
   contract.
-- The two design presets planned for the design pass are not shipped yet.
-  `dark-hero` here is an example config, not a built-in preset name.
+- `dark-hero` here is an example config; the theme presets live in
+  `examples/themes/`.
