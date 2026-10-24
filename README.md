@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/assets/logo-512.png" alt="Reach Around: a penguin holding a dashboard of link, chart and profile tiles. We've got your back." width="360">
+</p>
+
 # Reach Around
 
 **Reach Around. We've got your back.**
