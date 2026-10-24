@@ -501,6 +501,112 @@ error: custom.css is refused: url() in custom.css must be a relative same-site p
 error: overrides directory nope does not exist
 ```
 
+## Editing without breaking the file
+
+### Editor help: the JSON Schema
+
+`docs/site.schema.json` is the JSON Schema of the whole config, generated from
+the same models the build uses. It gives you completion, hover help and red
+squiggles for unknown keys while you type. Print or refresh it with:
+
+```
+reach-around schema                              # to stdout
+reach-around schema --out docs/site.schema.json  # to a file
+```
+
+The output is deterministic (sorted keys, no dates or paths). A test fails when
+the committed copy is out of date and prints the command above.
+
+**VS Code.** Install the "YAML" extension (Red Hat), then put this as the first
+line of your `site.yaml`:
+
+```yaml
+# yaml-language-server: $schema=https://raw.githubusercontent.com/ChiefGyk3D/Reach-Around/main/docs/site.schema.json
+```
+
+For a copy on disk, point at it instead, for example
+`# yaml-language-server: $schema=./site.schema.json` after running
+`reach-around schema --out site.schema.json` next to your config. You can
+also map it once in your VS Code settings:
+
+```json
+{
+  "yaml.schemas": {
+    "https://raw.githubusercontent.com/ChiefGyk3D/Reach-Around/main/docs/site.schema.json": "site.yaml"
+  }
+}
+```
+
+**GitHub's editor.** The plain editor on github.com does not read the modeline
+and shows no schema help. `github.dev` (press `.` on a repository) is VS Code
+in the browser and can use the same YAML extension and modeline; check that the
+extension is enabled there. The build is still the real check either way.
+
+The schema describes shape and types. The build adds checks a schema cannot
+express (unique ids, image paths, color values), so a clean editor is not a
+passing build.
+
+### Edit commands
+
+These commands change one thing in `site.yaml` and leave every other byte
+alone: comments, blank lines, quoting and indentation stay exactly as you wrote
+them. They splice whole lines of your file; they do not re-dump the YAML.
+
+Every command takes `--config PATH` and:
+
+- loads the file with the same hardened loader and models as `build`, and again
+  after the edit; if the result would be invalid, nothing is written;
+- checks that the edited data equals the old data plus exactly the requested
+  change;
+- writes through a temporary file in the same folder and renames it over the
+  original, so a failure leaves the original intact;
+- keeps the previous file as `site.yaml.bak` (skip with `--no-backup`);
+- prints a short diff; `--dry-run` prints it and writes nothing;
+- refuses a symlinked config and a path outside the current folder unless you
+  pass `--force-path`. There are no includes; the command never follows one.
+
+```
+# add a link at the end of a tab (id made from the title if you skip --id)
+reach-around add-link --config site.yaml --tab events \
+  --title "Summer Show" --url https://tickets.example.com/summer \
+  --subtitle "Bring friends" --icon link --affiliate
+
+# put it first in the tab (positions count the tab's blocks, from 1)
+reach-around add-link --config site.yaml --tab events \
+  --title "Front Row" --url https://tickets.example.com/front --position 1
+
+# preview a removal, then do it
+reach-around remove-link --config site.yaml summer-show --dry-run
+reach-around remove-link --config site.yaml summer-show
+
+# move a link within its list (a tab's blocks, or a section's links)
+reach-around move-link --config site.yaml example-stand --position 1
+
+# change one safe scalar
+reach-around set --config site.yaml theme.mode dark
+reach-around set --config site.yaml theme.colors.accent "#ff69b4"
+reach-around set --config site.yaml theme.background_dim 0.4
+reach-around set --config site.yaml creator.name "Example Creator"
+```
+
+Details and limits:
+
+- A generated id is the title lowercased with dashes (`Summer Show` becomes
+  `summer-show`), with `-2`, `-3` added if the id is taken anywhere on the site.
+  `--id` sets one yourself; a duplicate is refused.
+- `remove-link` and `move-link` take a comment that sits directly above the
+  item, at the same indent, along with it. Blank lines and other comments stay
+  where they are. They refuse a section, a tab, or the only item in a list
+  (remove that one by hand).
+- `set` accepts only `creator.name`, `creator.title`, `theme.mode`,
+  `theme.background_dim` and `theme.colors.{bg,text,accent,on_accent,surface,border}`.
+  It replaces the value in place (a trailing comment stays) or adds the key at
+  the end of its section. Values are checked by the models, so `theme.mode
+  purple` or `theme.background_dim 5` is refused with the key path.
+- Only plain block-style YAML is supported. Flow style (`blocks: [...]`,
+  `{...}`), CRLF line endings, and a `-` on a line by itself are refused with a
+  message; edit those files by hand.
+
 ## Preview, build, check
 
 1. **Preview while you edit.**
