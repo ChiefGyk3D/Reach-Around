@@ -100,6 +100,35 @@ payment page like any other code you run.
       qr: media/qr-example.png
 ```
 
+
+### Linking to another tab
+
+A link or a header social may point at another tab of the same site with
+`url: "tab:<tab-id>"` or `url: "tab:<tab-id>#<fragment>"`. For example, a header
+email icon that opens the Contact tab:
+
+```yaml
+creator:
+  socials:
+    - name: Email
+      icon: email
+      url: "tab:contact"
+```
+
+Rules: the scheme is exactly lowercase `tab:` (`TAB:contact` is refused); the
+tab id must exist, and the error names the key and lists the valid ids; the
+fragment is 1 to 40 characters of `a-z`, `0-9` and `-`. The build writes the
+tab's relative path (`./` for the first tab, `../contact/` from another page).
+Internal links open in the same tab, carry no `target`, `rel` or `ping`, are
+not click-counted, and do not appear in `manifest.json`. They cannot be marked
+`affiliate`. Any other scheme (`mailto:`, `javascript:`, `data:`, `//host`)
+is still refused.
+
+If you override `blocks/link.html`, `blocks/section.html` or `_macros.html`,
+import the macro with context (`{% from "_macros.html" import link_anchor with
+context %}`), because it calls the `tab_href` function the build provides. A
+copy that imports without context fails on `tab:` links only.
+
 ## Layer 2: the theme
 
 The `theme` section changes colors, fonts, background, column width, corner

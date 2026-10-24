@@ -63,6 +63,7 @@ such as `titel:` is an error, not a silently ignored line.
 | Subtitle | text, 1 to 500 characters |
 | Slug | `^[a-z0-9][a-z0-9-]{0,39}$`: lowercase letters, digits and hyphens, starts with a letter or digit, 1 to 40 characters |
 | HTTPS URL | at most 2048 characters; scheme must be `https`; must have a host; no spaces or control characters; no user name or password; valid port if one is given |
+| Tab link | `tab:<tab-id>` or `tab:<tab-id>#<fragment>`, lowercase scheme; the tab must exist; fragment 1 to 40 characters of `a-z0-9-`. Allowed instead of an HTTPS URL on a link `url` and a social `url` (not with `affiliate`). See [customizing](customizing.md#linking-to-another-tab) |
 | Date | `YYYY-MM-DD`, written either as a plain YAML date or a quoted string. Timestamps such as `2027-02-01 10:00:00` are refused |
 
 Text is stored as written. HTML in a title is not stripped; the page builder
@@ -116,7 +117,7 @@ creator:
 | Field | Type | Default | Constraints |
 | --- | --- | --- | --- |
 | `name` | Title | required | |
-| `url` | HTTPS URL | required | |
+| `url` | HTTPS URL or Tab link | required | |
 | `icon` | Slug | required | |
 
 ```yaml
@@ -150,7 +151,7 @@ tabs:
 | --- | --- | --- | --- |
 | `id` | Slug | required | unique across the site |
 | `title` | Title | required | |
-| `url` | HTTPS URL | required | |
+| `url` | HTTPS URL or Tab link | required | A Tab link is same-site: no `rel`, `target` or click ping, and it is left out of `manifest.json` |
 | `subtitle` | Subtitle | none | |
 | `icon` | Slug | none | |
 | `affiliate` | boolean | `false` | |

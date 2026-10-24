@@ -18,6 +18,8 @@ creator:
     - name: Example Mail
       url: https://mail.example.com/contact
       icon: email
+    # A social or link can open another tab: url: "tab:<tab-id>" or
+    # "tab:<tab-id>#<fragment>". See docs/customizing.md, "Linking to another tab".
     - name: Example Chat
       url: https://chat.example.invalid/example
       icon: chat

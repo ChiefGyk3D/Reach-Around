@@ -4,6 +4,10 @@
 All notable changes are listed here. Versions follow [Semantic Versioning](https://semver.org/);
 while the project is alpha, every release is `0.x` and anything can change between them.
 
+## [Unreleased]
+
+- Links and socials can point at another tab with `url: "tab:<id>"` or `"tab:<id>#fragment"`. Same-origin, no click ping, not in the manifest.
+
 ## [0.1.0] - 2026-10-24
 
 > **Alpha.** This is the first container image. There is no stable configuration
