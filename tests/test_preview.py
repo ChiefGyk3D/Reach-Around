@@ -207,7 +207,10 @@ def test_stops_cleanly_on_shutdown(config: Path) -> None:
         preview.close()
     thread.join(timeout=JOIN_TIMEOUT)
     assert not thread.is_alive()
-    with pytest.raises(OSError), socket.create_connection(("127.0.0.1", port), NET_TIMEOUT):
+    with (
+        pytest.raises(OSError),
+        socket.create_connection(("127.0.0.1", port), NET_TIMEOUT),
+    ):
         pass
     assert not root.exists()  # temporary output directory cleaned up
 
