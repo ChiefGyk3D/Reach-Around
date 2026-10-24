@@ -35,7 +35,10 @@ jobs:
       # On success or failure this writes a plain-language note to the job
       # summary; on failure it also fails the job.
       - name: Build the site with the pinned engine
-        run: scripts/validate.sh --out "$RUNNER_TEMP/site-preview" --summary "$GITHUB_STEP_SUMMARY"
+        run: >-
+          scripts/validate.sh --out "$RUNNER_TEMP/site-preview"
+          --manifest "$RUNNER_TEMP/preview-manifest/manifest.json"
+          --summary "$GITHUB_STEP_SUMMARY"
 
       - name: Say what happens next
         run: |

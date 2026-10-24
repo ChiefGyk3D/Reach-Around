@@ -44,6 +44,16 @@ engine repository for the reasoning.
    scripts/validate.sh --out out
    ```
 
+   The link manifest is written to a separate temporary file, never into the
+   output folder (pass `--manifest FILE` to keep it; the file must be outside
+   `--out`).
+
+   **Needs the next engine release.** `--manifest` is newer than the 0.1.0
+   image that `engine.lock` still pins, so `validate.sh` and the deploy
+   workflow fail against 0.1.0 with a message saying so. Update all three
+   lines of `engine.lock` to the first release that has `--manifest` before
+   you use this template.
+
 4. Commit and push to `main`. The deploy job will stop at the `production`
    environment until you finish the setup below, which is expected.
 
