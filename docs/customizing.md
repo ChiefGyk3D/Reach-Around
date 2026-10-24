@@ -70,6 +70,7 @@ keys:
 | image | `id`, `src`, `alt` |
 | crypto (addresses to copy) | `id`, `coins` |
 | email (a contact button) | `id`, `address` |
+| platforms (handles with follower counts) | `id`, `items` |
 | divider | `id` |
 
 Every `id` must be unique across the whole site. Links can carry `affiliate`,
@@ -120,6 +121,41 @@ link. This only stops simple scrapers; see
   address: name@example.test
   note: Business and press only.
 ```
+
+### Socials as the home page
+
+The `platforms` block is a laid-out list of every platform you are on, each with
+an icon, a handle, a link and, if you have one, a follower count. Put a Socials
+tab first in `tabs` and it is your home page (the first tab is the page at `/`).
+Use `layout: chips` for the compact strip of icon and count at the top, then a
+`list` block with a full row for every platform:
+
+```yaml
+tabs:
+  - id: socials          # first, so this is the home page
+    title: Socials
+    blocks:
+      - id: top
+        layout: chips
+        items:
+          - {platform: tiktok, handle: "@examplecreator", url: "https://example.com/tiktok", count: 406800, as_of: 2027-03-01}
+          - {platform: twitch, handle: examplecreator, url: "https://example.com/twitch", count: 3812, as_of: 2027-03-01}
+      - id: everywhere
+        title: Find me everywhere
+        items:
+          - {platform: twitch, handle: examplecreator, url: "https://example.com/twitch"}
+          - {platform: bluesky, handle: examplecreator.example.com, url: "https://example.com/bluesky"}
+  - id: links            # everything else moves to its own tab
+    title: Links
+    blocks: [...]
+```
+
+Counts can be typed in the config, or filled in at build time from a
+`numbers.json` your own script writes (see
+[the numbers file](config.md#the-numbers-file)); a count with no value shows no
+number at all, never `0`. `examples/platforms/site.yaml` is a working copy.
+Each platform link is click-counted like any other link, and
+`platforms.css` loads only on pages that have the block.
 
 ### Linking to another tab
 

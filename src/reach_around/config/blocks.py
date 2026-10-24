@@ -11,6 +11,7 @@ from __future__ import annotations
 import base64
 import re
 import unicodedata
+from datetime import date
 from typing import Annotated, Literal
 
 from pydantic import (
@@ -283,3 +284,153 @@ class Email(_BlockModel):
         """The address reversed, then base64: what ``email.js`` decodes."""
         raw = self.address[::-1].encode("ascii")
         return base64.b64encode(raw).decode("ascii")
+
+
+# --- platforms --------------------------------------------------------------
+
+MAX_PLATFORMS = 40
+MAX_DERIVED_ID = 40  # the click endpoint refuses longer ids
+# platform -> the icon slug already shipped for it. ``pixelfed`` has no shipped
+# glyph yet, so it (and ``other``) use the generic link icon.
+PLATFORM_ICONS = {
+    "twitch": "twitch",
+    "kick": "kick",
+    "youtube": "youtube",
+    "tiktok": "tiktok",
+    "instagram": "instagram",
+    "threads": "threads",
+    "bluesky": "bluesky",
+    "mastodon": "mastodon",
+    "pixelfed": "link",
+    "discord": "discord",
+    "matrix": "matrix",
+    "github": "github",
+    "patreon": "patreon",
+    "x": "x",
+    "linkedin": "linkedin",
+    "rss": "rss",
+}
+PLATFORM_SLUGS = frozenset({*PLATFORM_ICONS, "other"})
+_PLATFORM_NAMES = {
+    "twitch": "Twitch",
+    "kick": "Kick",
+    "youtube": "YouTube",
+    "tiktok": "TikTok",
+    "instagram": "Instagram",
+    "threads": "Threads",
+    "bluesky": "Bluesky",
+    "mastodon": "Mastodon",
+    "pixelfed": "Pixelfed",
+    "discord": "Discord",
+    "matrix": "Matrix",
+    "github": "GitHub",
+    "patreon": "Patreon",
+    "x": "X",
+    "linkedin": "LinkedIn",
+    "rss": "RSS",
+}
+PlatformKind = Literal[
+    "twitch",
+    "kick",
+    "youtube",
+    "tiktok",
+    "instagram",
+    "threads",
+    "bluesky",
+    "mastodon",
+    "pixelfed",
+    "discord",
+    "matrix",
+    "github",
+    "patreon",
+    "x",
+    "linkedin",
+    "rss",
+    "other",
+]
+CountLabel = Literal["followers", "subscribers", "members"]
+MAX_COUNT = 10**10
+_ISO_DAY = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+class PlatformItem(_BlockModel):
+    platform: PlatformKind
+    name: Annotated[str, StringConstraints(min_length=1, max_length=40)] | None = None
+    handle: Annotated[str, StringConstraints(min_length=1, max_length=80)]
+    url: Annotated[str, Field(max_length=2048)]
+    label: CountLabel = "followers"
+    count: Annotated[int, Field(strict=True, ge=0, le=MAX_COUNT)] | None = None
+    as_of: date | None = None
+
+    @field_validator("name", "handle")
+    @classmethod
+    def _text_is_plain(cls, value: str | None) -> str | None:
+        return _plain_text(value)
+
+    @field_validator("url")
+    @classmethod
+    def _url_is_https_or_tab(cls, value: str) -> str:
+        from reach_around.config.models import check_link_url
+
+        return check_link_url(value)
+
+    @field_validator("as_of", mode="before")
+    @classmethod
+    def _iso_date_only(cls, value: object) -> object:
+        if value is None or type(value) is date:
+            return value
+        if isinstance(value, str) and _ISO_DAY.match(value):
+            return value
+        raise ValueError("must be a date written YYYY-MM-DD")
+
+    @model_validator(mode="after")
+    def _shape(self) -> PlatformItem:
+        if self.platform == "other" and self.name is None:
+            raise ValueError("name is required when platform is 'other'")
+        if self.platform != "other" and self.name is not None:
+            raise ValueError("name is only used when platform is 'other'")
+        if self.as_of is not None and self.count is None:
+            raise ValueError("as_of needs a count")
+        return self
+
+    @property
+    def display(self) -> str:
+        return self.name if self.name is not None else _PLATFORM_NAMES[self.platform]
+
+    @property
+    def icon(self) -> str:
+        return PLATFORM_ICONS.get(self.platform, "link")
+
+
+class Platforms(_BlockModel):
+    id: BlockId
+    title: Annotated[str, StringConstraints(min_length=1, max_length=200)] | None = None
+    layout: Literal["list", "chips"] = "list"
+    note: Annotated[str, StringConstraints(min_length=1, max_length=300)] | None = None
+    items: Annotated[list[PlatformItem], Field(min_length=1, max_length=MAX_PLATFORMS)]
+
+    @field_validator("title", "note")
+    @classmethod
+    def _text_is_plain(cls, value: str | None) -> str | None:
+        return _plain_text(value)
+
+    @property
+    def item_ids(self) -> list[str]:
+        """Click ids: ``<block id>-<platform>``, ``-2``, ``-3`` for repeats."""
+        seen: dict[str, int] = {}
+        ids = []
+        for entry in self.items:
+            base = f"{self.id}-{entry.platform}"
+            seen[base] = seen.get(base, 0) + 1
+            ids.append(base if seen[base] == 1 else f"{base}-{seen[base]}")
+        return ids
+
+    @model_validator(mode="after")
+    def _ids_fit_the_click_endpoint(self) -> Platforms:
+        longest = max(len(i) for i in self.item_ids)
+        if longest > MAX_DERIVED_ID:
+            raise ValueError(
+                f"item ids are the block id plus the platform and reach {longest} "
+                f"characters; the limit is {MAX_DERIVED_ID}, so shorten the block id"
+            )
+        return self

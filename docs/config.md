@@ -287,9 +287,10 @@ has, and every `id` must be unique across the whole site.
 | image | `id`, `src`, `alt`, optional `link` | `alt` is required |
 | crypto | `id`, `coins`, optional `title`, `note` | addresses to copy; see [Crypto](#crypto) |
 | email | `id`, `address`, optional `title`, `note`, `reveal`, `spell` | a contact address kept off the page; see [Email](#email) |
+| platforms | `id`, `items`, optional `title`, `layout`, `note` | handles with counts; see [Platforms](#platforms) |
 | divider | `id` only | a horizontal rule |
 
-Text, image, crypto, email and divider blocks have no `show_from` or `show_until`; they always
+Text, image, crypto, email, platforms and divider blocks have no `show_from` or `show_until`; they always
 show.
 
 ```yaml
@@ -420,6 +421,95 @@ spelled form. If an address must never be found, do not publish it.
 `window.__raOpen(url)` when that function exists, and sets
 `window.location.href` otherwise. Browser tests define `__raOpen` so no test
 ever hands off to a real mail client.
+
+#### Platforms
+
+A laid-out list of the platforms you are on. Each item is a card or row with
+the platform icon, its name, your handle, an abbreviated count (`3.8k`,
+`406.8k`, `1.2M`) and a small `as of` date. The whole card is the link. The
+exact number (`3,812 followers`) is in the page as hidden text for screen
+readers, so the abbreviation costs no information.
+
+```yaml
+blocks:
+  - id: socials
+    title: Find me everywhere
+    layout: list
+    items:
+      - platform: twitch
+        handle: examplecreator
+        url: https://example.com/twitch
+        count: 3812
+        as_of: 2027-03-01
+      - platform: youtube
+        handle: "@examplecreator"
+        url: https://example.com/youtube
+        label: subscribers
+      - platform: other
+        name: Example Net
+        handle: examplecreator
+        url: https://example.com/other
+```
+
+| Key | Rule |
+| --- | --- |
+| `id` | a slug, unique across the site |
+| `title` | optional heading, plain text, up to 200 characters |
+| `layout` | `list` (default: full rows, two columns from 896 px, `56rem`) or `chips` (a compact strip of icon and count) |
+| `note` | optional, plain text, up to 300 characters, shown under the list |
+| `items` | 1 to 40 entries |
+| `items[].platform` | `twitch`, `kick`, `youtube`, `tiktok`, `instagram`, `threads`, `bluesky`, `mastodon`, `pixelfed`, `discord`, `matrix`, `github`, `patreon`, `x`, `linkedin`, `rss` or `other` (`pixelfed` and `other` use the generic link icon) |
+| `items[].name` | required for `other`, refused for the others; up to 40 characters |
+| `items[].handle` | the text shown, 1 to 80 characters, plain: no control, bidirectional or zero-width characters |
+| `items[].url` | `https` only, or an internal `tab:<id>` link (same rules as a link) |
+| `items[].label` | what the number counts: `followers` (default), `subscribers` or `members` |
+| `items[].count` | optional whole number from 0 to 10,000,000,000. A float, a string or a boolean is refused |
+| `items[].as_of` | optional `YYYY-MM-DD`; needs a `count` |
+
+A platform with no count (typed or from the numbers file) shows no number.
+
+**Click ids.** With click tracking on, an item's link carries `ping` and
+`data-link-id` set to `<block id>-<platform>`; a repeat of the same platform in
+one block gets `-2`, `-3`. These ids are in the manifest, must not collide with
+any other id on the site, and are at most 40 characters (the click endpoint's
+limit), so a long block id with a long platform name is refused with the
+length named. An item whose `url` is a `tab:` link is internal: no ping, no
+manifest entry.
+
+**Assets.** `static/platforms.css` is added only to pages that contain a
+platforms block. It reads only theme tokens, keeps every target at least 44 px
+high and wraps long handles.
+
+##### The numbers file
+
+Counts can come from a JSON file instead of (or on top of) the config, so a
+script can refresh them without touching `site.yaml`:
+
+```json
+{"version": 1, "platforms": {"twitch": {"count": 3812, "as_of": "2026-10-24T12:00:00Z"}}}
+```
+
+`reach-around build --numbers PATH` reads it. Without the flag the build reads
+`numbers.json` beside the config when that file exists, and quietly skips it
+when it does not. A file named with `--numbers` that is missing or invalid is an
+error naming the file, and so is an invalid default file. The file is read at
+build time only: it is never copied into the output and never put in the
+manifest, and a path inside `--out` is refused.
+
+| Rule | Value |
+| --- | --- |
+| Top level | exactly `version` (1) and `platforms` |
+| Key | a platform slug (applies to every item of that platform) or an item id such as `socials-twitch` (applies to that one item and wins over the slug) |
+| Entry | exactly `count` and `as_of` |
+| `count` | a whole JSON number, 0 to 10,000,000,000; `3.0`, strings, booleans and negatives are refused |
+| `as_of` | a full timestamp with `Z` or an offset, from 2000-01-01 to one day after the build |
+| Size and shape | up to 256 KiB, 1000 entries, no duplicate keys, no `NaN` or `Infinity`, deeply nested input is an error |
+| Unknown keys | a key that is neither a platform slug nor an item id in the config is ignored; the build prints how many |
+
+Which value wins: with no typed `count`, the file's value is used. With a typed
+`count` and no `as_of`, the file wins. With both, the file wins when its date
+(UTC) is the same day or later than the typed `as_of`, and the typed value
+stays otherwise. The date shown is the date of the value that won.
 
 #### Markdown
 

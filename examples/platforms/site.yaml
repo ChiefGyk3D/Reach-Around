@@ -1,0 +1,111 @@
+# Synthetic example: Socials is the home page. A chips strip of the big
+# platforms with counts, then a row for every platform. Every handle, URL and
+# count below is made up. Run `reach-around build --numbers numbers.example.json`
+# to see the numbers file overlay the counts written here.
+version: 1
+creator:
+  name: Example Creator
+  header: centered
+tabs:
+  - id: socials
+    title: Socials
+    blocks:
+      - id: top
+        layout: chips
+        items:
+          - platform: tiktok
+            handle: "@examplecreator"
+            url: https://example.com/tiktok
+            count: 406800
+            as_of: 2027-03-01
+          - platform: instagram
+            handle: "@examplecreator"
+            url: https://example.com/instagram
+            count: 38200
+            as_of: 2027-03-01
+          - platform: youtube
+            handle: "@examplecreator"
+            url: https://example.com/youtube
+            label: subscribers
+            count: 1240000
+            as_of: 2027-03-01
+          - platform: twitch
+            handle: examplecreator
+            url: https://example.com/twitch
+            count: 3812
+            as_of: 2027-03-01
+          - platform: threads
+            handle: "@examplecreator"
+            url: https://example.com/threads
+            count: 999
+            as_of: 2027-03-01
+      - id: everywhere
+        title: Find me everywhere
+        note: Counts are rounded and updated by hand or by a script.
+        items:
+          - platform: twitch
+            handle: examplecreator
+            url: https://example.com/twitch
+            count: 3812
+            as_of: 2027-03-01
+          - platform: kick
+            handle: examplecreator
+            url: https://example.com/kick
+          - platform: youtube
+            handle: "@examplecreator"
+            url: https://example.com/youtube
+            label: subscribers
+            count: 1240000
+            as_of: 2027-03-01
+          - platform: tiktok
+            handle: "@examplecreator"
+            url: https://example.com/tiktok
+            count: 406800
+            as_of: 2027-03-01
+          - platform: instagram
+            handle: "@examplecreator"
+            url: https://example.com/instagram
+            count: 38200
+            as_of: 2027-03-01
+          - platform: threads
+            handle: "@examplecreator"
+            url: https://example.com/threads
+            count: 999
+            as_of: 2027-03-01
+          - platform: bluesky
+            handle: examplecreator.example.com
+            url: https://example.com/bluesky
+          - platform: mastodon
+            handle: "@examplecreator@mastodon.example.com"
+            url: https://example.com/mastodon
+          - platform: discord
+            handle: Example Creator server
+            url: https://example.com/discord
+            label: members
+            count: 2150
+            as_of: 2027-03-01
+          - platform: github
+            handle: examplecreator
+            url: https://example.com/github
+          - platform: patreon
+            handle: examplecreator
+            url: https://example.com/patreon
+            label: members
+            count: 120
+            as_of: 2027-03-01
+          - platform: other
+            name: Example Net
+            handle: examplecreator
+            url: https://example.com/other
+      - id: more
+        title: More
+        links:
+          - id: more-media-kit
+            title: Media kit
+            url: tab:links
+  - id: links
+    title: Links
+    blocks:
+      - id: first-link
+        title: A link
+        url: https://example.com/link

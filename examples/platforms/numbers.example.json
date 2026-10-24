@@ -1,0 +1,7 @@
+{
+  "version": 1,
+  "platforms": {
+    "twitch": {"count": 3900, "as_of": "2027-03-09T12:00:00Z"},
+    "top-tiktok": {"count": 410250, "as_of": "2027-03-09T12:00:00Z"}
+  }
+}

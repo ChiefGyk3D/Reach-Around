@@ -1,0 +1,134 @@
+/* SPDX-License-Identifier: Apache-2.0 */
+/* The platforms block. Loaded only on pages that have one, after site.css, so it
+   reads the same --ra-* tokens and holds no color of its own. Mobile first: the
+   list is one column and goes to two from 56rem; the chips wrap. Every text node
+   wraps anywhere, so a long handle never pushes the page sideways. */
+
+.blocks > .block-platforms { grid-column: 1 / -1; }
+.platforms-title {
+  margin: 0 0 var(--ra-space-3);
+  font-size: var(--ra-text-lg);
+  font-weight: 700;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+}
+.platforms { display: flex; margin: 0; padding: 0; list-style: none; }
+.platform { min-width: 0; }
+
+.platform-link {
+  display: flex;
+  align-items: center;
+  gap: var(--ra-space-3);
+  min-width: 0;
+  min-height: var(--ra-tap);
+  border: 1px solid var(--ra-color-border);
+  background-color: var(--ra-color-surface);
+  box-shadow: var(--ra-shadow-card);
+  color: var(--ra-color-text);
+  text-decoration: none;
+  transition: transform var(--ra-duration) var(--ra-ease), background-color var(--ra-duration);
+}
+.platform-link:active { transform: scale(0.985); }
+.platform-icon {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: var(--ra-thumb);
+  height: var(--ra-thumb);
+  border-radius: 50%;
+  background-color: var(--ra-color-chip);
+  color: var(--ra-color-accent);
+}
+.platform-count { font-weight: 700; font-variant-numeric: tabular-nums; }
+
+/* list: a full row per platform */
+.platforms-list { flex-direction: column; gap: var(--ra-space-3); }
+.platforms-list .platform-link {
+  display: grid;
+  grid-template-columns: var(--ra-thumb) minmax(0, 1fr);
+  column-gap: var(--ra-space-3);
+  height: 100%;
+  padding: var(--ra-space-3) var(--ra-space-4);
+  border-radius: var(--ra-card-radius);
+}
+.platforms-list .platform-icon { grid-column: 1; grid-row: 1 / span 2; }
+.platform-text { display: flex; grid-column: 2; flex-direction: column; min-width: 0; }
+.platform-name {
+  font-size: var(--ra-text-md);
+  font-weight: 600;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+}
+.platform-handle {
+  color: var(--ra-color-muted);
+  font-size: var(--ra-text-sm);
+  line-height: 1.3;
+  overflow-wrap: anywhere;
+}
+.platform-figure {
+  display: flex;
+  flex-flow: row wrap;
+  grid-column: 2;
+  align-items: baseline;
+  gap: 0 var(--ra-space-2);
+  min-width: 0;
+}
+.platforms-list .platform-count { font-size: var(--ra-text-lg); line-height: 1.2; }
+.platform-asof {
+  color: var(--ra-color-muted);
+  font-size: var(--ra-text-xs);
+  line-height: 1.3;
+  overflow-wrap: anywhere;
+}
+
+/* chips: a compact strip of icon and count */
+.platforms-chips { flex-flow: row wrap; justify-content: center; gap: var(--ra-space-2); }
+.platforms-chips .platform-link {
+  gap: var(--ra-space-2);
+  padding: var(--ra-space-1) var(--ra-space-4) var(--ra-space-1) var(--ra-space-1);
+  border-radius: var(--ra-button-radius);
+}
+.platforms-chips .platform-count { font-size: var(--ra-text-base); }
+.platforms-chips .platform-link:not(:has(.platform-count)) { padding-inline-end: var(--ra-space-1); }
+
+.platforms-note {
+  margin: var(--ra-space-3) 0 0;
+  padding: 0 var(--ra-space-1);
+  color: var(--ra-color-muted);
+  font-size: var(--ra-text-sm);
+}
+
+/* Desktop: two columns, the same breakpoint as site.css and crypto.css. Rows
+   keep their own height. */
+@media (min-width: 56rem) {
+  .platforms-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+/* Hover only where there is a pointer that can hover, so it never sticks. */
+@media (hover: hover) {
+  .platform-link:hover { background-color: var(--ra-color-raised); }
+}
+
+/* Touch screens: every card and chip is at least 44 px square. Motion is
+   stopped for everything by the reduced-motion rule in site.css. */
+@media (pointer: coarse) {
+  .platform-link { min-height: var(--ra-tap); min-width: var(--ra-tap); }
+}
+
+@media print {
+  .platform-link {
+    border: 1px solid CanvasText;
+    background: none;
+    box-shadow: none;
+    color: CanvasText;
+    break-inside: avoid;
+  }
+  .platform-icon { display: none; }
+  .platform-handle, .platform-asof, .platforms-note { color: CanvasText; }
+  .platforms-list .platform-link::after {
+    content: attr(href);
+    grid-column: 2;
+    font-size: var(--ra-text-xs);
+    overflow-wrap: anywhere;
+  }
+}
