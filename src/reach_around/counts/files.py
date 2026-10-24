@@ -11,17 +11,41 @@
 from __future__ import annotations
 
 import fcntl
+import json
 import os
 import secrets
 import stat
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
+
+from reach_around.config.numbers import NumbersEntry, parse_numbers
 
 LOCK_WAIT_SECONDS = 120.0
 _LOCK_POLL = 0.05
 _FORBIDDEN_SUFFIXES = (".yaml", ".yml")
+
+
+def utc_stamp(moment: datetime) -> str:
+    """``moment`` as ``YYYY-MM-DDTHH:MM:SSZ`` in UTC."""
+    return moment.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def dump_numbers(entries: Mapping[str, NumbersEntry]) -> str:
+    """Numbers-file text in the shape the build reads (see config/numbers.py).
+
+    The text is parsed again with the build's own parser before it is returned,
+    so what refresh writes is exactly what ``build --numbers`` accepts.
+    """
+    platforms = {
+        key: {"count": entries[key].count, "as_of": utc_stamp(entries[key].as_of)}
+        for key in sorted(entries)
+    }
+    text = json.dumps({"version": 1, "platforms": platforms}, indent=2) + "\n"
+    parse_numbers(text.encode("utf-8"), source="the numbers to write")
+    return text
 
 
 class LockBusy(Exception):

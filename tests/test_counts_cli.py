@@ -21,7 +21,13 @@ creator: {name: Test Creator}
 tabs:
   - id: home
     title: Home
-    blocks: []
+    blocks:
+      - id: socials
+        items:
+          - {platform: bluesky, handle: "@example", url: "https://example.com/bluesky"}
+          - {platform: github, handle: "@example", url: "https://example.com/github"}
+          - {platform: youtube, handle: "@example", url: "https://example.com/youtube"}
+          - {platform: twitch, handle: "@example", url: "https://example.com/twitch"}
 numbers:
   sources:
     - {platform: bluesky, kind: bluesky, actor: example.bsky.social}

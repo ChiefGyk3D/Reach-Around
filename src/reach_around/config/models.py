@@ -370,6 +370,32 @@ class SiteConfig(_Model):
             raise ValueError("; ".join(problems))
         return self
 
+    @model_validator(mode="after")
+    def _number_sources_name_a_platform(self) -> SiteConfig:
+        """Each ``numbers`` source key is a platform an item uses, or an item id.
+
+        The build looks a count up by item id first, then by platform slug; a
+        source that matches neither would write a number nothing shows.
+        """
+        if self.numbers is None:
+            return self
+        known: set[str] = set()
+        for tab in self.tabs:
+            for block in tab.blocks:
+                if isinstance(block, Platforms):
+                    known.update(block.item_ids)
+                    known.update(item.platform for item in block.items)
+        problems = [
+            f"numbers.sources[{i}].platform: {source.platform!r} matches no "
+            "platforms item (use an item's platform, such as 'github', or its "
+            "id, such as 'socials-github')"
+            for i, source in enumerate(self.numbers.sources)
+            if source.platform not in known
+        ]
+        if problems:
+            raise ValueError("; ".join(problems))
+        return self
+
 
 def _internal_urls(config: SiteConfig) -> list[tuple[str, str]]:
     """Every ``tab:`` url in the config, with the key it was written under."""

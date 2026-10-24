@@ -12,6 +12,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from urllib.parse import quote, urlencode, urlsplit
 
+from reach_around.config.blocks import MAX_COUNT
 from reach_around.config.numbers_sources import (
     BlueskySource,
     DiscordSource,
@@ -23,7 +24,6 @@ from reach_around.config.numbers_sources import (
 )
 from reach_around.net.egress import EgressBlocked, validate_hostname
 from reach_around.net.fetch import FetchError
-from reach_around.numbers import NumbersError, check_count
 
 # kind -> status word when a fetch is intentionally skipped (exit code 0)
 SKIP_USER_AUTH = "needs_user_token"
@@ -54,13 +54,17 @@ class Context:
     env: Mapping[str, str]
 
 
+def _check_count(value: object) -> int:
+    """A whole number from 0 to MAX_COUNT; bool, float, str and nesting refused."""
+    if type(value) is not int or not 0 <= value <= MAX_COUNT:
+        raise SourceError("bad_count")
+    return value
+
+
 def _count(payload: Mapping[str, object], field: str) -> int:
     if field not in payload:
         raise SourceError("missing_field")
-    try:
-        return check_count(payload[field])
-    except NumbersError:
-        raise SourceError("bad_count") from None
+    return _check_count(payload[field])
 
 
 def _digit_count(value: object) -> int:
@@ -72,10 +76,7 @@ def _digit_count(value: object) -> int:
         and len(value) <= 11
     ):
         value = int(value)
-    try:
-        return check_count(value)
-    except NumbersError:
-        raise SourceError("bad_count") from None
+    return _check_count(value)
 
 
 def _secret(env: Mapping[str, str], name: str) -> str:

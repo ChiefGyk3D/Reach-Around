@@ -681,10 +681,18 @@ each source for one number and writes a validated numbers file (see
 the exit codes and a scheduled workflow). Unknown keys are refused.
 
 `numbers.sources` is a list of 1 to 50 sources, one per `platform`. Every
-source has a `platform` (a slug, the same shape as an id: lowercase letters,
-digits and hyphens, at most 40 characters; it is the key in the numbers file and
-must be unique here) and a `kind` that decides which other keys it takes. Keys
-that a kind does not list are refused.
+source has a `platform` and a `kind` that decides which other keys it takes.
+Keys that a kind does not list are refused.
+
+`platform` is the key the count is written under in the numbers file, so it
+must be what the [platforms block](#platforms) looks up: either the `platform`
+of an item in a platforms block (such as `github`), which feeds every item of
+that platform, or the click id of one item (`<block id>-<platform>`, with `-2`,
+`-3` for repeats, such as `socials-github`), which feeds only that item and wins
+over the platform key. It must be unique across sources. A `platform` that no
+platforms item uses is refused when the config loads, with the key path, because
+the number would never be shown. (`kind` is separate: `kind: mastodon` with
+`platform: pixelfed` is how a Pixelfed server is read.)
 
 | `kind` | Keys | Asks | Needs a key |
 | --- | --- | --- | --- |
@@ -702,6 +710,8 @@ value is read when the command runs, sent in a header or a POST body (never in
 a URL), and never printed, logged, written or put in an error. Supply them
 with `doppler run -- reach-around counts refresh ...` or the CI secret store.
 A key written inline (`api_key: ...`) is refused as an unknown key.
+
+Each `platform` below must have an item in a platforms block (or be an item id):
 
 ```yaml
 numbers:
@@ -773,15 +783,17 @@ Limits worth knowing:
 ```
 
 `count` is a whole number from 0 to 10,000,000,000 and `as_of` is a UTC time in
-that exact form. The file is written atomically (temp file in the same folder,
-fsync, rename) with mode 0600. A failed source leaves its previous entry
+that exact form: the same file `reach-around build --numbers` reads (see
+[the numbers file](#the-numbers-file) under the platforms block). The file is
+written atomically (temp file in the same folder, fsync, rename) with mode 0600. A failed source leaves its previous entry
 untouched, and the reason goes to a sibling `numbers.status.json` as an error
 class and a time only (never a response body). Entries for platforms that have
 no source are not touched, so a hand-written entry for TikTok survives a
 refresh. A numbers file that does not validate stops the command (exit 2)
-instead of being overwritten. The shape lives in `reach_around/numbers.py`
-(`load_numbers`, `dump_numbers`); anything else that reads the file should call
-that module.
+instead of being overwritten. There is one definition of the shape and one
+reader, `load_numbers` in `reach_around/config/numbers.py`, which the build uses;
+refresh reads with it and checks what it writes by parsing it with the same
+parser. A manual or item-id entry in the file that no source touches is kept.
 
 ## `features`
 

@@ -17,11 +17,13 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from reach_around.config import ConfigError, load_site_config
+from reach_around.config.numbers import load_numbers
 from reach_around.counts.files import (
     LOCK_WAIT_SECONDS,
     FileLock,
     LockBusy,
     Paths,
+    dump_numbers,
     plan_paths,
     write_atomic,
 )
@@ -35,7 +37,6 @@ from reach_around.counts.refresh import (
     select,
 )
 from reach_around.net.egress import Transport
-from reach_around.numbers import NumbersError, dump_numbers, load_numbers
 
 EXIT_OK = 0
 EXIT_WRITE = 1
@@ -122,8 +123,10 @@ def _cycle(
     now: Callable[[], datetime],
 ) -> int:
     try:
-        previous = load_numbers(paths.target) if paths.target.exists() else {}
-    except NumbersError as exc:
+        previous = (
+            dict(load_numbers(paths.target).entries) if paths.target.exists() else {}
+        )
+    except ConfigError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return EXIT_USAGE
     stamp = now()
@@ -156,7 +159,7 @@ def _cycle(
             paths.status,
             render_status(load_status(paths.status), outcomes, stamp),
         )
-    except (OSError, NumbersError) as exc:
+    except (OSError, ConfigError) as exc:
         reason = exc.strerror if isinstance(exc, OSError) else str(exc)
         print(f"error: cannot write the result files: {reason}", file=sys.stderr)
         return EXIT_WRITE

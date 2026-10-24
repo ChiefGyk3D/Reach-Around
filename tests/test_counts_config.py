@@ -11,7 +11,18 @@ creator: {name: Test Creator}
 tabs:
   - id: home
     title: Home
-    blocks: []
+    blocks:
+      - id: socials
+        items:
+          - {platform: bluesky, handle: "@example", url: "https://example.com/bluesky"}
+          - {platform: mastodon, handle: "@example", url: "https://example.com/mastodon"}
+          - {platform: pixelfed, handle: "@example", url: "https://example.com/pixelfed"}
+          - {platform: github, handle: "@example", url: "https://example.com/github"}
+          - {platform: discord, handle: "@example", url: "https://example.com/discord"}
+          - {platform: matrix, handle: "@example", url: "https://example.com/matrix"}
+          - {platform: youtube, handle: "@example", url: "https://example.com/youtube"}
+          - {platform: twitch, handle: "@example", url: "https://example.com/twitch"}
+          - {platform: x, handle: "@example", url: "https://example.com/x"}
 """
 
 
@@ -158,3 +169,55 @@ def test_unknown_numbers_key_refused(tmp_path: Path) -> None:
         tmp_path,
         "numbers:\n  sources:\n    - {platform: a, kind: github, user: u}\n  x: 1\n",
     )
+
+
+# ---- source keys must match the platforms block -------------------------------------
+
+ONE_PLATFORM = """\
+version: 1
+creator: {name: Test Creator}
+tabs:
+  - id: home
+    title: Home
+    blocks:
+      - id: socials
+        items:
+          - {platform: github, handle: "@x", url: "https://example.com/g"}
+          - {platform: github, handle: "@y", url: "https://example.com/g2"}
+"""
+NO_PLATFORMS_BLOCK = """\
+version: 1
+creator: {name: Test Creator}
+tabs:
+  - id: home
+    title: Home
+    blocks: []
+"""
+
+
+def config_with(tmp_path: Path, head: str, key: str) -> SiteConfig:
+    path = tmp_path / "site.yaml"
+    entry = f"    - {{platform: {key}, kind: github, user: some-user}}\n"
+    path.write_text(head + "numbers:\n  sources:\n" + entry, encoding="utf-8")
+    return load_site_config(path)
+
+
+@pytest.mark.parametrize("key", ["github", "socials-github", "socials-github-2"])
+def test_a_source_may_name_a_platform_or_an_item_id(tmp_path: Path, key: str) -> None:
+    assert config_with(tmp_path, ONE_PLATFORM, key).numbers is not None
+
+
+@pytest.mark.parametrize("key", ["twitch", "socials-twitch", "socials", "other"])
+def test_a_source_that_matches_no_platforms_item_is_refused(
+    tmp_path: Path, key: str
+) -> None:
+    with pytest.raises(ConfigError) as caught:
+        config_with(tmp_path, ONE_PLATFORM, key)
+    message = str(caught.value)
+    assert "numbers.sources[0].platform" in message and repr(key) in message
+    assert "matches no platforms item" in message
+
+
+def test_a_source_with_no_platforms_block_at_all_is_refused(tmp_path: Path) -> None:
+    with pytest.raises(ConfigError, match="matches no platforms item"):
+        config_with(tmp_path, NO_PLATFORMS_BLOCK, "github")

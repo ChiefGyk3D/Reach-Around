@@ -16,6 +16,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from reach_around.config.loader import ConfigError, _read
+from reach_around.config.numbers import MAX_NUMBERS_BYTES, NumbersEntry
 from reach_around.config.numbers_sources import (
     BlueskySource,
     DiscordSource,
@@ -26,6 +28,7 @@ from reach_around.config.numbers_sources import (
     TwitchSource,
     YoutubeSource,
 )
+from reach_around.counts.files import utc_stamp
 from reach_around.counts.providers import (
     PROVIDERS,
     Context,
@@ -34,13 +37,8 @@ from reach_around.counts.providers import (
 )
 from reach_around.net.egress import Transport
 from reach_around.net.fetch import FetchError, fetch_json
-from reach_around.numbers import (
-    Numbers,
-    NumbersError,
-    PlatformCount,
-    read_capped,
-    utc_stamp,
-)
+
+Numbers = dict[str, NumbersEntry]
 
 Source = (
     BlueskySource
@@ -81,7 +79,7 @@ DROP_SUSPECT = "drop_suspect"
 SUSPECT_KINDS = (ZERO_SUSPECT, DROP_SUSPECT)
 
 
-def suspect_kind(previous: PlatformCount | None, count: int) -> str | None:
+def suspect_kind(previous: NumbersEntry | None, count: int) -> str | None:
     """A ``*_suspect`` word if ``count`` should not replace ``previous``."""
     if previous is None or previous.count == 0:
         return None
@@ -164,7 +162,9 @@ def refresh(
                     Outcome(source.platform, source.kind, "error", None, suspect)
                 )
                 continue
-            numbers[source.platform] = PlatformCount(count, utc_stamp(now()))
+            numbers[source.platform] = NumbersEntry(
+                count, now().astimezone(UTC).replace(microsecond=0)
+            )
             outcomes.append(Outcome(source.platform, source.kind, "ok", count))
     return numbers, outcomes
 
@@ -172,8 +172,8 @@ def refresh(
 def load_status(path: Path) -> dict[str, dict[str, str]]:
     """The previous per-source status, or an empty mapping if absent or damaged."""
     try:
-        raw = json.loads(read_capped(path))
-    except (NumbersError, ValueError, RecursionError):
+        raw = json.loads(_read(path, MAX_NUMBERS_BYTES))
+    except (ConfigError, ValueError, RecursionError):
         return {}
     sources = raw.get("sources") if isinstance(raw, dict) else None
     if not isinstance(sources, dict):
