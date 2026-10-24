@@ -1,0 +1,35 @@
+# Synthetic example: a grid tab with a cards section and a centered header.
+# Every name and URL is made up.
+version: 1
+creator:
+  name: Example Creator
+  header: centered
+theme:
+  mode: light
+  column_width: 48rem
+  radius: 1rem
+disclosure: This page uses affiliate links. Example Creator may earn a commission.
+tabs:
+  - id: start
+    title: Start
+    layout: grid
+    blocks:
+      - id: home-page
+        title: Example Home Page
+        url: https://example.com/
+      - id: shop
+        title: Example Shop
+        url: https://shop.example.com/
+      - id: gear
+        title: Gear
+        subtitle: Things used on the show
+        layout: cards
+        collapsed: false
+        links:
+          - id: example-mic
+            title: Example Microphone
+            url: https://shop.example.com/mic?ref=example
+            affiliate: true
+          - id: example-stand
+            title: Example Boom Stand
+            url: https://shop.example.com/stand
