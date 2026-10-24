@@ -188,11 +188,23 @@ class _Watchdog:
         self._timer.start()
 
     def add(self, sock: socket.socket) -> None:
+        """Watch the connection behind ``sock``.
+
+        Wrapping a socket in TLS detaches the raw object (its descriptor
+        becomes -1), so holding the raw socket would cut nothing. A duplicate
+        descriptor stays valid and refers to the same connection, and
+        ``shutdown`` acts on the connection, so it reaches whatever object is
+        really in use, including a handshake that is still running.
+        """
+        try:
+            watched = sock.dup()
+        except OSError:
+            return
         with self._lock:
-            self._socks.append(sock)
+            self._socks.append(watched)
             fired = self.fired
         if fired:
-            self._kill(sock)
+            self._kill(watched)
 
     def _fire(self) -> None:
         with self._lock:
@@ -210,6 +222,10 @@ class _Watchdog:
 
     def stop(self) -> None:
         self._timer.cancel()
+        with self._lock:
+            socks, self._socks = self._socks, []
+        for sock in socks:
+            sock.close()
 
 
 class _PinnedConnection(http.client.HTTPSConnection):

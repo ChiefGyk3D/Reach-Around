@@ -1,5 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 import ast
+import asyncio
+import shutil
 import socket
 import ssl
 import threading
@@ -330,7 +332,12 @@ def test_the_guard_flags_a_module_that_opens_connections() -> None:
 class DripServer:
     """Loopback server whose behavior function gets each accepted connection."""
 
-    def __init__(self, behavior: Callable[[socket.socket], None] | None) -> None:
+    def __init__(
+        self,
+        behavior: Callable[[socket.socket], None] | None,
+        tls_context: ssl.SSLContext | None = None,
+    ) -> None:
+        self._tls_context = tls_context
         self.listener = socket.socket()
         self.listener.bind(("127.0.0.1", 0))
         self.listener.listen(5)
@@ -352,6 +359,8 @@ class DripServer:
     def _run(self, conn: socket.socket) -> None:
         try:
             assert self._behavior is not None
+            if self._tls_context is not None:
+                conn = self._tls_context.wrap_socket(conn, server_side=True)
             self._behavior(conn)
         except OSError:
             pass
@@ -369,17 +378,18 @@ def drip(conn: socket.socket, data: bytes, gap: float = 0.1) -> None:
 
 
 def _slow_status(conn: socket.socket) -> None:
-    drip(conn, b"HTTP/1.1 200 OK\r\n" + b"X-Pad: " + b"a" * 5000 + b"\r\n\r\n")
+    drip(conn, b"HTTP/1.1 200 OK\r\n" + b"X-Pad: " + b"a" * 30 + b"\r\n\r\n")
 
 
 def _slow_headers(conn: socket.socket) -> None:
     conn.sendall(b"HTTP/1.1 200 OK\r\n")
-    drip(conn, b"X-Pad: " + b"a" * 5000 + b"\r\n\r\n{}")
+    drip(conn, b"X-Pad: " + b"a" * 30 + b"\r\n\r\n{}")
 
 
 def _slow_body(conn: socket.socket) -> None:
     conn.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: 5000\r\n\r\n")
-    drip(conn, b"x" * 5000)
+    drip(conn, b"x" * 30)
+    time.sleep(30)
 
 
 def _slow_close_delimited(conn: socket.socket) -> None:
@@ -393,7 +403,11 @@ def _silent(conn: socket.socket) -> None:
 
 
 def _timed(
-    server: DripServer, *, tls: bool, total: float = 0.6
+    server: DripServer,
+    *,
+    tls: bool,
+    total: float = 0.6,
+    client_context: ssl.SSLContext | None = None,
 ) -> tuple[float, EgressBlocked]:
     def connector(address: str, port: int, timeout: float) -> socket.socket:
         return socket.create_connection(("127.0.0.1", server.port), timeout=timeout)
@@ -401,9 +415,8 @@ def _timed(
     def wrapper(sock: socket.socket, server_hostname: str) -> socket.socket:
         if not tls:
             return sock
-        return ssl.create_default_context().wrap_socket(
-            sock, server_hostname=server_hostname
-        )
+        context = client_context or ssl.create_default_context()
+        return context.wrap_socket(sock, server_hostname=server_hostname)
 
     transport = HttpsTransport(
         resolver=lambda h, p: [PUBLIC],
@@ -485,3 +498,92 @@ def test_default_resolver_gets_only_the_remaining_time(
     )
     transport(_request())
     assert len(seen) == 1 and 0 < seen[0] <= 2.0
+
+
+# ---- the same deadline over a REAL TLS session ------------------------------------
+# Wrapping a socket in TLS detaches the raw socket, so a watchdog holding only
+# the raw one would cut nothing. These tests complete a real handshake first.
+
+
+@pytest.fixture(scope="module")
+def tls_pair(
+    tmp_path_factory: pytest.TempPathFactory,
+) -> tuple[ssl.SSLContext, ssl.SSLContext]:
+    """(server context, client context) around a throwaway self-signed cert."""
+    directory = tmp_path_factory.mktemp("tls")
+    cert, key = directory / "cert.pem", directory / "key.pem"
+    openssl = shutil.which("openssl")
+    assert openssl is not None, "the TLS tests need the openssl command"
+    argv = [
+        "req", "-x509", "-newkey", "rsa:2048", "-nodes",
+        "-keyout", str(key), "-out", str(cert), "-days", "1",
+        "-subj", "/CN=example.social",
+        "-addext", "subjectAltName=DNS:example.social",
+    ]  # fmt: skip
+
+    async def generate() -> int:
+        proc = await asyncio.create_subprocess_exec(
+            openssl,
+            *argv,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        return await proc.wait()
+
+    assert asyncio.run(generate()) == 0
+    server = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    server.load_cert_chain(str(cert), str(key))
+    client = ssl.create_default_context(cafile=str(cert))
+    return server, client
+
+
+def test_tls_fixture_really_completes_a_handshake(
+    tls_pair: tuple[ssl.SSLContext, ssl.SSLContext],
+) -> None:
+    def quick(conn: socket.socket) -> None:
+        conn.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}")
+        time.sleep(0.5)
+
+    server_ctx, client_ctx = tls_pair
+    server = DripServer(quick, server_ctx)
+
+    def connector(address: str, port: int, timeout: float) -> socket.socket:
+        return socket.create_connection(("127.0.0.1", server.port), timeout=timeout)
+
+    transport = HttpsTransport(
+        resolver=lambda h, p: [PUBLIC],
+        connector=connector,
+        wrapper=lambda sock, name: client_ctx.wrap_socket(sock, server_hostname=name),
+        total_timeout=3.0,
+    )
+    try:
+        assert transport(_request()).body == b"{}"
+    finally:
+        server.close()
+
+
+@pytest.mark.parametrize(
+    "behavior",
+    [_slow_status, _slow_headers, _slow_body, _slow_close_delimited],
+    ids=["status-line", "headers", "body", "close-delimited"],
+)
+def test_tls_servers_that_drip_after_the_handshake_are_cut_at_the_deadline(
+    behavior: Callable[[socket.socket], None],
+    tls_pair: tuple[ssl.SSLContext, ssl.SSLContext],
+) -> None:
+    server_ctx, client_ctx = tls_pair
+    elapsed, error = _timed(
+        DripServer(behavior, server_ctx), tls=True, client_context=client_ctx
+    )
+    assert error.reason == "timeout"
+    assert 0.5 <= elapsed < 2.0
+
+
+def test_tls_handshake_that_stalls_is_cut_at_the_deadline(
+    tls_pair: tuple[ssl.SSLContext, ssl.SSLContext],
+) -> None:
+    _, client_ctx = tls_pair
+    # accepts the TCP connection, never answers the ClientHello
+    elapsed, error = _timed(DripServer(_silent), tls=True, client_context=client_ctx)
+    assert error.reason == "timeout"
+    assert 0.5 <= elapsed < 2.0
