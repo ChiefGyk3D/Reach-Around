@@ -66,10 +66,13 @@ def _page_views() -> Disclosure:
     return Disclosure(
         what=(
             "A count of page views. Each view records the page, the referring "
-            "site's name only (never the full address), and your window width "
-            "as one of four sizes. From your request the server works "
-            "out and keeps only: your browser and operating system, the kind "
-            "of device, your language, and your country, region and city "
+            "site's name only (never the full address), a campaign label if "
+            "the link you followed carried one (the short utm_source label: at "
+            "most 30 characters of lower-case letters, digits and hyphens), and "
+            "your window width as one of four sizes. From your request the "
+            "server works out and keeps only: your browser and operating "
+            "system, the kind of device, your language, and your country, "
+            "region and city "
             "(as far as the counter is set to record them). It also marks the "
             "view as likely a person or likely automated, and keeps a daily "
             "code made from your address that changes every day and cannot be "

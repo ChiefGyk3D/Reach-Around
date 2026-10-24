@@ -239,3 +239,26 @@ def test_view_js_uses_no_fetch_xhr_storage_cookie_or_eval() -> None:
     assert violations(src) == []
     assert len(re.findall(r"innerWidth", src)) == 1
     assert len(re.findall(r"sendBeacon\(", src)) == 1
+
+
+def test_every_key_the_script_sends_has_a_disclosure_phrase() -> None:
+    phrases = {
+        "r": "referring site",
+        "u": "campaign label",
+        "w": "window width",
+    }
+    sent = set(re.findall(r'params\.append\("(\w)"', script_text()))
+    assert sent == set(phrases)  # a new key must be added here and disclosed
+    items = collected_items(make_config(analytics={"page_views": True}))
+    views = [i for i in items if "page views" in i.what]
+    assert len(views) == 1
+    text = f"{views[0].what} {views[0].why}"
+    for key in sorted(sent):
+        assert phrases[key] in text, key
+    assert "utm_source" in text and "30 characters" in text
+
+
+def test_view_js_checks_opt_outs_when_it_sends_not_only_at_start() -> None:
+    src = script_text()
+    send_head = src[src.index("function send()") :].split("try")[0]
+    assert "optedOut()" in send_head

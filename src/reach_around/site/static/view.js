@@ -13,12 +13,31 @@
   if (typeof navigator.sendBeacon !== "function") {
     return;
   }
-  // Global Privacy Control and Do Not Track: send nothing at all.
-  if (navigator.globalPrivacyControl === true) {
-    return;
+  // Global Privacy Control and Do Not Track: send nothing at all. Any of the
+  // three Do Not Track properties set to "1", "yes" or "true" (any case, spaces
+  // ignored) is an opt-out. Checked at start and again at send time, so a
+  // signal that arrives while the page is prerendering or hidden still wins.
+  function dntOn(value) {
+    if (typeof value === "number") {
+      value = String(value);
+    }
+    if (typeof value !== "string") {
+      return false;
+    }
+    value = value.trim().toLowerCase();
+    return value === "1" || value === "yes" || value === "true";
   }
-  var dnt = navigator.doNotTrack;
-  if (dnt === "1" || dnt === "yes" || window.doNotTrack === "1" || navigator.msDoNotTrack === "1") {
+
+  function optedOut() {
+    return (
+      navigator.globalPrivacyControl === true ||
+      dntOn(navigator.doNotTrack) ||
+      dntOn(window.doNotTrack) ||
+      dntOn(navigator.msDoNotTrack)
+    );
+  }
+
+  if (optedOut()) {
     return;
   }
 
@@ -41,6 +60,14 @@
     try {
       var host = new URL(document.referrer).hostname.toLowerCase();
       if (!host || host.length > 80 || host.indexOf("[") !== -1 || host.indexOf(":") !== -1) {
+        return null;
+      }
+      // Only a real name: at least two labels and a last label with a letter.
+      // This leaves out IPv4 literals in every spelling (dotted, decimal, hex,
+      // octal), single-label hosts and anything ending in a number, all of
+      // which the Worker would refuse, dropping the whole beacon with them.
+      var labels = host.split(".");
+      if (labels.length < 2 || !/[a-z]/.test(labels[labels.length - 1])) {
         return null;
       }
       return host;
@@ -77,7 +104,7 @@
   }
 
   function send() {
-    if (done) {
+    if (done || optedOut()) {
       return;
     }
     done = true;

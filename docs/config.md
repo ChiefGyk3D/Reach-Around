@@ -865,7 +865,7 @@ existed. Unknown keys are refused; there is deliberately nothing else to set.
 
 | Key | Type | Default | Meaning |
 | --- | --- | --- | --- |
-| `page_views` | boolean | `false` | Count one view per page load. Must be a real boolean. When on, the build ships `static/view.js`, links it from every tab page (not the privacy page), puts `data-page-id` and `data-view-route` on `<body>`, and adds the page-view item to the privacy page. |
+| `page_views` | boolean | `false` | Count one view per page load. Must be a real boolean. When on, the build ships `static/view.js`, links it from every tab page (not the privacy page), puts `data-page-id` and `data-view-route` on `<body>`, and adds the page-view item to the privacy page, which lists the referring site, the campaign label (`utm_source`, at most 30 characters) and the window width among the rest. |
 | `route` | path | `/e/v/` | The same-origin path the Worker serves the page-view route on. Plain segments (`A-Z a-z 0-9 . _ ~ -`, no segment starting with a dot), starting and ending with `/`, at most 64 characters. No scheme, host, query, fragment, `.` or `..` segment, escape or space. The tab id is appended to it. |
 
 ```yaml
@@ -883,8 +883,14 @@ What `view.js` does, and nothing more:
   `m` 480-767, `l` 768-1199, `x` 1200 and up). These are the fields the Worker
   route reads; see `worker/src/view.ts`.
 - It sends nothing when `navigator.globalPrivacyControl` is true or Do Not Track
-  is on (`navigator.doNotTrack` or `window.doNotTrack` is `1` or `yes`, or
-  `navigator.msDoNotTrack` is `1`). The Worker checks `Sec-GPC` and `DNT` again.
+  is on: any of `navigator.doNotTrack`, `window.doNotTrack` and
+  `navigator.msDoNotTrack` set to `1`, `yes` or `true` (any case, spaces ignored).
+  This is checked at start and again at send time, so a signal that arrives while
+  the page is prerendering or hidden still stops the beacon. The Worker checks
+  `Sec-GPC` and `DNT` again.
+- The referrer host is left out when it is not a real name: IPv4 literals in any
+  spelling, IPv6 literals, single-label hosts and hosts ending in a number (the
+  Worker would refuse the whole body). `u` and `w` are still sent.
 - It waits while the page is prerendering or hidden and sends on the first
   visible moment, once.
 - Without `navigator.sendBeacon` it does nothing. There is no fallback request.

@@ -422,3 +422,109 @@ def test_a_bad_route_sends_nothing(browser: Browser, base_url: str, bad: str) ->
     )
     assert _beacons(page) == []
     page.context.close()
+
+
+DNT_SPELLINGS = ["1", "yes", "true", "YES", " True "]
+DNT_PROPERTIES = {
+    "navigator.doNotTrack": "Object.defineProperty(Navigator.prototype, "
+    "'doNotTrack', {get: () => %s, configurable: true});",
+    "window.doNotTrack": "window.doNotTrack = %s;",
+    "navigator.msDoNotTrack": "Object.defineProperty(Navigator.prototype, "
+    "'msDoNotTrack', {get: () => %s, configurable: true});",
+}
+
+
+@pytest.mark.parametrize("spelling", DNT_SPELLINGS)
+@pytest.mark.parametrize("prop", sorted(DNT_PROPERTIES))
+def test_every_dnt_property_and_spelling_opts_out(
+    browser: Browser, base_url: str, prop: str, spelling: str
+) -> None:
+    init = DNT_PROPERTIES[prop] % repr(spelling)
+    page, ctx, _ = _open(browser, base_url, init=init)
+    assert _beacons(page) == []
+    ctx.close()
+
+
+@pytest.mark.parametrize("value", ["0", "no", "unspecified", ""])
+def test_dnt_values_that_are_not_opt_outs_still_send(
+    browser: Browser, base_url: str, value: str
+) -> None:
+    init = DNT_PROPERTIES["window.doNotTrack"] % repr(value)
+    page, ctx, _ = _open(browser, base_url, init=init)
+    assert len(_beacons(page)) == 1
+    ctx.close()
+
+
+GPC_FLAG = (
+    "Object.defineProperty(Navigator.prototype, 'globalPrivacyControl', "
+    "{get: () => window.__gpc === true, configurable: true});"
+)
+FLIP = {
+    "gpc": "window.__gpc = true;",
+    "dnt-window": "window.doNotTrack = 'yes';",
+    "dnt-navigator": "Object.defineProperty(Navigator.prototype, 'doNotTrack', "
+    "{get: () => 'true', configurable: true});",
+    "dnt-ms": "Object.defineProperty(Navigator.prototype, 'msDoNotTrack', "
+    "{get: () => '1', configurable: true});",
+}
+PRERENDER = (
+    "Object.defineProperty(Document.prototype, 'prerendering', "
+    "{get: () => !window.__active, configurable: true});" + GPC_FLAG
+)
+HIDDEN = (
+    "Object.defineProperty(Document.prototype, 'visibilityState', "
+    "{get: () => window.__state || 'hidden', configurable: true});" + GPC_FLAG
+)
+
+
+@pytest.mark.parametrize("signal", sorted(FLIP))
+def test_a_signal_that_arrives_before_activation_stops_the_send(
+    browser: Browser, base_url: str, signal: str
+) -> None:
+    page, ctx, _ = _open(browser, base_url, init=PRERENDER)
+    assert _beacons(page) == []
+    page.evaluate(FLIP[signal])
+    page.evaluate(
+        "window.__active = true;"
+        " document.dispatchEvent(new Event('prerenderingchange'));"
+    )
+    assert _beacons(page) == []
+    ctx.close()
+
+
+@pytest.mark.parametrize("signal", sorted(FLIP))
+def test_a_signal_that_arrives_while_hidden_stops_the_send(
+    browser: Browser, base_url: str, signal: str
+) -> None:
+    page, ctx, _ = _open(browser, base_url, init=HIDDEN)
+    assert _beacons(page) == []
+    page.evaluate(FLIP[signal])
+    page.evaluate(
+        "window.__state = 'visible';"
+        " document.dispatchEvent(new Event('visibilitychange'));"
+    )
+    assert _beacons(page) == []
+    ctx.close()
+
+
+@pytest.mark.parametrize(
+    "referrer",
+    [
+        "http://192.0.2.1:8080/x",
+        "http://0x7f.1/x",
+        "http://2130706433/x",
+        "http://017700000001/x",
+        "http://example.test.1/x",
+        "http://localhost/x",
+    ],
+)
+def test_numeric_and_single_label_referrer_hosts_are_omitted(
+    browser: Browser, base_url: str, referrer: str
+) -> None:
+    ref = (
+        "Object.defineProperty(Document.prototype, 'referrer', "
+        f"{{get: () => '{referrer}'}});"
+    )
+    page, ctx, _ = _open(browser, base_url + "?utm_source=blue", init=ref)
+    assert [c["body"] for c in _beacons(page)] == ["u=blue&w=l"]
+    ctx.close()
