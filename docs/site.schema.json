@@ -473,6 +473,71 @@
       "title": "Privacy",
       "type": "object"
     },
+    "ProfileButton": {
+      "additionalProperties": false,
+      "properties": {
+        "label": {
+          "maxLength": 40,
+          "minLength": 1,
+          "title": "Label",
+          "type": "string"
+        },
+        "url": {
+          "maxLength": 2048,
+          "title": "Url",
+          "type": "string"
+        }
+      },
+      "required": [
+        "label",
+        "url"
+      ],
+      "title": "ProfileButton",
+      "type": "object"
+    },
+    "ProfileCard": {
+      "additionalProperties": false,
+      "description": "Name, topic chips and a media-kit button shown after the content.",
+      "properties": {
+        "button": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ProfileButton"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "tags": {
+          "items": {
+            "maxLength": 30,
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 8,
+          "title": "Tags",
+          "type": "array"
+        },
+        "title": {
+          "anyOf": [
+            {
+              "maxLength": 80,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Title"
+        }
+      },
+      "title": "ProfileCard",
+      "type": "object"
+    },
     "Robots": {
       "additionalProperties": false,
       "properties": {
@@ -851,6 +916,17 @@
         "lead_retention_days": 365,
         "retention_days": 90
       }
+    },
+    "profile_card": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ProfileCard"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
     },
     "robots": {
       "anyOf": [
