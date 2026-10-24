@@ -603,6 +603,42 @@
       "title": "Social",
       "type": "object"
     },
+    "StoreConfig": {
+      "additionalProperties": false,
+      "description": "Where the snapshot store lives. Never holds a DSN or a password.",
+      "properties": {
+        "dsn_env": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Dsn Env"
+        },
+        "kind": {
+          "default": "sqlite",
+          "enum": [
+            "sqlite",
+            "postgres"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "path": {
+          "default": "data/reach-around.db",
+          "maxLength": 1024,
+          "minLength": 1,
+          "title": "Path",
+          "type": "string"
+        }
+      },
+      "title": "StoreConfig",
+      "type": "object"
+    },
     "Tab": {
       "additionalProperties": false,
       "properties": {
@@ -826,6 +862,14 @@
         }
       ],
       "default": null
+    },
+    "store": {
+      "$ref": "#/$defs/StoreConfig",
+      "default": {
+        "dsn_env": null,
+        "kind": "sqlite",
+        "path": "data/reach-around.db"
+      }
     },
     "tabs": {
       "items": {
