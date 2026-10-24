@@ -11,11 +11,14 @@ from reach_around.config.models import (
     Tab,
     load_site_config,
 )
+from reach_around.config.privacy import Features, Privacy
 
 __all__ = [
     "ConfigError",
     "Creator",
+    "Features",
     "Link",
+    "Privacy",
     "Section",
     "SiteConfig",
     "Social",

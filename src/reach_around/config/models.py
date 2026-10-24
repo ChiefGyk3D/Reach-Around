@@ -29,6 +29,7 @@ from pydantic import (
 
 from reach_around.config.blocks import Divider, Image, Text
 from reach_around.config.loader import ConfigError, load_yaml
+from reach_around.config.privacy import Features, Privacy
 from reach_around.config.theme import Theme
 
 _SLUG = re.compile(r"^[a-z0-9][a-z0-9-]{0,39}$")
@@ -196,6 +197,8 @@ class SiteConfig(_Model):
     disclosure: Annotated[str, StringConstraints(max_length=2000)] | None = None
     timezone: str = "America/New_York"
     theme: Theme = Theme()
+    features: Features = Features()
+    privacy: Privacy = Privacy()
 
     @field_validator("timezone")
     @classmethod

@@ -22,6 +22,7 @@ from jinja2 import Environment, PackageLoader, StrictUndefined
 
 from reach_around.config.models import Block, Link, Section, SiteConfig, Tab
 from reach_around.site.markdown import render_markdown
+from reach_around.site.privacy import collected_items, intro_text, sets_cookies
 from reach_around.site.theme import theme_css
 from reach_around.site.visibility import visible_blocks
 
@@ -99,15 +100,34 @@ def _render_page(
         page_title=f"{tab.title} - {config.creator.name}",
         disclosure=config.disclosure,
         show_disclosure=has_affiliate and bool(config.disclosure),
+        show_cookie_banner=sets_cookies(config),
+        cookie_text=intro_text(config),
+    )
+
+
+def _render_privacy(env: Environment, config: SiteConfig) -> str:
+    return env.get_template("privacy.html").render(
+        creator=config.creator,
+        nav=_nav(config, -1, "../"),
+        root="../",
+        page_title=f"Privacy - {config.creator.name}",
+        disclosure=config.disclosure,
+        show_disclosure=False,
+        show_cookie_banner=False,
+        intro=intro_text(config),
+        items=collected_items(config),
+        contact=config.privacy.contact,
     )
 
 
 def _render_pages(config: SiteConfig, shown: list[list[Block]]) -> dict[Path, str]:
     env = _environment()
-    return {
+    pages = {
         _page_path(i, tab): _render_page(env, config, i, shown[i])
         for i, tab in enumerate(config.tabs)
     }
+    pages[Path("privacy") / "index.html"] = _render_privacy(env, config)
+    return pages
 
 
 def _manifest(shown: list[list[Block]]) -> BuildManifest:
