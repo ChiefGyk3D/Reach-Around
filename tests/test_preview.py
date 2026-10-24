@@ -14,6 +14,8 @@ from reach_around.preview import Preview, PreviewError, serve
 
 ANY_V4 = ".".join(["0"] * 4)  # built, not written, so the lint rule stays quiet
 EXAMPLE = Path(__file__).resolve().parents[1] / "examples" / "instance" / "site.yaml"
+NET_TIMEOUT = 2.0  # every socket and request in this module is bounded by this
+JOIN_TIMEOUT = 2.0  # every thread join is bounded by this
 
 
 @pytest.fixture
@@ -21,6 +23,20 @@ def config(tmp_path: Path) -> Path:
     path = tmp_path / "site.yaml"
     path.write_text(EXAMPLE.read_text())
     return path
+
+
+@pytest.fixture
+def never_serve(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Fail fast if a guard regresses: ``serve`` must never reach the serve loop.
+
+    Without this, a regression that lets a non-loopback host through would bind
+    the port and block in ``serve_forever`` until the run is killed.
+    """
+
+    def _boom(self: Preview) -> None:
+        raise AssertionError("the preview reached serve_forever on a refused host")
+
+    monkeypatch.setattr(Preview, "serve_forever", _boom)
 
 
 @pytest.fixture
@@ -32,7 +48,7 @@ def running(config: Path) -> Iterator[Preview]:
         yield preview
     finally:
         preview.close()
-        thread.join(timeout=5)
+        thread.join(timeout=JOIN_TIMEOUT)
 
 
 def fetch(
@@ -41,7 +57,7 @@ def fetch(
     method: str = "GET",
     headers: dict[str, str] | None = None,
 ) -> tuple[int, dict[str, str], bytes]:
-    conn = http.client.HTTPConnection("127.0.0.1", preview.port, timeout=5)
+    conn = http.client.HTTPConnection("127.0.0.1", preview.port, timeout=NET_TIMEOUT)
     try:
         # raw path: no client-side normalization
         conn.request(method, path, headers=headers or {})
@@ -51,7 +67,7 @@ def fetch(
         conn.close()
 
 
-def test_serve_refuses_a_non_loopback_host(config: Path) -> None:
+def test_serve_refuses_a_non_loopback_host(config: Path, never_serve: None) -> None:
     for host in (ANY_V4, "::", "192.168.1.20", "10.0.0.5", "example.com"):
         with pytest.raises(PreviewError):
             serve(config, host=host, port=0)
@@ -185,11 +201,13 @@ def test_stops_cleanly_on_shutdown(config: Path) -> None:
     root = preview.root
     thread = threading.Thread(target=preview.serve_forever, daemon=True)
     thread.start()
-    assert fetch(preview, "/")[0] == 200
-    preview.close()
-    thread.join(timeout=5)
+    try:
+        assert fetch(preview, "/")[0] == 200
+    finally:
+        preview.close()
+    thread.join(timeout=JOIN_TIMEOUT)
     assert not thread.is_alive()
-    with pytest.raises(OSError), socket.create_connection(("127.0.0.1", port), 1):
+    with pytest.raises(OSError), socket.create_connection(("127.0.0.1", port), NET_TIMEOUT):
         pass
     assert not root.exists()  # temporary output directory cleaned up
 
@@ -202,7 +220,7 @@ def test_serve_signature_carries_overrides() -> None:
 
 
 def test_serve_command_refuses_a_non_loopback_host(
-    config: Path, capsys: pytest.CaptureFixture[str]
+    config: Path, capsys: pytest.CaptureFixture[str], never_serve: None
 ) -> None:
     assert main(["serve", "--config", str(config), "--host", ANY_V4]) == 1
     assert "loopback" in capsys.readouterr().err
@@ -231,7 +249,7 @@ def test_localhost_127_and_ipv6_hosts_with_ports_are_accepted(
 
 
 def test_missing_host_header_is_refused(running: Preview) -> None:
-    with socket.create_connection(("127.0.0.1", running.port), 5) as sock:
+    with socket.create_connection(("127.0.0.1", running.port), NET_TIMEOUT) as sock:
         sock.sendall(b"GET / HTTP/1.0\r\n\r\n")
         reply = b""
         while chunk := sock.recv(4096):
