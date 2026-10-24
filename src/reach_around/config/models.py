@@ -31,6 +31,12 @@ from reach_around.config.blocks import Crypto, Divider, Image, Text
 from reach_around.config.loader import ConfigError, load_yaml
 from reach_around.config.page_title import PageTitle, TitleTemplate
 from reach_around.config.privacy import Features, Privacy
+from reach_around.config.profile_card import (
+    MAX_TAGS,
+    MEDIA_KIT_ID,
+    ButtonLabel,
+    ProfileTag,
+)
 from reach_around.config.robots import Robots
 from reach_around.config.tablinks import is_tab_ref, parse_tab_ref
 from reach_around.config.theme import Theme
@@ -258,6 +264,30 @@ class StoreConfig(_Model):
         return self
 
 
+class ProfileButton(_Model):
+    label: ButtonLabel
+    url: HttpsUrl
+
+    @field_validator("url")
+    @classmethod
+    def _url_is_https(cls, value: str) -> str:
+        return check_https_url(value)
+
+
+class ProfileCard(_Model):
+    """Name, topic chips and a media-kit button shown after the content."""
+
+    title: PageTitle | None = None
+    tags: list[ProfileTag] = Field(default_factory=list, max_length=MAX_TAGS)
+    button: ProfileButton | None = None
+
+    @model_validator(mode="after")
+    def _has_something_to_show(self) -> ProfileCard:
+        if not self.tags and self.button is None:
+            raise ValueError("a profile card needs tags or a button")
+        return self
+
+
 class SiteConfig(_Model):
     version: Literal[1]
     creator: Creator
@@ -270,6 +300,7 @@ class SiteConfig(_Model):
     privacy: Privacy = Privacy()
     robots: Robots | None = None
     store: StoreConfig = StoreConfig()
+    profile_card: ProfileCard | None = None
 
     @field_validator("timezone")
     @classmethod
@@ -293,6 +324,14 @@ class SiteConfig(_Model):
                 if ident in seen:
                     raise ValueError(f"duplicate id {ident!r}: ids must be unique")
                 seen.add(ident)
+        if (
+            self.profile_card is not None
+            and self.profile_card.button is not None
+            and MEDIA_KIT_ID in seen
+        ):
+            raise ValueError(
+                f"id {MEDIA_KIT_ID!r} is reserved for the profile card button"
+            )
         return self
 
     @model_validator(mode="after")

@@ -29,6 +29,9 @@
 {% include "_nav.html" %}
 {% include "_header.html" %}
 {% block content %}{% endblock %}
+{% if profile_card %}
+{% include "_profile_card.html" %}
+{% endif %}
 {% include "_footer.html" %}
 </main>
 </body>

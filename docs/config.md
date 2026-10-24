@@ -86,6 +86,7 @@ escapes it when it renders.
 | `privacy` | Privacy | defaults | wording and retention for the privacy page; see [`privacy`](#privacy) |
 | `robots` | Robots | absent | optional; when present the build writes `robots.txt`; see [`robots`](#robots) |
 | `store` | StoreConfig | SQLite at `data/reach-around.db` | where the snapshot store lives; see [`store`](#store) |
+| `profile_card` | ProfileCard | none | name, topic chips and a media-kit button after the content of every page; see [`profile_card`](#profile_card) |
 
 Ids must be unique across the whole site: every tab id, every block id (links
 and sections) and every link id inside a section share one pool. Reusing an
@@ -471,6 +472,41 @@ key path and the reason. The check runs before the allowlist for each kind of
 value, so the message names the first problem it found. Only a fixed set of
 custom property names (`--ra-*`) and `color-scheme` is ever written to
 `theme.css`.
+
+## `profile_card`
+
+An optional card shown after the content of every tab page and the privacy
+page, before the disclosure and footer: your name, up to eight topic chips and
+a button to your media kit. Leave the key out and the output is byte-for-byte
+what it was without the feature. Unknown keys are refused.
+
+| Key | Type | Default | Constraints |
+| --- | --- | --- | --- |
+| `title` | page title text, 1-80 characters | `creator.name` | The heading of the card. Plain text. |
+| `tags` | list of text | empty | At most 8 chips, each 1-30 characters of plain text: no control, newline, bidirectional or zero-width characters, no leading or trailing space. |
+| `button.label` | text, 1-40 characters | required with `button` | Same plain-text rules as a tag. |
+| `button.url` | HTTPS URL | required with `button` | Same rules as a link URL: `https` only, no user name or password, at most 2048 characters. An internal page is not accepted yet. |
+
+A card needs at least `tags` or a `button`. All text is escaped; there is no
+markup in any field.
+
+```yaml
+profile_card:
+  title: Work with Example Creator
+  tags: [Retro games, Security, Amateur radio]
+  button:
+    label: Download the media kit
+    url: https://media.example.com/kit
+```
+
+The button is an ordinary external link: `rel="noopener noreferrer"`, no
+`target`. It has the id `profile-media-kit`, so a tab, block or link may not
+use that id when a button is set. With `features.click_tracking` on, the
+button carries the same `ping` and `data-link-id` attributes as a link, and the
+build adds `profile-media-kit` to the build manifest (the `links` map the
+click Worker is configured from), so the Worker counts it like any link. With click tracking off it carries neither. The card adds no
+JavaScript and no inline style; it is styled from the same tokens as the rest of
+the page (see [design](design.md)), so a theme's colors and `mode` apply.
 
 ## `features`
 
