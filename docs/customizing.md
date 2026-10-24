@@ -65,6 +65,7 @@ keys:
 | section (a group of links) | `id`, `title`, `links` |
 | text | `id`, `markdown` |
 | image | `id`, `src`, `alt` |
+| crypto (addresses to copy) | `id`, `coins` |
 | divider | `id` |
 
 Every `id` must be unique across the whole site. Links can carry `affiliate`,
@@ -72,6 +73,32 @@ Every `id` must be unique across the whole site. Links can carry `affiliate`,
 visible affiliate link exists. Full rules, limits and the Markdown subset are
 in [the config reference](config.md#blocks-layouts-and-headers). An
 unknown key is an error, not a silent no-op.
+
+### A Support tab with crypto addresses
+
+The `crypto` block lists public addresses with a Copy button. It is static: no
+wallet code and no outside calls, and a small script (`copy.js`) loads only on
+pages that have the block. Addresses are public data, but a wrong character
+sends money to the wrong place, so the page shows a reminder to check the first
+and last characters. `examples/crypto/site.yaml` is a working copy with fake
+addresses and a QR image. Keys, limits and the security notes are in
+[the config reference](config.md#crypto).
+
+Review any `custom.css` you did not write yourself before publishing a page
+with this block. A stylesheet can change how an address *looks* (for example
+overlay a different one with a pseudo-element) without changing what the Copy
+button writes, so someone reading the address off the screen and typing it in
+could be misled. The build cannot detect that, so treat third-party CSS on a
+payment page like any other code you run.
+
+```yaml
+- id: crypto
+  title: Send crypto
+  coins:
+    - coin: btc
+      address: bc1qexampleexampleexampleexampleexample
+      qr: media/qr-example.png
+```
 
 ## Layer 2: the theme
 

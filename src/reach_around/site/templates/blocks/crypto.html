@@ -1,0 +1,32 @@
+{# SPDX-License-Identifier: Apache-2.0 #}
+<li class="block block-crypto">
+{% if block.title %}
+<h2 class="crypto-title">{{ block.title }}</h2>
+{% endif %}
+<ul class="crypto-list">
+{% for entry in block.coins %}
+{% set addr_id = block.id ~ "-addr-" ~ loop.index %}
+<li class="crypto-card">
+<div class="crypto-head">
+<span class="crypto-chip" aria-hidden="true"><span class="icon icon-{{ entry.icon }}"></span></span>
+<span class="crypto-name">
+<span class="crypto-label">{{ entry.display }}</span>
+{% if entry.network %}<span class="crypto-network">{{ entry.network }}</span>{% endif %}
+</span>
+</div>
+<div class="crypto-body">
+<code class="crypto-address" id="{{ addr_id }}">{{ entry.address }}</code>
+<button class="copy-button" type="button" data-copy-target="{{ addr_id }}" aria-label="Copy {{ entry.display }} address">Copy</button>
+</div>
+{% if entry.qr %}
+<details class="crypto-qr">
+<summary>Show QR code</summary>
+<img class="crypto-qr-image" src="{{ root }}{{ entry.qr }}" alt="QR code for {{ entry.display }} address" loading="lazy" referrerpolicy="no-referrer">
+</details>
+{% endif %}
+</li>
+{% endfor %}
+</ul>
+<p class="crypto-note">{{ block.shown_note }}</p>
+<p class="copy-status sr-only" role="status" aria-live="polite" data-copy-status></p>
+</li>

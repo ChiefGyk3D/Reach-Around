@@ -1,0 +1,33 @@
+# Synthetic example: a Support tab with a crypto block. Every address below is
+# made up and belongs to no wallet. media/qr-example.png is a pattern, not a
+# scannable code. Never put a private key or seed phrase in this file.
+version: 1
+creator:
+  name: Example Creator
+  header: centered
+tabs:
+  - id: support
+    title: Support
+    blocks:
+      - id: support-intro
+        markdown: |
+          Thank you for thinking of it. Nothing here is required.
+      - id: crypto
+        title: Send crypto
+        coins:
+          - coin: btc
+            network: Bitcoin mainnet
+            address: bc1qexampleexampleexampleexampleexample
+            qr: media/qr-example.png
+          - coin: xmr
+            label: Monero
+            address: 4ExampleExampleExampleExampleExampleExampleExampleExampleExampleExampleExampleExampleExampleExampleExample
+          - coin: eth
+            network: ERC-20 on Ethereum
+            address: 0xExampleExampleExampleExampleExample
+          - coin: sol
+            address: ExampleExampleExampleExampleExample
+          - coin: other
+            name: Litecoin
+            network: Litecoin mainnet
+            address: ltc1qexampleexampleexampleexampleexample

@@ -20,6 +20,7 @@ from typing import Any
 
 from jinja2 import Environment
 
+from reach_around.config.blocks import Crypto
 from reach_around.config.models import Block, Link, Section, SiteConfig, Tab
 from reach_around.config.page_title import DEFAULT_TEMPLATE, render_template
 from reach_around.site.assets import collect_assets
@@ -49,6 +50,14 @@ def _links_in(blocks: Iterable[Block]) -> list[Link]:
         elif isinstance(block, Section):
             links.extend(block.links)
     return links
+
+
+def _has_crypto(blocks: Iterable[Block]) -> bool:
+    return any(isinstance(block, Crypto) for block in blocks)
+
+
+# Published only for a site with a crypto block on a page; see ``build_site``.
+_CRYPTO_FILES = (Path("static") / "copy.js", Path("static") / "crypto.css")
 
 
 def _page_path(tab_index: int, tab: Tab) -> Path:
@@ -112,6 +121,7 @@ def _render_page(
         show_disclosure=has_affiliate and bool(config.disclosure),
         show_cookie_banner=sets_cookies(config),
         click_tracking=config.features.click_tracking,
+        has_crypto=_has_crypto(blocks),
         cookie_text=intro_text(config),
         custom_css=custom_css,
     )
@@ -127,6 +137,7 @@ def _render_privacy(env: Environment, config: SiteConfig, custom_css: bool) -> s
         show_disclosure=False,
         show_cookie_banner=False,
         click_tracking=config.features.click_tracking,
+        has_crypto=False,
         intro=intro_text(config),
         items=collected_items(config),
         contact=config.privacy.contact,
@@ -251,6 +262,9 @@ def build_site(
         files[rel] = data
     if not config.features.click_tracking:
         files.pop(Path("static") / "click.js", None)
+    if not any(_has_crypto(blocks) for blocks in shown):
+        for rel in _CRYPTO_FILES:
+            files.pop(rel, None)
     files[Path("static") / "theme.css"] = theme_css(config.theme).encode("utf-8")
     if custom_css is not None:
         files[Path("static") / "custom.css"] = custom_css.encode("utf-8")

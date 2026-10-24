@@ -10,11 +10,17 @@
 {% endif %}
 <link rel="stylesheet" href="{{ root }}static/site.css">
 <link rel="stylesheet" href="{{ root }}static/theme.css">
+{% if has_crypto %}
+<link rel="stylesheet" href="{{ root }}static/crypto.css">
+{% endif %}
 {% if custom_css %}
 <link rel="stylesheet" href="{{ root }}static/custom.css">
 {% endif %}
 {% if click_tracking %}
 <script src="{{ root }}static/click.js" defer></script>
+{% endif %}
+{% if has_crypto %}
+<script src="{{ root }}static/copy.js" defer></script>
 {% endif %}
 </head>
 <body>
