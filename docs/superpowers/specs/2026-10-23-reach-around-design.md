@@ -88,7 +88,7 @@ The Worker holds no admin interface. The owner reads data through the Cloudflare
 
 **4.11 Data flow, gated content, secrets and retention [My call; added after the builder check].**
 - **Gated content.** The instance build produces two bundles: the public static site, and a gated bundle (the demographics, partners detail, case studies and rates that are not public). The gated bundle is uploaded to storage bound to the Worker (KV or R2) and is never part of the Pages deploy. The Worker serves it only against a valid token.
-- **The token.** A short-lived signed token (HMAC with a Worker secret), lifetime 24 hours by default and configurable, tied to the lead record. It is replayable within its lifetime, so a forwarded link works until it expires. A test must prove an expired, tampered or missing token gets nothing. Per-partner unique links are a later option (see the open question).
+- **The token [Decided: not forwardable].** An unlocked kit must not be shareable by link, because a forwarded link should send the recipient to the gate so they unlock it themselves and are counted. The unlock is a short-lived signed token (HMAC with a Worker secret), lifetime 24 hours by default and configurable, tied to the lead record, and carried only in an HttpOnly, Secure, SameSite cookie. It never appears in a URL. The emailed "send me a link" is single use: the first click sets the cookie in that browser and marks the lead verified; a second click or a forwarded copy lands on the gate. A partner who opens it on another device simply unlocks again, which records another event. Tests must prove that an expired, tampered or missing token gets nothing, that a used email link gets nothing, and that no URL carries the token.
 - **System of record.** The collector's snapshot store is the system of record. A daily pull job copies new events from the Worker's database (through the Cloudflare API, with a token held only by the collector host) into the local store as daily aggregates. The Worker keeps raw events for a short window (default 90 days) and then deletes them. Dashboards, exports and Grafana read only the local store.
 - **Leads stay separate.** Lead emails are copied to the owner's local store only when the owner runs an export or a follow-up, never into aggregate tables, and never to Grafana.
 - **Where collectors run, and secrets.** Collectors that use only public endpoints, plain API keys or a GitHub App can run as scheduled CI jobs. Collectors that use rotating OAuth refresh tokens (YouTube, Instagram, Threads, TikTok, X) run in the homelab container with a persistent volume, so a refreshed token is written back to a secrets manager or an encrypted local file. Credentials live in the secrets manager or environment, never the instance repo. The instance repo holds configuration only, never snapshots, leads or tokens.
@@ -164,12 +164,12 @@ Later: Zoho Books (#3), asking-rate guidance (#4), monetization tracking (#5), p
 | Docker and Podman both supported (OCI image, rootless-friendly) | Maintainer |
 | Engine/instance split; snapshot store; token registry | Author |
 | Instant-reveal gate with optional verified link | Author |
+| Unlocked kit is not forwardable: cookie-bound unlock, single-use email link | Maintainer |
 | D1 for leads and events; SQLite default store | Author |
 | Python 3.11+ default for collectors | Author |
 
 ## 11. Open items
 
-- **For the maintainer:** should an unlocked kit link be forwardable by a partner to colleagues for 24 hours (the default above), or should each partner get a unique link that works for one person and shows you who it reached? The first is simpler and friendlier. The second is stricter and changes the Worker's token design.
 - Platform terms still to be read by a human: Kick Developer Terms, Twitch Developer Agreement, StreamElements REST reference, YouTube sensitive-scope verification.
 - Whether a general-purpose open-source tool counts as "another product" under Social Blade's terms.
 - The exact per-call price of the X API and whether a free tier remains.
