@@ -33,6 +33,7 @@ theme:
 #   button:
 #     label: Download the media kit
 #     url: https://media.example.com/kit
+
 # The footer credit link is on by default. Uncomment to turn it off or reword
 # it (this changes the built pages, so the golden files change with it). See
 # docs/config.md, "footer".

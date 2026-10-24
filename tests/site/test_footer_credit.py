@@ -152,3 +152,18 @@ def test_default_footer_config() -> None:
     cfg = config()
     assert cfg.footer.credit is True
     assert cfg.footer.credit_text is None
+
+
+def test_commented_example_keys_validate_when_uncommented() -> None:
+    import yaml
+
+    lines = (ASSETS / "site.yaml").read_text().splitlines()
+    start = lines.index("# footer:")
+    block = []
+    for line in lines[start:]:
+        if not line.startswith("#"):
+            break
+        block.append(line[2:])
+    assert len(block) == 3
+    raw = yaml.safe_load("\n".join(block))
+    assert config(raw["footer"]).footer.credit is False

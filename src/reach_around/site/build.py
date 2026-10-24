@@ -21,9 +21,9 @@ from typing import Any
 from jinja2 import Environment
 
 from reach_around.config.blocks import Crypto, Email, Platforms
+from reach_around.config.footer import CREDIT_URL
 from reach_around.config.models import Block, Link, Section, SiteConfig, Tab
 from reach_around.config.numbers import Numbers
-from reach_around.config.footer import CREDIT_URL
 from reach_around.config.page_title import DEFAULT_TEMPLATE, render_template
 from reach_around.config.profile_card import MEDIA_KIT_ID
 from reach_around.config.tablinks import is_tab_ref, parse_tab_ref
