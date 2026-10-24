@@ -9,7 +9,8 @@
 <script src="../static/click.js" defer></script>
 </head>
 <body>
-<main>
+<a class="skip-link" href="#content">Skip to links</a>
+<main id="content">
 <header class="site-header header-compact">
 <div class="header-row">
 <img class="avatar" src="https://example.com/avatar.png" alt="" width="48" height="48" referrerpolicy="no-referrer">
@@ -17,20 +18,24 @@
 <h1>Example Creator</h1>
 </div>
 <ul class="socials">
-<li><a href="https://video.example.com/@example" rel="noopener noreferrer">Example Video</a></li>
-<li><a href="https://chat.example.invalid/example" rel="noopener noreferrer">Example Chat</a></li>
+<li><a class="social" href="https://video.example.com/@example" rel="noopener noreferrer"><span class="icon icon-youtube" aria-hidden="true"></span><span class="sr-only">Example Video</span></a></li>
+<li><a class="social" href="https://feed.example.com/rss" rel="noopener noreferrer"><span class="icon icon-rss" aria-hidden="true"></span><span class="sr-only">Example Feed</span></a></li>
+<li><a class="social" href="https://mail.example.com/contact" rel="noopener noreferrer"><span class="icon icon-email" aria-hidden="true"></span><span class="sr-only">Example Mail</span></a></li>
+<li><a class="social" href="https://chat.example.invalid/example" rel="noopener noreferrer"><span class="social-label">Example Chat</span></a></li>
 </ul>
 
 </header>
-<nav aria-label="Pages">
+<nav class="tabs" aria-label="Pages">
 <ul>
 <li><a href="../">Start Here</a></li>
 <li><a href="../events/" aria-current="page">Events</a></li>
 </ul>
 </nav>
 <ul class="blocks layout-list">
-<li class="block"><a class="link" href="https://tickets.example.invalid/spring" ping="/e/c/spring-meetup" data-link-id="spring-meetup" rel="noopener noreferrer">
+<li class="block block-link"><a class="link" href="https://tickets.example.invalid/spring" ping="/e/c/spring-meetup" data-link-id="spring-meetup" rel="noopener noreferrer">
+<span class="link-text">
 <span class="link-title">Spring Meetup Tickets</span>
+</span>
 </a></li>
 </ul>
 <footer>

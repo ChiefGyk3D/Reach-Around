@@ -7,7 +7,13 @@ creator:
   socials:
     - name: Example Video
       url: https://video.example.com/@example
-      icon: video
+      icon: youtube
+    - name: Example Feed
+      url: https://feed.example.com/rss
+      icon: rss
+    - name: Example Mail
+      url: https://mail.example.com/contact
+      icon: email
     - name: Example Chat
       url: https://chat.example.invalid/example
       icon: chat
@@ -20,6 +26,7 @@ tabs:
         title: Example Home Page
         subtitle: The main site
         url: https://example.com/
+        icon: link
       - id: gear-picks
         title: Gear Picks
         subtitle: Things used on the show

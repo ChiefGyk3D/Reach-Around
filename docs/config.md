@@ -269,7 +269,8 @@ stylesheet unchecked. Every value is validated when the config loads, and the
 build writes the result to `static/theme.css` (an external file, so the page
 needs no inline style). `static/site.css` declares a default for every token;
 `theme.css` overrides only the ones you change. A config with no `theme`
-section builds the same page as before.
+section builds the same page as before. The tokens, the two ready-made presets in
+`examples/themes/` and the icon slugs are listed in [design.md](design.md).
 
 ```yaml
 version: 1
