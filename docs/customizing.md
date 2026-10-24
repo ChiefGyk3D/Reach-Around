@@ -168,6 +168,8 @@ the file length; TrueType and OpenType need 1 to 64 tables and room for the
 table directory; AVIF needs an `avif` or `avis` brand. A `.yaml` renamed
 `secret.png` is refused, and so is a real PNG header followed by a text body.
 The extension is compared in lower case, so `.PNG` is checked the same way.
+These checks are structural, not a decoder: a file wrapped in valid image or
+font headers and trailers still passes.
 The error is `theme.mascot: 'secret.png' is not a real png file (its first
 bytes do not match the format)`. A file that passes can still be a damaged
 image; the checks only stop other file types from riding along.
@@ -206,6 +208,21 @@ or `attribute 'onclick' on <rect> is not allowed`.
   no processing instructions (the plain `<?xml ...?>` declaration is fine) and
   no CDATA sections. Comments are allowed, and an accepted file is copied
   byte for byte.
+
+- Function-style values: after removing well-formed `url(#id)` tokens, any
+  remaining `(` in an attribute value is refused (`image(`, `image-set(`,
+  `src(`, `cross-fade(`, `element(`, `paint(`, `calc(`, `var(` and so on). The
+  only exception is `transform` and `gradientTransform`, which may hold only
+  `matrix`, `translate`, `scale`, `rotate`, `skewX` and `skewY` (case-sensitive)
+  with numeric arguments (digits, sign, dot, `e`, comma, spaces). Error:
+  `function-style values are not allowed here`.
+- Size caps, so a small file cannot make a browser work hard: at most 20000
+  elements, nesting 64 deep (the root counts as 1), 64 attributes on one
+  element, 8 namespace declarations in the whole file, and 1 MiB of attribute
+  text in total. A file over a cap stops the parse at that point and the build
+  fails with, for example, `theme.mascot: 'm.svg' is refused as an svg: it has
+  more than 20000 elements`. Removing a namespace with `xmlns=""` is refused
+  the same way as any other namespace outside the SVG and xlink ones.
 
 **To allow another SVG feature**, add its element or attribute name to
 `ALLOWED_ELEMENTS` or `ALLOWED_ATTRIBUTES` in

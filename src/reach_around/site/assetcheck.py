@@ -85,6 +85,18 @@ ALLOWED_ATTRIBUTES = frozenset(
 _ALLOWED_NS_ATTRIBUTES = frozenset({(_XLINK_NS, "href"), (_XML_NS, "space")})
 _ALLOWED_NAMESPACES = frozenset({_SVG_NS, _XLINK_NS})
 _REFUSED_IN_VALUES = ("javascript:", "data:", "expression(", "@import")
+# Complexity caps, so a small file cannot make the build or a browser work hard.
+MAX_ELEMENTS = 20000
+MAX_DEPTH = 64
+MAX_ATTRIBUTES = 64
+MAX_NAMESPACE_DECLARATIONS = 8
+MAX_ATTRIBUTE_CHARS = 1024 * 1024
+# The only functions allowed, and only in these attributes, with numeric arguments.
+_TRANSFORM_ATTRIBUTES = frozenset({"transform", "gradientTransform"})
+_TRANSFORM = re.compile(
+    r"\s*(?:(?:matrix|translate|scale|rotate|skewX|skewY)"
+    r"\s*\(\s*[0-9eE+\-., \t\r\n]*\)\s*,?\s*)*"
+)
 _URL = re.compile(r"url\(\s*#[A-Za-z_][\w.:-]*\s*\)")
 
 
@@ -93,7 +105,7 @@ def _split(name: str) -> tuple[str, str]:
     return (namespace, local) if sep else ("", name)
 
 
-def _screen_value(value: str) -> str | None:
+def _screen_value(attr_name: str, value: str) -> str | None:
     """Return why an attribute value is refused, or None."""
     if "\\" in value:
         return "it contains a backslash"
@@ -108,6 +120,15 @@ def _screen_value(value: str) -> str | None:
     for match in re.finditer(r"url\(", lowered):
         if not _URL.match(value, match.start()):
             return "url( may only wrap a #fragment id, such as url(#a)"
+    if attr_name in _TRANSFORM_ATTRIBUTES:
+        # The whole value must be transform functions, so no url( hides inside.
+        if "(" in value and not _TRANSFORM.fullmatch(value):
+            return (
+                "only matrix, translate, scale, rotate, skewX and skewY "
+                "with numeric arguments are allowed"
+            )
+    elif "(" in _URL.sub("", value):
+        return "function-style values are not allowed here"
     return None
 
 
@@ -120,6 +141,9 @@ class _Screen:
 
     def __init__(self) -> None:
         self.depth = 0
+        self.elements = 0
+        self.namespaces = 0
+        self.chars = 0
 
     def start(self, tag: str, attrs: dict[str, str]) -> None:
         namespace, name = _split(tag)
@@ -128,7 +152,20 @@ class _Screen:
         if self.depth == 0 and name != "svg":
             raise _Refused("the root element must be <svg>")
         self.depth += 1
+        self.elements += 1
+        if self.elements > MAX_ELEMENTS:
+            raise _Refused(f"it has more than {MAX_ELEMENTS} elements")
+        if self.depth > MAX_DEPTH:
+            raise _Refused(f"it is nested deeper than {MAX_DEPTH} elements")
+        if len(attrs) > MAX_ATTRIBUTES:
+            raise _Refused(f"<{name}> has more than {MAX_ATTRIBUTES} attributes")
         for attr, value in attrs.items():
+            self.chars += len(value)
+            if self.chars > MAX_ATTRIBUTE_CHARS:
+                raise _Refused(
+                    "its attribute text is longer than "
+                    f"{MAX_ATTRIBUTE_CHARS} characters"
+                )
             attr_ns, attr_name = _split(attr)
             if attr_ns:
                 if (attr_ns, attr_name) not in _ALLOWED_NS_ATTRIBUTES:
@@ -144,7 +181,7 @@ class _Screen:
                 raise _Refused(
                     f"href on <{name}> must point at a #fragment in this file"
                 )
-            reason = _screen_value(value)
+            reason = _screen_value(attr_name, value)
             if reason:
                 raise _Refused(
                     f"the value of {attr_name!r} on <{name}> is not allowed: {reason}"
@@ -153,9 +190,16 @@ class _Screen:
     def end(self, tag: str) -> None:
         self.depth -= 1
 
-    def namespace(self, prefix: str | None, uri: str) -> None:
-        if uri not in _ALLOWED_NAMESPACES:
-            raise _Refused(f"the namespace {uri[:60]!r} is not allowed")
+    def namespace(self, prefix: str | None, uri: str | None) -> None:
+        # expat reports xmlns="" (removing a namespace) as a uri of None.
+        self.namespaces += 1
+        if self.namespaces > MAX_NAMESPACE_DECLARATIONS:
+            raise _Refused(
+                f"it has more than {MAX_NAMESPACE_DECLARATIONS} namespace declarations"
+            )
+        if uri is None or uri not in _ALLOWED_NAMESPACES:
+            shown = "" if uri is None else uri[:60]
+            raise _Refused(f"the namespace {shown!r} is not allowed")
 
     def pi(self, target: str, data: str) -> None:
         raise _Refused("a processing instruction is not allowed")
