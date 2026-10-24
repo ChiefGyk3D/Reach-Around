@@ -58,6 +58,9 @@ def _slots(config: SiteConfig) -> Iterator[tuple[str, str, str]]:
             src = getattr(block, "src", None)
             if isinstance(src, str) and _is_local(src):
                 yield f"tabs[{t}].blocks[{b}].src", src, "image"
+            for c, entry in enumerate(getattr(block, "coins", ())):
+                if entry.qr is not None:
+                    yield f"tabs[{t}].blocks[{b}].coins[{c}].qr", entry.qr, "image"
 
 
 def referenced_assets(config: SiteConfig) -> list[str]:

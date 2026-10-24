@@ -27,7 +27,7 @@ from pydantic import (
     model_validator,
 )
 
-from reach_around.config.blocks import Divider, Image, Text
+from reach_around.config.blocks import Crypto, Divider, Image, Text
 from reach_around.config.loader import ConfigError, load_yaml
 from reach_around.config.page_title import PageTitle, TitleTemplate
 from reach_around.config.privacy import Features, Privacy
@@ -123,7 +123,7 @@ class Section(_Model):
     links: list[Link]
 
 
-_NEW_BLOCK_KEYS = {"markdown": "text", "src": "image"}
+_NEW_BLOCK_KEYS = {"markdown": "text", "src": "image", "coins": "crypto"}
 
 
 def _block_kind(value: Any) -> str | None:
@@ -141,6 +141,7 @@ def _block_kind(value: Any) -> str | None:
         (Link, "link"),
         (Text, "text"),
         (Image, "image"),
+        (Crypto, "crypto"),
         (Divider, "divider"),
     ):
         if isinstance(value, model):
@@ -154,6 +155,7 @@ Block = Annotated[
     | Annotated[Section, Tag("section")]
     | Annotated[Text, Tag("text")]
     | Annotated[Image, Tag("image")]
+    | Annotated[Crypto, Tag("crypto")]
     | Annotated[Divider, Tag("divider")],
     Discriminator(
         _block_kind,
@@ -246,7 +248,7 @@ class SiteConfig(_Model):
         return self
 
 
-_BLOCK_TAGS = {"link", "section", "text", "image", "divider"}
+_BLOCK_TAGS = {"link", "section", "text", "image", "crypto", "divider"}
 
 
 def _dotted(loc: tuple[int | str, ...]) -> str:

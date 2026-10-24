@@ -247,9 +247,10 @@ has, and every `id` must be unique across the whole site.
 | section | `id`, `title`, `links`, optional `layout` | as before |
 | text | `id`, `markdown` | up to 5000 characters |
 | image | `id`, `src`, `alt`, optional `link` | `alt` is required |
+| crypto | `id`, `coins`, optional `title`, `note` | addresses to copy; see [Crypto](#crypto) |
 | divider | `id` only | a horizontal rule |
 
-Text, image and divider blocks have no `show_from` or `show_until`; they always
+Text, image, crypto and divider blocks have no `show_from` or `show_until`; they always
 show.
 
 ```yaml
@@ -266,6 +267,69 @@ blocks:
     link: https://example.com/
   - id: rule
 ```
+
+#### Crypto
+
+A list of public addresses people can copy, for a Support tab. Each entry is a
+card with the coin icon, a name, the address in selectable monospace text, a
+`Copy` button and, if you give one, a QR image inside a native
+`<details>` that stays closed until opened.
+
+```yaml
+blocks:
+  - id: crypto
+    title: Send crypto
+    note: Check the first and last characters of the address before you send anything.
+    coins:
+      - coin: btc
+        network: Bitcoin mainnet
+        address: bc1qexampleexampleexampleexampleexample
+        qr: media/qr-example.png
+      - coin: other
+        name: Litecoin
+        address: ltc1qexampleexampleexampleexampleexample
+```
+
+A runnable version with synthetic addresses is in `examples/crypto/`.
+
+| Key | Rule |
+| --- | --- |
+| `id` | a slug, unique across the site |
+| `title` | optional heading, plain text, up to 200 characters |
+| `coins` | 1 to 12 entries |
+| `note` | optional, plain text, up to 300 characters. It replaces the default "Check the first and last characters of the address before you send anything." The note always shows once, under the list |
+| `coins[].coin` | `btc`, `xmr`, `eth`, `sol` or `other` |
+| `coins[].name` | required for `other`, refused for the others; up to 40 characters |
+| `coins[].label` | optional display name, up to 60 characters; defaults to the coin name |
+| `coins[].network` | optional, plain text, up to 40 characters, such as `ERC-20 on Ethereum` |
+| `coins[].address` | required string of 20 to 128 characters from `A-Z a-z 0-9 : . _ -` only |
+| `coins[].qr` | optional relative image path, checked like the avatar |
+
+Text fields refuse control characters and hidden or bidirectional formatting
+characters. An address with whitespace, quotes, angle brackets, backticks,
+slashes or anything outside the list above is refused with the key named, for
+example `tabs[0].blocks[1].coins[0].address: address must be 20 to 128
+characters...`. The address is **not** checked against a coin's checksum or
+format: the page cannot know which network a string belongs to, so the note
+tells visitors to check it.
+
+`qr` goes through the same pipeline as `creator.avatar` and `theme.background`:
+a case-insensitive extension allowlist, a signature and structure check
+(a text file renamed `.png` is refused), the 8 MiB cap, no symlinks, and a copy
+to the same relative path in the output. The key in an error reads
+`tabs[0].blocks[1].coins[0].qr`.
+
+**Security notes.** The block is static. There is no wallet code, no wallet
+connection, no price lookup and no call to any outside service. Addresses are
+public data. The `Copy` button needs `static/copy.js`, a small same-origin
+script with no `eval`, no inline handler and no network call; it reads the
+address from the page and writes it to the clipboard, nothing else. The build
+adds `copy.js` and `crypto.css` only to pages that contain a crypto block, and
+leaves them out of the output otherwise, so other pages are unchanged. The
+script is loaded with `<script src defer>`, which the default
+`script-src 'self'` allows. Without JavaScript the button stays hidden and the
+address can still be selected and copied by hand. Never put a private key or a
+seed phrase in the config.
 
 #### Markdown
 

@@ -1,0 +1,119 @@
+/* SPDX-License-Identifier: Apache-2.0 */
+/* The crypto block. Loaded only on pages that have one, after site.css, so it
+   reads the same --ra-* tokens and holds no color of its own. Mobile first: a
+   card is one column, and the address wraps anywhere so it never pushes the
+   page sideways. */
+
+.blocks > .block-crypto { grid-column: 1 / -1; }
+.crypto-title {
+  margin: 0 0 var(--ra-space-3);
+  font-size: var(--ra-text-lg);
+  font-weight: 700;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+}
+.crypto-list { display: flex; flex-direction: column; gap: var(--ra-space-3); margin: 0; padding: 0; list-style: none; }
+.crypto-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ra-space-3);
+  min-width: 0;
+  padding: var(--ra-space-4);
+  border: 1px solid var(--ra-color-border);
+  border-radius: var(--ra-card-radius);
+  background-color: var(--ra-color-surface);
+  box-shadow: var(--ra-shadow-card);
+  color: var(--ra-color-text);
+}
+.crypto-head { display: flex; align-items: center; gap: var(--ra-space-3); min-width: 0; }
+.crypto-chip {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: var(--ra-thumb);
+  height: var(--ra-thumb);
+  border-radius: 50%;
+  background-color: var(--ra-color-chip);
+  color: var(--ra-color-accent);
+}
+.crypto-name { display: flex; flex-direction: column; min-width: 0; }
+.crypto-label {
+  font-size: var(--ra-text-md);
+  font-weight: 600;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+}
+.crypto-network {
+  color: var(--ra-color-muted);
+  font-size: var(--ra-text-sm);
+  line-height: 1.3;
+  overflow-wrap: anywhere;
+}
+.crypto-body { display: flex; flex-direction: column; gap: var(--ra-space-2); min-width: 0; }
+.crypto-address {
+  display: block;
+  min-width: 0;
+  padding: var(--ra-space-3);
+  border: 1px solid var(--ra-color-border);
+  border-radius: var(--ra-radius);
+  background-color: var(--ra-color-raised);
+  color: var(--ra-color-text);
+  font-family: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+  font-size: var(--ra-text-sm);
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+  word-break: break-all;
+  -webkit-user-select: all;
+  user-select: all;
+}
+
+/* The button needs script, so it stays hidden until copy.js marks the page. */
+.copy-button { display: none; }
+.copy-ready .copy-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: var(--ra-tap);
+  min-height: var(--ra-tap);
+  padding: 0 var(--ra-space-5);
+  border: 1px solid var(--ra-color-accent-edge);
+  border-radius: var(--ra-button-radius);
+  background-color: var(--ra-color-accent);
+  box-shadow: var(--ra-shadow-pill);
+  color: var(--ra-color-on-accent);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+  transition: transform var(--ra-duration) var(--ra-ease), filter var(--ra-duration);
+}
+.copy-ready .copy-button:active { transform: scale(0.985); }
+
+.crypto-qr summary {
+  display: flex;
+  align-items: center;
+  min-height: var(--ra-tap);
+  color: var(--ra-color-link);
+  cursor: pointer;
+  font-weight: 500;
+}
+.crypto-qr[open] summary { margin-bottom: var(--ra-space-2); }
+.crypto-qr-image {
+  display: block;
+  width: min(100%, 14rem);
+  height: auto;
+  aspect-ratio: 1;
+  border-radius: var(--ra-radius);
+}
+.crypto-note {
+  margin: var(--ra-space-3) 0 0;
+  padding: 0 var(--ra-space-1);
+  color: var(--ra-color-muted);
+  font-size: var(--ra-text-sm);
+}
+.copy-status { margin: 0; }
+
+@media (min-width: 30rem) {
+  .crypto-body { flex-direction: row; align-items: flex-start; gap: var(--ra-space-3); }
+  .crypto-address { flex: 1 1 auto; }
+  .copy-ready .copy-button { flex: none; }
+}
