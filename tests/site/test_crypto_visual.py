@@ -194,7 +194,9 @@ def test_the_qr_opens_and_loads_from_this_site(browser: Browser, base_url: str) 
     assert not image.is_visible()
     page.locator(".crypto-qr summary").click()
     assert image.is_visible()
-    page.wait_for_function("document.querySelector('.crypto-qr-image').naturalWidth > 0")
+    page.wait_for_function(
+        "document.querySelector('.crypto-qr-image').naturalWidth > 0"
+    )
     assert page.evaluate("document.documentElement.scrollWidth") <= 390
     page.context.close()
 
