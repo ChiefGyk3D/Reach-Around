@@ -18,7 +18,7 @@ TODAY = date(2027, 3, 10)
 ROOT = Path(__file__).resolve().parents[2]
 ASSETS = ROOT / "examples" / "instance"
 REPO = "https://github.com/ChiefGyk3D/Reach-Around"
-PAGES = ("index.html", "more/index.html", "privacy/index.html")
+PAGES = ("index.html", "more/index.html", "privacy/index.html", "404.html")
 
 
 def config(footer: dict[str, Any] | None = None, **extra: Any) -> SiteConfig:

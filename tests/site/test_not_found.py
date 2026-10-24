@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from reach_around.config import SiteConfig, load_site_config
+from reach_around.config.footer import CREDIT_URL
 from reach_around.site.build import build_site, manifest_json
 
 TODAY = date(2027, 3, 10)
@@ -70,7 +71,8 @@ def test_assets_and_nav_are_root_relative(tmp_path: Path) -> None:
     refs = re.findall(r'(?:href|src|action)="([^"#][^"]*)"', text)
     assert len(refs) >= 4
     for ref in refs:
-        assert ref.startswith("/"), ref
+        # The one allowed exception is the footer credit's external https link.
+        assert ref.startswith("/") or ref == CREDIT_URL, ref
     assert 'href="../' not in text and 'href="./' not in text
 
 

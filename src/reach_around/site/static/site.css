@@ -679,6 +679,7 @@ main > footer { margin-top: var(--ra-space-5); color: var(--ra-color-muted); fon
    buttons are the ones that would fall short. */
 @media (pointer: coarse) {
   .privacy-link a,
+  .credit a,
   .profile-button,
   .cookie-banner button,
   .crypto-qr summary {
