@@ -1,0 +1,20 @@
+Icon set for the link page
+==========================
+
+Source: Simple Icons (https://simpleicons.org), npm package "simple-icons".
+Version: 16.35.0 for every icon except linkedin.svg, which comes from version
+13.21.0 because newer releases no longer include it.
+License: CC0 1.0 Universal (public domain dedication).
+
+Changes made: each file keeps only its <path> element. The <title> element and
+role attribute were removed. Nothing else was edited.
+
+email.svg and link.svg are original generic glyphs drawn for this project and
+are released under the same CC0 1.0 terms.
+
+The brand marks shown here remain trademarks of their respective owners. They
+are included only to identify the matching account or service, and their
+presence does not imply endorsement.
+
+The icons are drawn with CSS mask-image, so they take the page's text color.
+No icon file is fetched from any other host.

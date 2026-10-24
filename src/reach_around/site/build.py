@@ -135,11 +135,15 @@ def _manifest_json(manifest: BuildManifest) -> str:
 
 def _static_files() -> dict[Path, bytes]:
     root = resources.files("reach_around.site") / "static"
-    return {
-        Path("static") / item.name: item.read_bytes()
-        for item in sorted(root.iterdir(), key=lambda i: i.name)
-        if item.is_file()
-    }
+    files: dict[Path, bytes] = {}
+    for item in sorted(root.iterdir(), key=lambda i: i.name):
+        if item.is_file():
+            files[Path("static") / item.name] = item.read_bytes()
+        elif item.name == "icons":
+            for icon in sorted(item.iterdir(), key=lambda i: i.name):
+                if icon.is_file() and icon.name.endswith(".svg"):
+                    files[Path("static") / "icons" / icon.name] = icon.read_bytes()
+    return files
 
 
 def _check_out_dir(out_dir: Path, protect: Iterable[Path]) -> Path:
