@@ -550,6 +550,48 @@ a.link:active, .social:active { transform: translateY(0) scale(0.985); }
 }
 .empty { padding: var(--ra-space-5) 0; color: var(--ra-color-muted); text-align: center; }
 
+/* Profile card: name, topic chips and the media-kit button, after the content. */
+.profile-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--ra-space-3);
+  margin-top: var(--ra-space-5);
+  padding: var(--ra-space-4);
+  border: 1px solid var(--ra-color-border);
+  border-radius: var(--ra-card-radius);
+  background-color: var(--ra-color-surface);
+  box-shadow: var(--ra-shadow-card);
+  color: var(--ra-color-text);
+  text-align: center;
+}
+.profile-title { font-size: var(--ra-text-lg); overflow-wrap: anywhere; }
+.profile-tags { display: flex; flex-wrap: wrap; justify-content: center; gap: var(--ra-space-2); min-width: 0; }
+.profile-tag {
+  padding: var(--ra-space-1) var(--ra-space-3);
+  border: 1px solid var(--ra-color-border);
+  border-radius: var(--ra-button-radius);
+  background-color: var(--ra-color-accent-soft);
+  color: var(--ra-color-text);
+  font-size: var(--ra-text-sm);
+  overflow-wrap: anywhere;
+}
+.profile-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: var(--ra-tap);
+  max-width: 100%;
+  padding: 0 var(--ra-space-5);
+  border: 1px solid var(--ra-color-accent-edge);
+  border-radius: var(--ra-button-radius);
+  background-color: var(--ra-color-accent);
+  color: var(--ra-color-on-accent);
+  font-weight: 600;
+  text-decoration: none;
+  overflow-wrap: anywhere;
+}
+
 /* Footer, cookie notice, privacy page. */
 main > footer { margin-top: var(--ra-space-5); color: var(--ra-color-muted); font-size: var(--ra-text-sm); text-align: center; }
 .disclosure { max-width: 30rem; margin: 0 auto var(--ra-space-3); color: var(--ra-color-muted); font-size: var(--ra-text-xs); }

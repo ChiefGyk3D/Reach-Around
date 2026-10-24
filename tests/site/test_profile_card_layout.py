@@ -10,6 +10,7 @@ from collections.abc import Iterator
 from datetime import date
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from typing import Any
 
 import pytest
 import yaml
@@ -38,7 +39,7 @@ CARD = {
     ],
     "button": {"label": "Download the media kit now", "url": "https://example.com/kit"},
 }
-VARIANTS = {
+VARIANTS: dict[str, dict[str, Any]] = {
     "dark": {},
     "light": {"mode": "light"},
     "accent": {"colors": {"accent": "#2a6fdb", "on_accent": "#ffffff"}},
