@@ -566,6 +566,15 @@ def test_only_pages_with_the_block_link_the_stylesheet(tmp_path: Path) -> None:
     assert "copy.js" not in (out / "index.html").read_text("utf-8")
 
 
+def test_the_404_page_builds_beside_a_platforms_block(tmp_path: Path) -> None:
+    out = build(cfg(block(item(count=5))), tmp_path)
+    page_404 = (out / "404.html").read_text("utf-8")
+    assert "That page does not exist." in page_404
+    assert "platforms.css" not in page_404
+    assert "platform-link" not in page_404
+    assert "platforms.css" in (out / "index.html").read_text("utf-8")
+
+
 def test_a_block_on_a_later_tab_uses_relative_paths(tmp_path: Path) -> None:
     config = SiteConfig.model_validate(
         {

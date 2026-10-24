@@ -236,6 +236,7 @@ def _render_not_found(env: Environment, config: SiteConfig, custom_css: bool) ->
         has_crypto=False,
         has_email=False,
         has_email_script=False,
+        has_platforms=False,
         noindex=True,
         profile_card=_profile_card(config),
         cookie_text=intro_text(config),
