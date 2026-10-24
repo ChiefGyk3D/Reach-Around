@@ -10,6 +10,7 @@ from __future__ import annotations
 ICON_SLUGS: frozenset[str] = frozenset(
     """
     twitch kick mastodon bluesky tiktok discord youtube github instagram
-    threads matrix x linkedin patreon email rss link
+    threads matrix x linkedin patreon email rss link bitcoin ethereum merch
+    monero solana
     """.split()
 )

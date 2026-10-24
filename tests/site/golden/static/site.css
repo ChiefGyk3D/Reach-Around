@@ -94,6 +94,8 @@
   /* Image slots: filled from the config, empty here. --ra-bg-image is the
      full-bleed page background; --ra-mascot-image is the giant faded mascot. */
   --ra-bg-image: none;
+  --ra-bg-dim: 0;
+  --ra-color-dim: color-mix(in srgb, #000000 calc(var(--ra-bg-dim) * 100%), transparent);
   --ra-mascot-image: none;
   --ra-mascot-opacity: 0.12;
   --ra-mascot-size: cover;
@@ -120,13 +122,14 @@ body {
   background-color: var(--ra-color-bg);
   /* Carbon-fiber weave: two crossing hatches, a soft center light on top. */
   background-image:
+    linear-gradient(var(--ra-color-dim), var(--ra-color-dim)),
     var(--ra-bg-image),
     radial-gradient(70rem 40rem at 50% 0, var(--ra-color-glow), transparent 70%),
     repeating-linear-gradient(45deg, var(--ra-color-grain) 0 2px, transparent 2px 4px),
     repeating-linear-gradient(-45deg, var(--ra-color-grain-deep) 0 2px, transparent 2px 4px);
-  background-size: cover, auto, auto, auto;
-  background-position: center, center, 0 0, 0 0;
-  background-repeat: no-repeat, no-repeat, repeat, repeat;
+  background-size: auto, cover, auto, auto, auto;
+  background-position: 0 0, center, center, 0 0, 0 0;
+  background-repeat: no-repeat, no-repeat, no-repeat, repeat, repeat;
   background-attachment: fixed;
   overflow-wrap: break-word;
 }
@@ -224,6 +227,11 @@ a:focus-visible, summary:focus-visible, button:focus-visible {
 .icon-email { -webkit-mask-image: url("icons/email.svg"); mask-image: url("icons/email.svg"); }
 .icon-rss { -webkit-mask-image: url("icons/rss.svg"); mask-image: url("icons/rss.svg"); }
 .icon-link { -webkit-mask-image: url("icons/link.svg"); mask-image: url("icons/link.svg"); }
+.icon-bitcoin { -webkit-mask-image: url("icons/bitcoin.svg"); mask-image: url("icons/bitcoin.svg"); }
+.icon-ethereum { -webkit-mask-image: url("icons/ethereum.svg"); mask-image: url("icons/ethereum.svg"); }
+.icon-merch { -webkit-mask-image: url("icons/merch.svg"); mask-image: url("icons/merch.svg"); }
+.icon-monero { -webkit-mask-image: url("icons/monero.svg"); mask-image: url("icons/monero.svg"); }
+.icon-solana { -webkit-mask-image: url("icons/solana.svg"); mask-image: url("icons/solana.svg"); }
 
 
 /* Header: avatar at the left, the name beside it, the social icons below the name. */

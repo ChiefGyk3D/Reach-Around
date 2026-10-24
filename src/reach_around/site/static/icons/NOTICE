@@ -18,3 +18,8 @@ presence does not imply endorsement.
 
 The icons are drawn with CSS mask-image, so they take the page's text color.
 No icon file is fetched from any other host.
+
+bitcoin.svg, ethereum.svg, merch.svg, monero.svg and solana.svg are copies of
+the files in media/icons/ in this repository with the role attribute and the
+<title> element removed, so they pass the SVG allowlist in
+site/assetcheck.py. merch.svg is an original generic glyph.

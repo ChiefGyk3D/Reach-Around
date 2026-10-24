@@ -16,6 +16,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from reach_around.site.theme import (
     COLOR_KEYS,
     DEFAULT_COLUMN_WIDTH,
+    MAX_BACKGROUND_DIM,
     check_background,
     check_color,
     check_font,
@@ -45,6 +46,9 @@ class Theme(_Model):
     fonts: FontStack = FontStack()
     background: str | None = None
     mascot: str | None = None
+    background_dim: float = Field(
+        default=0.0, ge=0.0, le=MAX_BACKGROUND_DIM, allow_inf_nan=False
+    )
     column_width: str = DEFAULT_COLUMN_WIDTH
     radius: str = "0.5rem"
     button_style: Literal["pill", "rounded", "square"] = "rounded"

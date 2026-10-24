@@ -37,11 +37,13 @@ RESERVED_FOLDERS: frozenset[str] = frozenset({"static", "privacy"})
 
 DEFAULT_FONT_BODY = "system-ui, sans-serif"
 DEFAULT_COLUMN_WIDTH = "35rem"
+MAX_BACKGROUND_DIM = 0.9
 
 ALLOWED_PROPERTIES: frozenset[str] = frozenset(
     {f"--ra-color-{key.replace('_', '-')}" for key in COLOR_KEYS}
     | {
         "--ra-mascot-image",
+        "--ra-bg-dim",
         "--ra-font-body",
         "--ra-font-heading",
         "--ra-bg-image",
@@ -284,6 +286,14 @@ def theme_css(theme: Theme) -> str:
         else:
             declarations[f"--ra-font-{slot}"] = _family_list(value)
 
+    if theme.background_dim != 0.0:
+        dim = theme.background_dim
+        if not 0.0 < dim <= MAX_BACKGROUND_DIM:
+            raise ValueError(
+                f"background_dim must be between 0 and {MAX_BACKGROUND_DIM}, "
+                f"not {dim!r}"
+            )
+        declarations["--ra-bg-dim"] = f"{dim:g}"
     if theme.mascot is not None:
         declarations["--ra-mascot-image"] = _css_url(check_image_path(theme.mascot))
     if theme.background is not None:

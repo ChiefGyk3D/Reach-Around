@@ -34,6 +34,7 @@ editing the stylesheet.
 | `fonts.body` | `--ra-font-body` | Jost (shipped in `static/fonts/`, OFL license), then `system-ui` |
 | `fonts.heading` | `--ra-font-heading` | the body font |
 | `background` | `--ra-bg-image` | none (the page background image, fixed, under the texture) |
+| `background_dim` | `--ra-bg-dim` | `0` (0 to 0.9; darkens the page background image) |
 | `mascot` | `--ra-mascot-image` | none (the giant faded mascot, a fixed layer behind the column) |
 | `column_width` | `--ra-column-width` | `35rem` (560 px) |
 | `radius` | `--ra-radius` | `0.5rem` |
@@ -59,6 +60,7 @@ be overridden by a creator who adds a stylesheet of their own.
 | `--ra-color-raised` | A card on hover, and links inside a section. |
 | `--ra-color-accent-soft` | The tint behind a link's icon. |
 | `--ra-color-highlight` | The faint top edge on cards. |
+| `--ra-color-dim` | The black overlay laid above the background image: the dim amount as a percentage of black. The mascot is not dimmed by it. |
 | `--ra-color-glow` | The soft center light behind the column and the hero card. |
 | `--ra-color-grain`, `--ra-color-grain-deep` | The light and dark hatches of the carbon-fiber texture. |
 | `--ra-color-edge` | The cue at a scrolling tab bar's edge when more tabs hide. |
@@ -114,7 +116,7 @@ color and no request leaves the site.
 The `icon` field of a social or a link is a slug from this list: `twitch`,
 `kick`, `mastodon`, `bluesky`, `tiktok`, `discord`, `youtube`, `github`,
 `instagram`, `threads`, `matrix`, `x`, `linkedin`, `patreon`, `email`, `rss`,
-`link`. An unknown slug shows the text label instead. Brand marks remain
+`link`, `bitcoin`, `ethereum`, `merch`, `monero`, `solana`. An unknown slug shows the text label instead. Brand marks remain
 trademarks of their owners.
 
 ## Known limits

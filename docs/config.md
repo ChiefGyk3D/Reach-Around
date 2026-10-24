@@ -292,6 +292,7 @@ theme:
     heading: fonts/heading.woff2
   background: media/background.webp
   mascot: media/mascot.svg
+  background_dim: 0.6
   column_width: 40rem
   radius: 1rem
   button_style: pill
@@ -310,6 +311,7 @@ tabs:
 | `fonts.body` | string | Jost, shipped with the engine | A system font stack or a font file path. |
 | `fonts.heading` | string | same as body | Same rules as `fonts.body`. |
 | `background` | string | none | The full-bleed page background, drawn under the carbon-fiber texture. A relative image path (preferred) or an `https://` URL. |
+| `background_dim` | number 0 to 0.9 | `0` | Darkens the page background image with a black overlay, in CSS only. If your background image has a bright subject behind the header, raise this. The mascot is not affected. |
 | `mascot` | string | none | The giant faded image behind the column. A relative image path only. |
 | `column_width` | length | `35rem` (560 px) | `px`, `rem`, `em`, `ch`, `%` or `vw`. |
 | `radius` | length | `0.5rem` | Base corner radius for cards and sections. |

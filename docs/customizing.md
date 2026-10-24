@@ -230,6 +230,19 @@ or `attribute 'onclick' on <rect> is not allowed`.
 `tests/site/test_assets_content.py`. The allowlist is the extension point;
 nothing else needs to change.
 
+**Dimming the background.** `theme.background_dim` (a number from 0 to 0.9,
+default 0) lays a black overlay over `theme.background` only; the faded mascot
+and the page content are not dimmed. If your background image has a bright
+subject behind the header, raise this. For a square image with a full-strength
+sticker behind the header, `background_dim: 0.6` keeps the white social icons
+readable (about 5.7:1 against pure white behind them).
+
+```yaml
+theme:
+  background: media/background.jpg
+  background_dim: 0.6
+```
+
 The mascot is faint on purpose (`--ra-mascot-opacity: 0.12`). If your image
 is already faded, raise it in `custom.css`:
 
