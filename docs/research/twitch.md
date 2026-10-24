@@ -6,7 +6,7 @@ Fetched 2026-10-23 from dev.twitch.tv docs unless noted. The API reference page 
 
 ## Summary
 
-Twitch has an official Helix REST API plus EventSub. Registration is self-service with no review step. Owner-level data (followers list, subscribers) needs a user token with specific scopes. Twitch does not expose a stream-history analytics endpoint in what was verified; per-stream analytics (peak viewers, average, hours) are dashboard-only as far as the docs show, so the tool must build its own history by sampling.
+Twitch has an official Helix REST API plus EventSub. Registration is self-service with no review step. Owner-level data (followers list, subscribers) needs a user token with specific scopes. No per-stream analytics endpoint was found in what was read. Review correction: the earlier claim that per-stream analytics are "dashboard-only" is UNVERIFIED, because Get Videos (type archive), Get Clips and Get Streams were never read (VOD archives may expose created_at, duration and view_count while retained). VOD metadata may serve as history, unchecked. Until checked, plan to build history by sampling.
 
 ## Metrics
 
@@ -30,7 +30,7 @@ Twitch has an official Helix REST API plus EventSub. Registration is self-servic
 3. One-time Authorization Code flow requesting only needed scopes (`moderator:read:followers`, `channel:read:subscriptions`).
 4. Save the refresh token as a secret; the job refreshes on 401 (Twitch recommends reacting to 401, not a timer).
 
-Public data such as stream status and clips can use an app access token (client credentials) with no user consent. UNVERIFIED for each endpoint.
+Public data such as stream status and clips can use an app access token (client credentials) with no user consent. UNVERIFIED for each endpoint (the review could not confirm the Get Streams token type either).
 
 ## Rate limits and cost
 
@@ -38,15 +38,15 @@ Free. Token-bucket points per app per minute; default cost 1 per call; HTTP 429 
 
 ## EventSub
 
-`stream.online` and `stream.offline` are available. Webhook transport uses an app token and needs an HTTPS callback on port 443, which a home-hosted daily job may not have. WebSocket transport requires a user access token and a long-lived connection (max 3 connections, 300 subscriptions each, `max_total_cost` 10 per user; source 5). `stream.online` costs 1 unless the broadcaster authorized your app, then 0. `channel.subscribe` needs `channel:read:subscriptions`; `channel.follow` v2 needs `moderator:read:followers`. A once-a-day batch job does not fit EventSub; polling Get Streams every few minutes is simpler, or an optional always-on listener captures exact peak/duration. Conduit transport: UNVERIFIED.
+`stream.online` and `stream.offline` are available. Webhook transport uses an app token and needs an HTTPS callback on port 443, which a home-hosted daily job may not have. WebSocket transport requires a user access token and a long-lived connection (max 3 connections, 300 subscriptions each, `max_total_cost` 10 per user; source 5; these limits were not verified by the review). `stream.online` costs 1 unless the broadcaster authorized your app, then 0. `channel.subscribe` needs `channel:read:subscriptions`; `channel.follow` v2 needs `moderator:read:followers`. A once-a-day batch job does not fit EventSub; polling Get Streams every few minutes is simpler, or an optional always-on listener captures exact peak/duration. Conduit transport: UNVERIFIED.
 
 ## Freshness and history
 
-Followers, streams: current values only. History must be accumulated by the tool. Game analytics reaches back 365 days (above).
+Followers, streams: current values only as far as read. History must be accumulated by the tool unless Get Videos archive metadata proves sufficient (UNVERIFIED). Game analytics reaches back 365 days (above).
 
 ## Risks and ToS limits
 
-- Developer Services Agreement: the fetched page returned only navigation text. Forum posts (secondary, undated or old, source 7) quote a rule limiting storage of Twitch content to a 24-hour cache unless you hold authorization, and a Twitch staff reply that obtaining user permission via OAuth makes longer storage compliant, "general guidance" only. Resyndication of data is said to be against the agreement without a specific deal. Treat as UNVERIFIED and unresolved.
+- Developer Services Agreement: the fetched page returned only navigation text. Forum posts (secondary, undated or old, source 7) quote a rule limiting storage of Twitch content to a 24-hour cache unless you hold authorization, and a Twitch staff reply that obtaining user permission via OAuth makes longer storage compliant, "general guidance" only. Resyndication of data is said to be against the agreement without a specific deal. Treat as UNVERIFIED and unresolved. The reviewer also got only navigation text from the agreement page (reviewer fetch 2026-10-23) and the 24-hour cache claim is forum-only; nothing fetched confirms or refutes it.
 - Users must be able to delete their data; honor disconnects.
 - Public display of owner-authorized data (follower and sub counts) is a gray area; keep sub and revenue data private by default.
 - Registration collects no review, but Twitch can revoke apps.
@@ -61,7 +61,7 @@ Public counts through app token (no consent). Scraping the Twitch site or Social
 
 ## Verdict
 
-Official API. Followers and subs via user token; live metrics via self-built sampling. Stream analytics history: dashboard only, not API (UNVERIFIED absence). Mixed: official API plus manual for the dashboard-only figures.
+Official API. Followers and subs via user token; live metrics via self-built sampling. Stream analytics history: no per-stream analytics endpoint found; VOD metadata (Get Videos archive) may serve as history, UNVERIFIED and unchecked. The earlier "dashboard only, not API" claim is removed as unsupported. Manual entry remains the fallback for peak and average viewers if no API route is confirmed.
 
 ## Sources (fetched 2026-10-23)
 
@@ -79,3 +79,8 @@ Official API. Followers and subs via user token; live metrics via self-built sam
 2. Do you want an optional always-on EventSub WebSocket listener, or polling only?
 3. Public site: show follower counts only, keep subs private?
 4. Should the research be redone with direct reading of the reference sections that did not load?
+
+## Review
+
+Verdict: FIX. Reviewer fetch date for every source: 2026-10-23. Verdict is from the independent review (REVIEW.md, Reach Around #1).
+Changed: removed the "dashboard only, not API" claim from the summary and verdict and marked it UNVERIFIED (Get Videos, Get Clips, Get Streams never read; VOD metadata may serve as history); noted the storage-rule page and 24-hour cache claim are still unresolved; marked EventSub limits and Get Streams token type as unconfirmed. Confirmed by the review: `moderator:read:followers` behavior, `channel:read:subscriptions`, `bits:read`, analytics scopes, refresh-token lifetimes, Get Streams paging, separate app and user buckets. Not verified: subscriber response shape (total/points), Get Streams token type, EventSub transport limits.

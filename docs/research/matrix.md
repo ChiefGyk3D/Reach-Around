@@ -64,3 +64,8 @@ Official API (client-server). Current count: `joined_members`. Joined/left over 
 3. Which homeservers must be supported day one (Synapse only, or also Dendrite, Conduit, matrix.org with MAS)?
 4. Should the tool store password for re-login, or only tokens?
 5. A live test is needed for `publicRooms` shape and Synapse token expiry settings (not read).
+
+## Review
+
+Verdict: SOUND. Reviewer fetch date for every source: 2026-10-23. Verdict is from the independent review (REVIEW.md, Reach Around #1).
+No changes made to this note. The review could not reach the `joined_members`, `members` or `publicRooms` sections of the spec v1.19 page (too large); the endpoints exist to the reviewer's knowledge but the text was not confirmed. The note correctly marks field names and Synapse defaults UNVERIFIED. Token-expiry and MAS statements are marked unverified in the note.

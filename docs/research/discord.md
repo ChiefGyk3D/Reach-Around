@@ -70,3 +70,8 @@ Official API (bot token, counts-only, no privileged intents) for totals and onli
 2. Should an optional Gateway listener component be in scope?
 3. Someone with a bot should confirm the Developer Policy storage and display clauses and whether `GET /guilds/{id}` needs any permission in practice.
 4. Does `GET /invites/{code}` need auth today? Confirm with a live test by the maintainer.
+
+## Review
+
+Verdict: SOUND. Reviewer fetch date for every source: 2026-10-23. Verdict is from the independent review (REVIEW.md, Reach Around #1).
+No changes made to this note. Confirmed by the review: Get Guild with `with_counts=true` returns `approximate_member_count` and `approximate_presence_count`; the page lists no permission or auth requirement. Wording: the presence count is non-offline members, not strictly "online". Unverified: invite endpoint auth, rate limits, intent approval thresholds, Developer Policy (403).

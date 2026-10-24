@@ -21,6 +21,8 @@ Kick now has an official public API with OAuth 2.1 (PKCE), documented at docs.ki
 | Stream start/end | Webhook `livestream.status.updated` | `events:subscribe` |
 | Demographics, revenue, VOD stats, history | Not documented | n/a |
 
+**SECRET WARNING (review correction):** the documented Channels response includes `stream.key`, `stream.url` and a thumbnail (https://docs.kick.com/apis/channels.md, reviewer fetch 2026-10-23). The stream key is a secret. The collector must never log or store it: drop `stream.key` from the response before anything is written to the database, logs or error reports. Verify what the live response actually returns before shipping (UNVERIFIED).
+
 ## User setup
 
 1. Create a Kick account and enable two-factor authentication (required for developer tools).
@@ -34,14 +36,15 @@ Kick now has an official public API with OAuth 2.1 (PKCE), documented at docs.ki
 
 - No app review or approval step is described in the app setup page. Separate "App Verification" exists (badge, chat subscription cap 1,000 to 10,000) by emailing the developer address; not needed here.
 - Rate limits: no page found states numeric limits. UNVERIFIED. A once-a-day job per user is very unlikely to hit them.
-- Developer Terms and Conditions are referenced by the setup page but I did not read them. Rules on storing and showing API data publicly are therefore UNVERIFIED. The maintainer should read them before the first release.
+- The Channels response carries the stream key (see the warning above): treat it as a secret, never store or log it.
+- Developer Terms and Conditions are referenced by the setup page but I did not read them (nor did the reviewer; the Developer Terms and ToS 1.4 text are unverified). Rules on storing and showing API data publicly are therefore UNVERIFIED. The maintainer should read them before the first release.
 - Kick's general Terms of Service (section 1.4) prohibit scraping, automated access outside "means provided or authorized," and circumventing access controls. Using the undocumented internal endpoints for follower counts falls under that. Third-party scrapers describe those endpoints as unstable and breaking without notice.
-- Webhooks: apps that fail to process an event for more than a day are auto-unsubscribed (changelog 2025-12-12). Disabling webhooks drops all subscriptions (2025-12-19).
+- Webhooks (changelog dates not verified by the review): apps that fail to process an event for more than a day are auto-unsubscribed (changelog 2025-12-12). Disabling webhooks drops all subscriptions (2025-12-19).
 - The API changes: Livestreams V1 and Categories V1 are deprecated, and token introspect moved. Pin to v2 where present and watch the changelog.
 
 ## Token lifetime and unattended access
 
-The OAuth page gives no numeric lifetime; responses carry `expires_in`. Refresh uses `grant_type=refresh_token`, and each refresh returns a NEW refresh token that must be stored (UNVERIFIED whether the old one is invalidated; assume yes). The app token from client credentials has no refresh token, but the job simply requests a new one each run. So a daily job on public data needs only the client ID and secret. A job that needs a user token must persist the rotating refresh token durably and handle revocation.
+The OAuth page gives no numeric lifetime; responses carry `expires_in`. Refresh uses `grant_type=refresh_token`, and each refresh returns a NEW refresh token that must be stored (UNVERIFIED whether the old one is invalidated; the docs do not say, per the review; assume yes). The app token from client credentials has no refresh token, but the job simply requests a new one each run. So a daily job on public data needs only the client ID and secret. A job that needs a user token must persist the rotating refresh token durably and handle revocation.
 
 ## Fallbacks if the API is closed or lacks a field
 
@@ -74,3 +77,8 @@ Official API for live status, viewer count, and subscriber counts (daily snapsho
 2. Is an opt-in unofficial follower path acceptable, or is manual and CSV entry enough?
 3. Does the daily job get a public HTTPS URL so webhooks are possible, or is polling only?
 4. Is a user token (subscriber counts) required, or are public live stats enough for v1?
+
+## Review
+
+Verdict: FIX (minor). Reviewer fetch date for every source: 2026-10-23. Verdict is from the independent review (REVIEW.md, Reach Around #1).
+Changed: added a warning that the Channels response includes a stream key (`stream.key`), a secret the collector must never log or store; clarified that the refresh-token invalidation question is unanswered by the docs. Confirmed by the review: no follower count on Channels, the subscriber and live fields, token types accepted, PKCE S256, rotating refresh token, no numeric lifetimes, no followers endpoint in the docs index. Not verified: Kick Developer Terms and ToS 1.4 text, webhook auto-unsubscribe changelog dates, rate limits.

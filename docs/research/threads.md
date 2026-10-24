@@ -70,3 +70,8 @@ Official API. Per-user own app, Threads Tester role, no App Review. Manual entry
 3. Demographics: private only or optional public?
 4. Token storage and expiry alerting, same as Instagram?
 5. Do we want a manual-entry fallback in version one?
+
+## Review
+
+Verdict: SOUND. Reviewer fetch date for every source: 2026-10-23. Verdict is from the independent review (REVIEW.md, Reach Around #1).
+No changes made to this note. Confirmed by the review: short-lived 1 h tokens, long-lived 60 days, refresh via GET /refresh_access_token, grant extension 90 days for public profiles (private profiles must re-grant), Tester invites must be accepted, non-role users need App Review and a published app. The 90 days is the permission grant, not the token; the job should track both. Unverified: refresh precondition (24 h minimum age) for Threads, metric names, the 1712991600 timestamp floor, rate formulas.

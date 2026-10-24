@@ -83,3 +83,8 @@ Official API. Followers, stars, forks: public endpoint, no key needed. Traffic a
 3. Is sponsors income in scope, given the scope requirements are UNVERIFIED?
 4. Org-owned repos: support them, given the fine-grained PAT one-owner limit?
 5. Should the job alert when it misses 10 days, given the 14-day traffic window?
+
+## Review
+
+Verdict: SOUND. Reviewer fetch date for every source: 2026-10-23. Verdict is from the independent review (REVIEW.md, Reach Around #1).
+No changes made to this note. Confirmed by the review: traffic endpoints cover the last 14 days; docs say repositories "that you have write access to"; stargazer count and history endpoints exist; the July 2026 narrowing of the stargazers listing endpoints is now in effect, so "from July 2026" should be present tense. Unverified: the Administration permission claim (not re-checked), rate-limit numbers, PAT expiry rules, Sponsors scopes, ToS Section H.

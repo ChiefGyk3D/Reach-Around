@@ -6,7 +6,7 @@ All sources fetched 2026-10-23.
 
 ## Summary
 
-X's official docs now describe a single pay-per-usage model: prepaid credits, no subscriptions, no named tiers. The pricing page I fetched does not describe a free API tier (it lists promotional credits instead). Third-party trackers say the Free tier closed in early 2026; the dates conflict, so treat that as UNVERIFIED but consistent with the official page. Your own follower count is available at `GET /2/users/me?user.fields=public_metrics`. A daily call is a tiny cost: the docs list "Owned Reads (your own data)" at $0.001, or "Users" reads at $0.010 per resource. Which rate applies to `/users/me` is UNVERIFIED, but either is well under a dollar a month for one call per day.
+X's official docs now describe a single pay-per-usage model: prepaid credits, no subscriptions, no named tiers. The pricing page I fetched does not describe a free API tier (it lists promotional credits instead). Review correction: secondary coverage (https://roboin.io/article/en/2026/02/08/x-transitions-api-to-pay-per-use-model-ending-free-plan/ , https://www.medianama.com/2026/02/223-x-developer-api-pricing-pay-per-use-model/, reviewer fetch 2026-10-23) says pay-per-use launched about 2026-02-06, with free access kept only for "for-good public utility apps", existing free users moved with a one-time $10 voucher, and legacy Free/Basic/Pro kept only for those who already had them. Secondary sources only; the official pricing page does not mention a free tier. Your own follower count is available at `GET /2/users/me?user.fields=public_metrics`. A daily call is a tiny cost: the docs list "Owned Reads (your own data)" at $0.001, or "Users" reads at $0.010 per resource. Which rate applies to `/users/me` is UNVERIFIED, but either is well under a dollar a month for one call per day.
 
 ## Metrics
 
@@ -22,11 +22,11 @@ X's official docs now describe a single pay-per-usage model: prepaid credits, no
 
 ## Pricing and limits (pay-per-usage)
 
-- Reads per resource returned: Posts $0.005, Users $0.010, Following/Followers $0.010, Owned Reads $0.001.
+- Reads per resource returned: Posts $0.005, Users $0.010, Following/Followers $0.010, Owned Reads $0.001. Review correction: the pricing page defines Owned Reads as your own data (posts, mentions, bookmarks, followers, following, lists) when the requested user ID matches the authenticated user AND that user owns the developer app. Bring-your-own-key satisfies that, so the $0.001 rate likely applies (still UNVERIFIED for `/users/me` specifically).
 - Writes per request: post create $0.015 (with URL $0.200).
 - Cap: 3 million post reads per billing cycle; optional spending limit blocks requests when reached; a resource charged once is not charged again within 24 hours UTC (soft guarantee).
 - Promotional: $20 credit after saving a card and first purchase (a card is required).
-- Rate limits are per 15 minutes: `/2/users/me` 75 per user; users lookup 900 per user or 300 per app; user timeline 900 per user. Limits per plan are in the Developer Console (not visible without signing in).
+- Rate limits are per 15 minutes: `/2/users/me` 75 per user; users lookup 900 per user or 300 per app; user timeline 900 per user. Limits per plan are in the Developer Console (not visible without signing in). Review note: the `/users/me` reference page lists no rate limits or prices (https://docs.x.com/x-api/users/get-my-user, reviewer fetch 2026-10-23), so the "75 per user" figure must come from the rate-limits page and was not re-checked (UNVERIFIED).
 - Enterprise is the upgrade path above the cap.
 
 ## User setup
@@ -47,7 +47,7 @@ X's official docs now describe a single pay-per-usage model: prepaid credits, no
 
 ## Tokens and unattended access
 
-Access token: 2 hours by default (PKCE flow). Refresh token is issued only with `offline.access` and lets the job mint new access tokens without a person ("until you revoke access"). Refresh token lifetime and rotation: not stated on the page (UNVERIFIED), so persist whatever the refresh response returns each run.
+Access token: 2 hours by default (PKCE flow). Refresh token is issued only with `offline.access` and lets the job mint new access tokens without a person ("until you revoke access"). Refresh token lifetime and rotation: not stated on the page (UNVERIFIED, and not verified by the review either), so persist whatever the refresh response returns each run.
 
 ## Fallbacks
 
@@ -75,5 +75,10 @@ Official API, pay-per-usage: viable for a daily follower count at roughly cents 
 1. Will users accept a card plus prepaid credits? Provide a spend-cap default.
 2. Which rate does `/users/me` bill at ($0.001 owned vs $0.010)? Check in the Developer Console.
 3. May a public dashboard show the creator's own counts under the redistribution rules, or private-only?
-4. Does the Free tier still exist for existing accounts? Verify in the console.
+4. Does the Free tier still exist for existing accounts? Secondary sources say legacy plans persist only for those who already had them; verify in the console.
 5. Should per-post metrics be in scope, given $0.005 per post read?
+
+## Review
+
+Verdict: FIX (minor). Reviewer fetch date for every source: 2026-10-23. Verdict is from the independent review (REVIEW.md, Reach Around #1).
+Changed: added the Owned Reads condition (own data AND the user owns the developer app); replaced the loose "Free tier closed" wording with the secondary-source account and marked it secondary; marked the 75-per-user limit as not re-checked. Confirmed by the review: pay-per-usage prices, 3 million post-read cap, 24 h UTC dedupe, $20 credit, spend limits, `users.read` + `tweet.read` scopes. Not verified: refresh-token lifetime, Developer Policy details (summary only). Other promotions (auto-recharge match up to $50, xAI credit back) do not affect the design.

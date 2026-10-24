@@ -68,3 +68,8 @@ Public endpoint (official, unauthenticated AppView API). Daily snapshots give fo
 - Store only counts and post URIs, not text?
 - Is an optional OAuth login worth the 2-week public-client expiry?
 - Confirm exact endpoint field names with one live unauthenticated test call (this research did not make calls).
+
+## Review
+
+Verdict: SOUND. Reviewer fetch date for every source: 2026-10-23. Verdict is from the independent review (REVIEW.md, Reach Around #1).
+No changes made to this note. Confirmed by the review with a live unauthenticated call (2026-10-23): `getProfile` returns `followersCount`, `followsCount`, `postsCount`; `getPosts` returns `likeCount`, `repostCount`, `replyCount`, `quoteCount` and also `bookmarkCount` (not listed in the note). The note's UNVERIFIED field-name caveat is therefore now verified and can be removed. OAuth: access tokens under 30 minutes; public clients' session and refresh tokens 2 weeks; confidential refresh tokens 180 days; refresh tokens single-use. Unverified: rate-limit mirror, Jetstream limits, ToS.

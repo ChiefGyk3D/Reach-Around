@@ -76,3 +76,8 @@ Official API. Per-user own app, Instagram Login, Standard Access, professional a
 3. Do we support only Standard Access (user brings own app), or ever a shared hosted app needing App Review?
 4. Where should the token live (env var, Doppler) and who gets the expiry alert?
 5. Is a no-API scraping fallback allowed at all, given ToS?
+
+## Review
+
+Verdict: SOUND. Reviewer fetch date for every source: 2026-10-23. Verdict is from the independent review (REVIEW.md, Reach Around #1).
+No changes made to this note. Confirmed by the review: no Facebook Page needed; professional (business/creator) accounts only; dashboard tokens long-lived 60 days; refresh needs a token at least 24 h old, unexpired, and `instagram_business_basic`. The no-App-Review conclusion, marked "inferred" in this note, is actually stated by Meta ("Standard Access is all your app needs" for accounts you own or manage); it can be upgraded to supported. Unverified: 100-follower floors, 90-day metric storage, 48-hour lag, the 4800 x impressions rate formula (the overview page the note cites mentions neither the floor nor the storage period).

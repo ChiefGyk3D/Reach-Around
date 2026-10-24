@@ -73,3 +73,8 @@ Official API with public endpoints. Public counts need no key; optional user tok
 - Public-only reads by default, with a token as opt-in?
 - Is a per-instance compatibility probe (version check, graceful 401/404) acceptable?
 - Check other instances' ToS, or leave that to each user?
+
+## Review
+
+Verdict: SOUND. Reviewer fetch date for every source: 2026-10-23. Verdict is from the independent review (REVIEW.md, Reach Around #1).
+No changes made to this note. Confirmed by the review: default 300 calls per 5 minutes per account; stricter limits for media upload and deletes; tokens "will not expire automatically"; refresh tokens not mentioned. Not re-checked: field list, version notes (quotes_count 4.5.0), lookup auth, Pixelfed claims.

@@ -29,8 +29,9 @@ Sources for the table: context7 mirror of the official docs (fetched 2026-10-23)
 
 ## Pricing and cost
 
-- Pack prices (official page excerpt via search, 2026-10-23): 100, 500, and 1,000 credits at $0.50 each; 5,000 and 7,500 at $0.25 each; tiers go down to $0.06. A competitor page (1Lookup, claims verified August 2026) says 18 tiers, smallest pack 100 credits for $50, purchases final, unused credits expire after six months of inactivity. So the maintainer's figure of "100 credits at $0.50 per credit" is VERIFIED as $50 for 100 credits, i.e. $0.50 per credit, not $0.50 per pack.
-- Credits per call: the mirror says YouTube history costs 1 credit (30 days), 2 (1 year), 3 (3 years). The competitor says 1 per profile lookup, up to 5 for ten-year history, and that after paying once a profile can be re-looked up daily for 30 days free. The free relookup is UNVERIFIED (single competitor source).
+- Pack prices (official page excerpt via search, 2026-10-23): 100, 500, and 1,000 credits at $0.50 each; 5,000 and 7,500 at $0.25 each; tiers go down to $0.06. A competitor page (1Lookup, claims verified August 2026) says 18 tiers, smallest pack 100 credits for $50, purchases final, unused credits expire after six months of inactivity. Review correction: the pricing is corroborated only indirectly (search excerpts of https://socialblade.com/developers; the official pages returned 403 to the reviewer too, reviewer fetch 2026-10-23), so it is not VERIFIED from the official page. The maintainer's figure reads as $50 for 100 credits, i.e. $0.50 per credit, not $0.50 per pack. "Prepaid, one credit per profile lookup" is from a third-party reviewer only.
+- Free monthly credits (review correction; New fact): paid Social Blade personal plans include free monthly API credits (Silver 5, Gold 20, Platinum 50) per a search excerpt of the official site (https://socialblade.com/products/subscription/personal, reviewer fetch 2026-10-23; not read directly). This changes the cost model for users who already subscribe: some of the assumptions below may be covered by the plan allowance. Corroborated only indirectly; UNVERIFIED.
+- Credits per call: the mirror says YouTube history costs 1 credit (30 days), 2 (1 year), 3 (3 years). The competitor says 1 per profile lookup, up to 5 for ten-year history, and that after paying once a profile can be re-looked up daily for 30 days free. The free relookup is UNVERIFIED (single competitor source; the reviewer could not verify it either). The six-month credit expiry also comes only from the competitor page.
 - Assumption A (conservative): 1 credit per call, no relookup discount, default 30-day history, 5 platforms (YouTube, TikTok, Twitch, Instagram, Facebook), one account each.
   - Daily: 5 x 30 = 150 credits/month x $0.50 = $75.00.
   - Weekly: 5 x 4.33 = about 22 credits/month x $0.50 = about $10.80.
@@ -56,7 +57,7 @@ Official platform APIs for the user's own accounts, CSV import of platform expor
 
 ## Verdict
 
-Official paid API, optional. Use it for Instagram and TikTok public counts and history gaps, weekly or monthly polling. Not feasible for Kick (not listed). Gate on reading the Developer Terms.
+Official paid API, optional (pricing corroborated only indirectly; platform list and per-call credits from the context7 mirror, not socialblade.com). Use it for Instagram and TikTok public counts and history gaps, weekly or monthly polling. Not feasible for Kick (not listed). Gate on reading the Developer Terms.
 
 ## Sources (fetched 2026-10-23)
 
@@ -71,3 +72,8 @@ Official paid API, optional. Use it for Instagram and TikTok public counts and h
 2. Confirm credits per call and the 30-day free relookup by checking the Developer Console after a $50 test purchase, or by emailing support.
 3. Is a $50 minimum acceptable as an optional per-user cost?
 4. Should Kick get a different gap filler, since Social Blade does not cover it?
+
+## Review
+
+Verdict: FIX. Reviewer fetch date for every source: 2026-10-23. Verdict is from the independent review (REVIEW.md, Reach Around #1).
+Changed: pricing now marked as corroborated only indirectly (not verified from the official page; the "VERIFIED" wording is removed); added the free monthly credits on paid personal plans (Silver 5, Gold 20, Platinum 50); noted credit expiry and "prepaid, one credit per lookup" are third-party only. Confirmed by the review (context7 mirror): platforms YouTube, Facebook, Instagram, TikTok, Twitch (Kick not listed); headers `clientid` and `token`; YouTube history credits 1/2/3; top lists page 0 free. UNVERIFIED: terms on storage and redistribution, rate limits, credit expiry, the free 30-day relookup, token lifetime, credits per call for non-YouTube platforms, TikTok `query` vs `username`.

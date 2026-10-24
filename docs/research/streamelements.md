@@ -2,6 +2,8 @@
 
 > **Status: draft.** First-pass research by an AI agent on 2026-10-23, written for issue #20. It has not yet been checked against its sources by an independent reviewer or by the maintainer. Treat every claim marked UNVERIFIED as open.
 
+> **WARNING (review verdict UNRELIABLE):** the API claims in this note are largely UNVERIFIED because the StreamElements developer docs did not render for the author or for the independent reviewer. Endpoints, scopes, rate limits, tip history and OAuth availability all come from secondary sources. A human must read dev.streamelements.com in a browser before any design depends on this note.
+
 Fetched 2026-10-23. Caveat: the official reference (dev.streamelements.com) is a JavaScript-rendered Stoplight site that returned no content to my fetcher, so most specifics below come from secondary sources and are marked.
 
 ## Summary
@@ -38,7 +40,7 @@ Sources for steps: PostHog docs (2026-10-23), community post (2026-10-23, via se
 
 ## Token lifetime and unattended access
 
-- A community post reports the JWT resets about every two weeks; staff suggested OAuth2 instead. A later poster claimed OAuth was no longer supported. Conflicting, user-reported, UNVERIFIED (support.streamelements.com community post, 2026-10-23).
+- A community post reports the JWT resets about every two weeks; staff suggested OAuth2 instead. A later poster claimed OAuth was no longer supported. Conflicting, user-reported, UNVERIFIED (support.streamelements.com community post, 2026-10-23). The reviewer found the same thread and nothing official (reviewer fetch 2026-10-23); the OAuth2 reference page returned only a title.
 - PostHog's troubleshooting says 401 means "invalid or expired", consistent with expiry.
 - A daily job with a pasted JWT will break roughly fortnightly unless OAuth refresh works. Refresh-token lifetime: UNVERIFIED. Design: alert on 401 and tell the user to repaste; document it.
 
@@ -57,7 +59,7 @@ Sources for steps: PostHog docs (2026-10-23), community post (2026-10-23, via se
 
 ## Verdict
 
-Official API (JWT now, OAuth2 preferred), with manual entry as the fallback. Feasible for tips and activity revenue. Confirm the OAuth app process and ToS before relying on it.
+Review correction: the earlier verdict "Official API, feasible" is NOT supported. An official API appears to exist, but nearly every specific is secondary or UNVERIFIED (endpoints, scopes, rate limits, tip history, OAuth availability). Do not design on it until someone reads dev.streamelements.com in a browser. Manual entry remains the fallback.
 
 ## Sources (all fetched 2026-10-23)
 
@@ -73,3 +75,8 @@ Official API (JWT now, OAuth2 preferred), with manual entry as the fallback. Fea
 2. Is OAuth2 app registration still open, and who approves it? If not, is a fortnightly JWT repaste acceptable?
 3. Do you want donor names stored at all, or aggregates only?
 4. Does the ToS allow showing tip totals publicly?
+
+## Review
+
+Verdict: UNRELIABLE. Reviewer fetch date for every source: 2026-10-23. Verdict is from the independent review (REVIEW.md, Reach Around #1).
+Changed: added an opening warning that the API claims are largely unverified and need a human read of the developer docs; replaced the "Official API, feasible" verdict with a statement that it is unsupported; recorded that the reviewer saw only the same community thread. Nothing in this note was confirmed from official documentation.

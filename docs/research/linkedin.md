@@ -70,3 +70,8 @@ Official API exists but is gated (vetted, Community Management); treat as not fe
 2. Do the API Terms (no scheduled refresh, no storing) rule out the API path for an open-source tool, or only for public display?
 3. Is XLSX import plus manual entry acceptable as the v1 LinkedIn story?
 4. Should the dashboard show LinkedIn numbers publicly, or only privately?
+
+## Review
+
+Verdict: SOUND. Reviewer fetch date for every source: 2026-10-23. Verdict is from the independent review (REVIEW.md, Reach Around #1).
+No changes made to this note. Confirmed by the review: `memberFollowersCount` with `r_member_profileAnalytics` (restricted to members); `me` and `dateRange` finders; 202511 sunsets 2026-11-16; Community Management is a Vetted Product (Development and Standard tiers; Standard needs a screencast); Development limits 500 per app / 100 per member (period not stated); `r_member_social` closed; programmatic refresh (access 60 days, refresh 365 days) documented for approved partners. Unverified: API Terms clauses (summary only), whether an individual can be approved, post-statistics metrics added in 202604.
