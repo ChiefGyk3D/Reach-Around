@@ -109,14 +109,18 @@ def test_html_in_titles_is_escaped(tmp_path: Path) -> None:
     build_site(config, tmp_path, today=TODAY)
     text = read_all(tmp_path)
     assert "&lt;script&gt;" in text
-    assert "<script" not in text.lower()
+    # The only script tag is the external click.js; none comes from the config.
+    assert text.lower().count("<script") == len(pages(tmp_path))
 
 
 def test_no_script_in_any_page(tmp_path: Path) -> None:
     build_site(load_site_config(EXAMPLE), tmp_path, today=TODAY)
     assert pages(tmp_path)
     for page in pages(tmp_path):
-        assert "<script" not in page.read_text().lower()
+        # Exactly one script tag per page: the external, deferred click.js.
+        text = page.read_text().lower()
+        assert text.count("<script") == 1
+        assert '<script src="' in text and 'click.js" defer></script>' in text
         assert 'href=""' not in page.read_text()
 
 

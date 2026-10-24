@@ -44,6 +44,14 @@ def text_of(items: list[Disclosure]) -> str:
     return " ".join(f"{i.what} {i.why} {i.kept}" for i in items)
 
 
+_CLICK_SCRIPT = re.compile(r'<script src="(?:\.\./)?static/click\.js" defer></script>')
+
+
+def without_click_script(text: str) -> str:
+    """Drop the one allowed tag (external, deferred click.js)."""
+    return _CLICK_SCRIPT.sub("", text)
+
+
 def read_all(out: Path) -> str:
     return "\n".join(p.read_text() for p in sorted(out.rglob("*.html")))
 
@@ -157,7 +165,7 @@ def test_privacy_page_has_no_scripts_and_escapes_the_intro(tmp_path: Path) -> No
     )
     build_site(config, tmp_path, today=TODAY)
     text = read_all(tmp_path)
-    assert "<script" not in text.lower()
+    assert "<script" not in without_click_script(text).lower()
     assert "&lt;script&gt;" in (tmp_path / "privacy" / "index.html").read_text()
     assert "<b>" not in text
 
@@ -181,3 +189,24 @@ def test_golden_privacy_page(tmp_path: Path, update_golden: bool) -> None:
         GOLDEN.write_bytes(built)
     assert GOLDEN.is_file(), "no golden file; run pytest --update-golden"
     assert built == GOLDEN.read_bytes()
+
+
+def test_click_tracking_off_removes_ping_and_the_click_script(tmp_path: Path) -> None:
+    config = make_config(features={"click_tracking": False})
+    build_site(config, tmp_path, today=TODAY)
+    text = read_all(tmp_path)
+    assert "<script" not in text.lower()
+    assert "ping=" not in text and "data-link-id" not in text
+    assert not (tmp_path / "static" / "click.js").exists()
+
+
+def test_click_tracking_on_adds_ping_and_exactly_one_script_per_page(
+    tmp_path: Path,
+) -> None:
+    build_site(make_config(), tmp_path, today=TODAY)
+    pages = sorted(tmp_path.rglob("*.html"))
+    assert pages
+    for page in pages:
+        assert page.read_text().lower().count("<script") == 1
+    assert 'ping="/e/c/one"' in (tmp_path / "index.html").read_text()
+    assert (tmp_path / "static" / "click.js").is_file()

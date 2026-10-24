@@ -101,6 +101,7 @@ def _render_page(
         disclosure=config.disclosure,
         show_disclosure=has_affiliate and bool(config.disclosure),
         show_cookie_banner=sets_cookies(config),
+        click_tracking=config.features.click_tracking,
         cookie_text=intro_text(config),
     )
 
@@ -114,6 +115,7 @@ def _render_privacy(env: Environment, config: SiteConfig) -> str:
         disclosure=config.disclosure,
         show_disclosure=False,
         show_cookie_banner=False,
+        click_tracking=config.features.click_tracking,
         intro=intro_text(config),
         items=collected_items(config),
         contact=config.privacy.contact,
@@ -204,6 +206,8 @@ def build_site(
         for page, html in _render_pages(config, shown).items()
     }
     files.update(_static_files())
+    if not config.features.click_tracking:
+        files.pop(Path("static") / "click.js", None)
     files[Path("static") / "theme.css"] = theme_css(config.theme).encode("utf-8")
     files[Path("manifest.json")] = _manifest_json(manifest).encode("utf-8")
     out = _check_out_dir(out_dir, protect)

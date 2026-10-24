@@ -86,6 +86,26 @@ endpoint is useless for guessing valid ids or testing bypasses.
 The Worker is also write-only. It has no route that returns clicks, counts or
 any stored data. You read your numbers through your own Cloudflare account.
 
+## How the page reports a click
+
+Every link on the page carries `ping="/e/c/<link id>"` next to its real
+`href`, plus a `data-link-id` attribute. Browsers that support `ping` send the
+report themselves. The page also loads one small external file, `click.js`
+(with `defer`); it only acts in browsers that lack `ping`, and then sends the
+same request with `navigator.sendBeacon`. The page has no inline script. If the
+counter is down, the link still opens, because the report is a side request.
+
+The ping path is relative, so the Worker must be routed on the site's own host
+(the `[[routes]]` example in `worker/wrangler.toml` shows `<site-host>/e/*`).
+
+In this version the social icon links in the header have no id yet, so they get
+no `ping` and are not counted.
+
+## Retention
+
+A daily cron trigger deletes click rows older than 90 days
+(`purgeOldEvents` in `worker/src/retention.ts`).
+
 ## Try it
 
 The tests in `worker/test/click.test.ts` cover each rule above. From the
