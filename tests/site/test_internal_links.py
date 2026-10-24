@@ -13,7 +13,7 @@ import pytest
 import yaml
 
 from reach_around.config import ConfigError, SiteConfig, load_site_config
-from reach_around.site.build import build_site
+from reach_around.site.build import build_site, manifest_json
 
 TODAY = date(2027, 3, 10)
 ANCHOR = re.compile(r"<a\b[^>]*>")
@@ -208,5 +208,6 @@ def test_manifest_lists_only_external_links(tmp_path: Path) -> None:
     out = tmp_path / "out"
     manifest = build_site(load(tmp_path, data()), out, today=TODAY)
     assert manifest.links == {"out": "https://example.com/"}
-    written = json.loads((out / "manifest.json").read_text(encoding="utf-8"))
+    assert not (out / "manifest.json").exists()
+    written = json.loads(manifest_json(manifest))
     assert written["links"] == manifest.links
