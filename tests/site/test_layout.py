@@ -140,7 +140,7 @@ def test_desktop_column_is_centered_at_1440px(browser: Browser, base_url: str) -
     box = page.locator("main").bounding_box()
     assert box is not None
     assert abs((box["x"] + box["width"] / 2) - 720) <= 1
-    assert 500 <= box["width"] <= 600
+    assert 863 <= box["width"] <= 865  # 54rem, the desktop column (#138)
     page.context.close()
 
 
