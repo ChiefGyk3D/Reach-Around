@@ -324,6 +324,11 @@ def test_a_root_outside_the_svg_namespace_is_refused(tmp_path: Path) -> None:
     )
 
 
+@pytest.mark.parametrize("root", ["g", "rect", "defs", "text", "use"])
+def test_an_allowed_element_is_not_a_valid_root(tmp_path: Path, root: str) -> None:
+    refused(tmp_path, f"<{root} xmlns='{SVG_NS}'/>".encode(), "root element")
+
+
 def test_an_unknown_namespace_declaration_is_refused(tmp_path: Path) -> None:
     refused(tmp_path, svg("<rect/>", "xmlns:evil='urn:evil'"), "namespace")
 
