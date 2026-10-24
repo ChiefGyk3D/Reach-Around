@@ -29,3 +29,18 @@ jobs:
       - run: npm ci
       - run: npm test
       - run: npx tsc --noEmit
+
+  # Our convention names the merge gate "CI green". GitHub Actions has no GYST
+  # Node reusable workflow yet, so this local job stands in for it.
+  ci-green:
+    name: CI green
+    runs-on: ubuntu-latest
+    needs: [worker]
+    if: always()
+    steps:
+      - name: Require the test job to have succeeded
+        env:
+          RESULT: ${{ needs.worker.result }}
+        run: |
+          echo "worker: $RESULT"
+          test "$RESULT" = "success"

@@ -66,6 +66,12 @@ is written, in this order:
 Cheap checks come first, so junk traffic is dropped before it spends any
 rate-limit budget.
 
+The user-agent check covers the usual families: link-preview and social
+crawlers, search and ad crawlers, command-line tools and HTTP libraries,
+headless browsers and uptime monitors. A user-agent filter is a speed bump, not
+a guarantee. The user agent is only what the sender claims, so it cannot stop
+automation that sends a browser user agent.
+
 These checks are a speed bump, not a lock. Headers can be forged by anyone
 who tries. The goal is that casual noise and simple bots do not distort the
 numbers, and that nobody can learn anything or cause harm by poking at it.
