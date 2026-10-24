@@ -10,6 +10,7 @@ from pathlib import Path
 
 from reach_around import __version__
 from reach_around.config import ConfigError, load_site_config
+from reach_around.preview import PreviewError, serve
 from reach_around.site.build import build_site
 from reach_around.site.visibility import today_in
 
@@ -28,7 +29,22 @@ def _parser() -> argparse.ArgumentParser:
     build.add_argument(
         "--out", type=Path, required=True, help="output directory (emptied first)"
     )
+    serve = commands.add_parser(
+        "serve", help="preview the site locally (loopback only)"
+    )
+    serve.add_argument("--config", type=Path, required=True, help="site config file")
+    serve.add_argument("--host", default="127.0.0.1", help="loopback address to bind")
+    serve.add_argument("--port", type=int, default=8000, help="port (default 8000)")
     return parser
+
+
+def _serve(config_path: Path, host: str, port: int) -> int:
+    try:
+        serve(config_path, host=host, port=port)
+    except (PreviewError, OSError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    return 0
 
 
 def _build(config_path: Path, out_dir: Path) -> int:
@@ -50,6 +66,8 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.command == "build":
         return _build(args.config, args.out)
+    if args.command == "serve":
+        return _serve(args.config, args.host, args.port)
     parser.print_help()
     return 2
 
