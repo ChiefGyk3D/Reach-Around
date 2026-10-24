@@ -1,0 +1,30 @@
+# Cloudflare Worker for Reach Around: the write-only click counter.
+# All ids below are clearly fake placeholders. Replace them in your own
+# deployment; never commit real account, database or namespace ids.
+name = "reach-around-clicks"
+main = "src/index.ts"
+compatibility_date = "2026-10-01"
+
+[vars]
+# The host of the static site. Requests from any other origin are ignored.
+SITE_HOST = "links.example.test"
+# JSON array of link ids, copied from the build manifest.
+LINK_IDS = '["example-one","example-two"]'
+
+[[d1_databases]]
+binding = "DB"
+database_name = "reach-around-clicks"
+database_id = "00000000-0000-0000-0000-000000000000" # placeholder, not a real id
+migrations_dir = "migrations"
+
+# Workers Rate Limiting binding: 20 checks per client per 60 seconds.
+[[ratelimits]]
+name = "CLICK_LIMITER"
+namespace_id = "1001" # placeholder, not a real id
+  [ratelimits.simple]
+  limit = 20
+  period = 60
+
+# Retention cron placeholder (implemented in Task 9):
+# [triggers]
+# crons = ["17 4 * * *"]
