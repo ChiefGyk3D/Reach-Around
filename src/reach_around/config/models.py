@@ -36,6 +36,7 @@ from reach_around.config.blocks import (
     Text,
 )
 from reach_around.config.footer import Footer
+from reach_around.config.analytics import Analytics
 from reach_around.config.loader import ConfigError, load_yaml
 from reach_around.config.numbers_sources import NumbersConfig
 from reach_around.config.page_title import PageTitle, TitleTemplate
@@ -322,6 +323,7 @@ class SiteConfig(_Model):
     store: StoreConfig = StoreConfig()
     profile_card: ProfileCard | None = None
     numbers: NumbersConfig | None = None
+    analytics: Analytics = Analytics()
 
     @field_validator("timezone")
     @classmethod

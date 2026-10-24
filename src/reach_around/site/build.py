@@ -187,6 +187,9 @@ def _render_page(
         footer_credit=config.footer.credit,
         footer_credit_text=config.footer.text,
         footer_credit_url=CREDIT_URL,
+        page_views=config.analytics.page_views,
+        page_id=tab.id,
+        view_route=config.analytics.route,
         has_crypto=_has_crypto(blocks),
         has_email=_has_email(blocks),
         has_email_script=_has_email_script(blocks),
@@ -211,6 +214,7 @@ def _render_privacy(env: Environment, config: SiteConfig, custom_css: bool) -> s
         footer_credit=config.footer.credit,
         footer_credit_text=config.footer.text,
         footer_credit_url=CREDIT_URL,
+        page_views=False,
         has_crypto=False,
         has_email=False,
         has_email_script=False,
@@ -395,6 +399,8 @@ def build_site(
         files[rel] = data
     if not config.features.click_tracking:
         files.pop(Path("static") / "click.js", None)
+    if not config.analytics.page_views:
+        files.pop(Path("static") / "view.js", None)
     if not any(_has_crypto(blocks) for blocks in shown):
         for rel in _CRYPTO_FILES:
             files.pop(rel, None)

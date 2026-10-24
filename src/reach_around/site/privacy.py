@@ -37,6 +37,8 @@ def collected_items(config: SiteConfig) -> list[Disclosure]:
                 sensitive=False,
             )
         )
+    if config.analytics.page_views:
+        items.append(_page_views())
     if config.features.kit_gate:
         items.append(
             Disclosure(
@@ -58,6 +60,35 @@ def collected_items(config: SiteConfig) -> list[Disclosure]:
             )
         )
     return items
+
+
+def _page_views() -> Disclosure:
+    return Disclosure(
+        what=(
+            "A count of page views. Each view records the page, the referring "
+            "site's name only (never the full address), and your window width "
+            "as one of four sizes. From your request the server works "
+            "out and keeps only: your browser and operating system, the kind "
+            "of device, your language, and your country, region and city "
+            "(as far as the counter is set to record them). It also marks the "
+            "view as likely a person or likely automated, and keeps a daily "
+            "code made from your address that changes every day and cannot be "
+            "turned back into the address, so one person is counted once a "
+            "day. Your IP address is never stored, and nothing is stored in your "
+            "browser."
+        ),
+        why=(
+            "To see which pages are read and where visitors come from. Nothing "
+            "is sent if your browser sends Global Privacy Control or Do Not "
+            "Track."
+        ),
+        kept=(
+            "Each view record is deleted after a few days (7 by default); the "
+            "daily code is deleted by the daily cleanup; only anonymous totals "
+            "are kept longer"
+        ),
+        sensitive=False,
+    )
 
 
 DEFAULT_INTRO = (
