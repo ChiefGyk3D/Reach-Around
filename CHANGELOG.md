@@ -4,7 +4,7 @@
 All notable changes are listed here. Versions follow [Semantic Versioning](https://semver.org/);
 while the project is alpha, every release is `0.x` and anything can change between them.
 
-## [0.1.0] - Unreleased
+## [0.1.0] - 2026-10-24
 
 > **Alpha.** This is the first container image. There is no stable configuration
 > format, no upgrade path between `0.x` releases, and no promise that a config that
