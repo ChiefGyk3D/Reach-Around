@@ -133,6 +133,17 @@ does.
 | Output | plain-language job summary, preview artifact | site artifact, then Pages and Worker deploy |
 | Token | not present | wrangler steps only |
 
+The link manifest is never inside the published site directory. The build
+writes it to a separate directory (`validate.sh --manifest FILE`, mounted at
+`/manifest`), the workflow uploads it as its own artifact (`site-manifest`), and
+the deploy job downloads it into an empty directory, checks that it holds
+exactly one regular file, and reads the link ids in a step with no secrets.
+
+**Engine version.** `--manifest` arrived after the published 0.1.0 image, so
+the template needs the next engine release. `engine.lock` stays on 0.1.0 until
+that release exists, and `validate.sh` says so plainly if the pinned image
+does not know `--manifest`.
+
 Every Action is pinned by commit with a version comment, using the same pins
 as this repository's workflows. A test in this repository
 (`tests/test_instance_repo_template.py`) builds the template's `site.yaml` and

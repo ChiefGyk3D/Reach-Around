@@ -239,3 +239,114 @@ def test_check_repo_flags_forbidden_files(tmp_path: Path) -> None:
     dirty = _script(root, "check-repo.sh")
     assert dirty.returncode == 1
     assert ".env" in dirty.stderr
+
+
+# --- the manifest never sits in the published directory ----------------------
+
+
+def _deploy_jobs() -> dict[str, Any]:
+    data = yaml.safe_load((WORKFLOWS / "deploy.yml").read_text(encoding="utf-8"))
+    jobs: dict[str, Any] = data["jobs"]
+    return jobs
+
+
+def _template_texts() -> dict[str, str]:
+    paths = [*workflow_files(), *sorted((TEMPLATE / "scripts").glob("*.sh"))]
+    return {p.name: p.read_text(encoding="utf-8") for p in paths}
+
+
+def manifest_violations(text: str) -> list[str]:
+    """Problems with how deploy.yml handles the build manifest."""
+    found: list[str] = []
+    data = yaml.safe_load(text)
+    for name, job in data["jobs"].items():
+        uploads: dict[str, str] = {}
+        for step in job["steps"]:
+            label = f"{name}/{step.get('name', step.get('uses'))}"
+            run = step.get("run", "")
+            if "site-out/manifest" in run or "site-out/manifest" in str(
+                step.get("with", "")
+            ):
+                found.append(f"{label}: manifest path inside the output directory")
+            if str(step.get("uses", "")).startswith("actions/upload-artifact@"):
+                uploads[step["with"]["name"]] = str(step["with"]["path"])
+        for art, path in uploads.items():
+            if "manifest" in path and art != "site-manifest":
+                found.append(f"{name}: manifest uploaded in artifact {art}")
+    return found
+
+
+def test_no_template_file_reads_a_manifest_inside_the_output() -> None:
+    texts = _template_texts()
+    assert {"deploy.yml", "preview.yml", "validate.sh", "deploy-local.sh"} <= set(texts)
+    for name, text in texts.items():
+        assert "site-out/manifest" not in text, name
+        assert "$out/manifest" not in text, name
+        assert "/out/manifest" not in text, name
+    deploy = (WORKFLOWS / "deploy.yml").read_text(encoding="utf-8")
+    assert manifest_violations(deploy) == []
+
+
+def test_validate_mounts_a_separate_manifest_directory() -> None:
+    text = (TEMPLATE / "scripts" / "validate.sh").read_text(encoding="utf-8")
+    assert '--manifest "/manifest/$manifest_name"' in text
+    assert '-v "$manifest_dir":/manifest' in text
+    assert '-v "$manifest_dir":/manifest:ro' not in text
+    # one run command carries the hardening flags for both mounts
+    for flag in ("--network none", "--read-only", "--cap-drop ALL", "keep-id"):
+        assert flag in text, flag
+
+
+def test_manifest_is_its_own_artifact_and_not_in_the_pages_upload() -> None:
+    jobs = _deploy_jobs()
+    uploads = {
+        s["with"]["name"]: str(s["with"]["path"])
+        for s in jobs["validate"]["steps"]
+        if str(s.get("uses", "")).startswith("actions/upload-artifact@")
+    }
+    assert set(uploads) == {"site-out", "site-manifest"}
+    assert "manifest" not in uploads["site-out"]
+    assert "site-manifest/manifest.json" in uploads["site-manifest"]
+    downloads = {
+        s["with"]["name"]: s["with"]["path"]
+        for s in jobs["deploy"]["steps"]
+        if str(s.get("uses", "")).startswith("actions/download-artifact@")
+    }
+    assert downloads == {"site-out": "site-out", "site-manifest": "manifest-in"}
+    pages = [
+        s
+        for s in jobs["deploy"]["steps"]
+        if s.get("name") == "Publish the site to Pages"
+    ]
+    assert len(pages) == 1
+    assert "manifest" not in pages[0]["run"]
+
+
+def test_the_manifest_reader_step_has_no_secrets() -> None:
+    steps = _deploy_jobs()["deploy"]["steps"]
+    readers = [s for s in steps if "manifest-in" in s.get("run", "")]
+    assert len(readers) == 1
+    reader = readers[0]
+    text = yaml.safe_dump(reader)
+    assert "secrets." not in text
+    assert CF_ENV_VAR not in text
+    run = reader["run"]
+    assert "jq " in run or "python3 -I" in run
+    assert "-mindepth 1" in run
+    assert "! -L" in run
+
+
+def test_the_manifest_guard_bites() -> None:
+    good = (WORKFLOWS / "deploy.yml").read_text(encoding="utf-8")
+    assert manifest_violations(good) == []
+    old_read = good.replace("manifest-in/manifest.json", "site-out/manifest.json")
+    assert old_read != good
+    assert manifest_violations(old_read)
+    bundled = good.replace(
+        "path: ${{ runner.temp }}/site-out\n",
+        "path: |\n            ${{ runner.temp }}/site-out\n"
+        "            ${{ runner.temp }}/site-manifest/manifest.json\n",
+        1,
+    )
+    assert bundled != good
+    assert manifest_violations(bundled)

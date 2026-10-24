@@ -45,12 +45,24 @@ jobs:
       # Builds with the engine image named by digest in engine.lock. A bad
       # config fails here, before anything is deployed.
       - name: Build the site with the pinned engine
-        run: scripts/validate.sh --out "$RUNNER_TEMP/site-out" --summary "$GITHUB_STEP_SUMMARY"
+        run: >-
+          scripts/validate.sh --out "$RUNNER_TEMP/site-out"
+          --manifest "$RUNNER_TEMP/site-manifest/manifest.json"
+          --summary "$GITHUB_STEP_SUMMARY"
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: site-out
           path: ${{ runner.temp }}/site-out
+          if-no-files-found: error
+          retention-days: 1
+
+      # The manifest is its own artifact, from a directory beside the site,
+      # so it is never in the Pages upload.
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: site-manifest
+          path: ${{ runner.temp }}/site-manifest/manifest.json
           if-no-files-found: error
           retention-days: 1
 
@@ -106,6 +118,12 @@ jobs:
           name: site-out
           path: site-out
 
+      # Into its own empty directory, never the working directory.
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: site-manifest
+          path: manifest-in
+
       # No secret in this step: it only checks the shape of plain values.
       - name: Check configuration
         env:
@@ -150,9 +168,28 @@ jobs:
         run: npm ci --ignore-scripts
 
       # The link ids come from the build manifest, so the Worker accepts
-      # exactly the links the page publishes. The engine's wrangler.toml holds
-      # fake placeholder ids; write a deploy copy with the real values (none
-      # is a secret). It is never committed.
+      # exactly the links the page publishes. This step has no secret in its
+      # environment. The artifact must hold exactly one regular file, and the
+      # value read from it is shape-checked before later steps see it.
+      - name: Read the link ids from the build manifest
+        run: |
+          set -eu
+          manifest=manifest-in/manifest.json
+          [ "$(find manifest-in -mindepth 1 | wc -l)" = 1 ] \
+            || { echo "::error::manifest-in must hold exactly one file"; exit 1; }
+          if [ -f "$manifest" ] && [ ! -L "$manifest" ]; then
+            :
+          else
+            echo "::error::$manifest is not a regular file"
+            exit 1
+          fi
+          LINK_IDS="$(jq -c '.links | keys' "$manifest")"
+          printf '%s' "$LINK_IDS" | grep -Eq '^\[("[a-z0-9-]{1,40}"(, ?)?)+\]$' \
+            || { echo "::error::the build manifest has no valid link ids"; exit 1; }
+          echo "LINK_IDS=$LINK_IDS" >> "$GITHUB_ENV"
+
+      # The engine's wrangler.toml holds fake placeholder ids; write a deploy
+      # copy with the real values (none is a secret). It is never committed.
       - name: Write deploy config
         working-directory: engine/worker
         env:
@@ -162,9 +199,6 @@ jobs:
           ZONE_NAME: ${{ vars.ZONE_NAME }}
         run: |
           set -eu
-          LINK_IDS="$(jq -c '.links | keys' ../../site-out/manifest.json)"
-          printf '%s' "$LINK_IDS" | grep -Eq '^\[("[a-z0-9-]{1,40}"(, ?)?)+\]$' \
-            || { echo "::error::the build manifest has no valid link ids"; exit 1; }
           sed \
             -e "s|^database_id = \"[^\"]*\"|database_id = \"${D1_DATABASE_ID}\"|" \
             -e "s|^namespace_id = \"[^\"]*\"|namespace_id = \"${RATELIMIT_NAMESPACE_ID}\"|" \

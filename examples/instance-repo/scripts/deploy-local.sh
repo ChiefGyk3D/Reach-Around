@@ -8,7 +8,8 @@
 #
 # What it does:
 #   1. builds the site with the pinned engine image (scripts/validate.sh),
-#   2. derives the link ids from the build manifest,
+#   2. derives the link ids from the build manifest (written beside the site
+#      output, never inside it),
 #   3. writes a wrangler config into a private directory,
 #   4. checks the shape of every value,
 #   5. shows the plan and asks for confirmation (or stops at --dry-run),
@@ -99,15 +100,18 @@ have_ref="$(git -C "$ENGINE_DIR" rev-parse HEAD)"
 umask 077
 mkdir -p "$PRIVATE_DIR"
 site_out="$PRIVATE_DIR/site-out"
+# The manifest sits beside the site, never inside the directory Pages gets.
+manifest_dir="$PRIVATE_DIR/site-manifest"
+manifest="$manifest_dir/manifest.json"
 wrangler_toml="$PRIVATE_DIR/wrangler.deploy.toml"
 
 # 1. Build and validate. No token exists in this process.
-rm -rf "$site_out"
-"$instance_dir/scripts/validate.sh" --out "$site_out"
+rm -rf "$site_out" "$manifest_dir"
+"$instance_dir/scripts/validate.sh" --out "$site_out" --manifest "$manifest"
 
 # 2. Link ids come from the build manifest, so the Worker accepts exactly the
 #    links the page publishes.
-link_ids="$(jq -c '.links | keys' "$site_out/manifest.json")"
+link_ids="$(jq -c '.links | keys' "$manifest")"
 printf '%s' "$link_ids" \
   | grep -Eq '^\[("[a-z0-9-]{1,40}"(, ?)?)+\]$' \
   || fail "the manifest produced no valid link ids"
