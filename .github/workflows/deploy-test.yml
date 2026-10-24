@@ -1,0 +1,117 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# Manual deploy of the Worker and the static site to the TEST subdomain.
+# One-time Cloudflare setup is in docs/deploy.md. Nothing here runs on a
+# push or a pull request; a maintainer starts it by hand from main.
+name: Deploy to test
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-test
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Deploy test site and Worker
+    # Refuse any ref other than main. The `test` environment can also restrict
+    # deployment branches and require a reviewer (docs/deploy.md).
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: test
+    env:
+      # Secrets and variables only, passed through env. Never echoed.
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+      PAGES_PROJECT: ${{ vars.PAGES_PROJECT }}
+      D1_DATABASE_ID: ${{ vars.D1_DATABASE_ID }}
+      RATELIMIT_NAMESPACE_ID: ${{ vars.RATELIMIT_NAMESPACE_ID }}
+      SITE_HOST: ${{ vars.SITE_HOST }}
+      LINK_IDS: ${{ vars.LINK_IDS }}
+      WRANGLER_SEND_METRICS: "false"
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: worker/package-lock.json
+
+      - name: Check configuration
+        run: |
+          set -eu
+          for name in CLOUDFLARE_API_TOKEN CLOUDFLARE_ACCOUNT_ID PAGES_PROJECT \
+                      D1_DATABASE_ID RATELIMIT_NAMESPACE_ID SITE_HOST LINK_IDS; do
+            eval "value=\${$name:-}"
+            if [ -z "$value" ]; then
+              echo "::error::$name is not set (see docs/deploy.md)"
+              exit 1
+            fi
+          done
+          # Values land in a config file below, so allow only plain characters.
+          printf '%s' "$D1_DATABASE_ID" | grep -Eq '^[0-9a-f-]{36}$' \
+            || { echo "::error::D1_DATABASE_ID is not a UUID"; exit 1; }
+          printf '%s' "$RATELIMIT_NAMESPACE_ID" | grep -Eq '^[0-9]{1,12}$' \
+            || { echo "::error::RATELIMIT_NAMESPACE_ID is not a number"; exit 1; }
+          printf '%s' "$SITE_HOST" | grep -Eq '^[a-z0-9.-]{3,253}$' \
+            || { echo "::error::SITE_HOST is not a plain hostname"; exit 1; }
+          printf '%s' "$PAGES_PROJECT" | grep -Eq '^[a-z0-9-]{1,58}$' \
+            || { echo "::error::PAGES_PROJECT is not a valid project name"; exit 1; }
+          printf '%s' "$LINK_IDS" | grep -Eq '^\[("[a-z0-9-]{1,40}"(, ?)?)+\]$' \
+            || { echo "::error::LINK_IDS must be a JSON array of link ids"; exit 1; }
+
+      # NOTE: `reach-around build` lands in Task 6, and pyproject.toml in
+      # Task 1. This step is written as the plan describes and will fail on
+      # a branch that lacks them.
+      - name: Build the site
+        run: |
+          set -eu
+          python -m pip install .
+          reach-around build --config examples/instance/site.yaml --out site-out
+
+      - name: Install Worker dependencies
+        working-directory: worker
+        run: npm ci
+
+      # worker/wrangler.toml holds fake placeholder ids. Write a deploy copy
+      # with the real values; it is never committed.
+      - name: Write deploy config
+        working-directory: worker
+        run: |
+          set -eu
+          sed \
+            -e "s|^database_id = \"[^\"]*\"|database_id = \"${D1_DATABASE_ID}\"|" \
+            -e "s|^namespace_id = \"[^\"]*\"|namespace_id = \"${RATELIMIT_NAMESPACE_ID}\"|" \
+            -e "s|^SITE_HOST = \"[^\"]*\"|SITE_HOST = \"${SITE_HOST}\"|" \
+            -e "s|^LINK_IDS = '[^']*'|LINK_IDS = '${LINK_IDS}'|" \
+            wrangler.toml > wrangler.deploy.toml
+          grep -qF "${D1_DATABASE_ID}" wrangler.deploy.toml
+          grep -qF "${SITE_HOST}" wrangler.deploy.toml
+
+      - name: Apply D1 migrations
+        working-directory: worker
+        run: npx wrangler d1 migrations apply DB --remote --config wrangler.deploy.toml
+
+      - name: Deploy the Worker
+        working-directory: worker
+        run: npx wrangler deploy --config wrangler.deploy.toml
+
+      - name: Publish the site to Pages
+        working-directory: worker
+        run: >-
+          npx wrangler pages deploy ../site-out
+          --project-name "$PAGES_PROJECT"
+          --branch main
+          --commit-dirty=true
