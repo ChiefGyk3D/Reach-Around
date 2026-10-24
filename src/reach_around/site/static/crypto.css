@@ -117,3 +117,14 @@
   .crypto-address { flex: 1 1 auto; }
   .copy-ready .copy-button { flex: none; }
 }
+
+/* Desktop: two cards across. The cards keep their own height, so a card with
+   its QR open does not stretch its neighbor. Same breakpoint as site.css. */
+@media (min-width: 56rem) {
+  .crypto-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start; }
+}
+
+@media print {
+  .crypto-qr-image { max-width: 8rem; }
+  .crypto-address { border-color: CanvasText; background: none; }
+}

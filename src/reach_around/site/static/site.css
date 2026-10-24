@@ -53,14 +53,16 @@
   --ra-font-body: "Jost", system-ui, sans-serif;
   --ra-font-heading: var(--ra-font-body);
 
-  /* Type scale: a 1.25 ratio from 1rem. */
+  /* Type scale: a 1.25 ratio from 1rem on a phone. The larger steps grow
+     smoothly with the viewport, and every bound is in rem so the visitor's
+     default font size and zoom always win. */
   --ra-text-xs: 0.8rem;
   --ra-text-sm: 0.875rem;
-  --ra-text-base: 1rem;
-  --ra-text-md: 1.125rem;
-  --ra-text-lg: 1.3rem;
-  --ra-text-xl: 1.75rem;
-  --ra-text-2xl: clamp(2rem, 7vw, 2.75rem);
+  --ra-text-base: clamp(1rem, 0.94rem + 0.2vw, 1.125rem);
+  --ra-text-md: clamp(1.125rem, 1.07rem + 0.2vw, 1.25rem);
+  --ra-text-lg: clamp(1.3rem, 1.2rem + 0.3vw, 1.5rem);
+  --ra-text-xl: clamp(1.75rem, 1.5rem + 0.9vw, 2.25rem);
+  --ra-text-2xl: clamp(2rem, 1.3rem + 3vw, 3.25rem);
   --ra-line-height: 1.5;
 
   /* Space: a 4-point rhythm. */
@@ -71,10 +73,13 @@
   --ra-space-5: 1.5rem;
   --ra-space-6: 2.5rem;
   --ra-tap: 2.75rem;
-  --ra-gutter: 1rem;
+  --ra-gutter: clamp(1rem, 0.4rem + 2.5vw, 2rem);
 
   /* Shape and layout. */
   --ra-column-width: 35rem;
+  --ra-column-tablet: 45rem;
+  --ra-column-desktop: 54rem;
+  --ra-measure: 50ch;
   --ra-radius: 0.5rem;
   --ra-button-radius: 2.25rem;
   --ra-card-radius: min(calc(var(--ra-radius) * 2), 1.75rem);
@@ -109,12 +114,17 @@
 
 *, *::before, *::after { box-sizing: border-box; }
 html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
+/* Very large monitors: scale everything (it is all rem) a little so the column
+   does not look small. A percentage keeps the visitor's own default size. */
+@media (min-width: 100rem) { html { font-size: 112.5%; } }
+@media (min-width: 140rem) { html { font-size: 125%; } }
 ::selection { background-color: var(--ra-color-accent); color: var(--ra-color-on-accent); }
 
 body {
   position: relative;
   isolation: isolate;
   min-height: 100vh;
+  min-height: 100dvh;
   margin: 0;
   font-family: var(--ra-font-body);
   font-size: var(--ra-text-base);
@@ -153,9 +163,14 @@ main {
   display: flex;
   flex-direction: column;
   min-height: 100vh;
+  min-height: 100dvh;
   max-width: var(--ra-column-width);
   margin: 0 auto;
-  padding: 0 0 var(--ra-space-5);
+  /* The safe-area insets are 0 until the page asks for viewport-fit=cover. */
+  padding:
+    env(safe-area-inset-top, 0px) env(safe-area-inset-right, 0px)
+    calc(var(--ra-space-5) + env(safe-area-inset-bottom, 0px))
+    env(safe-area-inset-left, 0px);
 }
 main > :not(.tabs) { padding-inline: var(--ra-gutter); }
 .blocks { flex: 1 0 auto; align-content: start; }
@@ -372,8 +387,8 @@ a:focus-visible, summary:focus-visible, button:focus-visible {
    the three-dot glyph at the right, and the text stays centered between them. */
 .blocks { display: flex; flex-direction: column; gap: var(--ra-space-4); }
 .blocks.layout-grid, .blocks.layout-cards, .section-links.layout-grid, .section-links.layout-cards { display: grid; }
-.blocks.layout-grid, .section-links.layout-grid { grid-template-columns: repeat(auto-fill, minmax(10rem, 1fr)); gap: var(--ra-space-3); }
-.blocks.layout-cards, .section-links.layout-cards { grid-template-columns: repeat(auto-fill, minmax(15rem, 1fr)); gap: var(--ra-space-3); }
+.blocks.layout-grid, .section-links.layout-grid { grid-template-columns: repeat(auto-fill, minmax(min(10rem, 100%), 1fr)); gap: var(--ra-space-3); }
+.blocks.layout-cards, .section-links.layout-cards { grid-template-columns: repeat(auto-fill, minmax(min(15rem, 100%), 1fr)); gap: var(--ra-space-3); }
 .layout-grid > .block-section, .layout-grid > .block-text, .layout-grid > .block-image, .layout-grid > .block-divider,
 .layout-cards > .block-section, .layout-cards > .block-text, .layout-cards > .block-image, .layout-cards > .block-divider { grid-column: 1 / -1; }
 .section-links { display: flex; flex-direction: column; gap: var(--ra-space-2); }
@@ -538,7 +553,7 @@ a.link:active, .social:active { transform: translateY(0) scale(0.985); }
 }
 
 /* Other blocks. */
-.text { padding: 0 var(--ra-space-1); }
+.text { max-width: var(--ra-measure); padding: 0 var(--ra-space-1); }
 .text h2, .text h3 { margin: var(--ra-space-4) 0 var(--ra-space-2); }
 .text ul { list-style: disc; padding-left: var(--ra-space-5); }
 .block-image img, .image { display: block; max-width: 100%; height: auto; border-radius: var(--ra-card-radius); box-shadow: var(--ra-shadow-card); }
@@ -594,7 +609,7 @@ a.link:active, .social:active { transform: translateY(0) scale(0.985); }
 
 /* Footer, cookie notice, privacy page. */
 main > footer { margin-top: var(--ra-space-5); color: var(--ra-color-muted); font-size: var(--ra-text-sm); text-align: center; }
-.disclosure { max-width: 30rem; margin: 0 auto var(--ra-space-3); color: var(--ra-color-muted); font-size: var(--ra-text-xs); }
+.disclosure { max-width: min(30rem, 100%); margin: 0 auto var(--ra-space-3); color: var(--ra-color-muted); font-size: var(--ra-text-xs); }
 .privacy-link a { display: inline-block; padding: var(--ra-space-3); color: var(--ra-color-muted); }
 .cookie-banner {
   margin-top: var(--ra-space-4);
@@ -623,7 +638,7 @@ main > footer { margin-top: var(--ra-space-5); color: var(--ra-color-muted); fon
   background-color: var(--ra-color-accent);
   color: var(--ra-color-on-accent);
 }
-.privacy { padding: var(--ra-space-2) var(--ra-space-1); }
+.privacy { max-width: var(--ra-measure); padding: var(--ra-space-2) var(--ra-space-1); }
 .collected { display: flex; flex-direction: column; gap: var(--ra-space-3); margin-bottom: var(--ra-space-4); }
 .collected li {
   padding: var(--ra-space-3) var(--ra-space-4);
@@ -651,9 +666,101 @@ main > footer { margin-top: var(--ra-space-5); color: var(--ra-color-muted); fon
 .blocks > li:nth-child(n+5) { animation-delay: 250ms; }
 
 @media (prefers-reduced-motion: reduce) {
-  *, *::before, *::after {
+  *, *::before, *::after, ::details-content {
     animation: none !important;
     transition: none !important;
     scroll-behavior: auto !important;
+  }
+}
+
+/* Touch screens: a finger needs 44 px, so every control keeps that height. A
+   link row may be taller on a phone already; the footer link and the inline
+   buttons are the ones that would fall short. */
+@media (pointer: coarse) {
+  .privacy-link a,
+  .profile-button,
+  .cookie-banner button,
+  .crypto-qr summary {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-height: var(--ra-tap);
+    min-width: var(--ra-tap);
+  }
+  .tabs a { min-height: max(3rem, var(--ra-tap)); }
+  a.link { min-height: max(4rem, calc(var(--ra-tap) + var(--ra-space-4))); }
+}
+
+/* Tablet and up (768 px at the default font size). The breakpoints are in rem,
+   so a visitor with a larger default font size gets the roomier layout later,
+   when there is really room for it. */
+@media (min-width: 48rem) {
+  main { max-width: max(var(--ra-column-width), var(--ra-column-tablet)); }
+  .site-header { padding-top: var(--ra-space-6); }
+  .tabs a { padding: 0 var(--ra-space-5); }
+  /* The centered header lays the avatar beside the name and icons. */
+  .header-centered:has(> .avatar) {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    grid-template-areas: "avatar name" "avatar socials";
+    justify-items: start;
+    align-content: center;
+    column-gap: var(--ra-space-5);
+    row-gap: var(--ra-space-2);
+    text-align: left;
+  }
+  .header-centered > .avatar { grid-area: avatar; align-self: center; }
+  .header-centered > h1 { grid-area: name; align-self: end; }
+  .header-centered > .socials {
+    grid-area: socials;
+    align-self: start;
+    justify-content: flex-start;
+    margin-left: calc(var(--ra-space-2) * -1);
+  }
+}
+
+/* Desktop (896 px): the column grows again and link groups take two columns. */
+@media (min-width: 56rem) {
+  main { max-width: max(var(--ra-column-width), var(--ra-column-desktop)); }
+  .blocks.layout-list, .section-links.layout-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--ra-space-3); }
+  .blocks.layout-list { gap: var(--ra-space-4) var(--ra-space-3); }
+  .layout-list > .block-section, .layout-list > .block-text, .layout-list > .block-image,
+  .layout-list > .block-divider, .layout-list > .block-crypto,
+  .layout-list > .block-link:has(> a.link-featured) { grid-column: 1 / -1; }
+  .layout-list > .block-section { align-self: start; }
+  .hero-card:has(> .avatar) { flex-direction: row; justify-content: center; gap: var(--ra-space-6); }
+  .hero-card:has(> .avatar) h1 { text-align: left; }
+}
+
+/* Print: no background, plain text on paper, every link's address visible. */
+@media print {
+  body { background: none; color: CanvasText; }
+  body::before, .tabs, .skip-link, .cookie-banner, .copy-button { display: none; }
+  main { max-width: none; min-height: 0; padding: 0; }
+  main > :not(.tabs) { padding-inline: 0; }
+  .site-header, .blocks > li, .section[open] .section-links { animation: none; }
+  .section::details-content { block-size: auto; opacity: 1; content-visibility: visible; }
+  a, a.link { color: CanvasText; }
+  a.link, .section, .profile-card, .crypto-card {
+    border: 1px solid CanvasText;
+    background: none;
+    box-shadow: none;
+    break-inside: avoid;
+  }
+  a.link { display: block; text-align: left; }
+  .link-chip, .link-thumb { display: none; }
+  a.link::after, a.link-featured::after {
+    content: attr(href);
+    display: block;
+    width: auto;
+    height: auto;
+    background: none;
+    margin-top: var(--ra-space-1);
+    font-size: var(--ra-text-xs);
+    overflow-wrap: anywhere;
+  }
+  .link-subtitle, .section-subtitle { color: CanvasText; }
+  .profile-button[href]::after, .image-link[href]::after {
+    content: " (" attr(href) ")";
   }
 }
