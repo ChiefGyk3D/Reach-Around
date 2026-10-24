@@ -20,8 +20,9 @@ from typing import Any
 
 from jinja2 import Environment
 
-from reach_around.config.blocks import Crypto, Email
+from reach_around.config.blocks import Crypto, Email, Platforms
 from reach_around.config.models import Block, Link, Section, SiteConfig, Tab
+from reach_around.config.numbers import Numbers
 from reach_around.config.page_title import DEFAULT_TEMPLATE, render_template
 from reach_around.config.profile_card import MEDIA_KIT_ID
 from reach_around.config.tablinks import is_tab_ref, parse_tab_ref
@@ -32,6 +33,7 @@ from reach_around.site.overrides import (
     render_headers,
     warn_about_javascript,
 )
+from reach_around.site.platforms import platform_rows
 from reach_around.site.privacy import collected_items, intro_text, sets_cookies
 from reach_around.site.robots import render_robots
 from reach_around.site.theme import theme_css
@@ -73,8 +75,13 @@ def _has_email_script(blocks: Iterable[Block]) -> bool:
     )
 
 
+def _has_platforms(blocks: Iterable[Block]) -> bool:
+    return any(isinstance(block, Platforms) for block in blocks)
+
+
 # Published only for a site with a crypto block on a page; see ``build_site``.
 _CRYPTO_FILES = (Path("static") / "copy.js", Path("static") / "crypto.css")
+_PLATFORMS_FILES = (Path("static") / "platforms.css",)
 
 
 # Published only for a site with an email block; the script only if one uses it.
@@ -179,6 +186,7 @@ def _render_page(
         has_crypto=_has_crypto(blocks),
         has_email=_has_email(blocks),
         has_email_script=_has_email_script(blocks),
+        has_platforms=_has_platforms(blocks),
         profile_card=_profile_card(config),
         cookie_text=intro_text(config),
         custom_css=custom_css,
@@ -199,6 +207,7 @@ def _render_privacy(env: Environment, config: SiteConfig, custom_css: bool) -> s
         has_crypto=False,
         has_email=False,
         has_email_script=False,
+        has_platforms=False,
         profile_card=_profile_card(config),
         intro=intro_text(config),
         items=collected_items(config),
@@ -256,6 +265,14 @@ def _manifest(config: SiteConfig, shown: list[list[Block]]) -> BuildManifest:
         for link in _links_in(blocks)
         if not is_tab_ref(link.url)
     }
+    for blocks in shown:
+        for block in blocks:
+            if isinstance(block, Platforms):
+                links.update(
+                    (ident, entry.url)
+                    for ident, entry in zip(block.item_ids, block.items, strict=True)
+                    if not is_tab_ref(entry.url)
+                )
     card = config.profile_card
     if card is not None and card.button is not None:
         links[MEDIA_KIT_ID] = card.button.url
@@ -331,6 +348,7 @@ def build_site(
     protect: Iterable[Path] = (),
     overrides: Path | None = None,
     assets_dir: Path | None = None,
+    numbers: Numbers | None = None,
 ) -> BuildManifest:
     """Write the site for ``today`` into ``out_dir`` and return the manifest.
 
@@ -344,10 +362,13 @@ def build_site(
     ``assets_dir`` is the instance directory: the files the config names (avatar,
     favicon, theme images, font files, image blocks) are copied from it to the
     same relative path in ``out_dir``. It is required when the config names any.
+    ``numbers`` is the loaded numbers file; its counts fill platform blocks and
+    only the resulting text is published, never the file.
     """
     shown = [list(visible_blocks(tab.blocks, today)) for tab in config.tabs]
     manifest = _manifest(config, shown)
     env = make_environment(overrides)
+    env.globals["platform_rows"] = lambda block: platform_rows(block, numbers)
     custom_css = load_custom_css(overrides)
     warn_about_javascript(overrides)
     files: dict[Path, bytes] = {
@@ -370,6 +391,9 @@ def build_site(
         files.pop(_EMAIL_STYLE, None)
     if not any(_has_email_script(blocks) for blocks in shown):
         files.pop(_EMAIL_SCRIPT, None)
+    if not any(_has_platforms(blocks) for blocks in shown):
+        for rel in _PLATFORMS_FILES:
+            files.pop(rel, None)
     files[Path("static") / "theme.css"] = theme_css(config.theme).encode("utf-8")
     if custom_css is not None:
         files[Path("static") / "custom.css"] = custom_css.encode("utf-8")

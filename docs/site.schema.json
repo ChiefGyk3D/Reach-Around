@@ -507,6 +507,165 @@
       "title": "Link",
       "type": "object"
     },
+    "PlatformItem": {
+      "additionalProperties": false,
+      "properties": {
+        "as_of": {
+          "anyOf": [
+            {
+              "format": "date",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "As Of"
+        },
+        "count": {
+          "anyOf": [
+            {
+              "maximum": 10000000000,
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Count"
+        },
+        "handle": {
+          "maxLength": 80,
+          "minLength": 1,
+          "title": "Handle",
+          "type": "string"
+        },
+        "label": {
+          "default": "followers",
+          "enum": [
+            "followers",
+            "subscribers",
+            "members"
+          ],
+          "title": "Label",
+          "type": "string"
+        },
+        "name": {
+          "anyOf": [
+            {
+              "maxLength": 40,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Name"
+        },
+        "platform": {
+          "enum": [
+            "twitch",
+            "kick",
+            "youtube",
+            "tiktok",
+            "instagram",
+            "threads",
+            "bluesky",
+            "mastodon",
+            "pixelfed",
+            "discord",
+            "matrix",
+            "github",
+            "patreon",
+            "x",
+            "linkedin",
+            "rss",
+            "other"
+          ],
+          "title": "Platform",
+          "type": "string"
+        },
+        "url": {
+          "maxLength": 2048,
+          "title": "Url",
+          "type": "string"
+        }
+      },
+      "required": [
+        "handle",
+        "platform",
+        "url"
+      ],
+      "title": "PlatformItem",
+      "type": "object"
+    },
+    "Platforms": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "pattern": "^[a-z0-9][a-z0-9-]{0,39}$",
+          "title": "Id",
+          "type": "string"
+        },
+        "items": {
+          "items": {
+            "$ref": "#/$defs/PlatformItem"
+          },
+          "maxItems": 40,
+          "minItems": 1,
+          "title": "Items",
+          "type": "array"
+        },
+        "layout": {
+          "default": "list",
+          "enum": [
+            "list",
+            "chips"
+          ],
+          "title": "Layout",
+          "type": "string"
+        },
+        "note": {
+          "anyOf": [
+            {
+              "maxLength": 300,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Note"
+        },
+        "title": {
+          "anyOf": [
+            {
+              "maxLength": 200,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Title"
+        }
+      },
+      "required": [
+        "id",
+        "items"
+      ],
+      "title": "Platforms",
+      "type": "object"
+    },
     "Privacy": {
       "additionalProperties": false,
       "description": "Retention periods and optional creator-supplied wording.",
@@ -811,6 +970,9 @@
               },
               {
                 "$ref": "#/$defs/Email"
+              },
+              {
+                "$ref": "#/$defs/Platforms"
               },
               {
                 "$ref": "#/$defs/Divider"

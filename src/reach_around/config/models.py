@@ -27,7 +27,14 @@ from pydantic import (
     model_validator,
 )
 
-from reach_around.config.blocks import Crypto, Divider, Email, Image, Text
+from reach_around.config.blocks import (
+    Crypto,
+    Divider,
+    Email,
+    Image,
+    Platforms,
+    Text,
+)
 from reach_around.config.loader import ConfigError, load_yaml
 from reach_around.config.page_title import PageTitle, TitleTemplate
 from reach_around.config.privacy import Features, Privacy
@@ -159,6 +166,7 @@ _NEW_BLOCK_KEYS = {
     "src": "image",
     "coins": "crypto",
     "address": "email",
+    "items": "platforms",
 }
 
 
@@ -179,6 +187,7 @@ def _block_kind(value: Any) -> str | None:
         (Image, "image"),
         (Crypto, "crypto"),
         (Email, "email"),
+        (Platforms, "platforms"),
         (Divider, "divider"),
     ):
         if isinstance(value, model):
@@ -194,6 +203,7 @@ Block = Annotated[
     | Annotated[Image, Tag("image")]
     | Annotated[Crypto, Tag("crypto")]
     | Annotated[Email, Tag("email")]
+    | Annotated[Platforms, Tag("platforms")]
     | Annotated[Divider, Tag("divider")],
     Discriminator(
         _block_kind,
@@ -327,6 +337,8 @@ class SiteConfig(_Model):
                 ids.append(block.id)
                 if isinstance(block, Section):
                     ids.extend(link.id for link in block.links)
+                elif isinstance(block, Platforms):
+                    ids.extend(block.item_ids)
             for ident in ids:
                 if ident in seen:
                     raise ValueError(f"duplicate id {ident!r}: ids must be unique")
@@ -366,6 +378,12 @@ def _internal_urls(config: SiteConfig) -> list[tuple[str, str]]:
             base = f"tabs[{t}].blocks[{b}]"
             if isinstance(block, Link) and is_tab_ref(block.url):
                 found.append((f"{base}.url", block.url))
+            elif isinstance(block, Platforms):
+                found.extend(
+                    (f"{base}.items[{k}].url", entry.url)
+                    for k, entry in enumerate(block.items)
+                    if is_tab_ref(entry.url)
+                )
             elif isinstance(block, Section):
                 found.extend(
                     (f"{base}.links[{k}].url", link.url)
@@ -375,7 +393,16 @@ def _internal_urls(config: SiteConfig) -> list[tuple[str, str]]:
     return found
 
 
-_BLOCK_TAGS = {"link", "section", "text", "image", "crypto", "email", "divider"}
+_BLOCK_TAGS = {
+    "link",
+    "section",
+    "text",
+    "image",
+    "crypto",
+    "email",
+    "platforms",
+    "divider",
+}
 
 
 def _dotted(loc: tuple[int | str, ...]) -> str:

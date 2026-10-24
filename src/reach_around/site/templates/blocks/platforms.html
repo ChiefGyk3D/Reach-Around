@@ -1,0 +1,32 @@
+{# SPDX-License-Identifier: Apache-2.0 #}
+<li class="block block-platforms">
+{% if block.title %}
+<h2 class="platforms-title">{{ block.title }}</h2>
+{% endif %}
+<ul class="platforms platforms-{{ block.layout }}">
+{% for row in platform_rows(block) %}
+<li class="platform">
+<a class="platform-link"{% if row.internal %} href="{{ tab_href(row.url) }}"{% else %} href="{{ row.url }}"{% if click_tracking %} ping="/e/c/{{ row.id }}" data-link-id="{{ row.id }}"{% endif %} rel="noopener noreferrer"{% endif %}>
+<span class="platform-icon" aria-hidden="true"><span class="icon icon-{{ row.icon }}"></span></span>
+{% if block.layout == "chips" %}
+{% if row.short %}<span class="platform-count" aria-hidden="true">{{ row.short }}</span>{% endif %}
+<span class="sr-only">{{ row.name }} {{ row.handle }}{% if row.exact %}, {{ row.exact }} {{ row.label }}{% if row.as_of %}, as of {{ row.as_of }}{% endif %}{% endif %}</span>
+{% else %}
+<span class="platform-text">
+<span class="platform-name">{{ row.name }}</span>
+<span class="platform-handle">{{ row.handle }}</span>
+</span>
+{% if row.short %}
+<span class="platform-figure">
+<span class="platform-count" aria-hidden="true">{{ row.short }}</span>
+<span class="sr-only">{{ row.exact }} {{ row.label }}</span>
+{% if row.as_of %}<span class="platform-asof">as of {{ row.as_of }}</span>{% endif %}
+</span>
+{% endif %}
+{% endif %}
+</a>
+</li>
+{% endfor %}
+</ul>
+{% if block.note %}<p class="platforms-note">{{ block.note }}</p>{% endif %}
+</li>

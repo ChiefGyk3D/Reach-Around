@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import importlib
+import os
 import pkgutil
 import sys
 from datetime import UTC, datetime
@@ -14,6 +15,7 @@ from jinja2 import TemplateError
 
 from reach_around import __version__, commands, edit_cli
 from reach_around.config import ConfigError, load_site_config
+from reach_around.config.numbers import Numbers, load_numbers
 from reach_around.preview import PreviewError, serve
 from reach_around.site.build import build_site, manifest_json
 from reach_around.site.visibility import today_in
@@ -41,6 +43,12 @@ def _parser() -> argparse.ArgumentParser:
         type=Path,
         help="where to write the link manifest (default: <out>.manifest.json "
         "beside --out); it is never written inside --out, which is published",
+    )
+    build.add_argument(
+        "--numbers",
+        type=Path,
+        help="JSON file of platform counts (default: numbers.json beside the "
+        "config, if it exists); read at build time, never published",
     )
     serve = commands_parsers.add_parser(
         "serve", help="preview the site locally (loopback only)"
@@ -85,15 +93,47 @@ def _manifest_target(out_dir: Path, manifest: Path | None, config_path: Path) ->
     return target
 
 
+def _numbers_source(
+    out_dir: Path, numbers: Path | None, config_path: Path
+) -> Path | None:
+    """The numbers file to read, or None; refuse one inside ``out_dir``."""
+    explicit = numbers is not None
+    path = numbers if numbers is not None else config_path.parent / "numbers.json"
+    if not explicit and not os.path.lexists(path):
+        return None
+    out = out_dir.resolve()
+    resolved = path.resolve()
+    if resolved == out or out in resolved.parents:
+        raise ValueError(
+            f"numbers path {path} is inside the output directory {out_dir}, "
+            "which is published; choose a path outside it"
+        )
+    if resolved == config_path.resolve():
+        raise ValueError(f"numbers path {path} is the config file")
+    return path
+
+
 def _build(
     config_path: Path,
     out_dir: Path,
     overrides: Path | None,
     manifest_path: Path | None = None,
+    numbers_path: Path | None = None,
 ) -> int:
     try:
         target = _manifest_target(out_dir, manifest_path, config_path)
+        source = _numbers_source(out_dir, numbers_path, config_path)
         config = load_site_config(config_path)
+        numbers: Numbers | None = None
+        if source is not None:
+            numbers = load_numbers(source)
+            unknown = numbers.unknown_keys(config)
+            if unknown:
+                print(
+                    f"warning: {len(unknown)} key(s) in {source} match no platform "
+                    "and were ignored",
+                    file=sys.stderr,
+                )
         today = today_in(config.timezone, datetime.now(UTC))
         manifest = build_site(
             config,
@@ -102,6 +142,7 @@ def _build(
             protect=[config_path],
             overrides=overrides,
             assets_dir=config_path.parent,
+            numbers=numbers,
         )
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(manifest_json(manifest), encoding="utf-8")
@@ -124,7 +165,9 @@ def main(argv: list[str] | None = None) -> int:
         print(f"reach-around {__version__}")
         return 0
     if args.command == "build":
-        return _build(args.config, args.out, args.overrides, args.manifest)
+        return _build(
+            args.config, args.out, args.overrides, args.manifest, args.numbers
+        )
     if args.command == "serve":
         return _serve(args.config, args.host, args.port, args.overrides)
     if args.command in edit_cli.COMMANDS:
