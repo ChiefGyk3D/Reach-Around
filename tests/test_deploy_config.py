@@ -88,3 +88,44 @@ def test_zone_name_only_where_needed() -> None:
         "Publish the site to Pages",
     ):
         assert "ZONE_NAME" not in _step(name)["env"]
+
+
+def _uploads_and_downloads() -> tuple[list[str], list[str]]:
+    workflow = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+    up = [
+        str(s["with"]["path"])
+        for s in workflow["jobs"]["build"]["steps"]
+        if str(s.get("uses", "")).startswith("actions/upload-artifact")
+    ]
+    down = [
+        str(s["with"]["path"])
+        for s in workflow["jobs"]["deploy"]["steps"]
+        if str(s.get("uses", "")).startswith("actions/download-artifact")
+    ]
+    return up, down
+
+
+def test_workflow_manifest_is_a_sibling_never_inside_the_published_dir() -> None:
+    text = WORKFLOW.read_text(encoding="utf-8")
+    workflow = yaml.safe_load(text)
+    build = [
+        s
+        for s in workflow["jobs"]["build"]["steps"]
+        if s.get("name") == "Build the site"
+    ]
+    assert len(build) == 1
+    assert "--out site-out" in build[0]["run"]
+    # the old location must be gone everywhere, including comments
+    assert "site-out/manifest.json" not in text
+    up, down = _uploads_and_downloads()
+    assert "site-out" in up and "site-out.manifest.json" in up
+    assert "site-out" in down  # collected something
+    # the Pages upload publishes exactly the site directory
+    publish = _step("Publish the site to Pages")["run"]
+    assert "pages deploy ../site-out " in publish + " "
+
+
+def test_workflow_check_step_reads_the_sibling_manifest() -> None:
+    check = _step("Check configuration")["run"]
+    assert "site-out.manifest.json" in check
+    assert "site-out/manifest.json" not in check

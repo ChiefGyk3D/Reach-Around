@@ -154,7 +154,8 @@ def _manifest(shown: list[list[Block]]) -> BuildManifest:
     )
 
 
-def _manifest_json(manifest: BuildManifest) -> str:
+def manifest_json(manifest: BuildManifest) -> str:
+    """The manifest file text. It is never written into the published site."""
     return json.dumps({"links": manifest.links}, sort_keys=True, indent=2) + "\n"
 
 
@@ -225,6 +226,9 @@ def build_site(
 ) -> BuildManifest:
     """Write the site for ``today`` into ``out_dir`` and return the manifest.
 
+    The manifest is returned, never written into ``out_dir``: the caller
+    decides where it goes (see ``manifest_json``).
+
     Everything already in ``out_dir`` is deleted first, so a removed tab never
     leaves a stale page behind. ``protect`` lists paths (the config file) that
     ``out_dir`` must not be or contain. ``overrides`` is an optional directory
@@ -255,7 +259,6 @@ def build_site(
     if custom_css is not None:
         files[Path("static") / "custom.css"] = custom_css.encode("utf-8")
     files[Path("_headers")] = render_headers().encode("utf-8")
-    files[Path("manifest.json")] = _manifest_json(manifest).encode("utf-8")
     out = _check_out_dir(out_dir, protect)
     _empty(out)
     _write(out, files)

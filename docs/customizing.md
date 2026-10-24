@@ -399,9 +399,15 @@ error: overrides directory nope does not exist
    `error: bad.yaml: theme.mode: Input should be 'auto', 'light' or 'dark'`.
    `--out` is emptied before each build; the build refuses an output folder
    that is, or contains, your config. A successful build writes `index.html`,
-   one folder per extra tab, `privacy/index.html`, `manifest.json`, `_headers`
+   one folder per extra tab, `privacy/index.html`, `_headers`
    and `static/` (`site.css`, `theme.css`, `click.js` when click tracking is on,
    and `custom.css` when you supplied one).
+
+   The link manifest (`{"links": {id: url}}`, used to fill `LINK_IDS`) is not
+   part of the site. `build` writes it next to `--out` as
+   `<out>.manifest.json` (for `--out out`, that is `out.manifest.json`), or to
+   the path you give with `--manifest`. It refuses a `--manifest` path inside
+   `--out`, because everything in `--out` gets published.
 
 3. **Check.** There is no separate check command yet; the build is the check.
    Then read the result:

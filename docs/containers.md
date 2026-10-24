@@ -23,6 +23,16 @@ Mounts:
 | `/config` | read-only  | your instance directory, with `site.yaml`    |
 | `/out`    | read-write | the generated static site; emptied each build |
 
+## The link manifest
+
+`build` writes a link manifest (`{"links": {id: url}}`) that is never placed in
+`/out`, because `/out` is what you publish. Without `--manifest` it goes next
+to the output directory, which would be `/out.manifest.json` here and is not
+writable on a read-only root. The commands on this page therefore pass
+`--manifest /tmp/manifest.json`, which is discarded with the container. To keep
+it, mount a second writable directory, for example `-v ./manifest:/manifest`,
+and pass `--manifest /manifest/manifest.json`.
+
 ## Output directory permissions
 
 The container user is uid 10001, not you. Make the output directory writable by it
@@ -61,7 +71,8 @@ podman build -f Containerfile -t reach-around:local .
 podman run --rm --read-only --cap-drop ALL \
   --security-opt no-new-privileges:true --tmpfs /tmp \
   -v ./examples/instance:/config:ro -v ./out:/out \
-  reach-around:local build --config /config/site.yaml --out /out
+  reach-around:local build --config /config/site.yaml --out /out \
+  --manifest /tmp/manifest.json
 ```
 
 ## Podman Quadlet (systemd, rootless)
@@ -85,8 +96,8 @@ To rebuild on a schedule, add a `reach-around.timer` that starts the service.
 ## Tests
 
 `tests/test_container_smoke.sh` builds the image and checks that it runs read-only
-as a non-root user, produces `index.html` and `manifest.json`, and cannot write
-outside `/out` and `/tmp`. CI runs it with both engines.
+as a non-root user, produces `index.html`, writes the link manifest outside `/out`, and
+cannot write outside `/out` and `/tmp`. CI runs it with both engines.
 
 ```sh
 CONTAINER_ENGINE=podman bash tests/test_container_smoke.sh

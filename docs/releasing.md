@@ -81,8 +81,9 @@ podman run --rm reach-around:local --version
 podman run --rm --read-only --cap-drop ALL \
   --security-opt no-new-privileges:true --tmpfs /tmp \
   -v ./examples/instance:/config:ro -v ./out:/out \
-  reach-around:local build --config /config/site.yaml --out /out
-ls out/index.html out/manifest.json
+  reach-around:local build --config /config/site.yaml --out /out \
+    --manifest /tmp/manifest.json
+ls out/index.html
 ```
 
 Swap `podman` for `docker` to use Docker. For a full check, `tests/test_container_smoke.sh`
