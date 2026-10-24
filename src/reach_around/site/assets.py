@@ -68,8 +68,10 @@ def _check_slot(key: str, rel: str, kind: str) -> None:
     """The one place every slot is checked before a file is touched."""
     allowed = _KINDS[kind]
     if not rel.lower().endswith(allowed):
+        article = "an" if kind == "image" else "a"
         raise ValueError(
-            f"{key}: {rel!r} must be a {kind} file ending in {', '.join(allowed)}"
+            f"{key}: {rel!r} must be {article} {kind} file "
+            f"ending in {', '.join(allowed)}"
         )
     parts = rel.split("/")
     if rel.startswith("/") or any(p in ("", ".", "..") for p in parts):

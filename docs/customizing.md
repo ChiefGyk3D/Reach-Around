@@ -149,7 +149,12 @@ ends in `.png`, `.jpg`, `.jpeg`, `.webp`, `.avif`, `.gif` or `.svg` (`.ico` is
 not accepted); the path does not start with `static/` or `privacy/`. The build
 copies only the files you name, to the same relative path in the output, so
 the page loads them from its own origin and the security headers stay as they
-are. A missing file, a symlink or a file over 8 MiB stops the build. An https
+are. The same extension list applies to image blocks (`src`), so a config cannot
+publish a `.yaml` or `.env` file; font files must end in `.woff2`, `.woff`,
+`.ttf` or `.otf`. A missing file, a symlink anywhere in the path (the instance
+folder itself included), a non-regular file such as a FIFO, or a file over
+8 MiB stops the build with an error naming the config key, for example
+`tabs[0].blocks[1].src: 'site.yaml' must be an image file ending in .png, ...`. An https
 URL is still accepted for `creator.avatar` and `theme.background`, but it
 tells that host about every visitor; use a local file. `favicon` and `mascot`
 refuse a URL.
