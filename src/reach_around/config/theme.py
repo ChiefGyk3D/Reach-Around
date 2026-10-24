@@ -47,7 +47,11 @@ class Theme(_Model):
     background: str | None = None
     mascot: str | None = None
     background_dim: float = Field(
-        default=0.0, ge=0.0, le=MAX_BACKGROUND_DIM, allow_inf_nan=False
+        default=0.0,
+        ge=0.0,
+        le=MAX_BACKGROUND_DIM,
+        allow_inf_nan=False,
+        strict=True,  # a plain number only: no "0.5" string, no true/false
     )
     column_width: str = DEFAULT_COLUMN_WIDTH
     radius: str = "0.5rem"

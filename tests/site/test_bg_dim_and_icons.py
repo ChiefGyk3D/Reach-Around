@@ -73,17 +73,55 @@ def test_a_value_is_written_as_the_dim_token(value: float, text: str) -> None:
     assert f"--ra-bg-dim: {text};" in css
 
 
-@pytest.mark.parametrize("value", [0.0, 0.5, 0.9, 0, "0.25"])
+@pytest.mark.parametrize("value", [0.0, 0.5, 0.9, 0])
 def test_values_in_range_are_accepted(value: Any) -> None:
     assert config(background_dim=value).theme.background_dim == float(value)
 
 
 @pytest.mark.parametrize(
-    "value", [-0.01, 0.91, 1.0, 5, "abc", None, float("nan"), float("inf"), [0.5]]
+    "value",
+    [
+        -0.01,
+        0.91,
+        1.0,
+        5,
+        "abc",
+        "0.5",
+        "0",
+        "",
+        True,
+        False,
+        None,
+        float("nan"),
+        float("inf"),
+        float("-inf"),
+        [0.5],
+    ],  # fmt: skip
 )
-def test_values_out_of_range_or_not_numbers_are_refused(value: Any) -> None:
+def test_values_out_of_range_or_not_plain_numbers_are_refused(value: Any) -> None:
     with pytest.raises(ValidationError):
         config(background_dim=value)
+
+
+@pytest.mark.parametrize(
+    ("text", "ok"),
+    [("0.5", True), ("0", True), ("'0.5'", False), ("true", False), ("false", False)],
+)
+def test_the_yaml_loader_applies_the_same_strictness(
+    tmp_path: Path, text: str, ok: bool
+) -> None:
+    from reach_around.config import ConfigError, load_site_config
+
+    path = tmp_path / "site.yaml"
+    path.write_text(
+        "version: 1\ncreator: {name: C}\ntheme:\n  background_dim: "
+        f"{text}\ntabs:\n  - id: a\n    title: A\n    blocks: []\n"
+    )
+    if ok:
+        assert load_site_config(path).theme.background_dim == float(text)
+    else:
+        with pytest.raises(ConfigError, match="background_dim"):
+            load_site_config(path)
 
 
 def test_theme_css_rechecks_a_value_set_past_validation() -> None:
