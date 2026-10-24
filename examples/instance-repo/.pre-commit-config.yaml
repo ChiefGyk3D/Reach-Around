@@ -1,0 +1,19 @@
+# Optional: run the same checks the pull-request workflow runs, before you
+# commit. Install once with `pip install pre-commit && pre-commit install`.
+# Both hooks are local scripts, so nothing is downloaded from a hook
+# repository. The validate hook needs Docker or Podman.
+repos:
+  - repo: local
+    hooks:
+      - id: check-repo
+        name: no secrets or backups in the repository
+        entry: scripts/check-repo.sh
+        language: system
+        pass_filenames: false
+        always_run: true
+      - id: validate-config
+        name: site.yaml builds with the pinned engine
+        entry: scripts/validate.sh
+        language: system
+        pass_filenames: false
+        files: ^(site\.yaml|media/|overrides/|engine\.lock)

@@ -1,0 +1,54 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# Pull requests: build the preview and report the result in plain language in
+# the job summary. Nothing is deployed and no secret or environment is used.
+# This is `pull_request`, never `pull_request_target`: the change under review
+# is the only thing that runs, and it runs with a read-only token.
+name: Preview
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: preview-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  preview:
+    name: Build the preview
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Check the repository for files that must not be committed
+        run: scripts/check-repo.sh
+
+      # On success or failure this writes a plain-language note to the job
+      # summary; on failure it also fails the job.
+      - name: Build the site with the pinned engine
+        run: scripts/validate.sh --out "$RUNNER_TEMP/site-preview" --summary "$GITHUB_STEP_SUMMARY"
+
+      - name: Say what happens next
+        run: |
+          {
+            echo
+            echo "Nothing was deployed. Download the \`site-preview\` artifact from"
+            echo "this run to look at the pages. Merging to \`main\` deploys, after"
+            echo "a reviewer approves."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: site-preview
+          path: ${{ runner.temp }}/site-preview
+          if-no-files-found: error
+          retention-days: 7

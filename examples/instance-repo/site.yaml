@@ -1,0 +1,25 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/ChiefGyk3D/Reach-Around/main/docs/site.schema.json
+# The schema file named above exists once the engine's schema export lands
+# (issue #103, phase 1, PR #109). Until then the line is a harmless comment
+# and the build is the validator. Field rules: docs/config.md in the engine.
+#
+# Synthetic starter config. Replace every name and URL with your own.
+version: 1
+creator:
+  name: Example Creator
+  socials:
+    - name: Example Video
+      url: https://video.example.com/@example
+      icon: video
+tabs:
+  - id: links
+    title: Links
+    blocks:
+      - id: home-page
+        title: Example Home Page
+        subtitle: The main site
+        url: https://example.com/
+      - id: newsletter
+        title: Newsletter
+        subtitle: One email a month
+        url: https://news.example.com/
