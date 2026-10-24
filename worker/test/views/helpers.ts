@@ -21,8 +21,10 @@ export function fakeLimiter(limit = 100000) {
   const counts = new Map<string, number>();
   return {
     calls: 0,
+    keys: [] as string[],
     async limit({ key }: { key: string }) {
       this.calls += 1;
+      this.keys.push(key);
       const n = (counts.get(key) ?? 0) + 1;
       counts.set(key, n);
       return { success: n <= limit };
@@ -137,39 +139,23 @@ export async function dumpDatabase(): Promise<string> {
   return JSON.stringify(out);
 }
 
-/** An env whose DB counts prepare() calls (and sums rows_written of run()). */
-export function spyDb() {
-  const calls = { prepare: 0, rowsWritten: 0 };
+/** A DB that counts prepare() and batch() calls and sums rows_written of every result. */
+export function spyDb(inject?: (stmts: D1PreparedStatement[]) => D1PreparedStatement[]) {
+  const calls = { prepare: 0, batch: 0, rowsWritten: 0 };
   const proxy = new Proxy(DB, {
     get(t, prop) {
       if (prop === "prepare") {
         return (q: string) => {
           calls.prepare += 1;
-          const stmt = t.prepare(q);
-          return new Proxy(stmt, {
-            get(s, p) {
-              if (p === "bind") {
-                return (...a: unknown[]) => {
-                  const bound = s.bind(...a);
-                  return new Proxy(bound, {
-                    get(b, bp) {
-                      if (bp === "run") {
-                        return async () => {
-                          const r = await b.run();
-                          calls.rowsWritten += (r.meta as { rows_written?: number }).rows_written ?? 0;
-                          return r;
-                        };
-                      }
-                      const v = Reflect.get(b, bp, b);
-                      return typeof v === "function" ? v.bind(b) : v;
-                    },
-                  });
-                };
-              }
-              const v = Reflect.get(s, p, s);
-              return typeof v === "function" ? v.bind(s) : v;
-            },
-          });
+          return t.prepare(q);
+        };
+      }
+      if (prop === "batch") {
+        return async (stmts: D1PreparedStatement[]) => {
+          calls.batch += 1;
+          const res = await t.batch(inject ? inject(stmts) : stmts);
+          for (const r of res) calls.rowsWritten += (r.meta as { rows_written?: number }).rows_written ?? 0;
+          return res;
         };
       }
       const v = Reflect.get(t, prop, t);

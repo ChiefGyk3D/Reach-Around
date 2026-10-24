@@ -45,12 +45,13 @@ crons = ["17 4 * * *", "5 0 * * *"]
 # BOTS_MODE = "count"              # count | drop
 # VIEWS_PER_HOUR = "120"           # global human budget
 # BOT_VIEWS_PER_HOUR = "30"        # global bot budget
-# CLIENT_VIEWS_PER_HOUR = "60"     # per-client cap (ceiling 1000), keyed on a hash
+# CLIENT_VIEWS_PER_HOUR = "60"     # per-client cap (ceiling 1000); clamped to half the human or a quarter of the bot budget
 # RAW_KEEP_DAYS = "7"              # raw view retention (ceiling 90)
 # UV_ENABLED = "1"
-# UV_BITS = "32"
+# UV_BITS = "64"                 # visitor hash width: minimum and default 64, at most 128
 # VIEW_HASH_SECRET is a SECRET: `npx wrangler secret put VIEW_HASH_SECRET`
-# (32 random bytes, base64). Never put it in this file.
+# (32 random bytes, base64). Never put it in this file. REQUIRED: without it
+# the page-view route records nothing (it fails closed).
 #
 # Per-client burst limiter, much stricter than the global budget: 5 views per
 # client per 60 seconds (a real visitor sends one beacon per page load).

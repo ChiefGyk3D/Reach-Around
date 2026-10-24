@@ -28,16 +28,41 @@
 //
 // DEFAULTS RELIED ON (open decisions in the plan, none decided by anyone)
 //   P-3 raw retention 7 days (applies to the rollup job, not this file)
-//   P-5 hash width 32 bits, day boundary UTC
+//   P-5 hash width 64 bits (UV_BITS may raise it to at most 128, anything
+//       lower falls back to 64), day boundary UTC
 //   P-6 write budget 120 human views per hour and 30 bot views per hour,
-//       counted in view_meta (an atomic upsert) because Plan 3's reserveRoute
-//       is not on main yet. VIEWS_PER_HOUR / BOT_VIEWS_PER_HOUR override.
+//       counted in view_meta because Plan 3's reserveRoute is not on main yet.
+//       VIEWS_PER_HOUR / BOT_VIEWS_PER_HOUR override. One client may use at
+//       most half the human budget or a quarter of the bot budget (and at most
+//       CLIENT_VIEWS_PER_HOUR, default 60), through ONE shared per-address
+//       counter, so bot and human traffic from one address share the cap.
+//
+// ACCEPTING A VIEW IS ONE ATOMIC D1 BATCH
+//   The client counter, the global counter, the event row and the
+//   visitor_seen row are written by one batch whose statements each depend on
+//   `changes()` of the one before, and the first depends on BOTH counters being
+//   under their limits. When either is spent nothing is written at all (the
+//   statements run and change zero rows); if any statement fails the whole
+//   batch rolls back, so no counter is consumed without an event and no
+//   visitor_seen row exists without one.
+//
+// FAIL CLOSED
+//   Without a usable VIEW_HASH_SECRET or a parsable client address there is
+//   no keyed client identity, so nothing is recorded (same 204, no limiter
+//   call, no database call). The rate-limiter bindings are keyed by purpose-
+//   separated daily HMACs of the address, never by the raw address.
+//
+// TIMING
+//   Every response is byte-identical, but latency depends on how far a
+//   request got (an early refusal is faster than an accepted view). That is
+//   accepted and documented; the body read has a short fixed deadline.
 //   GEO_LEVEL city, BOTS_MODE count, network class "unknown" for now.
 
 import { BOT_REASONS, classifyBot, uaSignals, type BotClass } from "./botclass";
 import { MAX_PATH_LENGTH, MAX_URL_LENGTH, originMatches } from "./click";
 import type { RateLimiter } from "./click";
 import { classifyUserAgent, primaryLanguage } from "./ua";
+import { padHour } from "./viewretention";
 
 export interface ViewEnv {
   DB: D1Database;
@@ -58,7 +83,7 @@ export interface ViewEnv {
   BOTS_MODE?: string;
   VIEWS_PER_HOUR?: string;
   BOT_VIEWS_PER_HOUR?: string;
-  /** Per-client hourly cap (default 60, ceiling 1000). Needs VIEW_HASH_SECRET. */
+  /** Per-client hourly cap (default 60, ceiling 1000), clamped below the class budget. */
   CLIENT_VIEWS_PER_HOUR?: string;
 }
 
@@ -77,7 +102,11 @@ const DEFAULT_BOT_PER_HOUR = 30;
  */
 export const DEFAULT_CLIENT_VIEWS_PER_HOUR = 60;
 export const MAX_CLIENT_VIEWS_PER_HOUR = 1000;
-const DEFAULT_HASH_BITS = 32;
+/** Visitor hash width in bits: default and minimum 64, at most 128. */
+const DEFAULT_HASH_BITS = 64;
+const MAX_HASH_BITS = 128;
+/** The body must arrive within this long or the request is dropped (same 204). */
+export const BODY_DEADLINE_MS = 2000;
 const MIN_SECRET_BYTES = 32;
 const HOUR_MS = 3_600_000;
 const MINUTE_MS = 60_000;
@@ -369,29 +398,49 @@ export async function visitorHash(key: CryptoKey, normalized: string, bits: numb
   return hex.slice(0, Math.ceil(bits / 4));
 }
 
+export interface Identity {
+  /** Key for VIEW_LIMITER (128-bit hex, purpose "lim"). */
+  lim: string;
+  /** Key for VIEW_SUSPECT_LIMITER (purpose "sus"). */
+  sus: string;
+  /** Per-address cap key (purpose "cap", 32-bit hex), shared by bots and humans. */
+  cap: string;
+  /** Daily unique-visitor hash, or null when uniques are off. */
+  uv: string | null;
+}
+
+function uvBits(raw: string | undefined): number {
+  const n = positiveInt(raw, DEFAULT_HASH_BITS, MAX_HASH_BITS);
+  return n >= DEFAULT_HASH_BITS ? n : DEFAULT_HASH_BITS;
+}
+
 /**
- * Keyed hashes for this request, or nulls when there is no usable secret or
- * the address does not parse. `uv` is the daily unique-visitor hash (only if
- * uniques are on); `cap` is a separate 32-bit hash under a different label,
- * used only as the per-client budget key (bots and humans on one address have
- * separate caps), so it cannot be matched to a visitor_seen row. The raw address is a local here and in normalizeAddress.
+ * The keyed identities of this request's address, or null when there is no
+ * usable secret or the address does not parse (the caller then fails closed).
+ * Each purpose has its own label so the values cannot be matched to one
+ * another or to a stored visitor hash without the secret, and all rotate
+ * with the UTC day. The raw address is a local here and in normalizeAddress;
+ * it is the only place the header is read.
  */
-async function hashesFor(
+export async function identityFor(
   request: Request,
   env: ViewEnv,
   now: number,
-  bot: boolean,
-): Promise<{ uv: string | null; cap: string | null }> {
+): Promise<Identity | null> {
   const secret = secretBytes(env.VIEW_HASH_SECRET);
-  if (secret === null || typeof env.VIEW_HASH_SECRET !== "string") return { uv: null, cap: null };
+  if (secret === null || typeof env.VIEW_HASH_SECRET !== "string") return null;
   const addr = normalizeAddress(request.headers.get("CF-Connecting-IP")); // CONTROL:pv-no-raw
-  if (addr === null) return { uv: null, cap: null };
+  if (addr === null) return null;
   const key = await dayKey(secret, env.VIEW_HASH_SECRET, utcDate(now)); // CONTROL:pv-uv-key
-  const cap = await visitorHash(key, `cap|${bot ? "bot" : "human"}|${addr}`, 32);
   const flag = env.UV_ENABLED;
-  if (typeof flag === "string" && !flagOn(flag)) return { uv: null, cap };
-  const bits = positiveInt(env.UV_BITS, DEFAULT_HASH_BITS, 64);
-  return { uv: await visitorHash(key, addr, bits >= 16 ? bits : DEFAULT_HASH_BITS), cap };
+  const uvOn = !(typeof flag === "string" && !flagOn(flag));
+  const [lim, sus, cap, uv] = await Promise.all([
+    visitorHash(key, `lim|${addr}`, 128),
+    visitorHash(key, `sus|${addr}`, 128),
+    visitorHash(key, `cap|${addr}`, 32),
+    uvOn ? visitorHash(key, addr, uvBits(env.UV_BITS)) : Promise.resolve(null),
+  ]);
+  return { lim, sus, cap, uv };
 }
 
 // ----------------------------------------------------------------- derive
@@ -407,15 +456,14 @@ interface Derived {
 }
 
 /** Reduce the user agent and language header to enums. Raw text stays local. */
-async function derive(request: Request, env: ViewEnv): Promise<Derived> {
+async function derive(request: Request, env: ViewEnv, suspectKey: string): Promise<Derived> {
   const ua = request.headers.get("User-Agent"); // CONTROL:pv-no-raw
   const acceptLanguage = request.headers.get("Accept-Language");
   const uaClass = classifyUserAgent(ua);
   let rate = false;
   if (env.VIEW_SUSPECT_LIMITER) {
     try {
-      const key = request.headers.get("CF-Connecting-IP") ?? "unknown";
-      rate = !(await env.VIEW_SUSPECT_LIMITER.limit({ key })).success;
+      rate = !(await env.VIEW_SUSPECT_LIMITER.limit({ key: suspectKey })).success;
     } catch {
       rate = false;
     }
@@ -443,21 +491,40 @@ async function derive(request: Request, env: ViewEnv): Promise<Derived> {
 
 // ------------------------------------------------------------------- body
 
-/** Read at most `max` bytes, counting as we go. Null when the cap is passed. */
-async function readBounded(body: ReadableStream<Uint8Array> | null, max: number): Promise<string | null> {
+/**
+ * Read at most `max` bytes, counting as we go, and give up after
+ * `deadlineMs`. Null when the cap is passed or the deadline expires.
+ */
+async function readBounded(
+  body: ReadableStream<Uint8Array> | null,
+  max: number,
+  deadlineMs: number,
+): Promise<string | null> {
   if (body === null) return "";
   const reader = body.getReader();
   const chunks: Uint8Array[] = [];
   let total = 0;
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    total += value.byteLength;
-    if (total > max) {
-      await reader.cancel().catch(() => undefined);
-      return null;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const expired = new Promise<"expired">((resolve) => {
+    timer = setTimeout(() => resolve("expired"), deadlineMs); // CONTROL:pv-deadline
+  });
+  try {
+    for (;;) {
+      const r = await Promise.race([reader.read(), expired]);
+      if (r === "expired") {
+        void reader.cancel().catch(() => undefined);
+        return null;
+      }
+      if (r.done) break;
+      total += r.value.byteLength;
+      if (total > max) {
+        await reader.cancel().catch(() => undefined);
+        return null;
+      }
+      chunks.push(r.value);
     }
-    chunks.push(value);
+  } finally {
+    clearTimeout(timer);
   }
   const all = new Uint8Array(total);
   let at = 0;
@@ -471,21 +538,101 @@ async function readBounded(body: ReadableStream<Uint8Array> | null, max: number)
 // ----------------------------------------------------------------- budget
 
 /**
- * Spend one unit of this hour's write budget for `route`, atomically. The
- * single upsert only raises the counter while it is under the limit, so
- * `changes` is 1 when a unit was granted and 0 when the budget is spent.
- * This is the first write of an accepted view.
+ * Effective per-client hourly cap for this class: the configured value
+ * (default 60, ceiling 1000) clamped to half the human budget or a quarter of
+ * the bot budget, never below 1 unless the budget or the setting is 0.
  */
-async function reserve(env: ViewEnv, key: string, limit: number): Promise<boolean> {
-  if (limit <= 0) return false;
-  const res = await env.DB.prepare(
-    "INSERT INTO view_meta (key, value) VALUES (?1, '1') " +
-      "ON CONFLICT(key) DO UPDATE SET value = CAST(CAST(value AS INTEGER) + 1 AS TEXT) " +
-      "WHERE CAST(value AS INTEGER) < ?2",
-  )
-    .bind(key, limit)
-    .run(); // CONTROL:pv-budget
-  return res.meta.changes === 1;
+export function clientLimit(env: ViewEnv, bot: boolean): number {
+  const configured = positiveInt(env.CLIENT_VIEWS_PER_HOUR, DEFAULT_CLIENT_VIEWS_PER_HOUR, MAX_CLIENT_VIEWS_PER_HOUR);
+  const global = bot
+    ? positiveInt(env.BOT_VIEWS_PER_HOUR, DEFAULT_BOT_PER_HOUR, 100000)
+    : positiveInt(env.VIEWS_PER_HOUR, DEFAULT_HUMAN_PER_HOUR, 100000);
+  if (configured <= 0 || global <= 0) return 0;
+  const share = bot ? Math.floor(global / 4) : Math.floor(global / 2);
+  return Math.max(1, Math.min(configured, share)); // CONTROL:pv-client-clamp
+}
+
+/** Global-budget test, true while the counter under ?2 is below ?3. */
+const GLOBAL_OK = "COALESCE((SELECT CAST(value AS INTEGER) FROM view_meta WHERE key = ?2), 0) < ?3";
+const BUMP = "value = CAST(CAST(value AS INTEGER) + 1 AS TEXT)";
+
+interface AcceptRow {
+  ts: number;
+  page: string;
+  kind: SrcKind;
+  src: string;
+  geo: Geo;
+  d: Derived;
+  vp: Viewport;
+}
+
+/**
+ * Accept a view in ONE atomic batch. Statement 1 raises the client counter
+ * only if the client is under its cap AND the global budget has room;
+ * statement 2 raises the global counter only if statement 1 changed a row;
+ * statement 3 inserts the event only if statement 2 did (`first` is computed
+ * inside it, before the visitor row exists); statement 4 inserts the visitor
+ * row only if statement 3 did. When anything is spent every statement changes
+ * zero rows and nothing is written; if a statement throws, the batch rolls
+ * back.
+ */
+async function accept(
+  env: ViewEnv,
+  id: Identity,
+  row: AcceptRow,
+  bot: boolean,
+  globalLimit: number,
+  now: number,
+): Promise<void> {
+  const clientCap = clientLimit(env, bot);
+  if (globalLimit <= 0 || clientCap <= 0) return;
+  const hour = padHour(Math.floor(now / HOUR_MS));
+  const capKey = `cap:${hour}:${id.cap}`;
+  const budKey = `bud:${hour}:${bot ? "pvbot" : "pv"}`;
+  const day = utcDate(now);
+  const uvh = bot ? null : id.uv;
+  const stmts = [
+    env.DB.prepare(
+      `INSERT INTO view_meta (key, value) SELECT ?1, '1' WHERE ${GLOBAL_OK} ` +
+        `ON CONFLICT(key) DO UPDATE SET ${BUMP} WHERE CAST(value AS INTEGER) < ?4 AND ${GLOBAL_OK}`,
+    ).bind(capKey, budKey, globalLimit, clientCap), // CONTROL:pv-client-cap
+    env.DB.prepare(
+      `INSERT INTO view_meta (key, value) SELECT ?1, '1' WHERE changes() = 1 ` +
+        `ON CONFLICT(key) DO UPDATE SET ${BUMP} WHERE changes() = 1`,
+    ).bind(budKey), // CONTROL:pv-budget
+    env.DB.prepare(
+      "INSERT INTO view_events (ts, page, src_kind, src, country, region, city, browser, bmajor, " +
+        "os, device, lang, vp, net, bot_class, reason, first) " +
+        "SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, " +
+        "CASE WHEN ?18 IS NOT NULL AND NOT EXISTS (SELECT 1 FROM visitor_seen WHERE day = ?17 AND h = ?18) " +
+        "THEN 1 ELSE 0 END WHERE changes() = 1",
+    ).bind(
+      row.ts,
+      row.page,
+      row.kind,
+      row.src,
+      row.geo.country,
+      row.geo.region,
+      row.geo.city,
+      row.d.browser,
+      row.d.bmajor,
+      row.d.os,
+      row.d.device,
+      row.d.lang,
+      row.vp,
+      "unknown", // network class: the dataset task fills this in later
+      row.d.cls,
+      row.d.reason,
+      day,
+      uvh,
+    ),
+  ];
+  if (uvh !== null) {
+    stmts.push(
+      env.DB.prepare("INSERT OR IGNORE INTO visitor_seen (day, h) SELECT ?1, ?2 WHERE changes() = 1").bind(day, uvh),
+    );
+  }
+  await env.DB.batch(stmts);
 }
 
 // ---------------------------------------------------------------- handler
@@ -503,6 +650,7 @@ export async function handleView(
   request: Request,
   env: ViewEnv,
   now: number = Date.now(),
+  bodyDeadlineMs: number = BODY_DEADLINE_MS,
 ): Promise<Response> {
   let bodyTouched = false;
   try {
@@ -528,72 +676,46 @@ export async function handleView(
     }
     if (request.headers.get("Transfer-Encoding") !== null) return noContent();
 
+    // No keyed identity (no secret, bad secret, unparsable address): fail
+    // closed, before the limiter, the body and the database.
+    const id = await identityFor(request, env, now);
+    if (id === null) return noContent();
+
     if (!env.VIEW_LIMITER) return noContent();
-    const limiterKey = request.headers.get("CF-Connecting-IP") ?? "unknown";
-    if (!(await env.VIEW_LIMITER.limit({ key: limiterKey })).success) return noContent(); // CONTROL:pv-limiter
+    if (!(await env.VIEW_LIMITER.limit({ key: id.lim })).success) return noContent(); // CONTROL:pv-limiter
 
     bodyTouched = true;
-    const text = await readBounded(request.body, MAX_BODY);
+    const text = await readBounded(request.body, MAX_BODY, bodyDeadlineMs);
     if (text === null) return noContent();
     const beacon = parseBeacon(text, env.SITE_HOST);
     if (beacon === null) return noContent();
 
     const level = oneOf(env.GEO_LEVEL ?? "", ["country", "region", "city"], "city") as GeoLevel;
     const geo = geoOf(request, level);
-    const d = await derive(request, env);
+    const d = await derive(request, env, id.sus);
 
     const bot = d.cls !== "h";
     if (env.BOTS_MODE === "drop" && (d.cls === "a" || d.cls === "s")) return noContent();
 
-    const limit = bot
+    const globalLimit = bot
       ? positiveInt(env.BOT_VIEWS_PER_HOUR, DEFAULT_BOT_PER_HOUR, 100000)
       : positiveInt(env.VIEWS_PER_HOUR, DEFAULT_HUMAN_PER_HOUR, 100000);
-    const hour = Math.floor(now / HOUR_MS);
-
-    // Per-client cap first, so one client cannot spend the global budget.
-    const { uv, cap } = await hashesFor(request, env, now, bot);
-    if (cap !== null) {
-      const perClient = positiveInt(env.CLIENT_VIEWS_PER_HOUR, DEFAULT_CLIENT_VIEWS_PER_HOUR, MAX_CLIENT_VIEWS_PER_HOUR);
-      if (!(await reserve(env, `cap:${cap}:${hour}`, perClient))) return noContent(); // CONTROL:pv-client-cap
-    }
-    if (!(await reserve(env, `bud:${bot ? "pvbot" : "pv"}:${hour}`, limit))) return noContent();
-
-    let first = 0;
-    if (!bot) {
-      const h = uv;
-      if (h !== null) {
-        const seen = await env.DB.prepare("INSERT OR IGNORE INTO visitor_seen (day, h) VALUES (?, ?)")
-          .bind(utcDate(now), h)
-          .run();
-        first = seen.meta.changes === 1 ? 1 : 0;
-      }
-    }
-
-    await env.DB.prepare(
-      "INSERT INTO view_events (ts, page, src_kind, src, country, region, city, browser, bmajor, " +
-        "os, device, lang, vp, net, bot_class, reason, first) " +
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-    )
-      .bind(
-        Math.floor(now / MINUTE_MS) * MINUTE_MS,
+    await accept(
+      env,
+      id,
+      {
+        ts: Math.floor(now / MINUTE_MS) * MINUTE_MS,
         page,
-        beacon.kind,
-        beacon.src,
-        geo.country,
-        geo.region,
-        geo.city,
-        d.browser,
-        d.bmajor,
-        d.os,
-        d.device,
-        d.lang,
-        beacon.vp,
-        "unknown", // network class: the dataset task fills this in later
-        d.cls,
-        d.reason,
-        first,
-      )
-      .run();
+        kind: beacon.kind,
+        src: beacon.src,
+        geo,
+        d,
+        vp: beacon.vp,
+      },
+      bot,
+      globalLimit,
+      now,
+    );
   } catch {
     // A failure looks the same as success from the outside. Nothing is logged.
   } finally {

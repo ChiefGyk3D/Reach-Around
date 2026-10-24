@@ -221,20 +221,20 @@ describe("source guards", () => {
     const src = Object.entries(sources).find(([k]) => k.endsWith("/view.ts"))?.[1] ?? "";
     expect(src.length).toBeGreaterThan(1000);
     const count = (needle: string) => src.split(needle).length - 1;
-    // limiter key, the suspect-limiter key, and the visitor hash: nowhere else.
-    expect(count('"CF-Connecting-IP"')).toBe(3);
+    // Read once, in identityFor(); the limiter keys, cap key and visitor hash all derive from it.
+    expect(count('"CF-Connecting-IP"')).toBe(1);
     // derive() only.
     expect(count('"User-Agent"')).toBe(1);
     expect(count('"Accept-Language"')).toBe(1);
     // No logging and no outbound call anywhere in the file.
     expect(src).not.toMatch(/console\./);
     expect(src).not.toMatch(/\bfetch\(/);
-    expect(src).not.toMatch(/\bsetTimeout\b|\bcaches\b|\bKV\b/);
+    expect(src).not.toMatch(/\bcaches\b|\bKV\b/);
   });
 
   it("raw_header_scan_bites", () => {
-    const sample = 'a("CF-Connecting-IP"); b("CF-Connecting-IP"); c("CF-Connecting-IP"); d("CF-Connecting-IP");';
-    expect(sample.split('"CF-Connecting-IP"').length - 1).not.toBe(3);
+    const sample = 'a("CF-Connecting-IP"); b("CF-Connecting-IP");';
+    expect(sample.split('"CF-Connecting-IP"').length - 1).not.toBe(1);
   });
 });
 
@@ -332,7 +332,7 @@ describe("stored values stay inside their domains (property test)", () => {
       ok += 1;
     }
     expect(ok).toBe(all.length);
-    for (const s of await seen()) expect(s.h).toMatch(/^[0-9a-f]{8}$/);
+    for (const s of await seen()) expect(s.h).toMatch(/^[0-9a-f]{16}$/);
     // Every text value in the whole database is short.
     for (const table of ["view_events", "visitor_seen", "view_meta"]) {
       const res = await DB.prepare(`SELECT * FROM ${table}`).all<Record<string, unknown>>();

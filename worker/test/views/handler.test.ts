@@ -2,19 +2,25 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import worker from "../../src/index";
 import {
+  BODY_DEADLINE_MS,
   DEFAULT_CLIENT_VIEWS_PER_HOUR,
   MAX_CLIENT_VIEWS_PER_HOUR,
+  clientLimit,
   handleView,
 } from "../../src/view";
 import {
+  DB,
   IP4,
+  IP6,
   NOW,
+  SECRET_2,
   SITE,
   beacon,
   budgets,
   clearAll,
   countingStream,
   fakeLimiter,
+  dumpDatabase,
   makeEnv,
   rows,
   seen,
@@ -82,6 +88,11 @@ const CASES: Case[] = [
   },
   { name: "killed", req: () => beacon(), env: () => makeEnv({ VIEWS_KILL: "1" }), writes: false },
   { name: "no limiter bound", req: () => beacon(), env: () => makeEnv({ VIEW_LIMITER: undefined }), writes: false },
+  { name: "no secret (fails closed)", req: () => beacon(), env: () => makeEnv({ VIEW_HASH_SECRET: undefined }), writes: false },
+  { name: "short secret (fails closed)", req: () => beacon(), env: () => makeEnv({ VIEW_HASH_SECRET: btoa("short") }), writes: false },
+  { name: "malformed secret (fails closed)", req: () => beacon(), env: () => makeEnv({ VIEW_HASH_SECRET: "%%%" }), writes: false },
+  { name: "no client address (fails closed)", req: () => beacon({ headers: { "CF-Connecting-IP": null } }), writes: false },
+  { name: "unparsable client address (fails closed)", req: () => beacon({ headers: { "CF-Connecting-IP": "not-an-ip" } }), writes: false },
   { name: "no page ids", req: () => beacon(), env: () => makeEnv({ PAGE_IDS: undefined }), writes: false },
   { name: "bad page ids", req: () => beacon(), env: () => makeEnv({ PAGE_IDS: "{not json" }), writes: false },
 ];
@@ -240,11 +251,16 @@ describe("privacy signals and caps", () => {
 describe("bots and budgets", () => {
   const CURL = { "User-Agent": "curl/8.5.0" };
 
+  const from = (n: number, extra: Record<string, string | null> = {}) => ({
+    ...extra,
+    "CF-Connecting-IP": `203.0.113.${n}`,
+  });
+
   it("budget_exhaustion_records_nothing_and_a_human_still_gets_through", async () => {
     const env = makeEnv({ BOT_VIEWS_PER_HOUR: "3" });
-    for (let i = 0; i < 5; i++) await handleView(beacon({ headers: CURL }), env, NOW);
+    for (let i = 1; i <= 5; i++) await handleView(beacon({ headers: from(i, CURL) }), env, NOW);
     expect((await rows()).filter((r) => r.bot_class === "a").length).toBe(3);
-    await handleView(beacon(), env, NOW);
+    await handleView(beacon({ headers: from(9) }), env, NOW);
     const all = await rows();
     expect(all.length).toBe(4);
     expect(all.filter((r) => r.bot_class === "h").length).toBe(1);
@@ -252,9 +268,9 @@ describe("bots and budgets", () => {
 
   it("human_budget_is_enforced_per_hour_and_resets_next_hour", async () => {
     const env = makeEnv({ VIEWS_PER_HOUR: "2" });
-    for (let i = 0; i < 4; i++) await handleView(beacon(), env, NOW);
+    for (let i = 1; i <= 4; i++) await handleView(beacon({ headers: from(i) }), env, NOW);
     expect((await rows()).length).toBe(2);
-    await handleView(beacon(), env, NOW + 3_600_000);
+    await handleView(beacon({ headers: from(5) }), env, NOW + 3_600_000);
     expect((await rows()).length).toBe(3);
   });
 
@@ -265,8 +281,12 @@ describe("bots and budgets", () => {
 
   it("bot_flood_does_not_move_human_counts", async () => {
     const env = makeEnv({ BOT_VIEWS_PER_HOUR: "30" });
-    for (let i = 0; i < 1000; i++) await handleView(beacon({ headers: CURL }), env, NOW);
-    for (let i = 0; i < 5; i++) await handleView(beacon(), env, NOW);
+    for (let i = 0; i < 300; i++) {
+      await handleView(beacon({ headers: { ...CURL, "CF-Connecting-IP": `203.0.113.${(i % 60) + 1}` } }), env, NOW);
+    }
+    for (let i = 0; i < 5; i++) {
+      await handleView(beacon({ headers: { "CF-Connecting-IP": `198.51.100.${i + 1}` } }), env, NOW);
+    }
     const all = await rows();
     expect(all.filter((r) => r.bot_class === "h").length).toBe(5);
     expect(all.filter((r) => r.bot_class !== "h").length).toBe(30);
@@ -289,7 +309,7 @@ describe("bots and budgets", () => {
       expect(r[0]?.reason).toBe(reason);
       expect(r[0]?.first).toBe(0);
       expect(await seen()).toEqual([]);
-      expect((await budgets()).filter((b) => b.key.startsWith("bud:")).map((b) => b.key.split(":")[1])).toEqual(["pvbot"]);
+      expect((await budgets()).filter((b) => b.key.startsWith("bud:")).map((b) => b.key.split(":")[2])).toEqual(["pvbot"]);
     }
   });
 
@@ -316,7 +336,7 @@ describe("per-client cap", () => {
     const env = makeEnv({ CLIENT_VIEWS_PER_HOUR: "3", VIEWS_PER_HOUR: "100" });
     for (let i = 0; i < 20; i++) await handleView(beacon({ headers: ip(9) }), env, NOW);
     expect((await rows()).length).toBe(3);
-    const global = (await budgets()).find((b) => b.key.startsWith("bud:pv:"));
+    const global = (await budgets()).find((b) => b.key.startsWith("bud:"));
     expect(global?.value).toBe("3");
     // Other visitors are untouched by the flood.
     for (let n = 1; n <= 4; n++) await handleView(beacon({ headers: ip(n) }), env, NOW);
@@ -348,9 +368,9 @@ describe("per-client cap", () => {
   it("the_stored_key_is_not_the_visitor_hash_nor_the_address", async () => {
     await handleView(beacon(), makeEnv(), NOW);
     const key = (await budgets()).find((b) => b.key.startsWith("cap:"))?.key ?? "";
-    expect(key).toMatch(/^cap:[0-9a-f]{8}:\d+$/);
+    expect(key).toMatch(/^cap:\d{8}:[0-9a-f]{8}$/);
     expect(key).not.toContain(IP4);
-    expect(key.split(":")[1]).not.toBe((await seen())[0]?.h);
+    expect(key.split(":")[2]).not.toBe((await seen())[0]?.h?.slice(0, 8));
   });
 
   it("bots_are_capped_per_client_too", async () => {
@@ -359,12 +379,188 @@ describe("per-client cap", () => {
     expect((await rows()).length).toBe(2);
   });
 
-  it("without_a_secret_there_is_no_client_key_and_the_limiter_alone_applies", async () => {
-    const env = makeEnv({ VIEW_HASH_SECRET: undefined, CLIENT_VIEWS_PER_HOUR: "1" });
+  it("one_shared_cap_covers_bot_and_human_traffic_from_one_address", async () => {
+    const env = makeEnv({ CLIENT_VIEWS_PER_HOUR: "3", VIEWS_PER_HOUR: "100", BOT_VIEWS_PER_HOUR: "100" });
+    await handleView(beacon({ headers: { "User-Agent": "curl/8.5.0" } }), env, NOW);
+    await handleView(beacon({ headers: { "User-Agent": "curl/8.5.0" } }), env, NOW);
     await handleView(beacon(), env, NOW);
-    await handleView(beacon(), env, NOW);
+    await handleView(beacon(), env, NOW); // the fourth view of any kind is over the shared cap
+    await handleView(beacon({ headers: { "User-Agent": "curl/8.5.0" } }), env, NOW);
+    expect((await rows()).length).toBe(3);
+    expect((await budgets()).filter((b) => b.key.startsWith("cap:")).length).toBe(1);
+  });
+
+  it("client_cap_is_clamped_below_the_class_budget", () => {
+    // human at most half the human budget, bot at most a quarter of the bot budget
+    expect(clientLimit(makeEnv({ CLIENT_VIEWS_PER_HOUR: "1000", VIEWS_PER_HOUR: "120" }), false)).toBe(60);
+    expect(clientLimit(makeEnv({ CLIENT_VIEWS_PER_HOUR: "1000", VIEWS_PER_HOUR: "10" }), false)).toBe(5);
+    expect(clientLimit(makeEnv({ CLIENT_VIEWS_PER_HOUR: "1000", BOT_VIEWS_PER_HOUR: "30" }), true)).toBe(7);
+    expect(clientLimit(makeEnv({ CLIENT_VIEWS_PER_HOUR: "2", BOT_VIEWS_PER_HOUR: "30" }), true)).toBe(2);
+    expect(clientLimit(makeEnv({ VIEWS_PER_HOUR: "1" }), false)).toBe(1);
+    expect(clientLimit(makeEnv({ VIEWS_PER_HOUR: "0" }), false)).toBe(0);
+    expect(clientLimit(makeEnv({}), false)).toBe(60);
+    expect(clientLimit(makeEnv({}), true)).toBe(7);
+  });
+
+  it("a_client_cannot_use_more_than_half_the_human_budget", async () => {
+    const env = makeEnv({ VIEWS_PER_HOUR: "10", CLIENT_VIEWS_PER_HOUR: "1000" });
+    for (let i = 0; i < 30; i++) await handleView(beacon(), env, NOW);
+    expect((await rows()).length).toBe(5);
+  });
+});
+
+describe("atomic accept", () => {
+  const client = (n: number) => ({ "CF-Connecting-IP": `203.0.113.${n}` });
+  const count = async (like: string) => (await budgets()).filter((b) => b.key.startsWith(like)).length;
+
+  it("after_the_global_budget_is_spent_distinct_clients_create_no_rows_and_no_writes", async () => {
+    const env = makeEnv({ VIEWS_PER_HOUR: "2", CLIENT_VIEWS_PER_HOUR: "5" });
+    await handleView(beacon({ headers: client(1) }), env, NOW);
+    await handleView(beacon({ headers: client(2) }), env, NOW);
     expect((await rows()).length).toBe(2);
-    expect((await budgets()).some((b) => b.key.startsWith("cap:"))).toBe(false);
+    const capRows = await count("cap:");
+    expect(capRows).toBe(2);
+
+    const spy = spyDb();
+    for (let n = 3; n < 63; n++) {
+      await handleView(beacon({ headers: client(n) }), { ...env, DB: spy.DB }, NOW);
+    }
+    expect(spy.calls.rowsWritten).toBe(0);
+    expect(await count("cap:")).toBe(capRows);
+    expect((await rows()).length).toBe(2);
+    expect((await seen()).length).toBe(2);
+    expect((await budgets()).find((b) => b.key.startsWith("bud:"))?.value).toBe("2");
+  });
+
+  it("an_exhausted_client_cap_spends_nothing_globally", async () => {
+    const env = makeEnv({ CLIENT_VIEWS_PER_HOUR: "1", VIEWS_PER_HOUR: "100" });
+    for (let i = 0; i < 10; i++) await handleView(beacon({ headers: client(7) }), env, NOW);
+    expect((await budgets()).find((b) => b.key.startsWith("bud:"))?.value).toBe("1");
+    expect((await rows()).length).toBe(1);
+  });
+
+  it("accept_is_one_batch_and_a_later_failure_rolls_everything_back", async () => {
+    const spy = spyDb((stmts) => [...stmts, DB.prepare("INSERT INTO table_that_does_not_exist VALUES (1)")]);
+    const res = await handleView(beacon(), { ...makeEnv(), DB: spy.DB }, NOW);
+    expect(res.status).toBe(204);
+    expect(spy.calls.batch).toBe(1); // attempted, then rolled back as a whole
+    expect(spy.calls.rowsWritten).toBe(0);
+    expect(await rows()).toEqual([]);
+    expect(await seen()).toEqual([]);
+    expect(await budgets()).toEqual([]);
+  });
+
+  it("a_normal_accept_uses_exactly_one_batch", async () => {
+    const spy = spyDb();
+    await handleView(beacon(), { ...makeEnv(), DB: spy.DB }, NOW);
+    expect(spy.calls.batch).toBe(1);
+    expect((await rows()).length).toBe(1);
+  });
+
+  it("no_visitor_seen_row_without_an_event", async () => {
+    const env = makeEnv({ VIEWS_PER_HOUR: "1" });
+    for (let n = 1; n <= 6; n++) await handleView(beacon({ headers: client(n) }), env, NOW);
+    expect((await seen()).length).toBe((await rows()).filter((r) => r.first === 1).length);
+    expect((await rows()).length).toBe(1);
+  });
+});
+
+describe("limiter keys", () => {
+  it("the_raw_address_never_reaches_a_rate_limiter_binding", async () => {
+    const view = fakeLimiter();
+    const suspect = fakeLimiter();
+    const env = makeEnv({ VIEW_LIMITER: view, VIEW_SUSPECT_LIMITER: suspect });
+    await handleView(beacon({ headers: { "CF-Connecting-IP": IP4 } }), env, NOW);
+    await handleView(beacon({ headers: { "CF-Connecting-IP": IP6 } }), env, NOW);
+    expect(view.keys.length).toBe(2);
+    expect(suspect.keys.length).toBe(2);
+    for (const k of [...view.keys, ...suspect.keys]) {
+      expect(k).toMatch(/^[0-9a-f]{32}$/);
+      expect(k).not.toContain(IP4);
+      expect(k).not.toContain("2001");
+    }
+  });
+
+  it("limiter_keys_are_purpose_separated_stable_in_a_day_and_rotate_daily", async () => {
+    const view = fakeLimiter();
+    const suspect = fakeLimiter();
+    const env = makeEnv({ VIEW_LIMITER: view, VIEW_SUSPECT_LIMITER: suspect });
+    await handleView(beacon(), env, NOW);
+    await handleView(beacon(), env, NOW + 1000);
+    await handleView(beacon(), env, NOW + 86_400_000);
+    expect(view.keys[0]).toBe(view.keys[1]);
+    expect(view.keys[0]).not.toBe(view.keys[2]);
+    expect(view.keys[0]).not.toBe(suspect.keys[0]); // different purpose label
+    const stored = JSON.stringify([await budgets(), await seen()]);
+    expect(stored).not.toContain(view.keys[0] as string);
+    expect(stored).not.toContain(suspect.keys[0] as string);
+  });
+
+  it("a_different_secret_gives_different_limiter_keys", async () => {
+    const l1 = fakeLimiter();
+    const l2 = fakeLimiter();
+    await handleView(beacon(), makeEnv({ VIEW_LIMITER: l1 }), NOW);
+    await handleView(beacon(), makeEnv({ VIEW_LIMITER: l2, VIEW_HASH_SECRET: SECRET_2 }), NOW);
+    expect(l1.keys[0]).not.toBe(l2.keys[0]);
+  });
+
+  it("requests_that_cannot_be_keyed_never_reach_the_limiter", async () => {
+    const l = fakeLimiter();
+    await handleView(beacon({ headers: { "CF-Connecting-IP": null } }), makeEnv({ VIEW_LIMITER: l }), NOW);
+    await handleView(beacon(), makeEnv({ VIEW_LIMITER: l, VIEW_HASH_SECRET: undefined }), NOW);
+    expect(l.calls).toBe(0);
+  });
+});
+
+describe("fail closed and deadlines", () => {
+  it("without_a_usable_secret_or_address_nothing_is_written", async () => {
+    for (const over of [
+      { VIEW_HASH_SECRET: undefined },
+      { VIEW_HASH_SECRET: btoa("short") },
+      { VIEW_HASH_SECRET: "%%%not base64%%%" },
+    ]) {
+      const spy = spyDb();
+      const res = await handleView(beacon(), { ...makeEnv(over), DB: spy.DB }, NOW);
+      expect(res.status).toBe(204);
+      expect(spy.calls.prepare + spy.calls.batch).toBe(0);
+    }
+    const spy = spyDb();
+    await handleView(beacon({ headers: { "CF-Connecting-IP": "bogus" } }), { ...makeEnv(), DB: spy.DB }, NOW);
+    expect(spy.calls.prepare + spy.calls.batch).toBe(0);
+    expect(await rows()).toEqual([]);
+  });
+
+  it("a_stalled_body_is_abandoned_after_the_deadline_with_the_same_204", async () => {
+    expect(BODY_DEADLINE_MS).toBeLessThanOrEqual(3000);
+    let cancelled = false;
+    const stream = new ReadableStream<Uint8Array>(
+      {
+        pull: () => new Promise(() => undefined), // never produces anything
+        cancel() {
+          cancelled = true;
+        },
+      },
+      { highWaterMark: 0 },
+    );
+    const t0 = Date.now();
+    const res = await handleView(beacon({ stream, headers: { "Content-Length": "20" } }), makeEnv(), NOW, 40);
+    expect(res.status).toBe(204);
+    expect(Date.now() - t0).toBeLessThan(1500);
+    expect(cancelled).toBe(true);
+    expect(await rows()).toEqual([]);
+  });
+
+  it("country_mode_stores_no_region_or_city_anywhere", async () => {
+    const cf = { regionCode: "ZQ", city: "Zzyzxville" };
+    await handleView(beacon({ cf }), makeEnv({ GEO_LEVEL: "country" }), NOW);
+    expect((await rows()).length).toBe(1);
+    const dump = await dumpDatabase();
+    expect(dump).not.toContain("Zzyzxville");
+    expect(dump).not.toContain("ZQ");
+    expect((await rows())[0]).toMatchObject({ country: "US", region: "", city: "" });
+    // The default stores them, so the assertions above are not vacuous.
+    await handleView(beacon({ cf }), makeEnv(), NOW + 1000);
+    expect(await dumpDatabase()).toContain("Zzyzxville");
   });
 });
 
@@ -394,9 +590,8 @@ describe("accepted view", () => {
       reason: "none",
       first: 1,
     });
-    // Budget counter + visitor_seen + event row + ts index. Plan 4's own
-    // worst case is 7 (P-6); the measured number here is much lower.
-    expect(spy.calls.rowsWritten).toBeLessThanOrEqual(7);
+    // Global counter + client counter + event row + ts index + visitor_seen (measured: 6 in the test runtime).
+    expect(spy.calls.rowsWritten).toBeLessThanOrEqual(6);
     expect(spy.calls.rowsWritten).toBeGreaterThan(0);
   });
 

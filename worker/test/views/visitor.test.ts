@@ -76,7 +76,7 @@ describe("unique visitors in the handler", () => {
     expect(s.length).toBe(2);
     expect(s[0]?.day).not.toBe(s[1]?.day);
     expect(s[0]?.h).not.toBe(s[1]?.h);
-    expect(s[0]?.h).toMatch(/^[0-9a-f]{8}$/);
+    expect(s[0]?.h).toMatch(/^[0-9a-f]{16}$/);
   });
 
   it("uses_the_utc_day_not_the_local_day", async () => {
@@ -107,14 +107,8 @@ describe("unique visitors in the handler", () => {
     expect((await rows()).map((x) => x.first)).toEqual([1, 0]);
   });
 
-  it("a_short_secret_or_no_secret_or_uv_off_disables_uniques_without_throwing", async () => {
-    for (const over of [
-      { VIEW_HASH_SECRET: btoa("short") },
-      { VIEW_HASH_SECRET: undefined },
-      { VIEW_HASH_SECRET: "%%%not base64%%%" },
-      { UV_ENABLED: "0" },
-      { UV_ENABLED: "false" },
-    ]) {
+  it("uv_off_still_records_the_view_with_no_visitor_row", async () => {
+    for (const over of [{ UV_ENABLED: "0" }, { UV_ENABLED: "false" }]) {
       await clearAll();
       const res = await handleView(beacon(), makeEnv(over), NOW);
       expect(res.status).toBe(204);
@@ -125,16 +119,28 @@ describe("unique visitors in the handler", () => {
     }
   });
 
-  it("an_unparseable_address_stores_the_view_without_a_hash", async () => {
+  it("a_missing_short_or_malformed_secret_or_an_unparsable_address_records_nothing", async () => {
+    for (const over of [
+      { VIEW_HASH_SECRET: btoa("short") },
+      { VIEW_HASH_SECRET: undefined },
+      { VIEW_HASH_SECRET: "%%%not base64%%%" },
+    ]) {
+      const res = await handleView(beacon(), makeEnv(over), NOW);
+      expect(res.status).toBe(204);
+    }
     await handleView(beacon({ headers: { "CF-Connecting-IP": null } }), makeEnv(), NOW);
-    const r = await rows();
-    expect(r.length).toBe(1);
-    expect(r[0]?.first).toBe(0);
+    await handleView(beacon({ headers: { "CF-Connecting-IP": "junk" } }), makeEnv(), NOW);
+    expect(await rows()).toEqual([]);
     expect(await seen()).toEqual([]);
   });
 
-  it("uv_bits_sets_the_stored_width_and_bad_values_fall_back_to_32", async () => {
-    for (const [bits, len] of [["16", 4], ["64", 16], ["48", 12], ["15", 8], ["65", 8], ["x", 8]] as const) {
+  it("uv_bits_is_64_by_default_and_anything_lower_falls_back_to_64", async () => {
+    for (const bits of [undefined, "64", "32", "16", "48", "15", "0", "x", "", "129", "-1"]) {
+      await clearAll();
+      await handleView(beacon(), makeEnv({ UV_BITS: bits }), NOW);
+      expect((await seen())[0]?.h.length, String(bits)).toBe(16);
+    }
+    for (const [bits, len] of [["80", 20], ["128", 32]] as const) {
       await clearAll();
       await handleView(beacon(), makeEnv({ UV_BITS: bits }), NOW);
       expect((await seen())[0]?.h.length, bits).toBe(len);

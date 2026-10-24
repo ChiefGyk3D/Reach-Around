@@ -2,7 +2,7 @@
 import { env as testEnv } from "cloudflare:workers";
 import { beforeEach, describe, expect, it } from "vitest";
 import worker from "../../src/index";
-import { DEFAULT_RAW_KEEP_DAYS, MAX_RAW_KEEP_DAYS, purgeViews } from "../../src/viewretention";
+import { DEFAULT_RAW_KEEP_DAYS, MAX_RAW_KEEP_DAYS, padHour, purgeViews } from "../../src/viewretention";
 import { DB, budgets, clearAll, fakeLimiter, rows, seen } from "./helpers";
 
 const DAY = 86_400_000;
@@ -70,17 +70,45 @@ describe("view retention", () => {
 
   it("old_budget_and_client_cap_keys_go_and_current_ones_stay", async () => {
     const hour = Math.floor(NOW / HOUR);
-    await addMeta(`bud:pv:${hour - 49}`);
-    await addMeta(`bud:pvbot:${hour - 60}`);
-    await addMeta(`bud:pv:${hour - 10}`);
-    await addMeta(`bud:pv:${hour}`);
-    await addMeta(`cap:abcd1234:${hour - 2}`);
-    await addMeta(`cap:abcd1234:${hour}`);
+    const k = (prefix: string, h: number, tail: string) => `${prefix}:${padHour(h)}:${tail}`;
+    await addMeta(k("bud", hour - 49, "pv"));
+    await addMeta(k("bud", hour - 60, "pvbot"));
+    await addMeta(k("bud", hour - 10, "pv"));
+    await addMeta(k("bud", hour, "pv"));
+    await addMeta(k("cap", hour - 2, "abcd1234"));
+    await addMeta(k("cap", hour - 1, "abcd1234"));
+    await addMeta(k("cap", hour, "abcd1234"));
     await addMeta("rolled_through"); // unrelated state is never touched
     await purgeViews(env(), NOW);
     expect((await budgets()).map((b) => b.key).sort()).toEqual(
-      [`bud:pv:${hour - 10}`, `bud:pv:${hour}`, `cap:abcd1234:${hour}`, "rolled_through"].sort(),
+      [k("bud", hour - 10, "pv"), k("bud", hour, "pv"), k("cap", hour - 1, "abcd1234"), k("cap", hour, "abcd1234"), "rolled_through"].sort(),
     );
+  });
+
+  it("counter_keys_sort_by_hour_so_expiry_is_a_range_delete", () => {
+    expect(padHour(5)).toBe("00000005");
+    expect(padHour(490_000) < padHour(1_000_000)).toBe(true);
+    expect(padHour(99) < padHour(100)).toBe(true);
+  });
+
+  it("a_backlog_beyond_the_batch_budget_is_recorded_and_the_next_run_finishes_it", async () => {
+    const hour = Math.floor(NOW / HOUR);
+    for (let i = 0; i < 25; i++) await addMeta(`bud:${padHour(hour - 100 - i)}:pv`);
+    await purgeViews(env(), NOW, { batch: 5, maxBatches: 2 });
+    const left = (await budgets()).filter((b) => b.key.startsWith("bud:")).length;
+    expect(left).toBe(15);
+    expect((await budgets()).some((b) => b.key === "purge_backlog")).toBe(true);
+    await purgeViews(env(), NOW, { batch: 5, maxBatches: 2 });
+    await purgeViews(env(), NOW, { batch: 5, maxBatches: 2 });
+    await purgeViews(env(), NOW, { batch: 5, maxBatches: 2 });
+    expect((await budgets()).filter((b) => b.key.startsWith("bud:")).length).toBe(0);
+    expect((await budgets()).some((b) => b.key === "purge_backlog")).toBe(false);
+  });
+
+  it("a_run_that_finishes_leaves_no_backlog_marker", async () => {
+    await addEvent(NOW - 30 * DAY);
+    await purgeViews(env(), NOW);
+    expect((await budgets()).some((b) => b.key === "purge_backlog")).toBe(false);
   });
 
   it("deletes_in_bounded_batches_and_clears_a_large_backlog", async () => {
@@ -113,13 +141,13 @@ describe("view retention", () => {
     await addEvent(now);
     await addSeen(new Date(now - DAY).toISOString().slice(0, 10), "aaaaaaaa");
     await addSeen(new Date(now).toISOString().slice(0, 10), "bbbbbbbb");
-    await addMeta(`bud:pv:${Math.floor(now / HOUR) - 100}`);
-    await addMeta(`bud:pv:${Math.floor(now / HOUR)}`);
+    await addMeta(`bud:${padHour(Math.floor(now / HOUR) - 100)}:pv`);
+    await addMeta(`bud:${padHour(Math.floor(now / HOUR))}:pv`);
     await worker.scheduled({} as ScheduledController, env(), ctx);
     await Promise.all(pending);
     expect((await rows()).map((r) => r.ts)).toEqual([now]);
     expect((await seen()).map((x) => x.h)).toEqual(["bbbbbbbb"]);
-    expect((await budgets()).map((b) => b.key)).toEqual([`bud:pv:${Math.floor(now / HOUR)}`]);
+    expect((await budgets()).map((b) => b.key)).toEqual([`bud:${padHour(Math.floor(now / HOUR))}:pv`]);
     const clicks = await DB.prepare("SELECT COUNT(*) AS n FROM click_events").first<{ n: number }>();
     expect(clicks?.n).toBe(0);
   });
