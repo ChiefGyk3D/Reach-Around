@@ -228,7 +228,9 @@ def test_icon_files_carry_nothing_active() -> None:
 
 
 def test_icon_guard_bites_on_a_hostile_svg() -> None:
-    bad = '<svg onload="x()"><script>1</script><image href="https://e.test/x.png"/></svg>'
+    bad = (
+        '<svg onload="x()"><script>1</script><image href="https://e.test/x.png"/></svg>'
+    )
     assert _hostile(bad) == ["<script", "onload=", "<image", "remote href"]
 
 
