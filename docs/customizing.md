@@ -172,33 +172,46 @@ The error is `theme.mascot: 'secret.png' is not a real png file (its first
 bytes do not match the format)`. A file that passes can still be a damaged
 image; the checks only stop other file types from riding along.
 
-**SVG is screened.** A browser runs an SVG as a document when someone opens
-its address, so the build parses it and refuses, with the config key and the
-reason (for example `theme.mascot: 'm.svg' is refused as an svg: a script
-element is not allowed`):
+**SVG is checked against an allowlist.** A browser runs an SVG as a document
+when someone opens its address, so the build accepts only what is listed and
+refuses everything else, with the config key and the reason, for example
+`theme.mascot: 'm.svg' is refused as an svg: element <script> is not allowed`
+or `attribute 'onclick' on <rect> is not allowed`.
 
-- a DOCTYPE or ENTITY declaration (checked before parsing, which also stops
-  entity-expansion payloads), a file that is not UTF-8, not valid XML, or
-  whose root is not `svg`;
-- `script`, `foreignObject`, `iframe`, `embed`, `object`, `audio` and `video`
-  elements, in any case or namespace prefix;
-- any attribute whose name starts with `on` (event handlers), and any
-  `xml:base` attribute, which would move where `#fragment` references resolve;
-- processing instructions (such as `xml-stylesheet`; the plain `<?xml ...?>`
-  declaration is fine), CDATA sections, comments inside a `style` element, and
-  any element nested inside a `style` element. Comments elsewhere are allowed,
-  and the file is copied unchanged;
-- any `href` or `xlink:href`, on any element, that does not start with `#`;
-- `animate`, `set`, `animateTransform` and `animateMotion` that target `href`;
-- `url(` in a `style` element, a `style` attribute or any other attribute
-  unless it points at a `#fragment` with no quotes (`url(#g)`, not
-  `url('#g')`); also `@import`, `expression(`, `image-set(`, CSS backslash
-  escapes and any `/*` comment opener in any CSS or attribute value. Comments
-  are refused, not stripped, so no parser can read the CSS differently from
-  this check.
+- Elements (SVG namespace, case-sensitive): `svg g defs symbol use path rect
+  circle ellipse line polyline polygon text tspan title desc linearGradient
+  radialGradient stop clipPath mask filter feGaussianBlur feOffset feBlend
+  feColorMatrix feFlood feComposite feMerge feMergeNode feDropShadow metadata`.
+  So `script`, `foreignObject`, `style`, `a`, `image`, `feImage`, `animate*`,
+  `set`, `switch`, `pattern`, `view`, `cursor`, `font-face`, `iframe` and every
+  element in another namespace are refused by default.
+- Attributes (no `style` attribute, no `on*` handlers, no `data-*`, no `role`
+  or `aria-*`): `id class transform viewBox preserveAspectRatio width height x
+  y x1 x2 y1 y2 cx cy r rx ry d points fill fill-opacity fill-rule stroke
+  stroke-width stroke-opacity stroke-linecap stroke-linejoin stroke-miterlimit
+  stroke-dasharray stroke-dashoffset opacity clip-path clip-rule mask filter
+  offset stop-color stop-opacity gradientUnits gradientTransform spreadMethod
+  fx fy dx dy stdDeviation in in2 result mode type values flood-color
+  flood-opacity operator k1 k2 k3 k4 font-family font-size font-weight
+  font-style text-anchor dominant-baseline letter-spacing version href
+  maskUnits clipPathUnits filterUnits primitiveUnits rotate textLength
+  lengthAdjust`, plus `xlink:href` and `xml:space`. `xml:base` is refused.
+  Only the SVG and xlink namespaces may be declared.
+- Values: no backslash, no `/*`, no control characters, no `javascript:`,
+  `data:`, `expression(` or `@import`; `href` and `xlink:href` must start with
+  `#`; any `url(` must be exactly `url(#id)` (optional spaces inside, no
+  quotes).
+- Document: no DOCTYPE or ENTITY declaration (checked before parsing, which
+  also stops entity-expansion payloads), UTF-8 only, valid XML, an `svg` root,
+  no processing instructions (the plain `<?xml ...?>` declaration is fine) and
+  no CDATA sections. Comments are allowed, and an accepted file is copied
+  byte for byte.
 
-Plain shapes, gradients, clip paths, filters, `use` of a `#id`, `title` and
-`desc` pass.
+**To allow another SVG feature**, add its element or attribute name to
+`ALLOWED_ELEMENTS` or `ALLOWED_ATTRIBUTES` in
+`src/reach_around/site/assetcheck.py` and add a test for it in
+`tests/site/test_assets_content.py`. The allowlist is the extension point;
+nothing else needs to change.
 
 The mascot is faint on purpose (`--ra-mascot-opacity: 0.12`). If your image
 is already faded, raise it in `custom.css`:

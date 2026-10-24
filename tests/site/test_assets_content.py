@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import re
 from datetime import date
 from pathlib import Path
 from typing import Any
@@ -149,145 +150,6 @@ def test_an_empty_file_is_refused(tmp_path: Path) -> None:
         build(tmp_path, "a.png", b"")
 
 
-# --- SVG screening ----------------------------------------------------------
-
-
-def svg(body: str, attrs: str = "") -> bytes:
-    return (
-        f"<svg xmlns='{SVG_NS}' xmlns:xlink='{XLINK_NS}' {attrs}>{body}</svg>".encode()
-    )
-
-
-def refused(tmp_path: Path, data: bytes, reason: str) -> None:
-    with pytest.raises(ValueError, match=rf"mascot.*{reason}"):
-        build(tmp_path, "m.svg", data, slot="mascot")
-
-
-def test_the_placeholder_mascot_passes(tmp_path: Path) -> None:
-    out = build(tmp_path, "m.svg", MASCOT.read_bytes(), slot="mascot")
-    assert (out / "m.svg").read_bytes() == MASCOT.read_bytes()
-
-
-@pytest.mark.parametrize(
-    "body",
-    [
-        "<rect width='1' height='1' fill='red'/>",
-        "<defs><linearGradient id='g'><stop offset='0'/></linearGradient>"
-        "<clipPath id='c'><circle r='1'/></clipPath>"
-        "<filter id='f'><feGaussianBlur stdDeviation='1'/></filter></defs>"
-        "<circle r='1' fill='url(#g)' clip-path='url(#c)' filter='url(#f)'/>",
-        "<defs><path id='p' d='M0 0'/></defs><use href='#p'/><use xlink:href='#p'/>",
-        "<title>a</title><desc>b</desc>",
-        "<style>.a { fill: url(#g); } circle { stroke: url(  #g); }</style>"
-        "<style>b { fill: url(#h); }</style>",
-        "<rect style='fill: url( #g )'/>",
-        "<animate attributeName='opacity' from='0' to='1'/>",
-    ],
-)
-def test_plain_shapes_gradients_clips_filters_and_fragment_refs_pass(
-    tmp_path: Path, body: str
-) -> None:
-    out = build(tmp_path, "m.svg", svg(body), slot="mascot")
-    assert (out / "m.svg").is_file()
-
-
-@pytest.mark.parametrize(
-    ("body", "reason"),
-    [
-        ("<script>alert(1)</script>", "script"),
-        ("<SCRIPT>alert(1)</SCRIPT>", "script"),
-        ("<svg:script xmlns:svg='" + SVG_NS + "'>x</svg:script>", "script"),
-        (
-            "<g xmlns:q='http://www.w3.org/1999/xhtml'><q:script>x</q:script></g>",
-            "script",
-        ),
-        ("<rect onload='x()'/>", "event handler"),
-        ("<rect ONCLICK='x()'/>", "event handler"),
-        ("<rect xmlns:z='urn:z' z:onmouseover='x()'/>", "event handler"),
-        ("<foreignObject><div/></foreignObject>", "foreignObject"),
-        ("<FOREIGNOBJECT/>", "foreignObject"),
-        ("<a href='javascript:alert(1)'><rect/></a>", "href"),
-        ("<a href='https://example.com/'><rect/></a>", "href"),
-        ("<use href='other.svg#a'/>", "href"),
-        ("<image href='https://example.com/x.png'/>", "href"),
-        ("<image href='data:image/png;base64,AAAA'/>", "href"),
-        ("<use xlink:href='https://example.com/x.svg#a'/>", "href"),
-        ("<use xmlns:foo='" + XLINK_NS + "' foo:href='x.svg#a'/>", "href"),
-        ("<use xmlns:XLINK='" + XLINK_NS + "' XLINK:HREF='x'/>", "href"),
-        ("<a><animate attributeName='href' to='javascript:alert(1)'/></a>", "animat"),
-        ("<a><set attributeName='xlink:href' to='x'/></a>", "animat"),
-        ("<a><animateTransform attributeName='href'/></a>", "animat"),
-        ("<a><animateMotion attributeName='HREF'/></a>", "animat"),
-        ("<style>@import url(#a);</style>", "@import"),
-        ("<style>a { fill: url(https://example.com/x) }</style>", "url"),
-        ("<style>a { fill: url('//example.com/x') }</style>", "url"),
-        ("<style>a { width: expression(alert(1)) }</style>", "expression"),
-        ("<rect style='fill: url(https://example.com/x)'/>", "url"),
-        ("<rect style='background: URL( data:text/html,x )'/>", "url"),
-        ("<rect fill='url(https://example.com/x)'/>", "url"),
-        ("<style>a { fill: u\\72l(https://example.com/x) }</style>", "escape"),
-        (
-            "<style>a { fill: image-set('https://example.com/x' 1x) }</style>",
-            "image-set",
-        ),
-        ("<iframe src='x'/>", "iframe"),
-        ("<embed src='x'/>", "embed"),
-        ("<object data='x'/>", "object"),
-        ("<audio src='x'/>", "audio"),
-        ("<video src='x'/>", "video"),
-    ],
-)
-def test_hostile_svg_is_refused_with_the_key_and_reason(
-    tmp_path: Path, body: str, reason: str
-) -> None:
-    refused(tmp_path, svg(body), reason)
-
-
-@pytest.mark.parametrize(
-    "prefix",
-    [
-        b"<!DOCTYPE svg>",
-        b"<!doctype svg>",
-        b"<!DOCTYPE svg [<!ENTITY a 'b'>]>",
-        b"<!ENTITY a 'b'>",
-    ],
-)
-def test_doctype_and_entity_declarations_are_refused(
-    tmp_path: Path, prefix: bytes
-) -> None:
-    data = prefix + svg("<rect/>")
-    refused(tmp_path, data, "DOCTYPE or ENTITY")
-
-
-def test_a_billion_laughs_payload_is_refused_before_it_is_parsed(
-    tmp_path: Path,
-) -> None:
-    lol = "<!DOCTYPE lolz [<!ENTITY a 'lol'>"
-    for i in range(1, 9):
-        prev = "&a;" if i == 1 else f"&e{i - 1};"
-        lol += f"<!ENTITY e{i} '{prev * 10}'>"
-    lol += "]>"
-    data = lol.encode() + svg("<text>&e8;</text>")
-    refused(tmp_path, data, "DOCTYPE or ENTITY")
-
-
-def test_a_utf16_svg_cannot_hide_a_doctype(tmp_path: Path) -> None:
-    text = "<!DOCTYPE svg [<!ENTITY a 'b'>]><svg xmlns='" + SVG_NS + "'/>"
-    refused(tmp_path, b"\xff\xfe" + text.encode("utf-16-le"), "UTF-8")
-
-
-def test_not_xml_and_wrong_root_are_refused(tmp_path: Path) -> None:
-    refused(tmp_path, b"<svg xmlns='" + SVG_NS.encode() + b"'><g></svg>", "valid XML")
-    refused(tmp_path, b"<html xmlns='http://www.w3.org/1999/xhtml'/>", "svg")
-    refused(tmp_path / "t", YAML, "valid XML")
-
-
-def test_a_hostile_svg_is_not_published(tmp_path: Path) -> None:
-    with pytest.raises(ValueError):
-        build(tmp_path, "m.svg", svg("<script>x</script>"), slot="mascot")
-    assert not (tmp_path / "out" / "m.svg").exists()
-
-
 # --- structural sanity: not just a prefix ------------------------------------
 
 
@@ -346,24 +208,230 @@ def test_the_boundaries_of_the_table_directory_are_accepted(tmp_path: Path) -> N
     assert (out / "f.ttf").is_file()
 
 
-# --- SVG: document-level tricks ---------------------------------------------
+# --- SVG screening: an allowlist ---------------------------------------------
 
 XML_NS = "http://www.w3.org/XML/1998/namespace"
 
 
+def svg(body: str, attrs: str = "") -> bytes:
+    return (
+        f"<svg xmlns='{SVG_NS}' xmlns:xlink='{XLINK_NS}' {attrs}>{body}</svg>"
+    ).encode()
+
+
+def refused(tmp_path: Path, data: bytes, reason: str) -> None:
+    with pytest.raises(ValueError, match=rf"theme\.mascot.*m\.svg.*{reason}"):
+        build(tmp_path, "m.svg", data, slot="mascot")
+
+
+def test_the_placeholder_mascot_passes_byte_for_byte(tmp_path: Path) -> None:
+    assert b"<!--" in MASCOT.read_bytes()
+    out = build(tmp_path, "m.svg", MASCOT.read_bytes(), slot="mascot")
+    assert (out / "m.svg").read_bytes() == MASCOT.read_bytes()
+
+
 @pytest.mark.parametrize(
-    "attrs",
+    "body",
     [
-        "xml:base='https://evil.test/a.svg'",
-        "xml:base='#frag'",
-        "xml:base=''",
+        "<rect width='1' height='1' fill='red'/>",
+        "<g transform='scale(2)'><circle cx='1' cy='1' r='1' fill='#fff'/></g>",
+        "<defs><linearGradient id='g' x1='0' x2='1' gradientUnits='userSpaceOnUse'>"
+        "<stop offset='0' stop-color='red' stop-opacity='1'/></linearGradient>"
+        "<radialGradient id='r' fx='0' fy='0' spreadMethod='pad'><stop offset='1'/>"
+        "</radialGradient></defs><rect fill='url(#g)' stroke='url(  #r )'/>",
+        "<defs><clipPath id='c' clipPathUnits='userSpaceOnUse'><circle r='1'/>"
+        "</clipPath><mask id='m' maskUnits='userSpaceOnUse'><rect/></mask></defs>"
+        "<circle r='1' clip-path='url(#c)' mask='url(#m)'/>",
+        "<defs><filter id='f' filterUnits='objectBoundingBox'>"
+        "<feGaussianBlur in='SourceGraphic' stdDeviation='1' result='b'/>"
+        "<feOffset in='b' dx='1' dy='1' result='o'/>"
+        "<feFlood flood-color='red' flood-opacity='0.5' result='fl'/>"
+        "<feComposite in='fl' in2='o' operator='in' k1='0' k2='1' k3='0' k4='0'/>"
+        "<feColorMatrix type='saturate' values='0'/><feBlend mode='multiply'/>"
+        "<feDropShadow dx='1' dy='1'/>"
+        "<feMerge><feMergeNode in='b'/></feMerge></filter></defs>"
+        "<rect filter='url(#f)'/>",
+        "<defs><path id='p' d='M0 0L1 1'/></defs>"
+        "<use href='#p'/><use xlink:href='#p' x='1' y='2'/>",
+        "<title>a</title><desc>b</desc><metadata>c</metadata>",
+        "<text x='1' y='2' font-family='serif' font-size='3' font-weight='bold'"
+        " text-anchor='middle' xml:space='preserve' textLength='9' rotate='0'>hi"
+        "<tspan dx='1'>there</tspan></text>",
+        "<symbol id='s' viewBox='0 0 1 1' preserveAspectRatio='none'><line x1='0'"
+        " x2='1' y1='0' y2='1'/><polyline points='0,0 1,1'/>"
+        "<polygon points='0,0 1,1 0,1'/><ellipse rx='1' ry='2'/></symbol>",
     ],
 )
-def test_xml_base_is_refused_on_the_root_and_on_children(
-    tmp_path: Path, attrs: str
+def test_the_allowed_shapes_gradients_clips_masks_filters_and_text_pass(
+    tmp_path: Path, body: str
 ) -> None:
-    refused(tmp_path, svg("<use href='#x'/>", attrs), "base")
-    refused(tmp_path / "c", svg(f"<g {attrs}><use href='#x'/></g>"), "base")
+    data = svg(body)
+    out = build(tmp_path, "m.svg", data, slot="mascot")
+    assert (out / "m.svg").read_bytes() == data
+
+
+def test_the_xml_declaration_and_a_leading_comment_are_accepted(
+    tmp_path: Path,
+) -> None:
+    data = b'<?xml version="1.0" encoding="UTF-8"?>\n<!-- note -->\n' + svg("<rect/>")
+    out = build(tmp_path, "m.svg", data, slot="mascot")
+    assert (out / "m.svg").read_bytes() == data
+
+
+def test_the_prefix_form_of_an_allowed_svg_element_passes(tmp_path: Path) -> None:
+    data = f"<s:svg xmlns:s='{SVG_NS}'><s:rect/></s:svg>".encode()
+    out = build(tmp_path, "m.svg", data, slot="mascot")
+    assert (out / "m.svg").is_file()
+
+
+# Every element outside the allowlist is refused by default.
+@pytest.mark.parametrize(
+    "element",
+    [
+        "script", "SCRIPT", "foreignObject", "FOREIGNOBJECT", "a", "image",
+        "feImage", "style", "animate", "set", "animateTransform",
+        "animateMotion", "switch", "pattern", "view", "cursor", "font-face",
+        "iframe", "embed", "object", "audio", "video", "marker", "mpath",
+        "textPath", "tref", "handler", "listener", "color-profile", "html",
+    ],
+)  # fmt: skip
+def test_every_element_outside_the_allowlist_is_refused(
+    tmp_path: Path, element: str
+) -> None:
+    refused(tmp_path, svg(f"<{element}/>"), rf"element <{element}> is not allowed")
+    refused(tmp_path / "n", svg(f"<g><{element}>x</{element}></g>"), "element")
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "<svg:script xmlns:svg='" + SVG_NS + "'>x</svg:script>",
+        "<q:script xmlns:q='http://www.w3.org/1999/xhtml'>x</q:script>",
+        "<q:rect xmlns:q='urn:other'/>",
+        "<rect xmlns='urn:other'/>",
+        "<x:rect xmlns:x='" + XLINK_NS + "'/>",
+        "<g xmlns:x='http://www.w3.org/1999/xhtml'><x:div/></g>",
+    ],
+)
+def test_elements_in_any_other_namespace_are_refused(tmp_path: Path, body: str) -> None:
+    refused(tmp_path, svg(body), "(element|namespace)")
+
+
+def test_a_root_outside_the_svg_namespace_is_refused(tmp_path: Path) -> None:
+    refused(tmp_path, b"<svg><rect/></svg>", "element <svg>")
+    refused(
+        tmp_path / "h", b"<html xmlns='http://www.w3.org/1999/xhtml'/>", "namespace"
+    )
+
+
+def test_an_unknown_namespace_declaration_is_refused(tmp_path: Path) -> None:
+    refused(tmp_path, svg("<rect/>", "xmlns:evil='urn:evil'"), "namespace")
+
+
+@pytest.mark.parametrize(
+    "attr",
+    [
+        "onclick='x()'", "onload='x()'", "ONCLICK='x()'", "style='fill:red'",
+        "requiredExtensions='x'", "xml:base='https://evil.test/'", "xml:base=''",
+        "data-x='1'", "target='_blank'", "role='img'", "aria-label='x'",
+        "tabindex='0'", "xml:lang='en'", "systemLanguage='en'", "begin='0s'",
+        "STYLE='fill:red'", "Fill='red'", "src='x'", "ping='x'", "lang='en'",
+    ],
+)  # fmt: skip
+def test_every_attribute_outside_the_allowlist_is_refused(
+    tmp_path: Path, attr: str
+) -> None:
+    name = attr.split("=")[0]
+    refused(tmp_path, svg("<rect/>", attr), r"attribute .* on <svg> is not allowed")
+    refused(tmp_path / "c", svg(f"<g><rect {attr}/></g>"), r"on <rect>")
+    assert name  # the name is part of the message checked below
+    with pytest.raises(ValueError, match=re.escape(name.split(":")[-1])):
+        build(tmp_path / "d", "m.svg", svg("<rect/>", attr), slot="mascot")
+
+
+def test_a_prefixed_attribute_in_an_unlisted_namespace_is_refused(
+    tmp_path: Path,
+) -> None:
+    refused(tmp_path, svg("<rect xmlns:z='urn:z' z:onmouseover='x()'/>"), "namespace")
+    refused(tmp_path / "x", svg("<rect xlink:title='x'/>"), "attribute")
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "javascript:alert(1)", "JavaScript:alert(1)", "data:image/png;base64,AA",
+        "expression(alert(1))", "@import 'x'", "a\\72 b", "a /* c */ b",
+        "a\x7fb",
+    ],
+)  # fmt: skip
+def test_hostile_values_are_refused_on_any_allowed_attribute(
+    tmp_path: Path, value: str
+) -> None:
+    attr = value.replace("&", "&amp;").replace("'", "&apos;")
+    refused(tmp_path, svg(f"<rect fill='{attr}'/>"), "value")
+
+
+@pytest.mark.parametrize(
+    "href",
+    [
+        "javascript:alert(1)", "https://example.com/x", "//example.com/x",
+        "data:image/png;base64,AAAA", "other.svg#a", "x", "", " #a",
+    ],
+)  # fmt: skip
+@pytest.mark.parametrize("name", ["href", "xlink:href"])
+def test_href_must_be_a_same_file_fragment(
+    tmp_path: Path, href: str, name: str
+) -> None:
+    refused(tmp_path, svg(f"<use {name}='{href}'/>"), "href")
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "url(https://evil.test/a)", "url(//evil.test/a)", "url('#g')",
+        'url("#g")', "url()", "url(#)", "URL(x)", "url( data:x )",
+        "url(#a b)", "url(#a) url(https://evil.test/)", "url(#g",
+    ],
+)  # fmt: skip
+def test_url_in_a_value_needs_a_fragment_id_and_a_closing_paren(
+    tmp_path: Path, value: str
+) -> None:
+    attr = value.replace("'", "&apos;").replace('"', "&quot;")
+    refused(tmp_path, svg(f"<rect fill='{attr}'/>"), "(url|data:)")
+
+
+@pytest.mark.parametrize(
+    "prefix",
+    [
+        b"<!DOCTYPE svg>", b"<!doctype svg>",
+        b"<!DOCTYPE svg [<!ENTITY a 'b'>]>", b"<!ENTITY a 'b'>",
+    ],
+)  # fmt: skip
+def test_doctype_and_entity_declarations_are_refused(
+    tmp_path: Path, prefix: bytes
+) -> None:
+    refused(tmp_path, prefix + svg("<rect/>"), "DOCTYPE or ENTITY")
+
+
+def test_a_billion_laughs_payload_is_refused_before_it_is_parsed(
+    tmp_path: Path,
+) -> None:
+    lol = "<!DOCTYPE lolz [<!ENTITY a 'lol'>"
+    for i in range(1, 9):
+        prev = "&a;" if i == 1 else f"&e{i - 1};"
+        lol += f"<!ENTITY e{i} '{prev * 10}'>"
+    lol += "]>"
+    refused(tmp_path, lol.encode() + svg("<text>&e8;</text>"), "DOCTYPE or ENTITY")
+
+
+def test_a_utf16_svg_cannot_hide_a_doctype(tmp_path: Path) -> None:
+    text = "<!DOCTYPE svg [<!ENTITY a 'b'>]><svg xmlns='" + SVG_NS + "'/>"
+    refused(tmp_path, b"\xff\xfe" + text.encode("utf-16-le"), "UTF-8")
+
+
+def test_not_xml_is_refused(tmp_path: Path) -> None:
+    refused(tmp_path, b"<svg xmlns='" + SVG_NS.encode() + b"'><g></svg>", "valid XML")
+    refused(tmp_path / "t", YAML, "valid XML")
 
 
 @pytest.mark.parametrize(
@@ -377,98 +445,15 @@ def test_xml_base_is_refused_on_the_root_and_on_children(
 )
 def test_processing_instructions_are_refused(tmp_path: Path, pi: bytes) -> None:
     refused(tmp_path, pi + svg("<rect/>"), "processing instruction")
-    refused(
-        tmp_path / "i", svg("<rect/>").replace(b"</svg>", pi + b"</svg>"), "processing"
-    )
-
-
-def test_the_xml_declaration_is_not_a_processing_instruction(tmp_path: Path) -> None:
-    data = b'<?xml version="1.0" encoding="UTF-8"?>\n' + svg("<rect/>")
-    out = build(tmp_path, "m.svg", data, slot="mascot")
-    assert (out / "m.svg").is_file()
-
-
-def test_a_plain_comment_outside_style_is_accepted_and_kept(tmp_path: Path) -> None:
-    data = svg("<!-- a note --><rect/>")
-    out = build(tmp_path, "m.svg", data, slot="mascot")
-    assert (out / "m.svg").read_bytes() == data
-
-
-def test_the_placeholder_mascot_keeps_its_comment_byte_for_byte(
-    tmp_path: Path,
-) -> None:
-    assert b"<!--" in MASCOT.read_bytes()
-    out = build(tmp_path, "m.svg", MASCOT.read_bytes(), slot="mascot")
-    assert (out / "m.svg").read_bytes() == MASCOT.read_bytes()
-
-
-@pytest.mark.parametrize(
-    "body",
-    [
-        "<style>a { fill: red } <!-- x --> b { fill: blue }</style>",
-        "<style>a { fill: url<!-- x -->(https://evil.test/a) }</style>",
-    ],
-)
-def test_a_comment_inside_style_is_refused(tmp_path: Path, body: str) -> None:
-    refused(tmp_path, svg(body), "comment")
+    inside = svg("<rect/>").replace(b"</svg>", pi + b"</svg>")
+    refused(tmp_path / "i", inside, "processing instruction")
 
 
 def test_cdata_is_refused(tmp_path: Path) -> None:
-    refused(tmp_path, svg("<style><![CDATA[a { fill: red }]]></style>"), "CDATA")
-    refused(tmp_path / "t", svg("<text><![CDATA[hi]]></text>"), "CDATA")
+    refused(tmp_path, svg("<text><![CDATA[hi]]></text>"), "CDATA")
 
 
-@pytest.mark.parametrize(
-    "body",
-    [
-        "<style><x:style xmlns:x='urn:x'/>@import url(https://evil.test/a.css);</style>",
-        "<style><b/>a { fill: url(https://evil.test/a) }</style>",
-        "<style>a { fill: red }<style>@import url(x);</style></style>",
-        "<style><svg:desc xmlns:svg='" + SVG_NS + "'/></style>",
-    ],
-)
-def test_any_element_inside_style_is_refused(tmp_path: Path, body: str) -> None:
-    refused(tmp_path, svg(body), "inside a style")
-
-
-def test_each_of_several_sibling_styles_is_screened(tmp_path: Path) -> None:
-    ok = "<style>a { fill: url(#g) }</style><style>b { fill: url(#h) }</style>"
-    out = build(tmp_path, "m.svg", svg(ok), slot="mascot")
-    assert (out / "m.svg").is_file()
-    bad = "<style>a { fill: red }</style><style>@import url(x);</style>"
-    refused(tmp_path / "b", svg(bad), "@import")
-    bad2 = "<style>a { fill: red }</style><style>b {}</style><g/><style>x{fill:url(https://e.test/)}</style>"
-    refused(tmp_path / "c", svg(bad2), "url")
-
-
-@pytest.mark.parametrize(
-    "css",
-    [
-        "a { fill: red } /* note */",
-        "a { fill: url(#g) /* x */ }",
-        "a { fill: u/**/rl(https://evil.test/a) }",
-        "/*",
-    ],
-)
-def test_css_comment_openers_are_refused_everywhere(tmp_path: Path, css: str) -> None:
-    refused(tmp_path, svg(f"<style>{css}</style>"), "comment")
-    refused(tmp_path / "s", svg(f"<rect style='{css}'/>"), "comment")
-    refused(tmp_path / "a", svg(f"<rect data-x='{css}'/>"), "comment")
-
-
-@pytest.mark.parametrize(
-    "css",
-    [
-        "fill: url('#g')",
-        'fill: url("#g")',
-        "fill: url( 'https://e.test/x' )",
-        "fill: URL(x)",
-        "fill: url()",
-    ],
-)
-def test_quotes_and_non_fragment_targets_in_url_are_refused(
-    tmp_path: Path, css: str
-) -> None:
-    attr = css.replace('"', "&quot;")
-    refused(tmp_path, svg(f'<rect style="{attr}"/>'), "url")
-    refused(tmp_path / "e", svg(f"<style>a {{ {css} }}</style>"), "url")
+def test_a_hostile_svg_is_not_published(tmp_path: Path) -> None:
+    with pytest.raises(ValueError):
+        build(tmp_path, "m.svg", svg("<script>x</script>"), slot="mascot")
+    assert not (tmp_path / "out" / "m.svg").exists()

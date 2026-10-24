@@ -52,42 +52,62 @@ _MAGIC: dict[str, Callable[[bytes], bool]] = {
     "otf": lambda d: _sfnt(d, (b"OTTO",)),
 }
 
-_FORBIDDEN_ELEMENTS = {
-    "script": "a script element",
-    "foreignobject": "a foreignObject element",
-    "iframe": "an iframe element",
-    "embed": "an embed element",
-    "object": "an object element",
-    "audio": "an audio element",
-    "video": "a video element",
-}
-_ANIMATION = {"animate", "set", "animatetransform", "animatemotion"}
+_SVG_NS = "http://www.w3.org/2000/svg"
+_XLINK_NS = "http://www.w3.org/1999/xlink"
+_XML_NS = "http://www.w3.org/XML/1998/namespace"
 
-
-def _local(name: str) -> str:
-    return name.rsplit("}", 1)[-1].rsplit(":", 1)[-1].lower()
-
-
-def _screen_css(css: str) -> str | None:
-    """Return the reason ``css`` is refused, or None.
-
-    Comments are refused outright rather than stripped, so no parser can read
-    the text differently from this check.
+# The allowlist is the extension point: to support another SVG feature, add
+# its element or attribute name here and add a test for it. Anything not listed
+# is refused, so new browser features are refused until someone decides.
+ALLOWED_ELEMENTS = frozenset(
     """
-    if "/*" in css:
-        return "a CSS comment is not allowed"
-    if "\\" in css:
-        return "CSS escapes are not allowed"
-    text = css.lower()
-    if "@import" in text:
-        return "@import is not allowed"
-    if "expression(" in text:
-        return "expression( is not allowed"
-    if "image-set(" in text:
-        return "image-set( is not allowed"
-    for match in re.finditer(r"url\(", text):
-        if not text[match.end() :].lstrip().startswith("#"):
-            return "url( may only point at a #fragment, without quotes"
+    svg g defs symbol use path rect circle ellipse line polyline polygon text
+    tspan title desc linearGradient radialGradient stop clipPath mask filter
+    feGaussianBlur feOffset feBlend feColorMatrix feFlood feComposite feMerge
+    feMergeNode feDropShadow metadata
+    """.split()
+)
+ALLOWED_ATTRIBUTES = frozenset(
+    """
+    id class transform viewBox preserveAspectRatio width height x y x1 x2 y1 y2
+    cx cy r rx ry d points fill fill-opacity fill-rule stroke stroke-width
+    stroke-opacity stroke-linecap stroke-linejoin stroke-miterlimit
+    stroke-dasharray stroke-dashoffset opacity clip-path clip-rule mask filter
+    offset stop-color stop-opacity gradientUnits gradientTransform
+    spreadMethod fx fy dx dy stdDeviation in in2 result mode type values
+    flood-color flood-opacity operator k1 k2 k3 k4 font-family font-size
+    font-weight font-style text-anchor dominant-baseline letter-spacing
+    version href maskUnits clipPathUnits filterUnits primitiveUnits rotate
+    textLength lengthAdjust
+    """.split()
+)
+# Namespaced attributes allowed, by (namespace, local name).
+_ALLOWED_NS_ATTRIBUTES = frozenset({(_XLINK_NS, "href"), (_XML_NS, "space")})
+_ALLOWED_NAMESPACES = frozenset({_SVG_NS, _XLINK_NS})
+_REFUSED_IN_VALUES = ("javascript:", "data:", "expression(", "@import")
+_URL = re.compile(r"url\(\s*#[A-Za-z_][\w.:-]*\s*\)")
+
+
+def _split(name: str) -> tuple[str, str]:
+    namespace, sep, local = name.rpartition("}")
+    return (namespace, local) if sep else ("", name)
+
+
+def _screen_value(value: str) -> str | None:
+    """Return why an attribute value is refused, or None."""
+    if "\\" in value:
+        return "it contains a backslash"
+    if "/*" in value:
+        return "it contains a comment opener"
+    if any(ord(ch) < 32 and ch not in "\t\n\r" or ord(ch) == 127 for ch in value):
+        return "it contains a control character"
+    lowered = value.lower()
+    for needle in _REFUSED_IN_VALUES:
+        if needle in lowered:
+            return f"it contains {needle!r}"
+    for match in re.finditer(r"url\(", lowered):
+        if not _URL.match(value, match.start()):
+            return "url( may only wrap a #fragment id, such as url(#a)"
     return None
 
 
@@ -96,63 +116,52 @@ class _Refused(Exception):
 
 
 class _Screen:
-    """Receives SVG parse events and refuses anything that can run or leave."""
+    """Receives SVG parse events and refuses everything not on the allowlist."""
 
     def __init__(self) -> None:
         self.depth = 0
-        self.style: list[str] | None = None
 
     def start(self, tag: str, attrs: dict[str, str]) -> None:
-        name = _local(tag)
-        if self.style is not None:
-            raise _Refused("an element inside a style element is not allowed")
+        namespace, name = _split(tag)
+        if namespace != _SVG_NS or name not in ALLOWED_ELEMENTS:
+            raise _Refused(f"element <{name}> is not allowed")
         if self.depth == 0 and name != "svg":
-            raise _Refused("the root element must be svg")
+            raise _Refused("the root element must be <svg>")
         self.depth += 1
-        if name in _FORBIDDEN_ELEMENTS:
-            raise _Refused(f"{_FORBIDDEN_ELEMENTS[name]} is not allowed")
-        if name == "style":
-            self.style = []
         for attr, value in attrs.items():
-            attr_name = _local(attr)
-            if attr_name.startswith("on"):
+            attr_ns, attr_name = _split(attr)
+            if attr_ns:
+                if (attr_ns, attr_name) not in _ALLOWED_NS_ATTRIBUTES:
+                    raise _Refused(
+                        f"attribute {attr_name!r} on <{name}> is not allowed "
+                        "(unlisted namespace)"
+                        if attr_ns not in (_XML_NS, _XLINK_NS)
+                        else f"attribute {attr_name!r} on <{name}> is not allowed"
+                    )
+            elif attr_name not in ALLOWED_ATTRIBUTES:
+                raise _Refused(f"attribute {attr_name!r} on <{name}> is not allowed")
+            if attr_name == "href" and not value.startswith("#"):
                 raise _Refused(
-                    f"an event handler attribute ({attr_name}) is not allowed"
+                    f"href on <{name}> must point at a #fragment in this file"
                 )
-            if attr_name == "href" and not value.strip().startswith("#"):
-                raise _Refused("an href may only point at a #fragment in this file")
-            if (
-                name in _ANIMATION
-                and attr_name == "attributename"
-                and _local(value) == "href"
-            ):
-                raise _Refused("an animation element targeting href is not allowed")
-            if attr_name == "base":
-                raise _Refused("an xml:base attribute is not allowed")
-            reason = _screen_css(value)
+            reason = _screen_value(value)
             if reason:
-                raise _Refused(reason)
+                raise _Refused(
+                    f"the value of {attr_name!r} on <{name}> is not allowed: {reason}"
+                )
+
+    def end(self, tag: str) -> None:
+        self.depth -= 1
+
+    def namespace(self, prefix: str | None, uri: str) -> None:
+        if uri not in _ALLOWED_NAMESPACES:
+            raise _Refused(f"the namespace {uri[:60]!r} is not allowed")
 
     def pi(self, target: str, data: str) -> None:
         raise _Refused("a processing instruction is not allowed")
 
-    def comment(self, data: str) -> None:
-        if self.style is not None:
-            raise _Refused("a comment inside a style element is not allowed")
-
     def cdata(self) -> None:
         raise _Refused("a CDATA section is not allowed")
-
-    def text(self, data: str) -> None:
-        if self.style is not None:
-            self.style.append(data)
-
-    def end(self, tag: str) -> None:
-        if _local(tag) == "style" and self.style is not None:
-            reason = _screen_css("".join(self.style))
-            self.style = None
-            if reason:
-                raise _Refused(reason)
 
 
 def _screen_svg(data: bytes) -> str | None:
@@ -168,10 +177,9 @@ def _screen_svg(data: bytes) -> str | None:
     screen = _Screen()
     parser = expat.ParserCreate("utf-8", namespace_separator="}")
     parser.StartElementHandler = screen.start
-    parser.CharacterDataHandler = screen.text
     parser.EndElementHandler = screen.end
+    parser.StartNamespaceDeclHandler = screen.namespace
     parser.ProcessingInstructionHandler = screen.pi
-    parser.CommentHandler = screen.comment
     parser.StartCdataSectionHandler = screen.cdata
     try:
         parser.Parse(data, True)
