@@ -103,6 +103,31 @@ your own; never commit real account ids, database ids or tokens.
    The workflow validates each value's shape before using it and fails with a
    clear message if a required one is missing.
 
+## Page views (`POST /e/v/:pageId`)
+
+The Worker also has a write-only page-view route (Plan 4 Tasks A3 and A4; the browser script that calls it is a later task). It needs migrations `0005` and `0006` applied to the same D1 database, and the same `/e/*` zone route as clicks.
+
+| Variable | Kind | What it does |
+|---|---|---|
+| `PAGE_IDS` | var | JSON array of tab ids from the build manifest. Any other page id is ignored. Deploy the Worker with it before the site |
+| `VIEW_HASH_SECRET` | **secret** | 32 or more random bytes, base64. Set with `npx wrangler secret put VIEW_HASH_SECRET`; never in `wrangler.toml`, a committed file, a log or a chat. **Required.** It keys the rate-limiter keys, the per-client cap and the visitor hash. Absent, too short or malformed (or a request with no parsable client address): the route fails closed and records nothing |
+| `VIEWS_KILL` | var | `1` or `true` makes the route return its usual empty 204 with no database or limiter call. Read per request |
+| `VIEW_LIMITER` | binding | Workers Rate Limiting binding, placeholder in `wrangler.toml` (5 per client per 60 s). Required: without it the route records nothing. It is keyed by a daily HMAC of the address under the secret (purpose label `lim`), never the raw address, so no address is stored in the binding either. `VIEW_SUSPECT_LIMITER` (optional) works the same way with label `sus` |
+| `VIEWS_PER_HOUR`, `BOT_VIEWS_PER_HOUR` | var | global hourly write budgets, defaults 120 and 30 (Plan 4 open decision P-6) |
+| `CLIENT_VIEWS_PER_HOUR` | var | per-address hourly cap, default 60, ceiling 1000, then clamped to half the human budget (humans) or a quarter of the bot budget (bots). One counter per address is shared by bot and human traffic. Keyed on a daily keyed hash of the address, never the address |
+| `RAW_KEEP_DAYS` | var | days raw view rows are kept, default 7 (open decision P-3), ceiling 90; a bad value falls back to 7 |
+| `GEO_LEVEL`, `BOTS_MODE`, `UV_ENABLED`, `UV_BITS` | var | `city` / `count` / on / `64` by default. `UV_BITS` has a minimum of 64 (open decision P-5): a lower value falls back to 64, and at most 128 is accepted |
+
+Retention runs from the cron (`17 4 * * *` and `5 0 * * *`): `visitor_seen` rows before today's UTC date, raw view rows past `RAW_KEEP_DAYS`, hourly budget counters older than 48 hours and client-cap counters older than the previous hour. Counter keys are `bud:<hour>:<route>` and `cap:<hour>:<hash>` with the hour zero-padded, so expiry is a range delete on the primary key. A run that hits its batch budget records `purge_backlog` in `view_meta` and the next run continues. The daily rollup that should run before the raw purge (Task A5) is not built yet, so raw rows are deleted by age alone for now.
+
+**Geography is stored.** By the maintainer's decision `GEO_LEVEL` defaults to `city`: country, region code and city name are written to the raw rows (kept for `RAW_KEEP_DAYS`, default 7, ceiling 90) and, once the rollup job exists, to the daily aggregates. Set `GEO_LEVEL=region` to drop the city, or `GEO_LEVEL=country` to store the country only; in `country` mode no region or city is stored anywhere (a test dumps the whole database to prove it). Say this plainly in the privacy text.
+
+**Atomic accept.** An accepted view is one D1 batch: the client counter, the global counter, the event row and the visitor row are written together only if both the global budget and the client cap have room, otherwise nothing is written; a failure rolls the whole batch back. After the budget is spent, extra clients create no rows.
+
+**Timing.** Every outcome is the same empty 204 with the same headers, so responses are byte-uniform, but they are not timing-uniform: an early refusal (wrong method, unknown page, GPC) returns faster than an accepted view, which makes database calls. A patient observer can tell stages apart. This is accepted: nothing secret is revealed, the page ids and routes are public. The body read has a fixed 2 second deadline and then gives the same 204.
+
+The route stores no address, user agent or referrer URL. After a deploy, one beacon from a browser should give a 204 and one `view_events` row with categories only; the same request with `Sec-GPC: 1` should leave no row.
+
 ## Secrets and Doppler
 
 Project secrets (this Cloudflare token, later the Mailgun and collector

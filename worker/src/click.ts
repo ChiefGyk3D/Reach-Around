@@ -132,7 +132,7 @@ function hostOf(value: string | null): string | null {
   }
 }
 
-function originMatches(request: Request, siteHost: string): boolean {
+export function originMatches(request: Request, siteHost: string): boolean {
   // Length guard first: an oversize header is never handed to the URL parser.
   for (const name of ["Ping-From", "Origin"]) {
     const v = request.headers.get(name);
