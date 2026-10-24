@@ -376,7 +376,7 @@ def test_chips_layout_is_a_compact_strip_with_accessible_names(tmp_path: Path) -
         tmp_path,
     )
     assert "platforms-chips" in html and "platforms-list" not in html
-    assert ">406.8k<" in html
+    assert '<span class="platform-count" aria-hidden="true">406.8k</span>' in html
     assert "406,800 followers" in html
     assert re.search(r'class="sr-only">[^<]*Twitch[^<]*@example', html)
     assert 'class="platform-handle"' not in html
