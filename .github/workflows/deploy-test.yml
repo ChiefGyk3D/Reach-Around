@@ -94,6 +94,8 @@ jobs:
           RATELIMIT_NAMESPACE_ID: ${{ vars.RATELIMIT_NAMESPACE_ID }}
           SITE_HOST: ${{ vars.SITE_HOST }}
           LINK_IDS: ${{ vars.LINK_IDS }}
+          # Optional: set it to route /e/* on the site host to the Worker.
+          ZONE_NAME: ${{ vars.ZONE_NAME }}
         run: |
           set -eu
           if [ -n "${CLOUDFLARE_API_TOKEN:-}" ]; then
@@ -117,6 +119,10 @@ jobs:
             || { echo "::error::RATELIMIT_NAMESPACE_ID is not a number"; exit 1; }
           printf '%s' "$SITE_HOST" | grep -Eq '^[a-z0-9.-]{3,253}$' \
             || { echo "::error::SITE_HOST is not a plain hostname"; exit 1; }
+          if [ -n "${ZONE_NAME:-}" ]; then
+            printf '%s' "$ZONE_NAME" | grep -Eq '^[a-z0-9.-]{3,253}$' \
+              || { echo "::error::ZONE_NAME is not a plain hostname"; exit 1; }
+          fi
           printf '%s' "$PAGES_PROJECT" | grep -Eq '^[a-z0-9-]{1,58}$' \
             || { echo "::error::PAGES_PROJECT is not a valid project name"; exit 1; }
           printf '%s' "$LINK_IDS" | grep -Eq '^\[("[a-z0-9-]{1,40}"(, ?)?)+\]$' \
@@ -138,6 +144,7 @@ jobs:
           RATELIMIT_NAMESPACE_ID: ${{ vars.RATELIMIT_NAMESPACE_ID }}
           SITE_HOST: ${{ vars.SITE_HOST }}
           LINK_IDS: ${{ vars.LINK_IDS }}
+          ZONE_NAME: ${{ vars.ZONE_NAME }}
         run: |
           set -eu
           sed \
@@ -148,6 +155,13 @@ jobs:
             wrangler.toml > wrangler.deploy.toml
           grep -qF "${D1_DATABASE_ID}" wrangler.deploy.toml
           grep -qF "${SITE_HOST}" wrangler.deploy.toml
+          # Optional route so click pings to /e/c/<id> on the site host reach
+          # the Worker. Values were validated in "Check configuration".
+          if [ -n "${ZONE_NAME:-}" ]; then
+            printf '\n[[routes]]\npattern = "%s/e/*"\nzone_name = "%s"\n' \
+              "${SITE_HOST}" "${ZONE_NAME}" >> wrangler.deploy.toml
+            grep -qF "pattern = \"${SITE_HOST}/e/*\"" wrangler.deploy.toml
+          fi
 
       # Smoke test with no secret in the environment.
       - name: Confirm wrangler runs

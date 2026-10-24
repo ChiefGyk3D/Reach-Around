@@ -48,8 +48,17 @@ your own; never commit real account ids, database ids or tokens.
    Under Account Resources, include only your one account. Add a client IP
    filter and a short expiry if you can. Do not use the Global API Key. If a
    wrangler step reports a missing permission, add that one permission and
-   nothing broader. Workers Routes or Zone permissions are not needed because
-   the Worker is reached through its `workers.dev` address, not a zone route.
+   nothing broader.
+
+   Only if you set `ZONE_NAME` (section 2), also grant these two, limited to
+   the one zone under Zone Resources:
+
+   | Scope | Permission | Why |
+   |---|---|---|
+   | Zone | Workers Routes: Edit | `wrangler deploy` creates the `/e/*` route |
+   | Zone | Zone: Read | wrangler looks up the zone by name |
+
+   Without `ZONE_NAME` neither is needed.
 
 ## 2. GitHub steps
 
@@ -71,8 +80,34 @@ your own; never commit real account ids, database ids or tokens.
    | `SITE_HOST` | `links-test.example.invalid` | the only origin the Worker accepts clicks from |
    | `LINK_IDS` | `["example-one","example-two"]` | link ids the Worker accepts; copy them from the build manifest |
 
+   Optional variable, set it to count clicks:
+
+   | Variable | Value | What it does |
+   |---|---|---|
+   | `ZONE_NAME` | `example.invalid` | the Cloudflare zone that holds `SITE_HOST`; adds a `[[routes]]` entry for `SITE_HOST/e/*` to the throwaway deploy config |
+
+   **Without `ZONE_NAME` the page works but clicks are not counted.** The
+   click pings go to `/e/c/<id>` on the site's own host, and only a zone route
+   sends that path to the Worker. When set, `ZONE_NAME` must be a plain
+   hostname (`a-z`, `0-9`, `.`, `-`); when unset, the deploy config is
+   unchanged.
+
    The workflow validates each value's shape before using it and fails with a
-   clear message if one is missing.
+   clear message if a required one is missing.
+
+## Secrets and Doppler
+
+Project secrets (this Cloudflare token, later the Mailgun and collector
+tokens) live in the Doppler project `reach-around`, with configs `dev`, `stg`
+and `prd`. For a local deploy, read the token from the `stg` config:
+
+```
+doppler run --project reach-around --config stg --only-secrets CLOUDFLARE_API_TOKEN -- <command>
+```
+
+The CI workflow still reads `CLOUDFLARE_API_TOKEN` from the GitHub `test`
+environment secret until issue #98 moves it to Doppler OIDC. Never paste a
+token into chat, issues or commits.
 
 ## 3. Run it
 
