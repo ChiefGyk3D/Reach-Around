@@ -1,0 +1,38 @@
+# AI crawler user-agent tokens for robots.txt (ai_crawlers: block).
+#
+# VERIFY BEFORE RELYING. Each token below was read on 2026-10-24 on the
+# operator's own public documentation page named above its group. Operators
+# rename and add crawlers; check each page again before you depend on this list.
+# A crawler that ignores robots.txt is not stopped by it.
+#
+# Only training and AI-search crawlers that their operators say honor
+# robots.txt are listed. User-initiated fetchers (for example ChatGPT-User,
+# Claude-User, Perplexity-User, Meta-ExternalFetcher) are left out on purpose:
+# some operators say those may bypass robots.txt. Ordinary search engine
+# crawlers (Googlebot, Bingbot) are not listed and stay allowed.
+#
+# One token per line, strict [A-Za-z0-9._*-], no duplicates, "#" starts a comment.
+#
+# Source: https://platform.openai.com/docs/bots
+GPTBot
+OAI-SearchBot
+#
+# Source: https://privacy.anthropic.com/en/articles/8896518-does-anthropic-crawl-data-from-the-web-and-how-can-site-owners-block-the-crawler
+ClaudeBot
+Claude-SearchBot
+#
+# Source: https://developers.google.com/search/docs/crawling-indexing/google-common-crawlers
+Google-Extended
+Google-CloudVertexBot
+#
+# Source: https://support.apple.com/en-us/119829
+Applebot-Extended
+#
+# Source: https://developers.facebook.com/docs/sharing/webmasters/web-crawlers/
+Meta-ExternalAgent
+#
+# Source: https://docs.perplexity.ai/guides/bots
+PerplexityBot
+#
+# Source: https://commoncrawl.org/ccbot
+CCBot

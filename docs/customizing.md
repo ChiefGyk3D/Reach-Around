@@ -455,6 +455,25 @@ you need. Template variables (`creator`, `tab`, `blocks`, `nav`, `root`,
 `disclosure`, `show_disclosure`, `show_cookie_banner`, `click_tracking`) are
 set in `site/build.py` and may change.
 
+## Telling crawlers what you prefer
+
+Add a `robots` key to `site.yaml` and the build writes `robots.txt`. Leave it
+out and nothing changes.
+
+```yaml
+robots:
+  ai_crawlers: block      # also disallow the packaged AI crawler list
+  block: [ExampleBot]     # any other user-agent token you name
+  noindex_paths: [/thanks]  # adds X-Robots-Tag: noindex for these paths
+```
+
+Every key and limit is in [the config reference](config.md#robots). Two honest
+notes. `robots.txt` is advisory: polite crawlers follow it and others ignore
+it, so it is not a way to protect anything. And the AI crawler list is a
+snapshot of what operators documented, marked "verify before relying". Blocking
+bots at Cloudflare itself is a separate dashboard step; see Cloudflare's current
+documentation.
+
 ## What is deliberately refused
 
 - **Custom JavaScript.** A `.js`, `.mjs` or `.cjs` file in the overrides

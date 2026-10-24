@@ -32,6 +32,7 @@ from reach_around.site.overrides import (
     warn_about_javascript,
 )
 from reach_around.site.privacy import collected_items, intro_text, sets_cookies
+from reach_around.site.robots import render_robots
 from reach_around.site.theme import theme_css
 from reach_around.site.visibility import visible_blocks
 
@@ -303,7 +304,16 @@ def build_site(
     files[Path("static") / "theme.css"] = theme_css(config.theme).encode("utf-8")
     if custom_css is not None:
         files[Path("static") / "custom.css"] = custom_css.encode("utf-8")
-    files[Path("_headers")] = render_headers().encode("utf-8")
+    robots = config.robots
+    files[Path("_headers")] = render_headers(
+        noindex_paths=robots.noindex_paths if robots else ()
+    ).encode("utf-8")
+    if robots is not None:
+        if Path("robots.txt") in files:
+            raise ValueError(
+                "robots.txt would overwrite a file the build writes itself"
+            )
+        files[Path("robots.txt")] = render_robots(robots).encode("ascii")
     out = _check_out_dir(out_dir, protect)
     _empty(out)
     _write(out, files)

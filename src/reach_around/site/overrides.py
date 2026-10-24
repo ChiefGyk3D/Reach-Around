@@ -389,6 +389,9 @@ _ORIGIN = re.compile(
 )
 _PATH = re.compile(r"/[A-Za-z0-9._~/*:-]*")
 
+# A noindex prefix: plain segments, no wildcards, no dot segments.
+_NOINDEX_PATH = re.compile(r"/[A-Za-z0-9._~-]+(?:/[A-Za-z0-9._~-]+)*/?")
+
 _OTHER_HEADERS: tuple[tuple[str, str], ...] = (
     ("X-Content-Type-Options", "nosniff"),
     ("Referrer-Policy", "strict-origin-when-cross-origin"),
@@ -424,12 +427,15 @@ def build_csp(extra: Mapping[str, Sequence[str]] | None = None) -> str:
 
 def render_headers(
     path_extras: Mapping[str, Mapping[str, Sequence[str]]] | None = None,
+    noindex_paths: Sequence[str] = (),
 ) -> str:
     """Return the Cloudflare Pages ``_headers`` file.
 
     ``path_extras`` maps a path pattern to a CSP extra for that path only. A
     path block first detaches the site-wide policy (``! Header``) and then sets
     its own, because Pages otherwise sends both and the stricter one wins.
+    ``noindex_paths`` are plain path prefixes that get ``X-Robots-Tag: noindex``
+    for the path itself and everything under it; each is validated strictly.
     """
     lines = [
         "/*",
@@ -445,4 +451,15 @@ def render_headers(
             "  ! Content-Security-Policy",
             f"  Content-Security-Policy: {build_csp(extra)}",
         ]
+    patterns: set[str] = set()
+    for prefix in noindex_paths:
+        if (
+            not _NOINDEX_PATH.fullmatch(prefix)
+            or len(prefix) > 200
+            or any(part in (".", "..") for part in prefix.split("/"))
+        ):
+            raise OverridesError(f"noindex path {prefix!r} is not allowed")
+        patterns.update((prefix.rstrip("/"), prefix.rstrip("/") + "/*"))
+    for pattern in sorted(patterns):
+        lines += ["", pattern, "  X-Robots-Tag: noindex"]
     return "\n".join(lines) + "\n"
