@@ -1,0 +1,30 @@
+# SPDX-License-Identifier: Apache-2.0
+# Podman Quadlet unit. Rootless install:
+#   mkdir -p ~/.config/containers/systemd ~/reach-around/config ~/reach-around/out
+#   cp deploy/podman/reach-around.container ~/.config/containers/systemd/
+#   systemctl --user daemon-reload && systemctl --user start reach-around.service
+# Put site.yaml in ~/reach-around/config. The site is written to ~/reach-around/out.
+[Unit]
+Description=Reach Around site build
+
+[Container]
+Image=localhost/reach-around:local
+ContainerName=reach-around
+Exec=build --config /config/site.yaml --out /out
+User=10001
+Group=10001
+# Map uid 10001 in the container to your own user so ./out stays yours.
+UserNS=keep-id:uid=10001,gid=10001
+ReadOnly=true
+DropCapability=ALL
+NoNewPrivileges=true
+Tmpfs=/tmp
+Volume=%h/reach-around/config:/config:ro,Z
+Volume=%h/reach-around/out:/out:Z
+
+[Service]
+Type=oneshot
+RemainAfterExit=no
+
+[Install]
+WantedBy=default.target

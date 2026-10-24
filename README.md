@@ -23,7 +23,7 @@ An open-source (Apache-2.0) single pane for creator analytics: one place for you
 | Platform API research (16 platforms) | Merged as drafts with an independent review: [docs/research](docs/research/README.md) |
 | Design spec | In progress: [docs/superpowers/specs](docs/superpowers/specs/) |
 | Plan and roadmap | Not started |
-| Code | None |
+| Code | Early alpha: config loader, static link page builder, container image |
 
 The work is tracked on a GitHub Project board run with [Scrum Around and Find Out](https://github.com/ChiefGyk3D/scrum-around-and-find-out). Every task has an issue and a card before work starts.
 
