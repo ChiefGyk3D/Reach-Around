@@ -205,10 +205,11 @@ def test_exit_codes_for_usage_and_config_errors(
 
 
 def test_out_must_not_be_the_config_or_a_directory_or_in_a_missing_dir(
-    setup: Path,
+    setup: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     config = setup / "site.yaml"
     assert main(refresh_args(setup, "--out", str(config))) == 2
+    assert "--out is the config file" in capsys.readouterr().err
     assert main(refresh_args(setup, "--out", str(setup))) == 2
     assert main(refresh_args(setup, "--out", str(setup / "nodir" / "n.json"))) == 2
     assert config.read_text() == CONFIG

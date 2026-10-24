@@ -15,6 +15,8 @@ while the project is alpha, every release is `0.x` and anything can change betwe
   `numbers.json` beside the config) overlays counts from a strictly validated
   JSON file that is never published. See `examples/platforms/`.
 - A "Made with Reach Around" credit link in the footer of every page, on by default. `footer.credit: false` removes it and `footer.credit_text` rewords it (plain text, 1-60 characters). Plain https link, no click tracking, no script. The built pages and goldens change by that one line.
+- `reach-around counts refresh` pulls follower counts (Bluesky, Mastodon-compatible servers, GitHub, Discord invites, Matrix, YouTube, Twitch) into a validated `numbers.json`, driven by a new optional `numbers` config block. A failed source keeps its previous number and is recorded in `numbers.status.json`; keys come only from environment variables named in the config. Requests are https-only with pinned public addresses, no cross-host redirects, a hard total deadline and size caps.
+
 - Links and socials can point at another tab with `url: "tab:<id>"` or `"tab:<id>#fragment"`. Same-origin, no click ping, not in the manifest.
 
 ## [0.1.0] - 2026-10-24

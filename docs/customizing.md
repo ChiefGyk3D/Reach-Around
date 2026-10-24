@@ -531,6 +531,143 @@ images from `{{ root }}` or with a leading `/`, never relative to the page.
 And the page is built with `click_tracking` off and `noindex` on, so keep it
 free of `data-link-id` links. CSS goes in `custom.css` under `.not-found`.
 
+## Daily follower counts
+
+`reach-around counts refresh` fetches follower or member counts and writes
+them to a numbers file the build can read. List the sources under `numbers` in
+`site.yaml` (see [`numbers`](config.md#numbers) for each kind and its limits),
+then run:
+
+```
+reach-around counts refresh --config site.yaml --out numbers.json
+```
+
+| Option | Meaning |
+| --- | --- |
+| `--config PATH` | the site config (required) |
+| `--out PATH` | the numbers file (default `numbers.json` beside the config); the status file is `<name>.status.json` beside it |
+| `--only SLUG [SLUG ...]` | refresh only these platforms |
+| `--dry-run` | print which hosts and kinds would be fetched; fetch nothing, write nothing |
+
+Exit codes: `0` every source succeeded or was skipped on purpose; `3` at least
+one source failed; `2` a usage or config problem (including a numbers file that
+does not validate); `1` the result files could not be written. A failed source
+never overwrites its old number and never becomes a zero; `numbers.status.json`
+records `ok`, `skipped` or `error` per source with the error class and the time.
+
+Keyed sources read their secret from an environment variable named in the
+config. Run the command under Doppler so the values exist only for that process:
+
+```
+doppler run -- reach-around counts refresh --config site.yaml --out numbers.json
+```
+
+### What each platform allows
+
+- **Bluesky, Mastodon-compatible servers, GitHub, Discord invites, Matrix:**
+  public endpoints, no key. Discord and Matrix give a current member count only;
+  there is no history, so the numbers file keeps just the latest value. Discord
+  counts are approximate. Matrix works only for publicly joinable or
+  world-readable rooms.
+- **YouTube:** a Data API key (read-only, public data). Public subscriber counts
+  are rounded by YouTube and can be hidden by the channel. The owner-only
+  Analytics API is a different thing and its data must not be shown publicly
+  (see the YouTube research note); this command never touches it.
+- **Twitch:** app credentials can register an app, but the follower total has
+  been documented as needing a user token that app credentials cannot get. The
+  command reports `needs_user_token` as a skip. Enter the number by hand until a
+  user-token path exists.
+- **TikTok, Instagram, Threads, Kick:** no source kind yet (their approval or
+  token paths are not in place). The manual fallback is to add the entry to the
+  numbers file yourself; a refresh never touches platforms it has no source for:
+
+  ```json
+  {"version": 1, "platforms": {"tiktok": {"count": 5200, "as_of": "2026-10-20T00:00:00Z"}}}
+  ```
+
+  The `as_of` date is how a reader can see the figure is a hand-kept one.
+
+### A scheduled refresh in your instance repository
+
+This workflow goes in your instance repository (not the engine). It refreshes
+once a day, commits the result when it changed, and starts the deploy workflow,
+which rebuilds the page. The public APIs above allow hourly runs; change the
+`cron` to `17 * * * *` if you want that, but check each platform's limits first,
+and do not run it more often than the page is worth rebuilding. The secrets live
+in Doppler, not in GitHub; the Doppler token is the only secret GitHub holds.
+
+```yaml
+name: Refresh follower counts
+on:
+  schedule:
+    - cron: "17 6 * * *"   # daily; "17 * * * *" for hourly
+  workflow_dispatch:
+
+permissions:
+  contents: write   # commit numbers/numbers.json
+  actions: write    # start the deploy workflow (a push by GITHUB_TOKEN would not)
+
+concurrency:
+  group: counts
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@<pin by commit, as in deploy.yml>
+      - uses: dopplerhq/cli-action@<pin by commit>
+      - name: Refresh counts
+        env:
+          DOPPLER_TOKEN: ${{ secrets.DOPPLER_TOKEN }}
+        run: |
+          set -u
+          image="$(scripts/read-lock.sh ENGINE_IMAGE)"
+          mkdir -p numbers
+          set +e
+          doppler run -- docker run --rm --read-only --cap-drop ALL \
+            --security-opt no-new-privileges:true --tmpfs /tmp \
+            --user "$(id -u):$(id -g)" \
+            -e YOUTUBE_API_KEY \
+            -v "$PWD":/config:ro -v "$PWD/numbers":/config/numbers \
+            "$image" counts refresh --config /config/site.yaml \
+            --out /config/numbers/numbers.json
+          echo "code=$?" >> "$GITHUB_OUTPUT"
+        id: refresh
+      - name: Commit when changed
+        id: commit
+        run: |
+          if git diff --quiet -- numbers/numbers.json; then exit 0; fi
+          git config user.name "counts-bot"
+          git config user.email "counts-bot@users.noreply.github.com"
+          git add numbers/numbers.json numbers/numbers.status.json
+          git commit -m "Refresh follower counts"
+          git push
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+      - name: Rebuild and deploy
+        if: steps.commit.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run deploy.yml
+      - name: Fail the run if a source failed
+        if: steps.refresh.outputs.code == '3'
+        run: |
+          echo "::error::at least one source failed; its previous number was kept"
+          exit 1
+```
+
+Things to check before you rely on it:
+
+- The container is run with network access here (the build job runs with none).
+  Only `YOUTUBE_API_KEY` is passed in; list the other environment variables your
+  `numbers` sources name, nothing else.
+- `git diff --quiet` ignores a file that is not tracked yet; commit an initial
+  `numbers/numbers.json` by hand first.
+- Pin each Action by commit and add the version comment, as the template
+  workflows do. The two `<pin ...>` markers above are placeholders on purpose.
+- This example was not run against a live repository when it was written.
+
 ## Telling crawlers what you prefer
 
 Add a `robots` key to `site.yaml` and the build writes `robots.txt`. Leave it

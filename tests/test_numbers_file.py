@@ -131,6 +131,10 @@ def test_load_refuses_symlink_fifo_big_and_non_utf8(tmp_path: Path) -> None:
     big.write_bytes(b" " * 2_000_000)
     with pytest.raises(NumbersError):
         load_numbers(big)
+    padded = tmp_path / "padded.json"
+    padded.write_text(dump_numbers({}) + " " * 2_000_000)
+    with pytest.raises(NumbersError, match="larger than"):
+        load_numbers(padded)
     bad = tmp_path / "bad.json"
     bad.write_bytes(b"\xff\xfe")
     with pytest.raises(NumbersError):

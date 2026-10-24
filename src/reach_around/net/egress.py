@@ -170,6 +170,48 @@ def _default_wrapper(sock: socket.socket, server_hostname: str) -> socket.socket
     return context.wrap_socket(sock, server_hostname=server_hostname)
 
 
+class _Watchdog:
+    """Closes every registered socket at an absolute deadline.
+
+    Per-operation socket timeouts cannot bound the total: a server that drips
+    one byte at a time never trips them. This timer shuts the connection down
+    when the deadline passes, which wakes any blocked connect, TLS handshake,
+    send or read from another thread.
+    """
+
+    def __init__(self, seconds: float) -> None:
+        self.fired = False
+        self._lock = threading.Lock()
+        self._socks: list[socket.socket] = []
+        self._timer = threading.Timer(max(seconds, 0.0), self._fire)
+        self._timer.daemon = True
+        self._timer.start()
+
+    def add(self, sock: socket.socket) -> None:
+        with self._lock:
+            self._socks.append(sock)
+            fired = self.fired
+        if fired:
+            self._kill(sock)
+
+    def _fire(self) -> None:
+        with self._lock:
+            self.fired = True
+            socks = list(self._socks)
+        for sock in socks:
+            self._kill(sock)
+
+    @staticmethod
+    def _kill(sock: socket.socket) -> None:
+        try:
+            sock.shutdown(socket.SHUT_RDWR)
+        except (OSError, ValueError):
+            pass
+
+    def stop(self) -> None:
+        self._timer.cancel()
+
+
 class _PinnedConnection(http.client.HTTPSConnection):
     """HTTPS to a checked address; Host header and TLS name stay the host name."""
 
@@ -180,24 +222,31 @@ class _PinnedConnection(http.client.HTTPSConnection):
         timeout: float,
         connector: Connector,
         wrapper: Wrapper,
+        watchdog: _Watchdog,
     ) -> None:
         super().__init__(host, 443, timeout=timeout)
         self._address = address
         self._connector = connector
         self._wrapper = wrapper
+        self._watchdog = watchdog
 
     def connect(self) -> None:
         sock = self._connector(self._address, 443, float(self.timeout or 10.0))
+        self._watchdog.add(sock)  # before the handshake, so a stalled one is cut
         self.sock = self._wrapper(sock, self.host)
 
 
 class HttpsTransport:
-    """The default ``Transport``: resolve, check every answer, connect pinned."""
+    """The default ``Transport``: resolve, check every answer, connect pinned.
+
+    One absolute deadline covers resolve, connect, TLS handshake, send, header
+    parse and body read.
+    """
 
     def __init__(
         self,
         *,
-        resolver: Resolver = system_resolver,
+        resolver: Resolver | None = None,
         connector: Connector = _default_connector,
         wrapper: Wrapper = _default_wrapper,
         clock: Callable[[], float] = time.monotonic,
@@ -214,7 +263,13 @@ class HttpsTransport:
         if request.port != 443:
             raise EgressBlocked("port", host)
         deadline = request.deadline or (self._clock() + self._total)
-        answers = self._resolver(host, 443)
+        remaining = deadline - self._clock()
+        if remaining <= 0:
+            raise EgressBlocked("timeout", host)
+        if self._resolver is None:
+            answers = system_resolver(host, 443, timeout=remaining)
+        else:
+            answers = self._resolver(host, 443)
         if not answers:
             raise EgressBlocked("no_address", host)
         # every answer must be public; a mixed set is refused whole
@@ -224,8 +279,9 @@ class HttpsTransport:
         remaining = deadline - self._clock()
         if remaining <= 0:
             raise EgressBlocked("timeout", host)
+        watchdog = _Watchdog(remaining)
         conn = _PinnedConnection(
-            host, address, remaining, self._connector, self._wrapper
+            host, address, remaining, self._connector, self._wrapper, watchdog
         )
         try:
             try:
@@ -240,14 +296,23 @@ class HttpsTransport:
                 response = conn.getresponse()
                 body = self._read(conn, response, deadline, request.max_bytes + 1, host)
                 headers = {key.lower(): value for key, value in response.getheaders()}
+                if watchdog.fired:  # a cut connection can look like a short body
+                    raise EgressBlocked("timeout", host)
                 return RawResponse(response.status, headers, body)
+            except EgressBlocked:
+                raise
             except TimeoutError:
                 raise EgressBlocked("timeout", host) from None
             except ssl.SSLError:
-                raise EgressBlocked("tls_failed", host) from None
+                raise EgressBlocked(
+                    "timeout" if watchdog.fired else "tls_failed", host
+                ) from None
             except (OSError, http.client.HTTPException, ValueError):
-                raise EgressBlocked("connect_failed", host) from None
+                raise EgressBlocked(
+                    "timeout" if watchdog.fired else "connect_failed", host
+                ) from None
         finally:
+            watchdog.stop()
             conn.close()
 
     def _read(

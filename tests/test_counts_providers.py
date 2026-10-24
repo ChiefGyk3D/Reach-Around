@@ -353,7 +353,22 @@ def test_youtube_hidden_subscriber_count_is_a_skip_not_a_zero() -> None:
 
 @pytest.mark.parametrize(
     "value",
-    ["-5", "1.5", "12abc", "", " 5", "٣", "1" * 12, 1.5, -1, None, True, [1], "0x10"],
+    [
+        "9" * 5000,
+        "-5",
+        "1.5",
+        "12abc",
+        "",
+        " 5",
+        "٣",
+        "1" * 12,
+        1.5,
+        -1,
+        None,
+        True,
+        [1],
+        "0x10",
+    ],
 )
 def test_youtube_hostile_subscriber_counts_refused(value: object) -> None:
     transport = FakeTransport({YT_URL: reply(yt_body({"subscriberCount": value}))})

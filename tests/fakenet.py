@@ -67,6 +67,9 @@ class FakeSock:
     def settimeout(self, value: float | None) -> None:
         self.timeouts.append(value)
 
+    def shutdown(self, how: int) -> None:
+        self.closed = True
+
     def close(self) -> None:
         self.closed = True
 

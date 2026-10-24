@@ -1,7 +1,10 @@
 # SPDX-License-Identifier: Apache-2.0
 import ast
 import socket
+import ssl
+import threading
 import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import cast
 
@@ -319,3 +322,166 @@ def test_the_guard_flags_a_module_that_opens_connections() -> None:
     assert _network_imports("from http import client\n") == ["http.client"]
     assert _network_imports("import socket\n") == ["socket"]
     assert _network_imports("import json\n") == []
+
+
+# ---- one absolute deadline across the whole exchange ----------------------------
+
+
+class DripServer:
+    """Loopback server whose behavior function gets each accepted connection."""
+
+    def __init__(self, behavior: Callable[[socket.socket], None] | None) -> None:
+        self.listener = socket.socket()
+        self.listener.bind(("127.0.0.1", 0))
+        self.listener.listen(5)
+        self.port = self.listener.getsockname()[1]
+        self._behavior = behavior
+        self._conns: list[socket.socket] = []
+        self._thread = threading.Thread(target=self._serve, daemon=True)
+        self._thread.start()
+
+    def _serve(self) -> None:
+        while self._behavior is not None:  # None: never accept (backlog only)
+            try:
+                conn, _ = self.listener.accept()
+            except OSError:
+                return
+            self._conns.append(conn)
+            threading.Thread(target=self._run, args=(conn,), daemon=True).start()
+
+    def _run(self, conn: socket.socket) -> None:
+        try:
+            assert self._behavior is not None
+            self._behavior(conn)
+        except OSError:
+            pass
+
+    def close(self) -> None:
+        self.listener.close()
+        for conn in self._conns:
+            conn.close()
+
+
+def drip(conn: socket.socket, data: bytes, gap: float = 0.1) -> None:
+    for i in range(len(data)):
+        conn.sendall(data[i : i + 1])
+        time.sleep(gap)
+
+
+def _slow_status(conn: socket.socket) -> None:
+    drip(conn, b"HTTP/1.1 200 OK\r\n" + b"X-Pad: " + b"a" * 5000 + b"\r\n\r\n")
+
+
+def _slow_headers(conn: socket.socket) -> None:
+    conn.sendall(b"HTTP/1.1 200 OK\r\n")
+    drip(conn, b"X-Pad: " + b"a" * 5000 + b"\r\n\r\n{}")
+
+
+def _slow_body(conn: socket.socket) -> None:
+    conn.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: 5000\r\n\r\n")
+    drip(conn, b"x" * 5000)
+
+
+def _slow_close_delimited(conn: socket.socket) -> None:
+    conn.sendall(b"HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n")
+    conn.sendall(b'{"a": "')
+    time.sleep(30)  # the reader is blocked here when the deadline cuts it
+
+
+def _silent(conn: socket.socket) -> None:
+    time.sleep(30)
+
+
+def _timed(
+    server: DripServer, *, tls: bool, total: float = 0.6
+) -> tuple[float, EgressBlocked]:
+    def connector(address: str, port: int, timeout: float) -> socket.socket:
+        return socket.create_connection(("127.0.0.1", server.port), timeout=timeout)
+
+    def wrapper(sock: socket.socket, server_hostname: str) -> socket.socket:
+        if not tls:
+            return sock
+        return ssl.create_default_context().wrap_socket(
+            sock, server_hostname=server_hostname
+        )
+
+    transport = HttpsTransport(
+        resolver=lambda h, p: [PUBLIC],
+        connector=connector,
+        wrapper=wrapper,
+        total_timeout=total,
+    )
+    started = time.monotonic()
+    try:
+        with pytest.raises(EgressBlocked) as caught:
+            transport(_request())
+    finally:
+        server.close()
+    return time.monotonic() - started, caught.value
+
+
+@pytest.mark.parametrize(
+    ("behavior", "tls"),
+    [
+        (_slow_status, False),
+        (_slow_headers, False),
+        (_slow_body, False),
+        (_slow_close_delimited, False),  # a cut looks like a clean short body
+        (_silent, True),  # TLS handshake stalls after TCP accept
+        (None, True),  # nothing ever accepts: connect succeeds into the backlog
+    ],
+    ids=[
+        "status-line",
+        "headers",
+        "body",
+        "close-delimited",
+        "tls-handshake",
+        "accept-stall",
+    ],
+)
+def test_slow_servers_end_near_the_total_deadline(
+    behavior: Callable[[socket.socket], None] | None, tls: bool
+) -> None:
+    elapsed, error = _timed(DripServer(behavior), tls=tls)
+    assert error.reason == "timeout"
+    assert 0.5 <= elapsed < 2.0  # the drip alone would take 500 s
+
+
+def test_a_fast_answer_is_not_cut_by_the_watchdog() -> None:
+    def quick(conn: socket.socket) -> None:
+        conn.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}")
+        time.sleep(0.5)
+
+    server = DripServer(quick)
+
+    def connector(address: str, port: int, timeout: float) -> socket.socket:
+        return socket.create_connection(("127.0.0.1", server.port), timeout=timeout)
+
+    transport = HttpsTransport(
+        resolver=lambda h, p: [PUBLIC],
+        connector=connector,
+        wrapper=lambda sock, name: sock,
+        total_timeout=3.0,
+    )
+    try:
+        assert transport(_request()).body == b"{}"
+    finally:
+        server.close()
+
+
+def test_default_resolver_gets_only_the_remaining_time(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen: list[float] = []
+
+    def fake(host: str, port: int, *, timeout: float = 5.0) -> list[str]:
+        seen.append(timeout)
+        return [PUBLIC]
+
+    monkeypatch.setattr("reach_around.net.egress.system_resolver", fake)
+    spy = Spy(http_answer(b"{}"))
+    transport = HttpsTransport(
+        connector=spy.connector, wrapper=spy.wrapper, total_timeout=2.0
+    )
+    transport(_request())
+    assert len(seen) == 1 and 0 < seen[0] <= 2.0

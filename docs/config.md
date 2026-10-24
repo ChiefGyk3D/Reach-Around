@@ -88,6 +88,7 @@ escapes it when it renders.
 | `robots` | Robots | absent | optional; when present the build writes `robots.txt`; see [`robots`](#robots) |
 | `store` | StoreConfig | SQLite at `data/reach-around.db` | where the snapshot store lives; see [`store`](#store) |
 | `profile_card` | ProfileCard | none | name, topic chips and a media-kit button after the content of every page; see [`profile_card`](#profile_card) |
+| `numbers` | NumbersConfig | none | where each platform's follower count comes from, for `reach-around counts refresh`; see [`numbers`](#numbers) |
 
 Ids must be unique across the whole site: every tab id, every block id (links
 and sections) and every link id inside a section share one pool. Reusing an
@@ -670,6 +671,117 @@ build adds `profile-media-kit` to the build manifest (the `links` map the
 click Worker is configured from), so the Worker counts it like any link. With click tracking off it carries neither. The card adds no
 JavaScript and no inline style; it is styled from the same tokens as the rest of
 the page (see [design](design.md)), so a theme's colors and `mode` apply.
+
+## `numbers`
+
+Where each platform's follower or member count comes from. Optional: leave it
+out and nothing changes. `reach-around counts refresh` reads this block, asks
+each source for one number and writes a validated numbers file (see
+[Daily follower counts](customizing.md#daily-follower-counts) for the command,
+the exit codes and a scheduled workflow). Unknown keys are refused.
+
+`numbers.sources` is a list of 1 to 50 sources, one per `platform`. Every
+source has a `platform` (a slug, the same shape as an id: lowercase letters,
+digits and hyphens, at most 40 characters; it is the key in the numbers file and
+must be unique here) and a `kind` that decides which other keys it takes. Keys
+that a kind does not list are refused.
+
+| `kind` | Keys | Asks | Needs a key |
+| --- | --- | --- | --- |
+| `bluesky` | `actor`: a handle such as `name.bsky.social`, or a DID | `public.api.bsky.app` `getProfile`, field `followersCount` | no |
+| `mastodon` | `host`: a public host name; `acct`: the local user name, no leading `@` | `https://<host>/api/v1/accounts/lookup`, field `followers_count`. Also for Pixelfed and other servers that speak the Mastodon API | no |
+| `github` | `user`: a GitHub user name | `api.github.com/users/<user>`, field `followers` | no |
+| `discord` | `invite`: the invite code (not the URL) | `discord.com/api/v10/invites/<code>?with_counts=true`, field `approximate_member_count` (label: members) | no |
+| `matrix` | `room`: a public alias such as `#room:example.org` | resolves the alias on the alias server's client API (following its `.well-known`), then reads the room summary's `num_joined_members` (label: members) | no |
+| `youtube` | `channel_id`: the `UC...` id; `api_key_env`: the NAME of an environment variable | YouTube Data API v3 `channels.list`, `statistics.subscriberCount` | yes |
+| `twitch` | `login`; `client_id_env` and `client_secret_env`: environment variable NAMES that must differ | app token, then `helix/channels/followers` `total` | yes, and see the limit below |
+
+Credentials are never in the config. A keyed source names an environment
+variable (capital letters, digits and underscores, starting with a letter); the
+value is read when the command runs, sent in a header or a POST body (never in
+a URL), and never printed, logged, written or put in an error. Supply them
+with `doppler run -- reach-around counts refresh ...` or the CI secret store.
+A key written inline (`api_key: ...`) is refused as an unknown key.
+
+```yaml
+numbers:
+  sources:
+    - {platform: bluesky, kind: bluesky, actor: example.bsky.social}
+    - {platform: mastodon, kind: mastodon, host: example.social, acct: example}
+    - {platform: github, kind: github, user: example}
+    - {platform: discord, kind: discord, invite: abc-DEF123}
+    - {platform: matrix, kind: matrix, room: "#example:example.org"}
+    - platform: youtube
+      kind: youtube
+      channel_id: UCabcdefghijklmnopqrstuv
+      api_key_env: YOUTUBE_API_KEY
+```
+
+Rules the command enforces whatever the config says:
+
+- https only, port 443 only, no redirect to another host, no credentials in a
+  URL.
+- Fixed providers use fixed hosts. For the two configurable hosts (Mastodon
+  `host`, and the server in a Matrix alias) the config loader refuses IP
+  addresses in any notation, `localhost`, single-label names and
+  `.local`/`.internal` style suffixes. At run time the command also resolves the
+  name, requires EVERY answer to be a public address (loopback, private,
+  link-local, multicast, reserved, carrier-grade NAT and cloud-metadata ranges
+  are all refused), and connects to the checked address while keeping the host
+  name for the Host header and the certificate check.
+- 10 seconds in total for each request (resolve, connect, TLS, send, read), at
+  most 256 KiB of response, `application/json` only, no compressed responses.
+- A 429 or 5xx is retried at most twice, and only for a GET. `Retry-After` is
+  honored up to 60 seconds with a little jitter; a longer wait is not slept
+  through, the source simply fails this run.
+- A count must be a whole number from 0 to 10,000,000,000. A float, a string, a
+  negative number, a boolean or a nested value is a failure. (YouTube sends
+  `subscriberCount` as a string of digits; only that source accepts one.)
+
+Limits worth knowing:
+
+- **Twitch.** The follower total is documented under the moderator scope, and
+  Twitch has asked for a user access token on that route. App credentials cannot
+  obtain one, so the command reports the source as skipped with
+  `needs_user_token` (a skip is not a failure) when Twitch answers 401 or 403.
+  It does not try another route. Keep the last value by hand (below).
+- **YouTube.** Public counts are rounded by YouTube to three significant
+  figures, and a channel can hide its count; then the source is skipped as
+  `hidden_subscriber_count`, never written as zero.
+- **Matrix.** The room summary is public only for rooms that are publicly
+  joinable or world-readable (in practice, rooms published in the directory).
+  For any other room the source fails as `room_not_public`.
+- **Mastodon.** A server that requires login for the public API (limited
+  federation mode) answers 401; the source fails with `http_401`.
+- **GitHub.** Unauthenticated calls are limited to 60 an hour per address.
+  Shared CI runners can hit that; a failure keeps the old number.
+- **TikTok, Instagram, Threads, Kick** have no source kind. Their approval paths
+  do not exist yet. Put the number in the numbers file by hand (below).
+
+### The numbers file
+
+`reach-around counts refresh` writes `numbers.json` (default beside the config;
+`--out` changes it) as a version 1 document:
+
+```json
+{
+  "version": 1,
+  "platforms": {
+    "bluesky": {"count": 1234, "as_of": "2026-10-24T09:00:00Z"}
+  }
+}
+```
+
+`count` is a whole number from 0 to 10,000,000,000 and `as_of` is a UTC time in
+that exact form. The file is written atomically (temp file in the same folder,
+fsync, rename) with mode 0600. A failed source leaves its previous entry
+untouched, and the reason goes to a sibling `numbers.status.json` as an error
+class and a time only (never a response body). Entries for platforms that have
+no source are not touched, so a hand-written entry for TikTok survives a
+refresh. A numbers file that does not validate stops the command (exit 2)
+instead of being overwritten. The shape lives in `reach_around/numbers.py`
+(`load_numbers`, `dump_numbers`); anything else that reads the file should call
+that module.
 
 ## `features`
 
