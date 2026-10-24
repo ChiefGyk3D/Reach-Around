@@ -1,0 +1,8 @@
+pytest
+pytest-cov
+ruff
+mypy
+types-PyYAML
+PyYAML
+pydantic>=2
+Jinja2

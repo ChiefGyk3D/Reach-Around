@@ -1,0 +1,46 @@
+# SPDX-License-Identifier: Apache-2.0
+# The generic legs (ruff, mypy, the pytest matrix, the smoke test, the workflow lint) are
+# ChiefGyk3D/git-your-ship-together's python-ci.yml; it reports its gate as `CI green`, here
+# `ci / CI green`. Nothing project-specific lives in this file yet. The container build job
+# arrives with the Containerfile (Task 10), so docker-build stays off until then.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  ci:
+    uses: ChiefGyk3D/git-your-ship-together/.github/workflows/python-ci.yml@8fdb8d106b11aae0f37e893bb57e9bd8e8b0e7b7 # v1.24.0
+    permissions:
+      contents: read
+      id-token: write   # Doppler OIDC, when an identity is configured; python-ci keeps it off the test job
+    secrets:
+      DOPPLER_TOKEN: ${{ secrets.DOPPLER_TOKEN }}   # optional Service Token fallback; unset means OIDC only
+    with:
+      python-versions: '["3.11", "3.12", "3.13"]'
+      install-command: |
+        python -m pip install --upgrade pip
+        pip install --require-hashes -r requirements-dev.txt
+        pip install --no-deps -e .
+      test-command: pytest --cov=reach_around --cov-report=xml
+      lint-install-command: pip install --require-hashes -r requirements-dev.txt
+      lint-command: |
+        ruff check .
+        ruff format --check .
+      typecheck-install-command: |
+        pip install --require-hashes -r requirements-dev.txt
+        pip install --no-deps -e .
+      typecheck-command: mypy
+      smoke-command: reach-around --version
+      docker-build: false
+      egress-policy: block
