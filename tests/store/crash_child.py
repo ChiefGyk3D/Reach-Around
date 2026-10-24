@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import time
 from collections.abc import Sequence
 from contextlib import AbstractContextManager
 from pathlib import Path
@@ -25,8 +26,15 @@ class FaultyDb:
     statement of the first pending file and the last is its version row.
     """
 
-    def __init__(self, inner: Db, fail_at: int, mode: Literal["raise", "exit"]) -> None:
+    def __init__(
+        self,
+        inner: Db,
+        fail_at: int,
+        mode: Literal["raise", "exit"],
+        delay: float = 0.0,
+    ) -> None:
         self._inner = inner
+        self._delay = delay
         self._fail_at = fail_at
         self._mode = mode
         self.calls = 0
@@ -44,7 +52,12 @@ class FaultyDb:
     def query(
         self, sql: str, params: Sequence[object] = ()
     ) -> list[tuple[object, ...]]:
-        return self._inner.query(sql, params)
+        rows = self._inner.query(sql, params)
+        if self._delay and "schema_migrations" in sql:
+            # widen the window between reading the plan and acting on it, so a
+            # missing lock shows up as a collision every time
+            time.sleep(self._delay)
+        return rows
 
     def transaction(self, *, immediate: bool = False) -> AbstractContextManager[None]:
         return self._inner.transaction(immediate=immediate)
@@ -73,5 +86,6 @@ def migrate_when_released(
     index: int, spec: str, migrations_dir: str, release: str
 ) -> None:
     store = open_child_store(spec, migrations_dir)
+    store.db = FaultyDb(store.db, 0, "raise", delay=0.3)
     mp.wait_for_go(Path(release), index)
     store.migrate()
