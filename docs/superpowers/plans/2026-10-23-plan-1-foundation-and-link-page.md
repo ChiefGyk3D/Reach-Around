@@ -172,6 +172,79 @@ tests/                               pytest
 - [ ] **Step 5: Run** `pytest tests/site -v`. Expected: PASS.
 - [ ] **Step 6: Commit** `feat: generate the privacy disclosure from enabled features`.
 
+### Task 6B: Theme in the config
+
+**Files:**
+- Modify: `src/reach_around/config/models.py`, `templates/base.html`, `static/site.css`
+- Create: `src/reach_around/site/theme.py`, `tests/site/test_theme.py`
+
+**Interfaces:**
+- Consumes: `SiteConfig` (Task 3).
+- Produces: `Theme(colors: dict[str, str] = {}, fonts: FontStack, background: str | None = None, column_width: str = "560px", radius: str = "1rem", button_style: Literal["pill", "rounded", "square"] = "pill", mode: Literal["auto", "light", "dark"] = "auto")`; `SiteConfig.theme: Theme`; `theme_css(theme: Theme) -> str` returning a `:root { --ra-... }` block.
+
+- [ ] **Step 1: Write failing tests**: `test_color_values_are_validated` (hex, `rgb()`, `hsl()` and named colors pass; `red; background:url(x)`, `}`, `url(`, `expression(` and any `;` or `{` raise `ConfigError`); `test_only_known_token_names_are_emitted` (an unknown color key is refused); `test_fonts_are_system_stacks_or_local_files` (an `https://` font URL is refused, because no third-party font hosts means no visitor data leaks; a path inside the instance directory is allowed); `test_background_is_https_or_relative_asset`; `test_theme_css_overrides_defaults_in_the_built_page`; `test_mode_dark_forces_dark_tokens`.
+- [ ] **Step 2: Run** `pytest tests/site/test_theme.py -v`. Expected: FAIL.
+- [ ] **Step 3: Implement** the models and `theme_css`, emitting only an allowlisted set of custom-property names, and render the block in `base.html` as an external `theme.css` file (no inline style).
+- [ ] **Step 4: Run.** Expected: PASS.
+- [ ] **Step 5: Commit** `feat: make the look configurable through a validated theme`.
+
+### Task 6C: Layouts and block types
+
+**Files:**
+- Modify: `src/reach_around/config/models.py`, `templates/tab.html`, `static/site.css`
+- Create: `src/reach_around/site/markdown.py`, `templates/blocks/*.html`, `tests/site/test_blocks.py`
+
+**Interfaces:**
+- Consumes: `Tab`, `Section`, `Link`.
+- Produces: new block models `Text(id: str, markdown: str)`, `Image(id: str, src: str, alt: str, link: str | None = None)`, `Divider(id: str)`; `Tab.layout` and `Section.layout: Literal["list", "grid", "cards"] = "list"`; `Creator.header: Literal["compact", "centered", "hero"] = "compact"`; `render_markdown(text: str) -> str` supporting only bold, italic, https links, lists and line breaks.
+
+- [ ] **Step 1: Write failing tests**: `test_markdown_escapes_raw_html` (`<script>` and `<img onerror=...>` come out escaped); `test_markdown_links_must_be_https`; `test_image_requires_alt_text`; `test_image_src_is_https_or_relative_asset`; `test_unknown_layout_or_header_is_refused`; `test_grid_and_cards_layouts_render_the_same_links_as_list` (same hrefs, different container class); `test_block_ids_stay_unique_across_the_site`; `test_golden_output_for_each_header_variant`.
+- [ ] **Step 2: Run.** Expected: FAIL.
+- [ ] **Step 3: Implement** the models, the restricted markdown renderer (no raw HTML pass-through) and the block templates. Every new block must keep the page working without JavaScript.
+- [ ] **Step 4: Run.** Expected: PASS.
+- [ ] **Step 5: Commit** `feat: add text, image and divider blocks and layout variants`.
+
+### Task 6D: Instance overrides and a strict CSP
+
+**Files:**
+- Modify: `src/reach_around/site/build.py`, `src/reach_around/cli.py`
+- Create: `src/reach_around/site/overrides.py`, `tests/site/test_overrides.py`
+
+**Interfaces:**
+- Produces: CLI option `reach-around build --overrides DIR`; `make_environment(overrides: Path | None) -> jinja2.Environment` that looks in `DIR/templates` before the packaged templates; an optional `DIR/custom.css` appended after the theme; the build writes a `_headers` file with a strict Content-Security-Policy.
+
+- [ ] **Step 1: Write failing tests**: `test_override_template_wins_and_missing_ones_fall_back`; `test_override_name_cannot_escape_the_directory` (`../x.html` and an absolute path are refused); `test_custom_css_is_appended_after_the_theme`; `test_no_custom_javascript_is_loaded` (a `custom.js` in the overrides directory is ignored and the build warns); `test_headers_file_has_a_strict_csp` (contains `default-src 'self'`, `script-src 'self'`, `style-src 'self'`, `frame-ancestors 'none'`, `base-uri 'none'`, `form-action 'self'` and contains neither `unsafe-inline` nor `unsafe-eval`); `test_pages_use_no_inline_style_or_script`.
+- [ ] **Step 2: Run.** Expected: FAIL.
+- [ ] **Step 3: Implement** the overrides loader and the `_headers` writer. Custom JavaScript is deliberately not supported in v0.1: it would weaken the CSP, and the phase 3 gate will need its own explicit, narrow relaxation for the Turnstile script.
+- [ ] **Step 4: Run.** Expected: PASS.
+- [ ] **Step 5: Commit** `feat: support instance template overrides and ship a strict CSP`.
+
+### Task 6E: Local preview server
+
+**Files:**
+- Create: `src/reach_around/preview.py`, `src/reach_around/site/templates/_preview.html` (never part of a production build), `tests/test_preview.py`
+- Modify: `src/reach_around/cli.py`
+
+**Interfaces:**
+- Produces: `reach-around serve --config PATH [--overrides DIR] [--port 8000]`; `serve(config: Path, overrides: Path | None, host: str = "127.0.0.1", port: int = 8000) -> None`. Rebuilds when the config, theme, templates or overrides change, and serves `/__preview`, a page showing the site at desktop and 390 px phone width side by side.
+
+- [ ] **Step 1: Write failing tests**: `test_serve_refuses_a_non_loopback_host` (`0.0.0.0` and a LAN address raise); `test_rebuilds_when_the_config_changes` (touch and edit the config; the served page reflects it within 2 seconds); `test_preview_page_is_not_in_a_production_build` (the output of `build` has no `__preview`); `test_path_traversal_returns_404` (`/../../etc/passwd`, `/%2e%2e/`); `test_a_broken_config_shows_the_error_instead_of_crashing`.
+- [ ] **Step 2: Run.** Expected: FAIL.
+- [ ] **Step 3: Implement** with the standard library `http.server`, bound to loopback only, polling file modification times. This is a local development tool; it is never deployed and never public.
+- [ ] **Step 4: Run.** Expected: PASS.
+- [ ] **Step 5: Commit** `feat: add a loopback-only live preview`.
+
+### Task 6F: Customization guide and examples
+
+**Files:**
+- Create: `docs/customizing.md`, `examples/instance-variants/{minimal,dark-hero,grid-cards}/site.yaml`, `tests/test_example_variants.py`
+
+- [ ] **Step 1: Write the failing test** `test_every_example_variant_validates_and_builds`: loads each variant, builds it, and asserts the escaping, no-inline-script and no-third-party-host checks from Task 6 hold for every output page.
+- [ ] **Step 2: Run.** Expected: FAIL (no variants).
+- [ ] **Step 3: Write the variants and `docs/customizing.md`**: the layers from least to most work (edit links, change the theme, change layouts, override templates and CSS), the preview command, and what is deliberately not allowed (custom JavaScript, third-party fonts and scripts) and why.
+- [ ] **Step 4: Run.** Expected: PASS.
+- [ ] **Step 5: Commit** `docs: add the customization guide and example variants`.
+
 ### Task 7: Design pass (visual review gate)
 
 **Files:**
@@ -182,7 +255,7 @@ This task is reviewed by the maintainer by screenshot before it merges: it is th
 
 - [ ] **Step 1: Write failing layout tests** (`pytest` with Playwright, marked `visual`, skipped unless `--run-visual`): `test_no_horizontal_scroll_at_360px` (`document.documentElement.scrollWidth <= 360`), `test_tab_bar_never_clips_a_tab_at_360px` (every tab's bounding box is inside the viewport or the bar is horizontally scrollable with a visible edge cue), `test_desktop_column_is_centered_at_1440px`, `test_contrast_meets_wcag_aa` (computed text and background of the link button and the tab bar).
 - [ ] **Step 2: Run** `pytest tests/site/test_layout.py --run-visual -v`. Expected: FAIL.
-- [ ] **Step 3: Design** the theme with CSS custom properties on `:root`, a dark-mode override under `prefers-color-scheme`, a desktop column of about 560 px with artwork in the margins, full width on phone, and the icon row wrapping cleanly. Use the frontend-design guidance. Document tokens in `docs/design.md`.
+- [ ] **Step 3: Design** the default look through the theme tokens from Task 6B (so every choice is something another creator can change), with a dark-mode override under `prefers-color-scheme`, two shipped presets (`dark-hero` and `light-clean`), a desktop column of about 560 px with artwork in the margins, full width on phone, and the icon row wrapping cleanly. Use the frontend-design guidance. Document tokens in `docs/design.md`.
 - [ ] **Step 4: Run** the visual tests. Expected: PASS. Take screenshots at 1440 px and 390 px of each tab and attach them to the PR for the maintainer.
 - [ ] **Step 5: Commit** `feat: design pass for the link page`.
 
