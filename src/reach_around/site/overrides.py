@@ -20,9 +20,11 @@ the ``unsafe-*`` keywords are refused.
 
 from __future__ import annotations
 
+import errno
 import logging
 import os
 import re
+import stat
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
@@ -35,6 +37,7 @@ from jinja2 import (
     StrictUndefined,
     TemplateNotFound,
 )
+from jinja2.sandbox import ImmutableSandboxedEnvironment
 
 from reach_around.config.models import Block
 from reach_around.site.markdown import render_markdown
@@ -50,6 +53,53 @@ class OverridesError(ValueError):
 
 
 # ---------------------------------------------------------------- templates
+
+
+def _read_confined(path: Path, root: Path, limit: int | None = None) -> bytes:
+    """Read a regular file without following a symlink at the last component.
+
+    The file is opened with ``O_NOFOLLOW``, so a swap to a symlink between an
+    earlier check and this open fails instead of reading the target. Reading
+    goes through the descriptor, which ``fstat`` confirms is a regular file,
+    and (where ``/proc`` exists) whose real location is inside ``root``.
+    Swapping a parent directory for a symlink cannot be fully prevented
+    without ``openat2``; the docs say the overrides directory must not be
+    writable by untrusted users while a build runs.
+    """
+    flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | getattr(os, "O_NONBLOCK", 0)
+    try:
+        fd = os.open(path, flags)
+    except OSError as exc:
+        if exc.errno == errno.ELOOP:
+            raise OverridesError(
+                f"{path.name} is a symlink, which is not allowed in overrides"
+            ) from exc
+        raise OverridesError(f"cannot open {path.name}: {exc.strerror}") from exc
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise OverridesError(f"{path.name} must be a regular file")
+        proc = f"/proc/self/fd/{fd}"
+        if os.path.exists(proc):
+            actual = Path(os.path.realpath(proc))
+            if root not in actual.parents:
+                raise OverridesError(
+                    f"{path.name} resolves outside the overrides directory"
+                )
+        chunks = []
+        remaining = limit
+        while True:
+            want = 65536 if remaining is None else min(65536, remaining)
+            if want == 0:
+                break
+            chunk = os.read(fd, want)
+            if not chunk:
+                break
+            chunks.append(chunk)
+            if remaining is not None:
+                remaining -= len(chunk)
+        return b"".join(chunks)
+    finally:
+        os.close(fd)
 
 
 class _ConfinedLoader(BaseLoader):
@@ -81,7 +131,11 @@ class _ConfinedLoader(BaseLoader):
             )
         if not real.is_file():
             raise TemplateNotFound(template)
-        source = real.read_text(encoding="utf-8")
+        path = self.root.joinpath(*template.split("/"))
+        try:
+            source = _read_confined(path, self.root).decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise OverridesError(f"template {template!r} must be UTF-8") from exc
         mtime = real.stat().st_mtime_ns
 
         def uptodate() -> bool:
@@ -95,8 +149,13 @@ class _ConfinedLoader(BaseLoader):
 
 def check_overrides_dir(overrides: Path) -> Path:
     """Return the resolved overrides directory or raise a clear error."""
-    if not overrides.exists():
+    if not overrides.exists() and not overrides.is_symlink():
         raise OverridesError(f"overrides directory {overrides} does not exist")
+    if overrides.is_symlink():
+        raise OverridesError(
+            f"overrides directory {overrides} is a symlink, which is not allowed; "
+            "point --overrides at the real directory"
+        )
     if not overrides.is_dir():
         raise OverridesError(f"overrides path {overrides} is not a directory")
     return overrides.resolve()
@@ -112,9 +171,17 @@ def make_environment(overrides: Path | None) -> Environment:
     loaders: list[BaseLoader] = []
     if overrides is not None:
         root = check_overrides_dir(overrides)
-        loaders.append(_ConfinedLoader(root / "templates"))
+        templates = root / "templates"
+        if templates.is_symlink():
+            raise OverridesError(
+                "overrides/templates is a symlink, which is not allowed"
+            )
+        loaders.append(_ConfinedLoader(templates))
     loaders.append(PackageLoader("reach_around.site", "templates"))
-    env = Environment(
+    # Templates are creator-supplied code. The immutable sandbox refuses
+    # attribute walks such as ``cycler.__init__.__globals__`` that would
+    # otherwise reach the interpreter.
+    env = ImmutableSandboxedEnvironment(
         loader=ChoiceLoader(loaders),
         autoescape=True,
         undefined=StrictUndefined,
@@ -212,13 +279,11 @@ def load_custom_css(overrides: Path | None) -> str | None:
         return None
     root = check_overrides_dir(overrides)
     path = root / "custom.css"
-    if not path.exists() and not path.is_symlink():
+    if path.is_symlink():
+        raise OverridesError("custom.css is a symlink, which is not allowed")
+    if not path.exists():
         return None
-    real = Path(os.path.realpath(path))
-    if root not in real.parents or not real.is_file():
-        raise OverridesError("custom.css must be a regular file inside the overrides")
-    with real.open("rb") as handle:
-        data = handle.read(MAX_CUSTOM_CSS_BYTES + 1)
+    data = _read_confined(path, root, MAX_CUSTOM_CSS_BYTES + 1)
     if len(data) > MAX_CUSTOM_CSS_BYTES:
         raise OverridesError("custom.css is refused: it is larger than 256 KiB")
     try:
