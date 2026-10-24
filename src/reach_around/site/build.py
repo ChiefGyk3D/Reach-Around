@@ -22,6 +22,7 @@ from jinja2 import Environment, PackageLoader, StrictUndefined
 
 from reach_around.config.models import Block, Link, Section, SiteConfig, Tab
 from reach_around.site.markdown import render_markdown
+from reach_around.site.theme import theme_css
 from reach_around.site.visibility import visible_blocks
 
 
@@ -183,6 +184,7 @@ def build_site(
         for page, html in _render_pages(config, shown).items()
     }
     files.update(_static_files())
+    files[Path("static") / "theme.css"] = theme_css(config.theme).encode("utf-8")
     files[Path("manifest.json")] = _manifest_json(manifest).encode("utf-8")
     out = _check_out_dir(out_dir, protect)
     _empty(out)
