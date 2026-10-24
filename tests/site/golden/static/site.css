@@ -81,6 +81,7 @@
   --ra-tab-radius: 0;
   --ra-avatar-radius: 50%;
   --ra-thumb: 2.75rem;
+  --ra-thumb-radius: 50%;
 
   /* Depth. */
   --ra-shadow-card:
@@ -417,6 +418,17 @@ a.link::after {
   border-radius: 50%;
   background-color: var(--ra-color-chip);
   color: var(--ra-color-accent);
+}
+/* A link's own picture replaces the chip: square slot, cropped to fill. */
+.link-thumb {
+  display: block;
+  grid-column: 1;
+  grid-row: 1;
+  width: var(--ra-thumb);
+  height: var(--ra-thumb);
+  border-radius: var(--ra-thumb-radius);
+  object-fit: cover;
+  background-color: var(--ra-color-chip);
 }
 .link-text { grid-column: 2; grid-row: 1; min-width: 0; }
 .link-title {

@@ -134,9 +134,7 @@ def test_thumbnail_is_collected_for_a_top_level_link(tmp_path: Path) -> None:
 
 def test_thumbnail_is_collected_for_a_link_in_a_section(tmp_path: Path) -> None:
     work = inst(tmp_path, {"a.svg": SVG})
-    cfg = config(
-        [{"id": "sec", "title": "S", "links": [{**BASE, "image": "a.svg"}]}]
-    )
+    cfg = config([{"id": "sec", "title": "S", "links": [{**BASE, "image": "a.svg"}]}])
     assert collect_assets(cfg, work) == {Path("a.svg"): SVG}
 
 

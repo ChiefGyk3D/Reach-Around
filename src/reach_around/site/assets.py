@@ -121,7 +121,7 @@ def _open_dir(name: str, dir_fd: int | None, shown: str) -> int:
 def _read(
     root: Path,
     rel: str,
-    limit: int = MAX_ASSET_BYTES,
+    limit: int | None = None,
     too_big: str | None = None,
 ) -> bytes:
     """Read ``rel`` below ``root`` one component at a time.
@@ -153,6 +153,8 @@ def _read(
         fds.append(fd)
         if not stat.S_ISREG(os.fstat(fd).st_mode):
             raise ValueError(f"{rel} must be a regular file")
+        if limit is None:
+            limit = MAX_ASSET_BYTES  # read at call time, so it can be patched
         chunks: list[bytes] = []
         total = 0
         while True:
