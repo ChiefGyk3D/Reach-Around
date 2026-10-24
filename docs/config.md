@@ -85,6 +85,7 @@ escapes it when it renders.
 | `features` | Features | click tracking on, kit gate off | switches for features that collect data; see [`features`](#features) |
 | `privacy` | Privacy | defaults | wording and retention for the privacy page; see [`privacy`](#privacy) |
 | `robots` | Robots | absent | optional; when present the build writes `robots.txt`; see [`robots`](#robots) |
+| `store` | StoreConfig | SQLite at `data/reach-around.db` | where the snapshot store lives; see [`store`](#store) |
 
 Ids must be unique across the whole site: every tab id, every block id (links
 and sections) and every link id inside a section share one pool. Reusing an
@@ -94,6 +95,18 @@ id anywhere is refused, with the message `duplicate id 'x': ids must be unique`.
 timezone: Europe/Berlin
 disclosure: Some links are affiliate links.
 ```
+
+### `store`
+
+| Field | Type | Default | Constraints |
+| --- | --- | --- | --- |
+| `kind` | `sqlite` or `postgres` | `sqlite` | `postgres` is not built yet |
+| `path` | text | `data/reach-around.db` | the SQLite file; created mode 0600 in a 0700 directory |
+| `dsn_env` | text | none | the NAME of an environment variable holding a Postgres DSN; required for `postgres`; never a DSN or password |
+
+Run `reach-around store status --config site.yaml` to see applied and pending
+migrations and `reach-around store migrate --config site.yaml` to apply them.
+A SQLite store is copied to `<file>.pre-<version>` first (three copies kept).
 
 ### `creator`
 

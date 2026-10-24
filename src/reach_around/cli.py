@@ -4,13 +4,15 @@
 from __future__ import annotations
 
 import argparse
+import importlib
+import pkgutil
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
 
 from jinja2 import TemplateError
 
-from reach_around import __version__, edit_cli
+from reach_around import __version__, commands, edit_cli
 from reach_around.config import ConfigError, load_site_config
 from reach_around.preview import PreviewError, serve
 from reach_around.site.build import build_site, manifest_json
@@ -27,8 +29,8 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--version", action="store_true", help="print the version and exit"
     )
-    commands = parser.add_subparsers(dest="command")
-    build = commands.add_parser("build", help="render the static site")
+    commands_parsers = parser.add_subparsers(dest="command")
+    build = commands_parsers.add_parser("build", help="render the static site")
     build.add_argument("--config", type=Path, required=True, help="site config file")
     build.add_argument(
         "--out", type=Path, required=True, help="output directory (emptied first)"
@@ -40,14 +42,18 @@ def _parser() -> argparse.ArgumentParser:
         help="where to write the link manifest (default: <out>.manifest.json "
         "beside --out); it is never written inside --out, which is published",
     )
-    serve = commands.add_parser(
+    serve = commands_parsers.add_parser(
         "serve", help="preview the site locally (loopback only)"
     )
     serve.add_argument("--config", type=Path, required=True, help="site config file")
     serve.add_argument("--host", default="127.0.0.1", help="loopback address to bind")
     serve.add_argument("--port", type=int, default=8000, help="port (default 8000)")
     serve.add_argument("--overrides", type=Path, help=_OVERRIDES_HELP)
-    edit_cli.register(commands)
+    edit_cli.register(commands_parsers)
+    for module in pkgutil.iter_modules(commands.__path__):
+        importlib.import_module(f"{commands.__name__}.{module.name}").register(
+            commands_parsers
+        )
     return parser
 
 
@@ -123,6 +129,9 @@ def main(argv: list[str] | None = None) -> int:
         return _serve(args.config, args.host, args.port, args.overrides)
     if args.command in edit_cli.COMMANDS:
         return edit_cli.run(args)
+    func = getattr(args, "func", None)
+    if func is not None:
+        return int(func(args))
     parser.print_help()
     return 2
 

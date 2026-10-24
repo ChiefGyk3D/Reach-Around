@@ -8,6 +8,7 @@ from reach_around.config.models import (
     Section,
     SiteConfig,
     Social,
+    StoreConfig,
     Tab,
     load_site_config,
 )
@@ -22,6 +23,7 @@ __all__ = [
     "Section",
     "SiteConfig",
     "Social",
+    "StoreConfig",
     "Tab",
     "load_site_config",
     "load_yaml",
