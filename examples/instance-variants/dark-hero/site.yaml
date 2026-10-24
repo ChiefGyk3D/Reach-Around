@@ -1,0 +1,37 @@
+# Synthetic example: dark theme, hero header, pill buttons.
+# Every name and URL is made up.
+version: 1
+creator:
+  name: Example Creator
+  header: hero
+  socials:
+    - name: Example Video
+      url: https://video.example.com/@example
+      icon: video
+theme:
+  mode: dark
+  colors:
+    bg: "#101418"
+    text: "#e8edf2"
+    accent: "#ff69b4"
+    surface: "#1a2128"
+    border: "#33404c"
+  fonts:
+    body: Georgia, "Times New Roman", serif
+  button_style: pill
+tabs:
+  - id: start
+    title: Start
+    blocks:
+      - id: welcome
+        markdown: |
+          Welcome. **New episodes** every week, see the
+          [show page](https://example.com/show).
+      - id: home-page
+        title: Example Home Page
+        subtitle: The main site
+        url: https://example.com/
+      - id: rule
+      - id: latest
+        title: Latest Episode
+        url: https://video.example.com/watch/latest

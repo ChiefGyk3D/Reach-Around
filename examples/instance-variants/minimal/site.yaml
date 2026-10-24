@@ -1,0 +1,15 @@
+# Synthetic example: the smallest useful config. Every name and URL is made up.
+version: 1
+creator:
+  name: Example Creator
+tabs:
+  - id: links
+    title: Links
+    blocks:
+      - id: home-page
+        title: Example Home Page
+        url: https://example.com/
+      - id: newsletter
+        title: Newsletter
+        subtitle: One email a month
+        url: https://news.example.com/

@@ -23,3 +23,12 @@ def test_config_doc_example_validates(tmp_path: Path) -> None:
     sample.write_text(first_yaml_block(ROOT / "docs" / "config.md"), encoding="utf-8")
     config = load_site_config(sample)
     assert config.tabs
+
+
+def test_customizing_doc_example_validates(tmp_path: Path) -> None:
+    sample = tmp_path / "site.yaml"
+    sample.write_text(
+        first_yaml_block(ROOT / "docs" / "customizing.md"), encoding="utf-8"
+    )
+    config = load_site_config(sample)
+    assert config.tabs

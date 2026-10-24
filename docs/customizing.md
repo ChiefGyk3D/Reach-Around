@@ -1,0 +1,263 @@
+# Customizing your page
+
+This guide is for a creator who hosts their own Reach-Around page and wants to
+change the links, blocks, theme and layout without touching engine code. Work
+through the layers in order. Each one takes more effort than the one before,
+and most pages never need the last.
+
+Reach-Around is alpha. The config format, template names and CSS custom
+property names can change before a release. Pin the version you build with and
+re-read this page when you upgrade. Every command and key below was run or
+read from the code at the time of writing; the field-by-field rules live in
+the [config reference](config.md).
+
+## Where things live
+
+An instance is a folder you own, outside the engine:
+
+```
+my-page/
+  site.yaml            # the config: creator, tabs, blocks, theme, features
+  my-overrides/        # optional
+    templates/         # replace packaged templates by name
+    custom.css         # extra CSS, linked after the theme
+```
+
+The folder names are yours. The engine only needs the paths you pass on the
+command line. `site.yaml` is the only required file. This first example is a
+complete config and is checked by `tests/test_docs_examples.py`.
+
+```yaml
+version: 1
+creator:
+  name: Example Creator
+  socials:
+    - name: Example Video
+      url: https://video.example.com/@example
+      icon: video
+tabs:
+  - id: start
+    title: Start
+    blocks:
+      - id: home-page
+        title: Example Home Page
+        subtitle: The main site
+        url: https://example.com/
+      - id: gear
+        title: Gear
+        links:
+          - id: example-stand
+            title: Example Boom Stand
+            url: https://shop.example.com/stand
+```
+
+Three more complete files are in `examples/instance-variants/`: `minimal`,
+`dark-hero` and `grid-cards`. A test builds each one, so they stay valid.
+
+## Layer 1: links and blocks
+
+Edit `tabs[].blocks`. Each tab becomes one page. A block is picked by its
+keys:
+
+| Block | Keys |
+| --- | --- |
+| link | `id`, `title`, `url` |
+| section (a group of links) | `id`, `title`, `links` |
+| text | `id`, `markdown` |
+| image | `id`, `src`, `alt` |
+| divider | `id` |
+
+Every `id` must be unique across the whole site. Links can carry `affiliate`,
+`show_from` and `show_until`; the page shows the `disclosure` text when a
+visible affiliate link exists. Full rules, limits and the Markdown subset are
+in [the config reference](config.md#blocks-layouts-and-headers). An
+unknown key is an error, not a silent no-op.
+
+## Layer 2: the theme
+
+The `theme` section changes colors, fonts, background, column width, corner
+radius, button shape and light or dark mode. Values are checked when the
+config loads, and the build writes the result to `static/theme.css`. This
+is the `dark-hero` variant's theme:
+
+```yaml
+theme:
+  mode: dark
+  colors:
+    bg: "#101418"
+    text: "#e8edf2"
+    accent: "#ff69b4"
+    surface: "#1a2128"
+    border: "#33404c"
+  fonts:
+    body: Georgia, "Times New Roman", serif
+  button_style: pill
+```
+
+and what the build wrote for it:
+
+```
+:root {
+  --ra-color-bg: #101418;
+  --ra-color-text: #e8edf2;
+  --ra-color-accent: #ff69b4;
+  --ra-color-surface: #1a2128;
+  --ra-color-border: #33404c;
+  --ra-font-body: "Georgia", "Times New Roman", serif;
+  --ra-button-radius: 999px;
+  color-scheme: dark;
+}
+```
+
+Fonts are a system font stack or a font file inside your instance folder.
+A font on someone else's server is refused. See
+[`theme` in the config reference](config.md#theme) for every key.
+
+## Layer 3: layouts and the header
+
+`layout` is `list` (default), `grid` or `cards`. Put it on a tab to lay out
+that page's blocks, or on a section to lay out its links. `creator.header` is
+`compact` (default), `centered` or `hero`. The `grid-cards` variant uses all
+three:
+
+```yaml
+creator:
+  name: Example Creator
+  header: centered
+tabs:
+  - id: start
+    title: Start
+    layout: grid
+    blocks:
+      - id: gear
+        title: Gear
+        layout: cards
+        links: []
+```
+
+The same links show in every layout; only the container class changes.
+
+## Layer 4: template and CSS overrides
+
+When config is not enough, point `--overrides` at a folder.
+
+**CSS.** `my-overrides/custom.css` is copied to `static/custom.css` and linked
+after `theme.css`, so it wins ties. The theme tokens are CSS custom
+properties; reading them keeps your CSS in step with the config. The names in
+`static/site.css` today are `--ra-color-bg`, `--ra-color-text`,
+`--ra-color-accent`, `--ra-color-surface`, `--ra-color-border`,
+`--ra-font-body`, `--ra-font-heading`, `--ra-column-width`, `--ra-radius`,
+`--ra-button-radius` and `--ra-bg-image`. Class names you can target include
+`a.link`, `.link-title`, `.site-header`, `.header-hero`,
+`.hero-card`, `.layout-grid` and `.layout-cards`. Read the packaged
+templates and `site.css` for the rest; neither is a stable API yet.
+
+```css
+.hero-card { border-width: 2px; }
+a.link { letter-spacing: 0.02em; }
+```
+
+**Templates.** A file at `my-overrides/templates/NAME.html` replaces the
+packaged template of the same name; everything else falls back. The packaged
+names are `base.html`, `tab.html`, `privacy.html`, `_header.html`,
+`_header_variants.html`, `_nav.html`, `_footer.html`, `_cookie_banner.html`,
+`_macros.html` and `blocks/{link,section,text,image,divider}.html`. A
+subfolder such as `templates/blocks/divider.html` works. This footer
+override was built and checked:
+
+```
+<footer><p class="privacy-link"><a href="{{ root }}privacy/">Privacy</a></p><p>Made by {{ creator.name }}</p></footer>
+```
+
+A replaced template replaces all of it. The footer above no longer shows the
+affiliate disclosure or the cookie notice, because the packaged footer is what
+printed them. If you override `_footer.html`, keep the
+`show_disclosure` and `show_cookie_banner` blocks from the packaged file, or
+the page can claim less than it does. Copy the packaged file from
+`src/reach_around/site/templates/` as a starting point and change only what
+you need. Template variables (`creator`, `tab`, `blocks`, `nav`, `root`,
+`disclosure`, `show_disclosure`, `show_cookie_banner`, `click_tracking`) are
+set in `site/build.py` and may change.
+
+## What is deliberately refused
+
+- **Custom JavaScript.** A `.js`, `.mjs` or `.cjs` file in the overrides
+  folder is ignored and the build prints
+  `ignored extra.js: custom JavaScript is not supported (it would weaken the Content-Security-Policy)`.
+- **Third-party fonts, scripts and remote CSS `url()`.** Each one tells another
+  host about every visitor. For remote art use an Image block or the theme
+  `background`, which you choose explicitly.
+- **Inline styles, scripts and event handlers.** The page's security headers
+  have no `unsafe-inline`, so a template that adds one will not run in the
+  browser.
+- **Unsafe templates and CSS.** Templates run in a sandbox; `custom.css`,
+  override paths and symlinks are checked and the build stops with a
+  one-line error.
+
+The reasons, the exact current rules and the test behind each are in
+[the CSP and overrides page](education/csp-and-overrides.md) and in
+[the config reference](config.md#instance-overrides-and-security-headers).
+They change as the checks are hardened, so they are not repeated here. Real
+refusals look like this:
+
+```
+error: custom.css is refused: it contains @import
+error: custom.css is refused: url() in custom.css must be a relative same-site path (no scheme, no //); use an Image block or the theme background for remote art
+error: overrides directory nope does not exist
+```
+
+## Preview, build, check
+
+1. **Preview while you edit.**
+
+   ```
+   reach-around serve --config site.yaml --overrides my-overrides --port 8000
+   ```
+
+   Open `http://127.0.0.1:8000/` for the site or
+   `http://127.0.0.1:8000/__preview` for desktop and 390 px phone width side
+   by side. It rebuilds when the config, the overrides folder or the packaged
+   files change. A broken config shows the error in the browser (HTTP 500)
+   until you fix it. It binds to loopback only: `--host 0.0.0.0` stops with
+   `error: refusing to bind '0.0.0.0': the preview serves only on a loopback
+   address (127.0.0.1, ::1 or localhost)`. Details are in
+   [the preview page](preview.md).
+
+2. **Build.**
+
+   ```
+   reach-around build --config site.yaml --out out --overrides my-overrides
+   ```
+
+   The config is validated first, so a typo or bad value stops here with the
+   file and the key path, for example
+   `error: bad.yaml: theme.mode: Input should be 'auto', 'light' or 'dark'`.
+   `--out` is emptied before each build; the build refuses an output folder
+   that is, or contains, your config. A successful build writes `index.html`,
+   one folder per extra tab, `privacy/index.html`, `manifest.json`, `_headers`
+   and `static/` (`site.css`, `theme.css`, `click.js` when click tracking is on,
+   and `custom.css` when you supplied one).
+
+3. **Check.** There is no separate check command yet; the build is the check.
+   Then read the result:
+
+   - open `out/index.html` or the preview and click through every tab;
+   - `grep -n '<script' out/*.html out/*/*.html` should show only
+     `static/click.js`, and no `style=` or `on...=` attributes should appear;
+   - confirm `out/_headers` is present, because the host serves it.
+
+   If you also run the repository tests, `tests/test_example_variants.py`
+   applies these page checks to the example variants.
+
+Keep the overrides folder out of reach of other users and build steps; the
+build cannot defend against someone rewriting it while it runs (see the
+residual risk in the CSP page).
+
+## Alpha limits
+
+- No release, stable config format or stable template API.
+- No `check` or `validate` command; use `build`.
+- Template variables and CSS class names are read from the code, not a
+  contract.
+- The two design presets planned for the design pass are not shipped yet.
+  `dark-hero` here is an example config, not a built-in preset name.
