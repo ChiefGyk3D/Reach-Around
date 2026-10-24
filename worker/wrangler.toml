@@ -10,6 +10,11 @@ compatibility_date = "2026-10-01"
 SITE_HOST = "links.example.test"
 # JSON array of link ids, copied from the build manifest.
 LINK_IDS = '["example-one","example-two"]'
+# Optional kill switch, deliberately unset here. "1" or "true" (any case) makes
+# the click route return its usual empty 204 without touching D1 or the rate
+# limiter; anything else leaves it on. Read on every request. Flip it with
+#   npx wrangler deploy --var CLICKS_KILL:1   (off)   /   --var CLICKS_KILL:0   (on)
+# CLICKS_KILL = "1"
 
 [[d1_databases]]
 binding = "DB"
