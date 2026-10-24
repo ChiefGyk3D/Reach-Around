@@ -52,6 +52,10 @@ class LockBusy(Exception):
     """Another refresh held the lock for longer than we were willing to wait."""
 
 
+class LockLost(Exception):
+    """The lock file or its folder was replaced while we were locking it."""
+
+
 @dataclass(frozen=True)
 class Paths:
     config: Path
@@ -112,7 +116,21 @@ def plan_paths(config_path: Path, out: Path | None) -> Paths:
 
 
 class FileLock:
-    """Exclusive advisory lock on a file; waits up to ``wait`` seconds."""
+    """Exclusive advisory lock for one output folder; waits up to ``wait`` seconds.
+
+    Two locks are taken. The folder itself is locked first, so two runs cannot
+    overlap even if the lock file is deleted or replaced while one is running
+    (a new file would be a new inode, and a lock on the old one protects no
+    one). Then the lock file is locked and checked: after ``flock`` succeeds
+    the name must still lead to the file that was locked (same device and
+    inode, no symlink followed); if not, the lock is dropped and taken again,
+    a few times at most, then ``LockLost`` is raised. Do not delete the lock
+    file while a refresh runs. ``after_dir_lock`` and ``after_lock`` are test
+    hooks that run after the folder lock and after each lock-file ``flock``, each
+    just before its check.
+    """
+
+    ATTEMPTS = 5
 
     def __init__(
         self,
@@ -121,48 +139,85 @@ class FileLock:
         wait: float = LOCK_WAIT_SECONDS,
         clock: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], None] = time.sleep,
+        after_lock: Callable[[], None] | None = None,
+        after_dir_lock: Callable[[], None] | None = None,
     ) -> None:
         self._path = path
         self._wait = wait
         self._clock = clock
         self._sleep = sleep
-        self._fd: int | None = None
+        self._after_lock = after_lock
+        self._after_dir_lock = after_dir_lock
+        self._fds: list[int] = []
+        self.identity: tuple[int, int] | None = None
+
+    def _flock(self, fd: int, deadline: float) -> None:
+        while True:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                return
+            except BlockingIOError:
+                if self._clock() >= deadline:
+                    raise LockBusy from None
+                self._sleep(_LOCK_POLL)
 
     def __enter__(self) -> FileLock:
+        deadline = self._clock() + self._wait
         dir_fd = os.open(
             self._path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
         )
+        self._fds.append(dir_fd)
         try:
-            fd = os.open(
-                self._path.name,
-                os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW,
-                0o600,
-                dir_fd=dir_fd,
-            )
-        finally:
-            os.close(dir_fd)
-        try:
-            if not stat.S_ISREG(os.fstat(fd).st_mode):
-                raise OSError("lock file is not a regular file")
-            deadline = self._clock() + self._wait
-            while True:
+            self._flock(dir_fd, deadline)
+            if self._after_dir_lock is not None:
+                self._after_dir_lock()
+            if _identity(os.fstat(dir_fd)) != _identity(
+                os.stat(self._path.parent, follow_symlinks=False)
+            ):
+                raise LockLost("the output folder was replaced while locking")
+            for _ in range(self.ATTEMPTS):
+                fd = os.open(
+                    self._path.name,
+                    os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW,
+                    0o600,
+                    dir_fd=dir_fd,
+                )
                 try:
-                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                    break
-                except BlockingIOError:
-                    if self._clock() >= deadline:
-                        raise LockBusy from None
-                    self._sleep(_LOCK_POLL)
+                    info = os.fstat(fd)
+                    if not stat.S_ISREG(info.st_mode):
+                        raise OSError("lock file is not a regular file")
+                    self._flock(fd, deadline)
+                    if self._after_lock is not None:
+                        self._after_lock()
+                    try:
+                        named = os.stat(
+                            self._path.name, dir_fd=dir_fd, follow_symlinks=False
+                        )
+                    except FileNotFoundError:
+                        named = None
+                    if named is not None and _identity(named) == _identity(info):
+                        self._fds.append(fd)
+                        self.identity = _identity(info)
+                        return self
+                except BaseException:
+                    os.close(fd)
+                    raise
+                os.close(fd)  # the name no longer leads here: lock the new file
+            raise LockLost("the lock file keeps being replaced")
         except BaseException:
-            os.close(fd)
+            self._release()
             raise
-        self._fd = fd
-        return self
+
+    def _release(self) -> None:
+        while self._fds:
+            os.close(self._fds.pop())  # closing a descriptor drops its flock
 
     def __exit__(self, *exc: object) -> None:
-        if self._fd is not None:
-            os.close(self._fd)  # closing the descriptor releases the flock
-            self._fd = None
+        self._release()
+
+
+def _identity(info: os.stat_result) -> tuple[int, int]:
+    return (info.st_dev, info.st_ino)
 
 
 def write_atomic(

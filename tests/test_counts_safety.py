@@ -12,10 +12,17 @@ from pathlib import Path
 
 import pytest
 
+import reach_around.commands.counts as counts_cmd
 import reach_around.net.egress as egress
 from fakenet import FakeTransport, reply
 from reach_around.commands.counts import run_refresh
-from reach_around.counts.files import FileLock, LockBusy, plan_paths, write_atomic
+from reach_around.counts.files import (
+    FileLock,
+    LockBusy,
+    LockLost,
+    plan_paths,
+    write_atomic,
+)
 from reach_around.counts.refresh import DROP_MIN_PREVIOUS, DROP_PERCENT
 from reach_around.net.egress import (
     EgressBlocked,
@@ -528,3 +535,201 @@ def test_capacity_returns_when_lookups_finish(
     release.set()
     assert egress.wait_for_idle_resolvers(5.0)
     assert system_resolver("c.example.org", 443, timeout=5.0) == ["93.184.216.34"]
+
+
+# ---- status first: the pair of files stays coherent --------------------------------
+
+
+def failing_write(monkeypatch: pytest.MonkeyPatch, *, fail_on: list[str]) -> list[str]:
+    """Make write_atomic raise before its replace for the named files, in order."""
+    real = write_atomic
+    calls: list[str] = []
+
+    def fake(path: Path, text: str, **kwargs: object) -> None:
+        calls.append(path.name)
+        if path.name in fail_on:
+            raise OSError(28, "No space left on device")
+        real(path, text)
+
+    monkeypatch.setattr(counts_cmd, "write_atomic", fake)
+    return calls
+
+
+def test_the_status_file_is_written_before_the_numbers_file(
+    site: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls = failing_write(monkeypatch, fail_on=[])
+    assert refresh(site, 7) == 0
+    assert calls == ["numbers.status.json", "numbers.json"]
+    status = json.loads((site / "numbers.status.json").read_text())
+    assert status["committed"] is True
+
+
+def test_a_failed_status_write_leaves_the_numbers_file_untouched(
+    site: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    target = site / "numbers.json"
+    target.write_text(numbers_text(github=entry(100)))
+    before = target.read_bytes()
+    failing_write(monkeypatch, fail_on=["numbers.status.json"])
+    assert refresh(site, 150) == 1
+    assert target.read_bytes() == before
+    assert "cannot write" in capsys.readouterr().err
+    assert not (site / "numbers.status.json").exists()
+
+
+def test_a_failed_numbers_write_is_recorded_as_not_committed(
+    site: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    target = site / "numbers.json"
+    target.write_text(numbers_text(github=entry(100)))
+    before = target.read_bytes()
+    failing_write(monkeypatch, fail_on=["numbers.json"])
+    assert refresh(site, 150) == 1
+    assert target.read_bytes() == before
+    status = json.loads((site / "numbers.status.json").read_text())
+    assert status["committed"] is False
+
+
+def test_a_run_with_nothing_to_commit_is_committed(site: Path) -> None:
+    (site / "numbers.json").write_text(numbers_text(github=entry(100)))
+    assert refresh(site, 0) == 3  # zero_suspect: nothing succeeded
+    status = json.loads((site / "numbers.status.json").read_text())
+    assert status["committed"] is True
+
+
+def test_both_writes_failing_still_exits_one_and_keeps_the_numbers(
+    site: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    target = site / "numbers.json"
+    target.write_text(numbers_text(github=entry(100)))
+    before = target.read_bytes()
+    failing_write(monkeypatch, fail_on=["numbers.json", "numbers.status.json"])
+    assert refresh(site, 150) == 1
+    assert target.read_bytes() == before
+
+
+# ---- a thread that cannot start does not leak resolver capacity ---------------------
+
+
+def test_a_lookup_thread_that_fails_to_start_leaves_no_entry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen: list[egress._Lookup] = []
+
+    def refuse(self: threading.Thread) -> None:
+        seen.append(egress._lookups[("a.example.org", 443)])
+        raise RuntimeError("can't start new thread")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(threading.Thread, "start", refuse)
+        with pytest.raises(EgressBlocked) as caught:
+            system_resolver("a.example.org", 443, timeout=0.5)
+    assert caught.value.reason == "resolution_failed"
+    assert egress._lookups == {}  # the exact entry was removed
+    assert seen[0].done.is_set() and seen[0].failed  # a waiter would not hang
+    monkeypatch.setattr(
+        socket, "getaddrinfo", lambda *a, **k: [(0, 0, 0, "", ("93.184.216.34", 443))]
+    )
+    assert system_resolver("a.example.org", 443, timeout=5.0) == ["93.184.216.34"]
+
+
+def test_start_failures_do_not_consume_the_cap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(egress, "MAX_RESOLVER_THREADS", 1)
+
+    def refuse(self: threading.Thread) -> None:
+        raise RuntimeError("can't start new thread")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(threading.Thread, "start", refuse)
+        for host in ("a.example.org", "b.example.org", "c.example.org"):
+            with pytest.raises(EgressBlocked) as caught:
+                system_resolver(host, 443, timeout=0.2)
+            assert caught.value.reason == "resolution_failed"  # never "busy"
+    assert egress._lookups == {}
+
+
+# ---- the lock domain cannot be split by deleting the lock file ----------------------
+
+
+def test_deleting_the_lock_file_while_held_does_not_let_a_second_run_in(
+    site: Path,
+) -> None:
+    lock_path = site / "numbers.json.lock"
+    with FileLock(lock_path, wait=1.0):
+        lock_path.unlink()
+        with pytest.raises(LockBusy):
+            with FileLock(lock_path, wait=0.2):
+                pass
+        code = run_refresh(
+            site / "site.yaml",
+            None,
+            ["github"],
+            False,
+            transport=FakeTransport({GH: reply({"followers": 1})}),
+            env={},
+            lock_wait=0.2,
+        )
+        assert code == 1
+    assert not (site / "numbers.json").exists()
+
+
+def test_a_lock_file_replaced_after_locking_is_detected_and_retried(
+    site: Path,
+) -> None:
+    lock_path = site / "x.lock"
+    calls: list[int] = []
+
+    def replace_once() -> None:
+        calls.append(1)
+        if len(calls) == 1:
+            lock_path.unlink()
+
+    with FileLock(lock_path, wait=1.0, after_lock=replace_once) as lock:
+        assert len(calls) == 2  # first attempt saw a stale inode, second held
+        assert lock.identity == (lock_path.stat().st_dev, lock_path.stat().st_ino)
+
+
+def test_a_lock_file_that_keeps_being_replaced_fails_after_a_bound(
+    site: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    lock_path = site / "x.lock"
+    calls: list[int] = []
+
+    def always_replace() -> None:
+        calls.append(1)
+        lock_path.unlink()
+
+    with pytest.raises(LockLost):
+        with FileLock(lock_path, wait=1.0, after_lock=always_replace):
+            pass
+    assert 2 <= len(calls) <= 10  # bounded, not forever
+
+
+def test_a_replaced_directory_is_detected(site: Path, tmp_path: Path) -> None:
+    holder = tmp_path / "holder"
+    holder.mkdir()
+    moved = tmp_path / "moved"
+    lock_path = holder / "x.lock"
+
+    def swap_dir() -> None:
+        holder.rename(moved)
+        holder.mkdir()
+
+    with pytest.raises(LockLost):
+        with FileLock(lock_path, wait=1.0, after_dir_lock=swap_dir):
+            pass
+
+
+def test_an_old_lookup_finishing_never_removes_a_newer_entry() -> None:
+    older, newer = egress._Lookup(), egress._Lookup()
+    egress._lookups[("a.example.org", 443)] = newer
+    try:
+        egress._forget("a.example.org", 443, older)
+        assert egress._lookups[("a.example.org", 443)] is newer
+        egress._forget("a.example.org", 443, newer)
+        assert egress._lookups == {}
+    finally:
+        egress._lookups.pop(("a.example.org", 443), None)

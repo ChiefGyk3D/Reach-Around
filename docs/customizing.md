@@ -569,8 +569,14 @@ the numbers file, the status file (`<name>.status.json`) and the lock file
 (`<name>.json.lock`) must be three different files, none of them the config, not
 a symlink, not a hardlink to one another or to the config, not named `*.yaml` or
 `*.yml`, and in a folder that exists. A whole run holds an exclusive lock on the
-lock file (waiting up to two minutes, then exit `1`), so two overlapping runs
-cannot roll a newer number back. Files are written through a directory opened
+output folder and on the lock file (waiting up to two minutes, then exit `1`),
+so two overlapping runs cannot roll a newer number back. The folder lock keeps
+that true even if someone deletes the lock file mid-run, and the lock file is
+checked after it is taken (a replaced one is retried a few times, then the run
+stops with exit `1`). Do not delete the lock file while a refresh runs. Two
+numbers files in the same folder therefore refresh one at a time.
+The status file is written first, then the numbers file; if the numbers file
+cannot be written the status file says `"committed": false` and the exit is `1`. Files are written through a directory opened
 once without following links, so swapping the folder for a symlink mid-run does
 not redirect the write. Name lookups for the configurable hosts run on at most
 eight shared helper threads; beyond that a lookup fails as `resolution_busy`

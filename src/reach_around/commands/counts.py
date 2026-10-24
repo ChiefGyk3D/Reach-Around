@@ -22,6 +22,7 @@ from reach_around.counts.files import (
     LOCK_WAIT_SECONDS,
     FileLock,
     LockBusy,
+    LockLost,
     Paths,
     dump_numbers,
     plan_paths,
@@ -109,9 +110,17 @@ def run_refresh(
             file=sys.stderr,
         )
         return EXIT_WRITE
+    except LockLost as exc:
+        print(f"error: {exc}; nothing was written", file=sys.stderr)
+        return EXIT_WRITE
     except OSError as exc:
         print(f"error: cannot use the output folder: {exc.strerror}", file=sys.stderr)
         return EXIT_WRITE
+
+
+def _write_failed(exc: Exception) -> None:
+    reason = exc.strerror if isinstance(exc, OSError) else str(exc)
+    print(f"error: cannot write the result files: {reason}", file=sys.stderr)
 
 
 def _cycle(
@@ -152,17 +161,31 @@ def _cycle(
                     f"with --accept-drop {outcome.platform}",
                     file=sys.stderr,
                 )
+    # The status file goes first and the numbers file last, so a failure can never
+    # leave new numbers with no record of the run. If the numbers write fails, the
+    # status is rewritten with ``committed: false`` (best effort) and the exit is 1.
+    changed = any(outcome.status == "ok" for outcome in outcomes)
+    previous_status = load_status(paths.status)
     try:
-        if any(outcome.status == "ok" for outcome in outcomes):
-            write_atomic(paths.target, dump_numbers(numbers))
         write_atomic(
-            paths.status,
-            render_status(load_status(paths.status), outcomes, stamp),
+            paths.status, render_status(previous_status, outcomes, stamp, True)
         )
     except (OSError, ConfigError) as exc:
-        reason = exc.strerror if isinstance(exc, OSError) else str(exc)
-        print(f"error: cannot write the result files: {reason}", file=sys.stderr)
+        _write_failed(exc)
         return EXIT_WRITE
+    if changed:
+        try:
+            write_atomic(paths.target, dump_numbers(numbers))
+        except (OSError, ConfigError) as exc:
+            try:
+                write_atomic(
+                    paths.status,
+                    render_status(previous_status, outcomes, stamp, False),
+                )
+            except (OSError, ConfigError):
+                pass  # the numbers file is untouched either way
+            _write_failed(exc)
+            return EXIT_WRITE
     failed = any(outcome.status == "error" for outcome in outcomes)
     return EXIT_SOURCE_FAILED if failed else EXIT_OK
 

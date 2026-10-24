@@ -191,7 +191,10 @@ def load_status(path: Path) -> dict[str, dict[str, str]]:
 
 
 def render_status(
-    previous: dict[str, dict[str, str]], outcomes: list[Outcome], moment: datetime
+    previous: dict[str, dict[str, str]],
+    outcomes: list[Outcome],
+    moment: datetime,
+    committed: bool = True,
 ) -> str:
     """Status text: for each source only status, error class or reason, and time."""
     at = utc_stamp(moment)
@@ -202,6 +205,13 @@ def render_status(
             item["detail"] = outcome.detail
         sources[outcome.platform] = item
     return (
-        json.dumps({"version": 1, "sources": dict(sorted(sources.items()))}, indent=2)
+        json.dumps(
+            {
+                "version": 1,
+                "committed": committed,
+                "sources": dict(sorted(sources.items())),
+            },
+            indent=2,
+        )
         + "\n"
     )

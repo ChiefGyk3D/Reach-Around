@@ -150,12 +150,27 @@ def _start_lookup(host: str, port: int) -> _Lookup:
         except Exception:
             lookup.failed = True
         finally:
-            with _lookups_lock:
-                _lookups.pop((host, port), None)
+            _forget(host, port, lookup)
             lookup.done.set()
 
-    threading.Thread(target=work, daemon=True).start()
+    worker = threading.Thread(target=work, daemon=True)
+    try:
+        worker.start()
+    except Exception:
+        # no thread, so no worker will ever clear this entry: do it here, and
+        # release anyone already waiting on it
+        lookup.failed = True
+        _forget(host, port, lookup)
+        lookup.done.set()
+        raise EgressBlocked("resolution_failed", host) from None
     return lookup
+
+
+def _forget(host: str, port: int, lookup: _Lookup) -> None:
+    """Drop this exact lookup from the table (never a newer one for the name)."""
+    with _lookups_lock:
+        if _lookups.get((host, port)) is lookup:
+            del _lookups[(host, port)]
 
 
 def wait_for_idle_resolvers(timeout: float) -> bool:
