@@ -88,3 +88,69 @@ def test_zone_name_only_where_needed() -> None:
         "Publish the site to Pages",
     ):
         assert "ZONE_NAME" not in _step(name)["env"]
+
+
+def _uploads_and_downloads() -> tuple[list[str], list[str]]:
+    workflow = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+    up = [
+        str(s["with"]["path"])
+        for s in workflow["jobs"]["build"]["steps"]
+        if str(s.get("uses", "")).startswith("actions/upload-artifact")
+    ]
+    down = [
+        str(s["with"]["path"])
+        for s in workflow["jobs"]["deploy"]["steps"]
+        if str(s.get("uses", "")).startswith("actions/download-artifact")
+    ]
+    return up, down
+
+
+def test_workflow_manifest_is_a_sibling_never_inside_the_published_dir() -> None:
+    text = WORKFLOW.read_text(encoding="utf-8")
+    workflow = yaml.safe_load(text)
+    build = [
+        s
+        for s in workflow["jobs"]["build"]["steps"]
+        if s.get("name") == "Build the site"
+    ]
+    assert len(build) == 1
+    assert "--out site-out" in build[0]["run"]
+    # the old location must be gone everywhere, including comments
+    assert "site-out/manifest.json" not in text
+    up, down = _uploads_and_downloads()
+    assert "site-out" in up and "site-out.manifest.json" in up
+    assert "site-out" in down  # collected something
+    # the Pages upload publishes exactly the site directory
+    publish = _step("Publish the site to Pages")["run"]
+    assert "pages deploy ../site-out " in publish + " "
+
+
+def test_manifest_is_read_by_a_tokenless_isolated_step() -> None:
+    workflow = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+    steps = workflow["jobs"]["deploy"]["steps"]
+    downloads = [
+        s
+        for s in steps
+        if str(s.get("uses", "")).startswith("actions/download-artifact")
+        and s["with"]["name"] == "site-manifest"
+    ]
+    assert len(downloads) == 1
+    # its own directory, never the working directory
+    assert downloads[0]["with"]["path"] == "manifest-in"
+    reader = _step("Verify the build manifest")
+    run = reader["run"]
+    assert "manifest-in/site-out.manifest.json" in run
+    assert "python3 -I" in run
+    assert "-mindepth 1" in run and "-L" in run  # one file, no symlink
+    assert "secrets." not in str(reader)
+    assert "CLOUDFLARE_API_TOKEN" not in str(reader)
+    # the token-presence step stays separate and runs no python
+    check = _step("Check configuration")
+    assert "CLOUDFLARE_API_TOKEN" in check["env"]
+    assert "manifest" not in check["run"] and "python" not in check["run"]
+    # no step that carries the token runs python or reads manifest-in
+    carrying = [s for s in steps if "CLOUDFLARE_API_TOKEN" in str(s.get("env", {}))]
+    assert carrying
+    for step in carrying:
+        body = str(step.get("run", ""))
+        assert "python" not in body and "manifest-in" not in body

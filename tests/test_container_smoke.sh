@@ -9,13 +9,16 @@ engine="${CONTAINER_ENGINE:-podman}"
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 image="reach-around:smoke-$$"
 out="$(mktemp -d)"
+mdir="$(mktemp -d)"
 cleanup() {
     # Files written by the container belong to its uid (a subuid when rootless), so
     # empty the directory from inside a container before removing it from the host.
     "$engine" run --rm --user 0 --entrypoint sh -v "$out:/out" "$image" \
         -c 'find /out -mindepth 1 -delete' >/dev/null 2>&1 || true
     "$engine" rmi -f "$image" >/dev/null 2>&1 || true
-    rm -rf "$out"
+    "$engine" run --rm --user 0 --entrypoint sh -v "$mdir:/manifest" "$image" \
+        -c 'find /manifest -mindepth 1 -delete' >/dev/null 2>&1 || true
+    rm -rf "$out" "$mdir"
 }
 trap cleanup EXIT
 
@@ -25,16 +28,18 @@ fail() { echo "FAIL: $*" >&2; exit 1; }
 
 # Same hardening as compose.yaml. The empty /out is made world-writable because the
 # container runs as a fixed non-root uid that differs from the host user.
-chmod 0777 "$out"
+chmod 0777 "$out" "$mdir"
 run=("$engine" run --rm --read-only --cap-drop ALL
     --security-opt no-new-privileges:true --tmpfs /tmp
-    -v "$root/examples/instance:/config:ro" -v "$out:/out")
+    -v "$root/examples/instance:/config:ro" -v "$out:/out" -v "$mdir:/manifest")
 
 "${run[@]}" "$image" build --config /config/site.yaml --out /out \
+    --manifest /manifest/manifest.json \
     || fail "build exited non-zero"
 
 [ -f "$out/index.html" ] || fail "/out/index.html missing"
-[ -f "$out/manifest.json" ] || fail "/out/manifest.json missing"
+[ -f "$mdir/manifest.json" ] || fail "manifest.json missing"
+[ ! -e "$out/manifest.json" ] || fail "manifest.json was published inside /out"
 
 uid="$("${run[@]}" --entrypoint id "$image" -u)"
 [ "$uid" != "0" ] || fail "container process runs as uid 0"

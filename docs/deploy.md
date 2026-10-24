@@ -85,7 +85,7 @@ your own; never commit real account ids, database ids or tokens.
    | `D1_DATABASE_ID` | the D1 UUID | written into a throwaway deploy config |
    | `RATELIMIT_NAMESPACE_ID` | `1001` | rate limiter namespace |
    | `SITE_HOST` | `links-test.example.invalid` | the only origin the Worker accepts clicks from |
-   | `LINK_IDS` | `["example-one","example-two"]` | link ids the Worker accepts; copy them from the build manifest |
+   | `LINK_IDS` | `["example-one","example-two"]` | link ids the Worker accepts; copy them from the build manifest (`site-out.manifest.json`, beside the site folder, never inside it) |
 
    Optional variable, set it to count clicks:
 
@@ -288,9 +288,13 @@ jobs:
 1. **`build`** has read-only repository access, no secrets and no
    environment. It installs the package, runs
    `reach-around build --config examples/instance/site.yaml --out site-out`,
-   and uploads `site-out` as an artifact.
+   and uploads `site-out` as an artifact. The build also writes the link
+   manifest to `site-out.manifest.json`, beside the site folder and never
+   inside it, so Pages cannot publish it. It goes up as a second artifact,
+   `site-manifest`.
 2. **`deploy`** waits for `build`, then waits for a reviewer to approve the
-   `test` environment. It downloads the artifact, installs the Worker
+   `test` environment. It downloads both artifacts (the configuration check warns when `LINK_IDS`
+   and `site-out.manifest.json` disagree), installs the Worker
    dependencies with `npm ci --ignore-scripts`, applies D1 migrations,
    deploys the Worker, and publishes the site with `wrangler pages deploy`.
 

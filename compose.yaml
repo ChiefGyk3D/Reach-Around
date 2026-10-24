@@ -8,7 +8,8 @@ services:
       context: .
       dockerfile: Containerfile
     image: reach-around:local
-    command: ["build", "--config", "/config/site.yaml", "--out", "/out"]
+    command: ["build", "--config", "/config/site.yaml", "--out", "/out",
+               "--manifest", "/tmp/manifest.json"]
     user: "10001:10001"
     read_only: true
     cap_drop: [ALL]

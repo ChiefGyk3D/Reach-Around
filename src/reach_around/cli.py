@@ -13,7 +13,7 @@ from jinja2 import TemplateError
 from reach_around import __version__
 from reach_around.config import ConfigError, load_site_config
 from reach_around.preview import PreviewError, serve
-from reach_around.site.build import build_site
+from reach_around.site.build import build_site, manifest_json
 from reach_around.site.visibility import today_in
 
 _OVERRIDES_HELP = "directory with templates/ and custom.css that override the defaults"
@@ -34,6 +34,12 @@ def _parser() -> argparse.ArgumentParser:
         "--out", type=Path, required=True, help="output directory (emptied first)"
     )
     build.add_argument("--overrides", type=Path, help=_OVERRIDES_HELP)
+    build.add_argument(
+        "--manifest",
+        type=Path,
+        help="where to write the link manifest (default: <out>.manifest.json "
+        "beside --out); it is never written inside --out, which is published",
+    )
     serve = commands.add_parser(
         "serve", help="preview the site locally (loopback only)"
     )
@@ -53,11 +59,36 @@ def _serve(config_path: Path, host: str, port: int, overrides: Path | None) -> i
     return 0
 
 
-def _build(config_path: Path, out_dir: Path, overrides: Path | None) -> int:
+def _manifest_target(out_dir: Path, manifest: Path | None, config_path: Path) -> Path:
+    """The manifest path; refuse one inside ``out_dir`` (it gets published)."""
+    out = out_dir.resolve()
+    target = (
+        manifest if manifest is not None else out.parent / f"{out.name}.manifest.json"
+    )
+    resolved = target.resolve()
+    if resolved == out or out in resolved.parents:
+        raise ValueError(
+            f"manifest path {target} is inside the output directory {out_dir}, "
+            "which is published; choose a path outside it"
+        )
+    if resolved == config_path.resolve():
+        raise ValueError(f"manifest path {target} is the config file")
+    if resolved.is_dir():
+        raise ValueError(f"manifest path {target} is a directory")
+    return target
+
+
+def _build(
+    config_path: Path,
+    out_dir: Path,
+    overrides: Path | None,
+    manifest_path: Path | None = None,
+) -> int:
     try:
+        target = _manifest_target(out_dir, manifest_path, config_path)
         config = load_site_config(config_path)
         today = today_in(config.timezone, datetime.now(UTC))
-        build_site(
+        manifest = build_site(
             config,
             out_dir,
             today=today,
@@ -65,7 +96,9 @@ def _build(config_path: Path, out_dir: Path, overrides: Path | None) -> int:
             overrides=overrides,
             assets_dir=config_path.parent,
         )
-    except (ConfigError, ValueError) as exc:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(manifest_json(manifest), encoding="utf-8")
+    except (ConfigError, ValueError, OSError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
     except TemplateError as exc:
@@ -84,7 +117,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"reach-around {__version__}")
         return 0
     if args.command == "build":
-        return _build(args.config, args.out, args.overrides)
+        return _build(args.config, args.out, args.overrides, args.manifest)
     if args.command == "serve":
         return _serve(args.config, args.host, args.port, args.overrides)
     parser.print_help()

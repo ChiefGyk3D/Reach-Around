@@ -9,7 +9,7 @@ from typing import Any
 import pytest
 
 from reach_around.config import SiteConfig, load_site_config
-from reach_around.site.build import BuildManifest, build_site
+from reach_around.site.build import BuildManifest, build_site, manifest_json
 
 TODAY = date(2027, 3, 10)
 ROOT = Path(__file__).resolve().parents[2]
@@ -233,19 +233,28 @@ def test_manifest_lists_only_visible_links(tmp_path: Path) -> None:
     assert "spring-meetup" not in manifest.links
     assert manifest.links["example-mic"] == "https://shop.example.com/mic?ref=example"
     assert "gear-picks" not in manifest.links  # sections are not links
-    on_disk = json.loads((tmp_path / "a" / "manifest.json").read_text())
-    assert on_disk == {"links": manifest.links}
+    assert json.loads(manifest_json(manifest)) == {"links": manifest.links}
     later = build_site(
         config, tmp_path / "b", today=date(2027, 3, 1), assets_dir=EXAMPLE.parent
     )
     assert "spring-meetup" in later.links
 
 
-def test_manifest_json_has_sorted_keys(tmp_path: Path) -> None:
+def test_build_never_publishes_a_manifest(tmp_path: Path) -> None:
     build_site(
         load_site_config(EXAMPLE), tmp_path, today=TODAY, assets_dir=EXAMPLE.parent
     )
-    raw = (tmp_path / "manifest.json").read_text()
+    names = [p.name for p in tmp_path.rglob("*")]
+    assert "index.html" in names  # something was collected
+    assert not [n for n in names if "manifest" in n.lower()]
+    assert "manifest" not in (tmp_path / "_headers").read_text().lower()
+
+
+def test_manifest_json_has_sorted_keys(tmp_path: Path) -> None:
+    manifest = build_site(
+        load_site_config(EXAMPLE), tmp_path, today=TODAY, assets_dir=EXAMPLE.parent
+    )
+    raw = manifest_json(manifest)
     ids = list(json.loads(raw)["links"])
     assert ids == sorted(ids)
     assert raw == json.dumps(json.loads(raw), sort_keys=True, indent=2) + "\n"

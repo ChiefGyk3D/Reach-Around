@@ -6,7 +6,7 @@ from importlib import resources
 from pathlib import Path
 
 from reach_around.config import load_site_config
-from reach_around.site.build import build_site
+from reach_around.site.build import build_site, manifest_json
 
 TODAY = date(2027, 3, 10)
 ROOT = Path(__file__).resolve().parents[2]
@@ -86,9 +86,10 @@ def test_pages_have_no_inline_handlers(tmp_path: Path) -> None:
 
 
 def test_ping_paths_use_only_ids_from_the_manifest(tmp_path: Path) -> None:
-    build(tmp_path)
-    manifest = json.loads((tmp_path / "manifest.json").read_text(encoding="utf-8"))
-    ids = set(manifest["links"])
+    manifest = build_site(
+        load_site_config(EXAMPLE), tmp_path, today=TODAY, assets_dir=EXAMPLE.parent
+    )
+    ids = set(json.loads(manifest_json(manifest))["links"])
     pings: list[str] = []
     for page in sorted(tmp_path.rglob("*.html")):
         pings += re.findall(r'\bping="([^"]*)"', page.read_text(encoding="utf-8"))
