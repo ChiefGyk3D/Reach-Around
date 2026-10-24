@@ -285,7 +285,7 @@ def test_every_external_link_has_rel_noopener(tmp_path: Path) -> None:
 
 def test_pages_declare_lang_and_viewport_and_a_title(tmp_path: Path) -> None:
     build_site(make_config(two_tabs()), tmp_path, today=TODAY)
-    assert len(pages(tmp_path)) == 2
+    assert len(pages(tmp_path)) == 3  # two tabs plus the privacy page
     for page in pages(tmp_path):
         text = page.read_text()
         assert text.startswith("<!DOCTYPE html>")

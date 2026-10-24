@@ -1,0 +1,29 @@
+{# SPDX-License-Identifier: Apache-2.0 #}
+{% extends "base.html" %}
+{% block content %}
+<section class="privacy">
+<h2>Privacy</h2>
+<p>{{ intro }}</p>
+{% if items %}
+<ul class="collected" id="cookies">
+{% for item in items %}
+<li>
+<p><strong>{{ item.what }}</strong></p>
+<p>Why: {{ item.why }}</p>
+<p>Kept: {{ item.kept }}</p>
+{% if item.sensitive %}
+<p>This is sensitive data.</p>
+{% else %}
+<p>This is not sensitive data.</p>
+{% endif %}
+</li>
+{% endfor %}
+</ul>
+{% else %}
+<p id="cookies">This site collects nothing about you.</p>
+{% endif %}
+{% if contact %}
+<p>Questions: {{ contact }}</p>
+{% endif %}
+</section>
+{% endblock %}
