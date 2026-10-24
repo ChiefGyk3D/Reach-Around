@@ -1,0 +1,131 @@
+# SPDX-License-Identifier: Apache-2.0
+# The project board for this repository, defined as code for Scrum Around and Find Out (SAFO).
+# A user-owned GitHub Project: no App can write one, so it is kept current from the maintainer's own
+# `gh` login with `safo --board board.yaml reconcile` (no token is stored in CI).
+version: 1
+project:
+  owner: ChiefGyk3D
+  owner_type: user
+  number: 12
+  title: Reach Around
+repositories:
+  - owner: ChiefGyk3D
+    name: Reach-Around
+    default_area: Foundation
+    area_rules:
+      - {match: api research, area: "Collectors"}
+      - {match: collector, area: "Collectors"}
+      - {match: twitch, area: "Collectors"}
+      - {match: youtube, area: "Collectors"}
+      - {match: bluesky, area: "Collectors"}
+      - {match: mastodon, area: "Collectors"}
+      - {match: tiktok, area: "Collectors"}
+      - {match: instagram, area: "Collectors"}
+      - {match: link page, area: "Link page"}
+      - {match: media kit, area: "Media kit"}
+      - {match: pdf, area: "Media kit"}
+      - {match: gate, area: "Email and gate"}
+      - {match: mailgun, area: "Email and gate"}
+      - {match: worker, area: "Email and gate"}
+      - {match: grafana, area: "Dashboards and exports"}
+      - {match: export, area: "Dashboards and exports"}
+      - {match: dashboard, area: "Dashboards and exports"}
+      - {match: threat, area: "Security"}
+      - {match: spam, area: "Security"}
+fields:
+  - name: Status
+    type: single_select
+    options:
+      - {name: Backlog, color: GRAY, description: "Not scheduled"}
+      - {name: Next, color: BLUE, description: "Scheduled for a sprint"}
+      - {name: In progress, color: YELLOW, description: "Being worked, or a draft pull request"}
+      - {name: In review, color: PURPLE, description: "Pull request open, checks and reviews running"}
+      - {name: Blocked, color: RED, description: "Needs the maintainer or an outside answer"}
+      - {name: Done, color: GREEN, description: "Closed or merged"}
+  - name: Area
+    type: single_select
+    options:
+      - {name: Foundation, color: GRAY, description: "Repository, CI, config format, process"}
+      - {name: Collectors, color: BLUE, description: "Platform data collectors and API research"}
+      - {name: Link page, color: ORANGE, description: "The static link page and click tracking"}
+      - {name: Media kit, color: PINK, description: "The media kit, the private PDF and the executive export"}
+      - {name: Email and gate, color: PURPLE, description: "The write-only Worker, the email gate and delivery"}
+      - {name: Dashboards and exports, color: GREEN, description: "Built-in dashboard, Grafana outputs, metric exports"}
+      - {name: Security, color: RED, description: "Threat models, hardening reviews, abuse controls"}
+      - {name: Docs, color: YELLOW, description: "Education, specs and README: reading, not building"}
+  - name: Size
+    type: single_select
+    options:
+      - {name: S, color: GRAY, description: "About 2 hours"}
+      - {name: M, color: BLUE, description: "About 5 hours"}
+      - {name: L, color: ORANGE, description: "About 12 hours"}
+      - {name: XL, color: RED, description: "About 30 hours: split before scheduling"}
+  - name: Kind
+    type: single_select
+    options:
+      - {name: Feature, color: GREEN, description: "New capability in the repository"}
+      - {name: Bug, color: RED, description: "Something is wrong"}
+      - {name: Decision, color: PURPLE, description: "A ruling, design note or approval"}
+      - {name: Research, color: BLUE, description: "A research note or a spike"}
+      - {name: Chore, color: GRAY, description: "Upkeep, rotation, dependency bump"}
+      - {name: Docs, color: YELLOW, description: "Documentation, including education pages"}
+      - {name: Release, color: ORANGE, description: "A tag, a release or a cutover"}
+      - {name: Epic, color: PINK, description: "A grouping issue; its work is in sub-issues"}
+  - name: Epic
+    type: single_select
+    options:
+      - {name: Design and API research, color: BLUE, description: "Epic #1"}
+  - {name: Decision, type: text}
+  - name: Priority
+    type: single_select
+    options:
+      - {name: P0 now, color: RED, description: "Drop everything"}
+      - {name: P1 soon, color: ORANGE, description: ""}
+      - {name: P2 later, color: YELLOW, description: ""}
+      - {name: P3 someday, color: GRAY, description: ""}
+  - name: Agent
+    type: single_select
+    options:
+      - {name: Claude, color: ORANGE, description: "Claude lead or a Claude subagent"}
+      - {name: Codex, color: GREEN, description: "OpenAI Codex"}
+      - {name: Copilot, color: BLUE, description: "GitHub Copilot coding agent"}
+      - {name: You, color: PURPLE, description: "The maintainer"}
+      - {name: ChatGPT, color: GREEN, description: "OpenAI ChatGPT: language, copy and prompt wording"}
+      - {name: Ollama, color: PINK, description: "Local model on the maintainer's server: triage, summaries, first drafts"}
+  - {name: Sprint, type: iteration, start: 2026-10-26, duration_days: 14, count: 8, title_prefix: "S"}
+  - {name: Start date, type: date}
+  - {name: Target date, type: date}
+  - {name: Done on, type: date}
+views:
+  - {name: All Items, layout: table, filter: ""}
+  - {name: Board, layout: board, filter: "-status:Done"}
+  - {name: Roadmap, layout: roadmap, filter: "-status:Done"}
+  - {name: Sprint, layout: board, filter: "sprint:@current"}
+  - {name: Sprint plan, layout: table, filter: "-status:Done"}
+  - {name: Epics, layout: table, filter: "kind:Epic"}
+  - {name: Bugs, layout: table, filter: "kind:Bug -status:Done"}
+  - {name: "Blocked: needs the maintainer", layout: table, filter: "status:Blocked"}
+  - {name: By area, layout: table, filter: "-status:Done"}
+  - {name: Security, layout: table, filter: 'area:Security -status:Done'}
+  - {name: Done log, layout: table, filter: "status:Done"}
+rules:
+  status:
+    opened: Backlog
+    opened_pr: In review
+    draft_pr: In progress
+    reopened: Backlog
+    closed: Done
+    merged: Done
+  done_date_field: Done on
+  new_item_defaults:
+    Priority: P2 later
+agents:
+  field: Agent
+  working: [In progress, In review, Next]
+  waiting: [Blocked]
+ui_only:
+  - "Board and Sprint views: Column field = Status, Sort by Priority"
+  - "Roadmap view: Date fields = Start date and Target date, Group by = Epic, zoom = Quarter"
+  - "Sprint plan view: Group by = Sprint; show Size, Agent, Area, Kind"
+  - "By area view: Group by = Area"
+  - "Project workflows: Item closed -> Done; Pull request merged -> Done; Auto-add is not needed (reconcile adds)"
