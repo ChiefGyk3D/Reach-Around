@@ -10,10 +10,13 @@ from jinja2 import StrictUndefined
 from jinja2.exceptions import SecurityError, UndefinedError
 from jinja2.sandbox import ImmutableSandboxedEnvironment
 
+from reach_around.cli import main
 from reach_around.site.overrides import (
     OverridesError,
+    build_csp,
     load_custom_css,
     make_environment,
+    render_headers,
 )
 
 
@@ -191,6 +194,129 @@ def test_custom_css_swapped_for_a_symlink_after_the_check_is_not_read(
     except OverridesError:
         return
     assert css is None or "external-secret" not in css
+
+
+# ------------------------------------------------------- 6. header injection
+
+_BAD_TAILS = ["\n", "\r", "\t", " ", "\0", " ", "\r\n", "\x0b", "\x85"]
+
+
+@pytest.mark.parametrize("tail", _BAD_TAILS)
+def test_csp_source_with_trailing_control_or_space_is_refused(tail: str) -> None:
+    with pytest.raises(OverridesError):
+        build_csp({"script-src": ["https://example.com" + tail]})
+    with pytest.raises(OverridesError):
+        build_csp({"script-src": ["'self'" + tail]})
+    with pytest.raises(OverridesError):
+        build_csp({"script-src": [tail + "https://example.com"]})
+
+
+@pytest.mark.parametrize("tail", _BAD_TAILS)
+def test_csp_directive_name_with_trailing_control_is_refused(tail: str) -> None:
+    with pytest.raises(OverridesError):
+        build_csp({"script-src" + tail: ["https://example.com"]})
+
+
+@pytest.mark.parametrize("tail", _BAD_TAILS)
+def test_header_path_with_trailing_control_or_space_is_refused(tail: str) -> None:
+    good = {"script-src": ["https://a.example.com"]}
+    for path in ("/*" + tail, "/gate/*" + tail, tail + "/gate/*", "/ga" + tail + "te"):
+        with pytest.raises(OverridesError):
+            render_headers({path: good})
+
+
+def test_site_wide_path_is_refused_with_and_without_whitespace() -> None:
+    good = {"script-src": ["https://a.example.com"]}
+    for path in ("/*", "/*\n", "/* ", "/*\r\n"):
+        with pytest.raises(OverridesError):
+            render_headers({path: good})
+
+
+def test_rendered_headers_contain_only_expected_newlines() -> None:
+    text = render_headers({"/gate/*": {"script-src": ["https://a.example.com"]}})
+    assert "\r" not in text and "\0" not in text and " " not in text
+    for line in text.split("\n"):
+        assert line == "" or line.startswith(("/", "  "))
+    assert text.count("Content-Security-Policy:") == 2
+
+
+def test_csp_port_must_be_ascii_digits() -> None:
+    with pytest.raises(OverridesError):
+        build_csp({"script-src": ["https://example.com:\u0663\u0663"]})
+
+
+# ------------------------------------------------------ CLI, hostile inputs
+
+EXAMPLE = Path(__file__).resolve().parents[2] / "examples" / "instance" / "site.yaml"
+
+
+def _hostile_dir(tmp_path: Path, name: str) -> Path:
+    """Build one hostile overrides directory by name."""
+    base = tmp_path / name
+    (base / "templates").mkdir(parents=True)
+    outside = tmp_path / f"{name}-outside"
+    outside.mkdir()
+    (outside / "tab.html").write_text("SECRET")
+    (outside / "x.css").write_text("a{}")
+    if name == "symlinked-root":
+        link = tmp_path / "link"
+        link.symlink_to(base, target_is_directory=True)
+        return link
+    if name == "symlinked-templates":
+        (base / "templates").rmdir()
+        (base / "templates").symlink_to(outside, target_is_directory=True)
+    elif name == "symlinked-css":
+        (base / "custom.css").symlink_to(outside / "x.css")
+    elif name == "sandbox-escape":
+        (base / "templates" / "_footer.html").write_text(
+            "{{ cycler.__init__.__globals__.__builtins__.open('/nonexistent/x') }}"
+        )
+    elif name == "css-escape":
+        (base / "custom.css").write_text(
+            "a{--x:\\2f\\2a; background:url(//attacker.example/pixel)}"
+        )
+    elif name == "css-remote":
+        (base / "custom.css").write_text(
+            "a{background:url(https://attacker.example/p)}"
+        )
+    elif name == "css-unterminated":
+        (base / "custom.css").write_text("a{color:red} /*")
+    return base
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "symlinked-root",
+        "symlinked-templates",
+        "symlinked-css",
+        "sandbox-escape",
+        "css-escape",
+        "css-remote",
+        "css-unterminated",
+    ],
+)
+def test_cli_build_refuses_hostile_overrides_cleanly(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], name: str
+) -> None:
+    hostile = _hostile_dir(tmp_path, name)
+    code = main(
+        [
+            "build",
+            "--config",
+            str(EXAMPLE),
+            "--out",
+            str(tmp_path / "out"),
+            "--overrides",
+            str(hostile),
+        ]
+    )
+    err = capsys.readouterr().err
+    assert code == 1
+    assert err.startswith("error: ")
+    assert len(err.strip().splitlines()) == 1
+    assert "Traceback" not in err
+    assert not (tmp_path / "out").exists()
 
 
 # ------------------------------------------------- 4 and 5. custom.css rules

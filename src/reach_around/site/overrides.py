@@ -359,10 +359,12 @@ _EXTENDABLE = frozenset(
         "form-action",
     }
 )
+# Matched with ``fullmatch`` (never ``match`` plus ``$``, which accepts a final
+# newline). Any whitespace or control character fails; nothing is normalized.
 _ORIGIN = re.compile(
-    r"^https://[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?(?::\d{1,5})?$"
+    r"https://[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?(?::[0-9]{1,5})?"
 )
-_PATH = re.compile(r"^/[A-Za-z0-9._~/*:-]*$")
+_PATH = re.compile(r"/[A-Za-z0-9._~/*:-]*")
 
 _OTHER_HEADERS: tuple[tuple[str, str], ...] = (
     ("X-Content-Type-Options", "nosniff"),
@@ -374,7 +376,7 @@ _OTHER_HEADERS: tuple[tuple[str, str], ...] = (
 
 
 def _check_source(directive: str, source: str) -> None:
-    if source != "'self'" and not _ORIGIN.match(source):
+    if source != "'self'" and not _ORIGIN.fullmatch(source):
         raise OverridesError(
             f"CSP source {source!r} for {directive} is refused: use 'self' or an "
             "exact https origin (no wildcards, data:, nonces or unsafe-* keywords)"
@@ -412,7 +414,7 @@ def render_headers(
         *(f"  {name}: {value}" for name, value in _OTHER_HEADERS),
     ]
     for path, extra in (path_extras or {}).items():
-        if path == "/*" or not _PATH.match(path):
+        if path == "/*" or not _PATH.fullmatch(path):
             raise OverridesError(f"header path {path!r} is not allowed")
         lines += [
             "",

@@ -8,6 +8,8 @@ import sys
 from datetime import UTC, datetime
 from pathlib import Path
 
+from jinja2 import TemplateError
+
 from reach_around import __version__
 from reach_around.config import ConfigError, load_site_config
 from reach_around.preview import PreviewError, serve
@@ -60,6 +62,12 @@ def _build(config_path: Path, out_dir: Path, overrides: Path | None) -> int:
         )
     except (ConfigError, ValueError) as exc:
         print(f"error: {exc}", file=sys.stderr)
+        return 1
+    except TemplateError as exc:
+        # a refused or broken override template (for example a sandbox
+        # violation): report it on one line, never a traceback
+        message = " ".join(str(exc).split())
+        print(f"error: template problem: {message}", file=sys.stderr)
         return 1
     return 0
 
