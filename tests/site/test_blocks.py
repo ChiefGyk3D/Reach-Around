@@ -1,6 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
 import re
+import time
 from datetime import date
+from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any
 
@@ -9,8 +11,9 @@ from pydantic import ValidationError
 
 from reach_around.config import SiteConfig
 from reach_around.config.blocks import Divider, Image, Text
+from reach_around.config.models import check_https_url
 from reach_around.site.build import build_site
-from reach_around.site.markdown import render_markdown
+from reach_around.site.markdown import MAX_MARKDOWN_CHARS, render_markdown
 from reach_around.site.visibility import visible_blocks
 
 TODAY = date(2027, 3, 10)
@@ -123,6 +126,165 @@ def test_markdown_emphasis_cannot_break_out_of_a_url() -> None:
     out = render_markdown("[a](https://example.com/*x*y*)")
     assert 'href="https://example.com/*x*y*"' in out
     assert "<em>" not in out
+
+
+# --- markdown: limits, shared URL validation, well-formedness ----------------
+
+
+def test_render_markdown_rejects_input_over_the_cap() -> None:
+    assert MAX_MARKDOWN_CHARS == 5000
+    render_markdown("a" * MAX_MARKDOWN_CHARS)
+    with pytest.raises(ValueError):
+        render_markdown("a" * (MAX_MARKDOWN_CHARS + 1))
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["*a " * 1666, "*" * 5000, "[" * 2500, "_" * 5000, "[a](" * 1250, "**a " * 1250],
+)
+def test_render_markdown_is_fast_on_hostile_input(text: str) -> None:
+    start = time.perf_counter()
+    render_markdown(text)
+    assert time.perf_counter() - start < 0.2
+
+
+def test_uppercase_scheme_link_renders_with_lowercase_scheme() -> None:
+    out = render_markdown("[x](HTTPS://example.com/Path)")
+    assert 'href="https://example.com/Path"' in out
+
+
+def test_parentheses_in_a_valid_url_render_as_a_link() -> None:
+    out = render_markdown("see [x](https://example.com/a(b)) now")
+    assert 'href="https://example.com/a(b)"' in out
+    assert out.count("</a>") == 1
+    assert "now" in out.split("</a>")[1]
+
+
+URL_TABLE = [
+    "https://example.com/",
+    "HTTPS://example.com/",
+    "https://example.com/a(b)",
+    "https://example.com/a(b(c))d",
+    "https://example.com/?q=1&r=2",
+    'https://example.com/"quoted"',
+    "https://example.com:8443/x",
+    "https://example.com/" + "a" * 2028,  # exactly 2048 characters
+    "https://example.com/" + "a" * 2029,  # 2049 characters
+    "http://example.com/",
+    "javascript:alert(1)",
+    "JAVASCRIPT:alert(1)",
+    "data:text/html,hi",
+    "//example.com/",
+    "/relative",
+    "https://user:pw@example.com/",
+    "https://user@example.com/",
+    "https:///nohost",
+    "https:example.com",
+    "https://example.com/\x00",
+    "https://example.com/\x07bell",
+    "https://example.com/ x",
+    "https://example.com:notaport/",
+]
+
+
+@pytest.mark.parametrize("url", URL_TABLE)
+def test_any_url_the_model_accepts_the_renderer_links_else_text(
+    url: str,
+) -> None:
+    try:
+        check_https_url(url)
+        accepted = True
+    except ValueError:
+        accepted = False
+    out = render_markdown(f"[x]({url})")
+    assert ("<a " in out) is accepted, out
+    if accepted:
+        assert 'href="https://' in out
+    else:
+        assert "href" not in out
+
+
+def test_codex_probe_html_in_a_link_label_is_escaped() -> None:
+    out = render_markdown("[<img src=x onerror=alert(1)>](https://example.com/)")
+    assert "<img" not in out
+    assert "&lt;img" in out
+    assert 'href="https://example.com/"' in out
+    assert not re.search(r"<[^>]*\son\w+=", out)
+
+
+def test_codex_probe_tab_in_a_link_target_is_not_a_link() -> None:
+    out = render_markdown("[x](https://example.com/\tjavascript:foo)")
+    assert "<a " not in out
+    assert "href" not in out
+
+
+def test_codex_probe_protocol_relative_link_is_not_a_link() -> None:
+    out = render_markdown("[x](//example.com/)")
+    assert "<a " not in out
+    assert "href" not in out
+
+
+class _Balance(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__()
+        self.stack: list[str] = []
+        self.ok = True
+
+    def handle_starttag(self, tag: str, attrs: Any) -> None:
+        if tag != "br":
+            self.stack.append(tag)
+
+    def handle_endtag(self, tag: str) -> None:
+        if not self.stack or self.stack.pop() != tag:
+            self.ok = False
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "***<script>***",
+        "***a** b*",
+        "***a* b**",
+        "*a **b* c**",
+        "**a *b** c*",
+        "*a [b*](https://example.com/) c*",
+        "**a [b**](https://example.com/)",
+        "[*a](https://example.com/) b*",
+        "****",
+        "*** a ***",
+        "**a**b**c",
+        "*a*b*c*d*",
+        "- *a **b*\n- c** d*",
+        "*a\n\n*b*",
+        "_*a_*",
+    ],
+)
+def test_emphasis_output_is_always_well_formed(text: str) -> None:
+    out = render_markdown(text)
+    parser = _Balance()
+    parser.feed(out)
+    parser.close()
+    assert parser.ok and not parser.stack, out
+
+
+def test_triple_asterisk_renders_nested_emphasis() -> None:
+    out = render_markdown("***x***")
+    assert "<strong>" in out and "<em>" in out and "x" in out
+
+
+def test_text_template_has_no_autoescape_off_block() -> None:
+    import reach_around.site as site_pkg
+
+    path = Path(site_pkg.__file__).parent / "templates" / "blocks" / "text.html"
+    source = path.read_text(encoding="utf-8")
+    assert "block.markdown|markdown" in source.replace(" ", "")
+    assert "autoescape" not in source
+
+
+def test_render_markdown_returns_markup() -> None:
+    from markupsafe import Markup
+
+    assert isinstance(render_markdown("x"), Markup)
 
 
 # --- models -----------------------------------------------------------------

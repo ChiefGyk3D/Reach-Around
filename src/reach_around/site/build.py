@@ -42,8 +42,8 @@ def _environment() -> Environment:
         keep_trailing_newline=True,
     )
     env.globals["block_kind"] = _block_kind
-    # The template turns autoescape off around this filter; render_markdown
-    # escapes its input first.
+    # render_markdown returns Markup that is already escaped, so autoescape
+    # stays on in the template.
     env.filters["markdown"] = render_markdown
     return env
 
