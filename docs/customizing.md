@@ -566,11 +566,17 @@ Every command takes `--config PATH` and:
   backup never truncates the earlier one, and the edit stops before touching
   your config;
 - locks the config from the read to the rename, so two of these commands
-  running at once happen one after the other and both changes land. Another
-  program (an editor, a sync tool) is not covered by the lock: right before the
-  rename the command checks that the file is still the same one with the same
-  content, and if it is not, it stops with `the file changed while editing;
-  nothing was written, run the command again`;
+  running at once happen one after the other and both changes land. If the lock
+  is not free within 10 seconds, the command stops with `another reach-around
+  edit is running or the file is locked; nothing was written`. The lock only
+  serializes these commands. Another program (an editor, a sync tool) ignores
+  it, and no program can fully prevent that on a normal filesystem. So the slow
+  work (writing and flushing the new file and the backup) is done first, and the
+  last step before the rename checks that the config is still the same file with
+  the same content. If it is not, the command stops with `the file changed while
+  editing; nothing was written, run the command again` (the backup then holds
+  the version this command read). A change made in the instant between that
+  check and the rename can still be lost;
 - prints a short diff; `--dry-run` prints it and writes nothing;
 - refuses a symlinked config and a path outside the current folder unless you
   pass `--force-path`. There are no includes; the command never follows one.

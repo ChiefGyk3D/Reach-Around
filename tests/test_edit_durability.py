@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import fcntl
 import os
 import stat
 import threading
@@ -65,7 +66,8 @@ def test_a_change_during_the_edit_is_refused(
     err = capsys.readouterr().err
     assert "changed while editing" in err and "nothing was written" in err
     assert "dark" not in cfg.read_text()
-    assert (cfg.parent / "site.yaml.bak").read_text() == "old backup\n"
+    # the backup is made first and holds exactly what was read
+    assert (cfg.parent / "site.yaml.bak").read_bytes() == EXAMPLE.read_bytes()
     assert sorted(p.name for p in cfg.parent.iterdir()) == [
         "site.yaml",
         "site.yaml.bak",
@@ -180,3 +182,76 @@ def test_a_failed_directory_fsync_is_reported(
     assert set_mode(cfg) == 1
     err = capsys.readouterr().err
     assert err.startswith("error:") and "Traceback" not in err
+
+
+@pytest.mark.parametrize("seam", ["_during_backup", "_before_replace"])
+@pytest.mark.parametrize("change", [change_in_place_longer, change_in_place_same_size])
+def test_a_change_during_backup_creation_is_detected(
+    cfg: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    seam: str,
+    change: Callable[[Path], None],
+) -> None:
+    monkeypatch.setattr(editing, seam, lambda path: change(path))
+    assert set_mode(cfg) == 1
+    assert "changed while editing" in capsys.readouterr().err
+    assert "dark" not in cfg.read_text()
+    assert sorted(p.name for p in cfg.parent.iterdir()) == [
+        "site.yaml",
+        "site.yaml.bak",
+    ]
+
+
+def test_the_final_check_is_the_last_step_before_the_rename(
+    cfg: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    events: list[str] = []
+    real_replace = os.replace
+    real_fsync = os.fsync
+    real_verify = editing._verify_unchanged
+
+    def replace(src: str | Path, dst: str | Path) -> None:
+        events.append(f"replace:{Path(dst).name}")
+        real_replace(src, dst)
+
+    def fsync(fd: int) -> None:
+        events.append("fsync")
+        real_fsync(fd)
+
+    def verify(path: Path, snap: editing._Snapshot) -> None:
+        events.append("verify")
+        real_verify(path, snap)
+
+    monkeypatch.setattr(os, "replace", replace)
+    monkeypatch.setattr(os, "fsync", fsync)
+    monkeypatch.setattr(editing, "_verify_unchanged", verify)
+    assert set_mode(cfg) == 0
+    assert events[events.index("verify") + 1 :][0] == "replace:site.yaml"
+    assert events.index("replace:site.yaml.bak") < events.index("verify")
+    assert (
+        "fsync"
+        not in events[events.index("verify") : events.index("replace:site.yaml")]
+    )
+
+
+def test_a_held_lock_times_out_with_a_clear_error(
+    cfg: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(editing, "LOCK_TIMEOUT", 0.3)
+    before = cfg.read_bytes()
+    holder = os.open(cfg, os.O_RDONLY)
+    try:
+        fcntl.flock(holder, fcntl.LOCK_EX)
+        started = time.monotonic()
+        assert set_mode(cfg) == 1
+        waited = time.monotonic() - started
+        err = capsys.readouterr().err
+        assert "another reach-around edit is running" in err
+        assert "nothing was written" in err and "Traceback" not in err
+        assert 0.25 <= waited < 5
+        assert cfg.read_bytes() == before
+        assert sorted(p.name for p in cfg.parent.iterdir()) == ["site.yaml"]
+    finally:
+        os.close(holder)
+    assert set_mode(cfg) == 0  # released: works again

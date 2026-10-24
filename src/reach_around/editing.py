@@ -27,6 +27,7 @@ import os
 import re
 import stat
 import tempfile
+import time
 import unicodedata
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -40,6 +41,8 @@ from reach_around.config import ConfigError, load_site_config, load_yaml
 from reach_around.site.theme import COLOR_KEYS
 
 MAX_BYTES = 1_048_576
+LOCK_TIMEOUT = 10.0  # seconds to wait for another edit's lock
+LOCK_POLL = 0.05
 
 SET_KEYS: tuple[str, ...] = (
     "creator.name",
@@ -143,15 +146,31 @@ def _open_locked(path: Path) -> int:
 
     The lock is on the config's own descriptor. A writer replaces the file by
     rename, so after the lock is granted the path is checked to still name
-    this very file; if not, the new file is opened and locked instead.
+    this very file; if not, the new file is opened and locked instead. Waiting
+    for the lock is bounded by ``LOCK_TIMEOUT`` in total.
     """
+    deadline = time.monotonic() + LOCK_TIMEOUT
     for _ in range(20):
         try:
             fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
         except OSError as exc:
             raise EditError(f"{path}: cannot open: {exc.strerror}") from exc
+        while True:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    os.close(fd)
+                    raise EditError(
+                        f"{path}: another reach-around edit is running or the "
+                        "file is locked; nothing was written"
+                    ) from None
+                time.sleep(LOCK_POLL)
+            except OSError as exc:
+                os.close(fd)
+                raise EditError(f"{path}: cannot lock: {exc.strerror}") from exc
         try:
-            fcntl.flock(fd, fcntl.LOCK_EX)
             held, named = os.fstat(fd), os.stat(path)
         except OSError as exc:
             os.close(fd)
@@ -183,8 +202,12 @@ def _verify_unchanged(path: Path, snap: _Snapshot) -> None:
         raise _changed(path)
 
 
+def _during_backup(path: Path) -> None:
+    """Seam inside the backup step, before its rename (tests hook it)."""
+
+
 def _before_replace(path: Path) -> None:
-    """Seam between validating the edit and the final check (tests hook it)."""
+    """Seam after the backup, right before the final check (tests hook it)."""
 
 
 def _fsync_dir(directory: Path) -> None:
@@ -216,12 +239,8 @@ def _check_candidate(path: Path, text: str) -> dict[str, Any]:
     return loaded
 
 
-def _replace_durably(target: Path, text: str, mode: int) -> None:
-    """Temp file in the same folder, fsync, rename over ``target``, fsync folder.
-
-    On any failure before the rename ``target`` is untouched and the temp file
-    is removed.
-    """
+def _stage(target: Path, text: str, mode: int) -> Path:
+    """Write ``text`` to a synced temp file beside ``target``; return its path."""
     fd, name = tempfile.mkstemp(
         dir=target.parent, prefix=f".{target.name}.", suffix=".tmp"
     )
@@ -232,6 +251,15 @@ def _replace_durably(target: Path, text: str, mode: int) -> None:
             handle.flush()
             os.fchmod(handle.fileno(), mode)
             os.fsync(handle.fileno())
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
+    return tmp
+
+
+def _commit(tmp: Path, target: Path) -> None:
+    """Rename ``tmp`` over ``target`` and sync the folder; drop ``tmp`` on failure."""
+    try:
         os.replace(tmp, target)
     except BaseException:
         tmp.unlink(missing_ok=True)
@@ -242,7 +270,13 @@ def _replace_durably(target: Path, text: str, mode: int) -> None:
 def _write_backup(path: Path, text: str, mode: int) -> Path:
     backup = path.with_name(path.name + ".bak")
     try:
-        _replace_durably(backup, text, mode)
+        tmp = _stage(backup, text, mode)
+        try:
+            _during_backup(path)
+        except BaseException:
+            tmp.unlink(missing_ok=True)
+            raise
+        _commit(tmp, backup)
     except OSError as exc:
         raise EditError(
             f"{backup}: cannot write backup (the previous backup and the "
@@ -287,13 +321,23 @@ def apply(
         if dry_run:
             return Result(path, old, new, False, None)
         mode = stat.S_IMODE(os.fstat(lock).st_mode)
-        _before_replace(path)
-        _verify_unchanged(path, snap)
-        saved = _write_backup(path, old, mode) if backup else None
         try:
-            _replace_durably(path, new, mode)
+            staged = _stage(path, new, mode)
         except OSError as exc:
             raise EditError(f"{path}: cannot write: {exc.strerror or exc}") from exc
+        try:
+            # Everything slow comes first. The check is the last step before the
+            # rename, so the window for a writer that ignores the lock is tiny
+            # (it cannot be closed on POSIX).
+            saved = _write_backup(path, old, mode) if backup else None
+            _before_replace(path)
+            _verify_unchanged(path, snap)
+            try:
+                _commit(staged, path)
+            except OSError as exc:
+                raise EditError(f"{path}: cannot write: {exc.strerror or exc}") from exc
+        finally:
+            staged.unlink(missing_ok=True)
         return Result(path, old, new, True, saved)
     finally:
         os.close(lock)
