@@ -2,6 +2,7 @@
 import http.client
 import logging
 import re
+import shutil
 import threading
 import time
 from collections.abc import Iterator
@@ -380,7 +381,7 @@ def test_csp_scanner_bites() -> None:
 def test_every_page_still_passes_with_the_csp(tmp_path: Path) -> None:
     out = tmp_path / "out"
     config = load_site_config(EXAMPLE)
-    build_site(config, out, today=TODAY, protect=[EXAMPLE])
+    build_site(config, out, today=TODAY, protect=[EXAMPLE], assets_dir=EXAMPLE.parent)
     built = sorted(out.rglob("*.html"))
     assert len(built) >= 2
     for page in built:
@@ -391,6 +392,7 @@ def test_every_page_still_passes_with_the_csp(tmp_path: Path) -> None:
 def running(tmp_path: Path, overrides: Path) -> Iterator[Preview]:
     config = tmp_path / "site.yaml"
     config.write_text(EXAMPLE.read_text())
+    shutil.copytree(EXAMPLE.parent / "media", tmp_path / "media")
     (overrides / "templates" / "_footer.html").write_text("<footer>PREVIEWED</footer>")
     preview = Preview(config, "127.0.0.1", 0, overrides=overrides)
     thread = threading.Thread(target=preview.serve_forever, daemon=True)

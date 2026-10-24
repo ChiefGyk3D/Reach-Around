@@ -113,6 +113,153 @@ Fonts are a system font stack or a font file inside your instance folder.
 A font on someone else's server is refused. See
 [`theme` in the config reference](config.md#theme) for every key.
 
+## Your own images: avatar, favicon, background, mascot
+
+The engine ships no artwork. Four image slots are config keys, and each takes
+a file that lives in your instance folder (the folder that holds `site.yaml`):
+
+| Config key | What it draws |
+| --- | --- |
+| `creator.avatar` | The small round picture beside your name. |
+| `creator.favicon` | The browser tab icon. |
+| `theme.background` | The full-bleed page background, fixed, under the texture. |
+| `theme.mascot` | The giant faded image behind the column, fixed in place. |
+
+```
+my-page/
+  site.yaml
+  media/
+    avatar.png
+    favicon.svg
+    background.jpg
+    mascot.svg
+```
+
+```yaml
+creator:
+  avatar: media/avatar.png
+  favicon: media/favicon.svg
+theme:
+  background: media/background.jpg
+  mascot: media/mascot.svg
+```
+
+Rules: a relative path with no `..`, no leading `/` and no scheme; the file
+ends in `.png`, `.jpg`, `.jpeg`, `.webp`, `.avif`, `.gif` or `.svg` (`.ico` is
+not accepted); the path does not start with `static/` or `privacy/`. The build
+copies only the files you name, to the same relative path in the output, so
+the page loads them from its own origin and the security headers stay as they
+are. The same extension list applies to image blocks (`src`), so a config cannot
+publish a `.yaml` or `.env` file; font files must end in `.woff2`, `.woff`,
+`.ttf` or `.otf`. A missing file, a symlink anywhere in the path (the instance
+folder itself included), a non-regular file such as a FIFO, or a file over
+8 MiB stops the build with an error naming the config key, for example
+`tabs[0].blocks[1].src: 'site.yaml' must be an image file ending in .png, ...`. An https
+URL is still accepted for `creator.avatar` and `theme.background`, but it
+tells that host about every visitor; use a local file. `favicon` and `mascot`
+refuse a URL.
+
+**The bytes must match the extension.** After reading a file the build runs
+cheap structural sanity checks, not a full decoder: the format's signature plus
+a length or end marker that a renamed text file lacks. PNG must end with the
+12-byte IEND chunk, GIF with `;`, JPEG with `FFD9`; WebP's RIFF size field plus
+8 must equal the file length; WOFF and WOFF2's header length field must equal
+the file length; TrueType and OpenType need 1 to 64 tables and room for the
+table directory; AVIF needs an `avif` or `avis` brand. A `.yaml` renamed
+`secret.png` is refused, and so is a real PNG header followed by a text body.
+The extension is compared in lower case, so `.PNG` is checked the same way.
+These checks are structural, not a decoder: a file wrapped in valid image or
+font headers and trailers still passes.
+The error is `theme.mascot: 'secret.png' is not a real png file (its first
+bytes do not match the format)`. A file that passes can still be a damaged
+image; the checks only stop other file types from riding along.
+
+**SVG is checked against an allowlist.** A browser runs an SVG as a document
+when someone opens its address, so the build accepts only what is listed and
+refuses everything else, with the config key and the reason, for example
+`theme.mascot: 'm.svg' is refused as an svg: element <script> is not allowed`
+or `attribute 'onclick' on <rect> is not allowed`.
+
+- Elements (SVG namespace, case-sensitive): `svg g defs symbol use path rect
+  circle ellipse line polyline polygon text tspan title desc linearGradient
+  radialGradient stop clipPath mask filter feGaussianBlur feOffset feBlend
+  feColorMatrix feFlood feComposite feMerge feMergeNode feDropShadow metadata`.
+  So `script`, `foreignObject`, `style`, `a`, `image`, `feImage`, `animate*`,
+  `set`, `switch`, `pattern`, `view`, `cursor`, `font-face`, `iframe` and every
+  element in another namespace are refused by default.
+- Attributes (no `style` attribute, no `on*` handlers, no `data-*`, no `role`
+  or `aria-*`): `id class transform viewBox preserveAspectRatio width height x
+  y x1 x2 y1 y2 cx cy r rx ry d points fill fill-opacity fill-rule stroke
+  stroke-width stroke-opacity stroke-linecap stroke-linejoin stroke-miterlimit
+  stroke-dasharray stroke-dashoffset opacity clip-path clip-rule mask filter
+  offset stop-color stop-opacity gradientUnits gradientTransform spreadMethod
+  fx fy dx dy stdDeviation in in2 result mode type values flood-color
+  flood-opacity operator k1 k2 k3 k4 font-family font-size font-weight
+  font-style text-anchor dominant-baseline letter-spacing version href
+  maskUnits clipPathUnits filterUnits primitiveUnits rotate textLength
+  lengthAdjust`, plus `xlink:href` and `xml:space`. `xml:base` is refused.
+  Only the SVG and xlink namespaces may be declared.
+- Values: no backslash, no `/*`, no control characters, no `javascript:`,
+  `data:`, `expression(` or `@import`; `href` and `xlink:href` must start with
+  `#`; any `url(` must be exactly `url(#id)` (optional spaces inside, no
+  quotes).
+- Document: no DOCTYPE or ENTITY declaration (checked before parsing, which
+  also stops entity-expansion payloads), UTF-8 only, valid XML, an `svg` root,
+  no processing instructions (the plain `<?xml ...?>` declaration is fine) and
+  no CDATA sections. Comments are allowed, and an accepted file is copied
+  byte for byte.
+
+- Function-style values: after removing well-formed `url(#id)` tokens, any
+  remaining `(` in an attribute value is refused (`image(`, `image-set(`,
+  `src(`, `cross-fade(`, `element(`, `paint(`, `calc(`, `var(` and so on). The
+  only exception is `transform` and `gradientTransform`, which may hold only
+  `matrix`, `translate`, `scale`, `rotate`, `skewX` and `skewY` (case-sensitive)
+  with numeric arguments (digits, sign, dot, `e`, comma, spaces). Error:
+  `function-style values are not allowed here`.
+- Size caps, so a small file cannot make a browser work hard: at most 20000
+  elements, nesting 64 deep (the root counts as 1), 64 attributes on one
+  element, 8 namespace declarations in the whole file, and 1 MiB of attribute
+  text in total. A file over a cap stops the parse at that point and the build
+  fails with, for example, `theme.mascot: 'm.svg' is refused as an svg: it has
+  more than 20000 elements`. Removing a namespace with `xmlns=""` is refused
+  the same way as any other namespace outside the SVG and xlink ones.
+
+**To allow another SVG feature**, add its element or attribute name to
+`ALLOWED_ELEMENTS` or `ALLOWED_ATTRIBUTES` in
+`src/reach_around/site/assetcheck.py` and add a test for it in
+`tests/site/test_assets_content.py`. The allowlist is the extension point;
+nothing else needs to change.
+
+**Dimming the background.** `theme.background_dim` (a number from 0 to 0.9,
+default 0) lays a black overlay over `theme.background` only; the faded mascot
+and the page content are not dimmed. If your background image has a bright
+subject behind the header, raise this. For a square image with a full-strength
+sticker behind the header, `background_dim: 0.6` keeps the white social icons
+readable (about 5.7:1 against pure white behind them).
+
+```yaml
+theme:
+  background: media/background.jpg
+  background_dim: 0.6
+```
+
+The mascot is faint on purpose (`--ra-mascot-opacity: 0.12`). If your image
+is already faded, raise it in `custom.css`:
+
+```css
+:root { --ra-mascot-opacity: 0.6; --ra-mascot-position: left center; }
+```
+
+`examples/instance/media/mascot.svg` is a synthetic placeholder drawn for this
+repository. Build the example with `--config examples/instance/site.yaml` to
+see every slot filled. Brand colors are tokens too: set `theme.colors.accent`
+(default `#FBB03B`), `on_accent` (`#1A1A1A`, the text on the accent), `bg`
+(`#0E0E0E`) and `text` (`#FFFFFF`). The font is Jost, shipped with the engine
+under its OFL license; set `theme.fonts.body` to change it.
+
+A link with `featured: true` becomes the taller highlighted pill; use it once,
+for the top link.
+
 ## Layer 3: layouts and the header
 
 `layout` is `list` (default), `grid` or `cards`. Put it on a tab to lay out
@@ -259,5 +406,5 @@ residual risk in the CSP page).
 - No `check` or `validate` command; use `build`.
 - Template variables and CSS class names are read from the code, not a
   contract.
-- The two design presets planned for the design pass are not shipped yet.
-  `dark-hero` here is an example config, not a built-in preset name.
+- `dark-hero` here is an example config; the theme presets live in
+  `examples/themes/`.

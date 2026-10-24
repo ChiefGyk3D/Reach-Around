@@ -3,14 +3,14 @@
 {% if creator.socials %}
 <ul class="socials">
 {% for social in creator.socials %}
-<li><a href="{{ social.url }}" rel="noopener noreferrer">{{ social.name }}</a></li>
+<li><a class="social" href="{{ social.url }}" rel="noopener noreferrer">{% if social.icon in icon_slugs %}<span class="icon icon-{{ social.icon }}" aria-hidden="true"></span><span class="sr-only">{{ social.name }}</span>{% else %}<span class="social-label">{{ social.name }}</span>{% endif %}</a></li>
 {% endfor %}
 </ul>
 {% endif %}
 {% endmacro %}
 {% macro avatar(creator, size) %}
 {% if creator.avatar %}
-<img class="avatar" src="{{ creator.avatar }}" alt="" width="{{ size }}" height="{{ size }}" referrerpolicy="no-referrer">
+<img class="avatar" src="{{ creator.avatar if ':' in creator.avatar else root ~ creator.avatar }}" alt="" width="{{ size }}" height="{{ size }}" referrerpolicy="no-referrer">
 {% endif %}
 {% endmacro %}
 {% if creator.header == "hero" %}
@@ -30,9 +30,11 @@
 {% else %}
 <header class="site-header header-compact">
 <div class="header-row">
-{{ avatar(creator, 48) }}
+{{ avatar(creator, 56) }}
+<div class="header-text">
 <h1>{{ creator.name }}</h1>
-</div>
 {{ socials(creator) }}
+</div>
+</div>
 </header>
 {% endif %}

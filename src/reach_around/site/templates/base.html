@@ -5,6 +5,9 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{{ page_title }}</title>
+{% if creator.favicon %}
+<link rel="icon" href="{{ root }}{{ creator.favicon }}">
+{% endif %}
 <link rel="stylesheet" href="{{ root }}static/site.css">
 <link rel="stylesheet" href="{{ root }}static/theme.css">
 {% if custom_css %}
@@ -15,9 +18,10 @@
 {% endif %}
 </head>
 <body>
-<main>
-{% include "_header.html" %}
+<a class="skip-link" href="#content">Skip to links</a>
+<main id="content">
 {% include "_nav.html" %}
+{% include "_header.html" %}
 {% block content %}{% endblock %}
 {% include "_footer.html" %}
 </main>

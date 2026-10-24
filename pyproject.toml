@@ -25,7 +25,7 @@ version = { attr = "reach_around.__version__" }
 where = ["src"]
 
 [tool.setuptools.package-data]
-reach_around = ["py.typed", "site/templates/*.html", "site/templates/blocks/*.html", "site/static/*", "preview_assets/*"]
+reach_around = ["py.typed", "site/templates/*.html", "site/templates/blocks/*.html", "site/static/*", "site/static/icons/*", "site/static/fonts/*", "preview_assets/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

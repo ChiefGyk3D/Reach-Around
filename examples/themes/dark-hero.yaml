@@ -1,0 +1,17 @@
+# Dark and warm: charcoal page, orange accent, pill buttons and a hero header.
+# Pair it with `creator.header: hero`. Add `background:` to show your artwork
+# faintly behind the column.
+colors:
+  bg: "#141210"
+  surface: "#211e1b"
+  text: "#f3eee7"
+  accent: "#ff8a3c"
+  on_accent: "#1a1a1a"
+  border: "#3a3530"
+fonts:
+  body: "system-ui, sans-serif"
+  heading: "Avenir Next, Avenir, Segoe UI, system-ui, sans-serif"
+button_style: pill
+radius: 0.75rem
+column_width: 36rem
+mode: dark

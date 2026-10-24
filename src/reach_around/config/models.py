@@ -31,6 +31,7 @@ from reach_around.config.blocks import Divider, Image, Text
 from reach_around.config.loader import ConfigError, load_yaml
 from reach_around.config.privacy import Features, Privacy
 from reach_around.config.theme import Theme
+from reach_around.site.theme import check_image_path
 
 _SLUG = re.compile(r"^[a-z0-9][a-z0-9-]{0,39}$")
 _ISO_DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
@@ -76,6 +77,7 @@ class Link(_Model):
     subtitle: Subtitle | None = None
     icon: Slug | None = None
     affiliate: bool = False
+    featured: bool = False
     show_from: date | None = None
     show_until: date | None = None
 
@@ -180,14 +182,29 @@ class Social(_Model):
 
 class Creator(_Model):
     name: Title
-    avatar: HttpsUrl | None = None
+    avatar: Annotated[str, Field(max_length=_MAX_URL)] | None = None
+    favicon: str | None = None
     header: HeaderStyle = "compact"
     socials: list[Social] = Field(default_factory=list)
 
     @field_validator("avatar")
     @classmethod
-    def _avatar_is_https(cls, value: str | None) -> str | None:
-        return None if value is None else check_https_url(value)
+    def _avatar_is_local_or_https(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        if "://" in value or value.startswith("//"):
+            return check_https_url(value)
+        try:
+            return check_image_path(value)
+        except ValueError as exc:
+            raise ValueError(
+                f"must be an https URL or a local image path: {exc}"
+            ) from None
+
+    @field_validator("favicon")
+    @classmethod
+    def _favicon_is_local(cls, value: str | None) -> str | None:
+        return None if value is None else check_image_path(value)
 
 
 class SiteConfig(_Model):

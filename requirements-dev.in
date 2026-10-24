@@ -6,3 +6,4 @@ types-PyYAML
 PyYAML
 pydantic>=2
 Jinja2
+playwright

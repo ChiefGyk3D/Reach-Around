@@ -69,7 +69,7 @@ def two_tabs() -> list[dict[str, Any]]:
 
 def test_each_tab_has_its_own_page(tmp_path: Path) -> None:
     out = tmp_path / "out"
-    build_site(make_config(two_tabs()), out, today=TODAY)
+    build_site(make_config(two_tabs()), out, today=TODAY, assets_dir=EXAMPLE.parent)
     assert (out / "index.html").is_file()
     assert (out / "socials" / "index.html").is_file()
     assert "https://example.com/a" in (out / "index.html").read_text()
@@ -106,7 +106,7 @@ def test_html_in_titles_is_escaped(tmp_path: Path) -> None:
         creator={"name": evil},
         disclosure=evil,
     )
-    build_site(config, tmp_path, today=TODAY)
+    build_site(config, tmp_path, today=TODAY, assets_dir=EXAMPLE.parent)
     text = read_all(tmp_path)
     assert "&lt;script&gt;" in text
     # The only script tag is the external click.js; none comes from the config.
@@ -114,7 +114,9 @@ def test_html_in_titles_is_escaped(tmp_path: Path) -> None:
 
 
 def test_no_script_in_any_page(tmp_path: Path) -> None:
-    build_site(load_site_config(EXAMPLE), tmp_path, today=TODAY)
+    build_site(
+        load_site_config(EXAMPLE), tmp_path, today=TODAY, assets_dir=EXAMPLE.parent
+    )
     assert pages(tmp_path)
     for page in pages(tmp_path):
         # Exactly one script tag per page: the external, deferred click.js.
@@ -149,7 +151,7 @@ def test_affiliate_links_get_rel_sponsored_noopener_and_the_disclosure_is_shown(
         ],
         disclosure="We may earn a commission.",
     )
-    build_site(config, tmp_path, today=TODAY)
+    build_site(config, tmp_path, today=TODAY, assets_dir=EXAMPLE.parent)
     first = (tmp_path / "index.html").read_text()
     assert 'rel="sponsored noopener noreferrer"' in first
     assert "We may earn a commission." in first
@@ -179,7 +181,7 @@ def test_hidden_affiliate_link_does_not_trigger_the_disclosure(
         ],
         disclosure="We may earn a commission.",
     )
-    build_site(config, tmp_path, today=TODAY)
+    build_site(config, tmp_path, today=TODAY, assets_dir=EXAMPLE.parent)
     assert "commission" not in (tmp_path / "index.html").read_text()
 
 
@@ -201,7 +203,7 @@ def test_sections_use_details_summary(tmp_path: Path) -> None:
             }
         ]
     )
-    build_site(config, tmp_path, today=TODAY)
+    build_site(config, tmp_path, today=TODAY, assets_dir=EXAMPLE.parent)
     text = (tmp_path / "index.html").read_text()
     details = re.findall(r"<details[^>]*>", text)
     assert len(details) == 2
@@ -212,27 +214,37 @@ def test_sections_use_details_summary(tmp_path: Path) -> None:
 
 def test_scheduled_link_hidden_by_today(tmp_path: Path) -> None:
     config = load_site_config(EXAMPLE)
-    build_site(config, tmp_path / "before", today=date(2027, 2, 28))
-    build_site(config, tmp_path / "during", today=date(2027, 3, 1))
+    build_site(
+        config, tmp_path / "before", today=date(2027, 2, 28), assets_dir=EXAMPLE.parent
+    )
+    build_site(
+        config, tmp_path / "during", today=date(2027, 3, 1), assets_dir=EXAMPLE.parent
+    )
     assert "tickets.example.invalid" not in read_all(tmp_path / "before")
     assert "tickets.example.invalid" in read_all(tmp_path / "during")
 
 
 def test_manifest_lists_only_visible_links(tmp_path: Path) -> None:
     config = load_site_config(EXAMPLE)
-    manifest = build_site(config, tmp_path / "a", today=date(2027, 2, 28))
+    manifest = build_site(
+        config, tmp_path / "a", today=date(2027, 2, 28), assets_dir=EXAMPLE.parent
+    )
     assert isinstance(manifest, BuildManifest)
     assert "spring-meetup" not in manifest.links
     assert manifest.links["example-mic"] == "https://shop.example.com/mic?ref=example"
     assert "gear-picks" not in manifest.links  # sections are not links
     on_disk = json.loads((tmp_path / "a" / "manifest.json").read_text())
     assert on_disk == {"links": manifest.links}
-    later = build_site(config, tmp_path / "b", today=date(2027, 3, 1))
+    later = build_site(
+        config, tmp_path / "b", today=date(2027, 3, 1), assets_dir=EXAMPLE.parent
+    )
     assert "spring-meetup" in later.links
 
 
 def test_manifest_json_has_sorted_keys(tmp_path: Path) -> None:
-    build_site(load_site_config(EXAMPLE), tmp_path, today=TODAY)
+    build_site(
+        load_site_config(EXAMPLE), tmp_path, today=TODAY, assets_dir=EXAMPLE.parent
+    )
     raw = (tmp_path / "manifest.json").read_text()
     ids = list(json.loads(raw)["links"])
     assert ids == sorted(ids)
@@ -241,10 +253,10 @@ def test_manifest_json_has_sorted_keys(tmp_path: Path) -> None:
 
 def test_output_directory_is_cleaned_of_stale_files(tmp_path: Path) -> None:
     out = tmp_path / "out"
-    build_site(make_config(two_tabs()), out, today=TODAY)
+    build_site(make_config(two_tabs()), out, today=TODAY, assets_dir=EXAMPLE.parent)
     assert (out / "socials" / "index.html").is_file()
     (out / "junk.txt").write_text("old")
-    build_site(make_config(two_tabs()[:1]), out, today=TODAY)
+    build_site(make_config(two_tabs()[:1]), out, today=TODAY, assets_dir=EXAMPLE.parent)
     assert not (out / "socials").exists()
     assert not (out / "junk.txt").exists()
     assert (out / "index.html").is_file()
@@ -259,7 +271,13 @@ def test_build_refuses_an_out_dir_that_is_the_config_directory_or_a_parent(
     config_file.write_text("keep me")
     for bad in (conf_dir, conf_dir.parent, tmp_path, conf_dir / ".." / "conf"):
         with pytest.raises(ValueError, match="config"):
-            build_site(make_config(), bad, today=TODAY, protect=[config_file])
+            build_site(
+                make_config(),
+                bad,
+                today=TODAY,
+                protect=[config_file],
+                assets_dir=EXAMPLE.parent,
+            )
     assert config_file.read_text() == "keep me"
     # A sibling directory is fine.
     build_site(
@@ -271,11 +289,13 @@ def test_build_refuses_an_out_dir_that_is_a_file(tmp_path: Path) -> None:
     target = tmp_path / "file"
     target.write_text("x")
     with pytest.raises(ValueError, match="not a directory"):
-        build_site(make_config(), target, today=TODAY)
+        build_site(make_config(), target, today=TODAY, assets_dir=EXAMPLE.parent)
 
 
 def test_every_external_link_has_rel_noopener(tmp_path: Path) -> None:
-    build_site(load_site_config(EXAMPLE), tmp_path, today=TODAY)
+    build_site(
+        load_site_config(EXAMPLE), tmp_path, today=TODAY, assets_dir=EXAMPLE.parent
+    )
     seen = 0
     for page in pages(tmp_path):
         for tag in re.findall(r"<a\b[^>]*>", page.read_text()):
@@ -288,7 +308,9 @@ def test_every_external_link_has_rel_noopener(tmp_path: Path) -> None:
 
 
 def test_pages_declare_lang_and_viewport_and_a_title(tmp_path: Path) -> None:
-    build_site(make_config(two_tabs()), tmp_path, today=TODAY)
+    build_site(
+        make_config(two_tabs()), tmp_path, today=TODAY, assets_dir=EXAMPLE.parent
+    )
     assert len(pages(tmp_path)) == 3  # two tabs plus the privacy page
     for page in pages(tmp_path):
         text = page.read_text()
@@ -300,7 +322,9 @@ def test_pages_declare_lang_and_viewport_and_a_title(tmp_path: Path) -> None:
 
 
 def test_stylesheet_path_resolves_from_every_page(tmp_path: Path) -> None:
-    build_site(make_config(two_tabs()), tmp_path, today=TODAY)
+    build_site(
+        make_config(two_tabs()), tmp_path, today=TODAY, assets_dir=EXAMPLE.parent
+    )
     for page in pages(tmp_path):
         href = re.search(r'<link rel="stylesheet" href="([^"]+)"', page.read_text())
         assert href
@@ -309,8 +333,8 @@ def test_stylesheet_path_resolves_from_every_page(tmp_path: Path) -> None:
 
 def test_build_is_deterministic(tmp_path: Path) -> None:
     config = load_site_config(EXAMPLE)
-    build_site(config, tmp_path / "a", today=TODAY)
-    build_site(config, tmp_path / "b", today=TODAY)
+    build_site(config, tmp_path / "a", today=TODAY, assets_dir=EXAMPLE.parent)
+    build_site(config, tmp_path / "b", today=TODAY, assets_dir=EXAMPLE.parent)
     first = snapshot(tmp_path / "a")
     assert first
     assert first == snapshot(tmp_path / "b")
@@ -330,7 +354,7 @@ def test_package_data_patterns_cover_templates_and_static() -> None:
 
 def test_golden_output_for_example_config(tmp_path: Path, update_golden: bool) -> None:
     out = tmp_path / "out"
-    build_site(load_site_config(EXAMPLE), out, today=TODAY)
+    build_site(load_site_config(EXAMPLE), out, today=TODAY, assets_dir=EXAMPLE.parent)
     built = snapshot(out)
     if update_golden:
         for old in sorted(GOLDEN.rglob("*"), reverse=True):

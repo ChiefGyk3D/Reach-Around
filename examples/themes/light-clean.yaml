@@ -1,0 +1,15 @@
+# Light and clean: soft gray page, white cards, a deep blue accent.
+colors:
+  bg: "#eef1f5"
+  surface: "#ffffff"
+  text: "#16202b"
+  accent: "#1d4ed8"
+  on_accent: "#ffffff"
+  border: "#d3dbe5"
+fonts:
+  body: "system-ui, sans-serif"
+  heading: "system-ui, sans-serif"
+button_style: rounded
+radius: 0.625rem
+column_width: 34rem
+mode: light

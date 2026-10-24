@@ -58,7 +58,12 @@ def _build(config_path: Path, out_dir: Path, overrides: Path | None) -> int:
         config = load_site_config(config_path)
         today = today_in(config.timezone, datetime.now(UTC))
         build_site(
-            config, out_dir, today=today, protect=[config_path], overrides=overrides
+            config,
+            out_dir,
+            today=today,
+            protect=[config_path],
+            overrides=overrides,
+            assets_dir=config_path.parent,
         )
     except (ConfigError, ValueError) as exc:
         print(f"error: {exc}", file=sys.stderr)
