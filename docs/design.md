@@ -89,7 +89,7 @@ be overridden by a creator who adds a stylesheet of their own.
 - **Mobile first.** One column, no horizontal page scroll at 360 px, long titles
   wrap, every control is at least 44 px tall.
 - **Tab bar.** An accent-colored bar flush to the top of the column with uppercase
-  labels. It scrolls sideways when the tabs do not fit, and a soft edge
+  labels, smaller below 430 px. It scrolls sideways when the tabs do not fit, and a soft edge
   shadow shows on the side that has more.
 - **Link buttons.** Full-width accent pills with dark text, a 1 px darker
   border and a soft shadow. A link's `icon` shows as a round thumbnail at the
@@ -121,8 +121,10 @@ trademarks of their owners.
 
 ## Known limits
 
-- The tab bar cannot scroll the current tab into view without script. On a very
-  narrow screen with many tabs, the active tab may sit off to the side.
+- Below 430 px the tab labels and padding shrink so about four short tabs fit in
+  one row. With more tabs or longer labels the bar scrolls, and the current tab
+  starts in view through CSS `scroll-initial-target` (Chrome 133 and
+  newer; other browsers may start with the current tab off to the side).
 - `light-dark()` and `color-mix()` need a browser from 2024 or newer (Chrome 123,
   Firefox 120, Safari 17.5). Older browsers drop the colors and show the
   browser defaults, which stay readable.

@@ -282,3 +282,109 @@ def test_jost_is_the_rendered_font_and_loads_from_this_site(
     assert page.evaluate("() => document.fonts.check('16px Jost')")
     assert fonts and all(u.startswith(base_url) for u in fonts)
     context.close()
+
+
+FOUR_TABS = ("Support", "Socials", "Product Recs", "Contact")
+LONG_TABS = (
+    "Support",
+    "Socials",
+    "Product Recommendations",
+    "Contact Me Directly",
+    "Press and Media Inquiries",
+)
+PHONE_WIDTHS = (360, 375, 390, 430)
+TabSite = tuple[str, list[str]]
+
+
+def _serve_tabs(work: Path, titles: tuple[str, ...]) -> Iterator[TabSite]:
+    raw = yaml.safe_load(EXAMPLE.read_text())
+    slugs = [re.sub(r"[^a-z0-9]+", "-", t.lower()).strip("-") for t in titles]
+    raw["tabs"] = [
+        {"id": slug, "title": title, "blocks": []}
+        for slug, title in zip(slugs, titles, strict=True)
+    ]
+    config_path = work / "site.yaml"
+    config_path.write_text(yaml.safe_dump(raw))
+    out = work / "out"
+    build_site(
+        load_site_config(config_path), out, today=TODAY, assets_dir=EXAMPLE.parent
+    )
+    handler = functools.partial(_Quiet, directory=str(out))
+    server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{server.server_address[1]}/", slugs
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join()
+
+
+@pytest.fixture(scope="module")
+def four_tabs(tmp_path_factory: pytest.TempPathFactory) -> Iterator[TabSite]:
+    yield from _serve_tabs(tmp_path_factory.mktemp("four"), FOUR_TABS)
+
+
+@pytest.fixture(scope="module")
+def long_tabs(tmp_path_factory: pytest.TempPathFactory) -> Iterator[TabSite]:
+    yield from _serve_tabs(tmp_path_factory.mktemp("long"), LONG_TABS)
+
+
+def _tab_path(slugs: list[str], index: int) -> str:
+    return "" if index == 0 else f"{slugs[index]}/"
+
+
+@pytest.mark.parametrize("width", PHONE_WIDTHS)
+def test_four_short_tabs_fit_one_row_without_scrolling(
+    browser: Browser, four_tabs: TabSite, width: int
+) -> None:
+    url, slugs = four_tabs
+    for index in range(len(FOUR_TABS)):
+        page = _open(browser, url + _tab_path(slugs, index), width)
+        bar = page.locator(".tabs ul").element_handle()
+        assert page.evaluate("(el) => el.scrollWidth <= el.clientWidth", bar), (
+            width,
+            index,
+            page.evaluate("(el) => [el.scrollWidth, el.clientWidth]", bar),
+        )
+        links = page.locator(".tabs a")
+        assert links.count() == 4
+        tops = set()
+        for i in range(4):
+            box = links.nth(i).bounding_box()
+            assert box is not None
+            assert box["x"] >= 0 and box["x"] + box["width"] <= width + 0.5, (
+                width,
+                i,
+                box,
+            )
+            assert box["height"] >= 43.5, (width, i, box)
+            tops.add(round(box["y"]))
+        assert len(tops) == 1, "tabs should share one row"
+        page.context.close()
+
+
+def test_long_tab_labels_still_scroll_with_the_active_tab_visible(
+    browser: Browser, long_tabs: TabSite
+) -> None:
+    url, slugs = long_tabs
+    for width in (360, 390):
+        page = _open(browser, url + _tab_path(slugs, len(LONG_TABS) - 1), width)
+        bar = page.locator(".tabs ul").element_handle()
+        assert page.evaluate("(el) => el.scrollWidth > el.clientWidth", bar)
+        assert page.evaluate("(el) => getComputedStyle(el).overflowX", bar) in (
+            "auto",
+            "scroll",
+        )
+        page.wait_for_timeout(200)
+        box = page.locator(".tabs a[aria-current='page']").bounding_box()
+        bar_box = page.locator(".tabs ul").bounding_box()
+        assert box is not None and bar_box is not None
+        assert box["x"] >= bar_box["x"] - 0.5, (width, box, bar_box)
+        assert box["x"] + box["width"] <= bar_box["x"] + bar_box["width"] + 0.5, (
+            width,
+            box,
+            bar_box,
+        )
+        page.context.close()
