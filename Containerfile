@@ -40,6 +40,21 @@ RUN groupadd --gid 10001 reach \
  && mkdir /config /out \
  && chown 10001:10001 /out
 COPY --from=builder /opt/venv /opt/venv
+# The runtime never installs anything: drop pip, setuptools and wheel from the
+# base image and from the venv. They bundle libraries (urllib3, msgpack) that
+# the image scanner flags and that nothing here uses.
+RUN /usr/local/bin/python -m pip uninstall --yes pip setuptools wheel \
+ && rm -rf /usr/local/bin/pip /usr/local/bin/pip3 /usr/local/bin/pip3.* \
+           /usr/local/lib/python3*/site-packages/pip* \
+           /usr/local/lib/python3*/site-packages/setuptools* \
+           /usr/local/lib/python3*/site-packages/pkg_resources \
+           /usr/local/lib/python3*/site-packages/wheel* \
+ && rm -rf /opt/venv/bin/pip /opt/venv/bin/pip3 /opt/venv/bin/pip3.* \
+           /opt/venv/lib/python3*/site-packages/pip* \
+           /opt/venv/lib/python3*/site-packages/setuptools* \
+           /opt/venv/lib/python3*/site-packages/pkg_resources \
+           /opt/venv/lib/python3*/site-packages/_distutils_hack \
+           /opt/venv/lib/python3*/site-packages/distutils-precedence.pth
 USER 10001:10001
 WORKDIR /out
 # Writable paths at run time are /out (the site) and /tmp (a tmpfs); the root
