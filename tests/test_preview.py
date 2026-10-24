@@ -36,11 +36,15 @@ def running(config: Path) -> Iterator[Preview]:
 
 
 def fetch(
-    preview: Preview, path: str, method: str = "GET"
+    preview: Preview,
+    path: str,
+    method: str = "GET",
+    headers: dict[str, str] | None = None,
 ) -> tuple[int, dict[str, str], bytes]:
     conn = http.client.HTTPConnection("127.0.0.1", preview.port, timeout=5)
     try:
-        conn.request(method, path)  # raw path: no client-side normalization
+        # raw path: no client-side normalization
+        conn.request(method, path, headers=headers or {})
         resp = conn.getresponse()
         return resp.status, {k.lower(): v for k, v in resp.getheaders()}, resp.read()
     finally:
@@ -203,3 +207,56 @@ def test_serve_command_refuses_a_non_loopback_host(
 ) -> None:
     assert main(["serve", "--config", str(config), "--host", ANY_V4]) == 1
     assert "loopback" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    "host", ["evil.example:8000", "127.0.0.1.evil.example", "evil.example", "[::2]:80"]
+)
+@pytest.mark.parametrize("method", ["GET", "HEAD", "POST"])
+def test_rebinding_host_is_refused(running: Preview, host: str, method: str) -> None:
+    status, headers, body = fetch(running, "/", method, {"Host": host})
+    assert status == 421
+    assert body == b""
+    assert headers["cache-control"] == "no-store"
+    assert fetch(running, "/__preview", headers={"Host": host})[0] == 421
+
+
+@pytest.mark.parametrize(
+    "host",
+    ["localhost", "localhost:8000", "127.0.0.1", "127.0.0.1:9", "[::1]", "[::1]:8000"],
+)
+def test_localhost_127_and_ipv6_hosts_with_ports_are_accepted(
+    running: Preview, host: str
+) -> None:
+    assert fetch(running, "/", headers={"Host": host})[0] == 200
+
+
+def test_missing_host_header_is_refused(running: Preview) -> None:
+    with socket.create_connection(("127.0.0.1", running.port), 5) as sock:
+        sock.sendall(b"GET / HTTP/1.0\r\n\r\n")
+        reply = b""
+        while chunk := sock.recv(4096):
+            reply += chunk
+    assert reply.startswith(b"HTTP/1.") and b" 421 " in reply.split(b"\r\n")[0]
+    assert b"Example Creator" not in reply
+
+
+def test_cross_origin_request_is_refused(running: Preview) -> None:
+    for origin in ("http://evil.example", "http://127.0.0.1.evil.example:8000", "null"):
+        assert fetch(running, "/", headers={"Origin": origin})[0] == 403
+    assert fetch(running, "/", headers={"Sec-Fetch-Site": "cross-site"})[0] == 403
+    assert fetch(running, "/", "POST", {"Origin": "http://evil.example"})[0] == 403
+    ok = {"Origin": "http://localhost:8000", "Sec-Fetch-Site": "same-origin"}
+    assert fetch(running, "/", headers=ok)[0] == 200
+
+
+def test_error_page_is_not_served_to_a_rebinding_host(
+    running: Preview, config: Path
+) -> None:
+    config.write_text("version: 2\n")
+    deadline = time.monotonic() + 2.0
+    while time.monotonic() < deadline and fetch(running, "/")[0] == 200:
+        time.sleep(0.1)
+    assert fetch(running, "/")[0] == 500
+    status, _, body = fetch(running, "/", headers={"Host": "evil.example:8000"})
+    assert status == 421 and b"site.yaml" not in body

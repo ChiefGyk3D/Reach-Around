@@ -41,6 +41,7 @@ _PREVIEW_CSP = (
     "default-src 'self'; frame-src 'self'; img-src 'self' data:; "
     "style-src 'self'; script-src 'self'; base-uri 'none'; form-action 'none'"
 )
+_BASE_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
 _FORBIDDEN_ESCAPES = ("%2f", "%5c", "%00")
 
 
@@ -80,6 +81,16 @@ def _watched_files(config: Path) -> dict[Path, tuple[int, int]]:
             continue
         snapshot[path] = (st.st_mtime_ns, st.st_size)
     return snapshot
+
+
+def _host_name(host_header: str) -> str:
+    """Lowercase host from a Host header value, port and IPv6 brackets removed."""
+    value = host_header.strip().lower()
+    if value.startswith("["):
+        return value[1 : value.find("]")] if "]" in value else value
+    if value.count(":") == 1:
+        return value.split(":")[0]
+    return value
 
 
 def _error_page(message: str) -> bytes:
@@ -156,7 +167,32 @@ class _Handler(BaseHTTPRequestHandler):
             HTTPStatus.NOT_FOUND, b"not found\n", "text/plain; charset=utf-8", head=head
         )
 
+    def _guard(self) -> bool:
+        """Refuse DNS-rebinding and cross-site requests; True when allowed."""
+        allowed = self.server.preview.allowed_hosts
+        host = self.headers.get("Host")
+        if host is None or _host_name(host) not in allowed:
+            self._deny(HTTPStatus.MISDIRECTED_REQUEST)
+            return False
+        origin = self.headers.get("Origin")
+        if origin is not None:
+            origin_host = urlsplit(origin).hostname if origin != "null" else None
+            if origin_host is None or origin_host.lower() not in allowed:
+                self._deny(HTTPStatus.FORBIDDEN)
+                return False
+        if (self.headers.get("Sec-Fetch-Site") or "").lower() == "cross-site":
+            self._deny(HTTPStatus.FORBIDDEN)
+            return False
+        return True
+
+    def _deny(self, status: HTTPStatus) -> None:
+        self.send_response(status)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
     def _serve(self, head: bool) -> None:
+        if not self._guard():
+            return
         route = urlsplit(self.path).path
         preview = self.server.preview
         if route == "/__preview/version":
@@ -203,6 +239,8 @@ class _Handler(BaseHTTPRequestHandler):
         self._serve(head=True)
 
     def _refuse(self) -> None:
+        if not self._guard():
+            return
         self._send(
             HTTPStatus.METHOD_NOT_ALLOWED,
             b"only GET and HEAD are served\n",
@@ -233,6 +271,7 @@ class Preview:
                 "loopback address (127.0.0.1, ::1 or localhost)"
             )
         self.config = config
+        self.allowed_hosts = _BASE_HOSTS | {host.lower()}
         self.version = 0
         self.error: str | None = None
         self._tmp = Path(tempfile.mkdtemp(prefix="reach-around-preview-"))

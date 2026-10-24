@@ -16,6 +16,10 @@ to see it at desktop width and at 390 px phone width side by side.
   and the next rebuild clears it.
 - It binds to loopback only (`127.0.0.1`, `::1`, `localhost`). Any other host,
   including `0.0.0.0` and LAN addresses, is refused.
+- It checks the `Host` header on every request (DNS-rebinding defense). Only
+  `localhost`, `127.0.0.1`, `[::1]` and the bound host are answered; anything
+  else, or a missing `Host`, gets 421. A request with a foreign `Origin` or
+  `Sec-Fetch-Site: cross-site` gets 403.
 - It serves only GET and HEAD, sends `Cache-Control: no-store`, and never serves
   anything outside the temporary output directory.
 - The `--overrides` option arrives with template overrides (Task 6D). The
