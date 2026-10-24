@@ -159,6 +159,8 @@ CASES: list[tuple[str, Any]] = [
     ("bool", True),
     ("float-nan", float("nan")),
     ("list", ["a"]),
+    ("bytes", b"abc"),
+    ("none-in-list", [None]),
 ]
 
 
