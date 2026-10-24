@@ -247,6 +247,7 @@ def _render_not_found(env: Environment, config: SiteConfig, custom_css: bool) ->
         footer_credit=config.footer.credit,
         footer_credit_text=config.footer.text,
         footer_credit_url=CREDIT_URL,
+        page_views=False,
         has_crypto=False,
         has_email=False,
         has_email_script=False,

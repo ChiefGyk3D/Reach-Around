@@ -897,7 +897,10 @@ cannot warn that `analytics.page_views` is on without a Worker. The route must
 be served on the same hostname as the pages (the Worker also requires the
 request `Origin` to match its `SITE_HOST`), the tab ids must be in the Worker's
 `PAGE_IDS` (the build manifest lists them), and its limiter, hash secret and
-kill switch must be set. See [deploy](deploy.md). If nothing answers the route,
+kill switch must be set. The merged Worker records nothing without
+`VIEW_HASH_SECRET` (it fails closed) and serves only `/e/v/:pageId` today, so
+change `route` only when a proxy or route rule maps your path to that Worker
+path. See [deploy](deploy.md). If nothing answers the route,
 the beacon fails silently and the pages work normally; you just get no counts.
 The privacy page still discloses the counting, which is the safe direction.
 

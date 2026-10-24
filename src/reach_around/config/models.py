@@ -27,6 +27,7 @@ from pydantic import (
     model_validator,
 )
 
+from reach_around.config.analytics import Analytics
 from reach_around.config.blocks import (
     Crypto,
     Divider,
