@@ -225,6 +225,8 @@ def _render_not_found(env: Environment, config: SiteConfig, custom_css: bool) ->
         show_cookie_banner=sets_cookies(config),
         click_tracking=False,
         has_crypto=False,
+        has_email=False,
+        has_email_script=False,
         noindex=True,
         profile_card=_profile_card(config),
         cookie_text=intro_text(config),
