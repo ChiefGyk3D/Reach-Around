@@ -154,6 +154,8 @@ tabs:
 | `url` | HTTPS URL or Tab link | required | A Tab link is same-site: no `rel`, `target` or click ping, and it is left out of `manifest.json` |
 | `subtitle` | Subtitle | none | |
 | `icon` | Slug | none | |
+| `image` | local image path | none | A round thumbnail; wins over `icon`. Same path rules as a local `avatar`, file at most 256 KiB. See [Link thumbnails](customizing.md#link-thumbnails). |
+| `image_alt` | text | empty | At most 120 characters; empty means decorative. Refused without `image`. |
 | `affiliate` | boolean | `false` | |
 | `show_from` | Date | none | first day the link shows |
 | `show_until` | Date | none | last day the link shows; must not be before `show_from` (the same day is fine) |

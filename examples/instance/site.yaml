@@ -37,6 +37,10 @@ tabs:
         url: https://example.com/
         icon: link
         featured: true
+        # A round picture instead of the icon (a file in this folder, at most
+        # 256 KiB). Uncomment, add the file, and see docs/customizing.md.
+        # image: media/thumbs/home.jpg
+        # image_alt: The example home page logo
       - id: gear-picks
         title: Gear Picks
         subtitle: Things used on the show

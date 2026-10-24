@@ -14,3 +14,8 @@ ICON_SLUGS: frozenset[str] = frozenset(
     monero solana
     """.split()
 )
+
+# A link thumbnail is a square this many CSS pixels wide. It matches the
+# ``--ra-thumb`` token (2.75rem at the default 16 px) and gives the browser a
+# fixed box to reserve before the image arrives.
+THUMB_PX = 44

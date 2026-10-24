@@ -1,7 +1,8 @@
 {# SPDX-License-Identifier: Apache-2.0 #}
 {% macro link_anchor(link, track) -%}
 <a class="link{% if link.featured %} link-featured{% endif %}"{% if link.url.startswith('tab:') %} href="{{ tab_href(link.url) }}"{% else %} href="{{ link.url }}"{% if track %} ping="/e/c/{{ link.id }}" data-link-id="{{ link.id }}"{% endif %} rel="{{ 'sponsored noopener noreferrer' if link.affiliate else 'noopener noreferrer' }}"{% endif %}>
-{% if link.icon and link.icon in icon_slugs %}<span class="link-chip" aria-hidden="true"><span class="icon icon-{{ link.icon }}"></span></span>{% endif %}
+{% if link.image %}<img class="link-thumb" src="{{ root ~ link.image }}" alt="{{ link.image_alt }}" width="{{ thumb_px }}" height="{{ thumb_px }}" loading="lazy" decoding="async" referrerpolicy="no-referrer">
+{% elif link.icon and link.icon in icon_slugs %}<span class="link-chip" aria-hidden="true"><span class="icon icon-{{ link.icon }}"></span></span>{% endif %}
 <span class="link-text">
 <span class="link-title">{{ link.title }}</span>
 {% if link.subtitle %}<span class="link-subtitle">{{ link.subtitle }}</span>{% endif %}

@@ -40,7 +40,7 @@ from jinja2 import (
 from jinja2.sandbox import ImmutableSandboxedEnvironment
 
 from reach_around.config.models import Block
-from reach_around.site.icons import ICON_SLUGS
+from reach_around.site.icons import ICON_SLUGS, THUMB_PX
 from reach_around.site.markdown import render_markdown
 
 LOG = logging.getLogger("reach_around.site.overrides")
@@ -198,6 +198,7 @@ def make_environment(overrides: Path | None) -> Environment:
     )
     env.globals["block_kind"] = block_kind
     env.globals["icon_slugs"] = ICON_SLUGS
+    env.globals["thumb_px"] = THUMB_PX
     # render_markdown returns Markup that is already escaped, so autoescape
     # stays on in the template.
     env.filters["markdown"] = render_markdown
