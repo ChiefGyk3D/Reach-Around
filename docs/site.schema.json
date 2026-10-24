@@ -72,6 +72,140 @@
       "title": "Creator",
       "type": "object"
     },
+    "Crypto": {
+      "additionalProperties": false,
+      "properties": {
+        "coins": {
+          "items": {
+            "$ref": "#/$defs/CryptoCoin"
+          },
+          "maxItems": 12,
+          "minItems": 1,
+          "title": "Coins",
+          "type": "array"
+        },
+        "id": {
+          "pattern": "^[a-z0-9][a-z0-9-]{0,39}$",
+          "title": "Id",
+          "type": "string"
+        },
+        "note": {
+          "anyOf": [
+            {
+              "maxLength": 300,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Note"
+        },
+        "title": {
+          "anyOf": [
+            {
+              "maxLength": 200,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Title"
+        }
+      },
+      "required": [
+        "coins",
+        "id"
+      ],
+      "title": "Crypto",
+      "type": "object"
+    },
+    "CryptoCoin": {
+      "additionalProperties": false,
+      "properties": {
+        "address": {
+          "title": "Address",
+          "type": "string"
+        },
+        "coin": {
+          "enum": [
+            "btc",
+            "xmr",
+            "eth",
+            "sol",
+            "other"
+          ],
+          "title": "Coin",
+          "type": "string"
+        },
+        "label": {
+          "anyOf": [
+            {
+              "maxLength": 60,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Label"
+        },
+        "name": {
+          "anyOf": [
+            {
+              "maxLength": 40,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Name"
+        },
+        "network": {
+          "anyOf": [
+            {
+              "maxLength": 40,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Network"
+        },
+        "qr": {
+          "anyOf": [
+            {
+              "maxLength": 512,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Qr"
+        }
+      },
+      "required": [
+        "address",
+        "coin"
+      ],
+      "title": "CryptoCoin",
+      "type": "object"
+    },
     "Divider": {
       "additionalProperties": false,
       "properties": {
@@ -210,6 +344,25 @@
           "title": "Id",
           "type": "string"
         },
+        "image": {
+          "anyOf": [
+            {
+              "maxLength": 2048,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Image"
+        },
+        "image_alt": {
+          "default": "",
+          "maxLength": 120,
+          "title": "Image Alt",
+          "type": "string"
+        },
         "show_from": {
           "anyOf": [
             {
@@ -320,6 +473,49 @@
       "title": "Privacy",
       "type": "object"
     },
+    "Robots": {
+      "additionalProperties": false,
+      "properties": {
+        "ai_crawlers": {
+          "default": "allow",
+          "enum": [
+            "allow",
+            "block"
+          ],
+          "title": "Ai Crawlers",
+          "type": "string"
+        },
+        "allow_all": {
+          "default": true,
+          "title": "Allow All",
+          "type": "boolean"
+        },
+        "block": {
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 100,
+          "title": "Block",
+          "type": "array"
+        },
+        "noindex_paths": {
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 50,
+          "title": "Noindex Paths",
+          "type": "array"
+        },
+        "sitemap": {
+          "const": false,
+          "default": false,
+          "title": "Sitemap",
+          "type": "boolean"
+        }
+      },
+      "title": "Robots",
+      "type": "object"
+    },
     "Section": {
       "additionalProperties": false,
       "properties": {
@@ -424,6 +620,9 @@
               },
               {
                 "$ref": "#/$defs/Image"
+              },
+              {
+                "$ref": "#/$defs/Crypto"
               },
               {
                 "$ref": "#/$defs/Divider"
@@ -616,6 +815,17 @@
         "lead_retention_days": 365,
         "retention_days": 90
       }
+    },
+    "robots": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Robots"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
     },
     "tabs": {
       "items": {
