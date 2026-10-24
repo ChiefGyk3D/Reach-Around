@@ -25,6 +25,13 @@ namespace_id = "1001" # placeholder, not a real id
   limit = 20
   period = 60
 
-# Retention cron placeholder (implemented in Task 9):
-# [triggers]
-# crons = ["17 4 * * *"]
+# Retention: purge click rows older than 90 days, daily.
+[triggers]
+crons = ["17 4 * * *"]
+
+# The click pings use the relative path /e/c/<id>, so the browser sends them to
+# the site's own host. Route the Worker there in your deployment (placeholder
+# host; replace it with your site host and zone):
+# [[routes]]
+# pattern = "links.example.test/e/*"
+# zone_name = "example.test"
