@@ -25,6 +25,8 @@ export const MAX_BODY_BYTES = 1024;
 export const MAX_PATH_LENGTH = 128;
 /** Longest link id, matching the slug limit in the build config. */
 export const MAX_ID_LENGTH = 40;
+/** Longest Origin or Ping-From header we will parse, in characters. */
+export const MAX_ORIGIN_HEADER = 256;
 /** Longest full request URL we will parse, in characters. */
 export const MAX_URL_LENGTH = 2048;
 
@@ -131,6 +133,11 @@ function hostOf(value: string | null): string | null {
 }
 
 function originMatches(request: Request, siteHost: string): boolean {
+  // Length guard first: an oversize header is never handed to the URL parser.
+  for (const name of ["Ping-From", "Origin"]) {
+    const v = request.headers.get(name);
+    if (v !== null && v.length > MAX_ORIGIN_HEADER) return false; // CONTROL:header-cap
+  }
   const from = hostOf(request.headers.get("Ping-From"));
   const origin = hostOf(request.headers.get("Origin"));
   const want = siteHost.toLowerCase();

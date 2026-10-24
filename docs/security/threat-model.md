@@ -325,7 +325,7 @@ What the code does today (`worker/src/click.ts`, `index.ts`, `retention.ts`, `wr
 | Per-client rate limit (20 per 60 s on `CF-Connecting-IP`) | **[shipped]**; test `burst from one client is limited`. Bounds one client, not a distributed flood |
 | Same response whether accepted, ignored or failed, so no oracle | **[shipped]**; tests `response is identical for accepted and ignored requests`, `a database failure still returns the same 204` |
 | 90-day purge of click rows, daily | **[shipped]**; tests in `worker/test/retention.test.ts`. No heartbeat records its last success, and nothing caps the row count between runs |
-| Origin check on `Ping-From` or `Origin` | **[shipped]** but only a noise filter: the sender controls both headers and the ids are public (F3, F15) |
+| Origin check on `Ping-From` or `Origin`; a header over 256 characters (`MAX_ORIGIN_HEADER`) is rejected before it reaches the URL parser (test `a 1,000,000 character Origin or Ping-From is never parsed and records nothing`) | **[shipped]** but only a noise filter: the sender controls both headers and the ids are public (F3, F15) |
 | Cap on total URL length (2048, before the URL is parsed), path length (128) before `decodeURIComponent` and the allowlist, and id length (40) | **[shipped]** (F14); tests `a 1,000,000 character query is rejected before the URL is parsed`, `path longer than the cap records nothing and is not decoded`, `an id longer than the id cap records nothing even if listed` |
 | Body-size cap before parsing on gate, `send` and any route that reads a body | Does not exist; those routes do not exist yet (the click-route cap is shipped, above) |
 | Global per-route budget (a ceiling on accepted requests per route per time window, regardless of client) | Does not exist |

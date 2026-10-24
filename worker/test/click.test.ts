@@ -5,6 +5,7 @@ import {
   handleClick,
   MAX_BODY_BYTES,
   MAX_ID_LENGTH,
+  MAX_ORIGIN_HEADER,
   MAX_PATH_LENGTH,
   MAX_URL_LENGTH,
   type Env,
@@ -522,6 +523,53 @@ describe("cost guards: body cap, path cap, kill switch", () => {
     }
   });
 
+  it("a 1,000,000 character Origin or Ping-From is never parsed and records nothing", async () => {
+    const g = globalThis as unknown as { URL: typeof URL };
+    const RealURL = g.URL;
+    const lengths: number[] = [];
+    g.URL = class extends RealURL {
+      constructor(...args: ConstructorParameters<typeof URL>) {
+        super(...args);
+        lengths.push(String(args[0]).length);
+      }
+    } as typeof URL;
+    try {
+      const huge = `https://${"a".repeat(1_000_000)}.example/`;
+      const variants: Array<Record<string, string | null>> = [
+        { Origin: huge, "Ping-From": null },
+        { "Ping-From": huge },
+        { Origin: huge, "Ping-From": `https://${SITE}/` },
+        { "Ping-From": huge, Origin: `https://${SITE}` },
+      ];
+      for (const headers of variants) {
+        await expectEmpty204(await handleClick(click("/e/c/example-one", headers), makeEnv()));
+      }
+      expect(Math.max(...lengths)).toBeLessThan(MAX_ORIGIN_HEADER + 100);
+    } finally {
+      g.URL = RealURL;
+    }
+    expect(await rows()).toHaveLength(0);
+  });
+
+  it("a 40-character origin still records", async () => {
+    const host = "links.example.test";
+    const origin = `https://${host}`;
+    expect(origin.length).toBeLessThan(40);
+    await handleClick(click("/e/c/example-one", { "Ping-From": null, Origin: origin }), makeEnv());
+    expect(await rows()).toHaveLength(1);
+  });
+
+  it("an origin exactly at the cap is parsed, one over is not", async () => {
+    const pad = "a".repeat(MAX_ORIGIN_HEADER - `https://${SITE}/?`.length);
+    const atCap = `https://${SITE}/?${pad}`;
+    expect(atCap.length).toBe(MAX_ORIGIN_HEADER);
+    await handleClick(click("/e/c/example-one", { "Ping-From": atCap }), makeEnv());
+    expect(await rows()).toHaveLength(1);
+    await testEnv.DB.prepare("DELETE FROM click_events").run();
+    await handleClick(click("/e/c/example-one", { "Ping-From": atCap + "a" }), makeEnv());
+    expect(await rows()).toHaveLength(0);
+  });
+
   it("a 1,000,000 character query is rejected before the URL is parsed", async () => {
     const url = "https://worker.example.test/e/c/example-one?" + "q".repeat(1_000_000);
     const req = new Request(url, { method: "POST", headers: click().headers });
@@ -620,7 +668,7 @@ describe("cost guards: body cap, path cap, kill switch", () => {
     expect(await rows()).toHaveLength(0);
   });
 
-  it("17 different requests get an identical response; only the valid one writes", async () => {
+  it("19 different requests get an identical response; only the valid one writes", async () => {
     const cases: Array<[string, () => Request, Partial<Env>?]> = [
       ["GET", () => click("/e/c/example-one", {}, "GET")],
       ["PUT", () => click("/e/c/example-one", {}, "PUT")],
@@ -636,11 +684,13 @@ describe("cost guards: body cap, path cap, kill switch", () => {
       ["oversize CL", () => streamed(4, 1024, { "Content-Length": "4096" }).req],
       ["body without length", () => streamed(1000, 512).req],
       ["huge first chunk", () => streamed(1, 50 * 1024 * 1024).req],
+      ["huge Origin", () => click("/e/c/example-one", { Origin: `https://${"a".repeat(1_000_000)}.example/`, "Ping-From": null })],
+      ["huge Ping-From", () => click("/e/c/example-one", { "Ping-From": `https://${"a".repeat(1_000_000)}.example/` })],
       ["huge query", () => click("/e/c/example-one?" + "q".repeat(1_000_000))],
       ["killed", () => click(), { CLICKS_KILL: "1" }],
       ["rate limited", () => click(), { CLICK_LIMITER: fakeLimiter(0) }],
     ];
-    expect(cases).toHaveLength(17);
+    expect(cases).toHaveLength(19);
     const valid = await sig(await handleClick(click(), makeEnv()));
     expect(valid.status).toBe(204);
     expect(valid.body).toBe("");
