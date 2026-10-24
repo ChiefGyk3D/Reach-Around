@@ -19,7 +19,13 @@ from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
 import pytest
-from playwright.sync_api import Browser, BrowserContext, Page, sync_playwright
+from playwright.sync_api import (
+    Browser,
+    BrowserContext,
+    Page,
+    Route,
+    sync_playwright,
+)
 
 from reach_around.config import SiteConfig
 from reach_around.site.build import build_site
@@ -208,6 +214,21 @@ def test_bad_utm_and_ip_literal_referrer_are_omitted(
     ctx.close()
 
 
+@pytest.mark.parametrize("label", ["a_b", "x" * 31, "x@y", ""])
+def test_bad_utm_labels_are_omitted(
+    browser: Browser, base_url: str, label: str
+) -> None:
+    page, ctx, _ = _open(browser, base_url + "?utm_source=" + label)
+    assert [c["body"] for c in _beacons(page)] == ["w=l"]
+    ctx.close()
+
+
+def test_a_thirty_character_utm_label_is_sent(browser: Browser, base_url: str) -> None:
+    page, ctx, _ = _open(browser, base_url + "?utm_source=" + "x" * 30)
+    assert [c["body"] for c in _beacons(page)] == ["u=" + "x" * 30 + "&w=l"]
+    ctx.close()
+
+
 GPC = (
     "Object.defineProperty(Navigator.prototype, 'globalPrivacyControl', "
     "{get: () => true});"
@@ -358,3 +379,46 @@ def test_the_real_beacon_is_a_small_form_post(browser: Browser, base_url: str) -
     ]
     assert context.cookies() == []
     context.close()
+
+
+def _tampered(browser: Browser, url: str, old: str, new: str) -> Page:
+    """Load the page with one attribute rewritten in the HTML on the way in."""
+    context = browser.new_context(viewport={"width": 800, "height": 900})
+    page = context.new_page()
+    page.add_init_script(PROBE)
+
+    def rewrite(route: Route) -> None:
+        response = route.fetch()
+        html = response.text()
+        assert old in html
+        route.fulfill(response=response, body=html.replace(old, new, 1))
+
+    page.route(url, rewrite)
+    page.goto(url)
+    page.wait_for_load_state("load")
+    return page
+
+
+@pytest.mark.parametrize("bad", ["Bad Id", "../x", "UPPER", "a" * 41, ""])
+def test_a_bad_page_id_sends_nothing(browser: Browser, base_url: str, bad: str) -> None:
+    page = _tampered(browser, base_url, 'data-page-id="start"', f'data-page-id="{bad}"')
+    assert _beacons(page) == []
+    page.context.close()
+
+
+def test_a_missing_page_id_sends_nothing(browser: Browser, base_url: str) -> None:
+    page = _tampered(browser, base_url, 'data-page-id="start"', "")
+    assert _beacons(page) == []
+    page.context.close()
+
+
+@pytest.mark.parametrize(
+    "bad",
+    ["https://evil.test/", "//evil.test/", "/a/../", "/e/v", "e/v/", "/" + "a/" * 40],
+)
+def test_a_bad_route_sends_nothing(browser: Browser, base_url: str, bad: str) -> None:
+    page = _tampered(
+        browser, base_url, 'data-view-route="/stats/pv/"', f'data-view-route="{bad}"'
+    )
+    assert _beacons(page) == []
+    page.context.close()
