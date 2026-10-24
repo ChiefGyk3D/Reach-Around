@@ -260,6 +260,24 @@ under its OFL license; set `theme.fonts.body` to change it.
 A link with `featured: true` becomes the taller highlighted pill; use it once,
 for the top link.
 
+### Page titles
+
+By default a page is titled `<tab> - <creator.name>`. To set the name of the
+whole site, add `creator.title`; the first tab then uses it alone and the other
+tabs read `<tab> - <title>`. For full control, set `title_template` using only
+`{tab}`, `{creator}` and `{site}`, and give any one tab its own `page_title`
+to replace the result for that page:
+
+```yaml
+creator:
+  name: Example Creator
+  title: Example Creator Links
+title_template: "{tab} | {site}"
+```
+
+Anything else in braces is refused when the config loads. The rules and limits
+are in [Page titles](config.md#page-titles).
+
 ## Layer 3: layouts and the header
 
 `layout` is `list` (default), `grid` or `cards`. Put it on a tab to lay out

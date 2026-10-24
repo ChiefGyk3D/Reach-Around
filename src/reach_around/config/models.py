@@ -29,6 +29,7 @@ from pydantic import (
 
 from reach_around.config.blocks import Divider, Image, Text
 from reach_around.config.loader import ConfigError, load_yaml
+from reach_around.config.page_title import PageTitle, TitleTemplate
 from reach_around.config.privacy import Features, Privacy
 from reach_around.config.theme import Theme
 from reach_around.site.theme import check_image_path
@@ -166,6 +167,7 @@ class Tab(_Model):
     id: Slug
     title: Title
     layout: Layout = "list"
+    page_title: PageTitle | None = None
     blocks: list[Block]
 
 
@@ -182,6 +184,7 @@ class Social(_Model):
 
 class Creator(_Model):
     name: Title
+    title: PageTitle | None = None
     avatar: Annotated[str, Field(max_length=_MAX_URL)] | None = None
     favicon: str | None = None
     header: HeaderStyle = "compact"
@@ -213,6 +216,7 @@ class SiteConfig(_Model):
     tabs: list[Tab] = Field(min_length=1)
     disclosure: Annotated[str, StringConstraints(max_length=2000)] | None = None
     timezone: str = "America/New_York"
+    title_template: TitleTemplate | None = None
     theme: Theme = Theme()
     features: Features = Features()
     privacy: Privacy = Privacy()

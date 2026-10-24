@@ -79,6 +79,7 @@ escapes it when it renders.
 | `tabs` | list of Tab | required | at least one tab |
 | `disclosure` | text | none | at most 2000 characters; shown when affiliate links exist |
 | `timezone` | text | `America/New_York` | must be a known IANA zone name; decides which calendar day "today" is for scheduled links |
+| `title_template` | text | `{tab} - {creator}` | how page titles are built; see [Page titles](#page-titles) |
 | `theme` | Theme | defaults | colors, fonts, background and shape; see [`theme`](#theme) |
 | `features` | Features | click tracking on, kit gate off | switches for features that collect data; see [`features`](#features) |
 | `privacy` | Privacy | defaults | wording and retention for the privacy page; see [`privacy`](#privacy) |
@@ -97,6 +98,7 @@ disclosure: Some links are affiliate links.
 | Field | Type | Default | Constraints |
 | --- | --- | --- | --- |
 | `name` | Title | required | |
+| `title` | page title text | none | The whole-site title; see [Page titles](#page-titles). |
 | `avatar` | HTTPS URL or local image path | none | A relative path such as `media/avatar.png` is copied from the instance directory to the same path in the site. |
 | `favicon` | local image path | none | The browser tab icon. Same rules as a local `avatar`; an https URL is refused. |
 | `header` | `compact`, `centered`, `hero` | `compact` | See [layouts and headers](#blocks-layouts-and-headers). |
@@ -129,7 +131,8 @@ socials:
 | Field | Type | Default | Constraints |
 | --- | --- | --- | --- |
 | `id` | Slug | required | unique across the site |
-| `title` | Title | required | |
+| `title` | Title | required | the label in the navigation |
+| `page_title` | page title text | none | Replaces the whole browser title of this tab's page; see [Page titles](#page-titles). It is not called `title` because that key is the navigation label. |
 | `blocks` | list of Link or Section | required | may be empty |
 
 A block is a section if it has a `links` key, otherwise a link.
@@ -181,6 +184,52 @@ tabs:
       title: Example Boom Stand
       url: https://shop.example.com/stand
 ```
+
+## Page titles
+
+The text in the browser tab (the HTML `<title>`) is built per page.
+
+Page title text (`creator.title`, `tabs[].page_title`) is plain text, 1 to 80
+characters. It must be a real string (a number or `true` is refused), must not
+be empty or only spaces, must not start or end with a space, and must not
+contain control characters, line breaks or invisible format characters.
+`title_template` follows the same rules with a 200 character cap.
+
+`title_template` may use exactly three placeholders and nothing else:
+
+| Placeholder | Value |
+| --- | --- |
+| `{tab}` | the tab's `title` (`Privacy` on the privacy page) |
+| `{creator}` | `creator.name` |
+| `{site}` | `creator.title`, or `creator.name` when `creator.title` is not set |
+
+Any other brace, such as `{nope}`, `{tab.x}`, `{0}` or `{{tab}}`, is refused
+when the file loads, with an error that names `title_template`. The
+substitution is a plain token replace, not Python formatting, and a value that
+itself contains `{tab}` is left as written.
+
+Which text wins, first match first:
+
+1. The tab's `page_title`, used as is.
+2. `title_template`, when set, for every page.
+3. `creator.title` alone, when set, on the first tab (the home page). Other
+   tabs and the privacy page use `{tab} - {site}`.
+4. Otherwise `{tab} - {creator}`, the same as before this option existed.
+
+```yaml
+creator:
+  name: Example Creator
+  title: Example Creator Links
+title_template: "{tab} | {site}"
+tabs:
+  - id: start-here
+    title: Start Here
+    page_title: Welcome to Example Creator Links
+    blocks: []
+```
+
+Titles are escaped when the page is built, so `<script>` shows as text. They
+are never marked safe and are never written into the CSS or JavaScript.
 
 ## Blocks, layouts and headers
 
@@ -402,8 +451,8 @@ enabled features, so they cannot claim less than the site does. See
 
 After the file loads, the models refuse a root that is not a mapping, unknown
 keys, wrong types, non-HTTPS or credentialed URLs, bad slugs, duplicate ids,
-reversed date windows, timestamps in date fields, unknown time zones and an
-empty `tabs` list. Messages from the models name the dotted path, for example
+reversed date windows, timestamps in date fields, unknown time zones, an
+empty `tabs` list and bad page titles or title templates. Messages from the models name the dotted path, for example
 `tabs[0].blocks[0].url: url must start with https://`.
 
 The reasons behind these rules, and the test that proves each one, are in
