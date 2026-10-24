@@ -159,12 +159,18 @@ URL is still accepted for `creator.avatar` and `theme.background`, but it
 tells that host about every visitor; use a local file. `favicon` and `mascot`
 refuse a URL.
 
-**The bytes must match the extension.** After reading a file the build checks
-its first bytes against the format (PNG, JPEG, GIF, WebP, AVIF, WOFF2, WOFF,
-TrueType, OpenType), so a `.yaml` renamed `secret.png` is refused. The
-extension is compared in lower case, so `.PNG` is checked the same way. The
-error is `theme.mascot: 'secret.png' is not a real png file (its first bytes
-do not match the format)`.
+**The bytes must match the extension.** After reading a file the build runs
+cheap structural sanity checks, not a full decoder: the format's signature plus
+a length or end marker that a renamed text file lacks. PNG must end with the
+12-byte IEND chunk, GIF with `;`, JPEG with `FFD9`; WebP's RIFF size field plus
+8 must equal the file length; WOFF and WOFF2's header length field must equal
+the file length; TrueType and OpenType need 1 to 64 tables and room for the
+table directory; AVIF needs an `avif` or `avis` brand. A `.yaml` renamed
+`secret.png` is refused, and so is a real PNG header followed by a text body.
+The extension is compared in lower case, so `.PNG` is checked the same way.
+The error is `theme.mascot: 'secret.png' is not a real png file (its first
+bytes do not match the format)`. A file that passes can still be a damaged
+image; the checks only stop other file types from riding along.
 
 **SVG is screened.** A browser runs an SVG as a document when someone opens
 its address, so the build parses it and refuses, with the config key and the
@@ -176,12 +182,20 @@ element is not allowed`):
   whose root is not `svg`;
 - `script`, `foreignObject`, `iframe`, `embed`, `object`, `audio` and `video`
   elements, in any case or namespace prefix;
-- any attribute whose name starts with `on` (event handlers);
+- any attribute whose name starts with `on` (event handlers), and any
+  `xml:base` attribute, which would move where `#fragment` references resolve;
+- processing instructions (such as `xml-stylesheet`; the plain `<?xml ...?>`
+  declaration is fine), CDATA sections, comments inside a `style` element, and
+  any element nested inside a `style` element. Comments elsewhere are allowed,
+  and the file is copied unchanged;
 - any `href` or `xlink:href`, on any element, that does not start with `#`;
 - `animate`, `set`, `animateTransform` and `animateMotion` that target `href`;
 - `url(` in a `style` element, a `style` attribute or any other attribute
-  unless it points at a `#fragment`; also `@import`, `expression(`,
-  `image-set(` and CSS backslash escapes.
+  unless it points at a `#fragment` with no quotes (`url(#g)`, not
+  `url('#g')`); also `@import`, `expression(`, `image-set(`, CSS backslash
+  escapes and any `/*` comment opener in any CSS or attribute value. Comments
+  are refused, not stripped, so no parser can read the CSS differently from
+  this check.
 
 Plain shapes, gradients, clip paths, filters, `use` of a `#id`, `title` and
 `desc` pass.

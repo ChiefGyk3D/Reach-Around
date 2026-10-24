@@ -56,7 +56,9 @@ def make_assets(root: Path) -> Path:
     """An instance folder holding the image files the test configs name."""
     for name in ("img/a.png", "img/b.png"):
         (root / name).parent.mkdir(parents=True, exist_ok=True)
-        (root / name).write_bytes(b"\x89PNG\r\n\x1a\nsynthetic")
+        (root / name).write_bytes(
+            b"\x89PNG\r\n\x1a\nsynthetic\x00\x00\x00\x00IEND\xaeB`\x82"
+        )
     return root
 
 

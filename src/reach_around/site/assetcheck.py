@@ -17,17 +17,39 @@ from xml.parsers import expat
 
 _AVIF_BRANDS = (b"avif", b"avis")
 
+_IEND = b"\x00\x00\x00\x00IEND\xaeB`\x82"
+
+
+def _sfnt(d: bytes, tags: tuple[bytes, ...]) -> bool:
+    """A font container with a plausible table directory."""
+    if len(d) < 12 or d[:4] not in tags:
+        return False
+    tables = int.from_bytes(d[4:6], "big")
+    return 1 <= tables <= 64 and len(d) >= 12 + 16 * tables
+
+
+def _woff(d: bytes, tag: bytes) -> bool:
+    return len(d) >= 12 and d[:4] == tag and int.from_bytes(d[8:12], "big") == len(d)
+
+
+# Structural sanity checks, not decoders: the signature plus the cheap
+# end-of-file or length facts that a text file renamed to an image lacks.
 _MAGIC: dict[str, Callable[[bytes], bool]] = {
-    "png": lambda d: d.startswith(b"\x89PNG\r\n\x1a\n"),
-    "jpg": lambda d: d.startswith(b"\xff\xd8\xff"),
-    "jpeg": lambda d: d.startswith(b"\xff\xd8\xff"),
-    "gif": lambda d: d.startswith((b"GIF87a", b"GIF89a")),
-    "webp": lambda d: d[:4] == b"RIFF" and d[8:12] == b"WEBP",
+    "png": lambda d: d.startswith(b"\x89PNG\r\n\x1a\n") and d.endswith(_IEND),
+    "jpg": lambda d: d.startswith(b"\xff\xd8\xff") and d.endswith(b"\xff\xd9"),
+    "jpeg": lambda d: d.startswith(b"\xff\xd8\xff") and d.endswith(b"\xff\xd9"),
+    "gif": lambda d: d.startswith((b"GIF87a", b"GIF89a")) and d.endswith(b";"),
+    "webp": lambda d: (
+        len(d) >= 12
+        and d[:4] == b"RIFF"
+        and d[8:12] == b"WEBP"
+        and int.from_bytes(d[4:8], "little") + 8 == len(d)
+    ),
     "avif": lambda d: d[4:8] == b"ftyp" and d[8:12] in _AVIF_BRANDS,
-    "woff2": lambda d: d.startswith(b"wOF2"),
-    "woff": lambda d: d.startswith(b"wOFF"),
-    "ttf": lambda d: d.startswith((b"\x00\x01\x00\x00", b"true")),
-    "otf": lambda d: d.startswith(b"OTTO"),
+    "woff2": lambda d: _woff(d, b"wOF2"),
+    "woff": lambda d: _woff(d, b"wOFF"),
+    "ttf": lambda d: _sfnt(d, (b"\x00\x01\x00\x00", b"true")),
+    "otf": lambda d: _sfnt(d, (b"OTTO",)),
 }
 
 _FORBIDDEN_ELEMENTS = {
@@ -47,10 +69,16 @@ def _local(name: str) -> str:
 
 
 def _screen_css(css: str) -> str | None:
-    """Return the reason ``css`` is refused, or None."""
+    """Return the reason ``css`` is refused, or None.
+
+    Comments are refused outright rather than stripped, so no parser can read
+    the text differently from this check.
+    """
+    if "/*" in css:
+        return "a CSS comment is not allowed"
     if "\\" in css:
         return "CSS escapes are not allowed"
-    text = re.sub(r"/\*.*?\*/", "", css, flags=re.S).lower()
+    text = css.lower()
     if "@import" in text:
         return "@import is not allowed"
     if "expression(" in text:
@@ -58,9 +86,8 @@ def _screen_css(css: str) -> str | None:
     if "image-set(" in text:
         return "image-set( is not allowed"
     for match in re.finditer(r"url\(", text):
-        target = text[match.end() :].lstrip().lstrip("'\"").lstrip()
-        if not target.startswith("#"):
-            return "url( may only point at a #fragment in the same file"
+        if not text[match.end() :].lstrip().startswith("#"):
+            return "url( may only point at a #fragment, without quotes"
     return None
 
 
@@ -77,6 +104,8 @@ class _Screen:
 
     def start(self, tag: str, attrs: dict[str, str]) -> None:
         name = _local(tag)
+        if self.style is not None:
+            raise _Refused("an element inside a style element is not allowed")
         if self.depth == 0 and name != "svg":
             raise _Refused("the root element must be svg")
         self.depth += 1
@@ -98,10 +127,21 @@ class _Screen:
                 and _local(value) == "href"
             ):
                 raise _Refused("an animation element targeting href is not allowed")
-            if attr_name == "style" or "url(" in value.lower() or "\\" in value:
-                reason = _screen_css(value)
-                if reason:
-                    raise _Refused(reason)
+            if attr_name == "base":
+                raise _Refused("an xml:base attribute is not allowed")
+            reason = _screen_css(value)
+            if reason:
+                raise _Refused(reason)
+
+    def pi(self, target: str, data: str) -> None:
+        raise _Refused("a processing instruction is not allowed")
+
+    def comment(self, data: str) -> None:
+        if self.style is not None:
+            raise _Refused("a comment inside a style element is not allowed")
+
+    def cdata(self) -> None:
+        raise _Refused("a CDATA section is not allowed")
 
     def text(self, data: str) -> None:
         if self.style is not None:
@@ -130,6 +170,9 @@ def _screen_svg(data: bytes) -> str | None:
     parser.StartElementHandler = screen.start
     parser.CharacterDataHandler = screen.text
     parser.EndElementHandler = screen.end
+    parser.ProcessingInstructionHandler = screen.pi
+    parser.CommentHandler = screen.comment
+    parser.StartCdataSectionHandler = screen.cdata
     try:
         parser.Parse(data, True)
     except _Refused as refused:
