@@ -50,6 +50,10 @@ def test_click_js_is_the_only_script(tmp_path: Path) -> None:
     for page in pages:
         text = page.read_text(encoding="utf-8")
         scripts = re.findall(r"<script\b[^>]*>", text, re.IGNORECASE)
+        if page.name == "404.html":
+            # Never click-counted: no script at all (see test_not_found.py).
+            assert scripts == []
+            continue
         assert len(scripts) == 1
         attrs = dict(ATTR.findall(scripts[0]))
         assert attrs["src"].endswith("static/click.js")

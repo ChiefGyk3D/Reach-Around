@@ -37,7 +37,9 @@ def make_config(tabs: list[dict[str, Any]] | None = None, **extra: Any) -> SiteC
 
 
 def pages(out: Path) -> list[Path]:
-    return sorted(out.rglob("*.html"))
+    # 404.html is root-relative and untracked by design; tests/site/test_not_found.py
+    # covers it, so the tab and privacy page checks here leave it out.
+    return sorted(p for p in out.rglob("*.html") if p != out / "404.html")
 
 
 def read_all(out: Path) -> str:

@@ -207,6 +207,33 @@ def _render_privacy(env: Environment, config: SiteConfig, custom_css: bool) -> s
     )
 
 
+def _render_not_found(env: Environment, config: SiteConfig, custom_css: bool) -> str:
+    """The 404 page.
+
+    Hosts serve it at arbitrary depths (``/a/b/c``), so unlike every other page
+    its asset and nav links are root-relative (``root="/"``). It never loads
+    click.js and carries ``noindex``.
+    """
+    return env.get_template("404.html").render(
+        creator=config.creator,
+        nav=_nav(config, -1, "/"),
+        tab_href=_internal_href(config, "/"),
+        root="/",
+        page_title=page_title(config, "Not found", home=False, own=None),
+        disclosure=config.disclosure,
+        show_disclosure=False,
+        show_cookie_banner=sets_cookies(config),
+        click_tracking=False,
+        has_crypto=False,
+        has_email=False,
+        has_email_script=False,
+        noindex=True,
+        profile_card=_profile_card(config),
+        cookie_text=intro_text(config),
+        custom_css=custom_css,
+    )
+
+
 def _render_pages(
     env: Environment,
     config: SiteConfig,
@@ -218,6 +245,7 @@ def _render_pages(
         for i, tab in enumerate(config.tabs)
     }
     pages[Path("privacy") / "index.html"] = _render_privacy(env, config, custom_css)
+    pages[Path("404.html")] = _render_not_found(env, config, custom_css)
     return pages
 
 

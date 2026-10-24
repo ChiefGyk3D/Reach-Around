@@ -195,9 +195,14 @@ def card_html(page: str) -> str:
     return match.group(0)
 
 
-def test_card_renders_on_every_tab_and_privacy(tmp_path: Path) -> None:
+def test_card_renders_on_every_tab_privacy_and_the_404_page(tmp_path: Path) -> None:
     pages = build(make_config(CARD), tmp_path)
-    assert set(pages) == {"index.html", "more/index.html", "privacy/index.html"}
+    assert set(pages) == {
+        "index.html",
+        "more/index.html",
+        "privacy/index.html",
+        "404.html",
+    }
     for name, page in pages.items():
         assert page.count('class="profile-card"') == 1, name
         html = card_html(page)

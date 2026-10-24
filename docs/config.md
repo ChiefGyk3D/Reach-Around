@@ -217,7 +217,7 @@ contain control characters, line breaks or invisible format characters.
 
 | Placeholder | Value |
 | --- | --- |
-| `{tab}` | the tab's `title` (`Privacy` on the privacy page) |
+| `{tab}` | the tab's `title` (`Privacy` on the privacy page, `Not found` on the 404 page) |
 | `{creator}` | `creator.name` |
 | `{site}` | `creator.title`, or `creator.name` when `creator.title` is not set |
 
@@ -231,8 +231,28 @@ Which text wins, first match first:
 1. The tab's `page_title`, used as is.
 2. `title_template`, when set, for every page.
 3. `creator.title` alone, when set, on the first tab (the home page). Other
-   tabs and the privacy page use `{tab} - {site}`.
+   tabs, the privacy page and the 404 page use `{tab} - {site}`.
 4. Otherwise `{tab} - {creator}`, the same as before this option existed.
+
+The 404 page has no tab, so rule 1 does not apply to it: its title is
+`Not found - <creator>` by default and follows `title_template` like the
+privacy page.
+
+### The 404 page
+
+Every build writes `404.html` at the site root, with no config key. Hosts such
+as Cloudflare Pages serve it, with status 404, for any path that does not
+exist; without it they answer such paths with `index.html` and status 200. It
+has the same theme, header and tab bar as the other pages, the line "That page
+does not exist.", a link home and the privacy link. It carries
+`<meta name="robots" content="noindex">`, loads no script and has no
+click-counted link.
+
+Because a host serves it at any depth (`/a/b/c`), its stylesheet, avatar, tab
+and privacy links are root-relative (`/static/site.css`, `/privacy/`), unlike
+the other pages, whose paths are relative to their own folder. This assumes
+the site lives at the root of its domain; a site under a path prefix is not
+supported today. To restyle it see [customizing](customizing.md#the-404-page).
 
 ```yaml
 creator:

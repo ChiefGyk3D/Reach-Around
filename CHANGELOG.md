@@ -7,6 +7,7 @@ while the project is alpha, every release is `0.x` and anything can change betwe
 ## [Unreleased]
 
 - An `email` block for a Contact tab: the built page never holds the plain address or a `mailto:` link, only a spelled-out form (`name at example dot test`, words configurable with `spell`) and the address reversed and base64 encoded in a data attribute. `email.js` reveals it on a click (or at load with `reveal: always`) as selectable text with Write email and Copy buttons; `reveal: never_js` ships no script. Assets are published only on pages with the block. Reduces cheap scraping only. Browser tests use a `window.__raOpen` seam and a repo guard keeps tests from ever navigating to `mailto:` or `tel:`.
+- Every build writes `404.html` at the site root: same theme and tab bar, "That page does not exist.", a link home, `noindex`, no script and no click ping. Its links are root-relative so it works at any URL depth. Cloudflare Pages otherwise answers unknown paths with the home page and status 200.
 - Links and socials can point at another tab with `url: "tab:<id>"` or `"tab:<id>#fragment"`. Same-origin, no click ping, not in the manifest.
 
 ## [0.1.0] - 2026-10-24
