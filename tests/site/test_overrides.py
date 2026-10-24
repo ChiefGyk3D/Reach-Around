@@ -182,6 +182,10 @@ def test_no_custom_css_means_no_link(tmp_path: Path) -> None:
         "a { background: image-set('http://example.com/x.png' 1x) }",
         "a::after { content: 'javascript:x' }",
         "a { background: url(https://example.com/x.png }",
+        # a remote url() leaks visitor IPs; refused since the security fix round
+        'a { background: url("https://example.com/bg.png") }',
+        # any backslash is refused, because CSS escapes can hide keywords
+        'a::before { content: "\\201C" }',
     ],
 )
 def test_custom_css_with_import_or_script_url_is_refused(
@@ -199,8 +203,7 @@ def test_custom_css_with_import_or_script_url_is_refused(
     [
         "a { background: url(img/bg.png) }",
         "a { background: url('../img/bg.png') }",
-        'a { background: url("https://example.com/bg.png") }',
-        'a::before { content: "\\201C" }',
+        'a::before { content: "quote" }',
         "/* @import not really */ a { color: red }",
     ],
 )

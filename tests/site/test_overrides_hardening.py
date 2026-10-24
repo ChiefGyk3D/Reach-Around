@@ -191,3 +191,88 @@ def test_custom_css_swapped_for_a_symlink_after_the_check_is_not_read(
     except OverridesError:
         return
     assert css is None or "external-secret" not in css
+
+
+# ------------------------------------------------- 4 and 5. custom.css rules
+
+
+def _css(overrides: Path, text: str) -> str | None:
+    (overrides / "custom.css").write_text(text)
+    return load_custom_css(overrides)
+
+
+@pytest.mark.parametrize(
+    "css",
+    [
+        "a{--x:\\2f\\2a; background:url(//attacker.example/pixel)}",
+        "a { background: \\75rl(https://attacker.example/x) }",
+        "a { background: u\\rl(x.png) }",
+        "a { background: u/**/rl(//attacker.example/x) }",
+        "a { background: u/**/rl(https://attacker.example/x) }",
+        "@\\69mport 'x.css';",
+        "a { color: red } /* never closed",
+        "a { color: red } /*",
+        'a{content:"/*"; background:url(//attacker.example/x)} b{content:"*/"}',
+        "/* c */ a { background: url(//attacker.example/x) }",
+        "a { content: '\\201C' }",
+        "a { /* \\ */ color: red }",
+        "/* x */ @import 'x.css';",
+    ],
+)
+def test_css_tokenizer_tricks_are_refused(overrides: Path, css: str) -> None:
+    with pytest.raises(OverridesError):
+        _css(overrides, css)
+
+
+def test_backslash_error_says_why(overrides: Path) -> None:
+    with pytest.raises(OverridesError, match="backslash"):
+        _css(overrides, "a { content: '\\201C' }")
+
+
+def test_forbidden_word_inside_a_comment_is_allowed_outside_it_is_not(
+    overrides: Path,
+) -> None:
+    assert _css(overrides, "/* @import 'x.css'; expression(1) */ a{color:red}")
+    with pytest.raises(OverridesError):
+        _css(overrides, "@import 'x.css'; /* fine */ a{color:red}")
+
+
+@pytest.mark.parametrize(
+    "css",
+    [
+        "a { background: url(https://attacker.example/pixel) }",
+        'a { background: url("https://attacker.example/pixel") }',
+        "a { background: url('HTTPS://attacker.example/pixel') }",
+        "a { background: url(//attacker.example/pixel) }",
+        'a { background: url("ht\ttps://attacker.example/pixel") }',
+        'a { background: url("/\t/attacker.example/pixel") }',
+        'a { background: url("/\n/attacker.example/pixel") }',
+        "a { background: url(mailto:x@example.com) }",
+    ],
+)
+def test_custom_css_url_must_be_relative_and_same_site(
+    overrides: Path, css: str
+) -> None:
+    with pytest.raises(OverridesError, match="relative"):
+        _css(overrides, css)
+
+
+def test_remote_url_error_points_to_the_image_block(overrides: Path) -> None:
+    with pytest.raises(OverridesError, match="Image block"):
+        _css(overrides, "a { background: url(https://attacker.example/x) }")
+
+
+@pytest.mark.parametrize(
+    "css",
+    [
+        "a { background: url(img/bg.png) }",
+        "a { background: url('../img/bg.png') }",
+        'a { background: url("/img/bg.png") }',
+        "/* @import 'x.css' */ a { color: red }",
+        'a::before { content: "quote" }',
+    ],
+)
+def test_custom_css_relative_urls_and_plain_css_are_accepted(
+    overrides: Path, css: str
+) -> None:
+    assert _css(overrides, css) == css

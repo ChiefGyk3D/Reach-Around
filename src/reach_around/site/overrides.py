@@ -217,13 +217,10 @@ def warn_about_javascript(overrides: Path | None) -> list[Path]:
 
 # ---------------------------------------------------------------------- CSS
 
-_COMMENT = re.compile(r"/\*.*?(?:\*/|$)", re.DOTALL)
-_ESCAPE = re.compile(r"\\(?:([0-9a-fA-F]{1,6})[ \t\n\r\f]?|(.))", re.DOTALL)
 _URL_OPEN = re.compile(r"url\s*\(", re.IGNORECASE)
 _URL = re.compile(
     r"""url\s*\(\s*(?:"([^"]*)"|'([^']*)'|([^)"'\s]*))\s*\)""", re.IGNORECASE
 )
-_SCHEME = re.compile(r"^[a-z][a-z0-9+.-]*:", re.IGNORECASE)
 _FORBIDDEN: tuple[tuple[str, re.Pattern[str]], ...] = tuple(
     (label, re.compile(pattern, re.IGNORECASE))
     for label, pattern in (
@@ -236,41 +233,83 @@ _FORBIDDEN: tuple[tuple[str, re.Pattern[str]], ...] = tuple(
         ("src()", r"(?<![\w-])src\s*\("),
     )
 )
+_REMOTE_HELP = (
+    "url() in custom.css must be a relative same-site path (no scheme, no //); "
+    "use an Image block or the theme background for remote art"
+)
 
 
-def _decode_escapes(text: str) -> str:
-    def one(match: re.Match[str]) -> str:
-        if match.group(1) is not None:
-            code = int(match.group(1), 16)
-            return chr(code) if 0 < code <= 0x10FFFF else "�"
-        return match.group(2)
+def _strip_comments(css: str, replacement: str) -> str:
+    """Remove real ``/* ... */`` comments, honoring quoted strings.
 
-    return _ESCAPE.sub(one, text)
+    This follows CSS tokenization for the one case that matters: ``/*`` inside
+    a string is not a comment, so it cannot be used to hide text from the
+    checks. Backslashes are refused before this runs, so no escape handling is
+    needed. A string ends at its closing quote or at a newline (a bad string).
+    An unterminated comment is refused.
+    """
+    out: list[str] = []
+    i, n = 0, len(css)
+    quote = ""
+    while i < n:
+        ch = css[i]
+        if quote:
+            out.append(ch)
+            if ch == quote or ch == "\n":
+                quote = ""
+            i += 1
+        elif ch in "\"'":
+            quote = ch
+            out.append(ch)
+            i += 1
+        elif css.startswith("/*", i):
+            end = css.find("*/", i + 2)
+            if end == -1:
+                raise OverridesError("custom.css is refused: unterminated /* comment")
+            out.append(replacement)
+            i = end + 2
+        else:
+            out.append(ch)
+            i += 1
+    return "".join(out)
+
+
+def _check_url_target(target: str) -> None:
+    # Privacy tradeoff, on purpose: a remote url() in custom.css would tell a
+    # third party every visitor's IP address, so only same-site paths pass.
+    # The page CSP keeps ``img-src 'self' https:`` because an Image block or an
+    # avatar may use an https URL by the creator's explicit choice.
+    # Browsers drop tabs and newlines inside a URL, so any control character
+    # or whitespace could hide a scheme or a leading //. Refuse, do not clean.
+    if (
+        not target
+        or target.startswith("//")
+        or ":" in target
+        or any(ch.isspace() or not ch.isprintable() for ch in target)
+    ):
+        raise OverridesError(f"custom.css is refused: {_REMOTE_HELP}")
 
 
 def _check_css(css: str) -> None:
-    decoded = _decode_escapes(css)
-    variants = (
-        _COMMENT.sub(" ", decoded),
-        _COMMENT.sub("", decoded),
-    )
-    for text in variants:
+    if "\\" in css:
+        raise OverridesError(
+            "custom.css is refused: it contains a backslash. CSS escapes can "
+            "hide keywords from the safety check, so none are allowed; write "
+            "the characters directly"
+        )
+    # Strip comments from the raw text first. Both replacements are checked so
+    # a keyword split by a comment is refused whichever way a browser joins it.
+    for text in (_strip_comments(css, " "), _strip_comments(css, "")):
         for label, pattern in _FORBIDDEN:
             if pattern.search(text):
                 raise OverridesError(f"custom.css is refused: it contains {label}")
         for opener in _URL_OPEN.finditer(text):
             match = _URL.match(text, opener.start())
             if match is None:
-                raise OverridesError("custom.css is refused: malformed url(")
-            target = next(g for g in match.groups() if g is not None).strip()
-            if target.startswith(("//", "\\")):
                 raise OverridesError(
-                    "custom.css is refused: url() must be relative or https"
+                    f"custom.css is refused: malformed url(; {_REMOTE_HELP}"
                 )
-            if _SCHEME.match(target) and not target.lower().startswith("https://"):
-                raise OverridesError(
-                    "custom.css is refused: url() must be relative or https"
-                )
+            _check_url_target(next(g for g in match.groups() if g is not None).strip())
 
 
 def load_custom_css(overrides: Path | None) -> str | None:
