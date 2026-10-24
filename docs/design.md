@@ -36,7 +36,7 @@ editing the stylesheet.
 | `background` | `--ra-bg-image` | none (the page background image, fixed, under the texture) |
 | `background_dim` | `--ra-bg-dim` | `0` (0 to 0.9; darkens the page background image) |
 | `mascot` | `--ra-mascot-image` | none (the giant faded mascot, a fixed layer behind the column) |
-| `column_width` | `--ra-column-width` | `35rem` (560 px) |
+| `column_width` | `--ra-column-width` | `35rem` (560 px), the phone column and the floor for wider screens |
 | `radius` | `--ra-radius` | `0.5rem` |
 | `button_style` | `--ra-button-radius` | `2.25rem` (36 px); `pill` and `square` set it |
 | `mode` | `color-scheme` | `auto` is the stylesheet default (dark); `light` forces light |
@@ -70,7 +70,7 @@ be overridden by a creator who adds a stylesheet of their own.
 
 | Token | Meaning |
 | --- | --- |
-| `--ra-text-xs`, `--ra-text-sm`, `--ra-text-base`, `--ra-text-md`, `--ra-text-lg`, `--ra-text-xl`, `--ra-text-2xl` | The type scale, a 1.25 ratio from 1rem. `--ra-text-2xl` is the fluid hero name. |
+| `--ra-text-xs`, `--ra-text-sm`, `--ra-text-base`, `--ra-text-md`, `--ra-text-lg`, `--ra-text-xl`, `--ra-text-2xl` | The type scale, a 1.25 ratio from 1rem on a phone. The larger steps are `clamp()` of rem and vw, so they grow smoothly with the screen and still follow the visitor's font size. |
 | `--ra-line-height` | Body line height. |
 | `--ra-space-1`, `--ra-space-2`, `--ra-space-3`, `--ra-space-4`, `--ra-space-5`, `--ra-space-6` | The spacing scale on a 4-point rhythm (0.25rem to 2.5rem). |
 | `--ra-tap` | Minimum touch target, `2.75rem` (44 px). |
@@ -79,7 +79,9 @@ be overridden by a creator who adds a stylesheet of their own.
 | `--ra-avatar-radius` | Corner radius of the avatar, `50%` (a circle). |
 | `--ra-thumb` | Size of the round thumbnail slot and the three-dot slot on a link button. |
 | `--ra-thumb-radius` | Corner radius of a link's own thumbnail picture (`image`), `50%` (a circle). |
-| `--ra-gutter` | Side padding inside the column on a phone and a desktop. |
+| `--ra-gutter` | Side padding inside the column: `clamp()` from 1rem on a phone to 2rem on a desktop. |
+| `--ra-column-tablet`, `--ra-column-desktop` | The column width from 768 px (`45rem`) and from 896 px (`54rem`). A larger `column_width` wins over both. |
+| `--ra-measure` | Longest line of running text (`50ch`, about 70 characters), so a wide column never makes a hard-to-read line. |
 | `--ra-shadow-pill` | The soft shadow under the tab bar and link buttons. |
 | `--ra-shadow-card`, `--ra-shadow-lift` | Resting and hover depth. |
 | `--ra-mascot-opacity`, `--ra-mascot-size`, `--ra-mascot-position` | How the mascot is drawn: faint (0.12), covering the screen, centered. Tune them in `custom.css` for a photo that is already faded. |
@@ -87,7 +89,7 @@ be overridden by a creator who adds a stylesheet of their own.
 
 ## Behavior the stylesheet guarantees
 
-- **Mobile first.** One column, no horizontal page scroll at 360 px, long titles
+- **Mobile first.** See [Responsive layout](#responsive-layout). One column, no horizontal page scroll at 360 px, long titles
   wrap, every control is at least 44 px tall.
 - **Tab bar.** An accent-colored bar flush to the top of the column with uppercase
   labels, smaller below 430 px. It scrolls sideways when the tabs do not fit, and a soft edge
@@ -120,12 +122,55 @@ The `icon` field of a social or a link is a slug from this list: `twitch`,
 `link`, `bitcoin`, `ethereum`, `merch`, `monero`, `solana`. An unknown slug shows the text label instead. Brand marks remain
 trademarks of their owners.
 
+## Responsive layout
+
+The page adapts with fluid sizes and a few breakpoints. All breakpoints are in
+`rem`, so a visitor whose browser default font size is larger gets the roomier
+layouts later, when there is really room. Nothing uses a pixel breakpoint and
+nothing needs script or inline style.
+
+| From (at 16 px) | Name | What changes |
+| --- | --- | --- |
+| 0 | Phone | One column of up to `column_width` (560 px). Tab labels shrink below 430 px. |
+| 768 px (`48rem`) | Tablet | The column grows to `--ra-column-tablet` (720 px). Tab padding and the header's top space grow. A centered header with an avatar puts the avatar beside the name and icons. Grid and card layouts add columns by themselves. |
+| 896 px (`56rem`) | Desktop | The column grows to `--ra-column-desktop` (864 px). Links in a list tab and in an open section take two columns (featured links, text, images, dividers, crypto and sections span both). Crypto cards go two across. The hero header lays the avatar beside the name. |
+| 1600 px (`100rem`) | Large monitor | The root font size is 112.5%, so the column is 972 px and everything is a little larger. |
+| 2240 px (`140rem`) | Very large monitor | The root font size is 125%, so the column is 1080 px. |
+
+Other adaptations:
+
+- **Type.** The scale steps use `clamp()` between a rem floor and a rem ceiling.
+  Running text and the privacy page stop at `--ra-measure` (about 70
+  characters), left aligned, however wide the column is.
+- **Touch and mouse.** Hover effects live inside `@media (hover: hover)`, so
+  they never stick after a tap. With `(pointer: coarse)` every control is at
+  least 44 px square, including the footer link and the inline buttons.
+- **Motion.** `prefers-reduced-motion: reduce` stops every animation and
+  transition, including the section open and close animation.
+- **Text size and zoom.** Everything is sized in rem, grids use
+  `minmax(min(10rem, 100%), 1fr)` so a track can never be wider than the screen, and
+  long words wrap anywhere. The tests check 200 percent text and 200 percent zoom
+  on a phone, a tablet and a desktop for sideways overflow and clipped text.
+- **Notches.** The column's padding adds `env(safe-area-inset-*)`.
+- **Print.** No background or tab bar, plain text on paper, each link's address
+  printed under it, and sections printed open.
+- **Color scheme.** Unchanged: `prefers-color-scheme` still picks the palette.
+
+The tests in `tests/site/test_responsive.py` (run with `--run-visual`) check a
+rich synthetic site at 320 and 360 to 2560 px, and
+`tests/site/test_responsive_css.py` guards the breakpoint rules in the source.
+
 ## Known limits
 
-- Below 430 px the tab labels and padding shrink so about four short tabs fit in
-  one row. With more tabs or longer labels the bar scrolls, and the current tab
-  starts in view through CSS `scroll-initial-target` (Chrome 133 and
-  newer; other browsers may start with the current tab off to the side).
-- `light-dark()` and `color-mix()` need a browser from 2024 or newer (Chrome 123,
-  Firefox 120, Safari 17.5). Older browsers drop the colors and show the
-  browser defaults, which stay readable.
+- The safe-area insets stay at 0 until the page's viewport meta tag adds
+  `viewport-fit=cover`; the template is not changed by this work, so on a notched
+  phone the browser's own inset still applies.
+- A creator's `column_width` is the floor: a value below 45rem is raised to
+  `45rem` at tablet width and to `54rem` at desktop width. Override
+  `--ra-column-tablet` and `--ra-column-desktop` in `custom.css` to hold a narrow column.
+- An odd number of links leaves a gap in the last row of a two-column list.
+- Blocks added after this work (for example a platforms block with its own
+  stylesheet) are not covered by these rules until they get their own.
+- The tests check for sideways overflow and clipped text down to a 195 px wide
+  window (a 390 px phone at 200 percent zoom) and at 320 px; below that, a very
+  long unbreakable string in a creator's own custom CSS could still overflow.
