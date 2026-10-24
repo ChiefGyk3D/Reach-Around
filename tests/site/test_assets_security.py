@@ -16,7 +16,7 @@ from reach_around.site.assets import collect_assets
 from reach_around.site.build import build_site
 
 TODAY = date(2027, 3, 10)
-PNG = b"\x89PNG synthetic"
+PNG = b"\x89PNG\r\n\x1a\nsynthetic"
 
 
 def make(**parts: Any) -> SiteConfig:
@@ -180,17 +180,17 @@ def test_the_size_cap_is_enforced_on_bytes_read(
 ) -> None:
     work = tmp_path / "inst"
     (work / "media").mkdir(parents=True)
-    (work / "media" / "a.png").write_bytes(b"x" * 2048)
+    (work / "media" / "a.png").write_bytes(PNG + b"x" * 2048)
     monkeypatch.setattr(assets, "MAX_ASSET_BYTES", 1024)
     with pytest.raises(ValueError, match="larger than"):
         run(avatar_config(), work, tmp_path / "out")
-    (work / "media" / "a.png").write_bytes(b"x" * 1024)
+    (work / "media" / "a.png").write_bytes(PNG + b"x" * (1024 - len(PNG)))
     run(avatar_config(), work, tmp_path / "out2")
 
 
 def test_a_file_just_over_8_mib_is_refused(tmp_path: Path) -> None:
     work = tmp_path / "inst"
     (work / "media").mkdir(parents=True)
-    (work / "media" / "a.png").write_bytes(b"x" * (8 * 1024 * 1024 + 1))
+    (work / "media" / "a.png").write_bytes(PNG + b"x" * (8 * 1024 * 1024))
     with pytest.raises(ValueError, match="8 MiB"):
         run(avatar_config(), work, tmp_path / "out")

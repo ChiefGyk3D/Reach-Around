@@ -20,6 +20,7 @@ from collections.abc import Iterator
 from pathlib import Path
 
 from reach_around.config.models import SiteConfig
+from reach_around.site.assetcheck import check_content
 from reach_around.site.theme import IMAGE_EXTENSIONS, RESERVED_FOLDERS
 
 MAX_ASSET_BYTES = 8 * 1024 * 1024
@@ -165,5 +166,7 @@ def collect_assets(config: SiteConfig, assets_dir: Path | None) -> dict[Path, by
     for key, rel, kind in slots:
         _check_slot(key, rel, kind)
         if Path(rel) not in files:
-            files[Path(rel)] = _read(assets_dir, rel)
+            data = _read(assets_dir, rel)
+            check_content(key, rel, data)
+            files[Path(rel)] = data
     return files

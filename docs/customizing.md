@@ -159,6 +159,33 @@ URL is still accepted for `creator.avatar` and `theme.background`, but it
 tells that host about every visitor; use a local file. `favicon` and `mascot`
 refuse a URL.
 
+**The bytes must match the extension.** After reading a file the build checks
+its first bytes against the format (PNG, JPEG, GIF, WebP, AVIF, WOFF2, WOFF,
+TrueType, OpenType), so a `.yaml` renamed `secret.png` is refused. The
+extension is compared in lower case, so `.PNG` is checked the same way. The
+error is `theme.mascot: 'secret.png' is not a real png file (its first bytes
+do not match the format)`.
+
+**SVG is screened.** A browser runs an SVG as a document when someone opens
+its address, so the build parses it and refuses, with the config key and the
+reason (for example `theme.mascot: 'm.svg' is refused as an svg: a script
+element is not allowed`):
+
+- a DOCTYPE or ENTITY declaration (checked before parsing, which also stops
+  entity-expansion payloads), a file that is not UTF-8, not valid XML, or
+  whose root is not `svg`;
+- `script`, `foreignObject`, `iframe`, `embed`, `object`, `audio` and `video`
+  elements, in any case or namespace prefix;
+- any attribute whose name starts with `on` (event handlers);
+- any `href` or `xlink:href`, on any element, that does not start with `#`;
+- `animate`, `set`, `animateTransform` and `animateMotion` that target `href`;
+- `url(` in a `style` element, a `style` attribute or any other attribute
+  unless it points at a `#fragment`; also `@import`, `expression(`,
+  `image-set(` and CSS backslash escapes.
+
+Plain shapes, gradients, clip paths, filters, `use` of a `#id`, `title` and
+`desc` pass.
+
 The mascot is faint on purpose (`--ra-mascot-opacity: 0.12`). If your image
 is already faded, raise it in `custom.css`:
 
