@@ -78,6 +78,7 @@ be overridden by a creator who adds a stylesheet of their own.
 | `--ra-tab-radius` | Corner radius of the tab bar, `0` (flush). |
 | `--ra-avatar-radius` | Corner radius of the avatar, `50%` (a circle). |
 | `--ra-thumb` | Size of the round thumbnail slot and the three-dot slot on a link button. |
+| `--ra-thumb-radius` | Corner radius of a link's own thumbnail picture (`image`), `50%` (a circle). |
 | `--ra-gutter` | Side padding inside the column on a phone and a desktop. |
 | `--ra-shadow-pill` | The soft shadow under the tab bar and link buttons. |
 | `--ra-shadow-card`, `--ra-shadow-lift` | Resting and hover depth. |
@@ -92,7 +93,7 @@ be overridden by a creator who adds a stylesheet of their own.
   labels, smaller below 430 px. It scrolls sideways when the tabs do not fit, and a soft edge
   shadow shows on the side that has more.
 - **Link buttons.** Full-width accent pills with dark text, a 1 px darker
-  border and a soft shadow. A link's `icon` shows as a round thumbnail at the
+  border and a soft shadow. A link's `image` (or else its `icon`) shows as a round thumbnail at the
   left; a three-dot glyph at the right is a visual cue only. `featured: true`
   makes a taller pill with no border or dots.
 - **Collapsible sections** use the native `<details>` element. The chevron

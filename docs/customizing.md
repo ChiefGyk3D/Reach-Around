@@ -337,6 +337,58 @@ title_template: "{tab} | {site}"
 Anything else in braces is refused when the config loads. The rules and limits
 are in [Page titles](config.md#page-titles).
 
+## Link thumbnails
+
+A link can carry its own round picture, like the thumbnails on a Beacons page.
+Add `image` (and, if the picture means something, `image_alt`) to the link:
+
+```yaml
+- id: spring-meetup
+  title: Spring Meetup Tickets
+  url: https://tickets.example.invalid/spring
+  image: media/thumbs/meetup.jpg
+  image_alt: Crowd at last year's meetup
+```
+
+- `image` is a path under your instance folder, with the same rules and the same
+  checks as `creator.avatar`: `.png`, `.jpg`, `.jpeg`, `.webp`, `.avif` or `.gif`
+  (`.svg` only if it passes the SVG allowlist), the bytes must match the
+  extension, no symlinks, no `..`, never inside `static/` or `privacy/`. A URL is
+  refused: thumbnails are always copied to your own site, so the page's
+  `img-src` stays as it is. Errors name the key, for example
+  `tabs[0].blocks[1].links[2].image: 'media/x.png' is not a real png file`.
+- `image_alt` is up to 120 characters. Left empty, the picture is decorative and
+  screen readers skip it. It is refused without `image`.
+- When a link has both `image` and `icon`, the picture wins and the icon is not
+  drawn.
+- The page draws the picture at 44 by 44 pixels, cropped to a circle with
+  `object-fit: cover`. The `<img>` has a fixed `width` and `height`, `loading="lazy"`
+  and `decoding="async"`, so the layout does not jump and pictures below the fold
+  wait. Change the crop with the `--ra-thumb-radius` token (`50%` is a circle).
+- **Size cap: 256 KiB per thumbnail.** The build has no image-processing
+  dependency and never resizes, so it refuses a bigger file and tells you to
+  resize it. One line with ImageMagick makes a square 128 pixel JPEG (twice the
+  display size, for sharp high-density screens):
+
+  ```
+  magick input.png -resize 128x128^ -gravity center -extent 128x128 -quality 82 media/thumbs/meetup.jpg
+  ```
+
+  (On ImageMagick 6 the command is `convert` instead of `magick`.)
+
+### Getting the pictures from an existing Beacons page
+
+There is no import tool; do it by hand, once:
+
+1. Open your Beacons page in a browser and open the developer tools (F12), then
+   the Network tab, filtered to Img. Reload the page.
+2. For each link, right-click its thumbnail and choose "Save image as", or copy
+   the image address from the Network tab and download it with `curl -L -o`.
+   Save them in a folder such as `media/thumbs/` next to `site.yaml`.
+3. Resize each with the ImageMagick line above.
+4. Set `image:` on the matching link. You only need rights to pictures you
+   made or are allowed to reuse.
+
 ## Layer 3: layouts and the header
 
 `layout` is `list` (default), `grid` or `cards`. Put it on a tab to lay out

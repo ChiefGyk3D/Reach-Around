@@ -86,6 +86,8 @@ class Link(_Model):
     url: HttpsUrl
     subtitle: Subtitle | None = None
     icon: Slug | None = None
+    image: Annotated[str, Field(max_length=_MAX_URL)] | None = None
+    image_alt: Annotated[str, StringConstraints(max_length=120)] = ""
     affiliate: bool = False
     featured: bool = False
     show_from: date | None = None
@@ -95,6 +97,17 @@ class Link(_Model):
     @classmethod
     def _url_is_https(cls, value: str) -> str:
         return check_link_url(value)
+
+    @field_validator("image")
+    @classmethod
+    def _image_is_local(cls, value: str | None) -> str | None:
+        return None if value is None else check_image_path(value)
+
+    @model_validator(mode="after")
+    def _alt_needs_image(self) -> Link:
+        if self.image_alt and self.image is None:
+            raise ValueError("image_alt needs an image")
+        return self
 
     @field_validator("show_from", "show_until", mode="before")
     @classmethod

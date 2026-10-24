@@ -18,6 +18,8 @@ The date is filled in when the `v0.1.0` tag is cut.
 
 ### Added
 
+- Link thumbnails: `image` and `image_alt` on a link draw a lazy-loaded, fixed-size
+  round picture (256 KiB cap, same-origin only) in place of the icon.
 - Package scaffold, `reach-around --version`, and CI built on the shared reusable workflows.
 - A hardened YAML loader and validated site config models (strict schema, size and
   nesting limits, no aliases or duplicate keys).

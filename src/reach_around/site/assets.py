@@ -19,21 +19,29 @@ import stat
 from collections.abc import Iterator
 from pathlib import Path
 
-from reach_around.config.models import SiteConfig
+from reach_around.config.models import Link, Section, SiteConfig
 from reach_around.site.assetcheck import check_content
 from reach_around.site.theme import IMAGE_EXTENSIONS, RESERVED_FOLDERS
 
 MAX_ASSET_BYTES = 8 * 1024 * 1024
+# A link thumbnail is drawn at 44 px; the build does not resize, so it caps.
+MAX_THUMBNAIL_BYTES = 256 * 1024
 FONT_EXTENSIONS = (".woff2", ".woff", ".ttf", ".otf")
 
 _KINDS: dict[str, tuple[str, ...]] = {
     "image": IMAGE_EXTENSIONS,
+    "thumbnail": IMAGE_EXTENSIONS,
     "font": FONT_EXTENSIONS,
 }
 
 
 def _is_local(value: str) -> bool:
     return ":" not in value and not value.startswith("//")
+
+
+def _thumb(where: str, link: Link) -> Iterator[tuple[str, str, str]]:
+    if link.image is not None:
+        yield f"{where}.image", link.image, "thumbnail"
 
 
 def _slots(config: SiteConfig) -> Iterator[tuple[str, str, str]]:
@@ -61,6 +69,12 @@ def _slots(config: SiteConfig) -> Iterator[tuple[str, str, str]]:
             for c, entry in enumerate(getattr(block, "coins", ())):
                 if entry.qr is not None:
                     yield f"tabs[{t}].blocks[{b}].coins[{c}].qr", entry.qr, "image"
+            shown = f"tabs[{t}].blocks[{b}]"
+            if isinstance(block, Link):
+                yield from _thumb(shown, block)
+            elif isinstance(block, Section):
+                for n, item in enumerate(block.links):
+                    yield from _thumb(f"{shown}.links[{n}]", item)
 
 
 def referenced_assets(config: SiteConfig) -> list[str]:
@@ -104,7 +118,12 @@ def _open_dir(name: str, dir_fd: int | None, shown: str) -> int:
         ) from exc
 
 
-def _read(root: Path, rel: str) -> bytes:
+def _read(
+    root: Path,
+    rel: str,
+    limit: int | None = None,
+    too_big: str | None = None,
+) -> bytes:
     """Read ``rel`` below ``root`` one component at a time.
 
     Every directory and the file are opened relative to the previous
@@ -134,6 +153,8 @@ def _read(root: Path, rel: str) -> bytes:
         fds.append(fd)
         if not stat.S_ISREG(os.fstat(fd).st_mode):
             raise ValueError(f"{rel} must be a regular file")
+        if limit is None:
+            limit = MAX_ASSET_BYTES  # read at call time, so it can be patched
         chunks: list[bytes] = []
         total = 0
         while True:
@@ -141,11 +162,13 @@ def _read(root: Path, rel: str) -> bytes:
             if not chunk:
                 break
             total += len(chunk)
-            if total > MAX_ASSET_BYTES:
+            if total > limit:
+                if too_big is not None:
+                    raise ValueError(too_big)
                 raise ValueError(
-                    f"{rel} is larger than {MAX_ASSET_BYTES // 2**20} MiB"
-                    if MAX_ASSET_BYTES >= 2**20
-                    else f"{rel} is larger than {MAX_ASSET_BYTES} bytes"
+                    f"{rel} is larger than {limit // 2**20} MiB"
+                    if limit >= 2**20
+                    else f"{rel} is larger than {limit} bytes"
                 )
             chunks.append(chunk)
         return b"".join(chunks)
@@ -168,6 +191,15 @@ def collect_assets(config: SiteConfig, assets_dir: Path | None) -> dict[Path, by
     files: dict[Path, bytes] = {}
     for key, rel, kind in slots:
         _check_slot(key, rel, kind)
+        if kind == "thumbnail":
+            kib = MAX_THUMBNAIL_BYTES // 1024
+            _read(
+                assets_dir,
+                rel,
+                MAX_THUMBNAIL_BYTES,
+                f"{key}: {rel!r} is larger than {kib} KiB; a thumbnail is drawn "
+                "at 44 px, so resize it (for example 128 px wide) and try again",
+            )
         if Path(rel) not in files:
             data = _read(assets_dir, rel)
             check_content(key, rel, data)
