@@ -42,6 +42,15 @@ podman run --rm --read-only --cap-drop ALL \
 
 Replace the example mount with your own instance directory. Once `v0.1.0` is published the image is `ghcr.io/chiefgyk3d/reach-around:0.1.0` (pull it by digest, and sign-in is needed while the repository is private). See [docs/containers.md](docs/containers.md), [docs/releasing.md](docs/releasing.md) and the [changelog](CHANGELOG.md).
 
+## Documentation
+
+- [docs/deploy.md](docs/deploy.md): deploying the site and click Worker to Cloudflare (Pages or Worker, production branch, token type, Doppler, route by hand, troubleshooting)
+- [docs/examples/deploy-private.sh](docs/examples/deploy-private.sh): a sanitized private deploy script for a real instance
+- [docs/releasing.md](docs/releasing.md): cutting and verifying a release
+- [docs/containers.md](docs/containers.md): running the container image
+- [docs/config.md](docs/config.md) and [docs/customizing.md](docs/customizing.md): the site config and how to change the page
+- [docs/preview.md](docs/preview.md): the local preview server
+
 ## License
 
 Apache-2.0. See [LICENSE](LICENSE).
