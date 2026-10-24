@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import json
 import shutil
-from collections.abc import Iterable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from datetime import date
 from importlib import resources
@@ -23,6 +23,7 @@ from jinja2 import Environment
 from reach_around.config.blocks import Crypto
 from reach_around.config.models import Block, Link, Section, SiteConfig, Tab
 from reach_around.config.page_title import DEFAULT_TEMPLATE, render_template
+from reach_around.config.tablinks import is_tab_ref, parse_tab_ref
 from reach_around.site.assets import collect_assets
 from reach_around.site.overrides import (
     load_custom_css,
@@ -37,7 +38,10 @@ from reach_around.site.visibility import visible_blocks
 
 @dataclass(frozen=True)
 class BuildManifest:
-    """What the build published: visible link id -> destination URL."""
+    """What the build published: visible off-site link id -> destination URL.
+
+    Internal ``tab:`` links are not listed: they are not click-counted.
+    """
 
     links: dict[str, str]
 
@@ -75,6 +79,26 @@ def _nav(config: SiteConfig, current: int, root: str) -> list[dict[str, Any]]:
         }
         for i, tab in enumerate(config.tabs)
     ]
+
+
+def _internal_href(config: SiteConfig, root: str) -> Callable[[str], str]:
+    """Resolve ``tab:<id>[#fragment]`` to the tab's path as seen from a page.
+
+    ``root`` is what the nav uses for the first tab ("./" or "../"); the other
+    tabs live at ``<prefix><id>/``. The config was validated at load, so every
+    id is known.
+    """
+    prefix = "" if root == "./" else root
+    homes = {
+        tab.id: (root if i == 0 else f"{prefix}{tab.id}/")
+        for i, tab in enumerate(config.tabs)
+    }
+
+    def href(url: str) -> str:
+        tab_id, fragment = parse_tab_ref(url)
+        return homes[tab_id] if fragment is None else f"{homes[tab_id]}#{fragment}"
+
+    return href
 
 
 def page_title(
@@ -115,6 +139,7 @@ def _render_page(
         tab=tab,
         blocks=blocks,
         nav=_nav(config, index, root or "./"),
+        tab_href=_internal_href(config, root or "./"),
         root=root,
         page_title=page_title(config, tab.title, home=index == 0, own=tab.page_title),
         disclosure=config.disclosure,
@@ -131,6 +156,7 @@ def _render_privacy(env: Environment, config: SiteConfig, custom_css: bool) -> s
     return env.get_template("privacy.html").render(
         creator=config.creator,
         nav=_nav(config, -1, "../"),
+        tab_href=_internal_href(config, "../"),
         root="../",
         page_title=page_title(config, "Privacy", home=False, own=None),
         disclosure=config.disclosure,
@@ -161,7 +187,12 @@ def _render_pages(
 
 def _manifest(shown: list[list[Block]]) -> BuildManifest:
     return BuildManifest(
-        links={link.id: link.url for blocks in shown for link in _links_in(blocks)}
+        links={
+            link.id: link.url
+            for blocks in shown
+            for link in _links_in(blocks)
+            if not is_tab_ref(link.url)
+        }
     )
 
 

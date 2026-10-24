@@ -31,6 +31,7 @@ from reach_around.config.blocks import Crypto, Divider, Image, Text
 from reach_around.config.loader import ConfigError, load_yaml
 from reach_around.config.page_title import PageTitle, TitleTemplate
 from reach_around.config.privacy import Features, Privacy
+from reach_around.config.tablinks import is_tab_ref, parse_tab_ref
 from reach_around.config.theme import Theme
 from reach_around.site.theme import check_image_path
 
@@ -64,6 +65,14 @@ def check_https_url(value: str) -> str:
     return value
 
 
+def check_link_url(value: str) -> str:
+    """Return ``value`` if it is an https URL or a well-formed ``tab:`` link."""
+    if is_tab_ref(value):
+        parse_tab_ref(value)
+        return value
+    return check_https_url(value)
+
+
 HttpsUrl = Annotated[str, Field(max_length=_MAX_URL)]
 
 
@@ -85,7 +94,7 @@ class Link(_Model):
     @field_validator("url")
     @classmethod
     def _url_is_https(cls, value: str) -> str:
-        return check_https_url(value)
+        return check_link_url(value)
 
     @field_validator("show_from", "show_until", mode="before")
     @classmethod
@@ -107,6 +116,8 @@ class Link(_Model):
             and self.show_until < self.show_from
         ):
             raise ValueError("show_until must not be before show_from")
+        if self.affiliate and is_tab_ref(self.url):
+            raise ValueError("an internal tab: link cannot be an affiliate link")
         return self
 
 
@@ -181,7 +192,7 @@ class Social(_Model):
     @field_validator("url")
     @classmethod
     def _url_is_https(cls, value: str) -> str:
-        return check_https_url(value)
+        return check_link_url(value)
 
 
 class Creator(_Model):
@@ -246,6 +257,39 @@ class SiteConfig(_Model):
                     raise ValueError(f"duplicate id {ident!r}: ids must be unique")
                 seen.add(ident)
         return self
+
+    @model_validator(mode="after")
+    def _tab_links_resolve(self) -> SiteConfig:
+        known = [tab.id for tab in self.tabs]
+        problems = [
+            f"{where}: unknown tab {parse_tab_ref(url)[0]!r} in {url!r}; "
+            f"valid tab ids: {', '.join(known)}"
+            for where, url in _internal_urls(self)
+            if parse_tab_ref(url)[0] not in known
+        ]
+        if problems:
+            raise ValueError("; ".join(problems))
+        return self
+
+
+def _internal_urls(config: SiteConfig) -> list[tuple[str, str]]:
+    """Every ``tab:`` url in the config, with the key it was written under."""
+    found: list[tuple[str, str]] = []
+    for i, social in enumerate(config.creator.socials):
+        if is_tab_ref(social.url):
+            found.append((f"creator.socials[{i}].url", social.url))
+    for t, tab in enumerate(config.tabs):
+        for b, block in enumerate(tab.blocks):
+            base = f"tabs[{t}].blocks[{b}]"
+            if isinstance(block, Link) and is_tab_ref(block.url):
+                found.append((f"{base}.url", block.url))
+            elif isinstance(block, Section):
+                found.extend(
+                    (f"{base}.links[{k}].url", link.url)
+                    for k, link in enumerate(block.links)
+                    if is_tab_ref(link.url)
+                )
+    return found
 
 
 _BLOCK_TAGS = {"link", "section", "text", "image", "crypto", "divider"}
