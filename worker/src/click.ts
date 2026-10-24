@@ -25,6 +25,8 @@ export const MAX_BODY_BYTES = 1024;
 export const MAX_PATH_LENGTH = 128;
 /** Longest link id, matching the slug limit in the build config. */
 export const MAX_ID_LENGTH = 40;
+/** Longest full request URL we will parse, in characters. */
+export const MAX_URL_LENGTH = 2048;
 
 const ROUTE = /^\/e\/c\/([^/]+)$/;
 const MAX_UA_LENGTH = 512;
@@ -73,26 +75,28 @@ function killed(env: Env): boolean {
 }
 
 /**
- * True when the body (if any) is within the cap. Never buffers: bytes are
- * counted and dropped, and the stream is cancelled the moment the cap is
- * passed, whatever Content-Length claimed. A request with no body costs nothing.
+ * The click route never needs a body, so a body is never read. Returns false
+ * (ignore the request) when a body is present and cannot be shown small from
+ * headers alone: Content-Length missing, not plain digits, over the cap, or
+ * Transfer-Encoding set. A body that passes is cancelled unread.
  */
-async function bodyWithinCap(request: Request): Promise<boolean> {
+async function bodyAcceptable(request: Request): Promise<boolean> {
+  const body = request.body;
   const declared = request.headers.get("Content-Length");
-  if (declared !== null) {
-    if (!/^\d{1,10}$/.test(declared) || Number(declared) > MAX_BODY_BYTES) return false;
+  if (declared !== null && (!/^\d{1,10}$/.test(declared) || Number(declared) > MAX_BODY_BYTES)) {
+    await discard(body);
+    return false; // CONTROL:body-cap
   }
-  if (request.body === null) return true;
-  const reader = request.body.getReader();
-  let total = 0;
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) return true;
-    total += value.byteLength;
-    if (total > MAX_BODY_BYTES) {
-      await reader.cancel().catch(() => undefined);
-      return false; // CONTROL:body-cap
-    }
+  if (body === null) return true;
+  await discard(body);
+  return declared !== null && request.headers.get("Transfer-Encoding") === null;
+}
+
+async function discard(body: ReadableStream<Uint8Array> | null): Promise<void> {
+  try {
+    await body?.cancel();
+  } catch {
+    // Nothing to do: the request is being ignored anyway.
   }
 }
 
@@ -139,21 +143,20 @@ function countryOf(request: Request): string | null {
 }
 
 /**
- * Handle `POST /e/c/:linkId`. Check order: kill switch, body cap, route and method (with path and id
- * length caps), id allowlist,
+ * Handle `POST /e/c/:linkId`. Check order: kill switch, method, URL/path/id length caps, id allowlist,
+ * body (never read),
  * user agent, origin, rate limit, insert. Always returns an empty 204.
  * No IP address is stored; the client address is used only as a rate-limit
  * key and is never written anywhere.
  */
 export async function handleClick(request: Request, env: Env): Promise<Response> {
   try {
-    // 0. Cost guards, before anything is read or decoded: kill switch,
-    // then the body cap.
+    // 0. Cost guards, cheapest first, before anything is parsed or read.
     if (killed(env)) return noContent(); // CONTROL:kill-switch
-    if (!(await bodyWithinCap(request))) return noContent();
 
-    // 1. Route and method. The path length is capped before decoding.
+    // 1. Method, then URL, path and id length caps, all before decoding.
     if (request.method !== "POST") return noContent();
+    if (request.url.length > MAX_URL_LENGTH) return noContent();
     const pathname = new URL(request.url).pathname;
     if (pathname.length > MAX_PATH_LENGTH) return noContent();
     const linkId = linkIdFromPath(pathname);
@@ -161,6 +164,9 @@ export async function handleClick(request: Request, env: Env): Promise<Response>
 
     // 2. Id allowlist (a Set of exact strings: no prototype lookups).
     if (!allowedIds(env.LINK_IDS).has(linkId)) return noContent();
+
+    // 2b. Body: never read; ignored when it cannot be shown small.
+    if (!(await bodyAcceptable(request))) return noContent();
 
     // 3. User agent: missing, empty or bot-like records nothing.
     const ua = request.headers.get("User-Agent");
