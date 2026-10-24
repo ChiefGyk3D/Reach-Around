@@ -16,83 +16,152 @@ from __future__ import annotations
 import errno
 import os
 import stat
+from collections.abc import Iterator
 from pathlib import Path
 
 from reach_around.config.models import SiteConfig
-from reach_around.site.theme import RESERVED_FOLDERS
+from reach_around.site.theme import IMAGE_EXTENSIONS, RESERVED_FOLDERS
 
 MAX_ASSET_BYTES = 8 * 1024 * 1024
-_FONT_EXTENSIONS = (".woff2", ".woff", ".ttf", ".otf")
+FONT_EXTENSIONS = (".woff2", ".woff", ".ttf", ".otf")
+
+_KINDS: dict[str, tuple[str, ...]] = {
+    "image": IMAGE_EXTENSIONS,
+    "font": FONT_EXTENSIONS,
+}
 
 
 def _is_local(value: str) -> bool:
     return ":" not in value and not value.startswith("//")
 
 
-def referenced_assets(config: SiteConfig) -> list[str]:
-    """Return the relative paths the config names, sorted and unique."""
-    names: set[str] = set()
-    creator = config.creator
-    for value in (creator.avatar, creator.favicon):
+def _slots(config: SiteConfig) -> Iterator[tuple[str, str, str]]:
+    """Yield (config key, relative path, kind) for every local file named."""
+    creator, theme = config.creator, config.theme
+    for key, value in (
+        ("creator.avatar", creator.avatar),
+        ("creator.favicon", creator.favicon),
+        ("theme.background", theme.background),
+        ("theme.mascot", theme.mascot),
+    ):
         if value is not None and _is_local(value):
-            names.add(value)
-    theme = config.theme
-    for value in (theme.background, theme.mascot):
-        if value is not None and _is_local(value):
-            names.add(value)
-    for font in (theme.fonts.body, theme.fonts.heading):
-        if font is not None and font.lower().endswith(_FONT_EXTENSIONS):
-            names.add(font)
-    for tab in config.tabs:
-        for block in tab.blocks:
+            yield key, value, "image"
+    for key, font in (
+        ("theme.fonts.body", theme.fonts.body),
+        ("theme.fonts.heading", theme.fonts.heading),
+    ):
+        if font is not None and font.lower().endswith(FONT_EXTENSIONS):
+            yield key, font, "font"
+    for t, tab in enumerate(config.tabs):
+        for b, block in enumerate(tab.blocks):
             src = getattr(block, "src", None)
             if isinstance(src, str) and _is_local(src):
-                names.add(src)
-    return sorted(names)
+                yield f"tabs[{t}].blocks[{b}].src", src, "image"
+
+
+def referenced_assets(config: SiteConfig) -> list[str]:
+    """Return the relative paths the config names, sorted and unique."""
+    return sorted({rel for _key, rel, _kind in _slots(config)})
+
+
+def _check_slot(key: str, rel: str, kind: str) -> None:
+    """The one place every slot is checked before a file is touched."""
+    allowed = _KINDS[kind]
+    if not rel.lower().endswith(allowed):
+        raise ValueError(
+            f"{key}: {rel!r} must be a {kind} file ending in {', '.join(allowed)}"
+        )
+    parts = rel.split("/")
+    if rel.startswith("/") or any(p in ("", ".", "..") for p in parts):
+        raise ValueError(f"{key}: {rel!r} must be a plain relative path")
+    if parts[0] in RESERVED_FOLDERS:
+        raise ValueError(f"{key}: {rel!r} is inside a folder the build writes itself")
+
+
+def _open_dir(name: str, dir_fd: int | None, shown: str) -> int:
+    flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_DIRECTORY | os.O_CLOEXEC
+    try:
+        return os.open(name, flags, dir_fd=dir_fd)
+    except OSError as exc:
+        try:
+            is_link = stat.S_ISLNK(
+                os.stat(name, dir_fd=dir_fd, follow_symlinks=False).st_mode
+            )
+        except OSError:
+            is_link = False
+        if exc.errno == errno.ELOOP or is_link:
+            raise ValueError(
+                f"{shown} is or passes through a symlink, which is not allowed"
+            ) from exc
+        raise ValueError(
+            f"cannot read {shown}: {exc.strerror or 'unavailable'}"
+        ) from exc
 
 
 def _read(root: Path, rel: str) -> bytes:
-    flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | getattr(os, "O_NONBLOCK", 0)
-    target = root / rel
+    """Read ``rel`` below ``root`` one component at a time.
+
+    Every directory and the file are opened relative to the previous
+    descriptor with ``O_NOFOLLOW``, so no component, root included, can be a
+    symlink and nothing depends on ``/proc``. The result is capped by counting
+    the bytes actually read, not by trusting a size.
+    """
+    fds: list[int] = []
     try:
-        fd = os.open(target, flags)
-    except OSError as exc:
-        if exc.errno == errno.ELOOP:
+        cur = _open_dir(os.fspath(root), None, str(root))
+        fds.append(cur)
+        *folders, leaf = rel.split("/")
+        for part in folders:
+            cur = _open_dir(part, cur, rel)
+            fds.append(cur)
+        flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK
+        try:
+            fd = os.open(leaf, flags, dir_fd=cur)
+        except OSError as exc:
+            if exc.errno == errno.ELOOP:
+                raise ValueError(
+                    f"{rel} is a symlink, which is not allowed for instance files"
+                ) from exc
             raise ValueError(
-                f"{rel} is a symlink, which is not allowed for instance files"
+                f"cannot read {rel} from {root}: {exc.strerror or 'unavailable'}"
             ) from exc
-        raise ValueError(
-            f"cannot read {rel} from {root}: {exc.strerror or 'unavailable'}"
-        ) from exc
-    try:
-        info = os.fstat(fd)
-        if not stat.S_ISREG(info.st_mode):
+        fds.append(fd)
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
             raise ValueError(f"{rel} must be a regular file")
-        if info.st_size > MAX_ASSET_BYTES:
-            raise ValueError(f"{rel} is larger than {MAX_ASSET_BYTES // 2**20} MiB")
-        proc = f"/proc/self/fd/{fd}"
-        if os.path.exists(proc) and root not in Path(os.path.realpath(proc)).parents:
-            raise ValueError(f"{rel} resolves outside the instance directory")
-        with os.fdopen(os.dup(fd), "rb") as handle:
-            return handle.read(MAX_ASSET_BYTES + 1)
+        chunks: list[bytes] = []
+        total = 0
+        while True:
+            chunk = os.read(fd, 65536)
+            if not chunk:
+                break
+            total += len(chunk)
+            if total > MAX_ASSET_BYTES:
+                raise ValueError(
+                    f"{rel} is larger than {MAX_ASSET_BYTES // 2**20} MiB"
+                    if MAX_ASSET_BYTES >= 2**20
+                    else f"{rel} is larger than {MAX_ASSET_BYTES} bytes"
+                )
+            chunks.append(chunk)
+        return b"".join(chunks)
     finally:
-        os.close(fd)
+        for fd in reversed(fds):
+            os.close(fd)
 
 
 def collect_assets(config: SiteConfig, assets_dir: Path | None) -> dict[Path, bytes]:
     """Read every file the config names; the result maps output path to bytes."""
-    names = referenced_assets(config)
-    if not names:
+    slots = list(_slots(config))
+    if not slots:
         return {}
     if assets_dir is None:
+        names = ", ".join(sorted({rel for _k, rel, _t in slots})[:3])
         raise ValueError(
-            f"the config names local files ({', '.join(names[:3])}) but no "
-            "assets_dir was given to find them in"
+            f"the config names local files ({names}) but no assets_dir was given "
+            "to find them in"
         )
-    root = assets_dir.resolve()
     files: dict[Path, bytes] = {}
-    for rel in names:
-        if rel.split("/", 1)[0] in RESERVED_FOLDERS:
-            raise ValueError(f"{rel} is inside a folder the build writes itself")
-        files[Path(rel)] = _read(root, rel)
+    for key, rel, kind in slots:
+        _check_slot(key, rel, kind)
+        if Path(rel) not in files:
+            files[Path(rel)] = _read(assets_dir, rel)
     return files

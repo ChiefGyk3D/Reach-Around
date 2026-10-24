@@ -113,7 +113,7 @@ _GENERIC_FONTS = frozenset(
 )
 _FONT_NAME = re.compile(r"^[A-Za-z][A-Za-z0-9 -]{0,39}$")
 _FONT_EXTENSIONS = (".woff2", ".woff", ".ttf", ".otf")
-_IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg", ".webp", ".avif", ".gif", ".svg")
+IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg", ".webp", ".avif", ".gif", ".svg")
 _ASSET_PATH = re.compile(
     r"^[A-Za-z0-9][A-Za-z0-9._-]*(?:/[A-Za-z0-9][A-Za-z0-9._-]*)*$"
 )
@@ -219,7 +219,7 @@ def check_image_path(value: str) -> str:
     a folder the build writes itself.
     """
     check_css_value(value)
-    _check_asset_path(value, _IMAGE_EXTENSIONS, "image")
+    _check_asset_path(value, IMAGE_EXTENSIONS, "image")
     if value.split("/", 1)[0] in RESERVED_FOLDERS:
         raise ValueError(
             "must not be inside a folder the build writes itself "
