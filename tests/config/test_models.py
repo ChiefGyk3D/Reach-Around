@@ -9,7 +9,7 @@ from typing import Any
 import pytest
 import yaml
 
-from reach_around.config import ConfigError, SiteConfig, load_site_config
+from reach_around.config import ConfigError, Link, SiteConfig, load_site_config
 
 EXAMPLE = Path(__file__).parents[2] / "examples" / "instance" / "site.yaml"
 
@@ -242,4 +242,6 @@ def test_html_in_text_is_kept_verbatim_for_the_template_to_escape(
     data = good()
     text = '<script>alert(1)</script> "q" café'
     first_link(data)["title"] = text
-    assert load(tmp_path, data).tabs[0].blocks[0].title == text
+    block = load(tmp_path, data).tabs[0].blocks[0]
+    assert isinstance(block, Link)
+    assert block.title == text

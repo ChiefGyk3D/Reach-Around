@@ -14,3 +14,19 @@ a:focus-visible, summary:focus-visible { outline: 3px solid; outline-offset: 2px
 .link-subtitle, .section-subtitle { display: block; font-size: 0.9em; opacity: 0.8; }
 summary { cursor: pointer; font-weight: 600; padding: 0.5rem 0; }
 .disclosure { font-size: 0.85em; opacity: 0.8; }
+
+/* Layouts and header variants (Task 6C). */
+.site-header.header-compact { text-align: left; }
+.header-row { display: flex; align-items: center; gap: 0.75rem; }
+.header-row h1 { font-size: 1.25rem; margin: 0; }
+.header-compact .socials { justify-content: flex-start; }
+.header-hero .hero-card { padding: 2rem 1rem; border-radius: 1rem; border: 1px solid currentColor; }
+.header-hero h1 { font-size: 2rem; }
+.layout-grid, .layout-cards, .section-links.layout-grid, .section-links.layout-cards { display: grid; gap: 0.75rem; }
+.layout-grid { grid-template-columns: repeat(auto-fill, minmax(10rem, 1fr)); }
+.layout-cards { grid-template-columns: repeat(auto-fill, minmax(16rem, 1fr)); }
+.layout-cards a.link { padding: 1.25rem 1rem; border-radius: 1rem; }
+.layout-grid > li, .layout-cards > li { margin: 0; }
+.block-image img, .image { max-width: 100%; height: auto; }
+.divider { border: 0; border-top: 1px solid currentColor; opacity: 0.4; }
+.text ul { list-style: disc; padding-left: 1.25rem; }
