@@ -29,6 +29,7 @@ from urllib.parse import unquote, urlsplit
 import reach_around.site as _site_package
 from reach_around.config import ConfigError, load_site_config
 from reach_around.site.build import build_site
+from reach_around.site.overrides import OverridesError, check_overrides_dir
 from reach_around.site.visibility import today_in
 
 POLL_SECONDS = 0.5
@@ -67,10 +68,14 @@ def _is_loopback(host: str) -> bool:
     )
 
 
-def _watched_files(config: Path) -> dict[Path, tuple[int, int]]:
-    """Snapshot (mtime, size) of the config and every template/static file."""
+def _watched_files(
+    config: Path, overrides: Path | None = None
+) -> dict[Path, tuple[int, int]]:
+    """Snapshot (mtime, size) of the config, the overrides and package files."""
     package = Path(_site_package.__file__).resolve().parent
     paths = [config]
+    if overrides is not None:
+        paths.extend(p for p in overrides.rglob("*") if p.is_file())
     for sub in ("templates", "static"):
         paths.extend(p for p in (package / sub).rglob("*") if p.is_file())
     snapshot: dict[Path, tuple[int, int]] = {}
@@ -264,13 +269,25 @@ class _Server6(_Server):
 class Preview:
     """A running preview: temp output directory, watcher thread, HTTP server."""
 
-    def __init__(self, config: Path, host: str, port: int) -> None:
+    def __init__(
+        self,
+        config: Path,
+        host: str,
+        port: int,
+        overrides: Path | None = None,
+    ) -> None:
         if not _is_loopback(host):
             raise PreviewError(
                 f"refusing to bind {host!r}: the preview serves only on a "
                 "loopback address (127.0.0.1, ::1 or localhost)"
             )
+        if overrides is not None:
+            try:
+                check_overrides_dir(overrides)
+            except OverridesError as exc:
+                raise PreviewError(str(exc)) from exc
         self.config = config
+        self.overrides = overrides
         self.allowed_hosts = _BASE_HOSTS | {host.lower()}
         self.version = 0
         self.error: str | None = None
@@ -280,7 +297,9 @@ class Preview:
         self._watcher: threading.Thread | None = None
         self._serving = threading.Event()
         self._closed = False
-        self._seen = _watched_files(config)  # before the build: no change is missed
+        self._seen = _watched_files(
+            config, overrides
+        )  # before the build: no change is missed
         self._rebuild()
         server_class = _Server6 if ":" in host else _Server
         try:
@@ -300,7 +319,13 @@ class Preview:
         try:
             config = load_site_config(self.config)
             today = today_in(config.timezone, datetime.now(UTC))
-            build_site(config, new_root, today=today, protect=[self.config])
+            build_site(
+                config,
+                new_root,
+                today=today,
+                protect=[self.config],
+                overrides=self.overrides,
+            )
         except (ConfigError, ValueError, OSError) as exc:
             shutil.rmtree(new_root, ignore_errors=True)
             self.error = str(exc)
@@ -314,7 +339,7 @@ class Preview:
 
     def _watch(self) -> None:
         while not self._stop.wait(POLL_SECONDS):
-            now = _watched_files(self.config)
+            now = _watched_files(self.config, self.overrides)
             if now != self._seen:
                 self._seen = now
                 self._rebuild()
@@ -347,12 +372,10 @@ def serve(
 ) -> None:
     """Serve a live preview of ``config`` on a loopback ``host`` until interrupted.
 
-    ``overrides`` is accepted for the ``--overrides`` option of Task 6D but is
-    not used yet: ``build_site`` has no overrides support.
-    TODO(task-6d): pass ``overrides`` to ``build_site`` and watch that directory.
+    ``overrides`` is an optional overrides directory (see
+    ``reach_around.site.overrides``); it is built in and watched for changes.
     """
-    del overrides
-    preview = Preview(config, host, port)
+    preview = Preview(config, host, port, overrides)
     shown = f"[{host}]" if ":" in host else host
     print(f"preview: http://{shown}:{preview.port}/__preview  (Ctrl+C to stop)")
     try:

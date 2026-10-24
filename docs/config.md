@@ -400,3 +400,68 @@ empty `tabs` list. Messages from the models name the dotted path, for example
 
 The reasons behind these rules, and the test that proves each one, are in
 [docs/education/config-hardening.md](education/config-hardening.md).
+
+## Instance overrides and security headers
+
+`reach-around build` and `reach-around serve` take `--overrides DIR`. The
+directory is optional and holds only these two things:
+
+| Path | What it does |
+| --- | --- |
+| `DIR/templates/NAME.html` | Replaces the packaged template of the same name. A name you do not override falls back to the packaged one. |
+| `DIR/custom.css` | Written to `static/custom.css` and linked after `theme.css`, so it wins ties. |
+
+A missing or non-directory `DIR` stops the build with a clear error. `DIR`
+itself, `DIR/templates` and `DIR/custom.css` must not be symlinks; a symlink
+there is refused.
+
+Template lookups are confined to `DIR/templates`. A name with `..`, an
+absolute path, a backslash, or a file or directory symlink that points outside
+that folder is refused with an error, not skipped. Templates run in a Jinja
+sandbox: reaching into Python internals (`__class__`, `__globals__`, `open`,
+`os`) is refused and the build stops with a one-line error.
+
+`custom.css` is refused (the build stops and names the reason) when:
+
+- it is larger than 256 KiB or is not UTF-8;
+- it contains a backslash anywhere (CSS escapes such as `\75rl(` can hide
+  keywords from the check, so none are allowed; write the characters
+  directly);
+- it has a `/*` comment that is never closed. Real `/* ... */` comments are
+  removed first, so a forbidden word inside a comment is fine and the same
+  word outside one is not;
+- it contains `@import`, `expression(`, `behavior:`, `-moz-binding`,
+  `image-set(`, `src(` or the text `javascript:`;
+- any `url(...)` is not a relative same-site path (no scheme, no `//`, no
+  whitespace or control characters). For remote art use an Image block or the
+  theme `background`. This is a privacy choice: a remote `url()` in CSS would
+  tell a third party every visitor's IP address. The page policy still allows
+  `img-src 'self' https:` because an Image block or avatar may use an https
+  URL by your explicit choice.
+
+Custom JavaScript is not supported. Any `.js`, `.mjs` or `.cjs` file under
+`DIR` is ignored and the build logs a warning naming it. See
+[docs/education/csp-and-overrides.md](education/csp-and-overrides.md) for why.
+
+### `_headers`
+
+Every build writes a Cloudflare Pages `_headers` file for `/*`:
+
+| Header | Value |
+| --- | --- |
+| `Content-Security-Policy` | `default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' https:; font-src 'self'; connect-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'` |
+| `X-Content-Type-Options` | `nosniff` |
+| `Referrer-Policy` | `strict-origin-when-cross-origin` |
+| `Permissions-Policy` | `camera=(), microphone=(), geolocation=(), payment=()` |
+| `Cross-Origin-Opener-Policy` | `same-origin` |
+| `Strict-Transport-Security` | `max-age=31536000; includeSubDomains` |
+
+The policy has no `unsafe-inline` and no `unsafe-eval`. Pages carry no inline
+style, no inline script and no inline event handler, and a test checks every
+built page. A template override that adds one will not run in the browser.
+
+For code that needs a narrow exception later (the gate page and its Turnstile
+script), `reach_around.site.overrides.build_csp(extra)` and `render_headers(
+path_extras)` accept extra sources for a fixed set of directives. A source
+must be `'self'` or an exact `https://host[:port]` origin. `*`, `data:`,
+`https:`, nonces and the `unsafe-*` keywords are refused.
