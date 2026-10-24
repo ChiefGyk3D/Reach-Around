@@ -452,7 +452,7 @@ a.link { letter-spacing: 0.02em; }
 
 **Templates.** A file at `my-overrides/templates/NAME.html` replaces the
 packaged template of the same name; everything else falls back. The packaged
-names are `base.html`, `tab.html`, `privacy.html`, `_header.html`,
+names are `base.html`, `tab.html`, `privacy.html`, `404.html`, `_header.html`,
 `_header_variants.html`, `_nav.html`, `_profile_card.html`, `_footer.html`,
 `_cookie_banner.html`,
 `_macros.html` and `blocks/{link,section,text,image,divider}.html`. A
@@ -473,6 +473,27 @@ you need. Template variables (`creator`, `tab`, `blocks`, `nav`, `root`,
 `disclosure`, `show_disclosure`, `show_cookie_banner`, `click_tracking`,
 `profile_card`) are
 set in `site/build.py` and may change.
+
+### The 404 page
+
+The build always writes `404.html` (see [the 404 page](config.md#the-404-page)).
+To restyle it, put a `404.html` in `my-overrides/templates/`; it extends
+`base.html`, so the header, tab bar and footer come with it and you only
+write the `content` block:
+
+```
+{% extends "base.html" %}
+{% block content %}
+<section class="not-found"><h2>Lost?</h2><p>That page does not exist.</p>
+<p><a href="{{ root }}">Back to the start</a></p></section>
+{% endblock %}
+```
+
+Two rules differ from the other pages. Here `root` is `/`, not `./` or `../`,
+because the host serves this file at any depth; write your own links and
+images from `{{ root }}` or with a leading `/`, never relative to the page.
+And the page is built with `click_tracking` off and `noindex` on, so keep it
+free of `data-link-id` links. CSS goes in `custom.css` under `.not-found`.
 
 ## Telling crawlers what you prefer
 
@@ -675,7 +696,7 @@ Details and limits:
    `error: bad.yaml: theme.mode: Input should be 'auto', 'light' or 'dark'`.
    `--out` is emptied before each build; the build refuses an output folder
    that is, or contains, your config. A successful build writes `index.html`,
-   one folder per extra tab, `privacy/index.html`, `_headers`
+   one folder per extra tab, `privacy/index.html`, `404.html`, `_headers`
    and `static/` (`site.css`, `theme.css`, `click.js` when click tracking is on,
    and `custom.css` when you supplied one).
 
