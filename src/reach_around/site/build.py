@@ -107,9 +107,7 @@ def _render_page(
         blocks=blocks,
         nav=_nav(config, index, root or "./"),
         root=root,
-        page_title=page_title(
-            config, tab.title, home=index == 0, own=tab.page_title
-        ),
+        page_title=page_title(config, tab.title, home=index == 0, own=tab.page_title),
         disclosure=config.disclosure,
         show_disclosure=has_affiliate and bool(config.disclosure),
         show_cookie_banner=sets_cookies(config),
