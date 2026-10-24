@@ -25,7 +25,8 @@ def _step(name: str) -> dict[str, Any]:
     steps = workflow["jobs"]["deploy"]["steps"]
     found = [s for s in steps if s.get("name") == name]
     assert len(found) == 1, name
-    return found[0]
+    step: dict[str, Any] = found[0]
+    return step
 
 
 def _run(tmp_path: Path, zone: str | None) -> str:
@@ -65,7 +66,8 @@ def test_no_zone_name_leaves_output_unchanged(tmp_path: Path, zone: str | None) 
     base = (ROOT / "worker" / "wrangler.toml").read_text(encoding="utf-8")
     # Same line count, and only the four substituted lines differ.
     assert len(out.splitlines()) == len(base.splitlines())
-    differing = [a for a, b in zip(base.splitlines(), out.splitlines()) if a != b]
+    pairs = zip(base.splitlines(), out.splitlines(), strict=True)
+    differing = [a for a, b in pairs if a != b]
     assert len(differing) == 4
     assert out.endswith("\n")
 
