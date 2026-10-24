@@ -8,7 +8,7 @@
 {% endif %}
 <ul class="section-links layout-{{ block.layout }}">
 {% for link in block.links %}
-<li>{{ link_anchor(link) }}</li>
+<li>{{ link_anchor(link, click_tracking) }}</li>
 {% endfor %}
 </ul>
 </details>

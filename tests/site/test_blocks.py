@@ -44,6 +44,14 @@ def config(
     return SiteConfig.model_validate({"version": 1, "creator": creator, "tabs": [tab]})
 
 
+_CLICK_SCRIPT = re.compile(r'<script src="(?:\.\./)?static/click\.js" defer></script>')
+
+
+def without_click_script(text: str) -> str:
+    """Drop the one allowed tag (external, deferred click.js)."""
+    return _CLICK_SCRIPT.sub("", text)
+
+
 def built(cfg: SiteConfig, out: Path) -> str:
     build_site(cfg, out, today=TODAY)
     return (out / "index.html").read_text(encoding="utf-8")
@@ -336,7 +344,7 @@ def test_image_alt_is_escaped(tmp_path: Path) -> None:
     alt = '"><script>alert(1)</script>'
     cfg = config([{"id": "pic", "src": "https://example.com/a.png", "alt": alt}])
     text = built(cfg, tmp_path / "out")
-    assert "<script" not in text
+    assert "<script" not in without_click_script(text)
     assert "&lt;script&gt;" in text
     assert 'alt="&#34;&gt;' in text
 
@@ -436,13 +444,13 @@ def test_new_blocks_render_without_javascript(tmp_path: Path) -> None:
     assert '<img class="image"' in text
     assert "<hr" in text
     assert '<a class="image-link" href="https://example.com/b"' in text
-    assert "<script" not in text
+    assert "<script" not in without_click_script(text)
 
 
 def test_text_block_html_is_escaped_in_the_page(tmp_path: Path) -> None:
     cfg = config([{"id": "t", "markdown": "<script>alert(1)</script>"}])
     text = built(cfg, tmp_path / "out")
-    assert "<script" not in text
+    assert "<script" not in without_click_script(text)
     assert "&lt;script&gt;" in text
 
 

@@ -340,7 +340,7 @@ Switches for the features that collect data. Unknown keys are refused.
 
 | Key | Type | Default | Meaning |
 | --- | --- | --- | --- |
-| `click_tracking` | boolean | `true` | Count link clicks anonymously (link and country only, no IP address). |
+| `click_tracking` | boolean | `true` | Count link clicks anonymously (link and country only, no IP address). When off, links carry no `ping` attribute and the page ships no `click.js`. |
 | `kit_gate` | boolean | `false` | Ask for an email address to unlock a kit. This sets a cookie, so the site shows a cookie notice. |
 
 ## `privacy`
