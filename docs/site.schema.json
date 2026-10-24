@@ -355,6 +355,33 @@
       "title": "FontStack",
       "type": "object"
     },
+    "Footer": {
+      "additionalProperties": false,
+      "description": "What the footer of every page shows besides the privacy link.",
+      "properties": {
+        "credit": {
+          "default": true,
+          "title": "Credit",
+          "type": "boolean"
+        },
+        "credit_text": {
+          "anyOf": [
+            {
+              "maxLength": 60,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Credit Text"
+        }
+      },
+      "title": "Footer",
+      "type": "object"
+    },
     "Image": {
       "additionalProperties": false,
       "properties": {
@@ -1155,6 +1182,13 @@
       "default": {
         "click_tracking": true,
         "kit_gate": false
+      }
+    },
+    "footer": {
+      "$ref": "#/$defs/Footer",
+      "default": {
+        "credit": true,
+        "credit_text": null
       }
     },
     "privacy": {

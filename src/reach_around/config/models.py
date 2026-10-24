@@ -35,6 +35,7 @@ from reach_around.config.blocks import (
     Platforms,
     Text,
 )
+from reach_around.config.footer import Footer
 from reach_around.config.loader import ConfigError, load_yaml
 from reach_around.config.page_title import PageTitle, TitleTemplate
 from reach_around.config.privacy import Features, Privacy
@@ -315,6 +316,7 @@ class SiteConfig(_Model):
     theme: Theme = Theme()
     features: Features = Features()
     privacy: Privacy = Privacy()
+    footer: Footer = Footer()
     robots: Robots | None = None
     store: StoreConfig = StoreConfig()
     profile_card: ProfileCard | None = None
