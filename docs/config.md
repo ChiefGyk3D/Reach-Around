@@ -79,6 +79,7 @@ escapes it when it renders.
 | `tabs` | list of Tab | required | at least one tab |
 | `disclosure` | text | none | at most 2000 characters; shown when affiliate links exist |
 | `timezone` | text | `America/New_York` | must be a known IANA zone name; decides which calendar day "today" is for scheduled links |
+| `theme` | Theme | defaults | colors, fonts, background and shape; see [`theme`](#theme) |
 
 Ids must be unique across the whole site: every tab id, every block id (links
 and sections) and every link id inside a section share one pool. Reusing an
@@ -175,6 +176,161 @@ tabs:
       title: Example Boom Stand
       url: https://shop.example.com/stand
 ```
+
+## Blocks, layouts and headers
+
+The block types, layout options and header variants added in Plan 1, Task 6C.
+Every example uses synthetic data.
+
+### Block types
+
+A tab's `blocks` list can mix these. The type is picked by the keys the block
+has, and every `id` must be unique across the whole site.
+
+| Block | Keys | Notes |
+| --- | --- | --- |
+| link | `id`, `title`, `url` | as before |
+| section | `id`, `title`, `links`, optional `layout` | as before |
+| text | `id`, `markdown` | up to 5000 characters |
+| image | `id`, `src`, `alt`, optional `link` | `alt` is required |
+| divider | `id` only | a horizontal rule |
+
+Text, image and divider blocks have no `show_from` or `show_until`; they always
+show.
+
+```yaml
+blocks:
+  - id: welcome
+    markdown: |
+      Welcome. **Bold**, *italic* and a [link](https://example.com/).
+
+      - first
+      - second
+  - id: banner
+    src: img/banner.png
+    alt: A banner with the show logo
+    link: https://example.com/
+  - id: rule
+```
+
+#### Markdown
+
+Only these are supported: `**bold**`, `*italic*`, `[text](https://...)` links,
+`-` bullet lists, and line breaks. Everything else is shown as plain text. Raw
+HTML is escaped, never passed through. A link must be `https`; `http:`,
+`javascript:`, `data:` and relative links stay as plain text.
+
+#### Images
+
+`src` is either an `https://` URL or a relative path such as `img/photo.png`
+(letters, digits, `.`, `_`, `-` and `/` only; no `..`, no leading slash, no
+scheme). `alt` is required so the page works for people who cannot see the
+image. `link`, if set, must be `https`.
+
+### Layouts
+
+`layout` is `list` (the default), `grid` or `cards`. Set it on a tab to lay out
+that page's top-level blocks, or on a section to lay out its links. The same
+links show in every layout; only the container class changes.
+
+```yaml
+tabs:
+  - id: start
+    title: Start
+    layout: grid
+    blocks:
+      - id: gear
+        title: Gear
+        layout: cards
+        links:
+          - id: example-stand
+            title: Example Boom Stand
+            url: https://shop.example.com/stand
+```
+
+### Header variants
+
+`creator.header` is `compact` (the default), `centered` or `hero`.
+
+```yaml
+creator:
+  name: Example Creator
+  header: hero
+```
+
+An unknown `layout` or `header` is refused when the config loads.
+
+## `theme`
+
+The theme changes how the page looks without letting config text reach the
+stylesheet unchecked. Every value is validated when the config loads, and the
+build writes the result to `static/theme.css` (an external file, so the page
+needs no inline style). `static/site.css` declares a default for every token;
+`theme.css` overrides only the ones you change. A config with no `theme`
+section builds the same page as before.
+
+```yaml
+version: 1
+creator:
+  name: Example Creator
+theme:
+  mode: dark
+  colors:
+    bg: "#101418"
+    text: "#e8edf2"
+    accent: hotpink
+    surface: rgb(24 30 36)
+    border: hsl(210 20% 30%)
+  fonts:
+    body: Georgia, "Times New Roman", serif
+    heading: fonts/heading.woff2
+  background: media/background.webp
+  column_width: 40rem
+  radius: 1rem
+  button_style: pill
+tabs:
+  - id: start
+    title: Start
+    blocks:
+      - id: home
+        title: Example Home
+        url: https://example.com/
+```
+
+| Key | Type | Default | Notes |
+| --- | --- | --- | --- |
+| `colors` | map | empty | Keys: `bg`, `text`, `accent`, `surface`, `border`. Any other key is refused. |
+| `fonts.body` | string | `system-ui, sans-serif` | A system font stack or a font file path. |
+| `fonts.heading` | string | same as body | Same rules as `fonts.body`. |
+| `background` | string | none | An `https://` URL or a relative image path. |
+| `column_width` | length | `36rem` | `px`, `rem`, `em`, `ch`, `%` or `vw`. |
+| `radius` | length | `0.5rem` | Corner radius for link buttons. |
+| `button_style` | `pill`, `rounded`, `square` | `rounded` | `rounded` uses `radius`. |
+| `mode` | `auto`, `light`, `dark` | `auto` | `auto` follows the visitor's setting. |
+
+### What is accepted
+
+- **Colors:** a hex color (`#fff`, `#1a2b3c`, with or without alpha), `rgb()`,
+  `rgba()`, `hsl()`, `hsla()`, or a standard named color.
+- **Lengths:** a number with `px`, `rem`, `em`, `ch`, `%` or `vw`, or `0`.
+  `calc()`, `var()` and bare numbers are refused.
+- **Fonts:** letters, digits, spaces and hyphens in a comma separated stack
+  (`Georgia, "Times New Roman", serif`), or a font file (`.woff2`, `.woff`,
+  `.ttf`, `.otf`) as a relative path inside the instance directory. A font
+  on `https://` is refused on purpose: loading one tells that host about every
+  visitor.
+- **Background:** an `https://` image URL, or a relative path to a `.png`,
+  `.jpg`, `.jpeg`, `.webp`, `.avif`, `.gif` or `.svg` file. A relative path
+  has no `..` segment and does not start with `/`.
+
+### What is refused
+
+Any value that contains `;`, `{`, `}`, `url(`, `expression(`, `@import`, a
+backslash escape, a comment opener (`/*`) or a newline is refused with the
+key path and the reason. The check runs before the allowlist for each kind of
+value, so the message names the first problem it found. Only a fixed set of
+custom property names (`--ra-*`) and `color-scheme` is ever written to
+`theme.css`.
 
 ## What the loader refuses
 
