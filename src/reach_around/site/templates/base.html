@@ -13,6 +13,9 @@
 {% if has_crypto %}
 <link rel="stylesheet" href="{{ root }}static/crypto.css">
 {% endif %}
+{% if has_email %}
+<link rel="stylesheet" href="{{ root }}static/email.css">
+{% endif %}
 {% if custom_css %}
 <link rel="stylesheet" href="{{ root }}static/custom.css">
 {% endif %}
@@ -21,6 +24,9 @@
 {% endif %}
 {% if has_crypto %}
 <script src="{{ root }}static/copy.js" defer></script>
+{% endif %}
+{% if has_email_script %}
+<script src="{{ root }}static/email.js" defer></script>
 {% endif %}
 </head>
 <body>

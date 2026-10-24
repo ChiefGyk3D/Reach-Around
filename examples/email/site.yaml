@@ -1,0 +1,22 @@
+# Synthetic example: a Contact tab with an email block. The address is made up
+# (example.test is reserved and never delivers). The built page never holds the
+# plain address or a mail link; see docs/config.md#email for the honest limits.
+version: 1
+creator:
+  name: Example Creator
+  header: centered
+tabs:
+  - id: contact
+    title: Contact
+    blocks:
+      - id: contact-intro
+        markdown: |
+          The best way to reach me is email.
+      - id: email
+        title: Email me
+        address: name@example.test
+        note: Business and press only. I read everything and answer within a week.
+        reveal: click
+        spell:
+          at: at
+          dot: dot
