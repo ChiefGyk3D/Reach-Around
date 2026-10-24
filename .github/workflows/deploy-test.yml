@@ -3,6 +3,10 @@
 # Manual deploy of the Worker and the static site to the TEST subdomain.
 # One-time Cloudflare setup is in docs/deploy.md. Nothing here runs on a
 # push or a pull request; a maintainer starts it by hand from main.
+#
+# Two jobs: `build` has no secrets and no environment, so pip install scripts
+# never see the Cloudflare token; `deploy` carries the token in the three
+# wrangler steps only.
 name: Deploy to test
 
 on:
@@ -16,24 +20,16 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  deploy:
-    name: Deploy test site and Worker
-    # Refuse any ref other than main. The `test` environment can also restrict
-    # deployment branches and require a reviewer (docs/deploy.md).
+  build:
+    name: Build the site
+    # Refuse any ref other than main.
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
-    timeout-minutes: 15
-    environment: test
-    env:
-      # Secrets and variables only, passed through env. Never echoed.
-      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-      CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
-      PAGES_PROJECT: ${{ vars.PAGES_PROJECT }}
-      D1_DATABASE_ID: ${{ vars.D1_DATABASE_ID }}
-      RATELIMIT_NAMESPACE_ID: ${{ vars.RATELIMIT_NAMESPACE_ID }}
-      SITE_HOST: ${{ vars.SITE_HOST }}
-      LINK_IDS: ${{ vars.LINK_IDS }}
-      WRANGLER_SEND_METRICS: "false"
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    # No `environment` and no secrets here, on purpose: `pip install .` runs
+    # dependency build scripts.
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
@@ -43,17 +39,71 @@ jobs:
         with:
           python-version: "3.12"
 
+      # NOTE: `reach-around build` lands in Task 6, and pyproject.toml in
+      # Task 1. This step is written as the plan describes and will fail on
+      # a branch that lacks them.
+      - name: Build the site
+        run: |
+          set -eu
+          python -m pip install .
+          reach-around build --config examples/instance/site.yaml --out site-out
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: site-out
+          path: site-out
+          if-no-files-found: error
+          retention-days: 1
+
+  deploy:
+    name: Deploy test site and Worker
+    needs: build
+    # Refuse any ref other than main. The `test` environment can also restrict
+    # deployment branches and require a reviewer (docs/deploy.md).
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: test
+    permissions:
+      contents: read
+    # No job-level env: the Cloudflare token is set only on the presence check
+    # and the three wrangler steps, never where install scripts could run.
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: "24"
-          cache: npm
-          cache-dependency-path: worker/package-lock.json
 
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: site-out
+          path: site-out
+
+      # Tests that the secret exists without printing it or exporting it: the
+      # value lives only in this step's env, and nothing is written to the
+      # runner's env or output files for later steps.
       - name: Check configuration
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          PAGES_PROJECT: ${{ vars.PAGES_PROJECT }}
+          D1_DATABASE_ID: ${{ vars.D1_DATABASE_ID }}
+          RATELIMIT_NAMESPACE_ID: ${{ vars.RATELIMIT_NAMESPACE_ID }}
+          SITE_HOST: ${{ vars.SITE_HOST }}
+          LINK_IDS: ${{ vars.LINK_IDS }}
         run: |
           set -eu
-          for name in CLOUDFLARE_API_TOKEN CLOUDFLARE_ACCOUNT_ID PAGES_PROJECT \
-                      D1_DATABASE_ID RATELIMIT_NAMESPACE_ID SITE_HOST LINK_IDS; do
+          if [ -n "${CLOUDFLARE_API_TOKEN:-}" ]; then
+            :
+          else
+            echo "::error::CLOUDFLARE_API_TOKEN is not set (see docs/deploy.md)"
+            exit 1
+          fi
+          for name in CLOUDFLARE_ACCOUNT_ID PAGES_PROJECT D1_DATABASE_ID \
+                      RATELIMIT_NAMESPACE_ID SITE_HOST LINK_IDS; do
             eval "value=\${$name:-}"
             if [ -z "$value" ]; then
               echo "::error::$name is not set (see docs/deploy.md)"
@@ -72,23 +122,22 @@ jobs:
           printf '%s' "$LINK_IDS" | grep -Eq '^\[("[a-z0-9-]{1,40}"(, ?)?)+\]$' \
             || { echo "::error::LINK_IDS must be a JSON array of link ids"; exit 1; }
 
-      # NOTE: `reach-around build` lands in Task 6, and pyproject.toml in
-      # Task 1. This step is written as the plan describes and will fail on
-      # a branch that lacks them.
-      - name: Build the site
-        run: |
-          set -eu
-          python -m pip install .
-          reach-around build --config examples/instance/site.yaml --out site-out
-
+      # --ignore-scripts: wrangler runs without its dependencies' install
+      # scripts (verified with `wrangler --version` on Node 24), so none run.
+      # This step has no secret in its environment either way.
       - name: Install Worker dependencies
         working-directory: worker
-        run: npm ci
+        run: npm ci --ignore-scripts
 
       # worker/wrangler.toml holds fake placeholder ids. Write a deploy copy
-      # with the real values; it is never committed.
+      # with the real values (none is a secret); it is never committed.
       - name: Write deploy config
         working-directory: worker
+        env:
+          D1_DATABASE_ID: ${{ vars.D1_DATABASE_ID }}
+          RATELIMIT_NAMESPACE_ID: ${{ vars.RATELIMIT_NAMESPACE_ID }}
+          SITE_HOST: ${{ vars.SITE_HOST }}
+          LINK_IDS: ${{ vars.LINK_IDS }}
         run: |
           set -eu
           sed \
@@ -100,18 +149,39 @@ jobs:
           grep -qF "${D1_DATABASE_ID}" wrangler.deploy.toml
           grep -qF "${SITE_HOST}" wrangler.deploy.toml
 
+      # Smoke test with no secret in the environment.
+      - name: Confirm wrangler runs
+        working-directory: worker
+        env:
+          WRANGLER_SEND_METRICS: "false"
+        run: npx --no-install wrangler --version
+
+      # The only three steps that carry the Cloudflare token.
       - name: Apply D1 migrations
         working-directory: worker
-        run: npx wrangler d1 migrations apply DB --remote --config wrangler.deploy.toml
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          WRANGLER_SEND_METRICS: "false"
+        run: npx --no-install wrangler d1 migrations apply DB --remote --config wrangler.deploy.toml
 
       - name: Deploy the Worker
         working-directory: worker
-        run: npx wrangler deploy --config wrangler.deploy.toml
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          WRANGLER_SEND_METRICS: "false"
+        run: npx --no-install wrangler deploy --config wrangler.deploy.toml
 
       - name: Publish the site to Pages
         working-directory: worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          PAGES_PROJECT: ${{ vars.PAGES_PROJECT }}
+          WRANGLER_SEND_METRICS: "false"
         run: >-
-          npx wrangler pages deploy ../site-out
+          npx --no-install wrangler pages deploy ../site-out
           --project-name "$PAGES_PROJECT"
           --branch main
           --commit-dirty=true
