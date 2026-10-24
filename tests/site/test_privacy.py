@@ -125,12 +125,14 @@ def test_banner_text_comes_from_config_when_set(tmp_path: Path) -> None:
 def test_every_page_links_to_privacy_in_the_footer(tmp_path: Path) -> None:
     build_site(make_config(), tmp_path, today=TODAY)
     pages = sorted(tmp_path.rglob("*.html"))
-    assert len(pages) == 3
+    assert len(pages) == 4  # two tabs, privacy and 404
     for page in pages:
         html = page.read_text()
         href = re.search(r'<footer>.*<a href="([^"]*privacy/)"', html, re.S)
         assert href, page
-        assert (page.parent / href.group(1)).resolve() == (
+        # 404.html is root-relative (it is served at any depth); the rest are not.
+        base = tmp_path if href.group(1).startswith("/") else page.parent
+        assert (base / href.group(1).lstrip("/")).resolve() == (
             tmp_path / "privacy"
         ).resolve()
 
@@ -207,6 +209,8 @@ def test_click_tracking_on_adds_ping_and_exactly_one_script_per_page(
     pages = sorted(tmp_path.rglob("*.html"))
     assert pages
     for page in pages:
-        assert page.read_text().lower().count("<script") == 1
+        # The 404 page is never click-counted, so it has no script at all.
+        expected = 0 if page.name == "404.html" else 1
+        assert page.read_text().lower().count("<script") == expected, page
     assert 'ping="/e/c/one"' in (tmp_path / "index.html").read_text()
     assert (tmp_path / "static" / "click.js").is_file()

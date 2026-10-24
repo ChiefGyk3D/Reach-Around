@@ -319,7 +319,9 @@ def test_theme_stylesheet_path_resolves_from_every_page(tmp_path: Path) -> None:
             r'<link rel="stylesheet" href="([^"]*theme\.css)">', page.read_text()
         )
         assert href, page
-        assert (page.parent / href.group(1)).resolve().is_file()
+        # 404.html is root-relative (it is served at any depth); the rest are not.
+        base = out if href.group(1).startswith("/") else page.parent
+        assert (base / href.group(1).lstrip("/")).resolve().is_file()
 
 
 def test_default_theme_builds_the_same_page_as_before(tmp_path: Path) -> None:
