@@ -375,7 +375,7 @@ a:focus-visible, summary:focus-visible, button:focus-visible {
   font-weight: 700;
 }
 
-@media (max-width: 430px) {
+@media (max-width: 26.875rem) {
   .tabs a {
     padding: 0 var(--ra-space-2);
     font-size: var(--ra-text-xs);

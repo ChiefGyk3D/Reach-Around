@@ -15,7 +15,7 @@ DOC = (Path(__file__).resolve().parents[2] / "docs" / "design.md").read_text()
 
 
 def _queries(css: str) -> list[str]:
-    return re.findall(r"@media\s*([^{]+)\{", css)
+    return [q.strip() for q in re.findall(r"@media\s*([^{]+)\{", css)]
 
 
 def test_breakpoints_are_rem_based_and_collected() -> None:

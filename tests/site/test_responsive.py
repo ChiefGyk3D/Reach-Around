@@ -135,7 +135,7 @@ def rich_config(header: Header) -> dict[str, Any]:
                 },
             ],
         },
-        "disclosure": "This page uses affiliate links. Example Creator may earn a commission.",
+        "disclosure": "This page uses affiliate links. The creator may earn a fee.",
         "profile_card": {
             "title": "Example Creator",
             "tags": ["Retro games", "Security", "Amateur radio", "Open source"],
