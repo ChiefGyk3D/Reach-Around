@@ -1,15 +1,31 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 /* Minimal placeholder styling. The real design comes in a later task. */
-:root { color-scheme: light dark; }
-body { font-family: system-ui, sans-serif; line-height: 1.5; margin: 0; }
-main { max-width: 36rem; margin: 0 auto; padding: 1.5rem 1rem; }
+/* Every color, font, radius and width reads a --ra-* custom property. The
+   defaults live here; static/theme.css overrides only those properties. */
+:root {
+  color-scheme: light dark;
+  --ra-color-bg: Canvas;
+  --ra-color-text: CanvasText;
+  --ra-color-accent: currentColor;
+  --ra-color-surface: transparent;
+  --ra-color-border: currentColor;
+  --ra-font-body: system-ui, sans-serif;
+  --ra-font-heading: inherit;
+  --ra-bg-image: none;
+  --ra-column-width: 36rem;
+  --ra-radius: 0.5rem;
+  --ra-button-radius: var(--ra-radius);
+}
+body { font-family: var(--ra-font-body); line-height: 1.5; margin: 0; background-color: var(--ra-color-bg); background-image: var(--ra-bg-image); color: var(--ra-color-text); }
+h1, h2, h3 { font-family: var(--ra-font-heading); }
+main { max-width: var(--ra-column-width); margin: 0 auto; padding: 1.5rem 1rem; }
 header { text-align: center; }
 .avatar { border-radius: 50%; }
 ul { list-style: none; margin: 0; padding: 0; }
 .socials, nav ul { display: flex; flex-wrap: wrap; gap: 0.75rem; justify-content: center; }
 .blocks > li, details li { margin: 0.5rem 0; }
-a.link { display: block; padding: 0.75rem 1rem; border: 1px solid currentColor; border-radius: 0.5rem; text-decoration: none; }
-a:focus-visible, summary:focus-visible { outline: 3px solid; outline-offset: 2px; }
+a.link { display: block; padding: 0.75rem 1rem; border: 1px solid var(--ra-color-border); border-radius: var(--ra-button-radius); background-color: var(--ra-color-surface); text-decoration: none; }
+a:focus-visible, summary:focus-visible { outline: 3px solid var(--ra-color-accent); outline-offset: 2px; }
 .link-title { display: block; font-weight: 600; }
 .link-subtitle, .section-subtitle { display: block; font-size: 0.9em; opacity: 0.8; }
 summary { cursor: pointer; font-weight: 600; padding: 0.5rem 0; }
@@ -20,13 +36,13 @@ summary { cursor: pointer; font-weight: 600; padding: 0.5rem 0; }
 .header-row { display: flex; align-items: center; gap: 0.75rem; }
 .header-row h1 { font-size: 1.25rem; margin: 0; }
 .header-compact .socials { justify-content: flex-start; }
-.header-hero .hero-card { padding: 2rem 1rem; border-radius: 1rem; border: 1px solid currentColor; }
+.header-hero .hero-card { padding: 2rem 1rem; border-radius: calc(var(--ra-radius) * 2); border: 1px solid var(--ra-color-border); }
 .header-hero h1 { font-size: 2rem; }
 .layout-grid, .layout-cards, .section-links.layout-grid, .section-links.layout-cards { display: grid; gap: 0.75rem; }
 .layout-grid { grid-template-columns: repeat(auto-fill, minmax(10rem, 1fr)); }
 .layout-cards { grid-template-columns: repeat(auto-fill, minmax(16rem, 1fr)); }
-.layout-cards a.link { padding: 1.25rem 1rem; border-radius: 1rem; }
+.layout-cards a.link { padding: 1.25rem 1rem; border-radius: calc(var(--ra-button-radius) * 2); }
 .layout-grid > li, .layout-cards > li { margin: 0; }
 .block-image img, .image { max-width: 100%; height: auto; }
-.divider { border: 0; border-top: 1px solid currentColor; opacity: 0.4; }
+.divider { border: 0; border-top: 1px solid var(--ra-color-border); opacity: 0.4; }
 .text ul { list-style: disc; padding-left: 1.25rem; }
