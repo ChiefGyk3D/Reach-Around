@@ -1,0 +1,42 @@
+# Synthetic example config. Every name and URL here is made up.
+version: 1
+timezone: America/New_York
+creator:
+  name: Example Creator
+  avatar: https://example.com/avatar.png
+  socials:
+    - name: Example Video
+      url: https://video.example.com/@example
+      icon: video
+    - name: Example Chat
+      url: https://chat.example.invalid/example
+      icon: chat
+disclosure: This page uses affiliate links. Example Creator may earn a commission.
+tabs:
+  - id: start-here
+    title: Start Here
+    blocks:
+      - id: home-page
+        title: Example Home Page
+        subtitle: The main site
+        url: https://example.com/
+      - id: gear-picks
+        title: Gear Picks
+        subtitle: Things used on the show
+        collapsed: true
+        links:
+          - id: example-mic
+            title: Example Microphone
+            url: https://shop.example.com/mic?ref=example
+            affiliate: true
+          - id: example-stand
+            title: Example Boom Stand
+            url: https://shop.example.com/stand
+  - id: events
+    title: Events
+    blocks:
+      - id: spring-meetup
+        title: Spring Meetup Tickets
+        url: https://tickets.example.invalid/spring
+        show_from: 2027-03-01
+        show_until: 2027-04-15
