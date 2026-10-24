@@ -80,6 +80,8 @@ escapes it when it renders.
 | `disclosure` | text | none | at most 2000 characters; shown when affiliate links exist |
 | `timezone` | text | `America/New_York` | must be a known IANA zone name; decides which calendar day "today" is for scheduled links |
 | `theme` | Theme | defaults | colors, fonts, background and shape; see [`theme`](#theme) |
+| `features` | Features | click tracking on, kit gate off | switches for features that collect data; see [`features`](#features) |
+| `privacy` | Privacy | defaults | wording and retention for the privacy page; see [`privacy`](#privacy) |
 
 Ids must be unique across the whole site: every tab id, every block id (links
 and sections) and every link id inside a section share one pool. Reusing an
@@ -331,6 +333,41 @@ key path and the reason. The check runs before the allowlist for each kind of
 value, so the message names the first problem it found. Only a fixed set of
 custom property names (`--ra-*`) and `color-scheme` is ever written to
 `theme.css`.
+
+## `features`
+
+Switches for the features that collect data. Unknown keys are refused.
+
+| Key | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| `click_tracking` | boolean | `true` | Count link clicks anonymously (link and country only, no IP address). |
+| `kit_gate` | boolean | `false` | Ask for an email address to unlock a kit. This sets a cookie, so the site shows a cookie notice. |
+
+## `privacy`
+
+Wording and retention for the generated privacy page. Unknown keys are refused.
+
+| Key | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| `contact` | text, 1-200 characters | none | How visitors can reach you about privacy. Shown as plain text. |
+| `intro` | text, 1-2000 characters | neutral default | Replaces the opening text of the privacy page and the cookie notice. Escaped, never treated as HTML. |
+| `retention_days` | integer, 1-3650 | `90` | How long click counts are kept. |
+| `lead_retention_days` | integer, 1-3650 | `365` | How long a kit email address is kept. |
+
+```yaml
+features:
+  click_tracking: true
+  kit_gate: true
+privacy:
+  contact: privacy@example.com
+  intro: Here is exactly what this site collects.
+  retention_days: 90
+  lead_retention_days: 365
+```
+
+The privacy page at `/privacy/` and the cookie notice are generated from the
+enabled features, so they cannot claim less than the site does. See
+[privacy by construction](education/privacy-by-construction.md).
 
 ## What the loader refuses
 
