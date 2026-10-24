@@ -21,6 +21,7 @@ from typing import Any
 from jinja2 import Environment
 
 from reach_around.config.models import Block, Link, Section, SiteConfig, Tab
+from reach_around.config.page_title import DEFAULT_TEMPLATE, render_template
 from reach_around.site.assets import collect_assets
 from reach_around.site.overrides import (
     load_custom_css,
@@ -67,6 +68,29 @@ def _nav(config: SiteConfig, current: int, root: str) -> list[dict[str, Any]]:
     ]
 
 
+def page_title(
+    config: SiteConfig, tab_name: str, *, home: bool, own: str | None
+) -> str:
+    """Text for <title>: per-tab override, else the template, else the defaults."""
+    if own is not None:
+        return own
+    creator = config.creator
+    template = config.title_template
+    if template is None:
+        if creator.title is None:
+            template = DEFAULT_TEMPLATE
+        elif home:
+            return creator.title
+        else:
+            template = "{tab} - {site}"
+    return render_template(
+        template,
+        tab=tab_name,
+        creator=creator.name,
+        site=creator.title or creator.name,
+    )
+
+
 def _render_page(
     env: Environment,
     config: SiteConfig,
@@ -83,7 +107,9 @@ def _render_page(
         blocks=blocks,
         nav=_nav(config, index, root or "./"),
         root=root,
-        page_title=f"{tab.title} - {config.creator.name}",
+        page_title=page_title(
+            config, tab.title, home=index == 0, own=tab.page_title
+        ),
         disclosure=config.disclosure,
         show_disclosure=has_affiliate and bool(config.disclosure),
         show_cookie_banner=sets_cookies(config),
@@ -98,7 +124,7 @@ def _render_privacy(env: Environment, config: SiteConfig, custom_css: bool) -> s
         creator=config.creator,
         nav=_nav(config, -1, "../"),
         root="../",
-        page_title=f"Privacy - {config.creator.name}",
+        page_title=page_title(config, "Privacy", home=False, own=None),
         disclosure=config.disclosure,
         show_disclosure=False,
         show_cookie_banner=False,

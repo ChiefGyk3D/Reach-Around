@@ -1,8 +1,11 @@
 # Synthetic example config. Every name and URL here is made up.
 version: 1
 timezone: America/New_York
+# Optional page titles. Uncomment to try; see docs/config.md, "Page titles".
+# title_template: "{tab} | {site}"
 creator:
   name: Example Creator
+  # title: Example Creator Links
   avatar: media/mascot.svg
   favicon: media/mascot.svg
   socials:
@@ -24,6 +27,7 @@ disclosure: This page uses affiliate links. Example Creator may earn a commissio
 tabs:
   - id: start-here
     title: Start Here
+    # page_title: Welcome to Example Creator Links
     blocks:
       - id: home-page
         title: Example Home Page
