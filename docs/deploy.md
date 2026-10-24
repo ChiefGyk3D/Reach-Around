@@ -103,6 +103,25 @@ your own; never commit real account ids, database ids or tokens.
    The workflow validates each value's shape before using it and fails with a
    clear message if a required one is missing.
 
+## Page views (`POST /e/v/:pageId`)
+
+The Worker also has a write-only page-view route (Plan 4 Tasks A3 and A4; the browser script that calls it is a later task). It needs migrations `0005` and `0006` applied to the same D1 database, and the same `/e/*` zone route as clicks.
+
+| Variable | Kind | What it does |
+|---|---|---|
+| `PAGE_IDS` | var | JSON array of tab ids from the build manifest. Any other page id is ignored. Deploy the Worker with it before the site |
+| `VIEW_HASH_SECRET` | **secret** | 32 or more random bytes, base64. Set with `npx wrangler secret put VIEW_HASH_SECRET`; never in `wrangler.toml`, a committed file, a log or a chat. Absent or too short: unique visitors and the per-client cap are off (the `VIEW_LIMITER` binding still applies) and views are still counted |
+| `VIEWS_KILL` | var | `1` or `true` makes the route return its usual empty 204 with no database or limiter call. Read per request |
+| `VIEW_LIMITER` | binding | Workers Rate Limiting binding, placeholder in `wrangler.toml` (5 per client per 60 s). Required: without it the route records nothing |
+| `VIEWS_PER_HOUR`, `BOT_VIEWS_PER_HOUR` | var | global hourly write budgets, defaults 120 and 30 (Plan 4 open decision P-6) |
+| `CLIENT_VIEWS_PER_HOUR` | var | per-client hourly cap, default 60, ceiling 1000. Keyed on a daily keyed hash of the address, never the address, so one client cannot spend the global budget |
+| `RAW_KEEP_DAYS` | var | days raw view rows are kept, default 7 (open decision P-3), ceiling 90; a bad value falls back to 7 |
+| `GEO_LEVEL`, `BOTS_MODE`, `UV_ENABLED`, `UV_BITS` | var | `city` / `count` / on / `32` by default (open decision P-5 for the hash width) |
+
+Retention runs from the cron (`17 4 * * *` and `5 0 * * *`): `visitor_seen` rows before today's UTC date, raw view rows past `RAW_KEEP_DAYS`, hourly budget counters older than 48 hours and client-cap counters older than the previous hour. The daily rollup that should run before the raw purge (Task A5) is not built yet, so raw rows are deleted by age alone for now.
+
+The route stores no address, user agent or referrer URL. After a deploy, one beacon from a browser should give a 204 and one `view_events` row with categories only; the same request with `Sec-GPC: 1` should leave no row.
+
 ## Secrets and Doppler
 
 Project secrets (this Cloudflare token, later the Mailgun and collector

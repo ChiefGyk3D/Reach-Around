@@ -1,8 +1,13 @@
 // SPDX-License-Identifier: Apache-2.0
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import worker from "../../src/index";
-import { handleView } from "../../src/view";
 import {
+  DEFAULT_CLIENT_VIEWS_PER_HOUR,
+  MAX_CLIENT_VIEWS_PER_HOUR,
+  handleView,
+} from "../../src/view";
+import {
+  IP4,
   NOW,
   SITE,
   beacon,
@@ -284,7 +289,7 @@ describe("bots and budgets", () => {
       expect(r[0]?.reason).toBe(reason);
       expect(r[0]?.first).toBe(0);
       expect(await seen()).toEqual([]);
-      expect((await budgets()).map((b) => b.key.split(":")[1])).toEqual(["pvbot"]);
+      expect((await budgets()).filter((b) => b.key.startsWith("bud:")).map((b) => b.key.split(":")[1])).toEqual(["pvbot"]);
     }
   });
 
@@ -301,6 +306,65 @@ describe("bots and budgets", () => {
   it("bots_mode_count_is_the_default", async () => {
     await handleView(beacon({ headers: CURL }), makeEnv(), NOW);
     expect((await rows()).length).toBe(1);
+  });
+});
+
+describe("per-client cap", () => {
+  const ip = (n: number) => ({ "CF-Connecting-IP": `203.0.113.${n}` });
+
+  it("one_client_exhausting_its_cap_never_spends_more_than_its_cap_of_the_global_budget", async () => {
+    const env = makeEnv({ CLIENT_VIEWS_PER_HOUR: "3", VIEWS_PER_HOUR: "100" });
+    for (let i = 0; i < 20; i++) await handleView(beacon({ headers: ip(9) }), env, NOW);
+    expect((await rows()).length).toBe(3);
+    const global = (await budgets()).find((b) => b.key.startsWith("bud:pv:"));
+    expect(global?.value).toBe("3");
+    // Other visitors are untouched by the flood.
+    for (let n = 1; n <= 4; n++) await handleView(beacon({ headers: ip(n) }), env, NOW);
+    expect((await rows()).length).toBe(7);
+  });
+
+  it("many_distinct_clients_still_share_the_global_budget", async () => {
+    const env = makeEnv({ CLIENT_VIEWS_PER_HOUR: "5", VIEWS_PER_HOUR: "4" });
+    for (let n = 1; n <= 10; n++) await handleView(beacon({ headers: ip(n) }), env, NOW);
+    expect((await rows()).length).toBe(4);
+  });
+
+  it("the_cap_resets_next_hour_and_default_is_documented", async () => {
+    expect(DEFAULT_CLIENT_VIEWS_PER_HOUR).toBe(60);
+    expect(MAX_CLIENT_VIEWS_PER_HOUR).toBe(1000);
+    const env = makeEnv({ CLIENT_VIEWS_PER_HOUR: "1" });
+    await handleView(beacon(), env, NOW);
+    await handleView(beacon(), env, NOW);
+    await handleView(beacon(), env, NOW + 3_600_000);
+    expect((await rows()).length).toBe(2);
+  });
+
+  it("an_override_above_the_ceiling_falls_back_to_the_default", async () => {
+    const env = makeEnv({ CLIENT_VIEWS_PER_HOUR: "999999" });
+    for (let i = 0; i < 70; i++) await handleView(beacon(), env, NOW);
+    expect((await rows()).length).toBe(DEFAULT_CLIENT_VIEWS_PER_HOUR);
+  }, 60_000);
+
+  it("the_stored_key_is_not_the_visitor_hash_nor_the_address", async () => {
+    await handleView(beacon(), makeEnv(), NOW);
+    const key = (await budgets()).find((b) => b.key.startsWith("cap:"))?.key ?? "";
+    expect(key).toMatch(/^cap:[0-9a-f]{8}:\d+$/);
+    expect(key).not.toContain(IP4);
+    expect(key.split(":")[1]).not.toBe((await seen())[0]?.h);
+  });
+
+  it("bots_are_capped_per_client_too", async () => {
+    const env = makeEnv({ CLIENT_VIEWS_PER_HOUR: "2" });
+    for (let i = 0; i < 6; i++) await handleView(beacon({ headers: { "User-Agent": "curl/8.5.0" } }), env, NOW);
+    expect((await rows()).length).toBe(2);
+  });
+
+  it("without_a_secret_there_is_no_client_key_and_the_limiter_alone_applies", async () => {
+    const env = makeEnv({ VIEW_HASH_SECRET: undefined, CLIENT_VIEWS_PER_HOUR: "1" });
+    await handleView(beacon(), env, NOW);
+    await handleView(beacon(), env, NOW);
+    expect((await rows()).length).toBe(2);
+    expect((await budgets()).some((b) => b.key.startsWith("cap:"))).toBe(false);
   });
 });
 

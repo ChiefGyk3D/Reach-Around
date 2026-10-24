@@ -58,6 +58,8 @@ export interface ViewEnv {
   BOTS_MODE?: string;
   VIEWS_PER_HOUR?: string;
   BOT_VIEWS_PER_HOUR?: string;
+  /** Per-client hourly cap (default 60, ceiling 1000). Needs VIEW_HASH_SECRET. */
+  CLIENT_VIEWS_PER_HOUR?: string;
 }
 
 export const MAX_BODY = 256;
@@ -67,6 +69,14 @@ const MAX_CITY_LENGTH = 60;
 const MAX_CITY_INPUT = 200;
 const DEFAULT_HUMAN_PER_HOUR = 120;
 const DEFAULT_BOT_PER_HOUR = 30;
+/**
+ * One client may spend at most this many accepted views an hour, so a single
+ * address cannot drain the global budget. The client is identified only by a
+ * keyed hash (see capKey), never the address. CLIENT_VIEWS_PER_HOUR overrides
+ * it up to the ceiling; a larger or malformed value falls back to the default.
+ */
+export const DEFAULT_CLIENT_VIEWS_PER_HOUR = 60;
+export const MAX_CLIENT_VIEWS_PER_HOUR = 1000;
 const DEFAULT_HASH_BITS = 32;
 const MIN_SECRET_BYTES = 32;
 const HOUR_MS = 3_600_000;
@@ -360,21 +370,28 @@ export async function visitorHash(key: CryptoKey, normalized: string, bits: numb
 }
 
 /**
- * Daily visitor hash for this request, or null when uniques are off, the
- * secret is missing or too short, or the address does not parse. The raw
- * address is a local here and in normalizeAddress only.
+ * Keyed hashes for this request, or nulls when there is no usable secret or
+ * the address does not parse. `uv` is the daily unique-visitor hash (only if
+ * uniques are on); `cap` is a separate 32-bit hash under a different label,
+ * used only as the per-client budget key (bots and humans on one address have
+ * separate caps), so it cannot be matched to a visitor_seen row. The raw address is a local here and in normalizeAddress.
  */
-async function hashFor(request: Request, env: ViewEnv, now: number): Promise<string | null> {
-  const uv = env.UV_ENABLED;
-  if (typeof uv === "string" && !flagOn(uv)) return null;
+async function hashesFor(
+  request: Request,
+  env: ViewEnv,
+  now: number,
+  bot: boolean,
+): Promise<{ uv: string | null; cap: string | null }> {
   const secret = secretBytes(env.VIEW_HASH_SECRET);
-  if (secret === null || typeof env.VIEW_HASH_SECRET !== "string") return null;
+  if (secret === null || typeof env.VIEW_HASH_SECRET !== "string") return { uv: null, cap: null };
   const addr = normalizeAddress(request.headers.get("CF-Connecting-IP")); // CONTROL:pv-no-raw
-  if (addr === null) return null;
-  const bits = positiveInt(env.UV_BITS, DEFAULT_HASH_BITS, 64);
-  const useBits = bits >= 16 ? bits : DEFAULT_HASH_BITS;
+  if (addr === null) return { uv: null, cap: null };
   const key = await dayKey(secret, env.VIEW_HASH_SECRET, utcDate(now)); // CONTROL:pv-uv-key
-  return visitorHash(key, addr, useBits);
+  const cap = await visitorHash(key, `cap|${bot ? "bot" : "human"}|${addr}`, 32);
+  const flag = env.UV_ENABLED;
+  if (typeof flag === "string" && !flagOn(flag)) return { uv: null, cap };
+  const bits = positiveInt(env.UV_BITS, DEFAULT_HASH_BITS, 64);
+  return { uv: await visitorHash(key, addr, bits >= 16 ? bits : DEFAULT_HASH_BITS), cap };
 }
 
 // ----------------------------------------------------------------- derive
@@ -459,9 +476,8 @@ async function readBounded(body: ReadableStream<Uint8Array> | null, max: number)
  * `changes` is 1 when a unit was granted and 0 when the budget is spent.
  * This is the first write of an accepted view.
  */
-async function reserve(env: ViewEnv, route: "pv" | "pvbot", limit: number, now: number): Promise<boolean> {
+async function reserve(env: ViewEnv, key: string, limit: number): Promise<boolean> {
   if (limit <= 0) return false;
-  const key = `bud:${route}:${Math.floor(now / HOUR_MS)}`;
   const res = await env.DB.prepare(
     "INSERT INTO view_meta (key, value) VALUES (?1, '1') " +
       "ON CONFLICT(key) DO UPDATE SET value = CAST(CAST(value AS INTEGER) + 1 AS TEXT) " +
@@ -532,11 +548,19 @@ export async function handleView(
     const limit = bot
       ? positiveInt(env.BOT_VIEWS_PER_HOUR, DEFAULT_BOT_PER_HOUR, 100000)
       : positiveInt(env.VIEWS_PER_HOUR, DEFAULT_HUMAN_PER_HOUR, 100000);
-    if (!(await reserve(env, bot ? "pvbot" : "pv", limit, now))) return noContent();
+    const hour = Math.floor(now / HOUR_MS);
+
+    // Per-client cap first, so one client cannot spend the global budget.
+    const { uv, cap } = await hashesFor(request, env, now, bot);
+    if (cap !== null) {
+      const perClient = positiveInt(env.CLIENT_VIEWS_PER_HOUR, DEFAULT_CLIENT_VIEWS_PER_HOUR, MAX_CLIENT_VIEWS_PER_HOUR);
+      if (!(await reserve(env, `cap:${cap}:${hour}`, perClient))) return noContent(); // CONTROL:pv-client-cap
+    }
+    if (!(await reserve(env, `bud:${bot ? "pvbot" : "pv"}:${hour}`, limit))) return noContent();
 
     let first = 0;
     if (!bot) {
-      const h = await hashFor(request, env, now);
+      const h = uv;
       if (h !== null) {
         const seen = await env.DB.prepare("INSERT OR IGNORE INTO visitor_seen (day, h) VALUES (?, ?)")
           .bind(utcDate(now), h)

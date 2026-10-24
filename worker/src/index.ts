@@ -2,6 +2,7 @@
 import { handleClick, MAX_URL_LENGTH, type Env as ClickEnv } from "./click";
 import { purgeOldEvents } from "./retention";
 import { handleView, type ViewEnv } from "./view";
+import { purgeViews } from "./viewretention";
 
 export type { Env } from "./click";
 export type { ViewEnv } from "./view";
@@ -32,12 +33,30 @@ export default {
     return handleClick(request, env);
   },
 
-  /** Daily cron: drop click rows past the retention window. */
+  /**
+   * Daily cron: drop click rows and page-view rows past their retention
+   * windows. Each purge is independent, so one failing cannot stop the other,
+   * and nothing here throws.
+   */
   async scheduled(
     _controller: ScheduledController,
-    env: ClickEnv,
+    env: ClickEnv & { RAW_KEEP_DAYS?: string },
     ctx: ExecutionContext,
   ): Promise<void> {
-    ctx.waitUntil(purgeOldEvents(env, Date.now()).then(() => undefined));
+    ctx.waitUntil(
+      (async () => {
+        const now = Date.now();
+        try {
+          await purgeOldEvents(env, now);
+        } catch {
+          // Next run retries; nothing request-derived to report.
+        }
+        try {
+          await purgeViews(env, now);
+        } catch {
+          // Same.
+        }
+      })(),
+    );
   },
 };

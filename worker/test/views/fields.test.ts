@@ -24,6 +24,7 @@ describe("parseHost", () => {
       "example.test/path",
       "https://example.test/a?b=c#d",
       "a".repeat(81),
+      `${"a".repeat(63)}.${"b".repeat(14)}.cc`, // 81 characters, otherwise well formed
       "-bad.example.test",
       "bad-.example.test",
       "exa mple.test",
