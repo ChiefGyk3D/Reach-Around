@@ -266,9 +266,10 @@ has, and every `id` must be unique across the whole site.
 | text | `id`, `markdown` | up to 5000 characters |
 | image | `id`, `src`, `alt`, optional `link` | `alt` is required |
 | crypto | `id`, `coins`, optional `title`, `note` | addresses to copy; see [Crypto](#crypto) |
+| email | `id`, `address`, optional `title`, `note`, `reveal`, `spell` | a contact address kept off the page; see [Email](#email) |
 | divider | `id` only | a horizontal rule |
 
-Text, image, crypto and divider blocks have no `show_from` or `show_until`; they always
+Text, image, crypto, email and divider blocks have no `show_from` or `show_until`; they always
 show.
 
 ```yaml
@@ -348,6 +349,57 @@ script is loaded with `<script src defer>`, which the default
 `script-src 'self'` allows. Without JavaScript the button stays hidden and the
 address can still be selected and copied by hand. Never put a private key or a
 seed phrase in the config.
+
+#### Email
+
+A contact button that keeps the plain address out of the built page. Without
+JavaScript the page shows the address spelled out (`name at example dot test`)
+as selectable text. With JavaScript a **Show email** button reveals the real
+address as selectable text, a **Write email** button that opens the visitor's
+mail program, and a **Copy** button.
+
+```yaml
+blocks:
+  - id: email
+    title: Email me
+    address: name@example.test
+    note: Business and press only. I read everything and answer within a week.
+    reveal: click
+    spell:
+      at: at
+      dot: dot
+```
+
+A runnable version is in `examples/email/`.
+
+| Key | Rule |
+| --- | --- |
+| `id` | a slug, unique across the site |
+| `title` | optional heading, plain text, up to 200 characters |
+| `address` | required. One plain ASCII address, `local@domain`: no display name, quotes, comments, spaces, control characters or Unicode, at most 254 characters (64 before the `@`). The domain needs at least one dot and cannot be a bare IP number |
+| `note` | optional, plain text, up to 300 characters, shown under the buttons. This is where you say what the address is for. It is refused if it contains `@`, `mailto:` or the address's domain, because it is plain text on the page |
+| `reveal` | `click` (default): the visitor presses Show email. `always`: the script shows the address at load. `never_js`: no script is shipped for this block and the page only ever shows the spelled form |
+| `spell.at`, `spell.dot` | optional words used for `@` and `.` in the spelled form, 1 to 20 characters with no spaces, `@` or `.`. Defaults `at` and `dot`. Dots in the part before the `@` are spelled out too |
+
+**What the built page contains.** The HTML has the spelled text, and (for
+`click` and `always`) the address reversed and base64 encoded in a `data-email`
+attribute. It never contains the plain address, an `@`, or a `mailto:` link: the
+script creates the link only after the reveal. `email.js` and `email.css` are
+added only to pages with the block (`never_js` blocks get the stylesheet and no
+script), the script is loaded with `<script src defer>` so the default
+`script-src 'self'` still holds, and it makes no network request and stores
+nothing.
+
+**The honest limit.** This stops simple scrapers that read page source or run
+a regular expression over the HTML. It does not stop a determined one: a
+browser-driven or AI scraper that runs the script, or anything that decodes a
+base64 attribute, can read the address, and so can a person who copies the
+spelled form. If an address must never be found, do not publish it.
+
+**Testing note.** The script opens the mail program through
+`window.__raOpen(url)` when that function exists, and sets
+`window.location.href` otherwise. Browser tests define `__raOpen` so no test
+ever hands off to a real mail client.
 
 #### Markdown
 

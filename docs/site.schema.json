@@ -221,6 +221,90 @@
       "title": "Divider",
       "type": "object"
     },
+    "Email": {
+      "additionalProperties": false,
+      "description": "A contact address kept out of the built page.\n\nThe HTML holds the address only reversed and base64 encoded in a data\nattribute; ``email.js`` assembles it. No ``@`` and no mail link is ever\nwritten to the output. Without script the page shows it spelled out.",
+      "properties": {
+        "address": {
+          "title": "Address",
+          "type": "string"
+        },
+        "id": {
+          "pattern": "^[a-z0-9][a-z0-9-]{0,39}$",
+          "title": "Id",
+          "type": "string"
+        },
+        "note": {
+          "anyOf": [
+            {
+              "maxLength": 300,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Note"
+        },
+        "reveal": {
+          "default": "click",
+          "enum": [
+            "click",
+            "always",
+            "never_js"
+          ],
+          "title": "Reveal",
+          "type": "string"
+        },
+        "spell": {
+          "$ref": "#/$defs/EmailSpell",
+          "default": {
+            "at": "at",
+            "dot": "dot"
+          }
+        },
+        "title": {
+          "anyOf": [
+            {
+              "maxLength": 200,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Title"
+        }
+      },
+      "required": [
+        "address",
+        "id"
+      ],
+      "title": "Email",
+      "type": "object"
+    },
+    "EmailSpell": {
+      "additionalProperties": false,
+      "description": "The words shown in place of ``@`` and ``.`` when script is off.",
+      "properties": {
+        "at": {
+          "default": "at",
+          "title": "At",
+          "type": "string"
+        },
+        "dot": {
+          "default": "dot",
+          "title": "Dot",
+          "type": "string"
+        }
+      },
+      "title": "EmailSpell",
+      "type": "object"
+    },
     "Features": {
       "additionalProperties": false,
       "description": "Which data-collecting features the site uses.",
@@ -724,6 +808,9 @@
               },
               {
                 "$ref": "#/$defs/Crypto"
+              },
+              {
+                "$ref": "#/$defs/Email"
               },
               {
                 "$ref": "#/$defs/Divider"

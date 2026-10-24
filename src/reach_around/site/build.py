@@ -20,7 +20,7 @@ from typing import Any
 
 from jinja2 import Environment
 
-from reach_around.config.blocks import Crypto
+from reach_around.config.blocks import Crypto, Email
 from reach_around.config.models import Block, Link, Section, SiteConfig, Tab
 from reach_around.config.page_title import DEFAULT_TEMPLATE, render_template
 from reach_around.config.profile_card import MEDIA_KIT_ID
@@ -62,8 +62,24 @@ def _has_crypto(blocks: Iterable[Block]) -> bool:
     return any(isinstance(block, Crypto) for block in blocks)
 
 
+def _has_email(blocks: Iterable[Block]) -> bool:
+    return any(isinstance(block, Email) for block in blocks)
+
+
+def _has_email_script(blocks: Iterable[Block]) -> bool:
+    """An email block needs the script unless it opted out of it."""
+    return any(
+        isinstance(block, Email) and block.reveal != "never_js" for block in blocks
+    )
+
+
 # Published only for a site with a crypto block on a page; see ``build_site``.
 _CRYPTO_FILES = (Path("static") / "copy.js", Path("static") / "crypto.css")
+
+
+# Published only for a site with an email block; the script only if one uses it.
+_EMAIL_STYLE = Path("static") / "email.css"
+_EMAIL_SCRIPT = Path("static") / "email.js"
 
 
 def _page_path(tab_index: int, tab: Tab) -> Path:
@@ -161,6 +177,8 @@ def _render_page(
         show_cookie_banner=sets_cookies(config),
         click_tracking=config.features.click_tracking,
         has_crypto=_has_crypto(blocks),
+        has_email=_has_email(blocks),
+        has_email_script=_has_email_script(blocks),
         profile_card=_profile_card(config),
         cookie_text=intro_text(config),
         custom_css=custom_css,
@@ -179,6 +197,8 @@ def _render_privacy(env: Environment, config: SiteConfig, custom_css: bool) -> s
         show_cookie_banner=False,
         click_tracking=config.features.click_tracking,
         has_crypto=False,
+        has_email=False,
+        has_email_script=False,
         profile_card=_profile_card(config),
         intro=intro_text(config),
         items=collected_items(config),
@@ -318,6 +338,10 @@ def build_site(
     if not any(_has_crypto(blocks) for blocks in shown):
         for rel in _CRYPTO_FILES:
             files.pop(rel, None)
+    if not any(_has_email(blocks) for blocks in shown):
+        files.pop(_EMAIL_STYLE, None)
+    if not any(_has_email_script(blocks) for blocks in shown):
+        files.pop(_EMAIL_SCRIPT, None)
     files[Path("static") / "theme.css"] = theme_css(config.theme).encode("utf-8")
     if custom_css is not None:
         files[Path("static") / "custom.css"] = custom_css.encode("utf-8")

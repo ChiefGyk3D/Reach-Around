@@ -1,0 +1,86 @@
+/* SPDX-License-Identifier: Apache-2.0 */
+/* The email block. Loaded only on pages that have one, after site.css, so it
+   reads the same --ra-* tokens and holds no color of its own. Mobile first:
+   one column, the address wraps anywhere, and the buttons stay hidden until
+   email.js marks the page, so no control is shown that does nothing. */
+
+.blocks > .block-email { grid-column: 1 / -1; }
+.email-title {
+  margin: 0 0 var(--ra-space-3);
+  font-size: var(--ra-text-lg);
+  font-weight: 700;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+}
+.email-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ra-space-3);
+  min-width: 0;
+  padding: var(--ra-space-4);
+  border: 1px solid var(--ra-color-border);
+  border-radius: var(--ra-card-radius);
+  background-color: var(--ra-color-surface);
+  box-shadow: var(--ra-shadow-card);
+  color: var(--ra-color-text);
+}
+.email-spelled,
+.email-note {
+  margin: 0;
+  min-width: 0;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+.email-spelled { font-size: var(--ra-text-md); }
+.email-note { color: var(--ra-color-muted); font-size: var(--ra-text-sm); }
+.email-actions { display: none; }
+.email-ready .email-actions { display: flex; flex-direction: column; gap: var(--ra-space-2); }
+/* Once the address is shown, the spelled text and the Show button are done. */
+.email-card[data-email-state="open"] .email-spelled,
+.email-card[data-email-state="open"] .email-actions { display: none; }
+.email-revealed { display: flex; flex-direction: column; gap: var(--ra-space-3); min-width: 0; }
+.email-revealed[hidden] { display: none; }
+.email-address {
+  display: block;
+  min-width: 0;
+  padding: var(--ra-space-3);
+  border: 1px solid var(--ra-color-border);
+  border-radius: var(--ra-radius);
+  background-color: var(--ra-color-raised);
+  color: var(--ra-color-text);
+  font-size: var(--ra-text-md);
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+.email-buttons { display: flex; flex-direction: column; gap: var(--ra-space-2); }
+.email-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: var(--ra-tap);
+  min-height: var(--ra-tap);
+  padding: 0 var(--ra-space-5);
+  border-radius: var(--ra-button-radius);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+  transition: transform var(--ra-duration) var(--ra-ease), filter var(--ra-duration);
+}
+.email-show,
+.email-write {
+  border: 1px solid var(--ra-color-accent-edge);
+  background-color: var(--ra-color-accent);
+  box-shadow: var(--ra-shadow-pill);
+  color: var(--ra-color-on-accent);
+}
+.email-copy {
+  border: 1px solid var(--ra-color-border);
+  background-color: var(--ra-color-raised);
+  color: var(--ra-color-text);
+}
+.email-button:active { transform: scale(0.985); }
+
+@media (min-width: 30rem) {
+  .email-ready .email-actions,
+  .email-buttons { flex-direction: row; flex-wrap: wrap; gap: var(--ra-space-3); }
+}

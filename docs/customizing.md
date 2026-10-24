@@ -69,6 +69,7 @@ keys:
 | text | `id`, `markdown` |
 | image | `id`, `src`, `alt` |
 | crypto (addresses to copy) | `id`, `coins` |
+| email (a contact button) | `id`, `address` |
 | divider | `id` |
 
 Every `id` must be unique across the whole site. Links can carry `affiliate`,
@@ -103,6 +104,22 @@ payment page like any other code you run.
       qr: media/qr-example.png
 ```
 
+
+### A contact button that hides the address
+
+The `email` block shows `name at example dot test` as plain text, and with
+JavaScript a **Show email** button reveals the real address with Write email and
+Copy buttons. The built page never holds the plain address or a `mailto:`
+link. This only stops simple scrapers; see
+[the config reference](config.md#email) for the honest limit and the keys.
+`examples/email/site.yaml` is a working copy with a made-up address.
+
+```yaml
+- id: email
+  title: Email me
+  address: name@example.test
+  note: Business and press only.
+```
 
 ### Linking to another tab
 

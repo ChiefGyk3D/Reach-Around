@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Content blocks that carry no schedule: text, image, divider and crypto.
+"""Content blocks that carry no schedule: text, image, divider, crypto and email.
 
 These live apart from ``models`` so each block type has one small home. They
 cannot import ``models`` at module level (``models`` imports this module), so
@@ -8,6 +8,7 @@ the URL check is imported inside the validators.
 
 from __future__ import annotations
 
+import base64
 import re
 import unicodedata
 from typing import Annotated, Literal
@@ -181,3 +182,104 @@ class Crypto(_BlockModel):
     @property
     def shown_note(self) -> str:
         return self.note if self.note is not None else DEFAULT_CRYPTO_NOTE
+
+
+# --- email ------------------------------------------------------------------
+
+# One plain ASCII address and nothing else: no display name, no quoted local
+# part, no comment, no Unicode. ``fullmatch`` on purpose (a pattern ending in
+# ``$`` would accept a trailing newline).
+_EMAIL_LOCAL = re.compile(r"[A-Za-z0-9%+_-]+(?:\.[A-Za-z0-9%+_-]+)*")
+_HOST_LABEL = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?")
+_MAX_ADDRESS = 254
+_MAX_LOCAL = 64
+_SPELL_WORD = re.compile(r"[^\s@.]{1,20}")
+EmailReveal = Literal["click", "always", "never_js"]
+
+
+def _check_email(value: str) -> str:
+    problem = (
+        "address must be one plain ASCII address like name@example.com: no "
+        "display name, quotes, spaces, control characters or Unicode, at most "
+        f"{_MAX_ADDRESS} characters"
+    )
+    if len(value) > _MAX_ADDRESS or value.count("@") != 1:
+        raise ValueError(problem)
+    local, domain = value.split("@")
+    if len(local) > _MAX_LOCAL or not _EMAIL_LOCAL.fullmatch(local):
+        raise ValueError(problem)
+    labels = domain.split(".")
+    if len(labels) < 2 or not all(_HOST_LABEL.fullmatch(part) for part in labels):
+        raise ValueError(problem)
+    if labels[-1].isdigit():  # 192.0.2.1 is a number, not a name
+        raise ValueError(problem)
+    return value
+
+
+class EmailSpell(_BlockModel):
+    """The words shown in place of ``@`` and ``.`` when script is off."""
+
+    at: StrictStr = "at"
+    dot: StrictStr = "dot"
+
+    @field_validator("at", "dot")
+    @classmethod
+    def _word(cls, value: str) -> str:
+        _plain_text(value)
+        if not _SPELL_WORD.fullmatch(value):
+            raise ValueError(
+                "must be 1 to 20 characters with no spaces, '@' or '.' "
+                "(the spelled-out address must not look like one)"
+            )
+        return value
+
+
+class Email(_BlockModel):
+    """A contact address kept out of the built page.
+
+    The HTML holds the address only reversed and base64 encoded in a data
+    attribute; ``email.js`` assembles it. No ``@`` and no mail link is ever
+    written to the output. Without script the page shows it spelled out.
+    """
+
+    id: BlockId
+    title: Annotated[str, StringConstraints(min_length=1, max_length=200)] | None = None
+    address: StrictStr
+    note: Annotated[str, StringConstraints(min_length=1, max_length=300)] | None = None
+    reveal: EmailReveal = "click"
+    spell: EmailSpell = EmailSpell()
+
+    @field_validator("title", "note")
+    @classmethod
+    def _text_is_plain(cls, value: str | None) -> str | None:
+        return _plain_text(value)
+
+    @field_validator("address")
+    @classmethod
+    def _address_shape(cls, value: str) -> str:
+        return _check_email(value)
+
+    @model_validator(mode="after")
+    def _note_keeps_the_address_off_the_page(self) -> Email:
+        if self.note is not None:
+            lowered = self.note.lower()
+            domain = self.address.split("@")[1].lower()
+            if "@" in lowered or "mailto:" in lowered or domain in lowered:
+                raise ValueError(
+                    "note must not contain an address, '@', 'mailto:' or the "
+                    "domain: it is shown on the page as plain text"
+                )
+        return self
+
+    @property
+    def spelled(self) -> str:
+        """``name at example dot test``, the only form the HTML shows."""
+        local, domain = self.address.split("@")
+        dot = f" {self.spell.dot} "
+        return f"{local.replace('.', dot)} {self.spell.at} {domain.replace('.', dot)}"
+
+    @property
+    def encoded(self) -> str:
+        """The address reversed, then base64: what ``email.js`` decodes."""
+        raw = self.address[::-1].encode("ascii")
+        return base64.b64encode(raw).decode("ascii")

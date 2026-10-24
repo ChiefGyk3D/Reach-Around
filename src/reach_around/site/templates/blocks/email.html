@@ -1,0 +1,19 @@
+{# SPDX-License-Identifier: Apache-2.0 #}
+<li class="block block-email">
+{% if block.title %}
+<h2 class="email-title">{{ block.title }}</h2>
+{% endif %}
+<div class="email-card"{% if block.reveal != "never_js" %} data-email="{{ block.encoded }}" data-email-reveal="{{ block.reveal }}"{% endif %}>
+<p class="email-spelled" id="{{ block.id }}-spelled">{{ block.spelled }}</p>
+{% if block.reveal != "never_js" %}
+<div class="email-actions">
+<button class="email-button email-show" type="button" data-email-action="show" aria-describedby="{{ block.id }}-spelled">Show email</button>
+</div>
+<div class="email-revealed" hidden></div>
+{% endif %}
+{% if block.note %}
+<p class="email-note">{{ block.note }}</p>
+{% endif %}
+<p class="email-status sr-only" role="status" aria-live="polite" data-email-status></p>
+</div>
+</li>
