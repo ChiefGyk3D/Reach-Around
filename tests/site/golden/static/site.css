@@ -306,7 +306,10 @@ a:focus-visible, summary:focus-visible, button:focus-visible {
 }
 
 /* Tab bar: accent bar flush to the top of the column, uppercase labels. It
-   scrolls sideways when the tabs do not fit, with an edge cue where more hide. */
+   scrolls sideways when the tabs do not fit, with an edge cue where more hide.
+   The current tab is the initial scroll target, so it starts in view without
+   script. Below 430 px the labels and padding shrink so about four short tabs
+   share one row; longer or more tabs fall back to the scrolling bar. */
 .tabs { margin: 0 0 var(--ra-space-3); }
 .tabs ul {
   display: flex;
@@ -317,6 +320,7 @@ a:focus-visible, summary:focus-visible, button:focus-visible {
   overscroll-behavior-x: contain;
   scrollbar-width: none;
   scroll-snap-type: x proximity;
+  scroll-padding-inline: var(--ra-space-4);
   border-radius: var(--ra-tab-radius);
   background-color: var(--ra-color-accent);
   background-image:
@@ -332,6 +336,7 @@ a:focus-visible, summary:focus-visible, button:focus-visible {
 }
 .tabs ul::-webkit-scrollbar { display: none; }
 .tabs li { flex: 1 0 auto; scroll-snap-align: center; }
+.tabs li:has(> a[aria-current="page"]) { scroll-initial-target: nearest; }
 .tabs a {
   display: flex;
   align-items: center;
@@ -352,6 +357,14 @@ a:focus-visible, summary:focus-visible, button:focus-visible {
   background-color: var(--ra-color-accent-edge);
   box-shadow: inset 0 -3px 0 var(--ra-color-on-accent);
   font-weight: 700;
+}
+
+@media (max-width: 430px) {
+  .tabs a {
+    padding: 0 var(--ra-space-2);
+    font-size: var(--ra-text-xs);
+    letter-spacing: 0;
+  }
 }
 
 /* Link buttons: full-width accent pills. The thumbnail slot sits at the left,
