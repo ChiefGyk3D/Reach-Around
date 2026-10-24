@@ -24,7 +24,7 @@ BASH = "/bin/bash"
 
 PINNED = re.compile(r"^[\w.-]+/[\w./-]+@[0-9a-f]{40} # v\d+(\.\d+)*$")
 USES_LINE = re.compile(r"^\s*(?:-\s*)?uses:\s*(\S.*?)\s*$", re.MULTILINE)
-TOKEN = "CLOUDFLARE_API_TOKEN"
+CF_ENV_VAR = "CLOUDFLARE_API_TOKEN"
 DIGEST_IMAGE = re.compile(r"^ENGINE_IMAGE=\S+:[\w.-]+@sha256:[0-9a-f]{64}$", re.M)
 
 
@@ -64,11 +64,13 @@ def violations(text: str) -> list[str]:
             step_text = yaml.safe_dump(step)
             is_wrangler = "wrangler" in run and "--version" not in run
             token_step = (
-                is_wrangler and job_name == "deploy" and TOKEN in step.get("env", {})
+                is_wrangler
+                and job_name == "deploy"
+                and CF_ENV_VAR in step.get("env", {})
             )
             if "secrets." in step_text and not token_step:
                 found.append(f"{label}: secret outside a wrangler step")
-            if TOKEN in step_text and not token_step:
+            if CF_ENV_VAR in step_text and not token_step:
                 found.append(f"{label}: token name outside a wrangler step")
     return found
 
@@ -128,7 +130,7 @@ def test_deploy_workflow_shape() -> None:
     assert jobs["deploy"]["environment"] == "production"
     assert jobs["deploy"]["needs"] == "validate"
     with_token = [
-        s["name"] for s in jobs["deploy"]["steps"] if TOKEN in s.get("env", {})
+        s["name"] for s in jobs["deploy"]["steps"] if CF_ENV_VAR in s.get("env", {})
     ]
     assert with_token == [
         "Apply D1 migrations",
@@ -153,7 +155,9 @@ def test_the_guard_bites() -> None:
     sha = re.search(r"actions/checkout@([0-9a-f]{40}) # v[\d.]+", good)
     assert sha
     install = "        run: npm ci --ignore-scripts"
-    token_env = f"        env:\n          {TOKEN}: ${{{{ secrets.{TOKEN} }}}}\n"
+    token_env = (
+        f"        env:\n          {CF_ENV_VAR}: ${{{{ secrets.{CF_ENV_VAR} }}}}\n"
+    )
     mutations = {
         "unpinned": good.replace(sha.group(0), "actions/checkout@main"),
         "no version comment": good.replace(
