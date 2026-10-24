@@ -20,6 +20,7 @@ One note per platform, written under epic #1. These are drafts: first-pass resea
 | LinkedIn | #19 | [linkedin.md](linkedin.md) | SOUND |
 | StreamElements | #20 | [streamelements.md](streamelements.md) | UNRELIABLE |
 | Patreon | #21 | [patreon.md](patreon.md) | FIX |
+| IP network datasets | #120 | [ip-network-datasets.md](ip-network-datasets.md) | none yet |
 
 Review: FIX and UNRELIABLE notes have been corrected in this branch but still need a human read where marked UNVERIFIED (notably TikTok open-source clause, StreamElements docs, Twitch Get Videos/Get Streams, Social Blade terms).
 
