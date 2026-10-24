@@ -12,6 +12,7 @@ from jinja2.sandbox import ImmutableSandboxedEnvironment
 
 from reach_around.cli import main
 from reach_around.site.overrides import (
+    MAX_OVERRIDE_TEMPLATE_BYTES,
     OverridesError,
     build_csp,
     load_custom_css,
@@ -402,3 +403,114 @@ def test_custom_css_relative_urls_and_plain_css_are_accepted(
     overrides: Path, css: str
 ) -> None:
     assert _css(overrides, css) == css
+
+
+# ----------------------------------------- CSS functions that can fetch a URL
+
+_FETCHING_FUNCTIONS = [
+    "image",
+    "image-set",
+    "-webkit-image-set",
+    "-moz-image-set",
+    "src",
+    "cross-fade",
+    "-webkit-cross-fade",
+]
+
+
+@pytest.mark.parametrize("quote", ['"', "'"])
+@pytest.mark.parametrize("gap", ["", " ", "\n"])
+@pytest.mark.parametrize("name", _FETCHING_FUNCTIONS)
+@pytest.mark.parametrize("case", [str.lower, str.upper, str.title])
+def test_css_functions_that_take_a_url_are_refused(
+    overrides: Path, name: str, gap: str, quote: str, case: Any
+) -> None:
+    arg = f"{quote}https://evil.example/x{quote}"
+    with pytest.raises(OverridesError, match="refused"):
+        _css(overrides, f"a{{background:{case(name)}{gap}({arg})}}")
+
+
+def test_image_function_with_string_argument_is_refused(overrides: Path) -> None:
+    with pytest.raises(OverridesError, match=r"image\(\)"):
+        _css(overrides, 'a{background:image("https://evil.example/x")}')
+
+
+def test_function_names_hidden_by_comments_are_refused(overrides: Path) -> None:
+    for css in (
+        'a{background:ima/**/ge("https://evil.example/x")}',
+        'a{background:cross-/**/fade("https://evil.example/x")}',
+    ):
+        with pytest.raises(OverridesError):
+            _css(overrides, css)
+
+
+@pytest.mark.parametrize(
+    "rule", ['@namespace "http://x.example/ns";', "@namespace url(x);"]
+)
+def test_namespace_rule_is_refused(overrides: Path, rule: str) -> None:
+    with pytest.raises(OverridesError, match="@namespace"):
+        _css(overrides, rule)
+
+
+def test_font_face_with_remote_src_is_refused(overrides: Path) -> None:
+    with pytest.raises(OverridesError, match="relative"):
+        _css(
+            overrides,
+            "@font-face{font-family:x;src:url(https://evil.example/f.woff2)}",
+        )
+
+
+@pytest.mark.parametrize(
+    "css",
+    [
+        "@font-face{font-family:x;src:url(fonts/x.woff2) format('woff2')}",
+        "@font-face{font-family:x;src:local(Arial)}",
+        "a{background:linear-gradient(red,blue)}",
+        "a{background-image:none;image-rendering:pixelated;object-fit:cover}",
+        "a{background:element(#some-id)}",
+        "a{background:paint(my-worklet)}",
+        "a{--src:1;--image:2;color:var(--src)}",
+    ],
+)
+def test_non_fetching_css_is_still_accepted(overrides: Path, css: str) -> None:
+    assert _css(overrides, css) == css
+
+
+# ------------------------------------------------- override template size cap
+
+
+def _template_with_bytes(overrides: Path, size: int) -> None:
+    (overrides / "templates" / "_footer.html").write_bytes(b"x" * size)
+
+
+def test_template_exactly_at_the_cap_is_loaded(overrides: Path) -> None:
+    _template_with_bytes(overrides, MAX_OVERRIDE_TEMPLATE_BYTES)
+    env = make_environment(overrides)
+    rendered = env.get_template("_footer.html").render()
+    assert len(rendered) == MAX_OVERRIDE_TEMPLATE_BYTES
+
+
+def test_template_one_byte_over_the_cap_is_refused_by_name(overrides: Path) -> None:
+    _template_with_bytes(overrides, MAX_OVERRIDE_TEMPLATE_BYTES + 1)
+    env = make_environment(overrides)
+    with pytest.raises(OverridesError, match=r"_footer\.html.*256 KiB"):
+        env.get_template("_footer.html")
+
+
+def test_template_cap_is_enforced_on_bytes_read_not_on_stat(
+    overrides: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _template_with_bytes(overrides, MAX_OVERRIDE_TEMPLATE_BYTES + 1)
+    real_fstat = os.fstat
+
+    class _ZeroSize:
+        def __init__(self, st: os.stat_result) -> None:
+            self._st = st
+
+        def __getattr__(self, name: str) -> Any:
+            return 0 if name == "st_size" else getattr(self._st, name)
+
+    monkeypatch.setattr(os, "fstat", lambda fd: _ZeroSize(real_fstat(fd)))
+    env = make_environment(overrides)
+    with pytest.raises(OverridesError, match="256 KiB"):
+        env.get_template("_footer.html")

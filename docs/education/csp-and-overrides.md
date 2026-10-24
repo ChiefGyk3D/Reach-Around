@@ -84,6 +84,12 @@ my-overrides/
   the sandbox `{{ cycler.__init__.__globals__.__builtins__.open(...) }}`
   reaches the file system. The sandbox refuses it
   (`test_the_globals_escape_is_a_security_error`).
+- Each override template is capped at 256 KiB, like `custom.css`. The limit is
+  enforced on the bytes actually read (one more than the limit is requested),
+  not on the size the file claims, so a sparse or growing file cannot slip
+  through. The error names the file
+  (`test_template_one_byte_over_the_cap_is_refused_by_name`,
+  `test_template_cap_is_enforced_on_bytes_read_not_on_stat`).
 - The overrides directory, `templates/` and `custom.css` must be real, not
   symlinks (`test_symlinked_templates_directory_is_refused`). Otherwise a
   symlinked `templates/` would turn any outside folder into a trusted root.
@@ -101,6 +107,19 @@ my-overrides/
   (`test_css_tokenizer_tricks_are_refused`). Creators rarely need escapes.
   Real comments are stripped from the raw text first, with strings respected,
   and an unterminated comment is refused.
+- The check is deny-by-default for CSS functions that can fetch a URL. These
+  are refused by name, case-insensitively, with or without whitespace before
+  the parenthesis and with or without a vendor prefix such as `-webkit-`:
+  `image()` (which takes a plain string such as `image("https://...")`),
+  `image-set()`, `src()` and `cross-fade()`. So are `@import` and
+  `@namespace`. The page CSP allows https images, so any of these would let a
+  stylesheet make every visitor's browser contact a third party
+  (`test_css_functions_that_take_a_url_are_refused`). `element()` and
+  `paint()` are allowed: neither fetches anything (`element()` points at a node
+  in the same document, and `paint()` only names a worklet that JavaScript
+  would have to register, and there is none). A `@font-face` rule is allowed
+  with a relative `url()` or `local()` source; a remote one is refused by the
+  `url()` rule, and the CSP only allows fonts from this site anyway.
 - `url(...)` in `custom.css` accepts only relative same-site paths. A remote
   image would send every visitor's IP address to a third party. For remote art
   use an Image block or the theme `background`; that is an explicit choice the

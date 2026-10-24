@@ -45,6 +45,7 @@ from reach_around.site.markdown import render_markdown
 LOG = logging.getLogger("reach_around.site.overrides")
 
 MAX_CUSTOM_CSS_BYTES = 256 * 1024
+MAX_OVERRIDE_TEMPLATE_BYTES = 256 * 1024
 _SCRIPT_SUFFIXES = frozenset({".js", ".mjs", ".cjs"})
 
 
@@ -133,7 +134,12 @@ class _ConfinedLoader(BaseLoader):
             raise TemplateNotFound(template)
         path = self.root.joinpath(*template.split("/"))
         try:
-            source = _read_confined(path, self.root).decode("utf-8")
+            data = _read_confined(path, self.root, MAX_OVERRIDE_TEMPLATE_BYTES + 1)
+            if len(data) > MAX_OVERRIDE_TEMPLATE_BYTES:
+                raise OverridesError(
+                    f"template {template!r} is refused: it is larger than 256 KiB"
+                )
+            source = data.decode("utf-8")
         except UnicodeDecodeError as exc:
             raise OverridesError(f"template {template!r} must be UTF-8") from exc
         mtime = real.stat().st_mtime_ns
@@ -229,8 +235,17 @@ _FORBIDDEN: tuple[tuple[str, re.Pattern[str]], ...] = tuple(
         ("behavior:", r"behavior\s*:"),
         ("-moz-binding", r"-moz-binding"),
         ("a javascript: string", r"javascript\s*:"),
-        ("image-set()", r"image-set\s*\("),
-        ("src()", r"(?<![\w-])src\s*\("),
+        ("@namespace", r"@\s*namespace"),
+        # Deny by name every CSS function that can take a URL or a string used
+        # as a URL: image("..."), image-set(), src(), cross-fade(), with or
+        # without a vendor prefix. url() is the one allowed form and has its
+        # own same-site check. element() and paint() are not refused: element()
+        # only references a node in the same document, and paint() only names a
+        # worklet that page JavaScript must register (and there is none).
+        (
+            "a URL-taking function (image(), image-set(), src() or cross-fade())",
+            r"(?<!\w)(?:-[a-z]+-)?(?:image|image-set|src|cross-fade)\s*\(",
+        ),
     )
 )
 _REMOTE_HELP = (
