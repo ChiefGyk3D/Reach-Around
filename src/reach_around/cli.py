@@ -14,6 +14,8 @@ from reach_around.preview import PreviewError, serve
 from reach_around.site.build import build_site
 from reach_around.site.visibility import today_in
 
+_OVERRIDES_HELP = "directory with templates/ and custom.css that override the defaults"
+
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
@@ -29,29 +31,33 @@ def _parser() -> argparse.ArgumentParser:
     build.add_argument(
         "--out", type=Path, required=True, help="output directory (emptied first)"
     )
+    build.add_argument("--overrides", type=Path, help=_OVERRIDES_HELP)
     serve = commands.add_parser(
         "serve", help="preview the site locally (loopback only)"
     )
     serve.add_argument("--config", type=Path, required=True, help="site config file")
     serve.add_argument("--host", default="127.0.0.1", help="loopback address to bind")
     serve.add_argument("--port", type=int, default=8000, help="port (default 8000)")
+    serve.add_argument("--overrides", type=Path, help=_OVERRIDES_HELP)
     return parser
 
 
-def _serve(config_path: Path, host: str, port: int) -> int:
+def _serve(config_path: Path, host: str, port: int, overrides: Path | None) -> int:
     try:
-        serve(config_path, host=host, port=port)
+        serve(config_path, host=host, port=port, overrides=overrides)
     except (PreviewError, OSError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
     return 0
 
 
-def _build(config_path: Path, out_dir: Path) -> int:
+def _build(config_path: Path, out_dir: Path, overrides: Path | None) -> int:
     try:
         config = load_site_config(config_path)
         today = today_in(config.timezone, datetime.now(UTC))
-        build_site(config, out_dir, today=today, protect=[config_path])
+        build_site(
+            config, out_dir, today=today, protect=[config_path], overrides=overrides
+        )
     except (ConfigError, ValueError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
@@ -65,9 +71,9 @@ def main(argv: list[str] | None = None) -> int:
         print(f"reach-around {__version__}")
         return 0
     if args.command == "build":
-        return _build(args.config, args.out)
+        return _build(args.config, args.out, args.overrides)
     if args.command == "serve":
-        return _serve(args.config, args.host, args.port)
+        return _serve(args.config, args.host, args.port, args.overrides)
     parser.print_help()
     return 2
 

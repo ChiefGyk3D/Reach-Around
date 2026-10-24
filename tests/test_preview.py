@@ -194,9 +194,8 @@ def test_stops_cleanly_on_shutdown(config: Path) -> None:
     assert not root.exists()  # temporary output directory cleaned up
 
 
-def test_serve_signature_carries_overrides_for_task_6d() -> None:
-    # Contract for Task 6D: `overrides` is accepted now and ignored until
-    # build_site supports it.
+def test_serve_signature_carries_overrides() -> None:
+    # `overrides` is part of the public signature and is passed to the build.
     params = inspect.signature(serve).parameters
     assert list(params) == ["config", "host", "port", "overrides"]
     assert params["overrides"].default is None

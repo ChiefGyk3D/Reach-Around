@@ -18,10 +18,15 @@ from importlib import resources
 from pathlib import Path
 from typing import Any
 
-from jinja2 import Environment, PackageLoader, StrictUndefined
+from jinja2 import Environment
 
 from reach_around.config.models import Block, Link, Section, SiteConfig, Tab
-from reach_around.site.markdown import render_markdown
+from reach_around.site.overrides import (
+    load_custom_css,
+    make_environment,
+    render_headers,
+    warn_about_javascript,
+)
 from reach_around.site.privacy import collected_items, intro_text, sets_cookies
 from reach_around.site.theme import theme_css
 from reach_around.site.visibility import visible_blocks
@@ -32,27 +37,6 @@ class BuildManifest:
     """What the build published: visible link id -> destination URL."""
 
     links: dict[str, str]
-
-
-def _environment() -> Environment:
-    env = Environment(
-        loader=PackageLoader("reach_around.site", "templates"),
-        autoescape=True,
-        undefined=StrictUndefined,
-        trim_blocks=True,
-        lstrip_blocks=True,
-        keep_trailing_newline=True,
-    )
-    env.globals["block_kind"] = _block_kind
-    # render_markdown returns Markup that is already escaped, so autoescape
-    # stays on in the template.
-    env.filters["markdown"] = render_markdown
-    return env
-
-
-def _block_kind(block: Block) -> str:
-    """Name the partial under ``templates/blocks/`` that renders ``block``."""
-    return type(block).__name__.lower()
 
 
 def _links_in(blocks: Iterable[Block]) -> list[Link]:
@@ -87,6 +71,7 @@ def _render_page(
     config: SiteConfig,
     index: int,
     blocks: Sequence[Block],
+    custom_css: bool,
 ) -> str:
     tab = config.tabs[index]
     root = "" if index == 0 else "../"
@@ -103,10 +88,11 @@ def _render_page(
         show_cookie_banner=sets_cookies(config),
         click_tracking=config.features.click_tracking,
         cookie_text=intro_text(config),
+        custom_css=custom_css,
     )
 
 
-def _render_privacy(env: Environment, config: SiteConfig) -> str:
+def _render_privacy(env: Environment, config: SiteConfig, custom_css: bool) -> str:
     return env.get_template("privacy.html").render(
         creator=config.creator,
         nav=_nav(config, -1, "../"),
@@ -119,16 +105,21 @@ def _render_privacy(env: Environment, config: SiteConfig) -> str:
         intro=intro_text(config),
         items=collected_items(config),
         contact=config.privacy.contact,
+        custom_css=custom_css,
     )
 
 
-def _render_pages(config: SiteConfig, shown: list[list[Block]]) -> dict[Path, str]:
-    env = _environment()
+def _render_pages(
+    env: Environment,
+    config: SiteConfig,
+    shown: list[list[Block]],
+    custom_css: bool,
+) -> dict[Path, str]:
     pages = {
-        _page_path(i, tab): _render_page(env, config, i, shown[i])
+        _page_path(i, tab): _render_page(env, config, i, shown[i], custom_css)
         for i, tab in enumerate(config.tabs)
     }
-    pages[Path("privacy") / "index.html"] = _render_privacy(env, config)
+    pages[Path("privacy") / "index.html"] = _render_privacy(env, config, custom_css)
     return pages
 
 
@@ -192,23 +183,33 @@ def build_site(
     *,
     today: date,
     protect: Iterable[Path] = (),
+    overrides: Path | None = None,
 ) -> BuildManifest:
     """Write the site for ``today`` into ``out_dir`` and return the manifest.
 
     Everything already in ``out_dir`` is deleted first, so a removed tab never
     leaves a stale page behind. ``protect`` lists paths (the config file) that
-    ``out_dir`` must not be or contain.
+    ``out_dir`` must not be or contain. ``overrides`` is an optional directory
+    with ``templates/`` and ``custom.css`` (see ``reach_around.site.overrides``).
     """
     shown = [list(visible_blocks(tab.blocks, today)) for tab in config.tabs]
     manifest = _manifest(shown)
+    env = make_environment(overrides)
+    custom_css = load_custom_css(overrides)
+    warn_about_javascript(overrides)
     files: dict[Path, bytes] = {
         page: html.encode("utf-8")
-        for page, html in _render_pages(config, shown).items()
+        for page, html in _render_pages(
+            env, config, shown, custom_css is not None
+        ).items()
     }
     files.update(_static_files())
     if not config.features.click_tracking:
         files.pop(Path("static") / "click.js", None)
     files[Path("static") / "theme.css"] = theme_css(config.theme).encode("utf-8")
+    if custom_css is not None:
+        files[Path("static") / "custom.css"] = custom_css.encode("utf-8")
+    files[Path("_headers")] = render_headers().encode("utf-8")
     files[Path("manifest.json")] = _manifest_json(manifest).encode("utf-8")
     out = _check_out_dir(out_dir, protect)
     _empty(out)
