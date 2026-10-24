@@ -1,7 +1,15 @@
 // SPDX-License-Identifier: Apache-2.0
 import { env as testEnv } from "cloudflare:workers";
-import { beforeEach, describe, expect, it } from "vitest";
-import { handleClick, type Env } from "../src/click";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  handleClick,
+  MAX_BODY_BYTES,
+  MAX_ID_LENGTH,
+  MAX_ORIGIN_HEADER,
+  MAX_PATH_LENGTH,
+  MAX_URL_LENGTH,
+  type Env,
+} from "../src/click";
 import worker from "../src/index";
 
 const SITE = "links.example.test";
@@ -368,5 +376,330 @@ describe("origin policy and uniform responses", () => {
     expect(options).toEqual(accepted);
     expect(limited).toEqual(accepted);
     expect(await rows()).toHaveLength(1);
+  });
+});
+
+describe("cost guards: body cap, path cap, kill switch", () => {
+  const sig = async (r: Response) => ({
+    status: r.status,
+    body: await r.text(),
+    headers: [...r.headers.entries()].sort(),
+  });
+
+  /** A POST whose body stream counts how many chunks were pulled. */
+  function streamed(
+    chunks: number,
+    chunkSize: number,
+    headers: Record<string, string | null> = {},
+    path = "/e/c/example-one",
+    method = "POST",
+  ) {
+    const state = { pulls: 0, cancelled: false };
+    let sent = 0;
+    // highWaterMark 0: the stream pulls only when a reader asks, so the pull
+    // count measures what the handler read.
+    const body = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        state.pulls += 1;
+        if (sent >= chunks) {
+          controller.close();
+          return;
+        }
+        sent += 1;
+        controller.enqueue(new Uint8Array(chunkSize));
+      },
+      cancel() {
+        state.cancelled = true;
+      },
+    }, { highWaterMark: 0 });
+    const h = new Headers({
+      "User-Agent": BROWSER_UA,
+      "Ping-From": `https://${SITE}/`,
+      "CF-Connecting-IP": "198.51.100.7",
+    });
+    for (const [k, v] of Object.entries(headers)) if (v !== null) h.set(k, v);
+    const req = new Request(`https://worker.example.test${path}`, {
+      method,
+      headers: h,
+      body,
+      duplex: "half",
+    } as RequestInit);
+    return { req, state };
+  }
+
+  function spyEnv(over: Partial<Env> = {}) {
+    const calls = { db: 0, limiter: 0 };
+    const real = testEnv.DB;
+    const DB = new Proxy(real, {
+      get(t, prop) {
+        if (prop === "prepare") {
+          return (q: string) => {
+            calls.db += 1;
+            return t.prepare(q);
+          };
+        }
+        const v = Reflect.get(t, prop, t) as unknown;
+        return typeof v === "function" ? (v as (...a: unknown[]) => unknown).bind(t) : v;
+      },
+    });
+    const CLICK_LIMITER = {
+      async limit() {
+        calls.limiter += 1;
+        return { success: true };
+      },
+    };
+    return { env: makeEnv({ DB, CLICK_LIMITER, ...over }), calls };
+  }
+
+  it("the cap is 1 KiB", () => {
+    expect(MAX_BODY_BYTES).toBe(1024);
+  });
+
+  it("content-length over the cap: body stream is never pulled, nothing recorded", async () => {
+    const { req, state } = streamed(4, 1024, { "Content-Length": "4096" });
+    const { env, calls } = spyEnv();
+    await expectEmpty204(await handleClick(req, env));
+    expect(state.pulls).toBe(0);
+    expect(calls.db).toBe(0);
+    expect(calls.limiter).toBe(0);
+    expect(await rows()).toHaveLength(0);
+  });
+
+  it("body with no content-length is ignored without a single pull", async () => {
+    const { req, state } = streamed(1000, 512);
+    const { env, calls } = spyEnv();
+    await expectEmpty204(await handleClick(req, env));
+    expect(state.pulls).toBe(0);
+    expect(state.cancelled).toBe(true);
+    expect(calls.db).toBe(0);
+    expect(await rows()).toHaveLength(0);
+  });
+
+  it("transfer-encoding with a body is ignored without a pull", async () => {
+    const { req, state } = streamed(2, 10, {
+      "Content-Length": "20",
+      "Transfer-Encoding": "chunked",
+    });
+    await expectEmpty204(await handleClick(req, makeEnv()));
+    expect(state.pulls).toBe(0);
+    expect(await rows()).toHaveLength(0);
+  });
+
+  it("one huge first chunk is never read", async () => {
+    const { req, state } = streamed(1, 50 * 1024 * 1024);
+    await expectEmpty204(await handleClick(req, makeEnv()));
+    expect(state.pulls).toBe(0);
+    expect(state.cancelled).toBe(true);
+    expect(await rows()).toHaveLength(0);
+  });
+
+  it("lying low content-length with a huge body: zero pulls, body cancelled", async () => {
+    const { req, state } = streamed(1, 50 * 1024 * 1024, { "Content-Length": "10" });
+    await expectEmpty204(await handleClick(req, makeEnv()));
+    expect(state.pulls).toBe(0);
+    expect(state.cancelled).toBe(true);
+  });
+
+  it("over-cap content-length also cancels the body unread", async () => {
+    const { req, state } = streamed(1, 10, { "Content-Length": "4096" });
+    await handleClick(req, makeEnv());
+    expect(state.pulls).toBe(0);
+    expect(state.cancelled).toBe(true);
+  });
+
+  it("wrong method, wrong path and unlisted id never touch the body", async () => {
+    const cases: Array<[string, string]> = [
+      ["PUT", "/e/c/example-one"],
+      ["OPTIONS", "/e/c/example-one"],
+      ["POST", "/elsewhere"],
+      ["POST", "/e/c/" + "a".repeat(MAX_PATH_LENGTH)],
+      ["POST", "/e/c/nope"],
+    ];
+    for (const [method, path] of cases) {
+      const { req, state } = streamed(1, 10, { "Content-Length": "10" }, path, method);
+      await expectEmpty204(await handleClick(req, makeEnv()));
+      expect(state.cancelled, `${method} ${path}`).toBe(false);
+      expect(state.pulls).toBe(0);
+    }
+  });
+
+  it("a 1,000,000 character Origin or Ping-From is never parsed and records nothing", async () => {
+    const g = globalThis as unknown as { URL: typeof URL };
+    const RealURL = g.URL;
+    const lengths: number[] = [];
+    g.URL = class extends RealURL {
+      constructor(...args: ConstructorParameters<typeof URL>) {
+        super(...args);
+        lengths.push(String(args[0]).length);
+      }
+    } as typeof URL;
+    try {
+      const huge = `https://${"a".repeat(1_000_000)}.example/`;
+      const variants: Array<Record<string, string | null>> = [
+        { Origin: huge, "Ping-From": null },
+        { "Ping-From": huge },
+        { Origin: huge, "Ping-From": `https://${SITE}/` },
+        { "Ping-From": huge, Origin: `https://${SITE}` },
+      ];
+      for (const headers of variants) {
+        await expectEmpty204(await handleClick(click("/e/c/example-one", headers), makeEnv()));
+      }
+      expect(Math.max(...lengths)).toBeLessThan(MAX_ORIGIN_HEADER + 100);
+    } finally {
+      g.URL = RealURL;
+    }
+    expect(await rows()).toHaveLength(0);
+  });
+
+  it("a 40-character origin still records", async () => {
+    const host = "links.example.test";
+    const origin = `https://${host}`;
+    expect(origin.length).toBeLessThan(40);
+    await handleClick(click("/e/c/example-one", { "Ping-From": null, Origin: origin }), makeEnv());
+    expect(await rows()).toHaveLength(1);
+  });
+
+  it("an origin exactly at the cap is parsed, one over is not", async () => {
+    const pad = "a".repeat(MAX_ORIGIN_HEADER - `https://${SITE}/?`.length);
+    const atCap = `https://${SITE}/?${pad}`;
+    expect(atCap.length).toBe(MAX_ORIGIN_HEADER);
+    await handleClick(click("/e/c/example-one", { "Ping-From": atCap }), makeEnv());
+    expect(await rows()).toHaveLength(1);
+    await testEnv.DB.prepare("DELETE FROM click_events").run();
+    await handleClick(click("/e/c/example-one", { "Ping-From": atCap + "a" }), makeEnv());
+    expect(await rows()).toHaveLength(0);
+  });
+
+  it("a 1,000,000 character query is rejected before the URL is parsed", async () => {
+    const url = "https://worker.example.test/e/c/example-one?" + "q".repeat(1_000_000);
+    const req = new Request(url, { method: "POST", headers: click().headers });
+    expect(req.url.length).toBeGreaterThan(MAX_URL_LENGTH);
+    const g = globalThis as unknown as { URL: typeof URL };
+    const RealURL = g.URL;
+    let constructed = 0;
+    g.URL = class extends RealURL {
+      constructor(...args: ConstructorParameters<typeof URL>) {
+        super(...args);
+        constructed += 1;
+      }
+    } as typeof URL;
+    try {
+      await expectEmpty204(await handleClick(req, makeEnv()));
+      expect(constructed).toBe(0);
+    } finally {
+      g.URL = RealURL;
+    }
+    expect(await rows()).toHaveLength(0);
+  });
+
+  it("garbage content-length is rejected without reading", async () => {
+    for (const cl of ["abc", "-1", "1e3", "10, 20", "0x10"]) {
+      const { req, state } = streamed(1, 8, { "Content-Length": cl });
+      await expectEmpty204(await handleClick(req, makeEnv()));
+      expect(state.pulls).toBe(0);
+    }
+    expect(await rows()).toHaveLength(0);
+  });
+
+  it("a small body within the cap is never read, and the click still records", async () => {
+    const { req, state } = streamed(2, 100, { "Content-Length": "200" });
+    await expectEmpty204(await handleClick(req, makeEnv()));
+    expect(state.pulls).toBe(0);
+    expect(await rows()).toHaveLength(1);
+  });
+
+  it("a request with no body is not read at all", async () => {
+    const res = await handleClick(click(), makeEnv());
+    await expectEmpty204(res);
+    expect(await rows()).toHaveLength(1);
+  });
+
+  it("path longer than the cap records nothing and is not decoded", async () => {
+    const decode = vi.spyOn(globalThis, "decodeURIComponent");
+    try {
+      const long = "/e/c/" + "%41".repeat(MAX_PATH_LENGTH);
+      await expectEmpty204(await handleClick(click(long), makeEnv()));
+      expect(decode).not.toHaveBeenCalled();
+    } finally {
+      decode.mockRestore();
+    }
+    expect(await rows()).toHaveLength(0);
+  });
+
+  it("an id longer than the id cap records nothing even if listed", async () => {
+    const id = "a".repeat(MAX_ID_LENGTH + 1);
+    const env = makeEnv({ LINK_IDS: JSON.stringify([id]) });
+    await expectEmpty204(await handleClick(click(`/e/c/${id}`), env));
+    expect(await rows()).toHaveLength(0);
+  });
+
+  it("kill switch: same 204, no D1, no limiter, no body read", async () => {
+    for (const v of ["1", "true", "TRUE", "True"]) {
+      const { req, state } = streamed(1, 8);
+      const { env, calls } = spyEnv({ CLICKS_KILL: v });
+      await expectEmpty204(await handleClick(req, env));
+      expect(calls.db).toBe(0);
+      expect(calls.limiter).toBe(0);
+      expect(state.pulls).toBe(0);
+    }
+    expect(await rows()).toHaveLength(0);
+  });
+
+  it("kill switch values other than 1/true leave the route on", async () => {
+    for (const v of ["", "0", "false", "yes", "on", " 1", "2"]) {
+      await testEnv.DB.prepare("DELETE FROM click_events").run();
+      await handleClick(click(), makeEnv({ CLICKS_KILL: v }));
+      expect(await rows(), `value ${JSON.stringify(v)}`).toHaveLength(1);
+    }
+  });
+
+  it("kill switch is read on every request (no module-level cache)", async () => {
+    const env = makeEnv();
+    await handleClick(click(), env);
+    env.CLICKS_KILL = "1";
+    await handleClick(click(), env);
+    env.CLICKS_KILL = "0";
+    await handleClick(click(), env);
+    expect(await rows()).toHaveLength(2);
+  });
+
+  it("kill switch also applies through the Worker entry point", async () => {
+    await expectEmpty204(await worker.fetch(click(), makeEnv({ CLICKS_KILL: "1" })));
+    expect(await rows()).toHaveLength(0);
+  });
+
+  it("19 different requests get an identical response; only the valid one writes", async () => {
+    const cases: Array<[string, () => Request, Partial<Env>?]> = [
+      ["GET", () => click("/e/c/example-one", {}, "GET")],
+      ["PUT", () => click("/e/c/example-one", {}, "PUT")],
+      ["DELETE", () => click("/e/c/example-one", {}, "DELETE")],
+      ["OPTIONS", () => click("/e/c/example-one", {}, "OPTIONS")],
+      ["other path", () => click("/anything")],
+      ["unknown id", () => click("/e/c/nope")],
+      ["encoded slash id", () => click("/e/c/..%2F..%2Fx")],
+      ["overlong path", () => click("/e/c/" + "a".repeat(MAX_PATH_LENGTH))],
+      ["bot UA", () => click("/e/c/example-one", { "User-Agent": "curl/8.0" })],
+      ["no UA", () => click("/e/c/example-one", { "User-Agent": null })],
+      ["wrong origin", () => click("/e/c/example-one", { "Ping-From": "https://evil.example/" })],
+      ["oversize CL", () => streamed(4, 1024, { "Content-Length": "4096" }).req],
+      ["body without length", () => streamed(1000, 512).req],
+      ["huge first chunk", () => streamed(1, 50 * 1024 * 1024).req],
+      ["huge Origin", () => click("/e/c/example-one", { Origin: `https://${"a".repeat(1_000_000)}.example/`, "Ping-From": null })],
+      ["huge Ping-From", () => click("/e/c/example-one", { "Ping-From": `https://${"a".repeat(1_000_000)}.example/` })],
+      ["huge query", () => click("/e/c/example-one?" + "q".repeat(1_000_000))],
+      ["killed", () => click(), { CLICKS_KILL: "1" }],
+      ["rate limited", () => click(), { CLICK_LIMITER: fakeLimiter(0) }],
+    ];
+    expect(cases).toHaveLength(19);
+    const valid = await sig(await handleClick(click(), makeEnv()));
+    expect(valid.status).toBe(204);
+    expect(valid.body).toBe("");
+    expect(await rows()).toHaveLength(1);
+    await testEnv.DB.prepare("DELETE FROM click_events").run();
+    for (const [name, build, over] of cases) {
+      const got = await sig(await handleClick(build(), makeEnv(over)));
+      expect(got, name).toEqual(valid);
+    }
+    expect(await rows()).toHaveLength(0);
   });
 });

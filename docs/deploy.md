@@ -91,6 +91,7 @@ your own; never commit real account ids, database ids or tokens.
 
    | Variable | Value | What it does |
    |---|---|---|
+   | `CLICKS_KILL` | `1` or `true` | optional kill switch: the click route returns its usual empty 204 and touches neither D1 nor the rate limiter. Any other value, or unset, leaves it on. Read on every request, so `npx wrangler deploy --var CLICKS_KILL:1` takes effect when the deploy lands and `--var CLICKS_KILL:0` turns it back on. Leave it unset in the committed `wrangler.toml`. The link page keeps working with the Worker dark, because links carry their real `href` |
    | `ZONE_NAME` | `example.invalid` | the Cloudflare zone that holds `SITE_HOST`; adds a `[[routes]]` entry for `SITE_HOST/e/*` to the throwaway deploy config |
 
    **Without `ZONE_NAME` the page works but clicks are not counted.** The
