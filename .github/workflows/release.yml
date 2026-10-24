@@ -75,6 +75,8 @@ jobs:
       packages: read  # pull the published image to verify it
     with:
       image: ${{ needs.release.outputs.image }}
-      # The signing identity is the reusable workflow, not this repository.
-      identity-regexp: ^https://github.com/ChiefGyk3D/git-your-ship-together/
+      # The signing identity is the reusable workflow file, not this repository.
+      # `gh attestation verify --owner` (run by verify-published) pins the owner;
+      # a per-repository pin needs a GYST input (tracked there).
+      identity-regexp: ^https://github.com/ChiefGyk3D/git-your-ship-together/\.github/workflows/container-release\.yml@
       test-command: docker run --rm "$IMAGE" --version

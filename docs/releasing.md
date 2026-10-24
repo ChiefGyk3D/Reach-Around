@@ -50,10 +50,10 @@ IMAGE=ghcr.io/chiefgyk3d/reach-around
 
 # Signature and SBOM attestation (the signing identity is the reusable workflow).
 cosign verify "$IMAGE:0.1.0" \
-  --certificate-identity-regexp '^https://github.com/ChiefGyk3D/git-your-ship-together/' \
+  --certificate-identity-regexp '^https://github.com/ChiefGyk3D/git-your-ship-together/\.github/workflows/container-release\.yml@' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
 cosign verify-attestation --type spdxjson "$IMAGE:0.1.0" \
-  --certificate-identity-regexp '^https://github.com/ChiefGyk3D/git-your-ship-together/' \
+  --certificate-identity-regexp '^https://github.com/ChiefGyk3D/git-your-ship-together/\.github/workflows/container-release\.yml@' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
 
 # Build provenance.
