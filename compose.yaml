@@ -1,0 +1,23 @@
+# SPDX-License-Identifier: Apache-2.0
+# Works with `docker compose` and `podman compose`.
+#   docker compose run --rm reach-around
+# The site lands in ./out. No Docker socket is mounted anywhere.
+services:
+  reach-around:
+    build:
+      context: .
+      dockerfile: Containerfile
+    image: reach-around:local
+    command: ["build", "--config", "/config/site.yaml", "--out", "/out"]
+    user: "10001:10001"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp
+    volumes:
+      # Your instance directory (site.yaml and assets), read-only.
+      - ./examples/instance:/config:ro
+      # The only host path the container writes to. Must be writable by uid 10001.
+      - ./out:/out

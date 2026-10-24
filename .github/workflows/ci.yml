@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
 # The generic legs (ruff, mypy, the pytest matrix, the smoke test, the workflow lint) are
 # ChiefGyk3D/git-your-ship-together's python-ci.yml; it reports its gate as `CI green`, here
-# `ci / CI green`. Nothing project-specific lives in this file yet. The container build job
-# arrives with the Containerfile (Task 10), so docker-build stays off until then.
+# `ci / CI green`. Its `docker` job builds the Containerfile; the one project-specific job
+# here, `podman`, runs the container smoke test under Podman.
 name: CI
 
 on:
@@ -42,5 +42,35 @@ jobs:
         pip install --no-deps -e .
       typecheck-command: mypy
       smoke-command: reach-around --version
-      docker-build: false
+      docker-build: true
+      dockerfile: Containerfile
       egress-policy: block
+
+  podman:
+    name: Podman smoke test
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        with:
+          egress-policy: block
+          allowed-endpoints: >-
+            api.github.com:443
+            auth.docker.io:443
+            files.pythonhosted.org:443
+            github.com:443
+            production.cloudfront.docker.com:443
+            pypi.org:443
+            registry-1.docker.io:443
+          disable-telemetry: true
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Build and run the image under Podman
+        env:
+          CONTAINER_ENGINE: podman
+        run: bash tests/test_container_smoke.sh
