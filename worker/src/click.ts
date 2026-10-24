@@ -12,7 +12,19 @@ export interface Env {
   /** JSON array of link ids from the build manifest. */
   LINK_IDS: string;
   CLICK_LIMITER: RateLimiter;
+  /**
+   * Optional kill switch. "1" or "true" (any case) turns click recording off;
+   * anything else, or unset, leaves it on. Read on every request.
+   */
+  CLICKS_KILL?: string;
 }
+
+/** Largest request body we will look at, in bytes. The route never needs one. */
+export const MAX_BODY_BYTES = 1024;
+/** Longest URL path we will decode or match, in characters. */
+export const MAX_PATH_LENGTH = 128;
+/** Longest link id, matching the slug limit in the build config. */
+export const MAX_ID_LENGTH = 40;
 
 const ROUTE = /^\/e\/c\/([^/]+)$/;
 const MAX_UA_LENGTH = 512;
@@ -50,6 +62,38 @@ const BOT_UA = new RegExp(
  */
 function noContent(): Response {
   return new Response(null, { status: 204 });
+}
+
+/** Kill switch: read per request, never cached at module load. */
+function killed(env: Env): boolean {
+  const v = env.CLICKS_KILL;
+  if (typeof v !== "string") return false;
+  const lower = v.toLowerCase();
+  return lower === "1" || lower === "true";
+}
+
+/**
+ * True when the body (if any) is within the cap. Never buffers: bytes are
+ * counted and dropped, and the stream is cancelled the moment the cap is
+ * passed, whatever Content-Length claimed. A request with no body costs nothing.
+ */
+async function bodyWithinCap(request: Request): Promise<boolean> {
+  const declared = request.headers.get("Content-Length");
+  if (declared !== null) {
+    if (!/^\d{1,10}$/.test(declared) || Number(declared) > MAX_BODY_BYTES) return false;
+  }
+  if (request.body === null) return true;
+  const reader = request.body.getReader();
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) return true;
+    total += value.byteLength;
+    if (total > MAX_BODY_BYTES) {
+      await reader.cancel().catch(() => undefined);
+      return false; // CONTROL:body-cap
+    }
+  }
 }
 
 function allowedIds(raw: string): Set<string> {
@@ -95,17 +139,25 @@ function countryOf(request: Request): string | null {
 }
 
 /**
- * Handle `POST /e/c/:linkId`. Check order: route and method, id allowlist,
+ * Handle `POST /e/c/:linkId`. Check order: kill switch, body cap, route and method (with path and id
+ * length caps), id allowlist,
  * user agent, origin, rate limit, insert. Always returns an empty 204.
  * No IP address is stored; the client address is used only as a rate-limit
  * key and is never written anywhere.
  */
 export async function handleClick(request: Request, env: Env): Promise<Response> {
   try {
-    // 1. Route and method.
+    // 0. Cost guards, before anything is read or decoded: kill switch,
+    // then the body cap.
+    if (killed(env)) return noContent(); // CONTROL:kill-switch
+    if (!(await bodyWithinCap(request))) return noContent();
+
+    // 1. Route and method. The path length is capped before decoding.
     if (request.method !== "POST") return noContent();
-    const linkId = linkIdFromPath(new URL(request.url).pathname);
-    if (linkId === null) return noContent();
+    const pathname = new URL(request.url).pathname;
+    if (pathname.length > MAX_PATH_LENGTH) return noContent();
+    const linkId = linkIdFromPath(pathname);
+    if (linkId === null || linkId.length > MAX_ID_LENGTH) return noContent();
 
     // 2. Id allowlist (a Set of exact strings: no prototype lookups).
     if (!allowedIds(env.LINK_IDS).has(linkId)) return noContent();
