@@ -1,0 +1,38 @@
+{# SPDX-License-Identifier: Apache-2.0 #}
+{% macro socials(creator) %}
+{% if creator.socials %}
+<ul class="socials">
+{% for social in creator.socials %}
+<li><a href="{{ social.url }}" rel="noopener noreferrer">{{ social.name }}</a></li>
+{% endfor %}
+</ul>
+{% endif %}
+{% endmacro %}
+{% macro avatar(creator, size) %}
+{% if creator.avatar %}
+<img class="avatar" src="{{ creator.avatar }}" alt="" width="{{ size }}" height="{{ size }}" referrerpolicy="no-referrer">
+{% endif %}
+{% endmacro %}
+{% if creator.header == "hero" %}
+<header class="site-header header-hero">
+<div class="hero-card">
+{{ avatar(creator, 160) }}
+<h1>{{ creator.name }}</h1>
+</div>
+{{ socials(creator) }}
+</header>
+{% elif creator.header == "centered" %}
+<header class="site-header header-centered">
+{{ avatar(creator, 96) }}
+<h1>{{ creator.name }}</h1>
+{{ socials(creator) }}
+</header>
+{% else %}
+<header class="site-header header-compact">
+<div class="header-row">
+{{ avatar(creator, 48) }}
+<h1>{{ creator.name }}</h1>
+</div>
+{{ socials(creator) }}
+</header>
+{% endif %}

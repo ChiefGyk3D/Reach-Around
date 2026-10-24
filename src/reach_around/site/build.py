@@ -21,6 +21,7 @@ from typing import Any
 from jinja2 import Environment, PackageLoader, StrictUndefined
 
 from reach_around.config.models import Block, Link, Section, SiteConfig, Tab
+from reach_around.site.markdown import render_markdown
 from reach_around.site.visibility import visible_blocks
 
 
@@ -41,6 +42,9 @@ def _environment() -> Environment:
         keep_trailing_newline=True,
     )
     env.globals["block_kind"] = _block_kind
+    # render_markdown returns Markup that is already escaped, so autoescape
+    # stays on in the template.
+    env.filters["markdown"] = render_markdown
     return env
 
 

@@ -27,6 +27,7 @@ from pydantic import (
     model_validator,
 )
 
+from reach_around.config.blocks import Divider, Image, Text
 from reach_around.config.loader import ConfigError, load_yaml
 
 _SLUG = re.compile(r"^[a-z0-9][a-z0-9-]{0,39}$")
@@ -104,27 +105,51 @@ class Link(_Model):
         return self
 
 
+Layout = Literal["list", "grid", "cards"]
+HeaderStyle = Literal["compact", "centered", "hero"]
+
+
 class Section(_Model):
     id: Slug
     title: Title
     subtitle: Subtitle | None = None
     collapsed: bool = True
+    layout: Layout = "list"
     links: list[Link]
+
+
+_NEW_BLOCK_KEYS = {"markdown": "text", "src": "image"}
 
 
 def _block_kind(value: Any) -> str | None:
     if isinstance(value, dict):
-        return "section" if "links" in value else "link"
-    if isinstance(value, Section):
-        return "section"
-    if isinstance(value, Link):
+        if "links" in value:
+            return "section"
+        for key, kind in _NEW_BLOCK_KEYS.items():
+            if key in value:
+                return kind
+        if "url" not in value and set(value) == {"id"}:
+            return "divider"
         return "link"
+    for model, kind in (
+        (Section, "section"),
+        (Link, "link"),
+        (Text, "text"),
+        (Image, "image"),
+        (Divider, "divider"),
+    ):
+        if isinstance(value, model):
+            return kind
     return None
 
 
 # Later block types are added to this union with their own Tag.
 Block = Annotated[
-    Annotated[Link, Tag("link")] | Annotated[Section, Tag("section")],
+    Annotated[Link, Tag("link")]
+    | Annotated[Section, Tag("section")]
+    | Annotated[Text, Tag("text")]
+    | Annotated[Image, Tag("image")]
+    | Annotated[Divider, Tag("divider")],
     Discriminator(
         _block_kind,
         custom_error_type="block_type",
@@ -136,6 +161,7 @@ Block = Annotated[
 class Tab(_Model):
     id: Slug
     title: Title
+    layout: Layout = "list"
     blocks: list[Block]
 
 
@@ -153,6 +179,7 @@ class Social(_Model):
 class Creator(_Model):
     name: Title
     avatar: HttpsUrl | None = None
+    header: HeaderStyle = "compact"
     socials: list[Social] = Field(default_factory=list)
 
     @field_validator("avatar")
@@ -193,7 +220,7 @@ class SiteConfig(_Model):
         return self
 
 
-_BLOCK_TAGS = {"link", "section"}
+_BLOCK_TAGS = {"link", "section", "text", "image", "divider"}
 
 
 def _dotted(loc: tuple[int | str, ...]) -> str:

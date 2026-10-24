@@ -6,7 +6,7 @@
 {% if block.subtitle %}
 <p class="section-subtitle">{{ block.subtitle }}</p>
 {% endif %}
-<ul>
+<ul class="section-links layout-{{ block.layout }}">
 {% for link in block.links %}
 <li>{{ link_anchor(link) }}</li>
 {% endfor %}

@@ -2,7 +2,7 @@
 {% extends "base.html" %}
 {% block content %}
 {% if blocks %}
-<ul class="blocks">
+<ul class="blocks layout-{{ tab.layout }}">
 {% for block in blocks %}
 {% include "blocks/" ~ block_kind(block) ~ ".html" %}
 {% endfor %}
