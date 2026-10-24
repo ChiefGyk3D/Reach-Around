@@ -1,0 +1,14 @@
+{# SPDX-License-Identifier: Apache-2.0 #}
+<header>
+{% if creator.avatar %}
+<img class="avatar" src="{{ creator.avatar }}" alt="" width="96" height="96" referrerpolicy="no-referrer">
+{% endif %}
+<h1>{{ creator.name }}</h1>
+{% if creator.socials %}
+<ul class="socials">
+{% for social in creator.socials %}
+<li><a href="{{ social.url }}" rel="noopener noreferrer">{{ social.name }}</a></li>
+{% endfor %}
+</ul>
+{% endif %}
+</header>

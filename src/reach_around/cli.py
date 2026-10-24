@@ -5,8 +5,13 @@ from __future__ import annotations
 
 import argparse
 import sys
+from datetime import UTC, datetime
+from pathlib import Path
 
 from reach_around import __version__
+from reach_around.config import ConfigError, load_site_config
+from reach_around.site.build import build_site
+from reach_around.site.visibility import today_in
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -17,9 +22,24 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--version", action="store_true", help="print the version and exit"
     )
-    # Subcommands (build) are added in a later task.
-    parser.add_subparsers(dest="command")
+    commands = parser.add_subparsers(dest="command")
+    build = commands.add_parser("build", help="render the static site")
+    build.add_argument("--config", type=Path, required=True, help="site config file")
+    build.add_argument(
+        "--out", type=Path, required=True, help="output directory (emptied first)"
+    )
     return parser
+
+
+def _build(config_path: Path, out_dir: Path) -> int:
+    try:
+        config = load_site_config(config_path)
+        today = today_in(config.timezone, datetime.now(UTC))
+        build_site(config, out_dir, today=today, protect=[config_path])
+    except (ConfigError, ValueError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    return 0
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -28,6 +48,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.version:
         print(f"reach-around {__version__}")
         return 0
+    if args.command == "build":
+        return _build(args.config, args.out)
     parser.print_help()
     return 2
 

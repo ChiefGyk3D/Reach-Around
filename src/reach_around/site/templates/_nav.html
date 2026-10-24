@@ -1,0 +1,10 @@
+{# SPDX-License-Identifier: Apache-2.0 #}
+{% if nav|length > 1 %}
+<nav aria-label="Pages">
+<ul>
+{% for item in nav %}
+<li><a href="{{ item.href }}"{% if item.current %} aria-current="page"{% endif %}>{{ item.title }}</a></li>
+{% endfor %}
+</ul>
+</nav>
+{% endif %}

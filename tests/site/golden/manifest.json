@@ -1,0 +1,8 @@
+{
+  "links": {
+    "example-mic": "https://shop.example.com/mic?ref=example",
+    "example-stand": "https://shop.example.com/stand",
+    "home-page": "https://example.com/",
+    "spring-meetup": "https://tickets.example.invalid/spring"
+  }
+}

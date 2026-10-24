@@ -1,0 +1,13 @@
+{# SPDX-License-Identifier: Apache-2.0 #}
+{% extends "base.html" %}
+{% block content %}
+{% if blocks %}
+<ul class="blocks">
+{% for block in blocks %}
+{% include "blocks/" ~ block_kind(block) ~ ".html" %}
+{% endfor %}
+</ul>
+{% else %}
+<p class="empty">Nothing here right now.</p>
+{% endif %}
+{% endblock %}

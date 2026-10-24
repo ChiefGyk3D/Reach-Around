@@ -1,0 +1,18 @@
+{# SPDX-License-Identifier: Apache-2.0 #}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{ page_title }}</title>
+<link rel="stylesheet" href="{{ root }}static/site.css">
+</head>
+<body>
+<main>
+{% include "_header.html" %}
+{% include "_nav.html" %}
+{% block content %}{% endblock %}
+{% include "_footer.html" %}
+</main>
+</body>
+</html>
