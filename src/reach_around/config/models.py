@@ -31,8 +31,8 @@ from reach_around.config.blocks import Crypto, Divider, Image, Text
 from reach_around.config.loader import ConfigError, load_yaml
 from reach_around.config.page_title import PageTitle, TitleTemplate
 from reach_around.config.privacy import Features, Privacy
-from reach_around.config.tablinks import is_tab_ref, parse_tab_ref
 from reach_around.config.robots import Robots
+from reach_around.config.tablinks import is_tab_ref, parse_tab_ref
 from reach_around.config.theme import Theme
 from reach_around.site.theme import check_image_path
 
