@@ -15,11 +15,34 @@ export interface Env {
 }
 
 const ROUTE = /^\/e\/c\/([^/]+)$/;
-const MAX_ID_LENGTH = 100;
 const MAX_UA_LENGTH = 512;
 const COUNTRY = /^[A-Z]{2}$/;
-const BOT_UA =
-  /bot|crawl|spider|slurp|curl|wget|python|httpclient|java\/|go-http|libwww|headless|lighthouse|preview|monitor|scan|fetch|check/i;
+/**
+ * Known crawlers, link previewers, HTTP clients, headless browsers and
+ * monitors, plus generic words (bot, crawler, spider, ...). Case-insensitive.
+ *
+ * This is a speed bump, not a guarantee. A user-agent string is whatever the
+ * sender says it is, so this cannot stop automation that sends a browser user
+ * agent. It only keeps honest tools out of the counts.
+ */
+const BOT_UA = new RegExp(
+  [
+    // Link-preview and social crawlers.
+    "facebookexternalhit", "facebot", "twitterbot", "slackbot", "slack-imgproxy",
+    "whatsapp", "telegrambot", "discordbot", "linkedinbot", "pinterest", "applebot",
+    // Search and ad crawlers.
+    "googlebot", "adsbot", "mediapartners", "bingbot", "yandexbot", "baiduspider",
+    "duckduckbot", "ia_archiver",
+    // HTTP clients and scripts.
+    "curl", "wget", "python", "aiohttp", "httpx", "axios", "node-fetch", "undici",
+    "\\bgot\\b", "go-http", "okhttp", "java/", "libwww", "httpclient",
+    // Headless browsers and monitors.
+    "headless", "phantomjs", "lighthouse", "pingdom", "uptimerobot", "statuscake",
+    // Generic words.
+    "bot", "crawl", "spider", "slurp", "preview", "monitor", "scan", "fetch", "check",
+  ].join("|"),
+  "i",
+);
 
 /**
  * Every outcome, accepted or ignored, is this exact response: an empty 204.
@@ -44,7 +67,7 @@ function linkIdFromPath(pathname: string): string | null {
   if (!m) return null;
   try {
     const id = decodeURIComponent(m[1]);
-    return id.length > 0 && id.length <= MAX_ID_LENGTH ? id : null;
+    return id.length > 0 ? id : null;
   } catch {
     return null;
   }

@@ -236,3 +236,137 @@ describe("click endpoint", () => {
     expect(await rows()).toHaveLength(0);
   });
 });
+
+const BOT_FAMILIES: Record<string, string[]> = {
+  "link-preview and social crawlers": [
+    "facebookexternalhit/1.1 (+http://www.facebook.com/externalhit_uatext.php)",
+    "Facebot",
+    "Twitterbot/1.0",
+    "Slackbot-LinkExpanding 1.0 (+https://api.slack.com/robots)",
+    "Slack-ImgProxy (+https://api.slack.com/robots)",
+    "WhatsApp/2.23.20.0",
+    "TelegramBot (like TwitterBot)",
+    "Mozilla/5.0 (compatible; Discordbot/2.0; +https://discordapp.com)",
+    "LinkedInBot/1.0 (compatible; Mozilla/5.0)",
+    "Pinterest/0.2 (+http://www.pinterest.com/bot.html)",
+    "Mozilla/5.0 (Macintosh) Applebot/0.1",
+  ],
+  "search and ad crawlers": [
+    "Googlebot/2.1",
+    "AdsBot-Google (+http://www.google.com/adsbot.html)",
+    "Mediapartners-Google",
+    "Mozilla/5.0 (compatible; bingbot/2.0)",
+    "Mozilla/5.0 (compatible; YandexBot/3.0)",
+    "Mozilla/5.0 (compatible; Baiduspider/2.0)",
+    "DuckDuckBot/1.1",
+    "ia_archiver (+http://www.alexa.com/site/help/webmasters)",
+  ],
+  "HTTP clients and scripts": [
+    "curl/8.5.0",
+    "Wget/1.21",
+    "python-requests/2.32",
+    "Python-urllib/3.12",
+    "Python/3.12 aiohttp/3.9",
+    "python-httpx/0.27",
+    "axios/1.7.9",
+    "node-fetch/1.0",
+    "undici",
+    "got (https://example.test/got)",
+    "Go-http-client/2.0",
+    "okhttp/4.12.0",
+    "Java/17.0.2",
+    "libwww-perl/6.67",
+  ],
+  "headless browsers and monitors": [
+    "Mozilla/5.0 HeadlessChrome/120.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Unknown; Linux) AppleWebKit/538.1 PhantomJS/2.1.1",
+    "Mozilla/5.0 Chrome-Lighthouse",
+    "Pingdom.com_bot_version_1.4",
+    "UptimeRobot/2.0",
+    "StatusCake_Pagespeed_Indev",
+  ],
+  "generic words": [
+    "SomeTool bot 1.0",
+    "acme crawler",
+    "acme spider",
+    "Yahoo! Slurp",
+    "LinkPreview/1.0",
+    "SiteMonitor/3",
+  ],
+};
+
+describe("bot filter", () => {
+  for (const [family, uas] of Object.entries(BOT_FAMILIES)) {
+    it(`ignores ${family}`, async () => {
+      for (const ua of uas) {
+        // Matching is case-insensitive: try the original, upper and lower case.
+        for (const variant of [ua, ua.toUpperCase(), ua.toLowerCase()]) {
+          await expectEmpty204(
+            await handleClick(click("/e/c/example-one", { "User-Agent": variant }), makeEnv()),
+          );
+        }
+      }
+      expect(await rows()).toHaveLength(0);
+    });
+  }
+
+  it("accepts normal Firefox, Chrome and Safari", async () => {
+    const real = [
+      "Mozilla/5.0 (X11; Linux x86_64; rv:130.0) Gecko/20100101 Firefox/130.0",
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36",
+      "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.6 Safari/605.1.15",
+    ];
+    for (const ua of real) {
+      await handleClick(click("/e/c/example-one", { "User-Agent": ua }), makeEnv());
+    }
+    expect(await rows()).toHaveLength(3);
+  });
+
+  it("a 600-character non-bot user agent records nothing", async () => {
+    const ua = "Mozilla/5.0 " + "a".repeat(588);
+    expect(ua).toHaveLength(600);
+    await expectEmpty204(await handleClick(click("/e/c/example-one", { "User-Agent": ua }), makeEnv()));
+    expect(await rows()).toHaveLength(0);
+  });
+});
+
+describe("origin policy and uniform responses", () => {
+  const sig = async (r: Response) => ({
+    status: r.status,
+    body: await r.text(),
+    headers: [...r.headers.entries()].sort(),
+  });
+
+  it("missing SITE_HOST fails closed with the same 204", async () => {
+    const accepted = await sig(await handleClick(click(), makeEnv()));
+    await testEnv.DB.prepare("DELETE FROM click_events").run();
+    const res = await handleClick(click(), makeEnv({ SITE_HOST: "" }));
+    expect(await sig(res)).toEqual(accepted);
+    expect(await rows()).toHaveLength(0);
+  });
+
+  it("policy: a matching Origin is enough even if Ping-From is for another host", async () => {
+    // Either header matching is accepted. This is a speed bump, not a bug.
+    await handleClick(
+      click("/e/c/example-one", {
+        "Ping-From": "https://evil.example/",
+        Origin: `https://${SITE}`,
+      }),
+      makeEnv(),
+    );
+    expect(await rows()).toHaveLength(1);
+  });
+
+  it("OPTIONS and rate-limited responses are byte-identical to an accepted one", async () => {
+    const accepted = await sig(await handleClick(click(), makeEnv()));
+    const options = await sig(
+      await worker.fetch(click("/e/c/example-one", {}, "OPTIONS"), makeEnv()),
+    );
+    const limited = await sig(
+      await handleClick(click(), makeEnv({ CLICK_LIMITER: fakeLimiter(0) })),
+    );
+    expect(options).toEqual(accepted);
+    expect(limited).toEqual(accepted);
+    expect(await rows()).toHaveLength(1);
+  });
+});
