@@ -84,6 +84,7 @@ escapes it when it renders.
 | `theme` | Theme | defaults | colors, fonts, background and shape; see [`theme`](#theme) |
 | `features` | Features | click tracking on, kit gate off | switches for features that collect data; see [`features`](#features) |
 | `privacy` | Privacy | defaults | wording and retention for the privacy page; see [`privacy`](#privacy) |
+| `robots` | Robots | absent | optional; when present the build writes `robots.txt`; see [`robots`](#robots) |
 
 Ids must be unique across the whole site: every tab id, every block id (links
 and sections) and every link id inside a section share one pool. Reusing an
@@ -491,6 +492,41 @@ The privacy page at `/privacy/` and the cookie notice are generated from the
 enabled features, so they cannot claim less than the site does. See
 [privacy by construction](education/privacy-by-construction.md).
 
+## `robots`
+
+Optional. When the `robots` key is **absent**, the build writes no `robots.txt`
+and the output is byte-for-byte what it was before this key existed. When it is
+present (even as `robots: {}`), the build writes `robots.txt` at the site root.
+Unknown keys are refused; there is deliberately no free-form `extra_rules`.
+
+| Key | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| `allow_all` | boolean | `true` | `true` writes `User-agent: *` with `Allow: /`; `false` writes `Disallow: /` for everyone. Must be a real boolean. |
+| `block` | list of tokens | empty | User-agent tokens to disallow entirely. Each is 1-60 characters from `A-Z a-z 0-9 . _ * -`, at most 100 tokens, no duplicates (case-insensitive). A bare `*` is refused: use `allow_all: false`. |
+| `ai_crawlers` | `allow` or `block` | `allow` | `block` also disallows every token in the packaged list `src/reach_around/site/data/ai_crawlers.txt`. |
+| `sitemap` | boolean | `false` | Sitemaps are not generated; only `false` is accepted. |
+| `noindex_paths` | list of paths | empty | Path prefixes that get `X-Robots-Tag: noindex` in `_headers`. At most 50. Each starts with `/` and uses plain segments (`A-Z a-z 0-9 . _ ~ -`), at most 200 characters; no wildcards, query, `.` or `..` segments, and not `/` alone. `/private` covers `/private` and everything under it. |
+
+```yaml
+robots:
+  ai_crawlers: block
+  block: [ExampleBot]
+  noindex_paths: [/thanks]
+```
+
+The output is sorted, ASCII and deterministic, and starts with a comment saying
+it is advisory. A path in `noindex_paths` is deliberately not also disallowed in
+`robots.txt`: a crawler must be allowed to fetch a page to see its `noindex`.
+
+**Honest limits.** `robots.txt` is advisory. It asks well-behaved crawlers to
+stay away; it is not access control and stops nobody who ignores it. The AI
+crawler list is data copied from each operator's public documentation on the
+date noted in the file, marked "verify before relying", and it will go stale.
+It leaves out user-initiated fetchers, which some operators say may bypass
+`robots.txt`. Blocking bots at Cloudflare is a separate step in the Cloudflare
+dashboard that this tool neither performs nor checks: see Cloudflare's current
+documentation for what is available on your plan.
+
 ## What the loader refuses
 
 `load_yaml` and `load_site_config` raise `ConfigError` (it carries `path`,
@@ -577,6 +613,9 @@ Every build writes a Cloudflare Pages `_headers` file for `/*`:
 | `Permissions-Policy` | `camera=(), microphone=(), geolocation=(), payment=()` |
 | `Cross-Origin-Opener-Policy` | `same-origin` |
 | `Strict-Transport-Security` | `max-age=31536000; includeSubDomains` |
+
+When `robots.noindex_paths` is set, each prefix also gets its own block with
+`X-Robots-Tag: noindex` (see [`robots`](#robots)).
 
 The policy has no `unsafe-inline` and no `unsafe-eval`. Pages carry no inline
 style, no inline script and no inline event handler, and a test checks every
