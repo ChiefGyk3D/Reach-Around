@@ -1,0 +1,40 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:recommended", "helpers:pinGitHubActionDigests"],
+  "minimumReleaseAge": "7 days",
+  "labels": ["dependencies"],
+  "schedule": ["before 6am on monday"],
+  "customManagers": [
+    {
+      "customType": "regex",
+      "description": "Engine container image: tag plus digest in engine.lock",
+      "managerFilePatterns": ["/^engine\\.lock$/"],
+      "matchStrings": [
+        "ENGINE_IMAGE=(?<depName>[^:@\\s]+):(?<currentValue>[^@\\s]+)@(?<currentDigest>sha256:[a-f0-9]{64})"
+      ],
+      "datasourceTemplate": "docker"
+    },
+    {
+      "customType": "regex",
+      "description": "Engine source commit (for the Worker) in engine.lock, tag in the comment",
+      "managerFilePatterns": ["/^engine\\.lock$/"],
+      "matchStrings": [
+        "ENGINE_REPO=(?<depName>\\S+)\\s+ENGINE_REF=(?<currentDigest>[a-f0-9]{40}) # (?<currentValue>v\\S+)"
+      ],
+      "datasourceTemplate": "github-tags"
+    }
+  ],
+  "packageRules": [
+    {
+      "description": "The image and the Worker source must move together",
+      "matchDepNames": ["ghcr.io/chiefgyk3d/reach-around", "ChiefGyk3D/Reach-Around"],
+      "groupName": "reach-around engine",
+      "commitMessageTopic": "reach-around engine"
+    },
+    {
+      "description": "One pull request for all Actions bumps",
+      "matchManagers": ["github-actions"],
+      "groupName": "github actions"
+    }
+  ]
+}

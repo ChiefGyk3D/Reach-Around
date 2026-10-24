@@ -1,0 +1,18 @@
+# Build output and scratch directories
+out/
+site-out/
+dist/
+# Deploy config generated on the runner or locally; it holds real ids
+wrangler.deploy.toml
+.wrangler/
+# Checkout of the engine used for local deploys
+engine/
+# Secrets and local settings: never commit these
+.env
+.env.*
+*.settings
+# Backups written by the engine's edit commands
+*.bak
+# Editors and OS
+.DS_Store
+*.swp

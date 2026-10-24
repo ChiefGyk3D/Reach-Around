@@ -1,0 +1,235 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# Deploy this instance to Cloudflare: the static site to Pages and the click
+# counter to a Worker. Runs on a push to main and by hand. Adapted from the
+# engine repository's deploy-test.yml; the one-time Cloudflare and GitHub
+# setup is in README.md and the engine's docs/deploy.md.
+#
+# Two jobs. `validate` has no environment and no secrets: it checks the
+# repository and builds the site with the pinned engine image (engine.lock),
+# so nothing that runs there can see the Cloudflare token. `deploy` runs in
+# the `production` environment (a required reviewer approves each run) and
+# gives the token to the three wrangler steps only.
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    name: Validate and build
+    # Refuse any ref other than main (a manual run can pick another branch).
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    # No `environment` and no secrets here, on purpose.
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Check the repository for files that must not be committed
+        run: scripts/check-repo.sh
+
+      # Builds with the engine image named by digest in engine.lock. A bad
+      # config fails here, before anything is deployed.
+      - name: Build the site with the pinned engine
+        run: scripts/validate.sh --out "$RUNNER_TEMP/site-out" --summary "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: site-out
+          path: ${{ runner.temp }}/site-out
+          if-no-files-found: error
+          retention-days: 1
+
+  deploy:
+    name: Deploy site and Worker
+    needs: validate
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # Add a required reviewer and restrict deployment branches to main on this
+    # environment (README.md, "One-time setup").
+    environment: production
+    permissions:
+      contents: read
+      # To read the token from Doppler by OIDC instead of a GitHub secret
+      # (disabled until engine issue #98 lands; see README.md), this job also
+      # needs:
+      #   id-token: write
+    # No job-level env: the Cloudflare token is set only on the three wrangler
+    # steps, never where install scripts could run.
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # The values are parsed (never sourced) and shape-checked, so they are
+      # safe to export to later steps.
+      - name: Read the engine pin
+        run: |
+          set -eu
+          {
+            echo "ENGINE_REPO=$(scripts/read-lock.sh ENGINE_REPO)"
+            echo "ENGINE_REF=$(scripts/read-lock.sh ENGINE_REF)"
+          } >> "$GITHUB_ENV"
+
+      # The image holds only the site builder, so the Worker code comes from
+      # the engine repository at the pinned commit.
+      - name: Fetch the Worker source at the pinned commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ env.ENGINE_REPO }}
+          ref: ${{ env.ENGINE_REF }}
+          path: engine
+          sparse-checkout: worker
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "24"
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: site-out
+          path: site-out
+
+      # No secret in this step: it only checks the shape of plain values.
+      - name: Check configuration
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          PAGES_PROJECT: ${{ vars.PAGES_PROJECT }}
+          D1_DATABASE_ID: ${{ vars.D1_DATABASE_ID }}
+          RATELIMIT_NAMESPACE_ID: ${{ vars.RATELIMIT_NAMESPACE_ID }}
+          SITE_HOST: ${{ vars.SITE_HOST }}
+          # Optional: set it to route /e/* on the site host to the Worker.
+          ZONE_NAME: ${{ vars.ZONE_NAME }}
+        run: |
+          set -eu
+          for name in CLOUDFLARE_ACCOUNT_ID PAGES_PROJECT D1_DATABASE_ID \
+                      RATELIMIT_NAMESPACE_ID SITE_HOST; do
+            eval "value=\${$name:-}"
+            if [ -z "$value" ]; then
+              echo "::error::$name is not set on the production environment (see README.md)"
+              exit 1
+            fi
+          done
+          # Values land in a config file below, so allow only plain characters.
+          printf '%s' "$CLOUDFLARE_ACCOUNT_ID" | grep -Eq '^[0-9a-f]{32}$' \
+            || { echo "::error::CLOUDFLARE_ACCOUNT_ID is not a 32-character id"; exit 1; }
+          printf '%s' "$D1_DATABASE_ID" | grep -Eq '^[0-9a-f-]{36}$' \
+            || { echo "::error::D1_DATABASE_ID is not a UUID"; exit 1; }
+          printf '%s' "$RATELIMIT_NAMESPACE_ID" | grep -Eq '^[0-9]{1,12}$' \
+            || { echo "::error::RATELIMIT_NAMESPACE_ID is not a number"; exit 1; }
+          printf '%s' "$SITE_HOST" | grep -Eq '^[a-z0-9.-]{3,253}$' \
+            || { echo "::error::SITE_HOST is not a plain hostname"; exit 1; }
+          if [ -n "${ZONE_NAME:-}" ]; then
+            printf '%s' "$ZONE_NAME" | grep -Eq '^[a-z0-9.-]{3,253}$' \
+              || { echo "::error::ZONE_NAME is not a plain hostname"; exit 1; }
+          fi
+          printf '%s' "$PAGES_PROJECT" | grep -Eq '^[a-z0-9-]{1,58}$' \
+            || { echo "::error::PAGES_PROJECT is not a valid project name"; exit 1; }
+
+      # --ignore-scripts: wrangler runs without its dependencies' install
+      # scripts (verified in the engine's deploy-test.yml), so none run. This
+      # step has no secret in its environment.
+      - name: Install Worker dependencies
+        working-directory: engine/worker
+        run: npm ci --ignore-scripts
+
+      # The link ids come from the build manifest, so the Worker accepts
+      # exactly the links the page publishes. The engine's wrangler.toml holds
+      # fake placeholder ids; write a deploy copy with the real values (none
+      # is a secret). It is never committed.
+      - name: Write deploy config
+        working-directory: engine/worker
+        env:
+          D1_DATABASE_ID: ${{ vars.D1_DATABASE_ID }}
+          RATELIMIT_NAMESPACE_ID: ${{ vars.RATELIMIT_NAMESPACE_ID }}
+          SITE_HOST: ${{ vars.SITE_HOST }}
+          ZONE_NAME: ${{ vars.ZONE_NAME }}
+        run: |
+          set -eu
+          LINK_IDS="$(jq -c '.links | keys' ../../site-out/manifest.json)"
+          printf '%s' "$LINK_IDS" | grep -Eq '^\[("[a-z0-9-]{1,40}"(, ?)?)+\]$' \
+            || { echo "::error::the build manifest has no valid link ids"; exit 1; }
+          sed \
+            -e "s|^database_id = \"[^\"]*\"|database_id = \"${D1_DATABASE_ID}\"|" \
+            -e "s|^namespace_id = \"[^\"]*\"|namespace_id = \"${RATELIMIT_NAMESPACE_ID}\"|" \
+            -e "s|^SITE_HOST = \"[^\"]*\"|SITE_HOST = \"${SITE_HOST}\"|" \
+            -e "s|^LINK_IDS = '[^']*'|LINK_IDS = '${LINK_IDS}'|" \
+            wrangler.toml > wrangler.deploy.toml
+          grep -qF "${D1_DATABASE_ID}" wrangler.deploy.toml
+          grep -qF "${SITE_HOST}" wrangler.deploy.toml
+          grep -qF "${LINK_IDS}" wrangler.deploy.toml
+          # Optional route so click pings to /e/c/<id> on the site host reach
+          # the Worker. Values were validated in "Check configuration".
+          if [ -n "${ZONE_NAME:-}" ]; then
+            printf '\n[[routes]]\npattern = "%s/e/*"\nzone_name = "%s"\n' \
+              "${SITE_HOST}" "${ZONE_NAME}" >> wrangler.deploy.toml
+            grep -qF "pattern = \"${SITE_HOST}/e/*\"" wrangler.deploy.toml
+          fi
+
+      # Smoke test with no secret in the environment.
+      - name: Confirm wrangler runs
+        working-directory: engine/worker
+        env:
+          WRANGLER_SEND_METRICS: "false"
+        run: npx --no-install wrangler --version
+
+      # DOPPLER OPTION (disabled until engine issue #98 lands). To use it,
+      # remove the `CLOUDFLARE_API_TOKEN` secret lines from the three steps
+      # below, add `id-token: write` to this job's permissions, and put a
+      # Doppler OIDC step here that exports the token to ONLY the following
+      # wrangler steps. The exact step is documented in the engine's
+      # docs/instance-repos.md once it exists. Do not install the Doppler CLI
+      # in a step that carries the token.
+
+      # The only three steps that carry the Cloudflare token. The first also
+      # fails early, with a plain message, when the token is missing.
+      - name: Apply D1 migrations
+        working-directory: engine/worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          WRANGLER_SEND_METRICS: "false"
+        run: |
+          set -eu
+          if [ -z "${CLOUDFLARE_API_TOKEN:-}" ]; then
+            echo "::error::CLOUDFLARE_API_TOKEN is not set on the production environment (see README.md)"
+            exit 1
+          fi
+          npx --no-install wrangler d1 migrations apply DB --remote --config wrangler.deploy.toml
+
+      - name: Deploy the Worker
+        working-directory: engine/worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          WRANGLER_SEND_METRICS: "false"
+        run: npx --no-install wrangler deploy --config wrangler.deploy.toml
+
+      - name: Publish the site to Pages
+        working-directory: engine/worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          PAGES_PROJECT: ${{ vars.PAGES_PROJECT }}
+          WRANGLER_SEND_METRICS: "false"
+        run: >-
+          npx --no-install wrangler pages deploy ../../site-out
+          --project-name "$PAGES_PROJECT"
+          --branch main
+          --commit-dirty=true

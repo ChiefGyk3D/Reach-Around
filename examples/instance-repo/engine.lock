@@ -1,0 +1,14 @@
+# The engine version this instance builds and deploys with. Three lines, and
+# they must move together (Renovate groups them into one pull request):
+#
+#   ENGINE_IMAGE  the published container image, by tag AND digest. The digest
+#                 is what is pulled; the tag is only a label for humans.
+#   ENGINE_REPO   the engine's source repository (the Worker code is taken
+#                 from here, because the image holds only the site builder).
+#   ENGINE_REF    the commit of that release tag, with the tag in a comment.
+#
+# Read by scripts/read-lock.sh, which checks each value's shape. Nothing in
+# this file is a secret.
+ENGINE_IMAGE=ghcr.io/chiefgyk3d/reach-around:0.1.0@sha256:057eb42711a1f07d4735304a5317202e61822e0b95ca55fd8b43abd022e68af4
+ENGINE_REPO=ChiefGyk3D/Reach-Around
+ENGINE_REF=0d1f96a0268cf99890c7d5ee7b9cd6edf7d4a207 # v0.1.0

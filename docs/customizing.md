@@ -24,7 +24,10 @@ my-page/
 ```
 
 The folder names are yours. The engine only needs the paths you pass on the
-command line. `site.yaml` is the only required file. This first example is a
+command line. To keep this folder in its own private repository that pins an
+engine release and deploys on merge, start from
+[`examples/instance-repo/`](../examples/instance-repo/) and read
+[instance repositories](instance-repos.md). `site.yaml` is the only required file. This first example is a
 complete config and is checked by `tests/test_docs_examples.py`.
 
 ```yaml

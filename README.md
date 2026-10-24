@@ -45,6 +45,7 @@ Replace the example mount with your own instance directory. Once `v0.1.0` is pub
 ## Documentation
 
 - [docs/deploy.md](docs/deploy.md): deploying the site and click Worker to Cloudflare (Pages or Worker, production branch, token type, Doppler, route by hand, troubleshooting)
+- [docs/instance-repos.md](docs/instance-repos.md): keep your own page in a private repository that pins this project's release ([template](examples/instance-repo/))
 - [docs/examples/deploy-private.sh](docs/examples/deploy-private.sh): a sanitized private deploy script for a real instance
 - [docs/releasing.md](docs/releasing.md): cutting and verifying a release
 - [docs/containers.md](docs/containers.md): running the container image
