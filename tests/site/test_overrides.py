@@ -8,7 +8,6 @@ from collections.abc import Iterator
 from datetime import date
 from pathlib import Path
 
-import jinja2
 import pytest
 
 from reach_around.cli import main
@@ -71,9 +70,9 @@ def test_override_template_wins_and_missing_ones_fall_back(
 def test_override_name_cannot_escape_the_directory(
     overrides: Path, tmp_path: Path, name: str
 ) -> None:
-    (tmp_path / "x.html").write_text("SECRET")
+    (overrides / "x.html").write_text("SECRET")  # one level above templates/
     env = make_environment(overrides)
-    with pytest.raises((OverridesError, jinja2.TemplateNotFound)):
+    with pytest.raises(OverridesError):
         env.get_template(name)
 
 
@@ -81,7 +80,7 @@ def test_override_absolute_name_is_refused(overrides: Path, tmp_path: Path) -> N
     secret = tmp_path / "secret.html"
     secret.write_text("SECRET")
     env = make_environment(overrides)
-    with pytest.raises((OverridesError, jinja2.TemplateNotFound)):
+    with pytest.raises(OverridesError):
         env.get_template(str(secret))
 
 
