@@ -547,6 +547,7 @@ reach-around counts refresh --config site.yaml --out numbers.json
 | `--config PATH` | the site config (required) |
 | `--out PATH` | the numbers file (default `numbers.json` beside the config); the status file is `<name>.status.json` beside it |
 | `--only SLUG [SLUG ...]` | refresh only these platforms |
+| `--accept-drop PLATFORM [PLATFORM ...]` | accept a zero, or a fall of more than 90 percent from a previous value of 1000 or more, for these platforms on purpose |
 | `--dry-run` | print which hosts and kinds would be fetched; fetch nothing, write nothing |
 
 Exit codes: `0` every source succeeded or was skipped on purpose; `3` at least
@@ -554,6 +555,26 @@ one source failed; `2` a usage or config problem (including a numbers file that
 does not validate); `1` the result files could not be written. A failed source
 never overwrites its old number and never becomes a zero; `numbers.status.json`
 records `ok`, `skipped` or `error` per source with the error class and the time.
+
+A good number is not replaced by a suspicious one. A result of `0` over a
+previous value above zero is kept out as `zero_suspect`; a result more than 90
+percent below a previous value of 1000 or more is kept out as `drop_suspect`
+(a glitching API looks exactly like that). Both count as a failed source (exit
+`3`, the old number stays, the status file records the word). When the change is
+real, run once with `--accept-drop PLATFORM`. Zero is accepted when there is no
+previous value for that platform or the previous value was already zero.
+
+The command refuses (exit `2`) any layout where an output could be the config:
+the numbers file, the status file (`<name>.status.json`) and the lock file
+(`<name>.json.lock`) must be three different files, none of them the config, not
+a symlink, not a hardlink to one another or to the config, not named `*.yaml` or
+`*.yml`, and in a folder that exists. A whole run holds an exclusive lock on the
+lock file (waiting up to two minutes, then exit `1`), so two overlapping runs
+cannot roll a newer number back. Files are written through a directory opened
+once without following links, so swapping the folder for a symlink mid-run does
+not redirect the write. Name lookups for the configurable hosts run on at most
+eight shared helper threads; beyond that a lookup fails as `resolution_busy`
+rather than piling up threads behind a stalled resolver.
 
 Keyed sources read their secret from an environment variable named in the
 config. Run the command under Doppler so the values exist only for that process:

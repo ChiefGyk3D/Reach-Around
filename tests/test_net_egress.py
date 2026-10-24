@@ -13,6 +13,7 @@ from typing import cast
 import pytest
 
 import reach_around
+import reach_around.net.egress as egress
 from fakenet import FakeSock, http_answer
 from reach_around.net.egress import (
     EgressBlocked,
@@ -269,7 +270,7 @@ def test_slow_resolver_times_out(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr(socket, "getaddrinfo", slow)
     with pytest.raises(EgressBlocked) as caught:
-        system_resolver("example.social", 443, timeout=0.1)
+        system_resolver("slow.example.social", 443, timeout=0.1)
     assert caught.value.reason == "resolution_timeout"
 
 
@@ -279,7 +280,7 @@ def test_resolution_failure_is_typed(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr(socket, "getaddrinfo", boom)
     with pytest.raises(EgressBlocked) as caught:
-        system_resolver("example.social", 443)
+        system_resolver("fail.example.social", 443)
     assert caught.value.reason == "resolution_failed"
 
 
@@ -587,3 +588,126 @@ def test_tls_handshake_that_stalls_is_cut_at_the_deadline(
     elapsed, error = _timed(DripServer(_silent), tls=True, client_context=client_ctx)
     assert error.reason == "timeout"
     assert 0.5 <= elapsed < 2.0
+
+
+# ---- the watchdog fails closed and never touches a recycled descriptor -------------
+
+
+class RecordingSock:
+    """Stand-in socket that records the order of shutdown and close calls."""
+
+    def __init__(
+        self,
+        *,
+        dup_fails: bool = False,
+        in_shutdown: threading.Event | None = None,
+        release: threading.Event | None = None,
+    ) -> None:
+        self.events: list[str] = []
+        self._dup_fails = dup_fails
+        self._in_shutdown = in_shutdown
+        self._release = release
+        self._lock = threading.Lock()
+
+    def _note(self, name: str) -> None:
+        with self._lock:
+            self.events.append(name)
+
+    def dup(self) -> "RecordingSock":
+        if self._dup_fails:
+            raise OSError(24, "Too many open files")
+        return self
+
+    def shutdown(self, how: int) -> None:
+        self._note("shutdown_start")
+        if self._in_shutdown is not None:
+            self._in_shutdown.set()
+        if self._release is not None:
+            assert self._release.wait(10)
+        self._note("shutdown_end")
+
+    def close(self) -> None:
+        self._note("close")
+
+
+def _watchdog() -> egress._Watchdog:
+    return egress._Watchdog(3600.0)  # the real timer never fires in these tests
+
+
+def test_a_socket_that_cannot_be_duplicated_is_refused_and_closed() -> None:
+    watchdog = _watchdog()
+    sock = RecordingSock(dup_fails=True)
+    try:
+        with pytest.raises(EgressBlocked) as caught:
+            watchdog.add(cast(socket.socket, sock))
+    finally:
+        watchdog.stop()
+    assert caught.value.reason == "timeout"
+    assert sock.events == ["shutdown_start", "shutdown_end", "close"]
+
+
+def test_a_connection_with_no_working_deadline_never_sends_a_request() -> None:
+    class NoDup(FakeSock):
+        def dup(self) -> FakeSock:
+            raise OSError(24, "Too many open files")
+
+    sock = NoDup(http_answer(b"{}"))
+
+    def connector(address: str, port: int, timeout: float) -> socket.socket:
+        return cast(socket.socket, sock)
+
+    transport = HttpsTransport(
+        resolver=lambda h, p: [PUBLIC], connector=connector, wrapper=lambda s, n: s
+    )
+    with pytest.raises(EgressBlocked) as caught:
+        transport(_request())
+    assert caught.value.reason == "timeout"
+    assert sock.sent == b"" and sock.closed
+
+
+def test_stop_waits_for_a_fire_in_progress_before_closing_the_duplicate() -> None:
+    in_shutdown, release = threading.Event(), threading.Event()
+    watchdog = _watchdog()
+    sock = RecordingSock(in_shutdown=in_shutdown, release=release)
+    watchdog.add(cast(socket.socket, sock))
+    fire = threading.Thread(target=watchdog._fire)
+    fire.start()
+    assert in_shutdown.wait(10)  # shutdown() is running on the duplicate
+    stop = threading.Thread(target=watchdog.stop)
+    stop.start()
+    stop.join(0.3)
+    assert stop.is_alive()  # stop() must not close the descriptor yet
+    assert sock.events == ["shutdown_start"]
+    release.set()
+    fire.join(10)
+    stop.join(10)
+    assert sock.events == ["shutdown_start", "shutdown_end", "close"]
+
+
+def test_a_fire_after_stop_touches_nothing() -> None:
+    watchdog = _watchdog()
+    sock = RecordingSock()
+    watchdog.add(cast(socket.socket, sock))
+    watchdog.stop()
+    assert sock.events == ["close"]
+    watchdog._fire()  # a timer callback that was already queued
+    assert sock.events == ["close"]  # no shutdown on a closed, reusable descriptor
+    assert not watchdog.fired
+
+
+def test_a_socket_added_after_stop_is_closed_and_never_shut_down() -> None:
+    watchdog = _watchdog()
+    watchdog.stop()
+    sock = RecordingSock()
+    watchdog.add(cast(socket.socket, sock))
+    assert sock.events == ["close"]
+
+
+def test_a_socket_added_after_the_deadline_is_shut_down_at_once() -> None:
+    watchdog = _watchdog()
+    watchdog._fire()
+    sock = RecordingSock()
+    watchdog.add(cast(socket.socket, sock))
+    assert sock.events == ["shutdown_start", "shutdown_end"]
+    watchdog.stop()
+    assert sock.events[-1] == "close"

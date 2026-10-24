@@ -209,7 +209,7 @@ def test_out_must_not_be_the_config_or_a_directory_or_in_a_missing_dir(
 ) -> None:
     config = setup / "site.yaml"
     assert main(refresh_args(setup, "--out", str(config))) == 2
-    assert "--out is the config file" in capsys.readouterr().err
+    assert "config file" in capsys.readouterr().err
     assert main(refresh_args(setup, "--out", str(setup))) == 2
     assert main(refresh_args(setup, "--out", str(setup / "nodir" / "n.json"))) == 2
     assert config.read_text() == CONFIG
@@ -254,7 +254,7 @@ def test_write_failure_exits_one(
 ) -> None:
     use(monkeypatch, FakeTransport(good_routes()))
 
-    def boom(src: object, dst: object) -> None:
+    def boom(src: object, dst: object, **kwargs: object) -> None:
         raise OSError(28, "No space left on device")
 
     monkeypatch.setattr(os, "replace", boom)

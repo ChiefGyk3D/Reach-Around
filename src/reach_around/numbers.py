@@ -17,7 +17,6 @@ import json
 import os
 import re
 import stat
-import tempfile
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -156,29 +155,3 @@ def load_numbers(path: Path) -> Numbers:
         return parse_numbers(read_capped(path))
     except NumbersError as exc:
         raise NumbersError(f"{path}: {exc}") from None
-
-
-def write_atomic(path: Path, text: str) -> None:
-    """Write ``text`` to ``path``: temp file beside it, fsync, rename, mode 0600."""
-    directory = path.parent
-    fd, tmp_name = tempfile.mkstemp(
-        dir=directory, prefix=f".{path.name}.", suffix=".tmp"
-    )
-    try:
-        os.fchmod(fd, 0o600)
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            handle.write(text)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(tmp_name, path)
-    except BaseException:
-        try:
-            os.unlink(tmp_name)
-        except FileNotFoundError:
-            pass
-        raise
-    dir_fd = os.open(directory, os.O_RDONLY)
-    try:
-        os.fsync(dir_fd)
-    finally:
-        os.close(dir_fd)

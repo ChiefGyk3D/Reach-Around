@@ -70,6 +70,30 @@ def host_of(source: Source) -> str:
     return _FIXED_HOSTS[source.kind]
 
 
+# A good number is not replaced by a suspicious one without an explicit
+# --accept-drop. A zero over a positive number, or a fall of more than
+# DROP_PERCENT percent from a previous value of at least DROP_MIN_PREVIOUS, is
+# far more likely a glitching API than a real change.
+DROP_MIN_PREVIOUS = 1000
+DROP_PERCENT = 90
+ZERO_SUSPECT = "zero_suspect"
+DROP_SUSPECT = "drop_suspect"
+SUSPECT_KINDS = (ZERO_SUSPECT, DROP_SUSPECT)
+
+
+def suspect_kind(previous: PlatformCount | None, count: int) -> str | None:
+    """A ``*_suspect`` word if ``count`` should not replace ``previous``."""
+    if previous is None or previous.count == 0:
+        return None
+    if count == 0:
+        return ZERO_SUSPECT
+    if previous.count >= DROP_MIN_PREVIOUS and count * 100 < previous.count * (
+        100 - DROP_PERCENT
+    ):
+        return DROP_SUSPECT
+    return None
+
+
 @dataclass(frozen=True)
 class Outcome:
     platform: str
@@ -99,6 +123,7 @@ def refresh(
     now: Callable[[], datetime] = lambda: datetime.now(UTC),
     fetch: Callable[..., dict[str, object]] = fetch_json,
     sleep: Callable[[float], None] | None = None,
+    accept_drop: frozenset[str] = frozenset(),
 ) -> tuple[Numbers, list[Outcome]]:
     """Fetch every source; return the new numbers and one outcome per source."""
     numbers: Numbers = dict(previous)
@@ -129,6 +154,16 @@ def refresh(
                 Outcome(source.platform, source.kind, "error", None, type(exc).__name__)
             )
         else:
+            suspect = (
+                None
+                if source.platform in accept_drop
+                else suspect_kind(previous.get(source.platform), count)
+            )
+            if suspect is not None:
+                outcomes.append(
+                    Outcome(source.platform, source.kind, "error", None, suspect)
+                )
+                continue
             numbers[source.platform] = PlatformCount(count, utc_stamp(now()))
             outcomes.append(Outcome(source.platform, source.kind, "ok", count))
     return numbers, outcomes

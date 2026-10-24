@@ -7,13 +7,13 @@ from typing import cast
 
 import pytest
 
+from reach_around.counts.files import write_atomic
 from reach_around.numbers import (
     NumbersError,
     PlatformCount,
     dump_numbers,
     load_numbers,
     parse_numbers,
-    write_atomic,
 )
 
 GOOD = {
@@ -159,7 +159,7 @@ def test_write_atomic_failure_keeps_the_old_file_and_cleans_up(
     target = tmp_path / "numbers.json"
     target.write_text("old")
 
-    def boom(src: object, dst: object) -> None:
+    def boom(src: object, dst: object, **kwargs: object) -> None:
         raise OSError("disk full")
 
     monkeypatch.setattr(os, "replace", boom)
@@ -179,9 +179,9 @@ def test_write_atomic_fsyncs_file_before_rename(
         events.append("fsync")
         real_fsync(fd)
 
-    def spy_replace(src: str, dst: str) -> None:
+    def spy_replace(src: str, dst: str, **kwargs: int) -> None:
         events.append("replace")
-        real_replace(src, dst)
+        real_replace(src, dst, **kwargs)
 
     monkeypatch.setattr(os, "fsync", spy_fsync)
     monkeypatch.setattr(os, "replace", spy_replace)

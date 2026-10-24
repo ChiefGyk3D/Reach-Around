@@ -28,6 +28,7 @@ Reason = Literal[
     "no_address",
     "resolution_failed",
     "resolution_timeout",
+    "resolution_busy",
     "connect_failed",
     "tls_failed",
     "timeout",
@@ -114,26 +115,69 @@ def is_public_address(
 Resolver = Callable[[str, int], list[str]]
 
 
-def system_resolver(host: str, port: int, *, timeout: float = 5.0) -> list[str]:
-    """``getaddrinfo`` on a worker thread so a slow resolver cannot hang us."""
-    result: list[list[str]] = []
-    failure: list[Exception] = []
+# Hard cap on lookup threads alive at once. getaddrinfo cannot be interrupted, so
+# a timed-out lookup keeps its thread until the resolver answers; without a cap a
+# run against a black-holed resolver would pile up threads. Callers asking for the
+# same name while a lookup is in flight share that lookup instead of starting one.
+MAX_RESOLVER_THREADS = 8
+
+
+class _Lookup:
+    def __init__(self) -> None:
+        self.done = threading.Event()
+        self.answers: list[str] | None = None
+        self.failed = False
+
+
+_lookups: dict[tuple[str, int], _Lookup] = {}
+_lookups_lock = threading.Lock()
+
+
+def _start_lookup(host: str, port: int) -> _Lookup:
+    with _lookups_lock:
+        existing = _lookups.get((host, port))
+        if existing is not None:
+            return existing
+        if len(_lookups) >= MAX_RESOLVER_THREADS:
+            raise EgressBlocked("resolution_busy", host)
+        lookup = _Lookup()
+        _lookups[(host, port)] = lookup
 
     def work() -> None:
         try:
             infos = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
-            result.append([str(info[4][0]) for info in infos])
-        except Exception as exc:
-            failure.append(exc)
+            lookup.answers = [str(info[4][0]) for info in infos]
+        except Exception:
+            lookup.failed = True
+        finally:
+            with _lookups_lock:
+                _lookups.pop((host, port), None)
+            lookup.done.set()
 
-    worker = threading.Thread(target=work, daemon=True)
-    worker.start()
-    worker.join(timeout)
-    if worker.is_alive():
+    threading.Thread(target=work, daemon=True).start()
+    return lookup
+
+
+def wait_for_idle_resolvers(timeout: float) -> bool:
+    """Wait until no lookup thread is alive (for tests); True if none remain."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        with _lookups_lock:
+            if not _lookups:
+                return True
+        time.sleep(0.01)
+    with _lookups_lock:
+        return not _lookups
+
+
+def system_resolver(host: str, port: int, *, timeout: float = 5.0) -> list[str]:
+    """``getaddrinfo`` on a shared, capped worker thread; a stall cannot hang us."""
+    lookup = _start_lookup(host, port)
+    if not lookup.done.wait(timeout):
         raise EgressBlocked("resolution_timeout", host)
-    if failure or not result:
+    if lookup.failed or lookup.answers is None:
         raise EgressBlocked("resolution_failed", host)
-    return result[0]
+    return list(lookup.answers)
 
 
 @dataclass(frozen=True)
@@ -177,41 +221,54 @@ class _Watchdog:
     one byte at a time never trips them. This timer shuts the connection down
     when the deadline passes, which wakes any blocked connect, TLS handshake,
     send or read from another thread.
+
+    Every shutdown and close happens under one lock, and ``stop`` marks the
+    watchdog stopped under that lock before it closes anything, so a timer
+    callback that is running (or already queued) can never call ``shutdown`` on
+    a descriptor number that has been closed and handed to someone else.
     """
 
     def __init__(self, seconds: float) -> None:
         self.fired = False
+        self._stopped = False
         self._lock = threading.Lock()
         self._socks: list[socket.socket] = []
         self._timer = threading.Timer(max(seconds, 0.0), self._fire)
         self._timer.daemon = True
         self._timer.start()
 
-    def add(self, sock: socket.socket) -> None:
-        """Watch the connection behind ``sock``.
+    def add(self, sock: socket.socket, host: str = "") -> None:
+        """Watch the connection behind ``sock``; fail closed if that is impossible.
 
         Wrapping a socket in TLS detaches the raw object (its descriptor
         becomes -1), so holding the raw socket would cut nothing. A duplicate
         descriptor stays valid and refers to the same connection, and
         ``shutdown`` acts on the connection, so it reaches whatever object is
-        really in use, including a handshake that is still running.
+        really in use, including a handshake that is still running. If no
+        duplicate can be made the connection would run without a deadline, so
+        it is shut down and refused.
         """
         try:
             watched = sock.dup()
         except OSError:
-            return
+            self._kill(sock)
+            self._close(sock)
+            raise EgressBlocked("timeout", host) from None
         with self._lock:
+            if self._stopped:
+                self._close(watched)
+                return
+            if self.fired:
+                self._kill(watched)
             self._socks.append(watched)
-            fired = self.fired
-        if fired:
-            self._kill(watched)
 
     def _fire(self) -> None:
         with self._lock:
+            if self._stopped:
+                return
             self.fired = True
-            socks = list(self._socks)
-        for sock in socks:
-            self._kill(sock)
+            for sock in self._socks:
+                self._kill(sock)
 
     @staticmethod
     def _kill(sock: socket.socket) -> None:
@@ -220,12 +277,20 @@ class _Watchdog:
         except (OSError, ValueError):
             pass
 
+    @staticmethod
+    def _close(sock: socket.socket) -> None:
+        try:
+            sock.close()
+        except OSError:
+            pass
+
     def stop(self) -> None:
         self._timer.cancel()
-        with self._lock:
+        with self._lock:  # waits for a fire in progress
+            self._stopped = True
             socks, self._socks = self._socks, []
-        for sock in socks:
-            sock.close()
+            for sock in socks:
+                self._close(sock)
 
 
 class _PinnedConnection(http.client.HTTPSConnection):
@@ -248,7 +313,9 @@ class _PinnedConnection(http.client.HTTPSConnection):
 
     def connect(self) -> None:
         sock = self._connector(self._address, 443, float(self.timeout or 10.0))
-        self._watchdog.add(sock)  # before the handshake, so a stalled one is cut
+        self._watchdog.add(
+            sock, self.host
+        )  # before the handshake: a stalled one is cut
         self.sock = self._wrapper(sock, self.host)
 
 

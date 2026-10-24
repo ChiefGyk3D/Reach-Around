@@ -3,7 +3,7 @@
 
 Exit codes: 0 every source succeeded or was intentionally skipped; 3 at least
 one source failed (its previous number is kept); 2 usage or config problem;
-1 the result files could not be written.
+1 the result files could not be written or another refresh holds the lock.
 """
 
 from __future__ import annotations
@@ -17,7 +17,17 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from reach_around.config import ConfigError, load_site_config
+from reach_around.counts.files import (
+    LOCK_WAIT_SECONDS,
+    FileLock,
+    LockBusy,
+    Paths,
+    plan_paths,
+    write_atomic,
+)
 from reach_around.counts.refresh import (
+    SUSPECT_KINDS,
+    Source,
     host_of,
     load_status,
     refresh,
@@ -25,12 +35,7 @@ from reach_around.counts.refresh import (
     select,
 )
 from reach_around.net.egress import Transport
-from reach_around.numbers import (
-    NumbersError,
-    dump_numbers,
-    load_numbers,
-    write_atomic,
-)
+from reach_around.numbers import NumbersError, dump_numbers, load_numbers
 
 EXIT_OK = 0
 EXIT_WRITE = 1
@@ -48,34 +53,31 @@ def default_sleep(seconds: float) -> None:
     time.sleep(seconds)
 
 
-def status_path(out: Path) -> Path:
-    return out.with_name(f"{out.stem}.status.json")
-
-
 def run_refresh(
     config_path: Path,
     out: Path | None,
     only: list[str] | None,
     dry_run: bool,
     *,
+    accept_drop: list[str] | None = None,
     env: Mapping[str, str] | None = None,
     transport: Transport | None = None,
     now: Callable[[], datetime] = lambda: datetime.now(UTC),
+    lock_wait: float = LOCK_WAIT_SECONDS,
 ) -> int:
     try:
         config = load_site_config(config_path)
         if config.numbers is None:
             raise ValueError("the config has no numbers.sources to refresh")
         sources = select(config.numbers, only)
-        target = (
-            out if out is not None else config_path.resolve().parent / "numbers.json"
-        )
-        if target.resolve() == config_path.resolve():
-            raise ValueError("--out is the config file")
-        if target.is_dir() or not target.resolve().parent.is_dir():
-            raise ValueError(f"cannot write the numbers file at {target}")
-        previous = load_numbers(target) if target.exists() else {}
-    except (ConfigError, ValueError, NumbersError) as exc:
+        known = {source.platform for source in config.numbers.sources}
+        unknown = sorted(set(accept_drop or []) - known)
+        if unknown:
+            raise ValueError(
+                f"--accept-drop names no configured source: {', '.join(unknown)}"
+            )
+        paths = plan_paths(config_path, out)
+    except (ConfigError, ValueError, OSError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return EXIT_USAGE
 
@@ -87,7 +89,43 @@ def run_refresh(
         print("dry run: nothing fetched, nothing written")
         return EXIT_OK
 
-    environment = os.environ if env is None else env
+    try:
+        # One lock for the whole load, fetch, merge and write cycle: a second run
+        # started meanwhile waits, then reads what this one wrote, so a stale copy
+        # can never replace a newer number.
+        with FileLock(paths.lock, wait=lock_wait):
+            return _cycle(
+                paths,
+                sources,
+                frozenset(accept_drop or []),
+                os.environ if env is None else env,
+                transport,
+                now,
+            )
+    except LockBusy:
+        print(
+            "error: another counts refresh holds the lock; try again shortly",
+            file=sys.stderr,
+        )
+        return EXIT_WRITE
+    except OSError as exc:
+        print(f"error: cannot use the output folder: {exc.strerror}", file=sys.stderr)
+        return EXIT_WRITE
+
+
+def _cycle(
+    paths: Paths,
+    sources: list[Source],
+    accept: frozenset[str],
+    environment: Mapping[str, str],
+    transport: Transport | None,
+    now: Callable[[], datetime],
+) -> int:
+    try:
+        previous = load_numbers(paths.target) if paths.target.exists() else {}
+    except NumbersError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return EXIT_USAGE
     stamp = now()
     numbers, outcomes = refresh(
         sources,
@@ -96,6 +134,7 @@ def run_refresh(
         transport=transport if transport is not None else default_transport(),
         now=lambda: stamp,
         sleep=default_sleep,
+        accept_drop=accept,
     )
     for outcome in outcomes:
         if outcome.status == "ok":
@@ -104,12 +143,18 @@ def run_refresh(
             print(f"{outcome.platform}: skipped ({outcome.detail})")
         else:
             print(f"{outcome.platform}: error ({outcome.detail})", file=sys.stderr)
+            if outcome.detail in SUSPECT_KINDS:
+                print(
+                    f"  the previous number was kept; if the change is real, rerun "
+                    f"with --accept-drop {outcome.platform}",
+                    file=sys.stderr,
+                )
     try:
         if any(outcome.status == "ok" for outcome in outcomes):
-            write_atomic(target, dump_numbers(numbers))
+            write_atomic(paths.target, dump_numbers(numbers))
         write_atomic(
-            status_path(target),
-            render_status(load_status(status_path(target)), outcomes, stamp),
+            paths.status,
+            render_status(load_status(paths.status), outcomes, stamp),
         )
     except (OSError, NumbersError) as exc:
         reason = exc.strerror if isinstance(exc, OSError) else str(exc)
@@ -120,7 +165,13 @@ def run_refresh(
 
 
 def _run(args: argparse.Namespace) -> int:
-    return run_refresh(args.config, args.out, args.only, args.dry_run)
+    return run_refresh(
+        args.config,
+        args.out,
+        args.only,
+        args.dry_run,
+        accept_drop=args.accept_drop,
+    )
 
 
 def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
@@ -150,6 +201,15 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
         action="extend",
         metavar="SLUG",
         help="refresh only this platform slug (repeatable)",
+    )
+    refresh_parser.add_argument(
+        "--accept-drop",
+        nargs="+",
+        action="extend",
+        metavar="PLATFORM",
+        help="accept a zero or a fall of more than 90 percent (from 1000 or "
+        "more) for this platform on purpose; otherwise such a value is kept out "
+        "as zero_suspect or drop_suspect",
     )
     refresh_parser.add_argument(
         "--dry-run",
