@@ -558,9 +558,19 @@ Every command takes `--config PATH` and:
   after the edit; if the result would be invalid, nothing is written;
 - checks that the edited data equals the old data plus exactly the requested
   change;
-- writes through a temporary file in the same folder and renames it over the
-  original, so a failure leaves the original intact;
-- keeps the previous file as `site.yaml.bak` (skip with `--no-backup`);
+- writes through a temporary file in the same folder, flushes it to disk, and
+  renames it over the original, then flushes the folder so the rename survives
+  a crash; a failure leaves the original intact;
+- keeps the previous file as `site.yaml.bak` (skip with `--no-backup`). The
+  backup is written the same way (temporary file, flush, rename), so a failed
+  backup never truncates the earlier one, and the edit stops before touching
+  your config;
+- locks the config from the read to the rename, so two of these commands
+  running at once happen one after the other and both changes land. Another
+  program (an editor, a sync tool) is not covered by the lock: right before the
+  rename the command checks that the file is still the same one with the same
+  content, and if it is not, it stops with `the file changed while editing;
+  nothing was written, run the command again`;
 - prints a short diff; `--dry-run` prints it and writes nothing;
 - refuses a symlinked config and a path outside the current folder unless you
   pass `--force-path`. There are no includes; the command never follows one.

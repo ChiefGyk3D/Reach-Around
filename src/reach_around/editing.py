@@ -19,6 +19,8 @@ fails, nothing is written.
 from __future__ import annotations
 
 import copy
+import fcntl
+import hashlib
 import json
 import math
 import os
@@ -84,16 +86,7 @@ def resolve_config(path: Path, *, force_path: bool) -> Path:
     return resolved
 
 
-def _read_text(path: Path) -> str:
-    try:
-        info = path.lstat()
-        if not stat.S_ISREG(info.st_mode):
-            raise EditError(f"{path}: not a regular file")
-        if info.st_size > MAX_BYTES:
-            raise EditError(f"{path}: file too large (limit {MAX_BYTES} bytes)")
-        data = path.read_bytes()
-    except OSError as exc:
-        raise EditError(f"{path}: cannot read file: {exc.strerror}") from exc
+def _decode(path: Path, data: bytes) -> str:
     try:
         text = data.decode("utf-8")
     except UnicodeDecodeError:
@@ -101,6 +94,105 @@ def _read_text(path: Path) -> str:
     if "\r" in text:
         raise EditError(f"{path}: CRLF line endings are not supported; convert first")
     return text
+
+
+@dataclass(frozen=True)
+class _Snapshot:
+    """Identity and content of the config as it was read."""
+
+    dev: int
+    ino: int
+    size: int
+    mtime_ns: int
+    sha256: str
+
+
+def _read_fd(fd: int, path: Path) -> bytes:
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode):
+            raise EditError(f"{path}: not a regular file")
+        if info.st_size > MAX_BYTES:
+            raise EditError(f"{path}: file too large (limit {MAX_BYTES} bytes)")
+        data = b""
+        while len(data) <= MAX_BYTES:
+            chunk = os.pread(fd, 65536, len(data))
+            if not chunk:
+                break
+            data += chunk
+    except OSError as exc:
+        raise EditError(f"{path}: cannot read file: {exc.strerror}") from exc
+    if len(data) > MAX_BYTES:
+        raise EditError(f"{path}: file too large (limit {MAX_BYTES} bytes)")
+    return data
+
+
+def _snapshot(fd: int, data: bytes) -> _Snapshot:
+    info = os.fstat(fd)
+    return _Snapshot(
+        info.st_dev,
+        info.st_ino,
+        info.st_size,
+        info.st_mtime_ns,
+        hashlib.sha256(data).hexdigest(),
+    )
+
+
+def _open_locked(path: Path) -> int:
+    """Open ``path`` (never through a symlink) and hold an exclusive lock.
+
+    The lock is on the config's own descriptor. A writer replaces the file by
+    rename, so after the lock is granted the path is checked to still name
+    this very file; if not, the new file is opened and locked instead.
+    """
+    for _ in range(20):
+        try:
+            fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+        except OSError as exc:
+            raise EditError(f"{path}: cannot open: {exc.strerror}") from exc
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            held, named = os.fstat(fd), os.stat(path)
+        except OSError as exc:
+            os.close(fd)
+            raise EditError(f"{path}: cannot lock: {exc.strerror}") from exc
+        if (held.st_dev, held.st_ino) == (named.st_dev, named.st_ino):
+            return fd
+        os.close(fd)
+    raise EditError(f"{path}: the file keeps being replaced; try again")
+
+
+def _changed(path: Path) -> EditError:
+    return EditError(
+        f"{path}: the file changed while editing; nothing was written, "
+        "run the command again"
+    )
+
+
+def _verify_unchanged(path: Path, snap: _Snapshot) -> None:
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    except OSError:
+        raise _changed(path) from None
+    try:
+        data = _read_fd(fd, path)
+        now = _snapshot(fd, data)
+    finally:
+        os.close(fd)
+    if now != snap:
+        raise _changed(path)
+
+
+def _before_replace(path: Path) -> None:
+    """Seam between validating the edit and the final check (tests hook it)."""
+
+
+def _fsync_dir(directory: Path) -> None:
+    fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
 
 
 def _check_candidate(path: Path, text: str) -> dict[str, Any]:
@@ -124,8 +216,15 @@ def _check_candidate(path: Path, text: str) -> dict[str, Any]:
     return loaded
 
 
-def _write_atomic(path: Path, text: str, mode: int) -> None:
-    fd, name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
+def _replace_durably(target: Path, text: str, mode: int) -> None:
+    """Temp file in the same folder, fsync, rename over ``target``, fsync folder.
+
+    On any failure before the rename ``target`` is untouched and the temp file
+    is removed.
+    """
+    fd, name = tempfile.mkstemp(
+        dir=target.parent, prefix=f".{target.name}.", suffix=".tmp"
+    )
     tmp = Path(name)
     try:
         with os.fdopen(fd, "w", encoding="utf-8", newline="") as handle:
@@ -133,22 +232,22 @@ def _write_atomic(path: Path, text: str, mode: int) -> None:
             handle.flush()
             os.fchmod(handle.fileno(), mode)
             os.fsync(handle.fileno())
-        os.replace(tmp, path)
+        os.replace(tmp, target)
     except BaseException:
         tmp.unlink(missing_ok=True)
         raise
+    _fsync_dir(target.parent)
 
 
 def _write_backup(path: Path, text: str, mode: int) -> Path:
     backup = path.with_name(path.name + ".bak")
-    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW
     try:
-        fd = os.open(backup, flags, 0o600)
+        _replace_durably(backup, text, mode)
     except OSError as exc:
-        raise EditError(f"{backup}: cannot write backup: {exc.strerror}") from exc
-    with os.fdopen(fd, "w", encoding="utf-8", newline="") as handle:
-        handle.write(text)
-        os.fchmod(handle.fileno(), mode)
+        raise EditError(
+            f"{backup}: cannot write backup (the previous backup and the "
+            f"config are unchanged): {exc.strerror or exc}"
+        ) from exc
     return backup
 
 
@@ -160,31 +259,44 @@ def apply(
     backup: bool,
     force_path: bool,
 ) -> Result:
-    """Run one edit end to end. Raises ``EditError``; never half-writes."""
+    """Run one edit end to end. Raises ``EditError``; never half-writes.
+
+    The config is locked from the read to the rename, so two of our commands
+    run one after the other. Against any other writer, the file's identity and
+    hash are re-checked right before the rename; a change is refused.
+    """
     path = resolve_config(config, force_path=force_path)
+    lock = _open_locked(path)
     try:
-        load_site_config(path)  # the file must be valid before it is edited
-        raw = load_yaml(path)
-    except ConfigError as exc:
-        raise EditError(str(exc)) from None
-    if not isinstance(raw, dict):
-        raise EditError(f"{path}: the config is not a mapping")
-    old = _read_text(path)
-    new, expected = compute(old, raw)
-    if _check_candidate(path, new) != expected:
-        raise EditError(
-            f"{path}: internal check failed: the edited file does not match the "
-            "requested change; nothing was written (please report this)"
-        )
-    if dry_run:
-        return Result(path, old, new, False, None)
-    mode = stat.S_IMODE(path.stat().st_mode)
-    saved = _write_backup(path, old, mode) if backup else None
-    try:
-        _write_atomic(path, new, mode)
-    except OSError as exc:
-        raise EditError(f"{path}: cannot write: {exc.strerror or exc}") from exc
-    return Result(path, old, new, True, saved)
+        data = _read_fd(lock, path)
+        snap = _snapshot(lock, data)
+        try:
+            load_site_config(path)  # the file must be valid before it is edited
+            raw = load_yaml(path)
+        except ConfigError as exc:
+            raise EditError(str(exc)) from None
+        if not isinstance(raw, dict):
+            raise EditError(f"{path}: the config is not a mapping")
+        old = _decode(path, data)
+        new, expected = compute(old, raw)
+        if _check_candidate(path, new) != expected:
+            raise EditError(
+                f"{path}: internal check failed: the edited file does not match "
+                "the requested change; nothing was written (please report this)"
+            )
+        if dry_run:
+            return Result(path, old, new, False, None)
+        mode = stat.S_IMODE(os.fstat(lock).st_mode)
+        _before_replace(path)
+        _verify_unchanged(path, snap)
+        saved = _write_backup(path, old, mode) if backup else None
+        try:
+            _replace_durably(path, new, mode)
+        except OSError as exc:
+            raise EditError(f"{path}: cannot write: {exc.strerror or exc}") from exc
+        return Result(path, old, new, True, saved)
+    finally:
+        os.close(lock)
 
 
 # ---- locating nodes ----
