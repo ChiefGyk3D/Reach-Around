@@ -416,7 +416,15 @@ def test_the_script_has_no_network_eval_storage_or_html_building() -> None:
 def test_the_script_navigates_only_through_the_seam() -> None:
     lines = (STATIC / "email.js").read_text("utf-8").splitlines()
     code = "\n".join(line for line in lines if not line.lstrip().startswith("//"))
-    assert "window.__raOpen" in code
+    # The seam is checked first and called; location.href is only the else arm.
+    # (A browser test cannot prove this: a script that ignored the seam would
+    # really navigate, which no test may allow.)
+    pattern = (
+        r'if \(typeof window\.__raOpen === "function"\) \{\s*'
+        r"window\.__raOpen\(url\);\s*\} else \{\s*"
+        r"window\.location\.href = url;\s*\}"
+    )
+    assert re.search(pattern, code)
     assert code.count("location.href") == 1
     assert "location.assign" not in code
     assert "location.replace" not in code
