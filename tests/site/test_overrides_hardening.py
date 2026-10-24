@@ -497,6 +497,28 @@ def test_template_one_byte_over_the_cap_is_refused_by_name(overrides: Path) -> N
         env.get_template("_footer.html")
 
 
+def test_huge_sparse_template_is_not_read_past_the_cap(
+    overrides: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    victim = overrides / "templates" / "_footer.html"
+    with victim.open("wb") as handle:
+        handle.truncate(512 * 1024 * 1024)  # sparse: no disk used
+    total = 0
+    real_read = os.read
+
+    def counting(fd: int, n: int) -> bytes:
+        nonlocal total
+        chunk = real_read(fd, n)
+        total += len(chunk)
+        return chunk
+
+    monkeypatch.setattr(os, "read", counting)
+    env = make_environment(overrides)
+    with pytest.raises(OverridesError, match=r"_footer\.html.*256 KiB"):
+        env.get_template("_footer.html")
+    assert total <= MAX_OVERRIDE_TEMPLATE_BYTES + 1
+
+
 def test_template_cap_is_enforced_on_bytes_read_not_on_stat(
     overrides: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -510,7 +532,11 @@ def test_template_cap_is_enforced_on_bytes_read_not_on_stat(
         def __getattr__(self, name: str) -> Any:
             return 0 if name == "st_size" else getattr(self._st, name)
 
+    real_stat = os.stat
     monkeypatch.setattr(os, "fstat", lambda fd: _ZeroSize(real_fstat(fd)))
+    monkeypatch.setattr(
+        os, "stat", lambda p, *a, **kw: _ZeroSize(real_stat(p, *a, **kw))
+    )
     env = make_environment(overrides)
     with pytest.raises(OverridesError, match="256 KiB"):
         env.get_template("_footer.html")
