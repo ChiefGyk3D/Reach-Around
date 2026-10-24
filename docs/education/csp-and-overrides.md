@@ -120,6 +120,14 @@ my-overrides/
   would have to register, and there is none). A `@font-face` rule is allowed
   with a relative `url()` or `local()` source; a remote one is refused by the
   `url()` rule, and the CSP only allows fonts from this site anyway.
+- Legacy Internet Explorer filters are refused: `progid:` anywhere (in
+  `filter:` or `-ms-filter:`, quoted or not, any case, split by whitespace or a
+  comment), plus the names `DXImageTransform` and `AlphaImageLoader`, because
+  `AlphaImageLoader(src='https://...')` makes old IE fetch an image the CSP
+  does not cover. `expression(` is refused too, however it is spelled. Ordinary
+  modern filters such as `filter: blur(2px)` and `drop-shadow(...)` still work
+  (`test_legacy_ie_filter_and_expression_are_refused`,
+  `test_modern_css_filters_are_still_accepted`).
 - `url(...)` in `custom.css` accepts only relative same-site paths. A remote
   image would send every visitor's IP address to a third party. For remote art
   use an Image block or the theme `background`; that is an explicit choice the

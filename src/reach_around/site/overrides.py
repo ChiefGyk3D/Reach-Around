@@ -236,6 +236,11 @@ _FORBIDDEN: tuple[tuple[str, re.Pattern[str]], ...] = tuple(
         ("-moz-binding", r"-moz-binding"),
         ("a javascript: string", r"javascript\s*:"),
         ("@namespace", r"@\s*namespace"),
+        # Legacy IE filters: progid:DXImageTransform...AlphaImageLoader(src=...)
+        # fetches a remote image, and the CSP does not cover that fetch.
+        ("progid:", r"progid\s*:"),
+        ("a DXImageTransform filter", r"dximagetransform"),
+        ("an AlphaImageLoader filter", r"alphaimageloader"),
         # Deny by name every CSS function that can take a URL or a string used
         # as a URL: image("..."), image-set(), src(), cross-fade(), with or
         # without a vendor prefix. url() is the one allowed form and has its

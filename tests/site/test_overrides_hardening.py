@@ -540,3 +540,43 @@ def test_template_cap_is_enforced_on_bytes_read_not_on_stat(
     env = make_environment(overrides)
     with pytest.raises(OverridesError, match="256 KiB"):
         env.get_template("_footer.html")
+
+
+# ------------------------------------------ legacy IE filters (progid, expr)
+
+_IE_FETCH = "AlphaImageLoader(src='https://evil.example/p.png')"
+
+
+@pytest.mark.parametrize(
+    "css",
+    [
+        f'a{{-ms-filter:"progid:DXImageTransform.Microsoft.{_IE_FETCH}"}}',
+        f"a{{filter:progid:DXImageTransform.Microsoft.{_IE_FETCH}}}",
+        f'a{{filter:"PROGID:DXImageTransform.Microsoft.{_IE_FETCH}"}}',
+        f"a{{filter: ProgId : DXImageTransform.Microsoft.{_IE_FETCH}}}",
+        f"a{{filter:prog/**/id:DXImageTransform.Microsoft.{_IE_FETCH}}}",
+        f"a{{filter:progid/* c */:DXImageTransform.Microsoft.{_IE_FETCH}}}",
+        f"a{{filter:progid\n:DXImageTransform.Microsoft.{_IE_FETCH}}}",
+        f"a{{filter:DXImageTransform.Microsoft.{_IE_FETCH}}}",
+        f"a{{filter:{_IE_FETCH}}}",
+        "a{width:expression(alert(1))}",
+        "a{width:EXPRESSION (alert(1))}",
+        "a{width:expr/**/ession(alert(1))}",
+    ],
+)
+def test_legacy_ie_filter_and_expression_are_refused(overrides: Path, css: str) -> None:
+    with pytest.raises(OverridesError, match="refused"):
+        _css(overrides, css)
+
+
+@pytest.mark.parametrize(
+    "css",
+    [
+        "a{filter:blur(2px)}",
+        "a{filter:drop-shadow(0 0 2px black) grayscale(50%)}",
+        "a{-webkit-filter:blur(2px);backdrop-filter:blur(4px)}",
+        "a{filter:none}",
+    ],
+)
+def test_modern_css_filters_are_still_accepted(overrides: Path, css: str) -> None:
+    assert _css(overrides, css) == css
