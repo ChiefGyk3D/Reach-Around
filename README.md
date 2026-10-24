@@ -2,9 +2,9 @@
 
 **Reach Around. We've got your back.**
 
-> ## ⚠️ Alpha: design stage, nothing to install yet
+> ## ⚠️ Alpha: early code, expect breaking changes
 >
-> Reach Around is **alpha** and still being designed. There is no release, no installer and no stable configuration format. Interfaces, file layouts and the plan will change without notice, and some platform behavior described in the research notes is unverified. Do not depend on it yet. This repository is private while that is true.
+> Reach Around is **alpha**. The first release (`v0.1.0`) is a container image that builds a static link page from a config file. There is no stable configuration format and no upgrade path between `0.x` releases. Interfaces and file layouts will change without notice, and some platform behavior described in the research notes is unverified. Do not depend on it yet. This repository is private while that is true.
 
 An open-source (Apache-2.0) single pane for creator analytics: one place for your link page, your media kit and your numbers across every platform you publish on, built to be self-hosted with your own API keys. It is meant to replace Beacons.ai for creators, close to 1:1, and then go further.
 
@@ -22,10 +22,25 @@ An open-source (Apache-2.0) single pane for creator analytics: one place for you
 |---|---|
 | Platform API research (16 platforms) | Merged as drafts with an independent review: [docs/research](docs/research/README.md) |
 | Design spec | In progress: [docs/superpowers/specs](docs/superpowers/specs/) |
-| Plan and roadmap | Not started |
+| Plan and roadmap | Drafts: [docs/superpowers/plans](docs/superpowers/plans/) |
 | Code | Early alpha: config loader, static link page builder, container image |
 
 The work is tracked on a GitHub Project board run with [Scrum Around and Find Out](https://github.com/ChiefGyk3D/scrum-around-and-find-out). Every task has an issue and a card before work starts.
+
+## Run it with Docker or Podman
+
+The image is an OCI image built from the `Containerfile`. It runs as a non-root user, works rootless, and needs no socket. Docker and Podman use the same commands. Build it, then build the example site (the output directory must be writable by uid 10001):
+
+```sh
+podman build -f Containerfile -t reach-around:local .     # or: docker build ...
+mkdir -p out && chmod 0777 out
+podman run --rm --read-only --cap-drop ALL \
+  --security-opt no-new-privileges:true --tmpfs /tmp \
+  -v ./examples/instance:/config:ro -v ./out:/out \
+  reach-around:local build --config /config/site.yaml --out /out
+```
+
+Replace the example mount with your own instance directory. Once `v0.1.0` is published the image is `ghcr.io/chiefgyk3d/reach-around:0.1.0` (pull it by digest, and sign-in is needed while the repository is private). See [docs/containers.md](docs/containers.md), [docs/releasing.md](docs/releasing.md) and the [changelog](CHANGELOG.md).
 
 ## License
 
