@@ -23,6 +23,7 @@ from jinja2 import Environment
 from reach_around.config.blocks import Crypto
 from reach_around.config.models import Block, Link, Section, SiteConfig, Tab
 from reach_around.config.page_title import DEFAULT_TEMPLATE, render_template
+from reach_around.config.profile_card import MEDIA_KIT_ID
 from reach_around.config.tablinks import is_tab_ref, parse_tab_ref
 from reach_around.site.assets import collect_assets
 from reach_around.site.overrides import (
@@ -125,6 +126,18 @@ def page_title(
     )
 
 
+def _profile_card(config: SiteConfig) -> dict[str, Any] | None:
+    card = config.profile_card
+    if card is None:
+        return None
+    return {
+        "title": card.title or config.creator.name,
+        "tags": card.tags,
+        "button": card.button,
+        "button_id": MEDIA_KIT_ID,
+    }
+
+
 def _render_page(
     env: Environment,
     config: SiteConfig,
@@ -148,6 +161,7 @@ def _render_page(
         show_cookie_banner=sets_cookies(config),
         click_tracking=config.features.click_tracking,
         has_crypto=_has_crypto(blocks),
+        profile_card=_profile_card(config),
         cookie_text=intro_text(config),
         custom_css=custom_css,
     )
@@ -165,6 +179,7 @@ def _render_privacy(env: Environment, config: SiteConfig, custom_css: bool) -> s
         show_cookie_banner=False,
         click_tracking=config.features.click_tracking,
         has_crypto=False,
+        profile_card=_profile_card(config),
         intro=intro_text(config),
         items=collected_items(config),
         contact=config.privacy.contact,
@@ -186,15 +201,17 @@ def _render_pages(
     return pages
 
 
-def _manifest(shown: list[list[Block]]) -> BuildManifest:
-    return BuildManifest(
-        links={
-            link.id: link.url
-            for blocks in shown
-            for link in _links_in(blocks)
-            if not is_tab_ref(link.url)
-        }
-    )
+def _manifest(config: SiteConfig, shown: list[list[Block]]) -> BuildManifest:
+    links = {
+        link.id: link.url
+        for blocks in shown
+        for link in _links_in(blocks)
+        if not is_tab_ref(link.url)
+    }
+    card = config.profile_card
+    if card is not None and card.button is not None:
+        links[MEDIA_KIT_ID] = card.button.url
+    return BuildManifest(links=links)
 
 
 def manifest_json(manifest: BuildManifest) -> str:
@@ -281,7 +298,7 @@ def build_site(
     same relative path in ``out_dir``. It is required when the config names any.
     """
     shown = [list(visible_blocks(tab.blocks, today)) for tab in config.tabs]
-    manifest = _manifest(shown)
+    manifest = _manifest(config, shown)
     env = make_environment(overrides)
     custom_css = load_custom_css(overrides)
     warn_about_javascript(overrides)

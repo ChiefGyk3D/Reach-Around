@@ -32,6 +32,8 @@ The date is filled in when the `v0.1.0` tag is cut.
 - A `crypto` block for a Support tab: copyable public addresses with a Copy
   button, optional QR image, and `copy.js` and `crypto.css` published only on
   pages that use it.
+- Optional `profile_card`: creator name, up to eight topic chips and a media-kit
+  button after the content of every page.
 - Click tracking through the `ping` attribute with a beacon fallback (no redirect
   route), and a write-only Cloudflare Worker with a click endpoint. The Worker is
   in the repository and tested; it is not part of the container image.

@@ -1,0 +1,14 @@
+{# SPDX-License-Identifier: Apache-2.0 #}
+<section class="profile-card" aria-labelledby="profile-card-title">
+<h2 class="profile-title" id="profile-card-title">{{ profile_card.title }}</h2>
+{% if profile_card.tags %}
+<ul class="profile-tags">
+{% for tag in profile_card.tags %}
+<li class="profile-tag">{{ tag }}</li>
+{% endfor %}
+</ul>
+{% endif %}
+{% if profile_card.button %}
+<a class="profile-button" id="{{ profile_card.button_id }}" href="{{ profile_card.button.url }}"{% if click_tracking %} ping="/e/c/{{ profile_card.button_id }}" data-link-id="{{ profile_card.button_id }}"{% endif %} rel="noopener noreferrer">{{ profile_card.button.label }}</a>
+{% endif %}
+</section>

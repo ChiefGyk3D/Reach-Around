@@ -436,7 +436,8 @@ a.link { letter-spacing: 0.02em; }
 **Templates.** A file at `my-overrides/templates/NAME.html` replaces the
 packaged template of the same name; everything else falls back. The packaged
 names are `base.html`, `tab.html`, `privacy.html`, `_header.html`,
-`_header_variants.html`, `_nav.html`, `_footer.html`, `_cookie_banner.html`,
+`_header_variants.html`, `_nav.html`, `_profile_card.html`, `_footer.html`,
+`_cookie_banner.html`,
 `_macros.html` and `blocks/{link,section,text,image,divider}.html`. A
 subfolder such as `templates/blocks/divider.html` works. This footer
 override was built and checked:
@@ -452,7 +453,8 @@ printed them. If you override `_footer.html`, keep the
 the page can claim less than it does. Copy the packaged file from
 `src/reach_around/site/templates/` as a starting point and change only what
 you need. Template variables (`creator`, `tab`, `blocks`, `nav`, `root`,
-`disclosure`, `show_disclosure`, `show_cookie_banner`, `click_tracking`) are
+`disclosure`, `show_disclosure`, `show_cookie_banner`, `click_tracking`,
+`profile_card`) are
 set in `site/build.py` and may change.
 
 ## Telling crawlers what you prefer
@@ -473,6 +475,11 @@ it, so it is not a way to protect anything. And the AI crawler list is a
 snapshot of what operators documented, marked "verify before relying". Blocking
 bots at Cloudflare itself is a separate dashboard step; see Cloudflare's current
 documentation.
+**Profile card.** To show a name, topic chips and a media-kit button after
+the content of every page, add a `profile_card` section; see
+[`profile_card`](config.md#profile_card). `base.html` includes
+`_profile_card.html` between the page content and the footer. If you override
+`base.html`, keep that include or the card disappears.
 
 ## What is deliberately refused
 
