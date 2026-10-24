@@ -261,6 +261,7 @@ class StoreConfig(_Model):
             raise ValueError("dsn_env must be an environment variable NAME")
         if self.kind == "postgres" and self.dsn_env is None:
             raise ValueError("a postgres store requires dsn_env")
+        return self
 
 
 class ProfileButton(_Model):
