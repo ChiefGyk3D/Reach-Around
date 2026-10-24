@@ -153,7 +153,7 @@ jobs:
           LINK_IDS: ${{ vars.LINK_IDS }}
         run: |
           set -eu
-          manifest=manifest-in/site-out.manifest.json
+          manifest="manifest-in/site-out.manifest.json"
           [ "$(find manifest-in -mindepth 1 | wc -l)" = 1 ] \
             || { echo "::error::manifest-in must hold exactly one file"; exit 1; }
           if [ -f "$manifest" ] && [ ! -L "$manifest" ]; then
