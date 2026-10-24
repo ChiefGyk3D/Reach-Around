@@ -84,6 +84,13 @@ and last characters. `examples/crypto/site.yaml` is a working copy with fake
 addresses and a QR image. Keys, limits and the security notes are in
 [the config reference](config.md#crypto).
 
+Review any `custom.css` you did not write yourself before publishing a page
+with this block. A stylesheet can change how an address *looks* (for example
+overlay a different one with a pseudo-element) without changing what the Copy
+button writes, so someone reading the address off the screen and typing it in
+could be misled. The build cannot detect that, so treat third-party CSS on a
+payment page like any other code you run.
+
 ```yaml
 - id: crypto
   title: Send crypto
