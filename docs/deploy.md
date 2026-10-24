@@ -76,12 +76,28 @@ your own; never commit real account ids, database ids or tokens.
 
 ## 3. Run it
 
-Actions > Deploy to test > Run workflow, branch `main`. A reviewer approves
-the `test` environment, then the job: builds the site with
-`reach-around build --config examples/instance/site.yaml --out site-out`,
-applies D1 migrations, deploys the Worker, and publishes the site with
-`wrangler pages deploy`. The committed `worker/wrangler.toml` keeps its fake
-ids; the workflow writes a temporary `wrangler.deploy.toml` on the runner only.
+Actions > Deploy to test > Run workflow, branch `main`. The workflow has two
+jobs:
+
+1. **`build`** has read-only repository access, no secrets and no
+   environment. It installs the package, runs
+   `reach-around build --config examples/instance/site.yaml --out site-out`,
+   and uploads `site-out` as an artifact.
+2. **`deploy`** waits for `build`, then waits for a reviewer to approve the
+   `test` environment. It downloads the artifact, installs the Worker
+   dependencies with `npm ci --ignore-scripts`, applies D1 migrations,
+   deploys the Worker, and publishes the site with `wrangler pages deploy`.
+
+Why two jobs: `pip install` and `npm ci` run code from third-party
+dependencies. Neither runs anywhere the Cloudflare token exists. The token is
+set only on the configuration check and the three wrangler steps (migrations,
+Worker deploy, Pages deploy); it is not in workflow-level or job-level `env`,
+is never echoed, and is not passed to later steps. The `test` environment is
+where you add a required reviewer (section 2), so a person approves each
+deploy before the secret is released to the `deploy` job.
+
+The committed `worker/wrangler.toml` keeps its fake ids; the workflow writes a
+temporary `wrangler.deploy.toml` on the runner only.
 
 Note: the build command arrives in plan Task 6 (and `pyproject.toml` in Task
 1). Until both are on `main`, the build step fails by design.
