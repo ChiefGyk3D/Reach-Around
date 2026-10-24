@@ -23,6 +23,7 @@ from jinja2 import Environment
 from reach_around.config.blocks import Crypto, Email, Platforms
 from reach_around.config.models import Block, Link, Section, SiteConfig, Tab
 from reach_around.config.numbers import Numbers
+from reach_around.config.footer import CREDIT_URL
 from reach_around.config.page_title import DEFAULT_TEMPLATE, render_template
 from reach_around.config.profile_card import MEDIA_KIT_ID
 from reach_around.config.tablinks import is_tab_ref, parse_tab_ref
@@ -183,6 +184,9 @@ def _render_page(
         show_disclosure=has_affiliate and bool(config.disclosure),
         show_cookie_banner=sets_cookies(config),
         click_tracking=config.features.click_tracking,
+        footer_credit=config.footer.credit,
+        footer_credit_text=config.footer.text,
+        footer_credit_url=CREDIT_URL,
         has_crypto=_has_crypto(blocks),
         has_email=_has_email(blocks),
         has_email_script=_has_email_script(blocks),
@@ -204,6 +208,9 @@ def _render_privacy(env: Environment, config: SiteConfig, custom_css: bool) -> s
         show_disclosure=False,
         show_cookie_banner=False,
         click_tracking=config.features.click_tracking,
+        footer_credit=config.footer.credit,
+        footer_credit_text=config.footer.text,
+        footer_credit_url=CREDIT_URL,
         has_crypto=False,
         has_email=False,
         has_email_script=False,

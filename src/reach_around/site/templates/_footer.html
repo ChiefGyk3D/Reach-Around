@@ -4,6 +4,9 @@
 <p class="disclosure">{{ disclosure }}</p>
 {% endif %}
 <p class="privacy-link"><a href="{{ root }}privacy/">Privacy</a></p>
+{% if footer_credit %}
+<p class="credit"><a href="{{ footer_credit_url }}" rel="noopener noreferrer">{{ footer_credit_text }}</a></p>
+{% endif %}
 {% if show_cookie_banner %}
 {% include "_cookie_banner.html" %}
 {% endif %}

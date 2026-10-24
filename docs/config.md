@@ -84,6 +84,7 @@ escapes it when it renders.
 | `theme` | Theme | defaults | colors, fonts, background and shape; see [`theme`](#theme) |
 | `features` | Features | click tracking on, kit gate off | switches for features that collect data; see [`features`](#features) |
 | `privacy` | Privacy | defaults | wording and retention for the privacy page; see [`privacy`](#privacy) |
+| `footer` | Footer | credit on | the "Made with Reach Around" link in the footer; see [`footer`](#footer) |
 | `robots` | Robots | absent | optional; when present the build writes `robots.txt`; see [`robots`](#robots) |
 | `store` | StoreConfig | SQLite at `data/reach-around.db` | where the snapshot store lives; see [`store`](#store) |
 | `profile_card` | ProfileCard | none | name, topic chips and a media-kit button after the content of every page; see [`profile_card`](#profile_card) |
@@ -704,6 +705,29 @@ privacy:
 The privacy page at `/privacy/` and the cookie notice are generated from the
 enabled features, so they cannot claim less than the site does. See
 [privacy by construction](education/privacy-by-construction.md).
+
+## `footer`
+
+The footer of every generated page (each tab, the privacy page and any other
+page the build writes) carries a small link to the Reach Around project. It is
+on by default and you can turn it off or reword it. Unknown keys are refused.
+
+| Key | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| `credit` | boolean | `true` | Show the credit link. When `false`, nothing is rendered for it. |
+| `credit_text` | text, 1-60 characters | `Made with Reach Around` | The link label. Plain text only: no control, bidi or zero-width characters, no leading or trailing space. Escaped, never treated as HTML. Ignored when `credit` is `false`. |
+
+```yaml
+footer:
+  credit: true
+  credit_text: Built with Reach Around
+```
+
+The link goes to `https://github.com/ChiefGyk3D/Reach-Around` and is an
+ordinary link with `rel="noopener noreferrer"`. It has no `ping` and no
+`data-link-id`, so clicks on it are never counted, it adds no script, and the
+page makes no request to that address until a visitor follows the link.
+Because of that, the privacy page needs no extra statement for it.
 
 ## `robots`
 

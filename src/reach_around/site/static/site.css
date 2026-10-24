@@ -610,6 +610,7 @@ a.link:active, .social:active { transform: translateY(0) scale(0.985); }
 /* Footer, cookie notice, privacy page. */
 main > footer { margin-top: var(--ra-space-5); color: var(--ra-color-muted); font-size: var(--ra-text-sm); text-align: center; }
 .disclosure { max-width: min(30rem, 100%); margin: 0 auto var(--ra-space-3); color: var(--ra-color-muted); font-size: var(--ra-text-xs); }
+.credit a { display: inline-block; padding: var(--ra-space-3); color: var(--ra-color-muted); }
 .privacy-link a { display: inline-block; padding: var(--ra-space-3); color: var(--ra-color-muted); }
 .cookie-banner {
   margin-top: var(--ra-space-4);
