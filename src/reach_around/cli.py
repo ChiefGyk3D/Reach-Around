@@ -59,9 +59,7 @@ def _serve(config_path: Path, host: str, port: int, overrides: Path | None) -> i
     return 0
 
 
-def _manifest_target(
-    out_dir: Path, manifest: Path | None, config_path: Path
-) -> Path:
+def _manifest_target(out_dir: Path, manifest: Path | None, config_path: Path) -> Path:
     """The manifest path; refuse one inside ``out_dir`` (it gets published)."""
     out = out_dir.resolve()
     target = (

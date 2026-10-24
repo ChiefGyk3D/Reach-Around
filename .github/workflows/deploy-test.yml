@@ -91,11 +91,12 @@ jobs:
           path: site-out
 
       # The manifest is a separate artifact so it never sits in the Pages
-      # upload directory. It lands at ./site-out.manifest.json.
+      # upload directory. It goes into its own empty directory, never the
+      # working directory, so nothing in it can shadow a Python module.
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: site-manifest
-          path: .
+          path: manifest-in
 
       # Tests that the secret exists without printing it or exporting it: the
       # value lives only in this step's env, and nothing is written to the
@@ -142,11 +143,28 @@ jobs:
             || { echo "::error::PAGES_PROJECT is not a valid project name"; exit 1; }
           printf '%s' "$LINK_IDS" | grep -Eq '^\[("[a-z0-9-]{1,40}"(, ?)?)+\]$' \
             || { echo "::error::LINK_IDS must be a JSON array of link ids"; exit 1; }
-          # Compare with the build manifest (a sibling of site-out, not in it).
-          # A mismatch is a warning: clicks on unlisted ids are rejected.
-          python3 - <<'PY'
+
+      # Reads the downloaded manifest. No secret is in this step's env, and
+      # python runs isolated (-I: no working-directory imports), so a hostile
+      # artifact file cannot execute with the token present. A mismatch is a
+      # warning: clicks on unlisted ids are rejected by the Worker.
+      - name: Verify the build manifest
+        env:
+          LINK_IDS: ${{ vars.LINK_IDS }}
+        run: |
+          set -eu
+          manifest=manifest-in/site-out.manifest.json
+          [ "$(find manifest-in -mindepth 1 | wc -l)" = 1 ] \
+            || { echo "::error::manifest-in must hold exactly one file"; exit 1; }
+          if [ -f "$manifest" ] && [ ! -L "$manifest" ]; then
+            :
+          else
+            echo "::error::$manifest is not a regular file"
+            exit 1
+          fi
+          python3 -I - "$manifest" <<'PY'
           import json, os, sys
-          with open("site-out.manifest.json", encoding="utf-8") as f:
+          with open(sys.argv[1], encoding="utf-8") as f:
               built = set(json.load(f)["links"])
           allowed = set(json.loads(os.environ["LINK_IDS"]))
           for name in sorted(built - allowed):
