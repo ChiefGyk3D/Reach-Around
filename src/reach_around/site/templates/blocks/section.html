@@ -1,0 +1,15 @@
+{# SPDX-License-Identifier: Apache-2.0 #}
+{% from "_macros.html" import link_anchor %}
+<li class="block">
+<details class="section"{% if not block.collapsed %} open{% endif %}>
+<summary>{{ block.title }}</summary>
+{% if block.subtitle %}
+<p class="section-subtitle">{{ block.subtitle }}</p>
+{% endif %}
+<ul>
+{% for link in block.links %}
+<li>{{ link_anchor(link) }}</li>
+{% endfor %}
+</ul>
+</details>
+</li>

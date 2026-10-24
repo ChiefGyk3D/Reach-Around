@@ -1,0 +1,7 @@
+{# SPDX-License-Identifier: Apache-2.0 #}
+{% macro link_anchor(link) -%}
+<a class="link" href="{{ link.url }}" rel="{{ 'sponsored noopener noreferrer' if link.affiliate else 'noopener noreferrer' }}">
+<span class="link-title">{{ link.title }}</span>
+{% if link.subtitle %}<span class="link-subtitle">{{ link.subtitle }}</span>{% endif %}
+</a>
+{%- endmacro %}
