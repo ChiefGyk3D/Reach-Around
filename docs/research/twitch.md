@@ -4,6 +4,15 @@
 
 Fetched 2026-10-23 from dev.twitch.tv docs unless noted. The API reference page is about 517k characters; the fetch tool could not surface the Get Streams, Get Broadcaster Subscriptions, Get Clips and Get Videos sections, so those details are UNVERIFIED and must be rechecked.
 
+> **Verified from the primary reference on 2026-10-23** (dev.twitch.tv/docs/api/reference, read in a real browser). This block supersedes any conflicting statement below.
+>
+> - **Get Streams** (`GET /helix/streams`, app or user access token): returns only streams that are broadcasting right now. Fields include `viewer_count`, `started_at`, `title`, `type`, `language`, `is_mature`, `thumbnail_url`. It has no history, so a collector that wants viewer-count curves must sample it while the creator is live.
+> - **Get Videos** (`GET /helix/videos`, app or user access token): returns videos including `type=archive` (on-demand VODs of past streams) with `view_count`, `duration`, `created_at`, `published_at`, `stream_id`, `title`, `language`, `viewable`, `muted_segments`. So per-stream history does exist through the API for as long as VODs are kept. The earlier claim that per-stream history is dashboard-only was unsupported and is withdrawn. How long Twitch keeps VODs depends on account type and is not stated on this page (UNVERIFIED).
+> - **Get Broadcaster Subscriptions** (`GET /helix/subscriptions`): needs a user access token with the `channel:read:subscriptions` scope, and the token's user must be the broadcaster.
+> - **Get Channel Followers** (`GET /helix/channels/followers`): the total follower count comes back even without the follower scope. The follower list needs `moderator:read:followers` and a token for the broadcaster or a moderator.
+> - **Design consequence:** the daily job can read follower total, subscriber total and recent VOD stats with no sampling. Concurrent-viewer curves and peak viewers during a live stream need a sampler (poll every minute or two while live, or EventSub stream.online and stream.offline to start and stop it). The sampler is a persistent job and belongs in the homelab collector.
+> - **Still unverified:** the Twitch Developer Agreement text (including any limit on how long data may be stored). The earlier 24-hour storage rule came from forum posts only and should not be relied on.
+
 ## Summary
 
 Twitch has an official Helix REST API plus EventSub. Registration is self-service with no review step. Owner-level data (followers list, subscribers) needs a user token with specific scopes. No per-stream analytics endpoint was found in what was read. Review correction: the earlier claim that per-stream analytics are "dashboard-only" is UNVERIFIED, because Get Videos (type archive), Get Clips and Get Streams were never read (VOD archives may expose created_at, duration and view_count while retained). VOD metadata may serve as history, unchecked. Until checked, plan to build history by sampling.

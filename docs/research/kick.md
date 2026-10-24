@@ -4,6 +4,15 @@
 
 Fetched 2026-10-23. Sources are listed at the bottom with the same date.
 
+> **Verified from the primary docs on 2026-10-23** (docs.kick.com, read in a real browser). This block supersedes any conflicting statement below.
+>
+> - **Get Channels** (`GET /public/v1/channels`, scope `channel:read`; by broadcaster user IDs or by up to 50 channel slugs, not mixed). The response has `active_subscribers_count`, `active_gifted_subscribers_count`, `canceled_subscribers_count`, `category`, `channel_description`, `slug`, `stream_title`, `banner_picture`, and a `stream` object with `is_live`, `viewer_count`, `start_time`, `language`, `is_mature`, `custom_tags`, `thumbnail`, `url` and `key`.
+> - **No follower count.** The word "follower" does not appear on the Channels page, and the response has no follower field. Followers need manual or CSV entry, or a source outside Kick.
+> - **SECRET WARNING:** `stream.key` in the response is the channel's stream key. The collector must never log it, store it, put it in the snapshot table, or send it anywhere. Drop it from the response before anything else touches the data.
+> - **Auth:** apps are created in the Kick developer settings with OAuth, which yields a client ID, client secret and a redirect URL you choose. Kick requires two-factor authentication on the account to use the developer tools.
+> - **Other doc sections that exist:** livestreams, users, chat, moderation, categories, channel rewards, kicks, ads, events (webhooks with signature security) and a public key page.
+> - **Still unverified:** the Developer Terms and Conditions. The docs tell you to review them but I could not find the link target, and a guessed URL returned 404. Rate limits and token lifetime were not read. A human should find and read the terms before any design depends on Kick.
+
 ## Summary
 
 Kick now has an official public API with OAuth 2.1 (PKCE), documented at docs.kick.com. It covers livestream status, live viewer count, subscriber counts, and webhooks for follows, subscriptions, and stream status. The documented Channels response has no follower count field. Follower totals appear only in the undocumented endpoints that kick.com itself uses, which Kick's Terms of Service do not authorize. Kick publishes no history or analytics endpoint, so Reach Around has to build its own history by polling daily.
