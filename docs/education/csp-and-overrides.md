@@ -80,14 +80,47 @@ my-overrides/
   (`test_override_name_cannot_escape_the_directory` and its symlink siblings).
   Otherwise a template named by a stranger's config could read any file you
   own.
-- `custom.css` is checked before it is used. `@import`, remote `url(...)`
-  targets, `expression(`, `behavior:`, `-moz-binding` and `javascript:` are
-  refused, and so is anything over 256 KiB
-  (`test_custom_css_with_import_or_script_url_is_refused`). Old browsers ran
-  code from some of those, and `@import` or a remote URL lets another site
-  watch your visitors load the page.
+- Templates run in Jinja's immutable sandbox. A template is code, and without
+  the sandbox `{{ cycler.__init__.__globals__.__builtins__.open(...) }}`
+  reaches the file system. The sandbox refuses it
+  (`test_the_globals_escape_is_a_security_error`).
+- The overrides directory, `templates/` and `custom.css` must be real, not
+  symlinks (`test_symlinked_templates_directory_is_refused`). Otherwise a
+  symlinked `templates/` would turn any outside folder into a trusted root.
+- Files are opened with `O_NOFOLLOW` and read from the descriptor, after
+  `fstat` confirms a regular file inside the directory
+  (`test_template_read_uses_o_nofollow`). A swap to a symlink between the
+  check and the read fails instead of leaking the target.
+- `custom.css` is checked before it is used. `@import`, `expression(`,
+  `behavior:`, `-moz-binding` and `javascript:` are refused, and so is
+  anything over 256 KiB (`test_custom_css_with_import_or_script_url_is_refused`).
+  Old browsers ran code from some of those.
+- The check follows how a browser tokenizes CSS. Any backslash is refused,
+  because an escape like `\2f\2a` decodes to `/*` and could open a fictitious
+  comment that hides the rest from a filter while the browser keeps it active
+  (`test_css_tokenizer_tricks_are_refused`). Creators rarely need escapes.
+  Real comments are stripped from the raw text first, with strings respected,
+  and an unterminated comment is refused.
+- `url(...)` in `custom.css` accepts only relative same-site paths. A remote
+  image would send every visitor's IP address to a third party. For remote art
+  use an Image block or the theme `background`; that is an explicit choice the
+  creator makes. The page CSP keeps `img-src 'self' https:` for that reason.
+- Header sources, directives and paths are matched with `fullmatch`, and any
+  whitespace or control character is refused. A regex `$` also matches before
+  a final newline, which would let a stray `\n` split a header or slip `/*`
+  past its prohibition (`test_header_path_with_trailing_control_or_space_is_refused`).
 - A missing directory stops the build with a clear message
   (`test_missing_override_directory_is_a_clear_error`).
+
+### Residual risk
+
+The checks cannot stop someone who can change the directory tree while a build
+runs. Swapping a parent directory for a symlink between the check and the open
+needs `openat2` to prevent, and this project does not use it. Keep the
+overrides directory out of reach of untrusted users and processes, and do not
+build from a directory that other accounts or build steps can write to. A
+template with a legitimate subdirectory symlink inside the tree is read through
+that link; the resolved location must still be inside the directory.
 
 Use `reach-around serve --config site.yaml --overrides my-overrides` to see
 changes live; the preview rebuilds when files in the directory change

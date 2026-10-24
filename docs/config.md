@@ -411,23 +411,33 @@ directory is optional and holds only these two things:
 | `DIR/templates/NAME.html` | Replaces the packaged template of the same name. A name you do not override falls back to the packaged one. |
 | `DIR/custom.css` | Written to `static/custom.css` and linked after `theme.css`, so it wins ties. |
 
-A missing or non-directory `DIR` stops the build with a clear error.
+A missing or non-directory `DIR` stops the build with a clear error. `DIR`
+itself, `DIR/templates` and `DIR/custom.css` must not be symlinks; a symlink
+there is refused.
 
 Template lookups are confined to `DIR/templates`. A name with `..`, an
 absolute path, a backslash, or a file or directory symlink that points outside
-that folder is refused with an error, not skipped.
+that folder is refused with an error, not skipped. Templates run in a Jinja
+sandbox: reaching into Python internals (`__class__`, `__globals__`, `open`,
+`os`) is refused and the build stops with a one-line error.
 
 `custom.css` is refused (the build stops and names the reason) when:
 
 - it is larger than 256 KiB or is not UTF-8;
+- it contains a backslash anywhere (CSS escapes such as `\75rl(` can hide
+  keywords from the check, so none are allowed; write the characters
+  directly);
+- it has a `/*` comment that is never closed. Real `/* ... */` comments are
+  removed first, so a forbidden word inside a comment is fine and the same
+  word outside one is not;
 - it contains `@import`, `expression(`, `behavior:`, `-moz-binding`,
   `image-set(`, `src(` or the text `javascript:`;
-- any `url(...)` points anywhere but a relative path or an `https://` URL
-  (so `http:`, `data:`, `javascript:` and `//host` are refused);
-- it is a symlink that leaves the overrides directory.
-
-CSS escapes (`\75rl(`) are decoded before these checks, so they do not slip
-past.
+- any `url(...)` is not a relative same-site path (no scheme, no `//`, no
+  whitespace or control characters). For remote art use an Image block or the
+  theme `background`. This is a privacy choice: a remote `url()` in CSS would
+  tell a third party every visitor's IP address. The page policy still allows
+  `img-src 'self' https:` because an Image block or avatar may use an https
+  URL by your explicit choice.
 
 Custom JavaScript is not supported. Any `.js`, `.mjs` or `.cjs` file under
 `DIR` is ignored and the build logs a warning naming it. See
