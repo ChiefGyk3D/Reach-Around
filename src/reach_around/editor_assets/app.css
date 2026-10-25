@@ -11,6 +11,7 @@
   --border: #6b7280;
   --focus: #0b57d0;
   --gap: 1rem;
+  --error: #a40e26;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -22,6 +23,7 @@
     --link: #8ab4f8;
     --border: #8b919c;
     --focus: #8ab4f8;
+    --error: #ff9aa8;
   }
 }
 
@@ -177,4 +179,151 @@ dl.tree dd {
     transition: none !important;
     scroll-behavior: auto !important;
   }
+}
+
+/* Editor forms */
+.group {
+  margin-block: 1.25rem;
+}
+
+.group h4 {
+  margin-block: 0 0.5rem;
+  font-size: 1.1rem;
+}
+
+.group h5 {
+  margin-block: 1rem 0.5rem;
+  font-size: 1rem;
+}
+
+.cards {
+  display: grid;
+  gap: var(--gap);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.card {
+  display: grid;
+  gap: 0.75rem;
+  padding: var(--gap);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 0.5rem;
+}
+
+.card-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.card-title {
+  margin: 0;
+  font-size: 1rem;
+  overflow-wrap: anywhere;
+}
+
+.moves {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.field {
+  display: grid;
+  gap: 0.25rem;
+}
+
+.field-check {
+  grid-template-columns: auto 1fr;
+  align-items: center;
+  column-gap: 0.5rem;
+}
+
+.field-check .field-error {
+  grid-column: 1 / -1;
+}
+
+.field label {
+  font-weight: 600;
+}
+
+.field input[type="text"],
+.field input[type="number"],
+.field select {
+  inline-size: 100%;
+  min-block-size: 2.75rem;
+  padding: 0.5rem 0.625rem;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 0.375rem;
+  font: inherit;
+}
+
+.field input[type="checkbox"] {
+  inline-size: 1.5rem;
+  block-size: 1.5rem;
+}
+
+.field [aria-invalid="true"] {
+  border-color: var(--error);
+  border-width: 2px;
+}
+
+.hint {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.875rem;
+}
+
+.field-error {
+  margin: 0;
+  color: var(--error);
+  font-weight: 600;
+}
+
+.colors {
+  display: grid;
+  gap: 0.75rem;
+  margin: 0;
+  padding: 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: 0.375rem;
+}
+
+.button {
+  justify-self: start;
+  min-block-size: 2.75rem;
+  min-inline-size: 2.75rem;
+  padding: 0.5rem 1rem;
+  color: var(--text);
+  background: var(--panel);
+  border: 2px solid var(--border);
+  border-radius: 0.375rem;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.button-small {
+  padding-inline: 0.75rem;
+}
+
+.button[disabled] {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.rest {
+  margin-block-start: 1.5rem;
+}
+
+.rest summary {
+  min-block-size: 2.75rem;
+  font-weight: 600;
+  cursor: pointer;
 }
