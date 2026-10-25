@@ -177,7 +177,9 @@ STICKS_OUT = """
   for (const el of document.querySelectorAll('body *')) {
     if (el.closest('.tabs ul')) continue;
     const r = el.getBoundingClientRect();
-    if (r.width && r.right > width + 1) bad.push([el.tagName + '.' + el.className, r.right]);
+    if (r.width && r.right > width + 1) {
+      bad.push([el.tagName + '.' + el.className, r.right]);
+    }
   }
   return bad;
 }

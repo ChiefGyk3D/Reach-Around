@@ -76,6 +76,6 @@ def test_the_guard_bites() -> None:
 
 
 def test_the_viewport_meta_asks_for_the_whole_screen() -> None:
-    base = (STATIC.parent / "templates" / "base.html").read_text()
+    base = (resources.files("reach_around.site") / "templates" / "base.html").read_text()
     assert "viewport-fit=cover" in base
     assert "viewport-fit=cover" not in base.replace("viewport-fit=cover", "")
