@@ -16,7 +16,14 @@ from reach_around import editing
 from reach_around.config import ConfigError
 from reach_around.schema import render_schema
 
-COMMANDS = ("schema", "add-link", "remove-link", "move-link", "set")
+COMMANDS = (
+    "schema",
+    "add-link",
+    "remove-link",
+    "move-link",
+    "set",
+    "set-link-field",
+)
 
 
 def register(commands: Any) -> None:
@@ -65,6 +72,14 @@ def register(commands: Any) -> None:
     common(setter)
     setter.add_argument("key", help="dotted key, for example theme.mode")
     setter.add_argument("value")
+    field = commands.add_parser(
+        "set-link-field",
+        help="set one field of a link (an empty subtitle or icon clears it)",
+    )
+    common(field)
+    field.add_argument("id", help="link id")
+    field.add_argument("field", help=", ".join(editing.LINK_FIELDS))
+    field.add_argument("value")
 
 
 def _write_schema(out: Path | None) -> int:
@@ -145,6 +160,14 @@ def run(args: argparse.Namespace) -> int:
     elif args.command == "move-link":
         compute = partial(
             _with_raw, editing.move_link, link_id=args.id, position=args.position
+        )
+    elif args.command == "set-link-field":
+        compute = partial(
+            _with_raw,
+            editing.set_link_field,
+            link_id=args.id,
+            field=args.field,
+            value=args.value,
         )
     else:
         compute = partial(_with_raw, editing.set_value, key=args.key, value=args.value)

@@ -334,7 +334,7 @@ def test_set_creates_a_missing_top_level_section(
         ("theme.colors.nope", "#fff"),
         ("creator.name", ""),
         ("creator.name", "a\nb"),
-        ("creator.avatar", "x.png"),
+        ("creator.favicon", "x.png"),
         ("tabs", "x"),
         ("version", "2"),
         ("theme", "x"),
