@@ -7,8 +7,14 @@
 # plain characters; they are names that appear on the published site), and a
 # setting name only when the config schema defines it.
 #
-# Usage: scripts/check-config.sh [--lock FILE] [--format plain|json]
+# Usage: scripts/check-config.sh [--root DIR] [--image REF] [--lock FILE] [--format plain|json]
 #                                [--against FILE] [--out FILE]
+#   --root DIR      the folder holding site.yaml and media/ (default: the one
+#                   this script belongs to). A pull request preview runs a
+#                   trusted copy of this script against the pull request's
+#                   files, which are only ever read as data.
+#   --image REF     the engine image, already chosen from a trusted lock (it
+#                   is checked for shape again); overrides --lock
 #   --lock FILE     read the engine pin from FILE instead of engine.lock. A pull
 #                   request preview passes the BASE branch's engine.lock, so the
 #                   pull request cannot choose the image its own preview runs in.
@@ -35,8 +41,18 @@ format="plain"
 against=""
 out=""
 lock=""
+root=""
+image=""
 while [ $# -gt 0 ]; do
   case "$1" in
+    --root)
+      root="${2:?--root needs a folder}"
+      shift 2
+      ;;
+    --image)
+      image="${2:?--image needs a reference}"
+      shift 2
+      ;;
     --lock)
       lock="${2:?--lock needs a file}"
       shift 2
@@ -97,22 +113,27 @@ done
   exit 3
 }
 
-image="$("$here/scripts/read-lock.sh" ENGINE_IMAGE ${lock:+"$lock"})"
+if [ -n "$image" ]; then
+  image="$("$here/scripts/read-lock.sh" --verify ENGINE_IMAGE "$image")"
+else
+  image="$("$here/scripts/read-lock.sh" ENGINE_IMAGE ${lock:+"$lock"})"
+fi
+data="$(cd "${root:-$here}" && pwd)"
 
 # Mount only what the check reads, one path at a time. A symlink is refused:
 # the runtime would resolve it on the host and mount what it points at.
 for item in site.yaml media; do
-  if [ -L "$here/$item" ]; then
+  if [ -L "$data/$item" ]; then
     echo "error: $item must not be a symbolic link" >&2
     exit 3
   fi
 done
-[ -f "$here/site.yaml" ] || {
+[ -f "$data/site.yaml" ] || {
   echo "error: site.yaml not found" >&2
   exit 3
 }
-mounts=(-v "$here/site.yaml":/config/site.yaml:ro)
-if [ -d "$here/media" ]; then mounts+=(-v "$here/media":/config/media:ro); fi
+mounts=(-v "$data/site.yaml":/config/site.yaml:ro)
+if [ -d "$data/media" ]; then mounts+=(-v "$data/media":/config/media:ro); fi
 
 args=(check --config /config/site.yaml --format "$format")
 if [ -n "$against" ]; then

@@ -5,6 +5,7 @@ and its workflows keep the hardening docs/instance-repos.md promises."""
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import stat
@@ -384,7 +385,21 @@ def code_only(text: str) -> str:
 
 
 COMMENT_PERMISSIONS = {"contents": "read", "pull-requests": "write"}
-UNTRUSTED_SCRIPT = re.compile(r"(?<!trusted/)scripts/")
+# A script path is only ever allowed behind a trusted folder: the copy made from
+# the base commit, the sparse checkout it is copied from, or the new folder.
+UNTRUSTED_SCRIPT = re.compile(
+    r"(?<!TRUSTED/)(?<!trusted/)(?<!trusted-src/)(?<!\$dir/)scripts/"
+)
+TRUSTED_FILES = {
+    "scripts/read-lock.sh",
+    "scripts/check-repo.sh",
+    "scripts/check-config.sh",
+    "scripts/validate.sh",
+    "scripts/write-result.py",
+    "engine.lock",
+    "site.yaml",
+}
+FORK_GUARD = "head.repo.full_name == github.repository"
 
 
 def preview_violations(text: str) -> list[str]:
@@ -400,8 +415,11 @@ def preview_violations(text: str) -> list[str]:
     if not group.get("group") or group.get("cancel-in-progress") is not True:
         found.append("no concurrency group that cancels a superseded preview")
     jobs = data["jobs"]
-    if jobs["preview"].get("timeout-minutes") != 10:
+    preview = jobs["preview"]
+    if preview.get("timeout-minutes") != 10:
         found.append("preview: timeout-minutes is not 10")
+    if FORK_GUARD not in str(preview.get("if")):
+        found.append("preview: no guard against pull requests from forks")
     writers = [
         name
         for name, job in jobs.items()
@@ -415,25 +433,70 @@ def preview_violations(text: str) -> list[str]:
             found.append(f"{name}: a token outside the comment job")
         if "secrets." in job_text:
             found.append(f"{name}: secrets")
-    if "environment" in jobs["preview"]:
+    if "environment" in preview:
         found.append("preview: an environment")
-    # The preview job runs the pull request's code: its engine image must come
-    # from the base branch's lock.
-    for step in jobs["preview"]["steps"]:
+
+    # --- the preview job runs only trusted copies, against the PR as data
+    steps = preview["steps"]
+    checkouts = [s for s in steps if "checkout" in str(s.get("uses", ""))]
+    paths = sorted(str(c.get("with", {}).get("path")) for c in checkouts)
+    if paths != ["pr", "trusted-src"]:
+        found.append(f"preview: checkouts are at {paths}, not pr and trusted-src")
+    for checkout in checkouts:
+        with_ = checkout.get("with", {})
+        if with_.get("persist-credentials") is not False:
+            found.append("preview: a checkout keeps credentials")
+        if with_.get("path") == "trusted-src":
+            if "pull_request.base.sha" not in str(with_.get("ref")):
+                found.append("preview: the trusted copy is not of the base commit")
+            listed = set(str(with_.get("sparse-checkout", "")).split())
+            if listed != TRUSTED_FILES:
+                found.append("preview: the trusted checkout lists other files")
+        elif "ref" in with_:
+            found.append("preview: the data checkout is not the default ref")
+    trust = [s for s in steps if s.get("id") == "trust"]
+    if len(trust) != 1:
+        found.append("preview: no trust step")
+    else:
+        run = trust[0]["run"]
+        for needle in ("chmod -R a-w", "mktemp -d", '"$dir/scripts/read-lock.sh"'):
+            if needle not in run:
+                found.append(f"preview: the trust step lacks {needle}")
+        if steps.index(trust[0]) > min(
+            i for i, s in enumerate(steps) if "run" in s and s is not trust[0]
+        ):
+            found.append("preview: something runs before the trust step")
+    for step in steps:
         run = step.get("run", "")
+        if step.get("id") != "trust" and "read-lock" in run:
+            found.append("preview: the image is chosen again after the trust step")
+        if UNTRUSTED_SCRIPT.search(run):
+            found.append(f"preview: runs a script that is not a trusted copy: {run!r}")
+        if "working-directory" in step:
+            found.append("preview: a step changes directory")
         for script in ("check-config.sh", "validate.sh"):
-            if f"scripts/{script}" in run and "--lock base/engine.lock" not in run:
-                found.append(f"preview: {script} does not use the base engine.lock")
+            if f"scripts/{script}" in run:
+                for needle in ("--root pr", '--image "$IMAGE"'):
+                    if needle not in run:
+                        found.append(f"preview: {script} lacks {needle}")
+                if "--lock" in run:
+                    found.append(f"preview: {script} reads a lock from the checkout")
+        if "check-repo.sh" in run and "--root pr" not in run:
+            found.append("preview: check-repo.sh lacks --root pr")
+        if "write-result.py" in run and '"$TRUSTED/scripts/write-result.py"' not in run:
+            found.append("preview: write-result.py is not the trusted copy")
+
+    # --- the comment job renders from the base commit and the real verdict
     comment = jobs["comment"]
     if comment.get("permissions") != COMMENT_PERMISSIONS:
         found.append("comment: permissions are not exactly contents + pull-requests")
-    if "head.repo.full_name == github.repository" not in str(comment.get("if")):
+    if FORK_GUARD not in str(comment.get("if")):
         found.append("comment: no guard against pull requests from forks")
-    steps = comment["steps"]
-    checkouts = [s for s in steps if "checkout" in str(s.get("uses", ""))]
-    if len(checkouts) != 1:
+    csteps = comment["steps"]
+    ccheckouts = [s for s in csteps if "checkout" in str(s.get("uses", ""))]
+    if len(ccheckouts) != 1:
         found.append("comment: not exactly one checkout")
-    for checkout in checkouts:
+    for checkout in ccheckouts:
         with_ = checkout.get("with", {})
         if "pull_request.base.sha" not in str(with_.get("ref")):
             found.append("comment: the checkout is not of the base commit")
@@ -441,25 +504,40 @@ def preview_violations(text: str) -> list[str]:
             found.append("comment: the checkout keeps credentials")
         if with_.get("sparse-checkout") != "scripts/render-comment.py":
             found.append("comment: the checkout is not only the renderer")
-    for step in steps:
-        run = step.get("run", "")
-        if UNTRUSTED_SCRIPT.search(run):
+    for step in csteps:
+        if UNTRUSTED_SCRIPT.search(step.get("run", "")):
             found.append("comment: runs a script that is not from the base commit")
-    renders = [s for s in steps if "render-comment.py" in s.get("run", "")]
-    if len(renders) != 1 or "python3 -I trusted/scripts/render-comment.py" not in str(
-        renders[0].get("run")
-    ):
-        found.append("comment: the comment is not rendered by the trusted script")
-    posting = [s for s in steps if "gh api" in s.get("run", "")]
+    renders = [s for s in csteps if "render-comment.py" in s.get("run", "")]
+    if len(renders) != 1:
+        found.append("comment: not exactly one render step")
+    else:
+        run = renders[0]["run"]
+        if "python3 -I trusted/scripts/render-comment.py" not in run:
+            found.append("comment: the comment is not rendered by the trusted script")
+        if '--preview-result "$PREVIEW_RESULT"' not in run:
+            found.append("comment: the renderer is not told the job's real verdict")
+        if renders[0].get("env", {}).get("PREVIEW_RESULT") != (
+            "${{ needs.preview.result }}"
+        ):
+            found.append("comment: the verdict is not needs.preview.result")
+    posting = [s for s in csteps if "gh api" in s.get("run", "")]
     if len(posting) != 1:
         found.append("comment: not exactly one posting step")
     else:
         run = posting[0]["run"]
-        for needle in ("startswith", "github-actions[bot]", "--method PATCH"):
+        for needle in (
+            "startswith",
+            "github-actions[bot]",
+            "--method PATCH",
+            "repo=$GH_REPO workflow=$WORKFLOW",
+            '"$count" -gt 1',
+            "exit 1",
+        ):
             if needle not in run:
                 found.append(f"comment: the posting step lacks {needle}")
-        if "result-in" in run or "--edit-last" in run or "pr comment" in run:
-            found.append("comment: posts from the artifact or edits the last comment")
+        for banned in ("result-in", "--edit-last", "pr comment", "tail -n"):
+            if banned in run:
+                found.append(f"comment: the posting step uses {banned}")
     gate = jobs.get("ci-green", {})
     if gate.get("name") != "CI green":
         found.append("the gate job is not named CI green")
@@ -530,14 +608,81 @@ def test_deploy_runs_the_check_before_the_build() -> None:
     check = next(i for i, r in enumerate(runs) if "scripts/check-config.sh" in r)
     build = next(i for i, r in enumerate(runs) if "scripts/validate.sh" in r)
     assert check < build
-    # a push to main uses main's own lock: no --lock override
-    assert all("--lock" not in r for r in runs)
+    # a push to main uses main's own lock and files: no overrides
+    assert all("--lock" not in r and "--root" not in r for r in runs)
+
+
+def test_the_trust_step_copies_the_base_scripts_and_picks_the_image_once(
+    tmp_path: Path, request: pytest.FixtureRequest
+) -> None:
+    """Run the workflow's own trust step against a base copy and a hostile PR."""
+    steps = yaml.safe_load(preview_text())["jobs"]["preview"]["steps"]
+    run = next(s["run"] for s in steps if s.get("id") == "trust")
+    work = tmp_path / "work"
+    work.mkdir()
+    base = work / "trusted-src"
+    shutil.copytree(TEMPLATE, base)
+    pr = work / "pr"
+    shutil.copytree(TEMPLATE, pr)
+    (pr / "scripts" / "read-lock.sh").write_text("#!/bin/sh\necho evil\n")
+    (pr / "engine.lock").write_text("ENGINE_IMAGE=evil\n", encoding="utf-8")
+    runner_temp = tmp_path / "runner-temp"
+    runner_temp.mkdir()
+    output = tmp_path / "github-output"
+    output.write_text("", encoding="utf-8")
+    env = {
+        "PATH": "/usr/bin:/bin",
+        "RUNNER_TEMP": str(runner_temp),
+        "GITHUB_OUTPUT": str(output),
+    }
+    done = subprocess.run(  # noqa: S603 - the workflow's own step, bash
+        [BASH, "-e", "-c", run],
+        cwd=work,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert done.returncode == 0, done.stderr
+    values = dict(
+        line.split("=", 1) for line in output.read_text(encoding="utf-8").splitlines()
+    )
+    lock_image = _script(
+        _copy_template(tmp_path / "ref"), "read-lock.sh", "ENGINE_IMAGE"
+    )
+    assert values["image"] == lock_image.stdout.strip()
+    trusted = Path(values["dir"])
+    request.addfinalizer(
+        lambda: subprocess.run(["chmod", "-R", "u+w", str(trusted)], check=False)  # noqa: S603, S607 - cleanup
+    )
+    assert trusted.parent == runner_temp
+    assert not str(trusted).startswith(str(work))
+    # copies, not links, and read-only
+    assert not (trusted / "scripts").is_symlink()
+    for script in (trusted / "scripts").iterdir():
+        assert not script.is_symlink()
+        assert not os.access(script, os.W_OK) or os.geteuid() == 0
+    for name in ("read-lock.sh", "check-config.sh", "validate.sh", "write-result.py"):
+        assert (trusted / "scripts" / name).read_bytes() == (
+            TEMPLATE / "scripts" / name
+        ).read_bytes()
+    assert (trusted / "engine.lock").read_bytes() == (
+        TEMPLATE / "engine.lock"
+    ).read_bytes()
+    # nothing from the pull request's folder was used
+    assert b"evil" not in (trusted / "engine.lock").read_bytes()
+    # changing the source afterwards changes nothing: the image is a value
+    (base / "engine.lock").write_text("changed\n", encoding="utf-8")
+    assert (trusted / "engine.lock").read_bytes() == (
+        TEMPLATE / "engine.lock"
+    ).read_bytes()
 
 
 def test_the_preview_guard_bites() -> None:
     good = preview_text()
     assert preview_violations(good) == []
     checkout = "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1"
+    trusted = '"$TRUSTED/scripts/check-config.sh"'
     mutations = {
         "privileged trigger": good.replace(
             "  pull_request:\n", "  pull_request_target:\n"
@@ -559,27 +704,82 @@ def test_the_preview_guard_bites() -> None:
             "          BUILD_STATUS:",
             "          GH_TOKEN: ${{ github.token }}\n          BUILD_STATUS:",
         ),
-        "no fork guard": good.replace(
+        "no fork guard on the comment job": good.replace(
             " && github.event.pull_request.head.repo.full_name == github.repository",
             "",
+        ),
+        "no fork guard on the preview job": good.replace(
+            "    if: ${{ github.event.pull_request.head.repo.full_name"
+            " == github.repository }}\n"
+            "    runs-on: ubuntu-latest\n    timeout-minutes: 10",
+            "    runs-on: ubuntu-latest\n    timeout-minutes: 10",
         ),
         "no cancel": good.replace(
             "cancel-in-progress: true", "cancel-in-progress: false"
         ),
         "no timeout": good.replace("    timeout-minutes: 10\n", "", 1),
-        "check uses the head lock": good.replace(
-            "--lock base/engine.lock --format json", "--format json"
+        # --- the preview job must run only trusted copies
+        "check script from the pull request": good.replace(
+            trusted, "pr/scripts/check-config.sh"
         ),
-        "build uses the head lock": good.replace(
-            "scripts/validate.sh --lock base/engine.lock", "scripts/validate.sh"
+        "check script from the workspace": good.replace(
+            'bash "$TRUSTED/scripts/check-config.sh"', "bash ./scripts/check-config.sh"
         ),
+        "build script from the pull request": good.replace(
+            '"$TRUSTED/scripts/validate.sh"', "pr/scripts/validate.sh"
+        ),
+        "repo check from the pull request": good.replace(
+            'bash "$TRUSTED/scripts/check-repo.sh" --root pr', "scripts/check-repo.sh"
+        ),
+        "write-result from the pull request": good.replace(
+            '"$TRUSTED/scripts/write-result.py"', "pr/scripts/write-result.py"
+        ),
+        "no image handed to the check": good.replace(
+            '--root pr --image "$IMAGE" \\\n            --format json',
+            "--root pr \\\n            --format json",
+        ),
+        "lock read from the pull request": good.replace(
+            '--root pr --image "$IMAGE" \\\n            --format json',
+            "--root pr --lock pr/engine.lock \\\n            --format json",
+        ),
+        "no data root": good.replace(
+            'check-config.sh" --root pr --image', 'check-config.sh" --image'
+        ),
+        "image chosen again later": good.replace(
+            '          bash "$TRUSTED/scripts/validate.sh"',
+            '          IMAGE="$(bash "$TRUSTED/scripts/read-lock.sh" ENGINE_IMAGE)"\n'
+            '          bash "$TRUSTED/scripts/validate.sh"',
+        ),
+        "head checkout at the workspace root": good.replace("          path: pr\n", ""),
+        "trusted checkout of the head": good.replace(
+            "          ref: ${{ github.event.pull_request.base.sha }}\n"
+            "          path: trusted-src",
+            "          path: trusted-src",
+        ),
+        "trusted checkout lists more": good.replace(
+            "            scripts/write-result.py\n",
+            "            scripts/write-result.py\n"
+            "            scripts/deploy-local.sh\n",
+        ),
+        "trusted copy left writable": good.replace("chmod -R a-w", "chmod -R u+w"),
+        "step before the trust step": good.replace(
+            "      - name: Fetch the trusted scripts",
+            "      - run: echo early\n      - name: Fetch the trusted scripts",
+        ),
+        "checkout keeps credentials": good.replace(
+            "          path: pr\n          persist-credentials: false",
+            "          path: pr\n          persist-credentials: true",
+        ),
+        # --- the comment job
         "renderer from the head": good.replace(
-            "ref: ${{ github.event.pull_request.base.sha }}\n          path: trusted",
-            "path: trusted",
+            "ref: ${{ github.event.pull_request.base.sha }}\n          path: trusted\n",
+            "path: trusted\n",
         ),
         "renderer checkout keeps credentials": good.replace(
-            "sparse-checkout-cone-mode: false\n          persist-credentials: false\n",
-            "sparse-checkout-cone-mode: false\n          persist-credentials: true\n",
+            "sparse-checkout-cone-mode: false\n          persist-credentials: false\n"
+            "\n      - uses: actions/download-artifact",
+            "sparse-checkout-cone-mode: false\n          persist-credentials: true\n"
+            "\n      - uses: actions/download-artifact",
         ),
         "whole repository checked out in comment": good.replace(
             "          sparse-checkout: scripts/render-comment.py\n", ""
@@ -588,14 +788,24 @@ def test_the_preview_guard_bites() -> None:
             "python3 -I trusted/scripts/render-comment.py",
             "python3 -I scripts/render-comment.py",
         ),
+        "verdict not passed": good.replace(' --preview-result "$PREVIEW_RESULT"', ""),
+        "verdict from the artifact": good.replace(
+            "PREVIEW_RESULT: ${{ needs.preview.result }}", "PREVIEW_RESULT: success"
+        ),
         "comment posts the artifact": good.replace(
             '-F "body=@$COMMENT_FILE" > /dev/null\n          else',
             '-F "body=@$RUNNER_TEMP/result-in/result.json" > /dev/null\n          else',
         ),
+        "comment takes the last of several": good.replace(
+            'if [ "$count" -gt 1 ]; then', "if false; then"
+        ),
+        "marker without the repository": good.replace(
+            "repo=$GH_REPO workflow=$WORKFLOW", "workflow=$WORKFLOW"
+        ),
         "comment edits the last comment": good.replace(
             "--method PATCH", "--method PUT"
-        ).replace('startswith("\'"$marker"\'")', "true"),
-        "second checkout": good.replace(
+        ),
+        "second checkout in comment": good.replace(
             "      - uses: actions/download-artifact@",
             f"      - uses: {checkout}\n        with:\n          path: more\n"
             "      - uses: actions/download-artifact@",
@@ -1034,6 +1244,8 @@ def test_the_template_round_trip_from_the_engine_to_the_comment(
         [
             sys.executable, "-I", str(root / "scripts" / "render-comment.py"),
             "--in", str(result), "--out", str(comment),
+            "--preview-result", "failure", "--repo", "example/site",
+            "--workflow", "Preview",
         ],
         capture_output=True,
         text=True,
@@ -1089,3 +1301,208 @@ def test_check_config_out_survives_a_link_planted_during_the_run(
     result = _run(root, "check-config.sh", "--out", str(out), path=path)
     assert result.returncode == 3
     assert target.read_text(encoding="utf-8") == "keep"
+
+
+# --- a hostile pull request cannot reach the engine image or the scripts ----------
+
+EVIL_IMAGE = "evil.example/engine:9@sha256:" + "ab" * 32
+MARKER_FILE = "PWNED"
+
+
+def _evil_script(name: str) -> str:
+    if name.endswith(".py"):
+        return f"open({MARKER_FILE!r}, 'w').close()\n"
+    return f"#!/bin/bash\ntouch {MARKER_FILE}\necho {EVIL_IMAGE}\nexit 0\n"
+
+
+def _hostile_pr(tmp_path: Path, how: str) -> tuple[Path, Path, str]:
+    """A trusted copy (the base), and a pull request that attacks it.
+
+    Returns (trusted root, pull request root, the trusted image).
+    """
+    trusted = tmp_path / "trusted"
+    shutil.copytree(TEMPLATE, trusted)
+    pr = tmp_path / "pr"
+    shutil.copytree(TEMPLATE, pr)
+    image = _script(trusted, "read-lock.sh", "ENGINE_IMAGE").stdout.strip()
+    scripts = ("read-lock.sh", "check-repo.sh", "check-config.sh", "validate.sh")
+    if how.startswith("script:"):
+        name = how.split(":", 1)[1]
+        (pr / "scripts" / name).write_text(_evil_script(name), encoding="utf-8")
+    elif how == "lock":
+        lock = (pr / "engine.lock").read_text(encoding="utf-8")
+        lock = re.sub(
+            r"^ENGINE_IMAGE=.*$", f"ENGINE_IMAGE={EVIL_IMAGE}", lock, flags=re.M
+        )
+        (pr / "engine.lock").write_text(lock, encoding="utf-8")
+    elif how == "lock-link":
+        evil = tmp_path / "evil.lock"
+        evil.write_text(f"ENGINE_IMAGE={EVIL_IMAGE}\n", encoding="utf-8")
+        (pr / "engine.lock").unlink()
+        (pr / "engine.lock").symlink_to(evil)
+    elif how == "scripts-link":
+        evil_dir = tmp_path / "evil-scripts"
+        evil_dir.mkdir()
+        for name in scripts:
+            (evil_dir / name).write_text(_evil_script(name), encoding="utf-8")
+        shutil.rmtree(pr / "scripts")
+        (pr / "scripts").symlink_to(evil_dir)
+    elif how == "python-shadow":
+        for module in ("json", "os", "stat", "sys"):
+            (pr / f"{module}.py").write_text(_evil_script("x.py"), encoding="utf-8")
+    else:
+        raise AssertionError(how)
+    return trusted, pr, image
+
+
+HOSTILE_PRS = [
+    "script:read-lock.sh",
+    "script:check-repo.sh",
+    "script:check-config.sh",
+    "script:validate.sh",
+    "script:write-result.py",
+    "lock",
+    "lock-link",
+    "scripts-link",
+    "python-shadow",
+]
+
+
+@pytest.mark.parametrize("how", HOSTILE_PRS)
+@pytest.mark.parametrize("script", ["check-config.sh", "validate.sh"])
+def test_a_hostile_pull_request_cannot_change_the_image_or_the_mounts(
+    tmp_path: Path, how: str, script: str
+) -> None:
+    trusted, pr, image = _hostile_pr(tmp_path, how)
+    path, log = _recording_docker(tmp_path)
+    extra = ["--out", str(tmp_path / "site-out")] if script == "validate.sh" else []
+    done = subprocess.run(  # noqa: S603 - fixed argv; a trusted copy of the template
+        [
+            BASH,
+            str(trusted / "scripts" / script),
+            "--root",
+            str(pr),
+            "--image",
+            image,
+            *extra,
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+        cwd=pr,
+        env={"PATH": path, "HOME": str(tmp_path)},
+    )
+    assert done.returncode == 0, done.stderr
+    argv = _argv(log)
+    assert image in argv
+    assert EVIL_IMAGE not in argv
+    assert not any("evil" in a for a in argv)
+    mounts = _mounts(argv)
+    read_only = sorted(m for m in mounts if m.endswith(":ro"))
+    assert read_only == sorted(
+        [f"{pr}/site.yaml:/config/site.yaml:ro", f"{pr}/media:/config/media:ro"]
+    )
+    writable = [m for m in mounts if not m.endswith(":ro")]
+    expected = ["/manifest", "/out"] if script == "validate.sh" else []
+    assert sorted(w.split(":")[1] for w in writable) == expected
+    assert not any(m.split(":")[0] in {str(pr), str(trusted)} for m in mounts)
+    assert not (pr / MARKER_FILE).exists()  # no script from the pull request ran
+    assert not (tmp_path / MARKER_FILE).exists()
+    _assert_hardened(argv)
+
+
+@pytest.mark.parametrize("how", HOSTILE_PRS)
+def test_a_hostile_pull_request_cannot_make_the_trusted_helpers_run_its_code(
+    tmp_path: Path, how: str
+) -> None:
+    trusted, pr, _ = _hostile_pr(tmp_path, how)
+    # the repository check reads the pull request as data
+    done = subprocess.run(  # noqa: S603 - fixed argv
+        [BASH, str(trusted / "scripts" / "check-repo.sh"), "--root", str(pr)],
+        capture_output=True,
+        text=True,
+        check=False,
+        cwd=pr,
+        env={"PATH": "/usr/bin:/bin"},
+    )
+    assert done.returncode == 0, done.stderr
+    # the result writer must not import anything from the pull request's folder
+    out = tmp_path / "result.json"
+    done = subprocess.run(  # noqa: S603 - fixed argv
+        [
+            sys.executable, "-I", str(trusted / "scripts" / "write-result.py"),
+            "--check-status", "0", "--out", str(out),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+        cwd=pr,
+    )  # fmt: skip
+    assert done.returncode == 0, done.stderr
+    assert json.loads(out.read_text(encoding="utf-8"))["check_status"] == 0
+    assert not (pr / MARKER_FILE).exists()
+    assert not (tmp_path / MARKER_FILE).exists()
+
+
+def test_a_hostile_hostile_battery_is_collected() -> None:
+    assert len(HOSTILE_PRS) >= 9
+
+
+@pytest.mark.parametrize("script", ["check-config.sh", "validate.sh"])
+@pytest.mark.parametrize(
+    "bad",
+    [
+        "evil;touch PWNED",
+        "ghcr.io/x/y:1",
+        "ghcr.io/x/y@sha256:abc",
+        "$(touch PWNED)",
+        "",
+    ],
+)
+def test_a_badly_shaped_image_is_refused_before_anything_starts(
+    tmp_path: Path, script: str, bad: str
+) -> None:
+    root = _copy_template(tmp_path)
+    path, log = _recording_docker(tmp_path)
+    extra = ["--out", str(tmp_path / "o")] if script == "validate.sh" else []
+    result = _run(root, script, "--image", bad, *extra, path=path)
+    # an empty --image falls back to the lock; every other value is refused
+    if bad:
+        assert result.returncode != 0
+        assert not log.exists()
+    assert not (tmp_path / "PWNED").exists()
+
+
+def test_read_lock_verify_checks_the_shape_only(tmp_path: Path) -> None:
+    root = _copy_template(tmp_path)
+    good = _script(root, "read-lock.sh", "ENGINE_IMAGE").stdout.strip()
+    ok = _script(root, "read-lock.sh", "--verify", "ENGINE_IMAGE", good)
+    assert ok.returncode == 0 and ok.stdout.strip() == good
+    assert (
+        _script(root, "read-lock.sh", "--verify", "ENGINE_IMAGE", "x").returncode != 0
+    )
+
+
+def test_check_repo_checks_the_root_it_is_given_not_its_own_folder(
+    tmp_path: Path,
+) -> None:
+    trusted = tmp_path / "trusted"
+    shutil.copytree(TEMPLATE, trusted)
+    pr = tmp_path / "pr"
+    shutil.copytree(TEMPLATE, pr)
+    (pr / ".env").write_text("X=1\n", encoding="utf-8")
+    script = str(trusted / "scripts" / "check-repo.sh")
+    env = {"PATH": "/usr/bin:/bin"}
+    hostile = subprocess.run(  # noqa: S603 - fixed argv
+        [BASH, script, "--root", str(pr)],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=env,
+    )
+    assert hostile.returncode == 1
+    assert ".env" in hostile.stderr
+    clean = subprocess.run(  # noqa: S603 - fixed argv
+        [BASH, script], capture_output=True, text=True, check=False, env=env
+    )
+    assert clean.returncode == 0, clean.stderr

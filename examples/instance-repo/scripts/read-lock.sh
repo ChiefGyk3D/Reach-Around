@@ -3,6 +3,11 @@
 #
 # Print one value from engine.lock after checking its shape.
 # Usage: scripts/read-lock.sh ENGINE_IMAGE|ENGINE_REPO|ENGINE_REF [LOCK_FILE]
+#        scripts/read-lock.sh --verify ENGINE_IMAGE|ENGINE_REPO|ENGINE_REF VALUE
+#
+# --verify only checks VALUE against the same shape and prints it; the
+# preview workflow computes the image once from the trusted lock and hands
+# it to the other scripts, which verify it again before use.
 #
 # LOCK_FILE defaults to engine.lock in this repository. A pull request preview
 # passes the BASE branch's copy, so a pull request cannot choose the image
@@ -12,6 +17,11 @@
 # shape checks also make the printed value safe to append to $GITHUB_ENV.
 set -euo pipefail
 
+verify=""
+if [ "${1:-}" = "--verify" ]; then
+  verify=1
+  shift
+fi
 key="${1:-}"
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 lock="${2:-$here/engine.lock}"
@@ -25,6 +35,15 @@ case "$key" in
     exit 2
     ;;
 esac
+
+if [ -n "$verify" ]; then
+  printf '%s' "${2:-}" | grep -Eq "$shape" || {
+    echo "error: ${key} has the wrong shape" >&2
+    exit 1
+  }
+  printf '%s\n' "$2"
+  exit 0
+fi
 
 [ -f "$lock" ] && [ ! -L "$lock" ] || {
   echo "error: engine.lock not found" >&2

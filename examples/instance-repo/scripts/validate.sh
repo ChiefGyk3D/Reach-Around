@@ -6,6 +6,12 @@
 #
 # Usage: scripts/validate.sh [--lock FILE] [--out DIR] [--manifest FILE]
 #                            [--summary FILE]
+#   --root DIR      the folder holding site.yaml, media/ and the rest of the
+#                   instance (default: the one this script belongs to). A
+#                   pull request preview runs a trusted copy of this script
+#                   against the pull request's files, read only as data.
+#   --image REF     the engine image, already chosen from a trusted lock
+#                   (checked for shape again); overrides --lock
 #   --lock FILE     read the engine pin from FILE instead of engine.lock (a
 #                   pull request preview passes the base branch's copy)
 #   --out DIR       keep the built site in DIR (default: a temporary directory
@@ -31,8 +37,18 @@ out=""
 manifest=""
 summary=""
 lock=""
+root=""
+image=""
 while [ $# -gt 0 ]; do
   case "$1" in
+    --root)
+      root="${2:?--root needs a folder}"
+      shift 2
+      ;;
+    --image)
+      image="${2:?--image needs a reference}"
+      shift 2
+      ;;
     --lock)
       lock="${2:?--lock needs a file}"
       shift 2
@@ -68,7 +84,12 @@ done
   exit 1
 }
 
-image="$("$here/scripts/read-lock.sh" ENGINE_IMAGE ${lock:+"$lock"})"
+if [ -n "$image" ]; then
+  image="$("$here/scripts/read-lock.sh" --verify ENGINE_IMAGE "$image")"
+else
+  image="$("$here/scripts/read-lock.sh" ENGINE_IMAGE ${lock:+"$lock"})"
+fi
+data="$(cd "${root:-$here}" && pwd)"
 
 cleanup=""
 if [ -z "$out" ]; then
@@ -114,19 +135,19 @@ fi
 # runtime would resolve it on the host and mount what it points at.
 mounts=()
 for item in site.yaml media overrides numbers.json; do
-  path="$here/$item"
+  path="$data/$item"
   if [ -L "$path" ]; then
     echo "error: $item must not be a symbolic link" >&2
     exit 2
   fi
   if [ -e "$path" ]; then mounts+=(-v "$path":"/config/$item":ro); fi
 done
-[ -f "$here/site.yaml" ] || {
+[ -f "$data/site.yaml" ] || {
   echo "error: site.yaml not found" >&2
   exit 2
 }
 overrides=()
-if [ -d "$here/overrides" ]; then overrides=(--overrides /config/overrides); fi
+if [ -d "$data/overrides" ]; then overrides=(--overrides /config/overrides); fi
 
 set +e
 "$runtime" run --rm --network none --read-only --cap-drop ALL \

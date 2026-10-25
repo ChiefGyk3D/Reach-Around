@@ -231,6 +231,7 @@ def test_the_json_format(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> 
             "fix": "Write the full address, for example https://example.com/page.",
         }
     ]
+    assert report["error_count"] == 1
     code, out = check(capsys, write(tmp_path, good(), "ok.yaml"), "--format", "json")
     assert code == 0
     assert json.loads(out) == {
@@ -239,6 +240,7 @@ def test_the_json_format(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> 
         "tabs": 2,
         "blocks": 3,
         "errors": [],
+        "error_count": 0,
     }
 
 

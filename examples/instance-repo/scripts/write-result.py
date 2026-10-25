@@ -54,7 +54,8 @@ def status(text: str | None, default: int | None) -> int | None:
         value = int(text)
     except ValueError:
         return 3
-    return value if 0 <= value <= 255 else 3
+    # The renderer accepts a closed set: 0 good, 2 invalid, 1 or 3 failed to run.
+    return value if value in (0, 1, 2, 3) else 3
 
 
 def main() -> int:

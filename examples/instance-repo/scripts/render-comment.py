@@ -37,11 +37,16 @@ import stat
 import sys
 from typing import Any, NoReturn
 
-MARKER = "<!-- reach-around-preview -->"
+MARKER_PREFIX = "<!-- reach-around-preview"
+REPO = re.compile(r"[A-Za-z0-9._-]{1,100}/[A-Za-z0-9._-]{1,100}")
+WORKFLOW = re.compile(r"[A-Za-z0-9 ._-]{1,60}")
+PREVIEW_RESULTS = frozenset({"success", "failure", "cancelled", "skipped"})
+STATUS_CHECK = frozenset({0, 1, 2, 3})
+STATUS_BUILD = frozenset({0, 1, 2, 3})
 MAX_INPUT = 65536
 MAX_BODY = 20000
 MAX_ERRORS = 100
-MAX_CHANGES = 60
+MAX_CHANGES = 50
 MAX_NAME = 40
 
 # --- generated from reach_around.checkvocab and the config schema by ---------
@@ -570,23 +575,35 @@ def check_change(raw: Any) -> dict[str, Any]:
 def check_report(raw: Any) -> dict[str, Any]:
     rep = as_dict(
         raw,
-        {"valid", "file", "errors"},
+        {"valid", "file", "errors", "error_count"},
         {"tabs", "blocks", "changes", "change_records", "more_changes", "note"},
     )
     if not isinstance(rep["valid"], bool) or not is_str(rep["file"], 100):
         raise Invalid("report")
     rep["errors"] = [check_error(e) for e in as_list(rep["errors"], MAX_ERRORS)]
+    if rep["error_count"] != len(rep["errors"]) or isinstance(rep["error_count"], bool):
+        raise Invalid("error_count")
+    if rep["valid"] != (len(rep["errors"]) == 0):
+        raise Invalid("valid and errors disagree")
+    if rep["valid"] != ("tabs" in rep and "blocks" in rep):
+        raise Invalid("counts and valid disagree")
     for key in ("tabs", "blocks", "more_changes"):
         if key in rep and not is_int(rep[key], 0, 1_000_000):
             raise Invalid(key)
+    if rep["valid"] and rep["tabs"] < 1:
+        raise Invalid("a valid config has a tab")
     if "changes" in rep:
         texts = as_list(rep["changes"], MAX_CHANGES)
+        if len(texts) != len(rep.get("change_records", texts)):
+            raise Invalid("changes disagree")
         if not all(is_str(t, 400) for t in texts):
             raise Invalid("changes")
     if "change_records" in rep:
         rep["change_records"] = [
             check_change(r) for r in as_list(rep["change_records"], MAX_CHANGES)
         ]
+    if rep.get("more_changes") and len(rep.get("change_records", [])) != MAX_CHANGES:
+        raise Invalid("more_changes without a full list")
     if "note" in rep and rep["note"] not in NOTES:
         raise Invalid("note")
     return rep
@@ -594,15 +611,46 @@ def check_report(raw: Any) -> dict[str, Any]:
 
 def check_result(raw: Any) -> dict[str, Any]:
     result = as_dict(raw, {"check_status", "build_status", "check"}, set())
-    if not is_int(result["check_status"], 0, 255):
-        raise Invalid("check_status")
-    if result["build_status"] is not None and not is_int(
-        result["build_status"], 0, 255
+    if not is_int(result["check_status"], 0, 3) or (
+        result["check_status"] not in STATUS_CHECK
     ):
+        raise Invalid("check_status")
+    build = result["build_status"]
+    if build is not None and not (is_int(build, 0, 3) and build in STATUS_BUILD):
         raise Invalid("build_status")
     if result["check"] is not None:
         result["check"] = check_report(result["check"])
     return result
+
+
+def check_relations(result: dict[str, Any], preview_result: str) -> None:
+    """The statuses, the report and the workflow's own verdict must agree.
+
+    ``preview_result`` is ``needs.preview.result``: set by GitHub from the job's
+    real outcome, not by anything the pull request wrote.
+    """
+    check_status, build, report = (
+        result["check_status"],
+        result["build_status"],
+        result["check"],
+    )
+    if check_status == 0:
+        if report is None or not report["valid"]:
+            raise Invalid("status 0 needs a valid report")
+    elif check_status == 2:
+        if report is None or report["valid"]:
+            raise Invalid("status 2 needs a report with problems")
+    elif report is not None:
+        raise Invalid("a check that did not run has no report")
+    if build is not None and check_status != 0:
+        raise Invalid("no build without a good check")
+    good = check_status == 0 and build == 0
+    if preview_result == "success" and not good:
+        raise Invalid("the job succeeded but the result says otherwise")
+    if preview_result == "failure" and good:
+        raise Invalid("the job failed but the result says it is ready")
+    if preview_result not in {"success", "failure"}:
+        raise Invalid("the job did not finish")
 
 
 # --- building the comment ----------------------------------------------------
@@ -751,8 +799,8 @@ def link(run_url: str | None) -> list[str]:
     return []
 
 
-def build(result: dict[str, Any] | None, run_url: str | None) -> str:
-    out = [MARKER]
+def build(result: dict[str, Any] | None, run_url: str | None, marker: str) -> str:
+    out = [marker]
     if result is None:
         out += [
             "## The preview result could not be read",
@@ -837,12 +885,24 @@ def main() -> int:
     parser.add_argument("--in", dest="source", required=True)
     parser.add_argument("--out", required=True)
     parser.add_argument("--run-url")
+    parser.add_argument(
+        "--preview-result",
+        required=True,
+        choices=sorted(PREVIEW_RESULTS),
+        help="needs.preview.result, from the workflow, not from the artifact",
+    )
+    parser.add_argument("--repo", required=True, help="owner/name")
+    parser.add_argument("--workflow", required=True, help="the workflow's name")
     args = parser.parse_args()
+    if not REPO.fullmatch(args.repo) or not WORKFLOW.fullmatch(args.workflow):
+        fail("--repo or --workflow has characters that are not allowed")
+    marker = f"{MARKER_PREFIX} repo={args.repo} workflow={args.workflow} -->"
     try:
         result: dict[str, Any] | None = check_result(read_json(args.source))
+        check_relations(result, args.preview_result)
     except Invalid:
         result = None
-    write_new(args.out, build(result, args.run_url))
+    write_new(args.out, build(result, args.run_url, marker))
     return 0
 
 

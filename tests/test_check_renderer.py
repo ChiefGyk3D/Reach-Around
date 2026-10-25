@@ -74,6 +74,14 @@ def test_the_renderer_vocabulary_matches_the_engine() -> None:
 # --- running it ----------------------------------------------------------------
 
 RUN = "https://github.com/example/site/actions/runs/123"
+MARKER = "<!-- reach-around-preview repo=example/site workflow=Preview -->"
+
+
+def verdict(payload: Any) -> str:
+    """What GitHub would record for the preview job given an honest result."""
+    if isinstance(payload, dict) and payload.get("check_status") == 0:
+        return "success" if payload.get("build_status") == 0 else "failure"
+    return "failure"
 
 
 def render(
@@ -83,11 +91,16 @@ def render(
     raw: bytes | None = None,
     run_url: str | None = RUN,
     out_name: str = "comment.md",
+    preview_result: str | None = None,
+    repo: str = "example/site",
+    workflow: str = "Preview",
 ) -> tuple[subprocess.CompletedProcess[str], Path]:
     source = tmp_path / "result.json"
     source.write_bytes(raw if raw is not None else json.dumps(payload).encode())
     out = tmp_path / out_name
     argv = [sys.executable, "-I", str(RENDERER), "--in", str(source), "--out", str(out)]
+    argv += ["--preview-result", preview_result or verdict(payload)]
+    argv += ["--repo", repo, "--workflow", workflow]
     if run_url is not None:
         argv += ["--run-url", run_url]
     result = subprocess.run(  # noqa: S603 - fixed argv
@@ -133,7 +146,7 @@ def test_a_good_result_renders_the_ready_comment(
     done, out = render(tmp_path, wrap(0, report, 0))
     assert done.returncode == 0, done.stderr
     text = body(out)
-    assert text.splitlines()[0] == "<!-- reach-around-preview -->"
+    assert text.splitlines()[0] == MARKER
     assert "## The preview is ready" in text
     assert "The config is valid: 1 tab and 1 block." in text
     assert f"[Run details]({RUN})" in text
@@ -199,7 +212,7 @@ READ_ERROR = "## The preview result could not be read"
 def allowed_markup(text: str) -> None:
     """The comment holds no mention, HTML, reference or link of its own."""
     lines = text.splitlines()
-    assert lines[0] == "<!-- reach-around-preview -->"
+    assert lines[0] == MARKER
     rest = "\n".join(lines[1:]).replace(f"[Run details]({RUN})", "")
     assert "<" not in rest
     for line in re.sub(r"`[^`\n]*`", "", rest).splitlines():
@@ -223,7 +236,16 @@ def forged_error(**changes: Any) -> dict[str, Any]:
 
 
 def forged_report(**changes: Any) -> dict[str, Any]:
-    rep: dict[str, Any] = {"valid": False, "file": "site.yaml", "errors": []}
+    """A consistent report (problems, or valid with counts), then the forgery."""
+    errors = changes.pop("errors", [forged_error()])
+    rep: dict[str, Any] = {
+        "valid": not errors,
+        "file": "site.yaml",
+        "errors": errors,
+        "error_count": len(errors),
+    }
+    if not errors:
+        rep.update(tabs=1, blocks=1)
     rep.update(changes)
     return rep
 
@@ -257,15 +279,18 @@ FORGED: dict[str, Any] = {
     "limit text": wrap(2, forged_report(errors=[forged_error(limit=EVIL)])),
     "limit huge": wrap(2, forged_report(errors=[forged_error(limit=1e30)])),
     "line text": wrap(2, forged_report(errors=[forged_error(line=EVIL)])),
-    "bad op": wrap(0, forged_report(change_records=[change_record(op=EVIL)]), 0),
+    "bad op": wrap(
+        0, forged_report(errors=[], change_records=[change_record(op=EVIL)]), 0
+    ),
     "unknown change name": wrap(
         0,
         forged_report(
-            change_records=[change_record(op="settings_changed", names=["api_token"])]
+            errors=[],
+            change_records=[change_record(op="settings_changed", names=["api_token"])],
         ),
         0,
     ),
-    "note text": wrap(0, forged_report(note=EVIL), 0),
+    "note text": wrap(0, forged_report(errors=[], note=EVIL), 0),
     "object as tab": wrap(2, forged_report(errors=[forged_error(tab={"a": 1})])),
 }
 
@@ -284,6 +309,111 @@ def test_forged_structure_is_refused_with_the_fixed_fallback(
 
 def test_the_forged_battery_is_collected() -> None:
     assert len(FORGED) >= 20
+
+
+def ready_result(**report_changes: Any) -> dict[str, Any]:
+    report_changes.setdefault("errors", [])
+    return wrap(0, forged_report(**report_changes), 0)
+
+
+# (label, payload, what GitHub recorded for the preview job)
+CONTRADICTIONS: list[tuple[str, Any, str]] = [
+    ("ready claimed, job failed", ready_result(), "failure"),
+    ("ready claimed, job cancelled", ready_result(), "cancelled"),
+    ("ready claimed, job skipped", ready_result(), "skipped"),
+    ("problem claimed, job succeeded", wrap(2, forged_report()), "success"),
+    ("status 0, report has problems", wrap(0, forged_report(), 0), "success"),
+    ("status 2, report is valid", wrap(2, forged_report(errors=[])), "failure"),
+    ("status 0, no report", wrap(0, None, 0), "success"),
+    ("status 2, no report", wrap(2, None), "failure"),
+    ("status 3, with a report", wrap(3, forged_report()), "failure"),
+    (
+        "valid but errors listed",
+        ready_result(valid=True, errors=[forged_error()], tabs=1, blocks=1),
+        "success",
+    ),
+    (
+        "invalid but no errors",
+        wrap(2, forged_report(errors=[], valid=False)),
+        "failure",
+    ),
+    ("error count too low", wrap(2, forged_report(error_count=0)), "failure"),
+    ("error count too high", wrap(2, forged_report(error_count=5)), "failure"),
+    ("error count is a bool", wrap(2, forged_report(error_count=True)), "failure"),
+    ("build ran after a failed check", wrap(2, forged_report(), 0), "failure"),
+    ("status outside the closed set", wrap(7, None), "failure"),
+    ("build status outside the set", wrap(0, forged_report(errors=[]), 9), "failure"),
+    (
+        "valid without counts",
+        wrap(0, {**forged_report(errors=[]), "tabs": None}, 0),
+        "success",
+    ),
+    ("valid with zero tabs", ready_result(tabs=0), "success"),
+    (
+        "counts on a report with problems",
+        wrap(2, forged_report(tabs=1, blocks=1)),
+        "failure",
+    ),
+    ("negative count", ready_result(blocks=-1), "success"),
+    (
+        "more changes without a full list",
+        ready_result(change_records=[change_record()], more_changes=3),
+        "success",
+    ),
+    (
+        "changes and records disagree",
+        ready_result(change_records=[change_record()], changes=["a", "b"]),
+        "success",
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    ("label", "payload", "recorded"), CONTRADICTIONS, ids=[c[0] for c in CONTRADICTIONS]
+)
+def test_a_result_that_contradicts_itself_or_the_job_is_never_trusted(
+    tmp_path: Path, label: str, payload: Any, recorded: str
+) -> None:
+    done, out = render(tmp_path, payload, preview_result=recorded)
+    assert done.returncode == 0, done.stderr
+    text = body(out)
+    assert READ_ERROR in text, (label, text)
+    assert "The preview is ready" not in text
+    assert "## This change has a problem" not in text
+
+
+def test_the_contradiction_battery_is_collected() -> None:
+    assert len(CONTRADICTIONS) >= 20
+
+
+def test_an_honest_result_matches_the_recorded_verdict(tmp_path: Path) -> None:
+    done, out = render(tmp_path, ready_result(), preview_result="success")
+    assert "## The preview is ready" in body(out)
+    (tmp_path / "b").mkdir()
+    done, out = render(
+        tmp_path / "b", wrap(2, forged_report()), preview_result="failure"
+    )
+    assert "## This change has a problem" in body(out)
+
+
+def test_the_marker_names_the_repository_and_the_workflow(tmp_path: Path) -> None:
+    done, out = render(
+        tmp_path, wrap(3, None), repo="acme/site-private", workflow="Preview Site"
+    )
+    assert body(out).splitlines()[0] == (
+        "<!-- reach-around-preview repo=acme/site-private workflow=Preview Site -->"
+    )
+    for repo, workflow in (
+        ("a b/c", "Preview"),
+        ("acme/site", "x -->\n@evil"),
+        ("x", "P"),
+    ):
+        (tmp_path / "bad").mkdir(exist_ok=True)
+        done, _ = render(
+            tmp_path / "bad", wrap(3, None), repo=repo, workflow=workflow,
+            out_name=f"c{abs(hash((repo, workflow)))}.md",
+        )  # fmt: skip
+        assert done.returncode == 2, (repo, workflow)
 
 
 @pytest.mark.parametrize(
@@ -377,6 +507,8 @@ def test_it_refuses_to_overwrite_or_follow_a_link(tmp_path: Path) -> None:
 
 def run_with_input(source: Path, out: Path) -> subprocess.CompletedProcess[str]:
     argv = [sys.executable, "-I", str(RENDERER), "--in", str(source), "--out", str(out)]
+    argv += ["--preview-result", "failure", "--repo", "example/site"]
+    argv += ["--workflow", "Preview"]
     return subprocess.run(  # noqa: S603 - fixed argv
         argv, capture_output=True, text=True, check=False, timeout=20
     )

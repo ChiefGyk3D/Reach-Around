@@ -664,6 +664,7 @@ def _run(args: argparse.Namespace) -> int:
             "valid": not ordered,
             "file": name,
             "errors": [p.as_dict() for p in ordered],
+            "error_count": len(ordered),
         }
         if counts is not None:
             report["tabs"], report["blocks"] = counts

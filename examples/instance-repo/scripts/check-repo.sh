@@ -5,7 +5,13 @@
 # filename check, not a secret scanner; keep GitHub secret scanning on too.
 set -euo pipefail
 
-cd "$(dirname "${BASH_SOURCE[0]}")/.."
+# Usage: scripts/check-repo.sh [--root DIR]
+#   --root DIR  check the repository in DIR (default: the one this script
+#               belongs to). A pull request preview runs a trusted copy of
+#               this script against the pull request's files.
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+if [ "${1:-}" = "--root" ]; then root="${2:?--root needs a folder}"; fi
+cd "$root"
 
 # In a Git checkout, look at tracked files; otherwise (an unpacked copy) at
 # everything on disk.

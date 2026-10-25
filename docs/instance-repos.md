@@ -161,31 +161,47 @@ name), and fixed sentences from a closed table with a few engine-defined
 numbers. Tab titles and block ids are the one place text from the file reaches
 the comment, so do not put a secret in a tab title.
 
-**Why the pull request cannot forge the comment.** The `preview` job runs the
-pull request's code, so its output is untrusted. It writes only data: the two
-exit statuses and the engine's JSON. The `comment` job checks out
+**Why the pull request cannot forge the comment.** The `preview` job handles
+the pull request's files, so its output is untrusted. It writes only data: the
+two exit statuses and the engine's JSON. The `comment` job checks out
 `scripts/render-comment.py` from the **base** commit (sparse, no credentials
 kept), validates the data against a strict schema (size cap, exact keys, closed
 enums for the problem kinds and change kinds, per-field length and character
-limits, known setting names only), and builds every character of the comment
-from its own fixed text, with each punctuation mark in that text escaped so no
-link, mention, issue reference or HTML can form and names shown in code spans.
-Anything that fails validation produces one fixed sentence: "The preview result
-could not be read". The comment is found by its marker and the Actions bot as
-author, and updated by id; no other comment is touched. The renderer and
-`write-result.py` create their output files new (never over a file, never
-through a symlink).
+limits, known setting names only), checks that the data agree with themselves
+(status 0 only with a valid report and no problems, status 2 only with at least
+one problem, the problem count equal to the list, a build only after a good
+check, statuses from a closed set) **and with the verdict GitHub recorded for
+the job** (`needs.preview.result`, which the pull request cannot write): the
+comment says "ready" only if that verdict is `success` and the data say valid.
+It then builds every character of the comment from its own fixed text, with
+each punctuation mark in that text escaped so no link, mention, issue reference
+or HTML can form and names shown in code spans. Anything that fails
+validation produces one fixed sentence: "The preview result could not be read".
+The comment carries a marker naming this repository and this workflow; the job
+finds its own comment by that marker and the Actions bot as author, updates it
+by id, and **posts nothing** if more than one comment matches. Other comments
+are never touched. The renderer and `write-result.py` create their output files
+new (never over a file, never through a symlink).
 
-**Why the pull request cannot choose the engine image.** The image named in
-`engine.lock` runs on the checkout. The preview reads `engine.lock` from the
-base branch, so a pull request that points it at another image only takes
-effect after it is merged and reviewed. The container gets only `site.yaml`,
-`media/`, `overrides/` and `numbers.json` when they exist, and the base
-`site.yaml`, each mounted alone and read-only (never the whole checkout), with
-no network, a read-only root file system, all capabilities dropped,
-`no-new-privileges`, a process and a memory limit, and a non-root user. A
-symlinked `site.yaml` or `media/` is refused, because the runtime would follow
-it on the host. Pictures must therefore live under `media/`.
+**Why the pull request cannot choose the scripts or the engine image.** The
+preview job does not run anything from the pull request. It checks out the pull
+request into `pr/` and the base commit into `trusted-src/` (sparse: the five
+scripts, `engine.lock`, `site.yaml`), then in one step, before anything else
+runs, copies the scripts and the base `engine.lock` to a new folder under
+`$RUNNER_TEMP` outside the workspace, makes it read-only, and reads the engine
+image from that lock **once**. Every later step runs those copies with
+`--root pr` (so the pull request's `site.yaml` and `media/` are only data) and
+`--image` (the value chosen above, shape-checked again). Replacing a script,
+changing `engine.lock`, or replacing `scripts/` with a symlink in the pull
+request therefore changes nothing: the tests do each of those and check the
+image and the mount list. The container gets only `site.yaml`, `media/`,
+`overrides/` and `numbers.json` when they exist, and the base `site.yaml`, each
+mounted alone and read-only (never the whole checkout), with no network, a
+read-only root file system, all capabilities dropped, `no-new-privileges`, a
+process and a memory limit, and a non-root user. A symlinked `site.yaml` or
+`media/` is refused, because the runtime would follow it on the host. Pictures
+must therefore live under `media/`. A change to `engine.lock` takes effect for
+previews only after it merges.
 
 **What is still trusted.** With the `pull_request` trigger GitHub runs the
 workflow file from the pull request, so a collaborator with write access can
@@ -195,7 +211,8 @@ a pull request from impersonating the renderer or the engine pin, not a
 trusted-writer from rewriting the workflow. Instance repositories must give
 write access only to trusted people and, if there are collaborators, protect
 `.github/`, `scripts/` and `engine.lock` with CODEOWNERS and required review.
-Pull requests from forks never run the comment job.
+Pull requests from forks run neither the preview nor the comment job (both
+are guarded by `head.repo.full_name == github.repository`).
 
 A Pages preview deployment (a URL per pull request) is not used: it would need
 the Cloudflare token in a job that runs the change's code, which the template

@@ -98,8 +98,8 @@ restricts which actions may run, allow that repository.
 The preview comment needs no setup: the `comment` job uses the run's own
 token with `pull-requests: write` (and `contents: read` to fetch one script
 from the base commit) and nothing else. Pull requests from forks get no
-preview and no comment: the `comment` job is skipped for them, and their token
-cannot write anyway.
+preview and no comment: the `preview` and `comment` jobs are skipped for them
+(a guard on `head.repo.full_name`), and their token cannot write anyway.
 
 **Who may change the workflow.** With the `pull_request` trigger GitHub runs
 the workflow file from the pull request itself, so a collaborator with write

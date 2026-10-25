@@ -9,17 +9,19 @@
 # Three jobs and a gate.
 #   shell    GYST bash-ci: shellcheck, shfmt, actionlint and zizmor over this
 #            repository's scripts and workflows.
-#   preview  contents: read only. This job runs the pull request's code, so
-#            nothing it writes is trusted. It checks site.yaml with the engine
-#            image named in the BASE branch's engine.lock (a pull request cannot
-#            pick its own image), builds the site, uploads it as the `preview`
-#            artifact, and uploads a small JSON result file.
+#   preview  contents: read only. Runs only copies of the scripts taken from the
+#            BASE commit (made read-only outside the workspace before anything
+#            else runs), against the pull request's files as data, in the engine
+#            image named once by the BASE engine.lock. Nothing it writes is
+#            trusted. It uploads the built site as the `preview` artifact and a
+#            small JSON result file. Skipped for pull requests from forks.
 #   comment  the only job with `pull-requests: write`. It does not run the pull
 #            request's code. It takes scripts/render-comment.py from the BASE
 #            commit, so the pull request cannot change it; that script
-#            validates the JSON result against a strict schema and builds the
-#            whole comment from its own fixed text. The result is data, never
-#            text to post.
+#            validates the JSON result against a strict schema, checks it against
+#            needs.preview.result (GitHub's own verdict), and builds the whole
+#            comment from its own fixed text. The result is data, never text
+#            to post.
 #   ci-green the gate to require in branch protection.
 #
 # Trust that remains: with the `pull_request` trigger GitHub runs the workflow
@@ -51,26 +53,62 @@ jobs:
 
   preview:
     name: Build the preview
+    # Same-repository pull requests only. A fork's pull request gets no
+    # preview and no comment.
+    if: ${{ github.event.pull_request.head.repo.full_name == github.repository }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
       contents: read
     # No `environment` and no secrets here, on purpose.
     steps:
+      # The pull request's files. They are only ever read as data (the config
+      # and the pictures); nothing in this checkout is executed.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          path: pr
           persist-credentials: false
 
-      # The base branch's copy: its engine.lock chooses the engine image, and
-      # its site.yaml is what the changed blocks are listed against.
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # The scripts and the engine pin come from the BASE commit, in a separate
+      # folder, before anything else runs.
+      - name: Fetch the trusted scripts from the base commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.pull_request.base.sha }}
-          path: base
+          path: trusted-src
+          sparse-checkout: |
+            scripts/read-lock.sh
+            scripts/check-repo.sh
+            scripts/check-config.sh
+            scripts/validate.sh
+            scripts/write-result.py
+            engine.lock
+            site.yaml
+          sparse-checkout-cone-mode: false
           persist-credentials: false
 
+      # Copy them outside the workspace, make them read-only, and choose the
+      # engine image once, from the base lock. Every later step runs these
+      # copies against the pull request's files and is handed this image.
+      - name: Install the trusted copies and choose the engine image
+        id: trust
+        run: |
+          set -eu
+          dir="$(mktemp -d "$RUNNER_TEMP/trusted.XXXXXX")"
+          cp -R trusted-src/scripts "$dir/scripts"
+          cp trusted-src/engine.lock "$dir/engine.lock"
+          if [ -f trusted-src/site.yaml ]; then cp trusted-src/site.yaml "$dir/base-site.yaml"; fi
+          chmod -R a-w "$dir"
+          image="$(bash "$dir/scripts/read-lock.sh" ENGINE_IMAGE)"
+          {
+            echo "dir=$dir"
+            echo "image=$image"
+          } >> "$GITHUB_OUTPUT"
+
       - name: Check the repository for files that must not be committed
-        run: scripts/check-repo.sh
+        env:
+          TRUSTED: ${{ steps.trust.outputs.dir }}
+        run: bash "$TRUSTED/scripts/check-repo.sh" --root pr
 
       - name: Make a fresh folder for the results
         id: results
@@ -83,22 +121,27 @@ jobs:
       - name: Check the config in plain language
         id: check
         env:
+          TRUSTED: ${{ steps.trust.outputs.dir }}
+          IMAGE: ${{ steps.trust.outputs.image }}
           RESULTS: ${{ steps.results.outputs.dir }}
         run: |
           set +e
           against=()
-          if [ -f base/site.yaml ]; then against=(--against base/site.yaml); fi
-          scripts/check-config.sh --lock base/engine.lock --format json \
-            ${against[@]+"${against[@]}"} --out "$RESULTS/check.json"
+          if [ -f "$TRUSTED/base-site.yaml" ]; then against=(--against "$TRUSTED/base-site.yaml"); fi
+          bash "$TRUSTED/scripts/check-config.sh" --root pr --image "$IMAGE" \
+            --format json ${against[@]+"${against[@]}"} --out "$RESULTS/check.json"
           echo "status=$?" >> "$GITHUB_OUTPUT"
 
       # Only when the check passed. Same rule: record the status, fail last.
       - name: Build the site with the pinned engine
         id: build
         if: steps.check.outputs.status == '0'
+        env:
+          TRUSTED: ${{ steps.trust.outputs.dir }}
+          IMAGE: ${{ steps.trust.outputs.image }}
         run: |
           set +e
-          scripts/validate.sh --lock base/engine.lock \
+          bash "$TRUSTED/scripts/validate.sh" --root pr --image "$IMAGE" \
             --out "$RUNNER_TEMP/preview-site" \
             --manifest "$RUNNER_TEMP/preview-manifest/manifest.json"
           echo "status=$?" >> "$GITHUB_OUTPUT"
@@ -115,11 +158,12 @@ jobs:
       - name: Write the result file
         if: ${{ !cancelled() }}
         env:
+          TRUSTED: ${{ steps.trust.outputs.dir }}
           RESULTS: ${{ steps.results.outputs.dir }}
           CHECK_STATUS: ${{ steps.check.outputs.status }}
           BUILD_STATUS: ${{ steps.build.outputs.status }}
         run: |
-          python3 -I scripts/write-result.py \
+          python3 -I "$TRUSTED/scripts/write-result.py" \
             --check-status "$CHECK_STATUS" --build-status "$BUILD_STATUS" \
             --check "$RESULTS/check.json" --out "$RESULTS/result.json"
 
@@ -166,37 +210,49 @@ jobs:
           name: preview-result
           path: ${{ runner.temp }}/result-in
 
-      # The result file is data. The renderer validates it and writes every
-      # character of the comment itself; nothing from the file is posted.
+      # The result file is data. The renderer validates it, checks it against
+      # the verdict GitHub itself recorded for the preview job
+      # (needs.preview.result, not from the artifact), and writes every
+      # character of the comment; nothing from the file is posted.
       - name: Render the comment
         env:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          PREVIEW_RESULT: ${{ needs.preview.result }}
+          REPO: ${{ github.repository }}
+          WORKFLOW: ${{ github.workflow }}
         run: |
           set -eu
           dir="$(mktemp -d "$RUNNER_TEMP/comment-out.XXXXXX")"
           echo "COMMENT_FILE=$dir/comment.md" >> "$GITHUB_ENV"
           python3 -I trusted/scripts/render-comment.py \
             --in "$RUNNER_TEMP/result-in/result.json" \
-            --out "$dir/comment.md" --run-url "$RUN_URL"
+            --out "$dir/comment.md" --run-url "$RUN_URL" \
+            --preview-result "$PREVIEW_RESULT" --repo "$REPO" --workflow "$WORKFLOW"
           cat "$dir/comment.md" >> "$GITHUB_STEP_SUMMARY"
 
-      # Find this workflow's own earlier comment by its marker and its author
-      # (the Actions bot), and update it; otherwise post a new one. Other
-      # comments are never touched.
+      # Find this workflow's own earlier comment by its marker (which names
+      # this repository and this workflow) and its author (the Actions bot),
+      # and update it. If more than one comment matches, post nothing: the
+      # state is not one this workflow created. Other comments are never touched.
       - name: Post or update the comment
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
+          WORKFLOW: ${{ github.workflow }}
         run: |
           set -eu
-          marker='<!-- reach-around-preview -->'
-          id="$(gh api "repos/$GH_REPO/issues/$PR_NUMBER/comments" --paginate \
-            --jq '.[] | select(.user.login == "github-actions[bot]" and .user.type == "Bot" and (.body | startswith("'"$marker"'"))) | .id' \
-            | tail -n 1)"
-          if [ -n "$id" ]; then
-            printf '%s' "$id" | grep -Eq '^[0-9]+$' || { echo "::error::unexpected comment id"; exit 1; }
-            gh api --method PATCH "repos/$GH_REPO/issues/comments/$id" -F "body=@$COMMENT_FILE" > /dev/null
+          marker="<!-- reach-around-preview repo=$GH_REPO workflow=$WORKFLOW -->"
+          ids="$(gh api "repos/$GH_REPO/issues/$PR_NUMBER/comments" --paginate \
+            --jq '.[] | select(.user.login == "github-actions[bot]" and .user.type == "Bot" and (.body | startswith("'"$marker"'\n") or . == "'"$marker"'")) | .id')"
+          count="$(printf '%s' "$ids" | grep -c . || true)"
+          if [ "$count" -gt 1 ]; then
+            echo "::error::$count comments match this workflow's marker; posting nothing. Delete the extra ones."
+            exit 1
+          fi
+          if [ "$count" -eq 1 ]; then
+            printf '%s' "$ids" | grep -Eq '^[0-9]+$' || { echo "::error::unexpected comment id"; exit 1; }
+            gh api --method PATCH "repos/$GH_REPO/issues/comments/$ids" -F "body=@$COMMENT_FILE" > /dev/null
           else
             gh api --method POST "repos/$GH_REPO/issues/$PR_NUMBER/comments" -F "body=@$COMMENT_FILE" > /dev/null
           fi
