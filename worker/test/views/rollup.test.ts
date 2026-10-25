@@ -5,9 +5,6 @@ import { purgeViews } from "../../src/viewretention";
 import {
   MAX_DAYS_PER_RUN,
   ROW_CAP_CORE,
-  capDimValues,
-  capSources,
-  foldGeo,
   rollupClosedDays,
 } from "../../src/viewrollup";
 import { handleView } from "../../src/view";
@@ -243,9 +240,11 @@ describe("rollup geography", () => {
     expect(await q("SELECT * FROM view_geo_daily")).toMatchObject([{ region: "CA", city: "Sentinelville", views: 12 }]);
   });
 
-  it("a_city_with_four_views_folds_into_its_region_and_a_small_region_into_its_country", () => {
-    const g = (city: string, region: string, views: number) => ({ country: "US", region, city, bot_class: "h", views, uniques: 1 });
-    const out = foldGeo([g("A", "R1", 4), g("B", "R1", 5), g("C", "R2", 2)]);
+  it("a_city_with_four_views_folds_into_its_region_and_a_small_region_into_its_country", async () => {
+    const mk = (city: string, region: string, n: number): Raw[] => Array.from({ length: n }, (_, i) => ({ ts: D13 + i, country: "US", region, city }));
+    await insert([...mk("A", "R1", 4), ...mk("B", "R1", 5), ...mk("C", "R2", 2)]);
+    await rollupClosedDays(envOf(), NOW);
+    const out = await q<{ region: string; city: string; views: number }>("SELECT * FROM view_geo_daily");
     const keys = out.map((r) => `${r.region}/${r.city}/${r.views}`).sort();
     // A (4) folds into R1, which then has 4 < 5 and folds into the country with C (2); B (5) stays.
     expect(keys).toEqual(["//6", "R1/B/5"].sort());
@@ -253,17 +252,21 @@ describe("rollup geography", () => {
 });
 
 describe("rollup caps", () => {
-  it("sources_beyond_the_top_n_fold_to_other_and_direct_internal_never_fold", () => {
-    const c = (src_kind: string, src: string, views: number) => ({ page: "home", src_kind, src, country: "US", bot_class: "h", views, uniques: 0 });
-    const out = capSources([c("r", "a", 10), c("r", "b", 9), c("u", "c", 8), c("r", "d", 1), c("d", "", 1), c("i", "", 1)], 2);
+  it("sources_beyond_the_top_n_fold_to_other_and_direct_internal_never_fold", async () => {
+    const mk = (src_kind: string, src: string, n: number): Raw[] => Array.from({ length: n }, (_, i) => ({ ts: D13 + i, src_kind, src }));
+    await insert([...mk("r", "a", 10), ...mk("r", "b", 9), ...mk("u", "c", 8), ...mk("r", "d", 1), ...mk("d", "", 1), ...mk("i", "", 1)]);
+    await rollupClosedDays(envOf({ TOP_SOURCES: "2" }), NOW);
+    const out = await q<{ src_kind: string; src: string; views: number }>("SELECT * FROM view_daily");
     expect(out.map((r) => `${r.src_kind}:${r.src}:${r.views}`).sort()).toEqual(["d::1", "i::1", "o:other:9", "r:a:10", "r:b:9"].sort());
   });
 
-  it("top_n_ties_break_by_name_and_lang_browser_fold_to_other", () => {
-    const d = (value: string, views: number) => ({ dim: "lang", value, bot_class: "h", views, uniques: 0 });
-    const out = capDimValues([d("zz", 3), d("aa", 3), d("mm", 3)], "lang", 2);
-    expect(out.map((r) => r.value).sort()).toEqual(["aa", "mm", "other"].sort());
-    expect(out.reduce((a, r) => a + r.views, 0)).toBe(9);
+  it("top_n_ties_break_by_name_and_extra_values_fold_to_other", async () => {
+    const langs = Array.from({ length: 12 }, (_, i) => `l${String(i + 1).padStart(2, "0")}`);
+    await insert(langs.flatMap((lang, k) => Array.from({ length: 3 }, (_, i) => ({ ts: D13 + k * 10 + i, lang }))));
+    await rollupClosedDays(envOf(), NOW);
+    const out = await q<{ value: string; views: number }>("SELECT value, SUM(views) AS views FROM view_dim_daily WHERE dim = 'lang' GROUP BY value");
+    // Ten kept by name on the tie (l01..l10), the other two (6 views) are 'other'.
+    expect(out.map((r) => `${r.value}:${r.views}`).sort()).toEqual([...langs.slice(0, 10).map((l) => `${l}:3`), "other:6"].sort());
   });
 
   it("a_flood_of_random_referrers_stays_inside_the_row_cap_and_keeps_the_sum", async () => {
@@ -459,15 +462,52 @@ describe("retention order", () => {
     expect((await meta()).rollup_overdue).toBe("2027-03-14");
   });
 
-  it("rollup_then_purge_in_one_scheduled_run_counts_before_it_deletes", async () => {
+  it("the_purge_runs_before_the_rollup_so_a_day_is_deleted_only_on_a_run_after_it_was_counted", async () => {
     const now = Date.now();
     await insert([{ ts: now - 9 * DAY, first: 1 }, { ts: now - 9 * DAY + 1000, first: 1 }]);
     const pending: Promise<unknown>[] = [];
     const ctx = { waitUntil: (p: Promise<unknown>) => void pending.push(p) } as unknown as ExecutionContext;
-    await worker.scheduled({} as ScheduledController, { DB, SITE_HOST: "x.example.test", LINK_IDS: "[]", CLICK_LIMITER: fakeLimiter() }, ctx);
+    const env = { DB, SITE_HOST: "x.example.test", LINK_IDS: "[]", CLICK_LIMITER: fakeLimiter() };
+    await worker.scheduled({} as ScheduledController, env, ctx);
+    await Promise.all(pending);
+    // First run: the purge found nothing rolled, then the rollup counted the day.
+    expect(await rawCount()).toBe(2);
+    expect((await q<{ v: number; u: number }>("SELECT SUM(views) AS v, SUM(uniques) AS u FROM view_daily"))[0]).toEqual({ v: 2, u: 2 });
+    // Second run: the day is rolled and old, so the purge takes the raw rows.
+    await worker.scheduled({} as ScheduledController, env, ctx);
     await Promise.all(pending);
     expect(await rawCount()).toBe(0);
-    expect((await q<{ v: number; u: number }>("SELECT SUM(views) AS v, SUM(uniques) AS u FROM view_daily"))[0]).toEqual({ v: 2, u: 2 });
+    expect((await q<{ v: number }>("SELECT SUM(views) AS v FROM view_daily"))[0]?.v).toBe(2);
+  });
+
+  it("a_rollup_that_throws_or_is_cut_off_cannot_stop_the_purge_of_rolled_days", async () => {
+    const now = Date.now();
+    await insert([{ ts: now - 10 * DAY }]);
+    await DB.prepare("INSERT INTO view_rollup_log VALUES (?, 'UTC', 1, 1, 0, 1, 1, 1, 0, 1000000000000000, 0)").bind(day(now - 10 * DAY)).run();
+    const pending: Promise<unknown>[] = [];
+    const ctx = { waitUntil: (p: Promise<unknown>) => void pending.push(p) } as unknown as ExecutionContext;
+    const order: string[] = [];
+    const spy = new Proxy(DB, {
+      get(t, p) {
+        if (p === "prepare") {
+          return (sql: string) => {
+            if (sql.startsWith("SELECT strftime('%Y-%m-%d', ts / 1000")) {
+              order.push("rollup");
+              throw new Error("rollup unavailable");
+            }
+            if (sql.startsWith("DELETE FROM view_events")) order.push("purge");
+            return t.prepare(sql);
+          };
+        }
+        const v = Reflect.get(t, p, t);
+        return typeof v === "function" ? v.bind(t) : v;
+      },
+    }) as D1Database;
+    await worker.scheduled({} as ScheduledController, { DB: spy, SITE_HOST: "x.example.test", LINK_IDS: "[]", CLICK_LIMITER: fakeLimiter() }, ctx);
+    await expect(Promise.all(pending)).resolves.toBeDefined();
+    expect(order.indexOf("purge")).toBeGreaterThanOrEqual(0);
+    expect(order.indexOf("rollup")).toBeGreaterThan(order.indexOf("purge"));
+    expect(await rawCount()).toBe(0);
   });
 
   it("when_the_rollup_fails_the_raw_rows_survive_the_purge_and_nothing_throws", async () => {
@@ -521,7 +561,7 @@ describe("retention order", () => {
     }) as D1Database;
     // An old rolled day (purgeable), the stuck day and a later day.
     await insert([{ ts: ageDay(10) }, { ts: D12 + 5 }, { ts: D13 + 5 }]);
-    await DB.prepare("INSERT INTO view_rollup_log VALUES (?, 'UTC', 1, 1, 0, 1, 1, 1, 0, 1000000000000000)").bind(day(ageDay(10))).run();
+    await DB.prepare("INSERT INTO view_rollup_log VALUES (?, 'UTC', 1, 1, 0, 1, 1, 1, 0, 1000000000000000, 0)").bind(day(ageDay(10))).run();
     await expect(rollupClosedDays(envOf({ DB: failingDb }), NOW)).rejects.toThrow();
     const logged = (await q<{ day: string }>("SELECT day FROM view_rollup_log ORDER BY day")).map((r) => r.day);
     expect(logged).toContain("2027-03-13"); // the later day was still rolled
@@ -543,7 +583,7 @@ describe("retention order", () => {
   });
 
   it("aggregates_older_than_90_days_are_deleted", async () => {
-    await DB.prepare("INSERT INTO view_rollup_log VALUES ('2026-12-01','UTC',1,1,0,1,1,1,0,0), ('2027-03-10','UTC',1,1,0,1,1,1,0,0)").run();
+    await DB.prepare("INSERT INTO view_rollup_log VALUES ('2026-12-01','UTC',1,1,0,1,1,1,0,0,0), ('2027-03-10','UTC',1,1,0,1,1,1,0,0,0)").run();
     await DB.prepare("INSERT INTO view_geo_daily VALUES ('2026-12-01','UTC','US','','','h',1,0), ('2027-03-10','UTC','US','','','h',1,0)").run();
     await purgeViews({ DB }, NOW);
     expect((await q<{ day: string }>("SELECT day FROM view_rollup_log")).map((r) => r.day)).toEqual(["2027-03-10"]);

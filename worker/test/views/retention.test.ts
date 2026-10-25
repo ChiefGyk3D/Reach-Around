@@ -11,7 +11,7 @@ const NOW = Date.parse("2027-03-14T00:05:00Z");
 
 /** Mark a UTC day as rolled up (the purge only deletes raw rows of rolled days). */
 async function markRolled(day: string) {
-  await DB.prepare("INSERT OR IGNORE INTO view_rollup_log VALUES (?, 'UTC', 0, 0, 0, 0, 0, 0, 0, 1000000000000000)").bind(day).run();
+  await DB.prepare("INSERT OR IGNORE INTO view_rollup_log VALUES (?, 'UTC', 0, 0, 0, 0, 0, 0, 0, 1000000000000000, 0)").bind(day).run();
 }
 async function addEvent(ts: number, rolled = true) {
   if (rolled) await markRolled(new Date(ts).toISOString().slice(0, 10));

@@ -31,8 +31,9 @@ namespace_id = "1001" # placeholder, not a real id
   period = 60
 
 # One hourly run (Free allows 5 cron triggers per account): click purge, then
-# the page-view rollup (a day is rolled once its UTC midnight plus
-# ROLLUP_GRACE_HOURS has passed), then the page-view purge. Each run stays
+# the page-view purge, then the page-view rollup (a day is rolled once its UTC
+# midnight plus ROLLUP_GRACE_HOURS has passed). The purge runs first so a failing
+# or cut-off rollup can never block retention. Each run stays
 # inside QUERY_BUDGET D1 queries (default 40; Free allows 50, a batch counts
 # as one), so a long backlog simply continues on the next run. The :05 run at
 # 00:05 UTC keeps the daily visitor hash within about an hour of its day ending.
@@ -53,6 +54,8 @@ crons = ["5 * * * *"]
 # MIN_CELL = "3"                   # rollup cells under this many views fold into other (1 to 50)
 # ROLLUP_GRACE_HOURS = "2"         # wait this long after UTC midnight before rolling a day (0 to 12)
 # TOP_SOURCES = "50"               # referrer and utm labels kept per day
+# ROLLUP_MAX_ROWS_PER_DAY = "3000" # a bigger day is rolled in the reduced mode (ceiling 20000)
+# UTM_ALLOWLIST = "bluesky,mail"   # other utm_source labels are stored as other in the aggregates
 # UV_ENABLED = "1"
 # UV_BITS = "64"                 # visitor hash width: minimum and default 64, at most 128
 # VIEW_HASH_SECRET is a SECRET: `npx wrangler secret put VIEW_HASH_SECRET`

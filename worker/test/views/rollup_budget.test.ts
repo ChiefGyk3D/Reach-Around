@@ -12,7 +12,7 @@ import {
 } from "../../src/d1budget";
 import worker from "../../src/index";
 import { purgeViews } from "../../src/viewretention";
-import { graceMs, minCell, minCellCore, minCellDims, rollupClosedDays } from "../../src/viewrollup";
+import { graceMs, minCell, rollupClosedDays } from "../../src/viewrollup";
 import { DB, clearAll, fakeLimiter } from "./helpers";
 
 const DAY = 86_400_000;
@@ -196,14 +196,14 @@ describe("rollup under a hard query budget", () => {
     const total = await rawCount();
     expect(total).toBe(7320);
 
-    // Tight Free-style budget: 12 queries per invocation.
+    // Tight budget: 8 queries per invocation.
     const c = countingDb();
     const envFor = (budget: string, db: D1Database) => ({ DB: db, SITE_HOST: "x.example.test", LINK_IDS: "[]", CLICK_LIMITER: fakeLimiter(), QUERY_BUDGET: budget });
     let runs = 0;
     while ((await q("SELECT 1 FROM view_rollup_log")).length < 4 && runs < 30) {
       c.stats.queries = 0;
-      await invoke(envFor("12", c.db));
-      expect(c.stats.queries).toBeLessThanOrEqual(12);
+      await invoke(envFor("8", c.db));
+      expect(c.stats.queries).toBeLessThanOrEqual(8);
       runs += 1;
     }
     expect(runs).toBeGreaterThanOrEqual(4); // one day per tight invocation
@@ -322,7 +322,7 @@ describe("rollup lease", () => {
     expect((await meta()).rollup_lease).toBe("another:99999999999999"); // not released by a non-owner
   });
 
-  it("a_late_row_supplement_is_dropped_if_the_day_changed_under_it", async () => {
+  it("a_reroll_is_dropped_if_the_day_changed_under_it", async () => {
     const old = Math.floor((NOW - 10 * DAY) / DAY) * DAY;
     await insert([{ ts: old + 1000 }, { ts: old + 2000 }]);
     await rollupClosedDays(envOf(), NOW);
@@ -332,11 +332,38 @@ describe("rollup lease", () => {
     await a.hit;
     // The day's counted max_id moves (another folder got there first).
     await DB.prepare("UPDATE view_rollup_log SET max_id = max_id + 1000").run();
-    const before = JSON.stringify([await q("SELECT * FROM view_daily"), await q("SELECT views, uniques FROM view_rollup_log")]);
+    const before = JSON.stringify([await q("SELECT * FROM view_daily"), await q("SELECT views, uniques, rerolls FROM view_rollup_log")]);
     a.release();
     await run;
-    expect(JSON.stringify([await q("SELECT * FROM view_daily"), await q("SELECT views, uniques FROM view_rollup_log")])).toBe(before);
+    expect(JSON.stringify([await q("SELECT * FROM view_daily"), await q("SELECT views, uniques, rerolls FROM view_rollup_log")])).toBe(before);
     expect(await sumViews("view_daily")).toBe(2);
+  });
+
+  it("a_fresh_day_that_got_sealed_in_between_is_left_alone_without_an_error", async () => {
+    await seed();
+    const a = gatedDb(3);
+    const runA = rollupClosedDays(envOf({ DB: a.db }), NOW);
+    await a.hit;
+    // The lease is still valid and still mine, but the day's state is no longer "fresh".
+    await DB.prepare("INSERT INTO view_rollup_log VALUES ('2027-03-13', 'UTC', 150, 150, 0, 1, 1, 1, 0, 99999, 0)").run();
+    a.release();
+    await expect(runA).resolves.toBeDefined(); // gives up quietly, no database error
+    expect(await q("SELECT * FROM view_daily")).toEqual([]);
+    expect((await meta()).rollup_err).toBeUndefined();
+  });
+
+  it("an_expired_lease_with_no_takeover_writes_nothing", async () => {
+    await seed();
+    const a = gatedDb(3);
+    const runA = rollupClosedDays(envOf({ DB: a.db }), NOW);
+    await a.hit;
+    // Same token, but its expiry has passed and nobody took over.
+    await DB.prepare("UPDATE view_meta SET value = substr(value, 1, instr(value, ':')) || '1' WHERE key = 'rollup_lease'").run();
+    a.release();
+    await runA;
+    expect(await q("SELECT * FROM view_rollup_log")).toEqual([]);
+    expect(await q("SELECT * FROM view_daily")).toEqual([]);
+    expect(await q("SELECT * FROM view_dim_daily")).toEqual([]);
   });
 
   it("an_expired_lease_is_taken_over_and_a_live_one_is_not", async () => {
@@ -368,45 +395,6 @@ describe("grace period", () => {
   });
 });
 
-describe("late rows", () => {
-  const OLD = NOW - 10 * DAY;
-  const oldDay = Math.floor(OLD / DAY) * DAY;
-
-  it("a_row_written_after_the_seal_is_neither_lost_nor_purged_uncounted_and_is_counted_once", async () => {
-    await insert([{ ts: oldDay + 1000, first: 1 }, { ts: oldDay + 2000 }]);
-    await rollupClosedDays(envOf(), NOW);
-    const sealed = (await q<{ max_id: number; views: number }>("SELECT * FROM view_rollup_log"))[0];
-    expect(sealed?.views).toBe(2);
-    expect(sealed?.max_id).toBeGreaterThan(0);
-
-    // A view that began before midnight is written after the day sealed.
-    await insert([{ ts: oldDay + 3000, first: 1, src_kind: "r", src: "late.example.test" }]);
-    await purgeViews({ DB }, NOW);
-    // The two counted rows are old and rolled: gone. The late row is kept, not deleted as if counted.
-    expect(await rawCount()).toBe(1);
-    expect(await sumViews("view_daily")).toBe(2);
-
-    const r = await rollupClosedDays(envOf(), NOW + 1000);
-    expect(r.late).toBe(1);
-    expect(await sumViews("view_daily")).toBe(3);
-    expect(await sumViews("view_geo_daily")).toBe(3);
-    expect(await sumViews("view_dim_daily")).toBe(21);
-    expect((await q<{ views: number; uniques: number }>("SELECT * FROM view_rollup_log"))[0]).toMatchObject({ views: 3, uniques: 2 });
-    expect((await meta()).rollup_late_rows).toBe("1");
-    expect((await q("SELECT * FROM view_daily WHERE src = 'late.example.test'")).length).toBe(1);
-
-    // Replaying changes nothing: the late row is counted exactly once.
-    const again = await rollupClosedDays(envOf(), NOW + 2000);
-    expect(again.late).toBe(0);
-    expect(await sumViews("view_daily")).toBe(3);
-    expect((await meta()).rollup_late_rows).toBe("0");
-
-    // Only now, counted, may the purge delete it.
-    await purgeViews({ DB }, NOW);
-    expect(await rawCount()).toBe(0);
-  });
-});
-
 describe("small cells", () => {
   it("min_cell_parsing_defaults_to_three_and_is_clamped", () => {
     expect(minCell(undefined)).toBe(3);
@@ -414,19 +402,6 @@ describe("small cells", () => {
     expect(minCell("1")).toBe(1);
     expect(minCell("50")).toBe(50);
     expect(minCell("500")).toBe(50); // clamped to the ceiling
-  });
-
-  it("cells_under_the_minimum_fold_into_other_and_totals_do_not_change", () => {
-    const d = (dim: string, value: string, views: number) => ({ dim, value, bot_class: "h", views, uniques: 1 });
-    const out = minCellDims([d("os", "linux", 9), d("os", "plan9", 2), d("os", "haiku", 1), d("browser", "lynx", 2)], 3);
-    expect(out.map((r) => `${r.dim}:${r.value}:${r.views}`).sort()).toEqual(["browser:other:2", "os:linux:9", "os:other:3"].sort());
-    const c = (src_kind: string, src: string, country: string, views: number) => ({ page: "home", src_kind, src, country, bot_class: "h", views, uniques: 0 });
-    const core = minCellCore([c("r", "a.example.test", "US", 2), c("r", "b.example.test", "DE", 1), c("d", "", "FR", 1), c("d", "", "US", 5)], 3);
-    // The two small referrers merge into ('o','other') for US/DE which are still under 3 and fold to ZZ;
-    // the small direct cell loses only its country.
-    expect(core.reduce((a, r) => a + r.views, 0)).toBe(9);
-    expect(core.filter((r) => r.views < 3).every((r) => r.country === "ZZ")).toBe(true);
-    expect(core.some((r) => r.src === "a.example.test")).toBe(false);
   });
 
   it("with_the_default_minimum_no_published_cell_is_small_except_the_other_buckets_and_totals_hold", async () => {

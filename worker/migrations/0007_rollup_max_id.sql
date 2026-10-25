@@ -1,16 +1,24 @@
 -- SPDX-License-Identifier: Apache-2.0
--- Page view rollup: the highest raw row id that a day's aggregate already
--- counts. The raw purge deletes a rolled day's rows only up to this id, and a
--- later run folds rows above it (a view that began before UTC midnight and
--- was written after the day sealed) into the same day exactly once.
+-- Page view rollup: the state that makes late rows and re-rolls safe.
+--
+--   max_id   the highest raw row id a day's aggregates count. The raw purge
+--            deletes a rolled day's rows only up to this id, and a raw row of
+--            a sealed day with a larger id is a LATE row, which triggers a
+--            full re-roll of that day.
+--   rerolls  how many times the day was re-rolled.
+--
+-- Old state is INVALIDATED, not inferred. Whatever the rollup wrote before this
+-- migration has no record of which raw rows it counted, and guessing (for
+-- example from the current MAX(id)) could mark a never-counted late row as
+-- counted and let the purge delete it. So every aggregate and every log row is
+-- removed; every day that still has raw rows is rolled again from scratch by
+-- the new code, and days whose raw rows are already gone are simply not
+-- available (their aggregates are dropped). Fresh databases have nothing to
+-- delete.
+DELETE FROM view_daily;
+DELETE FROM view_dim_daily;
+DELETE FROM view_geo_daily;
+DELETE FROM view_rollup_log;
+DELETE FROM view_meta WHERE key IN ('rolled_through', 'rollup_failed_day');
 ALTER TABLE view_rollup_log ADD COLUMN max_id INTEGER NOT NULL DEFAULT 0;
-
--- Safe on its own: a log row that already existed counted every raw row it had
--- at the time, so its max_id is the highest id now stored for that day (0 when
--- no raw row is left). Without this, `id <= max_id` in the raw purge would keep
--- all of such a day's raw rows until the hard ceiling. The day expression is
--- the one the rollup and the purge use.
-UPDATE view_rollup_log SET max_id = COALESCE(
-  (SELECT MAX(id) FROM view_events
-    WHERE strftime('%Y-%m-%d', ts / 1000, 'unixepoch') = view_rollup_log.day),
-  0);
+ALTER TABLE view_rollup_log ADD COLUMN rerolls INTEGER NOT NULL DEFAULT 0;

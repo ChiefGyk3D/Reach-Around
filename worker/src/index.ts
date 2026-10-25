@@ -36,10 +36,11 @@ export default {
   },
 
   /**
-   * Daily cron, in this order: click purge, page-view rollup, page-view
-   * purge. The rollup runs before the view purge so a day is counted before
-   * its raw rows can be deleted. Each step is isolated: one failing never
-   * stops the others, and nothing here throws.
+   * Hourly cron, in this order: click purge, page-view purge, page-view
+   * rollup. The purge comes BEFORE the rollup so a rollup that fails, runs out
+   * of CPU or is cut off can never block retention (the purge only deletes
+   * days that are already rolled, plus rows past the hard ceiling). Each step
+   * is isolated: one failing never stops the others, and nothing here throws.
    */
   async scheduled(
     _controller: ScheduledController,
@@ -50,6 +51,8 @@ export default {
       MIN_CELL?: string;
       ROLLUP_GRACE_HOURS?: string;
       QUERY_BUDGET?: string;
+      ROLLUP_MAX_ROWS_PER_DAY?: string;
+      UTM_ALLOWLIST?: string;
     },
     ctx: ExecutionContext,
   ): Promise<void> {
@@ -57,26 +60,26 @@ export default {
       (async () => {
         const now = Date.now();
         // One meter for the whole invocation (Free allows 50 D1 queries, a
-        // batch counts as one); the rollup is held to half of it so the purge
-        // keeps the rest.
+        // batch counts as one). The purge is held to half of it; the rollup
+        // takes what is left.
         const budget = queryBudget(env.QUERY_BUDGET);
         const meter = new QueryMeter(budget);
         const whole = meteredDb(env.DB, meter);
-        const rollupDb = meteredDb(env.DB, meter.slice(Math.floor(budget / 2)));
+        const purgeDb = meteredDb(env.DB, meter.slice(Math.floor(budget / 2)));
         try {
           await purgeOldEvents({ ...env, DB: whole }, now);
         } catch {
           // Next run retries; nothing request-derived to report.
         }
         try {
-          await rollupClosedDays({ ...env, DB: rollupDb }, now);
-        } catch {
-          // The heartbeat in view_meta records the failure class.
-        }
-        try {
-          await purgeViews({ ...env, DB: whole }, now);
+          await purgeViews({ ...env, DB: purgeDb }, now);
         } catch {
           // Same.
+        }
+        try {
+          await rollupClosedDays({ ...env, DB: whole }, now);
+        } catch {
+          // The heartbeat in view_meta records the failure class.
         }
       })(),
     );

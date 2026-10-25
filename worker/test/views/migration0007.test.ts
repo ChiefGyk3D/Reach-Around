@@ -2,60 +2,72 @@
 import { env as testEnv } from "cloudflare:workers";
 import { beforeEach, describe, expect, it } from "vitest";
 import { purgeViews } from "../../src/viewretention";
+import { rollupClosedDays } from "../../src/viewrollup";
 import { DB, clearAll } from "./helpers";
 
 const DAY = 86_400_000;
 const NOW = Date.parse("2027-03-14T12:00:00Z");
+const day = (ms: number) => new Date(ms).toISOString().slice(0, 10);
+const q = async <T>(sql: string) => (await DB.prepare(sql).all<T>()).results;
+const sum = async (t: string) => (await q<{ v: number }>(`SELECT COALESCE(SUM(views), 0) AS v FROM ${t}`))[0]?.v ?? 0;
 
 beforeEach(clearAll);
 
-describe("migration 0007", () => {
-  it("backfills_max_id_so_the_purge_deletes_the_old_raw_rows_of_an_already_logged_day", async () => {
+async function columns(): Promise<string[]> {
+  return (await q<{ name: string }>("SELECT name FROM pragma_table_info('view_rollup_log')")).map((c) => c.name);
+}
+
+describe("migration 0007 invalidates old rollup state", () => {
+  it("clears_aggregates_and_log_so_the_new_code_rolls_every_day_still_in_raw_from_scratch", async () => {
     const mig = testEnv.TEST_MIGRATIONS.find((m) => m.name.startsWith("0007"));
     expect(mig, "migration 0007 is present").toBeDefined();
     expect(testEnv.TEST_MIGRATIONS.some((m) => m.name.startsWith("0006"))).toBe(true);
 
-    // Put the table back into its 0006 shape: no max_id column.
+    // Put the table back into its 0006 shape: no max_id, no rerolls.
     await DB.prepare("ALTER TABLE view_rollup_log DROP COLUMN max_id").run();
+    await DB.prepare("ALTER TABLE view_rollup_log DROP COLUMN rerolls").run();
     try {
       const old = Math.floor((NOW - 10 * DAY) / DAY) * DAY;
-      const recent = Math.floor((NOW - 1 * DAY) / DAY) * DAY;
-      const day = (ms: number) => new Date(ms).toISOString().slice(0, 10);
-      const ins = (ts: number) =>
-        DB.prepare("INSERT INTO view_events (ts, page, src_kind, bot_class, reason) VALUES (?, 'home', 'd', 'h', 'ok')").bind(ts);
-      await DB.batch([ins(old + 1000), ins(old + 2000), ins(recent + 1000)]);
-      // Log rows as 0006 wrote them (nine columns), for the old day and a day with no raw rows left.
+      const gone = Math.floor((NOW - 40 * DAY) / DAY) * DAY; // its raw rows were purged long ago
+      const ins = (ts: number, first = 0) =>
+        DB.prepare("INSERT INTO view_events (ts, page, src_kind, bot_class, reason, first) VALUES (?, 'home', 'd', 'h', 'ok', ?)").bind(ts, first);
+      await DB.batch([ins(old + 1000, 1), ins(old + 2000), ins(old + 3000, 1)]);
+      // Aggregates and log rows exactly as 0006-era code wrote them. The old log
+      // says two rows were counted, but three exist: one is a never-counted late row.
       await DB.batch([
-        DB.prepare("INSERT INTO view_rollup_log VALUES (?, 'UTC', 2, 2, 0, 1, 1, 1, 0)").bind(day(old)),
-        DB.prepare("INSERT INTO view_rollup_log VALUES ('2027-01-01', 'UTC', 1, 1, 0, 1, 1, 1, 0)"),
+        DB.prepare("INSERT INTO view_rollup_log VALUES (?, 'UTC', 2, 2, 1, 1, 1, 1, 0)").bind(day(old)),
+        DB.prepare("INSERT INTO view_rollup_log VALUES (?, 'UTC', 5, 5, 0, 1, 1, 1, 0)").bind(day(gone)),
+        DB.prepare("INSERT INTO view_daily VALUES (?, 'UTC', 'home', 'd', '', 'US', 'h', 2, 1)").bind(day(old)),
+        DB.prepare("INSERT INTO view_daily VALUES (?, 'UTC', 'home', 'd', '', 'US', 'h', 5, 0)").bind(day(gone)),
+        DB.prepare("INSERT INTO view_meta VALUES ('rolled_through', ?)").bind(day(old)),
       ]);
 
-      // Apply 0007 exactly as the migration runner would.
       for (const sql of mig!.queries) await DB.prepare(sql).run();
 
-      const logs = (await DB.prepare("SELECT day, max_id FROM view_rollup_log ORDER BY day").all<{ day: string; max_id: number }>()).results;
-      const ids = (await DB.prepare("SELECT id, ts FROM view_events ORDER BY id").all<{ id: number; ts: number }>()).results;
-      expect(logs.find((l) => l.day === day(old))?.max_id).toBe(ids[1]?.id); // highest id of that day
-      expect(logs.find((l) => l.day === "2027-01-01")?.max_id).toBe(0); // nothing left to count
+      expect(await columns()).toEqual(expect.arrayContaining(["max_id", "rerolls"]));
+      expect(await q("SELECT * FROM view_rollup_log")).toEqual([]);
+      expect(await q("SELECT * FROM view_daily")).toEqual([]);
+      expect(await q("SELECT * FROM view_meta WHERE key = 'rolled_through'")).toEqual([]);
 
+      // The new code rolls the day from the raw rows that exist: all three, the late one included.
+      await rollupClosedDays({ DB, MIN_CELL: "1" }, NOW);
+      expect(await sum("view_daily")).toBe(3);
+      expect((await q<{ uniques: number; max_id: number }>("SELECT * FROM view_rollup_log"))[0]).toMatchObject({ uniques: 2 });
+      expect(await q("SELECT * FROM view_rollup_log WHERE day = ?".replace("?", `'${day(gone)}'`))).toEqual([]); // nothing to count: dropped
+
+      // The late row was counted, so only now may the purge take the old raw rows.
       await purgeViews({ DB }, NOW);
-      const left = (await DB.prepare("SELECT ts FROM view_events ORDER BY id").all<{ ts: number }>()).results.map((r) => r.ts);
-      expect(left).toEqual([recent + 1000]); // the logged old day's raw rows are gone; the recent row stays
-    } finally {
-      // Whatever happened, leave the shared test database with the column back.
-      const cols = (await DB.prepare("SELECT name FROM pragma_table_info('view_rollup_log')").all<{ name: string }>()).results.map((c) => c.name);
-      if (!cols.includes("max_id")) await DB.prepare("ALTER TABLE view_rollup_log ADD COLUMN max_id INTEGER NOT NULL DEFAULT 0").run();
-    }
-  });
+      expect((await q<{ n: number }>("SELECT COUNT(*) AS n FROM view_events"))[0]?.n).toBe(0);
 
-  it("without_the_backfill_the_old_rows_would_have_stayed", async () => {
-    // The guard bites: a log row at max_id 0 keeps its raw rows (the purge needs id <= max_id).
-    const old = Math.floor((NOW - 10 * DAY) / DAY) * DAY;
-    await DB.prepare("INSERT INTO view_events (ts, page, src_kind, bot_class, reason) VALUES (?, 'home', 'd', 'h', 'ok')").bind(old + 1000).run();
-    await DB.prepare("INSERT INTO view_rollup_log (day, day_tz, raw_views, views, uniques, rows_core, rows_dim, rows_geo, rolled_at) VALUES (?, 'UTC', 1, 1, 0, 1, 1, 1, 0)")
-      .bind(new Date(old).toISOString().slice(0, 10))
-      .run();
-    await purgeViews({ DB }, NOW);
-    expect((await DB.prepare("SELECT COUNT(*) AS n FROM view_events").first<{ n: number }>())?.n).toBe(1);
+      // A row that arrives afterwards for the day whose raw rows were all purged is
+      // simply a fresh day of the rows that exist (the old aggregate was dropped).
+      await ins(gone + 5000, 1).run();
+      await rollupClosedDays({ DB, MIN_CELL: "1" }, NOW + 1000);
+      expect((await q<{ v: number }>(`SELECT COALESCE(SUM(views), 0) AS v FROM view_daily WHERE day = '${day(gone)}'`))[0]?.v).toBe(1);
+    } finally {
+      const cols = await columns();
+      if (!cols.includes("max_id")) await DB.prepare("ALTER TABLE view_rollup_log ADD COLUMN max_id INTEGER NOT NULL DEFAULT 0").run();
+      if (!cols.includes("rerolls")) await DB.prepare("ALTER TABLE view_rollup_log ADD COLUMN rerolls INTEGER NOT NULL DEFAULT 0").run();
+    }
   });
 });
