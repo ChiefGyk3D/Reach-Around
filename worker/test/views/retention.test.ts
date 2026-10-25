@@ -75,13 +75,13 @@ describe("view retention", () => {
     await addMeta(k("bud", hour - 60, "pvbot"));
     await addMeta(k("bud", hour - 10, "pv"));
     await addMeta(k("bud", hour, "pv"));
-    await addMeta(k("cap", hour - 2, "abcd1234"));
-    await addMeta(k("cap", hour - 1, "abcd1234"));
-    await addMeta(k("cap", hour, "abcd1234"));
+    await addMeta(k("cap", hour - 2, "abcd1234abcd1234"));
+    await addMeta(k("cap", hour - 1, "abcd1234abcd1234"));
+    await addMeta(k("cap", hour, "abcd1234abcd1234"));
     await addMeta("rolled_through"); // unrelated state is never touched
     await purgeViews(env(), NOW);
     expect((await budgets()).map((b) => b.key).sort()).toEqual(
-      [k("bud", hour - 10, "pv"), k("bud", hour, "pv"), k("cap", hour - 1, "abcd1234"), k("cap", hour, "abcd1234"), "rolled_through"].sort(),
+      [k("bud", hour - 10, "pv"), k("bud", hour, "pv"), k("cap", hour - 1, "abcd1234abcd1234"), k("cap", hour, "abcd1234abcd1234"), "rolled_through"].sort(),
     );
   });
 

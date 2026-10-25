@@ -50,7 +50,9 @@
 //   Without a usable VIEW_HASH_SECRET or a parsable client address there is
 //   no keyed client identity, so nothing is recorded (same 204, no limiter
 //   call, no database call). The rate-limiter bindings are keyed by purpose-
-//   separated daily HMACs of the address, never by the raw address.
+//   separated HMACs of the address, never by the raw address. Those limiter
+//   keys come from a stable key with no day component (see ratekey.ts), so a
+//   client does not get a fresh allowance at midnight UTC.
 //
 // TIMING
 //   Every response is byte-identical, but latency depends on how far a
@@ -62,7 +64,11 @@ import { BOT_REASONS, classifyBot, uaSignals, type BotClass } from "./botclass";
 import { MAX_PATH_LENGTH, MAX_URL_LENGTH, originMatches } from "./click";
 import type { RateLimiter } from "./click";
 import { classifyUserAgent, primaryLanguage } from "./ua";
+import { normalizeAddress } from "./address";
+import { limiterKey, secretBytes } from "./ratekey";
 import { padHour } from "./viewretention";
+
+export { normalizeAddress } from "./address";
 
 export interface ViewEnv {
   DB: D1Database;
@@ -89,6 +95,8 @@ export interface ViewEnv {
 
 export const MAX_BODY = 256;
 const MAX_ID_LENGTH = 40;
+/** Width of the per-client cap hash. 64 bits keeps collisions between clients negligible. */
+const CAP_HASH_BITS = 64;
 const MAX_HOST_LENGTH = 80;
 const MAX_CITY_LENGTH = 60;
 const MAX_CITY_INPUT = 200;
@@ -107,7 +115,6 @@ const DEFAULT_HASH_BITS = 64;
 const MAX_HASH_BITS = 128;
 /** The body must arrive within this long or the request is dropped (same 204). */
 export const BODY_DEADLINE_MS = 2000;
-const MIN_SECRET_BYTES = 32;
 const HOUR_MS = 3_600_000;
 const MINUTE_MS = 60_000;
 
@@ -286,77 +293,8 @@ export function geoOf(request: Request, level: GeoLevel): Geo {
 
 // ---------------------------------------------------------------- visitor
 
-function parseV4(s: string): number[] | null {
-  const m = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(s);
-  if (!m) return null;
-  const parts = [Number(m[1]), Number(m[2]), Number(m[3]), Number(m[4])];
-  return parts.every((p) => p <= 255) ? parts : null;
-}
-
-/**
- * IPv4 as canonical dotted text; IPv6 cut to its first 64 bits (so one
- * household's privacy addresses count once); an IPv4-mapped IPv6 address
- * becomes its IPv4 form; anything else is null.
- */
-export function normalizeAddress(ip: string | null): string | null {
-  if (typeof ip !== "string" || ip.length === 0 || ip.length > 45) return null;
-  const v4 = parseV4(ip);
-  if (v4) return v4.join(".");
-  if (!/^[0-9a-fA-F:.]+$/.test(ip) || !ip.includes(":")) return null;
-
-  let text = ip;
-  const lastColon = text.lastIndexOf(":");
-  const tail = text.slice(lastColon + 1);
-  if (tail.includes(".")) {
-    const t = parseV4(tail);
-    if (!t) return null;
-    const hi = ((t[0] as number) << 8) | (t[1] as number);
-    const lo = ((t[2] as number) << 8) | (t[3] as number);
-    text = `${text.slice(0, lastColon + 1)}${hi.toString(16)}:${lo.toString(16)}`;
-  }
-  const halves = text.split("::");
-  if (halves.length > 2) return null;
-  const toGroups = (s: string): string[] | null => {
-    if (s === "") return [];
-    const g = s.split(":");
-    return g.every((x) => /^[0-9a-fA-F]{1,4}$/.test(x)) ? g : null;
-  };
-  const head = toGroups(halves[0] as string);
-  if (head === null) return null;
-  let groups: string[];
-  if (halves.length === 2) {
-    const rest = toGroups(halves[1] as string);
-    if (rest === null || head.length + rest.length > 7) return null;
-    groups = [...head, ...Array<string>(8 - head.length - rest.length).fill("0"), ...rest];
-  } else {
-    if (head.length !== 8) return null;
-    groups = head;
-  }
-  const n = groups.map((g) => Number.parseInt(g, 16));
-  if (n.slice(0, 5).every((x) => x === 0) && n[5] === 0xffff) {
-    const a = n[6] as number;
-    const b = n[7] as number;
-    return [a >> 8, a & 255, b >> 8, b & 255].join(".");
-  }
-  return `v6:${n
-    .slice(0, 4)
-    .map((x) => x.toString(16).padStart(4, "0"))
-    .join("")}`;
-}
-
 function utcDate(ms: number): string {
   return new Date(ms).toISOString().slice(0, 10);
-}
-
-function secretBytes(secret: string | undefined): Uint8Array | null {
-  if (typeof secret !== "string" || secret.length === 0 || secret.length > 4096) return null;
-  try {
-    const bin = atob(secret);
-    if (bin.length < MIN_SECRET_BYTES) return null;
-    return Uint8Array.from(bin, (c) => c.charCodeAt(0));
-  } catch {
-    return null;
-  }
 }
 
 let keyCache: { secret: string; date: string; key: CryptoKey } | null = null;
@@ -399,11 +337,11 @@ export async function visitorHash(key: CryptoKey, normalized: string, bits: numb
 }
 
 export interface Identity {
-  /** Key for VIEW_LIMITER (128-bit hex, purpose "lim"). */
+  /** Key for VIEW_LIMITER (128-bit hex, purpose "lim"; stable, does not rotate daily). */
   lim: string;
   /** Key for VIEW_SUSPECT_LIMITER (purpose "sus"). */
   sus: string;
-  /** Per-address cap key (purpose "cap", 32-bit hex), shared by bots and humans. */
+  /** Per-address cap key (purpose "cap", 64-bit hex), shared by bots and humans. */
   cap: string;
   /** Daily unique-visitor hash, or null when uniques are off. */
   uv: string | null;
@@ -418,8 +356,8 @@ function uvBits(raw: string | undefined): number {
  * The keyed identities of this request's address, or null when there is no
  * usable secret or the address does not parse (the caller then fails closed).
  * Each purpose has its own label so the values cannot be matched to one
- * another or to a stored visitor hash without the secret, and all rotate
- * with the UTC day. The raw address is a local here and in normalizeAddress;
+ * another or to a stored visitor hash without the secret. The visitor hash
+ * and the cap hash rotate with the UTC day; the limiter keys do not. The raw address is a local here and in normalizeAddress;
  * it is the only place the header is read.
  */
 export async function identityFor(
@@ -435,9 +373,9 @@ export async function identityFor(
   const flag = env.UV_ENABLED;
   const uvOn = !(typeof flag === "string" && !flagOn(flag));
   const [lim, sus, cap, uv] = await Promise.all([
-    visitorHash(key, `lim|${addr}`, 128),
-    visitorHash(key, `sus|${addr}`, 128),
-    visitorHash(key, `cap|${addr}`, 32),
+    limiterKey(secret, env.VIEW_HASH_SECRET, "lim", addr), // CONTROL:pv-limiter-key
+    limiterKey(secret, env.VIEW_HASH_SECRET, "sus", addr),
+    visitorHash(key, `cap|${addr}`, CAP_HASH_BITS),
     uvOn ? visitorHash(key, addr, uvBits(env.UV_BITS)) : Promise.resolve(null),
   ]);
   return { lim, sus, cap, uv };

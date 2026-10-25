@@ -368,9 +368,9 @@ describe("per-client cap", () => {
   it("the_stored_key_is_not_the_visitor_hash_nor_the_address", async () => {
     await handleView(beacon(), makeEnv(), NOW);
     const key = (await budgets()).find((b) => b.key.startsWith("cap:"))?.key ?? "";
-    expect(key).toMatch(/^cap:\d{8}:[0-9a-f]{8}$/);
+    expect(key).toMatch(/^cap:\d{8}:[0-9a-f]{16}$/);
     expect(key).not.toContain(IP4);
-    expect(key.split(":")[2]).not.toBe((await seen())[0]?.h?.slice(0, 8));
+    expect(key.split(":")[2]).not.toBe((await seen())[0]?.h?.slice(0, 16));
   });
 
   it("bots_are_capped_per_client_too", async () => {
@@ -481,19 +481,34 @@ describe("limiter keys", () => {
     }
   });
 
-  it("limiter_keys_are_purpose_separated_stable_in_a_day_and_rotate_daily", async () => {
+  it("limiter_keys_are_purpose_separated_and_stable_across_the_utc_midnight_boundary", async () => {
     const view = fakeLimiter();
     const suspect = fakeLimiter();
     const env = makeEnv({ VIEW_LIMITER: view, VIEW_SUSPECT_LIMITER: suspect });
-    await handleView(beacon(), env, NOW);
-    await handleView(beacon(), env, NOW + 1000);
-    await handleView(beacon(), env, NOW + 86_400_000);
-    expect(view.keys[0]).toBe(view.keys[1]);
-    expect(view.keys[0]).not.toBe(view.keys[2]);
+    const before = Date.parse("2027-03-14T23:59:59Z");
+    const after = Date.parse("2027-03-15T00:00:01Z");
+    await handleView(beacon(), env, before);
+    await handleView(beacon(), env, before + 500);
+    await handleView(beacon(), env, after);
+    await handleView(beacon(), env, after + 86_400_000 * 30);
+    expect(new Set(view.keys).size).toBe(1); // no daily rotation: no boundary burst
+    expect(new Set(suspect.keys).size).toBe(1);
     expect(view.keys[0]).not.toBe(suspect.keys[0]); // different purpose label
-    const stored = JSON.stringify([await budgets(), await seen()]);
-    expect(stored).not.toContain(view.keys[0] as string);
-    expect(stored).not.toContain(suspect.keys[0] as string);
+    const everything = JSON.stringify([await budgets(), await seen(), await rows()]);
+    for (const k of [view.keys[0], suspect.keys[0]] as string[]) {
+      expect(everything).not.toContain(k);
+      expect(everything).not.toContain(k.slice(0, 16));
+    }
+  });
+
+  it("the_visitor_hash_still_rotates_daily_while_limiter_keys_do_not", async () => {
+    const view = fakeLimiter();
+    const env = makeEnv({ VIEW_LIMITER: view });
+    await handleView(beacon(), env, Date.parse("2027-03-14T23:59:59Z"));
+    await handleView(beacon(), env, Date.parse("2027-03-15T00:00:01Z"));
+    const hashes = (await seen()).map((r) => r.h);
+    expect(new Set(hashes).size).toBe(2);
+    expect(new Set(view.keys).size).toBe(1);
   });
 
   it("a_different_secret_gives_different_limiter_keys", async () => {

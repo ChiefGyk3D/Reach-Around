@@ -1,4 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
+import { normalizeAddress } from "./address";
+import { limiterKeyOrIsolate } from "./ratekey";
 
 /** Workers Rate Limiting binding (the subset we use). */
 export interface RateLimiter {
@@ -12,6 +14,12 @@ export interface Env {
   /** JSON array of link ids from the build manifest. */
   LINK_IDS: string;
   CLICK_LIMITER: RateLimiter;
+  /**
+   * Optional. When set, the limiter key is a stable keyed hash of the client
+   * address under it; when absent, a keyed hash under a random per-isolate key.
+   * The raw address never reaches the limiter, either way.
+   */
+  VIEW_HASH_SECRET?: string;
   /**
    * Optional kill switch. "1" or "true" (any case) turns click recording off;
    * anything else, or unset, leaves it on. Read on every request.
@@ -182,8 +190,15 @@ export async function handleClick(request: Request, env: Env): Promise<Response>
     // 4. Origin: Ping-From or Origin must be the configured site host.
     if (!env.SITE_HOST || !originMatches(request, env.SITE_HOST)) return noContent();
 
-    // 5. Rate limit per client. The key is never stored.
-    const key = request.headers.get("CF-Connecting-IP") ?? "unknown";
+    // 5. Rate limit per client. The key is a keyed hash, never the address,
+    // and is never stored.
+    const key = await limiterKeyOrIsolate(
+      env.VIEW_HASH_SECRET,
+      "clk",
+      // Canonical form, so equivalent spellings share one allowance. An absent
+      // or malformed address becomes the literal "unknown" (one shared bucket).
+      normalizeAddress(request.headers.get("CF-Connecting-IP")) ?? "unknown",
+    ); // CONTROL:click-limiter-key
     const { success } = await env.CLICK_LIMITER.limit({ key });
     if (!success) return noContent();
 
