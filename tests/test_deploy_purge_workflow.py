@@ -111,6 +111,35 @@ def test_the_repo_token_reaches_only_the_download_step_never_the_dependency_code
     assert "GITHUB_ENV" not in text and "GITHUB_PATH" not in text
 
 
+def test_the_download_step_runs_before_anything_can_change_PATH() -> None:
+    steps = load()["jobs"]["build"]["steps"]
+    names = [s.get("name") for s in steps]
+    position = names.index(DOWNLOAD_STEP)
+    # only checkout may precede it: no setup-python, no pip, no venv, no npm
+    for before in steps[:position]:
+        assert str(before.get("uses", "")).startswith("actions/checkout@"), before
+        assert "run" not in before
+    for later in steps[position + 1 :]:
+        # nothing after it can have taken the token with it
+        assert "GH_TOKEN" not in yaml.safe_dump(later)
+
+
+def test_the_download_step_pins_PATH_and_calls_gh_by_absolute_path() -> None:
+    run = step("build", DOWNLOAD_STEP)["run"]
+    assert re.search(r"^\s*PATH=/usr/bin:/bin\s*$", run, re.MULTILINE)
+    assert "/usr/bin/gh" in run
+    # no bare `gh` command anywhere: every use goes through the absolute path
+    bare = [
+        line
+        for line in run.splitlines()
+        if re.search(r"(^|[\s;(&|`$])gh\s+(run|api|auth|release)\b", line)
+    ]
+    assert bare == []
+    for banned in ("reach-around", "python", "pip", "npm", "source ", "venv"):
+        assert banned not in run, banned
+    assert "GITHUB_ENV" not in run and "GITHUB_PATH" not in run
+
+
 def test_the_inventory_artifact_is_uploaded_outside_the_site_and_kept() -> None:
     uploads = {
         s["with"]["name"]: s["with"]
@@ -174,8 +203,12 @@ def run_list_step(
         env["STUB_PREVIOUS_FILE"] = str(previous_file)
     # two steps, as in the workflow: only the first one gets the token
     list_env = {k: v for k, v in env.items() if k not in ("GH_TOKEN", "GH_REPO")}
+    # the script names gh by absolute path; point that literal at the stub
+    download = step("build", DOWNLOAD_STEP)["run"]
+    assert "/usr/bin/gh" in download
+    download = download.replace("/usr/bin/gh", str(bin_dir / "gh"))
     first = subprocess.run(  # noqa: S603 - fixed argv, synthetic env and stubs
-        ["/bin/bash", "-c", step("build", DOWNLOAD_STEP)["run"]],
+        ["/bin/bash", "-c", download],
         cwd=work,
         env=env,
         capture_output=True,

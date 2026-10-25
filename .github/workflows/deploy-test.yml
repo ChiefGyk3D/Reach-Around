@@ -41,6 +41,35 @@ jobs:
         with:
           persist-credentials: false
 
+      # Fetch the last successful deployment's inventory. This runs right after
+      # checkout, before setup-python or any pip install, so nothing installed
+      # from PyPI can be on PATH yet. The step pins PATH to the system
+      # directories, calls the runner image's GitHub CLI by absolute path, and
+      # holds the built-in token (it can only read artifacts) in this step's env
+      # only. No earlier deployment is a notice, not an error.
+      - name: Download the previous assets inventory
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -eu
+          PATH=/usr/bin:/bin
+          export PATH
+          if [ ! -x /usr/bin/gh ]; then
+            echo "::warning::/usr/bin/gh not found on this runner; the purge list stays empty"
+          elif previous="$(/usr/bin/gh run list --workflow deploy-test.yml --branch main \
+              --status success --limit 1 --json databaseId \
+              --jq '.[0].databaseId // empty')" && [ -n "$previous" ]; then
+            if /usr/bin/gh run download "$previous" --name site-assets-inventory \
+                --dir previous-inventory; then
+              echo "::notice::downloaded the inventory of run $previous"
+            else
+              echo "::notice::the earlier deployment has no assets inventory"
+            fi
+          else
+            echo "::notice::no earlier successful deployment found"
+          fi
+
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.12"
@@ -57,30 +86,6 @@ jobs:
           test -z "$(find site-out -iname '*assets.json')"
           test -f site-out.manifest.json
           test -f site-out.assets.json
-
-      # Fetch the last successful deployment's inventory. This is the only step
-      # in the job that holds the built-in token (it can only read artifacts),
-      # it runs gh and nothing installed from PyPI, and the token is in this
-      # step's env only, so no later step sees it. No earlier deployment is a
-      # notice, not an error.
-      - name: Download the previous assets inventory
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-        run: |
-          set -eu
-          if previous="$(gh run list --workflow deploy-test.yml --branch main \
-              --status success --limit 1 --json databaseId \
-              --jq '.[0].databaseId // empty')" && [ -n "$previous" ]; then
-            if gh run download "$previous" --name site-assets-inventory \
-                --dir previous-inventory; then
-              echo "::notice::downloaded the inventory of run $previous"
-            else
-              echo "::notice::the earlier deployment has no assets inventory"
-            fi
-          else
-            echo "::notice::no earlier successful deployment found"
-          fi
 
       # Compare it with this build's inventory. No token here: this step runs the
       # installed reach-around, which is dependency code. A missing or unreadable

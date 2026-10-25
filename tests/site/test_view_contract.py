@@ -119,8 +119,12 @@ def test_the_404_page_builds_with_analytics_on_and_has_no_beacon(
     )
     page = (tmp_path / "404.html").read_text(encoding="utf-8")
     assert "That page does not exist." in page
+    assert not VIEW_REF.search(page)
     assert "view.js" not in page
     assert "<script" not in page.lower()
     assert "data-page-id" not in page and "data-view-route" not in page
     # The tab page does carry it, so the check above can fail.
-    assert "view.js" in (tmp_path / "index.html").read_text(encoding="utf-8")
+    assert VIEW_REF.search((tmp_path / "index.html").read_text(encoding="utf-8"))
+
+
+VIEW_REF = re.compile(r"view\.[0-9a-f]{20}\.js")
