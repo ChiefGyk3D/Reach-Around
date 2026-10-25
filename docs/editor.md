@@ -36,8 +36,12 @@ the printed link again. Do not paste the link into a chat or a shared screen.
 - Every `/__edit/api/` request carries `X-RA-Token`, `GET` included.
 - At most 16 requests run at once and 32 connections are held open. A request
   that sends nothing is dropped after 10 seconds.
+- The 16 KiB header limit is enforced as bytes arrive, so an oversized or
+  endless header is refused (431) before it is parsed or stored. The request
+  line and all headers must arrive within 10 seconds in total, and a body within
+  30 seconds, however steadily the client sends; a slow drip is closed.
 - The editor stops by itself after 30 minutes without activity (`--idle-minutes`
-  changes it), and on Ctrl+C.
+  changes it; it must be above 0 and at most 1440), and on Ctrl+C.
 
 ## Routes
 

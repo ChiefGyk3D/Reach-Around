@@ -7,6 +7,7 @@ while the project is alpha, every release is `0.x` and anything can change betwe
 ## [Unreleased]
 
 - `reach-around edit --config PATH [--idle-minutes N]`: the foundation of the local editor (#173). Two loopback-only listeners (editor and preview) on random ports, a request guard that runs before any route (exact `Host` with port, `Origin`, `Sec-Fetch-Site`, a constant-time `X-RA-Token` check on every API request, content type, method and size caps), a strict CSP on every editor response, a connection cap, a 30 minute idle timeout and a clean shutdown. The session link, with the key in the URL fragment, is printed to the terminal only; the command never opens a browser. The only API route is a placeholder `GET /__edit/api/state`; there are no write routes yet. See `docs/editor.md`.
+- Editor server hardening (#183). The 16 KiB header cap is now enforced on the wire by a byte-counting reader, so an oversized or endless header is refused with 431 before `http.server` parses or stores it. The request line and headers must arrive within an absolute 10 second deadline and a body within 30 seconds, so a client dripping one byte at a time can no longer hold every worker slot. `--idle-minutes` (and `EditorSession`) now reject `nan`, `inf`, zero, negative and values above 1440 minutes.
 
 ## [0.2.0] - 2026-10-25
 

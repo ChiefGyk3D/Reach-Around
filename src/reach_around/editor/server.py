@@ -15,7 +15,9 @@ never produces a 5xx: the guard runs inside ``parse_request``, before any route.
 from __future__ import annotations
 
 import hashlib
+import io
 import json
+import math
 import os
 import secrets
 import signal
@@ -31,7 +33,7 @@ from importlib import resources
 from pathlib import Path
 from socketserver import BaseServer
 from types import FrameType
-from typing import Any
+from typing import Any, Protocol
 
 from reach_around.editor.guard import (
     JSON_CAP,
@@ -44,6 +46,10 @@ from reach_around.editor.guard import (
 BIND_ADDRESS = "127.0.0.1"
 DEFAULT_IDLE_SECONDS = 30 * 60.0
 READ_TIMEOUT_SECONDS = 10.0
+HEADER_DEADLINE_SECONDS = 10.0
+BODY_DEADLINE_SECONDS = 30.0
+MAX_IDLE_SECONDS = 24 * 3600.0
+_RECV_CHUNK = 8192
 MAX_ACTIVE_CONNECTIONS = 16
 MAX_OPEN_CONNECTIONS = 32
 CONFIG_READ_CAP = 8 * 1024 * 1024
@@ -163,6 +169,114 @@ class _BoundedServer(ThreadingHTTPServer):
         """Say nothing: a traceback could carry request data (T-35)."""
 
 
+class _Receiver(Protocol):
+    """The two socket methods the reader uses (no socket import here)."""
+
+    def settimeout(self, value: float | None, /) -> None: ...
+
+    def recv(self, bufsize: int, /) -> bytes: ...
+
+
+class _HeadersTooLarge(Exception):
+    """The request headers passed ``MAX_HEADER_BYTES`` on the wire."""
+
+
+class _BoundedReader(io.BufferedIOBase):
+    """A byte-counting, deadline-bound reader over the connection.
+
+    It replaces ``rfile`` so the 16 KiB header cap and the receive deadlines
+    apply while bytes arrive, before ``http.server`` parses or stores them.
+    Every ``recv`` waits at most ``min(read_timeout, time left to the deadline)``,
+    so a client that sends a byte just inside the per-read timeout still runs
+    out of time. The first line is the request line; an over-long one is
+    returned unterminated (``parse_request`` answers 414). The lines after it
+    share one cumulative budget (``_HeadersTooLarge``, 431). A passed deadline
+    raises ``TimeoutError``, which closes the connection without a reply.
+    """
+
+    def __init__(
+        self,
+        sock: _Receiver,
+        *,
+        read_timeout: float,
+        header_deadline: float,
+        body_deadline: float,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        self._sock = sock
+        self._read_timeout = read_timeout
+        self._body_seconds = body_deadline
+        self._clock = clock
+        self._deadline = clock() + header_deadline
+        self._buffer = bytearray()
+        self._lines = 0
+        self._header_bytes = 0
+        self._in_headers = True
+        self._eof = False
+
+    def start_body(self) -> None:
+        """Leave the header phase: no byte cap, the body deadline starts now."""
+        if self._in_headers:
+            self._in_headers = False
+            self._deadline = self._clock() + self._body_seconds
+
+    def _fill(self) -> None:
+        remaining = self._deadline - self._clock()
+        if remaining <= 0:
+            raise TimeoutError("receive deadline passed")
+        self._sock.settimeout(min(self._read_timeout, remaining))
+        chunk = self._sock.recv(_RECV_CHUNK)
+        if not chunk:
+            self._eof = True
+        self._buffer += chunk
+
+    def readable(self) -> bool:
+        return True
+
+    def readline(self, size: int | None = -1) -> bytes:
+        size = -1 if size is None else size
+        first = self._lines == 0
+        counted = self._in_headers and not first
+        limit = MAX_HEADER_BYTES + 1 if size < 0 else min(size, MAX_HEADER_BYTES + 1)
+        if counted:
+            limit = min(limit, MAX_HEADER_BYTES + 1 - self._header_bytes)
+        while True:
+            newline = self._buffer.find(b"\n", 0, limit)
+            if newline >= 0:
+                end = newline + 1
+                break
+            if len(self._buffer) >= limit:
+                end = limit
+                break
+            if self._eof:
+                end = len(self._buffer)
+                break
+            self._fill()
+        line = bytes(self._buffer[:end])
+        del self._buffer[:end]
+        self._lines += 1
+        if counted:
+            self._header_bytes += len(line)
+            if self._header_bytes > MAX_HEADER_BYTES:
+                raise _HeadersTooLarge
+        return line
+
+    def read(self, size: int | None = -1) -> bytes:
+        size = -1 if size is None else size
+        while (size < 0 or len(self._buffer) < size) and not self._eof:
+            self._fill()
+        if size < 0:
+            size = len(self._buffer)
+        data = bytes(self._buffer[:size])
+        del self._buffer[:size]
+        return data
+
+    def close(self) -> None:
+        self._buffer.clear()
+        self._eof = True
+        super().close()
+
+
 class _Handler(BaseHTTPRequestHandler):
     """Shared plumbing: fixed error bodies, hardening headers, silent logging."""
 
@@ -186,7 +300,14 @@ class _Handler(BaseHTTPRequestHandler):
 
     def setup(self) -> None:
         super().setup()
-        self.connection.settimeout(self.owner.read_timeout)
+        owner = self.owner
+        self.connection.settimeout(owner.read_timeout)
+        self.rfile = _BoundedReader(
+            self.connection,
+            read_timeout=owner.read_timeout,
+            header_deadline=owner.header_deadline,
+            body_deadline=owner.body_deadline,
+        )
 
     # -- policy hooks, overridden by the two listeners ---------------------------
 
@@ -246,6 +367,9 @@ class _Handler(BaseHTTPRequestHandler):
 
     def _drain_body(self) -> None:
         """Read a little of an unread POST body so closing does not reset the reply."""
+        reader = self.rfile
+        if isinstance(reader, _BoundedReader):
+            reader.start_body()
         if self.command != "POST":
             return
         try:
@@ -265,6 +389,10 @@ class _Handler(BaseHTTPRequestHandler):
     def parse_request(self) -> bool:
         try:
             return self._parse_and_guard()
+        except _HeadersTooLarge:
+            self.close_connection = True
+            self.send_error(431)
+            return False
         except OSError:  # a timeout or a dropped connection: close without a reply
             self.close_connection = True
             return False
@@ -289,6 +417,9 @@ class _Handler(BaseHTTPRequestHandler):
         if verdict is not None:
             self._refuse(verdict.status)
             return False
+        reader = self.rfile
+        if isinstance(reader, _BoundedReader):
+            reader.start_body()
         return True
 
     def route_path(self) -> str:
@@ -411,7 +542,14 @@ class EditorSession:
         clock: Callable[[], float] = time.monotonic,
         watchdog_interval: float = 1.0,
         read_timeout: float = READ_TIMEOUT_SECONDS,
+        header_deadline: float = HEADER_DEADLINE_SECONDS,
+        body_deadline: float = BODY_DEADLINE_SECONDS,
     ) -> None:
+        if not (math.isfinite(idle_seconds) and 0 < idle_seconds <= MAX_IDLE_SECONDS):
+            raise EditorError(
+                "the idle time must be a number of seconds above 0 and at most "
+                f"{MAX_IDLE_SECONDS:g}"
+            )
         if host != BIND_ADDRESS:
             raise EditorError(f"the editor binds {BIND_ADDRESS} only, not {host!r}")
         self.address = host
@@ -420,6 +558,8 @@ class EditorSession:
             raise EditorError(f"cannot read the config file {config}")
         self.idle_seconds = idle_seconds
         self.read_timeout = read_timeout
+        self.header_deadline = header_deadline
+        self.body_deadline = body_deadline
         self.token = secrets.token_urlsafe(32)
         self.stopped = threading.Event()
         self.stop_reason: str | None = None
