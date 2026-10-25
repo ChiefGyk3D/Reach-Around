@@ -9,7 +9,12 @@ const DAY = 86_400_000;
 const HOUR = 3_600_000;
 const NOW = Date.parse("2027-03-14T00:05:00Z");
 
-async function addEvent(ts: number) {
+/** Mark a UTC day as rolled up (the purge only deletes raw rows of rolled days). */
+async function markRolled(day: string) {
+  await DB.prepare("INSERT OR IGNORE INTO view_rollup_log VALUES (?, 'UTC', 0, 0, 0, 0, 0, 0, 0, 1000000000000000, 0)").bind(day).run();
+}
+async function addEvent(ts: number, rolled = true) {
+  if (rolled) await markRolled(new Date(ts).toISOString().slice(0, 10));
   await DB.prepare(
     "INSERT INTO view_events (ts, page, src_kind, bot_class, reason) VALUES (?, 'home', 'd', 'h', 'none')",
   )
@@ -29,6 +34,7 @@ beforeEach(clearAll);
 
 describe("view retention", () => {
   it("visitor_seen_before_today_utc_is_deleted_and_today_survives", async () => {
+    await markRolled("2027-03-13");
     await addSeen("2027-03-13", "aaaaaaaa");
     await addSeen("2027-03-14", "bbbbbbbb");
     await purgeViews(env(), NOW);
@@ -139,6 +145,7 @@ describe("view retention", () => {
     const now = Date.now();
     await addEvent(now - 8 * DAY);
     await addEvent(now);
+    await markRolled(new Date(now - DAY).toISOString().slice(0, 10));
     await addSeen(new Date(now - DAY).toISOString().slice(0, 10), "aaaaaaaa");
     await addSeen(new Date(now).toISOString().slice(0, 10), "bbbbbbbb");
     await addMeta(`bud:${padHour(Math.floor(now / HOUR) - 100)}:pv`);
@@ -147,7 +154,9 @@ describe("view retention", () => {
     await Promise.all(pending);
     expect((await rows()).map((r) => r.ts)).toEqual([now]);
     expect((await seen()).map((x) => x.h)).toEqual(["bbbbbbbb"]);
-    expect((await budgets()).map((b) => b.key)).toEqual([`bud:${padHour(Math.floor(now / HOUR))}:pv`]);
+    // Only the budget counters are expired; the rollup heartbeat keys are state.
+    expect((await budgets()).map((b) => b.key).filter((k) => k.startsWith("bud:"))).toEqual([`bud:${padHour(Math.floor(now / HOUR))}:pv`]);
+    expect((await budgets()).some((b) => b.key === "rollup_last_ok")).toBe(true);
     const clicks = await DB.prepare("SELECT COUNT(*) AS n FROM click_events").first<{ n: number }>();
     expect(clicks?.n).toBe(0);
   });

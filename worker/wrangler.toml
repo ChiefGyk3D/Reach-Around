@@ -30,12 +30,15 @@ namespace_id = "1001" # placeholder, not a real id
   limit = 20
   period = 60
 
-# Retention, daily: click rows older than 90 days; page-view raw rows past
-# RAW_KEEP_DAYS (default 7, ceiling 90); visitor_seen rows before today (UTC);
-# old budget counters. The 00:05 UTC run keeps the daily visitor hash within
-# about a day of its first write.
+# One hourly run (Free allows 5 cron triggers per account): click purge, then
+# the page-view purge, then the page-view rollup (a day is rolled once its UTC
+# midnight plus ROLLUP_GRACE_HOURS has passed). The purge runs first so a failing
+# or cut-off rollup can never block retention. Each run stays
+# inside QUERY_BUDGET D1 queries (default 40; Free allows 50, a batch counts
+# as one), so a long backlog simply continues on the next run. The :05 run at
+# 00:05 UTC keeps the daily visitor hash within about an hour of its day ending.
 [triggers]
-crons = ["17 4 * * *", "5 0 * * *"]
+crons = ["5 * * * *"]
 
 # Page views (POST /e/v/:pageId). Placeholders only; real values come from the
 # build manifest and `wrangler secret`, never from this file.
@@ -47,6 +50,12 @@ crons = ["17 4 * * *", "5 0 * * *"]
 # BOT_VIEWS_PER_HOUR = "30"        # global bot budget
 # CLIENT_VIEWS_PER_HOUR = "60"     # per-client cap (ceiling 1000); clamped to half the human or a quarter of the bot budget
 # RAW_KEEP_DAYS = "7"              # raw view retention (ceiling 90)
+# QUERY_BUDGET = "40"              # D1 queries per cron run (5 to 900)
+# MIN_CELL = "3"                   # rollup cells under this many views fold into other (1 to 50)
+# ROLLUP_GRACE_HOURS = "2"         # wait this long after UTC midnight before rolling a day (0 to 12)
+# TOP_SOURCES = "50"               # referrer and utm labels kept per day
+# ROLLUP_MAX_ROWS_PER_DAY = "3000" # a bigger day is rolled in the reduced mode (ceiling 20000)
+# UTM_ALLOWLIST = "bluesky,mail"   # other utm_source labels are stored as other in the aggregates
 # UV_ENABLED = "1"
 # UV_BITS = "64"                 # visitor hash width: minimum and default 64, at most 128
 # VIEW_HASH_SECRET is a SECRET: `npx wrangler secret put VIEW_HASH_SECRET`

@@ -21,7 +21,7 @@ const EXPECTED_COLUMNS: Record<string, string[]> = {
   ],
   view_rollup_log: [
     "day", "day_tz", "raw_views", "views", "uniques", "rows_core", "rows_dim", "rows_geo",
-    "rolled_at",
+    "rolled_at", "max_id", "rerolls",
   ],
 };
 
