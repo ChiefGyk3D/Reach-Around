@@ -8,7 +8,8 @@ browser: the URL, with the session token in the fragment, goes to the terminal
 and nowhere else.
 
 Routes are limited to the shell, the static files, ``GET /__edit/api/state``,
-``GET /__edit/api/version``, ``POST /__edit/api/op`` and 404 for everything
+``GET /__edit/api/version``, ``GET /__edit/api/history``, ``POST /__edit/api/op``,
+``POST /__edit/api/undo``, ``POST /__edit/api/redo`` and 404 for everything
 else. A refused or malformed request never writes and never produces a 5xx:
 the guard runs inside ``parse_request``, before any route.
 """
@@ -495,12 +496,17 @@ class _EditorHandler(_Handler):
             self._json_route(self._state)
         elif path == "/__edit/api/version":
             self._json_route(lambda: self.owner.service.version())
+        elif path == "/__edit/api/history":
+            self._json_route(lambda: self.owner.service.history())
         else:
             self._refuse(404)
 
     def _post(self) -> None:
-        if self.route_path() == "/__edit/api/op":
+        path = self.route_path()
+        if path == "/__edit/api/op":
             self._json_route(self._op)
+        elif path in ("/__edit/api/undo", "/__edit/api/redo"):
+            self._json_route(lambda: self._move(path.rsplit("/", 1)[1]))
         else:
             self._refuse(404)
 
@@ -528,7 +534,8 @@ class _EditorHandler(_Handler):
         session = self.owner
         return session.service.state(self._preview_host(), session.preview_port)
 
-    def _op(self) -> dict[str, Any]:
+    def _mutation_body(self) -> bytes:
+        """Count the request against the mutation limit, then read its body."""
         session = self.owner
         session.touch()
         wait = session.service.rate_check()
@@ -544,7 +551,19 @@ class _EditorHandler(_Handler):
         self.body_read = True
         if len(body) != length:
             raise RouteError(400, "bad_json", "The request body was cut short.")
+        return body
+
+    def _op(self) -> dict[str, Any]:
+        body = self._mutation_body()
+        session = self.owner
         return session.service.run_op(body, self._preview_host(), session.preview_port)
+
+    def _move(self, kind: str) -> dict[str, Any]:
+        body = self._mutation_body()
+        session = self.owner
+        return session.service.run_move(
+            body, kind, self._preview_host(), session.preview_port
+        )
 
 
 class _PreviewHandler(_Handler):

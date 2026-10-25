@@ -33,7 +33,14 @@ from typing import Any
 from reach_around import editing
 from reach_around.config import ConfigError, load_site_config, load_yaml
 from reach_around.editor.guard import JSON_CAP
-from reach_around.editor_history import MAX_ENTRIES, History, HistoryError
+from reach_around.editor_history import (
+    MAX_ENTRIES,
+    History,
+    HistoryError,
+    Refusal,
+    Restored,
+    Summary,
+)
 
 MUTATIONS_PER_MINUTE = 20
 RATE_WINDOW_SECONDS = 60.0
@@ -54,8 +61,10 @@ class RouteError(Exception):
         *,
         state: dict[str, Any] | None = None,
         headers: list[tuple[str, str]] | None = None,
+        extra: dict[str, Any] | None = None,
     ) -> None:
         super().__init__(message)
+        self.extra = extra or {}
         self.status = status
         self.code = code
         self.message = message
@@ -69,6 +78,7 @@ class RouteError(Exception):
         }
         if self.state is not None:
             body["state"] = self.state
+        body.update(self.extra)
         return body
 
 
@@ -478,6 +488,37 @@ class EditorService:
                 break
         return hashlib.sha256(first).hexdigest(), config, error
 
+    def _summary(self) -> Summary:
+        try:
+            return History(self.config).summary()
+        except (HistoryError, OSError):
+            return Summary((), False, False, None)
+
+    @staticmethod
+    def _outside(summary: Summary, digest: str) -> bool:
+        """True when the file is not what the editor wrote last (design 9.2)."""
+        return summary.produced is not None and summary.produced != digest
+
+    def history(self) -> dict[str, Any]:
+        """Labels, times and hashes of the history; never the text."""
+        summary = self._summary()
+        digest, _config, _error = self._load()
+        return {
+            "entries": [
+                {
+                    "id": e.id,
+                    "hash": e.hash,
+                    "label": e.label,
+                    "time": e.time,
+                    "current": e.current,
+                }
+                for e in summary.entries
+            ],
+            "can_undo": summary.can_undo,
+            "can_redo": summary.can_redo,
+            "outside_edit": self._outside(summary, digest),
+        }
+
     def version(self) -> dict[str, Any]:
         digest, _config, error = self._load()
         return {
@@ -492,9 +533,13 @@ class EditorService:
             mtime = os.stat(self.config).st_mtime
         except OSError:
             mtime = 0.0
+        summary = self._summary()
         return {
             "hash": digest,
             "mtime": mtime,
+            "can_undo": summary.can_undo,
+            "can_redo": summary.can_redo,
+            "outside_edit": self._outside(summary, digest),
             "config": config,
             "build": {"ok": error is None, "error": error},
             "version": self._observe(digest),
@@ -628,3 +673,108 @@ class EditorService:
         for name in spec.expect:
             if name not in expect or _canon(expect[name]) != _canon(current[name]):
                 raise _Stale(f"expect.{name}")
+
+    # -- undo and redo (design 9.3) --
+
+    def run_move(
+        self, body: bytes, kind: str, preview_host: str, preview_port: int
+    ) -> dict[str, Any]:
+        """Undo or redo (``kind``). ``anyway`` (undo only) is "restore anyway"."""
+        request = parse_json_object(body)
+        base = request.get("base")
+        if not isinstance(base, str) or _HASH.fullmatch(base) is None:
+            raise _bad(
+                "base", "base must be the hash from the last state.", "bad_request"
+            )
+        allowed = {"base", "anyway"} if kind == "undo" else {"base"}
+        unknown = set(request) - allowed
+        if unknown:
+            name = sorted(unknown)[0]
+            raise _bad(name, f"{name!r} is not a field of this request.", "bad_request")
+        anyway = request.get("anyway", False)
+        if not isinstance(anyway, bool):
+            raise _bad("anyway", "anyway must be true or false.", "bad_request")
+        with self._write_lock:
+            return self._move(base, kind, anyway, preview_host, preview_port)
+
+    def _stale_base(self, preview_host: str, preview_port: int) -> RouteError:
+        return RouteError(
+            409,
+            "stale",
+            "The file changed since you last looked. Nothing was changed.",
+            "base",
+            state=self.state(preview_host, preview_port),
+        )
+
+    def _move(
+        self, base: str, kind: str, anyway: bool, host: str, port: int
+    ) -> dict[str, Any]:
+        data = self._read(self.config)
+        if data is None:
+            raise RouteError(404, "not_found", "The config file cannot be read.")
+        try:
+            current = data.decode("utf-8")
+        except UnicodeDecodeError:
+            raise RouteError(
+                422, "refused", "The config file is not valid text."
+            ) from None
+        if sha256_text(current) != base:
+            raise self._stale_base(host, port)
+
+        def write(target: str) -> None:
+            def compute(text: str, _raw: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+                if text != current:  # changed since we looked: never overwrite it
+                    raise editing.EditError(
+                        "The file changed while this was running. Nothing was changed."
+                    )
+                return target, {}
+
+            editing.apply(
+                self.config,
+                compute,
+                dry_run=False,
+                backup=True,
+                force_path=True,
+                restore=True,
+            )
+
+        history = History(self.config)
+        try:
+            if kind == "redo":
+                outcome = history.redo(current, write)
+            elif anyway:
+                outcome = history.restore_anyway(current, write)
+            else:
+                outcome = history.undo(current, write)
+        except editing.EditError as exc:
+            raise RouteError(422, "refused", self._clean(str(exc))) from None
+        except HistoryError as exc:
+            raise RouteError(
+                409, "history_unavailable", self._clean(str(exc))
+            ) from None
+        if isinstance(outcome, Refusal):
+            raise self._refusal(outcome, host, port)
+        return self._moved(outcome, host, port)
+
+    def _refusal(self, refusal: Refusal, host: str, port: int) -> RouteError:
+        status = 422 if refusal.code == "too_large" else 409
+        extra = {"restore_anyway": True} if refusal.code == "outside_edit" else {}
+        return RouteError(
+            status,
+            refusal.code,
+            refusal.message,
+            state=self.state(host, port),
+            extra=extra,
+        )
+
+    def _moved(self, outcome: Restored, host: str, port: int) -> dict[str, Any]:
+        new_state = self.state(host, port)
+        return {
+            "state": new_state,
+            "history": {
+                "label": outcome.label,
+                "hash": new_state["hash"],
+                "can_undo": outcome.can_undo,
+                "can_redo": outcome.can_redo,
+            },
+        }

@@ -66,6 +66,25 @@ class Restored:
     can_redo: bool
 
 
+@dataclass(frozen=True)
+class HistoryEntry:
+    """One state as the UI may see it: no text, only a label, a time and a hash."""
+
+    id: int
+    hash: str
+    label: str
+    time: float
+    current: bool
+
+
+@dataclass(frozen=True)
+class Summary:
+    entries: tuple[HistoryEntry, ...]
+    can_undo: bool
+    can_redo: bool
+    produced: str | None
+
+
 @dataclass
 class _Entry:
     n: int
@@ -443,6 +462,30 @@ class History:
         finally:
             os.close(dir_fd)
 
+    def summary(self) -> Summary:
+        """What the history holds now, without its text. Empty if there is none."""
+        dir_fd = self._open_dir(create=False)
+        if dir_fd is None:
+            return Summary((), False, False, None)
+        try:
+            lock = self._lock(dir_fd)
+            try:
+                state = self._load(dir_fd)
+            finally:
+                os.close(lock)
+        finally:
+            os.close(dir_fd)
+        entries = tuple(
+            HistoryEntry(e.n, e.hash, e.label, e.time, i == state.cursor)
+            for i, e in enumerate(state.entries)
+        )
+        return Summary(
+            entries,
+            state.cursor > 0,
+            state.cursor < len(state.entries) - 1,
+            state.produced,
+        )
+
     def undo(self, current: str, write: Callable[[str], object]) -> Restored | Refusal:
         return self._move(current, write, -1, anyway=False)
 
@@ -595,8 +638,10 @@ __all__ = [
     "HISTORY_DIRNAME",
     "IGNORE_LINE",
     "History",
+    "HistoryEntry",
     "HistoryError",
     "Refusal",
     "Restored",
+    "Summary",
     "ensure_gitignore",
 ]
