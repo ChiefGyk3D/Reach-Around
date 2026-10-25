@@ -13,6 +13,8 @@ engine/
 *.settings
 # Backups written by the engine's edit commands
 *.bak
+# Undo history kept by the local editor
+.reach-around-history/
 # Editors and OS
 .DS_Store
 *.swp

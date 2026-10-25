@@ -55,6 +55,10 @@ SET_KEYS: tuple[str, ...] = (
     *(f"theme.colors.{key}" for key in COLOR_KEYS),
 )
 
+# Dotted config keys that name an asset path. ``apply`` hands a changed value
+# of each to the caller's ``validate_slot``. Empty until the asset slots land.
+ASSET_KEYS: frozenset[str] = frozenset()
+
 
 class EditError(Exception):
     """A refused edit. The message is shown to the user as ``error: ...``."""
@@ -288,6 +292,25 @@ def _write_backup(path: Path, text: str, mode: int) -> Path:
     return backup
 
 
+def _dotted(data: dict[str, Any], key: str) -> tuple[bool, Any]:
+    cursor: Any = data
+    for part in key.split("."):
+        if not isinstance(cursor, dict) or part not in cursor:
+            return False, None
+        cursor = cursor[part]
+    return True, cursor
+
+
+def _check_slots(
+    validate: Callable[[str, Any], None], before: dict[str, Any], after: dict[str, Any]
+) -> None:
+    """Call ``validate`` for each asset key whose value the edit set or changed."""
+    for key in sorted(ASSET_KEYS):
+        present, value = _dotted(after, key)
+        if present and _dotted(before, key) != (True, value):
+            validate(key, value)
+
+
 def apply(
     config: Path,
     compute: Compute,
@@ -295,6 +318,7 @@ def apply(
     dry_run: bool,
     backup: bool,
     force_path: bool,
+    validate_slot: Callable[[str, Any], None] | None = None,
 ) -> Result:
     """Run one edit end to end. Raises ``EditError``; never half-writes.
 
@@ -321,6 +345,8 @@ def apply(
                 f"{path}: internal check failed: the edited file does not match "
                 "the requested change; nothing was written (please report this)"
             )
+        if validate_slot is not None:
+            _check_slots(validate_slot, raw, expected)  # raises EditError to refuse
         if dry_run:
             return Result(path, old, new, False, None)
         mode = stat.S_IMODE(os.fstat(lock).st_mode)
