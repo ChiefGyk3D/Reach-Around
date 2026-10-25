@@ -291,15 +291,16 @@ def guarded(
     path: str,
     headers: dict[str, str] | None = None,
     *,
-    token: str | None = "good",
+    auth: str = "session",
+    wrong: str | None = None,
     same_origin: bool = False,
     host: str | None = "default",
 ) -> Response:
     head: dict[str, str] = dict(headers or {})
-    if token == "good":
+    if wrong is not None:
+        head["X-RA-Token"] = wrong
+    elif auth == "session":
         head["X-RA-Token"] = ed.session.token
-    elif token is not None:
-        head["X-RA-Token"] = token
     body = b""
     if method == "POST":
         head["Content-Type"] = "application/json"
@@ -311,21 +312,15 @@ def guarded(
 
 
 @pytest.mark.parametrize(("method", "path"), GUARDED)
-def test_history_undo_redo_guard_matrix(
-    ed: Editor, method: str, path: str
-) -> None:
+def test_history_undo_redo_guard_matrix(ed: Editor, method: str, path: str) -> None:
     rename(ed, "One")
     before = tree_snapshot(ed.config.parent)
     port = ed.session.port
-    assert guarded(ed, method, path, token=None, same_origin=True).status == 401
-    assert (
-        guarded(ed, method, path, token="0" * 64, same_origin=True).status == 401
-    )
+    assert guarded(ed, method, path, auth="none", same_origin=True).status == 401
+    assert guarded(ed, method, path, wrong="0" * 64, same_origin=True).status == 401
     cross = {"Origin": "http://evil.example"}
     assert guarded(ed, method, path, cross).status == 403
-    assert (
-        guarded(ed, method, path, {"Sec-Fetch-Site": "cross-site"}).status == 403
-    )
+    assert guarded(ed, method, path, {"Sec-Fetch-Site": "cross-site"}).status == 403
     for host in (f"127.0.0.1:{port + 1}", f"evil.example:{port}", "localhost"):
         got = guarded(ed, method, path, same_origin=True, host=host)
         assert got.status == 421, host
