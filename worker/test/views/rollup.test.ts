@@ -62,7 +62,7 @@ async function insert(list: Raw[]) {
 
 const q = async <T>(sql: string) => (await DB.prepare(sql).all<T>()).results;
 const meta = async () => Object.fromEntries((await q<{ key: string; value: string }>("SELECT * FROM view_meta")).map((m) => [m.key, m.value]));
-const envOf = (over: Record<string, unknown> = {}) => ({ DB, TOP_SOURCES: "1000", ...over });
+const envOf = (over: Record<string, unknown> = {}) => ({ DB, TOP_SOURCES: "1000", MIN_CELL: "1", ...over });
 
 /** Small seeded PRNG so a failure is reproducible. */
 function prng(seed: number) {
@@ -112,6 +112,24 @@ function group<T extends object>(rows: T[], keyOf: (r: T) => string[], first: (r
     m.set(k, c);
   }
   return m;
+}
+
+/** A DB whose Nth batch() call throws; everything else passes through. */
+function failingBatch(n: number): D1Database {
+  let calls = 0;
+  return new Proxy(DB, {
+    get(t, p) {
+      if (p === "batch") {
+        return async (stmts: D1PreparedStatement[]) => {
+          calls += 1;
+          if (calls === n) throw new Error("simulated failure: person@example.test");
+          return t.batch(stmts);
+        };
+      }
+      const v = Reflect.get(t, p, t);
+      return typeof v === "function" ? v.bind(t) : v;
+    },
+  }) as D1Database;
 }
 
 const day = (ts: number) => new Date(ts).toISOString().slice(0, 10);
@@ -272,40 +290,30 @@ describe("rollup idempotency, resume and heartbeat", () => {
     const before = await snap();
     const spy = spyDb();
     const second = await rollupClosedDays(envOf({ DB: spy.DB }), NOW + 1000);
-    expect(second).toEqual({ days: 0, rows: 0 });
+    expect(second).toEqual({ days: 0, rows: 0, late: 0 });
     expect(await snap()).toBe(before);
-    expect(spy.calls.batch).toBe(0); // no aggregate write at all
+    expect(spy.calls.batch).toBe(2); // the discovery read and the heartbeat; no aggregate write at all
   });
 
-  it("an_interrupted_run_resumes_without_double_counting", async () => {
-    const raw = randomRows(21, 120).map((r) => ({ ...r, ts: D13 + (r.ts % DAY) }));
+  it("an_interrupted_run_writes_nothing_and_the_next_run_counts_the_day_once", async () => {
+    const raw = randomRows(21, 600).map((r) => ({ ...r, ts: D13 + (r.ts % DAY) }));
     await insert(raw);
-    const flaky = new Proxy(DB, {
-      get(t, p) {
-        if (p === "prepare") {
-          return (sql: string) =>
-            sql.startsWith("INSERT INTO view_rollup_log")
-              ? ({ bind: () => ({ run: async () => { throw new Error("simulated crash before the checkpoint"); } }) } as unknown as D1PreparedStatement)
-              : t.prepare(sql);
-        }
-        const v = Reflect.get(t, p, t);
-        return typeof v === "function" ? v.bind(t) : v;
-      },
-    }) as D1Database;
+    const flaky = failingBatch(3); // discovery, day read, then the write batch fails
     await expect(rollupClosedDays(envOf({ DB: flaky }), NOW)).rejects.toThrow();
-    // Partial aggregates may exist, but the day is not sealed.
+    // The day is one transaction: nothing is half written, nothing is sealed.
     expect(await q("SELECT * FROM view_rollup_log")).toEqual([]);
-    expect((await q("SELECT * FROM view_daily")).length).toBeGreaterThan(0);
+    expect(await q("SELECT * FROM view_daily")).toEqual([]);
     const m1 = await meta();
     expect(m1.rollup_err).toBe("db");
     expect(m1.rollup_last_ok).toBeUndefined();
+    expect(m1.rollup_lease).toBeUndefined(); // the lease is released even on failure
 
     await rollupClosedDays(envOf(), NOW + 5000);
-    const total = await q<{ v: number }>("SELECT SUM(views) AS v FROM view_daily");
-    expect(total[0]?.v).toBe(120);
-    expect((await q<{ v: number }>("SELECT SUM(views) AS v FROM view_dim_daily WHERE dim = 'os'"))[0]?.v).toBe(120);
-    expect((await q<{ v: number }>("SELECT SUM(views) AS v FROM view_geo_daily"))[0]?.v).toBe(120);
-    expect(await q("SELECT * FROM view_rollup_log")).toMatchObject([{ raw_views: 120, views: 120 }]);
+    for (const t of ["view_daily", "view_geo_daily"]) {
+      expect((await q<{ v: number }>(`SELECT SUM(views) AS v FROM ${t}`))[0]?.v).toBe(600);
+    }
+    expect((await q<{ v: number }>("SELECT SUM(views) AS v FROM view_dim_daily WHERE dim = 'os'"))[0]?.v).toBe(600);
+    expect(await q("SELECT * FROM view_rollup_log")).toMatchObject([{ raw_views: 600, views: 600 }]);
     expect((await meta()).rollup_err).toBe("none");
   });
 
@@ -328,13 +336,7 @@ describe("rollup idempotency, resume and heartbeat", () => {
     await insert([{ ts: D13 + 1 }]);
     await rollupClosedDays(envOf(), NOW);
     await insert([{ ts: D12 + 1 }]);
-    const broken = new Proxy(DB, {
-      get(t, p) {
-        if (p === "batch") return async () => { throw new Error("secret text must not be stored: person@example.test"); };
-        const v = Reflect.get(t, p, t);
-        return typeof v === "function" ? v.bind(t) : v;
-      },
-    }) as D1Database;
+    const broken = failingBatch(3);
     await expect(rollupClosedDays(envOf({ DB: broken }), NOW + 9999)).rejects.toThrow();
     const m = await meta();
     expect(m.rollup_last_ok).toBe(String(NOW));
@@ -370,24 +372,23 @@ describe("rollup budget", () => {
     expect(res.rows).toBeLessThanOrEqual(N * 9 + 1);
     // Tighter on real distributions: the random generator has few distinct values.
     expect(res.rows).toBeLessThan(N);
-    expect(spy.calls.rowsWritten).toBeLessThanOrEqual(res.rows + 5);
-    expect(spy.calls.rowsWritten).toBeGreaterThanOrEqual(res.rows - 1); // the log row is a plain run(), not part of a batch
+    expect(spy.calls.rowsWritten).toBeLessThanOrEqual(res.rows + 10); // heartbeat keys and the lease
+    expect(spy.calls.rowsWritten).toBeGreaterThanOrEqual(res.rows);
   });
 
-  it("writes_go_out_in_bounded_batches", async () => {
-    const r = prng(3);
+  it("a_day_costs_two_queries_and_is_one_write_transaction", async () => {
     const list: Raw[] = [];
     for (let i = 0; i < 400; i++) list.push({ ts: D13 + i, src_kind: "r", src: `h${i}.example.test`, city: `c${i}`, region: `r${i % 40}`, country: `C${i % 50}` });
     await insert(list);
-    void r;
     const sizes: number[] = [];
     const spy = spyDb((stmts) => {
       sizes.push(stmts.length);
       return stmts;
     });
-    await rollupClosedDays({ DB: spy.DB, TOP_SOURCES: "1000" }, NOW);
-    expect(Math.max(...sizes)).toBeLessThanOrEqual(25);
-    expect(sizes.length).toBeGreaterThan(2);
+    await rollupClosedDays({ DB: spy.DB, TOP_SOURCES: "1000", MIN_CELL: "1" }, NOW);
+    // discovery (2 statements), the day read (10), the day write (many), the heartbeat (2).
+    expect(sizes.length).toBe(4);
+    expect(sizes[2]).toBeGreaterThan(25);
   });
 });
 
@@ -472,13 +473,7 @@ describe("retention order", () => {
   it("when_the_rollup_fails_the_raw_rows_survive_the_purge_and_nothing_throws", async () => {
     const now = Date.now();
     await insert([{ ts: now - 9 * DAY }]);
-    const noRollup = new Proxy(DB, {
-      get(t, p) {
-        if (p === "batch") return async () => { throw new Error("down"); };
-        const v = Reflect.get(t, p, t);
-        return typeof v === "function" ? v.bind(t) : v;
-      },
-    }) as D1Database;
+    const noRollup = failingBatch(3);
     const pending: Promise<unknown>[] = [];
     const ctx = { waitUntil: (p: Promise<unknown>) => void pending.push(p) } as unknown as ExecutionContext;
     await worker.scheduled({} as ScheduledController, { DB: noRollup, SITE_HOST: "x.example.test", LINK_IDS: "[]", CLICK_LIMITER: fakeLimiter() }, ctx);
@@ -515,7 +510,7 @@ describe("retention order", () => {
             return {
               bind: (...a: unknown[]) =>
                 a[0] === stuck
-                  ? { run: async () => { throw new Error("stuck day"); } }
+                  ? t.prepare("INSERT INTO no_such_table_for_the_test VALUES (1)").bind()
                   : st.bind(...a),
             } as unknown as D1PreparedStatement;
           };
@@ -526,7 +521,7 @@ describe("retention order", () => {
     }) as D1Database;
     // An old rolled day (purgeable), the stuck day and a later day.
     await insert([{ ts: ageDay(10) }, { ts: D12 + 5 }, { ts: D13 + 5 }]);
-    await DB.prepare("INSERT INTO view_rollup_log VALUES (?, 'UTC', 1, 1, 0, 1, 1, 1, 0)").bind(day(ageDay(10))).run();
+    await DB.prepare("INSERT INTO view_rollup_log VALUES (?, 'UTC', 1, 1, 0, 1, 1, 1, 0, 1000000000000000)").bind(day(ageDay(10))).run();
     await expect(rollupClosedDays(envOf({ DB: failingDb }), NOW)).rejects.toThrow();
     const logged = (await q<{ day: string }>("SELECT day FROM view_rollup_log ORDER BY day")).map((r) => r.day);
     expect(logged).toContain("2027-03-13"); // the later day was still rolled
@@ -548,7 +543,7 @@ describe("retention order", () => {
   });
 
   it("aggregates_older_than_90_days_are_deleted", async () => {
-    await DB.prepare("INSERT INTO view_rollup_log VALUES ('2026-12-01','UTC',1,1,0,1,1,1,0), ('2027-03-10','UTC',1,1,0,1,1,1,0)").run();
+    await DB.prepare("INSERT INTO view_rollup_log VALUES ('2026-12-01','UTC',1,1,0,1,1,1,0,0), ('2027-03-10','UTC',1,1,0,1,1,1,0,0)").run();
     await DB.prepare("INSERT INTO view_geo_daily VALUES ('2026-12-01','UTC','US','','','h',1,0), ('2027-03-10','UTC','US','','','h',1,0)").run();
     await purgeViews({ DB }, NOW);
     expect((await q<{ day: string }>("SELECT day FROM view_rollup_log")).map((r) => r.day)).toEqual(["2027-03-10"]);

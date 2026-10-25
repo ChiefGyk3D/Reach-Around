@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+import { QueryMeter, meteredDb, queryBudget } from "./d1budget";
 import { handleClick, MAX_URL_LENGTH, type Env as ClickEnv } from "./click";
 import { purgeOldEvents } from "./retention";
 import { handleView, type ViewEnv } from "./view";
@@ -42,24 +43,38 @@ export default {
    */
   async scheduled(
     _controller: ScheduledController,
-    env: ClickEnv & { RAW_KEEP_DAYS?: string; GEO_LEVEL?: string; TOP_SOURCES?: string },
+    env: ClickEnv & {
+      RAW_KEEP_DAYS?: string;
+      GEO_LEVEL?: string;
+      TOP_SOURCES?: string;
+      MIN_CELL?: string;
+      ROLLUP_GRACE_HOURS?: string;
+      QUERY_BUDGET?: string;
+    },
     ctx: ExecutionContext,
   ): Promise<void> {
     ctx.waitUntil(
       (async () => {
         const now = Date.now();
+        // One meter for the whole invocation (Free allows 50 D1 queries, a
+        // batch counts as one); the rollup is held to half of it so the purge
+        // keeps the rest.
+        const budget = queryBudget(env.QUERY_BUDGET);
+        const meter = new QueryMeter(budget);
+        const whole = meteredDb(env.DB, meter);
+        const rollupDb = meteredDb(env.DB, meter.slice(Math.floor(budget / 2)));
         try {
-          await purgeOldEvents(env, now);
+          await purgeOldEvents({ ...env, DB: whole }, now);
         } catch {
           // Next run retries; nothing request-derived to report.
         }
         try {
-          await rollupClosedDays(env, now);
+          await rollupClosedDays({ ...env, DB: rollupDb }, now);
         } catch {
           // The heartbeat in view_meta records the failure class.
         }
         try {
-          await purgeViews(env, now);
+          await purgeViews({ ...env, DB: whole }, now);
         } catch {
           // Same.
         }
