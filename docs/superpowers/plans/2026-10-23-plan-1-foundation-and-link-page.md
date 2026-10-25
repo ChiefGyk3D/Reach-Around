@@ -19,7 +19,7 @@
 - Do not store IP addresses. At most a two-letter country code from Cloudflare headers.
 - No personal details of the maintainer (address, callsign, grid square, hostnames, machine identifiers, real emails) in the repository, examples, tests or logs. Examples use synthetic data and the placeholder callsign `N0CALL` if one is ever needed.
 - No secrets in the repository. Credentials come from the environment or a secrets manager.
-- CI calls git-your-ship-together reusable workflows pinned by commit with a version comment: `ChiefGyk3D/git-your-ship-together/.github/workflows/python-ci.yml@8fdb8d106b11aae0f37e893bb57e9bd8e8b0e7b7 # v1.24.0`. The gate job is named `CI green`.
+- CI calls git-your-ship-together reusable workflows pinned by commit with a version comment: `ChiefGyk3D/git-your-ship-together/.github/workflows/python-ci.yml@6f40107c2e05483f485452991e422f7f63886000 # v1.25.1`. The gate job is named `CI green`.
 - Every PR links its issue (`Refs #n` or `Closes #n`). Every task has an issue and a board card before work starts.
 - Versions are semantic. Tags and releases start with the first container image: `v0.1.0`. While alpha, versions are `0.x`.
 - Containers build from a `Containerfile`, run rootless as a non-root user, depend on no Docker socket, and pin base images by digest. Both `docker` and `podman` must build and run it.
