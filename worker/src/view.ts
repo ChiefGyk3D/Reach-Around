@@ -50,7 +50,9 @@
 //   Without a usable VIEW_HASH_SECRET or a parsable client address there is
 //   no keyed client identity, so nothing is recorded (same 204, no limiter
 //   call, no database call). The rate-limiter bindings are keyed by purpose-
-//   separated daily HMACs of the address, never by the raw address.
+//   separated HMACs of the address, never by the raw address. Those limiter
+//   keys come from a stable key with no day component (see ratekey.ts), so a
+//   client does not get a fresh allowance at midnight UTC.
 //
 // TIMING
 //   Every response is byte-identical, but latency depends on how far a
@@ -62,6 +64,7 @@ import { BOT_REASONS, classifyBot, uaSignals, type BotClass } from "./botclass";
 import { MAX_PATH_LENGTH, MAX_URL_LENGTH, originMatches } from "./click";
 import type { RateLimiter } from "./click";
 import { classifyUserAgent, primaryLanguage } from "./ua";
+import { limiterKey, secretBytes } from "./ratekey";
 import { padHour } from "./viewretention";
 
 export interface ViewEnv {
@@ -89,6 +92,8 @@ export interface ViewEnv {
 
 export const MAX_BODY = 256;
 const MAX_ID_LENGTH = 40;
+/** Width of the per-client cap hash. 64 bits keeps collisions between clients negligible. */
+const CAP_HASH_BITS = 64;
 const MAX_HOST_LENGTH = 80;
 const MAX_CITY_LENGTH = 60;
 const MAX_CITY_INPUT = 200;
@@ -107,7 +112,6 @@ const DEFAULT_HASH_BITS = 64;
 const MAX_HASH_BITS = 128;
 /** The body must arrive within this long or the request is dropped (same 204). */
 export const BODY_DEADLINE_MS = 2000;
-const MIN_SECRET_BYTES = 32;
 const HOUR_MS = 3_600_000;
 const MINUTE_MS = 60_000;
 
@@ -348,17 +352,6 @@ function utcDate(ms: number): string {
   return new Date(ms).toISOString().slice(0, 10);
 }
 
-function secretBytes(secret: string | undefined): Uint8Array | null {
-  if (typeof secret !== "string" || secret.length === 0 || secret.length > 4096) return null;
-  try {
-    const bin = atob(secret);
-    if (bin.length < MIN_SECRET_BYTES) return null;
-    return Uint8Array.from(bin, (c) => c.charCodeAt(0));
-  } catch {
-    return null;
-  }
-}
-
 let keyCache: { secret: string; date: string; key: CryptoKey } | null = null;
 
 /** HMAC key for one UTC day: HMAC(secret, "RA-UV1|" + date), cached per date. */
@@ -399,11 +392,11 @@ export async function visitorHash(key: CryptoKey, normalized: string, bits: numb
 }
 
 export interface Identity {
-  /** Key for VIEW_LIMITER (128-bit hex, purpose "lim"). */
+  /** Key for VIEW_LIMITER (128-bit hex, purpose "lim"; stable, does not rotate daily). */
   lim: string;
   /** Key for VIEW_SUSPECT_LIMITER (purpose "sus"). */
   sus: string;
-  /** Per-address cap key (purpose "cap", 32-bit hex), shared by bots and humans. */
+  /** Per-address cap key (purpose "cap", 64-bit hex), shared by bots and humans. */
   cap: string;
   /** Daily unique-visitor hash, or null when uniques are off. */
   uv: string | null;
@@ -418,8 +411,8 @@ function uvBits(raw: string | undefined): number {
  * The keyed identities of this request's address, or null when there is no
  * usable secret or the address does not parse (the caller then fails closed).
  * Each purpose has its own label so the values cannot be matched to one
- * another or to a stored visitor hash without the secret, and all rotate
- * with the UTC day. The raw address is a local here and in normalizeAddress;
+ * another or to a stored visitor hash without the secret. The visitor hash
+ * and the cap hash rotate with the UTC day; the limiter keys do not. The raw address is a local here and in normalizeAddress;
  * it is the only place the header is read.
  */
 export async function identityFor(
@@ -435,9 +428,9 @@ export async function identityFor(
   const flag = env.UV_ENABLED;
   const uvOn = !(typeof flag === "string" && !flagOn(flag));
   const [lim, sus, cap, uv] = await Promise.all([
-    visitorHash(key, `lim|${addr}`, 128),
-    visitorHash(key, `sus|${addr}`, 128),
-    visitorHash(key, `cap|${addr}`, 32),
+    limiterKey(secret, env.VIEW_HASH_SECRET, "lim", addr), // CONTROL:pv-limiter-key
+    limiterKey(secret, env.VIEW_HASH_SECRET, "sus", addr),
+    visitorHash(key, `cap|${addr}`, CAP_HASH_BITS),
     uvOn ? visitorHash(key, addr, uvBits(env.UV_BITS)) : Promise.resolve(null),
   ]);
   return { lim, sus, cap, uv };
