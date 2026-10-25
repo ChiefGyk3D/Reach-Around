@@ -7,14 +7,14 @@ editor). Both bind ``127.0.0.1`` only, on random ports. Nothing here opens a
 browser: the URL, with the session token in the fragment, goes to the terminal
 and nowhere else.
 
-Routes are limited to the shell, three static files, ``GET /__edit/api/state``
-and 404 for everything else. A refused or malformed request never writes and
-never produces a 5xx: the guard runs inside ``parse_request``, before any route.
+Routes are limited to the shell, the static files, ``GET /__edit/api/state``,
+``GET /__edit/api/version``, ``POST /__edit/api/op`` and 404 for everything
+else. A refused or malformed request never writes and never produces a 5xx:
+the guard runs inside ``parse_request``, before any route.
 """
 
 from __future__ import annotations
 
-import hashlib
 import io
 import json
 import math
@@ -41,6 +41,12 @@ from reach_around.editor.guard import (
     Guard,
     PreviewGuard,
     Verdict,
+)
+from reach_around.editor.service import (
+    MUTATIONS_PER_MINUTE,
+    RATE_WINDOW_SECONDS,
+    EditorService,
+    RouteError,
 )
 
 BIND_ADDRESS = "127.0.0.1"
@@ -293,6 +299,7 @@ class _Handler(BaseHTTPRequestHandler):
     """Shared plumbing: fixed error bodies, hardening headers, silent logging."""
 
     protocol_version = "HTTP/1.0"  # one request per connection, no keep-alive
+    body_read = False
     server_version = "reach-around-edit"
     sys_version = ""
 
@@ -349,6 +356,7 @@ class _Handler(BaseHTTPRequestHandler):
                 "error": {
                     "code": HTTPStatus(status).name.lower(),
                     "message": _MESSAGES.get(status, "The request was refused."),
+                    "path": "",
                 }
             }
         ).encode("ascii")
@@ -382,7 +390,7 @@ class _Handler(BaseHTTPRequestHandler):
         reader = self.rfile
         if isinstance(reader, _BoundedReader):
             reader.start_body()
-        if self.command != "POST":
+        if self.command != "POST" or self.body_read:
             return
         try:
             declared = int(self.headers.get("Content-Length", "0"))
@@ -484,23 +492,59 @@ class _EditorHandler(_Handler):
             name, kind = route
             self._send(200, self.owner.asset(name), kind)
         elif path == "/__edit/api/state":
-            self._state()
+            self._json_route(self._state)
+        elif path == "/__edit/api/version":
+            self._json_route(lambda: self.owner.service.version())
         else:
             self._refuse(404)
 
     def _post(self) -> None:
-        # No write route exists yet: an authenticated POST is a 404 and no more.
-        self._refuse(404)
-
-    def _state(self) -> None:
-        data = read_config_bytes(self.owner.config)
-        if data is None:
+        if self.route_path() == "/__edit/api/op":
+            self._json_route(self._op)
+        else:
             self._refuse(404)
-            return
-        body = json.dumps(
-            {"hash": hashlib.sha256(data).hexdigest(), "config": {}}
-        ).encode("ascii")
-        self._send(200, body, "application/json")
+
+    def _json_route(self, action: Callable[[], dict[str, Any]]) -> None:
+        try:
+            self._send_json(200, action())
+        except RouteError as error:
+            self._send_json(error.status, error.body(), error.headers)
+
+    def _send_json(
+        self,
+        status: int,
+        data: dict[str, Any],
+        extra: list[tuple[str, str]] | None = None,
+    ) -> None:
+        body = json.dumps(data).encode("ascii")
+        self._send(status, body, "application/json", extra)
+
+    def _preview_host(self) -> str:
+        guard = self.owner.guard
+        host = guard.allowed_host(self.headers.get("Host")) if guard else None
+        return host.rsplit(":", 1)[0] if host else BIND_ADDRESS
+
+    def _state(self) -> dict[str, Any]:
+        session = self.owner
+        return session.service.state(self._preview_host(), session.preview_port)
+
+    def _op(self) -> dict[str, Any]:
+        session = self.owner
+        session.touch()
+        wait = session.service.rate_check()
+        if wait is not None:
+            raise RouteError(
+                429,
+                "too_many_requests",
+                "Too many changes in a minute. Wait a moment and try again.",
+                headers=[("Retry-After", str(wait))],
+            )
+        length = int(self.headers.get("Content-Length", "0"))
+        body = self.rfile.read(length)
+        self.body_read = True
+        if len(body) != length:
+            raise RouteError(400, "bad_json", "The request body was cut short.")
+        return session.service.run_op(body, self._preview_host(), session.preview_port)
 
 
 class _PreviewHandler(_Handler):
@@ -556,6 +600,8 @@ class EditorSession:
         read_timeout: float = READ_TIMEOUT_SECONDS,
         header_deadline: float = HEADER_DEADLINE_SECONDS,
         body_deadline: float = BODY_DEADLINE_SECONDS,
+        mutation_limit: int = MUTATIONS_PER_MINUTE,
+        mutation_window: float = RATE_WINDOW_SECONDS,
     ) -> None:
         if not (math.isfinite(idle_seconds) and 0 < idle_seconds <= MAX_IDLE_SECONDS):
             raise EditorError(
@@ -568,6 +614,13 @@ class EditorSession:
         self.config = config.resolve()
         if read_config_bytes(self.config) is None:
             raise EditorError(f"cannot read the config file {config}")
+        self.service = EditorService(
+            self.config,
+            read_config_bytes,
+            clock=clock,
+            mutation_limit=mutation_limit,
+            mutation_window=mutation_window,
+        )
         self.idle_seconds = idle_seconds
         self.read_timeout = read_timeout
         self.header_deadline = header_deadline
