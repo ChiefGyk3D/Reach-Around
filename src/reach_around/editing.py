@@ -649,6 +649,166 @@ def move_link(
     return _finish(text, out), expected
 
 
+LINK_FIELDS: tuple[str, ...] = (
+    "title",
+    "url",
+    "subtitle",
+    "icon",
+    "affiliate",
+    "featured",
+)
+_LINK_ORDER = (
+    "id",
+    "title",
+    "url",
+    "subtitle",
+    "icon",
+    "image",
+    "image_alt",
+    "affiliate",
+    "featured",
+    "show_from",
+    "show_until",
+)
+_LINK_BOOLS = ("affiliate", "featured")
+_LINK_OPTIONAL = ("subtitle", "icon")
+
+
+def _value_end_line(value: Node) -> int:
+    """The last line a value occupies (a block value ends before its mark)."""
+    mark = value.end_mark
+    return int(mark.line if mark.column > 0 else mark.line - 1)
+
+
+def _set_field(
+    lines: list[str],
+    node: MappingNode,
+    span: _Item,
+    order: tuple[str, ...],
+    field: str,
+    shown: str | None,
+    what: str,
+) -> None:
+    """Replace, add or (``shown`` is None) delete one scalar key of an item.
+
+    Only the lines of that key change. A replaced value keeps any comment after
+    it; a new key goes right after the last key that normally comes before it,
+    at the item's own indentation.
+    """
+    found = _get(node, field)
+    if found is not None:
+        key_node, old = found
+        simple = (
+            isinstance(old, ScalarNode)
+            and old.value != ""
+            and old.style in (None, '"', "'")
+            and old.start_mark.line == old.end_mark.line == key_node.start_mark.line
+            and lines[old.start_mark.line][: key_node.start_mark.column].strip()
+            in ("", "-")
+        )
+        if not simple:
+            raise EditError(f"{what} has an empty or multi-line value; edit it by hand")
+        row = old.start_mark.line
+        if shown is None:
+            if row == span.first:
+                raise EditError(
+                    f"{what} is on the line that starts the item; edit it by hand"
+                )
+            del lines[row]
+            return
+        lines[row] = (
+            lines[row][: old.start_mark.column]
+            + shown
+            + lines[row][old.end_mark.column :]
+        )
+        return
+    if shown is None:
+        return
+    earlier = order[: order.index(field)]
+    after = span.end
+    ends = [
+        _value_end_line(pair[1])
+        for name in earlier
+        if (pair := _get(node, name)) is not None
+    ]
+    if ends:
+        after = max(ends)
+    if not lines[after].endswith("\n"):
+        lines[after] += "\n"
+    lines[after + 1 : after + 1] = [f"{' ' * span.keycol}{field}: {shown}\n"]
+
+
+def _raw_link(raw: dict[str, Any], link_id: str) -> dict[str, Any]:
+    for tab in raw["tabs"]:
+        for block in tab["blocks"]:
+            if block["id"] == link_id:
+                found: dict[str, Any] = block
+                return found
+            for inner in block.get("links", []):
+                if inner["id"] == link_id:
+                    found = inner
+                    return found
+    raise EditError(f"no link with id {link_id!r}")
+
+
+def parse_link_field(field: str, value: str | bool | None) -> tuple[str | None, Any]:
+    """The YAML text and Python value of one link field; text None clears it."""
+    if field not in LINK_FIELDS:
+        raise EditError(
+            f"{field!r} cannot be set on a link; allowed fields: "
+            + ", ".join(LINK_FIELDS)
+        )
+    if field in _LINK_BOOLS:
+        if isinstance(value, bool):
+            flag = value
+        elif value in ("true", "false"):
+            flag = value == "true"
+        else:
+            raise EditError(f"{field} must be true or false")
+        return ("true" if flag else "false"), flag
+    if field in _LINK_OPTIONAL and (value is None or value == ""):
+        return None, None
+    if not isinstance(value, str):
+        raise EditError(f"{field} must be text")
+    check_text(value, field)
+    return scalar_text(value), value
+
+
+def set_link_field(
+    text: str,
+    raw: dict[str, Any],
+    *,
+    link_id: str,
+    field: str,
+    value: str | bool | None,
+) -> tuple[str, dict[str, Any]]:
+    """Set one scalar field of the link ``link_id``; only that line changes.
+
+    ``subtitle`` and ``icon`` are cleared by an empty value. ``affiliate`` and
+    ``featured`` take true or false; false on a key that is absent writes
+    nothing, so the file does not fill up with defaults.
+    """
+    shown, python_value = parse_link_field(field, value)
+    lines = text.splitlines(keepends=True)
+    holder, index = _find_link(_compose(text), link_id)
+    items = _items(text, lines, holder.node, holder.floor)
+    node = holder.node.value[index]
+    if not isinstance(node, MappingNode):  # _items already refused anything else
+        raise EditError(f"{link_id!r} is not a block mapping")
+    if python_value is False and _get(node, field) is None:
+        return text, copy.deepcopy(raw)
+    _set_field(
+        lines, node, items[index], _LINK_ORDER, field, shown, f"{link_id}.{field}"
+    )
+    expected = copy.deepcopy(raw)
+    target = _raw_link(expected, link_id)
+    if shown is None:
+        target.pop(field, None)
+    else:
+        target[field] = python_value
+    return _finish(text, lines), expected
+
+
 def parse_set_value(key: str, value: str) -> tuple[str, Any]:
     """The YAML text and the Python value for ``set KEY VALUE``."""
     if key not in SET_KEYS:
