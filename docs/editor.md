@@ -102,3 +102,29 @@ A success is `200` with `{"state": ..., "history": {"label", "hash",
 Every editor response carries a strict `Content-Security-Policy` (no
 `unsafe-*`), `X-Frame-Options: DENY`, `nosniff`, `no-referrer` and
 `Cache-Control: no-store`. The server logs nothing about requests.
+
+## The forms
+
+The page has one form per group of settings. Nothing is saved until you press that form's Save button.
+
+| Form | Fields |
+|---|---|
+| Creator | name, title |
+| Look | color mode (auto, light, dark), background dim (0 to 0.9), the six theme colors |
+| Each link | title, address, subtitle, icon, "affiliate link", "feature this link" |
+| Each platform item | handle, address, display name, count label, follower count, count date |
+
+Everything else in the config is shown read-only under "All settings" and is changed in a text editor. Adding and removing links or platform items, uploads, undo and redo come in later versions.
+
+How a save works:
+
+- Save compares each box with the saved value and sends one change for each box you edited, one after the other, each with the hash the last reply gave as `base` and the old value as `expect`. Boxes you did not touch send nothing. The page is rebuilt from the reply only after a successful save, so typing is never wiped under your hands.
+- A refused value (`422`) shows the server's message next to that box, marks it invalid, moves focus to it and keeps what you typed. Earlier boxes of the same save stay saved.
+- If the field changed in the file while you were editing (`409 stale`), nothing is saved, the forms show what the file holds now, and the page says so.
+- Too many changes (`429`) says how many seconds to wait, from `Retry-After`.
+- If the site does not build, a note above the forms shows the build error from the state.
+- Optional boxes (subtitle, icon, name, label, count, count date) are removed from the file when left empty. A title, address or handle cannot be empty, and a color or the creator title cannot be removed once set; the server refuses and says so.
+- Links and platform items move with the Move up and Move down buttons (drag and drop is not part of this version). The button keeps focus where it moved to, and the move is announced ("Moved X to position 2 of 5").
+- Every control has a visible label and a hint or error tied to it with `aria-describedby`; errors use text, not color alone. Results are spoken through the polite live region.
+
+The code is `store.js` (state, the operation bodies and the saver, with no DOM), `view.js` (the forms; values go in only with `textContent`, `.value` and a fixed list of attributes) and `app.js` (wiring). Tests: `tests/editor/test_forms_sources.py` (source guards), `test_forms_logic.py` with `forms_logic.mjs` (Node, stubs and a small fake DOM) and `test_forms_contract.py` (the shipped modules against a real editor server). The Node tests need `node` 20 or later and are skipped without it; with `CI` set they fail instead.
