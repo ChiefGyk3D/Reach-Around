@@ -48,11 +48,9 @@ engine repository for the reasoning.
    output folder (pass `--manifest FILE` to keep it; the file must be outside
    `--out`).
 
-   **Needs the next engine release.** `--manifest` is newer than the 0.1.0
-   image that `engine.lock` still pins, so `validate.sh` and the deploy
-   workflow fail against 0.1.0 with a message saying so. Update all three
-   lines of `engine.lock` to the first release that has `--manifest` before
-   you use this template.
+   **Needs engine v0.2.0 or later.** `--manifest` and `reach-around check` first shipped
+   in v0.2.0, and `engine.lock` pins that release. If you pin an older image,
+   `validate.sh` and the deploy workflow fail with a message saying so.
 
    Published files under `static/` and your images carry a content hash in
    their names (`site.3fa9c1d2ab4e5f607182.css`), and the built `_headers` caches them for

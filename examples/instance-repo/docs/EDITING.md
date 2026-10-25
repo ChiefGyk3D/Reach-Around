@@ -153,12 +153,10 @@ it either way. The pull-request check is the safety net, not the schema.
 
 ## Fast commands (after engine PR #109 lands)
 
-Engine PR #109 adds commands that edit `site.yaml` safely, keep your comments
-and formatting, validate the result and write a `.bak` first. **They do not
-exist in the pinned engine yet**: `engine.lock` pins v0.1.0, and these commands
-arrive in a later release. When you have updated `engine.lock` to a release
-that includes them, run them through the container the same way
-`scripts/validate.sh` does, or install the package locally. The shape, from
+The engine has commands that edit `site.yaml` safely, keep your comments
+and formatting, validate the result and write a `.bak` first (they first shipped
+in v0.2.0, which `engine.lock` pins). Run them through the container the same
+way `scripts/validate.sh` does, or install the package locally. The shape, from
 the pull request description (check `reach-around --help` for the real names
 before relying on them):
 
