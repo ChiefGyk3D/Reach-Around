@@ -1,0 +1,97 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# Refresh follower counts once a day and propose the new numbers.json as a
+# pull request. Runs on a schedule and by hand. Setup (the secrets, what each
+# source needs) is in README.md, "Daily follower counts".
+#
+# Design: a pull request, not a direct commit. A push made with the run's own
+# token does not start other workflows, so a direct commit to main would never
+# deploy; and main is protected. You merge the pull request, that push runs
+# deploy.yml, and a reviewer approves the deploy as usual. The branch
+# `counts/refresh` is rebuilt from main on each run, so there is at most one
+# open pull request.
+#
+# The keys reach one step only, the one that runs the engine, through env. No
+# step that runs anything else sees them. There is no environment and no
+# Cloudflare token here.
+name: Refresh counts
+
+on:
+  schedule:
+    # Once a day, 07:17 UTC (off the top of the hour, when runs start late).
+    - cron: "17 7 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: refresh-counts
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    name: Refresh counts
+    # A manual run can pick another branch; refuse it.
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write # to push the counts/refresh branch
+      pull-requests: write # to open the pull request
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Check the repository for files that must not be committed
+        run: scripts/check-repo.sh
+
+      - name: Check the config in plain language
+        run: scripts/check-config.sh
+
+      # The only step with the keys. A key that is not set is left out and its
+      # source is skipped. The engine keeps a suspect value out and fails only
+      # that source; the others still refresh. Nothing here overrides that.
+      - name: Refresh the counts
+        id: refresh
+        env:
+          YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
+          TWITCH_CLIENT_ID: ${{ secrets.TWITCH_CLIENT_ID }}
+          TWITCH_CLIENT_SECRET: ${{ secrets.TWITCH_CLIENT_SECRET }}
+        run: scripts/refresh-counts.sh --workdir "$RUNNER_TEMP/counts"
+
+      # No keys in this step. The token is used for one push and the pull
+      # request, and is not written to disk.
+      - name: Propose the new numbers
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          if [ -z "$(git status --porcelain -- numbers.json)" ]; then
+            echo "The numbers did not change."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -C counts/refresh
+          git add numbers.json
+          git commit -m "Refresh follower counts"
+          auth="$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)"
+          git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $auth" \
+            push --force origin counts/refresh
+          open="$(gh pr list --head counts/refresh --base main --state open \
+            --json number --jq length)"
+          if [ "$open" = 0 ]; then
+            gh pr create --base main --head counts/refresh \
+              --title "Refresh follower counts" \
+              --body "Daily follower counts from the Refresh counts workflow. Merge to publish them."
+          fi
+
+      # The good numbers are already proposed above; now make the run red so
+      # a broken source is noticed.
+      - name: Fail if a source failed
+        if: steps.refresh.outputs.source_failed == 'true'
+        run: |
+          echo "::error::At least one count source failed; see the Refresh the counts step. Numbers that did refresh were proposed."
+          exit 1

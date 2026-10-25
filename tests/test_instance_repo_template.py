@@ -41,6 +41,8 @@ def workflow_files() -> list[Path]:
 JOB_PERMISSIONS: dict[str, dict[str, str]] = {
     "comment": {"contents": "read", "pull-requests": "write"},
     "ci-green": {},
+    # Pushes the counts/refresh branch and opens one pull request.
+    "refresh": {"contents": "write", "pull-requests": "write"},
 }
 
 
@@ -85,7 +87,12 @@ def violations(text: str) -> list[str]:
                 and job_name == "deploy"
                 and CF_ENV_VAR in step.get("env", {})
             )
-            if "secrets." in step_text and not token_step:
+            counts_step = (
+                job_name == "refresh"
+                and step.get("name") == "Refresh the counts"
+                and CF_ENV_VAR not in step_text
+            )
+            if "secrets." in step_text and not (token_step or counts_step):
                 found.append(f"{label}: secret outside a wrangler step")
             if CF_ENV_VAR in step_text and not token_step:
                 found.append(f"{label}: token name outside a wrangler step")
@@ -108,6 +115,8 @@ def test_the_template_files_exist() -> None:
         "scripts/write-result.py",
         ".github/workflows/deploy.yml",
         ".github/workflows/preview.yml",
+        ".github/workflows/refresh-counts.yml",
+        "scripts/refresh-counts.sh",
     ):
         assert (TEMPLATE / rel).is_file(), rel
 
@@ -133,8 +142,12 @@ def test_the_template_config_names_the_schema() -> None:
     assert first.startswith("# yaml-language-server: $schema=https://")
 
 
-def test_both_workflows_are_collected() -> None:
-    assert [p.name for p in workflow_files()] == ["deploy.yml", "preview.yml"]
+def test_all_workflows_are_collected() -> None:
+    assert [p.name for p in workflow_files()] == [
+        "deploy.yml",
+        "preview.yml",
+        "refresh-counts.yml",
+    ]
 
 
 @pytest.mark.parametrize("path", workflow_files(), ids=lambda p: p.name)
