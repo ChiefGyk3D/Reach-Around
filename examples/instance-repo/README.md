@@ -17,10 +17,10 @@ engine repository for the reasoning.
 | `media/` | Your images (avatar, favicon, background). |
 | `overrides/` | Optional. Template and `custom.css` overrides; create it when you need it. |
 | `engine.lock` | The pinned engine: container image by digest, plus the matching source commit for the Worker. |
-| `.github/workflows/preview.yml` | On a pull request: build the preview and explain any error in plain language. Deploys nothing. |
-| `.github/workflows/deploy.yml` | On a push to `main`: validate, then deploy to Cloudflare after a reviewer approves. |
+| `.github/workflows/preview.yml` | On a pull request: check the config, build a preview artifact, and comment on the pull request with the result in plain language and the list of changed blocks. Also lints the scripts and workflows (GYST `bash-ci`). Deploys nothing. Its gate job is named `CI green`. |
+| `.github/workflows/deploy.yml` | On a push to `main`: check, validate, then deploy to Cloudflare after a reviewer approves. |
 | `renovate.json` | Keeps `engine.lock` and the Actions pins current. |
-| `scripts/` | `validate.sh` (the same check CI runs), `check-repo.sh`, `read-lock.sh`, `deploy-local.sh`. |
+| `scripts/` | `check-config.sh` (the plain-language config check), `validate.sh` (the build CI runs), `preview-comment.sh` (writes the pull request comment), `check-repo.sh`, `read-lock.sh`, `deploy-local.sh`. |
 | `docs/EDITING.md` | How to change the page without touching code. |
 
 ## Adopt it
@@ -90,7 +90,15 @@ On GitHub: **Settings > Environments > New environment** named `production`.
   disagree.
 
 Also turn on **Settings > Code security > Secret scanning** and push
-protection, and protect `main` (require the `Preview` check, no force pushes).
+protection, and protect `main` (require the `CI green` check from the `Preview` workflow, no
+force pushes). The `Preview` workflow calls a reusable workflow from the
+public `ChiefGyk3D/git-your-ship-together` repository; if your organization
+restricts which actions may run, allow that repository.
+
+The preview comment needs no setup: the `comment` job uses the run's own
+token with `pull-requests: write` and nothing else. Pull requests from forks
+get the check and the artifact but no comment, because a fork's token cannot
+write.
 
 ## The token
 
@@ -115,8 +123,9 @@ from Doppler per command (see the comments at the top of that script).
 2. Renovate opens one pull request, "reach-around engine", that changes the
    three lines in `engine.lock` together: image tag and digest, and the source
    commit.
-3. The `Preview` workflow builds your site with the new engine. A config that
-   the new version rejects shows up here, in plain language, not in production.
+3. The `Preview` workflow checks and builds your site with the new engine. A
+   config that the new version rejects shows up in the pull request comment,
+   in plain language, not in production.
 4. You read the engine's `CHANGELOG.md`, merge, and `Deploy` runs.
 
 Renovate must be enabled for the repository (the Renovate GitHub App, or your

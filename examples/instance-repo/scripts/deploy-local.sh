@@ -39,7 +39,10 @@ for arg in "$@"; do
   case "$arg" in
     --dry-run) dry_run=1 ;;
     --yes) assume_yes=1 ;;
-    -*) echo "unknown option: $arg" >&2; exit 2 ;;
+    -*)
+      echo "unknown option: $arg" >&2
+      exit 2
+      ;;
     *) settings="$arg" ;;
   esac
 done
@@ -61,10 +64,13 @@ unset CLOUDFLARE_API_TOKEN
 DOPPLER_CONFIG="${DOPPLER_CONFIG:-prd}"
 ZONE_NAME="${ZONE_NAME:-}"
 
-fail() { echo "error: $*" >&2; exit 1; }
+fail() {
+  echo "error: $*" >&2
+  exit 1
+}
 
 for name in ENGINE_DIR PRIVATE_DIR CLOUDFLARE_ACCOUNT_ID PAGES_PROJECT \
-            D1_DATABASE_ID RATELIMIT_NAMESPACE_ID SITE_HOST DOPPLER_PROJECT; do
+  D1_DATABASE_ID RATELIMIT_NAMESPACE_ID SITE_HOST DOPPLER_PROJECT; do
   [ -n "${!name:-}" ] || fail "$name is not set in $settings"
 done
 
@@ -86,16 +92,17 @@ check ENGINE_DIR '^/[A-Za-z0-9._/-]+$'
 
 [ -d "$ENGINE_DIR/worker" ] || fail "ENGINE_DIR has no worker/ directory"
 case "$PRIVATE_DIR" in
-  "$instance_dir"|"$instance_dir"/*|"$ENGINE_DIR"|"$ENGINE_DIR"/*)
-    fail "PRIVATE_DIR must be outside this repository and the engine checkout" ;;
+  "$instance_dir" | "$instance_dir"/* | "$ENGINE_DIR" | "$ENGINE_DIR"/*)
+    fail "PRIVATE_DIR must be outside this repository and the engine checkout"
+    ;;
 esac
 command -v jq >/dev/null || fail "jq is required"
 
 # The Worker code must be the release this repository pins.
 want_ref="$("$instance_dir/scripts/read-lock.sh" ENGINE_REF)"
 have_ref="$(git -C "$ENGINE_DIR" rev-parse HEAD)"
-[ "$have_ref" = "$want_ref" ] \
-  || fail "ENGINE_DIR is at $have_ref but engine.lock pins $want_ref"
+[ "$have_ref" = "$want_ref" ] ||
+  fail "ENGINE_DIR is at $have_ref but engine.lock pins $want_ref"
 
 umask 077
 mkdir -p "$PRIVATE_DIR"
@@ -112,9 +119,9 @@ rm -rf "$site_out" "$manifest_dir"
 # 2. Link ids come from the build manifest, so the Worker accepts exactly the
 #    links the page publishes.
 link_ids="$(jq -c '.links | keys' "$manifest")"
-printf '%s' "$link_ids" \
-  | grep -Eq '^\[("[a-z0-9-]{1,40}"(, ?)?)+\]$' \
-  || fail "the manifest produced no valid link ids"
+printf '%s' "$link_ids" |
+  grep -Eq '^\[("[a-z0-9-]{1,40}"(, ?)?)+\]$' ||
+  fail "the manifest produced no valid link ids"
 
 # 3. Generate the wrangler config. Paths that wrangler resolves relative to
 #    the config file become absolute, because the file lives elsewhere.
@@ -125,11 +132,11 @@ sed \
   -e "s|^namespace_id = \"[^\"]*\"|namespace_id = \"${RATELIMIT_NAMESPACE_ID}\"|" \
   -e "s|^SITE_HOST = \"[^\"]*\"|SITE_HOST = \"${SITE_HOST}\"|" \
   -e "s|^LINK_IDS = '[^']*'|LINK_IDS = '${link_ids}'|" \
-  "$ENGINE_DIR/worker/wrangler.toml" > "$wrangler_toml"
+  "$ENGINE_DIR/worker/wrangler.toml" >"$wrangler_toml"
 route_note="none (clicks are not counted)"
 if [ -n "$ZONE_NAME" ]; then
   printf '\n[[routes]]\npattern = "%s/e/*"\nzone_name = "%s"\n' \
-    "$SITE_HOST" "$ZONE_NAME" >> "$wrangler_toml"
+    "$SITE_HOST" "$ZONE_NAME" >>"$wrangler_toml"
   route_note="$SITE_HOST/e/* in zone $ZONE_NAME"
 fi
 grep -qF "$D1_DATABASE_ID" "$wrangler_toml" || fail "database id not written"

@@ -4,33 +4,104 @@ You do not need to run anything on your computer. Edit `site.yaml` on GitHub,
 open a pull request, read the result, merge. Your change goes live after a
 reviewer approves the deploy.
 
-## The safe loop
+## Edit from your phone or the GitHub web editor
 
-1. **Edit** `site.yaml` (steps below).
-2. **Propose**: GitHub offers "Create a new branch and start a pull request".
-   Choose that, not "commit directly to main".
-3. **Read the result.** In a minute the `Preview` check finishes. Open it,
-   then **Summary**:
-   - "The site builds": the change is valid. Download the `site-preview`
-     artifact to look at the pages.
-   - "The site did not build": the box says which setting is wrong, for
-     example `theme.mode: Input should be 'auto', 'light' or 'dark'`. Edit
-     the file again on the same branch; the check re-runs.
-4. **Merge** the pull request. The `Deploy` workflow starts and waits for the
-   reviewer to approve the `production` environment. After approval the page
-   is live.
+Everything below works in a phone browser, in the GitHub mobile app, and in
+the web editor on a computer. You never run anything. A change goes live only
+after a pull request is merged and a reviewer approves the deploy, so you
+cannot break the live page by trying.
 
-A mistake never reaches the site: a broken config cannot build, and nothing
-deploys without the approval click.
+1. **Open the file.** In your repository, tap `site.yaml`, then the pencil
+   icon (on a phone, the three dots, then Edit file).
 
-## Editing on GitHub (computer)
+   > [Screenshot placeholder: the repository file list with `site.yaml`
+   > highlighted and the pencil icon circled.]
 
-Open the repository, click `site.yaml`, click the pencil. Keep the spaces at
-the start of each line exactly as they are: YAML uses indentation to show what
-belongs to what.
+2. **Make the change.** Change a title, a URL or a date, or copy a whole link
+   (see "To add a link" below). Keep the spaces at the start of each line
+   exactly as they are.
 
-To add a link, find the tab and block list and copy a whole existing link,
-which looks like this, then change the text:
+   > [Screenshot placeholder: the editor with one `title:` line changed.]
+
+3. **Save to a new branch, not to `main`.** Tap Commit changes. Choose
+   "Create a new branch for this commit and start a pull request", give the
+   branch any short name (for example `new-podcast-link`), and tap Propose
+   changes.
+
+   > [Screenshot placeholder: the commit dialog with the new-branch option
+   > selected.]
+
+4. **Open the pull request.** Tap Create pull request. Nothing is live yet.
+
+   > [Screenshot placeholder: the Open a pull request page.]
+
+5. **Read the comment.** Within a few minutes a comment appears on the pull
+   request, headed with one of these:
+
+   - **The preview is ready.** Your change is valid and the site builds. The
+     comment lists the blocks you changed ("Tab "Links": block "newsletter"
+     changed.") and links to the `preview` download. Download it, unzip it and
+     open `index.html` to look at the pages.
+   - **This change has a problem.** Each problem is one sentence that names the
+     tab, the block and the field, then says how to fix it. Nothing was built.
+     Go back to step 1 on the same branch and fix it; the comment updates
+     after every save.
+   - **The settings are valid, but the site did not build.** Usually a picture
+     file named in `site.yaml` is not in the `media` folder. Open the run
+     details link.
+   - **The check could not run.** A problem with the check itself, not with
+     your change. Open the run details link, or ask whoever maintains the
+     repository.
+
+   > [Screenshot placeholder: a pull request comment headed "The preview is
+   > ready" with the list of changed blocks.]
+   >
+   > [Screenshot placeholder: a pull request comment headed "This change has a
+   > problem" with one numbered sentence.]
+
+6. **Merge to deploy.** When the checks are green (the one named `CI green`),
+   tap Merge pull request, then Confirm. The `Deploy` workflow starts and
+   waits for a reviewer to approve the `production` environment (Actions,
+   the `Deploy` run, Review deployments). After approval the page is live.
+
+   > [Screenshot placeholder: the green merge button, and the Review
+   > deployments dialog.]
+
+A mistake never reaches the site: a config the check rejects cannot be built,
+and nothing deploys without the approval click. The comment never repeats
+what you typed, only where the problem is, so pasting a private value in the
+wrong place does not publish it in the comment (it is still in the file's
+history in your repository, so remove it and rotate it if it was real).
+
+### Reading the problems
+
+The numbers in a message count from 1 (`links[2]` is the second link). "Tab
+"Links"" is the tab's title, and "block "newsletter"" is the block's `id`.
+
+| The comment says | What it means | What to do |
+|---|---|---|
+| `field "url": the web address must start with https://` | The link starts with `http://`, or has no scheme. | Write the full address, such as `https://example.com/page`. |
+| `field "url": the web address must not contain a user name or password` | The link has `name:password@` in it. | Remove everything before the `@`. Never put a password in a link. |
+| `field "title": is missing` (or `field "id"`, `field "url"`) | A required line is not there. | Add the line, indented like the lines around it. |
+| `field "titel": is not a setting Reach Around knows` | A misspelled or unknown setting name. | Fix the spelling, or delete the line. |
+| `(name not shown)` instead of a setting name | The name does not look like a setting name. It may have been pasted by mistake, so it is not repeated. | Delete that line. If it was a real token or password, revoke it and make a new one. |
+| `field "id": must be lowercase letters, digits and hyphens only` | The `id` has capitals, spaces or other characters. | Use something like `my-link`. |
+| `The id "home" is used more than once` | Two tabs, blocks or links share an `id`. | Give one of them a different `id`. |
+| `links to a tab that does not exist` | A `tab:` link names a tab that is not in the file. | Use `tab:` and the `id` of one of your tabs. |
+| `Setting "theme.mode": must be one of: auto, light or dark` | A setting that accepts only some words got another one. | Use one of the words listed. |
+| `is too long (at most 200 characters)` | Text over the limit. | Shorten it. |
+| `the date must be written YYYY-MM-DD` | A date like `March 3`. | Write `2027-03-03`. |
+| `must be a path to a picture file in this repository` | A picture path has `..`, a leading `/`, or the wrong ending. | Upload the picture to `media/` and write `media/photo.png`. |
+| `Line 14: The file is not valid YAML` | The indentation or a colon is wrong near that line. | Compare the line with the ones around it. Text with a colon in it needs quotes. |
+| `The file has a setting written twice` | The same key appears twice at one level. | Keep one. |
+| `The file uses an alias` (or anchor) | `&name` or `*name` is not allowed. | Write the value out where it is used. |
+| `The check could not run` | The check itself failed. | See "When something goes wrong" below. |
+
+## Editing on a computer
+
+Open the repository, click `site.yaml`, click the pencil, and follow the same
+steps. To add a link, find the tab and block list and copy a whole existing
+link, which looks like this, then change the text:
 
 ```yaml
       - id: newsletter
@@ -46,14 +117,9 @@ which looks like this, then change the text:
 
 Text with a colon or a leading symbol needs quotes: `title: "Gear: 2027"`.
 
-## Editing on a phone
-
-The GitHub mobile app and the mobile site both edit files: open `site.yaml`,
-tap the pencil (or the three dots, then Edit file), change a line, then
-"Commit changes" and pick the new-branch option. Typing indentation on a phone
-is error-prone, so on a phone prefer small edits to text you can already see
-(a title, a URL, a date) and copy-paste for new links. The preview check will
-catch a slip before anything goes live.
+On a phone, typing indentation is error-prone. Prefer small edits to text you
+can already see (a title, a URL, a date) and copy-paste for new links. The
+comment will catch a slip before anything goes live.
 
 ## Help from your editor
 
@@ -100,7 +166,10 @@ photos first. See `media/README.md`.
 
 ## When something goes wrong
 
-- The check says the site did not build: read the box, fix that line.
+- The comment says there is a problem: fix the line it names and save again.
+- No comment appeared: open the pull request's Checks tab and the `Preview`
+  run. Pull requests from forks get no comment. If the run says "the pinned
+  engine image is too old", `engine.lock` needs the newer engine release.
 - You merged and nothing changed: the deploy is waiting for approval. Open
   Actions, then the `Deploy` run, then Review deployments.
 - You need to undo: revert the pull request on GitHub (Revert button on the

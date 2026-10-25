@@ -16,8 +16,8 @@ else
 fi
 
 bad="$(printf '%s\n' "$files" | grep -E \
-  '(^|/)(\.env(\..*)?|wrangler\.deploy\.toml|.*\.bak|.*\.settings|id_(rsa|ed25519)|.*\.(pem|key|p12))$' \
-  || true)"
+  '(^|/)(\.env(\..*)?|wrangler\.deploy\.toml|.*\.bak|.*\.settings|id_(rsa|ed25519)|.*\.(pem|key|p12))$' ||
+  true)"
 
 if [ -n "$bad" ]; then
   echo "These files must not be in the repository:" >&2

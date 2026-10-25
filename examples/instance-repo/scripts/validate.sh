@@ -27,18 +27,36 @@ manifest=""
 summary=""
 while [ $# -gt 0 ]; do
   case "$1" in
-    --out) out="${2:?--out needs a directory}"; shift 2 ;;
-    --manifest) manifest="${2:?--manifest needs a file path}"; shift 2 ;;
-    --summary) summary="${2:?--summary needs a file}"; shift 2 ;;
-    *) echo "unknown option: $1" >&2; exit 2 ;;
+    --out)
+      out="${2:?--out needs a directory}"
+      shift 2
+      ;;
+    --manifest)
+      manifest="${2:?--manifest needs a file path}"
+      shift 2
+      ;;
+    --summary)
+      summary="${2:?--summary needs a file}"
+      shift 2
+      ;;
+    *)
+      echo "unknown option: $1" >&2
+      exit 2
+      ;;
   esac
 done
 
 runtime=""
 for candidate in docker podman; do
-  if command -v "$candidate" >/dev/null 2>&1; then runtime="$candidate"; break; fi
+  if command -v "$candidate" >/dev/null 2>&1; then
+    runtime="$candidate"
+    break
+  fi
 done
-[ -n "$runtime" ] || { echo "error: Docker or Podman is required" >&2; exit 1; }
+[ -n "$runtime" ] || {
+  echo "error: Docker or Podman is required" >&2
+  exit 1
+}
 
 image="$("$here/scripts/read-lock.sh" ENGINE_IMAGE)"
 
@@ -60,10 +78,16 @@ manifest_name="$(basename "$manifest")"
 mkdir -p "$(dirname "$manifest")"
 manifest_dir="$(cd "$(dirname "$manifest")" && pwd)"
 case "$manifest_dir/" in
-  "$out"/*) echo "error: --manifest must be outside --out ($out)" >&2; exit 2 ;;
+  "$out"/*)
+    echo "error: --manifest must be outside --out ($out)" >&2
+    exit 2
+    ;;
 esac
 case "$out/" in
-  "$manifest_dir"/*) echo "error: --out must not sit inside the manifest directory" >&2; exit 2 ;;
+  "$manifest_dir"/*)
+    echo "error: --out must not sit inside the manifest directory" >&2
+    exit 2
+    ;;
 esac
 
 log="$(mktemp)"

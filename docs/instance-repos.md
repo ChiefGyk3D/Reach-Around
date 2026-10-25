@@ -127,11 +127,45 @@ does.
 | | `preview.yml` (pull request) | `deploy.yml` (push to `main`, manual) |
 |---|---|---|
 | Trigger | `pull_request` only, never `pull_request_target` | `push` to `main`, `workflow_dispatch` |
-| Permissions | `contents: read` | `contents: read` |
+| Permissions | `contents: read`; only the `comment` job also has `pull-requests: write` | `contents: read` |
 | Secrets, environment | none | `production`, reviewer required |
-| Builds with | the pinned image, no network | the pinned image, no network |
-| Output | plain-language job summary, preview artifact | site artifact, then Pages and Worker deploy |
-| Token | not present | wrangler steps only |
+| Runs | `reach-around check`, then the build, with the pinned image and no network; GYST `bash-ci` over the scripts and workflows | `reach-around check`, then the build, with the pinned image and no network |
+| Output | a `preview` artifact (the built site) and a pull request comment | site artifact, then Pages and Worker deploy |
+| Token | only the run's own token, only in the `comment` job | wrangler steps only |
+| Gate | `CI green` (needs every other job) | the `production` approval |
+| Concurrency | one preview per pull request; a new push cancels the old | one deploy at a time, never cancelled |
+
+### What the pull request sees
+
+On every push to a pull request the `preview` job runs the engine's
+`reach-around check` against `site.yaml` and against the base branch's copy.
+If the config is valid it builds the site and uploads it as the artifact
+`preview`; either way it writes a comment text. The `comment` job, which has
+the only write permission and checks out no code, posts that text (or updates
+its own earlier comment). The comment says:
+
+- valid: the tabs and blocks that changed, and a link to the `preview`
+  artifact (download, unzip, open `index.html`);
+- not valid: each problem as one sentence naming the tab, the block and the
+  field, with a fix, and no build;
+- valid but the build failed: that the settings are fine and the run log
+  says which file is missing;
+- the check could not run: usually an engine in `engine.lock` that is too old.
+
+The check never prints a value from `site.yaml`, only the tab title, the block
+id and the setting name, so a token or an address pasted in the wrong place
+is not echoed into a comment. The comment job reads one text file, cut to
+a fixed size, from the preview job and runs none of the change's code. A pull
+request from a fork gets the check and the artifact but no comment.
+
+A Pages preview deployment (a URL per pull request) is not used: it would need
+the Cloudflare token in a job that runs the change's code, which the template
+keeps apart on purpose. The artifact is the preview.
+
+**Not yet exercised on GitHub.** The workflows pass actionlint, zizmor and the
+tests in this repository; the comment step (`gh pr comment --edit-last
+--create-if-none`) and the artifact link have not run on a real pull request.
+Check the first one.
 
 The link manifest is never inside the published site directory. The build
 writes it to a separate directory (`validate.sh --manifest FILE`, mounted at
@@ -139,10 +173,10 @@ writes it to a separate directory (`validate.sh --manifest FILE`, mounted at
 the deploy job downloads it into an empty directory, checks that it holds
 exactly one regular file, and reads the link ids in a step with no secrets.
 
-**Engine version.** `--manifest` arrived after the published 0.1.0 image, so
-the template needs the next engine release. `engine.lock` stays on 0.1.0 until
-that release exists, and `validate.sh` says so plainly if the pinned image
-does not know `--manifest`.
+**Engine version.** `--manifest` and `check` arrived after the published 0.1.0
+image, so the template needs the next engine release. `engine.lock` stays on
+0.1.0 until that release exists, and `validate.sh` and `check-config.sh` say
+so plainly if the pinned image does not know the option or the command.
 
 Every Action is pinned by commit with a version comment, using the same pins
 as this repository's workflows. A test in this repository

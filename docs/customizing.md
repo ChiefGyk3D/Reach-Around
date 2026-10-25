@@ -906,8 +906,32 @@ Details and limits:
    the path you give with `--manifest`. It refuses a `--manifest` path inside
    `--out`, because everything in `--out` gets published.
 
-3. **Check.** There is no separate check command yet; the build is the check.
-   Then read the result:
+3. **Check.**
+
+   ```
+   reach-around check --config site.yaml
+   reach-around check --config site.yaml --format json
+   reach-around check --config site.yaml --against old-site.yaml
+   ```
+
+   `check` validates the config without building and says what is wrong in
+   short sentences that name the tab, the block and the field, each with a
+   fix:
+
+   ```
+   site.yaml has 1 problem.
+   1. Tab "Links", block "newsletter", field "url": the web address must start with https://. Fix: Write the full address, for example https://example.com/page.
+   ```
+
+   It never prints a value from your file, only the tab title, the block id
+   and the setting name (a name that does not look like a setting name is
+   shown as `(name not shown)`, so a secret pasted in the wrong place is not
+   echoed). The exit status is 0 when the config is valid and 2 when it is not.
+   Counts such as `links[2]` start at 1. `--against FILE` also lists which
+   tabs and blocks differ from another config, by name only. It checks the
+   config, not the files it points at: a missing picture still fails the
+   build. The private-instance template runs it on every pull request; see
+   [instance-repos.md](instance-repos.md). Then read the result:
 
    - open `out/index.html` or the preview and click through every tab;
    - `grep -n '<script' out/*.html out/*/*.html` should show only

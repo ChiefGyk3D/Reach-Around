@@ -16,10 +16,16 @@ case "$key" in
   ENGINE_IMAGE) shape='^[a-z0-9./_-]+:[A-Za-z0-9._-]+@sha256:[0-9a-f]{64}$' ;;
   ENGINE_REPO) shape='^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$' ;;
   ENGINE_REF) shape='^[0-9a-f]{40}$' ;;
-  *) echo "usage: $0 ENGINE_IMAGE|ENGINE_REPO|ENGINE_REF" >&2; exit 2 ;;
+  *)
+    echo "usage: $0 ENGINE_IMAGE|ENGINE_REPO|ENGINE_REF" >&2
+    exit 2
+    ;;
 esac
 
-[ -f "$lock" ] || { echo "error: engine.lock not found" >&2; exit 1; }
+[ -f "$lock" ] || {
+  echo "error: engine.lock not found" >&2
+  exit 1
+}
 
 # Take the text after "KEY=" up to the first space (a trailing comment).
 value="$(sed -n "s/^${key}=\([^ ]*\).*$/\1/p" "$lock")"
@@ -27,6 +33,9 @@ if [ "$(printf '%s\n' "$value" | grep -c .)" -ne 1 ]; then
   echo "error: engine.lock must set ${key} exactly once" >&2
   exit 1
 fi
-printf '%s' "$value" | grep -Eq "$shape" \
-  || { echo "error: ${key} in engine.lock has the wrong shape" >&2; exit 1; }
+printf '%s' "$value" | grep -Eq "$shape" ||
+  {
+    echo "error: ${key} in engine.lock has the wrong shape" >&2
+    exit 1
+  }
 printf '%s\n' "$value"

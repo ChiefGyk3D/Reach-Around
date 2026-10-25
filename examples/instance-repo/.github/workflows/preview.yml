@@ -1,9 +1,23 @@
 # SPDX-License-Identifier: Apache-2.0
 #
-# Pull requests: build the preview and report the result in plain language in
-# the job summary. Nothing is deployed and no secret or environment is used.
-# This is `pull_request`, never `pull_request_target`: the change under review
-# is the only thing that runs, and it runs with a read-only token.
+# Pull requests: check the change, build a preview, and comment on the pull
+# request in plain language. Nothing is deployed and no secret or environment
+# is used. This is `pull_request`, never `pull_request_target`: the change
+# under review is the only thing that runs, and it runs with a read-only
+# token.
+#
+# Three jobs and a gate.
+#   shell    GYST bash-ci: shellcheck, shfmt, actionlint and zizmor over this
+#            repository's scripts and workflows.
+#   preview  contents: read only. Checks site.yaml with the pinned engine
+#            (`check` names the tab, block and field of every problem and never
+#            prints a value), builds the site, uploads it as the `preview`
+#            artifact, and writes the comment text to a second artifact.
+#   comment  the only job with `pull-requests: write`. It checks out nothing
+#            and runs none of the change's code: it downloads the comment text
+#            and posts it. Skipped for pull requests from forks, whose token
+#            cannot write.
+#   ci-green the gate to require in branch protection.
 name: Preview
 
 on:
@@ -13,45 +27,159 @@ on:
 permissions:
   contents: read
 
+# A new push to the pull request cancels the older preview.
 concurrency:
   group: preview-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
+  shell:
+    name: Shell and workflow lint
+    uses: ChiefGyk3D/git-your-ship-together/.github/workflows/bash-ci.yml@8fdb8d106b11aae0f37e893bb57e9bd8e8b0e7b7 # v1.24.0
+    permissions:
+      contents: read
+    with:
+      shfmt-args: "-i 2 -ci"
+
   preview:
     name: Build the preview
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
       contents: read
+    # No `environment` and no secrets here, on purpose.
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
+      # The base branch's site.yaml, to list which blocks this change touches.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: base
+          persist-credentials: false
+
       - name: Check the repository for files that must not be committed
         run: scripts/check-repo.sh
 
-      # On success or failure this writes a plain-language note to the job
-      # summary; on failure it also fails the job.
-      - name: Build the site with the pinned engine
-        run: >-
-          scripts/validate.sh --out "$RUNNER_TEMP/site-preview"
-          --manifest "$RUNNER_TEMP/preview-manifest/manifest.json"
-          --summary "$GITHUB_STEP_SUMMARY"
-
-      - name: Say what happens next
+      # The check records its status instead of failing here, so the later
+      # steps can still write the comment. The last step of the job fails it.
+      - name: Check the config in plain language
+        id: check
         run: |
-          {
-            echo
-            echo "Nothing was deployed. Download the \`site-preview\` artifact from"
-            echo "this run to look at the pages. Merging to \`main\` deploys, after"
-            echo "a reviewer approves."
-          } >> "$GITHUB_STEP_SUMMARY"
+          set +e
+          mkdir -p "$RUNNER_TEMP/preview-comment"
+          against=()
+          if [ -f base/site.yaml ]; then against=(--against base/site.yaml); fi
+          scripts/check-config.sh ${against[@]+"${against[@]}"} \
+            --out "$RUNNER_TEMP/preview-comment/check.txt"
+          echo "status=$?" >> "$GITHUB_OUTPUT"
 
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      # Only when the check passed. Same rule: record the status, fail last.
+      - name: Build the site with the pinned engine
+        id: build
+        if: steps.check.outputs.status == '0'
+        run: |
+          set +e
+          scripts/validate.sh --out "$RUNNER_TEMP/preview-site" \
+            --manifest "$RUNNER_TEMP/preview-manifest/manifest.json"
+          echo "status=$?" >> "$GITHUB_OUTPUT"
+
+      - name: Upload the built site as the preview
+        id: upload
+        if: steps.build.outputs.status == '0'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: site-preview
-          path: ${{ runner.temp }}/site-preview
+          name: preview
+          path: ${{ runner.temp }}/preview-site
           if-no-files-found: error
           retention-days: 7
+
+      - name: Write the pull request comment
+        if: ${{ !cancelled() }}
+        env:
+          CHECK_STATUS: ${{ steps.check.outputs.status }}
+          BUILD_STATUS: ${{ steps.build.outputs.status }}
+          ARTIFACT_URL: ${{ steps.upload.outputs.artifact-url }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          scripts/preview-comment.sh \
+            --check-status "${CHECK_STATUS:-3}" --build-status "${BUILD_STATUS}" \
+            --check "$RUNNER_TEMP/preview-comment/check.txt" \
+            --artifact-url "$ARTIFACT_URL" --run-url "$RUN_URL" \
+            --out "$RUNNER_TEMP/preview-comment/comment.md"
+          cat "$RUNNER_TEMP/preview-comment/comment.md" >> "$GITHUB_STEP_SUMMARY"
+
+      # Its own artifact, one file, so the comment job reads exactly that.
+      - name: Keep the comment text for the comment job
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: preview-comment
+          path: ${{ runner.temp }}/preview-comment/comment.md
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: Fail the job if the config or the build was not good
+        if: ${{ !cancelled() && (steps.check.outputs.status != '0' || steps.build.outputs.status != '0') }}
+        run: |
+          echo "::error::The preview did not pass. The pull request comment says what to fix."
+          exit 1
+
+  comment:
+    name: Comment on the pull request
+    needs: preview
+    # Same-repository pull requests only: a fork's token cannot write.
+    if: ${{ !cancelled() && github.event.pull_request.head.repo.full_name == github.repository }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      pull-requests: write  # to post the preview comment, and nothing else
+    # No checkout: nothing from the change runs in this job. It only moves one
+    # text file, cut to a fixed size, from the preview job to the comment.
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: preview-comment
+          path: ${{ runner.temp }}/comment-in
+
+      - name: Post or update the comment
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -eu
+          dir="$RUNNER_TEMP/comment-in"
+          file="$dir/comment.md"
+          [ "$(find "$dir" -mindepth 1 | wc -l)" = 1 ] \
+            || { echo "::error::the comment artifact must hold exactly one file"; exit 1; }
+          if [ -f "$file" ] && [ ! -L "$file" ]; then
+            :
+          else
+            echo "::error::the comment artifact is not a regular file"
+            exit 1
+          fi
+          [ "$(head -n 1 "$file")" = "<!-- reach-around-preview -->" ] \
+            || { echo "::error::the comment text has the wrong first line"; exit 1; }
+          head -c 60000 "$file" > "$RUNNER_TEMP/comment-out.md"
+          gh pr comment "$PR_NUMBER" --body-file "$RUNNER_TEMP/comment-out.md" \
+            --edit-last --create-if-none
+
+  ci-green:
+    name: CI green
+    if: ${{ always() }}
+    needs: [shell, preview, comment]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Every job passed or was deliberately skipped
+        env:
+          RESULTS: ${{ toJSON(needs.*.result) }}
+        run: |
+          set -eu
+          echo "needs: $RESULTS"
+          printf '%s' "$RESULTS" | jq -e 'all(. == "success" or . == "skipped")' >/dev/null \
+            || { echo "::error::a job failed or was cancelled"; exit 1; }
