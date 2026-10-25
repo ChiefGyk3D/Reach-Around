@@ -85,7 +85,7 @@ def test_symlinked_history_dir_is_refused(tmp_path: Path, doc: Doc) -> None:
     elsewhere = tmp_path / "elsewhere"
     elsewhere.mkdir()
     history_dir(doc).symlink_to(elsewhere, target_is_directory=True)
-    with pytest.raises(HistoryError, match="symlink"):
+    with pytest.raises(HistoryError, match="is a symlink"):
         History(doc.path).record_write("v0\n", "v1\n", "x")
     assert list(elsewhere.iterdir()) == []
 
@@ -101,6 +101,15 @@ def test_symlinked_snapshot_file_is_not_followed(tmp_path: Path, doc: Doc, hist:
     assert isinstance(out, Refusal) and out.code == "snapshot_unreadable"
     assert victim.read_text() == "secret\n"
     assert doc.text == "v1\n"
+
+
+def test_history_dir_owned_by_someone_else_is_refused(
+    doc: Doc, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    history_dir(doc).mkdir(mode=0o700)
+    monkeypatch.setattr(os, "geteuid", lambda: os.stat(doc.path).st_uid + 1)
+    with pytest.raises(HistoryError, match="not owned by you"):
+        History(doc.path).record_write("v0\n", "v1\n", "x")
 
 
 def test_history_dir_that_is_a_file_is_refused(doc: Doc) -> None:
@@ -184,6 +193,18 @@ def test_restore_anyway_snapshots_current_first(doc: Doc, hist: History) -> None
     assert any(sha("outside\n")[:8] in p.name for p in history_dir(doc).iterdir())
     assert isinstance(hist.redo(doc.text, doc.write), Restored) and doc.text == "v2\n"
     assert isinstance(hist.redo(doc.text, doc.write), Restored) and doc.text == "outside\n"
+
+
+def test_restore_anyway_clears_redo_like_any_new_operation(doc: Doc, hist: History) -> None:
+    edit(hist, doc, "v1\n")
+    edit(hist, doc, "v2\n")
+    assert isinstance(hist.undo(doc.text, doc.write), Restored)  # now at v1, v2 is redo
+    doc.write("outside\n")
+    assert isinstance(hist.restore_anyway(doc.text, doc.write), Restored)
+    assert doc.text == "v0\n"
+    assert isinstance(hist.redo(doc.text, doc.write), Restored) and doc.text == "v1\n"
+    assert isinstance(hist.redo(doc.text, doc.write), Restored) and doc.text == "outside\n"
+    assert isinstance(hist.redo(doc.text, doc.write), Refusal)
 
 
 def test_restore_anyway_snapshot_survives_a_failed_write(doc: Doc, hist: History) -> None:
@@ -400,6 +421,20 @@ def test_concurrent_writers_keep_index_consistent(doc: Doc) -> None:
     assert len(on_disk) == len(nums)  # no orphans
 
 
+def test_losing_the_folder_creation_race_is_fine(
+    doc: Doc, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    real = os.mkdir
+
+    def racing(name: str, mode: int = 0o777, *, dir_fd: int | None = None) -> None:
+        real(name, mode, dir_fd=dir_fd)  # the other writer wins ...
+        raise FileExistsError(name)  # ... and we are told so
+
+    monkeypatch.setattr(os, "mkdir", racing)
+    History(doc.path).record_write("v0\n", "v1\n", "x")
+    assert (history_dir(doc) / "index.json").is_file()
+
+
 def test_lock_wait_is_bounded(doc: Doc, hist: History, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(eh, "LOCK_TIMEOUT", 0.2)
     edit(hist, doc, "v1\n")
@@ -419,6 +454,11 @@ def test_lock_wait_is_bounded(doc: Doc, hist: History, monkeypatch: pytest.Monke
 
 def test_ignore_line() -> None:
     assert eh.IGNORE_LINE == f"{eh.HISTORY_DIRNAME}/"
+
+
+def test_instance_template_ignores_the_history_folder() -> None:
+    template = Path(__file__).resolve().parents[1] / "examples/instance-repo/.gitignore"
+    assert eh.IGNORE_LINE in template.read_text().splitlines()
 
 
 def test_gitignore_untouched_without_a_work_tree(tmp_path: Path) -> None:
@@ -456,6 +496,6 @@ def test_gitignore_symlink_is_not_followed(tmp_path: Path) -> None:
     (tmp_path / ".gitignore").symlink_to(target)
     cfg = tmp_path / "site.yaml"
     cfg.write_text("v0\n")
-    with pytest.raises(HistoryError, match="symlink"):
+    with pytest.raises(HistoryError, match="is a symlink"):
         eh.ensure_gitignore(cfg)
     assert target.read_text() == "keep\n"

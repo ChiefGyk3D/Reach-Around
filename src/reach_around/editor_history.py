@@ -270,14 +270,17 @@ class History:
             except FileNotFoundError:
                 if not create:
                     return None
-                os.mkdir(HISTORY_DIRNAME, 0o700, dir_fd=parent)
-            else:
-                if stat.S_ISLNK(info.st_mode):
-                    raise HistoryError(
-                        f"{self.directory}: the history folder is a symlink; refusing"
-                    )
-                if not stat.S_ISDIR(info.st_mode):
-                    raise HistoryError(f"{self.directory}: not a directory; refusing")
+                try:
+                    os.mkdir(HISTORY_DIRNAME, 0o700, dir_fd=parent)
+                except FileExistsError:
+                    pass  # another writer made it first; checked just below
+                info = os.stat(HISTORY_DIRNAME, dir_fd=parent, follow_symlinks=False)
+            if stat.S_ISLNK(info.st_mode):
+                raise HistoryError(
+                    f"{self.directory}: the history folder is a symlink; refusing"
+                )
+            if not stat.S_ISDIR(info.st_mode):
+                raise HistoryError(f"{self.directory}: not a directory; refusing")
             try:
                 fd = os.open(
                     HISTORY_DIRNAME,
