@@ -289,7 +289,7 @@ through standard input, so it appears neither on screen nor in the process
 list:
 
 ```
-doppler run --project reach-around --config stg --only-secrets CLOUDFLARE_API_TOKEN -- \
+doppler run --project reach-around --config ci --only-secrets CLOUDFLARE_API_TOKEN -- \
   sh -c 'printf "header = \"Authorization: Bearer %s\"\n" "$CLOUDFLARE_API_TOKEN" \
     | curl -sS -K - https://api.cloudflare.com/client/v4/user/tokens/verify \
     | jq "{success, status: .result.status, expires_on: .result.expires_on}"'
