@@ -1,5 +1,23 @@
 {
   "$defs": {
+    "Analytics": {
+      "additionalProperties": false,
+      "description": "Count page views through the Worker route. Off by default.",
+      "properties": {
+        "page_views": {
+          "default": false,
+          "title": "Page Views",
+          "type": "boolean"
+        },
+        "route": {
+          "default": "/e/v/",
+          "title": "Route",
+          "type": "string"
+        }
+      },
+      "title": "Analytics",
+      "type": "object"
+    },
     "BlueskySource": {
       "additionalProperties": false,
       "properties": {
@@ -1420,6 +1438,13 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
   "properties": {
+    "analytics": {
+      "$ref": "#/$defs/Analytics",
+      "default": {
+        "page_views": false,
+        "route": "/e/v/"
+      }
+    },
     "creator": {
       "$ref": "#/$defs/Creator"
     },
