@@ -335,10 +335,120 @@ config has no `[[routes]]` entry, so `wrangler deploy` does not manage routes
 and does not remove yours. (If you later set `ZONE_NAME`, wrangler will try to
 create the same route; remove the hand-made one first if it complains.)
 
+## Caching and stale files
+
+The rule: **a page you change shows at once, and a file is cached for a year
+only because its name changes whenever its content does.**
+
+| Class | Files | `Cache-Control` |
+|---|---|---|
+| Hashed | everything under `static/` (CSS, JS, icons, fonts) and every image or font file your config names, for example `static/site.3fa9c1d2ab.css`, `media/mascot.73e9847dc8.svg` | `public, max-age=31536000, immutable` |
+| Stable | `index.html` and every page, `404.html`, `robots.txt`, and a root-level `apple-touch-icon.png` or `favicon.ico` (a file a browser or crawler asks for by name) | `public, max-age=0, must-revalidate` |
+
+The hash is the first ten hex digits of the SHA-256 of the file's final bytes.
+CSS is hashed after its `url()` references are rewritten to the hashed names,
+so changing one icon renames the stylesheet that uses it, and the page that
+links the stylesheet changes with it. Nothing else is renamed. Because HTML is
+revalidated on every request, a returning visitor gets the new page, which
+names the new files, which are not in any cache: a miss, by construction. The
+old files stay at their old names for any page still open.
+
+**How Cloudflare Pages applies `_headers`.** Read from the Pages docs
+(Configuration > Headers): every rule whose pattern matches a URL applies, a
+header set by two matching rules is joined with a comma, `! Header` detaches a
+header an earlier rule set, a splat (`*`) matches greedily, and a file may hold
+at most 100 rules. A catch-all revalidate rule plus a narrower immutable rule
+would therefore send both values for a hashed file. So the build uses no
+catch-all: the immutable patterns (`/static/*`, and a `/<folder>/*` for each
+folder of your images when every file in it is hashed, otherwise one exact rule
+per file) and the revalidate patterns (each page at its folder and `index.html`
+URL, `404.html`, `robots.txt`, stable files) are listed so that no URL matches
+both, and no rule relies on a detach. A URL in neither list, such as an unknown
+path, gets the host default, which is also `max-age=0, must-revalidate`. A test
+checks the no-overlap property on every built example. The build stops with a
+clear message if a site would need more than 100 rules.
+
+**Not verified by the tests.** They check the `_headers` text, not a live
+Pages response. After the first deploy, check one of each class:
+
+```
+curl -sI https://YOUR-HOST/ | grep -i cache-control
+curl -sI https://YOUR-HOST/static/<the hashed css name from the page> | grep -i cache-control
+```
+
+If the zone's **Browser Cache TTL** setting is a fixed value, Cloudflare can
+raise `max-age` on files it caches by extension (CSS, JS, images, `robots.txt`).
+That is how a stale four-hour window can appear on a file. Hashed files do not
+care, since their name changes; for the stable files set Browser Cache TTL to
+**Respect Existing Headers**.
+
+### If a file is stale anyway
+
+- A **hashed** file cannot be stale: a different name is a different URL. If a
+  page looks wrong, hard-reload once; the page links the right names.
+- A **stable** file (a page, `robots.txt`, `404.html`) is revalidated, so it is
+  at most one request behind. If the zone setting above holds an old copy, purge
+  that URL (dashboard: Caching > Configuration > Purge Cache > Custom Purge).
+- A file you **removed** from the build (the first deploy published a
+  `/manifest.json` that later builds no longer have) was seen still served from
+  the edge for hours on the live test site (issue #155). Purge it by URL, or use
+  the optional step below.
+
+### The optional purge step
+
+This is a backstop for paths that already exist at the edge. Nothing depends on
+it. The deploy workflow runs it only when both of these are set in the `test`
+environment, and skips it with a notice otherwise:
+
+| Name | Kind | Value |
+|---|---|---|
+| `CLOUDFLARE_PURGE_TOKEN` | secret | an API token with exactly one permission: **Zone > Cache Purge > Purge**, limited to **one zone** (Zone Resources: Include > Specific zone > your zone). Not the deploy token, and it can do nothing else. |
+| `ZONE_ID` | variable | the zone id (dashboard > the zone's Overview, right-hand column). Not a secret. |
+
+Create the token under My Profile > API Tokens > Create Token > Custom token.
+Keep it in Doppler or as a GitHub secret, never in git or a chat:
+
+```
+doppler secrets set CLOUDFLARE_PURGE_TOKEN --project reach-around --config stg
+```
+
+For the GitHub workflow, add it as an environment secret on `test`
+(Settings > Environments > test > Add secret) and `ZONE_ID` as an environment
+variable. The token is in the last step's environment only, and the script gives
+it to `curl` on standard input as a header file, so it is never on a command
+line or in a log.
+
+How it works:
+
+1. The `build` job writes `site-out.assets.json` beside the site (never in it): every
+   published path with its SHA-256, size and class (`hashed` or `stable`). It is
+   uploaded as the artifact `site-assets-inventory`, kept 90 days.
+2. The same job downloads that artifact from the **latest successful** earlier
+   run (`gh run list` and `gh run download`) and runs
+   `reach-around deploy-purge-list --previous OLD --current NEW`. The list has
+   the paths that were removed, the stable files whose bytes changed, and always
+   `/`, every page, `/404.html` and `/robots.txt`. A changed hashed file needs
+   no purge, since its new name is a new URL. With no earlier deployment (the
+   first run), or an unreadable inventory, the list is empty and the step
+   reports a notice.
+3. After the Pages publish, `.github/scripts/purge-cache.sh` posts the list to
+   `POST https://api.cloudflare.com/client/v4/zones/{ZONE_ID}/purge_cache` as
+   `{"files": [...]}`, 30 URLs per request (the script's own limit; the current
+   Cloudflare docs allow 100 for a single-file purge), https only, with the token
+   in the `Authorization` header. It checks `"success": true` in each response.
+4. A failure is a warning annotation and a line in the job summary. It never
+   fails the deploy.
+
+To run the comparison by hand: build twice and run
+`reach-around deploy-purge-list --previous old.assets.json --current new.assets.json`.
+The inventory comes from `build`; `--assets-inventory PATH` moves it (it is
+refused inside `--out`, like `--manifest`).
+
 ## Troubleshooting
 
 | Symptom | Likely cause | What to do |
 |---|---|---|
+| A file looks old after a deploy | A removed path still cached at the edge, or the zone's Browser Cache TTL holds a stable file | See "Caching and stale files": purge the URL, set Browser Cache TTL to Respect Existing Headers, or set up the optional purge token. |
 | The custom domain serves old or different content | The domain is attached to a Worker, not the Pages project; or the deploy went to a preview because the production branch is not `main` | See "Pages or Worker?" and "Production branch". Check the newest deployment is tagged Production. |
 | Route rejected: "No access to the specified resource" | The token lacks Workers Routes: Edit or Zone: Read on that zone, or it is an account-owned token, which cannot carry zone permissions | Use a user token with the zone permissions (see "Token type"), or leave `ZONE_NAME` unset and add the route by hand. |
 | `d1 migrations apply` says there is nothing to apply | Every migration is already recorded in the database | Normal on a repeat deploy. To check, run `wrangler d1 migrations list DB --remote --config wrangler.deploy.toml`. |
@@ -357,12 +467,16 @@ jobs:
    and uploads `site-out` as an artifact. The build also writes the link
    manifest to `site-out.manifest.json`, beside the site folder and never
    inside it, so Pages cannot publish it. It goes up as a second artifact,
-   `site-manifest`.
+   `site-manifest`. The assets inventory (`site-out.assets.json`) is written
+   the same way and uploaded as `site-assets-inventory`; the job also compares
+   it with the last deployment's to build the optional purge list.
 2. **`deploy`** waits for `build`, then waits for a reviewer to approve the
    `test` environment. It downloads both artifacts (the configuration check warns when `LINK_IDS`
    and `site-out.manifest.json` disagree), installs the Worker
    dependencies with `npm ci --ignore-scripts`, applies D1 migrations,
-   deploys the Worker, and publishes the site with `wrangler pages deploy`.
+   deploys the Worker, publishes the site with `wrangler pages deploy`, and,
+   when `CLOUDFLARE_PURGE_TOKEN` and `ZONE_ID` are set, purges the changed paths
+   (see "Caching and stale files").
 
 Why two jobs: `pip install` and `npm ci` run code from third-party
 dependencies. Neither runs anywhere the Cloudflare token exists. The token is

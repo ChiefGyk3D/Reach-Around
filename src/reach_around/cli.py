@@ -18,6 +18,7 @@ from reach_around.config import ConfigError, load_site_config
 from reach_around.config.numbers import Numbers, load_numbers
 from reach_around.preview import PreviewError, serve
 from reach_around.site.build import build_site, manifest_json
+from reach_around.site.inventory import InventoryEntry, inventory_json
 from reach_around.site.visibility import today_in
 
 _OVERRIDES_HELP = "directory with templates/ and custom.css that override the defaults"
@@ -43,6 +44,13 @@ def _parser() -> argparse.ArgumentParser:
         type=Path,
         help="where to write the link manifest (default: <out>.manifest.json "
         "beside --out); it is never written inside --out, which is published",
+    )
+    build.add_argument(
+        "--assets-inventory",
+        type=Path,
+        help="where to write the published-file inventory (default: "
+        "<out>.assets.json beside --out); it is never written inside --out, "
+        "which is published",
     )
     build.add_argument(
         "--numbers",
@@ -74,22 +82,41 @@ def _serve(config_path: Path, host: str, port: int, overrides: Path | None) -> i
     return 0
 
 
-def _manifest_target(out_dir: Path, manifest: Path | None, config_path: Path) -> Path:
-    """The manifest path; refuse one inside ``out_dir`` (it gets published)."""
+def _sidecar_target(
+    label: str, suffix: str, out_dir: Path, explicit: Path | None, config_path: Path
+) -> Path:
+    """Where a build side file goes; refuse one inside ``out_dir`` (published)."""
     out = out_dir.resolve()
-    target = (
-        manifest if manifest is not None else out.parent / f"{out.name}.manifest.json"
-    )
+    target = explicit if explicit is not None else out.parent / f"{out.name}{suffix}"
     resolved = target.resolve()
     if resolved == out or out in resolved.parents:
         raise ValueError(
-            f"manifest path {target} is inside the output directory {out_dir}, "
+            f"{label} path {target} is inside the output directory {out_dir}, "
             "which is published; choose a path outside it"
         )
     if resolved == config_path.resolve():
-        raise ValueError(f"manifest path {target} is the config file")
+        raise ValueError(f"{label} path {target} is the config file")
     if resolved.is_dir():
-        raise ValueError(f"manifest path {target} is a directory")
+        raise ValueError(f"{label} path {target} is a directory")
+    return target
+
+
+def _manifest_target(out_dir: Path, manifest: Path | None, config_path: Path) -> Path:
+    """The manifest path; refuse one inside ``out_dir`` (it gets published)."""
+    return _sidecar_target("manifest", ".manifest.json", out_dir, manifest, config_path)
+
+
+def _inventory_target(
+    out_dir: Path, inventory: Path | None, manifest: Path, config_path: Path
+) -> Path:
+    """The inventory path, under the same rules as the manifest's."""
+    target = _sidecar_target(
+        "assets inventory", ".assets.json", out_dir, inventory, config_path
+    )
+    if target.resolve() == manifest.resolve():
+        raise ValueError(
+            f"assets inventory path {target} is the manifest path; use two files"
+        )
     return target
 
 
@@ -113,15 +140,41 @@ def _numbers_source(
     return path
 
 
+def _write_inventory(
+    target: Path, inventory: dict[str, InventoryEntry], is_default: bool
+) -> None:
+    """Write the inventory. A default location that cannot be written is a warning.
+
+    A container with a read-only root has nowhere beside ``--out`` to write, and
+    callers written before the inventory existed do not pass the flag; the
+    build must not fail for them. An explicit path that cannot be written fails.
+    """
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(inventory_json(inventory), encoding="utf-8")
+    except OSError as exc:
+        if not is_default:
+            raise
+        print(
+            f"warning: assets inventory not written to {target} ({exc.strerror}); "
+            "pass --assets-inventory PATH to keep it",
+            file=sys.stderr,
+        )
+
+
 def _build(
     config_path: Path,
     out_dir: Path,
     overrides: Path | None,
     manifest_path: Path | None = None,
     numbers_path: Path | None = None,
+    inventory_path: Path | None = None,
 ) -> int:
     try:
         target = _manifest_target(out_dir, manifest_path, config_path)
+        inventory_target = _inventory_target(
+            out_dir, inventory_path, target, config_path
+        )
         source = _numbers_source(out_dir, numbers_path, config_path)
         config = load_site_config(config_path)
         numbers: Numbers | None = None
@@ -146,6 +199,7 @@ def _build(
         )
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(manifest_json(manifest), encoding="utf-8")
+        _write_inventory(inventory_target, manifest.inventory, inventory_path is None)
     except (ConfigError, ValueError, OSError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
@@ -166,7 +220,12 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.command == "build":
         return _build(
-            args.config, args.out, args.overrides, args.manifest, args.numbers
+            args.config,
+            args.out,
+            args.overrides,
+            args.manifest,
+            args.numbers,
+            args.assets_inventory,
         )
     if args.command == "serve":
         return _serve(args.config, args.host, args.port, args.overrides)

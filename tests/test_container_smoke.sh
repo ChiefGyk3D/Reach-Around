@@ -35,11 +35,14 @@ run=("$engine" run --rm --read-only --cap-drop ALL
 
 "${run[@]}" "$image" build --config /config/site.yaml --out /out \
     --manifest /manifest/manifest.json \
+    --assets-inventory /manifest/assets.json \
     || fail "build exited non-zero"
 
 [ -f "$out/index.html" ] || fail "/out/index.html missing"
 [ -f "$mdir/manifest.json" ] || fail "manifest.json missing"
 [ ! -e "$out/manifest.json" ] || fail "manifest.json was published inside /out"
+[ -f "$mdir/assets.json" ] || fail "assets.json missing"
+[ ! -e "$out/assets.json" ] || fail "assets.json was published inside /out"
 
 uid="$("${run[@]}" --entrypoint id "$image" -u)"
 [ "$uid" != "0" ] || fail "container process runs as uid 0"

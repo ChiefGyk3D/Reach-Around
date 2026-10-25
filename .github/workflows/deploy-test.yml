@@ -6,7 +6,12 @@
 #
 # Two jobs: `build` has no secrets and no environment, so pip install scripts
 # never see the Cloudflare token; `deploy` carries the token in the three
-# wrangler steps only.
+# wrangler steps only (and, when set, the cache-purge token in the last step).
+#
+# Caching: every static and media file is published under a content-hashed name
+# and pages are revalidated, so a deploy shows at once without any purge. The
+# purge step at the end is an optional backstop for paths that already exist at
+# the edge (see docs/deploy.md, "Caching and stale files").
 name: Deploy to test
 
 on:
@@ -28,6 +33,7 @@ jobs:
     timeout-minutes: 10
     permissions:
       contents: read
+      actions: read # download the previous deployment's assets inventory
     # No `environment` and no secrets here, on purpose: `pip install .` runs
     # dependency build scripts.
     steps:
@@ -39,15 +45,48 @@ jobs:
         with:
           python-version: "3.12"
 
-      # The link manifest is written next to the site directory
-      # (site-out.manifest.json), never inside it, so Pages cannot publish it.
+      # The link manifest and the assets inventory are written next to the
+      # site directory (site-out.manifest.json, site-out.assets.json), never
+      # inside it, so Pages cannot publish them.
       - name: Build the site
         run: |
           set -eu
           python -m pip install .
           reach-around build --config examples/instance/site.yaml --out site-out
           test -z "$(find site-out -iname '*manifest*')"
+          test -z "$(find site-out -iname '*assets.json')"
           test -f site-out.manifest.json
+          test -f site-out.assets.json
+
+      # Compare this build with the last successful deployment's inventory.
+      # No secret is in this step: the built-in token only reads artifacts. With
+      # no earlier deployment, or an unreadable inventory, the list stays empty
+      # and the purge step has nothing to do. The deploy is never blocked here.
+      - name: List edge-cache paths to purge
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -eu
+          printf '# no previous deployment inventory; nothing to purge\n' > site-purge-list.txt
+          if previous="$(gh run list --workflow deploy-test.yml --branch main \
+              --status success --limit 1 --json databaseId \
+              --jq '.[0].databaseId // empty')" && [ -n "$previous" ]; then
+            if gh run download "$previous" --name site-assets-inventory \
+                --dir previous-inventory; then
+              if reach-around deploy-purge-list \
+                  --previous previous-inventory/site-out.assets.json \
+                  --current site-out.assets.json > site-purge-list.new; then
+                mv site-purge-list.new site-purge-list.txt
+              else
+                echo "::warning::could not compare inventories; the purge list is empty"
+              fi
+            else
+              echo "::notice::the earlier deployment has no assets inventory; the purge list is empty"
+            fi
+          else
+            echo "::notice::no earlier successful deployment found; the purge list is empty"
+          fi
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -60,6 +99,22 @@ jobs:
         with:
           name: site-manifest
           path: site-out.manifest.json
+          if-no-files-found: error
+          retention-days: 1
+
+      # Kept for 90 days: the next deployment compares against it. Not part of
+      # the Pages upload directory.
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: site-assets-inventory
+          path: site-out.assets.json
+          if-no-files-found: error
+          retention-days: 90
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: site-purge-list
+          path: site-purge-list.txt
           if-no-files-found: error
           retention-days: 1
 
@@ -97,6 +152,12 @@ jobs:
         with:
           name: site-manifest
           path: manifest-in
+
+      # URL paths to purge after the publish, computed in the build job.
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: site-purge-list
+          path: purge-in
 
       # Tests that the secret exists without printing it or exporting it: the
       # value lives only in this step's env, and nothing is written to the
@@ -244,3 +305,15 @@ jobs:
           --project-name "$PAGES_PROJECT"
           --branch main
           --commit-dirty=true
+
+      # Optional backstop. Skipped with a notice unless the repository secret
+      # CLOUDFLARE_PURGE_TOKEN (scope: Zone > Cache Purge, one zone only) and the
+      # variable ZONE_ID are set. It never fails the deploy: a refused purge is
+      # a warning and a line in the job summary. The token is only in this
+      # step's environment, and the script gives it to curl on stdin.
+      - name: Purge changed paths from the edge cache (optional)
+        env:
+          CLOUDFLARE_PURGE_TOKEN: ${{ secrets.CLOUDFLARE_PURGE_TOKEN }}
+          ZONE_ID: ${{ vars.ZONE_ID }}
+          SITE_HOST: ${{ vars.SITE_HOST }}
+        run: bash .github/scripts/purge-cache.sh purge-in/site-purge-list.txt

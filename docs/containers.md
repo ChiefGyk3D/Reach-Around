@@ -33,6 +33,13 @@ writable on a read-only root. The commands on this page therefore pass
 it, mount a second writable directory, for example `-v ./manifest:/manifest`,
 and pass `--manifest /manifest/manifest.json`.
 
+The same goes for the assets inventory (`<out>.assets.json`, a list of every
+published file with its hash, used to work out which cache entries to purge
+after a deploy; see [deploy.md](deploy.md#caching-and-stale-files)). Pass
+`--assets-inventory /manifest/assets.json` to keep it. If you pass nothing and
+the default location beside `/out` is not writable, the build prints a warning
+and still succeeds; it only fails when a path you gave cannot be written.
+
 ## Output directory permissions
 
 The container user is uid 10001, not you. Make the output directory writable by it
@@ -72,7 +79,7 @@ podman run --rm --read-only --cap-drop ALL \
   --security-opt no-new-privileges:true --tmpfs /tmp \
   -v ./examples/instance:/config:ro -v ./out:/out \
   reach-around:local build --config /config/site.yaml --out /out \
-  --manifest /tmp/manifest.json
+  --manifest /tmp/manifest.json --assets-inventory /tmp/assets.json
 ```
 
 ## Podman Quadlet (systemd, rootless)
