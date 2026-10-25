@@ -79,7 +79,7 @@ export function oracleCore(raw: RawRow[], o: Opts): Core[] {
   );
   rows = merge(rows.map((r) => (r.views < o.min && (r.src_kind === "r" || r.src_kind === "u") ? { ...r, src_kind: "o", src: "other" } : r)), coreKey);
   rows = merge(rows.map((r) => (r.views < o.min && r.country !== "ZZ" ? { ...r, country: "ZZ" } : r)), coreKey);
-  return hardCap(rows, ROW_CAP_CORE, coreKey, (r) => ({ ...r, src_kind: "o", src: "other", country: "ZZ" }), 40);
+  return hardCap(rows, ROW_CAP_CORE, coreKey, (r) => ({ ...r, page: "other", src_kind: "o", src: "other", country: "ZZ" }), 40);
 }
 
 export function oracleDim(raw: RawRow[], o: Opts): Dim[] {

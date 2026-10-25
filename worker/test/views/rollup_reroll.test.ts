@@ -263,6 +263,33 @@ describe("UTM allowlist", () => {
   });
 });
 
+describe("the core row cap is hard", () => {
+  it("5000_distinct_pages_return_at_most_the_cap_to_the_worker_and_still_sum", async () => {
+    await insert(Array.from({ length: 5000 }, (_, i) => ({ ts: D13 + i, page: `p${i}`, bot_class: ["h", "a", "s", "v"][i % 4] })));
+    let widest = 0;
+    const spy = new Proxy(DB, {
+      get(t, p) {
+        if (p === "batch") {
+          return async (stmts: D1PreparedStatement[]) => {
+            const res = await t.batch(stmts);
+            for (const x of res) widest = Math.max(widest, x.results?.length ?? 0);
+            return res;
+          };
+        }
+        const v = Reflect.get(t, p, t);
+        return typeof v === "function" ? v.bind(t) : v;
+      },
+    }) as D1Database;
+    await rollupClosedDays({ DB: spy, MIN_CELL: "1", ROLLUP_MAX_ROWS_PER_DAY: "20000" }, NOW);
+    expect(widest).toBeLessThanOrEqual(ROW_CAP_CORE); // what the Worker was handed, per query
+    const core = await q<{ page: string; bot_class: string; views: number }>("SELECT * FROM view_daily");
+    expect(core.length).toBeLessThanOrEqual(ROW_CAP_CORE);
+    expect(core.reduce((a, c) => a + c.views, 0)).toBe(5000);
+    // The overflow collapsed to one 'other' page row per bot class.
+    expect(core.filter((c) => c.page === "other").length).toBeLessThanOrEqual(4);
+  }, 120_000);
+});
+
 describe("oversized days", () => {
   it("the_per_day_row_limit_is_parsed_with_a_default_and_a_ceiling", () => {
     expect(maxRowsPerDay(undefined)).toBe(3000);

@@ -278,7 +278,9 @@ function coreSql(allowN: number): string {
     "b2m AS (SELECT page, src_kind, src, country, bot_class, SUM(v) AS v, SUM(u) AS u FROM b2 GROUP BY 1, 2, 3, 4, 5), " +
     "k AS (SELECT page, src_kind, src, country, bot_class, v, u, " +
     "ROW_NUMBER() OVER (ORDER BY v DESC, page, src_kind, src, country, bot_class) AS rn, (SELECT COUNT(*) FROM b2m) AS total FROM b2m) " +
-    `SELECT page, CASE WHEN total > ${ROW_CAP_CORE} AND rn > ${ROW_CAP_CORE - CORE_RESERVE} THEN 'o' ELSE src_kind END AS src_kind, ` +
+    // The overflow rows lose their page too, so they collapse to one row per bot class and the cap is hard.
+    `SELECT CASE WHEN total > ${ROW_CAP_CORE} AND rn > ${ROW_CAP_CORE - CORE_RESERVE} THEN 'other' ELSE page END AS page, ` +
+    `CASE WHEN total > ${ROW_CAP_CORE} AND rn > ${ROW_CAP_CORE - CORE_RESERVE} THEN 'o' ELSE src_kind END AS src_kind, ` +
     `CASE WHEN total > ${ROW_CAP_CORE} AND rn > ${ROW_CAP_CORE - CORE_RESERVE} THEN 'other' ELSE src END AS src, ` +
     `CASE WHEN total > ${ROW_CAP_CORE} AND rn > ${ROW_CAP_CORE - CORE_RESERVE} THEN 'ZZ' ELSE country END AS country, bot_class, ` +
     "SUM(v) AS views, SUM(u) AS uniques FROM k GROUP BY 1, 2, 3, 4, 5"
@@ -311,10 +313,24 @@ function geoSql(level: "country" | "region" | "city"): string {
  * seven dimensions and geography of ALL the day's raw rows. Ranking and folding
  * happen in D1; this function only checks that the capped output adds up.
  */
-async function aggregateDay(env: RollupEnv, db: D1Database, w: Work, lease: Lease): Promise<DayPlan> {
+async function aggregateDay(env: RollupEnv, db: D1Database, w: Work, lease: Lease, meter: QueryMeter): Promise<DayPlan> {
+  // The discovery count is only a first guess: rows can arrive before the read.
+  // The read batch recounts, and if the recount puts the day on the other side
+  // of ROLLUP_MAX_ROWS_PER_DAY the read is repeated once in the right mode.
+  const limit = maxRowsPerDay(env.ROLLUP_MAX_ROWS_PER_DAY);
+  let reduced = w.n > limit;
+  for (let attempt = 0; ; attempt++) {
+    const plan = await readDay(env, db, w, lease, reduced);
+    const should = plan.raw > limit;
+    if (should === reduced || attempt === 1) return plan;
+    reduced = should;
+    if (meter.remaining() < QUERIES_PER_DAY + RESERVE) throw new BudgetExceeded();
+  }
+}
+
+async function readDay(env: RollupEnv, db: D1Database, w: Work, lease: Lease, reduced: boolean): Promise<DayPlan> {
   const lo = dayStartMs(w.day);
   const hi = lo + DAY_MS;
-  const reduced = w.n > maxRowsPerDay(env.ROLLUP_MAX_ROWS_PER_DAY);
   const level = reduced ? "country" : geoLevel(env.GEO_LEVEL);
   const top = reduced ? Math.min(REDUCED_TOP_SOURCES, topSources(env.TOP_SOURCES)) : topSources(env.TOP_SOURCES);
   const min = minCell(env.MIN_CELL);
@@ -363,8 +379,7 @@ interface Guard {
   args: Array<string | number>;
 }
 
-function guardFor(lease: Lease, w: Work): Guard {
-  const now = lease.clock();
+function guardFor(lease: Lease, w: Work, now: number): Guard {
   return w.mode === "fresh"
     ? { sql: `${LEASE_OK} AND NOT EXISTS (SELECT 1 FROM view_rollup_log WHERE day = ?)`, args: [lease.token, now, w.day] }
     : {
@@ -402,7 +417,11 @@ function insertStatements(
  * be re-rolled because the purge already took part of the day).
  */
 async function writeDay(db: D1Database, w: Work, p: DayPlan, nowMs: number, lease: Lease, drop: boolean): Promise<number> {
-  const guard = guardFor(lease, w);
+  // ONE clock reading for every guard and the checkpoint of this batch: the
+  // statements must all pass or all fail the lease-expiry test together, never
+  // insert rows and then fail the checkpoint because time moved in between.
+  const leaseNow = lease.clock();
+  const guard = guardFor(lease, w, leaseNow);
   const tz = "UTC";
   const stmts: D1PreparedStatement[] = [];
   if (!drop) {
@@ -447,7 +466,7 @@ async function writeDay(db: D1Database, w: Work, p: DayPlan, nowMs: number, leas
     stmts.push(
       db
         .prepare(`UPDATE view_rollup_log SET max_id = ?, rolled_at = ? WHERE day = ? AND max_id = ? AND ${LEASE_OK}`)
-        .bind(p.maxId, nowMs, w.day, w.oldMax, lease.token, lease.clock()),
+        .bind(p.maxId, nowMs, w.day, w.oldMax, lease.token, leaseNow),
     );
   } else {
     stmts.push(
@@ -456,7 +475,7 @@ async function writeDay(db: D1Database, w: Work, p: DayPlan, nowMs: number, leas
           "UPDATE view_rollup_log SET raw_views = ?, views = ?, uniques = ?, rows_core = ?, rows_dim = ?, rows_geo = ?, " +
             `rolled_at = ?, max_id = ?, rerolls = rerolls + 1 WHERE day = ? AND max_id = ? AND ${LEASE_OK}`,
         )
-        .bind(p.raw, p.views, p.uniques, p.core.length, p.dim.length, p.geo.length, nowMs, p.maxId, w.day, w.oldMax, lease.token, lease.clock()),
+        .bind(p.raw, p.views, p.uniques, p.core.length, p.dim.length, p.geo.length, nowMs, p.maxId, w.day, w.oldMax, lease.token, leaseNow),
     );
   }
   if (stmts.length > 2000) throw new RangeError("a day must fit one batch"); // caps keep it near 100
@@ -511,6 +530,7 @@ export async function rollupClosedDays(env: RollupEnv, nowMs: number): Promise<R
   let failedDay = "";
   let lastGood = "";
   let complete = false;
+  let lost = false;
   let work: Work[] = [];
 
   // One read batch (one query): days to roll, and sealed days that got late rows.
@@ -587,8 +607,14 @@ export async function rollupClosedDays(env: RollupEnv, nowMs: number): Promise<R
         break;
       }
       try {
-        const plan = await aggregateDay(env, db, w, lease);
-        inputRows += w.n;
+        const plan = await aggregateDay(env, db, w, lease, meter);
+        // The read batch recounted the day: budget on that count, not on the
+        // pre-lease discovery count, which rows arriving in between can outgrow.
+        if (inputRows > 0 && inputRows + plan.raw > rowBudget) {
+          complete = false;
+          break;
+        }
+        inputRows += plan.raw;
         if (w.mode === "reroll") {
           const lateRows = plan.raw - plan.oldCount;
           if (lateRows <= 0) continue;
@@ -605,8 +631,12 @@ export async function rollupClosedDays(env: RollupEnv, nowMs: number): Promise<R
         }
       } catch (e) {
         if (e instanceof LeaseLost) {
-          // Another run owns this work now (or the lease ran out). Stop quietly.
-          return { days, rows, late };
+          // Another run owns this work now, or the lease ran out, or the day
+          // changed under us. Stop, but go through the cleanup below: the
+          // token-guarded release is safe if the lease is no longer ours.
+          lost = true;
+          complete = false;
+          break;
         }
         if (e instanceof BudgetExceeded) {
           complete = false;
@@ -619,6 +649,18 @@ export async function rollupClosedDays(env: RollupEnv, nowMs: number): Promise<R
         }
       }
     }
+  }
+
+  if (lost && lease !== null) {
+    // The heartbeat belongs to whoever owns the work now. Only release a lease
+    // that is still ours (token-guarded, so a no-op if someone else holds it).
+    try {
+      await db.prepare(`DELETE FROM view_meta WHERE key = 'rollup_lease' AND ${tokenMatch}`).bind(lease.token).run();
+    } catch (e) {
+      failure ??= e;
+    }
+    if (failure !== null) throw failure;
+    return { days, rows, late };
   }
 
   const through = failure === null && complete ? utcDate(todayStart - DAY_MS) : lastGood;

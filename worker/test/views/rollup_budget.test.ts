@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Query budget, lease, grace period, late rows, small cells and the overdue flag
 // of the page-view rollup. Synthetic data only.
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   BudgetExceeded,
   DEFAULT_QUERY_BUDGET,
@@ -350,6 +350,76 @@ describe("rollup lease", () => {
     await expect(runA).resolves.toBeDefined(); // gives up quietly, no database error
     expect(await q("SELECT * FROM view_daily")).toEqual([]);
     expect((await meta()).rollup_err).toBeUndefined();
+  });
+
+  it("one_clock_reading_covers_every_guard_and_the_checkpoint_of_a_reroll_batch", async () => {
+    await seed();
+    await rollupClosedDays(envOf(), NOW);
+    await insert([{ ts: D13 + 900_000 }]); // a late row, so the next run re-rolls the day
+    // Our module's clock jumps 6 minutes on every reading; the lease lasts 10
+    // minutes from the renewal. Two readings after the renewal would straddle
+    // the expiry (guards pass, checkpoint fails after the rows were inserted).
+    const real = Date.now.bind(Date);
+    let n = 0;
+    const base = real();
+    const spy = vi.spyOn(Date, "now").mockImplementation(() => {
+      if (!(new Error().stack ?? "").includes("viewrollup")) return real();
+      n += 1;
+      return base + n * 6 * 60_000;
+    });
+    try {
+      const r = await rollupClosedDays(envOf(), NOW + 1000);
+      expect(r.late).toBe(1);
+    } finally {
+      spy.mockRestore();
+    }
+    expect(n, "the stubbed clock was read by the rollup").toBeGreaterThanOrEqual(3);
+    expect(await q("SELECT * FROM view_rollup_log")).toMatchObject([{ raw_views: 151, views: 151, rerolls: 1 }]);
+    expect(await sumViews("view_daily")).toBe(151);
+    expect(await sumViews("view_geo_daily")).toBe(151);
+  });
+
+  it("a_day_that_changed_under_the_run_leaves_no_live_owned_lease", async () => {
+    await seed();
+    const a = gatedDb(3);
+    const runA = rollupClosedDays(envOf({ DB: a.db }), NOW);
+    await a.hit;
+    expect((await meta()).rollup_lease).toBeDefined(); // held while the write is pending
+    await DB.prepare("INSERT INTO view_rollup_log VALUES ('2027-03-13', 'UTC', 150, 150, 0, 1, 1, 1, 0, 99999, 0)").run();
+    a.release();
+    await runA;
+    expect((await meta()).rollup_lease).toBeUndefined(); // released on the lost-guard path
+    expect(await q("SELECT * FROM view_daily")).toEqual([]);
+  });
+
+  it("rows_arriving_between_discovery_and_the_read_put_the_day_in_reduced_mode", async () => {
+    await seed(); // 150 rows, no city
+    const a = gatedDb(2); // hold the day's read batch
+    const run = rollupClosedDays(envOf({ DB: a.db, ROLLUP_MAX_ROWS_PER_DAY: "200" }), NOW);
+    await a.hit;
+    await insert(Array.from({ length: 100 }, (_, i) => ({ ts: D13 + 200_000 + i, country: "US", region: "CA", city: "Sentinelville" })));
+    a.release();
+    await run;
+    expect((await meta()).rollup_reduced_days).toBe("1");
+    expect(await sumViews("view_daily")).toBe(250);
+    expect(JSON.stringify(await q("SELECT * FROM view_geo_daily"))).not.toContain("Sentinelville");
+  });
+
+  it("the_invocation_input_budget_uses_the_recount_not_the_discovery_count", async () => {
+    const d12 = D13 - DAY;
+    await insert([...Array.from({ length: 300 }, (_, i) => ({ ts: d12 + i })), ...Array.from({ length: 50 }, (_, i) => ({ ts: D13 + i }))]);
+    // Budget: 4 x 100 = 400 input rows. Day 1 takes 300; day 2 looked like 50 at discovery.
+    const a = gatedDb(4); // hold day 2's read batch
+    const run = rollupClosedDays(envOf({ DB: a.db, ROLLUP_MAX_ROWS_PER_DAY: "100" }), NOW);
+    await a.hit;
+    await insert(Array.from({ length: 400 }, (_, i) => ({ ts: D13 + 1000 + i })));
+    a.release();
+    const r = await run;
+    expect(r.days).toBe(1); // day 2 recounted as 450 and waits for the next invocation
+    expect((await q("SELECT day FROM view_rollup_log")).length).toBe(1);
+    const next = await rollupClosedDays(envOf({ ROLLUP_MAX_ROWS_PER_DAY: "100" }), NOW + 1000);
+    expect(next.days).toBe(1);
+    expect(await sumViews("view_daily")).toBe(750);
   });
 
   it("an_expired_lease_with_no_takeover_writes_nothing", async () => {

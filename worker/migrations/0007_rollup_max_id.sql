@@ -7,6 +7,15 @@
 --            full re-roll of that day.
 --   rerolls  how many times the day was re-rolled.
 --
+-- RULE (the control for this migration): migrations 0005, 0006 and 0007 must be
+-- applied together on a database that has never run a page-view rollup. As of
+-- this writing only migration 0001 has ever been applied to a live D1, and
+-- 0005 to 0007 have never shipped, so there is no rollup history to lose. A
+-- database that already ran an earlier rollup version must NOT use this
+-- migration as it is: export it first (`wrangler d1 export`). SQL migrations
+-- cannot refuse or ask, so this comment and docs/deploy.md are the control;
+-- nothing in the Worker code can undo the deletes below.
+--
 -- Old state is INVALIDATED, not inferred. Whatever the rollup wrote before this
 -- migration has no record of which raw rows it counted, and guessing (for
 -- example from the current MAX(id)) could mark a never-counted late row as
