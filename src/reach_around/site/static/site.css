@@ -680,6 +680,7 @@ main > footer { margin-top: var(--ra-space-5); color: var(--ra-color-muted); fon
 @media (pointer: coarse) {
   .privacy-link a,
   .credit a,
+  .not-found a,
   .profile-button,
   .cookie-banner button,
   .crypto-qr summary {
