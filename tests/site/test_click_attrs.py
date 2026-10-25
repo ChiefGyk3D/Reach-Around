@@ -5,6 +5,7 @@ from datetime import date
 from importlib import resources
 from pathlib import Path
 
+from assetpaths import asset_file
 from reach_around.config import load_site_config
 from reach_around.site.build import build_site, manifest_json
 
@@ -56,10 +57,10 @@ def test_click_js_is_the_only_script(tmp_path: Path) -> None:
             continue
         assert len(scripts) == 1
         attrs = dict(ATTR.findall(scripts[0]))
-        assert attrs["src"].endswith("static/click.js")
+        assert re.search(r"static/click\.[0-9a-f]{20}\.js$", attrs["src"])
         assert "defer" in scripts[0]
         assert re.search(r"<script\b[^>]*>\s*</script>", text, re.IGNORECASE)
-    assert (tmp_path / "static" / "click.js").is_file()
+    assert asset_file(tmp_path, "static/click.js").is_file()
 
 
 def test_click_js_contains_no_eval_no_document_write_and_no_inline_handlers() -> None:

@@ -13,6 +13,7 @@ import pytest
 import yaml
 from pydantic import ValidationError
 
+from assetpaths import asset, asset_file, read
 from reach_around.config import SiteConfig, load_site_config
 from reach_around.site.build import build_site
 from reach_around.site.theme import theme_css
@@ -94,19 +95,21 @@ def test_the_example_instance_fills_every_slot_with_its_placeholder(
     tmp_path: Path,
 ) -> None:
     out = build_example(tmp_path / "out")
-    assert (out / "media" / "mascot.svg").is_file()
+    mascot = asset(out, "media/mascot.svg")
+    assert (out / mascot).is_file()
     html = (out / "index.html").read_text()
-    assert re.search(r'<img class="avatar" src="media/mascot\.svg"', html)
-    assert re.search(r'<link rel="icon" href="media/mascot\.svg"', html)
-    theme = (out / "static" / "theme.css").read_text()
-    assert '--ra-mascot-image: url("../media/mascot.svg");' in theme
+    assert f'<img class="avatar" src="{mascot}"' in html
+    assert f'<link rel="icon" href="{mascot}"' in html
+    theme = read(out, "static/theme.css")
+    assert f'--ra-mascot-image: url("../{mascot}");' in theme
 
 
 def test_nested_page_uses_a_root_relative_path_for_slots(tmp_path: Path) -> None:
     out = build_example(tmp_path / "out")
     html = (out / "events" / "index.html").read_text()
-    assert 'src="../media/mascot.svg"' in html
-    assert 'href="../media/mascot.svg"' in html
+    mascot = asset(out, "media/mascot.svg")
+    assert f'src="../{mascot}"' in html
+    assert f'href="../{mascot}"' in html
 
 
 def test_the_placeholder_is_a_synthetic_svg_with_no_script() -> None:
@@ -124,7 +127,7 @@ def test_unreferenced_instance_files_are_not_published(tmp_path: Path) -> None:
     config = config_with(creator={"avatar": "a.svg"})
     out = tmp_path / "out"
     build_site(config, out, today=TODAY, assets_dir=work)
-    assert (out / "a.svg").is_file()
+    assert asset_file(out, "a.svg").is_file()
     assert not (out / "secret.txt").exists()
 
 
@@ -257,18 +260,15 @@ def test_jost_is_vendored_with_its_license_and_served_same_origin(
     assert face and 'url("fonts/jost-latin-wght-normal.woff2")' in face.group(0)
     assert token("--ra-font-body").startswith('"Jost"')
     out = build_example(tmp_path / "out")
-    assert (out / "static" / "fonts" / "jost-latin-wght-normal.woff2").is_file()
-    assert (out / "static" / "fonts" / "OFL.txt").is_file()
+    assert asset_file(out, "static/fonts/jost-latin-wght-normal.woff2").is_file()
+    assert asset_file(out, "static/fonts/OFL.txt").is_file()
 
 
 def test_a_system_font_stack_can_still_replace_jost(tmp_path: Path) -> None:
     config = config_with(fonts={"body": "system-ui, sans-serif"})
     out = tmp_path / "out"
     build_site(config, out, today=TODAY)
-    assert (
-        "--ra-font-body: system-ui, sans-serif;"
-        in (out / "static" / "theme.css").read_text()
-    )
+    assert "--ra-font-body: system-ui, sans-serif;" in read(out, "static/theme.css")
 
 
 # --- brand tokens and contrast -------------------------------------------------

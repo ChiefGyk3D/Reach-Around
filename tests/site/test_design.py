@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 import yaml
 
+from assetpaths import asset_file, read
 from reach_around.config import load_site_config
 from reach_around.config.theme import Theme
 from reach_around.site.build import build_site
@@ -182,7 +183,7 @@ def test_both_presets_validate_and_build(name: str, tmp_path: Path) -> None:
     config = load_site_config(_preset_config(preset, tmp_path))
     out = tmp_path / "out"
     build_site(config, out, today=TODAY, assets_dir=EXAMPLE.parent)
-    css = (out / "static" / "theme.css").read_text()
+    css = read(out, "static/theme.css")
     assert "--ra-color-bg" in css and "--ra-color-accent" in css
     assert (out / "index.html").is_file()
 
@@ -263,7 +264,7 @@ def test_built_example_references_only_existing_icons(tmp_path: Path) -> None:
         used |= set(re.findall(r"\bicon-([a-z0-9]+)\b", page.read_text()))
     assert used, "the example config should show at least one icon"
     for slug in used:
-        assert (out / "static" / "icons" / f"{slug}.svg").is_file(), slug
+        assert asset_file(out, f"static/icons/{slug}.svg").is_file(), slug
 
 
 def test_unknown_icon_slug_falls_back_to_the_text_label(tmp_path: Path) -> None:

@@ -12,6 +12,7 @@ from typing import Any
 import pytest
 from pydantic import ValidationError
 
+from assetpaths import asset, has_asset, read
 from reach_around.config import SiteConfig
 from reach_around.site.build import build_site
 from reach_around.site.overrides import build_csp
@@ -64,22 +65,25 @@ def script_text() -> str:
 
 def test_off_by_default_no_file_no_link_no_attribute(tmp_path: Path) -> None:
     build(tmp_path)
-    assert not (tmp_path / "static" / "view.js").exists()
+    assert not has_asset(tmp_path, "static/view.js")
+    assert not list((tmp_path / "static").glob("view*"))
     pages = sorted(tmp_path.rglob("*.html"))
     assert pages
     for page in pages:
         html = page.read_text()
+        assert not VIEW_REF.search(html)
         assert "view.js" not in html
         assert "data-page-id" not in html and "data-view-route" not in html
 
 
 def test_on_serves_the_file_and_links_it_from_tab_pages(tmp_path: Path) -> None:
     build(tmp_path, analytics={"page_views": True})
-    assert (tmp_path / "static" / "view.js").read_text() == script_text()
+    assert read(tmp_path, "static/view.js") == script_text()
+    hashed = asset(tmp_path, "static/view.js")
     home = (tmp_path / "index.html").read_text()
     more = (tmp_path / "more" / "index.html").read_text()
-    assert '<script src="static/view.js" defer></script>' in home
-    assert '<script src="../static/view.js" defer></script>' in more
+    assert f'<script src="{hashed}" defer></script>' in home
+    assert f'<script src="../{hashed}" defer></script>' in more
 
 
 def test_page_id_and_route_are_data_attributes_on_tab_pages_only(
@@ -92,6 +96,7 @@ def test_page_id_and_route_are_data_attributes_on_tab_pages_only(
     assert 'data-page-id="more"' in more
     privacy = (tmp_path / "privacy" / "index.html").read_text()
     assert "data-page-id" not in privacy
+    assert not VIEW_REF.search(privacy)
     assert "view.js" not in privacy
 
 
@@ -262,3 +267,6 @@ def test_view_js_checks_opt_outs_when_it_sends_not_only_at_start() -> None:
     src = script_text()
     send_head = src[src.index("function send()") :].split("try")[0]
     assert "optedOut()" in send_head
+
+
+VIEW_REF = re.compile(r"view\.[0-9a-f]{20}\.js")

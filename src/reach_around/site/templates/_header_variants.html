@@ -10,7 +10,7 @@
 {% endmacro %}
 {% macro avatar(creator, size) %}
 {% if creator.avatar %}
-<img class="avatar" src="{{ creator.avatar if ':' in creator.avatar else root ~ creator.avatar }}" alt="" width="{{ size }}" height="{{ size }}" referrerpolicy="no-referrer">
+<img class="avatar" src="{{ asset_url(creator.avatar, root) }}" alt="" width="{{ size }}" height="{{ size }}" referrerpolicy="no-referrer">
 {% endif %}
 {% endmacro %}
 {% if creator.header == "hero" %}

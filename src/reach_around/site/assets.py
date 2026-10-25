@@ -20,6 +20,7 @@ from collections.abc import Iterator
 from pathlib import Path
 
 from reach_around.config.models import Link, Section, SiteConfig
+from reach_around.config.pathlimits import check_path_bytes
 from reach_around.site.assetcheck import check_content
 from reach_around.site.theme import IMAGE_EXTENSIONS, RESERVED_FOLDERS
 
@@ -96,6 +97,7 @@ def _check_slot(key: str, rel: str, kind: str) -> None:
         raise ValueError(f"{key}: {rel!r} must be a plain relative path")
     if parts[0] in RESERVED_FOLDERS:
         raise ValueError(f"{key}: {rel!r} is inside a folder the build writes itself")
+    check_path_bytes(rel, key)
 
 
 def _open_dir(name: str, dir_fd: int | None, shown: str) -> int:

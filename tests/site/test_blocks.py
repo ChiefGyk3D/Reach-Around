@@ -9,6 +9,7 @@ from typing import Any
 import pytest
 from pydantic import ValidationError
 
+from assetpaths import asset
 from reach_around.config import SiteConfig
 from reach_around.config.blocks import Divider, Image, Text
 from reach_around.config.models import check_https_url
@@ -44,7 +45,9 @@ def config(
     return SiteConfig.model_validate({"version": 1, "creator": creator, "tabs": [tab]})
 
 
-_CLICK_SCRIPT = re.compile(r'<script src="(?:\.\./)?static/click\.js" defer></script>')
+_CLICK_SCRIPT = re.compile(
+    r'<script src="(?:\.\./)?static/click\.[0-9a-f]{20}\.js" defer></script>'
+)
 
 
 def without_click_script(text: str) -> str:
@@ -376,7 +379,7 @@ def test_relative_image_is_resolved_against_the_page_root(tmp_path: Path) -> Non
     )
     build_site(cfg, tmp_path / "out", today=TODAY, assets_dir=make_assets(tmp_path))
     page = (tmp_path / "out" / "b" / "index.html").read_text()
-    assert 'src="../img/a.png"' in page
+    assert f'src="../{asset(tmp_path / "out", "img/a.png")}"' in page
 
 
 def test_unknown_layout_or_header_is_refused() -> None:

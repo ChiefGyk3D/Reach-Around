@@ -9,33 +9,33 @@
 <meta name="robots" content="noindex">
 {% endif %}
 {% if creator.favicon %}
-<link rel="icon" href="{{ root }}{{ creator.favicon }}">
+<link rel="icon" href="{{ asset_url(creator.favicon, root) }}">
 {% endif %}
-<link rel="stylesheet" href="{{ root }}static/site.css">
-<link rel="stylesheet" href="{{ root }}static/theme.css">
+<link rel="stylesheet" href="{{ root }}{{ asset("static/site.css") }}">
+<link rel="stylesheet" href="{{ root }}{{ asset("static/theme.css") }}">
 {% if has_crypto %}
-<link rel="stylesheet" href="{{ root }}static/crypto.css">
+<link rel="stylesheet" href="{{ root }}{{ asset("static/crypto.css") }}">
 {% endif %}
 {% if has_email %}
-<link rel="stylesheet" href="{{ root }}static/email.css">
+<link rel="stylesheet" href="{{ root }}{{ asset("static/email.css") }}">
 {% endif %}
 {% if has_platforms %}
-<link rel="stylesheet" href="{{ root }}static/platforms.css">
+<link rel="stylesheet" href="{{ root }}{{ asset("static/platforms.css") }}">
 {% endif %}
 {% if custom_css %}
-<link rel="stylesheet" href="{{ root }}static/custom.css">
+<link rel="stylesheet" href="{{ root }}{{ asset("static/custom.css") }}">
 {% endif %}
 {% if click_tracking %}
-<script src="{{ root }}static/click.js" defer></script>
+<script src="{{ root }}{{ asset("static/click.js") }}" defer></script>
 {% endif %}
 {% if page_views %}
-<script src="{{ root }}static/view.js" defer></script>
+<script src="{{ root }}{{ asset("static/view.js") }}" defer></script>
 {% endif %}
 {% if has_crypto %}
-<script src="{{ root }}static/copy.js" defer></script>
+<script src="{{ root }}{{ asset("static/copy.js") }}" defer></script>
 {% endif %}
 {% if has_email_script %}
-<script src="{{ root }}static/email.js" defer></script>
+<script src="{{ root }}{{ asset("static/email.js") }}" defer></script>
 {% endif %}
 </head>
 <body{% if page_views and page_id %} data-page-id="{{ page_id }}" data-view-route="{{ view_route }}"{% endif %}>

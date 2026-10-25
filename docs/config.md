@@ -255,7 +255,7 @@ does not exist.", a link home and the privacy link. It carries
 click-counted link.
 
 Because a host serves it at any depth (`/a/b/c`), its stylesheet, avatar, tab
-and privacy links are root-relative (`/static/site.css`, `/privacy/`), unlike
+and privacy links are root-relative (`/static/site.<hash>.css`, `/privacy/`), unlike
 the other pages, whose paths are relative to their own folder. This assumes
 the site lives at the root of its domain; a site under a path prefix is not
 supported today. To restyle it see [customizing](customizing.md#the-404-page).
@@ -1034,6 +1034,32 @@ Every build writes a Cloudflare Pages `_headers` file for `/*`:
 
 When `robots.noindex_paths` is set, each prefix also gets its own block with
 `X-Robots-Tag: noindex` (see [`robots`](#robots)).
+
+After those blocks the file lists the cache rules. Files with a content hash in
+their name (everything under `static/`, and the images and fonts your config
+names) get `Cache-Control: public, max-age=31536000, immutable`; pages,
+`404.html`, `robots.txt` and root-level files a browser asks for by name get
+`Cache-Control: public, max-age=0, must-revalidate`. The patterns never
+overlap, so no URL gets both. See
+[deploy.md](deploy.md#caching-and-stale-files).
+
+### File names and the assets inventory
+
+Every file under `static/` and every image or font your config names is
+published as `name.<20 hex>.ext`, the hash being the SHA-256 of the file's
+final bytes. A config value such as `creator.avatar: media/me.png` still names
+the file in your instance folder; only the published name carries the hash, and
+the page links to it. `apple-touch-icon.png` (and its `-precomposed` form) at
+the root keep their names. Because the hash adds 21 bytes to a file name and
+Linux limits one name to 255 bytes, every image or font path in the config may
+have a file name of at most 234 bytes (counted in encoded bytes, so a multibyte
+character counts for each of its bytes) and a whole path of at most 1024 bytes;
+the config check names the field that is too long.
+`reach-around build --assets-inventory PATH` (default
+`<out>.assets.json` beside `--out`, never inside it) writes every published
+path with its SHA-256, size and class (`hashed` or `stable`).
+`reach-around deploy-purge-list --previous OLD --current NEW` prints the URL
+paths a cache may still hold in an old state.
 
 The policy has no `unsafe-inline` and no `unsafe-eval`. Pages carry no inline
 style, no inline script and no inline event handler, and a test checks every

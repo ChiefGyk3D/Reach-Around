@@ -20,6 +20,8 @@ from __future__ import annotations
 import re
 from typing import TYPE_CHECKING
 
+from reach_around.config.pathlimits import check_path_bytes
+
 if TYPE_CHECKING:
     from reach_around.config.theme import Theme
 
@@ -168,7 +170,7 @@ def _check_asset_path(value: str, extensions: tuple[str, ...], what: str) -> str
             f"must be a {what} path inside the instance directory "
             f"ending in {', '.join(extensions)}, not {value[:40]!r}"
         )
-    return value
+    return check_path_bytes(value, "path")
 
 
 def _is_remote(value: str) -> bool:

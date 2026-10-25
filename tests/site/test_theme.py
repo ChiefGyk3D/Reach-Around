@@ -11,6 +11,7 @@ from typing import Any
 import pytest
 import yaml
 
+from assetpaths import asset, read
 from reach_around.config import ConfigError, SiteConfig, load_site_config
 from reach_around.site.build import build_site
 from reach_around.site.theme import ALLOWED_PROPERTIES, theme_css
@@ -61,7 +62,7 @@ def css_for(tmp_path: Path, theme: object) -> str:
 def built_css(tmp_path: Path, theme: object) -> str:
     out = tmp_path / "out"
     build_site(load(tmp_path, theme), out, today=TODAY)
-    return (out / "static" / "theme.css").read_text(encoding="utf-8")
+    return read(out, "static/theme.css")
 
 
 # --- colors -----------------------------------------------------------------
@@ -286,17 +287,19 @@ def test_theme_css_overrides_defaults_in_the_built_page(tmp_path: Path) -> None:
     out = tmp_path / "out"
     config = load(tmp_path, {"colors": {"bg": "#101010"}, "column_width": "40rem"})
     build_site(config, out, today=TODAY)
-    css = (out / "static" / "theme.css").read_text()
+    css = read(out, "static/theme.css")
     assert ":root" in css
     assert "--ra-color-bg: #101010;" in css
     assert "--ra-column-width: 40rem;" in css
-    site_css = (out / "static" / "site.css").read_text()
+    site_css = read(out, "static/site.css")
     # site.css declares every default and reads each through var(--ra-*).
     for token in ("color-bg", "column-width", "radius", "button-radius", "font-body"):
         assert f"--ra-{token}:" in site_css
         assert f"var(--ra-{token})" in site_css
     html = (out / "index.html").read_text()
-    assert html.index("static/site.css") < html.index("static/theme.css")
+    assert html.index(asset(out, "static/site.css")) < html.index(
+        asset(out, "static/theme.css")
+    )
     assert "<style" not in html
     assert "style=" not in html
 
@@ -316,7 +319,8 @@ def test_theme_stylesheet_path_resolves_from_every_page(tmp_path: Path) -> None:
     build_site(load_site_config(path), out, today=TODAY)
     for page in sorted(out.rglob("*.html")):
         href = re.search(
-            r'<link rel="stylesheet" href="([^"]*theme\.css)">', page.read_text()
+            r'<link rel="stylesheet" href="([^"]*theme\.[0-9a-f]{20}\.css)">',
+            page.read_text(),
         )
         assert href, page
         # 404.html is root-relative (it is served at any depth); the rest are not.
@@ -330,9 +334,10 @@ def test_default_theme_builds_the_same_page_as_before(tmp_path: Path) -> None:
     assert css == ":root {\n}\n"
     out = tmp_path / "out"
     html = (out / "index.html").read_text()
-    stripped = html.replace('<link rel="stylesheet" href="static/theme.css">\n', "")
-    assert stripped.count("<link") == 1
-    assert html.count("theme.css") == 1
+    theme_tag = f'<link rel="stylesheet" href="{asset(out, "static/theme.css")}">\n'
+    assert html.count(theme_tag) == 1
+    assert html.replace(theme_tag, "").count("<link") == 1
+    assert html.count("theme.") == 1
     # The example instance still matches its golden output byte for byte.
     example = tmp_path / "example"
     build_site(
@@ -342,8 +347,9 @@ def test_default_theme_builds_the_same_page_as_before(tmp_path: Path) -> None:
         assets_dir=ROOT / "examples" / "instance",
     )
     golden = ROOT / "tests" / "site" / "golden"
-    assert (example / "static" / "theme.css").read_bytes() == (
-        golden / "static" / "theme.css"
+    assert asset(example, "static/theme.css") == asset(golden, "static/theme.css")
+    assert (example / asset(example, "static/theme.css")).read_bytes() == (
+        golden / asset(golden, "static/theme.css")
     ).read_bytes()
     assert (example / "index.html").read_bytes() == (golden / "index.html").read_bytes()
 

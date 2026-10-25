@@ -9,7 +9,8 @@ services:
       dockerfile: Containerfile
     image: reach-around:local
     command: ["build", "--config", "/config/site.yaml", "--out", "/out",
-               "--manifest", "/tmp/manifest.json"]
+               "--manifest", "/tmp/manifest.json",
+               "--assets-inventory", "/tmp/assets.json"]
     user: "10001:10001"
     read_only: true
     cap_drop: [ALL]

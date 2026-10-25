@@ -10,6 +10,7 @@ from typing import Any
 
 import pytest
 
+from assetpaths import asset_file
 from reach_around.config import SiteConfig
 from reach_around.site.build import build_site
 
@@ -93,13 +94,13 @@ def build(tmp_path: Path, name: str, data: bytes, slot: str = "avatar") -> Path:
 @pytest.mark.parametrize("ext", sorted(GOOD))
 def test_a_real_file_of_each_image_type_is_accepted(tmp_path: Path, ext: str) -> None:
     out = build(tmp_path, f"a.{ext}", GOOD[ext])
-    assert (out / f"a.{ext}").read_bytes() == GOOD[ext]
+    assert asset_file(out, f"a.{ext}").read_bytes() == GOOD[ext]
 
 
 @pytest.mark.parametrize("ext", sorted(FONTS))
 def test_a_real_file_of_each_font_type_is_accepted(tmp_path: Path, ext: str) -> None:
     out = build(tmp_path, f"f.{ext}", FONTS[ext], slot="font")
-    assert (out / f"f.{ext}").read_bytes() == FONTS[ext]
+    assert asset_file(out, f"f.{ext}").read_bytes() == FONTS[ext]
 
 
 @pytest.mark.parametrize("ext", sorted(GOOD))
@@ -121,7 +122,7 @@ def test_a_yaml_renamed_to_any_font_extension_is_refused(
 
 def test_extension_case_is_handled_the_same_way(tmp_path: Path) -> None:
     out = build(tmp_path, "a.PNG", GOOD["png"])
-    assert (out / "a.PNG").is_file()
+    assert asset_file(out, "a.PNG").is_file()
     with pytest.raises(ValueError, match=r"creator\.avatar"):
         build(tmp_path / "bad", "b.PNG", YAML)
 
@@ -137,12 +138,12 @@ def test_avif_needs_an_avif_brand_and_webp_needs_the_webp_tag(tmp_path: Path) ->
     with pytest.raises(ValueError, match="webp"):
         build(tmp_path / "w", "a.webp", b"RIFF\x0c\x00\x00\x00WAVEfmt \x00\x00\x00\x00")
     out = build(tmp_path / "s", "a.avif", b"\x00\x00\x00\x18ftypavis" + b"\x00" * 8)
-    assert (out / "a.avif").is_file()
+    assert asset_file(out, "a.avif").is_file()
 
 
 def test_ttf_accepts_the_true_tag(tmp_path: Path) -> None:
     out = build(tmp_path, "f.ttf", sfnt(b"true"), slot="font")
-    assert (out / "f.ttf").is_file()
+    assert asset_file(out, "f.ttf").is_file()
 
 
 def test_an_empty_file_is_refused(tmp_path: Path) -> None:
@@ -200,12 +201,12 @@ def test_the_structural_checks_follow_the_extension_case(tmp_path: Path) -> None
     with pytest.raises(ValueError, match=r"creator\.avatar"):
         build(tmp_path, "a.PNG", b"\x89PNG\r\n\x1a\n" + YAML)
     out = build(tmp_path / "ok", "a.GIF", GOOD["gif"])
-    assert (out / "a.GIF").is_file()
+    assert asset_file(out, "a.GIF").is_file()
 
 
 def test_the_boundaries_of_the_table_directory_are_accepted(tmp_path: Path) -> None:
     out = build(tmp_path, "f.ttf", sfnt(b"true", tables=64), slot="font")
-    assert (out / "f.ttf").is_file()
+    assert asset_file(out, "f.ttf").is_file()
 
 
 # --- SVG screening: an allowlist ---------------------------------------------
@@ -227,7 +228,7 @@ def refused(tmp_path: Path, data: bytes, reason: str) -> None:
 def test_the_placeholder_mascot_passes_byte_for_byte(tmp_path: Path) -> None:
     assert b"<!--" in MASCOT.read_bytes()
     out = build(tmp_path, "m.svg", MASCOT.read_bytes(), slot="mascot")
-    assert (out / "m.svg").read_bytes() == MASCOT.read_bytes()
+    assert asset_file(out, "m.svg").read_bytes() == MASCOT.read_bytes()
 
 
 @pytest.mark.parametrize(
@@ -267,7 +268,7 @@ def test_the_allowed_shapes_gradients_clips_masks_filters_and_text_pass(
 ) -> None:
     data = svg(body)
     out = build(tmp_path, "m.svg", data, slot="mascot")
-    assert (out / "m.svg").read_bytes() == data
+    assert asset_file(out, "m.svg").read_bytes() == data
 
 
 def test_the_xml_declaration_and_a_leading_comment_are_accepted(
@@ -275,13 +276,13 @@ def test_the_xml_declaration_and_a_leading_comment_are_accepted(
 ) -> None:
     data = b'<?xml version="1.0" encoding="UTF-8"?>\n<!-- note -->\n' + svg("<rect/>")
     out = build(tmp_path, "m.svg", data, slot="mascot")
-    assert (out / "m.svg").read_bytes() == data
+    assert asset_file(out, "m.svg").read_bytes() == data
 
 
 def test_the_prefix_form_of_an_allowed_svg_element_passes(tmp_path: Path) -> None:
     data = f"<s:svg xmlns:s='{SVG_NS}'><s:rect/></s:svg>".encode()
     out = build(tmp_path, "m.svg", data, slot="mascot")
-    assert (out / "m.svg").is_file()
+    assert asset_file(out, "m.svg").is_file()
 
 
 # Every element outside the allowlist is refused by default.

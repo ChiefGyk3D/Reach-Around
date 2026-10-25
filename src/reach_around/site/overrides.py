@@ -40,6 +40,7 @@ from jinja2 import (
 from jinja2.sandbox import ImmutableSandboxedEnvironment
 
 from reach_around.config.models import Block
+from reach_around.site.cachepolicy import HEADER_PATH, IMMUTABLE, REVALIDATE
 from reach_around.site.icons import ICON_SLUGS, THUMB_PX
 from reach_around.site.markdown import render_markdown
 
@@ -322,17 +323,29 @@ def _check_css(css: str) -> None:
         )
     # Strip comments from the raw text first. Both replacements are checked so
     # a keyword split by a comment is refused whichever way a browser joins it.
+    targets: list[list[str]] = []
     for text in (_strip_comments(css, " "), _strip_comments(css, "")):
         for label, pattern in _FORBIDDEN:
             if pattern.search(text):
                 raise OverridesError(f"custom.css is refused: it contains {label}")
+        found: list[str] = []
         for opener in _URL_OPEN.finditer(text):
             match = _URL.match(text, opener.start())
             if match is None:
                 raise OverridesError(
                     f"custom.css is refused: malformed url(; {_REMOTE_HELP}"
                 )
-            _check_url_target(next(g for g in match.groups() if g is not None).strip())
+            target = next(g for g in match.groups() if g is not None).strip()
+            _check_url_target(target)
+            found.append(target)
+        targets.append(found)
+    if targets[0] != targets[1]:
+        # A comment splits a word into or out of a url( token, so a browser and
+        # the build could disagree about which files the CSS names.
+        raise OverridesError(
+            "custom.css is refused: a comment sits inside the word url( or "
+            "splits a url(...) value; write url(...) without a comment in it"
+        )
 
 
 def load_custom_css(overrides: Path | None) -> str | None:
@@ -353,7 +366,10 @@ def load_custom_css(overrides: Path | None) -> str | None:
     except UnicodeDecodeError as exc:
         raise OverridesError("custom.css must be UTF-8 text") from exc
     _check_css(css)
-    return css
+    # The build rewrites url() references to hashed names, and it must see the
+    # same text the checks saw. Comments are replaced by a space, so the text
+    # that is rewritten and published is exactly the text that was validated.
+    return _strip_comments(css, " ")
 
 
 # ------------------------------------------------------------------ headers
@@ -388,6 +404,11 @@ _ORIGIN = re.compile(
     r"https://[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?(?::[0-9]{1,5})?"
 )
 _PATH = re.compile(r"/[A-Za-z0-9._~/*:-]*")
+
+# Cloudflare Pages reads at most this many rules from one _headers file.
+MAX_HEADER_RULES = 100
+# ... and at most this many characters on any one line, spacing included.
+MAX_HEADER_LINE = 2000
 
 # A noindex prefix: plain segments, no wildcards, no dot segments.
 _NOINDEX_PATH = re.compile(r"/[A-Za-z0-9._~-]+(?:/[A-Za-z0-9._~-]+)*/?")
@@ -425,9 +446,42 @@ def build_csp(extra: Mapping[str, Sequence[str]] | None = None) -> str:
     return "; ".join(f"{name} {' '.join(srcs)}" for name, srcs in policy.items())
 
 
+def _covers(pattern: str, other: str) -> bool:
+    """True when ``pattern`` is a splat rule that also matches ``other``."""
+    return pattern.endswith("/*") and other.startswith(pattern[:-1])
+
+
+def _check_cache_rules(immutable: Sequence[str], revalidate: Sequence[str]) -> None:
+    """Refuse cache rules where one URL could get two Cache-Control values.
+
+    Pages joins every matching rule, so the two classes must not overlap: no
+    repeated pattern, and no splat rule that covers a rule of the other class
+    (or any other rule at all; nested splats are refused too).
+    """
+    everything = [*immutable, *revalidate]
+    if len(set(everything)) != len(everything):
+        raise OverridesError("cache paths overlap: a pattern is listed twice")
+    for first in immutable:
+        for second in revalidate:
+            if _covers(first, second) or _covers(second, first):
+                raise OverridesError(
+                    f"cache paths overlap: {first!r} and {second!r} can match "
+                    "the same URL"
+                )
+    for kind in (immutable, revalidate):
+        for first in kind:
+            for second in kind:
+                if first != second and _covers(first, second):
+                    raise OverridesError(
+                        f"cache paths overlap: {first!r} covers {second!r}"
+                    )
+
+
 def render_headers(
     path_extras: Mapping[str, Mapping[str, Sequence[str]]] | None = None,
     noindex_paths: Sequence[str] = (),
+    immutable_paths: Sequence[str] = (),
+    revalidate_paths: Sequence[str] = (),
 ) -> str:
     """Return the Cloudflare Pages ``_headers`` file.
 
@@ -436,6 +490,10 @@ def render_headers(
     its own, because Pages otherwise sends both and the stricter one wins.
     ``noindex_paths`` are plain path prefixes that get ``X-Robots-Tag: noindex``
     for the path itself and everything under it; each is validated strictly.
+    ``immutable_paths`` and ``revalidate_paths`` get the two ``Cache-Control``
+    values (see ``cachepolicy``). They must not overlap, since Pages joins every
+    matching rule; each pattern is plain path characters with at most a final
+    ``/*``. Pages allows 100 rules in a file, so more than that is refused.
     """
     lines = [
         "/*",
@@ -451,6 +509,18 @@ def render_headers(
             "  ! Content-Security-Policy",
             f"  Content-Security-Policy: {build_csp(extra)}",
         ]
+    _check_cache_rules(immutable_paths, revalidate_paths)
+    for paths, value in (
+        (immutable_paths, IMMUTABLE),
+        (revalidate_paths, REVALIDATE),
+    ):
+        for pattern in paths:
+            if not (
+                HEADER_PATH.fullmatch(pattern.removesuffix("*"))
+                and "*" not in pattern.removesuffix("/*")
+            ):
+                raise OverridesError(f"cache path {pattern!r} is not allowed")
+            lines += ["", pattern, f"  Cache-Control: {value}"]
     patterns: set[str] = set()
     for prefix in noindex_paths:
         if (
@@ -462,4 +532,16 @@ def render_headers(
         patterns.update((prefix.rstrip("/"), prefix.rstrip("/") + "/*"))
     for pattern in sorted(patterns):
         lines += ["", pattern, "  X-Robots-Tag: noindex"]
+    for line in lines:
+        if len(line) > MAX_HEADER_LINE:
+            raise OverridesError(
+                f"a _headers line would be {len(line)} characters; Cloudflare "
+                f"Pages allows {MAX_HEADER_LINE}. Shorten the path or value."
+            )
+    rules = sum(1 for line in lines if line and not line.startswith(" "))
+    if rules > MAX_HEADER_RULES:
+        raise OverridesError(
+            f"_headers would hold {rules} rules; Cloudflare Pages allows "
+            f"{MAX_HEADER_RULES}. Use fewer tabs, or put images in a folder."
+        )
     return "\n".join(lines) + "\n"

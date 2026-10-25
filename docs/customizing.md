@@ -468,10 +468,32 @@ The same links show in every layout; only the container class changes.
 
 ## Layer 4: template and CSS overrides
 
+**Linking a file from a template.** Packaged files and your instance files are
+published under content-hashed names, so a template never writes
+`{{ root }}static/site.css`. Use the build's mapping instead:
+
+```
+<link rel="stylesheet" href="{{ root }}{{ asset("static/site.css") }}">
+<img src="{{ asset_url(creator.avatar, root) }}" alt="">
+```
+
+`asset("static/site.css")` returns the path relative to the site root, so
+prefix `root`. `asset_url(value, root)` does that for you and passes an
+`https://` value through unchanged. A name the build does not publish
+(a typo, or `static/copy.js` on a site with no crypto block) stops the build
+with `asset('...'): the build does not publish that file`. Your template
+override keeps working when a packaged file changes, because the name is looked
+up at build time, never typed.
+
 When config is not enough, point `--overrides` at a folder.
 
-**CSS.** `my-overrides/custom.css` is copied to `static/custom.css` and linked
-after `theme.css`, so it wins ties. The theme tokens are CSS custom
+**CSS.** `my-overrides/custom.css` is published as `static/custom.<hash>.css`
+(the hash is of its final bytes, so every edit is a new URL and never a stale
+cache hit) and linked after `theme.css`, so it wins ties. A `url()` in it that
+names a file the build publishes (a same-site path such as `../media/me.png`) is
+rewritten to that file's hashed name. Comments are removed from the published
+file (replaced by a space), so the text that is checked, rewritten and published
+is the same. A comment inside the word `url(` (`ur/**/l(`) is refused. The theme tokens are CSS custom
 properties; reading them keeps your CSS in step with the config. The names in
 `static/site.css` today are `--ra-color-bg`, `--ra-color-text`,
 `--ra-color-accent`, `--ra-color-surface`, `--ra-color-border`,
@@ -897,8 +919,9 @@ Details and limits:
    `--out` is emptied before each build; the build refuses an output folder
    that is, or contains, your config. A successful build writes `index.html`,
    one folder per extra tab, `privacy/index.html`, `404.html`, `_headers`
-   and `static/` (`site.css`, `theme.css`, `click.js` when click tracking is on,
-   and `custom.css` when you supplied one).
+   and `static/`, whose files carry a content hash in their names
+   (`site.<hash>.css`, `theme.<hash>.css`, `click.<hash>.js` when click
+   tracking is on, and `custom.<hash>.css` when you supplied one).
 
    The link manifest (`{"links": {id: url}}`, used to fill `LINK_IDS`) is not
    part of the site. `build` writes it next to `--out` as
@@ -939,7 +962,7 @@ Details and limits:
 
    - open `out/index.html` or the preview and click through every tab;
    - `grep -n '<script' out/*.html out/*/*.html` should show only
-     `static/click.js`, and no `style=` or `on...=` attributes should appear;
+     `static/click.<hash>.js`, and no `style=` or `on...=` attributes should appear;
    - confirm `out/_headers` is present, because the host serves it.
 
    If you also run the repository tests, `tests/test_example_variants.py`

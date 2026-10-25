@@ -21,7 +21,7 @@
 {% if entry.qr %}
 <details class="crypto-qr">
 <summary>Show QR code</summary>
-<img class="crypto-qr-image" src="{{ root }}{{ entry.qr }}" alt="QR code for {{ entry.display }} address" loading="lazy" referrerpolicy="no-referrer">
+<img class="crypto-qr-image" src="{{ asset_url(entry.qr, root) }}" alt="QR code for {{ entry.display }} address" loading="lazy" referrerpolicy="no-referrer">
 </details>
 {% endif %}
 </li>

@@ -200,6 +200,10 @@ def test_key_present_adds_only_robots_txt(tmp_path: Path) -> None:
     build_site(cfg(block=["Bot"]), tmp_path / "b", today=TODAY)
     a, b = files(tmp_path / "a"), files(tmp_path / "b")
     assert set(b) - set(a) == {"robots.txt"}
+    # the only other difference: robots.txt gets its revalidate rule in _headers
+    rule = b"\n/robots.txt\n  Cache-Control: public, max-age=0, must-revalidate\n"
+    assert b["_headers"].count(rule) == 1
+    b["_headers"] = b["_headers"].replace(rule, b"")
     assert {k: v for k, v in b.items() if k != "robots.txt"} == a
     assert b["robots.txt"] == render_robots(Robots(block=["Bot"])).encode("ascii")
 

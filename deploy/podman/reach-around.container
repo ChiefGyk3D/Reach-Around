@@ -10,7 +10,7 @@ Description=Reach Around site build
 [Container]
 Image=localhost/reach-around:local
 ContainerName=reach-around
-Exec=build --config /config/site.yaml --out /out --manifest /tmp/manifest.json
+Exec=build --config /config/site.yaml --out /out --manifest /tmp/manifest.json --assets-inventory /tmp/assets.json
 User=10001
 Group=10001
 # Map uid 10001 in the container to your own user so ./out stays yours.

@@ -42,7 +42,7 @@ podman run --rm --read-only --cap-drop ALL \
   --security-opt no-new-privileges:true --tmpfs /tmp \
   -v ./examples/instance:/config:ro -v ./out:/out \
   reach-around:local build --config /config/site.yaml --out /out \
-    --manifest /tmp/manifest.json
+    --manifest /tmp/manifest.json --assets-inventory /tmp/assets.json
 ```
 
 Replace the example mount with your own instance directory. Once `v0.1.0` is published the image is `ghcr.io/chiefgyk3d/reach-around:0.1.0` (pull it by digest, and sign-in is needed while the repository is private). See [docs/containers.md](docs/containers.md), [docs/releasing.md](docs/releasing.md) and the [changelog](CHANGELOG.md).

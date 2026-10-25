@@ -15,6 +15,7 @@ from typing import Any
 
 import pytest
 
+from assetpaths import asset, asset_file, has_asset
 from reach_around.config import SiteConfig, load_site_config
 from reach_around.config.blocks import Email
 from reach_around.config.loader import ConfigError
@@ -349,38 +350,47 @@ def test_the_block_has_no_link_in_the_html(tmp_path: Path) -> None:
 
 # --- assets only where the block is --------------------------------------------
 
-SCRIPT_TAG = '<script src="static/email.js" defer></script>'
-CSS_TAG = '<link rel="stylesheet" href="static/email.css">'
+SCRIPT_TAG = re.compile(
+    r'<script src="(?:\.\./)?static/email\.[0-9a-f]{20}\.js" defer></script>'
+)
+CSS_TAG = re.compile(
+    r'<link rel="stylesheet" href="(?:\.\./)?static/email\.[0-9a-f]{20}\.css">'
+)
+EMAIL_REF = re.compile(r"email\.[0-9a-f]{20}\.(?:js|css)")
 
 
 def test_assets_ship_with_a_click_block(tmp_path: Path) -> None:
     out = build(cfg(block()), tmp_path)
     html = (out / "index.html").read_text("utf-8")
-    assert SCRIPT_TAG in html
-    assert CSS_TAG in html
-    assert (out / "static" / "email.js").is_file()
-    assert (out / "static" / "email.css").is_file()
+    assert f'<script src="{asset(out, "static/email.js")}" defer></script>' in html
+    assert SCRIPT_TAG.search(html)
+    assert f'<link rel="stylesheet" href="{asset(out, "static/email.css")}">' in html
+    assert CSS_TAG.search(html)
+    assert asset_file(out, "static/email.js").is_file()
+    assert asset_file(out, "static/email.css").is_file()
 
 
 def test_never_js_ships_the_style_but_no_script(tmp_path: Path) -> None:
     out = build(cfg(block(reveal="never_js")), tmp_path)
     html = (out / "index.html").read_text("utf-8")
-    assert "email.js" not in html
-    assert CSS_TAG in html
-    assert not (out / "static" / "email.js").exists()
-    assert (out / "static" / "email.css").is_file()
+    assert not re.search(r"email\.[0-9a-f]{20}\.js", html)
+    assert CSS_TAG.search(html)
+    assert not has_asset(out, "static/email.js")
+    assert not list((out / "static").glob("email*.js"))
+    assert asset_file(out, "static/email.css").is_file()
 
 
 def test_other_pages_and_sites_do_not_mention_the_assets(tmp_path: Path) -> None:
     out = build(cfg(block(), extra_tabs=1), tmp_path)
     other = (out / "plain0" / "index.html").read_text("utf-8")
     assert "email." not in other
-    assert (out / "static" / "email.js").is_file()
+    assert asset_file(out, "static/email.js").is_file()
     out2 = tmp_path / "second"
     build_site(cfg({"id": "t", "markdown": "hello"}), out2, today=TODAY)
     assert "email." not in (out2 / "index.html").read_text("utf-8")
-    assert not (out2 / "static" / "email.js").exists()
-    assert not (out2 / "static" / "email.css").exists()
+    assert not has_asset(out2, "static/email.js")
+    assert not has_asset(out2, "static/email.css")
+    assert not list((out2 / "static").glob("email*"))
     assert "email" not in (out2 / "privacy" / "index.html").read_text("utf-8").lower()
 
 
