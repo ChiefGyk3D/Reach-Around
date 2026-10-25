@@ -5,6 +5,10 @@
 # numbers.json in the repository folder. Used by the scheduled
 # refresh-counts workflow; you can run it by hand too.
 #
+# The new numbers.json is checked by scripts/validate-numbers.py before it is
+# copied into the repository folder (and the workflow's publish job checks it
+# again after it crosses to the job that may write).
+#
 # Usage: scripts/refresh-counts.sh [--workdir DIR]
 #   --workdir DIR  scratch folder for the engine's result files (default: a
 #                  temporary folder that is removed afterwards)
@@ -125,8 +129,15 @@ case "$status" in
     ;;
 esac
 
+# The engine's file is data from a container that talked to the network. It
+# reaches the repository only through the strict validator, which writes a
+# fresh copy to a temporary file and renames it into place.
 if [ -f "$workdir/numbers.json" ] && [ ! -L "$workdir/numbers.json" ]; then
-  cp "$workdir/numbers.json" "$numbers"
+  python3 -I "$here/scripts/validate-numbers.py" \
+    --in "$workdir/numbers.json" --out "$numbers" || {
+    echo "refresh-counts: the engine's numbers.json failed the check; nothing was changed." >&2
+    exit 1
+  }
 fi
 
 if [ -n "${GITHUB_OUTPUT:-}" ]; then

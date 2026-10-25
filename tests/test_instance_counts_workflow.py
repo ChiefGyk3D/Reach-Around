@@ -18,7 +18,10 @@ SCRIPT = TEMPLATE / "scripts" / "refresh-counts.sh"
 
 SHA_USE = re.compile(r"^[\w.-]+/[\w./-]+@[0-9a-f]{40} # v\d+(\.\d+)*$")
 USES_LINE = re.compile(r"^\s*(?:-\s*)?uses:\s*(\S.*?)\s*$", re.MULTILINE)
-ALLOWED_PERMISSIONS = {"contents": "write", "pull-requests": "write"}
+ALLOWED_PERMISSIONS = {
+    "refresh": {"contents": "read"},
+    "publish": {"contents": "write", "pull-requests": "write"},
+}
 KEY_NAMES = {"YOUTUBE_API_KEY", "TWITCH_CLIENT_ID", "TWITCH_CLIENT_SECRET"}
 
 
@@ -42,7 +45,7 @@ def problems(text: str, script: str = "") -> list[str]:
             found.append(f"unpinned action: {line}")
     for name, job in data["jobs"].items():
         perms = job.get("permissions")
-        if perms != ALLOWED_PERMISSIONS:
+        if perms != ALLOWED_PERMISSIONS.get(name):
             found.append(f"{name}: permissions are {perms}")
         if "env" in job:
             found.append(f"{name}: job-level env")
@@ -59,6 +62,8 @@ def problems(text: str, script: str = "") -> list[str]:
         found.append("accept-drop is used")
     if "continue-on-error" in text:
         found.append("continue-on-error")
+    if re.search(r"--force(?!-with-lease)", text):
+        found.append("unconditional force push")
     return found
 
 
@@ -91,6 +96,74 @@ def test_secrets_reach_only_the_refresh_step_through_env() -> None:
     assert holders == ["Refresh the counts"]
 
 
+def _jobs() -> dict[str, Any]:
+    data = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+    return dict(data["jobs"])
+
+
+def test_the_job_with_the_keys_cannot_write_and_the_writer_has_no_keys() -> None:
+    jobs = _jobs()
+    assert set(jobs) == {"refresh", "publish"}
+    assert jobs["refresh"]["permissions"] == {"contents": "read"}
+    assert jobs["publish"]["permissions"] == {
+        "contents": "write",
+        "pull-requests": "write",
+    }
+    assert jobs["publish"]["needs"] == "refresh"
+    publish_text = yaml.safe_dump(jobs["publish"])
+    assert "secrets." not in publish_text
+    for name in KEY_NAMES:
+        assert name not in publish_text
+
+
+def test_both_jobs_keep_the_main_only_guard_and_no_stored_credentials() -> None:
+    for name, job in _jobs().items():
+        assert "refs/heads/main" in str(job.get("if")), name
+        checkouts = [
+            s
+            for s in job["steps"]
+            if str(s.get("uses", "")).startswith("actions/checkout@")
+        ]
+        assert checkouts, name
+        for step in checkouts:
+            assert step["with"]["persist-credentials"] is False, name
+
+
+def test_the_numbers_cross_the_jobs_as_an_artifact_and_are_checked_twice() -> None:
+    jobs = _jobs()
+    refresh_steps = jobs["refresh"]["steps"]
+    publish_steps = jobs["publish"]["steps"]
+    ups = [s for s in refresh_steps if "upload-artifact@" in str(s.get("uses"))]
+    downs = [s for s in publish_steps if "download-artifact@" in str(s.get("uses"))]
+    assert len(ups) == 1 and len(downs) == 1
+    assert ups[0]["with"]["name"] == downs[0]["with"]["name"]
+    assert ups[0]["with"]["if-no-files-found"] == "error"
+    # The validator runs in the refresh job (through the script) and again in
+    # publish, after the download and before the commit.
+    assert "validate-numbers.py" in SCRIPT.read_text(encoding="utf-8")
+    runs = [s.get("run", "") for s in publish_steps]
+    validate_at = next(i for i, r in enumerate(runs) if "validate-numbers.py" in r)
+    commit_at = next(i for i, r in enumerate(runs) if "commit -m" in r)
+    down_at = publish_steps.index(downs[0])
+    assert down_at < validate_at <= commit_at
+
+
+def test_the_push_is_a_leased_force_and_the_existing_pr_is_vetted() -> None:
+    text = WORKFLOW.read_text(encoding="utf-8")
+    code = "\n".join(
+        line for line in text.splitlines() if not line.lstrip().startswith("#")
+    )
+    assert "--force-with-lease=refs/heads/counts/refresh:" in code
+    assert not re.search(r"--force(?!-with-lease)", code)
+    assert "ls-remote" in code
+    # The existing pull request must be ours: same repository, the Actions
+    # bot as author, and numbers.json as the only changed file.
+    assert "isCrossRepository" in code
+    assert "github-actions" in code
+    assert '["numbers.json"]' in code
+    assert "Refresh follower counts" in code
+
+
 def test_failure_of_one_source_does_not_hide_the_others() -> None:
     script = SCRIPT.read_text(encoding="utf-8")
     # Exit 3 (a source failed) still lets the good numbers through; the job
@@ -116,6 +189,14 @@ def test_the_guard_bites() -> None:
         "secret in run": good.replace(
             "run: scripts/check-repo.sh",
             "run: echo ${{ secrets.YOUTUBE_API_KEY }}",
+        ),
+        "bare force push": good.replace(
+            "--force-with-lease=refs/heads/counts/refresh:", "--force "
+        ),
+        "write on the key job": good.replace(
+            "      contents: read # the keys are in this job",
+            "      contents: write # the keys are in this job",
+            1,
         ),
         "accept-drop": good + "\n# --accept-drop youtube\n",
     }

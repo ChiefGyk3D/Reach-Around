@@ -41,8 +41,10 @@ def workflow_files() -> list[Path]:
 JOB_PERMISSIONS: dict[str, dict[str, str]] = {
     "comment": {"contents": "read", "pull-requests": "write"},
     "ci-green": {},
-    # Pushes the counts/refresh branch and opens one pull request.
-    "refresh": {"contents": "write", "pull-requests": "write"},
+    # Holds the API keys, so it can only read; it publishes nothing.
+    "refresh": {"contents": "read"},
+    # Pushes the counts/refresh branch and opens one pull request; no keys.
+    "publish": {"contents": "write", "pull-requests": "write"},
 }
 
 
@@ -117,6 +119,7 @@ def test_the_template_files_exist() -> None:
         ".github/workflows/preview.yml",
         ".github/workflows/refresh-counts.yml",
         "scripts/refresh-counts.sh",
+        "scripts/validate-numbers.py",
     ):
         assert (TEMPLATE / rel).is_file(), rel
 

@@ -21,7 +21,7 @@ engine repository for the reasoning.
 | `.github/workflows/deploy.yml` | On a push to `main`: check, validate, then deploy to Cloudflare after a reviewer approves. |
 | `.github/workflows/refresh-counts.yml` | Once a day (and by hand): refresh follower counts with the pinned engine and open a pull request with the new `numbers.json`. Optional; see "Daily follower counts". |
 | `renovate.json` | Keeps `engine.lock` and the Actions pins current. |
-| `scripts/` | `check-config.sh` (the plain-language config check), `validate.sh` (the build CI runs), `write-result.py` (bundles the preview job's results into the one data file the comment job reads), `render-comment.py` (run by the comment job from the base commit: validates that file and writes the pull request comment from fixed text), `check-repo.sh`, `read-lock.sh`, `deploy-local.sh`. |
+| `scripts/` | `validate-numbers.py` (the strict check on `numbers.json` the counts refresh runs twice), `refresh-counts.sh`, `check-config.sh` (the plain-language config check), `validate.sh` (the build CI runs), `write-result.py` (bundles the preview job's results into the one data file the comment job reads), `render-comment.py` (run by the comment job from the base commit: validates that file and writes the pull request comment from fixed text), `check-repo.sh`, `read-lock.sh`, `deploy-local.sh`. |
 | `docs/EDITING.md` | How to change the page without touching code. |
 
 ## Adopt it
@@ -194,9 +194,21 @@ as skipped (`needs_user_token`); keep that number by hand in `numbers.json`.
 - One failed source never stops the others: the good numbers are proposed
   first, and then the run is marked failed so you notice. Entries you wrote by
   hand for platforms without a source are kept.
-- The workflow has `contents: write` and `pull-requests: write` and nothing
-  else, uses no `pull_request_target`, and refuses to run from a branch other
-  than `main`.
+- Two jobs keep the keys and the write access apart. The `refresh` job holds
+  the keys and can only read (`contents: read`); the `publish` job can write
+  (`contents: write`, `pull-requests: write`) and holds no keys. Neither uses
+  `pull_request_target`, and both refuse to run from a branch other than
+  `main`.
+- `numbers.json` is data, not trusted. `scripts/validate-numbers.py` checks it
+  before it is copied into the repository and again in the `publish` job after
+  it crosses as an artifact: the exact shape the engine writes, known id
+  names, whole non-negative counts, real UTC stamps, at most 64 KiB. It writes
+  a fresh copy through a temporary file and a rename, never the original bytes.
+- The branch is replaced only if it is still the commit the run saw
+  (`--force-with-lease`). If a pull request is already open on `counts/refresh`
+  and it was not opened by the Actions bot, comes from a fork, or changes
+  anything besides `numbers.json`, the run stops with a message and touches
+  nothing. Close that pull request or rename its branch, then run again.
 
 ## The token
 

@@ -11,6 +11,13 @@
 # `counts/refresh` is rebuilt from main on each run, so there is at most one
 # open pull request.
 #
+# Two jobs, so the keys and the write access never meet:
+#   refresh  holds the API keys and can only read the repository. It runs the
+#            engine, checks the result with scripts/validate-numbers.py and
+#            hands numbers.json on as an artifact.
+#   publish  can write (the branch and the pull request) and holds no keys.
+#            It downloads the artifact, checks it again with the same script,
+#            and only then commits it.
 # The keys reach one step only, the one that runs the engine, through env. No
 # step that runs anything else sees them. There is no environment and no
 # Cloudflare token here.
@@ -37,8 +44,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
-      contents: write # to push the counts/refresh branch
-      pull-requests: write # to open the pull request
+      contents: read # the keys are in this job, so it cannot write
+    outputs:
+      source_failed: ${{ steps.refresh.outputs.source_failed }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -61,7 +69,48 @@ jobs:
           TWITCH_CLIENT_SECRET: ${{ secrets.TWITCH_CLIENT_SECRET }}
         run: scripts/refresh-counts.sh --workdir "$RUNNER_TEMP/counts"
 
-      # No keys in this step. The token is used for one push and the pull
+      # The engine's file was already checked on its way into the workspace.
+      # This copy is the only thing the next job gets.
+      - name: Hand the numbers to the publish job
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: counts-numbers
+          path: numbers.json
+          if-no-files-found: error
+          retention-days: 1
+
+  publish:
+    name: Propose the new numbers
+    needs: refresh
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write # to push the counts/refresh branch
+      pull-requests: write # to open the pull request
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: counts-numbers
+          path: ${{ runner.temp }}/counts-in
+
+      # The artifact is data. Check it again, here, with the same script, and
+      # write a fresh copy over numbers.json.
+      - name: Check the numbers again
+        run: |
+          set -eu
+          in="$RUNNER_TEMP/counts-in"
+          if [ "$(ls -A "$in")" != "numbers.json" ]; then
+            echo "::error::The artifact must hold numbers.json and nothing else."
+            exit 1
+          fi
+          python3 -I scripts/validate-numbers.py --in "$in/numbers.json" --out numbers.json
+
+      # No API keys in this job. The token is used for one push and the pull
       # request, and is not written to disk.
       - name: Propose the new numbers
         env:
@@ -72,16 +121,39 @@ jobs:
             echo "The numbers did not change."
             exit 0
           fi
+          auth="$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)"
+          authed() {
+            git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $auth" "$@"
+          }
+          # An open pull request on this branch must be ours: from this
+          # repository, opened by the Actions bot, changing numbers.json only.
+          # Anything else is somebody's work; stop rather than overwrite it.
+          prs="$(gh pr list --head counts/refresh --base main --state open \
+            --json number,author,files,isCrossRepository)"
+          open="$(printf '%s' "$prs" | jq length)"
+          if [ "$open" -gt 1 ]; then
+            echo "::error::More than one open pull request uses counts/refresh. Close the extras and run again."
+            exit 1
+          fi
+          foreign="$(printf '%s' "$prs" | jq -r '.[]
+            | select(.isCrossRepository
+              or ((.author.login | IN("app/github-actions", "github-actions")) | not)
+              or ((.files | map(.path)) != ["numbers.json"]))
+            | .number')"
+          if [ -n "$foreign" ]; then
+            echo "::error::Pull request #$foreign on counts/refresh was not opened by the Actions bot, or changes more than numbers.json. Close it or rename its branch, then run again."
+            exit 1
+          fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git switch -C counts/refresh
           git add numbers.json
           git commit -m "Refresh follower counts"
-          auth="$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)"
-          git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $auth" \
-            push --force origin counts/refresh
-          open="$(gh pr list --head counts/refresh --base main --state open \
-            --json number --jq length)"
+          # Overwrite the branch only if it is still the commit seen now. An
+          # empty value means the branch must not exist yet.
+          seen="$(authed ls-remote origin refs/heads/counts/refresh | cut -f1)"
+          authed push --force-with-lease=refs/heads/counts/refresh:"$seen" \
+            origin counts/refresh
           if [ "$open" = 0 ]; then
             gh pr create --base main --head counts/refresh \
               --title "Refresh follower counts" \
@@ -91,7 +163,7 @@ jobs:
       # The good numbers are already proposed above; now make the run red so
       # a broken source is noticed.
       - name: Fail if a source failed
-        if: steps.refresh.outputs.source_failed == 'true'
+        if: needs.refresh.outputs.source_failed == 'true'
         run: |
-          echo "::error::At least one count source failed; see the Refresh the counts step. Numbers that did refresh were proposed."
+          echo "::error::At least one count source failed; see the Refresh the counts step of the refresh job. Numbers that did refresh were proposed."
           exit 1

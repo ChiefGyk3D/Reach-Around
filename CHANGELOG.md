@@ -7,6 +7,7 @@ while the project is alpha, every release is `0.x` and anything can change betwe
 ## [Unreleased]
 
 - The instance template gains `.github/workflows/refresh-counts.yml` and `scripts/refresh-counts.sh`: a daily (07:17 UTC, plus manual) run of `reach-around counts refresh` with the engine image pinned in `engine.lock`. Keys (`YOUTUBE_API_KEY`, `TWITCH_CLIENT_ID`, `TWITCH_CLIENT_SECRET`) come only from secrets through `env` on the one step that runs the engine; the suspect-value guard stays on and the drop override is never passed; a failed source does not stop the others; changed `numbers.json` goes to a `counts/refresh` pull request. A test guards the schedule, permissions, secret placement and pinning (#174).
+- Counts refresh hardening (#182): the workflow is split into `refresh` (holds the API keys, `contents: read` only, uploads `numbers.json` as an artifact) and `publish` (writes the branch and pull request, holds no keys). The new `scripts/validate-numbers.py` checks `numbers.json` strictly (the engine's exact shape, id names, whole counts from 0 to 10**10, UTC stamps, 64 KiB, no duplicate keys) before it is copied into the repository and again in `publish`, and writes a fresh copy through a temporary file and a rename. The push is `--force-with-lease` against the commit seen on the remote, and the run stops if an open pull request on `counts/refresh` was not opened by the Actions bot, is from a fork, or changes more than `numbers.json`.
 
 ## [0.2.0] - 2026-10-25
 
