@@ -73,3 +73,9 @@ def test_the_guard_bites() -> None:
     bad = "a { grid-template-columns: repeat(auto-fill, minmax(10rem, 1fr)); }"
     tracks = re.findall(r"minmax\(([^,]+),", bad)
     assert not all(t.startswith("min(") for t in tracks)
+
+
+def test_the_viewport_meta_asks_for_the_whole_screen() -> None:
+    base = (STATIC.parent / "templates" / "base.html").read_text()
+    assert "viewport-fit=cover" in base
+    assert "viewport-fit=cover" not in base.replace("viewport-fit=cover", "")

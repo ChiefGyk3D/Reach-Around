@@ -330,6 +330,10 @@ def test_pages_declare_lang_and_viewport_and_a_title(tmp_path: Path) -> None:
         assert text.startswith("<!DOCTYPE html>")
         assert '<html lang="en">' in text
         assert 'name="viewport"' in text
+        assert (
+            '<meta name="viewport" content="width=device-width, initial-scale=1,'
+            ' viewport-fit=cover">'
+        ) in text
         assert re.search(r"<title>[^<]+</title>", text)
         assert '<meta charset="utf-8">' in text
 

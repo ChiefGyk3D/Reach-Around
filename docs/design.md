@@ -151,7 +151,9 @@ Other adaptations:
   `minmax(min(10rem, 100%), 1fr)` so a track can never be wider than the screen, and
   long words wrap anywhere. The tests check 200 percent text and 200 percent zoom
   on a phone, a tablet and a desktop for sideways overflow and clipped text.
-- **Notches.** The column's padding adds `env(safe-area-inset-*)`.
+- **Notches.** Every page declares `viewport-fit=cover`, and the column's padding
+  adds `env(safe-area-inset-*)`, so content stays clear of a notch, the rounded
+  corners and the home bar.
 - **Print.** No background or tab bar, plain text on paper, each link's address
   printed under it, and sections printed open.
 - **Color scheme.** Unchanged: `prefers-color-scheme` still picks the palette.
@@ -162,9 +164,6 @@ rich synthetic site at 320 and 360 to 2560 px, and
 
 ## Known limits
 
-- The safe-area insets stay at 0 until the page's viewport meta tag adds
-  `viewport-fit=cover`; the template is not changed by this work, so on a notched
-  phone the browser's own inset still applies.
 - A creator's `column_width` is the floor: a value below 45rem is raised to
   `45rem` at tablet width and to `54rem` at desktop width. Override
   `--ra-column-tablet` and `--ra-column-desktop` in `custom.css` to hold a narrow column.
