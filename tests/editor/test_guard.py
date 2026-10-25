@@ -229,12 +229,13 @@ def test_token_differs_between_runs(tmp_path: Path) -> None:
 
 
 def post(
-    session: EditorSession, extra: dict[str, str], body: bytes = b"{}"
+    session: EditorSession,
+    extra: dict[str, str],
+    body: bytes = b"{}",
+    path: str = "/__edit/api/op",
 ) -> int | None:
     sent = {**tok(session), **extra}
-    return request(
-        session.port, "POST", "/__edit/api/op", sent, body, same_origin=True
-    ).status
+    return request(session.port, "POST", path, sent, body, same_origin=True).status
 
 
 def test_form_encoded_and_other_content_types_are_415(
@@ -296,7 +297,9 @@ def test_authenticated_post_to_unknown_route_is_404_and_writes_nothing(
 ) -> None:
     with running_editor(tmp_path) as session:
         before = tree_snapshot(tmp_path)
-        got = post(session, {"Content-Type": "application/json"})
+        got = post(
+            session, {"Content-Type": "application/json"}, path="/__edit/api/nothing"
+        )
         assert got == 404
         assert tree_snapshot(tmp_path) == before
 
