@@ -109,4 +109,66 @@ describe("click limiter keys", () => {
     const n = await testEnv.DB.prepare("SELECT COUNT(*) AS n FROM click_events").first<{ n: number }>();
     expect(n?.n).toBe(2);
   });
+
+  const SPELLINGS: string[][] = [
+    ["2001:db8::1", "2001:0db8:0:0:0:0:0:1", "2001:DB8:0000::0001", "2001:db8:0:0:ffff::9"],
+    ["192.0.2.1", "::ffff:192.0.2.1", "::FFFF:c000:0201", "0:0:0:0:0:ffff:192.0.2.1"],
+  ];
+
+  async function pair(a: string, b: string, secret?: string) {
+    const l = recorder();
+    const e = envWith(l, secret);
+    await handleClick(click(a), e);
+    await handleClick(click(b), e);
+    return l.keys;
+  }
+
+  for (const secret of [SECRET, undefined]) {
+    const tag = secret ? "with the secret" : "without the secret";
+    it(`equivalent spellings share one click limiter key ${tag}`, async () => {
+      for (const group of SPELLINGS) {
+        const keys = new Set<string>();
+        for (const s of group) keys.add((await pair(s, s, secret))[0] as string);
+        expect(keys.size, group.join(" ")).toBe(1);
+      }
+    });
+
+    it(`different addresses and different /64 networks differ ${tag}`, async () => {
+      const [k1, k2] = await pair("192.0.2.1", "192.0.2.2", secret);
+      expect(k1).not.toBe(k2);
+      const [k3, k4] = await pair("2001:db8:0:1::1", "2001:db8:0:2::1", secret);
+      expect(k3).not.toBe(k4);
+    });
+
+    it(`absent, malformed and zone-id addresses all use the one unknown bucket ${tag}`, async () => {
+      const l = recorder();
+      const e = envWith(l, secret);
+      for (const ip of [null, "not-an-ip", "fe80::1%eth0", "2001:db8::1::2", "1.2.3.999"]) {
+        await handleClick(click(ip), e);
+      }
+      expect(new Set(l.keys).size).toBe(1);
+      const known = recorder();
+      await handleClick(click("192.0.2.1"), envWith(known, secret));
+      expect(known.keys[0]).not.toBe(l.keys[0]);
+    });
+  }
+
+  it("page-view limiter keys are spelling-stable too, and differ for different addresses", async () => {
+    const v: ReturnType<typeof recorder>[] = [];
+    for (const ip of ["2001:db8::1", "2001:0DB8:0:0:0:0:0:1", "::ffff:192.0.2.1", "192.0.2.1"]) {
+      const r = recorder();
+      v.push(r);
+      await handleView(
+        new Request("https://worker.example.test/e/v/home", {
+          method: "POST",
+          headers: { "User-Agent": UA, Origin: `https://${SITE}`, "CF-Connecting-IP": ip, "Content-Length": "0" },
+          body: "",
+        }),
+        { DB: testEnv.DB, SITE_HOST: SITE, PAGE_IDS: '["home"]', VIEW_LIMITER: r, VIEW_HASH_SECRET: SECRET },
+      );
+    }
+    expect(v[0]?.keys[0]).toBe(v[1]?.keys[0]);
+    expect(v[2]?.keys[0]).toBe(v[3]?.keys[0]);
+    expect(v[0]?.keys[0]).not.toBe(v[2]?.keys[0]);
+  });
 });

@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+import { normalizeAddress } from "./address";
 import { limiterKeyOrIsolate } from "./ratekey";
 
 /** Workers Rate Limiting binding (the subset we use). */
@@ -194,7 +195,9 @@ export async function handleClick(request: Request, env: Env): Promise<Response>
     const key = await limiterKeyOrIsolate(
       env.VIEW_HASH_SECRET,
       "clk",
-      request.headers.get("CF-Connecting-IP") ?? "unknown",
+      // Canonical form, so equivalent spellings share one allowance. An absent
+      // or malformed address becomes the literal "unknown" (one shared bucket).
+      normalizeAddress(request.headers.get("CF-Connecting-IP")) ?? "unknown",
     ); // CONTROL:click-limiter-key
     const { success } = await env.CLICK_LIMITER.limit({ key });
     if (!success) return noContent();
