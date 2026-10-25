@@ -39,7 +39,9 @@ def test_default_asset_keys_is_empty() -> None:
 
 def test_hook_not_called_without_asset_keys(cfg: Path) -> None:
     calls: list[tuple[str, Any]] = []
-    run(cfg, "creator.name", "New Name", validate_slot=lambda k, v: calls.append((k, v)))
+    run(
+        cfg, "creator.name", "New Name", validate_slot=lambda k, v: calls.append((k, v))
+    )
     assert calls == []
 
 
@@ -48,19 +50,25 @@ def test_hook_called_for_a_changed_asset_key(
 ) -> None:
     monkeypatch.setattr(editing, "ASSET_KEYS", frozenset({"creator.name"}))
     calls: list[tuple[str, Any]] = []
-    run(cfg, "creator.name", "New Name", validate_slot=lambda k, v: calls.append((k, v)))
+    run(
+        cfg, "creator.name", "New Name", validate_slot=lambda k, v: calls.append((k, v))
+    )
     assert calls == [("creator.name", "New Name")]
     assert "New Name" in cfg.read_text()
 
 
-def test_hook_not_called_for_other_keys(cfg: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_hook_not_called_for_other_keys(
+    cfg: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     monkeypatch.setattr(editing, "ASSET_KEYS", frozenset({"creator.name"}))
     calls: list[Any] = []
     run(cfg, "theme.mode", "dark", validate_slot=lambda k, v: calls.append(k))
     assert calls == []
 
 
-def test_refusal_leaves_file_untouched(cfg: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_refusal_leaves_file_untouched(
+    cfg: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     monkeypatch.setattr(editing, "ASSET_KEYS", frozenset({"creator.name"}))
     before = cfg.read_bytes()
 
@@ -73,7 +81,9 @@ def test_refusal_leaves_file_untouched(cfg: Path, monkeypatch: pytest.MonkeyPatc
     assert [p.name for p in cfg.parent.iterdir()] == ["site.yaml"]  # no temp files
 
 
-def test_refusal_also_applies_to_dry_run(cfg: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_refusal_also_applies_to_dry_run(
+    cfg: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     monkeypatch.setattr(editing, "ASSET_KEYS", frozenset({"creator.name"}))
 
     def refuse(key: str, value: Any) -> None:

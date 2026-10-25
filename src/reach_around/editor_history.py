@@ -31,7 +31,6 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
 
 HISTORY_DIRNAME = ".reach-around-history"
 IGNORE_LINE = f"{HISTORY_DIRNAME}/"
@@ -400,12 +399,15 @@ class History:
             )
         if hashlib.sha256(data).hexdigest() != entry.hash:
             return Refusal(
-                "snapshot_corrupt", "That earlier version was changed; not restoring it."
+                "snapshot_corrupt",
+                "That earlier version was changed; not restoring it.",
             )
         try:
             return data.decode("utf-8")
         except UnicodeDecodeError:
-            return Refusal("snapshot_corrupt", "That earlier version is not valid text.")
+            return Refusal(
+                "snapshot_corrupt", "That earlier version is not valid text."
+            )
 
     # -- public API --
 
@@ -416,7 +418,8 @@ class History:
         if old == new:
             return
         dir_fd = self._open_dir(create=True)
-        assert dir_fd is not None
+        if dir_fd is None:  # not reachable with create=True
+            raise HistoryError(f"{self.directory}: cannot create the history folder")
         try:
             lock = self._lock(dir_fd)
             try:
@@ -425,7 +428,10 @@ class History:
                 old_hash = _sha(old)
                 if not state.entries or state.entries[state.cursor].hash != old_hash:
                     self._store(
-                        dir_fd, state, old, "start" if not state.entries else "outside edit"
+                        dir_fd,
+                        state,
+                        old,
+                        "start" if not state.entries else "outside edit",
                     )
                 self._store(dir_fd, state, new, label)
                 state.cursor = len(state.entries) - 1
@@ -564,7 +570,10 @@ def ensure_gitignore(config: Path) -> bool:
     try:
         tmp = f".gitignore.tmp-{secrets.token_hex(8)}"
         fd = os.open(
-            tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, mode, dir_fd=dir_fd
+            tmp,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+            mode,
+            dir_fd=dir_fd,
         )
         try:
             with os.fdopen(fd, "wb") as handle:

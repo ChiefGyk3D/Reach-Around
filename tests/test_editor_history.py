@@ -66,7 +66,9 @@ def test_layout_and_modes(doc: Doc, hist: History) -> None:
     assert "index.json" in files
     snaps = [f for f in files if f.endswith(".yaml")]
     assert len(snaps) == 2  # the text before and after the write
-    assert snaps[0].startswith("0001-") and snaps[0] == f"0001-{sha('v0\n')[:8]}.yaml"
+    assert (
+        snaps[0].startswith("0001-") and snaps[0] == "0001-" + sha("v0\n")[:8] + ".yaml"
+    )
     for p in d.iterdir():
         assert stat.S_IMODE(p.stat().st_mode) == 0o600, p.name
     # no temp files left behind
@@ -90,7 +92,9 @@ def test_symlinked_history_dir_is_refused(tmp_path: Path, doc: Doc) -> None:
     assert list(elsewhere.iterdir()) == []
 
 
-def test_symlinked_snapshot_file_is_not_followed(tmp_path: Path, doc: Doc, hist: History) -> None:
+def test_symlinked_snapshot_file_is_not_followed(
+    tmp_path: Path, doc: Doc, hist: History
+) -> None:
     edit(hist, doc, "v1\n")
     victim = tmp_path / "victim.txt"
     victim.write_text("secret\n")
@@ -157,7 +161,9 @@ def test_undo_with_no_history_is_a_typed_refusal(doc: Doc, hist: History) -> Non
     assert not history_dir(doc).exists()  # reading never creates the folder
 
 
-def test_undo_refused_after_outside_edit_and_file_untouched(doc: Doc, hist: History) -> None:
+def test_undo_refused_after_outside_edit_and_file_untouched(
+    doc: Doc, hist: History
+) -> None:
     edit(hist, doc, "v1\n")
     doc.write("outside\n")
     calls: list[str] = []
@@ -192,10 +198,14 @@ def test_restore_anyway_snapshots_current_first(doc: Doc, hist: History) -> None
     # the outside version was kept, so even this is undoable via redo
     assert any(sha("outside\n")[:8] in p.name for p in history_dir(doc).iterdir())
     assert isinstance(hist.redo(doc.text, doc.write), Restored) and doc.text == "v2\n"
-    assert isinstance(hist.redo(doc.text, doc.write), Restored) and doc.text == "outside\n"
+    assert (
+        isinstance(hist.redo(doc.text, doc.write), Restored) and doc.text == "outside\n"
+    )
 
 
-def test_restore_anyway_clears_redo_like_any_new_operation(doc: Doc, hist: History) -> None:
+def test_restore_anyway_clears_redo_like_any_new_operation(
+    doc: Doc, hist: History
+) -> None:
     edit(hist, doc, "v1\n")
     edit(hist, doc, "v2\n")
     assert isinstance(hist.undo(doc.text, doc.write), Restored)  # now at v1, v2 is redo
@@ -203,11 +213,15 @@ def test_restore_anyway_clears_redo_like_any_new_operation(doc: Doc, hist: Histo
     assert isinstance(hist.restore_anyway(doc.text, doc.write), Restored)
     assert doc.text == "v0\n"
     assert isinstance(hist.redo(doc.text, doc.write), Restored) and doc.text == "v1\n"
-    assert isinstance(hist.redo(doc.text, doc.write), Restored) and doc.text == "outside\n"
+    assert (
+        isinstance(hist.redo(doc.text, doc.write), Restored) and doc.text == "outside\n"
+    )
     assert isinstance(hist.redo(doc.text, doc.write), Refusal)
 
 
-def test_restore_anyway_snapshot_survives_a_failed_write(doc: Doc, hist: History) -> None:
+def test_restore_anyway_snapshot_survives_a_failed_write(
+    doc: Doc, hist: History
+) -> None:
     edit(hist, doc, "v1\n")
     doc.write("outside\n")
 
@@ -237,7 +251,9 @@ def test_noop_write_is_not_recorded(doc: Doc, hist: History) -> None:
     assert not history_dir(doc).exists()
 
 
-def test_write_after_outside_edit_keeps_the_outside_text(doc: Doc, hist: History) -> None:
+def test_write_after_outside_edit_keeps_the_outside_text(
+    doc: Doc, hist: History
+) -> None:
     edit(hist, doc, "v1\n")
     doc.write("outside\n")
     edit(hist, doc, "v2\n")
@@ -337,14 +353,19 @@ def _index(doc: Doc) -> Path:
         b"0" * (eh.MAX_INDEX_BYTES + 10),
     ],
 )
-def test_corrupted_index_is_quarantined_and_history_restarts(doc: Doc, payload: bytes) -> None:
+def test_corrupted_index_is_quarantined_and_history_restarts(
+    doc: Doc, payload: bytes
+) -> None:
     hist = History(doc.path)
     edit(hist, doc, "v1\n")
     _index(doc).write_bytes(payload)
     hist2 = History(doc.path)
     # undo has nothing trustworthy to go back to, and says so
     out = hist2.undo(doc.text, doc.write)
-    assert isinstance(out, Refusal) and out.code in {"nothing_to_undo", "history_corrupt"}
+    assert isinstance(out, Refusal) and out.code in {
+        "nothing_to_undo",
+        "history_corrupt",
+    }
     assert doc.text == "v1\n"
     # recording works again from a clean index
     edit(hist2, doc, "v2\n")
@@ -369,7 +390,9 @@ def test_missing_snapshot_is_a_refusal(doc: Doc, hist: History) -> None:
     assert isinstance(out, Refusal) and out.code == "snapshot_unreadable"
 
 
-def test_index_cannot_name_a_file_outside_the_directory(tmp_path: Path, doc: Doc, hist: History) -> None:
+def test_index_cannot_name_a_file_outside_the_directory(
+    tmp_path: Path, doc: Doc, hist: History
+) -> None:
     edit(hist, doc, "v1\n")
     victim = tmp_path / "victim.yaml"
     victim.write_text("v0\n")
@@ -435,7 +458,9 @@ def test_losing_the_folder_creation_race_is_fine(
     assert (history_dir(doc) / "index.json").is_file()
 
 
-def test_lock_wait_is_bounded(doc: Doc, hist: History, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_lock_wait_is_bounded(
+    doc: Doc, hist: History, monkeypatch: pytest.MonkeyPatch
+) -> None:
     monkeypatch.setattr(eh, "LOCK_TIMEOUT", 0.2)
     edit(hist, doc, "v1\n")
     import fcntl
