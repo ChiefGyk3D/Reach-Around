@@ -3,7 +3,7 @@
 // the UTM allowlist and the oversized-day mode. Synthetic data only.
 import { beforeEach, describe, expect, it } from "vitest";
 import { purgeViews } from "../../src/viewretention";
-import { DIM_TOP, ROW_CAP_CORE, maxRowsPerDay, rollupClosedDays, utmAllowlist } from "../../src/viewrollup";
+import { DIM_TOP, ROW_CAP_CORE, ROW_CAP_DIM, maxRowsPerDay, rollupClosedDays, utmAllowlist } from "../../src/viewrollup";
 import { DB, clearAll } from "./helpers";
 import { type RawRow, canon, oracleCore, oracleDim, oracleGeo } from "./oracle";
 
@@ -260,6 +260,82 @@ describe("UTM allowlist", () => {
     const out = (await q<{ src_kind: string; src: string; views: number }>("SELECT * FROM view_daily")).map((r) => `${r.src_kind}:${r.src}:${r.views}`).sort();
     expect(out).toEqual(["o:other:4", "r:alice-smith.example.test:4", "u:bluesky:4"].sort());
     expect(JSON.stringify(await q("SELECT * FROM view_daily"))).not.toContain("john-doe");
+  });
+});
+
+describe("hostile or damaged raw rows", () => {
+  it("odd_first_values_and_text_in_numeric_columns_never_fail_the_day_and_uniques_count_only_first_equals_1", async () => {
+    const ins = (first: string | number, ts: number | string, bmajor: string | number = 1) =>
+      DB.prepare(
+        "INSERT INTO view_events (ts, page, src_kind, bot_class, reason, first, bmajor, city, region, country) VALUES (?, 'home', 'd', 'h', 'ok', ?, ?, 'T', 'R', 'US')",
+      ).bind(ts, first, bmajor);
+    await DB.batch([
+      ins(1, D13 + 1),
+      ins(1, D13 + 2),
+      ins(0, D13 + 3),
+      ins(1_000_000, D13 + 4),
+      ins(-1, D13 + 5),
+      ins(2, D13 + 6, "not-a-number"),
+      ins("abc", D13 + 7),
+      ins(1.5, D13 + 8),
+      ins(1, "not-a-timestamp"), // never part of any day
+    ]);
+    const r = await rollupClosedDays({ DB, MIN_CELL: "1" }, NOW);
+    expect(r.days).toBe(1);
+    const m = await meta();
+    expect(m.rollup_err).toBe("none");
+    expect(m.rollup_failed_day).toBeUndefined();
+    // 8 rows are in the day; exactly the two rows with first = 1 are unique.
+    for (const t of ["view_daily", "view_geo_daily"]) {
+      expect((await q<{ v: number; u: number }>(`SELECT SUM(views) AS v, SUM(uniques) AS u FROM ${t}`))[0]).toEqual({ v: 8, u: 2 });
+    }
+    expect((await q<{ v: number; u: number }>("SELECT SUM(views) AS v, SUM(uniques) AS u FROM view_dim_daily WHERE dim = 'browser'"))[0]).toEqual({ v: 8, u: 2 });
+    expect((await q<{ views: number; uniques: number }>("SELECT * FROM view_rollup_log"))[0]).toMatchObject({ raw_views: 8, views: 8, uniques: 2 });
+    // The row whose timestamp is not an integer is garbage: the purge removes it.
+    expect(await rawCount()).toBe(9);
+    await purgeViews({ DB }, NOW);
+    expect((await q<{ n: number }>("SELECT COUNT(*) AS n FROM view_events WHERE typeof(ts) <> 'integer'"))[0]?.n).toBe(0);
+  });
+});
+
+describe("the dimension table's real maximum", () => {
+  it("a_worst_case_day_reaches_exactly_the_stated_maximum_and_no_more", async () => {
+    expect(ROW_CAP_DIM).toBe(324);
+    const rows: R[] = [];
+    // Four bot classes; every dimension column takes 40 distinct values with
+    // decreasing weights, the same ranking in every class, so each dimension
+    // keeps its top values in every class and has an 'other' row in every class.
+    for (const bot_class of ["h", "a", "s", "v"]) {
+      for (let j = 0; j < 40; j++) {
+        for (let k = 0; k < 40 - j; k++) {
+          rows.push({
+            ts: D13 + rows.length,
+            bot_class,
+            browser: `b${j}`, os: `o${j}`, device: `d${j}`, lang: `l${j}`, vp: `v${j}`, net: `n${j}`, reason: `r${j}`,
+          });
+        }
+      }
+    }
+    expect(rows.length).toBe(3280);
+    await insert(rows);
+    await rollupClosedDays({ DB, MIN_CELL: "1", ROLLUP_MAX_ROWS_PER_DAY: "20000" }, NOW);
+    const n = (await q<{ n: number }>("SELECT COUNT(*) AS n FROM view_dim_daily"))[0]?.n;
+    expect(n).toBe(ROW_CAP_DIM);
+    expect(await sum("view_dim_daily")).toBe(3280 * Object.keys(DIM_TOP).length);
+  }, 120_000);
+});
+
+describe("reduced re-rolls are counted", () => {
+  it("a_re_roll_of_a_reduced_day_increments_rollup_reduced_days", async () => {
+    const env = { MIN_CELL: "1", ROLLUP_MAX_ROWS_PER_DAY: "100" };
+    await insert(mk(300, {}));
+    await rollupClosedDays({ DB, ...env }, NOW);
+    expect((await meta()).rollup_reduced_days).toBe("1");
+    await insert([{ ts: D13 + 5000 }]); // a late row: the day is re-rolled, still over the limit
+    const r = await rollupClosedDays({ DB, ...env }, NOW + 1000);
+    expect(r.late).toBe(1);
+    expect((await meta()).rollup_reduced_days).toBe("1"); // counted for the re-roll too
+    expect((await q<{ rerolls: number }>("SELECT rerolls FROM view_rollup_log"))[0]?.rerolls).toBe(1);
   });
 });
 

@@ -106,7 +106,7 @@ export async function purgeViews(env: RetentionEnv, nowMs: number, opts: PurgeOp
     },
     {
       // The hard ceiling: unrolled (and uncounted late) rows past min(3 x keep, 90 days) go.
-      sql: "DELETE FROM view_events WHERE id IN (SELECT id FROM view_events WHERE ts < ?1 LIMIT ?2)",
+      sql: "DELETE FROM view_events WHERE id IN (SELECT id FROM view_events WHERE ts < ?1 OR typeof(ts) <> 'integer' LIMIT ?2)",
       args: [hardCutoff],
     },
     { sql: "DELETE FROM view_daily WHERE day IN (SELECT day FROM view_daily WHERE day < ?1 LIMIT ?2)", args: [aggCutoff] },

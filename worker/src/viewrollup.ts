@@ -24,8 +24,15 @@
 // functions. The Worker receives only the capped output rows (at most
 // ROW_CAP_* per table, a few hundred in total) and does no sorting or
 // grouping of raw-sized data. This matters because a Free Worker has 10 ms of
-// CPU per invocation. CPU cannot be measured in the test environment; see
-// docs/deploy.md for the arithmetic of rows handled in JavaScript.
+// CPU per cron invocation. Cloudflare documents that waiting on database
+// queries does not count as CPU time, but also that D1 query execution and
+// result serialization run within the Workers CPU and memory limits, so this
+// design only keeps the Worker's own work small and does not claim D1 work is
+// free. CPU cannot be measured in the test environment; see docs/deploy.md.
+//
+// Hostile or damaged raw rows must not fail a day: `uniques` counts only rows
+// whose `first` is exactly 1 (a stored 1000000, -1 or text counts as 0), and
+// bot_class / src_kind are closed sets enforced by CHECK constraints.
 //
 // Small cells (label suppression, NOT k-anonymity): every cell under MIN_CELL
 // views (default 3) in a day folds into the 'other' value of its dimension
@@ -72,7 +79,6 @@
 import { BudgetExceeded, QueryMeter, meterOf, meteredDb, queryBudget } from "./d1budget";
 
 export const ROW_CAP_CORE = 500;
-export const ROW_CAP_DIM = 300;
 export const ROW_CAP_GEO = 300;
 const CORE_RESERVE = 40;
 const GEO_RESERVE = 8;
@@ -90,7 +96,7 @@ export const MAX_MAX_ROWS_PER_DAY = 20000;
 const INVOCATION_ROWS_FACTOR = 4;
 export const LEASE_MS = 600_000;
 const MAX_UTM_ALLOW = 40;
-/** Values kept per dimension per bot class; the rest become 'other'. Closed enums fit entirely. */
+/** Values kept per dimension (ranked across all bot classes); the rest become 'other'. Closed enums fit entirely. */
 export const DIM_TOP: Record<string, number> = {
   browser: 12,
   lang: 10,
@@ -100,6 +106,12 @@ export const DIM_TOP: Record<string, number> = {
   net: 10,
   reason: 20,
 };
+/**
+ * The real maximum of view_dim_daily rows per day. It is not a cut-off applied
+ * afterwards: it follows from DIM_TOP. Per bot class (4) every dimension keeps
+ * at most its top values plus one 'other' row, so 4 x (74 + 7) = 324.
+ */
+export const ROW_CAP_DIM = 4 * (Object.values(DIM_TOP).reduce((a, b) => a + b, 0) + Object.keys(DIM_TOP).length);
 /** A city or region with fewer views than this in a day folds upward (raised by MIN_CELL if larger). */
 const MIN_GEO_VIEWS = 5;
 const ROWS_PER_INSERT = 10; // 9 columns x 10 rows + 4 guard values = 94 bound parameters, under D1's 100
@@ -244,7 +256,7 @@ const LEASE_OK = `EXISTS (SELECT 1 FROM view_meta WHERE key = 'rollup_lease' AND
 /** SQL for one dimension: top-N per dimension, then small cells to 'other', all in D1. */
 function dimSql(col: string, top: number): string {
   return (
-    "WITH g AS (SELECT bot_class, " + col + " AS value, COUNT(*) AS v, SUM(first) AS u FROM view_events " +
+    "WITH g AS (SELECT bot_class, " + col + " AS value, COUNT(*) AS v, SUM(CASE WHEN first = 1 THEN 1 ELSE 0 END) AS u FROM view_events " +
     "WHERE ts >= ?1 AND ts < ?2 GROUP BY bot_class, " + col + "), " +
     "r AS (SELECT value, ROW_NUMBER() OVER (ORDER BY SUM(v) DESC, value ASC) AS rn FROM g GROUP BY value), " +
     "t AS (SELECT g.bot_class AS bot_class, CASE WHEN r.rn <= " + top + " THEN g.value ELSE 'other' END AS value, g.v AS v, g.u AS u " +
@@ -262,7 +274,7 @@ function coreSql(allowN: number): string {
   const sk = allowN > 0 ? `CASE WHEN src_kind = 'u' AND src NOT IN (${allow}) THEN 'o' ELSE src_kind END` : "src_kind";
   const sv = allowN > 0 ? `CASE WHEN src_kind = 'u' AND src NOT IN (${allow}) THEN 'other' ELSE src END` : "src";
   return (
-    `WITH g AS (SELECT page, ${sk} AS src_kind, ${sv} AS src, country, bot_class, COUNT(*) AS v, SUM(first) AS u ` +
+    `WITH g AS (SELECT page, ${sk} AS src_kind, ${sv} AS src, country, bot_class, COUNT(*) AS v, SUM(CASE WHEN first = 1 THEN 1 ELSE 0 END) AS u ` +
     "FROM view_events WHERE ts >= ?1 AND ts < ?2 GROUP BY 1, 2, 3, country, bot_class), " +
     "r AS (SELECT src_kind, src, ROW_NUMBER() OVER (ORDER BY SUM(v) DESC, src_kind ASC, src ASC) AS rn FROM g " +
     "WHERE src_kind IN ('r','u') GROUP BY src_kind, src), " +
@@ -292,7 +304,7 @@ function geoSql(level: "country" | "region" | "city"): string {
   const city = level === "city" ? "city" : "''";
   const region = level === "country" ? "''" : "region";
   return (
-    `WITH g AS (SELECT country, ${region} AS region, ${city} AS city, bot_class, COUNT(*) AS v, SUM(first) AS u ` +
+    `WITH g AS (SELECT country, ${region} AS region, ${city} AS city, bot_class, COUNT(*) AS v, SUM(CASE WHEN first = 1 THEN 1 ELSE 0 END) AS u ` +
     "FROM view_events WHERE ts >= ?1 AND ts < ?2 GROUP BY country, 2, 3, bot_class), " +
     // CONTROL:small-count-fold
     "f1 AS (SELECT country, region, CASE WHEN city <> '' AND v < ?5 THEN '' ELSE city END AS city, bot_class, SUM(v) AS v, SUM(u) AS u " +
@@ -621,8 +633,12 @@ export async function rollupClosedDays(env: RollupEnv, nowMs: number): Promise<R
           // Re-roll only while every originally counted raw row still exists.
           const safe = plan.oldCount === w.oldViews;
           rows += await writeDay(db, w, plan, nowMs, lease, !safe);
-          if (safe) late += lateRows;
-          else dropped += lateRows;
+          if (safe) {
+            late += lateRows;
+            if (plan.reduced) reducedDays += 1;
+          } else {
+            dropped += lateRows;
+          }
         } else {
           rows += await writeDay(db, w, plan, nowMs, lease, false);
           days += 1;

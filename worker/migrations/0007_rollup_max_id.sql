@@ -7,6 +7,10 @@
 --            full re-roll of that day.
 --   rerolls  how many times the day was re-rolled.
 --
+-- ACCEPTED RISK: the maintainer accepts that this migration deletes rollup data,
+-- because only migration 0001 has ever run on a live database (his test
+-- database), so the rows it deletes never held real history.
+--
 -- RULE (the control for this migration): migrations 0005, 0006 and 0007 must be
 -- applied together on a database that has never run a page-view rollup. As of
 -- this writing only migration 0001 has ever been applied to a live D1, and
