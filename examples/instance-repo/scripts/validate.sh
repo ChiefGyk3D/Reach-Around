@@ -4,7 +4,16 @@
 # Build the site with the pinned engine image. The build is the validator: a
 # bad config stops it with the file and the key path.
 #
-# Usage: scripts/validate.sh [--out DIR] [--manifest FILE] [--summary FILE]
+# Usage: scripts/validate.sh [--lock FILE] [--out DIR] [--manifest FILE]
+#                            [--summary FILE]
+#   --root DIR      the folder holding site.yaml, media/ and the rest of the
+#                   instance (default: the one this script belongs to). A
+#                   pull request preview runs a trusted copy of this script
+#                   against the pull request's files, read only as data.
+#   --image REF     the engine image, already chosen from a trusted lock
+#                   (checked for shape again); overrides --lock
+#   --lock FILE     read the engine pin from FILE instead of engine.lock (a
+#                   pull request preview passes the base branch's copy)
 #   --out DIR       keep the built site in DIR (default: a temporary directory
 #                   that is removed afterwards)
 #   --manifest FILE keep the link manifest at FILE (default: a temporary file
@@ -18,29 +27,69 @@
 # Needs an engine image that supports --manifest (the engine release after
 # 0.1.0; see README.md). Needs Docker or Podman. The engine runs with no network, a read-only root
 # filesystem, no capabilities and the caller's own user id. Nothing in the
-# build can see a secret: none is passed in.
+# build can see a secret: none is passed in. Only site.yaml, media/, and (when
+# they exist) overrides/ and numbers.json are mounted, each read-only; the
+# rest of the checkout is not visible to the engine.
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 out=""
 manifest=""
 summary=""
+lock=""
+root=""
+image=""
 while [ $# -gt 0 ]; do
   case "$1" in
-    --out) out="${2:?--out needs a directory}"; shift 2 ;;
-    --manifest) manifest="${2:?--manifest needs a file path}"; shift 2 ;;
-    --summary) summary="${2:?--summary needs a file}"; shift 2 ;;
-    *) echo "unknown option: $1" >&2; exit 2 ;;
+    --root)
+      root="${2:?--root needs a folder}"
+      shift 2
+      ;;
+    --image)
+      image="${2:?--image needs a reference}"
+      shift 2
+      ;;
+    --lock)
+      lock="${2:?--lock needs a file}"
+      shift 2
+      ;;
+    --out)
+      out="${2:?--out needs a directory}"
+      shift 2
+      ;;
+    --manifest)
+      manifest="${2:?--manifest needs a file path}"
+      shift 2
+      ;;
+    --summary)
+      summary="${2:?--summary needs a file}"
+      shift 2
+      ;;
+    *)
+      echo "unknown option: $1" >&2
+      exit 2
+      ;;
   esac
 done
 
 runtime=""
 for candidate in docker podman; do
-  if command -v "$candidate" >/dev/null 2>&1; then runtime="$candidate"; break; fi
+  if command -v "$candidate" >/dev/null 2>&1; then
+    runtime="$candidate"
+    break
+  fi
 done
-[ -n "$runtime" ] || { echo "error: Docker or Podman is required" >&2; exit 1; }
+[ -n "$runtime" ] || {
+  echo "error: Docker or Podman is required" >&2
+  exit 1
+}
 
-image="$("$here/scripts/read-lock.sh" ENGINE_IMAGE)"
+if [ -n "$image" ]; then
+  image="$("$here/scripts/read-lock.sh" --verify ENGINE_IMAGE "$image")"
+else
+  image="$("$here/scripts/read-lock.sh" ENGINE_IMAGE ${lock:+"$lock"})"
+fi
+data="$(cd "${root:-$here}" && pwd)"
 
 cleanup=""
 if [ -z "$out" ]; then
@@ -60,10 +109,16 @@ manifest_name="$(basename "$manifest")"
 mkdir -p "$(dirname "$manifest")"
 manifest_dir="$(cd "$(dirname "$manifest")" && pwd)"
 case "$manifest_dir/" in
-  "$out"/*) echo "error: --manifest must be outside --out ($out)" >&2; exit 2 ;;
+  "$out"/*)
+    echo "error: --manifest must be outside --out ($out)" >&2
+    exit 2
+    ;;
 esac
 case "$out/" in
-  "$manifest_dir"/*) echo "error: --out must not sit inside the manifest directory" >&2; exit 2 ;;
+  "$manifest_dir"/*)
+    echo "error: --out must not sit inside the manifest directory" >&2
+    exit 2
+    ;;
 esac
 
 log="$(mktemp)"
@@ -76,14 +131,30 @@ if "$runtime" --version 2>/dev/null | grep -qi podman; then
   userns=(--userns keep-id)
 fi
 
+# Only these paths are mounted, each read-only. A symlink is refused: the
+# runtime would resolve it on the host and mount what it points at.
+mounts=()
+for item in site.yaml media overrides numbers.json; do
+  path="$data/$item"
+  if [ -L "$path" ]; then
+    echo "error: $item must not be a symbolic link" >&2
+    exit 2
+  fi
+  if [ -e "$path" ]; then mounts+=(-v "$path":"/config/$item":ro); fi
+done
+[ -f "$data/site.yaml" ] || {
+  echo "error: site.yaml not found" >&2
+  exit 2
+}
 overrides=()
-if [ -d "$here/overrides" ]; then overrides=(--overrides /config/overrides); fi
+if [ -d "$data/overrides" ]; then overrides=(--overrides /config/overrides); fi
 
 set +e
 "$runtime" run --rm --network none --read-only --cap-drop ALL \
-  --security-opt no-new-privileges:true --tmpfs /tmp \
+  --security-opt no-new-privileges:true --pids-limit 256 --memory 1g \
+  --tmpfs /tmp \
   --user "$(id -u):$(id -g)" ${userns[@]+"${userns[@]}"} \
-  -v "$here":/config:ro -v "$out":/out -v "$manifest_dir":/manifest \
+  "${mounts[@]}" -v "$out":/out -v "$manifest_dir":/manifest \
   "$image" build --config /config/site.yaml --out /out \
   --manifest "/manifest/$manifest_name" \
   ${overrides[@]+"${overrides[@]}"} >"$log" 2>&1

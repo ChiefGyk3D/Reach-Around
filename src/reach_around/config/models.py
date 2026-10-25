@@ -437,17 +437,24 @@ _BLOCK_TAGS = {
 }
 
 
-def _dotted(loc: tuple[int | str, ...]) -> str:
-    out = ""
+def error_path(loc: tuple[int | str, ...]) -> tuple[int | str, ...]:
+    """A pydantic error location without the union tag it inserts after a block."""
+    out: list[int | str] = []
     previous: int | str | None = None
     for part in loc:
+        if not (isinstance(previous, int) and part in _BLOCK_TAGS):
+            out.append(part)
+        previous = part
+    return tuple(out)
+
+
+def _dotted(loc: tuple[int | str, ...]) -> str:
+    out = ""
+    for part in error_path(loc):
         if isinstance(part, int):
             out += f"[{part}]"
-        elif isinstance(previous, int) and part in _BLOCK_TAGS:
-            continue  # the union tag pydantic inserts after a block index
         else:
             out += f".{part}" if out else part
-        previous = part
     return out
 
 

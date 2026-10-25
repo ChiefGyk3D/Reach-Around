@@ -1,9 +1,33 @@
 # SPDX-License-Identifier: Apache-2.0
 #
-# Pull requests: build the preview and report the result in plain language in
-# the job summary. Nothing is deployed and no secret or environment is used.
-# This is `pull_request`, never `pull_request_target`: the change under review
-# is the only thing that runs, and it runs with a read-only token.
+# Pull requests: check the change, build a preview, and comment on the pull
+# request in plain language. Nothing is deployed and no secret or environment
+# is used. This is `pull_request`, never `pull_request_target`: the change
+# under review is the only thing that runs, and it runs with a read-only
+# token. Pull requests from forks get no comment (their token cannot write).
+#
+# Three jobs and a gate.
+#   shell    GYST bash-ci: shellcheck, shfmt, actionlint and zizmor over this
+#            repository's scripts and workflows.
+#   preview  contents: read only. Runs only copies of the scripts taken from the
+#            BASE commit (made read-only outside the workspace before anything
+#            else runs), against the pull request's files as data, in the engine
+#            image named once by the BASE engine.lock. Nothing it writes is
+#            trusted. It uploads the built site as the `preview` artifact and a
+#            small JSON result file. Skipped for pull requests from forks.
+#   comment  the only job with `pull-requests: write`. It does not run the pull
+#            request's code. It takes scripts/render-comment.py from the BASE
+#            commit, so the pull request cannot change it; that script
+#            validates the JSON result against a strict schema, checks it against
+#            needs.preview.result (GitHub's own verdict), and builds the whole
+#            comment from its own fixed text. The result is data, never text
+#            to post.
+#   ci-green the gate to require in branch protection.
+#
+# Trust that remains: with the `pull_request` trigger GitHub runs the workflow
+# file from the pull request, so a collaborator with write access can edit this
+# file. Give write access only to people you trust, and protect `.github/` and
+# `scripts/` with CODEOWNERS and required review (docs/EDITING.md, README.md).
 name: Preview
 
 on:
@@ -13,45 +37,248 @@ on:
 permissions:
   contents: read
 
+# A new push to the pull request cancels the older preview.
 concurrency:
   group: preview-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
+  shell:
+    name: Shell and workflow lint
+    uses: ChiefGyk3D/git-your-ship-together/.github/workflows/bash-ci.yml@8fdb8d106b11aae0f37e893bb57e9bd8e8b0e7b7 # v1.24.0
+    permissions:
+      contents: read
+    with:
+      shfmt-args: "-i 2 -ci"
+
   preview:
     name: Build the preview
+    # Same-repository pull requests only. A fork's pull request gets no
+    # preview and no comment.
+    if: ${{ github.event.pull_request.head.repo.full_name == github.repository }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
       contents: read
+    # No `environment` and no secrets here, on purpose.
     steps:
+      # The pull request's files. They are only ever read as data (the config
+      # and the pictures); nothing in this checkout is executed.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          path: pr
           persist-credentials: false
 
-      - name: Check the repository for files that must not be committed
-        run: scripts/check-repo.sh
-
-      # On success or failure this writes a plain-language note to the job
-      # summary; on failure it also fails the job.
-      - name: Build the site with the pinned engine
-        run: >-
-          scripts/validate.sh --out "$RUNNER_TEMP/site-preview"
-          --manifest "$RUNNER_TEMP/preview-manifest/manifest.json"
-          --summary "$GITHUB_STEP_SUMMARY"
-
-      - name: Say what happens next
-        run: |
-          {
-            echo
-            echo "Nothing was deployed. Download the \`site-preview\` artifact from"
-            echo "this run to look at the pages. Merging to \`main\` deploys, after"
-            echo "a reviewer approves."
-          } >> "$GITHUB_STEP_SUMMARY"
-
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      # The scripts and the engine pin come from the BASE commit, in a separate
+      # folder, before anything else runs.
+      - name: Fetch the trusted scripts from the base commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          name: site-preview
-          path: ${{ runner.temp }}/site-preview
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: trusted-src
+          sparse-checkout: |
+            scripts/read-lock.sh
+            scripts/check-repo.sh
+            scripts/check-config.sh
+            scripts/validate.sh
+            scripts/write-result.py
+            engine.lock
+            site.yaml
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+
+      # Copy them outside the workspace, make them read-only, and choose the
+      # engine image once, from the base lock. Every later step runs these
+      # copies against the pull request's files and is handed this image.
+      - name: Install the trusted copies and choose the engine image
+        id: trust
+        run: |
+          set -eu
+          dir="$(mktemp -d "$RUNNER_TEMP/trusted.XXXXXX")"
+          cp -R trusted-src/scripts "$dir/scripts"
+          cp trusted-src/engine.lock "$dir/engine.lock"
+          if [ -f trusted-src/site.yaml ]; then cp trusted-src/site.yaml "$dir/base-site.yaml"; fi
+          chmod -R a-w "$dir"
+          image="$(bash "$dir/scripts/read-lock.sh" ENGINE_IMAGE)"
+          results="$(mktemp -d "$RUNNER_TEMP/preview-results.XXXXXX")"
+          {
+            echo "dir=$dir"
+            echo "image=$image"
+            echo "results=$results"
+          } >> "$GITHUB_OUTPUT"
+
+      # A forbidden file (.env, a key) must still produce a comment, so this
+      # records its status and its output instead of ending the job. The engine
+      # steps below are skipped when it fails, and the last step fails the job
+      # after the result has been uploaded.
+      - name: Check the repository for files that must not be committed
+        id: repo
+        env:
+          TRUSTED: ${{ steps.trust.outputs.dir }}
+          RESULTS: ${{ steps.trust.outputs.results }}
+        run: |
+          set +e
+          bash "$TRUSTED/scripts/check-repo.sh" --root pr 2> "$RESULTS/repo-output.txt"
+          echo "status=$?" >> "$GITHUB_OUTPUT"
+          cat "$RESULTS/repo-output.txt" >&2
+
+      # The check records its status instead of failing here, so the later
+      # steps can still write the result. The last step of the job fails it.
+      - name: Check the config in plain language
+        id: check
+        if: steps.repo.outputs.status == '0'
+        env:
+          TRUSTED: ${{ steps.trust.outputs.dir }}
+          IMAGE: ${{ steps.trust.outputs.image }}
+          RESULTS: ${{ steps.trust.outputs.results }}
+        run: |
+          set +e
+          against=()
+          if [ -f "$TRUSTED/base-site.yaml" ]; then against=(--against "$TRUSTED/base-site.yaml"); fi
+          bash "$TRUSTED/scripts/check-config.sh" --root pr --image "$IMAGE" \
+            --format json ${against[@]+"${against[@]}"} --out "$RESULTS/check.json"
+          echo "status=$?" >> "$GITHUB_OUTPUT"
+
+      # Only when the check passed. Same rule: record the status, fail last.
+      - name: Build the site with the pinned engine
+        id: build
+        if: steps.check.outputs.status == '0'
+        env:
+          TRUSTED: ${{ steps.trust.outputs.dir }}
+          IMAGE: ${{ steps.trust.outputs.image }}
+        run: |
+          set +e
+          bash "$TRUSTED/scripts/validate.sh" --root pr --image "$IMAGE" \
+            --out "$RUNNER_TEMP/preview-site" \
+            --manifest "$RUNNER_TEMP/preview-manifest/manifest.json"
+          echo "status=$?" >> "$GITHUB_OUTPUT"
+
+      - name: Upload the built site as the preview
+        if: steps.build.outputs.status == '0'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: preview
+          path: ${{ runner.temp }}/preview-site
           if-no-files-found: error
           retention-days: 7
+
+      - name: Write the result file
+        if: ${{ !cancelled() }}
+        env:
+          TRUSTED: ${{ steps.trust.outputs.dir }}
+          RESULTS: ${{ steps.trust.outputs.results }}
+          REPO_STATUS: ${{ steps.repo.outputs.status }}
+          CHECK_STATUS: ${{ steps.check.outputs.status }}
+          BUILD_STATUS: ${{ steps.build.outputs.status }}
+        run: |
+          python3 -I "$TRUSTED/scripts/write-result.py" \
+            --repo-status "$REPO_STATUS" --repo-files "$RESULTS/repo-output.txt" \
+            --check-status "$CHECK_STATUS" --build-status "$BUILD_STATUS" \
+            --check "$RESULTS/check.json" --out "$RESULTS/result.json"
+
+      # Its own artifact, one file. The comment job treats it as data.
+      - name: Keep the result for the comment job
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: preview-result
+          path: ${{ steps.trust.outputs.results }}/result.json
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: Fail the job if the config or the build was not good
+        if: ${{ !cancelled() && (steps.repo.outputs.status != '0' || steps.check.outputs.status != '0' || steps.build.outputs.status != '0') }}
+        run: |
+          echo "::error::The preview did not pass. The pull request comment says what to fix."
+          exit 1
+
+  comment:
+    name: Comment on the pull request
+    needs: preview
+    # Same-repository pull requests only: a fork's token cannot write.
+    if: ${{ !cancelled() && github.event.pull_request.head.repo.full_name == github.repository }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read # to fetch the one trusted script from the base commit
+      pull-requests: write # to post the preview comment, and nothing else
+    steps:
+      # The renderer comes from the BASE commit, so the pull request cannot
+      # change the code that runs in this job. Only that one file is fetched.
+      - name: Fetch the comment renderer from the base commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: trusted
+          sparse-checkout: scripts/render-comment.py
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: preview-result
+          path: ${{ runner.temp }}/result-in
+
+      # The result file is data. The renderer validates it, checks it against
+      # the verdict GitHub itself recorded for the preview job
+      # (needs.preview.result, not from the artifact), and writes every
+      # character of the comment; nothing from the file is posted.
+      - name: Render the comment
+        env:
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          PREVIEW_RESULT: ${{ needs.preview.result }}
+          REPO: ${{ github.repository }}
+          WORKFLOW: ${{ github.workflow }}
+        run: |
+          set -eu
+          dir="$(mktemp -d "$RUNNER_TEMP/comment-out.XXXXXX")"
+          echo "COMMENT_FILE=$dir/comment.md" >> "$GITHUB_ENV"
+          python3 -I trusted/scripts/render-comment.py \
+            --in "$RUNNER_TEMP/result-in/result.json" \
+            --out "$dir/comment.md" --run-url "$RUN_URL" \
+            --preview-result "$PREVIEW_RESULT" --repo "$REPO" --workflow "$WORKFLOW"
+          cat "$dir/comment.md" >> "$GITHUB_STEP_SUMMARY"
+
+      # Find this workflow's own earlier comment by its marker (which names
+      # this repository and this workflow) and its author (the Actions bot),
+      # and update it. If more than one comment matches, post nothing: the
+      # state is not one this workflow created. Other comments are never touched.
+      - name: Post or update the comment
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          WORKFLOW: ${{ github.workflow }}
+        run: |
+          set -eu
+          marker="<!-- reach-around-preview repo=$GH_REPO workflow=$WORKFLOW -->"
+          ids="$(gh api "repos/$GH_REPO/issues/$PR_NUMBER/comments" --paginate \
+            --jq '.[] | select(.user.login == "github-actions[bot]" and .user.type == "Bot" and (.body | startswith("'"$marker"'\n") or . == "'"$marker"'")) | .id')"
+          count="$(printf '%s' "$ids" | grep -c . || true)"
+          if [ "$count" -gt 1 ]; then
+            echo "::error::$count comments match this workflow's marker; posting nothing. Delete the extra ones."
+            exit 1
+          fi
+          if [ "$count" -eq 1 ]; then
+            printf '%s' "$ids" | grep -Eq '^[0-9]+$' || { echo "::error::unexpected comment id"; exit 1; }
+            gh api --method PATCH "repos/$GH_REPO/issues/comments/$ids" -F "body=@$COMMENT_FILE" > /dev/null
+          else
+            gh api --method POST "repos/$GH_REPO/issues/$PR_NUMBER/comments" -F "body=@$COMMENT_FILE" > /dev/null
+          fi
+
+  ci-green:
+    name: CI green
+    if: ${{ always() }}
+    needs: [shell, preview, comment]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Every job passed or was deliberately skipped
+        env:
+          RESULTS: ${{ toJSON(needs.*.result) }}
+        run: |
+          set -eu
+          echo "needs: $RESULTS"
+          printf '%s' "$RESULTS" | jq -e 'all(. == "success" or . == "skipped")' >/dev/null \
+            || { echo "::error::a job failed or was cancelled"; exit 1; }

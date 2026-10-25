@@ -17,10 +17,10 @@ engine repository for the reasoning.
 | `media/` | Your images (avatar, favicon, background). |
 | `overrides/` | Optional. Template and `custom.css` overrides; create it when you need it. |
 | `engine.lock` | The pinned engine: container image by digest, plus the matching source commit for the Worker. |
-| `.github/workflows/preview.yml` | On a pull request: build the preview and explain any error in plain language. Deploys nothing. |
-| `.github/workflows/deploy.yml` | On a push to `main`: validate, then deploy to Cloudflare after a reviewer approves. |
+| `.github/workflows/preview.yml` | On a pull request: check the config, build a preview artifact, and comment on the pull request with the result in plain language and the list of changed blocks. Also lints the scripts and workflows (GYST `bash-ci`). Deploys nothing. Its gate job is named `CI green`. |
+| `.github/workflows/deploy.yml` | On a push to `main`: check, validate, then deploy to Cloudflare after a reviewer approves. |
 | `renovate.json` | Keeps `engine.lock` and the Actions pins current. |
-| `scripts/` | `validate.sh` (the same check CI runs), `check-repo.sh`, `read-lock.sh`, `deploy-local.sh`. |
+| `scripts/` | `check-config.sh` (the plain-language config check), `validate.sh` (the build CI runs), `write-result.py` (bundles the preview job's results into the one data file the comment job reads), `render-comment.py` (run by the comment job from the base commit: validates that file and writes the pull request comment from fixed text), `check-repo.sh`, `read-lock.sh`, `deploy-local.sh`. |
 | `docs/EDITING.md` | How to change the page without touching code. |
 
 ## Adopt it
@@ -90,7 +90,46 @@ On GitHub: **Settings > Environments > New environment** named `production`.
   disagree.
 
 Also turn on **Settings > Code security > Secret scanning** and push
-protection, and protect `main` (require the `Preview` check, no force pushes).
+protection, and protect `main` (require the `CI green` check from the `Preview` workflow, no
+force pushes). The `Preview` workflow calls a reusable workflow from the
+public `ChiefGyk3D/git-your-ship-together` repository; if your organization
+restricts which actions may run, allow that repository.
+
+The preview comment needs no setup: the `comment` job uses the run's own
+token with `pull-requests: write` (and `contents: read` to fetch one script
+from the base commit) and nothing else. Pull requests from forks get no
+preview and no comment: the `preview` and `comment` jobs are skipped for them
+(a guard on `head.repo.full_name`), and their token cannot write anyway.
+
+**The comment marker is a convention, not proof.** The comment starts with a
+marker naming this repository and workflow, and the job updates only a comment
+that carries it and was written by the Actions bot, and refuses to post if more
+than one matches. The marker distinguishes this comment by convention: any other
+workflow in the repository with `pull-requests: write` could post one that
+looks the same. Treat who may change `.github/` as the real control (below).
+
+**Who may change the workflow.** With the `pull_request` trigger GitHub runs
+the workflow file from the pull request itself, so a collaborator with write
+access can edit `.github/workflows/preview.yml` and the scripts in their own
+pull request. The template stops a pull request from forging the comment (the
+comment is rendered by a script from the base commit, from validated data) and
+from choosing the engine image of its own preview (the image comes from the base
+branch's `engine.lock`), but it cannot stop someone with write access from
+changing the workflow itself. So: give write access only to people you trust,
+and if the repository has collaborators protect `.github/` and `scripts/` with
+a `CODEOWNERS` file and a branch rule that requires a code owner's review:
+
+```
+# .github/CODEOWNERS (replace the handle with a person or team you trust)
+/.github/   @your-handle
+/scripts/   @your-handle
+/engine.lock @your-handle
+```
+
+**`engine.lock` and previews.** A preview uses the `engine.lock` on the base
+branch, not the one in the pull request. A change to `engine.lock` takes effect
+for previews only after it is merged. (The merge itself is still checked: the
+pull request's own `Preview` run builds with the old engine.)
 
 ## The token
 
@@ -115,8 +154,9 @@ from Doppler per command (see the comments at the top of that script).
 2. Renovate opens one pull request, "reach-around engine", that changes the
    three lines in `engine.lock` together: image tag and digest, and the source
    commit.
-3. The `Preview` workflow builds your site with the new engine. A config that
-   the new version rejects shows up here, in plain language, not in production.
+3. The `Preview` workflow checks and builds your site with the new engine. A
+   config that the new version rejects shows up in the pull request comment,
+   in plain language, not in production.
 4. You read the engine's `CHANGELOG.md`, merge, and `Deploy` runs.
 
 Renovate must be enabled for the repository (the Renovate GitHub App, or your

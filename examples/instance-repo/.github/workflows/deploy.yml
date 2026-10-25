@@ -42,6 +42,11 @@ jobs:
       - name: Check the repository for files that must not be committed
         run: scripts/check-repo.sh
 
+      # Says in plain language which tab, block and field is wrong, before the
+      # build. It prints no config value and fails the job on a bad config.
+      - name: Check the config in plain language
+        run: scripts/check-config.sh
+
       # Builds with the engine image named by digest in engine.lock. A bad
       # config fails here, before anything is deployed.
       - name: Build the site with the pinned engine
