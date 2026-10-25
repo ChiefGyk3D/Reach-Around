@@ -3,12 +3,14 @@
 import { t } from "./strings.js";
 
 export class ApiError extends Error {
-  constructor(status, code, message, path) {
+  constructor(status, code, message, path, extra = {}) {
     super(message);
     this.name = "ApiError";
     this.status = status;
     this.code = code;
     this.path = path;
+    this.state = extra.state === undefined ? null : extra.state;
+    this.retryAfter = extra.retryAfter === undefined ? 0 : extra.retryAfter;
   }
 }
 
@@ -18,6 +20,13 @@ function plain(value, limit) {
   return typeof value === "string" && value.length > 0 && value.length <= limit
     ? value
     : "";
+}
+
+// Retry-After in whole seconds, 1 to 3600; anything else is 0 (unknown).
+function waitSeconds(reply) {
+  const raw = reply.headers && reply.headers.get ? reply.headers.get("Retry-After") : "";
+  const seconds = /^[0-9]{1,4}$/.test(raw || "") ? Number(raw) : 0;
+  return seconds >= 1 && seconds <= 3600 ? seconds : 0;
 }
 
 async function failure(reply) {
@@ -32,7 +41,12 @@ async function failure(reply) {
   const fallback = reply.status === 401 ? t("error.unauthorized") : t("error.generic");
   const message = plain(error && error.message, 300) || fallback;
   const path = plain(error && error.path, 200);
-  return new ApiError(reply.status, code, message, path);
+  const fresh = body && typeof body === "object" ? body.state : null;
+  const state = fresh && typeof fresh === "object" ? fresh : null;
+  return new ApiError(reply.status, code, message, path, {
+    state,
+    retryAfter: reply.status === 429 ? waitSeconds(reply) : 0,
+  });
 }
 
 export function createClient(getToken, fetcher = fetch) {
