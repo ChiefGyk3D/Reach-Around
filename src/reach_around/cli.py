@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import importlib
+import math
 import os
 import pkgutil
 import sys
@@ -16,12 +17,26 @@ from jinja2 import TemplateError
 from reach_around import __version__, commands, edit_cli
 from reach_around.config import ConfigError, load_site_config
 from reach_around.config.numbers import Numbers, load_numbers
+from reach_around.editor.server import MAX_IDLE_SECONDS, run_editor
 from reach_around.preview import PreviewError, serve
 from reach_around.site.build import build_site, manifest_json
 from reach_around.site.inventory import InventoryEntry, inventory_json
 from reach_around.site.visibility import today_in
 
 _OVERRIDES_HELP = "directory with templates/ and custom.css that override the defaults"
+
+
+def _idle_minutes(text: str) -> float:
+    """An argparse type: a finite number above 0 and at most a day."""
+    try:
+        value = float(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"not a number: {text!r}") from None
+    if not math.isfinite(value) or not 0 < value <= MAX_IDLE_SECONDS / 60:
+        raise argparse.ArgumentTypeError(
+            f"must be above 0 and at most {MAX_IDLE_SECONDS / 60:g} minutes"
+        )
+    return value
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -65,6 +80,17 @@ def _parser() -> argparse.ArgumentParser:
     serve.add_argument("--host", default="127.0.0.1", help="loopback address to bind")
     serve.add_argument("--port", type=int, default=8000, help="port (default 8000)")
     serve.add_argument("--overrides", type=Path, help=_OVERRIDES_HELP)
+    editor = commands_parsers.add_parser(
+        "edit",
+        help="edit the config in the browser (loopback only; never opens a browser)",
+    )
+    editor.add_argument("--config", type=Path, required=True, help="site config file")
+    editor.add_argument(
+        "--idle-minutes",
+        type=_idle_minutes,
+        default=30.0,
+        help="stop after this many minutes without activity (default 30, at most 1440)",
+    )
     edit_cli.register(commands_parsers)
     for module in pkgutil.iter_modules(commands.__path__):
         importlib.import_module(f"{commands.__name__}.{module.name}").register(
@@ -229,6 +255,8 @@ def main(argv: list[str] | None = None) -> int:
         )
     if args.command == "serve":
         return _serve(args.config, args.host, args.port, args.overrides)
+    if args.command == "edit":
+        return run_editor(args.config, idle_minutes=args.idle_minutes)
     if args.command in edit_cli.COMMANDS:
         return edit_cli.run(args)
     func = getattr(args, "func", None)

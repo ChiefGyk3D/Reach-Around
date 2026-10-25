@@ -19,6 +19,7 @@ fails, nothing is written.
 from __future__ import annotations
 
 import copy
+import datetime
 import fcntl
 import hashlib
 import json
@@ -38,7 +39,8 @@ import yaml
 from yaml.nodes import MappingNode, Node, ScalarNode, SequenceNode
 
 from reach_around.config import ConfigError, load_site_config, load_yaml
-from reach_around.site.theme import COLOR_KEYS
+from reach_around.config.models import check_https_url
+from reach_around.site.theme import COLOR_KEYS, check_image_path
 
 MAX_BYTES = 1_048_576
 LOCK_TIMEOUT = 10.0  # seconds to wait for another edit's lock
@@ -47,6 +49,7 @@ LOCK_POLL = 0.05
 SET_KEYS: tuple[str, ...] = (
     "creator.name",
     "creator.title",
+    "creator.avatar",
     "theme.background_dim",
     "theme.mode",
     *(f"theme.colors.{key}" for key in COLOR_KEYS),
@@ -654,6 +657,22 @@ def move_link(
     items = _items(text, lines, holder.node, holder.floor)
     if not 1 <= position <= len(items):
         raise EditError(f"--position must be between 1 and {len(items)}")
+    out = _reordered(lines, items, index, position)
+    expected = copy.deepcopy(raw)
+    current = _holder_list(expected, link_id)
+    entry = current.pop(index)
+    current.insert(position - 1, entry)
+    _set_holder(expected, link_id, current)
+    return _finish(text, out), expected
+
+
+def _reordered(
+    lines: list[str], items: list[_Item], index: int, position: int
+) -> list[str]:
+    """``lines`` with item ``index`` moved to 1-based ``position``.
+
+    The gaps between items stay in their slots; only the item chunks move.
+    """
     chunks = [lines[i.start : i.end + 1] for i in items]
     chunks = [
         c[:-1] + [c[-1] + "\n"] if not c[-1].endswith("\n") else c for c in chunks
@@ -667,12 +686,408 @@ def move_link(
         out.extend(chunks[slot])
         cursor = item.end + 1
     out.extend(lines[cursor:])
+    return out
+
+
+LINK_FIELDS: tuple[str, ...] = (
+    "title",
+    "url",
+    "subtitle",
+    "icon",
+    "affiliate",
+    "featured",
+)
+_LINK_ORDER = (
+    "id",
+    "title",
+    "url",
+    "subtitle",
+    "icon",
+    "image",
+    "image_alt",
+    "affiliate",
+    "featured",
+    "show_from",
+    "show_until",
+)
+_LINK_BOOLS = ("affiliate", "featured")
+_LINK_OPTIONAL = ("subtitle", "icon")
+
+
+def _value_end_line(value: Node) -> int:
+    """The last line a value occupies (a block value ends before its mark)."""
+    mark = value.end_mark
+    return int(mark.line if mark.column > 0 else mark.line - 1)
+
+
+def _set_field(
+    lines: list[str],
+    node: MappingNode,
+    span: _Item,
+    order: tuple[str, ...],
+    field: str,
+    shown: str | None,
+    what: str,
+) -> None:
+    """Replace, add or (``shown`` is None) delete one scalar key of an item.
+
+    Only the lines of that key change. A replaced value keeps any comment after
+    it; a new key goes right after the last key that normally comes before it,
+    at the item's own indentation.
+    """
+    found = _get(node, field)
+    if found is not None:
+        key_node, old = found
+        simple = (
+            isinstance(old, ScalarNode)
+            and old.value != ""
+            and old.style in (None, '"', "'")
+            and old.start_mark.line == old.end_mark.line == key_node.start_mark.line
+            and lines[old.start_mark.line][: key_node.start_mark.column].strip()
+            in ("", "-")
+        )
+        if not simple:
+            raise EditError(f"{what} has an empty or multi-line value; edit it by hand")
+        row = old.start_mark.line
+        if shown is None:
+            if row == span.first:
+                raise EditError(
+                    f"{what} is on the line that starts the item; edit it by hand"
+                )
+            del lines[row]
+            return
+        lines[row] = (
+            lines[row][: old.start_mark.column]
+            + shown
+            + lines[row][old.end_mark.column :]
+        )
+        return
+    if shown is None:
+        return
+    earlier = order[: order.index(field)]
+    after = span.end
+    ends = [
+        _value_end_line(pair[1])
+        for name in earlier
+        if (pair := _get(node, name)) is not None
+    ]
+    if ends:
+        after = max(ends)
+    if not lines[after].endswith("\n"):
+        lines[after] += "\n"
+    lines[after + 1 : after + 1] = [f"{' ' * span.keycol}{field}: {shown}\n"]
+
+
+def _raw_link(raw: dict[str, Any], link_id: str) -> dict[str, Any]:
+    for tab in raw["tabs"]:
+        for block in tab["blocks"]:
+            if block["id"] == link_id:
+                found: dict[str, Any] = block
+                return found
+            for inner in block.get("links", []):
+                if inner["id"] == link_id:
+                    found = inner
+                    return found
+    raise EditError(f"no link with id {link_id!r}")
+
+
+def parse_link_field(field: str, value: str | bool | None) -> tuple[str | None, Any]:
+    """The YAML text and Python value of one link field; text None clears it."""
+    if field not in LINK_FIELDS:
+        raise EditError(
+            f"{field!r} cannot be set on a link; allowed fields: "
+            + ", ".join(LINK_FIELDS)
+        )
+    if field in _LINK_BOOLS:
+        if isinstance(value, bool):
+            flag = value
+        elif value in ("true", "false"):
+            flag = value == "true"
+        else:
+            raise EditError(f"{field} must be true or false")
+        return ("true" if flag else "false"), flag
+    if field in _LINK_OPTIONAL and (value is None or value == ""):
+        return None, None
+    if not isinstance(value, str):
+        raise EditError(f"{field} must be text")
+    check_text(value, field)
+    return scalar_text(value), value
+
+
+def set_link_field(
+    text: str,
+    raw: dict[str, Any],
+    *,
+    link_id: str,
+    field: str,
+    value: str | bool | None,
+) -> tuple[str, dict[str, Any]]:
+    """Set one scalar field of the link ``link_id``; only that line changes.
+
+    ``subtitle`` and ``icon`` are cleared by an empty value. ``affiliate`` and
+    ``featured`` take true or false; false on a key that is absent writes
+    nothing, so the file does not fill up with defaults.
+    """
+    shown, python_value = parse_link_field(field, value)
+    lines = text.splitlines(keepends=True)
+    holder, index = _find_link(_compose(text), link_id)
+    items = _items(text, lines, holder.node, holder.floor)
+    node = holder.node.value[index]
+    if not isinstance(node, MappingNode):  # _items already refused anything else
+        raise EditError(f"{link_id!r} is not a block mapping")
+    if python_value is False and _get(node, field) is None:
+        return text, copy.deepcopy(raw)
+    _set_field(
+        lines, node, items[index], _LINK_ORDER, field, shown, f"{link_id}.{field}"
+    )
     expected = copy.deepcopy(raw)
-    current = _holder_list(expected, link_id)
-    entry = current.pop(index)
-    current.insert(position - 1, entry)
-    _set_holder(expected, link_id, current)
+    target = _raw_link(expected, link_id)
+    if shown is None:
+        target.pop(field, None)
+    else:
+        target[field] = python_value
+    return _finish(text, lines), expected
+
+
+PLATFORM_FIELDS: tuple[str, ...] = ("handle", "url", "name", "label", "count", "as_of")
+_PLATFORM_ORDER = ("platform", "name", "handle", "url", "label", "count", "as_of")
+_PLATFORM_REQUIRED = ("platform", "handle", "url")
+_DAY = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
+_COUNT = re.compile(r"[0-9]{1,12}")
+
+
+def _find_platforms(root: MappingNode, block_id: str) -> _Seq:
+    """The ``items`` list of the platforms block ``block_id``."""
+    tabs = _get(root, "tabs")
+    if tabs is None or not isinstance(tabs[1], SequenceNode):
+        raise EditError("the config has no tabs list")
+    for tab in tabs[1].value:
+        blocks = _get(tab, "blocks") if isinstance(tab, MappingNode) else None
+        if blocks is None or not isinstance(blocks[1], SequenceNode):
+            continue
+        for block in blocks[1].value:
+            if isinstance(block, MappingNode) and _scalar(block, "id") == block_id:
+                found = _get(block, "items")
+                if found is None or not isinstance(found[1], SequenceNode):
+                    raise EditError(f"{block_id!r} is not a platforms block")
+                return _Seq(found[1], found[0].start_mark.line)
+    raise EditError(f"no block with id {block_id!r}")
+
+
+def _raw_platform_items(raw: dict[str, Any], block_id: str) -> list[dict[str, Any]]:
+    for tab in raw["tabs"]:
+        for block in tab["blocks"]:
+            if block["id"] == block_id and isinstance(block.get("items"), list):
+                items: list[dict[str, Any]] = block["items"]
+                return items
+    raise EditError(f"no block with id {block_id!r}")
+
+
+def _item_number(index: object, size: int) -> int:
+    """Check a 1-based item number; return it as a 0-based index."""
+    if isinstance(index, bool) or not isinstance(index, int) or not 1 <= index <= size:
+        raise EditError(f"the item number must be between 1 and {size}")
+    return index - 1
+
+
+def _blank(value: object) -> bool:
+    return value is None or value == ""
+
+
+def parse_platform_field(field: str, value: object) -> tuple[str | None, Any]:
+    """The YAML text and Python value of one platform item field.
+
+    Text None clears the key. A blank ``count`` is cleared, never turned into 0.
+    """
+    if field == "count":
+        if _blank(value):
+            return None, None
+        if isinstance(value, bool) or not isinstance(value, (int, str)):
+            raise EditError("count must be a whole number")
+        digits = str(value)
+        if not _COUNT.fullmatch(digits):
+            raise EditError("count must be a whole number, 0 or more")
+        return str(int(digits)), int(digits)
+    if field == "as_of":
+        if _blank(value):
+            return None, None
+        day = value if isinstance(value, datetime.date) else None
+        if isinstance(value, str) and _DAY.fullmatch(value):
+            try:
+                day = datetime.date.fromisoformat(value)
+            except ValueError:
+                day = None
+        if not isinstance(day, datetime.date) or isinstance(day, datetime.datetime):
+            raise EditError("as_of must be a date written YYYY-MM-DD")
+        return day.isoformat(), day
+    if field in ("name", "label") and _blank(value):
+        return None, None
+    if not isinstance(value, str):
+        raise EditError(f"{field} must be text")
+    check_text(value, field)
+    return scalar_text(value), value
+
+
+def _platform_parts(item: dict[str, Any]) -> list[tuple[str, str, Any]]:
+    """(key, YAML text, Python value) of a new item, in the usual key order."""
+    unknown = [k for k in item if k not in _PLATFORM_ORDER]
+    if unknown:
+        raise EditError(
+            f"{unknown[0]!r} cannot be set on a platform item; allowed keys: "
+            + ", ".join(_PLATFORM_ORDER)
+        )
+    for key in _PLATFORM_REQUIRED:
+        if _blank(item.get(key)):
+            raise EditError(f"{key} is required for a platform item")
+    parts: list[tuple[str, str, Any]] = []
+    for key in _PLATFORM_ORDER:
+        if key not in item:
+            continue
+        shown, python_value = parse_platform_field(key, item[key])
+        if shown is None:
+            continue
+        parts.append((key, shown, python_value))
+    return parts
+
+
+def add_platform_item(
+    text: str,
+    raw: dict[str, Any],
+    *,
+    block: str,
+    item: dict[str, Any],
+    position: int | None,
+) -> tuple[str, dict[str, Any]]:
+    """Add an item to the platforms block ``block`` (``position`` is 1-based)."""
+    parts = _platform_parts(item)
+    lines = text.splitlines(keepends=True)
+    holder = _find_platforms(_compose(text), block)
+    items = _items(text, lines, holder.node, holder.floor)
+    count = len(items)
+    where = count + 1 if position is None else position
+    if not 1 <= where <= count + 1:
+        raise EditError(f"--position must be between 1 and {count + 1}")
+    sample = items[0]
+    pad = " " * sample.indent
+    keys = " " * sample.keycol
+    gap = " " * (sample.keycol - sample.indent - 1)
+    rows = [
+        f"{pad}-{gap}{key}: {shown}\n" if n == 0 else f"{keys}{key}: {shown}\n"
+        for n, (key, shown, _value) in enumerate(parts)
+    ]
+    at = items[-1].end + 1 if where == count + 1 else items[where - 1].start
+    if at > 0 and not lines[at - 1].endswith("\n"):
+        lines[at - 1] += "\n"
+    lines[at:at] = rows
+    expected = copy.deepcopy(raw)
+    _raw_platform_items(expected, block).insert(
+        where - 1, {key: value for key, _shown, value in parts}
+    )
+    return _finish(text, lines), expected
+
+
+def remove_platform_item(
+    text: str, raw: dict[str, Any], *, block: str, index: int
+) -> tuple[str, dict[str, Any]]:
+    """Remove item ``index`` (1-based); the last item cannot be removed."""
+    lines = text.splitlines(keepends=True)
+    holder = _find_platforms(_compose(text), block)
+    items = _items(text, lines, holder.node, holder.floor)
+    which = _item_number(index, len(items))
+    if len(items) == 1:
+        raise EditError(
+            f"{block!r} has only one item; a platforms block needs at least one, "
+            "so remove the whole block by hand"
+        )
+    span = items[which]
+    del lines[span.start : span.end + 1]
+    expected = copy.deepcopy(raw)
+    del _raw_platform_items(expected, block)[which]
+    return _finish(text, lines), expected
+
+
+def move_platform_item(
+    text: str, raw: dict[str, Any], *, block: str, index: int, position: int
+) -> tuple[str, dict[str, Any]]:
+    """Move item ``index`` to ``position`` (both 1-based) within its block."""
+    lines = text.splitlines(keepends=True)
+    holder = _find_platforms(_compose(text), block)
+    items = _items(text, lines, holder.node, holder.floor)
+    which = _item_number(index, len(items))
+    if not 1 <= position <= len(items):
+        raise EditError(f"--position must be between 1 and {len(items)}")
+    out = _reordered(lines, items, which, position)
+    expected = copy.deepcopy(raw)
+    current = _raw_platform_items(expected, block)
+    current.insert(position - 1, current.pop(which))
     return _finish(text, out), expected
+
+
+def set_platform_item_field(
+    text: str,
+    raw: dict[str, Any],
+    *,
+    block: str,
+    index: int,
+    field: str,
+    value: object,
+) -> tuple[str, dict[str, Any]]:
+    """Set one field of item ``index`` (1-based) of a platforms block.
+
+    ``name``, ``label``, ``count`` and ``as_of`` are cleared by a blank value:
+    the line is removed, so a blank count is never written as 0.
+    """
+    if field not in PLATFORM_FIELDS:
+        raise EditError(
+            f"{field!r} cannot be set on a platform item; allowed fields: "
+            + ", ".join(PLATFORM_FIELDS)
+        )
+    shown, python_value = parse_platform_field(field, value)
+    lines = text.splitlines(keepends=True)
+    holder = _find_platforms(_compose(text), block)
+    items = _items(text, lines, holder.node, holder.floor)
+    which = _item_number(index, len(items))
+    node = holder.node.value[which]
+    if not isinstance(node, MappingNode):  # _items already refused anything else
+        raise EditError(f"item {index} is not a block mapping")
+    present = {k: _get(node, k) is not None for k in ("count", "as_of")}
+    if field == "count" and shown is None and present["as_of"]:
+        raise EditError("clear as_of before count: a date needs a count")
+    if field == "as_of" and shown is not None and not present["count"]:
+        raise EditError("as_of needs a count; set the count first")
+    _set_field(
+        lines,
+        node,
+        items[which],
+        _PLATFORM_ORDER,
+        field,
+        shown,
+        f"item {index} {field}",
+    )
+    expected = copy.deepcopy(raw)
+    target = _raw_platform_items(expected, block)[which]
+    if shown is None:
+        target.pop(field, None)
+    else:
+        target[field] = python_value
+    return _finish(text, lines), expected
+
+
+def _check_avatar(value: str) -> None:
+    """The avatar rules of the config: an https URL, or a local image path.
+
+    These are the functions the ``creator.avatar`` model field itself uses, so
+    the editor and the build cannot disagree about what a valid avatar is.
+    """
+    try:
+        if "://" in value or value.startswith("//"):
+            check_https_url(value)
+        else:
+            check_image_path(value)
+    except ValueError as exc:
+        raise EditError(
+            f"creator.avatar must be an https URL or a local image path: {exc}"
+        ) from None
 
 
 def parse_set_value(key: str, value: str) -> tuple[str, Any]:
@@ -694,6 +1109,8 @@ def parse_set_value(key: str, value: str) -> tuple[str, Any]:
             shown += "0"
         return shown, float(shown)
     check_text(value, key)
+    if key == "creator.avatar":
+        _check_avatar(value)
     return scalar_text(value), value
 
 

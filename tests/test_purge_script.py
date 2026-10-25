@@ -367,11 +367,15 @@ def test_the_first_lines_survive_the_cap_so_entry_points_come_first(
 
 
 def test_a_total_time_budget_stops_further_requests(tmp_path: Path) -> None:
+    # The script counts whole seconds ($SECONDS), so a budget of N can read as spent
+    # up to a second early. A 2-second budget against a 2-second stub call always
+    # lets the first request go out (elapsed is 0 or 1) and always stops the second
+    # (elapsed is at least 2).
     result = run_script(
         tmp_path,
         urls(90),
         modes=["slow", "slow", "slow"],
-        env={"PURGE_BUDGET_SECONDS": "1"},
+        env={"PURGE_BUDGET_SECONDS": "2"},
     )
     assert result.code == 0
     assert len(result.calls) == 1

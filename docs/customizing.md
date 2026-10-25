@@ -870,6 +870,11 @@ reach-around set --config site.yaml theme.mode dark
 reach-around set --config site.yaml theme.colors.accent "#ff69b4"
 reach-around set --config site.yaml theme.background_dim 0.4
 reach-around set --config site.yaml creator.name "Example Creator"
+reach-around set --config site.yaml creator.avatar img/me.png
+
+# change one field of a link (an empty subtitle or icon clears it)
+reach-around set-link-field --config site.yaml summer-show subtitle "Doors at 7"
+reach-around set-link-field --config site.yaml summer-show featured true
 ```
 
 Details and limits:
@@ -881,11 +886,21 @@ Details and limits:
   item, at the same indent, along with it. Blank lines and other comments stay
   where they are. They refuse a section, a tab, or the only item in a list
   (remove that one by hand).
-- `set` accepts only `creator.name`, `creator.title`, `theme.mode`,
-  `theme.background_dim` and `theme.colors.{bg,text,accent,on_accent,surface,border}`.
+- `set-link-field ID FIELD VALUE` edits one scalar of an existing link
+  (`title`, `url`, `subtitle`, `icon`, `affiliate`, `featured`), found by its
+  id anywhere on the site. Only that line changes; a trailing comment stays,
+  and a key that is not there yet is added after the keys that normally come
+  before it. `affiliate` and `featured` take `true` or `false` (`false` on a
+  key that is absent writes nothing). It refuses a tab, a section, a
+  multi-line value and any other field.
+- `set` accepts only `creator.name`, `creator.title`, `creator.avatar`,
+  `theme.mode`, `theme.background_dim` and `theme.colors.{bg,text,accent,on_accent,surface,border}`.
   It replaces the value in place (a trailing comment stays) or adds the key at
   the end of its section. Values are checked by the models, so `theme.mode
   purple` or `theme.background_dim 5` is refused with the key path.
+  `creator.avatar` takes an https URL or a local image path under the same
+  rules as the config (no `..`, no leading slash, an image extension, not in
+  `static/` or `privacy/`).
 - Only plain block-style YAML is supported. Flow style (`blocks: [...]`,
   `{...}`), CRLF line endings, and a `-` on a line by itself are refused with a
   message; edit those files by hand.
