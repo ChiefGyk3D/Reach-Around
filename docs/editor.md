@@ -46,7 +46,7 @@ the printed link again. Do not paste the link into a chat or a shared screen.
 
 | Method | Path | Result |
 |---|---|---|
-| GET | `/__edit/`, `/__edit/app.js`, `/__edit/app.css` | the static shell |
+| GET | `/__edit/`, `/__edit/app.css` and the ES modules (`app.js`, `strings.js`, `token.js`, `api.js`, `store.js`, `announce.js`, `view.js`) | the static shell: a read-only view of the settings beside the sandboxed preview |
 | GET | `/__edit/api/state` | the config as JSON, see below (token) |
 | GET | `/__edit/api/version` | `{"version": N, "hash": "...", "build": {"ok": true}}`; `N` changes when the file changes. Polling it does not reset the idle timer (token) |
 | POST | `/__edit/api/op` | runs one edit operation (token, `Content-Type: application/json`, at most 64 KiB) |
