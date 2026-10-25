@@ -39,7 +39,8 @@ import yaml
 from yaml.nodes import MappingNode, Node, ScalarNode, SequenceNode
 
 from reach_around.config import ConfigError, load_site_config, load_yaml
-from reach_around.site.theme import COLOR_KEYS
+from reach_around.config.models import check_https_url
+from reach_around.site.theme import COLOR_KEYS, check_image_path
 
 MAX_BYTES = 1_048_576
 LOCK_TIMEOUT = 10.0  # seconds to wait for another edit's lock
@@ -48,6 +49,7 @@ LOCK_POLL = 0.05
 SET_KEYS: tuple[str, ...] = (
     "creator.name",
     "creator.title",
+    "creator.avatar",
     "theme.background_dim",
     "theme.mode",
     *(f"theme.colors.{key}" for key in COLOR_KEYS),
@@ -1046,6 +1048,23 @@ def set_platform_item_field(
     return _finish(text, lines), expected
 
 
+def _check_avatar(value: str) -> None:
+    """The avatar rules of the config: an https URL, or a local image path.
+
+    These are the functions the ``creator.avatar`` model field itself uses, so
+    the editor and the build cannot disagree about what a valid avatar is.
+    """
+    try:
+        if "://" in value or value.startswith("//"):
+            check_https_url(value)
+        else:
+            check_image_path(value)
+    except ValueError as exc:
+        raise EditError(
+            f"creator.avatar must be an https URL or a local image path: {exc}"
+        ) from None
+
+
 def parse_set_value(key: str, value: str) -> tuple[str, Any]:
     """The YAML text and the Python value for ``set KEY VALUE``."""
     if key not in SET_KEYS:
@@ -1065,6 +1084,8 @@ def parse_set_value(key: str, value: str) -> tuple[str, Any]:
             shown += "0"
         return shown, float(shown)
     check_text(value, key)
+    if key == "creator.avatar":
+        _check_avatar(value)
     return scalar_text(value), value
 
 
