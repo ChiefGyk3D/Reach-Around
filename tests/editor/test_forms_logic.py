@@ -33,7 +33,7 @@ def stage(target: Path) -> Path:
 
 
 def run_node(node: str, script: Path) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
+    return subprocess.run(  # noqa: S603 - fixed argv: node and a staged copy of our script
         [node, "--test", "--test-reporter=spec", str(script)],
         cwd=script.parent,
         capture_output=True,
@@ -62,7 +62,9 @@ def test_the_node_tests_go_red_on_broken_logic(tmp_path: Path) -> None:
     script = stage(tmp_path)
     store = tmp_path / "store.js"
     text = store.read_text(encoding="utf-8")
-    mutated = text.replace("{ base: current.hash, ...step", '{ base: "0".repeat(64), ...step')
+    mutated = text.replace(
+        "{ base: current.hash, ...step", '{ base: "0".repeat(64), ...step'
+    )
     assert mutated != text
     store.write_text(mutated, encoding="utf-8")
     done = run_node(node, script)

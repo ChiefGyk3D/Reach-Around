@@ -140,7 +140,9 @@ def test_network_goes_only_through_the_client_and_only_to_op_and_state() -> None
     for name in JS_NAMES:
         text = source(name)
         if name != "api.js":
-            assert not re.search(r"\bfetch\s*\(|XMLHttpRequest|WebSocket|sendBeacon", text)
+            assert not re.search(
+                r"\bfetch\s*\(|XMLHttpRequest|WebSocket|sendBeacon", text
+            )
     store = source("store.js")
     calls = re.findall(r"client\.(get|post)\(\s*([^,)]*)", store)
     assert calls == [("post", '"op"')]
@@ -150,14 +152,18 @@ def test_network_goes_only_through_the_client_and_only_to_op_and_state() -> None
 def test_forms_never_navigate_or_open_anything() -> None:
     for name in ("view.js", "store.js", "app.js"):
         text = source(name)
-        assert not re.search(r"\blocation\s*\.\s*(href|assign|replace)|window\.open", text)
+        assert not re.search(
+            r"\blocation\s*\.\s*(href|assign|replace)|window\.open", text
+        )
         assert not re.search(r"""setAttribute\(\s*"href"|"mailto:|"tel:""", text)
 
 
 def test_the_form_view_uses_text_content_for_values() -> None:
     view = source("view.js")
     assert view.count("textContent") >= 8
-    assert not re.search(r"\.(inner|outer)HTML|insertAdjacent|createContextualFragment", view)
+    assert not re.search(
+        r"\.(inner|outer)HTML|insertAdjacent|createContextualFragment", view
+    )
 
 
 @pytest.mark.parametrize(
@@ -166,7 +172,10 @@ def test_the_form_view_uses_text_content_for_values() -> None:
         ('node.textContent = "Save";', "textContent literal"),
         ('textual("p", "hint", "Type here");', "textual literal"),
         ('withHidden(button, "Move up", name);', "withHidden literal"),
-        ('node.setAttribute("aria-label", "Move");', "visible-name attribute set in code"),
+        (
+            'node.setAttribute("aria-label", "Move");',
+            "visible-name attribute set in code",
+        ),
     ],
 )
 def test_the_text_guard_bites(snippet: str, found: str) -> None:

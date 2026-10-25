@@ -62,9 +62,7 @@ def served(tmp_path: Path) -> Iterator[tuple[EditorSession, Path, Path]]:
         session.shutdown()
 
 
-def drive(
-    served: tuple[EditorSession, Path, Path], scenario: str
-) -> dict[str, Any]:
+def drive(served: tuple[EditorSession, Path, Path], scenario: str) -> dict[str, Any]:
     node = node_or_none()
     if node is None:
         pytest.skip("node is not installed; the browser-side logic was not run")
@@ -73,7 +71,7 @@ def drive(
     tools.mkdir()
     stage(tools)
     shutil.copyfile(Path(__file__).with_name("forms_contract.mjs"), tools / "run.mjs")
-    done = subprocess.run(
+    done = subprocess.run(  # noqa: S603 - fixed argv: node, a staged script, our own values
         [node, "run.mjs", str(session.port), session.token, str(config), scenario],
         cwd=tools,
         capture_output=True,
