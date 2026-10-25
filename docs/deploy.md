@@ -249,18 +249,28 @@ long-lived credential in GitHub; use it only in an emergency and prefer OIDC.
 
 ## Egress control
 
-Both jobs start with `step-security/harden-runner` in **block** mode and an
-explicit allow-list of `host:443` entries (no wildcards), followed by an egress
+Both jobs start with `step-security/harden-runner`, followed by an egress
 canary that says whether a failure is a broken runner network or a wrong list.
-The build job allows GitHub and the artifact endpoints, `pypi.org` and
-`files.pythonhosted.org`. The deploy job allows GitHub, the npm registry,
-`api.doppler.com` and `api.cloudflare.com`.
 
-**The allow-lists are unmeasured.** They come from what each step is known to
-reach, not from a recorded run, and the artifact upload may use a per-run blob
-host that is not listed. An unmeasured allow-list fails safe: a blocked host is
-named in the log; add it to the job's `allowed-endpoints` and re-run. Once a run
-has succeeded, compare the harden-runner report with the list and tighten it.
+- **`deploy` is in block mode** with an explicit allow-list of `host:443`
+  entries (no wildcards): GitHub, the npm registry, `api.doppler.com` and
+  `api.cloudflare.com`. This is the job that holds the Cloudflare token.
+- **`build` is in audit mode.** Artifact upload goes to a blob host whose name
+  varies per run and cannot be listed without a wildcard, so a block-mode list
+  would stop every build at upload. The build job holds no secrets and installs
+  from hashed lockfiles. Audit records every destination instead of stopping it.
+
+**The deploy allow-list is unmeasured.** It comes from what each step is known
+to reach, not from a recorded run. An unmeasured allow-list fails safe: a
+blocked host is named in the log; add it to the job's `allowed-endpoints` and
+re-run.
+
+**Measuring the build hosts.** After a build run, open the run's harden-runner
+report (the step summary or the StepSecurity link in the job log) and read the
+outbound destinations. If the artifact host turns out to be a stable set of
+names, add them as `allowed-endpoints` with no wildcards, change
+`egress-policy` to `block`, and re-run. If the names still vary per run, leave
+the job in audit.
 
 To store the token, let Doppler read the value from its prompt instead of
 putting it on the command line (a value typed as an argument lands in your

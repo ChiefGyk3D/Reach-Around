@@ -35,45 +35,49 @@ def steps(job: str) -> list[dict[str, Any]]:
 
 
 @pytest.mark.parametrize("job", ["build", "deploy"])
-def test_harden_runner_is_the_first_step_in_block_mode_sha_pinned(job: str) -> None:
+def test_harden_runner_is_the_first_step_sha_pinned(job: str) -> None:
     first = steps(job)[0]
     assert re.fullmatch(
         r"step-security/harden-runner@[0-9a-f]{40}", first.get("uses", "")
     ), first
     assert first["uses"] == HARDEN
+
+
+def test_the_deploy_job_blocks_egress_with_an_explicit_list() -> None:
+    # The deploy job holds the Cloudflare token: it must stay in block mode.
+    # Weakening it to audit must fail this test.
+    first = steps("deploy")[0]
     assert first["with"]["egress-policy"] == "block"
     endpoints = str(first["with"]["allowed-endpoints"]).split()
     assert endpoints
     for endpoint in endpoints:
         # explicit host:port only, no wildcards
         assert re.fullmatch(r"[a-z0-9.-]+:443", endpoint), endpoint
-
-
-def test_the_allow_lists_cover_what_each_job_does() -> None:
-    def hosts(job: str) -> set[str]:
-        return set(str(steps(job)[0]["with"]["allowed-endpoints"]).split())
-
-    assert {
-        "pypi.org:443",
-        "files.pythonhosted.org:443",
-        "github.com:443",
-        "api.github.com:443",
-        "results-receiver.actions.githubusercontent.com:443",
-    } <= hosts("build")
     assert {
         "github.com:443",
         "api.github.com:443",
         "registry.npmjs.org:443",
         "api.doppler.com:443",
         "api.cloudflare.com:443",
-    } <= hosts("deploy")
-    # the build job never talks to Cloudflare or Doppler
-    assert not {h for h in hosts("build") if "cloudflare.com" in h or "doppler" in h}
+    } <= set(endpoints)
+
+
+def test_the_build_job_audits_egress_and_says_why() -> None:
+    # Artifact upload goes to a blob host whose name varies per run and cannot
+    # be listed without a wildcard, so block mode would stop every build. The
+    # build job holds no secrets and installs from hashed lockfiles.
+    text = WORKFLOW.read_text(encoding="utf-8")
+    assert steps("build")[0]["with"]["egress-policy"] == "audit"
+    assert "*" not in str(steps("build")[0]["with"].get("allowed-endpoints", ""))
+    head = text[: text.index("  deploy:")]
+    flat = " ".join(head.replace("#", " ").split())
+    assert "varies per run" in flat and "without a wildcard" in flat
+    assert "no secrets" in flat and "hashed lockfiles" in flat
 
 
 def test_the_allow_lists_are_documented_as_unmeasured() -> None:
     text = WORKFLOW.read_text(encoding="utf-8")
-    assert text.count("UNMEASURED") >= 2  # one comment per job
+    assert "UNMEASURED" in text  # the deploy job's block-mode list
     docs = (ROOT / "docs" / "deploy.md").read_text(encoding="utf-8")
     flat = " ".join(docs.split())
     assert "unmeasured" in flat.lower()

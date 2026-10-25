@@ -44,22 +44,13 @@ jobs:
     steps:
       - uses: step-security/harden-runner@ccd8616d44fd3846e67624a50d5aad6d37bf2d25 # v2.22.1
         with:
-          # block, with an explicit list (no wildcards). The runner's own
-          # infrastructure hosts are allowed by the agent. This list is
-          # UNMEASURED: it comes from what each step is known to reach, not
-          # from a recorded run. The artifact upload may also reach a per-run blob host that is not listed here; if the upload is blocked, the log names it.
-          # An unmeasured allow-list fails safe: a blocked host is named in the
-          # job log and nothing was sent. Add the host here, note it in
-          # docs/deploy.md (Egress control), and re-run.
-          egress-policy: block
-          allowed-endpoints: >-
-            api.github.com:443
-            files.pythonhosted.org:443
-            github.com:443
-            objects.githubusercontent.com:443
-            pypi.org:443
-            release-assets.githubusercontent.com:443
-            results-receiver.actions.githubusercontent.com:443
+          # audit, not block: artifact upload goes to a blob host whose name
+          # varies per run and cannot be listed without a wildcard (unsupported
+          # here), so a block-mode list would stop every build at upload. This
+          # job holds no secrets and installs from hashed lockfiles. Audit logs
+          # the destinations, so a measured list can follow from a run's report
+          # (docs/deploy.md, Egress control). The deploy job stays in block.
+          egress-policy: audit
 
       # Egress canary, as in git-your-ship-together (EX-0001): a runner with
       # broken DNS makes block mode fail confusingly, so say which it is first.
