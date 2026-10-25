@@ -342,10 +342,10 @@ only because its name changes whenever its content does.**
 
 | Class | Files | `Cache-Control` |
 |---|---|---|
-| Hashed | everything under `static/` (CSS, JS, icons, fonts) and every image or font file your config names, for example `static/site.3fa9c1d2ab.css`, `media/mascot.73e9847dc8.svg` | `public, max-age=31536000, immutable` |
+| Hashed | everything under `static/` (CSS, JS, icons, fonts) and every image or font file your config names, for example `static/site.3fa9c1d2ab4e5f607182.css`, `media/mascot.73e9847dc81a2b3c4d5e.svg` | `public, max-age=31536000, immutable` |
 | Stable | `index.html` and every page, `404.html`, `robots.txt`, and a root-level `apple-touch-icon.png` (a file a browser asks for by name; the build also keeps a root-level `favicon.ico` unrenamed, though the config cannot name one today) | `public, max-age=0, must-revalidate` |
 
-The hash is the first ten hex digits of the SHA-256 of the file's final bytes.
+The hash is the first 20 hex digits (80 bits) of the SHA-256 of the file's final bytes.
 CSS is hashed after its `url()` references are rewritten to the hashed names,
 so changing one icon renames the stylesheet that uses it, and the page that
 links the stylesheet changes with it. Nothing else is renamed. Because HTML is
@@ -424,8 +424,10 @@ How it works:
    published path with its SHA-256, size and class (`hashed` or `stable`). It is
    uploaded as the artifact `site-assets-inventory`, kept 90 days.
 2. The same job downloads that artifact from the **latest successful** earlier
-   run (`gh run list` and `gh run download`) and runs
-   `reach-around deploy-purge-list --previous OLD --current NEW`. The list has
+   run (`gh run list` and `gh run download`, in a step that holds the built-in
+   read-only token and runs nothing else) and then, in a separate step with no
+   token, runs `reach-around deploy-purge-list --previous OLD --current NEW`.
+   The inventory is read as untrusted input (strict JSON, size cap, plain paths). The list has
    the paths that were removed, the stable files whose bytes changed, and always
    `/`, every page, `/404.html` and `/robots.txt`. A changed hashed file needs
    no purge, since its new name is a new URL. With no earlier deployment (the
@@ -436,6 +438,11 @@ How it works:
    `{"files": [...]}`, 30 URLs per request (the script's own limit; the current
    Cloudflare docs allow 100 for a single-file purge), https only, with the token
    in the `Authorization` header. It checks `"success": true` in each response.
+   The work is bounded because the list came from an earlier run: at most 300
+   URLs per deploy (the list puts the entry points first, so they are kept), a
+   cap you can raise with `PURGE_MAX` up to a hard ceiling of 1000, and a total
+   time budget of 240 seconds (`PURGE_BUDGET_SECONDS`, ceiling 600). Paths past
+   the cap are counted in a warning, never sent.
 4. A failure is a warning annotation and a line in the job summary. It never
    fails the deploy.
 

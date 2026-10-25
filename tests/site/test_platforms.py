@@ -31,9 +31,9 @@ TODAY = date(2027, 3, 10)
 NOW = datetime(2027, 3, 10, 12, 0, tzinfo=UTC)
 HOSTILE = "<script>alert(1)</script>"
 CSS_TAG = re.compile(
-    r'<link rel="stylesheet" href="(?:\.\./)?static/platforms\.[0-9a-f]{10}\.css">'
+    r'<link rel="stylesheet" href="(?:\.\./)?static/platforms\.[0-9a-f]{20}\.css">'
 )
-CSS_REF = re.compile(r"platforms\.[0-9a-f]{10}\.css")
+CSS_REF = re.compile(r"platforms\.[0-9a-f]{20}\.css")
 
 
 def item(**over: Any) -> dict[str, Any]:

@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Test helper: find the content-hashed file for a logical asset name.
 
-The build publishes ``static/site.css`` as ``static/site.<10 hex>.css``. Tests
+The build publishes ``static/site.css`` as ``static/site.<20 hex>.css``. Tests
 name files the way a template does and this helper maps that to the built path,
 so a test never hard-codes a hash and never accepts the unhashed name.
 """
@@ -11,7 +11,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-HASH = r"[0-9a-f]{10}"
+HASH = r"[0-9a-f]{20}"
 
 
 def hashed_re(logical: str) -> re.Pattern[str]:

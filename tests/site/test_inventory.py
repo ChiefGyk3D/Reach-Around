@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from datetime import date
 from pathlib import Path
 
@@ -15,6 +16,7 @@ from reach_around.config import load_site_config
 from reach_around.site.build import build_site
 from reach_around.site.inventory import (
     MAX_ENTRIES,
+    MAX_INVENTORY_BYTES,
     InventoryEntry,
     InventoryError,
     build_inventory,
@@ -256,10 +258,23 @@ def test_entry_points_are_always_purged() -> None:
     assert urls == sorted({"/", "/start/", "/404.html", "/privacy/", "/robots.txt"})
 
 
-def test_the_list_is_sorted_and_has_no_duplicates() -> None:
-    previous = {"a/index.html": entry(), "b.txt": entry()}
-    urls = purge_paths(previous, {})
-    assert urls == sorted(set(urls))
+def test_the_list_has_no_duplicates_and_puts_entry_points_first() -> None:
+    previous = {
+        "a/index.html": entry(),
+        "b.txt": entry(),
+        "aa.txt": entry(),
+        "z/index.html": entry(),
+    }
+    current = {"index.html": entry(), "z/index.html": entry(), "404.html": entry()}
+    urls = purge_paths(previous, current)
+    assert len(urls) == len(set(urls))
+    entry_points = {"/", "/z/", "/404.html", "/robots.txt"}
+    head, tail = urls[: len(entry_points)], urls[len(entry_points) :]
+    assert set(head) == entry_points
+    assert head == sorted(head)
+    # then the removed paths, sorted
+    assert tail == sorted(tail)
+    assert "/b.txt" in tail and "/a/" in tail
 
 
 def test_a_real_rebuild_with_a_changed_icon_purges_no_hashed_file(
@@ -274,3 +289,61 @@ def test_a_real_rebuild_with_a_changed_icon_purges_no_hashed_file(
     # the old stylesheet is gone from the build, so it is listed; new hashes are not
     assert "/" + renamed in urls
     assert "/static/site.0000000000.css" not in urls
+
+
+# ------------------------------------------------- how the file is opened
+
+
+def valid_text() -> str:
+    return inventory_json({"index.html": entry()})
+
+
+def test_a_symlink_is_refused_even_when_it_points_at_a_valid_inventory(
+    tmp_path: Path,
+) -> None:
+    real = tmp_path / "real.json"
+    real.write_text(valid_text(), encoding="utf-8")
+    link = tmp_path / "link.json"
+    link.symlink_to(real)
+    assert load_inventory(real)
+    with pytest.raises(InventoryError, match="symlink"):
+        load_inventory(link)
+
+
+def test_a_symlink_to_a_directory_or_a_missing_file_is_refused(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "d").mkdir()
+    (tmp_path / "to-dir").symlink_to(tmp_path / "d")
+    (tmp_path / "dangling").symlink_to(tmp_path / "missing")
+    for name in ("to-dir", "dangling"):
+        with pytest.raises(InventoryError):
+            load_inventory(tmp_path / name)
+
+
+def test_a_fifo_is_refused_without_blocking(tmp_path: Path) -> None:
+    fifo = tmp_path / "fifo.json"
+    os.mkfifo(fifo)
+    with pytest.raises(InventoryError, match="regular file"):
+        load_inventory(fifo)
+
+
+def test_a_directory_is_refused_as_not_a_regular_file(tmp_path: Path) -> None:
+    with pytest.raises(InventoryError, match="regular file"):
+        load_inventory(tmp_path)
+
+
+def test_a_device_is_refused_and_never_read() -> None:
+    with pytest.raises(InventoryError, match="regular file"):
+        load_inventory(Path("/dev/zero"))
+
+
+def test_the_read_is_capped_on_the_open_descriptor(tmp_path: Path) -> None:
+    big = tmp_path / "big.json"
+    big.write_bytes(b" " * (MAX_INVENTORY_BYTES + 1))
+    with pytest.raises(InventoryError, match="larger"):
+        load_inventory(big)
+    just = tmp_path / "just.json"
+    text = valid_text()
+    just.write_text(text + " " * (MAX_INVENTORY_BYTES - len(text)), encoding="utf-8")
+    assert load_inventory(just)

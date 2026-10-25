@@ -351,12 +351,12 @@ def test_the_block_has_no_link_in_the_html(tmp_path: Path) -> None:
 # --- assets only where the block is --------------------------------------------
 
 SCRIPT_TAG = re.compile(
-    r'<script src="(?:\.\./)?static/email\.[0-9a-f]{10}\.js" defer></script>'
+    r'<script src="(?:\.\./)?static/email\.[0-9a-f]{20}\.js" defer></script>'
 )
 CSS_TAG = re.compile(
-    r'<link rel="stylesheet" href="(?:\.\./)?static/email\.[0-9a-f]{10}\.css">'
+    r'<link rel="stylesheet" href="(?:\.\./)?static/email\.[0-9a-f]{20}\.css">'
 )
-EMAIL_REF = re.compile(r"email\.[0-9a-f]{10}\.(?:js|css)")
+EMAIL_REF = re.compile(r"email\.[0-9a-f]{20}\.(?:js|css)")
 
 
 def test_assets_ship_with_a_click_block(tmp_path: Path) -> None:
@@ -373,7 +373,7 @@ def test_assets_ship_with_a_click_block(tmp_path: Path) -> None:
 def test_never_js_ships_the_style_but_no_script(tmp_path: Path) -> None:
     out = build(cfg(block(reveal="never_js")), tmp_path)
     html = (out / "index.html").read_text("utf-8")
-    assert not re.search(r"email\.[0-9a-f]{10}\.js", html)
+    assert not re.search(r"email\.[0-9a-f]{20}\.js", html)
     assert CSS_TAG.search(html)
     assert not has_asset(out, "static/email.js")
     assert not list((out / "static").glob("email*.js"))

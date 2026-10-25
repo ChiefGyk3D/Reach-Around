@@ -31,13 +31,13 @@ GOOD_PNG = b"\x89PNG\r\n\x1a\nsynthetic\x00\x00\x00\x00IEND\xaeB`\x82"
 HOSTILE = "<script>alert(1)</script>"
 
 SCRIPT_TAG = re.compile(
-    r'<script src="(?:\.\./)?static/copy\.[0-9a-f]{10}\.js" defer></script>'
+    r'<script src="(?:\.\./)?static/copy\.[0-9a-f]{20}\.js" defer></script>'
 )
 CSS_TAG = re.compile(
-    r'<link rel="stylesheet" href="(?:\.\./)?static/crypto\.[0-9a-f]{10}\.css">'
+    r'<link rel="stylesheet" href="(?:\.\./)?static/crypto\.[0-9a-f]{20}\.css">'
 )
-COPY_REF = re.compile(r"copy\.[0-9a-f]{10}\.js")
-CRYPTO_CSS_REF = re.compile(r"crypto\.[0-9a-f]{10}\.css")
+COPY_REF = re.compile(r"copy\.[0-9a-f]{20}\.js")
+CRYPTO_CSS_REF = re.compile(r"crypto\.[0-9a-f]{20}\.css")
 
 
 def coin(**over: Any) -> dict[str, Any]:
@@ -277,7 +277,7 @@ def test_qr_renders_inside_native_details_with_alt_and_lazy(tmp_path: Path) -> N
     )
     assert "<details" in html and "<summary" in html
     assert 'alt="QR code for Bitcoin address"' in html
-    img = re.search(r'<img[^>]*src="media/qr\.[0-9a-f]{10}\.png"[^>]*>', html)
+    img = re.search(r'<img[^>]*src="media/qr\.[0-9a-f]{20}\.png"[^>]*>', html)
     assert img is not None and 'loading="lazy"' in img.group(0)
     assert asset_file(tmp_path / "out", "media/qr.png").read_bytes() == GOOD_PNG
 

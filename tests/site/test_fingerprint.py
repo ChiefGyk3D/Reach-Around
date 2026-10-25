@@ -24,7 +24,7 @@ def sha10(data: bytes) -> str:
 def test_hashed_name_puts_ten_hex_of_sha256_before_the_extension() -> None:
     data = b"body { color: red; }\n"
     assert hashed_name("static/site.css", data) == f"static/site.{sha10(data)}.css"
-    assert HASH_LEN == 10
+    assert HASH_LEN == 20
 
 
 def test_hashed_name_changes_only_with_content() -> None:
@@ -154,3 +154,20 @@ def test_rewrite_css_resolves_against_the_css_directory() -> None:
     # the same text from another directory points somewhere else: untouched
     same = 'a{b:url("icons/x.svg")}'
     assert rewrite_css(same, "media/site.css", mapping) == same
+
+
+def test_the_fingerprint_is_at_least_eighty_bits() -> None:
+    # 20 hex digits = 80 bits: a one-year immutable name must not be collidable
+    assert HASH_LEN >= 20
+
+
+def test_any_one_bit_change_changes_the_name() -> None:
+    data = bytes(range(64))
+    base = hashed_name("static/a.js", data)
+    seen = {base}
+    for index in range(len(data)):
+        for bit in range(8):
+            flipped = bytearray(data)
+            flipped[index] ^= 1 << bit
+            seen.add(hashed_name("static/a.js", bytes(flipped)))
+    assert len(seen) == 1 + len(data) * 8

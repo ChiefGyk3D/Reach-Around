@@ -130,7 +130,8 @@ def test_deploy_purge_list_prints_one_path_per_line(
     lines = capsys.readouterr().out.splitlines()
     assert "/manifest.json" in lines
     assert {"/", "/404.html", "/robots.txt"} <= set(lines)
-    assert lines == sorted(set(lines))
+    assert len(lines) == len(set(lines))
+    assert lines.index("/") < lines.index("/manifest.json")
     assert all(line.startswith("/") for line in lines)
 
 

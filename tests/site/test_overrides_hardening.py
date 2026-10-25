@@ -402,7 +402,10 @@ def test_remote_url_error_points_to_the_image_block(overrides: Path) -> None:
 def test_custom_css_relative_urls_and_plain_css_are_accepted(
     overrides: Path, css: str
 ) -> None:
-    assert _css(overrides, css) == css
+    # a comment is replaced by one space (the build rewrites and publishes the
+    # same text that was checked); everything else is unchanged
+    expected = css.replace("/* @import 'x.css' */", " ")
+    assert _css(overrides, css) == expected
 
 
 # ----------------------------------------- CSS functions that can fetch a URL

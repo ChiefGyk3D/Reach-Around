@@ -1046,7 +1046,7 @@ overlap, so no URL gets both. See
 ### File names and the assets inventory
 
 Every file under `static/` and every image or font your config names is
-published as `name.<10 hex>.ext`, the hash being the SHA-256 of the file's
+published as `name.<20 hex>.ext`, the hash being the SHA-256 of the file's
 final bytes. A config value such as `creator.avatar: media/me.png` still names
 the file in your instance folder; only the published name carries the hash, and
 the page links to it. `apple-touch-icon.png` (and its `-precomposed` form) at

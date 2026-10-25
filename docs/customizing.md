@@ -491,7 +491,9 @@ When config is not enough, point `--overrides` at a folder.
 (the hash is of its final bytes, so every edit is a new URL and never a stale
 cache hit) and linked after `theme.css`, so it wins ties. A `url()` in it that
 names a file the build publishes (a same-site path such as `../media/me.png`) is
-rewritten to that file's hashed name. The theme tokens are CSS custom
+rewritten to that file's hashed name. Comments are removed from the published
+file (replaced by a space), so the text that is checked, rewritten and published
+is the same. A comment inside the word `url(` (`ur/**/l(`) is refused. The theme tokens are CSS custom
 properties; reading them keeps your CSS in step with the config. The names in
 `static/site.css` today are `--ra-color-bg`, `--ra-color-text`,
 `--ra-color-accent`, `--ra-color-surface`, `--ra-color-border`,

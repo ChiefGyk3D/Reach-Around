@@ -15,6 +15,12 @@
 #   ZONE_ID                  the zone's id (32 hex digits).
 #   SITE_HOST                the host whose URLs are purged (plain hostname).
 #   GITHUB_STEP_SUMMARY      optional; a summary is appended when set.
+#   PURGE_MAX                optional cap on URLs purged per run (default 300,
+#                            hard ceiling 1000; anything else means the default).
+#   PURGE_BUDGET_SECONDS     optional total time budget (default 240, ceiling 600).
+# The list may come from an earlier run's artifact, so the work is bounded: the
+# first PURGE_MAX paths are purged (the list puts entry points first) and the
+# rest are reported, never sent.
 #
 # It never fails the deploy: a missing setting is a notice, an API failure is a
 # warning and a line in the job summary. The token goes to curl on stdin as a
@@ -23,6 +29,29 @@
 set -u
 
 BATCH=30 # URLs per request (the Cloudflare limit this was written against)
+MAX_DEFAULT=300
+MAX_CEILING=1000
+BUDGET_DEFAULT=240
+BUDGET_CEILING=600
+
+# A positive integer, clamped to a ceiling; anything else is the default.
+bounded() {
+  case "$1" in
+    '' | *[!0-9]*) echo "$2" ;;
+    *)
+      if [ "$1" -lt 1 ]; then
+        echo "$2"
+      elif [ "$1" -gt "$3" ]; then
+        echo "$3"
+      else
+        echo "$1"
+      fi
+      ;;
+  esac
+}
+max_urls=$(bounded "${PURGE_MAX:-}" "$MAX_DEFAULT" "$MAX_CEILING")
+budget=$(bounded "${PURGE_BUDGET_SECONDS:-}" "$BUDGET_DEFAULT" "$BUDGET_CEILING")
+started=$SECONDS
 API="https://api.cloudflare.com/client/v4"
 
 summary() {
@@ -66,9 +95,18 @@ batch_count=0
 total=0
 failed=0
 requests=0
+accepted=0
+seen=0
+out_of_time=0
 
 send() {
   [ "$batch_count" -gt 0 ] || return 0
+  if [ $((SECONDS - started)) -ge "$budget" ]; then
+    out_of_time=$((out_of_time + batch_count))
+    batch_json=""
+    batch_count=0
+    return 0
+  fi
   requests=$((requests + 1))
   body="{\"files\":[${batch_json}]}"
   response=$(
@@ -96,11 +134,17 @@ send() {
 
 while IFS= read -r line || [ -n "$line" ]; do
   case "$line" in '' | '#'*) continue ;; esac
+  seen=$((seen + 1))
+  # Past the cap a line is only counted, so a huge list costs almost nothing.
+  if [ "$accepted" -ge "$max_urls" ]; then
+    continue
+  fi
   # a plain absolute path: no scheme, no //, no query, fragment or whitespace
   if ! printf '%s' "$line" | grep -Eq '^/([A-Za-z0-9._~-][A-Za-z0-9._~/-]*)?$'; then
     warn "skipped a path that is not plain URL path characters"
     continue
   fi
+  accepted=$((accepted + 1))
   url="https://${SITE_HOST}${line}"
   if [ "$batch_count" -gt 0 ]; then
     batch_json="${batch_json},"
@@ -113,6 +157,12 @@ while IFS= read -r line || [ -n "$line" ]; do
 done <"$paths_file"
 send
 
+if [ "$seen" -gt "$accepted" ]; then
+  warn "the list has ${seen} paths; only the first ${accepted} (entry points first) were purged, the cap is ${max_urls}"
+fi
+if [ "$out_of_time" -gt 0 ]; then
+  warn "the ${budget}-second time budget ran out; ${out_of_time} URL(s) were not sent"
+fi
 if [ "$requests" -eq 0 ]; then
   notice "nothing to purge"
   exit 0

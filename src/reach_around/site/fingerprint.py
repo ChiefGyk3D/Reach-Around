@@ -2,7 +2,7 @@
 """Content-hashed names for every static file the build publishes.
 
 A file ``static/site.css`` is published as ``static/site.<hash>.css`` where
-``<hash>`` is the first ten hex digits of the SHA-256 of the final bytes. The
+``<hash>`` is the first 20 hex digits (80 bits) of the SHA-256 of the final bytes. The
 name changes when, and only when, the content changes, so the host can send
 ``Cache-Control: immutable`` for these files and a changed file is always a
 cache miss.
@@ -27,7 +27,9 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
-HASH_LEN = 10
+# 20 hex digits = 80 bits. A name is cached for a year as immutable, so it must
+# stay out of reach of a birthday collision or a second preimage.
+HASH_LEN = 20
 
 # Root-level files that browsers and crawlers request by a fixed name.
 STABLE_NAMES = frozenset(

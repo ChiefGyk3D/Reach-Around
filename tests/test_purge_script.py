@@ -29,6 +29,7 @@ case "${mode:-ok}" in
   ok) echo '{"success": true, "errors": [], "messages": [], "result": {"id": "x"}}' ;;
   denied) echo '{"success": false, "errors": [{"code": 10000,
     "message": "Authentication error"}]}' ;;
+  slow) sleep 2; echo '{"success": true}' ;;
   curlfail) echo "curl: (6) Could not resolve host" >&2; exit 6 ;;
 esac
 """
@@ -261,3 +262,66 @@ def test_a_last_line_without_a_newline_is_still_read(tmp_path: Path) -> None:
     result = run_script(tmp_path, [], raw="/a\n/b")
     (call,) = result.calls
     assert body_of(call)["files"] == [f"https://{HOST}/a", f"https://{HOST}/b"]
+
+
+# ----------------------------------------------------- total-work limits
+
+
+def sent_urls(result: Run) -> list[str]:
+    return [u for c in result.calls for u in body_of(c)["files"]]
+
+
+def test_a_huge_list_is_capped_at_300_urls_and_10_requests(tmp_path: Path) -> None:
+    result = run_script(tmp_path, urls(20000))
+    assert result.code == 0
+    assert len(result.calls) == 10
+    assert sent_urls(result) == [f"https://{HOST}{p}" for p in urls(300)]
+    assert "::warning::" in result.out
+    assert "20000" in result.out and "300" in result.out
+    assert "WARNING" in result.summary
+
+
+def test_a_list_at_the_cap_is_not_a_warning(tmp_path: Path) -> None:
+    result = run_script(tmp_path, urls(300))
+    assert len(sent_urls(result)) == 300
+    assert "::warning::" not in result.out
+
+
+@pytest.mark.parametrize(
+    ("setting", "expected"),
+    [
+        ("50", 50),
+        ("1000", 1000),
+        ("5000", 1000),
+        ("abc", 300),
+        ("0", 300),
+        ("-3", 300),
+        ("", 300),
+    ],
+)
+def test_the_cap_can_be_raised_to_a_hard_ceiling_only(
+    tmp_path: Path, setting: str, expected: int
+) -> None:
+    result = run_script(tmp_path, urls(1500), env={"PURGE_MAX": setting})
+    assert len(sent_urls(result)) == expected
+    assert len(result.calls) == -(-expected // 30)
+
+
+def test_the_first_lines_survive_the_cap_so_entry_points_come_first(
+    tmp_path: Path,
+) -> None:
+    lines = ["/", "/404.html", "/robots.txt", *urls(400)]
+    sent = sent_urls(run_script(tmp_path, lines, env={"PURGE_MAX": "3"}))
+    assert sent == [f"https://{HOST}{p}" for p in lines[:3]]
+
+
+def test_a_total_time_budget_stops_further_requests(tmp_path: Path) -> None:
+    result = run_script(
+        tmp_path,
+        urls(90),
+        modes=["slow", "slow", "slow"],
+        env={"PURGE_BUDGET_SECONDS": "1"},
+    )
+    assert result.code == 0
+    assert len(result.calls) == 1
+    assert "time budget" in result.out

@@ -16,7 +16,7 @@ import pytest
 from assetpaths import HASH, asset, asset_file, has_asset, png, read
 from reach_around.config import SiteConfig, load_site_config
 from reach_around.site.build import build_site
-from reach_around.site.overrides import render_headers
+from reach_around.site.overrides import OverridesError, render_headers
 
 TODAY = date(2027, 3, 10)
 ROOT = Path(__file__).resolve().parents[2]
@@ -90,7 +90,9 @@ def resolve(page: str, ref: str) -> str | None:
 
 
 def css_urls(css: str) -> list[str]:
-    pattern = re.compile(r"""url\(\s*(?:"([^"]*)"|'([^']*)'|([^)"'\s]*))\s*\)""")
+    pattern = re.compile(
+        r"""(?i:url)\s*\(\s*(?:"([^"]*)"|'([^']*)'|([^)"'\s]*))\s*\)"""
+    )
     return [next(g for g in m.groups() if g is not None) for m in pattern.finditer(css)]
 
 
@@ -113,7 +115,7 @@ def test_a_hashed_name_is_the_hash_of_the_published_bytes(built: Path) -> None:
     for path in published(built):
         match = re.fullmatch(rf"(.+)\.({HASH})(\.[A-Za-z0-9]+)", path.name)
         if match and path.relative_to(built).parts[0] == "static":
-            digest = hashlib.sha256(path.read_bytes()).hexdigest()[:10]
+            digest = hashlib.sha256(path.read_bytes()).hexdigest()[:20]
             assert match.group(2) == digest, path
             checked += 1
     assert checked >= 5
@@ -556,3 +558,85 @@ def test_a_stable_favicon_keeps_its_name_and_revalidates(tmp_path: Path) -> None
 
 def test_render_headers_without_cache_arguments_has_no_cache_rules() -> None:
     assert "Cache-Control" not in render_headers()
+
+
+# ----------------------------------------------- custom.css url() forms
+
+
+def custom_site(tmp_path: Path, css: str) -> tuple[Path, Path]:
+    instance = tmp_path / "instance"
+    (instance / "overrides").mkdir(parents=True)
+    (instance / "pic.png").write_bytes(png("pic"))
+    (instance / "overrides" / "custom.css").write_text(css, encoding="utf-8")
+    (instance / "site.yaml").write_text(
+        "version: 1\ncreator: {name: Example Creator}\n"
+        + ONE_LINK
+        + "  - {id: pic, src: pic.png, alt: A picture}\n",
+        encoding="utf-8",
+    )
+    return instance, tmp_path / "out"
+
+
+def assert_every_url_is_hashed_or_external(out: Path) -> int:
+    seen = 0
+    for sheet in sorted((out / "static").glob("*.css")):
+        rel = sheet.relative_to(out).as_posix()
+        for url in css_urls(sheet.read_text(encoding="utf-8")):
+            if url.startswith(("data:", "https:")):
+                continue
+            target = resolve(rel, url)
+            assert target is not None, (rel, url)
+            assert (out / target).is_file(), (rel, url)
+            assert HASHED_NAME.fullmatch(posixpath.basename(target)), (rel, url)
+            seen += 1
+    return seen
+
+
+@pytest.mark.parametrize(
+    "css",
+    [
+        'a { background: url("../pic.png"); }',
+        "a { background: URL('../pic.png'); }",
+        "a { background: Url ( ../pic.png ); }",
+        'a { background: url(\n"../pic.png"\n); }',
+        'a { background: uRL(\t"../pic.png"\t); }',
+        'a { background: url("../pic.png?v=2#x"); }',
+        'a { background: url/**/("../pic.png"); }',
+        'a { background: url/* x */ ("../pic.png"); }',
+        'a { background: url(/**/"../pic.png"); }',
+        'a { background: url("../pic.png"/**/); }',
+        '@font-face { font-family: X; src: url("../pic.png") format("woff2"); }',
+        'a { background: url("/pic.png"); }',
+        'a { background: url("../pic.png"); } /* url("../nope.png") */',
+    ],
+)
+def test_every_url_form_in_custom_css_ends_up_hashed(tmp_path: Path, css: str) -> None:
+    instance, out = custom_site(tmp_path, css)
+    build_instance(instance, out, instance / "overrides")
+    built = read(out, "static/custom.css")
+    assert Path(asset(out, "pic.png")).name in built
+    assert assert_every_url_is_hashed_or_external(out) >= 1
+
+
+@pytest.mark.parametrize(
+    "css",
+    [
+        'a { background: ur/**/l("../pic.png"); }',
+        "a { background: url(../pic.png), url(data:image/png;base64,AAAA); }",
+        'a { background: u\\72l("../pic.png"); }',
+        'a { background: url\\("../pic.png"); }',
+        '@import url("../pic.png");',
+        '@import "../pic.png";',
+        'a { background: image-set("../pic.png" 1x); }',
+        'a { background: -webkit-image-set(url("../pic.png") 1x); }',
+        'a { background: src("../pic.png"); }',
+        'a { background: cross-fade(url("../pic.png"), url("../pic.png"), 50%); }',
+    ],
+)
+def test_custom_css_with_a_url_the_rewriter_cannot_see_is_refused(
+    tmp_path: Path, css: str
+) -> None:
+    instance, out = custom_site(tmp_path, css)
+    with pytest.raises(OverridesError, match="custom.css"):
+        build_instance(instance, out, instance / "overrides")
+    assert not out.exists()

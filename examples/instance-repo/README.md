@@ -55,7 +55,7 @@ engine repository for the reasoning.
    you use this template.
 
    Published files under `static/` and your images carry a content hash in
-   their names (`site.3fa9c1d2ab.css`), and the built `_headers` caches them for
+   their names (`site.3fa9c1d2ab4e5f607182.css`), and the built `_headers` caches them for
    a year while pages are revalidated, so a change shows at once. The engine
    documents this, and an optional cache purge, in `docs/deploy.md` under
    "Caching and stale files". This template does not run the purge step.

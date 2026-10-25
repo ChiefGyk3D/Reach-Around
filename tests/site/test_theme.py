@@ -319,7 +319,7 @@ def test_theme_stylesheet_path_resolves_from_every_page(tmp_path: Path) -> None:
     build_site(load_site_config(path), out, today=TODAY)
     for page in sorted(out.rglob("*.html")):
         href = re.search(
-            r'<link rel="stylesheet" href="([^"]*theme\.[0-9a-f]{10}\.css)">',
+            r'<link rel="stylesheet" href="([^"]*theme\.[0-9a-f]{20}\.css)">',
             page.read_text(),
         )
         assert href, page

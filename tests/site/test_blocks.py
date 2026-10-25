@@ -46,7 +46,7 @@ def config(
 
 
 _CLICK_SCRIPT = re.compile(
-    r'<script src="(?:\.\./)?static/click\.[0-9a-f]{10}\.js" defer></script>'
+    r'<script src="(?:\.\./)?static/click\.[0-9a-f]{20}\.js" defer></script>'
 )
 
 

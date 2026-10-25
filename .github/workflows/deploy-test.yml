@@ -58,34 +58,48 @@ jobs:
           test -f site-out.manifest.json
           test -f site-out.assets.json
 
-      # Compare this build with the last successful deployment's inventory.
-      # No secret is in this step: the built-in token only reads artifacts. With
-      # no earlier deployment, or an unreadable inventory, the list stays empty
-      # and the purge step has nothing to do. The deploy is never blocked here.
-      - name: List edge-cache paths to purge
+      # Fetch the last successful deployment's inventory. This is the only step
+      # in the job that holds the built-in token (it can only read artifacts),
+      # it runs gh and nothing installed from PyPI, and the token is in this
+      # step's env only, so no later step sees it. No earlier deployment is a
+      # notice, not an error.
+      - name: Download the previous assets inventory
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: |
           set -eu
-          printf '# no previous deployment inventory; nothing to purge\n' > site-purge-list.txt
           if previous="$(gh run list --workflow deploy-test.yml --branch main \
               --status success --limit 1 --json databaseId \
               --jq '.[0].databaseId // empty')" && [ -n "$previous" ]; then
             if gh run download "$previous" --name site-assets-inventory \
                 --dir previous-inventory; then
-              if reach-around deploy-purge-list \
-                  --previous previous-inventory/site-out.assets.json \
-                  --current site-out.assets.json > site-purge-list.new; then
-                mv site-purge-list.new site-purge-list.txt
-              else
-                echo "::warning::could not compare inventories; the purge list is empty"
-              fi
+              echo "::notice::downloaded the inventory of run $previous"
             else
-              echo "::notice::the earlier deployment has no assets inventory; the purge list is empty"
+              echo "::notice::the earlier deployment has no assets inventory"
             fi
           else
-            echo "::notice::no earlier successful deployment found; the purge list is empty"
+            echo "::notice::no earlier successful deployment found"
+          fi
+
+      # Compare it with this build's inventory. No token here: this step runs the
+      # installed reach-around, which is dependency code. A missing or unreadable
+      # previous inventory leaves the list empty and the purge step idle; the
+      # deploy is never blocked here.
+      - name: List edge-cache paths to purge
+        run: |
+          set -eu
+          printf '# no previous deployment inventory; nothing to purge\n' > site-purge-list.txt
+          if [ -f previous-inventory/site-out.assets.json ]; then
+            if reach-around deploy-purge-list \
+                --previous previous-inventory/site-out.assets.json \
+                --current site-out.assets.json > site-purge-list.new; then
+              mv site-purge-list.new site-purge-list.txt
+            else
+              echo "::warning::could not compare inventories; the purge list is empty"
+            fi
+          else
+            echo "::notice::no previous inventory; the purge list is empty"
           fi
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

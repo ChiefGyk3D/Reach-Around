@@ -87,7 +87,7 @@ def test_serves_the_built_site_without_caching(running: Preview) -> None:
     assert status == 200
     assert b"Example Creator" in body
     assert headers["cache-control"] == "no-store"
-    link = re.search(rb'href="(static/site\.[0-9a-f]{10}\.css)"', body)
+    link = re.search(rb'href="(static/site\.[0-9a-f]{20}\.css)"', body)
     assert link, "the page must link the stylesheet by its hashed name"
     status, css_headers, css = fetch(running, "/" + link.group(1).decode())
     assert status == 200 and css

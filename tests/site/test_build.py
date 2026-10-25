@@ -125,7 +125,7 @@ def test_no_script_in_any_page(tmp_path: Path) -> None:
         text = page.read_text().lower()
         assert text.count("<script") == 1
         assert re.search(
-            r'<script src="[^"]*static/click\.[0-9a-f]{10}\.js" defer></script>', text
+            r'<script src="[^"]*static/click\.[0-9a-f]{20}\.js" defer></script>', text
         )
         assert 'href=""' not in page.read_text()
 

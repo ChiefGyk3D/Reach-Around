@@ -15,9 +15,12 @@ path checked against a plain-character pattern before it can reach a URL.
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import json
+import os
 import re
+import stat
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -118,15 +121,42 @@ def parse_inventory(text: str) -> Inventory:
     return inventory
 
 
-def load_inventory(path: Path) -> Inventory:
-    """Read an inventory file from disk (size-capped, regular files only)."""
+def _read_regular(path: Path) -> bytes:
+    """Read at most ``MAX_INVENTORY_BYTES + 1`` bytes of a regular file.
+
+    The file is opened once, without following a symlink and without blocking
+    (a FIFO or device would otherwise hang or stream forever), checked with
+    ``fstat`` on that descriptor, and read from it. Nothing is checked by name
+    first, so there is no gap for a swap between a check and the read.
+    """
+    flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC
     try:
-        if not path.is_file():
-            raise InventoryError(f"{path} is not a file")
-        with path.open("rb") as handle:
-            raw = handle.read(MAX_INVENTORY_BYTES + 1)
+        fd = os.open(path, flags)
+    except OSError as exc:
+        if exc.errno == errno.ELOOP:
+            raise InventoryError(f"{path} is a symlink, which is not allowed") from exc
+        raise InventoryError(f"cannot read {path}: {exc.strerror}") from exc
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise InventoryError(f"{path} is not a regular file")
+        chunks: list[bytes] = []
+        remaining = MAX_INVENTORY_BYTES + 1
+        while remaining > 0:
+            chunk = os.read(fd, min(65536, remaining))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        return b"".join(chunks)
     except OSError as exc:
         raise InventoryError(f"cannot read {path}: {exc.strerror}") from exc
+    finally:
+        os.close(fd)
+
+
+def load_inventory(path: Path) -> Inventory:
+    """Read an inventory file from disk (size-capped, regular files only)."""
+    raw = _read_regular(path)
     if len(raw) > MAX_INVENTORY_BYTES:
         raise InventoryError(f"{path} is larger than {MAX_INVENTORY_BYTES} bytes")
     try:
@@ -143,16 +173,20 @@ def purge_paths(
     Entry points are always included: ``/``, every page, ``/404.html`` and
     ``/robots.txt``. A kept hashed file needs no purge (a new hash is a new
     URL); a removed one is listed so an old copy cannot linger.
+
+    The entry points come first (sorted), then everything else (sorted), so a
+    consumer that cuts the list to a fixed length keeps the entry points.
     """
-    urls: set[str] = set(ALWAYS)
+    entry_points: set[str] = set(ALWAYS)
+    others: set[str] = set()
     for rel in set(previous) - set(current):
-        urls.update(url_variants(rel))
+        others.update(url_variants(rel))
     for rel, entry in current.items():
         if rel.endswith(".html"):
-            urls.add(url_variants(rel)[0])
+            entry_points.add(url_variants(rel)[0])
             continue
         before = previous.get(rel)
         changed = before is not None and before.sha256 != entry.sha256
         if entry.kind == "stable" and changed:
-            urls.update(url_variants(rel))
-    return sorted(urls)
+            others.update(url_variants(rel))
+    return sorted(entry_points) + sorted(others - entry_points)

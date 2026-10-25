@@ -31,7 +31,7 @@ pytestmark = pytest.mark.visual
 ROOT = Path(__file__).resolve().parents[2]
 TODAY = date(2027, 3, 10)
 SITES = ("instance", "crypto", "email", "platforms")
-HASHED = re.compile(r"\.[0-9a-f]{10}\.[A-Za-z0-9]+$")
+HASHED = re.compile(r"\.[0-9a-f]{20}\.[A-Za-z0-9]+$")
 
 
 class _Quiet(SimpleHTTPRequestHandler):
@@ -182,7 +182,7 @@ def test_the_font_and_icon_masks_load_through_rewritten_urls(
     )
     assert masks, "no icon is drawn with a mask"
     for mask in masks:
-        assert re.search(r"icons/[a-z]+\.[0-9a-f]{10}\.svg", mask), mask
+        assert re.search(r"icons/[a-z]+\.[0-9a-f]{20}\.svg", mask), mask
     icons = [u for u in watch.statuses if "/static/icons/" in u]
     assert icons
     for url in icons:

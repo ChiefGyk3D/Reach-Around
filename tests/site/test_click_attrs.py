@@ -57,7 +57,7 @@ def test_click_js_is_the_only_script(tmp_path: Path) -> None:
             continue
         assert len(scripts) == 1
         attrs = dict(ATTR.findall(scripts[0]))
-        assert re.search(r"static/click\.[0-9a-f]{10}\.js$", attrs["src"])
+        assert re.search(r"static/click\.[0-9a-f]{20}\.js$", attrs["src"])
         assert "defer" in scripts[0]
         assert re.search(r"<script\b[^>]*>\s*</script>", text, re.IGNORECASE)
     assert asset_file(tmp_path, "static/click.js").is_file()

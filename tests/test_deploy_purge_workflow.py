@@ -19,6 +19,7 @@ from reach_around.cli import main
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = ROOT / ".github" / "workflows" / "deploy-test.yml"
 EXAMPLE = ROOT / "examples" / "instance" / "site.yaml"
+DOWNLOAD_STEP = "Download the previous assets inventory"
 LIST_STEP = "List edge-cache paths to purge"
 PURGE_STEP = "Purge changed paths from the edge cache (optional)"
 
@@ -88,6 +89,28 @@ def test_permissions_stay_minimal() -> None:
     assert data["jobs"]["deploy"]["permissions"] == {"contents": "read"}
 
 
+def test_the_repo_token_reaches_only_the_download_step_never_the_dependency_code() -> (
+    None
+):
+    steps = load()["jobs"]["build"]["steps"]
+    holders = [s.get("name") for s in steps if "GH_TOKEN" in yaml.safe_dump(s)]
+    assert holders == [DOWNLOAD_STEP]
+    download = step("build", DOWNLOAD_STEP)
+    assert set(download["env"]) == {"GH_TOKEN", "GH_REPO"}
+    # the step that holds the token runs gh only, no installed entry point
+    assert "reach-around" not in download["run"]
+    assert "python" not in download["run"]
+    listing = step("build", LIST_STEP)
+    assert "env" not in listing
+    assert "reach-around deploy-purge-list" in listing["run"]
+    assert "gh " not in listing["run"]
+    names = [s.get("name") for s in steps]
+    assert names.index(DOWNLOAD_STEP) < names.index(LIST_STEP)
+    # nothing exports the token to later steps
+    text = yaml.safe_dump(load())
+    assert "GITHUB_ENV" not in text and "GITHUB_PATH" not in text
+
+
 def test_the_inventory_artifact_is_uploaded_outside_the_site_and_kept() -> None:
     uploads = {
         s["with"]["name"]: s["with"]
@@ -149,9 +172,10 @@ def run_list_step(
     }
     if previous_file is not None:
         env["STUB_PREVIOUS_FILE"] = str(previous_file)
-    script = step("build", LIST_STEP)["run"]
-    return subprocess.run(  # noqa: S603 - fixed argv, synthetic env and stubs
-        ["/bin/bash", "-c", script],
+    # two steps, as in the workflow: only the first one gets the token
+    list_env = {k: v for k, v in env.items() if k not in ("GH_TOKEN", "GH_REPO")}
+    first = subprocess.run(  # noqa: S603 - fixed argv, synthetic env and stubs
+        ["/bin/bash", "-c", step("build", DOWNLOAD_STEP)["run"]],
         cwd=work,
         env=env,
         capture_output=True,
@@ -159,6 +183,18 @@ def run_list_step(
         check=False,
         timeout=120,
     )
+    assert first.returncode == 0, first.stderr
+    second = subprocess.run(  # noqa: S603 - fixed argv, synthetic env and stubs
+        ["/bin/bash", "-c", step("build", LIST_STEP)["run"]],
+        cwd=work,
+        env=list_env,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=120,
+    )
+    second.stdout = first.stdout + second.stdout
+    return second
 
 
 def previous_with_extra_file(tmp_path: Path) -> Path:
