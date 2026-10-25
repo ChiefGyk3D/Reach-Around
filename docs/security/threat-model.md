@@ -1,6 +1,6 @@
 # Reach Around threat model
 
-Status: draft for maintainer review, revision 2 (2026-10-24, issue #49). Revision 1 (2026-10-23) was written from the design only. Revision 2 answers an independent review of that draft and adds what has shipped since: the Worker click endpoint and retention job, instance template overrides with the strict CSP, and the asset pipeline. Nothing was run against a live system and no system was probed. Test names marked "proposed" do not exist yet; names marked "exists" were found in the repository.
+Status: draft for maintainer review, revision 2 (2026-10-24, issue #49), plus the local-editor addendum in section 10 (2026-10-25, issue #158). Revision 1 (2026-10-23) was written from the design only. Revision 2 answers an independent review of that draft and adds what has shipped since: the Worker click endpoint and retention job, instance template overrides with the strict CSP, and the asset pipeline. Nothing was run against a live system and no system was probed. Test names marked "proposed" do not exist yet; names marked "exists" were found in the repository.
 
 Inputs read as data: the design spec (`docs/superpowers/specs/2026-10-23-reach-around-design.md`, including the section 4.11 amendment), Plan 1 (`docs/superpowers/plans/2026-10-23-plan-1-foundation-and-link-page.md`), the roadmap, the platform research notes in `docs/research/`, and, new in revision 2, the code in `worker/src`, `src/reach_around/site/{overrides,assets,assetcheck}.py`, their tests, and `docs/education/csp-and-overrides.md`. Where those documents contradict each other, this model says so and picks the safer reading.
 
@@ -833,3 +833,270 @@ The mutation step in item 48 applies to items 49 to 56 as well.
 - Cloudflare quota figures, D1 recovery windows, Mailgun log retention, the behavior of the Rate Limiting binding across locations, and which browsers support device-bound sessions were not checked against current documentation. Numbers in this document that look like limits are proposals, not provider facts.
 - No load test was run and none is authorized; the drill in T-07 is for the owner to run against their own test subdomain.
 - No active testing was done or authorized.
+
+## 10. Addendum: the local visual editor (issue #158, phase 3 of #103)
+
+Status: design review, written 2026-10-25 from `docs/superpowers/specs/2026-10-25-local-editor-design.md`. Nothing is built. Every mitigation below is **[planned: editor phase N]** (phase numbers are those of section 16 of the spec: 0 core additions, 1 MVP, 2 drag and drop, 3 uploads, 4 theme picker) unless it is marked **[shipped]**. Every test name for the editor is proposed. I read `src/reach_around/preview.py`, `editing.py`, `edit_cli.py`, `schema.py`, `site/assets.py`, `site/assetcheck.py` and the CSP builder in `site/overrides.py` to ground this; I did not run anything against a live system and did no active testing. Questions for the maintainer are in section 10.5 and in section 17 of the spec.
+
+The editor is new attack surface of a different kind than the rest of this model. The deployed site and Worker are anonymous and remote. The editor is local, runs as the owner, and can write the owner's config and a media folder. The main attackers are therefore not strangers on the internet but web pages the owner visits, other software on the owner's machine, and text inside a config file the owner was given.
+
+### 10.1 Added assets, actors, boundaries
+
+| ID | Item | Why it matters |
+|---|---|---|
+| A18 | The instance config file, its history folder and the media folder | What the editor writes. Tampering changes what the public site says and links to, after the next deploy |
+| A19 | The editor session (token, open ports, the running process) | Whoever holds a valid token can change A18 |
+| A20 | Draft and scheduled content shown in the editor and preview | It is not public yet; disclosure leaks unpublished links and partner names |
+
+| ID | Actor | Capability |
+|---|---|---|
+| X15 | A web page the owner visits while the editor runs | Runs script in the owner's browser; can send requests to `127.0.0.1` and, with DNS tricks, to names that resolve there; cannot read cross-origin responses unless a check fails |
+| X16 | Another local user or process on the same machine | Can connect to loopback ports; can list processes; may read the same user's files if it runs as the same user |
+| X17 | A browser extension with broad host permissions | Can read and modify pages, including the editor tab |
+| X18 | The author of a config the owner opened (a shared example, a pasted file, a repo from a helper) | Controls every string the editor will display and every file path it will be asked to open |
+
+Trust boundaries added: (B1) browser to editor server over loopback; (B2) editor origin to preview origin; (B3) editor process to the config folder (read, lock, write, rename); (B4) uploaded bytes to the media folder.
+
+### 10.2 Risk register for the editor
+
+Impact 1 to 5; prerequisite 5 (needs only a web page the owner opens) down to 1 (needs code execution as the owner). Ranked by impact and ease, then by how much the design depends on a single control.
+
+| Rank | ID | Abuse case | Impact | Prereq | Phase |
+|---|---|---|---|---|---|
+| 1 | T-22 | X15 uses DNS rebinding to make the owner's browser treat an attacker's name as the editor's origin, then reads or writes the config | 5 | 4 | 1 |
+| 2 | T-23 | X15 sends a cross-origin form post or fetch from another page to the editor's loopback port (CSRF, including a "simple" request that needs no preflight) | 5 | 5 | 1 |
+| 3 | T-32 | X18's config text (title, handle, URL) runs as script in the editor page, which holds the token and can write the config | 5 | 3 | 1 |
+| 4 | T-24 | The session token leaks (history, referrer, log, screen, another origin) or is guessable | 4 | 3 | 1 |
+| 5 | T-28 | A write corrupts the YAML, drops comments, introduces anchors or tags, races an outside edit, or loses data on a crash | 4 | 4 (mostly self-inflicted) | 0, 1 |
+| 6 | T-26 | X18 or a hostile request makes the editor read or write outside the config and media folders (path, `..`, symlink, FIFO) | 4 | 3 | 0, 1 |
+| 7 | T-27 | An uploaded file is not what it claims: renamed script, SVG with script, polyglot, size bomb, name collision, overwrite of an existing file | 4 | 3 | 3 |
+| 8 | T-34 | The preview iframe runs owner-authored or shared content with access to the editor (parent, token, API) or to the network | 4 | 3 | 1 |
+| 9 | T-33 | Front-end supply chain: a package, a CDN script, or a vendored library with a backdoor or a changed hash | 5 | 2 | 1 onward |
+| 10 | T-31 | X16 or X17 talks to the editor, reads the page or steals the token | 4 | 2 | 1 |
+| 11 | T-29 | The editor reads, shows or logs a secret from the instance (Doppler token, Cloudflare token, Worker secret, `.env`) | 4 | 2 | 1 |
+| 12 | T-25 | A request is too big, too slow, malformed or too frequent: memory or thread exhaustion, history or disk filling, parser confusion from a wrong content type | 3 | 4 | 1 |
+| 13 | T-30 | The editor is framed by another page and the owner is tricked into clicking (clickjacking) | 3 | 4 | 1 |
+| 14 | T-35 | Logs record config content, tokens, paths or upload names | 2 | 3 | 1 |
+| 15 | T-36 | The server keeps running after the owner leaves: an open, authenticated port for hours or days | 2 | 3 | 1 |
+
+### T-22 DNS rebinding and non-loopback reach
+
+Abuse: the owner runs the editor, then visits `evil.example`. The attacker's DNS answers with a short TTL, first with their own address (so the page loads), then with `127.0.0.1`. The browser now treats `evil.example:<port>` as the same origin as the page, so the attacker's script can call the editor with no cross-origin check and read the answers. Separately: a bind address other than loopback exposes the editor to the LAN.
+
+Mitigations:
+1. Bind only to loopback; refuse everything else at start; reuse `_is_loopback`. **[shipped for the preview in `tests/test_preview.py`; planned for the editor: phase 1]**
+2. `Host` must equal `127.0.0.1:<port>`, `localhost:<port>` or `[::1]:<port>` with the exact port of that listener; anything else gets 421. This is stricter than the shipped preview, which accepts the names without checking the port. **[planned: phase 1]**
+3. A valid token is required on every API request, `GET` included. A successful rebinding still has nothing to authenticate with: the token lives in a JavaScript variable of the real origin and was delivered in a fragment (T-24), so it is never sent to a rebound name. **[planned: phase 1]**
+4. `Origin`, when present, must equal the request's own origin; on `POST` it must be present. **[planned: phase 1]**
+5. The editor listens on an ephemeral port printed at start, so a page must sweep ports first. This is noise, not a control.
+
+Verification (proposed): `tests/editor/test_guard.py::test_rebound_host_name_is_421_for_every_route`, `::test_host_with_wrong_port_is_421`, `::test_missing_host_is_421`, `::test_host_with_userinfo_or_zone_is_421`, `::test_non_loopback_bind_is_refused_at_start` (0.0.0.0, a LAN address, a name resolving to both). Mutation: widen the allowlist to any host and confirm the rebinding test fails.
+
+Residual: a browser with a flawed same-origin policy. The token is the second wall.
+
+### T-23 CSRF and cross-origin requests from other local pages
+
+Abuse: another page posts a form or `fetch` to `http://127.0.0.1:<port>/__edit/api/op`. A "simple" cross-origin request (form post, `text/plain` fetch) is sent without a preflight and reaches the handler even though the page cannot read the answer. The write happens anyway.
+
+Mitigations:
+1. A per-session random token in a custom header `X-RA-Token` on every API request. A custom header forces a CORS preflight for any cross-origin request; the server never answers a preflight (`OPTIONS` gets 405, no `Access-Control-*` header exists), so the browser blocks the request. The token is not a cookie, so nothing is attached automatically. **[planned: phase 1]**
+2. `Content-Type` must be exactly `application/json` (or `application/octet-stream` on upload); a form or `text/plain` post gets 415 before the body is read. **[planned: phase 1]**
+3. `Origin` is required and must match on `POST`; `Sec-Fetch-Site` must be `same-origin` when sent. Old browsers that send neither still fail on the token. **[planned: phase 1]**
+4. State-changing operations are `POST` only; `GET` never changes anything. **[planned: phase 1]**
+
+Verification (proposed): `::test_post_without_token_is_401_and_changes_nothing`, `::test_form_encoded_post_is_415`, `::test_cross_origin_origin_header_is_403`, `::test_options_is_405_and_has_no_cors_headers`, `::test_get_never_modifies_the_file` (hash before and after a sweep of every GET route). A browser test serves a second page from another loopback port that tries a form post and a `fetch`, and asserts the file hash is unchanged. Mutations: remove the token check; remove the content-type check; each turns a test red.
+
+Residual: a bug in a browser's preflight enforcement. None known.
+
+### T-32 XSS inside the editor, from config text
+
+Abuse: a shared example config has a link title like `<img src=x onerror=...>` or a `javascript:` URL. The editor shows it. If it runs as script, it runs on the editor origin, holds the token, and can write the config, upload files and read drafts.
+
+Why it is unlikely, and what limits it if it happens:
+1. Every config value enters the DOM through `textContent` or a fixed attribute set. No `innerHTML`, `outerHTML`, `insertAdjacentHTML`, `document.write`, `eval`, `new Function` or string `setTimeout`. A source grep test enforces it. **[planned: phase 1]**
+2. URLs are shown as text and made links only after a check that the scheme is `https` (the loader's rule), with `rel="noopener noreferrer"`. **[planned: phase 1]**
+3. CSP: `default-src 'none'; script-src 'self'` with no `unsafe-inline`, no `unsafe-eval`, no nonce and no remote origin; `style-src 'self'`, `object-src 'none'`, `base-uri 'none'`, `form-action 'none'`, `connect-src 'self'`. Injected markup cannot run an inline handler, load a remote script, or post data anywhere but the editor itself. **[planned: phase 1]**
+4. Server side, the loader already refuses control characters in text (`_plain_text`, `check_text`).
+
+Verification (proposed): `tests/editor/test_sources.py::test_no_dangerous_sinks_in_editor_sources`; `::test_csp_has_no_unsafe_directive_on_any_editor_response`; a browser test `test_hostile_titles_render_as_text` loads a config whose titles, handles and subtitles hold `<script>`, `<img onerror>`, `"><svg onload>` and `javascript:` and asserts no dialog, no extra network request, and the text appears literally. Mutation: switch one render to `innerHTML`; the grep and the browser test must fail.
+
+Residual: a browser CSP bug, or a sink added later that the grep list does not know. The list is reviewed each phase.
+
+### T-24 Session token: delivery, storage, leakage
+
+Design: 256 bits from `secrets.token_urlsafe(32)`, per process, in memory only. It is delivered in the URL fragment printed to the terminal (`/__edit/#t=...`). The page moves it into a JavaScript variable and calls `history.replaceState` to clear the address bar. It is sent as `X-RA-Token` and compared with `hmac.compare_digest`. It is never in a cookie, `localStorage`, `sessionStorage`, a query string, the HTML, a log line or an error message, and never in the command line or environment of the process.
+
+Why a fragment: it is not sent to the server, so it is not in a request line, an access log or `Referer`. Why a header and not a cookie: a cookie is sent automatically on a cross-site request, which is the CSRF problem (T-23). Why not embed it in the HTML: any local process or rebinding page that can fetch `/__edit/` would receive it.
+
+Left over: the token is visible in the terminal and briefly in the address bar and the browser's history entry; a shared screen shows it; a clipboard manager may keep it. All of that ends when the process exits, because the token is never reused. A reload loses the token (nothing is stored); the owner opens the printed URL again.
+
+Verification (proposed): `::test_shell_html_contains_no_token`, `::test_token_not_in_any_response_body_header_or_log` (run a session, grep all captured output), `::test_wrong_token_of_correct_length_is_401`, `::test_token_differs_between_runs`, `::test_token_not_in_argv_or_environ`; browser test `test_token_removed_from_address_bar_and_not_in_storage`.
+
+Residual: same-user local access (T-31). A user who pastes the full URL into a chat; the editor docs say not to.
+
+### T-25 Request size, rate, content type, malformed input
+
+Abuse: send an enormous body, a slow body, thousands of mutating requests to fill the history or the disk, `multipart/form-data` to reach a different parser, chunked bodies to dodge length checks, or deeply nested JSON.
+
+Mitigations **[planned: phase 1; upload caps phase 3]**: the caps in section 8.5 of the spec (JSON 64 KiB; upload 8 MiB and 2 MiB for avatars; headers 16 KiB; 16 concurrent connections; 20 mutations and 5 uploads per minute; read timeouts; 100 history entries and 5 MiB of history; 200 editor-created media files). `Content-Length` is required and chunked bodies are refused. JSON is parsed with a depth limit and unknown keys are refused. Operation arguments are validated against the schema before they reach the edit core.
+
+Verification (proposed): `::test_json_over_cap_is_413_and_not_fully_read`, `::test_missing_content_length_is_411`, `::test_chunked_is_refused`, `::test_slow_body_times_out`, `::test_21st_mutation_in_a_minute_is_429_and_file_unchanged`, `::test_history_cap_drops_oldest`, `::test_deeply_nested_json_is_422`, plus a fuzz test that no random request produces a 500 or a write.
+
+Residual: a local process can still burn CPU. This is a single-user tool and is not built to resist local denial of service.
+
+### T-26 Path confinement and symlinks (config and media)
+
+Abuse: the config names `media/../../.ssh/id_ed25519` as the avatar; a symlink in the media folder points at a private file; the config path is a symlink or a FIFO; a request tries to reference an arbitrary path through an upload name or an operation argument.
+
+Mitigations:
+1. The config path is resolved by `editing.resolve_config`, which refuses a symlink unless `--force-path`; the editor does not offer `--force-path`. The file is opened with `O_NOFOLLOW`. **[shipped for the commands; reused by the editor in phase 0]**
+2. The editor takes no file path from a request except one it issued itself (the upload reply, checked against the media listing). The avatar value goes through the asset pipeline's `_check_slot` (extension allowlist, no absolute path, no `.` or `..` segment, no build-reserved folder) and the component-by-component `O_NOFOLLOW` read, which refuses a symlink anywhere on the path and any non-regular file. **[shipped in `tests/site/test_assets_security.py`; the editor adds the save-time hook in phase 0]**
+3. The history and media folders are opened relative to the config folder's directory descriptor and refused if they are symlinks. **[planned: phase 0]**
+4. The editor serves no file by path: its static files are an allowlist of its own asset names, and there is no "download any file" route. **[planned: phase 1]**
+
+Verification (proposed): `::test_set_avatar_dotdot_is_refused_at_save`, `::test_symlinked_media_folder_is_refused`, `::test_symlink_inside_media_is_refused`, `::test_fifo_as_media_file_does_not_hang`, `::test_history_dir_symlink_refuses_to_start`, `::test_static_route_serves_only_allowlisted_names` (`..`, `%2e%2e`, `%2f`, backslash, NUL), plus the shipped asset tests.
+
+Residual: a parent directory renamed between check and use (the same residual T-20 records for the override loader).
+
+### T-27 Uploads
+
+Abuse: upload a script named `a.png`; an SVG with `<script>` or an external reference; a polyglot valid as two formats; a huge image or compression bomb; a name that collides with an existing file and overwrites it; a path in the file name.
+
+Mitigations (all **[planned: editor phase 3]**, built on checks that are **[shipped]**):
+1. The client's file name is ignored entirely. The server picks `media/<kind>-<8 random hex>.<ext>`; the extension comes from the sniffed format. Creation uses `O_EXCL`, so an existing file is never overwritten.
+2. Format by magic number, then `check_content` (signature plus structural facts: PNG IEND, JPEG end marker, GIF trailer, WebP and WOFF lengths). A text file renamed to an image fails. [shipped]
+3. SVG goes through the shipped allowlist screen (no DOCTYPE or ENTITY, no script, no event handler, no foreign content, no external reference). [shipped: `tests/site/test_assets_content.py`] The editor never serves an uploaded SVG itself; the preview origin serves it as part of the built site, under the site's CSP.
+4. Size: the pipeline's 8 MiB cap, 2 MiB for avatars, enforced by counting bytes read and not by trusting `Content-Length`. Pixel dimensions are read from the header and capped (proposed 8000 by 8000) before anything decodes the image. The editor itself never decodes images; the browser shows a `blob:` preview.
+5. The upload route does not edit the config, and only a `kind` from a fixed list is accepted.
+6. EXIF and GPS data in a JPEG is not stripped (D-08, F23); the editor warns. A published avatar would carry it. This is a disclosure risk to the owner, not to a third party.
+
+Verification (proposed): `tests/editor/test_upload.py::test_text_file_named_png_is_422`, `::test_svg_with_script_is_422`, `::test_svg_with_doctype_is_422`, `::test_client_filename_with_path_is_ignored`, `::test_name_collision_never_overwrites`, `::test_oversize_by_bytes_read_not_header`, `::test_dimension_cap_from_header`, `::test_stored_mode_is_0644_with_no_exec_bit`, `::test_failed_reference_leaves_a_listed_orphan`. Mutation: skip `check_content`; the renamed-text test must fail.
+
+Residual: a valid image that exploits a browser decoder bug (the exposure of any image on the web); EXIF disclosure until D-08 is decided.
+
+### T-28 YAML write safety
+
+Abuse or failure: the write drops comments, reorders keys, re-quotes strings, introduces an anchor, alias or tag (`!!python/object`), changes line endings, races an outside edit and overwrites it, or is cut off by a crash and leaves half a file.
+
+Mitigations:
+1. The editor adds no YAML writer. It calls `editing.apply`, which locates nodes with the composer and splices whole lines of the original text, so every byte outside the edit is untouched. Anchors, tags, flow style, CRLF and a dash on its own line are refused rather than rewritten. **[shipped: `tests/test_edit.py`]**
+2. Values come from `scalar_text` (quotes anything ambiguous) after `check_text` (no control characters). The core compares "the loaded edited file" with "the original plus exactly the change"; a mismatch writes nothing. **[shipped]**
+3. `fcntl.flock` on the config's own descriptor for the whole span from read to rename; a re-check of identity and hash right before the rename; a staged temp file with `fsync`; a backup written before the rename; `os.replace`; `fsync` of the folder. **[shipped: `tests/test_edit_durability.py`]**
+4. New operations (spec 6.3) get the same two checks and the same hostile-input tests, plus a test that a sweep of random edits introduces no `&`, `*` or `!` token the input did not have. **[planned: phase 0]**
+5. An outside change is detected by hash and by comparing the `expect` values (spec 9.2); an edit never overwrites a field someone else changed. **[planned: phase 1]**
+6. History snapshots are mode 0600 in a 0700 folder; undo is refused when the file is not what the editor last wrote. **[planned: phase 1]**
+
+Verification (proposed): `tests/editor/test_ops.py::test_each_op_matches_the_command_byte_for_byte`, `::test_comments_blank_lines_and_quotes_survive_every_op`, `::test_no_anchor_alias_or_tag_is_ever_introduced`, `tests/editor/test_stale.py::test_expect_mismatch_is_409_and_file_unchanged`, `::test_unrelated_outside_edit_is_kept`, `tests/editor/test_history.py::test_undo_refused_after_outside_edit`, `::test_crash_between_stage_and_rename_leaves_the_original`, using the shipped seams `_during_backup` and `_before_replace`. Mutation: remove the `expect` comparison; the stale test must fail.
+
+Residual: a writer that ignores locks and lands in the very short window between the last check and the rename (documented in `editing.py`; it cannot be closed on POSIX). A crash after the backup and before the rename leaves a harmless extra `.bak`.
+
+### T-29 Secrets
+
+Abuse: the editor, a path bug or a debug route reads `.env`, a Doppler token, a Cloudflare token or Worker secrets and shows or logs them; the state endpoint dumps more than the form needs.
+
+Mitigations **[planned: phase 1]**: the editor opens only the config, its history, the media folder and files it created. It reads no environment variable except through its own flags. `/api/state` is built from an allowlist of schema fields, not by serializing a whole object. The config schema holds no secret by design. A file next to the config whose name looks like a secret (`.env`, `*.key`, `*.pem`, `doppler*`) is not listed in the media view. No debug or environment route exists.
+
+Verification (proposed): `::test_state_contains_only_schema_fields`, `::test_dotenv_next_to_config_is_never_read` (a sentinel file, with a spy on `open` and `os.open`), `::test_sentinel_secret_in_environment_absent_from_every_response_and_log`, `::test_media_listing_excludes_secret_like_names`.
+
+Residual: a creator who types a secret into a link title puts it in the config, which is theirs and ends up on the public site. The editor cannot know; its help text says so.
+
+### T-30 Clickjacking
+
+Abuse: a hostile page frames the editor, makes it invisible, and tricks the owner into clicking "Remove link" or "Restore anyway".
+
+Mitigations **[planned: phase 1]**: `Content-Security-Policy: frame-ancestors 'none'` and `X-Frame-Options: DENY` on every editor response. The preview origin allows framing only by the editor. Destructive actions need a second explicit confirmation in the page.
+
+Verification (proposed): `::test_every_editor_response_has_frame_ancestors_none_and_xfo_deny`; a browser test frames the editor from a second loopback origin and asserts the frame stays empty; `::test_preview_frame_ancestors_lists_only_the_editor_origin`.
+
+Residual: browser bugs only.
+
+### T-31 Hostile local process or browser extension
+
+What each can do, stated plainly:
+- **Same-user process.** It can read the config and the history folder directly, so the editor adds no new read. It can connect to the loopback port but cannot call the API without the token. It could find the token in the terminal scrollback, in process memory, or by driving the browser; if it can do that it can already edit the config file itself. The editor does not defend against code running as the owner. That is the stance of the existing edit commands too.
+- **Another user on a shared machine.** Loopback ports are reachable by every local user. The token stops them calling the API; the shell HTML and static assets are public code. They could still make connection attempts (T-25 caps). The documentation says not to run the editor on a machine with other untrusted users. A Unix-domain-socket mode is a possible later option.
+- **A browser extension with page access.** It can read the editor tab, including the token in memory, and drive it. It can already read the owner's logged-in sessions everywhere. The editor does not defend against it; the docs recommend a profile without extensions for editing, and the browser tests run in a clean profile.
+- **Process listing.** The token is never passed on a command line or in the environment, so `ps` and `/proc/<pid>/environ` do not show it. The port alone does nothing.
+
+Mitigations **[planned: phase 1]**: token never in argv or environment; 0700 history folder; the stance documented; no remote-debugging port; no `--open` by default.
+
+Verification (proposed): `::test_token_not_in_argv_or_environ` (reads `/proc/<pid>/cmdline` and `environ` of the running server), and a documentation test that the editor docs name this limit.
+
+Residual: accepted. Reopen if the editor is ever run on shared, remote or hosted machines.
+
+### T-33 Front-end supply chain
+
+Abuse: a compromised npm package, a changed CDN file, or a vendored library with a backdoor runs in the editor page, where it holds the token and can write the config.
+
+Mitigations:
+1. No npm, no bundler, no build step, no CDN, and no package manager file for the front end. Plain ES modules written in this repository, loaded by relative path. The CSP forbids any script origin but `'self'`, so even a stray `<script src="https://...">` does not run. **[planned: phase 1]**
+2. A library may be added only by a pull request that vendors the exact file under `editor_assets/vendor/`, records its version, source URL, SHA-256 and license in `editor_assets/vendor/MANIFEST.json` and in the third-party notices, and a test recomputes the hash. No library is planned for the MVP.
+3. Test-only tools (an accessibility checker, hypothesis) are not packaged; a wheel-contents test checks that nothing from `tests/` ships. axe-core, if used, is vendored and hashed under `tests/` (spec D-14).
+4. The Python side adds no runtime dependency; it uses the standard-library server the preview uses.
+
+Verification (proposed): `tests/editor/test_vendor.py::test_every_vendored_file_matches_its_manifest_hash_and_has_a_license`, `::test_no_package_json_or_lockfile_in_editor_assets`, `::test_no_remote_url_in_any_editor_asset`, `::test_wheel_contents_exclude_tests`.
+
+Residual: a vendored file changed together with its hash in one pull request; review catches it by size and content. The standard-library server is as trusted as Python.
+
+### T-34 Preview iframe isolation
+
+Abuse: the preview renders built site HTML and scripts from the owner's config and overrides, possibly from a shared example. That page could try to read the parent, call the editor API, steal the token, navigate the top window, open popups, or fetch from the network (remote images and fonts the site CSP allows).
+
+Mitigations **[planned: phase 1]**:
+1. Separate origin: the preview is served on its own port, so it is cross-origin to the editor; it cannot read the editor's DOM, storage or memory, and cannot call the API without the token it never receives.
+2. `<iframe sandbox="allow-scripts">` only, with no `allow-same-origin`, `allow-top-navigation`, `allow-popups`, `allow-forms`, `allow-modals` or `allow-downloads`, and `referrerpolicy="no-referrer"`. The frame gets an opaque origin and has no storage. (Spec D-05.)
+3. The editor's CSP `frame-src` lists the preview origin only.
+4. The preview origin sends `frame-ancestors <editor origin>` and, in editor mode, `img-src 'self' data:` and `connect-src 'self'`, so the previewed page makes no outside request by default (spec D-06). Remote thumbnails show as a placeholder.
+5. The preview keeps today's behavior: GET and HEAD only, Host and Origin checks, nothing outside the temporary build directory.
+6. No `postMessage` between the frames. The width buttons resize the iframe from outside.
+
+Verification (proposed): browser tests `test_preview_cannot_read_parent_dom`, `test_preview_cannot_fetch_editor_api` (a script in a test override tries `fetch` to the editor port and asserts failure and an unchanged file), `test_preview_makes_no_outside_request` (a route handler records every request and asserts all are loopback), `test_sandbox_attribute_is_exactly_allow_scripts`; unit `::test_preview_headers_in_editor_mode`.
+
+Residual: a browser sandbox escape. Owner-authored scripts in an overrides directory run in the preview with the site's own powers (they are the owner's code; T-20).
+
+### T-35 Logging
+
+By default the editor prints the URL once and one line per mutation: time, operation name and result code (`ok`, `refused:stale`, `refused:invalid`). No values, no titles, no URLs, no file names, no request headers, no token, no `Host` or `Origin` text. The existing handler's `log_message` is silent and stays so. Errors shown to the user quote config paths like `tabs[0].blocks[2].url`; the loader's own message can include a bad value and goes to the browser only, never to the log. `--verbose` is not offered in the MVP. **[planned: phase 1]**
+
+Verification (proposed): `::test_log_lines_use_fixed_codes_and_contain_no_request_data` (run a session with sentinel strings in every field and header; grep captured stdout and stderr), `::test_token_never_logged`.
+
+Residual: terminal scrollback keeps the printed URL (T-24).
+
+### T-36 Shutdown and idle timeout
+
+Abuse: the owner closes the tab and forgets; an authenticated port stays open for days on a laptop that moves between networks.
+
+Mitigations **[planned: phase 1]**: a default idle timeout of 30 minutes since the last mutating or explicit keep-alive request (version polls do not count). On timeout the server stops both listeners, deletes the temporary build directory and exits with a message. `POST /api/shutdown` and Ctrl+C do the same. Closing the tab sends a best-effort shutdown request on `pagehide`; the idle timer covers the case where it never arrives. The token dies with the process. The history folder stays, since it is the owner's undo.
+
+Verification (proposed): `::test_idle_timeout_stops_listeners_and_removes_temp_dir` (fake clock), `::test_polls_do_not_reset_idle`, `::test_shutdown_route_requires_token`, `::test_port_is_closed_after_exit`.
+
+Residual: up to 30 minutes of an open, token-protected port.
+
+### 10.3 Residual risk summary for the editor
+
+| Risk | Accepted by | Reopen when |
+|---|---|---|
+| Code running as the owner, or a browser extension, can drive the editor or read the config directly (T-31) | Maintainer | The editor is run on shared, remote or hosted machines |
+| A writer that ignores locks lands between the last hash check and the rename (T-28) | Maintainer | Instances are edited by more than one tool at once |
+| EXIF and other metadata in uploaded photos is published unless the owner strips it (T-27, D-08) | Maintainer | D-08 is decided, or a leak is reported |
+| Up to 30 minutes of an open port after the owner leaves (T-36) | Maintainer | A shorter timeout is requested |
+| Owner-authored scripts in an overrides directory run in the preview (T-34, T-20) | Maintainer | Overrides come from a third party |
+| Browser or CSP engine bugs (T-23, T-30, T-32, T-34) | Maintainer | Any advisory for the supported browsers |
+
+### 10.4 Abuse tests the editor plan must contain
+
+Beyond the named tests above, the editor plan carries these. Numbering continues the list in section 8.
+
+57. `tests/editor/test_guard.py` (all of T-22, T-23, T-25) plus the browser tests for rebinding and cross-origin posts, each paired with the mutation step of item 48.
+58. A rebinding drill with a test-only mapping: the test sends requests to the loopback listener with a fake `Host` such as `rebind.example:<port>` and asserts 421 on every route. No real DNS is touched and no outside host is contacted.
+59. `tests/editor/test_sources.py` and the browser hostile-title test (T-32).
+60. `tests/editor/test_upload.py` (T-27), and an extension of `tests/test_browser_tests_never_navigate.py`: a browser test may not call `webbrowser.open`, pass `--open`, or load a non-loopback URL. This protects the maintainer's desktop from a test launching a mail client or an external page.
+61. A final whole-branch security review of the MVP on the cyber-program tier before the first release, and a separate one for phase 3 (uploads).
+
+Scope of testing: all of the above are local tests against a server the test starts on loopback, with files in a temporary directory. No test probes a host the project does not own.
+
+### 10.5 Questions for the maintainer
+
+They are in section 17 of the spec. The ones that change this model: D-01 token delivery, D-03 ephemeral port, D-05 iframe sandbox without `allow-same-origin`, D-06 block remote images in the preview, D-08 strip image metadata, D-09 undo after an outside edit, D-10 idle timeout, D-18 no hosted editor from this design.
+
+Not covered in this addendum: the hosted editor (phase 4 of #103), a git-based CMS front end, and the assistant workflow (phase 5), each of which needs its own model; the security of the browser the owner uses; the instance repo's CI and deploy path (T-02, T-19).
