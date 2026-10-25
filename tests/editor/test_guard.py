@@ -428,16 +428,16 @@ def test_fuzz_random_requests_never_500_and_never_write(tmp_path: Path) -> None:
 def test_token_is_compared_with_hmac_compare_digest(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import reach_around.editor.guard as guard_module
+    import hmac
 
     calls: list[tuple[bytes, bytes]] = []
-    real = guard_module.hmac.compare_digest
+    real = hmac.compare_digest
 
     def spy(a: bytes, b: bytes) -> bool:
         calls.append((a, b))
-        return real(a, b)
+        return bool(real(a, b))
 
-    monkeypatch.setattr(guard_module.hmac, "compare_digest", spy)
+    monkeypatch.setattr(hmac, "compare_digest", spy)
     assert GUARD.token_ok("s3cret-token") is True
     assert GUARD.token_ok("nope") is False
     assert len(calls) == 2
