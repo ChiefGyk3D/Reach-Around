@@ -914,7 +914,7 @@ def test_the_preview_guard_bites() -> None:
             "needs: [shell, preview, comment]", "needs: [preview]"
         ),
         "unpinned shell call": good.replace(
-            "bash-ci.yml@8fdb8d106b11aae0f37e893bb57e9bd8e8b0e7b7 # v1.24.0",
+            "bash-ci.yml@b9db99287236b19f0249f83b54acc5cc41126e42 # v1.24.0",
             "bash-ci.yml@main",
         ),
     }

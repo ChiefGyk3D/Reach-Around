@@ -21,7 +21,7 @@ Copied from Plan 1, then extended.
 - Do not store IP addresses. At most a two-letter country code from Cloudflare headers.
 - No personal details of the maintainer (address, callsign, grid square, hostnames, machine identifiers, real emails) in the repository, examples, tests or logs. Examples use synthetic data (`example.com`, `203.0.113.x`, "Example Creator") and the placeholder callsign `N0CALL` if one is ever needed.
 - No secrets in the repository. Credentials come from the environment or a secrets manager.
-- CI calls git-your-ship-together reusable workflows pinned by commit with a version comment: `ChiefGyk3D/git-your-ship-together/.github/workflows/python-ci.yml@8fdb8d106b11aae0f37e893bb57e9bd8e8b0e7b7 # v1.24.0`. The gate job is named `CI green`.
+- CI calls git-your-ship-together reusable workflows pinned by commit with a version comment: `ChiefGyk3D/git-your-ship-together/.github/workflows/python-ci.yml@b9db99287236b19f0249f83b54acc5cc41126e42 # v1.24.0`. The gate job is named `CI green`.
 - Every PR links its issue (`Refs #n` or `Closes #n`). Every task has an issue and a board card before work starts.
 - Versions are semantic; alpha is `0.x`. This plan ends at `v0.3.0`.
 - Containers build from a `Containerfile`, run rootless, depend on no Docker socket, and pin base images by digest. The PDF renderer is a local owner tool and is not part of the image.
