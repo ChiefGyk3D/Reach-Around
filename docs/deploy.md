@@ -185,9 +185,10 @@ not configured. Never paste a token into chat, issues or commits.
 
 **CI config.** The Doppler action exports every secret in the config it reads
 into the rest of the job, so CI reads a dedicated config named `ci` that holds
-only what the deploy needs (`CLOUDFLARE_API_TOKEN`, and optionally
-`CLOUDFLARE_PURGE_TOKEN`). Runtime secrets such as the Mailgun key stay in
-`stg` and `prd`. To rotate the token automatically, add a Doppler Cloudflare
+only the deploy token (`CLOUDFLARE_API_TOKEN`). Runtime secrets such as the
+Mailgun key stay in `stg` and `prd`. The optional `CLOUDFLARE_PURGE_TOKEN` is
+not in `ci` either: it stays a GitHub `test` environment secret so it reaches
+only the purge step and never the wrangler steps. To rotate the token automatically, add a Doppler Cloudflare
 Tokens rotated secret in `ci` (it injects `CLOUDFLARE_KEY_NAME` and
 `CLOUDFLARE_KEY_VALUE`) and set `CLOUDFLARE_API_TOKEN` to
 `${CLOUDFLARE_KEY_VALUE}`. Create the two tokens it rotates with identical

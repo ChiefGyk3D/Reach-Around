@@ -57,14 +57,13 @@ def test_the_purge_token_is_in_exactly_one_step_and_no_other_secret_with_it() ->
     holders = [k for k, v in text_by_step.items() if "CLOUDFLARE_PURGE_TOKEN" in v]
     assert holders == [("deploy", PURGE_STEP)]
     purge = step("deploy", PURGE_STEP)
-    # The purge token may come from Doppler (exported into the job) or from the
-    # GitHub secret. The deploy token is exported into the job by the Doppler
-    # step, so this step blanks it explicitly: it never carries a value.
+    # The purge token is a GitHub secret only: Doppler exports its whole config
+    # into the job, so a purge token there would reach the wrangler steps too.
+    # The deploy token is exported into the job by the Doppler step, so this
+    # step blanks it explicitly: it never carries a value.
     assert purge["env"] == {
         "CLOUDFLARE_API_TOKEN": "",
-        "CLOUDFLARE_PURGE_TOKEN": (
-            "${{ env.CLOUDFLARE_PURGE_TOKEN || secrets.CLOUDFLARE_PURGE_TOKEN }}"
-        ),
+        "CLOUDFLARE_PURGE_TOKEN": "${{ secrets.CLOUDFLARE_PURGE_TOKEN }}",
         "ZONE_ID": "${{ vars.ZONE_ID }}",
         "SITE_HOST": "${{ vars.SITE_HOST }}",
     }

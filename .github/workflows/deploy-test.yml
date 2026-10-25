@@ -345,15 +345,17 @@ jobs:
           --commit-dirty=true
 
       # Optional backstop. Skipped with a notice unless the repository secret
-      # CLOUDFLARE_PURGE_TOKEN (scope: Zone > Cache Purge, one zone only; from
-      # Doppler or the GitHub secret) and the variable ZONE_ID are set. It never
-      # fails the deploy: a refused purge is a warning and a line in the job
-      # summary. The script gives the token to curl on stdin. The deploy token
-      # is blanked here: this step has no use for it.
+      # CLOUDFLARE_PURGE_TOKEN (scope: Zone > Cache Purge, one zone only) and the
+      # variable ZONE_ID are set. It never fails the deploy: a refused purge is
+      # a warning and a line in the job summary. The purge token stays a GitHub
+      # `test` environment secret, never in the Doppler `ci` config, so it
+      # reaches this step only and not the wrangler steps. The script gives it
+      # to curl on stdin. The deploy token is blanked here: this step has no
+      # use for it.
       - name: Purge changed paths from the edge cache (optional)
         env:
           CLOUDFLARE_API_TOKEN: ""
-          CLOUDFLARE_PURGE_TOKEN: ${{ env.CLOUDFLARE_PURGE_TOKEN || secrets.CLOUDFLARE_PURGE_TOKEN }}
+          CLOUDFLARE_PURGE_TOKEN: ${{ secrets.CLOUDFLARE_PURGE_TOKEN }}
           ZONE_ID: ${{ vars.ZONE_ID }}
           SITE_HOST: ${{ vars.SITE_HOST }}
         run: bash .github/scripts/purge-cache.sh purge-in/site-purge-list.txt
