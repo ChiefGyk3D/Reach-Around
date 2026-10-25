@@ -98,7 +98,10 @@ def test_avatar_is_added_under_creator_when_absent(cfg: Path) -> None:
 )
 def test_avatar_refuses_what_the_asset_pipeline_refuses(cfg: Path, value: str) -> None:
     message = refused(cfg, editing.set_value, key="creator.avatar", value=value)
-    assert "cannot be set from the command line" not in message  # refused on its merits
+    # refused by the editor's own check, before the config loader sees it
+    assert "must be an https URL or a local image path" in message or (
+        "non-empty printable text" in message
+    )
 
 
 def test_avatar_command_matches_the_function(cfg: Path, tmp_path: Path) -> None:

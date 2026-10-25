@@ -299,7 +299,7 @@ def test_set_field_blank_count_removes_the_line_never_writes_zero(
 
 
 def test_set_field_blank_count_with_a_date_is_refused(cfg: Path) -> None:
-    assert "as_of" in refused(
+    message = refused(
         cfg,
         editing.set_platform_item_field,
         block=BLOCK,
@@ -307,10 +307,11 @@ def test_set_field_blank_count_with_a_date_is_refused(cfg: Path) -> None:
         field="count",
         value="",
     )
+    assert "clear as_of before count" in message
 
 
 def test_set_field_as_of_without_a_count_is_refused(cfg: Path) -> None:
-    assert "count" in refused(
+    message = refused(
         cfg,
         editing.set_platform_item_field,
         block=BLOCK,
@@ -318,6 +319,7 @@ def test_set_field_as_of_without_a_count_is_refused(cfg: Path) -> None:
         field="as_of",
         value="2027-01-01",
     )
+    assert "set the count first" in message
 
 
 def test_set_field_clears_label_and_name(cfg: Path) -> None:

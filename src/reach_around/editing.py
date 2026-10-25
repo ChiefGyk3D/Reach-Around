@@ -826,7 +826,6 @@ def set_link_field(
 PLATFORM_FIELDS: tuple[str, ...] = ("handle", "url", "name", "label", "count", "as_of")
 _PLATFORM_ORDER = ("platform", "name", "handle", "url", "label", "count", "as_of")
 _PLATFORM_REQUIRED = ("platform", "handle", "url")
-_PLATFORM_OPTIONAL = ("name", "label", "count", "as_of")
 _DAY = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
 _COUNT = re.compile(r"[0-9]{1,12}")
 
@@ -916,7 +915,7 @@ def _platform_parts(item: dict[str, Any]) -> list[tuple[str, str, Any]]:
             raise EditError(f"{key} is required for a platform item")
     parts: list[tuple[str, str, Any]] = []
     for key in _PLATFORM_ORDER:
-        if key not in item or (key in _PLATFORM_OPTIONAL and _blank(item[key])):
+        if key not in item:
             continue
         shown, python_value = parse_platform_field(key, item[key])
         if shown is None:
