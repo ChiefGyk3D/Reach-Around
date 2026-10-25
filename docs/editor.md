@@ -47,7 +47,7 @@ the printed link again. Do not paste the link into a chat or a shared screen.
 
 | Method | Path | Result |
 |---|---|---|
-| GET | `/__edit/`, `/__edit/app.js`, `/__edit/app.css` | the static shell |
+| GET | `/__edit/`, `/__edit/app.css` and the ES modules (`app.js`, `strings.js`, `token.js`, `api.js`, `store.js`, `announce.js`, `view.js`) | the static shell: a read-only view of the settings beside the sandboxed preview |
 | GET | `/__edit/api/state` | `{"hash": "<sha256 of the config text>", "config": {}}` (token) |
 | anything else | | 404 (or 405, 415 and so on from the guard) |
 

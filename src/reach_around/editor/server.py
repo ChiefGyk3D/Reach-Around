@@ -53,11 +53,23 @@ _RECV_CHUNK = 8192
 MAX_ACTIVE_CONNECTIONS = 16
 MAX_OPEN_CONNECTIONS = 32
 CONFIG_READ_CAP = 8 * 1024 * 1024
-_ASSET_FILES = ("index.html", "app.js", "app.css")
+_MODULE_FILES = (
+    "app.js",
+    "strings.js",
+    "token.js",
+    "api.js",
+    "store.js",
+    "announce.js",
+    "view.js",
+)
+_ASSET_FILES = ("index.html", "app.css", *_MODULE_FILES)
 _STATIC_ROUTES = {
     "/__edit/": ("index.html", "text/html; charset=utf-8"),
-    "/__edit/app.js": ("app.js", "text/javascript; charset=utf-8"),
     "/__edit/app.css": ("app.css", "text/css; charset=utf-8"),
+    **{
+        f"/__edit/{name}": (name, "text/javascript; charset=utf-8")
+        for name in _MODULE_FILES
+    },
 }
 _MESSAGES = {
     400: "The request could not be understood.",

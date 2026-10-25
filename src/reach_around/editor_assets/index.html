@@ -3,14 +3,34 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
 <title>Reach Around editor</title>
 <link rel="stylesheet" href="/__edit/app.css">
 <script type="module" src="/__edit/app.js"></script>
 </head>
 <body>
-<main>
-<h1>Reach Around editor</h1>
-<p id="status">Starting.</p>
+<a class="skip-link" href="#preview" data-string="skip.preview"></a>
+<header class="bar">
+<h1 data-string="app.title"></h1>
+<p id="status" class="status" data-string="status.starting"></p>
+</header>
+<nav class="bar" aria-label="Page sections">
+<a class="nav-link" href="#config" data-string="nav.config"></a>
+<a class="nav-link" href="#preview" data-string="nav.preview"></a>
+</nav>
+<div id="announcer" class="visually-hidden" role="status" aria-live="polite" aria-atomic="true"></div>
+<main class="panes">
+<section id="config" class="pane" aria-labelledby="config-heading" tabindex="-1">
+<h2 id="config-heading" data-string="config.heading"></h2>
+<p class="note" data-string="config.readonly"></p>
+<div id="config-view"></div>
+</section>
+<section id="preview" class="pane" aria-labelledby="preview-heading" tabindex="-1">
+<h2 id="preview-heading" data-string="preview.heading"></h2>
+<p id="preview-note" class="note"></p>
+<iframe id="preview-frame" class="preview-frame" sandbox="allow-scripts" title="Preview of your page" referrerpolicy="no-referrer"></iframe>
+</section>
 </main>
+<noscript><p class="status">This editor needs JavaScript. Nothing is sent anywhere else.</p></noscript>
 </body>
 </html>
