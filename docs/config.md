@@ -20,6 +20,9 @@ creator:
       url: https://video.example.com/@example
       icon: video
 disclosure: This page uses affiliate links. Example Creator may earn a commission.
+analytics:
+  page_views: true
+  route: /e/v/
 tabs:
   - id: start-here
     title: Start Here
@@ -86,6 +89,7 @@ escapes it when it renders.
 | `privacy` | Privacy | defaults | wording and retention for the privacy page; see [`privacy`](#privacy) |
 | `footer` | Footer | credit on | the "Made with Reach Around" link in the footer; see [`footer`](#footer) |
 | `robots` | Robots | absent | optional; when present the build writes `robots.txt`; see [`robots`](#robots) |
+| `analytics` | Analytics | page views off | optional page-view counting; see [`analytics`](#analytics) |
 | `store` | StoreConfig | SQLite at `data/reach-around.db` | where the snapshot store lives; see [`store`](#store) |
 | `profile_card` | ProfileCard | none | name, topic chips and a media-kit button after the content of every page; see [`profile_card`](#profile_card) |
 | `numbers` | NumbersConfig | none | where each platform's follower count comes from, for `reach-around counts refresh`; see [`numbers`](#numbers) |
@@ -852,6 +856,59 @@ ordinary link with `rel="noopener noreferrer"`. It has no `ping` and no
 `data-link-id`, so clicks on it are never counted, it adds no script, and the
 page makes no request to that address until a visitor follows the link.
 Because of that, the privacy page needs no extra statement for it.
+
+## `analytics`
+
+Optional page-view counting. **Off by default**: with the section absent, or
+`page_views: false`, the build is byte-for-byte what it was before this key
+existed. Unknown keys are refused; there is deliberately nothing else to set.
+
+| Key | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| `page_views` | boolean | `false` | Count one view per page load. Must be a real boolean. When on, the build ships `static/view.js`, links it from every tab page (not the privacy page), puts `data-page-id` and `data-view-route` on `<body>`, and adds the page-view item to the privacy page, which lists the referring site, the campaign label (`utm_source`, at most 30 characters) and the window width among the rest. |
+| `route` | path | `/e/v/` | The same-origin path the Worker serves the page-view route on. Plain segments (`A-Z a-z 0-9 . _ ~ -`, no segment starting with a dot), starting and ending with `/`, at most 64 characters. No scheme, host, query, fragment, `.` or `..` segment, escape or space. The tab id is appended to it. |
+
+```yaml
+analytics:
+  page_views: true
+  route: /e/v/
+```
+
+What `view.js` does, and nothing more:
+
+- It sends one `navigator.sendBeacon` per page load, a small form-encoded body
+  to `<route><tab id>`: `r` (the referrer's host name only, when there is
+  one), `u` (a `utm_source` label of 1-30 characters from `a-z0-9-`, when
+  there is one) and `w` (one letter for the window width: `s` under 480,
+  `m` 480-767, `l` 768-1199, `x` 1200 and up). These are the fields the Worker
+  route reads; see `worker/src/view.ts`.
+- It sends nothing when `navigator.globalPrivacyControl` is true or Do Not Track
+  is on: any of `navigator.doNotTrack`, `window.doNotTrack` and
+  `navigator.msDoNotTrack` set to `1`, `yes` or `true` (any case, spaces ignored).
+  This is checked at start and again at send time, so a signal that arrives while
+  the page is prerendering or hidden still stops the beacon. The Worker checks
+  `Sec-GPC` and `DNT` again.
+- The referrer host is left out when it is not a real name: IPv4 literals in any
+  spelling, IPv6 literals, single-label hosts and hosts ending in a number (the
+  Worker would refuse the whole body). `u` and `w` are still sent.
+- It waits while the page is prerendering or hidden and sends on the first
+  visible moment, once.
+- Without `navigator.sendBeacon` it does nothing. There is no fallback request.
+- It sets no cookie, uses no browser storage and reads no identifier. The
+  Content Security Policy is unchanged (`script-src 'self'`, no inline script).
+
+**The Worker route is not detectable from this config.** The site config does
+not say where the Worker runs or which hostname it answers on, so the build
+cannot warn that `analytics.page_views` is on without a Worker. The route must
+be served on the same hostname as the pages (the Worker also requires the
+request `Origin` to match its `SITE_HOST`), the tab ids must be in the Worker's
+`PAGE_IDS` (the build manifest lists them), and its limiter, hash secret and
+kill switch must be set. The merged Worker records nothing without
+`VIEW_HASH_SECRET` (it fails closed) and serves only `/e/v/:pageId` today, so
+change `route` only when a proxy or route rule maps your path to that Worker
+path. See [deploy](deploy.md). If nothing answers the route,
+the beacon fails silently and the pages work normally; you just get no counts.
+The privacy page still discloses the counting, which is the safe direction.
 
 ## `robots`
 

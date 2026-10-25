@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Config loading and validation."""
 
+from reach_around.config.analytics import Analytics
 from reach_around.config.footer import Footer
 from reach_around.config.loader import ConfigError, load_yaml
 from reach_around.config.models import (
@@ -16,6 +17,7 @@ from reach_around.config.models import (
 from reach_around.config.privacy import Features, Privacy
 
 __all__ = [
+    "Analytics",
     "ConfigError",
     "Creator",
     "Features",

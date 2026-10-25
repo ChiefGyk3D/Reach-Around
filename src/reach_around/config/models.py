@@ -27,6 +27,7 @@ from pydantic import (
     model_validator,
 )
 
+from reach_around.config.analytics import Analytics
 from reach_around.config.blocks import (
     Crypto,
     Divider,
@@ -322,6 +323,7 @@ class SiteConfig(_Model):
     store: StoreConfig = StoreConfig()
     profile_card: ProfileCard | None = None
     numbers: NumbersConfig | None = None
+    analytics: Analytics = Analytics()
 
     @field_validator("timezone")
     @classmethod

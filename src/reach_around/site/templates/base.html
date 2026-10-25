@@ -28,6 +28,9 @@
 {% if click_tracking %}
 <script src="{{ root }}static/click.js" defer></script>
 {% endif %}
+{% if page_views %}
+<script src="{{ root }}static/view.js" defer></script>
+{% endif %}
 {% if has_crypto %}
 <script src="{{ root }}static/copy.js" defer></script>
 {% endif %}
@@ -35,7 +38,7 @@
 <script src="{{ root }}static/email.js" defer></script>
 {% endif %}
 </head>
-<body>
+<body{% if page_views and page_id %} data-page-id="{{ page_id }}" data-view-route="{{ view_route }}"{% endif %}>
 <a class="skip-link" href="#content">Skip to links</a>
 <main id="content">
 {% include "_nav.html" %}
