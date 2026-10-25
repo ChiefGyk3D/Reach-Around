@@ -487,20 +487,64 @@ describe("retention order", () => {
     expect((await meta()).rollup_err).toBe("db");
   });
 
-  it("visitor_seen_for_an_older_day_is_kept_until_that_day_is_rolled_up", async () => {
+  it("visitor_seen_before_today_is_deleted_whatever_the_rollup_state", async () => {
     await DB.prepare("INSERT INTO visitor_seen (day, h) VALUES ('2027-03-13', 'aaaaaaaa'), ('2027-03-14', 'bbbbbbbb')").run();
-    await insert([{ ts: D13 + 5, first: 1 }]);
-    await purgeViews({ DB }, NOW);
-    expect((await q<{ day: string }>("SELECT day FROM visitor_seen")).map((r) => r.day)).toEqual(["2027-03-13", "2027-03-14"]);
-    await rollupClosedDays(envOf(), NOW);
+    await insert([{ ts: D13 + 5, first: 1 }]); // day 03-13 is NOT rolled up
+    expect(await q("SELECT * FROM view_rollup_log")).toEqual([]);
     await purgeViews({ DB }, NOW);
     expect((await q<{ day: string }>("SELECT day FROM visitor_seen")).map((r) => r.day)).toEqual(["2027-03-14"]);
+    expect(await rawCount()).toBe(1); // the unrolled raw row is still kept
   });
 
-  it("visitor_seen_older_than_the_hard_bound_goes_even_if_never_rolled_up", async () => {
-    await DB.prepare("INSERT INTO visitor_seen (day, h) VALUES ('2027-03-11', 'aaaaaaaa')").run();
+  it("the_hard_ceiling_is_capped_at_the_maximum_keep_even_with_a_large_keep_setting", async () => {
+    // keep 90: 3x would be 270 days, but the ceiling is min(3 x keep, 90).
+    await insert([{ ts: ageDay(100) }, { ts: ageDay(80) }]);
+    await purgeViews({ DB, RAW_KEEP_DAYS: "90" }, NOW);
+    expect((await q<{ ts: number }>("SELECT ts FROM view_events")).map((r) => r.ts)).toEqual([ageDay(80)]);
+    expect((await meta()).rollup_overdue).toBe("2027-03-14");
+  });
+
+  it("a_stuck_day_does_not_block_later_days_or_the_purge_of_rolled_days", async () => {
+    const stuck = "2027-03-12";
+    const failingDb = new Proxy(DB, {
+      get(t, p) {
+        if (p === "prepare") {
+          return (sql: string) => {
+            const st = t.prepare(sql);
+            if (!sql.startsWith("INSERT INTO view_rollup_log")) return st;
+            return {
+              bind: (...a: unknown[]) =>
+                a[0] === stuck
+                  ? { run: async () => { throw new Error("stuck day"); } }
+                  : st.bind(...a),
+            } as unknown as D1PreparedStatement;
+          };
+        }
+        const v = Reflect.get(t, p, t);
+        return typeof v === "function" ? v.bind(t) : v;
+      },
+    }) as D1Database;
+    // An old rolled day (purgeable), the stuck day and a later day.
+    await insert([{ ts: ageDay(10) }, { ts: D12 + 5 }, { ts: D13 + 5 }]);
+    await DB.prepare("INSERT INTO view_rollup_log VALUES (?, 'UTC', 1, 1, 0, 1, 1, 1, 0)").bind(day(ageDay(10))).run();
+    await expect(rollupClosedDays(envOf({ DB: failingDb }), NOW)).rejects.toThrow();
+    const logged = (await q<{ day: string }>("SELECT day FROM view_rollup_log ORDER BY day")).map((r) => r.day);
+    expect(logged).toContain("2027-03-13"); // the later day was still rolled
+    expect(logged).not.toContain(stuck);
+    const m = await meta();
+    expect(m.rollup_err).toBe("db");
+    expect(m.rollup_failed_day).toBe(stuck);
+    expect(m.rollup_last_ok).toBeUndefined();
     await purgeViews({ DB }, NOW);
-    expect(await q("SELECT * FROM visitor_seen")).toEqual([]);
+    const left = (await q<{ ts: number }>("SELECT ts FROM view_events ORDER BY ts")).map((r) => day(r.ts));
+    expect(left).toEqual([stuck, "2027-03-13"]); // rolled-and-old purged, stuck day kept
+    // The next, healthy run retries the stuck day and clears the marker.
+    await rollupClosedDays(envOf(), NOW + 1000);
+    expect((await q<{ day: string }>("SELECT day FROM view_rollup_log")).map((r) => r.day)).toContain(stuck);
+    const m2 = await meta();
+    expect(m2.rollup_err).toBe("none");
+    expect(m2.rollup_failed_day).toBeUndefined();
+    expect(m2.rollup_last_ok).toBe(String(NOW + 1000));
   });
 
   it("aggregates_older_than_90_days_are_deleted", async () => {

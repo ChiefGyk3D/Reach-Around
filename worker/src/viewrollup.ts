@@ -358,12 +358,14 @@ export async function rollupClosedDays(env: RollupEnv, nowMs: number): Promise<R
   const todayStart = dayStartMs(utcDate(nowMs));
   let days = 0;
   let rows = 0;
-  let lastDay = "";
   let failure: unknown = null;
   let errClass: RollupError = "none";
+  let failedDay = "";
+  let lastGood = ""; // last rolled day before any failed day
   let complete = false;
+  let pending: Array<{ d: string }> = [];
   try {
-    const pending = await allRows<{ d: string }>(
+    pending = await allRows<{ d: string }>(
       db,
       "SELECT DISTINCT strftime('%Y-%m-%d', ts / 1000, 'unixepoch') AS d FROM view_events WHERE ts < ?1 " +
         "AND strftime('%Y-%m-%d', ts / 1000, 'unixepoch') NOT IN (SELECT day FROM view_rollup_log) ORDER BY d LIMIT ?2",
@@ -371,27 +373,38 @@ export async function rollupClosedDays(env: RollupEnv, nowMs: number): Promise<R
       MAX_DAYS_PER_RUN + 1,
     );
     complete = pending.length <= MAX_DAYS_PER_RUN;
-    for (const { d } of pending.slice(0, MAX_DAYS_PER_RUN)) {
+  } catch (e) {
+    failure = e;
+    errClass = "db";
+  }
+  // A failing day is recorded and skipped: later days still roll, and the
+  // failing day is found again (it has no log row) on the next run.
+  for (const { d } of pending.slice(0, MAX_DAYS_PER_RUN)) {
+    try {
       const plan = await aggregateDay(env, d);
       rows += await writeDay(env, d, plan, nowMs);
       days += 1;
-      lastDay = d;
+      if (failedDay === "") lastGood = d;
+    } catch (e) {
+      failure ??= e;
+      if (failedDay === "") {
+        failedDay = d;
+        errClass = e instanceof RollupMismatch ? "mismatch" : "db";
+      }
     }
-  } catch (e) {
-    failure = e;
-    errClass = e instanceof RollupMismatch ? "mismatch" : "db";
-    complete = false;
   }
-  const through = complete ? utcDate(todayStart - DAY_MS) : lastDay;
+  const through = failure === null && complete ? utcDate(todayStart - DAY_MS) : lastGood;
   const entries: Record<string, string> = {
     rollup_days: String(days),
     rollup_rows: String(rows),
     rollup_err: errClass,
   };
   if (through !== "") entries.rolled_through = through;
+  if (failedDay !== "") entries.rollup_failed_day = failedDay;
   if (failure === null) entries.rollup_last_ok = String(Math.floor(nowMs));
   try {
     await heartbeat(db, entries);
+    if (failure === null) await db.prepare("DELETE FROM view_meta WHERE key = 'rollup_failed_day'").run();
   } catch (e) {
     failure ??= e;
   }

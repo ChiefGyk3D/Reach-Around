@@ -2,16 +2,15 @@
 //
 // Retention for the page-view tables, run by the daily cron.
 //
-//   visitor_seen   rows before today's UTC date, but only once that day is
-//                  rolled up (its uniques are counted). A day that never rolls
-//                  up loses its hashes after SEEN_HARD_DAYS UTC days anyway:
-//                  the uniques are already in the raw `first` flags, so the
-//                  hash is not needed to count them.
+//   visitor_seen   every row before today's UTC date, unconditionally. It is
+//                  pseudonymous (a daily hash) and the rollup never reads it
+//                  (uniques come from the raw `first` flags), so it never
+//                  waits on the rollup.
 //   view_events    rows older than the raw keep window (default 7 days, Plan 4
 //                  open decision P-3, RAW_KEEP_DAYS overrides, ceiling 90),
 //                  but ONLY rows whose UTC day has a view_rollup_log row. A
 //                  day not yet rolled up is never deleted by age until the
-//                  hard ceiling of 3x the keep window; then it is dropped and
+//                  hard ceiling of min(3x the keep window, 90 days); then it is dropped and
 //                  view_meta('rollup_overdue') records the date.
 //   view_daily, view_dim_daily, view_geo_daily, view_rollup_log
 //                  rows older than 90 days.
@@ -37,8 +36,6 @@ export const DEFAULT_RAW_KEEP_DAYS = 7;
 export const MAX_RAW_KEEP_DAYS = 90;
 /** Unrolled raw rows are dropped at this multiple of the keep window. */
 export const HARD_CEILING_FACTOR = 3;
-/** visitor_seen rows older than this many UTC days go even if the day never rolled up. */
-export const SEEN_HARD_DAYS = 2;
 export const AGGREGATE_KEEP_DAYS = 90;
 
 export interface RetentionEnv {
@@ -108,18 +105,16 @@ export async function purgeViews(
   const today = new Date(nowMs).toISOString().slice(0, 10);
   const keep = keepDays(env.RAW_KEEP_DAYS);
   const cutoff = Math.floor(nowMs - keep * DAY_MS);
-  const hardCutoff = Math.floor(nowMs - keep * HARD_CEILING_FACTOR * DAY_MS);
+  const hardCutoff = Math.floor(nowMs - Math.min(keep * HARD_CEILING_FACTOR, MAX_RAW_KEEP_DAYS) * DAY_MS);
   const aggCutoff = new Date(nowMs - AGGREGATE_KEEP_DAYS * DAY_MS).toISOString().slice(0, 10);
-  const seenHard = new Date(nowMs - SEEN_HARD_DAYS * DAY_MS).toISOString().slice(0, 10);
   const hour = Math.floor(nowMs / HOUR_MS);
   const run = (sql: string, args: Array<string | number>) =>
     deleteBatched(env.DB, sql, args, batch, maxBatches);
   const steps: Array<() => Promise<boolean>> = [
     () =>
       run(
-        "DELETE FROM visitor_seen WHERE (day, h) IN (SELECT day, h FROM visitor_seen WHERE day < ?1 " +
-          "AND (day IN (SELECT day FROM view_rollup_log) OR day < ?2) LIMIT ?3)",
-        [today, seenHard],
+        "DELETE FROM visitor_seen WHERE (day, h) IN (SELECT day, h FROM visitor_seen WHERE day < ?1 LIMIT ?2)",
+        [today],
       ), // CONTROL:seen-purge
     async () => {
       // CONTROL:raw-purge  unrolled days survive until the hard ceiling.
