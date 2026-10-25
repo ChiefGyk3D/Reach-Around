@@ -9,6 +9,6 @@
 #
 # Read by scripts/read-lock.sh, which checks each value's shape. Nothing in
 # this file is a secret.
-ENGINE_IMAGE=ghcr.io/chiefgyk3d/reach-around:0.1.0@sha256:057eb42711a1f07d4735304a5317202e61822e0b95ca55fd8b43abd022e68af4
+ENGINE_IMAGE=ghcr.io/chiefgyk3d/reach-around:0.2.0@sha256:bec09d709701622a9dadff40ab5092de6e32f3006106bc52925e9929471fa071
 ENGINE_REPO=ChiefGyk3D/Reach-Around
-ENGINE_REF=0d1f96a0268cf99890c7d5ee7b9cd6edf7d4a207 # v0.1.0
+ENGINE_REF=46eb5c26b2d8c95825b7904ea860b502740e1d76 # v0.2.0

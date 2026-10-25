@@ -236,7 +236,7 @@ def test_read_lock_accepts_the_shipped_pins(tmp_path: Path) -> None:
     ("old", "new", "key"),
     [
         ("@sha256:", "@sha1:", "ENGINE_IMAGE"),
-        ("0d1f96a0268cf99890c7d5ee7b9cd6edf7d4a207", "main", "ENGINE_REF"),
+        ("<current ENGINE_REF commit>", "main", "ENGINE_REF"),
         ("ENGINE_REPO=ChiefGyk3D/Reach-Around", "ENGINE_REPO=a;b", "ENGINE_REPO"),
     ],
 )
@@ -246,6 +246,12 @@ def test_read_lock_refuses_bad_shapes(
     root = _copy_template(tmp_path)
     lock = root / "engine.lock"
     text = lock.read_text(encoding="utf-8")
+    if old == "<current ENGINE_REF commit>":
+        # Read the pinned commit from the lock itself so an engine bump never
+        # breaks this test.
+        match = re.search(r"^ENGINE_REF=([0-9a-f]{40})", text, re.MULTILINE)
+        assert match is not None
+        old = match.group(1)
     assert old in text
     lock.write_text(text.replace(old, new), encoding="utf-8")
     assert _script(root, "read-lock.sh", key).returncode != 0
