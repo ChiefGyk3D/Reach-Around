@@ -96,9 +96,33 @@ public `ChiefGyk3D/git-your-ship-together` repository; if your organization
 restricts which actions may run, allow that repository.
 
 The preview comment needs no setup: the `comment` job uses the run's own
-token with `pull-requests: write` and nothing else. Pull requests from forks
-get the check and the artifact but no comment, because a fork's token cannot
-write.
+token with `pull-requests: write` (and `contents: read` to fetch one script
+from the base commit) and nothing else. Pull requests from forks get no
+preview and no comment: the `comment` job is skipped for them, and their token
+cannot write anyway.
+
+**Who may change the workflow.** With the `pull_request` trigger GitHub runs
+the workflow file from the pull request itself, so a collaborator with write
+access can edit `.github/workflows/preview.yml` and the scripts in their own
+pull request. The template stops a pull request from forging the comment (the
+comment is rendered by a script from the base commit, from validated data) and
+from choosing the engine image of its own preview (the image comes from the base
+branch's `engine.lock`), but it cannot stop someone with write access from
+changing the workflow itself. So: give write access only to people you trust,
+and if the repository has collaborators protect `.github/` and `scripts/` with
+a `CODEOWNERS` file and a branch rule that requires a code owner's review:
+
+```
+# .github/CODEOWNERS (replace the handle with a person or team you trust)
+/.github/   @your-handle
+/scripts/   @your-handle
+/engine.lock @your-handle
+```
+
+**`engine.lock` and previews.** A preview uses the `engine.lock` on the base
+branch, not the one in the pull request. A change to `engine.lock` takes effect
+for previews only after it is merged. (The merge itself is still checked: the
+pull request's own `Preview` run builds with the old engine.)
 
 ## The token
 

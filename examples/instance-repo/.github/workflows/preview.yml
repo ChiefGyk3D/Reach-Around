@@ -4,20 +4,28 @@
 # request in plain language. Nothing is deployed and no secret or environment
 # is used. This is `pull_request`, never `pull_request_target`: the change
 # under review is the only thing that runs, and it runs with a read-only
-# token.
+# token. Pull requests from forks get no comment (their token cannot write).
 #
 # Three jobs and a gate.
 #   shell    GYST bash-ci: shellcheck, shfmt, actionlint and zizmor over this
 #            repository's scripts and workflows.
-#   preview  contents: read only. Checks site.yaml with the pinned engine
-#            (`check` names the tab, block and field of every problem and never
-#            prints a value), builds the site, uploads it as the `preview`
-#            artifact, and writes the comment text to a second artifact.
-#   comment  the only job with `pull-requests: write`. It checks out nothing
-#            and runs none of the change's code: it downloads the comment text
-#            and posts it. Skipped for pull requests from forks, whose token
-#            cannot write.
+#   preview  contents: read only. This job runs the pull request's code, so
+#            nothing it writes is trusted. It checks site.yaml with the engine
+#            image named in the BASE branch's engine.lock (a pull request cannot
+#            pick its own image), builds the site, uploads it as the `preview`
+#            artifact, and uploads a small JSON result file.
+#   comment  the only job with `pull-requests: write`. It does not run the pull
+#            request's code. It takes scripts/render-comment.py from the BASE
+#            commit, so the pull request cannot change it; that script
+#            validates the JSON result against a strict schema and builds the
+#            whole comment from its own fixed text. The result is data, never
+#            text to post.
 #   ci-green the gate to require in branch protection.
+#
+# Trust that remains: with the `pull_request` trigger GitHub runs the workflow
+# file from the pull request, so a collaborator with write access can edit this
+# file. Give write access only to people you trust, and protect `.github/` and
+# `scripts/` with CODEOWNERS and required review (docs/EDITING.md, README.md).
 name: Preview
 
 on:
@@ -53,7 +61,8 @@ jobs:
         with:
           persist-credentials: false
 
-      # The base branch's site.yaml, to list which blocks this change touches.
+      # The base branch's copy: its engine.lock chooses the engine image, and
+      # its site.yaml is what the changed blocks are listed against.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.pull_request.base.sha }}
@@ -63,17 +72,24 @@ jobs:
       - name: Check the repository for files that must not be committed
         run: scripts/check-repo.sh
 
+      - name: Make a fresh folder for the results
+        id: results
+        run: |
+          dir="$(mktemp -d "$RUNNER_TEMP/preview-results.XXXXXX")"
+          echo "dir=$dir" >> "$GITHUB_OUTPUT"
+
       # The check records its status instead of failing here, so the later
-      # steps can still write the comment. The last step of the job fails it.
+      # steps can still write the result. The last step of the job fails it.
       - name: Check the config in plain language
         id: check
+        env:
+          RESULTS: ${{ steps.results.outputs.dir }}
         run: |
           set +e
-          mkdir -p "$RUNNER_TEMP/preview-comment"
           against=()
           if [ -f base/site.yaml ]; then against=(--against base/site.yaml); fi
-          scripts/check-config.sh ${against[@]+"${against[@]}"} \
-            --out "$RUNNER_TEMP/preview-comment/check.txt"
+          scripts/check-config.sh --lock base/engine.lock --format json \
+            ${against[@]+"${against[@]}"} --out "$RESULTS/check.json"
           echo "status=$?" >> "$GITHUB_OUTPUT"
 
       # Only when the check passed. Same rule: record the status, fail last.
@@ -82,12 +98,12 @@ jobs:
         if: steps.check.outputs.status == '0'
         run: |
           set +e
-          scripts/validate.sh --out "$RUNNER_TEMP/preview-site" \
+          scripts/validate.sh --lock base/engine.lock \
+            --out "$RUNNER_TEMP/preview-site" \
             --manifest "$RUNNER_TEMP/preview-manifest/manifest.json"
           echo "status=$?" >> "$GITHUB_OUTPUT"
 
       - name: Upload the built site as the preview
-        id: upload
         if: steps.build.outputs.status == '0'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -96,28 +112,24 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-      - name: Write the pull request comment
+      - name: Write the result file
         if: ${{ !cancelled() }}
         env:
+          RESULTS: ${{ steps.results.outputs.dir }}
           CHECK_STATUS: ${{ steps.check.outputs.status }}
           BUILD_STATUS: ${{ steps.build.outputs.status }}
-          ARTIFACT_URL: ${{ steps.upload.outputs.artifact-url }}
-          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
-          scripts/preview-comment.sh \
-            --check-status "${CHECK_STATUS:-3}" --build-status "${BUILD_STATUS}" \
-            --check "$RUNNER_TEMP/preview-comment/check.txt" \
-            --artifact-url "$ARTIFACT_URL" --run-url "$RUN_URL" \
-            --out "$RUNNER_TEMP/preview-comment/comment.md"
-          cat "$RUNNER_TEMP/preview-comment/comment.md" >> "$GITHUB_STEP_SUMMARY"
+          python3 -I scripts/write-result.py \
+            --check-status "$CHECK_STATUS" --build-status "$BUILD_STATUS" \
+            --check "$RESULTS/check.json" --out "$RESULTS/result.json"
 
-      # Its own artifact, one file, so the comment job reads exactly that.
-      - name: Keep the comment text for the comment job
+      # Its own artifact, one file. The comment job treats it as data.
+      - name: Keep the result for the comment job
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: preview-comment
-          path: ${{ runner.temp }}/preview-comment/comment.md
+          name: preview-result
+          path: ${{ steps.results.outputs.dir }}/result.json
           if-no-files-found: error
           retention-days: 1
 
@@ -135,15 +147,42 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
-      pull-requests: write  # to post the preview comment, and nothing else
-    # No checkout: nothing from the change runs in this job. It only moves one
-    # text file, cut to a fixed size, from the preview job to the comment.
+      contents: read # to fetch the one trusted script from the base commit
+      pull-requests: write # to post the preview comment, and nothing else
     steps:
+      # The renderer comes from the BASE commit, so the pull request cannot
+      # change the code that runs in this job. Only that one file is fetched.
+      - name: Fetch the comment renderer from the base commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: trusted
+          sparse-checkout: scripts/render-comment.py
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          name: preview-comment
-          path: ${{ runner.temp }}/comment-in
+          name: preview-result
+          path: ${{ runner.temp }}/result-in
 
+      # The result file is data. The renderer validates it and writes every
+      # character of the comment itself; nothing from the file is posted.
+      - name: Render the comment
+        env:
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -eu
+          dir="$(mktemp -d "$RUNNER_TEMP/comment-out.XXXXXX")"
+          echo "COMMENT_FILE=$dir/comment.md" >> "$GITHUB_ENV"
+          python3 -I trusted/scripts/render-comment.py \
+            --in "$RUNNER_TEMP/result-in/result.json" \
+            --out "$dir/comment.md" --run-url "$RUN_URL"
+          cat "$dir/comment.md" >> "$GITHUB_STEP_SUMMARY"
+
+      # Find this workflow's own earlier comment by its marker and its author
+      # (the Actions bot), and update it; otherwise post a new one. Other
+      # comments are never touched.
       - name: Post or update the comment
         env:
           GH_TOKEN: ${{ github.token }}
@@ -151,21 +190,16 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
           set -eu
-          dir="$RUNNER_TEMP/comment-in"
-          file="$dir/comment.md"
-          [ "$(find "$dir" -mindepth 1 | wc -l)" = 1 ] \
-            || { echo "::error::the comment artifact must hold exactly one file"; exit 1; }
-          if [ -f "$file" ] && [ ! -L "$file" ]; then
-            :
+          marker='<!-- reach-around-preview -->'
+          id="$(gh api "repos/$GH_REPO/issues/$PR_NUMBER/comments" --paginate \
+            --jq '.[] | select(.user.login == "github-actions[bot]" and .user.type == "Bot" and (.body | startswith("'"$marker"'"))) | .id' \
+            | tail -n 1)"
+          if [ -n "$id" ]; then
+            printf '%s' "$id" | grep -Eq '^[0-9]+$' || { echo "::error::unexpected comment id"; exit 1; }
+            gh api --method PATCH "repos/$GH_REPO/issues/comments/$id" -F "body=@$COMMENT_FILE" > /dev/null
           else
-            echo "::error::the comment artifact is not a regular file"
-            exit 1
+            gh api --method POST "repos/$GH_REPO/issues/$PR_NUMBER/comments" -F "body=@$COMMENT_FILE" > /dev/null
           fi
-          [ "$(head -n 1 "$file")" = "<!-- reach-around-preview -->" ] \
-            || { echo "::error::the comment text has the wrong first line"; exit 1; }
-          head -c 60000 "$file" > "$RUNNER_TEMP/comment-out.md"
-          gh pr comment "$PR_NUMBER" --body-file "$RUNNER_TEMP/comment-out.md" \
-            --edit-last --create-if-none
 
   ci-green:
     name: CI green

@@ -127,9 +127,9 @@ does.
 | | `preview.yml` (pull request) | `deploy.yml` (push to `main`, manual) |
 |---|---|---|
 | Trigger | `pull_request` only, never `pull_request_target` | `push` to `main`, `workflow_dispatch` |
-| Permissions | `contents: read`; only the `comment` job also has `pull-requests: write` | `contents: read` |
+| Permissions | `contents: read`; only the `comment` job also has `pull-requests: write` (and reads one script from the base commit) | `contents: read` |
 | Secrets, environment | none | `production`, reviewer required |
-| Runs | `reach-around check`, then the build, with the pinned image and no network; GYST `bash-ci` over the scripts and workflows | `reach-around check`, then the build, with the pinned image and no network |
+| Runs | `reach-around check`, then the build, in the engine image named by the **base** branch's `engine.lock`, no network, only `site.yaml`, `media/` (and `overrides/`, `numbers.json`) mounted read-only; GYST `bash-ci` over the scripts and workflows | `reach-around check`, then the build, with the pinned image and no network |
 | Output | a `preview` artifact (the built site) and a pull request comment | site artifact, then Pages and Worker deploy |
 | Token | only the run's own token, only in the `comment` job | wrangler steps only |
 | Gate | `CI green` (needs every other job) | the `production` approval |
@@ -140,32 +140,73 @@ does.
 On every push to a pull request the `preview` job runs the engine's
 `reach-around check` against `site.yaml` and against the base branch's copy.
 If the config is valid it builds the site and uploads it as the artifact
-`preview`; either way it writes a comment text. The `comment` job, which has
-the only write permission and checks out no code, posts that text (or updates
-its own earlier comment). The comment says:
+`preview`; either way it uploads a small JSON result file. The `comment` job,
+which has the only write permission, posts the comment. The comment says:
 
-- valid: the tabs and blocks that changed, and a link to the `preview`
-  artifact (download, unzip, open `index.html`);
+- valid: the tabs and blocks that changed, and where to download the `preview`
+  artifact (the run page; download, unzip, open `index.html`);
 - not valid: each problem as one sentence naming the tab, the block and the
   field, with a fix, and no build;
 - valid but the build failed: that the settings are fine and the run log
   says which file is missing;
 - the check could not run: usually an engine in `engine.lock` that is too old.
 
-The check never prints a value from `site.yaml`, only the tab title, the block
-id and the setting name, so a token or an address pasted in the wrong place
-is not echoed into a comment. The comment job reads one text file, cut to
-a fixed size, from the preview job and runs none of the change's code. A pull
-request from a fork gets the check and the artifact but no comment.
+**What is printed, exactly.** No value from `site.yaml` is ever printed: not a
+URL, an address, a token or any text you typed. Printed: a tab title and a block
+id (reduced to letters, digits and a few punctuation marks and cut to 40
+characters; they are names that appear on the published site, not values like
+URLs, tokens or addresses), a setting name only if the config schema defines
+it (an unknown key is shown as `(unknown setting #N)`, its position, never its
+name), and fixed sentences from a closed table with a few engine-defined
+numbers. Tab titles and block ids are the one place text from the file reaches
+the comment, so do not put a secret in a tab title.
+
+**Why the pull request cannot forge the comment.** The `preview` job runs the
+pull request's code, so its output is untrusted. It writes only data: the two
+exit statuses and the engine's JSON. The `comment` job checks out
+`scripts/render-comment.py` from the **base** commit (sparse, no credentials
+kept), validates the data against a strict schema (size cap, exact keys, closed
+enums for the problem kinds and change kinds, per-field length and character
+limits, known setting names only), and builds every character of the comment
+from its own fixed text, with each punctuation mark in that text escaped so no
+link, mention, issue reference or HTML can form and names shown in code spans.
+Anything that fails validation produces one fixed sentence: "The preview result
+could not be read". The comment is found by its marker and the Actions bot as
+author, and updated by id; no other comment is touched. The renderer and
+`write-result.py` create their output files new (never over a file, never
+through a symlink).
+
+**Why the pull request cannot choose the engine image.** The image named in
+`engine.lock` runs on the checkout. The preview reads `engine.lock` from the
+base branch, so a pull request that points it at another image only takes
+effect after it is merged and reviewed. The container gets only `site.yaml`,
+`media/`, `overrides/` and `numbers.json` when they exist, and the base
+`site.yaml`, each mounted alone and read-only (never the whole checkout), with
+no network, a read-only root file system, all capabilities dropped,
+`no-new-privileges`, a process and a memory limit, and a non-root user. A
+symlinked `site.yaml` or `media/` is refused, because the runtime would follow
+it on the host. Pictures must therefore live under `media/`.
+
+**What is still trusted.** With the `pull_request` trigger GitHub runs the
+workflow file from the pull request, so a collaborator with write access can
+change the workflow and the scripts in their own pull request (for example to
+post through their own code, or to run another image). The measures above stop
+a pull request from impersonating the renderer or the engine pin, not a
+trusted-writer from rewriting the workflow. Instance repositories must give
+write access only to trusted people and, if there are collaborators, protect
+`.github/`, `scripts/` and `engine.lock` with CODEOWNERS and required review.
+Pull requests from forks never run the comment job.
 
 A Pages preview deployment (a URL per pull request) is not used: it would need
 the Cloudflare token in a job that runs the change's code, which the template
 keeps apart on purpose. The artifact is the preview.
 
 **Not yet exercised on GitHub.** The workflows pass actionlint, zizmor and the
-tests in this repository; the comment step (`gh pr comment --edit-last
---create-if-none`) and the artifact link have not run on a real pull request.
-Check the first one.
+tests in this repository; the comment lookup and update (`gh api` on the issue
+comments), the sparse checkout of one script, and the run page link have not
+run on a real pull request. Check the first one. The first pull request that
+adds these files has no base copy of the renderer, so its comment job fails;
+add the template to `main` directly.
 
 The link manifest is never inside the published site directory. The build
 writes it to a separate directory (`validate.sh --manifest FILE`, mounted at

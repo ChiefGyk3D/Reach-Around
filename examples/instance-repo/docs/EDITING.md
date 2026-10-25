@@ -40,8 +40,8 @@ cannot break the live page by trying.
 
    - **The preview is ready.** Your change is valid and the site builds. The
      comment lists the blocks you changed ("Tab "Links": block "newsletter"
-     changed.") and links to the `preview` download. Download it, unzip it and
-     open `index.html` to look at the pages.
+     changed.") and links to the run. On the run page, download the `preview`
+     artifact, unzip it and open `index.html` to look at the pages.
    - **This change has a problem.** Each problem is one sentence that names the
      tab, the block and the field, then says how to fix it. Nothing was built.
      Go back to step 1 on the same branch and fix it; the comment updates
@@ -68,10 +68,23 @@ cannot break the live page by trying.
    > deployments dialog.]
 
 A mistake never reaches the site: a config the check rejects cannot be built,
-and nothing deploys without the approval click. The comment never repeats
-what you typed, only where the problem is, so pasting a private value in the
-wrong place does not publish it in the comment (it is still in the file's
-history in your repository, so remove it and rotate it if it was real).
+and nothing deploys without the approval click.
+
+**What the comment prints, exactly.** It never prints a value from your file:
+no URL, address, token or text you typed. It prints only:
+
+- the tab's **title** and the block's **id**, reduced to plain letters, digits
+  and a few punctuation marks and cut to 40 characters. These are names that
+  appear on your published site, not secrets;
+- a **setting name** (such as `url` or `theme.mode`) only if it is one the
+  schema defines. A setting the schema does not know is shown as
+  `(unknown setting #4)`: its position among its neighbors, never its name;
+- fixed sentences, and numbers the engine itself defines (such as a length
+  limit).
+
+So pasting a private value into the wrong place does not publish it in the
+comment. It is still in the file's history in your repository, so remove it
+and rotate it if it was real.
 
 ### Reading the problems
 
@@ -83,8 +96,8 @@ The numbers in a message count from 1 (`links[2]` is the second link). "Tab
 | `field "url": the web address must start with https://` | The link starts with `http://`, or has no scheme. | Write the full address, such as `https://example.com/page`. |
 | `field "url": the web address must not contain a user name or password` | The link has `name:password@` in it. | Remove everything before the `@`. Never put a password in a link. |
 | `field "title": is missing` (or `field "id"`, `field "url"`) | A required line is not there. | Add the line, indented like the lines around it. |
-| `field "titel": is not a setting Reach Around knows` | A misspelled or unknown setting name. | Fix the spelling, or delete the line. |
-| `(name not shown)` instead of a setting name | The name does not look like a setting name. It may have been pasted by mistake, so it is not repeated. | Delete that line. If it was a real token or password, revoke it and make a new one. |
+| `field "(unknown setting #3)": is not a setting Reach Around knows` | A misspelled or unknown setting name. The comment gives its position, not its name. | Fix the spelling, or delete the line. |
+| `(unknown setting #4)` | The fourth setting under that tab or block is not one Reach Around has. Its name is not repeated, because it may have been pasted by mistake. | Count down to the fourth line there and fix or delete it. If it was a real token or password, revoke it and make a new one. |
 | `field "id": must be lowercase letters, digits and hyphens only` | The `id` has capitals, spaces or other characters. | Use something like `my-link`. |
 | `The id "home" is used more than once` | Two tabs, blocks or links share an `id`. | Give one of them a different `id`. |
 | `links to a tab that does not exist` | A `tab:` link names a tab that is not in the file. | Use `tab:` and the `id` of one of your tabs. |
@@ -92,9 +105,9 @@ The numbers in a message count from 1 (`links[2]` is the second link). "Tab
 | `is too long (at most 200 characters)` | Text over the limit. | Shorten it. |
 | `the date must be written YYYY-MM-DD` | A date like `March 3`. | Write `2027-03-03`. |
 | `must be a path to a picture file in this repository` | A picture path has `..`, a leading `/`, or the wrong ending. | Upload the picture to `media/` and write `media/photo.png`. |
-| `Line 14: The file is not valid YAML` | The indentation or a colon is wrong near that line. | Compare the line with the ones around it. Text with a colon in it needs quotes. |
-| `The file has a setting written twice` | The same key appears twice at one level. | Keep one. |
-| `The file uses an alias` (or anchor) | `&name` or `*name` is not allowed. | Write the value out where it is used. |
+| `Line 14: the file is not valid YAML` | The indentation or a colon is wrong near that line. | Compare the line with the ones around it. Text with a colon in it needs quotes. |
+| `Line 9: the file has a setting written twice` | The same key appears twice at one level. | Keep one. |
+| `the file uses an alias` (or an anchor) | `&name` or `*name` is not allowed. | Write the value out where it is used. |
 | `The check could not run` | The check itself failed. | See "When something goes wrong" below. |
 
 ## Editing on a computer

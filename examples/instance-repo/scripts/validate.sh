@@ -4,7 +4,10 @@
 # Build the site with the pinned engine image. The build is the validator: a
 # bad config stops it with the file and the key path.
 #
-# Usage: scripts/validate.sh [--out DIR] [--manifest FILE] [--summary FILE]
+# Usage: scripts/validate.sh [--lock FILE] [--out DIR] [--manifest FILE]
+#                            [--summary FILE]
+#   --lock FILE     read the engine pin from FILE instead of engine.lock (a
+#                   pull request preview passes the base branch's copy)
 #   --out DIR       keep the built site in DIR (default: a temporary directory
 #                   that is removed afterwards)
 #   --manifest FILE keep the link manifest at FILE (default: a temporary file
@@ -18,15 +21,22 @@
 # Needs an engine image that supports --manifest (the engine release after
 # 0.1.0; see README.md). Needs Docker or Podman. The engine runs with no network, a read-only root
 # filesystem, no capabilities and the caller's own user id. Nothing in the
-# build can see a secret: none is passed in.
+# build can see a secret: none is passed in. Only site.yaml, media/, and (when
+# they exist) overrides/ and numbers.json are mounted, each read-only; the
+# rest of the checkout is not visible to the engine.
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 out=""
 manifest=""
 summary=""
+lock=""
 while [ $# -gt 0 ]; do
   case "$1" in
+    --lock)
+      lock="${2:?--lock needs a file}"
+      shift 2
+      ;;
     --out)
       out="${2:?--out needs a directory}"
       shift 2
@@ -58,7 +68,7 @@ done
   exit 1
 }
 
-image="$("$here/scripts/read-lock.sh" ENGINE_IMAGE)"
+image="$("$here/scripts/read-lock.sh" ENGINE_IMAGE ${lock:+"$lock"})"
 
 cleanup=""
 if [ -z "$out" ]; then
@@ -100,14 +110,30 @@ if "$runtime" --version 2>/dev/null | grep -qi podman; then
   userns=(--userns keep-id)
 fi
 
+# Only these paths are mounted, each read-only. A symlink is refused: the
+# runtime would resolve it on the host and mount what it points at.
+mounts=()
+for item in site.yaml media overrides numbers.json; do
+  path="$here/$item"
+  if [ -L "$path" ]; then
+    echo "error: $item must not be a symbolic link" >&2
+    exit 2
+  fi
+  if [ -e "$path" ]; then mounts+=(-v "$path":"/config/$item":ro); fi
+done
+[ -f "$here/site.yaml" ] || {
+  echo "error: site.yaml not found" >&2
+  exit 2
+}
 overrides=()
 if [ -d "$here/overrides" ]; then overrides=(--overrides /config/overrides); fi
 
 set +e
 "$runtime" run --rm --network none --read-only --cap-drop ALL \
-  --security-opt no-new-privileges:true --tmpfs /tmp \
+  --security-opt no-new-privileges:true --pids-limit 256 --memory 1g \
+  --tmpfs /tmp \
   --user "$(id -u):$(id -g)" ${userns[@]+"${userns[@]}"} \
-  -v "$here":/config:ro -v "$out":/out -v "$manifest_dir":/manifest \
+  "${mounts[@]}" -v "$out":/out -v "$manifest_dir":/manifest \
   "$image" build --config /config/site.yaml --out /out \
   --manifest "/manifest/$manifest_name" \
   ${overrides[@]+"${overrides[@]}"} >"$log" 2>&1

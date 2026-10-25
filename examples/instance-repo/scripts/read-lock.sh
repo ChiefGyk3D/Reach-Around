@@ -2,7 +2,11 @@
 # SPDX-License-Identifier: Apache-2.0
 #
 # Print one value from engine.lock after checking its shape.
-# Usage: scripts/read-lock.sh ENGINE_IMAGE|ENGINE_REPO|ENGINE_REF
+# Usage: scripts/read-lock.sh ENGINE_IMAGE|ENGINE_REPO|ENGINE_REF [LOCK_FILE]
+#
+# LOCK_FILE defaults to engine.lock in this repository. A pull request preview
+# passes the BASE branch's copy, so a pull request cannot choose the image
+# its own preview runs in.
 #
 # The file is parsed, never sourced, so a bad edit cannot run code. The
 # shape checks also make the printed value safe to append to $GITHUB_ENV.
@@ -10,7 +14,7 @@ set -euo pipefail
 
 key="${1:-}"
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-lock="$here/engine.lock"
+lock="${2:-$here/engine.lock}"
 
 case "$key" in
   ENGINE_IMAGE) shape='^[a-z0-9./_-]+:[A-Za-z0-9._-]+@sha256:[0-9a-f]{64}$' ;;
@@ -22,7 +26,7 @@ case "$key" in
     ;;
 esac
 
-[ -f "$lock" ] || {
+[ -f "$lock" ] && [ ! -L "$lock" ] || {
   echo "error: engine.lock not found" >&2
   exit 1
 }

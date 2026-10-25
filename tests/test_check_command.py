@@ -117,7 +117,10 @@ CASES: list[tuple[str, Any, list[str]]] = [
     (
         "misspelled key",
         lambda d: d["tabs"][0]["blocks"][0].update(titel="x"),
-        ['Tab "Links", block "home", field "titel": ', "not a setting"],
+        [
+            'Tab "Links", block "home", field "(unknown setting #4)": ',
+            "not a setting",
+        ],
     ),
     (
         "bad block id",
@@ -223,6 +226,7 @@ def test_the_json_format(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> 
             "tab": "Links",
             "block": "news",
             "field": "url",
+            "kind": "url_scheme",
             "message": "the web address must start with https://",
             "fix": "Write the full address, for example https://example.com/page.",
         }
@@ -419,27 +423,46 @@ def test_the_sentinel_battery_is_collected_and_strict() -> None:
     assert len(HOSTILE) >= 30
 
 
-def test_a_secret_value_is_not_printed_but_the_key_is(
+def test_an_unknown_setting_is_never_named(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Only schema names are printed; an unknown key is a position."""
+    data = good()
+    block = data["tabs"][0]["blocks"][0]
+    block["api_token"] = SENTINEL
+    block["titel"] = "x"
+    block["ghp_" + "A1b2C3d4" * 5] = "y"
+    for fmt in ("plain", "json"):
+        code, out = check(capsys, write(tmp_path, data), "--format", fmt)
+        assert code == 2
+        for leaked in ("api_token", "titel", "ghp_", SENTINEL):
+            assert leaked not in out, (fmt, leaked)
+    _, plain = check(capsys, write(tmp_path, data))
+    assert plain.count("(unknown setting #") == 3
+    assert "#4" in plain and "#5" in plain and "#6" in plain
+
+
+def test_an_unknown_nested_key_is_a_position_too(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     data = good()
-    data["tabs"][0]["blocks"][0]["api_token"] = SENTINEL
-    code, out = check(capsys, write(tmp_path, data))
-    assert code == 2
-    assert 'field "api_token"' in out
-    assert SENTINEL not in out
+    data["theme"] = {"colors": {"accent": "#fff"}, "mood": "x"}
+    _, out = check(capsys, write(tmp_path, data))
+    assert 'Setting "theme.(unknown setting #2)"' in out
+    assert "mood" not in out
 
 
-def test_a_secret_pasted_as_a_key_name_is_not_printed(
+def test_a_schema_name_is_printed(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    secret_key = "ghp_" + "A1b2C3d4" * 5
+    from reach_around.commands.check import known_fields
+
+    assert {"url", "title", "mode", "blocks", "tabs", "colors"} <= known_fields()
+    assert "api_token" not in known_fields()
     data = good()
-    data["tabs"][0]["blocks"][0][secret_key] = "x"
-    code, out = check(capsys, write(tmp_path, data))
-    assert code == 2
-    assert secret_key not in out
-    assert "name not shown" in out
+    data["tabs"][0]["blocks"][0]["url"] = "http://x"
+    _, out = check(capsys, write(tmp_path, data))
+    assert 'field "url"' in out
 
 
 def test_a_hostile_title_cannot_inject_markup(

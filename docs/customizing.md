@@ -923,10 +923,14 @@ Details and limits:
    1. Tab "Links", block "newsletter", field "url": the web address must start with https://. Fix: Write the full address, for example https://example.com/page.
    ```
 
-   It never prints a value from your file, only the tab title, the block id
-   and the setting name (a name that does not look like a setting name is
-   shown as `(name not shown)`, so a secret pasted in the wrong place is not
-   echoed). The exit status is 0 when the config is valid and 2 when it is not.
+   It never prints a value from your file. It prints only the tab title and
+   the block id (reduced to plain characters and cut to 40; they are names
+   that appear on the published site) and a setting name only if the schema
+   defines it. A key the schema does not know is shown as
+   `(unknown setting #4)`, its position among its siblings, never its name, so
+   a secret pasted in the wrong place is not echoed. Every sentence comes from
+   a fixed table (`reach_around/checkvocab.py`). The exit status is 0 when the
+   config is valid and 2 when it is not.
    Counts such as `links[2]` start at 1. `--against FILE` also lists which
    tabs and blocks differ from another config, by name only. It checks the
    config, not the files it points at: a missing picture still fails the
