@@ -263,15 +263,78 @@ def test_undo_and_redo_need_the_token_and_origin(ed: Editor) -> None:
             payload,
         )
         assert no_origin.status == 403
-    assert request(
+    assert tree_snapshot(ed.config.parent) == before
+
+
+def test_history_is_get_only(ed: Editor) -> None:
+    got = request(
         ed.session.port,
         "POST",
         "/__edit/api/history",
         {"X-RA-Token": ed.session.token},
         b"{}",
         same_origin=True,
-    ).status in (404, 405, 415)
+    )
+    assert got.status in (404, 405, 415)
+
+
+GUARDED = [
+    ("GET", "/__edit/api/history"),
+    ("POST", "/__edit/api/undo"),
+    ("POST", "/__edit/api/redo"),
+]
+
+
+def guarded(
+    ed: Editor,
+    method: str,
+    path: str,
+    headers: dict[str, str] | None = None,
+    *,
+    token: str | None = "good",
+    same_origin: bool = False,
+    host: str | None = "default",
+) -> Response:
+    head: dict[str, str] = dict(headers or {})
+    if token == "good":
+        head["X-RA-Token"] = ed.session.token
+    elif token is not None:
+        head["X-RA-Token"] = token
+    body = b""
+    if method == "POST":
+        head["Content-Type"] = "application/json"
+        body = json.dumps({"base": sha(ed.text)}).encode()
+    kwargs: dict[str, Any] = {"same_origin": same_origin}
+    if host != "default":
+        kwargs["host"] = host
+    return request(ed.session.port, method, path, head, body, **kwargs)
+
+
+@pytest.mark.parametrize(("method", "path"), GUARDED)
+def test_history_undo_redo_guard_matrix(
+    ed: Editor, method: str, path: str
+) -> None:
+    rename(ed, "One")
+    before = tree_snapshot(ed.config.parent)
+    port = ed.session.port
+    assert guarded(ed, method, path, token=None, same_origin=True).status == 401
+    assert (
+        guarded(ed, method, path, token="0" * 64, same_origin=True).status == 401
+    )
+    cross = {"Origin": "http://evil.example"}
+    assert guarded(ed, method, path, cross).status == 403
+    assert (
+        guarded(ed, method, path, {"Sec-Fetch-Site": "cross-site"}).status == 403
+    )
+    for host in (f"127.0.0.1:{port + 1}", f"evil.example:{port}", "localhost"):
+        got = guarded(ed, method, path, same_origin=True, host=host)
+        assert got.status == 421, host
     assert tree_snapshot(ed.config.parent) == before
+
+
+def test_guard_matrix_lets_a_good_request_through(ed: Editor) -> None:
+    rename(ed, "One")
+    assert guarded(ed, "GET", "/__edit/api/history", same_origin=True).status == 200
 
 
 def test_undo_and_redo_count_toward_the_mutation_rate_limit(tmp_path: Path) -> None:
@@ -322,3 +385,106 @@ def test_apply_restore_skips_the_one_change_check_but_not_the_loader(
             backup=True,
             force_path=True,
         )
+
+
+# ---- the history cannot be saved after the file changed (#202) ----------------------
+
+
+def fail_save_after_write(
+    monkeypatch: pytest.MonkeyPatch, ed: Editor, before: str
+) -> list[int]:
+    """Make History._save raise once the config text is no longer ``before``."""
+    real = History._save
+    hits: list[int] = []
+
+    def flaky(self: History, dir_fd: int, st: Any) -> None:
+        if ed.config.read_text(encoding="utf-8") != before:
+            hits.append(1)
+            raise OSError(28, "No space left on device")
+        real(self, dir_fd, st)
+
+    monkeypatch.setattr(History, "_save", flaky)
+    return hits
+
+
+def test_undo_with_a_failed_history_save_still_reports_the_change(
+    ed: Editor, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    rename(ed, "One")
+    changed = ed.text
+    with monkeypatch.context() as m:
+        hits = fail_save_after_write(m, ed, changed)
+        got = move(ed, "undo")
+    assert hits
+    assert got.status == 200
+    data = body_of(got)
+    assert ed.text == CONFIG
+    assert data["history"]["recorded"] is False
+    assert "history could not be saved" in data["warning"]
+    assert data["state"]["hash"] == sha(CONFIG)
+    # the pointer repairs itself from the hash the file now has
+    got_state = state(ed)
+    assert got_state["outside_edit"] is False
+    assert (got_state["can_undo"], got_state["can_redo"]) == (False, True)
+    assert move(ed, "redo").status == 200 and ed.text == changed
+
+
+def test_redo_with_a_failed_history_save_still_reports_the_change(
+    ed: Editor, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    rename(ed, "One")
+    changed = ed.text
+    assert move(ed, "undo").status == 200
+    with monkeypatch.context() as m:
+        hits = fail_save_after_write(m, ed, CONFIG)
+        got = move(ed, "redo")
+    assert hits
+    assert got.status == 200 and ed.text == changed
+    assert body_of(got)["history"]["recorded"] is False
+    assert state(ed)["outside_edit"] is False
+    assert move(ed, "undo").status == 200 and ed.text == CONFIG
+
+
+def test_undo_repairs_itself_without_a_state_call_in_between(
+    ed: Editor, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    rename(ed, "One")
+    changed = ed.text
+    with monkeypatch.context() as m:
+        fail_save_after_write(m, ed, changed)
+        assert move(ed, "undo").status == 200
+    assert move(ed, "redo").status == 200 and ed.text == changed
+
+
+def test_restore_anyway_with_a_failed_history_save_still_reports_the_change(
+    ed: Editor, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    rename(ed, "One")
+    changed = ed.text
+    outside = outside_edit(ed)
+    with monkeypatch.context() as m:
+        hits = fail_save_after_write(m, ed, outside)
+        got = move(ed, "undo", anyway=True)
+    assert hits
+    assert got.status == 200 and ed.text == CONFIG
+    assert body_of(got)["history"]["recorded"] is False
+    assert state(ed)["outside_edit"] is False
+    assert move(ed, "redo").status == 200 and ed.text == changed
+    assert move(ed, "redo").status == 200 and ed.text == outside
+
+
+def test_a_history_save_failure_before_the_write_changes_nothing(
+    ed: Editor, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    rename(ed, "One")
+    changed = ed.text
+
+    def boom(self: History, dir_fd: int, st: Any) -> None:
+        raise OSError(30, "Read-only file system")
+
+    with monkeypatch.context() as m:
+        m.setattr(History, "_save", boom)
+        got = move(ed, "undo")
+    assert got.status == 409
+    assert body_of(got)["error"]["code"] == "history_unavailable"
+    assert ed.text == changed

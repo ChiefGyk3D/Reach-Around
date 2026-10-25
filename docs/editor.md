@@ -114,7 +114,7 @@ POST /__edit/api/redo   {"base": "<hash>"}
 `base` is the file hash the page last saw and is required. Unknown fields are
 refused (422 `bad_request`); `anyway` is only for undo and must be a boolean.
 A success is `200` with `{"state": ..., "history": {"label", "hash",
-"can_undo", "can_redo"}}`; `state` is the fresh state, so the page can redraw
+"can_undo", "can_redo", "recorded"}}`; `state` is the fresh state, so the page can redraw
 from it. The old text goes back through the same locked write path as every
 other change (backup included), and it must still load.
 
@@ -128,9 +128,18 @@ the fresh `state`:
 | 409 | `outside_edit` | the file was changed outside the editor; the reply also has `"restore_anyway": true` |
 | 409 | `nothing_to_undo`, `nothing_to_redo` | the history has no earlier or later state |
 | 409 | `snapshot_unreadable`, `snapshot_corrupt` | the kept copy is missing or was changed |
-| 409 | `history_unavailable` | the history folder cannot be used safely |
+| 409 | `history_unavailable` | the history folder cannot be used safely, or cannot be saved before the file is changed |
+| 500 | `io_error` | the file or its history could not be written; check the state |
 | 422 | `refused`, `too_large` | the old text would not load, or is over the size limit |
 | 429 | `too_many_requests` | undo, redo and ops share the 20 a minute limit |
+
+If the file was restored but the history could not be saved (disk full, read-only
+folder), the reply is still `200` because the file did change: `history.recorded`
+is `false` and a top-level `warning` says so. Nothing is lost. The next state,
+undo or redo repairs the history from the hash the file now has, so it is not
+reported as an outside edit. If the history cannot be saved *before* anything is
+written, the reply is `409 history_unavailable` and the file is untouched. A raw
+write failure is `500 io_error` with the fresh `state`; reread it before retrying.
 
 After `outside_edit`, show the message and a "Restore anyway" button. That
 button repeats the undo with `"anyway": true` and the `base` from the refusal's

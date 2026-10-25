@@ -488,9 +488,9 @@ class EditorService:
                 break
         return hashlib.sha256(first).hexdigest(), config, error
 
-    def _summary(self) -> Summary:
+    def _summary(self, digest: str | None = None) -> Summary:
         try:
-            return History(self.config).summary()
+            return History(self.config).summary(digest)
         except (HistoryError, OSError):
             return Summary((), False, False, None)
 
@@ -501,8 +501,8 @@ class EditorService:
 
     def history(self) -> dict[str, Any]:
         """Labels, times and hashes of the history; never the text."""
-        summary = self._summary()
         digest, _config, _error = self._load()
+        summary = self._summary(digest)
         return {
             "entries": [
                 {
@@ -533,7 +533,7 @@ class EditorService:
             mtime = os.stat(self.config).st_mtime
         except OSError:
             mtime = 0.0
-        summary = self._summary()
+        summary = self._summary(digest)
         return {
             "hash": digest,
             "mtime": mtime,
@@ -752,6 +752,16 @@ class EditorService:
             raise RouteError(
                 409, "history_unavailable", self._clean(str(exc))
             ) from None
+        except OSError:
+            # Never a bare 400: say what is known. Nothing past this point
+            # reports success, so the page must reread the state.
+            raise RouteError(
+                500,
+                "io_error",
+                "The file or its history could not be written. "
+                "Reload the state before trying again.",
+                state=self.state(host, port),
+            ) from None
         if isinstance(outcome, Refusal):
             raise self._refusal(outcome, host, port)
         return self._moved(outcome, host, port)
@@ -769,12 +779,19 @@ class EditorService:
 
     def _moved(self, outcome: Restored, host: str, port: int) -> dict[str, Any]:
         new_state = self.state(host, port)
-        return {
+        reply: dict[str, Any] = {
             "state": new_state,
             "history": {
                 "label": outcome.label,
                 "hash": new_state["hash"],
                 "can_undo": outcome.can_undo,
                 "can_redo": outcome.can_redo,
+                "recorded": outcome.recorded,
             },
         }
+        if not outcome.recorded:
+            reply["warning"] = (
+                "The file was changed, but the history could not be saved. "
+                "Undo and redo will pick up from this version."
+            )
+        return reply

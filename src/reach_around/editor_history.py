@@ -64,6 +64,9 @@ class Restored:
     label: str
     can_undo: bool
     can_redo: bool
+    #: False when the file was restored but the history pointer could not be
+    #: saved; the next read repairs it from the hash the file now has.
+    recorded: bool = True
 
 
 @dataclass(frozen=True)
@@ -103,6 +106,11 @@ class _State:
     cursor: int
     next: int
     produced: str | None
+    #: Written before a restore touches the file: (cursor, hash) it will have
+    #: afterwards. If the final save fails, the next read adopts it when the
+    #: file really has that hash, so a restore is never mistaken for an
+    #: outside edit.
+    pending: tuple[int, str] | None = None
 
 
 def _sha(text: str) -> str:
@@ -237,7 +245,21 @@ def _parse_index(raw: bytes) -> _State | None:
         isinstance(produced, str) and _HEX64.fullmatch(produced)
     ):
         return None
-    return _State(entries, cursor, nxt, produced)
+    pending = None
+    raw_pending = data.get("pending")
+    if raw_pending is not None:
+        if not isinstance(raw_pending, dict):
+            return None
+        p_cursor, p_hash = raw_pending.get("cursor"), raw_pending.get("hash")
+        if (
+            type(p_cursor) is not int
+            or p_cursor not in range(len(entries))
+            or not isinstance(p_hash, str)
+            or not _HEX64.fullmatch(p_hash)
+        ):
+            return None
+        pending = (p_cursor, p_hash)
+    return _State(entries, cursor, nxt, produced, pending)
 
 
 def _dump_index(state: _State) -> bytes:
@@ -247,6 +269,11 @@ def _dump_index(state: _State) -> bytes:
             "cursor": state.cursor,
             "next": state.next,
             "produced": state.produced,
+            "pending": (
+                None
+                if state.pending is None
+                else {"cursor": state.pending[0], "hash": state.pending[1]}
+            ),
             "entries": [
                 {
                     "n": e.n,
@@ -384,6 +411,19 @@ class History:
             if _SNAP_NAME.fullmatch(name) and name not in keep:
                 _unlink(dir_fd, name)
 
+    def _resolve(self, dir_fd: int, state: _State, current_hash: str | None) -> None:
+        """Settle a ``pending`` restore against the hash the file has now."""
+        pending = state.pending
+        if pending is None or current_hash is None:
+            return
+        state.pending = None
+        if current_hash == pending[1]:  # the write landed, the pointer save did not
+            state.cursor, state.produced = pending
+        try:
+            self._save(dir_fd, state)
+        except (OSError, HistoryError):
+            pass  # best effort; the in-memory state is already right
+
     def _store(self, dir_fd: int, state: _State, text: str, label: str) -> _Entry:
         data = _encode(text, "the snapshot")
         entry = _Entry(
@@ -443,8 +483,10 @@ class History:
             lock = self._lock(dir_fd)
             try:
                 state = self._load(dir_fd)
-                del state.entries[state.cursor + 1 :]
                 old_hash = _sha(old)
+                self._resolve(dir_fd, state, old_hash)
+                state.pending = None
+                del state.entries[state.cursor + 1 :]
                 if not state.entries or state.entries[state.cursor].hash != old_hash:
                     self._store(
                         dir_fd,
@@ -462,8 +504,12 @@ class History:
         finally:
             os.close(dir_fd)
 
-    def summary(self) -> Summary:
-        """What the history holds now, without its text. Empty if there is none."""
+    def summary(self, current_hash: str | None = None) -> Summary:
+        """What the history holds now, without its text. Empty if there is none.
+
+        ``current_hash`` (the file's hash) lets a restore whose pointer save
+        failed be repaired before it is reported.
+        """
         dir_fd = self._open_dir(create=False)
         if dir_fd is None:
             return Summary((), False, False, None)
@@ -471,6 +517,7 @@ class History:
             lock = self._lock(dir_fd)
             try:
                 state = self._load(dir_fd)
+                self._resolve(dir_fd, state, current_hash)
             finally:
                 os.close(lock)
         finally:
@@ -527,6 +574,7 @@ class History:
         anyway: bool,
     ) -> Restored | Refusal:
         state = self._load(dir_fd)
+        self._resolve(dir_fd, state, _sha(current))
         target = state.cursor + step
         if not 0 <= target < len(state.entries):
             return Refusal(*_NOTHING[step])
@@ -548,17 +596,33 @@ class History:
             # Kept before anything is written; the cursor stays on the old
             # state until the write succeeds, so a failed write loses nothing.
             del state.entries[state.cursor + 1 : -1]
+        # Record the intent before the file changes, so a failed save after
+        # the write can be repaired from the hash the file will have.
+        state.pending = (target, _sha(loaded))
+        try:
             self._save(dir_fd, state)
+        except OSError as exc:
+            raise HistoryError(
+                f"cannot save the history: {exc.strerror or 'I/O error'}"
+            ) from exc
         write(loaded)
         state.cursor = target
         state.produced = _sha(loaded)
-        self._prune(state)
-        self._save(dir_fd, state)
+        state.pending = None
+        recorded = True
+        try:
+            self._prune(state)
+            self._save(dir_fd, state)
+        except (OSError, HistoryError):
+            # The file already changed. Never report a refusal; the index on
+            # disk still holds the pending marker, which repairs the pointer.
+            recorded = False
         return Restored(
             loaded,
             state.entries[state.cursor].label,
             state.cursor > 0,
             state.cursor < len(state.entries) - 1,
+            recorded,
         )
 
 
