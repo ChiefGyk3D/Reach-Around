@@ -172,22 +172,50 @@ The route stores no address, user agent or referrer URL. After a deploy, one bea
 
 Project secrets (this Cloudflare token, later the Mailgun and collector
 tokens) live in the Doppler project `reach-around`, with configs `dev`, `stg`
-and `prd`. For a local deploy, read the token from the `stg` config:
+and `prd`, plus a `ci` config for the deploy credentials only. For a local
+deploy, read the token from the `ci` config:
 
 ```
-doppler run --project reach-around --config stg --only-secrets CLOUDFLARE_API_TOKEN -- <command>
+doppler run --project reach-around --config ci --only-secrets CLOUDFLARE_API_TOKEN -- <command>
 ```
 
-The CI workflow still reads `CLOUDFLARE_API_TOKEN` from the GitHub `test`
-environment secret until issue #98 moves it to Doppler OIDC. Never paste a
-token into chat, issues or commits.
+The deploy workflow reads the token from Doppler over OIDC, and falls back to
+a GitHub `test` environment secret named `CLOUDFLARE_API_TOKEN` when Doppler is
+not configured. Never paste a token into chat, issues or commits.
+
+**CI config.** The Doppler action exports every secret in the config it reads
+into the rest of the job, so CI reads a dedicated config named `ci` that holds
+only the deploy token (`CLOUDFLARE_API_TOKEN`). Runtime secrets such as the
+Mailgun key stay in `stg` and `prd`. The optional `CLOUDFLARE_PURGE_TOKEN` is
+not in `ci` either: it stays a GitHub `test` environment secret so it reaches
+only the purge step and never the wrangler steps. To rotate the token automatically, add a Doppler Cloudflare
+Tokens rotated secret in `ci` (it injects `CLOUDFLARE_KEY_NAME` and
+`CLOUDFLARE_KEY_VALUE`) and set `CLOUDFLARE_API_TOKEN` to
+`${CLOUDFLARE_KEY_VALUE}`. Create the two tokens it rotates with identical
+permissions, as in the token table above.
+
+**Identity.** Create a Doppler service account with Viewer on `reach-around`
+config `ci` only, and an OIDC identity on it with issuer
+`https://token.actions.githubusercontent.com`, audience
+`https://github.com/<owner>`, and these subjects. The job runs in the `test`
+environment, so the subject ends in `environment:test`, not a branch ref. If
+your repository uses the immutable subject form, list both:
+
+```
+repo:<owner>/<repo>:environment:test
+repo:<owner>@<owner-id>/<repo>@<repo-id>:environment:test
+```
+
+Put the identity UUID in the repository variable `DOPPLER_IDENTITY_ID`. A
+Doppler service token in the secret `DOPPLER_TOKEN` also works, but it is a
+long-lived credential in GitHub; prefer OIDC.
 
 To store the token, let Doppler read the value from its prompt instead of
 putting it on the command line (a value typed as an argument lands in your
 shell history and the process list):
 
 ```
-doppler secrets set CLOUDFLARE_API_TOKEN --project reach-around --config stg
+doppler secrets set CLOUDFLARE_API_TOKEN --project reach-around --config ci
 ```
 
 Do the same for `dev` and `prd` as needed. If the Doppler CLI nags about a
@@ -261,7 +289,7 @@ through standard input, so it appears neither on screen nor in the process
 list:
 
 ```
-doppler run --project reach-around --config stg --only-secrets CLOUDFLARE_API_TOKEN -- \
+doppler run --project reach-around --config ci --only-secrets CLOUDFLARE_API_TOKEN -- \
   sh -c 'printf "header = \"Authorization: Bearer %s\"\n" "$CLOUDFLARE_API_TOKEN" \
     | curl -sS -K - https://api.cloudflare.com/client/v4/user/tokens/verify \
     | jq "{success, status: .result.status, expires_on: .result.expires_on}"'

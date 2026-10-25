@@ -125,6 +125,34 @@ def test_workflow_manifest_is_a_sibling_never_inside_the_published_dir() -> None
     assert "pages deploy ../site-out " in publish + " "
 
 
+def test_doppler_fetch_comes_after_every_install_step() -> None:
+    """Doppler exports every secret into the rest of the job, so no step that
+    installs packages (and could run an install script) may follow the fetch."""
+    steps = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))["jobs"]["deploy"][
+        "steps"
+    ]
+    names = [s.get("name") for s in steps]
+    fetch = names.index("Fetch Cloudflare credentials from Doppler")
+    installers = [
+        i
+        for i, s in enumerate(steps)
+        if any(w in str(s.get("run", "")) for w in ("npm ci", "npm install", "pip "))
+    ]
+    assert installers, "no install step found; the ordering rule would be vacuous"
+    assert max(installers) < fetch
+    # the Doppler step is the only place the token enters the environment, and
+    # the presence check follows it before any wrangler step
+    assert fetch < names.index("Require the Cloudflare token")
+    assert names.index("Require the Cloudflare token") < names.index(
+        "Apply D1 migrations"
+    )
+    uses = steps[fetch]["uses"]
+    assert uses.startswith("ChiefGyk3D/git-your-ship-together/")
+    assert steps[fetch]["with"]["project"] == "reach-around"
+    assert steps[fetch]["with"]["config"] == "ci"
+    assert "vars.DOPPLER_IDENTITY_ID" in steps[fetch]["with"]["identity-id"]
+
+
 def test_manifest_is_read_by_a_tokenless_isolated_step() -> None:
     workflow = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
     steps = workflow["jobs"]["deploy"]["steps"]
@@ -144,10 +172,13 @@ def test_manifest_is_read_by_a_tokenless_isolated_step() -> None:
     assert "-mindepth 1" in run and "-L" in run  # one file, no symlink
     assert "secrets." not in str(reader)
     assert "CLOUDFLARE_API_TOKEN" not in str(reader)
-    # the token-presence step stays separate and runs no python
+    # the configuration check stays separate, runs no python, and runs before
+    # the token exists (it is fetched from Doppler later), so it holds none
     check = _step("Check configuration")
-    assert "CLOUDFLARE_API_TOKEN" in check["env"]
+    assert "CLOUDFLARE_API_TOKEN" not in check["env"]
     assert "manifest" not in check["run"] and "python" not in check["run"]
+    require = _step("Require the Cloudflare token")
+    assert "python" not in require["run"] and "manifest" not in require["run"]
     # no step that carries the token runs python or reads manifest-in
     carrying = [s for s in steps if "CLOUDFLARE_API_TOKEN" in str(s.get("env", {}))]
     assert carrying

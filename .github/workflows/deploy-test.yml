@@ -148,8 +148,9 @@ jobs:
     environment: test
     permissions:
       contents: read
-    # No job-level env: the Cloudflare token is set only on the presence check
-    # and the three wrangler steps, never where install scripts could run.
+      id-token: write # Doppler OIDC; only this job, never the build job
+    # No job-level env: the Cloudflare token is fetched from Doppler only after
+    # the last install step, so no install script ever runs with it present.
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
@@ -178,12 +179,10 @@ jobs:
           name: site-purge-list
           path: purge-in
 
-      # Tests that the secret exists without printing it or exporting it: the
-      # value lives only in this step's env, and nothing is written to the
-      # runner's env or output files for later steps.
+      # Checks the plain (non-secret) configuration before anything is
+      # fetched. The Cloudflare token is checked after the Doppler step.
       - name: Check configuration
         env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           PAGES_PROJECT: ${{ vars.PAGES_PROJECT }}
           D1_DATABASE_ID: ${{ vars.D1_DATABASE_ID }}
@@ -194,12 +193,6 @@ jobs:
           ZONE_NAME: ${{ vars.ZONE_NAME }}
         run: |
           set -eu
-          if [ -n "${CLOUDFLARE_API_TOKEN:-}" ]; then
-            :
-          else
-            echo "::error::CLOUDFLARE_API_TOKEN is not set (see docs/deploy.md)"
-            exit 1
-          fi
           for name in CLOUDFLARE_ACCOUNT_ID PAGES_PROJECT D1_DATABASE_ID \
                       RATELIMIT_NAMESPACE_ID SITE_HOST LINK_IDS; do
             eval "value=\${$name:-}"
@@ -295,11 +288,37 @@ jobs:
           WRANGLER_SEND_METRICS: "false"
         run: npx --no-install wrangler --version
 
-      # The only three steps that carry the Cloudflare token.
+      # From here on the token is in the job environment: Doppler exports every
+      # secret in the config it reads, so the `ci` config must hold only what
+      # this deploy needs. No install step follows. On a repository without
+      # Doppler the same name comes from the GitHub `test` environment secret.
+      - name: Fetch Cloudflare credentials from Doppler
+        uses: ChiefGyk3D/git-your-ship-together/.github/actions/doppler-secrets@6f40107c2e05483f485452991e422f7f63886000 # v1.25.1
+        with:
+          project: reach-around
+          config: ci
+          identity-id: ${{ vars.DOPPLER_IDENTITY_ID }}
+          token: ${{ secrets.DOPPLER_TOKEN }}
+
+      # Tests that the token exists without printing it. Neither Doppler nor
+      # the GitHub secret supplied it: fail, never skip.
+      - name: Require the Cloudflare token
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ env.CLOUDFLARE_API_TOKEN || secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          set -eu
+          if [ -n "${CLOUDFLARE_API_TOKEN:-}" ]; then
+            echo "Cloudflare token present (value not shown)."
+          else
+            echo "::error::CLOUDFLARE_API_TOKEN is not set: Doppler (project reach-around, config ci) and the GitHub secret both gave nothing (see docs/deploy.md)"
+            exit 1
+          fi
+
+      # The wrangler steps carry the Cloudflare token.
       - name: Apply D1 migrations
         working-directory: worker
         env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_API_TOKEN: ${{ env.CLOUDFLARE_API_TOKEN || secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           WRANGLER_SEND_METRICS: "false"
         run: npx --no-install wrangler d1 migrations apply DB --remote --config wrangler.deploy.toml
@@ -307,7 +326,7 @@ jobs:
       - name: Deploy the Worker
         working-directory: worker
         env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_API_TOKEN: ${{ env.CLOUDFLARE_API_TOKEN || secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           WRANGLER_SEND_METRICS: "false"
         run: npx --no-install wrangler deploy --config wrangler.deploy.toml
@@ -315,7 +334,7 @@ jobs:
       - name: Publish the site to Pages
         working-directory: worker
         env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_API_TOKEN: ${{ env.CLOUDFLARE_API_TOKEN || secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           PAGES_PROJECT: ${{ vars.PAGES_PROJECT }}
           WRANGLER_SEND_METRICS: "false"
@@ -328,10 +347,14 @@ jobs:
       # Optional backstop. Skipped with a notice unless the repository secret
       # CLOUDFLARE_PURGE_TOKEN (scope: Zone > Cache Purge, one zone only) and the
       # variable ZONE_ID are set. It never fails the deploy: a refused purge is
-      # a warning and a line in the job summary. The token is only in this
-      # step's environment, and the script gives it to curl on stdin.
+      # a warning and a line in the job summary. The purge token stays a GitHub
+      # `test` environment secret, never in the Doppler `ci` config, so it
+      # reaches this step only and not the wrangler steps. The script gives it
+      # to curl on stdin. The deploy token is blanked here: this step has no
+      # use for it.
       - name: Purge changed paths from the edge cache (optional)
         env:
+          CLOUDFLARE_API_TOKEN: ""
           CLOUDFLARE_PURGE_TOKEN: ${{ secrets.CLOUDFLARE_PURGE_TOKEN }}
           ZONE_ID: ${{ vars.ZONE_ID }}
           SITE_HOST: ${{ vars.SITE_HOST }}
