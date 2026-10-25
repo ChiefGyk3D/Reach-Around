@@ -3,6 +3,7 @@ import { handleClick, MAX_URL_LENGTH, type Env as ClickEnv } from "./click";
 import { purgeOldEvents } from "./retention";
 import { handleView, type ViewEnv } from "./view";
 import { purgeViews } from "./viewretention";
+import { rollupClosedDays } from "./viewrollup";
 
 export type { Env } from "./click";
 export type { ViewEnv } from "./view";
@@ -34,13 +35,14 @@ export default {
   },
 
   /**
-   * Daily cron: drop click rows and page-view rows past their retention
-   * windows. Each purge is independent, so one failing cannot stop the other,
-   * and nothing here throws.
+   * Daily cron, in this order: click purge, page-view rollup, page-view
+   * purge. The rollup runs before the view purge so a day is counted before
+   * its raw rows can be deleted. Each step is isolated: one failing never
+   * stops the others, and nothing here throws.
    */
   async scheduled(
     _controller: ScheduledController,
-    env: ClickEnv & { RAW_KEEP_DAYS?: string },
+    env: ClickEnv & { RAW_KEEP_DAYS?: string; GEO_LEVEL?: string; TOP_SOURCES?: string },
     ctx: ExecutionContext,
   ): Promise<void> {
     ctx.waitUntil(
@@ -50,6 +52,11 @@ export default {
           await purgeOldEvents(env, now);
         } catch {
           // Next run retries; nothing request-derived to report.
+        }
+        try {
+          await rollupClosedDays(env, now);
+        } catch {
+          // The heartbeat in view_meta records the failure class.
         }
         try {
           await purgeViews(env, now);

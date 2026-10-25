@@ -2,13 +2,19 @@
 //
 // Retention for the page-view tables, run by the daily cron.
 //
-//   visitor_seen   every row before today's UTC date (the daily hash lives
-//                  one UTC day; the 00:05 cron keeps that within about 24 h)
-//   view_events    rows older than the raw keep window. Default 7 days (Plan 4
-//                  open decision P-3), RAW_KEEP_DAYS overrides, ceiling 90.
-//                  NOTE: the daily rollup (Plan 4 Task A5) is not built yet,
-//                  so raw rows are deleted by age alone. When A5 lands it must
-//                  roll a day up before this purge reaches it.
+//   visitor_seen   rows before today's UTC date, but only once that day is
+//                  rolled up (its uniques are counted). A day that never rolls
+//                  up loses its hashes after SEEN_HARD_DAYS UTC days anyway:
+//                  the uniques are already in the raw `first` flags, so the
+//                  hash is not needed to count them.
+//   view_events    rows older than the raw keep window (default 7 days, Plan 4
+//                  open decision P-3, RAW_KEEP_DAYS overrides, ceiling 90),
+//                  but ONLY rows whose UTC day has a view_rollup_log row. A
+//                  day not yet rolled up is never deleted by age until the
+//                  hard ceiling of 3x the keep window; then it is dropped and
+//                  view_meta('rollup_overdue') records the date.
+//   view_daily, view_dim_daily, view_geo_daily, view_rollup_log
+//                  rows older than 90 days.
 //   view_meta      hourly counters. Their keys are `bud:<hour>:<route>` and
 //                  `cap:<hour>:<hash>` with the hour zero-padded to eight
 //                  digits, so keys sort by hour and expiry is a plain range
@@ -29,6 +35,11 @@ const MAX_BATCHES = 200;
 
 export const DEFAULT_RAW_KEEP_DAYS = 7;
 export const MAX_RAW_KEEP_DAYS = 90;
+/** Unrolled raw rows are dropped at this multiple of the keep window. */
+export const HARD_CEILING_FACTOR = 3;
+/** visitor_seen rows older than this many UTC days go even if the day never rolled up. */
+export const SEEN_HARD_DAYS = 2;
+export const AGGREGATE_KEEP_DAYS = 90;
 
 export interface RetentionEnv {
   DB: D1Database;
@@ -73,6 +84,18 @@ async function deleteBatched(
   return true;
 }
 
+/** True when raw rows past the hard ceiling exist whose day was never rolled up. */
+async function countUnrolledAged(db: D1Database, hardCutoff: number): Promise<boolean> {
+  const r = await db
+    .prepare(
+      "SELECT 1 AS x FROM view_events WHERE ts < ?1 " +
+        "AND strftime('%Y-%m-%d', ts / 1000, 'unixepoch') NOT IN (SELECT day FROM view_rollup_log) LIMIT 1",
+    )
+    .bind(hardCutoff)
+    .first();
+  return r !== null;
+}
+
 /** Purge every view table. Each step is independent; the first error is rethrown at the end. */
 export async function purgeViews(
   env: RetentionEnv,
@@ -83,21 +106,46 @@ export async function purgeViews(
   const batch = opts.batch ?? BATCH;
   const maxBatches = opts.maxBatches ?? MAX_BATCHES;
   const today = new Date(nowMs).toISOString().slice(0, 10);
-  const cutoff = Math.floor(nowMs - keepDays(env.RAW_KEEP_DAYS) * DAY_MS);
+  const keep = keepDays(env.RAW_KEEP_DAYS);
+  const cutoff = Math.floor(nowMs - keep * DAY_MS);
+  const hardCutoff = Math.floor(nowMs - keep * HARD_CEILING_FACTOR * DAY_MS);
+  const aggCutoff = new Date(nowMs - AGGREGATE_KEEP_DAYS * DAY_MS).toISOString().slice(0, 10);
+  const seenHard = new Date(nowMs - SEEN_HARD_DAYS * DAY_MS).toISOString().slice(0, 10);
   const hour = Math.floor(nowMs / HOUR_MS);
   const run = (sql: string, args: Array<string | number>) =>
     deleteBatched(env.DB, sql, args, batch, maxBatches);
   const steps: Array<() => Promise<boolean>> = [
     () =>
       run(
-        "DELETE FROM visitor_seen WHERE (day, h) IN (SELECT day, h FROM visitor_seen WHERE day < ?1 LIMIT ?2)",
-        [today],
+        "DELETE FROM visitor_seen WHERE (day, h) IN (SELECT day, h FROM visitor_seen WHERE day < ?1 " +
+          "AND (day IN (SELECT day FROM view_rollup_log) OR day < ?2) LIMIT ?3)",
+        [today, seenHard],
       ), // CONTROL:seen-purge
+    async () => {
+      // CONTROL:raw-purge  unrolled days survive until the hard ceiling.
+      const hardHit = await countUnrolledAged(env.DB, hardCutoff);
+      const more = await run(
+        "DELETE FROM view_events WHERE id IN (SELECT id FROM view_events WHERE ts < ?1 " +
+          "AND (strftime('%Y-%m-%d', ts / 1000, 'unixepoch') IN (SELECT day FROM view_rollup_log) OR ts < ?2) LIMIT ?3)",
+        [cutoff, hardCutoff],
+      );
+      if (hardHit) {
+        await env.DB.prepare(
+          "INSERT INTO view_meta (key, value) VALUES ('rollup_overdue', ?1) " +
+            "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        )
+          .bind(today)
+          .run();
+      }
+      return more;
+    },
+    () => run("DELETE FROM view_daily WHERE day IN (SELECT day FROM view_daily WHERE day < ?1 LIMIT ?2)", [aggCutoff]),
     () =>
-      run(
-        "DELETE FROM view_events WHERE id IN (SELECT id FROM view_events WHERE ts < ?1 LIMIT ?2)",
-        [cutoff],
-      ), // CONTROL:raw-purge
+      run("DELETE FROM view_dim_daily WHERE day IN (SELECT day FROM view_dim_daily WHERE day < ?1 LIMIT ?2)", [aggCutoff]),
+    () =>
+      run("DELETE FROM view_geo_daily WHERE day IN (SELECT day FROM view_geo_daily WHERE day < ?1 LIMIT ?2)", [aggCutoff]),
+    () =>
+      run("DELETE FROM view_rollup_log WHERE day IN (SELECT day FROM view_rollup_log WHERE day < ?1 LIMIT ?2)", [aggCutoff]),
     () =>
       run(
         "DELETE FROM view_meta WHERE key IN (SELECT key FROM view_meta WHERE key >= 'bud:' AND key < ?1 LIMIT ?2)",
