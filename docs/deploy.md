@@ -71,8 +71,15 @@ your own; never commit real account ids, database ids or tokens.
 
 1. Repository > Settings > Environments > New environment named `test`.
    - Add yourself under **Required reviewers** so every deploy needs a click.
+     Keep at least one reviewer; an environment with none releases its
+     secrets without a click.
    - Under **Deployment branches**, choose "Selected branches" and allow only
      `main`. The workflow also refuses any other ref on its own.
+   - **Prevent self-review.** With a sole maintainer, turning this on would
+     lock you out: you could never approve your own deploy. Leave it off
+     while you are the only reviewer, and turn it on once a second reviewer
+     exists (then a person other than the one who started the run must
+     approve it).
 2. In the `test` environment add this **secret**:
    - `CLOUDFLARE_API_TOKEN`: the token from step 1.6.
 3. In the same environment add these **variables** (not secret, but still
@@ -183,6 +190,26 @@ The deploy workflow reads the token from Doppler over OIDC, and falls back to
 a GitHub `test` environment secret named `CLOUDFLARE_API_TOKEN` when Doppler is
 not configured. Never paste a token into chat, issues or commits.
 
+**Where the token is available.** The Doppler action exports every secret in
+the config it reads into the job environment (`GITHUB_ENV`). From the Doppler
+step on, the Cloudflare token is therefore inherited by every later step and
+by every action's post-run hook, whether or not that step lists it in `env:`.
+It is not limited to the wrangler steps. Narrowing it to the steps that need it
+waits on git-your-ship-together#207. Until then the workflow keeps every
+package install before the Doppler step, and a test fails if an install or an
+unlisted action is added after it. That test checks order only; the YAML cannot
+prove the inherited-environment boundary.
+
+**The token is account-wide.** It covers Pages, D1, Workers Scripts and zone
+routes for the whole account, not just this project. Rotation keeps two such
+tokens valid at once; if you suspect a compromise, revoke both immediately in
+Cloudflare, then issue a new one. Per-operation tokens (one each for D1, the
+Worker and Pages) or a dedicated Cloudflare account for this project is the
+real isolation. That is an owner decision, tracked in issue #206.
+
+**Service-token fallback.** The `DOPPLER_TOKEN` secret is emergency-only. It is
+a long-lived credential stored in GitHub; do not leave it set while OIDC works.
+
 **CI config.** The Doppler action exports every secret in the config it reads
 into the rest of the job, so CI reads a dedicated config named `ci` that holds
 only the deploy token (`CLOUDFLARE_API_TOKEN`). Runtime secrets such as the
@@ -197,18 +224,43 @@ permissions, as in the token table above.
 **Identity.** Create a Doppler service account with Viewer on `reach-around`
 config `ci` only, and an OIDC identity on it with issuer
 `https://token.actions.githubusercontent.com`, audience
-`https://github.com/<owner>`, and these subjects. The job runs in the `test`
-environment, so the subject ends in `environment:test`, not a branch ref. If
-your repository uses the immutable subject form, list both:
+`https://github.com/<owner>`, and one subject. The job runs in the `test`
+environment, so the subject ends in `environment:test`, not a branch ref.
+Register only the subject form this repository actually emits, not both: an
+extra form is an extra way in. Check which form is in use:
 
 ```
-repo:<owner>/<repo>:environment:test
+gh api repos/<owner>/<repo>/actions/oidc/customization/sub
+```
+
+This repository uses the immutable form (it includes the numeric owner and
+repository ids, so a renamed or recreated repository cannot reuse it):
+
+```
 repo:<owner>@<owner-id>/<repo>@<repo-id>:environment:test
 ```
 
+If the command shows the default form instead, register
+`repo:<owner>/<repo>:environment:test` alone.
+
 Put the identity UUID in the repository variable `DOPPLER_IDENTITY_ID`. A
 Doppler service token in the secret `DOPPLER_TOKEN` also works, but it is a
-long-lived credential in GitHub; prefer OIDC.
+long-lived credential in GitHub; use it only in an emergency and prefer OIDC.
+
+## Egress control
+
+Both jobs start with `step-security/harden-runner` in **block** mode and an
+explicit allow-list of `host:443` entries (no wildcards), followed by an egress
+canary that says whether a failure is a broken runner network or a wrong list.
+The build job allows GitHub and the artifact endpoints, `pypi.org` and
+`files.pythonhosted.org`. The deploy job allows GitHub, the npm registry,
+`api.doppler.com` and `api.cloudflare.com`.
+
+**The allow-lists are unmeasured.** They come from what each step is known to
+reach, not from a recorded run, and the artifact upload may use a per-run blob
+host that is not listed. An unmeasured allow-list fails safe: a blocked host is
+named in the log; add it to the job's `allowed-endpoints` and re-run. Once a run
+has succeeded, compare the harden-runner report with the list and tighten it.
 
 To store the token, let Doppler read the value from its prompt instead of
 putting it on the command line (a value typed as an argument lands in your
@@ -509,20 +561,25 @@ jobs:
    the same way and uploaded as `site-assets-inventory`; the job also compares
    it with the last deployment's to build the optional purge list.
 2. **`deploy`** waits for `build`, then waits for a reviewer to approve the
-   `test` environment. It downloads both artifacts (the configuration check warns when `LINK_IDS`
-   and `site-out.manifest.json` disagree), installs the Worker
+   `test` environment. It downloads both artifacts (a script, `.github/scripts/verify-manifest.py`, warns when `LINK_IDS`
+   and `site-out.manifest.json` disagree, and refuses any link id outside
+   `[a-z0-9-]{1,40}` without echoing it), installs the Worker
    dependencies with `npm ci --ignore-scripts`, applies D1 migrations,
    deploys the Worker, publishes the site with `wrangler pages deploy`, and,
    when `CLOUDFLARE_PURGE_TOKEN` and `ZONE_ID` are set, purges the changed paths
    (see "Caching and stale files").
 
 Why two jobs: `pip install` and `npm ci` run code from third-party
-dependencies. Neither runs anywhere the Cloudflare token exists. The token is
-set only on the configuration check and the three wrangler steps (migrations,
-Worker deploy, Pages deploy); it is not in workflow-level or job-level `env`,
-is never echoed, and is not passed to later steps. The `test` environment is
-where you add a required reviewer (section 2), so a person approves each
-deploy before the secret is released to the `deploy` job.
+dependencies. Neither runs while the Cloudflare token exists: the build job has
+no secrets, and the deploy job installs before it fetches the token. The build
+installs Python dependencies with `pip install --require-hashes` from
+`requirements-build.txt` and `requirements.txt`, then the project itself with
+`--no-deps`, as the Containerfile does. After the Doppler step the token is in
+the job environment, including later steps and post-run hooks (see "Where the
+token is available"); it is not in workflow-level or job-level `env` and is
+never echoed. The `test` environment is where you add a required reviewer
+(section 2), so a person approves each deploy before the secret is released to
+the `deploy` job.
 
 The committed `worker/wrangler.toml` keeps its fake ids; the workflow writes a
 temporary `wrangler.deploy.toml` on the runner only.

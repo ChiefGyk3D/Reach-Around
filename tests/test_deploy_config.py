@@ -168,7 +168,13 @@ def test_manifest_is_read_by_a_tokenless_isolated_step() -> None:
     reader = _step("Verify the build manifest")
     run = reader["run"]
     assert "manifest-in/site-out.manifest.json" in run
-    assert "python3 -I" in run
+    # Issue #206: the inline Python moved to a script so its ids can be
+    # validated and tested; the step now only calls it, isolated (-I).
+    assert "python3 -I .github/scripts/verify-manifest.py" in run
+    script = (ROOT / ".github" / "scripts" / "verify-manifest.py").read_text(
+        encoding="utf-8"
+    )
+    assert "secrets." not in script and "CLOUDFLARE" not in script
     assert "-mindepth 1" in run and "-L" in run  # one file, no symlink
     assert "secrets." not in str(reader)
     assert "CLOUDFLARE_API_TOKEN" not in str(reader)

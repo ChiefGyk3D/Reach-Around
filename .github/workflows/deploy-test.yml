@@ -5,8 +5,13 @@
 # push or a pull request; a maintainer starts it by hand from main.
 #
 # Two jobs: `build` has no secrets and no environment, so pip install scripts
-# never see the Cloudflare token; `deploy` carries the token in the three
-# wrangler steps only (and, when set, the cache-purge token in the last step).
+# never see the Cloudflare token. `deploy` fetches the token from Doppler after
+# the last install step; the Doppler action exports its whole config into the
+# job environment, so from that step on the token is inherited by every later
+# step and action post-run hook, not only the wrangler steps (narrowing that
+# waits on git-your-ship-together#207; see docs/deploy.md). The optional
+# cache-purge token is a separate secret on the last step only. Both jobs run
+# under harden-runner in block mode; the allow-lists are unmeasured.
 #
 # Caching: every static and media file is published under a content-hashed name
 # and pages are revalidated, so a deploy shows at once without any purge. The
@@ -37,6 +42,43 @@ jobs:
     # No `environment` and no secrets here, on purpose: `pip install .` runs
     # dependency build scripts.
     steps:
+      - uses: step-security/harden-runner@ccd8616d44fd3846e67624a50d5aad6d37bf2d25 # v2.22.1
+        with:
+          # block, with an explicit list (no wildcards). The runner's own
+          # infrastructure hosts are allowed by the agent. This list is
+          # UNMEASURED: it comes from what each step is known to reach, not
+          # from a recorded run. The artifact upload may also reach a per-run blob host that is not listed here; if the upload is blocked, the log names it.
+          # An unmeasured allow-list fails safe: a blocked host is named in the
+          # job log and nothing was sent. Add the host here, note it in
+          # docs/deploy.md (Egress control), and re-run.
+          egress-policy: block
+          allowed-endpoints: >-
+            api.github.com:443
+            files.pythonhosted.org:443
+            github.com:443
+            objects.githubusercontent.com:443
+            pypi.org:443
+            release-assets.githubusercontent.com:443
+            results-receiver.actions.githubusercontent.com:443
+
+      # Egress canary, as in git-your-ship-together (EX-0001): a runner with
+      # broken DNS makes block mode fail confusingly, so say which it is first.
+      - name: Egress canary
+        timeout-minutes: 2
+        run: |
+          set -u
+          bad=""
+          for name in github.com api.github.com pypi.org; do
+            if ! timeout 8 bash -c "exec 3<>/dev/tcp/${name}/443" 2>/dev/null; then
+              bad="$bad $name"
+            fi
+          done
+          if [ -n "$bad" ]; then
+            echo "::error title=egress canary::cannot reach:${bad}. Either the runner network is broken (rerun the job) or the allow-list is wrong (docs/deploy.md)."
+            exit 1
+          fi
+          echo "egress canary: allowed hosts accept TCP 443"
+
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           persist-credentials: false
@@ -80,7 +122,9 @@ jobs:
       - name: Build the site
         run: |
           set -eu
-          python -m pip install .
+          python -m pip install --require-hashes -r requirements-build.txt
+          python -m pip install --require-hashes -r requirements.txt
+          python -m pip install --no-deps --no-build-isolation .
           reach-around build --config examples/instance/site.yaml --out site-out
           test -z "$(find site-out -iname '*manifest*')"
           test -z "$(find site-out -iname '*assets.json')"
@@ -152,6 +196,45 @@ jobs:
     # No job-level env: the Cloudflare token is fetched from Doppler only after
     # the last install step, so no install script ever runs with it present.
     steps:
+      - uses: step-security/harden-runner@ccd8616d44fd3846e67624a50d5aad6d37bf2d25 # v2.22.1
+        with:
+          # block, with an explicit list (no wildcards). The runner's own
+          # infrastructure hosts are allowed by the agent. This list is
+          # UNMEASURED: it comes from what each step is known to reach, not
+          # from a recorded run. Wrangler may reach hosts not listed here.
+          # An unmeasured allow-list fails safe: a blocked host is named in the
+          # job log and nothing was sent. Add the host here, note it in
+          # docs/deploy.md (Egress control), and re-run.
+          egress-policy: block
+          allowed-endpoints: >-
+            api.cloudflare.com:443
+            api.doppler.com:443
+            api.github.com:443
+            github.com:443
+            objects.githubusercontent.com:443
+            raw.githubusercontent.com:443
+            registry.npmjs.org:443
+            release-assets.githubusercontent.com:443
+            results-receiver.actions.githubusercontent.com:443
+
+      # Egress canary, as in git-your-ship-together (EX-0001): a runner with
+      # broken DNS makes block mode fail confusingly, so say which it is first.
+      - name: Egress canary
+        timeout-minutes: 2
+        run: |
+          set -u
+          bad=""
+          for name in github.com api.github.com api.cloudflare.com api.doppler.com registry.npmjs.org; do
+            if ! timeout 8 bash -c "exec 3<>/dev/tcp/${name}/443" 2>/dev/null; then
+              bad="$bad $name"
+            fi
+          done
+          if [ -n "$bad" ]; then
+            echo "::error title=egress canary::cannot reach:${bad}. Either the runner network is broken (rerun the job) or the allow-list is wrong (docs/deploy.md)."
+            exit 1
+          fi
+          echo "egress canary: allowed hosts accept TCP 443"
+
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           persist-credentials: false
@@ -235,16 +318,7 @@ jobs:
             echo "::error::$manifest is not a regular file"
             exit 1
           fi
-          python3 -I - "$manifest" <<'PY'
-          import json, os, sys
-          with open(sys.argv[1], encoding="utf-8") as f:
-              built = set(json.load(f)["links"])
-          allowed = set(json.loads(os.environ["LINK_IDS"]))
-          for name in sorted(built - allowed):
-              print(f"::warning::link id {name} is in the build but not in LINK_IDS")
-          for name in sorted(allowed - built):
-              print(f"::warning::LINK_IDS lists {name}, which is not in the build")
-          PY
+          python3 -I .github/scripts/verify-manifest.py "$manifest"
 
       # --ignore-scripts: wrangler runs without its dependencies' install
       # scripts (verified with `wrangler --version` on Node 24), so none run.
