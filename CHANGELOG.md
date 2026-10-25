@@ -7,6 +7,7 @@ while the project is alpha, every release is `0.x` and anything can change betwe
 ## [Unreleased]
 
 - Every page now declares `viewport-fit=cover`, so the safe-area padding the column already had takes effect on notched phones (#148). Pages and goldens change by that one meta tag.
+- The 404 page's "Go to the home page" link is now at least 44 px square on a touch screen. A new all-blocks browser matrix (`tests/site/test_matrix_all_blocks.py`, `--run-visual`) checks link, section, image, text, divider, crypto, email, platforms, profile card, footer credit, privacy and 404 at 320, 375, 768, 1024 and 1440 px for sideways scroll, clipped text and tap targets (#148).
 
 ## [0.2.0] - 2026-10-25
 

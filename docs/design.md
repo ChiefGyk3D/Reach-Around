@@ -158,7 +158,7 @@ Other adaptations:
   printed under it, and sections printed open.
 - **Color scheme.** Unchanged: `prefers-color-scheme` still picks the palette.
 
-The tests in `tests/site/test_responsive.py` (run with `--run-visual`) check a
+`tests/site/test_matrix_all_blocks.py` repeats the check at 320, 375, 768, 1024 and 1440 px with every block type, the footer credit and the 404 page, and asserts 44 px tap targets on a touch screen. The tests in `tests/site/test_responsive.py` (run with `--run-visual`) check a
 rich synthetic site at 320 and 360 to 2560 px, and
 `tests/site/test_responsive_css.py` guards the breakpoint rules in the source.
 
