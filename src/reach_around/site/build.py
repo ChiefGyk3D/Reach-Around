@@ -2,9 +2,10 @@
 """Render the static site and the build manifest.
 
 ``build_site`` is a short pipeline of small steps: choose what is visible,
-render every page in memory, check the output directory is safe to empty, then
-empty it and write the files. Rendering first means a template error never
-leaves a half-deleted output directory.
+gather the static and instance files and give each a content-hashed name (see
+``fingerprint``), render every page in memory against those names, check the
+output directory is safe to empty, then empty it and write the files. Rendering
+first means a template error never leaves a half-deleted output directory.
 """
 
 from __future__ import annotations
@@ -396,7 +397,13 @@ def build_site(
     """Write the site for ``today`` into ``out_dir`` and return the manifest.
 
     The manifest is returned, never written into ``out_dir``: the caller
-    decides where it goes (see ``manifest_json``).
+    decides where it goes (see ``manifest_json``). It also carries the
+    inventory of published files (see ``reach_around.site.inventory``).
+
+    Every file under ``static/`` and every instance file the config names is
+    published under a content-hashed name; templates reach them through the
+    ``asset`` and ``asset_url`` functions. Pages, ``404.html``, ``robots.txt``
+    and ``_headers`` keep their names.
 
     Everything already in ``out_dir`` is deleted first, so a removed tab never
     leaves a stale page behind. ``protect`` lists paths (the config file) that

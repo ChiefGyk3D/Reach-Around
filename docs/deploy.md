@@ -343,7 +343,7 @@ only because its name changes whenever its content does.**
 | Class | Files | `Cache-Control` |
 |---|---|---|
 | Hashed | everything under `static/` (CSS, JS, icons, fonts) and every image or font file your config names, for example `static/site.3fa9c1d2ab.css`, `media/mascot.73e9847dc8.svg` | `public, max-age=31536000, immutable` |
-| Stable | `index.html` and every page, `404.html`, `robots.txt`, and a root-level `apple-touch-icon.png` or `favicon.ico` (a file a browser or crawler asks for by name) | `public, max-age=0, must-revalidate` |
+| Stable | `index.html` and every page, `404.html`, `robots.txt`, and a root-level `apple-touch-icon.png` (a file a browser asks for by name; the build also keeps a root-level `favicon.ico` unrenamed, though the config cannot name one today) | `public, max-age=0, must-revalidate` |
 
 The hash is the first ten hex digits of the SHA-256 of the file's final bytes.
 CSS is hashed after its `url()` references are rewritten to the hashed names,
