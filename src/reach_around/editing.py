@@ -19,6 +19,7 @@ fails, nothing is written.
 from __future__ import annotations
 
 import copy
+import datetime
 import fcntl
 import hashlib
 import json
@@ -628,6 +629,22 @@ def move_link(
     items = _items(text, lines, holder.node, holder.floor)
     if not 1 <= position <= len(items):
         raise EditError(f"--position must be between 1 and {len(items)}")
+    out = _reordered(lines, items, index, position)
+    expected = copy.deepcopy(raw)
+    current = _holder_list(expected, link_id)
+    entry = current.pop(index)
+    current.insert(position - 1, entry)
+    _set_holder(expected, link_id, current)
+    return _finish(text, out), expected
+
+
+def _reordered(
+    lines: list[str], items: list[_Item], index: int, position: int
+) -> list[str]:
+    """``lines`` with item ``index`` moved to 1-based ``position``.
+
+    The gaps between items stay in their slots; only the item chunks move.
+    """
     chunks = [lines[i.start : i.end + 1] for i in items]
     chunks = [
         c[:-1] + [c[-1] + "\n"] if not c[-1].endswith("\n") else c for c in chunks
@@ -641,12 +658,7 @@ def move_link(
         out.extend(chunks[slot])
         cursor = item.end + 1
     out.extend(lines[cursor:])
-    expected = copy.deepcopy(raw)
-    current = _holder_list(expected, link_id)
-    entry = current.pop(index)
-    current.insert(position - 1, entry)
-    _set_holder(expected, link_id, current)
-    return _finish(text, out), expected
+    return out
 
 
 LINK_FIELDS: tuple[str, ...] = (
@@ -802,6 +814,231 @@ def set_link_field(
     )
     expected = copy.deepcopy(raw)
     target = _raw_link(expected, link_id)
+    if shown is None:
+        target.pop(field, None)
+    else:
+        target[field] = python_value
+    return _finish(text, lines), expected
+
+
+PLATFORM_FIELDS: tuple[str, ...] = ("handle", "url", "name", "label", "count", "as_of")
+_PLATFORM_ORDER = ("platform", "name", "handle", "url", "label", "count", "as_of")
+_PLATFORM_REQUIRED = ("platform", "handle", "url")
+_PLATFORM_OPTIONAL = ("name", "label", "count", "as_of")
+_DAY = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
+_COUNT = re.compile(r"[0-9]{1,12}")
+
+
+def _find_platforms(root: MappingNode, block_id: str) -> _Seq:
+    """The ``items`` list of the platforms block ``block_id``."""
+    tabs = _get(root, "tabs")
+    if tabs is None or not isinstance(tabs[1], SequenceNode):
+        raise EditError("the config has no tabs list")
+    for tab in tabs[1].value:
+        blocks = _get(tab, "blocks") if isinstance(tab, MappingNode) else None
+        if blocks is None or not isinstance(blocks[1], SequenceNode):
+            continue
+        for block in blocks[1].value:
+            if isinstance(block, MappingNode) and _scalar(block, "id") == block_id:
+                found = _get(block, "items")
+                if found is None or not isinstance(found[1], SequenceNode):
+                    raise EditError(f"{block_id!r} is not a platforms block")
+                return _Seq(found[1], found[0].start_mark.line)
+    raise EditError(f"no block with id {block_id!r}")
+
+
+def _raw_platform_items(raw: dict[str, Any], block_id: str) -> list[dict[str, Any]]:
+    for tab in raw["tabs"]:
+        for block in tab["blocks"]:
+            if block["id"] == block_id and isinstance(block.get("items"), list):
+                items: list[dict[str, Any]] = block["items"]
+                return items
+    raise EditError(f"no block with id {block_id!r}")
+
+
+def _item_number(index: object, size: int) -> int:
+    """Check a 1-based item number; return it as a 0-based index."""
+    if isinstance(index, bool) or not isinstance(index, int) or not 1 <= index <= size:
+        raise EditError(f"the item number must be between 1 and {size}")
+    return index - 1
+
+
+def _blank(value: object) -> bool:
+    return value is None or value == ""
+
+
+def parse_platform_field(field: str, value: object) -> tuple[str | None, Any]:
+    """The YAML text and Python value of one platform item field.
+
+    Text None clears the key. A blank ``count`` is cleared, never turned into 0.
+    """
+    if field == "count":
+        if _blank(value):
+            return None, None
+        if isinstance(value, bool) or not isinstance(value, (int, str)):
+            raise EditError("count must be a whole number")
+        digits = str(value)
+        if not _COUNT.fullmatch(digits):
+            raise EditError("count must be a whole number, 0 or more")
+        return str(int(digits)), int(digits)
+    if field == "as_of":
+        if _blank(value):
+            return None, None
+        day = value if isinstance(value, datetime.date) else None
+        if isinstance(value, str) and _DAY.fullmatch(value):
+            try:
+                day = datetime.date.fromisoformat(value)
+            except ValueError:
+                day = None
+        if not isinstance(day, datetime.date) or isinstance(day, datetime.datetime):
+            raise EditError("as_of must be a date written YYYY-MM-DD")
+        return day.isoformat(), day
+    if field in ("name", "label") and _blank(value):
+        return None, None
+    if not isinstance(value, str):
+        raise EditError(f"{field} must be text")
+    check_text(value, field)
+    return scalar_text(value), value
+
+
+def _platform_parts(item: dict[str, Any]) -> list[tuple[str, str, Any]]:
+    """(key, YAML text, Python value) of a new item, in the usual key order."""
+    unknown = [k for k in item if k not in _PLATFORM_ORDER]
+    if unknown:
+        raise EditError(
+            f"{unknown[0]!r} cannot be set on a platform item; allowed keys: "
+            + ", ".join(_PLATFORM_ORDER)
+        )
+    for key in _PLATFORM_REQUIRED:
+        if _blank(item.get(key)):
+            raise EditError(f"{key} is required for a platform item")
+    parts: list[tuple[str, str, Any]] = []
+    for key in _PLATFORM_ORDER:
+        if key not in item or (key in _PLATFORM_OPTIONAL and _blank(item[key])):
+            continue
+        shown, python_value = parse_platform_field(key, item[key])
+        if shown is None:
+            continue
+        parts.append((key, shown, python_value))
+    return parts
+
+
+def add_platform_item(
+    text: str,
+    raw: dict[str, Any],
+    *,
+    block: str,
+    item: dict[str, Any],
+    position: int | None,
+) -> tuple[str, dict[str, Any]]:
+    """Add an item to the platforms block ``block`` (``position`` is 1-based)."""
+    parts = _platform_parts(item)
+    lines = text.splitlines(keepends=True)
+    holder = _find_platforms(_compose(text), block)
+    items = _items(text, lines, holder.node, holder.floor)
+    count = len(items)
+    where = count + 1 if position is None else position
+    if not 1 <= where <= count + 1:
+        raise EditError(f"--position must be between 1 and {count + 1}")
+    sample = items[0]
+    pad = " " * sample.indent
+    keys = " " * sample.keycol
+    gap = " " * (sample.keycol - sample.indent - 1)
+    rows = [
+        f"{pad}-{gap}{key}: {shown}\n" if n == 0 else f"{keys}{key}: {shown}\n"
+        for n, (key, shown, _value) in enumerate(parts)
+    ]
+    at = items[-1].end + 1 if where == count + 1 else items[where - 1].start
+    if at > 0 and not lines[at - 1].endswith("\n"):
+        lines[at - 1] += "\n"
+    lines[at:at] = rows
+    expected = copy.deepcopy(raw)
+    _raw_platform_items(expected, block).insert(
+        where - 1, {key: value for key, _shown, value in parts}
+    )
+    return _finish(text, lines), expected
+
+
+def remove_platform_item(
+    text: str, raw: dict[str, Any], *, block: str, index: int
+) -> tuple[str, dict[str, Any]]:
+    """Remove item ``index`` (1-based); the last item cannot be removed."""
+    lines = text.splitlines(keepends=True)
+    holder = _find_platforms(_compose(text), block)
+    items = _items(text, lines, holder.node, holder.floor)
+    which = _item_number(index, len(items))
+    if len(items) == 1:
+        raise EditError(
+            f"{block!r} has only one item; a platforms block needs at least one, "
+            "so remove the whole block by hand"
+        )
+    span = items[which]
+    del lines[span.start : span.end + 1]
+    expected = copy.deepcopy(raw)
+    del _raw_platform_items(expected, block)[which]
+    return _finish(text, lines), expected
+
+
+def move_platform_item(
+    text: str, raw: dict[str, Any], *, block: str, index: int, position: int
+) -> tuple[str, dict[str, Any]]:
+    """Move item ``index`` to ``position`` (both 1-based) within its block."""
+    lines = text.splitlines(keepends=True)
+    holder = _find_platforms(_compose(text), block)
+    items = _items(text, lines, holder.node, holder.floor)
+    which = _item_number(index, len(items))
+    if not 1 <= position <= len(items):
+        raise EditError(f"--position must be between 1 and {len(items)}")
+    out = _reordered(lines, items, which, position)
+    expected = copy.deepcopy(raw)
+    current = _raw_platform_items(expected, block)
+    current.insert(position - 1, current.pop(which))
+    return _finish(text, out), expected
+
+
+def set_platform_item_field(
+    text: str,
+    raw: dict[str, Any],
+    *,
+    block: str,
+    index: int,
+    field: str,
+    value: object,
+) -> tuple[str, dict[str, Any]]:
+    """Set one field of item ``index`` (1-based) of a platforms block.
+
+    ``name``, ``label``, ``count`` and ``as_of`` are cleared by a blank value:
+    the line is removed, so a blank count is never written as 0.
+    """
+    if field not in PLATFORM_FIELDS:
+        raise EditError(
+            f"{field!r} cannot be set on a platform item; allowed fields: "
+            + ", ".join(PLATFORM_FIELDS)
+        )
+    shown, python_value = parse_platform_field(field, value)
+    lines = text.splitlines(keepends=True)
+    holder = _find_platforms(_compose(text), block)
+    items = _items(text, lines, holder.node, holder.floor)
+    which = _item_number(index, len(items))
+    node = holder.node.value[which]
+    if not isinstance(node, MappingNode):  # _items already refused anything else
+        raise EditError(f"item {index} is not a block mapping")
+    present = {k: _get(node, k) is not None for k in ("count", "as_of")}
+    if field == "count" and shown is None and present["as_of"]:
+        raise EditError("clear as_of before count: a date needs a count")
+    if field == "as_of" and shown is not None and not present["count"]:
+        raise EditError("as_of needs a count; set the count first")
+    _set_field(
+        lines,
+        node,
+        items[which],
+        _PLATFORM_ORDER,
+        field,
+        shown,
+        f"item {index} {field}",
+    )
+    expected = copy.deepcopy(raw)
+    target = _raw_platform_items(expected, block)[which]
     if shown is None:
         target.pop(field, None)
     else:
