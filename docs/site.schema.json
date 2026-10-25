@@ -1,5 +1,31 @@
 {
   "$defs": {
+    "BlueskySource": {
+      "additionalProperties": false,
+      "properties": {
+        "actor": {
+          "title": "Actor",
+          "type": "string"
+        },
+        "kind": {
+          "const": "bluesky",
+          "title": "Kind",
+          "type": "string"
+        },
+        "platform": {
+          "pattern": "^[a-z0-9][a-z0-9-]{0,39}$",
+          "title": "Platform",
+          "type": "string"
+        }
+      },
+      "required": [
+        "actor",
+        "kind",
+        "platform"
+      ],
+      "title": "BlueskySource",
+      "type": "object"
+    },
     "Creator": {
       "additionalProperties": false,
       "properties": {
@@ -206,6 +232,32 @@
       "title": "CryptoCoin",
       "type": "object"
     },
+    "DiscordSource": {
+      "additionalProperties": false,
+      "properties": {
+        "invite": {
+          "title": "Invite",
+          "type": "string"
+        },
+        "kind": {
+          "const": "discord",
+          "title": "Kind",
+          "type": "string"
+        },
+        "platform": {
+          "pattern": "^[a-z0-9][a-z0-9-]{0,39}$",
+          "title": "Platform",
+          "type": "string"
+        }
+      },
+      "required": [
+        "invite",
+        "kind",
+        "platform"
+      ],
+      "title": "DiscordSource",
+      "type": "object"
+    },
     "Divider": {
       "additionalProperties": false,
       "properties": {
@@ -382,6 +434,32 @@
       "title": "Footer",
       "type": "object"
     },
+    "GithubSource": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "github",
+          "title": "Kind",
+          "type": "string"
+        },
+        "platform": {
+          "pattern": "^[a-z0-9][a-z0-9-]{0,39}$",
+          "title": "Platform",
+          "type": "string"
+        },
+        "user": {
+          "title": "User",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "platform",
+        "user"
+      ],
+      "title": "GithubSource",
+      "type": "object"
+    },
     "Image": {
       "additionalProperties": false,
       "properties": {
@@ -532,6 +610,117 @@
         "url"
       ],
       "title": "Link",
+      "type": "object"
+    },
+    "MastodonSource": {
+      "additionalProperties": false,
+      "description": "Any server with the Mastodon API (Pixelfed and others included).",
+      "properties": {
+        "acct": {
+          "title": "Acct",
+          "type": "string"
+        },
+        "host": {
+          "title": "Host",
+          "type": "string"
+        },
+        "kind": {
+          "const": "mastodon",
+          "title": "Kind",
+          "type": "string"
+        },
+        "platform": {
+          "pattern": "^[a-z0-9][a-z0-9-]{0,39}$",
+          "title": "Platform",
+          "type": "string"
+        }
+      },
+      "required": [
+        "acct",
+        "host",
+        "kind",
+        "platform"
+      ],
+      "title": "MastodonSource",
+      "type": "object"
+    },
+    "MatrixSource": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "matrix",
+          "title": "Kind",
+          "type": "string"
+        },
+        "platform": {
+          "pattern": "^[a-z0-9][a-z0-9-]{0,39}$",
+          "title": "Platform",
+          "type": "string"
+        },
+        "room": {
+          "title": "Room",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "platform",
+        "room"
+      ],
+      "title": "MatrixSource",
+      "type": "object"
+    },
+    "NumbersConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "sources": {
+          "items": {
+            "discriminator": {
+              "mapping": {
+                "bluesky": "#/$defs/BlueskySource",
+                "discord": "#/$defs/DiscordSource",
+                "github": "#/$defs/GithubSource",
+                "mastodon": "#/$defs/MastodonSource",
+                "matrix": "#/$defs/MatrixSource",
+                "twitch": "#/$defs/TwitchSource",
+                "youtube": "#/$defs/YoutubeSource"
+              },
+              "propertyName": "kind"
+            },
+            "oneOf": [
+              {
+                "$ref": "#/$defs/BlueskySource"
+              },
+              {
+                "$ref": "#/$defs/MastodonSource"
+              },
+              {
+                "$ref": "#/$defs/GithubSource"
+              },
+              {
+                "$ref": "#/$defs/DiscordSource"
+              },
+              {
+                "$ref": "#/$defs/MatrixSource"
+              },
+              {
+                "$ref": "#/$defs/YoutubeSource"
+              },
+              {
+                "$ref": "#/$defs/TwitchSource"
+              }
+            ]
+          },
+          "maxItems": 50,
+          "minItems": 1,
+          "title": "Sources",
+          "type": "array"
+        }
+      },
+      "required": [
+        "sources"
+      ],
+      "title": "NumbersConfig",
       "type": "object"
     },
     "PlatformItem": {
@@ -1156,6 +1345,76 @@
       },
       "title": "Theme",
       "type": "object"
+    },
+    "TwitchSource": {
+      "additionalProperties": false,
+      "properties": {
+        "client_id_env": {
+          "pattern": "^[A-Z][A-Z0-9_]{1,63}$",
+          "title": "Client Id Env",
+          "type": "string"
+        },
+        "client_secret_env": {
+          "pattern": "^[A-Z][A-Z0-9_]{1,63}$",
+          "title": "Client Secret Env",
+          "type": "string"
+        },
+        "kind": {
+          "const": "twitch",
+          "title": "Kind",
+          "type": "string"
+        },
+        "login": {
+          "title": "Login",
+          "type": "string"
+        },
+        "platform": {
+          "pattern": "^[a-z0-9][a-z0-9-]{0,39}$",
+          "title": "Platform",
+          "type": "string"
+        }
+      },
+      "required": [
+        "client_id_env",
+        "client_secret_env",
+        "kind",
+        "login",
+        "platform"
+      ],
+      "title": "TwitchSource",
+      "type": "object"
+    },
+    "YoutubeSource": {
+      "additionalProperties": false,
+      "properties": {
+        "api_key_env": {
+          "pattern": "^[A-Z][A-Z0-9_]{1,63}$",
+          "title": "Api Key Env",
+          "type": "string"
+        },
+        "channel_id": {
+          "title": "Channel Id",
+          "type": "string"
+        },
+        "kind": {
+          "const": "youtube",
+          "title": "Kind",
+          "type": "string"
+        },
+        "platform": {
+          "pattern": "^[a-z0-9][a-z0-9-]{0,39}$",
+          "title": "Platform",
+          "type": "string"
+        }
+      },
+      "required": [
+        "api_key_env",
+        "channel_id",
+        "kind",
+        "platform"
+      ],
+      "title": "YoutubeSource",
+      "type": "object"
     }
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -1190,6 +1449,17 @@
         "credit": true,
         "credit_text": null
       }
+    },
+    "numbers": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/NumbersConfig"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
     },
     "privacy": {
       "$ref": "#/$defs/Privacy",

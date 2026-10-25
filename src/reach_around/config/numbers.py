@@ -148,11 +148,17 @@ def _parse(data: bytes, now: datetime) -> Numbers:
     return Numbers(entries=entries)
 
 
-def load_numbers(path: Path, *, now: datetime | None = None) -> Numbers:
-    """Read and validate ``path``; every failure is a ``ConfigError``."""
+def parse_numbers(
+    data: bytes, *, source: str = "numbers", now: datetime | None = None
+) -> Numbers:
+    """Validate numbers-file bytes; every failure is a ``ConfigError``."""
     when = now if now is not None else datetime.now(UTC)
-    data = _read(path, MAX_NUMBERS_BYTES)
     try:
         return _parse(data, when)
     except _Bad as exc:
-        raise ConfigError(str(path), None, str(exc)) from None
+        raise ConfigError(source, None, str(exc)) from None
+
+
+def load_numbers(path: Path, *, now: datetime | None = None) -> Numbers:
+    """Read and validate ``path``; every failure is a ``ConfigError``."""
+    return parse_numbers(_read(path, MAX_NUMBERS_BYTES), source=str(path), now=now)

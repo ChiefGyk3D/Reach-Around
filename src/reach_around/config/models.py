@@ -37,6 +37,7 @@ from reach_around.config.blocks import (
 )
 from reach_around.config.footer import Footer
 from reach_around.config.loader import ConfigError, load_yaml
+from reach_around.config.numbers_sources import NumbersConfig
 from reach_around.config.page_title import PageTitle, TitleTemplate
 from reach_around.config.privacy import Features, Privacy
 from reach_around.config.profile_card import (
@@ -320,6 +321,7 @@ class SiteConfig(_Model):
     robots: Robots | None = None
     store: StoreConfig = StoreConfig()
     profile_card: ProfileCard | None = None
+    numbers: NumbersConfig | None = None
 
     @field_validator("timezone")
     @classmethod
@@ -363,6 +365,32 @@ class SiteConfig(_Model):
             f"valid tab ids: {', '.join(known)}"
             for where, url in _internal_urls(self)
             if parse_tab_ref(url)[0] not in known
+        ]
+        if problems:
+            raise ValueError("; ".join(problems))
+        return self
+
+    @model_validator(mode="after")
+    def _number_sources_name_a_platform(self) -> SiteConfig:
+        """Each ``numbers`` source key is a platform an item uses, or an item id.
+
+        The build looks a count up by item id first, then by platform slug; a
+        source that matches neither would write a number nothing shows.
+        """
+        if self.numbers is None:
+            return self
+        known: set[str] = set()
+        for tab in self.tabs:
+            for block in tab.blocks:
+                if isinstance(block, Platforms):
+                    known.update(block.item_ids)
+                    known.update(item.platform for item in block.items)
+        problems = [
+            f"numbers.sources[{i}].platform: {source.platform!r} matches no "
+            "platforms item (use an item's platform, such as 'github', or its "
+            "id, such as 'socials-github')"
+            for i, source in enumerate(self.numbers.sources)
+            if source.platform not in known
         ]
         if problems:
             raise ValueError("; ".join(problems))
