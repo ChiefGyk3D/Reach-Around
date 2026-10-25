@@ -20,7 +20,7 @@ engine repository for the reasoning.
 | `.github/workflows/preview.yml` | On a pull request: check the config, build a preview artifact, and comment on the pull request with the result in plain language and the list of changed blocks. Also lints the scripts and workflows (GYST `bash-ci`). Deploys nothing. Its gate job is named `CI green`. |
 | `.github/workflows/deploy.yml` | On a push to `main`: check, validate, then deploy to Cloudflare after a reviewer approves. |
 | `renovate.json` | Keeps `engine.lock` and the Actions pins current. |
-| `scripts/` | `check-config.sh` (the plain-language config check), `validate.sh` (the build CI runs), `preview-comment.sh` (writes the pull request comment), `check-repo.sh`, `read-lock.sh`, `deploy-local.sh`. |
+| `scripts/` | `check-config.sh` (the plain-language config check), `validate.sh` (the build CI runs), `write-result.py` (bundles the preview job's results into the one data file the comment job reads), `render-comment.py` (run by the comment job from the base commit: validates that file and writes the pull request comment from fixed text), `check-repo.sh`, `read-lock.sh`, `deploy-local.sh`. |
 | `docs/EDITING.md` | How to change the page without touching code. |
 
 ## Adopt it
@@ -100,6 +100,13 @@ token with `pull-requests: write` (and `contents: read` to fetch one script
 from the base commit) and nothing else. Pull requests from forks get no
 preview and no comment: the `preview` and `comment` jobs are skipped for them
 (a guard on `head.repo.full_name`), and their token cannot write anyway.
+
+**The comment marker is a convention, not proof.** The comment starts with a
+marker naming this repository and workflow, and the job updates only a comment
+that carries it and was written by the Actions bot, and refuses to post if more
+than one matches. The marker distinguishes this comment by convention: any other
+workflow in the repository with `pull-requests: write` could post one that
+looks the same. Treat who may change `.github/` as the real control (below).
 
 **Who may change the workflow.** With the `pull_request` trigger GitHub runs
 the workflow file from the pull request itself, so a collaborator with write

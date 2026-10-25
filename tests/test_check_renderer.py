@@ -119,8 +119,20 @@ def engine_report(
     return code, json.loads(capsys.readouterr().out)
 
 
-def wrap(code: Any, report: Any, build: Any = None) -> dict[str, Any]:
-    return {"check_status": code, "build_status": build, "check": report}
+def wrap(
+    code: Any,
+    report: Any,
+    build: Any = None,
+    repo_status: Any = 0,
+    repo_files: Any = None,
+) -> dict[str, Any]:
+    return {
+        "check_status": code,
+        "build_status": build,
+        "check": report,
+        "repo_status": repo_status,
+        "repo_files": [] if repo_files is None else repo_files,
+    }
 
 
 GOOD_YAML = """\
@@ -530,3 +542,106 @@ def test_a_linked_or_special_input_is_not_read(tmp_path: Path) -> None:
 
 if __name__ == "__main__":
     regenerate()
+
+
+# --- a forbidden file in the pull request -----------------------------------------
+
+
+def repo_failed(files: Any = None, **changes: Any) -> dict[str, Any]:
+    """What write-result.py records when check-repo.sh found a forbidden file."""
+    payload = wrap(3, None, None, repo_status=1, repo_files=files or [".env"])
+    payload.update(changes)
+    return payload
+
+
+def test_a_forbidden_file_is_named_in_plain_language(tmp_path: Path) -> None:
+    done, out = render(tmp_path, repo_failed([".env", "deploy_key.pem"]))
+    assert done.returncode == 0, done.stderr
+    text = body(out)
+    assert "## A file that must not be committed is in this change" in text
+    assert "1. File `.env`: is a file that must not be committed" in text
+    assert "2. File `deploy_key.pem`:" in text
+    assert "git rm --cached" in text.replace("\\", "")
+    assert "Nothing was checked or built" in text
+    assert READ_ERROR not in text
+    allowed_markup(text)
+
+
+def test_forbidden_file_names_are_reduced_and_cannot_form_markup(
+    tmp_path: Path,
+) -> None:
+    names = [EVIL, "a" * 150, "`x`"]
+    done, out = render(tmp_path, repo_failed(names))
+    text = body(out)
+    assert done.returncode == 0
+    assert "## A file that must not be committed" in text
+    allowed_markup(text)
+    assert "a" * 41 not in text
+
+
+def test_a_forbidden_file_with_no_readable_name_still_says_so(tmp_path: Path) -> None:
+    done, out = render(tmp_path, repo_failed([], repo_files=[]))
+    assert "## A file that must not be committed" in body(out)
+
+
+def test_a_repository_check_that_could_not_run_is_the_generic_comment(
+    tmp_path: Path,
+) -> None:
+    done, out = render(tmp_path, wrap(3, None, None, repo_status=3))
+    assert "## The check could not run" in body(out)
+
+
+REPO_CONTRADICTIONS: dict[str, tuple[Any, str]] = {
+    "repo failed but the engine ran": (
+        wrap(0, forged_report(errors=[]), 0, repo_status=1, repo_files=[".env"]),
+        "success",
+    ),
+    "repo failed but a report exists": (
+        wrap(3, forged_report(), None, repo_status=1, repo_files=[".env"]),
+        "failure",
+    ),
+    "repo failed but a problem was found": (
+        wrap(2, forged_report(), None, repo_status=1, repo_files=[".env"]),
+        "failure",
+    ),
+    "repo failed but a build ran": (
+        wrap(3, None, 0, repo_status=1, repo_files=[".env"]),
+        "failure",
+    ),
+    "repo failed but the job succeeded": (repo_failed(), "success"),
+    "files listed though the repo check passed": (
+        wrap(2, forged_report(), None, repo_status=0, repo_files=[".env"]),
+        "failure",
+    ),
+    "repo check did not run but the engine did": (
+        wrap(0, forged_report(errors=[]), 0, repo_status=3),
+        "success",
+    ),
+    "repo status outside the closed set": (repo_failed(repo_status=2), "failure"),
+    "repo status is text": (repo_failed(repo_status="1"), "failure"),
+    "repo status is a bool": (repo_failed(repo_status=True), "failure"),
+    "too many files": (repo_failed(["a"] * 11), "failure"),
+    "file is not text": (repo_failed([{"a": 1}]), "failure"),
+    "file name too long": (repo_failed(["x" * 201]), "failure"),
+    "files is not a list": (repo_failed(repo_files=".env"), "failure"),
+    "repo fields missing": (
+        {"check_status": 3, "build_status": None, "check": None},
+        "failure",
+    ),
+}
+
+
+@pytest.mark.parametrize("label", sorted(REPO_CONTRADICTIONS))
+def test_repository_check_contradictions_are_never_trusted(
+    tmp_path: Path, label: str
+) -> None:
+    payload, recorded = REPO_CONTRADICTIONS[label]
+    done, out = render(tmp_path, payload, preview_result=recorded)
+    assert done.returncode == 0, done.stderr
+    text = body(out)
+    assert READ_ERROR in text, (label, text)
+    assert "The preview is ready" not in text
+
+
+def test_the_repository_battery_is_collected() -> None:
+    assert len(REPO_CONTRADICTIONS) >= 15

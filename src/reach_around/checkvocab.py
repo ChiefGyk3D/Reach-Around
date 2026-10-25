@@ -205,6 +205,12 @@ VOCAB: dict[str, tuple[str, str]] = {
         "links to a tab that does not exist",
         "Write tab: and one of your tab ids ({words}).",
     ),
+    # --- the repository check (a file name, never contents)
+    "forbidden_file": (
+        "is a file that must not be committed",
+        "Remove it from the repository (git rm --cached) and keep it private. "
+        "If it held a real secret, revoke the secret first.",
+    ),
     # --- the file itself
     "file_alias": (
         "the file uses an alias (a * reference)",

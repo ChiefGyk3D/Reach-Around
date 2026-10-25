@@ -43,6 +43,8 @@ WORKFLOW = re.compile(r"[A-Za-z0-9 ._-]{1,60}")
 PREVIEW_RESULTS = frozenset({"success", "failure", "cancelled", "skipped"})
 STATUS_CHECK = frozenset({0, 1, 2, 3})
 STATUS_BUILD = frozenset({0, 1, 2, 3})
+STATUS_REPO = frozenset({0, 1, 3})
+MAX_REPO_FILES = 10
 MAX_INPUT = 65536
 MAX_BODY = 20000
 MAX_ERRORS = 100
@@ -250,6 +252,11 @@ VOCAB: dict[str, tuple[str, str]] = {
         "links to a tab that does not exist",
         "Write tab: and one of your tab ids ({words}).",
     ),
+    "forbidden_file": (
+        "is a file that must not be committed",
+        "Remove it from the repository (git rm --cached) and keep it "
+        "private. If it held a real secret, revoke the secret first.",
+    ),
     "file_alias": (
         "the file uses an alias (a * reference)",
         "Write the value out where it is used; aliases and anchors are not allowed.",
@@ -431,7 +438,7 @@ OPS = frozenset(
     }
 )
 NOTES = frozenset({"compare_failed"})
-NAME_EXTRA = frozenset(" -.,!?:()+'")
+NAME_EXTRA = frozenset(" -._,!?:()+'")
 WORD = re.compile(r"[A-Za-z0-9_-]{1,20}")
 SLUG = re.compile(r"[a-z0-9][a-z0-9-]{0,39}")
 RUN_URL = re.compile(
@@ -610,7 +617,19 @@ def check_report(raw: Any) -> dict[str, Any]:
 
 
 def check_result(raw: Any) -> dict[str, Any]:
-    result = as_dict(raw, {"check_status", "build_status", "check"}, set())
+    result = as_dict(
+        raw,
+        {"check_status", "build_status", "check", "repo_status", "repo_files"},
+        set(),
+    )
+    repo = result["repo_status"]
+    if not (is_int(repo, 0, 3) and repo in STATUS_REPO):
+        raise Invalid("repo_status")
+    files = as_list(result["repo_files"], MAX_REPO_FILES)
+    if not all(is_str(f, 200) for f in files):
+        raise Invalid("repo_files")
+    if files and repo != 1:
+        raise Invalid("files listed without a failed repository check")
     if not is_int(result["check_status"], 0, 3) or (
         result["check_status"] not in STATUS_CHECK
     ):
@@ -634,6 +653,10 @@ def check_relations(result: dict[str, Any], preview_result: str) -> None:
         result["build_status"],
         result["check"],
     )
+    if result["repo_status"] != 0 and (
+        check_status != 3 or build is not None or report is not None
+    ):
+        raise Invalid("the engine ran although the repository check did not pass")
     if check_status == 0:
         if report is None or not report["valid"]:
             raise Invalid("status 0 needs a valid report")
@@ -814,7 +837,20 @@ def build(result: dict[str, Any] | None, run_url: str | None, marker: str) -> st
         result["build_status"],
         result["check"],
     )
-    if check_status == 0 and report is not None and build_status == 0:
+    if result["repo_status"] == 1:
+        out += ["## A file that must not be committed is in this change", ""]
+        message, fix = VOCAB["forbidden_file"]
+        for i, entry in enumerate(result["repo_files"], 1):
+            out.append(f"{i}. File {name(entry)}: {esc(message)}. Fix: {esc(fix)}")
+        if not result["repo_files"]:
+            out.append(f"A file {esc(message)}. Fix: {esc(fix)}")
+        out += [
+            "",
+            "Nothing was checked or built and nothing is deployed. Remove the file",
+            "from this branch and push again; this check runs again after every",
+            "push.",
+        ]
+    elif check_status == 0 and report is not None and build_status == 0:
         out += [
             "## The preview is ready",
             "",
@@ -853,9 +889,9 @@ def build(result: dict[str, Any] | None, run_url: str | None, marker: str) -> st
             "## The check could not run",
             "",
             "This is a problem with the check, not with your change. Nothing was",
-            "built and nothing is deployed. Open the run details. The usual causes are",
-            "a file that must not be committed (such as a `.env` file) or an engine",
-            "version in `engine.lock` that is too old to have the `check` command.",
+            "built and nothing is deployed. Open the run details. The usual cause is",
+            "an engine version in `engine.lock` that is too old to have the `check`",
+            "command.",
         ]
     body = "\n".join([*out, *link(run_url)]) + "\n"
     if len(body) > MAX_BODY:

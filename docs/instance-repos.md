@@ -149,6 +149,9 @@ which has the only write permission, posts the comment. The comment says:
   field, with a fix, and no build;
 - valid but the build failed: that the settings are fine and the run log
   says which file is missing;
+- a file that must not be committed (`.env`, a key) is in the change: its
+  base name is listed, the engine steps are skipped, and the comment says to
+  remove it; the file's contents are never read;
 - the check could not run: usually an engine in `engine.lock` that is too old.
 
 **What is printed, exactly.** No value from `site.yaml` is ever printed: not a
@@ -163,7 +166,10 @@ the comment, so do not put a secret in a tab title.
 
 **Why the pull request cannot forge the comment.** The `preview` job handles
 the pull request's files, so its output is untrusted. It writes only data: the
-two exit statuses and the engine's JSON. The `comment` job checks out
+three exit statuses (repository check, config check, build), the base names of
+any forbidden files, and the engine's JSON. A failing repository check is
+recorded, not allowed to end the job, so the result file is always written and
+uploaded and the job fails only after that. The `comment` job checks out
 `scripts/render-comment.py` from the **base** commit (sparse, no credentials
 kept), validates the data against a strict schema (size cap, exact keys, closed
 enums for the problem kinds and change kinds, per-field length and character
@@ -179,7 +185,10 @@ or HTML can form and names shown in code spans. Anything that fails
 validation produces one fixed sentence: "The preview result could not be read".
 The comment carries a marker naming this repository and this workflow; the job
 finds its own comment by that marker and the Actions bot as author, updates it
-by id, and **posts nothing** if more than one comment matches. Other comments
+by id, and **posts nothing** if more than one comment matches. The marker
+distinguishes this comment by convention only: any other workflow with
+`pull-requests: write` could post one that looks the same, so protect
+`.github/` with CODEOWNERS and required review. Other comments
 are never touched. The renderer and `write-result.py` create their output files
 new (never over a file, never through a symlink).
 

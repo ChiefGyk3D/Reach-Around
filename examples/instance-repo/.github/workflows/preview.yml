@@ -100,30 +100,37 @@ jobs:
           if [ -f trusted-src/site.yaml ]; then cp trusted-src/site.yaml "$dir/base-site.yaml"; fi
           chmod -R a-w "$dir"
           image="$(bash "$dir/scripts/read-lock.sh" ENGINE_IMAGE)"
+          results="$(mktemp -d "$RUNNER_TEMP/preview-results.XXXXXX")"
           {
             echo "dir=$dir"
             echo "image=$image"
+            echo "results=$results"
           } >> "$GITHUB_OUTPUT"
 
+      # A forbidden file (.env, a key) must still produce a comment, so this
+      # records its status and its output instead of ending the job. The engine
+      # steps below are skipped when it fails, and the last step fails the job
+      # after the result has been uploaded.
       - name: Check the repository for files that must not be committed
+        id: repo
         env:
           TRUSTED: ${{ steps.trust.outputs.dir }}
-        run: bash "$TRUSTED/scripts/check-repo.sh" --root pr
-
-      - name: Make a fresh folder for the results
-        id: results
+          RESULTS: ${{ steps.trust.outputs.results }}
         run: |
-          dir="$(mktemp -d "$RUNNER_TEMP/preview-results.XXXXXX")"
-          echo "dir=$dir" >> "$GITHUB_OUTPUT"
+          set +e
+          bash "$TRUSTED/scripts/check-repo.sh" --root pr 2> "$RESULTS/repo-output.txt"
+          echo "status=$?" >> "$GITHUB_OUTPUT"
+          cat "$RESULTS/repo-output.txt" >&2
 
       # The check records its status instead of failing here, so the later
       # steps can still write the result. The last step of the job fails it.
       - name: Check the config in plain language
         id: check
+        if: steps.repo.outputs.status == '0'
         env:
           TRUSTED: ${{ steps.trust.outputs.dir }}
           IMAGE: ${{ steps.trust.outputs.image }}
-          RESULTS: ${{ steps.results.outputs.dir }}
+          RESULTS: ${{ steps.trust.outputs.results }}
         run: |
           set +e
           against=()
@@ -159,11 +166,13 @@ jobs:
         if: ${{ !cancelled() }}
         env:
           TRUSTED: ${{ steps.trust.outputs.dir }}
-          RESULTS: ${{ steps.results.outputs.dir }}
+          RESULTS: ${{ steps.trust.outputs.results }}
+          REPO_STATUS: ${{ steps.repo.outputs.status }}
           CHECK_STATUS: ${{ steps.check.outputs.status }}
           BUILD_STATUS: ${{ steps.build.outputs.status }}
         run: |
           python3 -I "$TRUSTED/scripts/write-result.py" \
+            --repo-status "$REPO_STATUS" --repo-files "$RESULTS/repo-output.txt" \
             --check-status "$CHECK_STATUS" --build-status "$BUILD_STATUS" \
             --check "$RESULTS/check.json" --out "$RESULTS/result.json"
 
@@ -173,12 +182,12 @@ jobs:
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: preview-result
-          path: ${{ steps.results.outputs.dir }}/result.json
+          path: ${{ steps.trust.outputs.results }}/result.json
           if-no-files-found: error
           retention-days: 1
 
       - name: Fail the job if the config or the build was not good
-        if: ${{ !cancelled() && (steps.check.outputs.status != '0' || steps.build.outputs.status != '0') }}
+        if: ${{ !cancelled() && (steps.repo.outputs.status != '0' || steps.check.outputs.status != '0' || steps.build.outputs.status != '0') }}
         run: |
           echo "::error::The preview did not pass. The pull request comment says what to fix."
           exit 1

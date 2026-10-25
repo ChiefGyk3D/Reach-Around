@@ -454,12 +454,64 @@ def preview_violations(text: str) -> list[str]:
                 found.append("preview: the trusted checkout lists other files")
         elif "ref" in with_:
             found.append("preview: the data checkout is not the default ref")
+    by_id = {s["id"]: s for s in steps if "id" in s}
+    repo = by_id.get("repo")
+    if repo is None:
+        found.append("preview: no repository check step with an id")
+    else:
+        run = repo.get("run", "")
+        if "set +e" not in run or 'echo "status=$?"' not in run:
+            found.append("preview: the repository check does not record its status")
+        if "check-repo.sh" not in run or "2>" not in run:
+            found.append("preview: the repository check output is not kept")
+    for step_id in ("check", "build"):
+        wanted = (
+            "steps.repo.outputs.status == '0'"
+            if step_id == "check"
+            else ("steps.check.outputs.status == '0'")
+        )
+        if step_id in by_id and by_id[step_id].get("if") != wanted:
+            found.append(f"preview: {step_id} is not skipped after a failed step")
+    results_ids = [s for s in steps if s.get("name", "").startswith("Make a fresh")]
+    if results_ids:
+        found.append("preview: the results folder is made after the trust step")
+    last = steps[-1].get("if", "")
+    for needle in (
+        "steps.repo.outputs.status != '0'",
+        "steps.check.outputs.status != '0'",
+        "steps.build.outputs.status != '0'",
+    ):
+        if needle not in last:
+            found.append(f"preview: the last step does not fail on {needle}")
+    writes = [s for s in steps if "write-result.py" in s.get("run", "")]
+    if len(writes) != 1:
+        found.append("preview: not exactly one result writer")
+    else:
+        if "--repo-status" not in writes[0]["run"]:
+            found.append("preview: the result lacks the repository status")
+        if writes[0].get("if") != "${{ !cancelled() }}":
+            found.append("preview: the result is not always written")
+    upload_idx = [
+        i
+        for i, s in enumerate(steps)
+        if s.get("with", {}).get("name") == "preview-result"
+    ]
+    if len(upload_idx) != 1 or steps[upload_idx[0]].get("if") != "${{ !cancelled() }}":
+        found.append("preview: the result is not always uploaded")
+    elif len(steps) - 1 <= upload_idx[0]:
+        found.append("preview: the job fails before the result is uploaded")
     trust = [s for s in steps if s.get("id") == "trust"]
     if len(trust) != 1:
         found.append("preview: no trust step")
     else:
         run = trust[0]["run"]
-        for needle in ("chmod -R a-w", "mktemp -d", '"$dir/scripts/read-lock.sh"'):
+        for needle in (
+            "chmod -R a-w",
+            "mktemp -d",
+            '"$dir/scripts/read-lock.sh"',
+            "preview-results.XXXXXX",
+            "results=",
+        ):
             if needle not in run:
                 found.append(f"preview: the trust step lacks {needle}")
         if steps.index(trust[0]) > min(
@@ -762,6 +814,42 @@ def test_the_preview_guard_bites() -> None:
             "            scripts/deploy-local.sh\n",
         ),
         "trusted copy left writable": good.replace("chmod -R a-w", "chmod -R u+w"),
+        # --- a forbidden file must still produce a comment
+        "repo check aborts the job": good.replace(
+            '          set +e\n          bash "$TRUSTED/scripts/check-repo.sh"',
+            '          bash "$TRUSTED/scripts/check-repo.sh"',
+        ),
+        "repo output not kept": good.replace(' 2> "$RESULTS/repo-output.txt"', ""),
+        "engine check runs after a failed repo check": good.replace(
+            "        if: steps.repo.outputs.status == '0'\n", ""
+        ),
+        "build runs after a failed check": good.replace(
+            "        if: steps.check.outputs.status == '0'\n        env:",
+            "        env:",
+        ),
+        "repo status not in the result": good.replace(
+            '            --repo-status "$REPO_STATUS" '
+            '--repo-files "$RESULTS/repo-output.txt" \\\n',
+            "",
+        ),
+        "result written only on success": good.replace(
+            "      - name: Write the result file\n        if: ${{ !cancelled() }}",
+            "      - name: Write the result file\n        if: success()",
+        ),
+        "result upload only on success": good.replace(
+            "      - name: Keep the result for the comment job\n"
+            "        if: ${{ !cancelled() }}",
+            "      - name: Keep the result for the comment job\n        if: success()",
+        ),
+        "job not failed by a forbidden file": good.replace(
+            "(steps.repo.outputs.status != '0' || ", "("
+        ),
+        "results folder made later": good.replace(
+            "      - name: Check the config in plain language",
+            "      - name: Make a fresh folder for the results\n"
+            "        run: echo later\n\n"
+            "      - name: Check the config in plain language",
+        ),
         "step before the trust step": good.replace(
             "      - name: Fetch the trusted scripts",
             "      - run: echo early\n      - name: Fetch the trusted scripts",
@@ -1158,7 +1246,7 @@ def test_write_result_bundles_statuses_and_the_engine_json(tmp_path: Path) -> No
     check.write_text('{"valid": true}', encoding="utf-8")
     out = tmp_path / "result.json"
     done = _write_result(
-        root, "--check-status", "0", "--build-status", "0",
+        root, "--repo-status", "0", "--check-status", "0", "--build-status", "0",
         "--check", str(check), "--out", str(out),
     )  # fmt: skip
     assert done.returncode == 0, done.stderr
@@ -1166,6 +1254,8 @@ def test_write_result_bundles_statuses_and_the_engine_json(tmp_path: Path) -> No
         "check_status": 0,
         "build_status": 0,
         "check": {"valid": True},
+        "repo_status": 0,
+        "repo_files": [],
     }
 
 
@@ -1235,7 +1325,15 @@ def test_the_template_round_trip_from_the_engine_to_the_comment(
     result = tmp_path / "result.json"
     assert (
         _write_result(
-            root, "--check-status", "2", "--check", str(check), "--out", str(result)
+            root,
+            "--repo-status",
+            "0",
+            "--check-status",
+            "2",
+            "--check",
+            str(check),
+            "--out",
+            str(result),
         ).returncode
         == 0
     )
@@ -1506,3 +1604,183 @@ def test_check_repo_checks_the_root_it_is_given_not_its_own_folder(
         [BASH, script], capture_output=True, text=True, check=False, env=env
     )
     assert clean.returncode == 0, clean.stderr
+
+
+def test_write_result_records_the_forbidden_file_names_only(tmp_path: Path) -> None:
+    root = _copy_template(tmp_path)
+    output = tmp_path / "repo-output.txt"
+    output.write_text(
+        "These files must not be in the repository:\n"
+        "  config/.env\n"
+        "  keys/id_rsa\n"
+        "  evil\x00name/x.pem\n"
+        "Remove them from Git (git rm --cached <file>) and keep them private.\n"
+        "If one held a real token, revoke the token first.\n",
+        encoding="utf-8",
+    )
+    out = tmp_path / "result.json"
+    done = _write_result(
+        root, "--repo-status", "1", "--repo-files", str(output), "--out", str(out)
+    )
+    assert done.returncode == 0, done.stderr
+    data = json.loads(out.read_text(encoding="utf-8"))
+    assert data["repo_status"] == 1
+    assert data["repo_files"] == [".env", "id_rsa", "x.pem"]  # base names only
+    assert data["check_status"] == 3 and data["check"] is None
+    # names are not recorded when the check passed
+    (tmp_path / "b").mkdir()
+    out2 = tmp_path / "b" / "result.json"
+    _write_result(
+        root, "--repo-status", "0", "--repo-files", str(output), "--out", str(out2)
+    )
+    assert json.loads(out2.read_text(encoding="utf-8"))["repo_files"] == []
+    # a missing status means the check did not run
+    out3 = tmp_path / "b" / "r3.json"
+    _write_result(root, "--out", str(out3))
+    assert json.loads(out3.read_text(encoding="utf-8"))["repo_status"] == 3
+
+
+# --- end to end: a forbidden file still produces a comment ------------------------
+
+
+def _steps_by_id() -> dict[str, dict[str, Any]]:
+    steps = yaml.safe_load(preview_text())["jobs"]["preview"]["steps"]
+    return {s["id"]: s for s in steps if "id" in s}
+
+
+def _named_step(name: str) -> dict[str, Any]:
+    steps = yaml.safe_load(preview_text())["jobs"]["preview"]["steps"]
+    return next(s for s in steps if s.get("name") == name)
+
+
+class _Run:
+    """Run the preview job's own shell steps in a scratch workspace."""
+
+    def __init__(self, tmp_path: Path, forbidden: str | None) -> None:
+        self.work = tmp_path / "work"
+        self.work.mkdir()
+        shutil.copytree(TEMPLATE, self.work / "trusted-src")
+        shutil.copytree(TEMPLATE, self.work / "pr")
+        if forbidden:
+            target = self.work / "pr" / forbidden
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text("SECRET=1\n", encoding="utf-8")
+        self.runner_temp = tmp_path / "runner-temp"
+        self.runner_temp.mkdir()
+        self.output = tmp_path / "github-output"
+        self.output.write_text("", encoding="utf-8")
+        self.bin = tmp_path / "bin"
+        self.bin.mkdir()
+        (self.bin / "python3").symlink_to(sys.executable)
+        for tool in (
+            "bash", "cp", "chmod", "mktemp", "git", "find", "sed", "cat", "grep",
+            "dirname", "basename", "wc", "head", "tr", "id", "rm", "mkdir", "touch",
+            "readlink", "cut", "sort", "uname", "tee",
+        ):  # fmt: skip
+            for folder in ("/usr/bin", "/bin"):
+                if (Path(folder) / tool).exists():
+                    (self.bin / tool).symlink_to(Path(folder) / tool)
+                    break
+        self.docker_log = tmp_path / "docker-called"
+        docker = self.bin / "docker"
+        docker.write_text(
+            f"#!/bin/bash\ntouch {self.docker_log}\nexit 9\n", encoding="utf-8"
+        )
+        docker.chmod(0o755)
+        self.outputs: dict[str, str] = {}
+
+    def run(self, step: dict[str, Any], **env: str) -> subprocess.CompletedProcess[str]:
+        self.output.write_text("", encoding="utf-8")
+        full = {
+            "PATH": str(self.bin),
+            "RUNNER_TEMP": str(self.runner_temp),
+            "GITHUB_OUTPUT": str(self.output),
+            "HOME": str(self.work),
+            **env,
+        }
+        done = subprocess.run(  # noqa: S603 - the workflow's own step text
+            [str(self.bin / "bash"), "-e", "-c", step["run"]],
+            cwd=self.work, env=full, capture_output=True, text=True, check=False,
+        )  # fmt: skip
+        for line in self.output.read_text(encoding="utf-8").splitlines():
+            key, _, value = line.partition("=")
+            self.outputs[f"{step.get('id', '')}.{key}"] = value
+        return done
+
+
+@pytest.mark.parametrize(
+    "forbidden", [".env", "keys/server.pem", "deep/er/id_rsa", "x/wrangler.deploy.toml"]
+)
+def test_a_forbidden_file_still_produces_a_comment_end_to_end(
+    tmp_path: Path, request: pytest.FixtureRequest, forbidden: str
+) -> None:
+    run = _Run(tmp_path, forbidden)
+    steps = _steps_by_id()
+    done = run.run(steps["trust"])
+    assert done.returncode == 0, done.stderr
+    trusted = run.outputs["trust.dir"]
+    results = run.outputs["trust.results"]
+    request.addfinalizer(
+        lambda: subprocess.run(["chmod", "-R", "u+w", trusted], check=False)  # noqa: S603, S607 - cleanup
+    )
+    assert Path(results).is_dir() and not results.startswith(str(run.work))
+
+    # the repository check fails but the step records it and ends cleanly
+    done = run.run(steps["repo"], TRUSTED=trusted, RESULTS=results)
+    assert done.returncode == 0, done.stderr
+    assert run.outputs["repo.status"] == "1"
+    assert Path(forbidden).name in done.stderr
+
+    # the engine steps are skipped by their conditions, so nothing starts
+    assert steps["check"]["if"] == "steps.repo.outputs.status == '0'"
+    assert not run.docker_log.exists()
+
+    # the result is written anyway
+    write = _named_step("Write the result file")
+    done = run.run(
+        write, TRUSTED=trusted, RESULTS=results, REPO_STATUS="1",
+        CHECK_STATUS="", BUILD_STATUS="",
+    )  # fmt: skip
+    assert done.returncode == 0, done.stderr
+    result = Path(results) / "result.json"
+    data = json.loads(result.read_text(encoding="utf-8"))
+    assert data["repo_status"] == 1
+    assert data["repo_files"] == [Path(forbidden).name]
+    assert data["check_status"] == 3 and data["check"] is None
+
+    # and the trusted renderer turns it into the plain-language comment
+    comment = tmp_path / "comment.md"
+    rendered = subprocess.run(  # noqa: S603 - fixed argv
+        [
+            sys.executable, "-I", str(TEMPLATE / "scripts" / "render-comment.py"),
+            "--in", str(result), "--out", str(comment),
+            "--preview-result", "failure", "--repo", "example/site",
+            "--workflow", "Preview",
+        ],
+        capture_output=True, text=True, check=False,
+    )  # fmt: skip
+    assert rendered.returncode == 0, rendered.stderr
+    text = comment.read_text(encoding="utf-8")
+    assert "## A file that must not be committed is in this change" in text
+    assert f"`{Path(forbidden).name}`" in text
+    assert "SECRET" not in text  # file contents are never read
+
+    # the job fails only afterwards, and that step is the last one
+    steps_all = yaml.safe_load(preview_text())["jobs"]["preview"]["steps"]
+    assert steps_all[-1]["name"].startswith("Fail the job")
+    assert "steps.repo.outputs.status != '0'" in steps_all[-1]["if"]
+
+
+def test_a_clean_repository_check_records_status_zero(
+    tmp_path: Path, request: pytest.FixtureRequest
+) -> None:
+    run = _Run(tmp_path, None)
+    steps = _steps_by_id()
+    assert run.run(steps["trust"]).returncode == 0
+    trusted, results = run.outputs["trust.dir"], run.outputs["trust.results"]
+    request.addfinalizer(
+        lambda: subprocess.run(["chmod", "-R", "u+w", trusted], check=False)  # noqa: S603, S607 - cleanup
+    )
+    done = run.run(steps["repo"], TRUSTED=trusted, RESULTS=results)
+    assert done.returncode == 0, done.stderr
+    assert run.outputs["repo.status"] == "0"

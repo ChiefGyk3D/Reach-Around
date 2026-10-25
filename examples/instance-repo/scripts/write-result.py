@@ -47,6 +47,32 @@ def read_check(path: str | None) -> Any:
         return None
 
 
+def read_names(path: str | None) -> list[str]:
+    """File names from check-repo.sh's output: the lines it indents."""
+    if not path:
+        return []
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except OSError:
+        return []
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode):
+            return []
+        data = os.read(fd, MAX_CHECK)
+    except OSError:
+        return []
+    finally:
+        os.close(fd)
+    names: list[str] = []
+    for line in data.decode("utf-8", "replace").splitlines():
+        if line.startswith("  ") and line.strip():
+            base = os.path.basename(line.strip())
+            if base and len(base) <= 200:
+                names.append(base)
+    return names[:10]
+
+
 def status(text: str | None, default: int | None) -> int | None:
     if text is None or text == "":
         return default
@@ -63,12 +89,19 @@ def main() -> int:
     parser.add_argument("--check-status")
     parser.add_argument("--build-status")
     parser.add_argument("--check")
+    parser.add_argument("--repo-status")
+    parser.add_argument("--repo-files")
     parser.add_argument("--out", required=True)
     args = parser.parse_args()
+    repo_status = status(args.repo_status, 3)
+    if repo_status == 2:
+        repo_status = 3
     result = {
         "check_status": status(args.check_status, 3),
         "build_status": status(args.build_status, None),
         "check": read_check(args.check),
+        "repo_status": repo_status,
+        "repo_files": read_names(args.repo_files) if repo_status == 1 else [],
     }
     parent = os.path.dirname(os.path.abspath(args.out))
     if os.path.realpath(parent) != parent:
