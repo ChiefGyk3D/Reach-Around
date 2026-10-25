@@ -11,6 +11,7 @@ from pathlib import Path
 
 import pytest
 
+from assetpaths import asset, asset_file, has_asset, read
 from reach_around.cli import main
 from reach_around.config import SiteConfig, load_site_config
 from reach_around.preview import Preview, PreviewError
@@ -143,7 +144,7 @@ def test_build_command_accepts_overrides(tmp_path: Path, overrides: Path) -> Non
     out = tmp_path / "out"
     args = ["build", "--config", str(EXAMPLE), "--out", str(out)]
     assert main([*args, "--overrides", str(overrides)]) == 0
-    assert (out / "static" / "custom.css").is_file()
+    assert asset_file(out, "static/custom.css").is_file()
 
 
 def test_custom_css_is_appended_after_the_theme(
@@ -152,17 +153,19 @@ def test_custom_css_is_appended_after_the_theme(
     (overrides / "custom.css").write_text(".x { color: red; }\n")
     out = tmp_path / "out"
     build(out, overrides)
-    assert (out / "static" / "custom.css").read_text() == ".x { color: red; }\n"
+    assert read(out, "static/custom.css") == ".x { color: red; }\n"
+    theme, custom = asset(out, "static/theme.css"), asset(out, "static/custom.css")
     for page in (out / "index.html", out / "privacy" / "index.html"):
         html = page.read_text()
-        assert html.index("static/theme.css") < html.index("static/custom.css")
+        assert html.index(theme) < html.index(custom)
 
 
 def test_no_custom_css_means_no_link(tmp_path: Path) -> None:
     out = tmp_path / "out"
     build(out)
     assert "custom.css" not in (out / "index.html").read_text()
-    assert not (out / "static" / "custom.css").exists()
+    assert not has_asset(out, "static/custom.css")
+    assert not list((out / "static").glob("custom*"))
 
 
 @pytest.mark.parametrize(
@@ -250,7 +253,10 @@ def test_no_custom_javascript_is_loaded(
         build(out, overrides)
     assert "custom.js" in caplog.text and "more.js" in caplog.text
     assert "ignored" in caplog.text
-    assert {p.name for p in out.rglob("*.js")} == {"click.js"}  # the packaged one
+    # the packaged one, under its hashed name
+    assert [p.relative_to(out).as_posix() for p in out.rglob("*.js")] == [
+        asset(out, "static/click.js")
+    ]
     html = "".join(p.read_text() for p in out.rglob("*.html"))
     assert "custom.js" not in html and "more.js" not in html
 

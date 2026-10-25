@@ -1,5 +1,5 @@
 {# SPDX-License-Identifier: Apache-2.0 #}
-{% set src = block.src if ":" in block.src else root ~ block.src %}
+{% set src = asset_url(block.src, root) %}
 <li class="block block-image">
 {% if block.link %}
 <a class="image-link" href="{{ block.link }}" rel="noopener noreferrer"><img class="image" src="{{ src }}" alt="{{ block.alt }}" loading="lazy" referrerpolicy="no-referrer"></a>

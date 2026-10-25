@@ -12,6 +12,7 @@ from typing import Any
 import pytest
 from pydantic import ValidationError
 
+from assetpaths import asset, asset_file, read
 from reach_around.config import SiteConfig
 from reach_around.config.theme import Theme
 from reach_around.site.assetcheck import check_content
@@ -159,11 +160,18 @@ def test_dimming_adds_no_inline_style_and_changes_only_theme_css(
     plain, dim = tmp_path / "plain", tmp_path / "dim"
     build_site(config(), plain, today=TODAY)
     build_site(config(background_dim=0.6), dim, today=TODAY)
+    plain_theme = asset(plain, "static/theme.css")
+    dim_theme = asset(dim, "static/theme.css")
+    assert plain_theme != dim_theme
     for page in ("index.html", "privacy/index.html"):
-        assert (plain / page).read_bytes() == (dim / page).read_bytes()
+        # the pages differ only in the name of the theme stylesheet they link
+        before = (plain / page).read_text().replace(plain_theme, "THEME")
+        after = (dim / page).read_text().replace(dim_theme, "THEME")
+        assert before == after
+        assert "THEME" in after
         assert b"style=" not in (dim / page).read_bytes()
-    assert (plain / "static" / "theme.css").read_text() == ":root {\n}\n"
-    assert "--ra-bg-dim: 0.6;" in (dim / "static" / "theme.css").read_text()
+    assert read(plain, "static/theme.css") == ":root {\n}\n"
+    assert "--ra-bg-dim: 0.6;" in read(dim, "static/theme.css")
 
 
 # --- the icon set -------------------------------------------------------------
@@ -213,5 +221,5 @@ def test_a_link_with_a_new_icon_slug_renders_the_icon(tmp_path: Path) -> None:
     build_site(config(), out, today=TODAY)
     html = (out / "index.html").read_text()
     assert "icon-merch" in html and "icon-bitcoin" in html
-    assert (out / "static" / "icons" / "merch.svg").is_file()
-    assert (out / "static" / "icons" / "bitcoin.svg").is_file()
+    assert asset_file(out, "static/icons/merch.svg").is_file()
+    assert asset_file(out, "static/icons/bitcoin.svg").is_file()

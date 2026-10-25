@@ -6,6 +6,7 @@ from datetime import date
 from pathlib import Path
 from typing import Any
 
+from assetpaths import asset
 from reach_around.config import SiteConfig, load_site_config
 from reach_around.config.footer import CREDIT_URL
 from reach_around.site.build import build_site, manifest_json
@@ -59,12 +60,13 @@ def test_assets_and_nav_are_root_relative(tmp_path: Path) -> None:
         creator={"name": "Example Creator", "avatar": "media/mascot.svg"},
     )
     text = build(tmp_path, config)
+    out = tmp_path / "out"
     for needle in (
-        'href="/static/site.css"',
-        'href="/static/theme.css"',
+        f'href="/{asset(out, "static/site.css")}"',
+        f'href="/{asset(out, "static/theme.css")}"',
         'href="/privacy/"',
         'href="/more/"',
-        'src="/media/mascot.svg"',
+        f'src="/{asset(out, "media/mascot.svg")}"',
     ):
         assert needle in text, needle
     # A pure in-page fragment (the skip link) resolves against any URL.

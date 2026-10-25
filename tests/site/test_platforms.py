@@ -14,6 +14,7 @@ from typing import Any
 
 import pytest
 
+from assetpaths import asset, asset_file, has_asset
 from reach_around.config import SiteConfig, load_site_config
 from reach_around.config.blocks import PLATFORM_ICONS, PLATFORM_SLUGS, Platforms
 from reach_around.config.loader import ConfigError
@@ -29,7 +30,10 @@ CSS = STATIC / "platforms.css"
 TODAY = date(2027, 3, 10)
 NOW = datetime(2027, 3, 10, 12, 0, tzinfo=UTC)
 HOSTILE = "<script>alert(1)</script>"
-CSS_TAG = '<link rel="stylesheet" href="static/platforms.css">'
+CSS_TAG = re.compile(
+    r'<link rel="stylesheet" href="(?:\.\./)?static/platforms\.[0-9a-f]{10}\.css">'
+)
+CSS_REF = re.compile(r"platforms\.[0-9a-f]{10}\.css")
 
 
 def item(**over: Any) -> dict[str, Any]:
@@ -543,8 +547,9 @@ def test_numbers_never_reach_the_published_site(tmp_path: Path) -> None:
 
 def test_pages_without_the_block_do_not_mention_the_stylesheet(tmp_path: Path) -> None:
     out = build(cfg({"id": "rule"}), tmp_path)
-    assert "platforms.css" not in (out / "index.html").read_text("utf-8")
-    assert not (out / "static" / "platforms.css").exists()
+    assert not CSS_REF.search((out / "index.html").read_text("utf-8"))
+    assert not has_asset(out, "static/platforms.css")
+    assert not list((out / "static").glob("platforms*"))
 
 
 def test_only_pages_with_the_block_link_the_stylesheet(tmp_path: Path) -> None:
@@ -559,10 +564,10 @@ def test_only_pages_with_the_block_link_the_stylesheet(tmp_path: Path) -> None:
         }
     )
     out = build(config, tmp_path)
-    assert (out / "static" / "platforms.css").is_file()
-    assert CSS_TAG in (out / "index.html").read_text("utf-8")
-    assert "platforms.css" not in (out / "other" / "index.html").read_text("utf-8")
-    assert "platforms.css" not in (out / "privacy" / "index.html").read_text("utf-8")
+    assert asset_file(out, "static/platforms.css").is_file()
+    assert CSS_TAG.search((out / "index.html").read_text("utf-8"))
+    assert not CSS_REF.search((out / "other" / "index.html").read_text("utf-8"))
+    assert not CSS_REF.search((out / "privacy" / "index.html").read_text("utf-8"))
     assert "copy.js" not in (out / "index.html").read_text("utf-8")
 
 
@@ -570,9 +575,9 @@ def test_the_404_page_builds_beside_a_platforms_block(tmp_path: Path) -> None:
     out = build(cfg(block(item(count=5))), tmp_path)
     page_404 = (out / "404.html").read_text("utf-8")
     assert "That page does not exist." in page_404
-    assert "platforms.css" not in page_404
+    assert not CSS_REF.search(page_404)
     assert "platform-link" not in page_404
-    assert "platforms.css" in (out / "index.html").read_text("utf-8")
+    assert CSS_REF.search((out / "index.html").read_text("utf-8"))
 
 
 def test_a_block_on_a_later_tab_uses_relative_paths(tmp_path: Path) -> None:
@@ -587,9 +592,10 @@ def test_a_block_on_a_later_tab_uses_relative_paths(tmp_path: Path) -> None:
         }
     )
     out = build(config, tmp_path)
-    assert '<link rel="stylesheet" href="../static/platforms.css">' in (
-        out / "socials-tab" / "index.html"
-    ).read_text("utf-8")
+    assert (
+        f'<link rel="stylesheet" href="../{asset(out, "static/platforms.css")}">'
+        in (out / "socials-tab" / "index.html").read_text("utf-8")
+    )
 
 
 # --- the stylesheet ----------------------------------------------------------
@@ -659,6 +665,6 @@ def test_the_example_builds_with_a_socials_home(tmp_path: Path) -> None:
     manifest = build_site(config, out, today=TODAY, assets_dir=EXAMPLE.parent)
     html = (out / "index.html").read_text("utf-8")
     assert "platforms-chips" in html and "platforms-list" in html
-    assert "static/platforms.css" in html
+    assert asset(out, "static/platforms.css") in html
     assert len(manifest.links) >= 10
-    assert (out / "static" / "platforms.css").is_file()
+    assert asset_file(out, "static/platforms.css").is_file()

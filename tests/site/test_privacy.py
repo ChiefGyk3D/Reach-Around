@@ -6,6 +6,7 @@ from typing import Any
 
 import pytest
 
+from assetpaths import asset_file, has_asset
 from reach_around.config import SiteConfig
 from reach_around.site.build import build_site
 from reach_around.site.privacy import Disclosure, collected_items, sets_cookies
@@ -44,7 +45,9 @@ def text_of(items: list[Disclosure]) -> str:
     return " ".join(f"{i.what} {i.why} {i.kept}" for i in items)
 
 
-_CLICK_SCRIPT = re.compile(r'<script src="(?:\.\./)?static/click\.js" defer></script>')
+_CLICK_SCRIPT = re.compile(
+    r'<script src="(?:\.\./)?static/click\.[0-9a-f]{10}\.js" defer></script>'
+)
 
 
 def without_click_script(text: str) -> str:
@@ -199,7 +202,8 @@ def test_click_tracking_off_removes_ping_and_the_click_script(tmp_path: Path) ->
     text = read_all(tmp_path)
     assert "<script" not in text.lower()
     assert "ping=" not in text and "data-link-id" not in text
-    assert not (tmp_path / "static" / "click.js").exists()
+    assert not has_asset(tmp_path, "static/click.js")
+    assert not list((tmp_path / "static").glob("click*"))
 
 
 def test_click_tracking_on_adds_ping_and_exactly_one_script_per_page(
@@ -213,4 +217,4 @@ def test_click_tracking_on_adds_ping_and_exactly_one_script_per_page(
         expected = 0 if page.name == "404.html" else 1
         assert page.read_text().lower().count("<script") == expected, page
     assert 'ping="/e/c/one"' in (tmp_path / "index.html").read_text()
-    assert (tmp_path / "static" / "click.js").is_file()
+    assert asset_file(tmp_path, "static/click.js").is_file()

@@ -18,7 +18,7 @@
   font-style: normal;
   font-weight: 100 900;
   font-display: swap;
-  src: url("fonts/jost-latin-wght-normal.woff2") format("woff2");
+  src: url("fonts/jost-latin-wght-normal.7726a5cd6f.woff2") format("woff2");
 }
 
 :root {
@@ -226,28 +226,28 @@ a:focus-visible, summary:focus-visible, button:focus-visible {
   -webkit-mask-size: contain;
   mask-size: contain;
 }
-.icon-twitch { -webkit-mask-image: url("icons/twitch.svg"); mask-image: url("icons/twitch.svg"); }
-.icon-kick { -webkit-mask-image: url("icons/kick.svg"); mask-image: url("icons/kick.svg"); }
-.icon-mastodon { -webkit-mask-image: url("icons/mastodon.svg"); mask-image: url("icons/mastodon.svg"); }
-.icon-bluesky { -webkit-mask-image: url("icons/bluesky.svg"); mask-image: url("icons/bluesky.svg"); }
-.icon-tiktok { -webkit-mask-image: url("icons/tiktok.svg"); mask-image: url("icons/tiktok.svg"); }
-.icon-discord { -webkit-mask-image: url("icons/discord.svg"); mask-image: url("icons/discord.svg"); }
-.icon-youtube { -webkit-mask-image: url("icons/youtube.svg"); mask-image: url("icons/youtube.svg"); }
-.icon-github { -webkit-mask-image: url("icons/github.svg"); mask-image: url("icons/github.svg"); }
-.icon-instagram { -webkit-mask-image: url("icons/instagram.svg"); mask-image: url("icons/instagram.svg"); }
-.icon-threads { -webkit-mask-image: url("icons/threads.svg"); mask-image: url("icons/threads.svg"); }
-.icon-matrix { -webkit-mask-image: url("icons/matrix.svg"); mask-image: url("icons/matrix.svg"); }
-.icon-x { -webkit-mask-image: url("icons/x.svg"); mask-image: url("icons/x.svg"); }
-.icon-linkedin { -webkit-mask-image: url("icons/linkedin.svg"); mask-image: url("icons/linkedin.svg"); }
-.icon-patreon { -webkit-mask-image: url("icons/patreon.svg"); mask-image: url("icons/patreon.svg"); }
-.icon-email { -webkit-mask-image: url("icons/email.svg"); mask-image: url("icons/email.svg"); }
-.icon-rss { -webkit-mask-image: url("icons/rss.svg"); mask-image: url("icons/rss.svg"); }
-.icon-link { -webkit-mask-image: url("icons/link.svg"); mask-image: url("icons/link.svg"); }
-.icon-bitcoin { -webkit-mask-image: url("icons/bitcoin.svg"); mask-image: url("icons/bitcoin.svg"); }
-.icon-ethereum { -webkit-mask-image: url("icons/ethereum.svg"); mask-image: url("icons/ethereum.svg"); }
-.icon-merch { -webkit-mask-image: url("icons/merch.svg"); mask-image: url("icons/merch.svg"); }
-.icon-monero { -webkit-mask-image: url("icons/monero.svg"); mask-image: url("icons/monero.svg"); }
-.icon-solana { -webkit-mask-image: url("icons/solana.svg"); mask-image: url("icons/solana.svg"); }
+.icon-twitch { -webkit-mask-image: url("icons/twitch.fd41bf446e.svg"); mask-image: url("icons/twitch.fd41bf446e.svg"); }
+.icon-kick { -webkit-mask-image: url("icons/kick.4692fe8f88.svg"); mask-image: url("icons/kick.4692fe8f88.svg"); }
+.icon-mastodon { -webkit-mask-image: url("icons/mastodon.f2bb67ff27.svg"); mask-image: url("icons/mastodon.f2bb67ff27.svg"); }
+.icon-bluesky { -webkit-mask-image: url("icons/bluesky.1c4e5e55b6.svg"); mask-image: url("icons/bluesky.1c4e5e55b6.svg"); }
+.icon-tiktok { -webkit-mask-image: url("icons/tiktok.d59ebd3115.svg"); mask-image: url("icons/tiktok.d59ebd3115.svg"); }
+.icon-discord { -webkit-mask-image: url("icons/discord.43d952eeb4.svg"); mask-image: url("icons/discord.43d952eeb4.svg"); }
+.icon-youtube { -webkit-mask-image: url("icons/youtube.262c94adb9.svg"); mask-image: url("icons/youtube.262c94adb9.svg"); }
+.icon-github { -webkit-mask-image: url("icons/github.547f752a88.svg"); mask-image: url("icons/github.547f752a88.svg"); }
+.icon-instagram { -webkit-mask-image: url("icons/instagram.558edc7153.svg"); mask-image: url("icons/instagram.558edc7153.svg"); }
+.icon-threads { -webkit-mask-image: url("icons/threads.be0c165529.svg"); mask-image: url("icons/threads.be0c165529.svg"); }
+.icon-matrix { -webkit-mask-image: url("icons/matrix.0d0f6bea5f.svg"); mask-image: url("icons/matrix.0d0f6bea5f.svg"); }
+.icon-x { -webkit-mask-image: url("icons/x.6805de5726.svg"); mask-image: url("icons/x.6805de5726.svg"); }
+.icon-linkedin { -webkit-mask-image: url("icons/linkedin.535cefdf3c.svg"); mask-image: url("icons/linkedin.535cefdf3c.svg"); }
+.icon-patreon { -webkit-mask-image: url("icons/patreon.c8d7799357.svg"); mask-image: url("icons/patreon.c8d7799357.svg"); }
+.icon-email { -webkit-mask-image: url("icons/email.56b6ec9506.svg"); mask-image: url("icons/email.56b6ec9506.svg"); }
+.icon-rss { -webkit-mask-image: url("icons/rss.1811d3377c.svg"); mask-image: url("icons/rss.1811d3377c.svg"); }
+.icon-link { -webkit-mask-image: url("icons/link.14fa9e41d1.svg"); mask-image: url("icons/link.14fa9e41d1.svg"); }
+.icon-bitcoin { -webkit-mask-image: url("icons/bitcoin.6cc1105757.svg"); mask-image: url("icons/bitcoin.6cc1105757.svg"); }
+.icon-ethereum { -webkit-mask-image: url("icons/ethereum.095d94ffe3.svg"); mask-image: url("icons/ethereum.095d94ffe3.svg"); }
+.icon-merch { -webkit-mask-image: url("icons/merch.177fa7fb69.svg"); mask-image: url("icons/merch.177fa7fb69.svg"); }
+.icon-monero { -webkit-mask-image: url("icons/monero.e885750b71.svg"); mask-image: url("icons/monero.e885750b71.svg"); }
+.icon-solana { -webkit-mask-image: url("icons/solana.bfd79a6096.svg"); mask-image: url("icons/solana.bfd79a6096.svg"); }
 
 
 /* Header: avatar at the left, the name beside it, the social icons below the name. */

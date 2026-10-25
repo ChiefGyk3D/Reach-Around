@@ -14,6 +14,7 @@ from typing import Any
 
 import pytest
 
+from assetpaths import asset, asset_file, has_asset
 from reach_around.config import SiteConfig, load_site_config
 from reach_around.config.loader import ConfigError
 from reach_around.site.build import build_site
@@ -29,8 +30,14 @@ NOTE = "Check the first and last characters of the address before you send anyth
 GOOD_PNG = b"\x89PNG\r\n\x1a\nsynthetic\x00\x00\x00\x00IEND\xaeB`\x82"
 HOSTILE = "<script>alert(1)</script>"
 
-SCRIPT_TAG = '<script src="static/copy.js" defer></script>'
-CSS_TAG = '<link rel="stylesheet" href="static/crypto.css">'
+SCRIPT_TAG = re.compile(
+    r'<script src="(?:\.\./)?static/copy\.[0-9a-f]{10}\.js" defer></script>'
+)
+CSS_TAG = re.compile(
+    r'<link rel="stylesheet" href="(?:\.\./)?static/crypto\.[0-9a-f]{10}\.css">'
+)
+COPY_REF = re.compile(r"copy\.[0-9a-f]{10}\.js")
+CRYPTO_CSS_REF = re.compile(r"crypto\.[0-9a-f]{10}\.css")
 
 
 def coin(**over: Any) -> dict[str, Any]:
@@ -270,9 +277,9 @@ def test_qr_renders_inside_native_details_with_alt_and_lazy(tmp_path: Path) -> N
     )
     assert "<details" in html and "<summary" in html
     assert 'alt="QR code for Bitcoin address"' in html
-    img = re.search(r'<img[^>]*src="media/qr\.png"[^>]*>', html)
+    img = re.search(r'<img[^>]*src="media/qr\.[0-9a-f]{10}\.png"[^>]*>', html)
     assert img is not None and 'loading="lazy"' in img.group(0)
-    assert (tmp_path / "out" / "media" / "qr.png").read_bytes() == GOOD_PNG
+    assert asset_file(tmp_path / "out", "media/qr.png").read_bytes() == GOOD_PNG
 
 
 def test_qr_alt_text_is_escaped(tmp_path: Path) -> None:
@@ -307,9 +314,12 @@ def test_pages_without_a_crypto_block_do_not_mention_the_script(
 ) -> None:
     out = build(cfg({"id": "rule"}), tmp_path)
     html = (out / "index.html").read_text("utf-8")
+    assert not COPY_REF.search(html) and not CRYPTO_CSS_REF.search(html)
     assert "copy.js" not in html and "crypto.css" not in html
-    assert not (out / "static" / "copy.js").exists()
-    assert not (out / "static" / "crypto.css").exists()
+    assert not has_asset(out, "static/copy.js")
+    assert not has_asset(out, "static/crypto.css")
+    assert not list((out / "static").glob("copy*"))
+    assert not list((out / "static").glob("crypto*"))
 
 
 def test_only_crypto_pages_reference_the_script(tmp_path: Path) -> None:
@@ -324,29 +334,37 @@ def test_only_crypto_pages_reference_the_script(tmp_path: Path) -> None:
         }
     )
     out = build(config, tmp_path)
-    assert (out / "static" / "copy.js").is_file()
-    assert (out / "static" / "crypto.css").is_file()
+    assert asset_file(out, "static/copy.js").is_file()
+    assert asset_file(out, "static/crypto.css").is_file()
     home = (out / "index.html").read_text("utf-8")
     support = (out / "support" / "index.html").read_text("utf-8")
     privacy = (out / "privacy" / "index.html").read_text("utf-8")
-    assert "copy.js" not in home and "copy.js" not in privacy
-    assert "crypto.css" not in home and "crypto.css" not in privacy
-    assert SCRIPT_TAG.replace("static/", "../static/") in support
-    assert CSS_TAG.replace("static/", "../static/") in support
-    assert support.count("copy.js") == 1
+    for other in (home, privacy):
+        assert not COPY_REF.search(other)
+        assert not CRYPTO_CSS_REF.search(other)
+    copy_tag = SCRIPT_TAG.search(support)
+    assert copy_tag is not None
+    assert f'src="../{asset(out, "static/copy.js")}"' in copy_tag.group(0)
+    css_tag = CSS_TAG.search(support)
+    assert css_tag is not None
+    assert f'href="../{asset(out, "static/crypto.css")}"' in css_tag.group(0)
+    assert len(COPY_REF.findall(support)) == 1
 
 
 def test_a_crypto_block_on_the_first_tab_uses_root_relative_paths(
     tmp_path: Path,
 ) -> None:
     html = page(cfg(block()), tmp_path)
-    assert SCRIPT_TAG in html and CSS_TAG in html
+    assert SCRIPT_TAG.search(html) and CSS_TAG.search(html)
+    assert not re.search(
+        r'(?:src|href)="[^"]*static/(?:copy|crypto)\.(?:js|css)"', html
+    )
 
 
 def test_two_crypto_blocks_still_load_the_script_once(tmp_path: Path) -> None:
     second = block(coin(), id="pay-two")
     html = page(cfg(block(), second), tmp_path)
-    assert html.count("copy.js") == 1
+    assert len(COPY_REF.findall(html)) == 1
 
 
 # --- CSP safety --------------------------------------------------------------
@@ -372,7 +390,7 @@ def test_guard_bites() -> None:
     assert violations('<button onclick="x()">') == ["event handler"]
     assert violations('<p style="a">') == ["style attribute"]
     assert violations("<script>x</script>") == ["inline script"]
-    assert violations(SCRIPT_TAG) == []
+    assert violations('<script src="static/copy.js" defer></script>') == []
 
 
 def test_crypto_pages_stay_csp_safe(tmp_path: Path) -> None:
@@ -382,7 +400,7 @@ def test_crypto_pages_stay_csp_safe(tmp_path: Path) -> None:
         {"media/qr.png": GOOD_PNG},
     )
     assert violations(html) == []
-    assert "copy.js" in html
+    assert COPY_REF.search(html)
 
 
 def test_the_example_builds_and_is_csp_safe(tmp_path: Path) -> None:
@@ -393,7 +411,7 @@ def test_the_example_builds_and_is_csp_safe(tmp_path: Path) -> None:
     assert violations(html) == []
     assert html.count("<code") == 5
     assert "QR code for Bitcoin address" in html
-    assert (out / "media" / "qr-example.png").is_file()
+    assert asset_file(out, "media/qr-example.png").is_file()
     assert "Litecoin" in html
     headers = (out / "_headers").read_text("utf-8")
     assert "script-src 'self'" in headers

@@ -10,6 +10,7 @@ from typing import Any
 
 import pytest
 
+from assetpaths import asset_file
 from reach_around.config import SiteConfig
 from reach_around.site import assets
 from reach_around.site.assets import collect_assets
@@ -66,7 +67,7 @@ def test_an_image_block_with_an_image_extension_still_works(tmp_path: Path) -> N
     (work / "p.png").write_bytes(PNG)
     cfg = make(blocks=[{"id": "pic", "src": "p.png", "alt": "x"}])
     run(cfg, work, tmp_path / "out")
-    assert (tmp_path / "out" / "p.png").read_bytes() == PNG
+    assert asset_file(tmp_path / "out", "p.png").read_bytes() == PNG
 
 
 def _forge(cfg: SiteConfig, key: str, value: str) -> SiteConfig:
@@ -165,7 +166,7 @@ def test_confinement_does_not_depend_on_proc(
     (work / "media").mkdir()
     (work / "media" / "a.png").write_bytes(PNG)
     run(avatar_config(), work, tmp_path / "out2")
-    assert (tmp_path / "out2" / "media" / "a.png").read_bytes() == PNG
+    assert asset_file(tmp_path / "out2", "media/a.png").read_bytes() == PNG
 
 
 def test_a_fifo_is_refused_without_hanging(tmp_path: Path) -> None:

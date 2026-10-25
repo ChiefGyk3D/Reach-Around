@@ -11,6 +11,7 @@ from typing import Any
 import pytest
 from pydantic import ValidationError
 
+from assetpaths import asset, asset_file
 from reach_around.config import SiteConfig
 from reach_around.config.models import Link
 from reach_around.site.assets import collect_assets, referenced_assets
@@ -225,13 +226,13 @@ def test_renders_a_lazy_sized_square_img_with_alt(tmp_path: Path) -> None:
     match = re.search(r'<img class="link-thumb"[^>]*>', html)
     assert match, html
     tag = match.group(0)
-    assert 'src="t/a.png"' in tag
+    assert f'src="{asset(out, "t/a.png")}"' in tag
     assert 'alt="Logo of One"' in tag
     assert 'loading="lazy"' in tag
     assert 'decoding="async"' in tag
     assert 'width="44"' in tag and 'height="44"' in tag
     assert "referrerpolicy" in tag
-    assert (out / "t" / "a.png").read_bytes() == PNG
+    assert asset_file(out, "t/a.png").read_bytes() == PNG
 
 
 def test_default_alt_is_empty_so_it_is_decorative(tmp_path: Path) -> None:
@@ -293,7 +294,7 @@ def test_section_link_on_second_tab_uses_the_right_prefix(tmp_path: Path) -> Non
     )
     out = tmp_path / "out"
     build_site(cfg, out, today=TODAY, assets_dir=work)
-    assert 'src="../a.png"' in (out / "b" / "index.html").read_text()
+    assert f'src="../{asset(out, "a.png")}"' in (out / "b" / "index.html").read_text()
 
 
 def test_stylesheet_crops_the_thumbnail_with_tokens() -> None:

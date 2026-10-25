@@ -124,7 +124,9 @@ def test_no_script_in_any_page(tmp_path: Path) -> None:
         # Exactly one script tag per page: the external, deferred click.js.
         text = page.read_text().lower()
         assert text.count("<script") == 1
-        assert '<script src="' in text and 'click.js" defer></script>' in text
+        assert re.search(
+            r'<script src="[^"]*static/click\.[0-9a-f]{10}\.js" defer></script>', text
+        )
         assert 'href=""' not in page.read_text()
 
 

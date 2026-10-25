@@ -12,7 +12,7 @@ from __future__ import annotations
 import json
 import shutil
 from collections.abc import Callable, Iterable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from datetime import date
 from importlib import resources
 from pathlib import Path
@@ -28,6 +28,9 @@ from reach_around.config.page_title import DEFAULT_TEMPLATE, render_template
 from reach_around.config.profile_card import MEDIA_KIT_ID
 from reach_around.config.tablinks import is_tab_ref, parse_tab_ref
 from reach_around.site.assets import collect_assets
+from reach_around.site.cachepolicy import cache_patterns
+from reach_around.site.fingerprint import AssetMap, fingerprint
+from reach_around.site.inventory import InventoryEntry, build_inventory
 from reach_around.site.overrides import (
     load_custom_css,
     make_environment,
@@ -49,6 +52,9 @@ class BuildManifest:
     """
 
     links: dict[str, str]
+    # Every published file with its hash, size and cache class (see
+    # ``reach_around.site.inventory``); filled in by ``build_site``.
+    inventory: dict[str, InventoryEntry] = field(default_factory=dict)
 
 
 def _links_in(blocks: Iterable[Block]) -> list[Link]:
@@ -94,6 +100,27 @@ def _page_path(tab_index: int, tab: Tab) -> Path:
     if tab_index == 0:
         return Path("index.html")
     return Path(tab.id) / "index.html"
+
+
+def _page_paths(config: SiteConfig) -> set[Path]:
+    """Every HTML file the build writes."""
+    pages = {_page_path(i, tab) for i, tab in enumerate(config.tabs)}
+    return pages | {Path("privacy") / "index.html", Path("404.html")}
+
+
+def _asset_url(assets: AssetMap) -> Callable[[str, str], str]:
+    """``asset_url(value, root)``: a local file's hashed URL, a remote one as is.
+
+    Config values such as an avatar may be an https URL or a path inside the
+    instance; a template calls this and does not care which.
+    """
+
+    def asset_url(value: str, root: str) -> str:
+        if ":" in value or value.startswith("//"):
+            return value
+        return root + assets(value)
+
+    return asset_url
 
 
 def _nav(config: SiteConfig, current: int, root: str) -> list[dict[str, Any]]:
@@ -383,49 +410,62 @@ def build_site(
     """
     shown = [list(visible_blocks(tab.blocks, today)) for tab in config.tabs]
     manifest = _manifest(config, shown)
-    env = make_environment(overrides)
-    env.globals["platform_rows"] = lambda block: platform_rows(block, numbers)
     custom_css = load_custom_css(overrides)
     warn_about_javascript(overrides)
+    # Static files first: pages name them by content hash, so the names must
+    # exist before any page is rendered. Nothing is written yet.
+    static = _static_files()
+    pages_at = _page_paths(config)
+    for rel, data in collect_assets(config, assets_dir).items():
+        if rel in static or rel in pages_at:
+            raise ValueError(f"{rel} would overwrite a file the build writes itself")
+        static[rel] = data
+    if not config.features.click_tracking:
+        static.pop(Path("static") / "click.js", None)
+    if not config.analytics.page_views:
+        static.pop(Path("static") / "view.js", None)
+    if not any(_has_crypto(blocks) for blocks in shown):
+        for rel in _CRYPTO_FILES:
+            static.pop(rel, None)
+    if not any(_has_email(blocks) for blocks in shown):
+        static.pop(_EMAIL_STYLE, None)
+    if not any(_has_email_script(blocks) for blocks in shown):
+        static.pop(_EMAIL_SCRIPT, None)
+    if not any(_has_platforms(blocks) for blocks in shown):
+        for rel in _PLATFORMS_FILES:
+            static.pop(rel, None)
+    static[Path("static") / "theme.css"] = theme_css(config.theme).encode("utf-8")
+    if custom_css is not None:
+        static[Path("static") / "custom.css"] = custom_css.encode("utf-8")
+    named = fingerprint(static)
+    env = make_environment(overrides)
+    env.globals["platform_rows"] = lambda block: platform_rows(block, numbers)
+    env.globals["asset"] = named.assets
+    env.globals["asset_url"] = _asset_url(named.assets)
     files: dict[Path, bytes] = {
         page: html.encode("utf-8")
         for page, html in _render_pages(
             env, config, shown, custom_css is not None
         ).items()
     }
-    files.update(_static_files())
-    for rel, data in collect_assets(config, assets_dir).items():
-        if rel in files:
-            raise ValueError(f"{rel} would overwrite a file the build writes itself")
-        files[rel] = data
-    if not config.features.click_tracking:
-        files.pop(Path("static") / "click.js", None)
-    if not config.analytics.page_views:
-        files.pop(Path("static") / "view.js", None)
-    if not any(_has_crypto(blocks) for blocks in shown):
-        for rel in _CRYPTO_FILES:
-            files.pop(rel, None)
-    if not any(_has_email(blocks) for blocks in shown):
-        files.pop(_EMAIL_STYLE, None)
-    if not any(_has_email_script(blocks) for blocks in shown):
-        files.pop(_EMAIL_SCRIPT, None)
-    if not any(_has_platforms(blocks) for blocks in shown):
-        for rel in _PLATFORMS_FILES:
-            files.pop(rel, None)
-    files[Path("static") / "theme.css"] = theme_css(config.theme).encode("utf-8")
-    if custom_css is not None:
-        files[Path("static") / "custom.css"] = custom_css.encode("utf-8")
+    files.update(named.files)
     robots = config.robots
-    files[Path("_headers")] = render_headers(
-        noindex_paths=robots.noindex_paths if robots else ()
-    ).encode("utf-8")
     if robots is not None:
         if Path("robots.txt") in files:
             raise ValueError(
                 "robots.txt would overwrite a file the build writes itself"
             )
         files[Path("robots.txt")] = render_robots(robots).encode("ascii")
+    published = {path.as_posix() for path in files}
+    immutable, revalidate = cache_patterns(
+        published, {path.as_posix() for path in named.hashed}
+    )
+    files[Path("_headers")] = render_headers(
+        noindex_paths=robots.noindex_paths if robots else (),
+        immutable_paths=immutable,
+        revalidate_paths=revalidate,
+    ).encode("utf-8")
     out = _check_out_dir(out_dir, protect)
     _empty(out)
     _write(out, files)
-    return manifest
+    return replace(manifest, inventory=build_inventory(files, named.hashed))
