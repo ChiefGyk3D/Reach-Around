@@ -24,11 +24,14 @@
 #
 # It never fails the deploy: a missing setting is a notice, an API failure is a
 # warning and a line in the job summary. The token goes to curl on stdin as a
-# header file ("-H @-"), so it never appears in a process list, and it is never
-# echoed. Shell tracing is never turned on here.
+# header file (a mode-0600 file under RUNNER_TEMP, removed on exit), and the
+# JSON body goes to curl on stdin (--data-binary @-), so neither the token nor
+# the URLs appear in a process list, and the token is never echoed. A path over
+# 2000 characters is skipped. Shell tracing is never turned on here.
 set -u
 
 BATCH=30 # URLs per request (the Cloudflare limit this was written against)
+MAX_PATH_CHARS=2000
 MAX_DEFAULT=300
 MAX_CEILING=1000
 BUDGET_DEFAULT=240
@@ -90,8 +93,18 @@ if ! printf '%s' "${SITE_HOST:-}" | grep -Eq '^[a-z0-9.-]{3,253}$'; then
   exit 0
 fi
 
+# The Authorization header lives in a private file for the life of the script.
+umask 077
+header_file=$(mktemp "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/purge-header.XXXXXX") || {
+  warn "could not create a private header file; skipping"
+  exit 0
+}
+trap 'rm -f "$header_file"' EXIT
+printf 'Authorization: Bearer %s\n' "$CLOUDFLARE_PURGE_TOKEN" >"$header_file"
+
 batch_json=""
 batch_count=0
+too_long=0
 total=0
 failed=0
 requests=0
@@ -110,12 +123,12 @@ send() {
   requests=$((requests + 1))
   body="{\"files\":[${batch_json}]}"
   response=$(
-    printf 'Authorization: Bearer %s\n' "$CLOUDFLARE_PURGE_TOKEN" |
+    printf '%s' "$body" |
       curl --silent --show-error --proto '=https' --tlsv1.2 --max-time 30 \
         --request POST \
-        --header @- \
+        --header "@${header_file}" \
         --header 'Content-Type: application/json' \
-        --data "$body" \
+        --data-binary @- \
         "${API}/zones/${ZONE_ID}/purge_cache" 2>&1
   )
   status=$?
@@ -139,6 +152,10 @@ while IFS= read -r line || [ -n "$line" ]; do
   if [ "$accepted" -ge "$max_urls" ]; then
     continue
   fi
+  if [ "${#line}" -gt "$MAX_PATH_CHARS" ]; then
+    too_long=$((too_long + 1))
+    continue
+  fi
   # a plain absolute path: no scheme, no //, no query, fragment or whitespace
   if ! printf '%s' "$line" | grep -Eq '^/([A-Za-z0-9._~-][A-Za-z0-9._~/-]*)?$'; then
     warn "skipped a path that is not plain URL path characters"
@@ -159,6 +176,9 @@ send
 
 if [ "$seen" -gt "$accepted" ]; then
   warn "the list has ${seen} paths; only the first ${accepted} (entry points first) were purged, the cap is ${max_urls}"
+fi
+if [ "$too_long" -gt 0 ]; then
+  warn "${too_long} path(s) longer than ${MAX_PATH_CHARS} characters were skipped"
 fi
 if [ "$out_of_time" -gt 0 ]; then
   warn "the ${budget}-second time budget ran out; ${out_of_time} URL(s) were not sent"

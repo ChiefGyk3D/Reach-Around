@@ -442,7 +442,10 @@ How it works:
    URLs per deploy (the list puts the entry points first, so they are kept), a
    cap you can raise with `PURGE_MAX` up to a hard ceiling of 1000, and a total
    time budget of 240 seconds (`PURGE_BUDGET_SECONDS`, ceiling 600). Paths past
-   the cap are counted in a warning, never sent.
+   the cap are counted in a warning, never sent, and so is any path over 2000
+   characters. The JSON body goes to `curl` on standard input and the token in a
+   private 0600 header file under `RUNNER_TEMP` that is removed on exit, so
+   neither is on a command line.
 4. A failure is a warning annotation and a line in the job summary. It never
    fails the deploy.
 

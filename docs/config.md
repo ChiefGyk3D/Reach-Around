@@ -1050,7 +1050,12 @@ published as `name.<20 hex>.ext`, the hash being the SHA-256 of the file's
 final bytes. A config value such as `creator.avatar: media/me.png` still names
 the file in your instance folder; only the published name carries the hash, and
 the page links to it. `apple-touch-icon.png` (and its `-precomposed` form) at
-the root keep their names. `reach-around build --assets-inventory PATH` (default
+the root keep their names. Because the hash adds 21 bytes to a file name and
+Linux limits one name to 255 bytes, every image or font path in the config may
+have a file name of at most 234 bytes (counted in encoded bytes, so a multibyte
+character counts for each of its bytes) and a whole path of at most 1024 bytes;
+the config check names the field that is too long.
+`reach-around build --assets-inventory PATH` (default
 `<out>.assets.json` beside `--out`, never inside it) writes every published
 path with its SHA-256, size and class (`hashed` or `stable`).
 `reach-around deploy-purge-list --previous OLD --current NEW` prints the URL

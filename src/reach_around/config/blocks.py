@@ -24,6 +24,8 @@ from pydantic import (
     model_validator,
 )
 
+from reach_around.config.pathlimits import check_path_bytes
+
 _SLUG = re.compile(r"^[a-z0-9][a-z0-9-]{0,39}$")
 # A relative asset: letters, digits, dot, dash, underscore and slash only. No
 # colon (so no scheme), no backslash, no spaces, and it must not start with a
@@ -69,7 +71,7 @@ class Image(_BlockModel):
             raise ValueError(
                 "src must be an https URL or a relative path like img/photo.png"
             )
-        return value
+        return check_path_bytes(value, "src")
 
     @field_validator("link")
     @classmethod

@@ -24,6 +24,16 @@ n=$(ls "$STUB_DIR" | grep -c '^call-.*\.args$')
 n=$((n + 1))
 printf '%s\n' "$@" > "$STUB_DIR/call-$n.args"
 cat > "$STUB_DIR/call-$n.stdin"
+prev=""
+for arg in "$@"; do
+  if [ "$prev" = "--header" ] && [ "${arg#@}" != "$arg" ] && [ "$arg" != "@-" ]; then
+    file="${arg#@}"
+    cat "$file" > "$STUB_DIR/call-$n.header"
+    stat -c '%a' "$file" > "$STUB_DIR/call-$n.hmode"
+    printf '%s' "$file" > "$STUB_DIR/call-$n.hpath"
+  fi
+  prev="$arg"
+done
 mode=$(sed -n "${n}p" "$STUB_DIR/modes" 2>/dev/null)
 case "${mode:-ok}" in
   ok) echo '{"success": true, "errors": [], "messages": [], "result": {"id": "x"}}' ;;
@@ -88,7 +98,20 @@ def run_script(
     ):
         args = args_file.read_text().splitlines()
         stdin = args_file.with_suffix(".stdin").read_text()
-        calls.append({"args": args, "stdin": stdin})
+
+        def side(suffix: str, args_file: Path = args_file) -> str:
+            other = args_file.with_suffix(suffix)
+            return other.read_text() if other.exists() else ""
+
+        calls.append(
+            {
+                "args": args,
+                "stdin": stdin,
+                "header": side(".header"),
+                "hmode": side(".hmode").strip(),
+                "hpath": side(".hpath"),
+            }
+        )
     return Run(
         done.returncode,
         done.stdout,
@@ -99,9 +122,8 @@ def run_script(
 
 
 def body_of(call: dict[str, object]) -> dict[str, list[str]]:
-    args = call["args"]
-    assert isinstance(args, list)
-    body: dict[str, list[str]] = json.loads(args[args.index("--data") + 1])
+    # the body travels on stdin (--data-binary @-), never in argv
+    body: dict[str, list[str]] = json.loads(str(call["stdin"]))
     return body
 
 
@@ -147,13 +169,42 @@ def test_the_request_is_https_post_to_the_zone_with_the_token_only_on_stdin(
     assert args[args.index("--request") + 1] == "POST"
     assert args[args.index("--proto") + 1] == "=https"
     assert "Content-Type: application/json" in args
-    assert args[args.index("--header") + 1] == "@-"
-    # the token is in the header file on stdin and nowhere on the command line
-    assert call["stdin"] == f"Authorization: Bearer {BEARER}\n"
+    # the token is only in a 0600 header file; the body is only on stdin
+    assert call["header"] == f"Authorization: Bearer {BEARER}\n"
+    assert call["hmode"] == "600"
+    assert args[args.index("--header") + 1] == f"@{call['hpath']}"
+    assert args[args.index("--data-binary") + 1] == "@-"
+    assert "--data" not in args
+    assert BEARER not in str(call["stdin"])
     assert not any(BEARER in str(a) for a in args)
+    assert not any("https://" + HOST in str(a) for a in args)
+    assert not any("files" in str(a) for a in args)
     assert body_of(call) == {
         "files": [f"https://{HOST}/", f"https://{HOST}/index.html"]
     }
+
+
+def test_the_header_file_lives_under_runner_temp_and_is_removed(
+    tmp_path: Path,
+) -> None:
+    temp = tmp_path / "runner-temp"
+    temp.mkdir()
+    result = run_script(tmp_path, urls(65), env={"RUNNER_TEMP": str(temp)})
+    assert len(result.calls) == 3
+    for call in result.calls:
+        assert str(call["hpath"]).startswith(str(temp) + "/")
+    assert list(temp.iterdir()) == []
+
+
+def test_the_header_file_is_removed_after_a_failed_request_too(
+    tmp_path: Path,
+) -> None:
+    temp = tmp_path / "runner-temp"
+    temp.mkdir()
+    run_script(
+        tmp_path, urls(40), modes=["curlfail", "denied"], env={"RUNNER_TEMP": str(temp)}
+    )
+    assert list(temp.iterdir()) == []
 
 
 def test_the_token_is_never_printed(tmp_path: Path) -> None:
@@ -325,3 +376,37 @@ def test_a_total_time_budget_stops_further_requests(tmp_path: Path) -> None:
     assert result.code == 0
     assert len(result.calls) == 1
     assert "time budget" in result.out
+
+
+# ------------------------------------------------------- path length limits
+
+
+def test_a_path_of_exactly_2000_characters_is_sent(tmp_path: Path) -> None:
+    path = "/" + "a" * 1999
+    assert len(path) == 2000
+    result = run_script(tmp_path, ["/ok", path])
+    (call,) = result.calls
+    assert body_of(call)["files"] == [f"https://{HOST}/ok", f"https://{HOST}{path}"]
+    assert "::warning::" not in result.out
+
+
+def test_a_path_over_2000_characters_is_skipped_counted_and_warned(
+    tmp_path: Path,
+) -> None:
+    result = run_script(tmp_path, ["/ok", "/" + "a" * 2000, "/" + "b" * 5000, "/fine"])
+    (call,) = result.calls
+    assert body_of(call)["files"] == [f"https://{HOST}/ok", f"https://{HOST}/fine"]
+    assert "::warning::" in result.out
+    assert "2 path(s)" in result.out and "2000" in result.out
+
+
+def test_a_two_million_character_path_never_reaches_curl_or_argv(
+    tmp_path: Path,
+) -> None:
+    result = run_script(tmp_path, ["/ok", "/" + "z" * 2_000_000])
+    assert result.code == 0
+    (call,) = result.calls
+    assert body_of(call)["files"] == [f"https://{HOST}/ok"]
+    args = call["args"]
+    assert isinstance(args, list)
+    assert max(len(a) for a in args) < 200
