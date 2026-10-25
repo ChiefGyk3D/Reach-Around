@@ -19,8 +19,9 @@ engine repository for the reasoning.
 | `engine.lock` | The pinned engine: container image by digest, plus the matching source commit for the Worker. |
 | `.github/workflows/preview.yml` | On a pull request: check the config, build a preview artifact, and comment on the pull request with the result in plain language and the list of changed blocks. Also lints the scripts and workflows (GYST `bash-ci`). Deploys nothing. Its gate job is named `CI green`. |
 | `.github/workflows/deploy.yml` | On a push to `main`: check, validate, then deploy to Cloudflare after a reviewer approves. |
+| `.github/workflows/refresh-counts.yml` | Once a day (and by hand): refresh follower counts with the pinned engine and open a pull request with the new `numbers.json`. Optional; see "Daily follower counts". |
 | `renovate.json` | Keeps `engine.lock` and the Actions pins current. |
-| `scripts/` | `check-config.sh` (the plain-language config check), `validate.sh` (the build CI runs), `write-result.py` (bundles the preview job's results into the one data file the comment job reads), `render-comment.py` (run by the comment job from the base commit: validates that file and writes the pull request comment from fixed text), `check-repo.sh`, `read-lock.sh`, `deploy-local.sh`. |
+| `scripts/` | `validate-numbers.py` (the strict check on `numbers.json` the counts refresh runs twice), `refresh-counts.sh`, `check-config.sh` (the plain-language config check), `validate.sh` (the build CI runs), `write-result.py` (bundles the preview job's results into the one data file the comment job reads), `render-comment.py` (run by the comment job from the base commit: validates that file and writes the pull request comment from fixed text), `check-repo.sh`, `read-lock.sh`, `deploy-local.sh`. |
 | `docs/EDITING.md` | How to change the page without touching code. |
 
 ## Adopt it
@@ -134,6 +135,80 @@ a `CODEOWNERS` file and a branch rule that requires a code owner's review:
 branch, not the one in the pull request. A change to `engine.lock` takes effect
 for previews only after it is merged. (The merge itself is still checked: the
 pull request's own `Preview` run builds with the old engine.)
+
+## Daily follower counts
+
+Optional. If `site.yaml` has a `numbers` block (the engine's `docs/config.md`
+lists each source), `.github/workflows/refresh-counts.yml` runs
+`reach-around counts refresh` every day at 07:17 UTC, and you can run it from
+the **Actions** tab (**Run workflow**). It runs the engine image pinned in
+`engine.lock` (by digest, shape-checked by `scripts/read-lock.sh`), through
+`scripts/refresh-counts.sh`. Without a `numbers` block the run fails at the
+config check with a plain-language message; delete the workflow if you do not
+want counts.
+
+**What happens to the result.** The workflow does not push to `main`. It
+pushes the branch `counts/refresh` and opens one pull request, "Refresh
+follower counts", that changes `numbers.json`. You merge it; that push runs
+`Deploy` as usual, with its reviewer approval. Reasons: a push made with the
+run's own token does not start other workflows (so a direct commit would never
+deploy), and `main` should stay protected. Because of the same rule, the
+`Preview` check does not start on that pull request by itself; close and reopen
+it to run `Preview` if your branch rule requires `CI green`. If nothing
+changed, no pull request is opened.
+
+**Settings > Actions > General > Workflow permissions:** tick "Allow GitHub
+Actions to create and approve pull requests", or the pull request step fails.
+
+**Secrets.** Add them under **Settings > Secrets and variables > Actions**
+(repository secrets; this workflow has no environment). Add only the sources
+you use; a source whose secret is not set is skipped, not failed.
+
+| Secret | Source | Where it comes from |
+|---|---|---|
+| `YOUTUBE_API_KEY` | `youtube` | A YouTube Data API v3 key (Google Cloud console), restricted to that API. |
+| `TWITCH_CLIENT_ID` | `twitch` | The client id of an app in the Twitch developer console. |
+| `TWITCH_CLIENT_SECRET` | `twitch` | The client secret of the same app. |
+
+Sources that need no key (Bluesky, Mastodon-compatible servers, GitHub, Discord
+invites, Matrix) need no secret. The names are fixed by the workflow, so in
+`site.yaml` set `api_key_env: YOUTUBE_API_KEY`, `client_id_env: TWITCH_CLIENT_ID`
+and `client_secret_env: TWITCH_CLIENT_SECRET`. The Twitch follower total needs a
+user token that app credentials cannot get, so that source is normally reported
+as skipped (`needs_user_token`); keep that number by hand in `numbers.json`.
+
+**Safety.**
+
+- The keys are set on one step only (the one that runs the engine), through
+  `env`, and are passed into the container by name. They are not in workflow
+  or job `env`, not in a `run:` script, not printed; the engine never prints or
+  writes them.
+- The engine is allowed to reach the network (it has to), with a read-only root
+  file system, no capabilities, and only `site.yaml`, `media/` and `overrides/`
+  mounted read-only.
+- The suspect-value guard is always on. A result of zero over a good number, or
+  a fall of more than 90 percent from 1000 or more, is kept out and that source
+  is marked failed. The workflow never passes the option that accepts such a
+  value. If the change is real, run the engine once by hand with it (see
+  `docs/customizing.md` in the engine repository), or edit `numbers.json`.
+- One failed source never stops the others: the good numbers are proposed
+  first, and then the run is marked failed so you notice. Entries you wrote by
+  hand for platforms without a source are kept.
+- Two jobs keep the keys and the write access apart. The `refresh` job holds
+  the keys and can only read (`contents: read`); the `publish` job can write
+  (`contents: write`, `pull-requests: write`) and holds no keys. Neither uses
+  `pull_request_target`, and both refuse to run from a branch other than
+  `main`.
+- `numbers.json` is data, not trusted. `scripts/validate-numbers.py` checks it
+  before it is copied into the repository and again in the `publish` job after
+  it crosses as an artifact: the exact shape the engine writes, known id
+  names, whole non-negative counts, real UTC stamps, at most 64 KiB. It writes
+  a fresh copy through a temporary file and a rename, never the original bytes.
+- The branch is replaced only if it is still the commit the run saw
+  (`--force-with-lease`). If a pull request is already open on `counts/refresh`
+  and it was not opened by the Actions bot, comes from a fork, or changes
+  anything besides `numbers.json`, the run stops with a message and touches
+  nothing. Close that pull request or rename its branch, then run again.
 
 ## The token
 
