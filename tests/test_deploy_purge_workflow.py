@@ -124,9 +124,18 @@ def test_the_download_step_runs_before_anything_can_change_PATH() -> None:
     steps = load()["jobs"]["build"]["steps"]
     names = [s.get("name") for s in steps]
     position = names.index(DOWNLOAD_STEP)
-    # only checkout may precede it: no setup-python, no pip, no venv, no npm
+    # only checkout may precede it: no setup-python, no pip, no venv, no npm.
+    # Issue #206 added two legitimate first steps: harden-runner (an action
+    # that runs nothing the repository controls) and the egress canary, a fixed
+    # bash /dev/tcp probe that installs nothing and changes no PATH. Anything
+    # else before the download step still fails this test.
     for before in steps[:position]:
-        assert str(before.get("uses", "")).startswith("actions/checkout@"), before
+        if before.get("name") == "Egress canary":
+            assert "pip" not in before["run"] and "PATH" not in before["run"]
+            continue
+        assert str(before.get("uses", "")).startswith(
+            ("actions/checkout@", "step-security/harden-runner@")
+        ), before
         assert "run" not in before
     for later in steps[position + 1 :]:
         # nothing after it can have taken the token with it
