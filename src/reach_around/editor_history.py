@@ -23,6 +23,7 @@ from __future__ import annotations
 import fcntl
 import hashlib
 import json
+import math
 import os
 import re
 import secrets
@@ -231,6 +232,7 @@ def _parse_index(raw: bytes) -> _State | None:
             or not isinstance(label, str)
             or isinstance(when, bool)
             or not isinstance(when, int | float)
+            or not math.isfinite(when)
             or type(size) is not int
             or not 0 <= size <= MAX_SNAPSHOT_BYTES
         ):

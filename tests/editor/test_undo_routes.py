@@ -483,3 +483,19 @@ def test_a_history_save_failure_before_the_write_changes_nothing(
     assert got.status == 409
     assert body_of(got)["error"]["code"] == "history_unavailable"
     assert ed.text == changed
+
+
+def test_an_edit_whose_history_write_raises_oserror_is_still_saved(
+    ed: Editor, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def boom(self: History, old: str, new: str, label: str) -> None:
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(History, "record_write", boom)
+    got = rename(ed, "One")
+    assert got.status == 200
+    data = body_of(got)
+    assert "One" in ed.text
+    assert data["history"]["recorded"] is False
+    assert "undo is not available" in data["warning"]
+    assert data["state"]["hash"] == sha(ed.text)

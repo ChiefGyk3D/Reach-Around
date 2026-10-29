@@ -644,7 +644,7 @@ class EditorService:
             try:
                 History(self.config).record_write(result.old, result.new, label)
                 recorded = True
-            except HistoryError:
+            except (HistoryError, OSError):
                 warning = "Saved, but undo is not available for this change."
         reply: dict[str, Any] = {
             "state": self.state(preview_host, preview_port),
