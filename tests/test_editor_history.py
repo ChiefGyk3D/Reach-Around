@@ -6,6 +6,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import stat
 import threading
 from pathlib import Path
@@ -524,3 +525,40 @@ def test_gitignore_symlink_is_not_followed(tmp_path: Path) -> None:
     with pytest.raises(HistoryError, match="is a symlink"):
         eh.ensure_gitignore(cfg)
     assert target.read_text() == "keep\n"
+
+
+# ---- summary (read-only view for the editor) ----
+
+
+def test_summary_of_no_history_is_empty(doc: Doc, hist: History) -> None:
+    out = hist.summary()
+    assert out.entries == () and not out.can_undo and not out.can_redo
+    assert out.produced is None
+    assert not history_dir(doc).exists()  # reading never creates the folder
+
+
+def test_summary_tracks_cursor_and_hides_text(doc: Doc, hist: History) -> None:
+    edit(hist, doc, "v1\n")
+    edit(hist, doc, "v2\n")
+    out = hist.summary()
+    assert [e.current for e in out.entries] == [False, False, True]
+    assert (out.can_undo, out.can_redo) == (True, False)
+    assert out.produced == sha("v2\n")
+    assert isinstance(hist.undo(doc.text, doc.write), Restored)
+    out = hist.summary()
+    assert (out.can_undo, out.can_redo) == (True, True)
+    assert [e.current for e in out.entries] == [False, True, False]
+    assert not any(hasattr(e, "text") for e in out.entries)
+
+
+@pytest.mark.parametrize("bad", ["NaN", "Infinity", "-Infinity"])
+def test_a_non_finite_timestamp_quarantines_the_index(doc: Doc, bad: str) -> None:
+    hist = History(doc.path)
+    hist.record_write("v0\n", "v1\n", "x")
+    index = hist.directory / "index.json"
+    text = index.read_text(encoding="utf-8")
+    assert '"time":' in text
+    index.write_text(re.sub(r'("time":\s*)[0-9.e+-]+', rf"\g<1>{bad}", text))
+    summary = History(doc.path).summary()
+    assert summary.entries == ()
+    assert list(hist.directory.glob("index.json.corrupt-*"))

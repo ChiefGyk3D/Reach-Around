@@ -319,8 +319,14 @@ def apply(
     backup: bool,
     force_path: bool,
     validate_slot: Callable[[str, Any], None] | None = None,
+    restore: bool = False,
 ) -> Result:
     """Run one edit end to end. Raises ``EditError``; never half-writes.
+
+    ``restore=True`` is for putting back an earlier text (undo, redo): the
+    current file need not load (it may have been broken outside), and the new
+    text need not equal "original plus one change". The new text must still
+    load with the real loader and pass the slot checks.
 
     The config is locked from the read to the rename, so two of our commands
     run one after the other. Against any other writer, the file's identity and
@@ -331,22 +337,27 @@ def apply(
     try:
         data = _read_fd(lock, path)
         snap = _snapshot(lock, data)
+        raw: Any = {}
         try:
             load_site_config(path)  # the file must be valid before it is edited
             raw = load_yaml(path)
         except ConfigError as exc:
-            raise EditError(str(exc)) from None
+            if not restore:
+                raise EditError(str(exc)) from None
         if not isinstance(raw, dict):
-            raise EditError(f"{path}: the config is not a mapping")
+            if not restore:
+                raise EditError(f"{path}: the config is not a mapping")
+            raw = {}
         old = _decode(path, data)
         new, expected = compute(old, raw)
-        if _check_candidate(path, new) != expected:
+        candidate = _check_candidate(path, new)
+        if not restore and candidate != expected:
             raise EditError(
                 f"{path}: internal check failed: the edited file does not match "
                 "the requested change; nothing was written (please report this)"
             )
         if validate_slot is not None:
-            _check_slots(validate_slot, raw, expected)  # raises EditError to refuse
+            _check_slots(validate_slot, raw, candidate)  # raises EditError to refuse
         if dry_run:
             return Result(path, old, new, False, None)
         mode = stat.S_IMODE(os.fstat(lock).st_mode)
