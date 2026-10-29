@@ -42,6 +42,7 @@ fields:
       - {name: In review, color: PURPLE, description: "Pull request open, checks and reviews running"}
       - {name: Blocked, color: RED, description: "Needs the maintainer or an outside answer"}
       - {name: Done, color: GREEN, description: "Closed or merged"}
+      - {name: Todo, color: GRAY, description: "GitHub default option, unused: cards start in Backlog"}
   - name: Area
     type: single_select
     options:
@@ -75,6 +76,8 @@ fields:
     type: single_select
     options:
       - {name: Design and API research, color: BLUE, description: "Epic #1"}
+      - {name: Plan 1 foundation and link page, color: GREEN, description: "Epic #30 and later work"}
+      - {name: Phase plans and threat model, color: PURPLE, description: "Epic #46"}
   - {name: Decision, type: text}
   - name: Priority
     type: single_select
