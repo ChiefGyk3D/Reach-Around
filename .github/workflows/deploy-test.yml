@@ -358,7 +358,7 @@ jobs:
       # this deploy needs. No install step follows. On a repository without
       # Doppler the same name comes from the GitHub `test` environment secret.
       - name: Fetch Cloudflare credentials from Doppler
-        uses: ChiefGyk3D/git-your-ship-together/.github/actions/doppler-secrets@6f40107c2e05483f485452991e422f7f63886000 # v1.25.1
+        uses: ChiefGyk3D/git-your-ship-together/.github/actions/doppler-secrets@f344c638e1316d43514a41e4a22f172583c271fc # v1.26.0
         with:
           project: reach-around
           config: ci
