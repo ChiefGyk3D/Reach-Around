@@ -17,7 +17,7 @@ import yaml
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = ROOT / ".github" / "workflows" / "deploy-test.yml"
 SCRIPT = ROOT / ".github" / "scripts" / "verify-manifest.py"
-HARDEN = "step-security/harden-runner@ccd8616d44fd3846e67624a50d5aad6d37bf2d25"
+HARDEN = "step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43"
 DOPPLER_STEP = "Fetch Cloudflare credentials from Doppler"
 
 

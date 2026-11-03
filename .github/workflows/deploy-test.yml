@@ -42,7 +42,7 @@ jobs:
     # No `environment` and no secrets here, on purpose: `pip install .` runs
     # dependency build scripts.
     steps:
-      - uses: step-security/harden-runner@ccd8616d44fd3846e67624a50d5aad6d37bf2d25 # v2.22.1
+      - uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43 # v2.22.3
         with:
           # audit, not block: artifact upload goes to a blob host whose name
           # varies per run and cannot be listed without a wildcard (unsupported
@@ -187,7 +187,7 @@ jobs:
     # No job-level env: the Cloudflare token is fetched from Doppler only after
     # the last install step, so no install script ever runs with it present.
     steps:
-      - uses: step-security/harden-runner@ccd8616d44fd3846e67624a50d5aad6d37bf2d25 # v2.22.1
+      - uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43 # v2.22.3
         with:
           # block, with an explicit list (no wildcards). The runner's own
           # infrastructure hosts are allowed by the agent. This list is
@@ -358,7 +358,7 @@ jobs:
       # this deploy needs. No install step follows. On a repository without
       # Doppler the same name comes from the GitHub `test` environment secret.
       - name: Fetch Cloudflare credentials from Doppler
-        uses: ChiefGyk3D/git-your-ship-together/.github/actions/doppler-secrets@0fc2df49cf51608a2f8b4b8eeb51d86d4d4cfaba # v1.27.0
+        uses: ChiefGyk3D/git-your-ship-together/.github/actions/doppler-secrets@7501cb3fa19d83d0e0a131cb040e7c4da32a9504 # v1.28.0
         with:
           project: reach-around
           config: ci
