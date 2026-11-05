@@ -140,7 +140,9 @@ def _nav(config: SiteConfig, current: int, root: str) -> list[dict[str, Any]]:
     ]
 
 
-def _internal_href(config: SiteConfig, root: str) -> Callable[[str], str]:
+def _internal_href(
+    config: SiteConfig, root: str, shown: list[list[Block]] | None = None
+) -> Callable[[str], str]:
     """Resolve ``tab:<id>[#fragment]`` to the tab's path as seen from a page.
 
     ``root`` is what the nav uses for the first tab ("./" or "../"); the other
@@ -148,7 +150,7 @@ def _internal_href(config: SiteConfig, root: str) -> Callable[[str], str]:
     id is known.
     """
     if config.page_layout == "sections":
-        return _section_href(config, root)
+        return _section_href(config, root, shown)
     prefix = "" if root == "./" else root
     homes = {
         tab.id: (root if i == 0 else f"{prefix}{tab.id}/")
@@ -162,17 +164,36 @@ def _internal_href(config: SiteConfig, root: str) -> Callable[[str], str]:
     return href
 
 
-def _section_href(config: SiteConfig, root: str) -> Callable[[str], str]:
+def _section_href(
+    config: SiteConfig, root: str, shown: list[list[Block]] | None
+) -> Callable[[str], str]:
     """``tab:`` links on the single page: the first tab is the page, the rest are
     sections reached by fragment. A browser opens a closed ``<details>`` that
-    holds the fragment's target, so the link works without script."""
+    holds the fragment's target, so the link works without script.
+
+    ``root`` is the home page as seen from the current page ("./" on the page
+    itself, "../" on the privacy page, "/" on the 404 page), so a fragment keeps
+    that prefix off the home page. A tab with nothing to show has no section; a
+    link to it goes to the page itself rather than to a missing id."""
     first = config.tabs[0].id
+    omitted = (
+        set()
+        if shown is None
+        else {
+            t.id
+            for t, blocks in zip(config.tabs[1:], shown[1:], strict=True)
+            if not blocks
+        }
+    )
+    prefix = "" if root == "./" else root
 
     def href(url: str) -> str:
         tab_id, fragment = parse_tab_ref(url)
         if fragment is not None:
-            return f"{root}#{fragment}"
-        return root if tab_id == first else f"#{tab_id}"
+            return f"{prefix}#{fragment}"
+        if tab_id == first or tab_id in omitted:
+            return root
+        return f"{prefix}#{tab_id}"
 
     return href
 
@@ -278,7 +299,7 @@ def _render_sections_page(
         blocks=shown[0],
         sections=_sections(config, shown),
         nav=[],
-        tab_href=_internal_href(config, "./"),
+        tab_href=_internal_href(config, "./", shown),
         root="",
         page_title=page_title(config, tab.title, home=True, own=tab.page_title),
         disclosure=config.disclosure,
@@ -302,11 +323,16 @@ def _render_sections_page(
     )
 
 
-def _render_privacy(env: Environment, config: SiteConfig, custom_css: bool) -> str:
+def _render_privacy(
+    env: Environment,
+    config: SiteConfig,
+    shown: list[list[Block]],
+    custom_css: bool,
+) -> str:
     return env.get_template("privacy.html").render(
         creator=config.creator,
         nav=_nav(config, -1, "../"),
-        tab_href=_internal_href(config, "../"),
+        tab_href=_internal_href(config, "../", shown),
         root="../",
         page_title=page_title(config, "Privacy", home=False, own=None),
         disclosure=config.disclosure,
@@ -330,7 +356,12 @@ def _render_privacy(env: Environment, config: SiteConfig, custom_css: bool) -> s
     )
 
 
-def _render_not_found(env: Environment, config: SiteConfig, custom_css: bool) -> str:
+def _render_not_found(
+    env: Environment,
+    config: SiteConfig,
+    shown: list[list[Block]],
+    custom_css: bool,
+) -> str:
     """The 404 page.
 
     Hosts serve it at arbitrary depths (``/a/b/c``), so unlike every other page
@@ -340,7 +371,7 @@ def _render_not_found(env: Environment, config: SiteConfig, custom_css: bool) ->
     return env.get_template("404.html").render(
         creator=config.creator,
         nav=_nav(config, -1, "/"),
-        tab_href=_internal_href(config, "/"),
+        tab_href=_internal_href(config, "/", shown),
         root="/",
         page_title=page_title(config, "Not found", home=False, own=None),
         disclosure=config.disclosure,
@@ -377,8 +408,10 @@ def _render_pages(
             _page_path(i, tab): _render_page(env, config, i, shown[i], custom_css)
             for i, tab in enumerate(config.tabs)
         }
-    pages[Path("privacy") / "index.html"] = _render_privacy(env, config, custom_css)
-    pages[Path("404.html")] = _render_not_found(env, config, custom_css)
+    pages[Path("privacy") / "index.html"] = _render_privacy(
+        env, config, shown, custom_css
+    )
+    pages[Path("404.html")] = _render_not_found(env, config, shown, custom_css)
     return pages
 
 

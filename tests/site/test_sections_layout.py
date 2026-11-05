@@ -226,7 +226,7 @@ def test_tab_links_become_fragments_on_the_single_page(tmp_path: Path) -> None:
     )
     out = build(tmp_path, data)
     html = (out / "index.html").read_text()
-    assert 'href="#crypto"' in html and 'href="./#tip"' in html
+    assert 'href="#crypto"' in html and 'href="#tip"' in html
 
 
 def test_privacy_and_404_have_no_dead_tab_links(tmp_path: Path) -> None:
@@ -332,3 +332,48 @@ def test_brand_dark_preset_carries_the_kit_palette() -> None:
 def test_the_sections_layout_is_documented() -> None:
     assert "page_layout" in DOC and "sections" in DOC
     assert "brand-dark" in (ROOT / "docs" / "design.md").read_text()
+
+
+# --- review fixes: links from nested pages and to omitted tabs ---------------------
+
+
+def _social_tab_link(data: dict[str, Any], tab: str) -> dict[str, Any]:
+    data["creator"]["socials"] = [{"name": "Go", "url": f"tab:{tab}", "icon": "link"}]
+    return data
+
+
+def _go_href(html: str) -> str:
+    match = re.search(r'<a [^>]*href="([^"]*)"[^>]*>[^<]*(?:<[^>]+>)*\s*Go', html)
+    assert match, "social link not found"
+    return match.group(1)
+
+
+@pytest.mark.parametrize(
+    ("page", "prefix"),
+    [("index.html", ""), ("privacy/index.html", "../"), ("404.html", "/")],
+)
+def test_a_section_link_keeps_the_home_prefix_on_nested_pages(
+    tmp_path: Path, page: str, prefix: str
+) -> None:
+    out = build(tmp_path, _social_tab_link(site(), "contact"))
+    href = _go_href((out / page).read_text())
+    assert href == (f"{prefix}#contact" if prefix else "#contact"), href
+
+
+def test_a_link_to_an_omitted_tab_lands_on_the_page_not_a_missing_id(
+    tmp_path: Path,
+) -> None:
+    data = _social_tab_link(site(), "recs")
+    data["tabs"][3]["blocks"] = [
+        {
+            "id": "old",
+            "title": "Old",
+            "url": "https://e.example/",
+            "show_until": "2027-01-01",
+        }
+    ]
+    out = build(tmp_path, data)
+    html = (out / "index.html").read_text()
+    assert 'id="recs"' not in html
+    assert _go_href(html) in ("./", "")
+    assert _go_href((out / "privacy/index.html").read_text()) == "../"
