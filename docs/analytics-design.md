@@ -46,7 +46,7 @@ Hard rules carried over unchanged from #101 and Plan 4
 - VPN, proxy, Tor and hosting detection uses range data held locally; visitor
   addresses are never sent to a third party.
 - City is on (country, region, city); never coordinates or a postal code.
-  Bots are counted separately, not dropped. Unique visitors use a keyed hash
+  Bots are counted separately, not dropped. No site may set `bots: drop`; the shipped `BOTS_MODE=drop` stays an operator emergency valve for budget pressure, and while it is on the dashboard says automated views are not being recorded. Unique visitors use a keyed hash
   that rotates daily.
 
 ## 2. What exists today
@@ -85,7 +85,7 @@ with them.
 | Time bucket | See 3.3 | Server clock | |
 | Country, region, city | Two-letter country, region code (at most 3 characters), city name (at most 60 characters) | Cloudflare request metadata (`cf.country`, `cf.regionCode`, `cf.city`), `GEO_LEVEL` per site | Never coordinates, postal code, metro code, organization or ASN number. `GEO_LEVEL=region` drops city; `country` drops both |
 | Bot class and reason | `h` human-likely, `v` verified crawler (claims only), `a` automated, `s` suspicious; plus a reason code from the closed list in `botclass.ts` | Derived from the user agent, language, rate signal and network class, then dropped | The dashboard calls `h` "likely human", never "human" |
-| Network flag | Closed set: `residential`, `mobile`, `hosting`, `vpn-proxy`, `tor`, `unknown` (crawler vendor is carried by the reason code, not a new column) | Local range data plus the ASN, read transiently (Plan 4 "Network-type dataset") | **Value is `unknown` today.** This is the "VPN/proxy/hosting flag" of #101. `residential` means only "no list matched" and is shown as "likely residential" |
+| Network flag | The existing `NetworkClass` values in `botclass.ts`: `residential`, `mobile`, `vpn-proxy`, `hosting-datacenter`, `tor`, `unknown` (the classifier's `datacenter` signal tests `hosting-datacenter`, so the stored name is not renamed) ; crawler vendor is carried by the reason code, not a new column) | Local range data plus the ASN, read transiently (Plan 4 "Network-type dataset") | **Value is `unknown` today.** This is the "VPN/proxy/hosting flag" of #101. `residential` means only "no list matched" and is shown as "likely residential" |
 | Device facts | Browser family and major-version bucket, OS family, device class, primary language, window-size letter (`s` `m` `l` `x`) | User agent and `Accept-Language` (transient), beacon `w` letter | Already shipped. The blog edge mode has no window letter (empty) |
 | Unique-visitor code | See 3.4 | Keyed hash of the address | Stored only in `visitor_seen`, deleted at the end of the UTC day |
 
@@ -112,14 +112,19 @@ request.
 
 ### 3.3 Time bucket
 
-- Aggregates are bucketed by day in the site's configured time zone
-  (`day_tz`, default `America/New_York`), as shipped.
-- Raw rows currently store an exact millisecond timestamp. **Proposal (open
-  decision D-A1):** new rows store the timestamp rounded down to the hour. The
-  dashboard needs a day, and an hour is enough for the "time of day" view; exact
-  times add re-identification value to a small blog audience (a row with a rare
-  city and an exact second can be matched to a person who remembers visiting).
-  Rounding does not affect the rollup, which orders by row id (`max_id`), not time.
+- **Shipped:** the Worker rollup (`viewrollup.ts`) buckets by UTC day and
+  writes `day_tz = 'UTC'`. The `America/New_York` default belongs to the Python
+  site config, not to `worker/src`. This design keeps UTC days everywhere
+  (aggregates, funnel, dashboard). A per-site time zone would be a new feature
+  with its own daylight-saving work (23- and 25-hour days) and is not specified
+  here.
+- **Shipped:** raw rows store `ts` rounded down to the minute
+  (`Math.floor(now / MINUTE_MS) * MINUTE_MS` in `view.ts`). **Proposal (open
+  decision D-A1):** round to the hour instead. The dashboard needs a day, and an
+  hour is enough for a time-of-day view; minute precision still lets a row with
+  a rare city and a known minute be matched by a person who remembers visiting
+  a small blog. Rounding does not affect the rollup, which orders by row id
+  (`max_id`), not time.
 
 ### 3.4 Unique visitors without storing an IP
 
@@ -139,16 +144,58 @@ request.
 - The secret (`VIEW_HASH_SECRET`) is a Worker secret, never in a committed file.
   Without it the route records nothing (fail closed, as shipped).
 - Bots are not added to `visitor_seen` (humans only, as shipped).
+- **Cutover day.** Rows already in `visitor_seen` hold site-less codes. After
+  the change a returning visitor gets a new `links` code, so both of that
+  day's events would set `first = 1`. The migration therefore deletes every
+  `visitor_seen` row, and the deploy happens right after 00:05 UTC (the hourly
+  run that closes the day), so the overcount window is at most one hour of one
+  day. That day's `uniques` may be high by the visitors seen in that window,
+  and the rollup log notes the cutover day. The alternative, keeping the old
+  derivation until the next UTC day, needs two code paths and is rejected.
 
 ### 3.5 Tables
 
-One migration (proposed `0008_sites.sql`; the number is not fixed here) adds a
-`site TEXT NOT NULL DEFAULT 'links'` column to `view_events` and puts `site` in
-the primary key of `view_daily`, `view_dim_daily`, `view_geo_daily` and in
-`view_rollup_log`. Existing rows take the default `links`, so history stays
-valid. `visitor_seen` needs no change because its codes are site-scoped by
-construction (3.4). Click rows gain the same column (`click_events.site`) so
-the funnel can join per site.
+SQLite cannot add a column to an existing primary key, so this is a table
+rebuild, not an added column. One migration (proposed `0008_sites.sql`; the
+number is not fixed here), run as one atomic batch:
+
+1. `ALTER TABLE view_events ADD COLUMN site TEXT NOT NULL DEFAULT 'links'`
+   (a plain column, so a plain add is fine) and an index on `(site, ts)`.
+2. For `view_daily`, `view_dim_daily`, `view_geo_daily` and
+   `view_rollup_log`: create a new table with `site` as the first primary-key
+   column, copy every row with `site = 'links'`, drop the old table, rename
+   the new one. (`view_rollup_log` is keyed by `day` alone today, so it must
+   be rebuilt too, with `(site, day)`.)
+3. `DELETE FROM visitor_seen` (cutover, 3.4). `visitor_seen` keeps its
+   `(day, h)` key because codes are site-scoped by construction.
+4. Click rows: rebuild `click_events` with `site` (default `links`), see 6.1.
+5. Existing rollup state is rewritten for the new keys (`rolled_through`
+   becomes per site, below).
+
+### 3.6 Site-aware rollup, late rows, retention and the pull
+
+The shipped job keeps day-only state: one `view_rollup_log` row per `day`,
+a global `rolled_through` in `view_meta`, `NOT IN (SELECT day FROM
+view_rollup_log)` in the retention probe, and a join on `l.day` when purging raw
+rows (`viewretention.ts`, `viewrollup.ts`). With two sites a day sealed for
+`links` must not seal it for `blog`. Invariants the code PR must implement and
+test:
+
+- A day is sealed per `(site, day)`. The rollup loops over configured sites;
+  each has its own checkpoint, `max_id`, re-roll counter and lease state
+  (`view_meta` keys gain the site: `rolled_through:<site>`, `rollup_failed_day:<site>`
+  and so on).
+- Every predicate over `view_rollup_log` and every raw-row join includes
+  `site`: an event of site S on day D is purgeable only if `(S, D)` is sealed
+  and `id <= max_id` of that row. The "unrolled day" ceiling is evaluated per
+  site.
+- A late row for `(S, D)` re-rolls only `(S, D)`.
+- A site removed from the config keeps its existing rows until they age out;
+  retention iterates sites present in the data, not only the config.
+- The local pull (Plan 4 A7) reads per-site checkpoints and never treats a
+  day as final for a site whose checkpoint has not passed it.
+- Test: seal day D for site A only, then run retention and assert site B's raw
+  rows of day D survive; and the reverse.
 
 The schema guard test (`worker/test/views/schema.test.ts`) stays the gate: a
 new column is allowed only if it is on the guard's list, and the guard
@@ -168,12 +215,14 @@ deployments keep working). Synthetic example:
     "hosts": ["links.example.test"],
     "mode": "beacon",
     "pages": ["home", "support"],
+    "link_ids": {"example-one": "home", "example-two": "support"},
     "geo": "city"
   },
   "blog": {
     "hosts": ["blog.example.test"],
     "mode": "edge",
     "pages": "html-200",
+    "link_ids": {"support-cta": "*"},
     "geo": "city",
     "utm_allowlist": ["bluesky", "mastodon", "mail"],
     "min_cell": 5
@@ -190,7 +239,7 @@ that one site rather than the whole collector):
   both sites and records `view_meta('config_err')`.
 - `mode`: `beacon` or `edge`. `pages`: an id list (beacon) or the literal
   `html-200` (edge: any path the origin served as a successful HTML page).
-- Per-site overrides: `geo`, `bots` (`count` or `drop`), `utm_allowlist`,
+- Per-site overrides: `geo`, `utm_allowlist`,
   `min_cell`, and the raw keep days, each clamped to the global ceilings (raw
   keep at most 90 days, as shipped).
 - Per-site kill switch: `VIEWS_KILL` stays global; add `VIEWS_KILL_SITES`, a
@@ -250,13 +299,19 @@ Design:
    images, scripts, feeds and other assets out of the numbers.
 2. Reduce at the edge, before any call: path normalized (3.2), referrer cut to
    host, UTM read and checked against the allowlist, query discarded.
-3. Hand the reduced facts plus the request metadata the collector needs
-   (country, region, city, address, user agent, language, ASN) to the
-   collector, in the same Worker or over a service binding (a private,
-   not-publicly-routable call; UNVERIFIED which binding forms pass `request.cf`
-   data and how an RPC entrypoint behaves, not read for this page). The
-   collector derives the closed categories and drops the raw values exactly as
-   it does for a beacon.
+3. Derive at the edge. The edge Worker holds the raw address, user agent,
+   language and ASN only as locals of the shared derivation function (the same
+   function the beacon route uses, imported, not copied), reduces them to the
+   closed categories (bot class and reason, network class, browser, OS, device,
+   language, hashed daily code, geography) and passes **only those closed
+   values** to the collector write. When both run in one Worker this is a
+   function call and no raw value crosses a boundary. If the edge Worker and the
+   collector are separate Workers, the same rule holds across the binding: the
+   call carries closed categories only, never the address, user agent, language
+   or ASN. Moving raw values across a binding is not adopted; doing so would
+   need its own design (authenticated, non-logging envelope, tests) first.
+   UNVERIFIED: whether `request.cf` is available to the edge Worker in the
+   blog's setup (section 15).
 4. Do the count after the response is on its way (`ctx.waitUntil`), so a
    collector outage or slowness never delays a page. Errors are swallowed and
    counted in `view_meta` as a closed class.
@@ -290,7 +345,7 @@ by recording nothing, the same as the beacon route does today.
 
 ## 6. Funnel definition (source, page, click)
 
-Per site, per day (in the site's time zone):
+Per site, per UTC day:
 
 - **Source** is the `src_kind`/`src` pair of a view: direct, internal, referrer
   host, or allowlisted UTM label.
@@ -313,6 +368,25 @@ Per site, per day (in the site's time zone):
   are shown in a separate traffic-quality panel.
 - Ids that map to no page (header icons, copy and QR actions) are reported
   under "header and support actions" and never added to a page.
+
+### 6.1 Clicks per site
+
+The shipped click route has one `SITE_HOST` and one global `LINK_IDS`, so it
+cannot tell sites apart. For the funnel join the click route must resolve the
+site the same way the view route does:
+
+- Each site in `SITES` gets its own `links` list (link and action ids). The
+  click route resolves the site from the matched `Origin`/`Ping-From` host
+  against `hosts`, then checks the id against **that site's** list. An id listed
+  for another site records nothing, so identical ids on two hosts are
+  separate rows, never merged by accident.
+- The site is never read from the client body or path. As with views, host
+  matching is a noise filter (threat A1); the per-site rate limit and budget
+  bound forged clicks.
+- Blog clicks (outbound or call-to-action links) use `ping` anchors to the
+  same route on the blog's host or collector host (section 15, item 7).
+- `click_events` gets `site` in the migration (3.5). The funnel joins clicks to
+  views on `(site, day, page)` through each site's link-to-page map.
 
 ## 7. Retention
 
@@ -355,8 +429,12 @@ selector (one page per site, or a site column) and these panels:
 6. **Network type:** labeled "likely" in the heading and in every cell
    (residential, mobile, hosting, VPN or proxy, Tor, unknown). Shows the
    proportion of views whose class is `unknown` so a missing dataset is visible.
-7. **Visitors:** browsers with major version, OS, language, device class,
-   window size.
+7. **Visitors:** browsers (family only), OS, language, device class,
+   window size. The browser major version is **not** shown: the rollup
+   deliberately excludes it (`view_dim_daily` has no such dimension and `bmajor`
+   exists only in raw rows), so after the raw window there is no source for it.
+   Adding it would need a separately approved aggregate dimension with its own
+   retention and privacy treatment.
 8. **Collector health:** last rollup success, rollup lag, days rolled in the
    reduced mode, late rows, config errors, network-data age. A stale heartbeat
    is shown in red (Plan 4 A8; the alert for a stale heartbeat is still planned).
@@ -443,7 +521,7 @@ nothing; it does not tell the sender.
 | Account request quota exhausted (free plan) | Pages and links may stop with the analytics; analytics must not be the reason, so the edge path sheds first | Quota alert (account step, `docs/deploy.md`) |
 | Collector deployed with a typo in a site's hosts | Beacons are ignored (origin mismatch); edge mode is unaffected because the site is chosen by the matched host | Zero views for that site |
 | Cron missed | Next hourly run catches up within its query budget | Rollup lag on the health panel |
-| Clock or time-zone change (daylight saving) | Day boundaries use the site time zone; the 23- and 25-hour days are tested | Rollup log row counts |
+| Clock or time-zone change (daylight saving) | Days are UTC, so there is no daylight-saving boundary | Rollup log row counts |
 
 ## 12. Operations notes
 
@@ -477,6 +555,9 @@ asserts strictly (it fails if it collected nothing) and has a negative case.
 | GPC and DNT record nothing on both paths | Header tests, both modes |
 | Privacy text covers every stored field | Generated-text test (section 9, item 12) with a negative case that adds a field and fails |
 | Retention ceilings hold per site | Retention test with two sites and a per-site lower keep |
+| Edge path leaks no raw value across any boundary | Sentinel test on the edge path: the arguments of the collector write contain only closed values; a negative case passes a raw address and fails |
+| Rollup, late rows and retention are per site | Seal-one-site tests (3.6) |
+| Cutover | Migration test: `visitor_seen` is empty after migration; old rows copied with `site = 'links'`; composite keys present |
 | Collector never calls a third party in a request path | Test that fails if `fetch` is called on the request path (carried from Plan 4) |
 
 ## 14. Threats added to T-07 and T-17
@@ -495,7 +576,7 @@ that time. "Prereq" is what the attacker needs.
 | A2 | **Path cardinality flood:** random valid-looking paths grow D1 and the aggregates | Any client; trivially cheap | Count only origin-confirmed 200 HTML pages (edge), path allowlist (beacon), `MAX_PAGES_PER_SITE` fold, normalization that drops rather than rewrites | Tests in section 13 (random paths, cap) |
 | A3 | **Edge amplification:** every blog request (including crawls and floods of real pages) becomes a collector call, spending Worker and D1 quota that the gate and kit also need | A flood of GETs to real pages | Background `waitUntil` count, site budget check before the database, sampling under pressure, per-site kill switch, account quota alerts | Load test with the budget spent: zero D1 calls; kill switch makes zero I/O |
 | A4 | **Cross-site starvation:** one site's flood spends the shared budget so the other site records nothing | A flood on one site | Counters keyed by site, plus a small account-wide ceiling above them | Test: spend A, B still records |
-| A5 | **Public or loose cross-origin access to the collector:** a wildcard CORS header, extra routes, or a service-binding entry reachable from the internet lets anyone submit views with forged metadata (country, user agent, address) | Knowing the collector host | Send no `Access-Control-Allow-*` headers at all; the edge-to-collector call goes through a binding that has no public route; collector entry ignores caller-supplied geography on the public route; every request path returns the uniform 204 | Test: no CORS header on any response; public route ignores any smuggled metadata; UNVERIFIED how the binding is exposed |
+| A5 | **Public or loose cross-origin access to the collector:** a wildcard CORS header, extra routes, or a service-binding entry reachable from the internet lets anyone submit views with forged metadata (country, user agent, address) | Knowing the collector host | Send no `Access-Control-Allow-*` headers at all; the edge-to-collector call carries closed categories only and, if it is a separate Worker, goes through a binding with no public route; collector entry ignores caller-supplied geography on the public route; every request path returns the uniform 204 | Test: no CORS header on any response; public route ignores any smuggled metadata; UNVERIFIED how the binding is exposed |
 | A6 | **Config abuse or drift:** a duplicate host, a wildcard host or a site added without a privacy change sends one site's traffic into another or collects without disclosure | A bad config change (insider or mistake) | Strict loader that disables the site on any violation; privacy-coverage test in CI; the config is reviewed like code | Loader tests with bad configs; the privacy test with a negative case |
 | A7 | **Cross-site linkage via the daily code:** one code across sites would let the operator, or anyone with D1 read access, follow a visitor between the link page and the blog | Read access to `visitor_seen` | Site id inside the key derivation (3.4); no cross-site unique count | Test: codes differ per site |
 
@@ -508,8 +589,8 @@ T-17 is written for lead data; the same reasoning applies to analytics data.
 | B1 | **Second site outlives its purpose:** raw rows or aggregates of the blog are kept past the maximum, because retention was written for one site | Retention loops over all sites; per-site keep is clamped to the global ceiling; no site exceeds 90 days | Retention test with two sites and a lower per-site keep; negative case with a keep above the ceiling is clamped |
 | B2 | **Copies outside the Worker:** the pulled local store, exports, Grafana sinks, D1 backups and point-in-time restore hold city-level raw rows past the raw window | Pull aggregates only, not raw rows; copies follow the 90 day ceiling; list every copy in the deletion registry the T-17 work defines; the privacy text does not claim deletion that a backup undoes; backup retention is UNVERIFIED and must be read from the vendor docs | Test: the pull reads no raw table; registry lists every copy |
 | B3 | **Deletion on request is impossible:** nothing identifies a person, so a request to delete "my views" cannot be met | Say so in the privacy text; keep the raw window short; offer the opt-out signals (GPC, DNT) | Privacy text test |
-| B4 | **Small-audience re-identification:** on a small blog, a rare city plus a referrer host plus an exact time can single out one person, and a daily code plus a rare city can too | Hour-rounded timestamps (D-A1), `min_cell` suppression, city only in raw rows and the geography aggregate (never joined to device facts: separate marginal tables, as shipped), short raw window; accepted residual: one-view cells remain inside `other` and DB readers can read raw rows during the window | Rollup test that no table joins geography to device facts; suppression test; residual stated in the register |
-| B5 | **The network flag becomes a profile:** a VPN or hosting flag stored with city and referrer marks a person as privacy-conscious or as a researcher | Stored only as the class, in its own marginal table, never joined to geography or source | Schema test that `net` appears in no table with `city` |
+| B4 | **Small-audience re-identification:** on a small blog, a rare city plus a referrer host plus a known minute can single out one person, and a daily code plus a rare city can too | Hour-rounded timestamps (D-A1), `min_cell` suppression, city in raw rows and in the geography aggregate (the aggregates never join it to device facts: separate marginal tables, as shipped; raw rows do keep them together for the raw window), short raw window; accepted residual: one-view cells remain inside `other` and DB readers can read raw rows during the window | Rollup test that no aggregate table joins geography to device facts; suppression test; residual stated in the register |
+| B5 | **The network flag becomes a profile:** a VPN or hosting flag stored with city and referrer marks a person as privacy-conscious or as a researcher | In the aggregates the class lives only in `view_dim_daily` (dimension `net`), never joined to geography or source. In raw `view_events` the class sits in the same row as city and source for the raw window; that is a **stated residual**: anyone with D1 read access can combine them until the row ages out, which is why the raw window is short and why the pull reads aggregates only. Option if the maintainer wants it closed: drop `net` from raw rows after the bot classification has used it (D-A7) | Aggregate-level schema test: `net` appears in no aggregate table that has `city` or source columns. No such claim is made for `view_events` |
 
 ## 15. UNVERIFIED items to close before building
 
@@ -546,6 +627,7 @@ Close each with a dated read of the docs page, recorded in this file or in
 | D-A3 | Blog collection: edge count first, beacon fallback? | Yes, after the spike in section 15 items 2 and 3 |
 | D-A4 | Cross-site unique count: never (recommended) or add a separate site-less code? | Never |
 | D-A5 | Source on click rows (funnel attribution, old P-1)? | Not now |
+| D-A7 | Drop `net` from raw rows once classified (closes the raw-row residual in B5)? | Maintainer to decide; it costs the raw `net` column's use in later reclassification |
 | D-A6 | Separate register numbers for A1 to A7 and B1 to B5, or fold into T-07 and T-17? | Fold in, with the ids kept as sub-entries |
 
 ## 17. Build order for the follow-up code PRs
