@@ -16,6 +16,13 @@ editing the stylesheet.
    - `dark-hero.yaml`: charcoal, warm orange, pill buttons. Pair it with
      `creator.header: hero`.
    - `light-clean.yaml`: soft gray page, white cards, deep blue accent.
+   - `brand-dark.yaml`: a generic dark brand kit (amber accent `#FBB03B`,
+     near-black ground, light text, a muted warm gray). Dark only. Change the
+     hex values to your own kit. Jost, the body face, ships with the engine; for
+     a display face such as Orbitron, put its `.woff2` (OFL) in your instance
+     folder and set `fonts.heading` to its path. No font host is ever
+     contacted. Pair it with `page_layout: sections` (see
+     [config.md](config.md#page_layout)).
 3. Keep text contrast at 4.5:1 or better against both `bg` and `surface`, and
    keep `accent` at 4.5:1 or better against `bg` (it is used for links and the
    focus ring) and `on_accent` at 4.5:1 or better against `accent` (the tab bar
@@ -31,6 +38,7 @@ editing the stylesheet.
 | `colors.accent` | `--ra-color-accent` | brand orange `#FBB03B` in both modes |
 | `colors.on_accent` | `--ra-color-on-accent` | `#1A1A1A`, the text on the accent fill |
 | `colors.border` | `--ra-color-border` | light tan, dark brown-gray in dark |
+| `colors.muted` | `--ra-color-muted` | derived: 72% text over the background; set it to pin secondary text |
 | `fonts.body` | `--ra-font-body` | Jost (shipped in `static/fonts/`, OFL license), then `system-ui` |
 | `fonts.heading` | `--ra-font-heading` | the body font |
 | `background` | `--ra-bg-image` | none (the page background image, fixed, under the texture) |
@@ -98,6 +106,9 @@ be overridden by a creator who adds a stylesheet of their own.
   border and a soft shadow. A link's `image` (or else its `icon`) shows as a round thumbnail at the
   left; a three-dot glyph at the right is a visual cue only. `featured: true`
   makes a taller pill with no border or dots.
+- **Single-page sections** (`page_layout: sections`) render each tab after the
+  first as a `<details class="tab-section">` with the title as a heading in the
+  summary. The summary is at least 44 px tall and shows the 3 px focus ring.
 - **Collapsible sections** use the native `<details>` element. The chevron
   rotates and the content eases open (in browsers that support
   `::details-content`; elsewhere it fades in). No script is involved.

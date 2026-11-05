@@ -105,7 +105,10 @@ def _page_path(tab_index: int, tab: Tab) -> Path:
 
 def _page_paths(config: SiteConfig) -> set[Path]:
     """Every HTML file the build writes."""
-    pages = {_page_path(i, tab) for i, tab in enumerate(config.tabs)}
+    if config.page_layout == "sections":
+        pages = {Path("index.html")}
+    else:
+        pages = {_page_path(i, tab) for i, tab in enumerate(config.tabs)}
     return pages | {Path("privacy") / "index.html", Path("404.html")}
 
 
@@ -125,6 +128,8 @@ def _asset_url(assets: AssetMap) -> Callable[[str, str], str]:
 
 
 def _nav(config: SiteConfig, current: int, root: str) -> list[dict[str, Any]]:
+    if config.page_layout == "sections":
+        return []  # one page: no tab bar, the sections are on the page
     return [
         {
             "title": tab.title,
@@ -142,6 +147,8 @@ def _internal_href(config: SiteConfig, root: str) -> Callable[[str], str]:
     tabs live at ``<prefix><id>/``. The config was validated at load, so every
     id is known.
     """
+    if config.page_layout == "sections":
+        return _section_href(config, root)
     prefix = "" if root == "./" else root
     homes = {
         tab.id: (root if i == 0 else f"{prefix}{tab.id}/")
@@ -153,6 +160,34 @@ def _internal_href(config: SiteConfig, root: str) -> Callable[[str], str]:
         return homes[tab_id] if fragment is None else f"{homes[tab_id]}#{fragment}"
 
     return href
+
+
+def _section_href(config: SiteConfig, root: str) -> Callable[[str], str]:
+    """``tab:`` links on the single page: the first tab is the page, the rest are
+    sections reached by fragment. A browser opens a closed ``<details>`` that
+    holds the fragment's target, so the link works without script."""
+    first = config.tabs[0].id
+
+    def href(url: str) -> str:
+        tab_id, fragment = parse_tab_ref(url)
+        if fragment is not None:
+            return f"{root}#{fragment}"
+        return root if tab_id == first else f"#{tab_id}"
+
+    return href
+
+
+def _sections(config: SiteConfig, shown: list[list[Block]]) -> list[dict[str, Any]]:
+    """The collapsible sections of the single page: every tab after the first
+    that still has something to show. The first of them is open unless a tab
+    says otherwise with ``open``."""
+    out: list[dict[str, Any]] = []
+    for tab, blocks in zip(config.tabs[1:], shown[1:], strict=True):
+        if not blocks:
+            continue
+        opened = tab.open if tab.open is not None else not out
+        out.append({"tab": tab, "blocks": blocks, "open": opened})
+    return out
 
 
 def page_title(
@@ -228,6 +263,45 @@ def _render_page(
     )
 
 
+def _render_sections_page(
+    env: Environment,
+    config: SiteConfig,
+    shown: list[list[Block]],
+    custom_css: bool,
+) -> str:
+    """The single page of ``page_layout: sections``."""
+    tab = config.tabs[0]
+    every = [block for blocks in shown for block in blocks]
+    return env.get_template("sections.html").render(
+        creator=config.creator,
+        tab=tab,
+        blocks=shown[0],
+        sections=_sections(config, shown),
+        nav=[],
+        tab_href=_internal_href(config, "./"),
+        root="",
+        page_title=page_title(config, tab.title, home=True, own=tab.page_title),
+        disclosure=config.disclosure,
+        show_disclosure=any(link.affiliate for link in _links_in(every))
+        and bool(config.disclosure),
+        show_cookie_banner=sets_cookies(config),
+        click_tracking=config.features.click_tracking,
+        footer_credit=config.footer.credit,
+        footer_credit_text=config.footer.text,
+        footer_credit_url=CREDIT_URL,
+        page_views=config.analytics.page_views,
+        page_id=tab.id,
+        view_route=config.analytics.route,
+        has_crypto=_has_crypto(every),
+        has_email=_has_email(every),
+        has_email_script=_has_email_script(every),
+        has_platforms=_has_platforms(every),
+        profile_card=_profile_card(config),
+        cookie_text=intro_text(config),
+        custom_css=custom_css,
+    )
+
+
 def _render_privacy(env: Environment, config: SiteConfig, custom_css: bool) -> str:
     return env.get_template("privacy.html").render(
         creator=config.creator,
@@ -248,6 +322,7 @@ def _render_privacy(env: Environment, config: SiteConfig, custom_css: bool) -> s
         has_email_script=False,
         has_platforms=False,
         profile_card=_profile_card(config),
+        single_page=config.page_layout == "sections",
         intro=intro_text(config),
         items=collected_items(config),
         contact=config.privacy.contact,
@@ -293,10 +368,15 @@ def _render_pages(
     shown: list[list[Block]],
     custom_css: bool,
 ) -> dict[Path, str]:
-    pages = {
-        _page_path(i, tab): _render_page(env, config, i, shown[i], custom_css)
-        for i, tab in enumerate(config.tabs)
-    }
+    if config.page_layout == "sections":
+        pages = {
+            Path("index.html"): _render_sections_page(env, config, shown, custom_css)
+        }
+    else:
+        pages = {
+            _page_path(i, tab): _render_page(env, config, i, shown[i], custom_css)
+            for i, tab in enumerate(config.tabs)
+        }
     pages[Path("privacy") / "index.html"] = _render_privacy(env, config, custom_css)
     pages[Path("404.html")] = _render_not_found(env, config, custom_css)
     return pages

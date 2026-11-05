@@ -1231,6 +1231,18 @@
           "title": "Layout",
           "type": "string"
         },
+        "open": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Open"
+        },
         "page_title": {
           "anyOf": [
             {
@@ -1485,6 +1497,15 @@
         }
       ],
       "default": null
+    },
+    "page_layout": {
+      "default": "tabs",
+      "enum": [
+        "tabs",
+        "sections"
+      ],
+      "title": "Page Layout",
+      "type": "string"
     },
     "privacy": {
       "$ref": "#/$defs/Privacy",

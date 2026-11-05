@@ -1,0 +1,25 @@
+{# SPDX-License-Identifier: Apache-2.0 #}
+{# The single-page layout: the first tab is the page, every other tab is a native
+   <details> section. No script is involved in opening or closing one. #}
+{% extends "base.html" %}
+{% block content %}
+{% if blocks %}
+<ul class="blocks layout-{{ tab.layout }}">
+{% for block in blocks %}
+{% include "blocks/" ~ block_kind(block) ~ ".html" %}
+{% endfor %}
+</ul>
+{% elif not sections %}
+<p class="empty">Nothing here right now.</p>
+{% endif %}
+{% for section in sections %}
+<details class="tab-section" id="{{ section.tab.id }}"{% if section.open %} open{% endif %}>
+<summary><h2 class="tab-section-title">{{ section.tab.title }}</h2></summary>
+<ul class="blocks layout-{{ section.tab.layout }}">
+{% for block in section.blocks %}
+{% include "blocks/" ~ block_kind(block) ~ ".html" %}
+{% endfor %}
+</ul>
+</details>
+{% endfor %}
+{% endblock %}

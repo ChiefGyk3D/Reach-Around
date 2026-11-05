@@ -174,7 +174,7 @@ def _preset_config(preset: Path, tmp_path: Path) -> Path:
     return target
 
 
-@pytest.mark.parametrize("name", ["dark-hero", "light-clean"])
+@pytest.mark.parametrize("name", ["dark-hero", "light-clean", "brand-dark"])
 def test_both_presets_validate_and_build(name: str, tmp_path: Path) -> None:
     preset = THEMES / f"{name}.yaml"
     assert preset.is_file()
@@ -188,7 +188,7 @@ def test_both_presets_validate_and_build(name: str, tmp_path: Path) -> None:
     assert (out / "index.html").is_file()
 
 
-@pytest.mark.parametrize("name", ["dark-hero", "light-clean"])
+@pytest.mark.parametrize("name", ["dark-hero", "light-clean", "brand-dark"])
 def test_presets_meet_text_contrast(name: str) -> None:
     theme = Theme.model_validate(yaml.safe_load((THEMES / f"{name}.yaml").read_text()))
     colors = {key: _hex_to_rgb(value) for key, value in theme.colors.items()}
@@ -197,6 +197,9 @@ def test_presets_meet_text_contrast(name: str) -> None:
     assert contrast(colors["accent"], colors["bg"]) >= 4.5
     assert "on_accent" in colors, "a preset must set the text color on its accent"
     assert contrast(colors["on_accent"], colors["accent"]) >= 4.5
+    if "muted" in colors:
+        for ground in ("bg", "surface"):
+            assert contrast(colors["muted"], colors[ground]) >= 4.5, ground
 
 
 # --- icons ------------------------------------------------------------------

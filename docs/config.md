@@ -83,6 +83,7 @@ escapes it when it renders.
 | `tabs` | list of Tab | required | at least one tab |
 | `disclosure` | text | none | at most 2000 characters; shown when affiliate links exist |
 | `timezone` | text | `America/New_York` | must be a known IANA zone name; decides which calendar day "today" is for scheduled links |
+| `page_layout` | `tabs` or `sections` | `tabs` | `sections` puts every tab after the first on one page as native `<details>` sections; see [`page_layout`](#page_layout) |
 | `title_template` | text | `{tab} - {creator}` | how page titles are built; see [Page titles](#page-titles) |
 | `theme` | Theme | defaults | colors, fonts, background and shape; see [`theme`](#theme) |
 | `features` | Features | click tracking on, kit gate off | switches for features that collect data; see [`features`](#features) |
@@ -155,6 +156,7 @@ socials:
 | `id` | Slug | required | unique across the site |
 | `title` | Title | required | the label in the navigation |
 | `page_title` | page title text | none | Replaces the whole browser title of this tab's page; see [Page titles](#page-titles). It is not called `title` because that key is the navigation label. |
+| `open` | true or false | unset | Only with [`page_layout: sections`](#page_layout): whether this tab's section starts open. Unset opens the first section only. |
 | `blocks` | list of Link or Section | required | may be empty |
 
 A block is a section if it has a `links` key, otherwise a link.
@@ -208,6 +210,53 @@ tabs:
       title: Example Boom Stand
       url: https://shop.example.com/stand
 ```
+
+## `page_layout`
+
+`page_layout` is `tabs` (the default: one page per tab with a tab bar) or
+`sections` (one page). It is a top-level key; a config without it builds
+exactly what it built before.
+
+With `sections` the build writes one `index.html` (plus `privacy/` and
+`404.html`) and no page per tab:
+
+- The **first tab** is the page itself, shown under the header.
+- **Every other tab** becomes a native `<details>` section after it, with the
+  tab title as a heading inside the `<summary>` and the tab id as the section's
+  `id`. The first section is open; the rest are closed. Set `open: true` or
+  `open: false` on a tab to choose (the key is ignored with `page_layout: tabs`).
+  A tab whose blocks are all hidden by `show_from` or `show_until` is left out,
+  and the next tab becomes the first section.
+- There is no tab bar. A `tab:<id>` link points at `#<id>` (or at
+  `#<fragment>` for `tab:<id>#<fragment>`); a browser opens a closed section
+  that holds the fragment's target, with no script.
+- No new script, style or inline attribute is added: the Content Security Policy
+  is unchanged, `ping` click tracking and `rel="sponsored"` on affiliate links
+  work as on a tab page, and the crypto, email and platforms assets load once
+  for the page when any section uses them.
+
+Zero-click rule for support pages: put the primary support actions (tip, Ko-fi,
+Patreon, shop) as plain link blocks in the open section, so they are visible
+buttons, and put only crypto and secondary groups in closed sections (a crypto
+tab, or a `section` block with `collapsed: true`). Each summary is a full-width
+row at least 44 px tall with the same focus ring as every other control.
+
+```yaml
+page_layout: sections
+tabs:
+  - id: socials          # the page
+    title: Socials
+    blocks: [...]
+  - id: support          # open section: the buttons are visible
+    title: Support
+    blocks: [...]
+  - id: crypto           # closed section
+    title: Send crypto
+    blocks: [...]
+```
+
+`examples/instance-variants/sections/site.yaml` is a complete synthetic example
+with the `brand-dark` theme preset.
 
 ## Page titles
 
@@ -606,7 +655,7 @@ tabs:
 
 | Key | Type | Default | Notes |
 | --- | --- | --- | --- |
-| `colors` | map | empty | Keys: `bg`, `text`, `accent`, `on_accent` (text on the accent fill), `surface`, `border`. Any other key is refused. |
+| `colors` | map | empty | Keys: `bg`, `text`, `accent`, `on_accent` (text on the accent fill), `surface`, `border`, `muted` (secondary text; derived from `text` and `bg` when unset). Any other key is refused. |
 | `fonts.body` | string | Jost, shipped with the engine | A system font stack or a font file path. |
 | `fonts.heading` | string | same as body | Same rules as `fonts.body`. |
 | `background` | string | none | The full-bleed page background, drawn under the carbon-fiber texture. A relative image path (preferred) or an `https://` URL. |

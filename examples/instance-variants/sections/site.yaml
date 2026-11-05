@@ -1,0 +1,113 @@
+# Synthetic example: the single-page `sections` layout with the brand-dark
+# preset. Support is open and its buttons are visible; crypto and the other
+# groups are native <details> sections. Every name, URL and address is made up
+# and belongs to no one. Never put a private key or seed phrase in this file.
+version: 1
+page_layout: sections
+creator:
+  name: Example Creator
+  header: centered
+  socials:
+    - name: Example Video
+      url: https://video.example.com/@example
+      icon: youtube
+    - name: Example Feed
+      url: https://feed.example.com/rss
+      icon: rss
+    - name: Example Mail
+      url: tab:contact
+      icon: email
+features:
+  click_tracking: true
+disclosure: This page uses affiliate links. Example Creator may earn a commission.
+theme:
+  mode: dark
+  button_style: pill
+  radius: 0.75rem
+  colors:
+    accent: "#FBB03B"
+    on_accent: "#1A1A1A"
+    bg: "#0F0F0F"
+    surface: "#202020"
+    text: "#F0F0F0"
+    muted: "#B5ADA2"
+    border: "#333333"
+tabs:
+  - id: socials
+    title: Socials
+    blocks:
+      - id: home-page
+        title: Example Home Page
+        subtitle: The main site
+        url: https://example.com/
+        icon: link
+        featured: true
+      - id: latest
+        title: Latest Episode
+        url: https://video.example.com/watch/latest
+        icon: youtube
+  - id: support
+    title: Support
+    blocks:
+      - id: tip
+        title: Leave a tip
+        subtitle: One time, any amount
+        url: https://tip.example.com/example
+        icon: link
+        featured: true
+      - id: kofi
+        title: Ko-fi
+        url: https://kofi.example.com/example
+        icon: link
+      - id: patreon
+        title: Patreon
+        url: https://patreon.example.com/example
+        icon: patreon
+      - id: shop
+        title: Shop
+        url: https://shop.example.com/
+        icon: merch
+      - id: more-ways
+        title: More ways to help
+        collapsed: true
+        links:
+          - id: share
+            title: Share the page
+            url: https://example.com/share
+          - id: subscribe
+            title: Subscribe
+            url: https://video.example.com/@example?sub=1
+  - id: crypto
+    title: Send crypto
+    blocks:
+      - id: wallets
+        title: Wallets
+        coins:
+          - coin: btc
+            network: Bitcoin mainnet
+            address: bc1qexampleexampleexampleexampleexample
+          - coin: eth
+            network: ERC-20 on Ethereum
+            address: 0xExampleExampleExampleExampleExample
+          - coin: xmr
+            label: Monero
+            address: 4ExampleExampleExampleExampleExampleExampleExampleExampleExampleExampleExampleExampleExampleExampleExample
+  - id: recs
+    title: Product recs
+    blocks:
+      - id: example-mic
+        title: Example Microphone
+        subtitle: Used on the show
+        url: https://shop.example.com/mic?ref=example
+        affiliate: true
+      - id: example-stand
+        title: Example Boom Stand
+        url: https://shop.example.com/stand
+        affiliate: true
+  - id: contact
+    title: Contact
+    blocks:
+      - id: contact-note
+        markdown: |
+          Business and press: write to name@example.test. Amateur radio
+          contacts: N0CALL.

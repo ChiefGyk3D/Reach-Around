@@ -49,6 +49,7 @@ export const STRINGS = {
   "color.on_accent": "Text on accent color",
   "color.surface": "Surface color",
   "color.border": "Border color",
+  "color.muted": "Muted text color",
   "links.heading": "Links",
   "links.tab": "Tab: {name}",
   "links.group": "Group: {name}",
