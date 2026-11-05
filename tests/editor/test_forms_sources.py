@@ -92,7 +92,8 @@ def test_dynamic_string_ids_exist() -> None:
     known = string_ids()
     wanted = {f"theme.mode.{m}" for m in ("auto", "light", "dark")}
     wanted |= {
-        f"color.{k}" for k in ("bg", "text", "accent", "on_accent", "surface", "border")
+        f"color.{k}"
+        for k in ("bg", "text", "accent", "on_accent", "surface", "border", "muted")
     }
     wanted |= {"links.tab", "links.group", "action.moveUp", "action.moveDown"}
     assert wanted <= known

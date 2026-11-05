@@ -26,7 +26,7 @@ export function createStore(initial) {
 export const LINK_TEXT = ["title", "url", "subtitle", "icon"];
 export const LINK_FLAGS = ["affiliate", "featured"];
 export const PLATFORM_FIELDS = ["handle", "url", "name", "label", "count", "as_of"];
-export const COLOR_KEYS = ["bg", "text", "accent", "on_accent", "surface", "border"];
+export const COLOR_KEYS = ["bg", "text", "accent", "on_accent", "surface", "border", "muted"];
 export const MODES = ["auto", "light", "dark"];
 const NAME_LIMIT = 30;
 // What the build uses when a key is absent, so an untouched box is no change.

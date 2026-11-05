@@ -390,6 +390,8 @@ KNOWN_FIELDS: frozenset[str] = frozenset(
         "noindex_paths",
         "note",
         "numbers",
+        "open",
+        "page_layout",
         "page_title",
         "page_views",
         "path",

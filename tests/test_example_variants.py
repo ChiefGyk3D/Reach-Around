@@ -16,7 +16,7 @@ from reach_around.site.build import build_site
 ROOT = Path(__file__).resolve().parent.parent
 VARIANTS = ROOT / "examples" / "instance-variants"
 TODAY = date(2027, 3, 10)
-EXPECTED = {"minimal", "dark-hero", "grid-cards"}
+EXPECTED = {"minimal", "dark-hero", "grid-cards", "sections"}
 HOSTILE = "<script>alert(1)</script>"
 
 INLINE_STYLE = re.compile(r"<[^>]*\sstyle\s*=", re.IGNORECASE)

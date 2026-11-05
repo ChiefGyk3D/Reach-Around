@@ -503,13 +503,13 @@ a.link-featured .link-title { font-size: var(--ra-text-lg); }
 a.link:active, .social:active { transform: translateY(0) scale(0.985); }
 
 /* Collapsible sections: native details, rotating chevron, smooth open and close. */
-.section {
+.section, .tab-section {
   border: 1px solid var(--ra-color-border);
   border-radius: var(--ra-card-radius);
   background-color: var(--ra-color-surface);
   box-shadow: var(--ra-shadow-card);
 }
-.section summary {
+.section summary, .tab-section > summary {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -524,8 +524,8 @@ a.link:active, .social:active { transform: translateY(0) scale(0.985); }
   font-weight: 700;
   line-height: 1.25;
 }
-.section summary::-webkit-details-marker { display: none; }
-.section summary::after {
+.section summary::-webkit-details-marker, .tab-section > summary::-webkit-details-marker { display: none; }
+.section summary::after, .tab-section > summary::after {
   content: "";
   flex: none;
   width: 0.6rem;
@@ -536,21 +536,30 @@ a.link:active, .social:active { transform: translateY(0) scale(0.985); }
   transform: rotate(45deg);
   transition: transform var(--ra-duration) var(--ra-ease);
 }
-.section[open] > summary::after { transform: rotate(-135deg) translate(-2px, -2px); }
+.section[open] > summary::after, .tab-section[open] > summary::after { transform: rotate(-135deg) translate(-2px, -2px); }
 .section > .section-subtitle { margin: calc(var(--ra-space-2) * -1) 0 var(--ra-space-3); padding: 0 var(--ra-space-4); }
 .section .section-links { padding: 0 var(--ra-space-3) var(--ra-space-3); }
 .section a.link { box-shadow: none; }
-.section[open] .section-links { animation: ra-reveal 260ms var(--ra-ease) both; }
+.section[open] .section-links, .tab-section[open] > .blocks { animation: ra-reveal 260ms var(--ra-ease) both; }
 @supports selector(::details-content) {
-  .section[open] .section-links { animation: none; }
-  .section::details-content {
+  .section[open] .section-links, .tab-section[open] > .blocks { animation: none; }
+  .section::details-content, .tab-section::details-content {
     block-size: 0;
     overflow: clip;
     opacity: 0;
     transition: block-size 260ms var(--ra-ease), opacity 200ms, content-visibility 260ms allow-discrete;
   }
-  .section[open]::details-content { block-size: auto; opacity: 1; }
+  .section[open]::details-content, .tab-section[open]::details-content { block-size: auto; opacity: 1; }
 }
+
+/* page_layout: sections. The first tab is the page; every other tab is a card-like
+   <details> after it. The title is a heading inside the summary, so the page
+   keeps an outline and the whole row is the 44 px target. */
+.tab-section { flex: none; margin-top: var(--ra-space-4); }
+.tab-section:last-of-type { margin-bottom: auto; }
+.tab-section-title { margin: 0; font: inherit; letter-spacing: inherit; }
+.tab-section > .blocks { flex: none; padding: 0 var(--ra-space-3) var(--ra-space-3); }
+.blocks:has(~ .tab-section) { flex: 0 0 auto; }
 
 /* Other blocks. */
 .text { max-width: var(--ra-measure); padding: 0 var(--ra-space-1); }
@@ -741,10 +750,10 @@ main > footer { margin-top: var(--ra-space-5); color: var(--ra-color-muted); fon
   body::before, .tabs, .skip-link, .cookie-banner, .copy-button { display: none; }
   main { max-width: none; min-height: 0; padding: 0; }
   main > :not(.tabs) { padding-inline: 0; }
-  .site-header, .blocks > li, .section[open] .section-links { animation: none; }
-  .section::details-content { block-size: auto; opacity: 1; content-visibility: visible; }
+  .site-header, .blocks > li, .section[open] .section-links, .tab-section[open] > .blocks { animation: none; }
+  .section::details-content, .tab-section::details-content { block-size: auto; opacity: 1; content-visibility: visible; }
   a, a.link { color: CanvasText; }
-  a.link, .section, .profile-card, .crypto-card {
+  a.link, .section, .tab-section, .profile-card, .crypto-card {
     border: 1px solid CanvasText;
     background: none;
     box-shadow: none;

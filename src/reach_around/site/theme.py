@@ -32,6 +32,7 @@ COLOR_KEYS: tuple[str, ...] = (
     "on_accent",
     "surface",
     "border",
+    "muted",
 )
 
 # Folders the build writes itself; an instance file may not live inside them.

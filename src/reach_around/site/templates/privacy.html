@@ -25,5 +25,8 @@
 {% if contact %}
 <p>Questions: {{ contact }}</p>
 {% endif %}
+{% if single_page %}
+<p><a href="{{ root }}">Back to the links</a></p>
+{% endif %}
 </section>
 {% endblock %}

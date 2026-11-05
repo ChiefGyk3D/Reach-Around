@@ -153,6 +153,7 @@ class Link(_Model):
 
 Layout = Literal["list", "grid", "cards"]
 HeaderStyle = Literal["compact", "centered", "hero"]
+PageLayout = Literal["tabs", "sections"]
 
 
 class Section(_Model):
@@ -221,6 +222,9 @@ class Tab(_Model):
     title: Title
     layout: Layout = "list"
     page_title: PageTitle | None = None
+    # Only read by ``page_layout: sections``: whether this tab's section starts
+    # open. Unset means the first section on the page is open and the rest closed.
+    open: bool | None = None
     blocks: list[Block]
 
 
@@ -312,6 +316,7 @@ class SiteConfig(_Model):
     version: Literal[1]
     creator: Creator
     tabs: list[Tab] = Field(min_length=1)
+    page_layout: PageLayout = "tabs"
     disclosure: Annotated[str, StringConstraints(max_length=2000)] | None = None
     timezone: str = "America/New_York"
     title_template: TitleTemplate | None = None

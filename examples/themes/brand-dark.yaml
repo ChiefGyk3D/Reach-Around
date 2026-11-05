@@ -1,0 +1,23 @@
+# A generic dark brand preset: amber accent on near-black, dark only. Every value
+# is editable; replace the hex colors with your own kit.
+#
+# Contrast (computed by the tests): text on bg 16.8:1, accent on bg 10.4:1,
+# on_accent on accent 9.4:1, muted on surface 7.3:1.
+#
+# Fonts: the body is Jost, which the engine already serves from your own site, so
+# `fonts.body` stays unset. For a display face such as Orbitron, put its .woff2
+# file (SIL OFL) in your instance folder and uncomment `fonts.heading`; nothing is
+# ever fetched from a font host.
+colors:
+  accent: "#FBB03B"
+  on_accent: "#1A1A1A"
+  bg: "#0F0F0F"
+  surface: "#202020"
+  text: "#F0F0F0"
+  muted: "#B5ADA2"
+  border: "#333333"
+# fonts:
+#   heading: fonts/orbitron.woff2
+button_style: pill
+radius: 0.75rem
+mode: dark
