@@ -130,3 +130,66 @@ def test_a_state_read_that_never_settles_is_503(
 
 def test_a_settled_read_is_still_200(ed: Editor) -> None:
     assert ed.get("/__edit/api/state").status == 200
+
+
+# ---- one accepted state is one set of bytes (#197) ----------------------------------
+
+
+def test_a_file_that_goes_a_b_a_between_reads_never_mixes_states(
+    ed: Editor, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = ed.session.service
+    real = service._read
+    other = CONFIG.replace("Example Creator", "Someone Else")
+    assert other != CONFIG
+    calls = {"n": 0}
+
+    def flipping(path: Path) -> bytes | None:
+        calls["n"] += 1
+        data = real(path)
+        if calls["n"] == 1:  # the loaders will see B ...
+            ed.config.write_text(other, encoding="utf-8")
+        elif calls["n"] == 2:  # ... and the confirming read sees A again
+            ed.config.write_text(CONFIG, encoding="utf-8")
+            data = CONFIG.encode()
+        return data
+
+    monkeypatch.setattr(service, "_read", flipping)
+    got = ed.get("/__edit/api/state")
+    if got.status == 200:
+        data = body_of(got)
+        assert data["hash"] == sha(CONFIG)
+        assert data["config"]["creator"]["name"] == "Example Creator"
+    else:
+        assert got.status == 503
+
+
+def test_the_response_never_pairs_recorded_with_a_different_file(
+    ed: Editor, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = ed.session.service
+    real_read = service._read
+    real_record = History.record_write
+    outside = CONFIG.replace("# keep me", "# edited later")
+    done = {"record": False, "fired": False}
+
+    def record(self: History, old: str, new: str, label: str) -> None:
+        real_record(self, old, new, label)
+        done["record"] = True
+
+    def reading(path: Path) -> bytes | None:
+        data = real_read(path)
+        if done["record"] and not done["fired"]:
+            done["fired"] = True  # a writer lands right after the first look
+            ed.config.write_text(outside, encoding="utf-8")
+        return data
+
+    monkeypatch.setattr(History, "record_write", record)
+    monkeypatch.setattr(service, "_read", reading)
+    got = ed.op("set_link_field", {"id": "first", "field": "title", "value": "One"})
+    assert got.status == 200
+    data = body_of(got)
+    if data["history"]["recorded"]:
+        assert data["state"]["hash"] == data["history"]["hash"]
+    else:
+        assert "warning" in data

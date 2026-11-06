@@ -22,6 +22,7 @@ import json
 import math
 import os
 import re
+import tempfile
 import threading
 import time
 from collections import deque
@@ -473,15 +474,7 @@ class EditorService:
             if data is None:
                 raise RouteError(404, "not_found", "The config file cannot be read.")
             first = data
-            config: dict[str, Any] = {}
-            error: str | None = None
-            try:
-                load_site_config(self.config)
-                loaded = load_yaml(self.config)
-                if isinstance(loaded, dict):
-                    config = json_safe(loaded)
-            except (ConfigError, OSError) as exc:
-                error = self._clean(str(exc))
+            config, error = self._parse(data)
             if self._read(self.config) == first:
                 break
         else:
@@ -493,9 +486,34 @@ class EditorService:
             )
         return hashlib.sha256(first).hexdigest(), config, error
 
-    def _digest_now(self) -> str | None:
-        data = self._read(self.config)
-        return None if data is None else hashlib.sha256(data).hexdigest()
+    def _parse(self, data: bytes) -> tuple[dict[str, Any], str | None]:
+        """Load exactly ``data`` (a private copy beside the config), not the path.
+
+        The path may name another version by now; the hash we report must be
+        the hash of the bytes the config and build result came from.
+        """
+        config: dict[str, Any] = {}
+        tmp: Path | None = None
+        try:
+            fd, name = tempfile.mkstemp(
+                dir=self.config.parent, prefix=f".{self.config.name}.", suffix=".view"
+            )
+            tmp = Path(name)
+            with os.fdopen(fd, "wb") as handle:
+                handle.write(data)
+            load_site_config(tmp)
+            loaded = load_yaml(tmp)
+            if isinstance(loaded, dict):
+                config = json_safe(loaded)
+        except (ConfigError, OSError) as exc:
+            shown = str(exc).replace(str(tmp), str(self.config)) if tmp else str(exc)
+            if tmp is not None:
+                shown = shown.replace(tmp.name, self.config.name)
+            return {}, self._clean(shown)
+        finally:
+            if tmp is not None:
+                tmp.unlink(missing_ok=True)
+        return config, None
 
     def _summary(self, digest: str | None = None) -> Summary:
         try:
@@ -536,8 +554,13 @@ class EditorService:
             "build": {"ok": error is None},
         }
 
-    def state(self, preview_host: str, preview_port: int) -> dict[str, Any]:
-        digest, config, error = self._load()
+    def state(
+        self,
+        preview_host: str,
+        preview_port: int,
+        loaded: tuple[str, dict[str, Any], str | None] | None = None,
+    ) -> dict[str, Any]:
+        digest, config, error = loaded if loaded is not None else self._load()
         try:
             mtime = os.stat(self.config).st_mtime
         except OSError:
@@ -646,17 +669,30 @@ class EditorService:
             raise RouteError(422, "refused", self._clean(str(exc))) from None
         warning: str | None = None
         recorded = False
+        loaded: tuple[str, dict[str, Any], str | None] | None = None
         if result.written and result.old != result.new:
+            # Hold the config's own lock through the history commit and the one
+            # read the reply is built from, so no cooperating writer slips in.
+            lock: int | None = None
             try:
+                lock = editing.lock_config(self.config)
                 History(self.config).record_write(result.old, result.new, label)
                 recorded = True
-                if self._digest_now() != sha256_text(result.new):
+                loaded = self._load()
+                if loaded[0] != sha256_text(result.new):
                     recorded = False
                     warning = "Saved, but the file changed again; undo may refuse."
-            except (HistoryError, OSError):
+            except (HistoryError, OSError, editing.EditError):
                 warning = "Saved, but undo is not available for this change."
+            except RouteError:
+                loaded = None
+                recorded = False
+                warning = "Saved, but the file changed again; undo may refuse."
+            finally:
+                if lock is not None:
+                    os.close(lock)
         reply: dict[str, Any] = {
-            "state": self.state(preview_host, preview_port),
+            "state": self.state(preview_host, preview_port, loaded),
             "history": {
                 "label": label,
                 "hash": sha256_text(result.new),
