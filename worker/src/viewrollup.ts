@@ -84,7 +84,7 @@
 // Heartbeat (view_meta, no free text): rollup_last_ok (ms, success only),
 // rollup_days, rollup_rows, rollup_late_rows (late rows re-rolled),
 // rollup_late_dropped, rollup_reduced_days, rollup_err (closed class),
-// rollup_failed_day (first failed day), rolled_through (last final day).
+// rollup_failed_day:<site> (first failed day), rolled_through:<site> (last final day).
 
 import { BudgetExceeded, QueryMeter, meterOf, meteredDb, queryBudget } from "./d1budget";
 import { configErrText, loadSites, type Site, type SitesEnv } from "./sites";

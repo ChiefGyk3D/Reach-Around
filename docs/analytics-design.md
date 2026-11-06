@@ -513,7 +513,7 @@ nothing; it does not tell the sender.
 | `VIEW_HASH_SECRET` missing or invalid | Nothing recorded (fail closed), same 204 | Collector health panel: zero views, `view_meta` closed class |
 | D1 write fails | Atomic batch rolls back, no counter consumed without an event; same 204 | `view_meta` error class |
 | D1 unavailable or slow in edge mode | Page is served normally; the count is dropped | Gap in counts; error class |
-| Rollup fails or is cut off | Purge runs first, so retention is never blocked; a stuck day is skipped and later days roll; raw rows of an unrolled day are kept at most min(3 x keep, 90 days) then dropped with `rollup_overdue` set | Heartbeat stale; `rollup_failed_day` |
+| Rollup fails or is cut off | Purge runs first, so retention is never blocked; a stuck day is skipped and later days roll; raw rows of an unrolled day are kept at most min(3 x keep, 90 days) then dropped with `rollup_overdue` set | Heartbeat stale; `rollup_failed_day:<site>` |
 | Late row after a day is rolled | Full re-roll of the day, or dropped and counted if raw rows are already purged | `rollup_late_rows`, `rollup_late_dropped` |
 | Network range data missing, stale or corrupt | Class `unknown`, never blocks a request | Dashboard shows the unknown share; `net_status` |
 | Site config invalid or duplicate host | That site records nothing; other sites continue | `config_err` |
