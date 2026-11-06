@@ -162,13 +162,35 @@ describe("budgets are per site (A4)", () => {
     expect(keys.filter((k) => k.startsWith("bud:") && k.endsWith(":blog:pv"))).toHaveLength(1);
   });
 
-  it("the_client_cap_is_per_site", async () => {
-    const e = env({ VIEWS_PER_HOUR: "4", ACCOUNT_VIEWS_PER_HOUR: "100" }); // half of 4 = a cap of 2 per client
-    for (let i = 0; i < 4; i++) await post(e, "links.example.test", "home", 9);
-    for (let i = 0; i < 4; i++) await post(e, "blog.example.test", "post-one", 9);
-    const r = await rows();
-    expect(r.filter((x) => x.site === "links")).toHaveLength(2);
-    expect(r.filter((x) => x.site === "blog")).toHaveLength(2);
+  it("one_client_spreading_across_sites_is_still_bounded_by_one_client_cap", async () => {
+    const e = env({ VIEWS_PER_HOUR: "10", ACCOUNT_VIEWS_PER_HOUR: "100" }); // client cap = 5
+    for (let i = 0; i < 6; i++) {
+      await post(e, "links.example.test", "home", 9);
+      await post(e, "blog.example.test", "post-one", 9);
+    }
+    expect(await rows()).toHaveLength(5);
+    // A different client is unaffected.
+    await post(e, "blog.example.test", "post-one", 10);
+    expect(await rows()).toHaveLength(6);
+  });
+
+  it("the_account_wide_client_counter_is_not_the_stored_daily_code", async () => {
+    const e = env();
+    await post(e, "links.example.test", "home", 9);
+    await post(e, "blog.example.test", "post-one", 9);
+    const h = (await seen()).map((x) => x.h.slice(0, 16));
+    const keys = (await budgets()).filter((b) => b.key.startsWith("cap:")).map((b) => b.key.split(":")[3]);
+    expect(keys).toHaveLength(3); // links, blog and the account-wide counter
+    for (const k of keys) expect(h).not.toContain(k);
+  });
+
+  it("the_burst_limiter_key_is_the_same_for_one_client_on_every_site", async () => {
+    const lim = fakeLimiter();
+    const e = env({ VIEW_LIMITER: lim });
+    await post(e, "links.example.test", "home", 9);
+    await post(e, "blog.example.test", "post-one", 9);
+    expect(lim.keys).toHaveLength(2);
+    expect(new Set(lim.keys).size).toBe(1);
   });
 
   it("a_shared_account_ceiling_sits_above_the_site_budgets", async () => {
@@ -177,7 +199,7 @@ describe("budgets are per site (A4)", () => {
     for (let i = 4; i <= 6; i++) await post(e, "blog.example.test", "post-one", i);
     expect(await rows()).toHaveLength(3);
     // The ceiling counted exactly what was accepted: the refused ones consumed nothing.
-    const all = (await budgets()).find((b) => b.key.endsWith(":all:pv"));
+    const all = (await budgets()).find((b) => b.key.endsWith(":_all:pv"));
     expect(all?.value).toBe("3");
   });
 
@@ -187,7 +209,7 @@ describe("budgets are per site (A4)", () => {
       const e = env({ VIEWS_PER_HOUR: "100000", ACCOUNT_VIEWS_PER_HOUR: bad });
       for (let i = 1; i <= 20; i++) await post(e, "links.example.test", "home", i);
       expect((await rows()).length, bad).toBe(20);
-      expect((await budgets()).some((b) => b.key.endsWith(":all:pv")), bad).toBe(true);
+      expect((await budgets()).some((b) => b.key.endsWith(":_all:pv")), bad).toBe(true);
     }
   });
 });

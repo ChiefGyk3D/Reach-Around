@@ -4,10 +4,23 @@
       "additionalProperties": false,
       "description": "Count page views through the Worker route. Off by default.",
       "properties": {
+        "other_sites": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Other Sites",
+          "type": "array"
+        },
         "page_views": {
           "default": false,
           "title": "Page Views",
           "type": "boolean"
+        },
+        "raw_keep_days": {
+          "default": 7,
+          "title": "Raw Keep Days",
+          "type": "integer"
         },
         "route": {
           "default": "/e/v/",
@@ -1453,7 +1466,9 @@
     "analytics": {
       "$ref": "#/$defs/Analytics",
       "default": {
+        "other_sites": [],
         "page_views": false,
+        "raw_keep_days": 7,
         "route": "/e/v/"
       }
     },

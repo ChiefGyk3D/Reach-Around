@@ -44,6 +44,15 @@ crons = ["5 * * * *"]
 # build manifest and `wrangler secret`, never from this file.
 # PAGE_IDS = '["home"]'            # JSON array of tab ids, from the build manifest
 # VIEWS_KILL = "1"                 # kill switch, same rules as CLICKS_KILL
+# SITES = '{"links":{"hosts":["links.example.test"],"mode":"beacon","pages":["home"],"link_ids":{"example-one":"home"}}}'
+#   The sites this collector serves (docs/analytics-design.md section 4). Up to 8; a bad
+#   entry disables that one site, a broken whole value loads none. Optional per-site keys:
+#   geo, utm_allowlist, min_cell, raw_keep_days. SITE_HOST + PAGE_IDS + LINK_IDS stay as the
+#   one-site shorthand for the site "links" when SITES is unset.
+# VIEWS_KILL_SITES = "blog"        # comma list of site ids whose view route is off
+# CLICKS_KILL_SITES = "blog"       # same for the click route
+# ACCOUNT_VIEWS_PER_HOUR = "480"   # shared ceiling above the per-site budgets (humans)
+# ACCOUNT_BOT_VIEWS_PER_HOUR = "120"
 # GEO_LEVEL = "city"               # country | region | city
 # BOTS_MODE = "count"              # count | drop
 # VIEWS_PER_HOUR = "120"           # global human budget

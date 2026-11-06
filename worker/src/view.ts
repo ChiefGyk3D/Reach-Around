@@ -357,8 +357,14 @@ export interface Identity {
   lim: string;
   /** Key for VIEW_SUSPECT_LIMITER (purpose "sus"). */
   sus: string;
-  /** Per-address cap key (purpose "cap", 64-bit hex), shared by bots and humans. */
+  /** Per-address cap key (purpose "cap", 64-bit hex), shared by bots and humans; scoped to the site. */
   cap: string;
+  /**
+   * The same cap key across ALL sites (hourly counter only, expires within two
+   * hours, never stored beside an event), so a client cannot get a fresh cap on
+   * each site. Derived under a key no site id can equal.
+   */
+  capAll: string;
   /** Daily unique-visitor hash, or null when uniques are off. */
   uv: string | null;
 }
@@ -389,13 +395,15 @@ export async function identityFor(
   const key = await dayKey(secret, env.VIEW_HASH_SECRET, utcDate(now), site); // CONTROL:pv-uv-key
   const flag = env.UV_ENABLED;
   const uvOn = !(typeof flag === "string" && !flagOn(flag));
-  const [lim, sus, cap, uv] = await Promise.all([
-    limiterKey(secret, env.VIEW_HASH_SECRET, `lim:${site}`, addr), // CONTROL:pv-limiter-key
-    limiterKey(secret, env.VIEW_HASH_SECRET, `sus:${site}`, addr),
+  const allKey = await dayKey(secret, env.VIEW_HASH_SECRET, utcDate(now), "*"); // "*" is not a valid site id
+  const [lim, sus, cap, capAll, uv] = await Promise.all([
+    limiterKey(secret, env.VIEW_HASH_SECRET, "lim", addr), // CONTROL:pv-limiter-key
+    limiterKey(secret, env.VIEW_HASH_SECRET, "sus", addr),
     visitorHash(key, `cap|${addr}`, CAP_HASH_BITS),
+    visitorHash(allKey, `cap|${addr}`, CAP_HASH_BITS),
     uvOn ? visitorHash(key, addr, uvBits(env.UV_BITS)) : Promise.resolve(null),
   ]);
-  return { lim, sus, cap, uv };
+  return { lim, sus, cap, capAll, uv };
 }
 
 // ----------------------------------------------------------------- derive
@@ -528,9 +536,9 @@ interface AcceptRow {
  * (per site) only if the client is under its cap AND the site budget AND the
  * account-wide ceiling have room; statement 2 raises the site counter and
  * statement 3 the account counter, each only if the one before changed a row;
- * statement 4 inserts the event only if statement 3 did (`first` is computed
- * inside it, before the visitor row exists); statement 5 inserts the visitor
- * row only if statement 4 did. When anything is spent every statement changes
+ * statement 4 the account-wide per-client counter, statement 5 inserts the event only if statement 4 did (`first` is computed
+ * inside it, before the visitor row exists); statement 6 inserts the visitor
+ * row only if statement 5 did. When anything is spent every statement changes
  * zero rows and nothing is written; if a statement throws, the batch rolls
  * back. Budgets are keyed by site, so one site's flood cannot spend another
  * site's allowance (threat A4); the account ceiling stays above them.
@@ -550,15 +558,19 @@ async function accept(
   const cls = bot ? "pvbot" : "pv";
   const capKey = `cap:${hour}:${row.site}:${id.cap}`;
   const budKey = `bud:${hour}:${row.site}:${cls}`;
-  const allKey = `bud:${hour}:all:${cls}`;
+  // "_all" is not a valid site id, so no site's keys can collide with the account-wide ones.
+  const allKey = `bud:${hour}:_all:${cls}`;
+  const allCapKey = `cap:${hour}:_all:${id.capAll}`;
+  // One client across every site gets at most this many views, a share of the account ceiling.
+  const allClientCap = Math.max(1, Math.min(clientCap, Math.floor(accountLimit / 2)));
   const day = utcDate(now);
   const uvh = bot ? null : id.uv;
-  const both = `${budgetOk(2, 3)} AND ${budgetOk(5, 6)}`;
+  const both = `${budgetOk(2, 3)} AND ${budgetOk(5, 6)} AND ${budgetOk(7, 8)}`;
   const stmts = [
     env.DB.prepare(
       `INSERT INTO view_meta (key, value) SELECT ?1, '1' WHERE ${both} ` +
         `ON CONFLICT(key) DO UPDATE SET ${BUMP} WHERE CAST(value AS INTEGER) < ?4 AND ${both}`,
-    ).bind(capKey, budKey, globalLimit, clientCap, allKey, accountLimit), // CONTROL:pv-client-cap
+    ).bind(capKey, budKey, globalLimit, clientCap, allKey, accountLimit, allCapKey, allClientCap), // CONTROL:pv-client-cap
     env.DB.prepare(
       `INSERT INTO view_meta (key, value) SELECT ?1, '1' WHERE changes() = 1 ` +
         `ON CONFLICT(key) DO UPDATE SET ${BUMP} WHERE changes() = 1`,
@@ -567,6 +579,10 @@ async function accept(
       `INSERT INTO view_meta (key, value) SELECT ?1, '1' WHERE changes() = 1 ` +
         `ON CONFLICT(key) DO UPDATE SET ${BUMP} WHERE changes() = 1`,
     ).bind(allKey), // CONTROL:pv-account-budget
+    env.DB.prepare(
+      `INSERT INTO view_meta (key, value) SELECT ?1, '1' WHERE changes() = 1 ` +
+        `ON CONFLICT(key) DO UPDATE SET ${BUMP} WHERE changes() = 1`,
+    ).bind(allCapKey), // CONTROL:pv-account-client-cap
     env.DB.prepare(
       "INSERT INTO view_events (ts, page, src_kind, src, country, region, city, browser, bmajor, " +
         "os, device, lang, vp, net, bot_class, reason, first, site) " +

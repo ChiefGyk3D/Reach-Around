@@ -176,7 +176,7 @@ export async function handleClick(request: Request, env: Env): Promise<Response>
     // and is never stored.
     const key = await limiterKeyOrIsolate(
       env.VIEW_HASH_SECRET,
-      `clk:${site.id}`,
+      "clk",
       // Canonical form, so equivalent spellings share one allowance. An absent
       // or malformed address becomes the literal "unknown" (one shared bucket).
       normalizeAddress(request.headers.get("CF-Connecting-IP")) ?? "unknown",

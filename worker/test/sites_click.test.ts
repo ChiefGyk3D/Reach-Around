@@ -99,13 +99,13 @@ describe("per-site clicks", () => {
     expect(await rows()).toHaveLength(1);
   });
 
-  it("the_limiter_key_differs_per_site_for_one_client", async () => {
+  it("the_limiter_key_is_the_same_for_one_client_on_every_site", async () => {
     const e = env();
     await handleClick(click("example-one", "links.example.test"), e);
     await handleClick(click("support-cta", "blog.example.test"), e);
     const keys = (e.CLICK_LIMITER as ReturnType<typeof limiter>).keys;
     expect(keys).toHaveLength(2);
-    expect(new Set(keys).size).toBe(2);
+    expect(new Set(keys).size).toBe(1);
     expect(JSON.stringify(keys)).not.toContain("198.51.100.7");
   });
 });

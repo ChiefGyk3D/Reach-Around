@@ -79,5 +79,12 @@ def test_unknown_keys_are_refused() -> None:
             make(**{key: True})
 
 
-def test_the_section_has_exactly_two_fields() -> None:
-    assert set(Analytics.model_fields) == {"page_views", "route"}
+def test_the_section_has_exactly_these_fields() -> None:
+    # A new field is a new fact for the privacy text: see
+    # tests/site/test_privacy_sites.py.
+    assert set(Analytics.model_fields) == {
+        "page_views",
+        "route",
+        "raw_keep_days",
+        "other_sites",
+    }

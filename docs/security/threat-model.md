@@ -367,6 +367,20 @@ Verification (all proposed unless marked exists):
 - exists: `tests/site/test_click_attrs.py::test_every_link_block_has_ping_and_real_href`, `::test_ping_paths_use_only_ids_from_the_manifest`, and `tests/site/test_privacy.py::test_click_tracking_on_adds_ping_and_exactly_one_script_per_page`
 - Load drill (not run; needs the owner's written go-ahead): the owner, against their own test subdomain only, in a window they set and with a stop condition (stop on the first 5xx or when 80 percent of the daily quota is spent), sends synthetic traffic from several source addresses and confirms that D1 rows stay at or below the cap, every response is the uniform 204, and the kill switch stops writes within one minute. No agent runs this.
 
+#### T-07 additions: page-view analytics with more than one site (A1 to A7)
+
+Folded into T-07 as sub-entries (design decision D-A6, provisional). Status: **[shipped]** in `worker/src/sites.ts`, `view.ts`, `click.ts`, `viewrollup.ts`, `viewretention.ts` and migration 0008, except where marked **[planned]** (the blog's edge-count path is a later step). Tests are in `worker/test/views/sites*.test.ts` and `worker/test/sites_click.test.ts`.
+
+| Id | Threat | Mitigation | Verification |
+|---|---|---|---|
+| A1 | Forged site: a sender names a site to inflate or poison another site's numbers | The site comes only from the matched `Origin`/`Ping-From` host, never from the body, path or query; the header check is a noise filter (the sender controls it), so per-site budgets and the per-client cap bound the damage; a page or link id must be on that site's own list | `a_client_cannot_name_the_site_in_the_body_headers_path_or_query`, `a_page_of_another_site_records_nothing`, `an_id_listed_for_another_site_records_nothing` |
+| A2 | Page-id cardinality growth | Beacon pages are an allowlist per site; slug-only ids; the edge-count path (open-ended pages, a per-site page cap) is **[planned]** | loader tests for bad page ids and caps |
+| A3 | Edge amplification (every request becomes a collector call) | **[planned]** with the edge-count Worker; this change adds the per-site kill switches and budgets it will use | `killing_one_site_leaves_the_other_and_a_killed_site_does_no_io` |
+| A4 | One site's flood starves another | Hourly counters keyed by site, plus a shared account ceiling above them; one client has a per-site cap and an account-wide cap (a client cannot reset its allowance by moving between sites); the burst limiter key is the same on every site | `spending_one_sites_hourly_budget_leaves_the_other_untouched`, `a_shared_account_ceiling_sits_above_the_site_budgets`, `one_client_spreading_across_sites_is_still_bounded_by_one_client_cap`, `the_burst_limiter_key_is_the_same_for_one_client_on_every_site` |
+| A5 | Loose cross-origin access to the collector | No `Access-Control-*` header on any response; every outcome is the same empty 204; no route returns data | existing `no_cors_headers_on_any_response`; the edge-to-collector binding is **[planned]** |
+| A6 | Config abuse or drift (duplicate or wildcard host, a site added without a privacy change) | Strict loader: a bad entry disables that site, duplicate hosts disable both, duplicate keys and unknown keys are refused, a broken whole value loads none; errors are closed codes in `view_meta('config_err')`; the privacy text is tested against every stored column | `worker/test/views/sites.test.ts` (hostile entries), `tests/site/test_privacy_sites.py::test_every_stored_column_is_disclosed_in_plain_words` and its negative case |
+| A7 | Cross-site linkage through the daily code | The site id is inside the key derivation, so one visitor has unrelated codes per site; no cross-site unique count (D-A4). Residual: the hourly account-wide client counter in `view_meta` is derived without the site so a client cannot dodge its cap; it holds only a counter, lives about an hour, and is not stored beside any event | `four_codes_are_four_different_values`, `the_account_wide_client_counter_is_not_the_stored_daily_code` |
+
 Residual: an attacker who accepts the cost can still spend the free-tier request quota with traffic that passes the front checks, because the platform counts a request before the Worker's code decides to ignore it (general knowledge, unverified against current documentation). The budget and kill switch limit the damage to the data stores and the mail budget and give the owner a fast stop; they cannot make the quota unspendable. Counts can still be inflated by anyone with patience (T-05). Reopen when the provider's usage notification fires, when the quota is spent on any day, or when the gate ships.
 
 ### T-08 Page-level injection and framing
@@ -453,6 +467,18 @@ Verification:
 - `tests/test_exports.py::test_share_export_excludes_leads` and `::test_leads_table_never_read_by_grafana_sink`
 - `worker/test/no_leak.test.ts::no_email_address_in_console_output` (shared with T-04)
 - `tests/site/test_privacy.py::test_default_disclosure_lists_click_counts_and_says_no_ip_address` (plan Task 6A)
+
+#### T-17 additions: analytics data (B1 to B5)
+
+Status: **[shipped]** except B2's local-copy parts, which wait for the local pull (**[planned]**). Provisional defaults: hour-rounded timestamps (D-A1), 7 days raw and 90 days aggregates (D-A2), raw `net` cleared once counted (D-A7), no source on click rows (D-A5).
+
+| Id | Threat | Mitigation | Verification |
+|---|---|---|---|
+| B1 | A second site outlives its purpose | Retention works on the stored data, not the config: every site present is purged; a per-site raw keep may be shorter than the global one, never longer; a retired site ages out with the global window; a broken config never freezes or wipes retention | `worker/test/views/sites_rollup.test.ts` retention block |
+| B2 | Copies outside the Worker (pulled store, exports, backups, restore points) | The pull reads aggregates only (**[planned]**); copies follow the 90 day ceiling; backup and restore-point retention is unverified and the privacy text claims no deletion a backup would undo | **[planned]** with the pull |
+| B3 | Deletion on request is impossible | The privacy text says so and states the raw window from config; opt-out signals are honored | `test_text_says_small_totals_are_merged_and_no_per_person_deletion` |
+| B4 | Small-audience re-identification | Hour-rounded timestamps; small-cell folding (label suppression, not k-anonymity); short raw window; aggregates never join geography to device facts. Accepted residual: one-view cells remain inside `other`, and anyone who can read D1 can read raw rows during the window | migration 0008 test (rounding), `no_aggregate_table_joins_geography_to_device_facts_or_the_network_class` |
+| B5 | The network flag becomes a profile | In aggregates the class is only a value of `view_dim_daily`; in raw rows it is cleared once the day is counted and settled (a day more than 24 hours past its seal); it is `unknown` today because no range data is loaded | `a_counted_row_of_a_day_sealed_over_a_day_ago_is_cleared_and_the_aggregate_keeps_the_class` |
 
 Residual: provider-side copies (Cloudflare recovery windows, Mailgun log retention, the recipient's mailbox) are outside our deletion and are disclosed, not fixed. Backups of the local store keep a deleted lead until they roll off; the runbook states the roll-off period. Reopen if a regulator or a requester challenges the disclosure.
 

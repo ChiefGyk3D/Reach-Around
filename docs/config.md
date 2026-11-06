@@ -955,6 +955,8 @@ existed. Unknown keys are refused; there is deliberately nothing else to set.
 | Key | Type | Default | Meaning |
 | --- | --- | --- | --- |
 | `page_views` | boolean | `false` | Count one view per page load. Must be a real boolean. When on, the build ships `static/view.js`, links it from every tab page (not the privacy page), puts `data-page-id` and `data-view-route` on `<body>`, and adds the page-view item to the privacy page, which lists the referring site, the campaign label (`utm_source`, at most 30 characters) and the window width among the rest. |
+| `raw_keep_days` | integer 1 to 90 | `7` | What the privacy page says about how long individual view records are kept. It does not change the Worker: keep it equal to the Worker's `RAW_KEEP_DAYS`. |
+| `other_sites` | list of host names | none | Other sites counted by the same collector (the Worker's `SITES`), named on the privacy page. Lower-case host names only, at most 7, no scheme, port, path or wildcard. |
 | `route` | path | `/e/v/` | The same-origin path the Worker serves the page-view route on. Plain segments (`A-Z a-z 0-9 . _ ~ -`, no segment starting with a dot), starting and ending with `/`, at most 64 characters. No scheme, host, query, fragment, `.` or `..` segment, escape or space. The tab id is appended to it. |
 
 ```yaml
