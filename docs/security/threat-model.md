@@ -865,7 +865,7 @@ The mutation step in item 48 applies to items 49 to 56 as well.
 
 ## 10. Addendum: the local visual editor (issue #158, phase 3 of #103)
 
-Status: design review, written 2026-10-25 from `docs/superpowers/specs/2026-10-25-local-editor-design.md`. Nothing is built. Every mitigation below is **[planned: editor phase N]** (phase numbers are those of section 16 of the spec: 0 core additions, 1 MVP, 2 drag and drop, 3 uploads, 4 theme picker) unless it is marked **[shipped]**. Every test name for the editor is proposed. I read `src/reach_around/preview.py`, `editing.py`, `edit_cli.py`, `schema.py`, `site/assets.py`, `site/assetcheck.py` and the CSP builder in `site/overrides.py` to ground this; I did not run anything against a live system and did no active testing. Questions for the maintainer are in section 10.5 and in section 17 of the spec.
+Status: design review, written 2026-10-25 from `docs/superpowers/specs/2026-10-25-local-editor-design.md`, with verification names and status updated on 2026-11-06 (issue #192) against the merged code. What exists now: the server (two loopback listeners, the request guard, the state, version, op, undo, redo and history routes, the history store) and a browser page with forms for the creator, the look, each link and each platform item (moves, no add or remove). There are no undo or redo controls in the page, no upload route, no real preview and no media folder. A mitigation tagged **[planned: editor phase N]** (phase numbers are those of section 16 of the spec: 0 core additions, 1 MVP, 2 drag and drop, 3 uploads, 4 theme picker) is not built; **[shipped]** means the code does it. In a Verification list, "exists" means the named test is in `tests/` today; "proposed" means it is not. Test names were checked against `tests/` by grep; the mutation steps described below were not run for this update. I read `src/reach_around/preview.py`, `editing.py`, `edit_cli.py`, `schema.py`, `site/assets.py`, `site/assetcheck.py` and the CSP builder in `site/overrides.py` to ground this; I did not run anything against a live system and did no active testing. Questions for the maintainer are in section 10.5 and in section 17 of the spec.
 
 The editor is new attack surface of a different kind than the rest of this model. The deployed site and Worker are anonymous and remote. The editor is local, runs as the owner, and can write the owner's config and a media folder. The main attackers are therefore not strangers on the internet but web pages the owner visits, other software on the owner's machine, and text inside a config file the owner was given.
 
@@ -913,13 +913,13 @@ Impact 1 to 5; prerequisite 5 (needs only a web page the owner opens) down to 1 
 Abuse: the owner runs the editor, then visits `evil.example`. The attacker's DNS answers with a short TTL, first with their own address (so the page loads), then with `127.0.0.1`. The browser now treats `evil.example:<port>` as the same origin as the page, so the attacker's script can call the editor with no cross-origin check and read the answers. Separately: a bind address other than loopback exposes the editor to the LAN.
 
 Mitigations:
-1. Bind only to loopback; refuse everything else at start; reuse `_is_loopback`. **[shipped for the preview in `tests/test_preview.py`; planned for the editor: phase 1]**
-2. `Host` must equal `127.0.0.1:<port>`, `localhost:<port>` or `[::1]:<port>` with the exact port of that listener; anything else gets 421. This is stricter than the shipped preview, which accepts the names without checking the port. **[planned: phase 1]**
-3. A valid token is required on every API request, `GET` included. A successful rebinding still has nothing to authenticate with: the token lives in a JavaScript variable of the real origin and was delivered in a fragment (T-24), so it is never sent to a rebound name. **[planned: phase 1]**
-4. `Origin`, when present, must equal the request's own origin; on `POST` it must be present. **[planned: phase 1]**
+1. Bind only to loopback; refuse everything else at start. **[shipped for the preview in `tests/test_preview.py` and for the editor: `EditorSession` refuses any host but `127.0.0.1`]**
+2. `Host` must equal `127.0.0.1:<port>`, `localhost:<port>` or `[::1]:<port>` with the exact port of that listener; anything else gets 421. This is stricter than the shipped preview, which accepts the names without checking the port. The editor's own preview listener also checks the port. **[shipped]**
+3. A valid token is required on every API request, `GET` included. A successful rebinding still has nothing to authenticate with: the token lives in a JavaScript variable of the real origin and was delivered in a fragment (T-24), so it is never sent to a rebound name. **[shipped]**
+4. `Origin`, when present, must equal the request's own origin; on `POST` it must be present. **[shipped]**
 5. The editor listens on an ephemeral port printed at start, so a page must sweep ports first. This is noise, not a control.
 
-Verification (proposed): `tests/editor/test_guard.py::test_rebound_host_name_is_421_for_every_route`, `::test_host_with_wrong_port_is_421`, `::test_missing_host_is_421`, `::test_host_with_userinfo_or_zone_is_421`, `::test_non_loopback_bind_is_refused_at_start` (0.0.0.0, a LAN address, a name resolving to both). Mutation: widen the allowlist to any host and confirm the rebinding test fails.
+Verification: exists: `tests/editor/test_guard.py::test_rebound_host_name_is_421_for_every_route`, `::test_host_with_wrong_port_or_shape_is_421` (wrong port, userinfo and similar shapes; the design name was `test_host_with_wrong_port_is_421`), `::test_missing_host_is_421`, `::test_the_three_allowed_names_with_the_exact_port_work`; `tests/editor/test_server_lifecycle.py::test_non_loopback_bind_is_refused_at_start` (`0.0.0.0`, a documentation address, `::`, empty, `localhost` and a name; it does not cover a name that resolves to both). Proposed: the mutation step (widen the allowlist to any host and confirm the rebinding test fails) is not recorded as run.
 
 Residual: a browser with a flawed same-origin policy. The token is the second wall.
 
@@ -928,12 +928,12 @@ Residual: a browser with a flawed same-origin policy. The token is the second wa
 Abuse: another page posts a form or `fetch` to `http://127.0.0.1:<port>/__edit/api/op`. A "simple" cross-origin request (form post, `text/plain` fetch) is sent without a preflight and reaches the handler even though the page cannot read the answer. The write happens anyway.
 
 Mitigations:
-1. A per-session random token in a custom header `X-RA-Token` on every API request. A custom header forces a CORS preflight for any cross-origin request; the server never answers a preflight (`OPTIONS` gets 405, no `Access-Control-*` header exists), so the browser blocks the request. The token is not a cookie, so nothing is attached automatically. **[planned: phase 1]**
-2. `Content-Type` must be exactly `application/json` (or `application/octet-stream` on upload); a form or `text/plain` post gets 415 before the body is read. **[planned: phase 1]**
-3. `Origin` is required and must match on `POST`; `Sec-Fetch-Site` must be `same-origin` when sent. Old browsers that send neither still fail on the token. **[planned: phase 1]**
-4. State-changing operations are `POST` only; `GET` never changes anything. **[planned: phase 1]**
+1. A per-session random token in a custom header `X-RA-Token` on every API request. A custom header forces a CORS preflight for any cross-origin request; the server never answers a preflight (`OPTIONS` gets 405, no `Access-Control-*` header exists), so the browser blocks the request. The token is not a cookie, so nothing is attached automatically. **[shipped]**
+2. `Content-Type` must be exactly `application/json` (or `application/octet-stream` on upload); a form or `text/plain` post gets 415 before the body is read. The upload type is in the guard; no upload route exists. **[shipped for JSON]**
+3. `Origin` is required and must match on `POST`; `Sec-Fetch-Site` must be `same-origin` when sent. Old browsers that send neither still fail on the token. (A `POST` with no `Origin` at all is refused with 403.) **[shipped]**
+4. State-changing operations are `POST` only; `GET` never changes anything. **[shipped]**
 
-Verification (proposed): `::test_post_without_token_is_401_and_changes_nothing`, `::test_form_encoded_post_is_415`, `::test_cross_origin_origin_header_is_403`, `::test_options_is_405_and_has_no_cors_headers`, `::test_get_never_modifies_the_file` (hash before and after a sweep of every GET route). A browser test serves a second page from another loopback port that tries a form post and a `fetch`, and asserts the file hash is unchanged. Mutations: remove the token check; remove the content-type check; each turns a test red.
+Verification: exists, in `tests/editor/test_guard.py`: `::test_post_without_token_is_401_and_changes_nothing`, `::test_form_encoded_and_other_content_types_are_415` (design name `test_form_encoded_post_is_415`), `::test_cross_origin_origin_header_is_403`, `::test_origin_with_another_port_is_403`, `::test_sec_fetch_site_cross_site_is_403`, `::test_post_without_origin_is_403`, `::test_other_methods_are_405_and_no_cors_headers` (design name `test_options_is_405_and_has_no_cors_headers`), `::test_get_never_modifies_the_file`; in `tests/editor/test_routes.py`: `::test_no_token_is_401_and_nothing_is_written`, `::test_wrong_origin_is_403_and_nothing_is_written`. Proposed, not built: the browser test that serves a second page from another loopback port and tries a form post and a `fetch`; the mutation runs (remove the token check, remove the content-type check) are not recorded as run.
 
 Residual: a bug in a browser's preflight enforcement. None known.
 
@@ -942,12 +942,12 @@ Residual: a bug in a browser's preflight enforcement. None known.
 Abuse: a shared example config has a link title like `<img src=x onerror=...>` or a `javascript:` URL. The editor shows it. If it runs as script, it runs on the editor origin, holds the token, and can write the config, upload files and read drafts.
 
 Why it is unlikely, and what limits it if it happens:
-1. Every config value enters the DOM through `textContent` or a fixed attribute set. No `innerHTML`, `outerHTML`, `insertAdjacentHTML`, `document.write`, `eval`, `new Function` or string `setTimeout`. A source grep test enforces it. **[planned: phase 1]**
-2. URLs are shown as text and made links only after a check that the scheme is `https` (the loader's rule), with `rel="noopener noreferrer"`. **[planned: phase 1]**
-3. CSP: `default-src 'none'; script-src 'self'` with no `unsafe-inline`, no `unsafe-eval`, no nonce and no remote origin; `style-src 'self'`, `object-src 'none'`, `base-uri 'none'`, `form-action 'none'`, `connect-src 'self'`. Injected markup cannot run an inline handler, load a remote script, or post data anywhere but the editor itself. **[planned: phase 1]**
+1. Every config value enters the DOM through `textContent` or a fixed attribute set. No `innerHTML`, `outerHTML`, `insertAdjacentHTML`, `document.write`, `eval`, `new Function` or string `setTimeout`. A source grep test enforces it. **[shipped]**
+2. URLs are shown as text and made links only after a check that the scheme is `https` (the loader's rule), with `rel="noopener noreferrer"`. The forms show every value as the value of a text box or as text and make no link from config text, so this check is not needed yet. The page's only generated address is the preview frame's, which is used only if it is a plain loopback http address. **[no link is made from config text; revisit if one is added]**
+3. CSP: `default-src 'none'; script-src 'self'` with no `unsafe-inline`, no `unsafe-eval`, no nonce and no remote origin; `style-src 'self'`, `object-src 'none'`, `base-uri 'none'`, `form-action 'none'`, `connect-src 'self'`. Injected markup cannot run an inline handler, load a remote script, or post data anywhere but the editor itself. The shipped policy also carries a `sandbox` directive and `img-src 'self' blob: data:`. **[shipped]**
 4. Server side, the loader already refuses control characters in text (`_plain_text`, `check_text`).
 
-Verification (proposed): `tests/editor/test_sources.py::test_no_dangerous_sinks_in_editor_sources`; `::test_csp_has_no_unsafe_directive_on_any_editor_response`; a browser test `test_hostile_titles_render_as_text` loads a config whose titles, handles and subtitles hold `<script>`, `<img onerror>`, `"><svg onload>` and `javascript:` and asserts no dialog, no extra network request, and the text appears literally. Mutation: switch one render to `innerHTML`; the grep and the browser test must fail.
+Verification: exists: `tests/editor/test_sources.py::test_no_dangerous_sinks_in_editor_sources` (with `::test_the_scanner_flags_hostile_input`, the negative case), `tests/editor/test_csp.py::test_csp_has_no_unsafe_directive_on_any_editor_response` and `::test_shell_html_uses_no_inline_script_or_style`. Proposed, not built: a browser test `test_hostile_titles_render_as_text` that loads a config whose titles, handles and subtitles hold `<script>`, `<img onerror>`, `"><svg onload>` and `javascript:` and asserts no dialog, no extra network request, and the text appears literally. The mutation (switch one render to `innerHTML`) is not recorded as run; the scanner test above shows the grep bites on hostile input.
 
 Residual: a browser CSP bug, or a sink added later that the grep list does not know. The list is reviewed each phase.
 
@@ -959,7 +959,7 @@ Why a fragment: it is not sent to the server, so it is not in a request line, an
 
 Left over: the token is visible in the terminal and briefly in the address bar and the browser's history entry; a shared screen shows it; a clipboard manager may keep it. All of that ends when the process exits, because the token is never reused. A reload loses the token (nothing is stored); the owner opens the printed URL again.
 
-Verification (proposed): `::test_shell_html_contains_no_token`, `::test_token_not_in_any_response_body_header_or_log` (run a session, grep all captured output), `::test_wrong_token_of_correct_length_is_401`, `::test_token_differs_between_runs`, `::test_token_not_in_argv_or_environ`; browser test `test_token_removed_from_address_bar_and_not_in_storage`.
+Verification: exists: `tests/editor/test_csp.py::test_shell_html_contains_no_token`, `tests/editor/test_guard.py::test_wrong_token_of_correct_length_is_401`, `::test_token_differs_between_runs`, `::test_token_is_compared_with_hmac_compare_digest`, `tests/editor/test_server_lifecycle.py::test_url_has_the_token_in_the_fragment_only`, `::test_token_never_reaches_stdout_or_stderr_of_a_real_session` (stdout and stderr only; the design wanted every response body and header too), `tests/editor/test_routes.py::test_errors_never_echo_the_token`, `tests/editor/test_shell.py::test_the_token_is_read_once_and_never_stored` (reads the JavaScript source). `::test_token_not_in_argv_or_environ` exists as `test_server_lifecycle.py::test_token_is_not_in_argv_or_environ_of_the_process`, which checks the test process's `sys.argv` and `os.environ`, not `/proc/<pid>` of a separate server. Proposed, not built: the browser test `test_token_removed_from_address_bar_and_not_in_storage`.
 
 Residual: same-user local access (T-31). A user who pastes the full URL into a chat; the editor docs say not to.
 
@@ -967,9 +967,9 @@ Residual: same-user local access (T-31). A user who pastes the full URL into a c
 
 Abuse: send an enormous body, a slow body, thousands of mutating requests to fill the history or the disk, `multipart/form-data` to reach a different parser, chunked bodies to dodge length checks, or deeply nested JSON.
 
-Mitigations **[planned: phase 1; upload caps phase 3]**: the caps in section 8.5 of the spec (JSON 64 KiB; upload 8 MiB and 2 MiB for avatars; headers 16 KiB; 16 concurrent connections; 20 mutations and 5 uploads per minute; read timeouts; 100 history entries and 5 MiB of history; 200 editor-created media files). `Content-Length` is required and chunked bodies are refused. JSON is parsed with a depth limit and unknown keys are refused. Operation arguments are validated against the schema before they reach the edit core.
+Mitigations **[shipped for the JSON caps, headers, connections, timeouts, the 20 changes a minute and the history caps; planned: phase 3 for uploads and the 5 uploads a minute; no 200 media file cap exists]**: the caps in section 8.5 of the spec (JSON 64 KiB; upload 8 MiB and 2 MiB for avatars; headers 16 KiB; 16 concurrent connections; 20 mutations and 5 uploads per minute; read timeouts; 100 history entries and 5 MiB of history; 200 editor-created media files). `Content-Length` is required and chunked bodies are refused. JSON is parsed with a depth limit (too deep is 400 `bad_json`) and unknown keys are refused (422). Operation arguments are validated against the schema before they reach the edit core.
 
-Verification (proposed): `::test_json_over_cap_is_413_and_not_fully_read`, `::test_missing_content_length_is_411`, `::test_chunked_is_refused`, `::test_slow_body_times_out`, `::test_21st_mutation_in_a_minute_is_429_and_file_unchanged`, `::test_history_cap_drops_oldest`, `::test_deeply_nested_json_is_422`, plus a fuzz test that no random request produces a 500 or a write.
+Verification: exists: in `tests/editor/test_guard.py`: `::test_json_over_cap_is_413_and_not_read`, `::test_missing_content_length_is_411`, `::test_chunked_is_refused`, `::test_oversized_headers_are_431`, `::test_oversized_request_line_is_414`, `::test_fuzz_random_requests_never_500_and_never_write` (the fuzz test); in `tests/editor/test_server_hardening.py`: `::test_body_deadline_cuts_off_a_dripped_body` (design name `test_slow_body_times_out`), `::test_dripped_headers_are_cut_off_by_the_absolute_deadline`, `::test_drip_feeders_cannot_hold_every_worker_slot`; in `tests/editor/test_routes.py`: `::test_the_21st_mutation_in_a_minute_is_429_with_retry_after`, `::test_refused_mutations_count_toward_the_limit`, `::test_malformed_bodies_get_the_error_shape` (includes a 5000-level nested body, answered 400 `bad_json`, not 422 as the design said); in `tests/test_editor_history.py`: `::test_entry_cap_drops_oldest_and_files` (design name `test_history_cap_drops_oldest`), `::test_byte_cap_drops_oldest`.
 
 Residual: a local process can still burn CPU. This is a single-user tool and is not built to resist local denial of service.
 
@@ -978,12 +978,12 @@ Residual: a local process can still burn CPU. This is a single-user tool and is 
 Abuse: the config names `media/../../.ssh/id_ed25519` as the avatar; a symlink in the media folder points at a private file; the config path is a symlink or a FIFO; a request tries to reference an arbitrary path through an upload name or an operation argument.
 
 Mitigations:
-1. The config path is resolved by `editing.resolve_config`, which refuses a symlink unless `--force-path`; the editor does not offer `--force-path`. The file is opened with `O_NOFOLLOW`. **[shipped for the commands; reused by the editor in phase 0]**
-2. The editor takes no file path from a request except one it issued itself (the upload reply, checked against the media listing). The avatar value goes through the asset pipeline's `_check_slot` (extension allowlist, no absolute path, no `.` or `..` segment, no build-reserved folder) and the component-by-component `O_NOFOLLOW` read, which refuses a symlink anywhere on the path and any non-regular file. **[shipped in `tests/site/test_assets_security.py`; the editor adds the save-time hook in phase 0]**
-3. The history and media folders are opened relative to the config folder's directory descriptor and refused if they are symlinks. **[planned: phase 0]**
-4. The editor serves no file by path: its static files are an allowlist of its own asset names, and there is no "download any file" route. **[planned: phase 1]**
+1. The config path is resolved by `editing.resolve_config`, which refuses a symlink unless `--force-path`; the editor does not offer `--force-path`. The file is opened with `O_NOFOLLOW`. **[shipped for the commands. The editor differs: `EditorSession` resolves the given path (following a symlink) before it opens the file, and calls `editing.apply` with `force_path=True`, so a symlinked config is edited at its target, not refused.]**
+2. The editor takes no file path from a request except one it issued itself (the upload reply, checked against the media listing). The avatar value goes through the asset pipeline's `_check_slot` (extension allowlist, no absolute path, no `.` or `..` segment, no build-reserved folder) and the component-by-component `O_NOFOLLOW` read, which refuses a symlink anywhere on the path and any non-regular file. **[shipped in `tests/site/test_assets_security.py`. The save-time hook exists as `validate_slot` in `editing.apply`, but `editing.ASSET_KEYS` is empty and the editor does not pass a hook, so no editor path runs it yet. Uploads and the media folder are not built.]**
+3. The history and media folders are opened relative to the config folder's directory descriptor and refused if they are symlinks. **[shipped for the history folder; the media folder does not exist]**
+4. The editor serves no file by path: its static files are an allowlist of its own asset names, and there is no "download any file" route. **[shipped]**
 
-Verification (proposed): `::test_set_avatar_dotdot_is_refused_at_save`, `::test_symlinked_media_folder_is_refused`, `::test_symlink_inside_media_is_refused`, `::test_fifo_as_media_file_does_not_hang`, `::test_history_dir_symlink_refuses_to_start`, `::test_static_route_serves_only_allowlisted_names` (`..`, `%2e%2e`, `%2f`, backslash, NUL), plus the shipped asset tests.
+Verification: exists: `tests/test_editor_history.py::test_symlinked_history_dir_is_refused`, `::test_symlinked_snapshot_file_is_not_followed`, `::test_index_cannot_name_a_file_outside_the_directory`; `tests/editor/test_shell.py::test_a_file_outside_the_allowlist_is_not_served` (three paths: an unknown name, `..` and a subfolder; not the encoded, backslash and NUL forms); `tests/editor/test_server_lifecycle.py::test_state_for_a_fifo_or_missing_config_does_not_hang_or_500`; and the shipped asset tests. Proposed, not built: `::test_set_avatar_dotdot_is_refused_at_save`, `::test_symlinked_media_folder_is_refused`, `::test_symlink_inside_media_is_refused`, `::test_fifo_as_media_file_does_not_hang`, and an editor test that a symlinked history folder refuses to start (today a symlinked history folder makes the history store raise, and the change is saved with a warning that undo is unavailable).
 
 Residual: a parent directory renamed between check and use (the same residual T-20 records for the override loader).
 
@@ -999,7 +999,7 @@ Mitigations (all **[planned: editor phase 3]**, built on checks that are **[ship
 5. The upload route does not edit the config, and only a `kind` from a fixed list is accepted.
 6. EXIF and GPS data in a JPEG is not stripped (D-08, F23); the editor warns. A published avatar would carry it. This is a disclosure risk to the owner, not to a third party.
 
-Verification (proposed): `tests/editor/test_upload.py::test_text_file_named_png_is_422`, `::test_svg_with_script_is_422`, `::test_svg_with_doctype_is_422`, `::test_client_filename_with_path_is_ignored`, `::test_name_collision_never_overwrites`, `::test_oversize_by_bytes_read_not_header`, `::test_dimension_cap_from_header`, `::test_stored_mode_is_0644_with_no_exec_bit`, `::test_failed_reference_leaves_a_listed_orphan`. Mutation: skip `check_content`; the renamed-text test must fail.
+Verification (all proposed; `tests/editor/test_upload.py` does not exist and there is no upload route): `tests/editor/test_upload.py::test_text_file_named_png_is_422`, `::test_svg_with_script_is_422`, `::test_svg_with_doctype_is_422`, `::test_client_filename_with_path_is_ignored`, `::test_name_collision_never_overwrites`, `::test_oversize_by_bytes_read_not_header`, `::test_dimension_cap_from_header`, `::test_stored_mode_is_0644_with_no_exec_bit`, `::test_failed_reference_leaves_a_listed_orphan`. Mutation: skip `check_content`; the renamed-text test must fail.
 
 Residual: a valid image that exploits a browser decoder bug (the exposure of any image on the web); EXIF disclosure until D-08 is decided.
 
@@ -1008,14 +1008,14 @@ Residual: a valid image that exploits a browser decoder bug (the exposure of any
 Abuse or failure: the write drops comments, reorders keys, re-quotes strings, introduces an anchor, alias or tag (`!!python/object`), changes line endings, races an outside edit and overwrites it, or is cut off by a crash and leaves half a file.
 
 Mitigations:
-1. The editor adds no YAML writer. It calls `editing.apply`, which locates nodes with the composer and splices whole lines of the original text, so every byte outside the edit is untouched. Anchors, tags, flow style, CRLF and a dash on its own line are refused rather than rewritten. **[shipped: `tests/test_edit.py`]**
+1. The editor adds no YAML writer. It calls `editing.apply`, which locates nodes with the composer and splices whole lines of the original text, so every byte outside the edit is untouched. Anchors, tags, flow style, CRLF and a dash on its own line are refused rather than rewritten. **[shipped: `tests/test_edit.py`; the editor's route reaches it through `tests/editor/test_routes.py`]**
 2. Values come from `scalar_text` (quotes anything ambiguous) after `check_text` (no control characters). The core compares "the loaded edited file" with "the original plus exactly the change"; a mismatch writes nothing. **[shipped]**
 3. `fcntl.flock` on the config's own descriptor for the whole span from read to rename; a re-check of identity and hash right before the rename; a staged temp file with `fsync`; a backup written before the rename; `os.replace`; `fsync` of the folder. **[shipped: `tests/test_edit_durability.py`]**
-4. New operations (spec 6.3) get the same two checks and the same hostile-input tests, plus a test that a sweep of random edits introduces no `&`, `*` or `!` token the input did not have. **[planned: phase 0]**
-5. An outside change is detected by hash and by comparing the `expect` values (spec 9.2); an edit never overwrites a field someone else changed. **[planned: phase 1]**
-6. History snapshots are mode 0600 in a 0700 folder; undo is refused when the file is not what the editor last wrote. **[planned: phase 1]**
+4. New operations (spec 6.3) get the same two checks and the same hostile-input tests, plus a test that a sweep of random edits introduces no `&`, `*` or `!` token the input did not have. **[shipped: the new operations use the same double check; the random-sweep test is proposed]**
+5. An outside change is detected by hash and by comparing the `expect` values (spec 9.2); an edit never overwrites a field someone else changed. **[shipped]**
+6. History snapshots are mode 0600 in a 0700 folder; undo is refused when the file is not what the editor last wrote. **[shipped in `reach_around.editor_history`; `POST /__edit/api/undo` and `/redo` call it; the page has no undo control yet]**
 
-Verification (proposed): `tests/editor/test_ops.py::test_each_op_matches_the_command_byte_for_byte`, `::test_comments_blank_lines_and_quotes_survive_every_op`, `::test_no_anchor_alias_or_tag_is_ever_introduced`, `tests/editor/test_stale.py::test_expect_mismatch_is_409_and_file_unchanged`, `::test_unrelated_outside_edit_is_kept`, `tests/editor/test_history.py::test_undo_refused_after_outside_edit`, `::test_crash_between_stage_and_rename_leaves_the_original`, using the shipped seams `_during_backup` and `_before_replace`. Mutation: remove the `expect` comparison; the stale test must fail.
+Verification: exists: `tests/editor/test_undo_routes.py` (the undo, redo and history routes); `tests/editor/test_routes.py::test_op_result_equals_the_core_result` (design name `test_each_op_matches_the_command_byte_for_byte`), `::test_outside_edit_of_the_same_field_is_409_stale_with_fresh_state` (design name `test_expect_mismatch_is_409_and_file_unchanged`), `::test_unrelated_outside_edit_is_merged_when_expect_still_matches` (design name `test_unrelated_outside_edit_is_kept`), `::test_a_changed_base_without_expect_is_stale`, `::test_a_core_refusal_is_422_refused_and_writes_nothing`; `tests/test_editor_history.py::test_undo_refused_after_outside_edit_and_file_untouched` (history store only); `tests/test_edit_durability.py::test_a_change_during_backup_creation_is_detected` and `::test_the_final_check_is_the_last_step_before_the_rename` (the crash and race seams, for the commands). Proposed, not built: `test_comments_blank_lines_and_quotes_survive_every_op`, `test_no_anchor_alias_or_tag_is_ever_introduced`, and a crash-between-stage-and-rename test through the editor route. The mutation (remove the `expect` comparison) is not recorded as run.
 
 Residual: a writer that ignores locks and lands in the very short window between the last check and the rename (documented in `editing.py`; it cannot be closed on POSIX). A crash after the backup and before the rename leaves a harmless extra `.bak`.
 
@@ -1023,9 +1023,9 @@ Residual: a writer that ignores locks and lands in the very short window between
 
 Abuse: the editor, a path bug or a debug route reads `.env`, a Doppler token, a Cloudflare token or Worker secrets and shows or logs them; the state endpoint dumps more than the form needs.
 
-Mitigations **[planned: phase 1]**: the editor opens only the config, its history, the media folder and files it created. It reads no environment variable except through its own flags. `/api/state` is built from an allowlist of schema fields, not by serializing a whole object. The config schema holds no secret by design. A file next to the config whose name looks like a secret (`.env`, `*.key`, `*.pem`, `doppler*`) is not listed in the media view. No debug or environment route exists.
+Mitigations **[shipped except as noted]**: the editor opens only the config and its history folder (there is no media folder), plus its own packaged assets. It reads no environment variable. **[Differs from the design: `/api/state` is not built from an allowlist of schema fields. `config` is the whole loaded YAML mapping as JSON, so anything the file holds is returned to a client with the key.]** The config schema holds no secret by design. A file next to the config whose name looks like a secret (`.env`, `*.key`, `*.pem`, `doppler*`) is not listed in the media view. No debug or environment route exists. The listing rule is not built (no media view).
 
-Verification (proposed): `::test_state_contains_only_schema_fields`, `::test_dotenv_next_to_config_is_never_read` (a sentinel file, with a spy on `open` and `os.open`), `::test_sentinel_secret_in_environment_absent_from_every_response_and_log`, `::test_media_listing_excludes_secret_like_names`.
+Verification (all proposed; no test of these names exists): `::test_state_contains_only_schema_fields`, `::test_dotenv_next_to_config_is_never_read` (a sentinel file, with a spy on `open` and `os.open`), `::test_sentinel_secret_in_environment_absent_from_every_response_and_log`, `::test_media_listing_excludes_secret_like_names`.
 
 Residual: a creator who types a secret into a link title puts it in the config, which is theirs and ends up on the public site. The editor cannot know; its help text says so.
 
@@ -1033,9 +1033,9 @@ Residual: a creator who types a secret into a link title puts it in the config, 
 
 Abuse: a hostile page frames the editor, makes it invisible, and tricks the owner into clicking "Remove link" or "Restore anyway".
 
-Mitigations **[planned: phase 1]**: `Content-Security-Policy: frame-ancestors 'none'` and `X-Frame-Options: DENY` on every editor response. The preview origin allows framing only by the editor. Destructive actions need a second explicit confirmation in the page.
+Mitigations: `Content-Security-Policy: frame-ancestors 'none'` and `X-Frame-Options: DENY` on every editor response, and the preview origin allows framing only by the editor **[shipped]**. Destructive actions need a second explicit confirmation in the page **[planned: with the forms; the page has no destructive controls]**.
 
-Verification (proposed): `::test_every_editor_response_has_frame_ancestors_none_and_xfo_deny`; a browser test frames the editor from a second loopback origin and asserts the frame stays empty; `::test_preview_frame_ancestors_lists_only_the_editor_origin`.
+Verification: exists: `tests/editor/test_csp.py::test_every_editor_response_has_the_hardening_headers` (checks `X-Frame-Options: DENY` on every kind of response; the `frame-ancestors 'none'` directive is checked in the same file's CSP tests) and `::test_preview_listener_is_sandboxed_and_only_the_editor_may_frame_it` (design name `test_preview_frame_ancestors_lists_only_the_editor_origin`). Proposed, not built: the browser test that frames the editor from a second loopback origin.
 
 Residual: browser bugs only.
 
@@ -1047,9 +1047,9 @@ What each can do, stated plainly:
 - **A browser extension with page access.** It can read the editor tab, including the token in memory, and drive it. It can already read the owner's logged-in sessions everywhere. The editor does not defend against it; the docs recommend a profile without extensions for editing, and the browser tests run in a clean profile.
 - **Process listing.** The token is never passed on a command line or in the environment, so `ps` and `/proc/<pid>/environ` do not show it. The port alone does nothing.
 
-Mitigations **[planned: phase 1]**: token never in argv or environment; 0700 history folder; the stance documented; no remote-debugging port; no `--open` by default.
+Mitigations **[shipped]**: token never in argv or environment; 0700 history folder; the stance documented in `docs/editor.md`; no remote-debugging port; no `--open` option at all.
 
-Verification (proposed): `::test_token_not_in_argv_or_environ` (reads `/proc/<pid>/cmdline` and `environ` of the running server), and a documentation test that the editor docs name this limit.
+Verification: exists, in a weaker form: `tests/editor/test_server_lifecycle.py::test_token_is_not_in_argv_or_environ_of_the_process` (checks the test process's own `sys.argv` and `os.environ`; it does not read `/proc/<pid>` of a server), and `::test_cli_edit_prints_url_with_fragment_token_and_never_opens_a_browser`. Proposed: the `/proc/<pid>` version, and a documentation test that the editor docs name this limit (`docs/editor.md` does name it; no test checks it).
 
 Residual: accepted. Reopen if the editor is ever run on shared, remote or hosted machines.
 
@@ -1058,12 +1058,12 @@ Residual: accepted. Reopen if the editor is ever run on shared, remote or hosted
 Abuse: a compromised npm package, a changed CDN file, or a vendored library with a backdoor runs in the editor page, where it holds the token and can write the config.
 
 Mitigations:
-1. No npm, no bundler, no build step, no CDN, and no package manager file for the front end. Plain ES modules written in this repository, loaded by relative path. The CSP forbids any script origin but `'self'`, so even a stray `<script src="https://...">` does not run. **[planned: phase 1]**
+1. No npm, no bundler, no build step, no CDN, and no package manager file for the front end. Plain ES modules written in this repository, loaded by relative path. The CSP forbids any script origin but `'self'`, so even a stray `<script src="https://...">` does not run. **[shipped]**
 2. A library may be added only by a pull request that vendors the exact file under `editor_assets/vendor/`, records its version, source URL, SHA-256 and license in `editor_assets/vendor/MANIFEST.json` and in the third-party notices, and a test recomputes the hash. No library is planned for the MVP.
 3. Test-only tools (an accessibility checker, hypothesis) are not packaged; a wheel-contents test checks that nothing from `tests/` ships. axe-core, if used, is vendored and hashed under `tests/` (spec D-14).
 4. The Python side adds no runtime dependency; it uses the standard-library server the preview uses.
 
-Verification (proposed): `tests/editor/test_vendor.py::test_every_vendored_file_matches_its_manifest_hash_and_has_a_license`, `::test_no_package_json_or_lockfile_in_editor_assets`, `::test_no_remote_url_in_any_editor_asset`, `::test_wheel_contents_exclude_tests`.
+Verification: exists: `tests/editor/test_sources.py::test_no_https_url_anywhere_in_the_assets` (design name `test_no_remote_url_in_any_editor_asset`), `::test_every_import_is_a_same_folder_module_that_exists`, `::test_html_references_only_same_origin_files`, `::test_assets_fit_the_size_budget`. Proposed, not built (no vendored library exists): `tests/editor/test_vendor.py::test_every_vendored_file_matches_its_manifest_hash_and_has_a_license`, `::test_no_package_json_or_lockfile_in_editor_assets`, `::test_wheel_contents_exclude_tests`.
 
 Residual: a vendored file changed together with its hash in one pull request; review catches it by size and content. The standard-library server is as trusted as Python.
 
@@ -1071,23 +1071,23 @@ Residual: a vendored file changed together with its hash in one pull request; re
 
 Abuse: the preview renders built site HTML and scripts from the owner's config and overrides, possibly from a shared example. That page could try to read the parent, call the editor API, steal the token, navigate the top window, open popups, or fetch from the network (remote images and fonts the site CSP allows).
 
-Mitigations **[planned: phase 1]**:
+Mitigations (items 1, 2, 3 and 5 **[shipped]**; item 4 is partly shipped; the preview serves a placeholder page, not a built site, so the build-related protections have nothing to protect yet):
 1. Separate origin: the preview is served on its own port, so it is cross-origin to the editor; it cannot read the editor's DOM, storage or memory, and cannot call the API without the token it never receives.
 2. `<iframe sandbox="allow-scripts">` only, with no `allow-same-origin`, `allow-top-navigation`, `allow-popups`, `allow-forms`, `allow-modals` or `allow-downloads`, and `referrerpolicy="no-referrer"`. The frame gets an opaque origin and has no storage. (Spec D-05.)
 3. The editor's CSP `frame-src` lists the preview origin only.
-4. The preview origin sends `frame-ancestors <editor origin>` and, in editor mode, `img-src 'self' data:` and `connect-src 'self'`, so the previewed page makes no outside request by default (spec D-06). Remote thumbnails show as a placeholder.
+4. The preview origin sends `frame-ancestors <editor origin>` and `default-src 'self'` (which covers images and connections) with `base-uri 'none'` and `form-action 'none'`, so the previewed page makes no outside request by default (spec D-06). The spec's separate `img-src 'self' data:` and `connect-src 'self'` are not sent; `default-src` does the work, but `data:` images are not allowed.
 5. The preview keeps today's behavior: GET and HEAD only, Host and Origin checks, nothing outside the temporary build directory.
 6. No `postMessage` between the frames. The width buttons resize the iframe from outside.
 
-Verification (proposed): browser tests `test_preview_cannot_read_parent_dom`, `test_preview_cannot_fetch_editor_api` (a script in a test override tries `fetch` to the editor port and asserts failure and an unchanged file), `test_preview_makes_no_outside_request` (a route handler records every request and asserts all are loopback), `test_sandbox_attribute_is_exactly_allow_scripts`; unit `::test_preview_headers_in_editor_mode`.
+Verification: exists: `tests/editor/test_shell.py::test_the_preview_frame_is_sandboxed_with_scripts_only` (design name `test_sandbox_attribute_is_exactly_allow_scripts`), `::test_the_preview_address_is_checked_before_it_is_used`; `tests/editor/test_csp.py::test_preview_listener_is_sandboxed_and_only_the_editor_may_frame_it` and `::test_preview_listener_checks_host_with_port_and_method` (together the design's `test_preview_headers_in_editor_mode`), `::test_frame_src_names_only_the_preview_origin_in_the_form_opened`. Proposed, not built: the browser tests `test_preview_cannot_read_parent_dom`, `test_preview_cannot_fetch_editor_api`, `test_preview_makes_no_outside_request`.
 
 Residual: a browser sandbox escape. Owner-authored scripts in an overrides directory run in the preview with the site's own powers (they are the owner's code; T-20).
 
 ### T-35 Logging
 
-By default the editor prints the URL once and one line per mutation: time, operation name and result code (`ok`, `refused:stale`, `refused:invalid`). No values, no titles, no URLs, no file names, no request headers, no token, no `Host` or `Origin` text. The existing handler's `log_message` is silent and stays so. Errors shown to the user quote config paths like `tabs[0].blocks[2].url`; the loader's own message can include a bad value and goes to the browser only, never to the log. `--verbose` is not offered in the MVP. **[planned: phase 1]**
+As designed, the editor prints the URL once and one line per mutation: time, operation name and result code (`ok`, `refused:stale`, `refused:invalid`). **What ships differs: the editor prints the link, a start note and a stop note, and nothing per request or per mutation.** No values, no titles, no URLs, no file names, no request headers, no token, no `Host` or `Origin` text. The existing handler's `log_message` is silent and stays so. Errors shown to the user quote config paths like `tabs[0].blocks[2].url`; the loader's own message can include a bad value and goes to the browser only, never to the log. `--verbose` is not offered. **[shipped: logging is silent; the per-mutation line is not built]**
 
-Verification (proposed): `::test_log_lines_use_fixed_codes_and_contain_no_request_data` (run a session with sentinel strings in every field and header; grep captured stdout and stderr), `::test_token_never_logged`.
+Verification: exists: `tests/editor/test_server_lifecycle.py::test_token_never_reaches_stdout_or_stderr_of_a_real_session` (design name `test_token_never_logged`). Proposed, not built: `::test_log_lines_use_fixed_codes_and_contain_no_request_data` (a session with sentinel strings in every field and header, grepping stdout and stderr). There is no mutation log line for it to check.
 
 Residual: terminal scrollback keeps the printed URL (T-24).
 
@@ -1095,9 +1095,9 @@ Residual: terminal scrollback keeps the printed URL (T-24).
 
 Abuse: the owner closes the tab and forgets; an authenticated port stays open for days on a laptop that moves between networks.
 
-Mitigations **[planned: phase 1]**: a default idle timeout of 30 minutes since the last mutating or explicit keep-alive request (version polls do not count). On timeout the server stops both listeners, deletes the temporary build directory and exits with a message. `POST /api/shutdown` and Ctrl+C do the same. Closing the tab sends a best-effort shutdown request on `pagehide`; the idle timer covers the case where it never arrives. The token dies with the process. The history folder stays, since it is the owner's undo.
+Mitigations: a default idle timeout of 30 minutes since the last change, undo or redo request that reached its route (reads, history listings and version polls do not count; there is no explicit keep-alive request) **[shipped]**. On timeout the server stops both listeners and exits with a message; Ctrl+C and SIGTERM do the same **[shipped]**. There is no temporary build directory yet, no `POST /api/shutdown` and no `pagehide` request **[planned]**; the idle timer is the only stop besides Ctrl+C. The token dies with the process. The history folder stays, since it is the owner's undo.
 
-Verification (proposed): `::test_idle_timeout_stops_listeners_and_removes_temp_dir` (fake clock), `::test_polls_do_not_reset_idle`, `::test_shutdown_route_requires_token`, `::test_port_is_closed_after_exit`.
+Verification: exists: `tests/editor/test_server_lifecycle.py::test_idle_timeout_stops_listeners_and_frees_ports` (covers the port check; there is no temp dir), `::test_idle_with_fake_clock_and_touch_and_polls`, `::test_touch_resets_the_idle_timer`, `::test_default_idle_timeout_is_thirty_minutes`, `::test_shutdown_is_clean_and_idempotent`; `tests/editor/test_routes.py::test_polling_does_not_reset_the_idle_timer_but_an_op_does` (design name `test_polls_do_not_reset_idle`); `tests/editor/test_server_hardening.py::test_session_rejects_bad_idle_seconds`. Proposed, not built: `::test_shutdown_route_requires_token` (no shutdown route) and the temp-dir removal check.
 
 Residual: up to 30 minutes of an open, token-protected port.
 
@@ -1116,9 +1116,9 @@ Residual: up to 30 minutes of an open, token-protected port.
 
 Beyond the named tests above, the editor plan carries these. Numbering continues the list in section 8.
 
-57. `tests/editor/test_guard.py` (all of T-22, T-23, T-25) plus the browser tests for rebinding and cross-origin posts, each paired with the mutation step of item 48.
+57. `tests/editor/test_guard.py` (exists; T-22, T-23, T-25) plus the browser tests for rebinding and cross-origin posts (proposed, not built), each paired with the mutation step of item 48.
 58. A rebinding drill with a test-only mapping: the test sends requests to the loopback listener with a fake `Host` such as `rebind.example:<port>` and asserts 421 on every route. No real DNS is touched and no outside host is contacted.
-59. `tests/editor/test_sources.py` and the browser hostile-title test (T-32).
+59. `tests/editor/test_sources.py` (exists) and the browser hostile-title test (T-32; proposed, not built).
 60. `tests/editor/test_upload.py` (T-27), and an extension of `tests/test_browser_tests_never_navigate.py`: a browser test may not call `webbrowser.open`, pass `--open`, or load a non-loopback URL. This protects the maintainer's desktop from a test launching a mail client or an external page.
 61. A final whole-branch security review of the MVP on the cyber-program tier before the first release, and a separate one for phase 3 (uploads).
 

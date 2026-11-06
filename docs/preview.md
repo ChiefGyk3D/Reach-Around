@@ -30,3 +30,8 @@ to see it at desktop width and at 390 px phone width side by side.
 
 This is a development tool. Never expose it, and never deploy it. The preview
 page is not part of `reach-around build` output.
+
+To change the config from a browser instead of a text editor, see
+[the local editor](editor.md). It is a separate command (`reach-around edit`)
+with its own loopback listeners, and its preview frame does not show your site
+yet, so keep `serve` running to see the real page.

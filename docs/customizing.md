@@ -770,6 +770,15 @@ error: overrides directory nope does not exist
 
 ## Editing without breaking the file
 
+Three ways to change the config: edit `site.yaml` by hand (every key, any
+layer), run the commands below (one safe value at a time), or use
+[the local editor](editor.md). Use hand-editing for anything beyond links,
+platform items and the few `set` keys, and for tabs, sections, layouts and
+overrides. The local editor today has forms for the creator, the look, each link
+and each platform item, plus server routes that run the same operations as
+these commands; it cannot yet add or remove a link or upload an image, so it
+does not replace the other two.
+
 ### Editor help: the JSON Schema
 
 `docs/site.schema.json` is the JSON Schema of the whole config, generated from
@@ -921,6 +930,8 @@ Details and limits:
    `error: refusing to bind '0.0.0.0': the preview serves only on a loopback
    address (127.0.0.1, ::1 or localhost)`. Details are in
    [the preview page](preview.md).
+   The local editor's preview frame is a placeholder for now; keep this
+   command running to see your page ([the editor](editor.md)).
 
 2. **Build.**
 
