@@ -1,6 +1,6 @@
 {# SPDX-License-Identifier: Apache-2.0 #}
 <li class="block block-crypto">
-{% if block.title %}
+{% if block.title and not skip_title|default(false) %}
 <h2 class="crypto-title">{{ block.title }}</h2>
 {% endif %}
 <ul class="crypto-list">

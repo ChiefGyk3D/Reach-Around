@@ -17,6 +17,8 @@
 <summary><h2 class="tab-section-title">{{ section.tab.title }}</h2></summary>
 <ul class="blocks layout-{{ section.tab.layout }}">
 {% for block in section.blocks %}
+{# A block title equal to the section title would repeat the summary's heading. #}
+{% set skip_title = block.title is defined and block.title and block.title|trim|lower == section.tab.title|trim|lower %}
 {% include "blocks/" ~ block_kind(block) ~ ".html" %}
 {% endfor %}
 </ul>
