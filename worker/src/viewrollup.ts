@@ -71,12 +71,23 @@
 // State is explicit: no log row = FRESH; a log row with raw rows above its
 // max_id = RE-ROLL. Nothing keys off max_id being zero.
 //
+// SITES. Everything here is per (site, day) (docs/analytics-design.md 3.6): a day
+// sealed for one site never seals it for another, each site has its own log row,
+// checkpoint, max_id and re-roll counter, a late row re-rolls only its own
+// (site, day), and a site's options (geo level, UTM allowlist, MIN_CELL) come
+// from its entry in SITES with the global variables as the fallback. Sites that
+// are in the data but not in the config (retired, or a broken SITES) are rolled
+// with the global options, so a config mistake never freezes the rollup.
+// The heartbeat keys that name a site are rolled_through:<site> and
+// rollup_failed_day:<site>.
+//
 // Heartbeat (view_meta, no free text): rollup_last_ok (ms, success only),
 // rollup_days, rollup_rows, rollup_late_rows (late rows re-rolled),
 // rollup_late_dropped, rollup_reduced_days, rollup_err (closed class),
 // rollup_failed_day (first failed day), rolled_through (last final day).
 
 import { BudgetExceeded, QueryMeter, meterOf, meteredDb, queryBudget } from "./d1budget";
+import { configErrText, loadSites, type Site, type SitesEnv } from "./sites";
 
 export const ROW_CAP_CORE = 500;
 export const ROW_CAP_GEO = 300;
@@ -114,7 +125,7 @@ export const DIM_TOP: Record<string, number> = {
 export const ROW_CAP_DIM = 4 * (Object.values(DIM_TOP).reduce((a, b) => a + b, 0) + Object.keys(DIM_TOP).length);
 /** A city or region with fewer views than this in a day folds upward (raised by MIN_CELL if larger). */
 const MIN_GEO_VIEWS = 5;
-const ROWS_PER_INSERT = 10; // 9 columns x 10 rows + 4 guard values = 94 bound parameters, under D1's 100
+const ROWS_PER_INSERT = 9; // 10 columns x 9 rows + 5 guard values = 95 bound parameters, under D1's 100
 const DAY_MS = 86_400_000;
 const HOUR_MS = 3_600_000;
 /** Queries a day needs: one read batch and one write batch. */
@@ -125,7 +136,7 @@ const RESERVE = 1;
 export const ERROR_CLASSES = ["none", "mismatch", "db"] as const;
 export type RollupError = (typeof ERROR_CLASSES)[number];
 
-export interface RollupEnv {
+export interface RollupEnv extends SitesEnv {
   DB: D1Database;
   GEO_LEVEL?: string;
   TOP_SOURCES?: string;
@@ -232,6 +243,7 @@ class LeaseLost extends Error {
 }
 
 interface Work {
+  site: string;
   day: string;
   /** Raw rows of the day (all ids). */
   n: number;
@@ -248,6 +260,7 @@ interface Lease {
   clock: () => number;
 }
 
+const SITE_KEY = /^[a-z0-9][a-z0-9-]{0,19}$/;
 const tokenMatch = "substr(value, 1, instr(value, ':') - 1) = ?";
 const expiryOk = "CAST(substr(value, instr(value, ':') + 1) AS INTEGER) >= ?";
 /** The lease is mine and has not expired (needs the bound token and now). */
@@ -257,7 +270,7 @@ const LEASE_OK = `EXISTS (SELECT 1 FROM view_meta WHERE key = 'rollup_lease' AND
 function dimSql(col: string, top: number): string {
   return (
     "WITH g AS (SELECT bot_class, " + col + " AS value, COUNT(*) AS v, SUM(CASE WHEN first = 1 THEN 1 ELSE 0 END) AS u FROM view_events " +
-    "WHERE ts >= ?1 AND ts < ?2 GROUP BY bot_class, " + col + "), " +
+    "WHERE site = ?4 AND ts >= ?1 AND ts < ?2 GROUP BY bot_class, " + col + "), " +
     "r AS (SELECT value, ROW_NUMBER() OVER (ORDER BY SUM(v) DESC, value ASC) AS rn FROM g GROUP BY value), " +
     "t AS (SELECT g.bot_class AS bot_class, CASE WHEN r.rn <= " + top + " THEN g.value ELSE 'other' END AS value, g.v AS v, g.u AS u " +
     "FROM g JOIN r ON r.value = g.value), " +
@@ -268,14 +281,14 @@ function dimSql(col: string, top: number): string {
   );
 }
 
-/** SQL for the core table; the UTM allowlist (when set) binds ?10 and up. */
+/** SQL for the core table; ?5 is the site; the UTM allowlist (when set) binds ?10 and up. */
 function coreSql(allowN: number): string {
   const allow = Array.from({ length: allowN }, (_, i) => `?${10 + i}`).join(",");
   const sk = allowN > 0 ? `CASE WHEN src_kind = 'u' AND src NOT IN (${allow}) THEN 'o' ELSE src_kind END` : "src_kind";
   const sv = allowN > 0 ? `CASE WHEN src_kind = 'u' AND src NOT IN (${allow}) THEN 'other' ELSE src END` : "src";
   return (
     `WITH g AS (SELECT page, ${sk} AS src_kind, ${sv} AS src, country, bot_class, COUNT(*) AS v, SUM(CASE WHEN first = 1 THEN 1 ELSE 0 END) AS u ` +
-    "FROM view_events WHERE ts >= ?1 AND ts < ?2 GROUP BY 1, 2, 3, country, bot_class), " +
+    "FROM view_events WHERE site = ?5 AND ts >= ?1 AND ts < ?2 GROUP BY 1, 2, 3, country, bot_class), " +
     "r AS (SELECT src_kind, src, ROW_NUMBER() OVER (ORDER BY SUM(v) DESC, src_kind ASC, src ASC) AS rn FROM g " +
     "WHERE src_kind IN ('r','u') GROUP BY src_kind, src), " +
     "a AS (SELECT g.page AS page, CASE WHEN r.rn > ?4 THEN 'o' ELSE g.src_kind END AS src_kind, " +
@@ -299,13 +312,13 @@ function coreSql(allowN: number): string {
   );
 }
 
-/** SQL for geography at a level; city under ?5 folds to region, region under ?5 to country. */
+/** SQL for geography at a level; ?3 is the site; city under ?5 folds to region, region under ?5 to country. */
 function geoSql(level: "country" | "region" | "city"): string {
   const city = level === "city" ? "city" : "''";
   const region = level === "country" ? "''" : "region";
   return (
     `WITH g AS (SELECT country, ${region} AS region, ${city} AS city, bot_class, COUNT(*) AS v, SUM(CASE WHEN first = 1 THEN 1 ELSE 0 END) AS u ` +
-    "FROM view_events WHERE ts >= ?1 AND ts < ?2 GROUP BY country, 2, 3, bot_class), " +
+    "FROM view_events WHERE site = ?3 AND ts >= ?1 AND ts < ?2 GROUP BY country, 2, 3, bot_class), " +
     // CONTROL:small-count-fold
     "f1 AS (SELECT country, region, CASE WHEN city <> '' AND v < ?5 THEN '' ELSE city END AS city, bot_class, SUM(v) AS v, SUM(u) AS u " +
     "FROM g GROUP BY country, region, 3, bot_class), " +
@@ -325,14 +338,28 @@ function geoSql(level: "country" | "region" | "city"): string {
  * seven dimensions and geography of ALL the day's raw rows. Ranking and folding
  * happen in D1; this function only checks that the capped output adds up.
  */
-async function aggregateDay(env: RollupEnv, db: D1Database, w: Work, lease: Lease, meter: QueryMeter): Promise<DayPlan> {
+/** The options of one site: its own entry in SITES, else the global variables. */
+interface Opts {
+  geo: "country" | "region" | "city";
+  min: number;
+  allow: string[];
+}
+function optsFor(env: RollupEnv, site: Site | undefined): Opts {
+  return {
+    geo: geoLevel(site?.geo ?? env.GEO_LEVEL),
+    min: site?.minCell !== undefined ? site.minCell : minCell(env.MIN_CELL),
+    allow: (site?.utmAllowlist !== undefined ? site.utmAllowlist : utmAllowlist(env.UTM_ALLOWLIST)) ?? [],
+  };
+}
+
+async function aggregateDay(env: RollupEnv, db: D1Database, w: Work, lease: Lease, meter: QueryMeter, o: Opts): Promise<DayPlan> {
   // The discovery count is only a first guess: rows can arrive before the read.
   // The read batch recounts, and if the recount puts the day on the other side
   // of ROLLUP_MAX_ROWS_PER_DAY the read is repeated once in the right mode.
   const limit = maxRowsPerDay(env.ROLLUP_MAX_ROWS_PER_DAY);
   let reduced = w.n > limit;
   for (let attempt = 0; ; attempt++) {
-    const plan = await readDay(env, db, w, lease, reduced);
+    const plan = await readDay(env, db, w, lease, reduced, o);
     const should = plan.raw > limit;
     if (should === reduced || attempt === 1) return plan;
     reduced = should;
@@ -340,16 +367,16 @@ async function aggregateDay(env: RollupEnv, db: D1Database, w: Work, lease: Leas
   }
 }
 
-async function readDay(env: RollupEnv, db: D1Database, w: Work, lease: Lease, reduced: boolean): Promise<DayPlan> {
+async function readDay(env: RollupEnv, db: D1Database, w: Work, lease: Lease, reduced: boolean, o: Opts): Promise<DayPlan> {
   const lo = dayStartMs(w.day);
   const hi = lo + DAY_MS;
-  const level = reduced ? "country" : geoLevel(env.GEO_LEVEL);
+  const level = reduced ? "country" : o.geo;
   const top = reduced ? Math.min(REDUCED_TOP_SOURCES, topSources(env.TOP_SOURCES)) : topSources(env.TOP_SOURCES);
-  const min = minCell(env.MIN_CELL);
-  const allow = utmAllowlist(env.UTM_ALLOWLIST) ?? [];
+  const min = o.min;
+  const allow = o.allow;
   const now = lease.clock();
   const geoMin = Math.max(MIN_GEO_VIEWS, min);
-  const coreArgs = allow.length > 0 ? [lo, hi, min, top, 0, 0, 0, 0, 0, ...allow] : [lo, hi, min, top];
+  const coreArgs = allow.length > 0 ? [lo, hi, min, top, w.site, 0, 0, 0, 0, ...allow] : [lo, hi, min, top, w.site];
   const res = await db.batch([
     db
       .prepare(
@@ -360,12 +387,12 @@ async function readDay(env: RollupEnv, db: D1Database, w: Work, lease: Lease, re
     db
       .prepare(
         "SELECT COUNT(*) AS n, COALESCE(MAX(id), 0) AS max_id, COALESCE(SUM(CASE WHEN id <= ?3 THEN 1 ELSE 0 END), 0) AS old_n " +
-          "FROM view_events WHERE ts >= ?1 AND ts < ?2",
+          "FROM view_events WHERE site = ?4 AND ts >= ?1 AND ts < ?2",
       )
-      .bind(lo, hi, w.oldMax),
+      .bind(lo, hi, w.oldMax, w.site),
     db.prepare(coreSql(allow.length)).bind(...coreArgs),
-    ...DIM_COLUMNS.map((c) => db.prepare(dimSql(c, DIM_TOP[c] as number)).bind(lo, hi, min)),
-    db.prepare(geoSql(level)).bind(lo, hi, 0, 0, geoMin),
+    ...DIM_COLUMNS.map((c) => db.prepare(dimSql(c, DIM_TOP[c] as number)).bind(lo, hi, min, w.site)),
+    db.prepare(geoSql(level)).bind(lo, hi, w.site, 0, geoMin),
   ]);
   if ((res[0]?.meta?.changes ?? 0) !== 1) throw new LeaseLost();
   const head = (res[1]?.results ?? [])[0] as { n: number; max_id: number; old_n: number } | undefined;
@@ -393,10 +420,10 @@ interface Guard {
 
 function guardFor(lease: Lease, w: Work, now: number): Guard {
   return w.mode === "fresh"
-    ? { sql: `${LEASE_OK} AND NOT EXISTS (SELECT 1 FROM view_rollup_log WHERE day = ?)`, args: [lease.token, now, w.day] }
+    ? { sql: `${LEASE_OK} AND NOT EXISTS (SELECT 1 FROM view_rollup_log WHERE site = ? AND day = ?)`, args: [lease.token, now, w.site, w.day] }
     : {
-        sql: `${LEASE_OK} AND EXISTS (SELECT 1 FROM view_rollup_log WHERE day = ? AND max_id = ?)`,
-        args: [lease.token, now, w.day, w.oldMax],
+        sql: `${LEASE_OK} AND EXISTS (SELECT 1 FROM view_rollup_log WHERE site = ? AND day = ? AND max_id = ?)`,
+        args: [lease.token, now, w.site, w.day, w.oldMax],
       };
 }
 
@@ -438,28 +465,28 @@ async function writeDay(db: D1Database, w: Work, p: DayPlan, nowMs: number, leas
   const stmts: D1PreparedStatement[] = [];
   if (!drop) {
     for (const t of ["view_daily", "view_dim_daily", "view_geo_daily"]) {
-      stmts.push(db.prepare(`DELETE FROM ${t} WHERE day = ? AND ${guard.sql}`).bind(w.day, ...guard.args));
+      stmts.push(db.prepare(`DELETE FROM ${t} WHERE site = ? AND day = ? AND ${guard.sql}`).bind(w.site, w.day, ...guard.args));
     }
     stmts.push(
       ...insertStatements(
         db,
         "view_daily",
-        ["day", "day_tz", "page", "src_kind", "src", "country", "bot_class", "views", "uniques"],
-        p.core.map((r) => [w.day, tz, r.page, r.src_kind, r.src, r.country, r.bot_class, r.views, r.uniques]),
+        ["site", "day", "day_tz", "page", "src_kind", "src", "country", "bot_class", "views", "uniques"],
+        p.core.map((r) => [w.site, w.day, tz, r.page, r.src_kind, r.src, r.country, r.bot_class, r.views, r.uniques]),
         guard,
       ),
       ...insertStatements(
         db,
         "view_dim_daily",
-        ["day", "day_tz", "dim", "value", "bot_class", "views", "uniques"],
-        p.dim.map((r) => [w.day, tz, r.dim, r.value, r.bot_class, r.views, r.uniques]),
+        ["site", "day", "day_tz", "dim", "value", "bot_class", "views", "uniques"],
+        p.dim.map((r) => [w.site, w.day, tz, r.dim, r.value, r.bot_class, r.views, r.uniques]),
         guard,
       ),
       ...insertStatements(
         db,
         "view_geo_daily",
-        ["day", "day_tz", "country", "region", "city", "bot_class", "views", "uniques"],
-        p.geo.map((r) => [w.day, tz, r.country, r.region, r.city, r.bot_class, r.views, r.uniques]),
+        ["site", "day", "day_tz", "country", "region", "city", "bot_class", "views", "uniques"],
+        p.geo.map((r) => [w.site, w.day, tz, r.country, r.region, r.city, r.bot_class, r.views, r.uniques]),
         guard,
       ),
     );
@@ -469,25 +496,25 @@ async function writeDay(db: D1Database, w: Work, p: DayPlan, nowMs: number, leas
     stmts.push(
       db
         .prepare(
-          "INSERT INTO view_rollup_log (day, day_tz, raw_views, views, uniques, rows_core, rows_dim, rows_geo, rolled_at, max_id, rerolls) " +
-            `SELECT ?,?,?,?,?,?,?,?,?,?,0 WHERE ${guard.sql}`,
+          "INSERT INTO view_rollup_log (site, day, day_tz, raw_views, views, uniques, rows_core, rows_dim, rows_geo, rolled_at, max_id, rerolls) " +
+            `SELECT ?,?,?,?,?,?,?,?,?,?,?,0 WHERE ${guard.sql}`,
         )
-        .bind(w.day, tz, p.raw, p.views, p.uniques, p.core.length, p.dim.length, p.geo.length, nowMs, p.maxId, ...guard.args),
+        .bind(w.site, w.day, tz, p.raw, p.views, p.uniques, p.core.length, p.dim.length, p.geo.length, nowMs, p.maxId, ...guard.args),
     );
   } else if (drop) {
     stmts.push(
       db
-        .prepare(`UPDATE view_rollup_log SET max_id = ?, rolled_at = ? WHERE day = ? AND max_id = ? AND ${LEASE_OK}`)
-        .bind(p.maxId, nowMs, w.day, w.oldMax, lease.token, leaseNow),
+        .prepare(`UPDATE view_rollup_log SET max_id = ?, rolled_at = ? WHERE site = ? AND day = ? AND max_id = ? AND ${LEASE_OK}`)
+        .bind(p.maxId, nowMs, w.site, w.day, w.oldMax, lease.token, leaseNow),
     );
   } else {
     stmts.push(
       db
         .prepare(
           "UPDATE view_rollup_log SET raw_views = ?, views = ?, uniques = ?, rows_core = ?, rows_dim = ?, rows_geo = ?, " +
-            `rolled_at = ?, max_id = ?, rerolls = rerolls + 1 WHERE day = ? AND max_id = ? AND ${LEASE_OK}`,
+            `rolled_at = ?, max_id = ?, rerolls = rerolls + 1 WHERE site = ? AND day = ? AND max_id = ? AND ${LEASE_OK}`,
         )
-        .bind(p.raw, p.views, p.uniques, p.core.length, p.dim.length, p.geo.length, nowMs, p.maxId, w.day, w.oldMax, lease.token, leaseNow),
+        .bind(p.raw, p.views, p.uniques, p.core.length, p.dim.length, p.geo.length, nowMs, p.maxId, w.site, w.day, w.oldMax, lease.token, leaseNow),
     );
   }
   if (stmts.length > 2000) throw new RangeError("a day must fit one batch"); // caps keep it near 100
@@ -497,7 +524,13 @@ async function writeDay(db: D1Database, w: Work, p: DayPlan, nowMs: number, leas
   return drop ? 1 : p.core.length + p.dim.length + p.geo.length + 1;
 }
 
-function heartbeatStatements(db: D1Database, entries: Record<string, string>, token: string | null, clearFailed: boolean) {
+function heartbeatStatements(
+  db: D1Database,
+  entries: Record<string, string>,
+  token: string | null,
+  clearFailed: boolean,
+  configErr: string,
+) {
   const keys = Object.keys(entries);
   const stmts = [
     db
@@ -507,7 +540,18 @@ function heartbeatStatements(db: D1Database, entries: Record<string, string>, to
       )
       .bind(...keys.flatMap((k) => [k, entries[k] as string])),
   ];
-  if (clearFailed) stmts.push(db.prepare("DELETE FROM view_meta WHERE key = 'rollup_failed_day'"));
+  // The site config's closed-code summary rides in this batch (no extra query);
+  // codes only, never text from the config.
+  stmts.push(
+    configErr === ""
+      ? db.prepare("DELETE FROM view_meta WHERE key = 'config_err'")
+      : db
+          .prepare("INSERT INTO view_meta (key, value) VALUES ('config_err', ?1) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
+          .bind(configErr),
+  );
+  if (clearFailed) {
+    stmts.push(db.prepare("DELETE FROM view_meta WHERE key LIKE 'rollup_failed_day:%' OR key = 'rollup_failed_day'"));
+  }
   if (token !== null) {
     stmts.push(db.prepare(`DELETE FROM view_meta WHERE key = 'rollup_lease' AND ${tokenMatch}`).bind(token));
   }
@@ -539,8 +583,9 @@ export async function rollupClosedDays(env: RollupEnv, nowMs: number): Promise<R
   let inputRows = 0;
   let failure: unknown = null;
   let errClass: RollupError = "none";
-  let failedDay = "";
-  let lastGood = "";
+  // Per site: the first failed day and the last good day of this run.
+  const failedDay = new Map<string, string>();
+  const lastGood = new Map<string, string>();
   let complete = false;
   let lost = false;
   let work: Work[] = [];
@@ -550,27 +595,30 @@ export async function rollupClosedDays(env: RollupEnv, nowMs: number): Promise<R
     const found = await db.batch([
       db
         .prepare(
-          "SELECT strftime('%Y-%m-%d', ts / 1000, 'unixepoch') AS d, COUNT(*) AS n FROM view_events WHERE ts < ?1 " +
-            "AND strftime('%Y-%m-%d', ts / 1000, 'unixepoch') NOT IN (SELECT day FROM view_rollup_log) GROUP BY 1 ORDER BY 1 LIMIT ?2",
+          "SELECT e.site AS s, strftime('%Y-%m-%d', e.ts / 1000, 'unixepoch') AS d, COUNT(*) AS n FROM view_events e WHERE e.ts < ?1 " +
+            "AND NOT EXISTS (SELECT 1 FROM view_rollup_log l WHERE l.site = e.site AND l.day = strftime('%Y-%m-%d', e.ts / 1000, 'unixepoch')) " +
+            "GROUP BY 1, 2 ORDER BY 2, 1 LIMIT ?2",
         )
         .bind(todayStart, MAX_DAYS_PER_RUN + 1),
       db
         .prepare(
-          "SELECT l.day AS d, l.max_id AS m, l.raw_views AS rv, " +
-            "(SELECT COUNT(*) FROM view_events x WHERE x.ts >= (strftime('%s', l.day) * 1000) AND x.ts < (strftime('%s', l.day) * 1000 + 86400000)) AS n " +
-            "FROM view_rollup_log l WHERE EXISTS (SELECT 1 FROM view_events e WHERE e.ts >= (strftime('%s', l.day) * 1000) " +
-            "AND e.ts < (strftime('%s', l.day) * 1000 + 86400000) AND e.id > l.max_id) ORDER BY l.day LIMIT ?1",
+          "SELECT l.site AS s, l.day AS d, l.max_id AS m, l.raw_views AS rv, " +
+            "(SELECT COUNT(*) FROM view_events x WHERE x.site = l.site AND x.ts >= (strftime('%s', l.day) * 1000) AND x.ts < (strftime('%s', l.day) * 1000 + 86400000)) AS n " +
+            "FROM view_rollup_log l WHERE EXISTS (SELECT 1 FROM view_events e WHERE e.site = l.site AND e.ts >= (strftime('%s', l.day) * 1000) " +
+            "AND e.ts < (strftime('%s', l.day) * 1000 + 86400000) AND e.id > l.max_id) ORDER BY l.day, l.site LIMIT ?1",
         )
         .bind(MAX_DAYS_PER_RUN),
     ]);
-    const fresh: Work[] = ((found[0]?.results ?? []) as Array<{ d: string; n: number }>).map((r) => ({
+    const fresh: Work[] = ((found[0]?.results ?? []) as Array<{ s: string; d: string; n: number }>).map((r) => ({
+      site: r.s,
       day: r.d,
       n: r.n,
       mode: "fresh",
       oldMax: 0,
       oldViews: 0,
     }));
-    const redo: Work[] = ((found[1]?.results ?? []) as Array<{ d: string; m: number; rv: number; n: number }>).map((r) => ({
+    const redo: Work[] = ((found[1]?.results ?? []) as Array<{ s: string; d: string; m: number; rv: number; n: number }>).map((r) => ({
+      site: r.s,
       day: r.d,
       n: r.n,
       mode: "reroll",
@@ -585,6 +633,9 @@ export async function rollupClosedDays(env: RollupEnv, nowMs: number): Promise<R
     errClass = "db";
   }
 
+  const sitesResult = loadSites(env);
+  const configured = sitesResult.sites;
+  const bySite = new Map<string, Site>(configured.map((x) => [x.id, x]));
   let lease: Lease | null = null;
   let skipped = false;
   if (failure === null && work.length > 0) {
@@ -619,7 +670,7 @@ export async function rollupClosedDays(env: RollupEnv, nowMs: number): Promise<R
         break;
       }
       try {
-        const plan = await aggregateDay(env, db, w, lease, meter);
+        const plan = await aggregateDay(env, db, w, lease, meter, optsFor(env, bySite.get(w.site)));
         // The read batch recounted the day: budget on that count, not on the
         // pre-lease discovery count, which rows arriving in between can outgrow.
         if (inputRows > 0 && inputRows + plan.raw > rowBudget) {
@@ -643,7 +694,7 @@ export async function rollupClosedDays(env: RollupEnv, nowMs: number): Promise<R
           rows += await writeDay(db, w, plan, nowMs, lease, false);
           days += 1;
           if (plan.reduced) reducedDays += 1;
-          if (failedDay === "") lastGood = w.day;
+          if (!failedDay.has(w.site)) lastGood.set(w.site, w.day);
         }
       } catch (e) {
         if (e instanceof LeaseLost) {
@@ -659,8 +710,8 @@ export async function rollupClosedDays(env: RollupEnv, nowMs: number): Promise<R
           break;
         }
         failure ??= e;
-        if (failedDay === "") {
-          failedDay = w.day;
+        if (!failedDay.has(w.site)) {
+          failedDay.set(w.site, w.day);
           errClass = e instanceof RollupMismatch ? "mismatch" : "db";
         }
       }
@@ -679,7 +730,6 @@ export async function rollupClosedDays(env: RollupEnv, nowMs: number): Promise<R
     return { days, rows, late };
   }
 
-  const through = failure === null && complete ? utcDate(todayStart - DAY_MS) : lastGood;
   const entries: Record<string, string> = {
     rollup_days: String(days),
     rollup_rows: String(rows),
@@ -688,11 +738,21 @@ export async function rollupClosedDays(env: RollupEnv, nowMs: number): Promise<R
     rollup_reduced_days: String(reducedDays),
     rollup_err: errClass,
   };
-  if (through !== "") entries.rolled_through = through;
-  if (failedDay !== "") entries.rollup_failed_day = failedDay;
+  // Per-site checkpoints. A site name from the data is used in a key only if it
+  // is a valid slug (the Worker wrote it from the config, but the key is built
+  // from stored text, so check anyway).
+  const finalDay = utcDate(todayStart - DAY_MS);
+  const names = new Set<string>([...configured.map((x) => x.id), ...work.map((x) => x.site)]);
+  for (const name of names) {
+    if (!SITE_KEY.test(name)) continue;
+    const through = failure === null && complete ? finalDay : (lastGood.get(name) ?? "");
+    if (through !== "") entries[`rolled_through:${name}`] = through;
+    const failed = failedDay.get(name);
+    if (failed !== undefined) entries[`rollup_failed_day:${name}`] = failed;
+  }
   if (failure === null) entries.rollup_last_ok = String(Math.floor(nowMs));
   try {
-    await db.batch(heartbeatStatements(db, entries, lease?.token ?? null, failure === null));
+    await db.batch(heartbeatStatements(db, entries, lease?.token ?? null, failure === null, configErrText(sitesResult.errors)));
   } catch (e) {
     failure ??= e;
   }

@@ -10,7 +10,7 @@ function bytes(b64: string): Uint8Array {
 }
 
 async function hash(secret: string, date: string, addr: string, bits = 32): Promise<string> {
-  const key = await dayKey(bytes(secret), secret, date);
+  const key = await dayKey(bytes(secret), secret, date, "links");
   return visitorHash(key, addr, bits);
 }
 

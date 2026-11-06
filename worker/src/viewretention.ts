@@ -25,6 +25,20 @@
 //                  bud:* older than 48 hours, cap:* older than the previous
 //                  hour. Other keys are never touched.
 //
+// SITES (docs/analytics-design.md 3.6 and threat B1). A raw row is purgeable only
+// if ITS site's day is sealed and its id is at most that log row's max_id, and the
+// unrolled-day ceiling is evaluated per site. A site may set a SHORTER raw keep
+// (raw_keep_days in SITES); the effective keep is min(site, global), so no site
+// can keep rows longer than RAW_KEEP_DAYS or the 90 day ceiling. Rows of a site
+// that is no longer in the config (or of any site while SITES is broken) age out
+// with the global window: retention iterates the data, not the config.
+//
+// The network class (`net`) is cleared from a raw row once it is counted: when
+// the day's log row for the row's site is more than a day old (past the window in
+// which a late row re-rolls the day) and the row's id is at most its max_id, the
+// aggregate already holds the class, and the raw row goes back to 'unknown'
+// (decision D-A7). A late row above max_id keeps its class until it is counted.
+//
 // Deletes run in bounded batches so one run cannot hold the database for long,
 // and within the invocation's D1 query budget (src/d1budget.ts): round one is
 // ONE db.batch() holding the overdue check and every step's first bounded
@@ -35,6 +49,7 @@
 // A bad keep value falls back to the default; it never means "delete all".
 
 import { QueryMeter, meterOf, meteredDb, queryBudget } from "./d1budget";
+import { loadSites, type SitesEnv } from "./sites";
 
 const DAY_MS = 86_400_000;
 const HOUR_MS = 3_600_000;
@@ -47,7 +62,7 @@ export const MAX_RAW_KEEP_DAYS = 90;
 export const HARD_CEILING_FACTOR = 3;
 export const AGGREGATE_KEEP_DAYS = 90;
 
-export interface RetentionEnv {
+export interface RetentionEnv extends SitesEnv {
   DB: D1Database;
   RAW_KEEP_DAYS?: string;
   QUERY_BUDGET?: string;
@@ -91,34 +106,64 @@ export async function purgeViews(env: RetentionEnv, nowMs: number, opts: PurgeOp
   const hardCutoff = Math.floor(nowMs - Math.min(keep * HARD_CEILING_FACTOR, MAX_RAW_KEEP_DAYS) * DAY_MS);
   const aggCutoff = new Date(nowMs - AGGREGATE_KEEP_DAYS * DAY_MS).toISOString().slice(0, 10);
   const hour = Math.floor(nowMs / HOUR_MS);
+  // Per-site raw windows: a VALUES list (site, cutoff, hard cutoff) for the
+  // sites that set a shorter keep. The dummy row keeps the list non-empty; the
+  // empty site never matches a real one. Everything else uses the global window.
+  const lows: Array<{ site: string; keep: number }> = [];
+  for (const site of loadSites(env).sites) {
+    if (site.rawKeepDays !== undefined && site.rawKeepDays < keep) lows.push({ site: site.id, keep: site.rawKeepDays });
+  }
+  const kArgs: Array<string | number> = ["", 0, 0];
+  for (const l of lows) {
+    kArgs.push(
+      l.site,
+      Math.floor(nowMs - l.keep * DAY_MS),
+      Math.floor(nowMs - Math.min(l.keep * HARD_CEILING_FACTOR, MAX_RAW_KEEP_DAYS) * DAY_MS),
+    );
+  }
+  const kRows = Array.from({ length: kArgs.length / 3 }, () => "(?,?,?)").join(",");
+  // Parameters are positional: the k list first, then the step's own, then the batch size.
+  const kCte = `WITH k(site, cut, hard) AS (VALUES ${kRows}) `;
+  const cutOf = "COALESCE((SELECT k.cut FROM k WHERE k.site = e.site), ?)";
+  const hardOf = "COALESCE((SELECT k.hard FROM k WHERE k.site = e.site), ?)";
+  const sealedJoin = "JOIN view_rollup_log l ON l.site = e.site AND l.day = strftime('%Y-%m-%d', e.ts / 1000, 'unixepoch')";
   const steps: Step[] = [
     {
       // CONTROL:seen-purge  unconditional: pseudonymous, and the rollup never reads it.
-      sql: "DELETE FROM visitor_seen WHERE (day, h) IN (SELECT day, h FROM visitor_seen WHERE day < ?1 LIMIT ?2)",
+      sql: "DELETE FROM visitor_seen WHERE (day, h) IN (SELECT day, h FROM visitor_seen WHERE day < ? LIMIT ?)",
       args: [today],
     },
     {
-      // CONTROL:raw-purge  a rolled day's rows, only up to the id the aggregate counted.
+      // CONTROL:raw-purge  a rolled day's rows, only up to the id the aggregate counted, per site.
       sql:
-        "DELETE FROM view_events WHERE id IN (SELECT e.id FROM view_events e JOIN view_rollup_log l " +
-        "ON l.day = strftime('%Y-%m-%d', e.ts / 1000, 'unixepoch') WHERE e.ts < ?1 AND e.id <= l.max_id LIMIT ?2)",
-      args: [cutoff],
+        `DELETE FROM view_events WHERE id IN (${kCte}SELECT e.id FROM view_events e ${sealedJoin} ` +
+        `WHERE e.ts < ${cutOf} AND e.id <= l.max_id LIMIT ?)`,
+      args: [...kArgs, cutoff],
     },
     {
-      // The hard ceiling: unrolled (and uncounted late) rows past min(3 x keep, 90 days) go.
-      sql: "DELETE FROM view_events WHERE id IN (SELECT id FROM view_events WHERE ts < ?1 OR typeof(ts) <> 'integer' LIMIT ?2)",
-      args: [hardCutoff],
+      // The hard ceiling: unrolled (and uncounted late) rows past min(3 x keep, 90 days) go, per site.
+      sql:
+        `DELETE FROM view_events WHERE id IN (${kCte}SELECT e.id FROM view_events e ` +
+        `WHERE e.ts < ${hardOf} OR typeof(e.ts) <> 'integer' LIMIT ?)`,
+      args: [...kArgs, hardCutoff],
     },
-    { sql: "DELETE FROM view_daily WHERE day IN (SELECT day FROM view_daily WHERE day < ?1 LIMIT ?2)", args: [aggCutoff] },
-    { sql: "DELETE FROM view_dim_daily WHERE day IN (SELECT day FROM view_dim_daily WHERE day < ?1 LIMIT ?2)", args: [aggCutoff] },
-    { sql: "DELETE FROM view_geo_daily WHERE day IN (SELECT day FROM view_geo_daily WHERE day < ?1 LIMIT ?2)", args: [aggCutoff] },
-    { sql: "DELETE FROM view_rollup_log WHERE day IN (SELECT day FROM view_rollup_log WHERE day < ?1 LIMIT ?2)", args: [aggCutoff] },
     {
-      sql: "DELETE FROM view_meta WHERE key IN (SELECT key FROM view_meta WHERE key >= 'bud:' AND key < ?1 LIMIT ?2)",
+      // CONTROL:net-clear  the class is already in the aggregate once the day is counted and settled.
+      sql:
+        `UPDATE view_events SET net = 'unknown' WHERE id IN (SELECT e.id FROM view_events e ${sealedJoin} ` +
+        "WHERE e.net <> 'unknown' AND e.id <= l.max_id AND l.rolled_at < ? LIMIT ?)",
+      args: [Math.floor(nowMs - DAY_MS)],
+    },
+    { sql: "DELETE FROM view_daily WHERE day IN (SELECT day FROM view_daily WHERE day < ? LIMIT ?)", args: [aggCutoff] },
+    { sql: "DELETE FROM view_dim_daily WHERE day IN (SELECT day FROM view_dim_daily WHERE day < ? LIMIT ?)", args: [aggCutoff] },
+    { sql: "DELETE FROM view_geo_daily WHERE day IN (SELECT day FROM view_geo_daily WHERE day < ? LIMIT ?)", args: [aggCutoff] },
+    { sql: "DELETE FROM view_rollup_log WHERE day IN (SELECT day FROM view_rollup_log WHERE day < ? LIMIT ?)", args: [aggCutoff] },
+    {
+      sql: "DELETE FROM view_meta WHERE key IN (SELECT key FROM view_meta WHERE key >= 'bud:' AND key < ? LIMIT ?)",
       args: [`bud:${padHour(hour - 48)}`],
     },
     {
-      sql: "DELETE FROM view_meta WHERE key IN (SELECT key FROM view_meta WHERE key >= 'cap:' AND key < ?1 LIMIT ?2)",
+      sql: "DELETE FROM view_meta WHERE key IN (SELECT key FROM view_meta WHERE key >= 'cap:' AND key < ? LIMIT ?)",
       args: [`cap:${padHour(hour - 1)}`],
     },
   ];
@@ -133,10 +178,10 @@ export async function purgeViews(env: RetentionEnv, nowMs: number, opts: PurgeOp
     const first = await db.batch([
       db
         .prepare(
-          "SELECT 1 AS x FROM view_events WHERE ts < ?1 AND " +
-            "strftime('%Y-%m-%d', ts / 1000, 'unixepoch') NOT IN (SELECT day FROM view_rollup_log) LIMIT 1",
+          `${kCte}SELECT 1 AS x FROM view_events e WHERE e.ts < ${hardOf} AND ` +
+            "NOT EXISTS (SELECT 1 FROM view_rollup_log l WHERE l.site = e.site AND l.day = strftime('%Y-%m-%d', e.ts / 1000, 'unixepoch')) LIMIT 1",
         )
-        .bind(hardCutoff),
+        .bind(...kArgs, hardCutoff),
       db.prepare("SELECT value FROM view_meta WHERE key = 'rollup_overdue'"),
       ...steps.map(del),
     ]);

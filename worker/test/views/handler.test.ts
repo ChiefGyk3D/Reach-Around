@@ -309,7 +309,9 @@ describe("bots and budgets", () => {
       expect(r[0]?.reason).toBe(reason);
       expect(r[0]?.first).toBe(0);
       expect(await seen()).toEqual([]);
-      expect((await budgets()).filter((b) => b.key.startsWith("bud:")).map((b) => b.key.split(":")[2])).toEqual(["pvbot"]);
+      expect(
+        (await budgets()).filter((b) => b.key.startsWith("bud:") && !b.key.includes(":all:")).map((b) => b.key.split(":")[3]),
+      ).toEqual(["pvbot"]);
     }
   });
 
@@ -368,9 +370,9 @@ describe("per-client cap", () => {
   it("the_stored_key_is_not_the_visitor_hash_nor_the_address", async () => {
     await handleView(beacon(), makeEnv(), NOW);
     const key = (await budgets()).find((b) => b.key.startsWith("cap:"))?.key ?? "";
-    expect(key).toMatch(/^cap:\d{8}:[0-9a-f]{16}$/);
+    expect(key).toMatch(/^cap:\d{8}:links:[0-9a-f]{16}$/);
     expect(key).not.toContain(IP4);
-    expect(key.split(":")[2]).not.toBe((await seen())[0]?.h?.slice(0, 16));
+    expect(key.split(":")[3]).not.toBe((await seen())[0]?.h?.slice(0, 16));
   });
 
   it("bots_are_capped_per_client_too", async () => {
@@ -586,8 +588,8 @@ describe("accepted view", () => {
     await handleView(beacon({ cf: { regionCode: "EX", city: "Exampleton" } }), env, NOW);
     const r = await rows();
     expect(r.length).toBe(1);
-    expect(r[0]?.ts).toBe(Math.floor(NOW / 60_000) * 60_000);
-    expect((r[0]?.ts as number) % 60_000).toBe(0);
+    expect(r[0]?.ts).toBe(Math.floor(NOW / 3_600_000) * 3_600_000);
+    expect((r[0]?.ts as number) % 3_600_000).toBe(0); // D-A1: the hour, not the minute
     expect((await seen()).length).toBe(1);
     expect(r[0]).toMatchObject({
       page: "home",
@@ -604,9 +606,11 @@ describe("accepted view", () => {
       bot_class: "h",
       reason: "none",
       first: 1,
+      site: "links",
     });
-    // Global counter + client counter + event row + ts index + visitor_seen (measured: 6 in the test runtime).
-    expect(spy.calls.rowsWritten).toBeLessThanOrEqual(6);
+    // Client counter + site counter + account counter + event row + two indexes (ts, site/ts) + visitor_seen
+    // (measured: 8 in the test runtime; it was 6 before the account ceiling and the site index).
+    expect(spy.calls.rowsWritten).toBeLessThanOrEqual(8);
     expect(spy.calls.rowsWritten).toBeGreaterThan(0);
   });
 

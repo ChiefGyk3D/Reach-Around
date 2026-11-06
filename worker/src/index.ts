@@ -10,7 +10,7 @@ export type { Env } from "./click";
 export type { ViewEnv } from "./view";
 
 /** Everything the deployed Worker is bound to: the click route's plus the view route's. */
-type WorkerEnv = ClickEnv & Omit<ViewEnv, "DB" | "SITE_HOST">;
+type WorkerEnv = ClickEnv & Omit<ViewEnv, "DB" | "SITES" | "SITE_HOST" | "PAGE_IDS" | "LINK_IDS">;
 
 const VIEW_PREFIX = "/e/v/";
 
