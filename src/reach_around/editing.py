@@ -26,6 +26,7 @@ import json
 import math
 import os
 import re
+import secrets
 import stat
 import tempfile
 import time
@@ -274,6 +275,17 @@ def _commit(tmp: Path, target: Path) -> None:
     _fsync_dir(target.parent)
 
 
+def _keep_backup(path: Path) -> Path | None:
+    """Hard-link an existing backup aside so an aborted edit can put it back."""
+    backup = path.with_name(path.name + ".bak")
+    kept = path.with_name(f".{path.name}.bak.{secrets.token_hex(8)}.keep")
+    try:
+        os.link(backup, kept, follow_symlinks=False)
+    except OSError:
+        return None
+    return kept
+
+
 def _write_backup(path: Path, text: str, mode: int) -> Path:
     backup = path.with_name(path.name + ".bak")
     try:
@@ -365,19 +377,29 @@ def apply(
             staged = _stage(path, new, mode)
         except OSError as exc:
             raise EditError(f"{path}: cannot write: {exc.strerror or exc}") from exc
+        kept: Path | None = None
         try:
             # Everything slow comes first. The check is the last step before the
             # rename, so the window for a writer that ignores the lock is tiny
             # (it cannot be closed on POSIX).
+            kept = _keep_backup(path) if backup else None
             saved = _write_backup(path, old, mode) if backup else None
-            _before_replace(path)
-            _verify_unchanged(path, snap)
+            try:
+                _before_replace(path)
+                _verify_unchanged(path, snap)
+            except BaseException:
+                # A refused edit must not cost the previous backup.
+                if saved is not None and kept is not None:
+                    os.replace(kept, saved)
+                raise
             try:
                 _commit(staged, path)
             except OSError as exc:
                 raise EditError(f"{path}: cannot write: {exc.strerror or exc}") from exc
         finally:
             staged.unlink(missing_ok=True)
+            if kept is not None:
+                kept.unlink(missing_ok=True)
         return Result(path, old, new, True, saved)
     finally:
         os.close(lock)

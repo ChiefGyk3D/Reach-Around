@@ -220,9 +220,7 @@ def _check_args(spec: OpSpec, args: object) -> dict[str, Any]:
     allowed = {**spec.required, **spec.optional}
     for name in args:
         if name not in allowed:
-            raise _bad(
-                f"args.{name}", f"{name!r} is not an argument of this operation."
-            )
+            raise _bad("args", "That argument is not accepted by this operation.")
     for name in spec.required:
         if name not in args:
             raise _bad(f"args.{name}", f"{name!r} is required.")
@@ -245,9 +243,9 @@ def _check_new_link(link: dict[str, Any]) -> None:
         elif name in _NEW_LINK_FLAGS:
             ok = isinstance(value, bool)
         else:
-            raise _bad(f"args.link.{name}", f"{name!r} cannot be set on a new link.")
+            raise _bad("args.link", "That field cannot be set on a new link.")
         if not ok:
-            raise _bad(f"args.link.{name}", f"{name!r} has the wrong kind of value.")
+            raise _bad("args.link", "A field of the new link has the wrong kind.")
     for name in ("title", "url"):
         if not link.get(name):
             raise _bad(f"args.link.{name}", f"{name!r} is required.")
@@ -256,9 +254,9 @@ def _check_new_link(link: dict[str, Any]) -> None:
 def _check_new_item(item: dict[str, Any]) -> None:
     for name, value in item.items():
         if name not in _NEW_ITEM_KEYS:
-            raise _bad(f"args.item.{name}", f"{name!r} cannot be set on an item.")
+            raise _bad("args.item", "That field cannot be set on an item.")
         if not _kind_ok(_CELL, value):
-            raise _bad(f"args.item.{name}", f"{name!r} has the wrong kind of value.")
+            raise _bad("args.item", "A field of the item has the wrong kind.")
 
 
 # ---- finding the current values (for expect) ---------------------------------------
@@ -486,7 +484,18 @@ class EditorService:
                 error = self._clean(str(exc))
             if self._read(self.config) == first:
                 break
+        else:
+            raise RouteError(
+                503,
+                "busy",
+                "The config changed while it was being read. Try again.",
+                headers=[("Retry-After", "1")],
+            )
         return hashlib.sha256(first).hexdigest(), config, error
+
+    def _digest_now(self) -> str | None:
+        data = self._read(self.config)
+        return None if data is None else hashlib.sha256(data).hexdigest()
 
     def _summary(self, digest: str | None = None) -> Summary:
         try:
@@ -573,8 +582,7 @@ class EditorService:
         label = self._label(request.get("label"), op)
         unknown = set(request) - {"base", "op", "args", "expect", "label"}
         if unknown:
-            name = sorted(unknown)[0]
-            raise _bad(name, f"{name!r} is not a field of a request.", "bad_request")
+            raise _bad("request", "That is not a field of a request.", "bad_request")
         with self._write_lock:
             return self._apply(
                 base, op, args, expect, label, preview_host, preview_port
@@ -588,9 +596,7 @@ class EditorService:
             raise _bad("expect", "expect must be an object.", "bad_request")
         for name in expect:
             if name not in spec.expect:
-                raise _bad(
-                    f"expect.{name}", f"{name!r} is not expected here.", "bad_request"
-                )
+                raise _bad("expect", "That is not expected here.", "bad_request")
         checked: dict[str, Any] = expect
         return checked
 
@@ -644,6 +650,9 @@ class EditorService:
             try:
                 History(self.config).record_write(result.old, result.new, label)
                 recorded = True
+                if self._digest_now() != sha256_text(result.new):
+                    recorded = False
+                    warning = "Saved, but the file changed again; undo may refuse."
             except (HistoryError, OSError):
                 warning = "Saved, but undo is not available for this change."
         reply: dict[str, Any] = {
@@ -689,8 +698,7 @@ class EditorService:
         allowed = {"base", "anyway"} if kind == "undo" else {"base"}
         unknown = set(request) - allowed
         if unknown:
-            name = sorted(unknown)[0]
-            raise _bad(name, f"{name!r} is not a field of this request.", "bad_request")
+            raise _bad("request", "That is not a field of this request.", "bad_request")
         anyway = request.get("anyway", False)
         if not isinstance(anyway, bool):
             raise _bad("anyway", "anyway must be true or false.", "bad_request")

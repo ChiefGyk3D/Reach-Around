@@ -66,8 +66,8 @@ def test_a_change_during_the_edit_is_refused(
     err = capsys.readouterr().err
     assert "changed while editing" in err and "nothing was written" in err
     assert "dark" not in cfg.read_text()
-    # the backup is made first and holds exactly what was read
-    assert (cfg.parent / "site.yaml.bak").read_bytes() == EXAMPLE.read_bytes()
+    # a refused edit leaves the previous backup as it was (#197)
+    assert (cfg.parent / "site.yaml.bak").read_text() == "old backup\n"
     assert sorted(p.name for p in cfg.parent.iterdir()) == [
         "site.yaml",
         "site.yaml.bak",
@@ -255,3 +255,18 @@ def test_a_held_lock_times_out_with_a_clear_error(
     finally:
         os.close(holder)
     assert set_mode(cfg) == 0  # released: works again
+
+
+@pytest.mark.parametrize("seam", ["_during_backup", "_before_replace"])
+def test_a_refused_raced_edit_keeps_the_previous_backup(
+    cfg: Path, monkeypatch: pytest.MonkeyPatch, seam: str
+) -> None:
+    backup = cfg.parent / "site.yaml.bak"
+    backup.write_text("old backup\n")
+    monkeypatch.setattr(editing, seam, change_in_place_longer)
+    assert set_mode(cfg) == 1
+    assert backup.read_text() == "old backup\n"
+    assert sorted(p.name for p in cfg.parent.iterdir()) == [
+        "site.yaml",
+        "site.yaml.bak",
+    ]

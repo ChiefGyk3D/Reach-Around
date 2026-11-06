@@ -6,6 +6,7 @@ while the project is alpha, every release is `0.x` and anything can change betwe
 
 ## [Unreleased]
 
+- Editor route hardening (#197, #202): the editor's history reply no longer claims a version that is already out of date, a refused edit leaves the previous backup untouched, a state read that cannot settle is a retryable 503, and validation errors use fixed text and generic paths. The #202 history-save fix and its guard matrix shipped in 0.2.1.
 - Brand token pin and drift check (#226): `vendor/brand/tokens.json` is a copy of the blog's `brand/tokens.json`, pinned by SHA-256 and source commit in `vendor/brand/tokens.lock.json`. `scripts/gen-brand-theme.py` generates `examples/themes/brand-dark.yaml` from it (colors and radius, mapped to the `--ra-*` theme keys), and `scripts/check-token-drift` (stdlib only, run in CI) fails if the vendored tokens, the pin or the theme file disagree. The preset now uses the brand `border` `#3A3530` and `radius` `0.5rem`. Docs gain a "Heading font: Orbitron" setup section.
 
 ## [0.2.2] - 2026-11-06

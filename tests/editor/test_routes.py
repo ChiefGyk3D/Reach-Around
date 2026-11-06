@@ -347,7 +347,7 @@ def test_unknown_op_and_unknown_arguments_are_422(ed: Editor) -> None:
     got = ed.op("set", {"key": "creator.name", "value": "N", "path": "/etc/x"})
     assert got.status == 422
     assert error_of(got)["code"] == "bad_argument"
-    assert error_of(got)["path"] == "args.path"
+    assert error_of(got)["path"] == "args"
     got = ed.op("set", {"key": "creator.name"})
     assert error_of(got)["path"] == "args.value"
     got = ed.op("move_link", {"id": "first", "position": "1"})
@@ -474,7 +474,7 @@ def test_expect_with_unknown_keys_is_422(ed: Editor) -> None:
         expect={"value": "Example Creator", "extra": 1},
     )
     assert got.status == 422
-    assert error_of(got)["path"] == "expect.extra"
+    assert error_of(got)["path"] == "expect"
 
 
 def test_a_matching_base_ignores_expect(ed: Editor) -> None:
