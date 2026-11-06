@@ -6,6 +6,8 @@ while the project is alpha, every release is `0.x` and anything can change betwe
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-11-06
+
 - Optional single-page layout (#220): top-level `page_layout: sections` renders the first tab as the page and every other tab as a native `<details>` section (the first open by default, `open:` per tab to change it), with no tab bar, no new script and the same CSP, `ping` tracking and `rel="sponsored"`. Internal `tab:` links become fragments. New `theme.colors.muted` key, a `brand-dark` theme preset in `examples/themes/`, and an `instance-variants/sections` example with synthetic data only. The config schema gains `page_layout` and `tabs[].open`.
 
 - Editor undo and redo no longer report a refusal when the config changed but the history could not be saved (#202). The pointer is recorded before the write; if the final save fails the reply is `200` with `history.recorded: false` and a `warning`, and the next state, undo or redo repairs the pointer from the file's hash instead of calling it an outside edit. Filesystem errors on the move path are `409 history_unavailable` (before the write) or `500 io_error`, never a bare 400. The guard matrix now covers `GET /__edit/api/history`, `POST /__edit/api/undo` and `POST /__edit/api/redo` at the socket (401, 403, 421).
