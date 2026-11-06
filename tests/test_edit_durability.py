@@ -66,8 +66,8 @@ def test_a_change_during_the_edit_is_refused(
     err = capsys.readouterr().err
     assert "changed while editing" in err and "nothing was written" in err
     assert "dark" not in cfg.read_text()
-    # the backup is made first and holds exactly what was read
-    assert (cfg.parent / "site.yaml.bak").read_bytes() == EXAMPLE.read_bytes()
+    # a refused edit leaves the previous backup as it was (#197)
+    assert (cfg.parent / "site.yaml.bak").read_text() == "old backup\n"
     assert sorted(p.name for p in cfg.parent.iterdir()) == [
         "site.yaml",
         "site.yaml.bak",
@@ -255,3 +255,90 @@ def test_a_held_lock_times_out_with_a_clear_error(
     finally:
         os.close(holder)
     assert set_mode(cfg) == 0  # released: works again
+
+
+@pytest.mark.parametrize("seam", ["_during_backup", "_before_replace"])
+def test_a_refused_raced_edit_keeps_the_previous_backup(
+    cfg: Path, monkeypatch: pytest.MonkeyPatch, seam: str
+) -> None:
+    backup = cfg.parent / "site.yaml.bak"
+    backup.write_text("old backup\n")
+    monkeypatch.setattr(editing, seam, change_in_place_longer)
+    assert set_mode(cfg) == 1
+    assert backup.read_text() == "old backup\n"
+    assert sorted(p.name for p in cfg.parent.iterdir()) == [
+        "site.yaml",
+        "site.yaml.bak",
+    ]
+
+
+# ---- a refused edit never costs the previous backup (#197) --------------------------
+
+
+def _bak(cfg: Path) -> Path:
+    return cfg.with_name(cfg.name + ".bak")
+
+
+def test_when_the_backup_cannot_be_kept_aside_a_copy_stands_in(
+    cfg: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _bak(cfg).write_text("old backup\n")
+
+    def no_links(src: object, dst: object, **kw: object) -> None:
+        raise PermissionError(1, "no hard links here")
+
+    monkeypatch.setattr(os, "link", no_links)
+    monkeypatch.setattr(editing, "_before_replace", change_in_place_longer)
+    assert set_mode(cfg) == 1
+    assert "dark" not in cfg.read_text()
+    assert _bak(cfg).read_text() == "old backup\n"
+    assert sorted(p.name for p in cfg.parent.iterdir()) == [
+        "site.yaml",
+        "site.yaml.bak",
+    ]
+
+
+def test_an_existing_backup_that_cannot_be_preserved_refuses_the_edit(
+    cfg: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _bak(cfg).write_text("old backup\n")
+    before = cfg.read_text()
+
+    def no_links(src: object, dst: object, **kw: object) -> None:
+        raise PermissionError(1, "no hard links here")
+
+    def no_copy(*args: object, **kw: object) -> None:
+        raise OSError(28, "no space")
+
+    monkeypatch.setattr(os, "link", no_links)
+    monkeypatch.setattr(editing, "_copy_aside", no_copy)
+    assert set_mode(cfg) == 1
+    assert "backup" in capsys.readouterr().err
+    assert cfg.read_text() == before
+    assert _bak(cfg).read_text() == "old backup\n"
+    assert sorted(p.name for p in cfg.parent.iterdir()) == [
+        "site.yaml",
+        "site.yaml.bak",
+    ]
+
+
+def test_a_failed_sync_after_the_backup_rename_restores_the_previous_backup(
+    cfg: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _bak(cfg).write_text("old backup\n")
+    before = cfg.read_text()
+    calls = {"n": 0}
+
+    def flaky_sync(directory: Path) -> None:
+        calls["n"] += 1
+        if calls["n"] == 1:  # the one that follows the backup's rename
+            raise OSError(5, "sync failed")
+
+    monkeypatch.setattr(editing, "_fsync_dir", flaky_sync)
+    assert set_mode(cfg) == 1
+    assert cfg.read_text() == before
+    assert _bak(cfg).read_text() == "old backup\n"
+    assert sorted(p.name for p in cfg.parent.iterdir()) == [
+        "site.yaml",
+        "site.yaml.bak",
+    ]

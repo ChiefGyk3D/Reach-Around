@@ -26,6 +26,7 @@ import json
 import math
 import os
 import re
+import secrets
 import stat
 import tempfile
 import time
@@ -115,6 +116,11 @@ class _Snapshot:
     size: int
     mtime_ns: int
     sha256: str
+
+
+def lock_config(config: Path) -> int:
+    """Lock the config (as ``apply`` does) and return the descriptor to close."""
+    return _open_locked(resolve_config(config, force_path=True))
 
 
 def _read_fd(fd: int, path: Path) -> bytes:
@@ -274,6 +280,60 @@ def _commit(tmp: Path, target: Path) -> None:
     _fsync_dir(target.parent)
 
 
+def _copy_aside(backup: Path, kept: Path) -> None:
+    """Copy ``backup`` to ``kept`` (synced); the fallback where links fail."""
+    fd = os.open(backup, os.O_RDONLY | os.O_NOFOLLOW)
+    with os.fdopen(fd, "rb") as source:
+        data = source.read()
+    out = os.open(kept, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    try:
+        with os.fdopen(out, "wb") as target:
+            target.write(data)
+            target.flush()
+            os.fsync(target.fileno())
+    except BaseException:
+        kept.unlink(missing_ok=True)
+        raise
+
+
+def _keep_backup(path: Path) -> Path | None:
+    """Keep an existing backup aside so an aborted edit can put it back.
+
+    None means there is no backup to keep. If one exists but cannot be kept
+    (no hard links and no copy), the edit is refused rather than replacing it.
+    """
+    backup = path.with_name(path.name + ".bak")
+    kept = path.with_name(f".{path.name}.bak.{secrets.token_hex(8)}.keep")
+    try:
+        os.link(backup, kept, follow_symlinks=False)
+    except FileNotFoundError:
+        return None
+    except OSError:
+        try:
+            _copy_aside(backup, kept)
+        except FileNotFoundError:
+            return None
+        except OSError as exc:
+            kept.unlink(missing_ok=True)
+            raise EditError(
+                f"{backup}: cannot keep the previous backup safe, so nothing was "
+                f"written: {exc.strerror or exc}"
+            ) from exc
+    return kept
+
+
+def _restore_backup(kept: Path, backup: Path) -> bool:
+    """Put the kept backup back; True if the backup is the previous one again."""
+    try:
+        os.replace(kept, backup)
+        return True
+    except OSError:
+        try:  # the rename may never have happened: then nothing was lost
+            return backup.read_bytes() == kept.read_bytes()
+        except OSError:
+            return False
+
+
 def _write_backup(path: Path, text: str, mode: int) -> Path:
     backup = path.with_name(path.name + ".bak")
     try:
@@ -365,19 +425,36 @@ def apply(
             staged = _stage(path, new, mode)
         except OSError as exc:
             raise EditError(f"{path}: cannot write: {exc.strerror or exc}") from exc
+        kept: Path | None = None
         try:
             # Everything slow comes first. The check is the last step before the
             # rename, so the window for a writer that ignores the lock is tiny
             # (it cannot be closed on POSIX).
-            saved = _write_backup(path, old, mode) if backup else None
-            _before_replace(path)
-            _verify_unchanged(path, snap)
+            kept = _keep_backup(path) if backup else None
+            try:
+                saved = _write_backup(path, old, mode) if backup else None
+            except BaseException:
+                # The new backup may already be renamed in; put the old one back.
+                if kept is not None:
+                    if not _restore_backup(kept, path.with_name(path.name + ".bak")):
+                        kept = None  # leave the kept copy on disk; report the cause
+                raise
+            try:
+                _before_replace(path)
+                _verify_unchanged(path, snap)
+            except BaseException:
+                # A refused edit must not cost the previous backup.
+                if saved is not None and kept is not None:
+                    os.replace(kept, saved)
+                raise
             try:
                 _commit(staged, path)
             except OSError as exc:
                 raise EditError(f"{path}: cannot write: {exc.strerror or exc}") from exc
         finally:
             staged.unlink(missing_ok=True)
+            if kept is not None:
+                kept.unlink(missing_ok=True)
         return Result(path, old, new, True, saved)
     finally:
         os.close(lock)

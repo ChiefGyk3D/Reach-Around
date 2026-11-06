@@ -22,6 +22,7 @@ import json
 import math
 import os
 import re
+import tempfile
 import threading
 import time
 from collections import deque
@@ -220,9 +221,7 @@ def _check_args(spec: OpSpec, args: object) -> dict[str, Any]:
     allowed = {**spec.required, **spec.optional}
     for name in args:
         if name not in allowed:
-            raise _bad(
-                f"args.{name}", f"{name!r} is not an argument of this operation."
-            )
+            raise _bad("args", "That argument is not accepted by this operation.")
     for name in spec.required:
         if name not in args:
             raise _bad(f"args.{name}", f"{name!r} is required.")
@@ -245,9 +244,9 @@ def _check_new_link(link: dict[str, Any]) -> None:
         elif name in _NEW_LINK_FLAGS:
             ok = isinstance(value, bool)
         else:
-            raise _bad(f"args.link.{name}", f"{name!r} cannot be set on a new link.")
+            raise _bad("args.link", "That field cannot be set on a new link.")
         if not ok:
-            raise _bad(f"args.link.{name}", f"{name!r} has the wrong kind of value.")
+            raise _bad("args.link", "A field of the new link has the wrong kind.")
     for name in ("title", "url"):
         if not link.get(name):
             raise _bad(f"args.link.{name}", f"{name!r} is required.")
@@ -256,9 +255,9 @@ def _check_new_link(link: dict[str, Any]) -> None:
 def _check_new_item(item: dict[str, Any]) -> None:
     for name, value in item.items():
         if name not in _NEW_ITEM_KEYS:
-            raise _bad(f"args.item.{name}", f"{name!r} cannot be set on an item.")
+            raise _bad("args.item", "That field cannot be set on an item.")
         if not _kind_ok(_CELL, value):
-            raise _bad(f"args.item.{name}", f"{name!r} has the wrong kind of value.")
+            raise _bad("args.item", "A field of the item has the wrong kind.")
 
 
 # ---- finding the current values (for expect) ---------------------------------------
@@ -475,18 +474,46 @@ class EditorService:
             if data is None:
                 raise RouteError(404, "not_found", "The config file cannot be read.")
             first = data
-            config: dict[str, Any] = {}
-            error: str | None = None
-            try:
-                load_site_config(self.config)
-                loaded = load_yaml(self.config)
-                if isinstance(loaded, dict):
-                    config = json_safe(loaded)
-            except (ConfigError, OSError) as exc:
-                error = self._clean(str(exc))
+            config, error = self._parse(data)
             if self._read(self.config) == first:
                 break
+        else:
+            raise RouteError(
+                503,
+                "busy",
+                "The config changed while it was being read. Try again.",
+                headers=[("Retry-After", "1")],
+            )
         return hashlib.sha256(first).hexdigest(), config, error
+
+    def _parse(self, data: bytes) -> tuple[dict[str, Any], str | None]:
+        """Load exactly ``data`` (a private copy beside the config), not the path.
+
+        The path may name another version by now; the hash we report must be
+        the hash of the bytes the config and build result came from.
+        """
+        config: dict[str, Any] = {}
+        tmp: Path | None = None
+        try:
+            fd, name = tempfile.mkstemp(
+                dir=self.config.parent, prefix=f".{self.config.name}.", suffix=".view"
+            )
+            tmp = Path(name)
+            with os.fdopen(fd, "wb") as handle:
+                handle.write(data)
+            load_site_config(tmp)
+            loaded = load_yaml(tmp)
+            if isinstance(loaded, dict):
+                config = json_safe(loaded)
+        except (ConfigError, OSError) as exc:
+            shown = str(exc).replace(str(tmp), str(self.config)) if tmp else str(exc)
+            if tmp is not None:
+                shown = shown.replace(tmp.name, self.config.name)
+            return {}, self._clean(shown)
+        finally:
+            if tmp is not None:
+                tmp.unlink(missing_ok=True)
+        return config, None
 
     def _summary(self, digest: str | None = None) -> Summary:
         try:
@@ -527,8 +554,13 @@ class EditorService:
             "build": {"ok": error is None},
         }
 
-    def state(self, preview_host: str, preview_port: int) -> dict[str, Any]:
-        digest, config, error = self._load()
+    def state(
+        self,
+        preview_host: str,
+        preview_port: int,
+        loaded: tuple[str, dict[str, Any], str | None] | None = None,
+    ) -> dict[str, Any]:
+        digest, config, error = loaded if loaded is not None else self._load()
         try:
             mtime = os.stat(self.config).st_mtime
         except OSError:
@@ -573,8 +605,7 @@ class EditorService:
         label = self._label(request.get("label"), op)
         unknown = set(request) - {"base", "op", "args", "expect", "label"}
         if unknown:
-            name = sorted(unknown)[0]
-            raise _bad(name, f"{name!r} is not a field of a request.", "bad_request")
+            raise _bad("request", "That is not a field of a request.", "bad_request")
         with self._write_lock:
             return self._apply(
                 base, op, args, expect, label, preview_host, preview_port
@@ -588,9 +619,7 @@ class EditorService:
             raise _bad("expect", "expect must be an object.", "bad_request")
         for name in expect:
             if name not in spec.expect:
-                raise _bad(
-                    f"expect.{name}", f"{name!r} is not expected here.", "bad_request"
-                )
+                raise _bad("expect", "That is not expected here.", "bad_request")
         checked: dict[str, Any] = expect
         return checked
 
@@ -640,14 +669,30 @@ class EditorService:
             raise RouteError(422, "refused", self._clean(str(exc))) from None
         warning: str | None = None
         recorded = False
+        loaded: tuple[str, dict[str, Any], str | None] | None = None
         if result.written and result.old != result.new:
+            # Hold the config's own lock through the history commit and the one
+            # read the reply is built from, so no cooperating writer slips in.
+            lock: int | None = None
             try:
+                lock = editing.lock_config(self.config)
                 History(self.config).record_write(result.old, result.new, label)
                 recorded = True
-            except (HistoryError, OSError):
+                loaded = self._load()
+                if loaded[0] != sha256_text(result.new):
+                    recorded = False
+                    warning = "Saved, but the file changed again; undo may refuse."
+            except (HistoryError, OSError, editing.EditError):
                 warning = "Saved, but undo is not available for this change."
+            except RouteError:
+                loaded = None
+                recorded = False
+                warning = "Saved, but the file changed again; undo may refuse."
+            finally:
+                if lock is not None:
+                    os.close(lock)
         reply: dict[str, Any] = {
-            "state": self.state(preview_host, preview_port),
+            "state": self.state(preview_host, preview_port, loaded),
             "history": {
                 "label": label,
                 "hash": sha256_text(result.new),
@@ -689,8 +734,7 @@ class EditorService:
         allowed = {"base", "anyway"} if kind == "undo" else {"base"}
         unknown = set(request) - allowed
         if unknown:
-            name = sorted(unknown)[0]
-            raise _bad(name, f"{name!r} is not a field of this request.", "bad_request")
+            raise _bad("request", "That is not a field of this request.", "bad_request")
         anyway = request.get("anyway", False)
         if not isinstance(anyway, bool):
             raise _bad("anyway", "anyway must be true or false.", "bad_request")
