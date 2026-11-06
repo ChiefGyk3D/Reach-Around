@@ -37,6 +37,7 @@ jobs:
       lint-command: |
         ruff check .
         ruff format --check .
+        python3 -I scripts/check-token-drift
       typecheck-install-command: |
         pip install --require-hashes -r requirements-dev.txt
         pip install --no-deps -e .

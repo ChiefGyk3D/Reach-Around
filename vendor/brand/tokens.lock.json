@@ -1,0 +1,16 @@
+{
+  "note": "Pin for the vendored brand tokens. Refresh: copy the blog's brand/tokens.json over vendor/brand/tokens.json, update commit and sha256 here, run python3 -I scripts/gen-brand-theme.py, then python3 -I scripts/check-token-drift.",
+  "source": {
+    "repo": "ChiefGyk3D/no-php-no-cry",
+    "path": "brand/tokens.json",
+    "commit": "0effbd03029e5a33765007223b9c205a32051e86"
+  },
+  "vendored": "vendor/brand/tokens.json",
+  "sha256": "76213e67c7b7f4baf725eb1d31ed12b7b7d5ba440c3007466bca227594531258",
+  "outputs": [
+    {
+      "generator": "scripts/gen-brand-theme.py",
+      "output": "examples/themes/brand-dark.yaml"
+    }
+  ]
+}

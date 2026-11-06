@@ -19,9 +19,11 @@ editing the stylesheet.
    - `brand-dark.yaml`: a generic dark brand kit (amber accent `#FBB03B`,
      near-black ground, light text, a muted warm gray). Dark only. Change the
      hex values to your own kit. Jost, the body face, ships with the engine; for
-     a display face such as Orbitron, put its `.woff2` (OFL) in your instance
-     folder and set `fonts.heading` to its path. No font host is ever
-     contacted. Pair it with `page_layout: sections` (see
+     a display face such as Orbitron, follow
+     [Heading font: Orbitron](config.md#heading-font-orbitron). No font host is
+     ever contacted. The file is generated from the brand tokens pinned in
+     `vendor/brand/tokens.json` (`scripts/gen-brand-theme.py`); do not edit it
+     by hand, and see `scripts/check-token-drift`. Pair it with `page_layout: sections` (see
      [config.md](config.md#page_layout)).
 3. Keep text contrast at 4.5:1 or better against both `bg` and `surface`, and
    keep `accent` at 4.5:1 or better against `bg` (it is used for links and the

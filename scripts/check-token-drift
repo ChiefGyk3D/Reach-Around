@@ -1,0 +1,129 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+"""Fail when vendored design tokens, their pin and generated files disagree.
+
+Usage: python3 -I scripts/check-token-drift [--root DIR] [--lock FILE]
+
+Generic on purpose (stdlib only, no repo-specific code), so it can move to a
+shared workflow later. It reads a lock file (default
+vendor/brand/tokens.lock.json under --root) with:
+
+    vendored   path of the vendored tokens file, relative to the root
+    sha256     the pinned SHA-256 of that file
+    source     {repo, path, commit} of the upstream copy (must be present)
+    outputs    [{generator, output}, ...]
+
+and checks, in order: the lock is well formed; the vendored file exists and its
+SHA-256 equals the pin; and for each output, the generator module (a file that
+defines ``render(source: Path) -> str``) produces text identical to the file on
+disk. Every problem is printed; exit 1 if there is any, else 0.
+"""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import importlib.util
+import json
+import re
+import sys
+from pathlib import Path
+from typing import Any
+
+SHA256 = re.compile(r"^[0-9a-f]{64}$")
+COMMIT = re.compile(r"^[0-9a-f]{40}$")
+
+
+def inside(root: Path, rel: object) -> Path | None:
+    """Resolve ``rel`` under ``root``; None if it is not a plain relative path."""
+    if not isinstance(rel, str) or not rel:
+        return None
+    path = (root / rel).resolve()
+    if not path.is_relative_to(root.resolve()):
+        return None
+    return path
+
+
+def load_generator(path: Path) -> Any:
+    spec = importlib.util.spec_from_file_location("token_generator", path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"cannot load {path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def check(root: Path, lock_path: Path) -> list[str]:
+    problems: list[str] = []
+    try:
+        lock = json.loads(lock_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        return [f"cannot read lock {lock_path}: {exc}"]
+    if not isinstance(lock, dict):
+        return [f"{lock_path}: must be a JSON object"]
+
+    pin = lock.get("sha256")
+    if not isinstance(pin, str) or not SHA256.match(pin):
+        problems.append("lock: sha256 must be 64 lowercase hex characters")
+    source = lock.get("source")
+    if not isinstance(source, dict) or not COMMIT.match(str(source.get("commit"))):
+        problems.append("lock: source.commit must be a 40-character commit id")
+    elif not source.get("repo") or not source.get("path"):
+        problems.append("lock: source needs repo and path")
+
+    vendored = inside(root, lock.get("vendored"))
+    if vendored is None:
+        problems.append("lock: vendored must be a relative path inside the root")
+    elif not vendored.is_file():
+        problems.append(f"vendored tokens missing: {vendored}")
+    elif isinstance(pin, str):
+        actual = hashlib.sha256(vendored.read_bytes()).hexdigest()
+        if actual != pin:
+            problems.append(
+                f"hash mismatch: {lock.get('vendored')} is {actual}, lock pins {pin}"
+            )
+
+    outputs = lock.get("outputs")
+    if not isinstance(outputs, list) or not outputs:
+        problems.append("lock: outputs must be a non-empty list")
+        return problems
+    for entry in outputs:
+        gen = inside(root, entry.get("generator")) if isinstance(entry, dict) else None
+        out = inside(root, entry.get("output")) if isinstance(entry, dict) else None
+        if gen is None or out is None:
+            problems.append("lock: each output needs relative generator and output")
+            continue
+        if vendored is None or not vendored.is_file():
+            continue
+        try:
+            expected = load_generator(gen).render(vendored)
+            current = out.read_text(encoding="utf-8")
+        except Exception as exc:  # generator and file errors are findings, not crashes
+            problems.append(f"{out.name}: cannot check ({type(exc).__name__}: {exc})")
+            continue
+        if current != expected:
+            problems.append(
+                f"drift: {entry['output']} differs from what {gen.name} generates "
+                f"from {lock.get('vendored')}"
+            )
+    return problems
+
+
+def main(argv: list[str]) -> int:
+    parser = argparse.ArgumentParser(description=(__doc__ or "").split("\n")[0])
+    default_root = Path(__file__).resolve().parent.parent
+    parser.add_argument("--root", type=Path, default=default_root)
+    parser.add_argument("--lock", type=Path, default=None)
+    args = parser.parse_args(argv)
+    lock = args.lock or args.root / "vendor" / "brand" / "tokens.lock.json"
+    problems = check(args.root, lock)
+    for problem in problems:
+        print(f"FAIL {problem}")
+    if problems:
+        return 1
+    print("ok   tokens, pin and generated files agree")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

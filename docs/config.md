@@ -681,6 +681,35 @@ tabs:
   `.jpg`, `.jpeg`, `.webp`, `.avif`, `.gif` or `.svg` file. A relative path
   has no `..` segment and does not start with `/`.
 
+### Heading font: Orbitron
+
+The `brand-dark` preset leaves `fonts.heading` commented out, because the engine
+does not ship Orbitron. To use it on your site:
+
+1. Download Orbitron from its upstream project
+   (https://github.com/theleagueof/orbitron) and keep its `OFL.txt` with it.
+2. Put the font file in your instance folder, for example
+   `fonts/orbitron.woff2` (`.woff`, `.ttf` and `.otf` also work). Use the file
+   as it comes: do not subset, convert or rename the font itself.
+3. Uncomment the line in your theme:
+
+   ```yaml
+   theme:
+     fonts:
+       heading: fonts/orbitron.woff2
+   ```
+
+4. Build. The file is copied to your site and served from your own domain; no
+   font host is contacted, which the Content-Security-Policy (`font-src 'self'`)
+   enforces. Body text stays Jost.
+
+License: Orbitron is licensed under the SIL Open Font License 1.1 and has the
+Reserved Font Name "Orbitron". You may use and redistribute the font, but
+a modified version may not keep that name, so ship it unmodified (converting a
+file to another format counts as a modification; take a ready-made `.woff2`
+from upstream or a repackaging that says it changes no glyphs) and include the
+license text and copyright line beside it. The engine does not bundle Orbitron.
+
 ### What is refused
 
 Any value that contains `;`, `{`, `}`, `url(`, `expression(`, `@import`, a
