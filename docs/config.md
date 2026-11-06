@@ -715,17 +715,9 @@ not bundle Orbitron.
 
 The OFL asks that the license text and copyright line travel with redistributed
 copies. Keep the font's `OFL.txt` in your instance folder (for example
-`fonts/OFL.txt`) and name it in the theme:
-
-```yaml
-theme:
-  fonts:
-    heading: fonts/orbitron.woff2
-    license: fonts/OFL.txt
-```
-
-The build publishes the file under a content-hashed name in the same folder as
-the font (see [File names and the assets inventory](#file-names-and-the-assets-inventory)).
+`fonts/OFL.txt`) and name it with `theme.fonts.license`, as in step 3.
+The build publishes the file under a content-hashed name at the same relative path it has in
+your instance folder (see [File names and the assets inventory](#file-names-and-the-assets-inventory)).
 Check that the license and copyright line meet the terms for your use.
 
 ### What is refused

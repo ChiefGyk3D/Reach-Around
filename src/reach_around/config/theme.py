@@ -16,14 +16,14 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from reach_around.site.theme import (
     COLOR_KEYS,
     DEFAULT_COLUMN_WIDTH,
+    FONT_FILE_EXTENSIONS,
     MAX_BACKGROUND_DIM,
     check_background,
     check_color,
     check_font,
-    FONT_FILE_EXTENSIONS,
-    check_license_path,
     check_image_path,
     check_length,
+    check_license_path,
 )
 
 

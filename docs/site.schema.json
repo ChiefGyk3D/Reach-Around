@@ -433,6 +433,18 @@
           ],
           "default": null,
           "title": "Heading"
+        },
+        "license": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "License"
         }
       },
       "title": "FontStack",
@@ -1355,7 +1367,8 @@
           "$ref": "#/$defs/FontStack",
           "default": {
             "body": null,
-            "heading": null
+            "heading": null,
+            "license": null
           }
         },
         "mascot": {
@@ -1579,7 +1592,8 @@
         "column_width": "35rem",
         "fonts": {
           "body": null,
-          "heading": null
+          "heading": null,
+          "license": null
         },
         "mascot": null,
         "mode": "auto",
