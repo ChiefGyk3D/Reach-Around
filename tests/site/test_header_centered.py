@@ -40,7 +40,7 @@ def _selectors(css: str) -> list[str]:
 
 
 def _unguarded(css: str) -> list[str]:
-    """Selectors that style a direct child of `.header-centered` with no avatar guard."""
+    """Selectors for a direct child of `.header-centered` lacking the avatar guard."""
     return [
         s
         for s in _selectors(css)
