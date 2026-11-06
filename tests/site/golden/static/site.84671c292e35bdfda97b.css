@@ -423,6 +423,11 @@ a.link::after {
     radial-gradient(circle at 50% 50%, var(--ra-color-on-accent-muted) 0.13rem, transparent 0.15rem),
     radial-gradient(circle at 50% 88%, var(--ra-color-on-accent-muted) 0.13rem, transparent 0.15rem);
 }
+/* A link with no icon or picture reserves no left slot: one column, the label
+   centered across the whole pill, and no dots (they only balanced the slot). */
+a.link:not(:has(.link-chip, .link-thumb)) { grid-template-columns: minmax(0, 1fr); }
+a.link:not(:has(.link-chip, .link-thumb))::after { display: none; }
+a.link:not(:has(.link-chip, .link-thumb)) .link-text { grid-column: 1; }
 .link-chip {
   display: grid;
   grid-column: 1;
@@ -556,6 +561,9 @@ a.link:active, .social:active { transform: translateY(0) scale(0.985); }
    <details> after it. The title is a heading inside the summary, so the page
    keeps an outline and the whole row is the 44 px target. */
 .tab-section { flex: none; margin-top: var(--ra-space-4); }
+/* The page gutter is margin here, not padding, so the card's edge is the edge of
+   the link buttons above it (`main > :not(.tabs)` would pad the box instead). */
+main > .tab-section { padding-inline: 0; margin-inline: var(--ra-gutter); }
 .tab-section:last-of-type { margin-bottom: auto; }
 .tab-section-title { margin: 0; font: inherit; letter-spacing: inherit; }
 .tab-section > .blocks { flex: none; padding: 0 var(--ra-space-3) var(--ra-space-3); }
