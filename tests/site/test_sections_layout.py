@@ -377,3 +377,147 @@ def test_a_link_to_an_omitted_tab_lands_on_the_page_not_a_missing_id(
     assert 'id="recs"' not in html
     assert _go_href(html) in ("./", "")
     assert _go_href((out / "privacy/index.html").read_text()) == "../"
+
+
+# --- layout polish (#232): section edges, icon-less links, duplicate headings -----
+
+
+def rule_bodies(css: str, selector: str) -> str:
+    """Declarations of every rule whose selector list holds ``selector`` exactly."""
+    out = []
+    css = re.sub(r"/\*.*?\*/", "", css, flags=re.DOTALL)
+    for match in re.finditer(r"([^{}]+)\{([^{}]*)\}", css):
+        if selector in [s.strip() for s in match.group(1).split(",")]:
+            out.append(match.group(2))
+    return "\n".join(out)
+
+
+def test_section_edges_line_up_with_the_link_column() -> None:
+    # The gutter was padding on the <details>, so its box spanned the whole column
+    # while the buttons sat inside the gutter. It must be margin, so the box edge
+    # is the button edge. `main > .tab-section` beats `main > :not(.tabs)`.
+    body = rule_bodies(SITE_CSS, "main > .tab-section")
+    assert "margin-inline: var(--ra-gutter)" in body
+    assert "padding-inline: 0" in body
+
+
+def test_the_edge_guard_bites_on_the_old_rule() -> None:
+    old = ".tab-section { flex: none; margin-top: 1rem; }"
+    assert "margin-inline" not in rule_bodies(old, ".tab-section")
+    assert rule_bodies(old, "main > .tab-section") == ""
+
+
+PLAIN = "a.link:not(:has(.link-chip, .link-thumb))"
+
+
+def _link_html(html: str, link_id: str) -> str:
+    match = re.search(rf'<a [^>]*data-link-id="{link_id}".*?</a>', html, re.DOTALL)
+    assert match, link_id
+    return match.group(0)
+
+
+def test_only_a_link_with_no_icon_or_picture_matches_the_plain_selector(
+    tmp_path: Path,
+) -> None:
+    # The CSS keys on the absence of a chip or thumbnail, so the markup must
+    # draw exactly one of them for an icon link and neither for a bare one.
+    data = site()
+    data["features"] = {"click_tracking": True}
+    data["tabs"][1]["blocks"] = [
+        {"id": "bare", "title": "Bare", "url": "https://a.example/"},
+        {
+            "id": "iconed",
+            "title": "Iconed",
+            "url": "https://b.example/",
+            "icon": "link",
+        },
+        {
+            "id": "unknown",
+            "title": "Unknown",
+            "url": "https://c.example/",
+            "icon": "no-such-icon-slug",
+        },
+    ]
+    html = (build(tmp_path, data) / "index.html").read_text()
+    for plain in ("bare", "unknown"):
+        assert "link-chip" not in _link_html(html, plain)
+        assert "link-thumb" not in _link_html(html, plain)
+    assert 'class="link-chip"' in _link_html(html, "iconed")
+
+
+def _exact_rule(selector: str) -> str:
+    """Body of a rule whose whole selector is ``selector`` (it may hold commas)."""
+    css = re.sub(r"/\*.*?\*/", "", SITE_CSS, flags=re.DOTALL)
+    match = re.search(r"(?:^|})\s*" + re.escape(selector) + r"\s*\{([^{}]*)\}", css)
+    return match.group(1) if match else ""
+
+
+def test_a_plain_link_keeps_no_empty_gutter_in_css() -> None:
+    assert "grid-template-columns: minmax(0, 1fr)" in _exact_rule(PLAIN)
+    assert "display: none" in _exact_rule(PLAIN + "::after")
+    # The label must move to column 1, or it opens an implicit second column.
+    assert "grid-column: 1" in _exact_rule(PLAIN + " .link-text")
+    # Icon links keep the three-column pill.
+    assert "var(--ra-thumb) minmax(0, 1fr) var(--ra-thumb)" in rule_bodies(
+        SITE_CSS, "a.link"
+    )
+
+
+def test_the_plain_guard_bites_when_the_rule_is_missing() -> None:
+    assert _exact_rule("a.link:not(:has(.nothing))") == ""
+
+
+def crypto_site(tab_title: str, block_title: str | None, kind: str = "crypto") -> Any:
+    data = site()
+    block: dict[str, Any]
+    if kind == "crypto":
+        block = {"id": "w", "coins": [{"coin": "btc", "address": ADDR}]}
+    else:
+        block = {"id": "w", "address": "name@example.test"}
+    if block_title is not None:
+        block["title"] = block_title
+    data["tabs"][2]["title"] = tab_title
+    data["tabs"][2]["blocks"] = [block]
+    return data
+
+
+@pytest.mark.parametrize(
+    ("kind", "cls"), [("crypto", "crypto-title"), ("email", "email-title")]
+)
+@pytest.mark.parametrize(
+    ("tab_title", "block_title"),
+    [("Crypto", "Crypto"), ("Crypto", "crypto"), ("Crypto", "  CRYPTO ")],
+)
+def test_an_equal_block_title_is_not_repeated_under_the_summary(
+    tmp_path: Path, kind: str, cls: str, tab_title: str, block_title: str
+) -> None:
+    html = build(tmp_path, crypto_site(tab_title, block_title, kind)) / "index.html"
+    text = html.read_text()
+    assert f'<h2 class="tab-section-title">{tab_title}</h2>' in text
+    assert cls not in text
+
+
+@pytest.mark.parametrize(
+    ("kind", "cls"), [("crypto", "crypto-title"), ("email", "email-title")]
+)
+def test_a_different_block_title_keeps_its_heading(
+    tmp_path: Path, kind: str, cls: str
+) -> None:
+    out = build(tmp_path, crypto_site("Send crypto", "Wallets", kind))
+    text = (out / "index.html").read_text()
+    assert f'<h2 class="{cls}">Wallets</h2>' in text
+
+
+def test_the_first_tab_keeps_a_block_title_equal_to_its_own() -> None:
+    # The first tab is the page body: it has no section heading to repeat.
+    data = site()
+    data["tabs"][0]["blocks"] = [
+        {"id": "w", "title": "Socials", "coins": [{"coin": "btc", "address": ADDR}]}
+    ]
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmp:
+        out = build(Path(tmp), data)
+        assert (
+            '<h2 class="crypto-title">Socials</h2>' in (out / "index.html").read_text()
+        )
