@@ -6,6 +6,8 @@ while the project is alpha, every release is `0.x` and anything can change betwe
 
 ## [Unreleased]
 
+- Brand token pin and drift check (#226): `vendor/brand/tokens.json` is a copy of the blog's `brand/tokens.json`, pinned by SHA-256 and source commit in `vendor/brand/tokens.lock.json`. `scripts/gen-brand-theme.py` generates `examples/themes/brand-dark.yaml` from it (colors and radius, mapped to the `--ra-*` theme keys), and `scripts/check-token-drift` (stdlib only, run in CI) fails if the vendored tokens, the pin or the theme file disagree. The preset now uses the brand `border` `#3A3530` and `radius` `0.5rem`. Docs gain a "Heading font: Orbitron" setup section.
+
 ## [0.2.2] - 2026-11-06
 
 - Base image bump (#224): the pinned `python:3.13-slim` index digest moves to `sha256:09a17cad...` (apt and libapt-pkg7.0 3.0.4 on amd64 and arm64) to clear CVE-2026-109518, which the release image scan flagged as HIGH in the previous base's apt 3.0.3. No code change.
