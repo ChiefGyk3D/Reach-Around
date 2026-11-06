@@ -22,17 +22,24 @@ from pathlib import Path
 from reach_around.config.models import Link, Section, SiteConfig
 from reach_around.config.pathlimits import check_path_bytes
 from reach_around.site.assetcheck import check_content
-from reach_around.site.theme import IMAGE_EXTENSIONS, RESERVED_FOLDERS
+from reach_around.site.theme import (
+    IMAGE_EXTENSIONS,
+    LICENSE_EXTENSIONS,
+    RESERVED_FOLDERS,
+)
 
 MAX_ASSET_BYTES = 8 * 1024 * 1024
 # A link thumbnail is drawn at 44 px; the build does not resize, so it caps.
 MAX_THUMBNAIL_BYTES = 256 * 1024
+# A license text (the OFL is about 4 KiB) is plain text and never large.
+MAX_LICENSE_BYTES = 256 * 1024
 FONT_EXTENSIONS = (".woff2", ".woff", ".ttf", ".otf")
 
 _KINDS: dict[str, tuple[str, ...]] = {
     "image": IMAGE_EXTENSIONS,
     "thumbnail": IMAGE_EXTENSIONS,
     "font": FONT_EXTENSIONS,
+    "license": LICENSE_EXTENSIONS,
 }
 
 
@@ -62,6 +69,8 @@ def _slots(config: SiteConfig) -> Iterator[tuple[str, str, str]]:
     ):
         if font is not None and font.lower().endswith(FONT_EXTENSIONS):
             yield key, font, "font"
+    if theme.fonts.license is not None:
+        yield "theme.fonts.license", theme.fonts.license, "license"
     for t, tab in enumerate(config.tabs):
         for b, block in enumerate(tab.blocks):
             src = getattr(block, "src", None)
@@ -179,6 +188,20 @@ def _read(
             os.close(fd)
 
 
+def _check_license_text(key: str, rel: str, data: bytes) -> None:
+    """A license is non-empty UTF-8 text with no control characters but \\n \\r \\t."""
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise ValueError(f"{key}: {rel!r} is not UTF-8 text") from exc
+    if not text.strip():
+        raise ValueError(f"{key}: {rel!r} is empty")
+    if any(ch < " " and ch not in "\n\r\t" for ch in text):
+        raise ValueError(
+            f"{key}: {rel!r} is not plain text (it has control characters)"
+        )
+
+
 def collect_assets(config: SiteConfig, assets_dir: Path | None) -> dict[Path, bytes]:
     """Read every file the config names; the result maps output path to bytes."""
     slots = list(_slots(config))
@@ -203,7 +226,16 @@ def collect_assets(config: SiteConfig, assets_dir: Path | None) -> dict[Path, by
                 "at 44 px, so resize it (for example 128 px wide) and try again",
             )
         if Path(rel) not in files:
-            data = _read(assets_dir, rel)
-            check_content(key, rel, data)
+            if kind == "license":
+                data = _read(
+                    assets_dir,
+                    rel,
+                    MAX_LICENSE_BYTES,
+                    f"{key}: {rel!r} is larger than {MAX_LICENSE_BYTES // 1024} KiB",
+                )
+                _check_license_text(key, rel, data)
+            else:
+                data = _read(assets_dir, rel)
+                check_content(key, rel, data)
             files[Path(rel)] = data
     return files

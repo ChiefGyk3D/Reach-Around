@@ -118,6 +118,8 @@ _GENERIC_FONTS = frozenset(
 )
 _FONT_NAME = re.compile(r"^[A-Za-z][A-Za-z0-9 -]{0,39}$")
 _FONT_EXTENSIONS = (".woff2", ".woff", ".ttf", ".otf")
+FONT_FILE_EXTENSIONS = _FONT_EXTENSIONS
+LICENSE_EXTENSIONS = (".txt",)
 IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg", ".webp", ".avif", ".gif", ".svg")
 _ASSET_PATH = re.compile(
     r"^[A-Za-z0-9][A-Za-z0-9._-]*(?:/[A-Za-z0-9][A-Za-z0-9._-]*)*$"
@@ -213,6 +215,18 @@ def check_font(value: str) -> str:
         _check_asset_path(value, _FONT_EXTENSIONS, "font file")
     else:
         _split_font_stack(value)
+    return value
+
+
+def check_license_path(value: str) -> str:
+    """Return ``value`` if it is a relative ``.txt`` path inside the instance."""
+    check_css_value(value)
+    _check_asset_path(value, LICENSE_EXTENSIONS, "license text")
+    if value.split("/", 1)[0] in RESERVED_FOLDERS:
+        raise ValueError(
+            "must not be inside a folder the build writes itself "
+            f"({', '.join(sorted(RESERVED_FOLDERS))}), not {value[:40]!r}"
+        )
     return value
 
 

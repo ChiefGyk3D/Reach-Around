@@ -379,6 +379,7 @@ KNOWN_FIELDS: frozenset[str] = frozenset(
         "label",
         "layout",
         "lead_retention_days",
+        "license",
         "link",
         "links",
         "login",

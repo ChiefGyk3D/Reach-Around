@@ -658,6 +658,7 @@ tabs:
 | `colors` | map | empty | Keys: `bg`, `text`, `accent`, `on_accent` (text on the accent fill), `surface`, `border`, `muted` (secondary text; derived from `text` and `bg` when unset). Any other key is refused. |
 | `fonts.body` | string | Jost, shipped with the engine | A system font stack or a font file path. |
 | `fonts.heading` | string | same as body | Same rules as `fonts.body`. |
+| `fonts.license` | string | none | A relative path to a `.txt` license or notice (for example the font's `OFL.txt`) in the instance directory. It is published beside your site's files, so the license travels with the font. Needs a font file in `fonts.body` or `fonts.heading`. Must be non-empty UTF-8 text, at most 256 KiB. |
 | `background` | string | none | The full-bleed page background, drawn under the carbon-fiber texture. A relative image path (preferred) or an `https://` URL. |
 | `background_dim` | number 0 to 0.9 | `0` | A plain number (`0.6`, not `"0.6"` or `true`). Darkens the page background image with a black overlay, in CSS only. If your background image has a bright subject behind the header, raise this. The mascot is not affected. |
 | `mascot` | string | none | The giant faded image behind the column. A relative image path only. |
@@ -687,8 +688,8 @@ The `brand-dark` preset leaves `fonts.heading` commented out, because the engine
 does not ship Orbitron. To use it on your site:
 
 1. Download Orbitron from its upstream project
-   (https://github.com/theleagueof/orbitron) and keep its `OFL.txt` in your own
-   records.
+   (https://github.com/theleagueof/orbitron) and put its `OFL.txt` beside the font
+   (see the license note below).
 2. Put the font file in your instance folder, for example
    `fonts/orbitron.woff2` (`.woff`, `.ttf` and `.otf` also work). Use the file
    as it comes: do not subset, convert or rename the font itself.
@@ -698,6 +699,7 @@ does not ship Orbitron. To use it on your site:
    theme:
      fonts:
        heading: fonts/orbitron.woff2
+       license: fonts/OFL.txt
    ```
 
 4. Build. The file is copied to your site and served from your own domain; no
@@ -711,15 +713,12 @@ file to another format counts as a modification; take a ready-made `.woff2`
 from upstream or a repackaging that says it changes no glyphs). The engine does
 not bundle Orbitron.
 
-Limitation: the OFL asks that the license text and copyright line travel with
-redistributed copies, and the engine has no way to publish them. The build
-copies only the files your config names, and only images and fonts (see
-[File names and the assets inventory](#file-names-and-the-assets-inventory)), so
-`OFL.txt` placed beside the font is not copied to the deployed site, and
-comments in `custom.css` are stripped before it is written. Until the engine
-gains a way to publish a license file, add the notice to the deployed site
-yourself, outside the build, and check that it meets the license for your use.
-This gap is tracked in a follow-up issue.
+The OFL asks that the license text and copyright line travel with redistributed
+copies. Keep the font's `OFL.txt` in your instance folder (for example
+`fonts/OFL.txt`) and name it with `theme.fonts.license`, as in step 3.
+The build publishes the file under a content-hashed name at the same relative path it has in
+your instance folder (see [File names and the assets inventory](#file-names-and-the-assets-inventory)).
+Check that the license and copyright line meet the terms for your use.
 
 ### What is refused
 

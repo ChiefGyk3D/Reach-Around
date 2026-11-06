@@ -11,17 +11,19 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from reach_around.site.theme import (
     COLOR_KEYS,
     DEFAULT_COLUMN_WIDTH,
+    FONT_FILE_EXTENSIONS,
     MAX_BACKGROUND_DIM,
     check_background,
     check_color,
     check_font,
     check_image_path,
     check_length,
+    check_license_path,
 )
 
 
@@ -34,11 +36,31 @@ class FontStack(_Model):
 
     body: str | None = None
     heading: str | None = None
+    # A license or notice text published beside the font files (for example
+    # the OFL.txt that ships with the font).
+    license: str | None = None
 
     @field_validator("body", "heading")
     @classmethod
     def _font_is_local(cls, value: str | None) -> str | None:
         return None if value is None else check_font(value)
+
+    @field_validator("license")
+    @classmethod
+    def _license_is_local(cls, value: str | None) -> str | None:
+        return None if value is None else check_license_path(value)
+
+    @model_validator(mode="after")
+    def _license_needs_a_font_file(self) -> FontStack:
+        if self.license is not None and not any(
+            font is not None and font.lower().endswith(FONT_FILE_EXTENSIONS)
+            for font in (self.body, self.heading)
+        ):
+            raise ValueError(
+                "fonts.license needs a custom font file in fonts.body or "
+                "fonts.heading to travel with"
+            )
+        return self
 
 
 class Theme(_Model):
