@@ -383,7 +383,7 @@ def test_a_link_to_an_omitted_tab_lands_on_the_page_not_a_missing_id(
 
 
 def rule_bodies(css: str, selector: str) -> str:
-    """The declarations of every rule whose selector list contains ``selector`` exactly."""
+    """Declarations of every rule whose selector list holds ``selector`` exactly."""
     out = []
     css = re.sub(r"/\*.*?\*/", "", css, flags=re.DOTALL)
     for match in re.finditer(r"([^{}]+)\{([^{}]*)\}", css):
