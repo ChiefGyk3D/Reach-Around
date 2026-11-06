@@ -345,7 +345,7 @@ describe("rollup lease", () => {
     const runA = rollupClosedDays(envOf({ DB: a.db }), NOW);
     await a.hit;
     // The lease is still valid and still mine, but the day's state is no longer "fresh".
-    await DB.prepare("INSERT INTO view_rollup_log VALUES ('2027-03-13', 'UTC', 150, 150, 0, 1, 1, 1, 0, 99999, 0)").run();
+    await DB.prepare("INSERT INTO view_rollup_log VALUES ('links', '2027-03-13', 'UTC', 150, 150, 0, 1, 1, 1, 0, 99999, 0)").run();
     a.release();
     await expect(runA).resolves.toBeDefined(); // gives up quietly, no database error
     expect(await q("SELECT * FROM view_daily")).toEqual([]);
@@ -385,7 +385,7 @@ describe("rollup lease", () => {
     const runA = rollupClosedDays(envOf({ DB: a.db }), NOW);
     await a.hit;
     expect((await meta()).rollup_lease).toBeDefined(); // held while the write is pending
-    await DB.prepare("INSERT INTO view_rollup_log VALUES ('2027-03-13', 'UTC', 150, 150, 0, 1, 1, 1, 0, 99999, 0)").run();
+    await DB.prepare("INSERT INTO view_rollup_log VALUES ('links', '2027-03-13', 'UTC', 150, 150, 0, 1, 1, 1, 0, 99999, 0)").run();
     a.release();
     await runA;
     expect((await meta()).rollup_lease).toBeUndefined(); // released on the lost-guard path

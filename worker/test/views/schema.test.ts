@@ -8,18 +8,21 @@ const DB = testEnv.DB;
 const EXPECTED_COLUMNS: Record<string, string[]> = {
   view_events: [
     "id", "ts", "page", "src_kind", "src", "country", "region", "city", "browser", "bmajor",
-    "os", "device", "lang", "vp", "net", "bot_class", "reason", "first",
+    "os", "device", "lang", "vp", "net", "bot_class", "reason", "first", "site",
   ],
   visitor_seen: ["day", "h"],
   view_meta: ["key", "value"],
   view_daily: [
+    "site",
     "day", "day_tz", "page", "src_kind", "src", "country", "bot_class", "views", "uniques",
   ],
-  view_dim_daily: ["day", "day_tz", "dim", "value", "bot_class", "views", "uniques"],
+  view_dim_daily: ["site", "day", "day_tz", "dim", "value", "bot_class", "views", "uniques"],
   view_geo_daily: [
+    "site",
     "day", "day_tz", "country", "region", "city", "bot_class", "views", "uniques",
   ],
   view_rollup_log: [
+    "site",
     "day", "day_tz", "raw_views", "views", "uniques", "rows_core", "rows_dim", "rows_geo",
     "rolled_at", "max_id", "rerolls",
   ],
@@ -111,18 +114,63 @@ describe("page view schema", () => {
   it("aggregate_views_must_be_positive", async () => {
     await expect(
       DB.prepare(
-        "INSERT INTO view_daily (day, day_tz, page, src_kind, src, country, bot_class, views, uniques) VALUES ('2027-01-01','America/New_York','home','d','','US','h',0,0)",
+        "INSERT INTO view_daily (site, day, day_tz, page, src_kind, src, country, bot_class, views, uniques) VALUES ('links','2027-01-01','America/New_York','home','d','','US','h',0,0)",
       ).run(),
     ).rejects.toThrow();
     await expect(
       DB.prepare(
-        "INSERT INTO view_dim_daily (day, day_tz, dim, value, bot_class, views, uniques) VALUES ('2027-01-01','America/New_York','color','x','h',1,0)",
+        "INSERT INTO view_dim_daily (site, day, day_tz, dim, value, bot_class, views, uniques) VALUES ('links','2027-01-01','America/New_York','color','x','h',1,0)",
       ).run(),
     ).rejects.toThrow();
   });
 
+  it("site_is_the_first_primary_key_column_of_every_aggregate_and_the_log", async () => {
+    for (const t of ["view_daily", "view_dim_daily", "view_geo_daily", "view_rollup_log"]) {
+      const pk = (
+        await DB.prepare(`SELECT name FROM pragma_table_info('${t}') WHERE pk > 0 ORDER BY pk`).all<{ name: string }>()
+      ).results.map((c) => c.name);
+      expect(pk[0], t).toBe("site");
+    }
+  });
+
+  it("site_must_be_a_short_slug_in_every_table", async () => {
+    const bad = ["", "A", "a b", "../x", "a/b", "-a", "a".repeat(21), "aé", "a\nb"];
+    for (const site of bad) {
+      await expect(
+        DB.prepare("INSERT INTO view_events (ts, page, src_kind, bot_class, reason, site) VALUES (0, 'home', 'd', 'h', 'none', ?)")
+          .bind(site)
+          .run(),
+        JSON.stringify(site),
+      ).rejects.toThrow();
+      await expect(
+        DB.prepare("INSERT INTO view_rollup_log VALUES (?, '2027-01-01', 'UTC', 1, 1, 0, 1, 1, 1, 0, 0, 0)").bind(site).run(),
+        JSON.stringify(site),
+      ).rejects.toThrow();
+      await expect(
+        DB.prepare("INSERT INTO click_events (ts, link_id, country, site) VALUES (0, 'x', NULL, ?)").bind(site).run(),
+        JSON.stringify(site),
+      ).rejects.toThrow();
+    }
+    await expect(
+      DB.prepare("INSERT INTO view_events (ts, page, src_kind, bot_class, reason, site) VALUES (0, 'home', 'd', 'h', 'none', 'blog-2')").run(),
+    ).resolves.toBeTruthy();
+    await DB.prepare("DELETE FROM view_events").run();
+  });
+
+  it("site_passes_the_denylist_but_an_ip_column_still_trips_it", async () => {
+    const cols = await allColumns();
+    expect(cols.some((c) => c.column === "site")).toBe(true);
+    expect(flagForbidden(cols)).toEqual([]);
+    await DB.exec("ALTER TABLE view_events ADD COLUMN ip TEXT");
+    try {
+      expect(flagForbidden(await allColumns()).map((c) => `${c.table}.${c.column}`)).toContain("view_events.ip");
+    } finally {
+      await DB.exec("ALTER TABLE view_events DROP COLUMN ip");
+    }
+  });
+
   it("existing_click_events_unchanged", async () => {
-    expect(await columnsOf("click_events")).toEqual(["id", "ts", "link_id", "country"]);
+    expect(await columnsOf("click_events")).toEqual(["id", "ts", "link_id", "country", "site"]);
   });
 
   it("view_events_defaults_are_closed_values", async () => {

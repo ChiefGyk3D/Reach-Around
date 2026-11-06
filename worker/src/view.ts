@@ -61,22 +61,37 @@
 //   GEO_LEVEL city, BOTS_MODE count, network class "unknown" for now.
 
 import { BOT_REASONS, classifyBot, uaSignals, type BotClass } from "./botclass";
-import { MAX_PATH_LENGTH, MAX_URL_LENGTH, originMatches } from "./click";
+import { MAX_PATH_LENGTH, MAX_URL_LENGTH } from "./click";
 import type { RateLimiter } from "./click";
 import { classifyUserAgent, primaryLanguage } from "./ua";
 import { normalizeAddress } from "./address";
 import { limiterKey, secretBytes } from "./ratekey";
 import { padHour } from "./viewretention";
+import { killedSites, loadSites, siteForRequest } from "./sites";
 
 export { normalizeAddress } from "./address";
 
 export interface ViewEnv {
   DB: D1Database;
-  SITE_HOST: string;
-  /** JSON array of page (tab) ids from the build manifest. */
+  /**
+   * The sites this collector serves (docs/analytics-design.md section 4): a
+   * JSON object of site id to its settings. When unset, the one-site shorthand
+   * below describes the site `links`.
+   */
+  SITES?: string;
+  /** Shorthand for one site `links`: its host. */
+  SITE_HOST?: string;
+  /** Shorthand for one site `links`: JSON array of page (tab) ids from the build manifest. */
   PAGE_IDS?: string;
+  /** Shorthand for one site `links`: JSON array of link ids (read by the click route). */
+  LINK_IDS?: string;
   /** "1" or "true" (any case) turns the route off, read per request. */
   VIEWS_KILL?: string;
+  /** Comma list of site ids whose page-view route is off, read per request. */
+  VIEWS_KILL_SITES?: string;
+  /** Account-wide hourly ceilings above the per-site budgets (defaults 480 human, 120 bot). */
+  ACCOUNT_VIEWS_PER_HOUR?: string;
+  ACCOUNT_BOT_VIEWS_PER_HOUR?: string;
   VIEW_LIMITER?: RateLimiter;
   /** Optional second limiter that only feeds the `rate` bot signal. */
   VIEW_SUSPECT_LIMITER?: RateLimiter;
@@ -102,6 +117,9 @@ const MAX_CITY_LENGTH = 60;
 const MAX_CITY_INPUT = 200;
 const DEFAULT_HUMAN_PER_HOUR = 120;
 const DEFAULT_BOT_PER_HOUR = 30;
+/** The shared ceiling above the per-site budgets: the account's request quota is one resource (T-07). */
+const DEFAULT_ACCOUNT_HUMAN_PER_HOUR = 480;
+const DEFAULT_ACCOUNT_BOT_PER_HOUR = 120;
 /**
  * One client may spend at most this many accepted views an hour, so a single
  * address cannot drain the global budget. The client is identified only by a
@@ -116,7 +134,6 @@ const MAX_HASH_BITS = 128;
 /** The body must arrive within this long or the request is dropped (same 204). */
 export const BODY_DEADLINE_MS = 2000;
 const HOUR_MS = 3_600_000;
-const MINUTE_MS = 60_000;
 
 const ROUTE = /^\/e\/v\/([a-z0-9][a-z0-9-]{0,39})$/;
 const UTM = /^[a-z0-9-]{1,30}$/;
@@ -156,16 +173,6 @@ function noContent(): Response {
 
 export function flagOn(v: string | undefined): boolean {
   return typeof v === "string" && (v.toLowerCase() === "1" || v.toLowerCase() === "true");
-}
-
-function idSet(raw: string | undefined): Set<string> {
-  try {
-    const parsed: unknown = JSON.parse(raw ?? "");
-    if (!Array.isArray(parsed)) return new Set();
-    return new Set(parsed.filter((v): v is string => typeof v === "string" && v !== ""));
-  } catch {
-    return new Set();
-  }
 }
 
 function oneOf(v: string, allowed: readonly string[], fallback: string): string {
@@ -217,7 +224,8 @@ export function parseUtm(raw: string): string | null {
  * unknown keys are ignored. A key that is present but invalid drops the whole
  * beacon (null). `u` wins over `r`; a host equal to the site's own is kind "i".
  */
-export function parseBeacon(text: string, siteHost: string): Beacon | null {
+export function parseBeacon(text: string, siteHosts: string | readonly string[]): Beacon | null {
+  const own = (typeof siteHosts === "string" ? [siteHosts] : siteHosts).map((h) => h.toLowerCase());
   if (text.length > MAX_BODY) return null;
   let params: URLSearchParams;
   try {
@@ -248,7 +256,7 @@ export function parseBeacon(text: string, siteHost: string): Beacon | null {
 
   if (utm !== null) return { kind: "u", src: utm, vp };
   if (host !== null) {
-    if (host === siteHost.toLowerCase()) return { kind: "i", src: "", vp };
+    if (own.includes(host)) return { kind: "i", src: "", vp };
     return { kind: "r", src: host, vp };
   }
   return { kind: "d", src: "", vp };
@@ -297,11 +305,19 @@ function utcDate(ms: number): string {
   return new Date(ms).toISOString().slice(0, 10);
 }
 
-let keyCache: { secret: string; date: string; key: CryptoKey } | null = null;
+let keyCache: { secret: string; keys: Map<string, CryptoKey> } | null = null;
 
-/** HMAC key for one UTC day: HMAC(secret, "RA-UV1|" + date), cached per date. */
-export async function dayKey(secret: Uint8Array, secretText: string, date: string): Promise<CryptoKey> {
-  if (keyCache && keyCache.secret === secretText && keyCache.date === date) return keyCache.key;
+/**
+ * HMAC key for one UTC day AND one site: HMAC(secret, "RA-UV2|" + date + "|" +
+ * site). The site is inside the derivation, so the same visitor has unrelated
+ * codes on two sites and there is no cross-site unique count (decision D-A4,
+ * threat A7). Cached per (date, site) for the current secret.
+ */
+export async function dayKey(secret: Uint8Array, secretText: string, date: string, site: string): Promise<CryptoKey> {
+  if (!keyCache || keyCache.secret !== secretText || keyCache.keys.size >= 32) keyCache = { secret: secretText, keys: new Map() };
+  const id = `${date}|${site}`;
+  const hit = keyCache.keys.get(id);
+  if (hit) return hit;
   const enc = new TextEncoder();
   const root = await crypto.subtle.importKey(
     "raw",
@@ -310,7 +326,7 @@ export async function dayKey(secret: Uint8Array, secretText: string, date: strin
     false,
     ["sign"],
   );
-  const derived = await crypto.subtle.sign("HMAC", root, enc.encode(`RA-UV1|${date}`));
+  const derived = await crypto.subtle.sign("HMAC", root, enc.encode(`RA-UV2|${id}`));
   const key = await crypto.subtle.importKey(
     "raw",
     derived,
@@ -318,7 +334,7 @@ export async function dayKey(secret: Uint8Array, secretText: string, date: strin
     false,
     ["sign"],
   );
-  keyCache = { secret: secretText, date, key };
+  keyCache.keys.set(id, key);
   return key;
 }
 
@@ -341,8 +357,14 @@ export interface Identity {
   lim: string;
   /** Key for VIEW_SUSPECT_LIMITER (purpose "sus"). */
   sus: string;
-  /** Per-address cap key (purpose "cap", 64-bit hex), shared by bots and humans. */
+  /** Per-address cap key (purpose "cap", 64-bit hex), shared by bots and humans; scoped to the site. */
   cap: string;
+  /**
+   * The same cap key across ALL sites (hourly counter only, expires within two
+   * hours, never stored beside an event), so a client cannot get a fresh cap on
+   * each site. Derived under a key no site id can equal.
+   */
+  capAll: string;
   /** Daily unique-visitor hash, or null when uniques are off. */
   uv: string | null;
 }
@@ -364,21 +386,24 @@ export async function identityFor(
   request: Request,
   env: ViewEnv,
   now: number,
+  site: string,
 ): Promise<Identity | null> {
   const secret = secretBytes(env.VIEW_HASH_SECRET);
   if (secret === null || typeof env.VIEW_HASH_SECRET !== "string") return null;
   const addr = normalizeAddress(request.headers.get("CF-Connecting-IP")); // CONTROL:pv-no-raw
   if (addr === null) return null;
-  const key = await dayKey(secret, env.VIEW_HASH_SECRET, utcDate(now)); // CONTROL:pv-uv-key
+  const key = await dayKey(secret, env.VIEW_HASH_SECRET, utcDate(now), site); // CONTROL:pv-uv-key
   const flag = env.UV_ENABLED;
   const uvOn = !(typeof flag === "string" && !flagOn(flag));
-  const [lim, sus, cap, uv] = await Promise.all([
+  const allKey = await dayKey(secret, env.VIEW_HASH_SECRET, utcDate(now), "*"); // "*" is not a valid site id
+  const [lim, sus, cap, capAll, uv] = await Promise.all([
     limiterKey(secret, env.VIEW_HASH_SECRET, "lim", addr), // CONTROL:pv-limiter-key
     limiterKey(secret, env.VIEW_HASH_SECRET, "sus", addr),
     visitorHash(key, `cap|${addr}`, CAP_HASH_BITS),
+    visitorHash(allKey, `cap|${addr}`, CAP_HASH_BITS),
     uvOn ? visitorHash(key, addr, uvBits(env.UV_BITS)) : Promise.resolve(null),
   ]);
-  return { lim, sus, cap, uv };
+  return { lim, sus, cap, capAll, uv };
 }
 
 // ----------------------------------------------------------------- derive
@@ -490,12 +515,14 @@ export function clientLimit(env: ViewEnv, bot: boolean): number {
   return Math.max(1, Math.min(configured, share)); // CONTROL:pv-client-clamp
 }
 
-/** Global-budget test, true while the counter under ?2 is below ?3. */
-const GLOBAL_OK = "COALESCE((SELECT CAST(value AS INTEGER) FROM view_meta WHERE key = ?2), 0) < ?3";
+/** Budget test, true while the counter under the key bound at ?k is below the limit bound at ?l. */
+const budgetOk = (k: number, l: number) =>
+  `COALESCE((SELECT CAST(value AS INTEGER) FROM view_meta WHERE key = ?${k}), 0) < ?${l}`;
 const BUMP = "value = CAST(CAST(value AS INTEGER) + 1 AS TEXT)";
 
 interface AcceptRow {
   ts: number;
+  site: string;
   page: string;
   kind: SrcKind;
   src: string;
@@ -506,13 +533,15 @@ interface AcceptRow {
 
 /**
  * Accept a view in ONE atomic batch. Statement 1 raises the client counter
- * only if the client is under its cap AND the global budget has room;
- * statement 2 raises the global counter only if statement 1 changed a row;
- * statement 3 inserts the event only if statement 2 did (`first` is computed
- * inside it, before the visitor row exists); statement 4 inserts the visitor
- * row only if statement 3 did. When anything is spent every statement changes
+ * (per site) only if the client is under its cap AND the site budget AND the
+ * account-wide ceiling have room; statement 2 raises the site counter and
+ * statement 3 the account counter, each only if the one before changed a row;
+ * statement 4 the account-wide per-client counter, statement 5 inserts the event only if statement 4 did (`first` is computed
+ * inside it, before the visitor row exists); statement 6 inserts the visitor
+ * row only if statement 5 did. When anything is spent every statement changes
  * zero rows and nothing is written; if a statement throws, the batch rolls
- * back.
+ * back. Budgets are keyed by site, so one site's flood cannot spend another
+ * site's allowance (threat A4); the account ceiling stays above them.
  */
 async function accept(
   env: ViewEnv,
@@ -520,30 +549,46 @@ async function accept(
   row: AcceptRow,
   bot: boolean,
   globalLimit: number,
+  accountLimit: number,
   now: number,
 ): Promise<void> {
   const clientCap = clientLimit(env, bot);
-  if (globalLimit <= 0 || clientCap <= 0) return;
+  if (globalLimit <= 0 || accountLimit <= 0 || clientCap <= 0) return;
   const hour = padHour(Math.floor(now / HOUR_MS));
-  const capKey = `cap:${hour}:${id.cap}`;
-  const budKey = `bud:${hour}:${bot ? "pvbot" : "pv"}`;
+  const cls = bot ? "pvbot" : "pv";
+  const capKey = `cap:${hour}:${row.site}:${id.cap}`;
+  const budKey = `bud:${hour}:${row.site}:${cls}`;
+  // "_all" is not a valid site id, so no site's keys can collide with the account-wide ones.
+  const allKey = `bud:${hour}:_all:${cls}`;
+  const allCapKey = `cap:${hour}:_all:${id.capAll}`;
+  // One client across every site gets at most this many views, a share of the account ceiling.
+  const allClientCap = Math.max(1, Math.min(clientCap, Math.floor(accountLimit / 2)));
   const day = utcDate(now);
   const uvh = bot ? null : id.uv;
+  const both = `${budgetOk(2, 3)} AND ${budgetOk(5, 6)} AND ${budgetOk(7, 8)}`;
   const stmts = [
     env.DB.prepare(
-      `INSERT INTO view_meta (key, value) SELECT ?1, '1' WHERE ${GLOBAL_OK} ` +
-        `ON CONFLICT(key) DO UPDATE SET ${BUMP} WHERE CAST(value AS INTEGER) < ?4 AND ${GLOBAL_OK}`,
-    ).bind(capKey, budKey, globalLimit, clientCap), // CONTROL:pv-client-cap
+      `INSERT INTO view_meta (key, value) SELECT ?1, '1' WHERE ${both} ` +
+        `ON CONFLICT(key) DO UPDATE SET ${BUMP} WHERE CAST(value AS INTEGER) < ?4 AND ${both}`,
+    ).bind(capKey, budKey, globalLimit, clientCap, allKey, accountLimit, allCapKey, allClientCap), // CONTROL:pv-client-cap
     env.DB.prepare(
       `INSERT INTO view_meta (key, value) SELECT ?1, '1' WHERE changes() = 1 ` +
         `ON CONFLICT(key) DO UPDATE SET ${BUMP} WHERE changes() = 1`,
     ).bind(budKey), // CONTROL:pv-budget
     env.DB.prepare(
+      `INSERT INTO view_meta (key, value) SELECT ?1, '1' WHERE changes() = 1 ` +
+        `ON CONFLICT(key) DO UPDATE SET ${BUMP} WHERE changes() = 1`,
+    ).bind(allKey), // CONTROL:pv-account-budget
+    env.DB.prepare(
+      `INSERT INTO view_meta (key, value) SELECT ?1, '1' WHERE changes() = 1 ` +
+        `ON CONFLICT(key) DO UPDATE SET ${BUMP} WHERE changes() = 1`,
+    ).bind(allCapKey), // CONTROL:pv-account-client-cap
+    env.DB.prepare(
       "INSERT INTO view_events (ts, page, src_kind, src, country, region, city, browser, bmajor, " +
-        "os, device, lang, vp, net, bot_class, reason, first) " +
+        "os, device, lang, vp, net, bot_class, reason, first, site) " +
         "SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, " +
         "CASE WHEN ?18 IS NOT NULL AND NOT EXISTS (SELECT 1 FROM visitor_seen WHERE day = ?17 AND h = ?18) " +
-        "THEN 1 ELSE 0 END WHERE changes() = 1",
+        "THEN 1 ELSE 0 END, ?19 WHERE changes() = 1",
     ).bind(
       row.ts,
       row.page,
@@ -558,11 +603,12 @@ async function accept(
       row.d.device,
       row.d.lang,
       row.vp,
-      "unknown", // network class: the dataset task fills this in later
+      "unknown", // network class: never kept in a raw row (D-A7); the dataset task classifies and drops it
       row.d.cls,
       row.d.reason,
       day,
       uvh,
+      row.site,
     ),
   ];
   if (uvh !== null) {
@@ -578,8 +624,8 @@ async function accept(
 /**
  * Handle `POST /e/v/:pageId`. Check order, cheapest first, nothing writes
  * before the budget step:
- *   kill switch, method, URL/path/id caps, id allowlist, Sec-GPC / DNT,
- *   Origin (or Ping-From) with the 256 header cap, Content-Length, rate
+ *   kill switch, method, URL/path/id caps, Sec-GPC / DNT, site from Origin
+ *   (or Ping-From, 256 header cap), per-site kill, that site's page allowlist, Content-Length, rate
  *   limit, bounded body read and parse, derive, classify, bots mode,
  *   budget, visitor_seen, view_events.
  * Always returns an empty 204.
@@ -601,12 +647,19 @@ export async function handleView(
     const m = ROUTE.exec(pathname);
     if (!m) return noContent();
     const page = m[1] as string;
-    if (page.length > MAX_ID_LENGTH || !idSet(env.PAGE_IDS).has(page)) return noContent();
+    if (page.length > MAX_ID_LENGTH) return noContent();
 
     if (request.headers.get("Sec-GPC")?.trim() === "1") return noContent(); // CONTROL:pv-gpc
     if (request.headers.get("DNT")?.trim() === "1") return noContent(); // CONTROL:pv-gpc
 
-    if (!env.SITE_HOST || !originMatches(request, env.SITE_HOST)) return noContent(); // CONTROL:pv-origin
+    // The site comes from the matched Origin / Ping-From host, never from the
+    // body, path or any other claim of the client. Only beacon-mode sites
+    // collect here; an unknown host, an edge-mode site or a page that is not on
+    // THAT site's list records nothing.
+    const site = siteForRequest(loadSites(env).sites, request); // CONTROL:pv-origin
+    if (site === null || site.mode !== "beacon") return noContent();
+    if (killedSites(env.VIEWS_KILL_SITES).has(site.id)) return noContent(); // CONTROL:pv-kill-site
+    if (site.pages === "html-200" || !site.pages.has(page)) return noContent();
 
     const declared = request.headers.get("Content-Length");
     if (declared === null || !/^\d{1,10}$/.test(declared) || Number(declared) > MAX_BODY) {
@@ -616,7 +669,7 @@ export async function handleView(
 
     // No keyed identity (no secret, bad secret, unparsable address): fail
     // closed, before the limiter, the body and the database.
-    const id = await identityFor(request, env, now);
+    const id = await identityFor(request, env, now, site.id);
     if (id === null) return noContent();
 
     if (!env.VIEW_LIMITER) return noContent();
@@ -625,10 +678,10 @@ export async function handleView(
     bodyTouched = true;
     const text = await readBounded(request.body, MAX_BODY, bodyDeadlineMs);
     if (text === null) return noContent();
-    const beacon = parseBeacon(text, env.SITE_HOST);
+    const beacon = parseBeacon(text, site.hosts);
     if (beacon === null) return noContent();
 
-    const level = oneOf(env.GEO_LEVEL ?? "", ["country", "region", "city"], "city") as GeoLevel;
+    const level = oneOf(site.geo ?? env.GEO_LEVEL ?? "", ["country", "region", "city"], "city") as GeoLevel;
     const geo = geoOf(request, level);
     const d = await derive(request, env, id.sus);
 
@@ -638,11 +691,18 @@ export async function handleView(
     const globalLimit = bot
       ? positiveInt(env.BOT_VIEWS_PER_HOUR, DEFAULT_BOT_PER_HOUR, 100000)
       : positiveInt(env.VIEWS_PER_HOUR, DEFAULT_HUMAN_PER_HOUR, 100000);
+    const accountLimit = bot
+      ? positiveInt(env.ACCOUNT_BOT_VIEWS_PER_HOUR, DEFAULT_ACCOUNT_BOT_PER_HOUR, 100000)
+      : positiveInt(env.ACCOUNT_VIEWS_PER_HOUR, DEFAULT_ACCOUNT_HUMAN_PER_HOUR, 100000);
     await accept(
       env,
       id,
       {
-        ts: Math.floor(now / MINUTE_MS) * MINUTE_MS,
+        // D-A1: the hour, not the minute. The dashboard needs a day; an hour is
+        // enough for time of day and no longer lets a rare city plus a known
+        // minute single out one visit.
+        ts: Math.floor(now / HOUR_MS) * HOUR_MS,
+        site: site.id,
         page,
         kind: beacon.kind,
         src: beacon.src,
@@ -652,6 +712,7 @@ export async function handleView(
       },
       bot,
       globalLimit,
+      accountLimit,
       now,
     );
   } catch {

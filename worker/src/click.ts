@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 import { normalizeAddress } from "./address";
 import { limiterKeyOrIsolate } from "./ratekey";
+import { killedSites, loadSites, siteForRequest } from "./sites";
 
 /** Workers Rate Limiting binding (the subset we use). */
 export interface RateLimiter {
@@ -9,10 +10,19 @@ export interface RateLimiter {
 
 export interface Env {
   DB: D1Database;
-  /** Host of the static site; the only origin whose clicks are counted. */
-  SITE_HOST: string;
-  /** JSON array of link ids from the build manifest. */
-  LINK_IDS: string;
+  /**
+   * The sites this collector serves (docs/analytics-design.md section 4). When
+   * unset, SITE_HOST and LINK_IDS describe the one site `links`.
+   */
+  SITES?: string;
+  /** Shorthand for one site `links`: its host, the only origin whose clicks are counted. */
+  SITE_HOST?: string;
+  /** Shorthand for one site `links`: JSON array of link ids from the build manifest. */
+  LINK_IDS?: string;
+  /** Shorthand for one site `links`: JSON array of tab ids (read by the view route). */
+  PAGE_IDS?: string;
+  /** Comma list of site ids whose click route is off, read per request. */
+  CLICKS_KILL_SITES?: string;
   CLICK_LIMITER: RateLimiter;
   /**
    * Optional. When set, the limiter key is a stable keyed hash of the client
@@ -110,16 +120,6 @@ async function discard(body: ReadableStream<Uint8Array> | null): Promise<void> {
   }
 }
 
-function allowedIds(raw: string): Set<string> {
-  try {
-    const parsed: unknown = JSON.parse(raw);
-    if (!Array.isArray(parsed)) return new Set();
-    return new Set(parsed.filter((v): v is string => typeof v === "string" && v !== ""));
-  } catch {
-    return new Set();
-  }
-}
-
 function linkIdFromPath(pathname: string): string | null {
   const m = ROUTE.exec(pathname);
   if (!m) return null;
@@ -131,36 +131,15 @@ function linkIdFromPath(pathname: string): string | null {
   }
 }
 
-function hostOf(value: string | null): string | null {
-  if (!value) return null;
-  try {
-    return new URL(value).host.toLowerCase();
-  } catch {
-    return null;
-  }
-}
-
-export function originMatches(request: Request, siteHost: string): boolean {
-  // Length guard first: an oversize header is never handed to the URL parser.
-  for (const name of ["Ping-From", "Origin"]) {
-    const v = request.headers.get(name);
-    if (v !== null && v.length > MAX_ORIGIN_HEADER) return false; // CONTROL:header-cap
-  }
-  const from = hostOf(request.headers.get("Ping-From"));
-  const origin = hostOf(request.headers.get("Origin"));
-  const want = siteHost.toLowerCase();
-  return from === want || origin === want;
-}
-
 function countryOf(request: Request): string | null {
   const c = request.headers.get("CF-IPCountry");
   return c !== null && COUNTRY.test(c) && c !== "XX" ? c : null;
 }
 
 /**
- * Handle `POST /e/c/:linkId`. Check order: kill switch, method, URL/path/id length caps, id allowlist,
- * body (never read),
- * user agent, origin, rate limit, insert. Always returns an empty 204.
+ * Handle `POST /e/c/:linkId`. Check order: kill switch, method, URL/path/id length caps, site (from
+ * Origin / Ping-From), per-site kill switch, that site's id allowlist, body (never read),
+ * user agent, rate limit, insert. Always returns an empty 204.
  * No IP address is stored; the client address is used only as a rate-limit
  * key and is never written anywhere.
  */
@@ -177,8 +156,14 @@ export async function handleClick(request: Request, env: Env): Promise<Response>
     const linkId = linkIdFromPath(pathname);
     if (linkId === null || linkId.length > MAX_ID_LENGTH) return noContent();
 
-    // 2. Id allowlist (a Set of exact strings: no prototype lookups).
-    if (!allowedIds(env.LINK_IDS).has(linkId)) return noContent();
+    // 2. The site is the one whose host matches Ping-From or Origin (never a
+    // client claim; a noise filter only, threat A1), then the id must be on
+    // THAT site's list (a Map of exact strings: no prototype lookups). An id
+    // listed for another site records nothing.
+    const site = siteForRequest(loadSites(env).sites, request); // CONTROL:click-site
+    if (site === null) return noContent();
+    if (killedSites(env.CLICKS_KILL_SITES).has(site.id)) return noContent(); // CONTROL:click-kill-site
+    if (!site.linkIds.has(linkId)) return noContent();
 
     // 2b. Body: never read; ignored when it cannot be shown small.
     if (!(await bodyAcceptable(request))) return noContent();
@@ -186,9 +171,6 @@ export async function handleClick(request: Request, env: Env): Promise<Response>
     // 3. User agent: missing, empty or bot-like records nothing.
     const ua = request.headers.get("User-Agent");
     if (!ua || ua.length > MAX_UA_LENGTH || BOT_UA.test(ua)) return noContent();
-
-    // 4. Origin: Ping-From or Origin must be the configured site host.
-    if (!env.SITE_HOST || !originMatches(request, env.SITE_HOST)) return noContent();
 
     // 5. Rate limit per client. The key is a keyed hash, never the address,
     // and is never stored.
@@ -203,8 +185,8 @@ export async function handleClick(request: Request, env: Env): Promise<Response>
     if (!success) return noContent();
 
     // 6. Insert: timestamp, link id and optional country only.
-    await env.DB.prepare("INSERT INTO click_events (ts, link_id, country) VALUES (?, ?, ?)")
-      .bind(Date.now(), linkId, countryOf(request))
+    await env.DB.prepare("INSERT INTO click_events (ts, link_id, country, site) VALUES (?, ?, ?, ?)")
+      .bind(Date.now(), linkId, countryOf(request), site.id)
       .run();
   } catch {
     // A failure must look the same as success from the outside.

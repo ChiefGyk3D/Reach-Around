@@ -309,7 +309,9 @@ describe("bots and budgets", () => {
       expect(r[0]?.reason).toBe(reason);
       expect(r[0]?.first).toBe(0);
       expect(await seen()).toEqual([]);
-      expect((await budgets()).filter((b) => b.key.startsWith("bud:")).map((b) => b.key.split(":")[2])).toEqual(["pvbot"]);
+      expect(
+        (await budgets()).filter((b) => b.key.startsWith("bud:") && !b.key.includes(":_all:")).map((b) => b.key.split(":")[3]),
+      ).toEqual(["pvbot"]);
     }
   });
 
@@ -367,10 +369,10 @@ describe("per-client cap", () => {
 
   it("the_stored_key_is_not_the_visitor_hash_nor_the_address", async () => {
     await handleView(beacon(), makeEnv(), NOW);
-    const key = (await budgets()).find((b) => b.key.startsWith("cap:"))?.key ?? "";
-    expect(key).toMatch(/^cap:\d{8}:[0-9a-f]{16}$/);
+    const key = (await budgets()).find((b) => b.key.startsWith("cap:") && !b.key.includes(":_all:"))?.key ?? "";
+    expect(key).toMatch(/^cap:\d{8}:links:[0-9a-f]{16}$/);
     expect(key).not.toContain(IP4);
-    expect(key.split(":")[2]).not.toBe((await seen())[0]?.h?.slice(0, 16));
+    expect(key.split(":")[3]).not.toBe((await seen())[0]?.h?.slice(0, 16));
   });
 
   it("bots_are_capped_per_client_too", async () => {
@@ -387,7 +389,7 @@ describe("per-client cap", () => {
     await handleView(beacon(), env, NOW); // the fourth view of any kind is over the shared cap
     await handleView(beacon({ headers: { "User-Agent": "curl/8.5.0" } }), env, NOW);
     expect((await rows()).length).toBe(3);
-    expect((await budgets()).filter((b) => b.key.startsWith("cap:")).length).toBe(1);
+    expect((await budgets()).filter((b) => b.key.startsWith("cap:")).length).toBe(2); // the site key and the account-wide one
   });
 
   it("client_cap_is_clamped_below_the_class_budget", () => {
@@ -419,7 +421,7 @@ describe("atomic accept", () => {
     await handleView(beacon({ headers: client(2) }), env, NOW);
     expect((await rows()).length).toBe(2);
     const capRows = await count("cap:");
-    expect(capRows).toBe(2);
+    expect(capRows).toBe(4); // per site and account-wide, for each of the two clients
 
     const spy = spyDb();
     for (let n = 3; n < 63; n++) {
@@ -586,8 +588,8 @@ describe("accepted view", () => {
     await handleView(beacon({ cf: { regionCode: "EX", city: "Exampleton" } }), env, NOW);
     const r = await rows();
     expect(r.length).toBe(1);
-    expect(r[0]?.ts).toBe(Math.floor(NOW / 60_000) * 60_000);
-    expect((r[0]?.ts as number) % 60_000).toBe(0);
+    expect(r[0]?.ts).toBe(Math.floor(NOW / 3_600_000) * 3_600_000);
+    expect((r[0]?.ts as number) % 3_600_000).toBe(0); // D-A1: the hour, not the minute
     expect((await seen()).length).toBe(1);
     expect(r[0]).toMatchObject({
       page: "home",
@@ -604,9 +606,11 @@ describe("accepted view", () => {
       bot_class: "h",
       reason: "none",
       first: 1,
+      site: "links",
     });
-    // Global counter + client counter + event row + ts index + visitor_seen (measured: 6 in the test runtime).
-    expect(spy.calls.rowsWritten).toBeLessThanOrEqual(6);
+    // Client counter + site counter + account counter + event row + two indexes (ts, site/ts) + visitor_seen
+    // + the account-wide client counter (measured: 9 in the test runtime; it was 6 before the multi-site change).
+    expect(spy.calls.rowsWritten).toBeLessThanOrEqual(9);
     expect(spy.calls.rowsWritten).toBeGreaterThan(0);
   });
 

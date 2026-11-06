@@ -101,6 +101,7 @@ export type Row = {
   bot_class: string;
   reason: string;
   first: number;
+  site: string;
 };
 
 export async function rows(): Promise<Row[]> {

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from reach_around.config.analytics import AGGREGATE_KEEP_DAYS
 from reach_around.config.models import SiteConfig
 
 
@@ -38,7 +39,7 @@ def collected_items(config: SiteConfig) -> list[Disclosure]:
             )
         )
     if config.analytics.page_views:
-        items.append(_page_views())
+        items.append(_page_views(config))
     if config.features.kit_gate:
         items.append(
             Disclosure(
@@ -62,7 +63,21 @@ def collected_items(config: SiteConfig) -> list[Disclosure]:
     return items
 
 
-def _page_views() -> Disclosure:
+def _page_views(config: SiteConfig) -> Disclosure:
+    analytics = config.analytics
+    if analytics.other_sites:
+        sites = (
+            "The same counter also counts "
+            + ", ".join(analytics.other_sites)
+            + ". The counts for each site are kept separately, and the daily "
+            "code below is different on each site, so the sites cannot be "
+            "linked."
+        )
+    else:
+        sites = (
+            "This counter counts this site only. If it ever counts another "
+            "site, the counts are kept separately and this page names it."
+        )
     return Disclosure(
         what=(
             "A count of page views. Each view records the page, the referring "
@@ -70,25 +85,35 @@ def _page_views() -> Disclosure:
             "the link you followed carried one (the short utm_source label: at "
             "most 30 characters of lower-case letters, digits and hyphens), and "
             "your window width as one of four sizes. From your request the "
-            "server works out and keeps only: your browser and operating "
-            "system, the kind of device, your language, and your country, "
-            "region and city "
-            "(as far as the counter is set to record them). It also marks the "
-            "view as likely a person or likely automated, and keeps a daily "
-            "code made from your address that changes every day and cannot be "
-            "turned back into the address, so one person is counted once a "
-            "day. Your IP address is never stored, and nothing is stored in your "
-            "browser."
+            "server works out and keeps only: your browser and its version, "
+            "your operating system, the kind of device, your language, and "
+            "your country, region and city (as far as the counter is set to "
+            "record them). It also marks the view as likely a person or likely "
+            "automated, with a short reason, and works out a network type when "
+            "it can (for example: looks like a hosting provider, a VPN or "
+            "proxy, or Tor). That work is done on our own server from lists we "
+            "hold, so no address is sent to anyone else. The time of a view is "
+            "kept to the hour only. It also keeps a daily code made from your "
+            "address and the name of the site that changes every day and "
+            "cannot be turned back into the address, so one person is counted "
+            "once a day on that site. " + sites + " Your IP address is never "
+            "stored, your raw browser identification is not stored, and "
+            "nothing is stored in your browser."
         ),
         why=(
             "To see which pages are read and where visitors come from. Nothing "
             "is sent if your browser sends Global Privacy Control or Do Not "
-            "Track."
+            "Track. Totals for small groups are merged into 'other'. Nothing "
+            "in these records identifies a person, so we cannot find and "
+            "delete the views of one person on request; the individual "
+            f"records are deleted automatically after {analytics.raw_keep_days} "
+            "days."
         ),
         kept=(
-            "Each view record is deleted after a few days (7 by default); the "
-            "daily code is deleted by the daily cleanup; only anonymous totals "
-            "are kept longer"
+            f"Each view record is deleted after {analytics.raw_keep_days} days; "
+            "the daily code is deleted at the end of the same day; only "
+            f"anonymous totals are kept longer, for up to {AGGREGATE_KEEP_DAYS} "
+            "days"
         ),
         sensitive=False,
     )

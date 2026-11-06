@@ -232,7 +232,7 @@ describe("SQL-side folding matches an independent model", () => {
         NOW,
       );
       const full = (await q<RawRow>("SELECT * FROM view_events")).map((x) => ({ ...x }));
-      const strip = <T extends Record<string, unknown>>(rows: T[]) => rows.map(({ day: _d, day_tz: _t, ...rest }) => rest);
+      const strip = <T extends Record<string, unknown>>(rows: T[]) => rows.map(({ site: _s, day: _d, day_tz: _t, ...rest }) => rest);
       const sqlCore = strip(await q<Record<string, unknown>>("SELECT * FROM view_daily"));
       const sqlDim = strip(await q<Record<string, unknown>>("SELECT * FROM view_dim_daily"));
       const sqlGeo = strip(await q<Record<string, unknown>>("SELECT * FROM view_geo_daily"));
@@ -284,7 +284,7 @@ describe("hostile or damaged raw rows", () => {
     expect(r.days).toBe(1);
     const m = await meta();
     expect(m.rollup_err).toBe("none");
-    expect(m.rollup_failed_day).toBeUndefined();
+    expect(m["rollup_failed_day:links"]).toBeUndefined();
     // 8 rows are in the day; exactly the two rows with first = 1 are unique.
     for (const t of ["view_daily", "view_geo_daily"]) {
       expect((await q<{ v: number; u: number }>(`SELECT SUM(views) AS v, SUM(uniques) AS u FROM ${t}`))[0]).toEqual({ v: 8, u: 2 });
