@@ -8,6 +8,11 @@ while the project is alpha, every release is `0.x` and anything can change betwe
 
 - Brand token pin and drift check (#226): `vendor/brand/tokens.json` is a copy of the blog's `brand/tokens.json`, pinned by SHA-256 and source commit in `vendor/brand/tokens.lock.json`. `scripts/gen-brand-theme.py` generates `examples/themes/brand-dark.yaml` from it (colors and radius, mapped to the `--ra-*` theme keys), and `scripts/check-token-drift` (stdlib only, run in CI) fails if the vendored tokens, the pin or the theme file disagree. The preset now uses the brand `border` `#3A3530` and `radius` `0.5rem`. Docs gain a "Heading font: Orbitron" setup section.
 
+## [0.2.2] - 2026-11-06
+
+- Base image bump (#224): the pinned `python:3.13-slim` index digest moves to `sha256:09a17cad...` (apt and libapt-pkg7.0 3.0.4 on amd64 and arm64) to clear CVE-2026-109518, which the release image scan flagged as HIGH in the previous base's apt 3.0.3. No code change.
+- v0.2.1 was tagged but never released: its image scan failed on that CVE, so no image or release was published. Use 0.2.2.
+
 ## [0.2.1] - 2026-11-06
 
 - Optional single-page layout (#220): top-level `page_layout: sections` renders the first tab as the page and every other tab as a native `<details>` section (the first open by default, `open:` per tab to change it), with no tab bar, no new script and the same CSP, `ping` tracking and `rel="sponsored"`. Internal `tab:` links become fragments. New `theme.colors.muted` key, a `brand-dark` theme preset in `examples/themes/`, and an `instance-variants/sections` example with synthetic data only. The config schema gains `page_layout` and `tabs[].open`.
