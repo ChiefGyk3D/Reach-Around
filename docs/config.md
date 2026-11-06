@@ -687,7 +687,8 @@ The `brand-dark` preset leaves `fonts.heading` commented out, because the engine
 does not ship Orbitron. To use it on your site:
 
 1. Download Orbitron from its upstream project
-   (https://github.com/theleagueof/orbitron) and keep its `OFL.txt` with it.
+   (https://github.com/theleagueof/orbitron) and keep its `OFL.txt` in your own
+   records.
 2. Put the font file in your instance folder, for example
    `fonts/orbitron.woff2` (`.woff`, `.ttf` and `.otf` also work). Use the file
    as it comes: do not subset, convert or rename the font itself.
@@ -707,8 +708,18 @@ License: Orbitron is licensed under the SIL Open Font License 1.1 and has the
 Reserved Font Name "Orbitron". You may use and redistribute the font, but
 a modified version may not keep that name, so ship it unmodified (converting a
 file to another format counts as a modification; take a ready-made `.woff2`
-from upstream or a repackaging that says it changes no glyphs) and include the
-license text and copyright line beside it. The engine does not bundle Orbitron.
+from upstream or a repackaging that says it changes no glyphs). The engine does
+not bundle Orbitron.
+
+Limitation: the OFL asks that the license text and copyright line travel with
+redistributed copies, and the engine has no way to publish them. The build
+copies only the files your config names, and only images and fonts (see
+[File names and the assets inventory](#file-names-and-the-assets-inventory)), so
+`OFL.txt` placed beside the font is not copied to the deployed site, and
+comments in `custom.css` are stripped before it is written. Until the engine
+gains a way to publish a license file, add the notice to the deployed site
+yourself, outside the build, and check that it meets the license for your use.
+This gap is tracked in a follow-up issue.
 
 ### What is refused
 

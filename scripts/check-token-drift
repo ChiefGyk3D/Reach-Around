@@ -66,10 +66,16 @@ def check(root: Path, lock_path: Path) -> list[str]:
     if not isinstance(pin, str) or not SHA256.match(pin):
         problems.append("lock: sha256 must be 64 lowercase hex characters")
     source = lock.get("source")
-    if not isinstance(source, dict) or not COMMIT.match(str(source.get("commit"))):
-        problems.append("lock: source.commit must be a 40-character commit id")
-    elif not source.get("repo") or not source.get("path"):
-        problems.append("lock: source needs repo and path")
+    if not isinstance(source, dict):
+        problems.append("lock: source must be an object with repo, path and commit")
+    else:
+        commit = source.get("commit")
+        if not isinstance(commit, str) or not COMMIT.match(commit):
+            problems.append("lock: source.commit must be a 40-character commit id")
+        for field in ("repo", "path"):
+            value = source.get(field)
+            if not isinstance(value, str) or not value:
+                problems.append(f"lock: source.{field} must be a non-empty string")
 
     vendored = inside(root, lock.get("vendored"))
     if vendored is None:

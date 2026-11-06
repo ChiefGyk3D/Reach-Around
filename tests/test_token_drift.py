@@ -161,3 +161,33 @@ def test_generator_rejects_bad_token(tmp_path: Path) -> None:
     bad.write_text(json.dumps(data))
     with pytest.raises(generator.TokenError):
         generator.render(bad)
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        {"repo": 1},
+        {"path": ["not", "a", "string"]},
+        {"commit": 1234567890123456789012345678901234567890},
+        {"commit": ["a" * 40]},
+        {"repo": ""},
+        {"path": ""},
+    ],
+    ids=[
+        "repo-int",
+        "path-list",
+        "commit-number",
+        "commit-list",
+        "repo-empty",
+        "path-empty",
+    ],
+)
+def test_source_fields_must_be_strings(
+    root: Path, capsys: pytest.CaptureFixture[str], bad: dict[str, object]
+) -> None:
+    lock = json.loads((root / LOCK).read_text())
+    lock["source"].update(bad)
+    (root / LOCK).write_text(json.dumps(lock))
+    code, out = run(root, capsys)
+    assert code == 1
+    assert "lock: source" in out
