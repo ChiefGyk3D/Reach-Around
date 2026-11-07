@@ -37,6 +37,7 @@ from reach_around.config.blocks import (
     Text,
 )
 from reach_around.config.footer import Footer
+from reach_around.config.kit import KitConfig
 from reach_around.config.loader import ConfigError, load_yaml
 from reach_around.config.numbers_sources import NumbersConfig
 from reach_around.config.page_title import PageTitle, TitleTemplate
@@ -329,6 +330,7 @@ class SiteConfig(_Model):
     profile_card: ProfileCard | None = None
     numbers: NumbersConfig | None = None
     analytics: Analytics = Analytics()
+    kit: KitConfig | None = None
 
     @field_validator("timezone")
     @classmethod
@@ -375,6 +377,16 @@ class SiteConfig(_Model):
         ]
         if problems:
             raise ValueError("; ".join(problems))
+        return self
+
+    @model_validator(mode="after")
+    def _gated_kit_content_needs_the_gate(self) -> SiteConfig:
+        if self.kit is not None and self.kit.has_gated_content:
+            if not self.features.kit_gate:
+                raise ValueError(
+                    "the kit has gated content (partners, case studies, rates or "
+                    "demographics): set features.kit_gate to true, or remove it"
+                )
         return self
 
     @model_validator(mode="after")

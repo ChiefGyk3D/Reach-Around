@@ -94,6 +94,7 @@ escapes it when it renders.
 | `store` | StoreConfig | SQLite at `data/reach-around.db` | where the snapshot store lives; see [`store`](#store) |
 | `profile_card` | ProfileCard | none | name, topic chips and a media-kit button after the content of every page; see [`profile_card`](#profile_card) |
 | `numbers` | NumbersConfig | none | where each platform's follower count comes from, for `reach-around counts refresh`; see [`numbers`](#numbers) |
+| `kit` | KitConfig | absent | optional media kit content and its display policy; see [`kit`](#kit) |
 
 Ids must be unique across the whole site: every tab id, every block id (links
 and sections) and every link id inside a section share one pool. Reusing an
@@ -763,6 +764,83 @@ build adds `profile-media-kit` to the build manifest (the `links` map the
 click Worker is configured from), so the Worker counts it like any link. With click tracking off it carries neither. The card adds no
 JavaScript and no inline style; it is styled from the same tokens as the rest of
 the page (see [design](design.md)), so a theme's colors and `mode` apply.
+
+## `kit`
+
+Media kit content. Optional: leave it out and nothing changes. This release
+adds the settings and their rules only; the pages that show the kit and the gate
+come in later releases, so a `kit` section is checked but not yet rendered.
+Unknown keys are refused everywhere in it. All text is plain: 1 character up to
+its limit, no `<` or `>`, no control or hidden characters, no space at either
+end. Text must be quoted if YAML would read it as a number.
+
+| Field | Type | Default | Constraints |
+| --- | --- | --- | --- |
+| `title` | text | required | at most 120 characters |
+| `about` | text | required | at most 1000 characters |
+| `metrics` | list of metric | none | at most 30; each `platform` and `label` pair once |
+| `partners` | list of partner | none | at most 50 |
+| `case_studies` | list of case study | none | at most 20 |
+| `rates` | list of rate | none | at most 30 |
+| `demographics` | list of demographic | none | at most 30 |
+| `unlock_link` | true or false | `false` | v1 has no emailed unlock link; nothing reads this switch yet |
+
+A **metric** is one headline number: `platform` (a platform name such as
+`twitch`, `youtube` or `other`), `label` (at most 60 characters, such as
+`Followers`), `source`, `value`, `as_of` and `in_total`.
+
+- `source: manual` (the default): you type `value` (a whole number, 0 up to
+  1,000,000,000,000) and **must** give `as_of`, the day you read it
+  (`YYYY-MM-DD`). Leave `value` out to keep a placeholder that is ignored.
+- `source: counts`: the number comes from the [numbers file](#the-numbers-file)
+  at build time, under the metric's `platform`. Do not write `value` or `as_of`.
+  The file's date is used. If the file has no entry, the metric has no value.
+- `in_total: false` keeps a metric out of the unified total (use it for a second
+  number from the same platform, such as views, so one audience is not counted
+  twice). Default `true`.
+
+A **partner** has `name` (80), optional `note` (200) and optional `url` (https
+only). A **case study** has `title` (100), `summary` (500) and `result` (300).
+A **rate** has `item` (80) and `price_text` (80); the price is text, so
+`Ask me!` or `From $200` are fine. A **demographic** has `label` (60), `value`
+(80) and a required `as_of`.
+
+**Display policy.** The table is fixed, not a setting:
+
+| Field | Shown |
+| --- | --- |
+| `title`, `about`, `metrics`, the unified total | public |
+| `partners`, `case_studies`, `rates`, `demographics` | gated (only after the gate) |
+| `unlock_link` | private (configuration, never shown) |
+
+The public half therefore shows the header and the headline numbers and nothing
+else. If `partners`, `case_studies`, `rates` or `demographics` is not empty,
+`features.kit_gate` must be `true`; the config is refused otherwise, so gated
+content can never be published with no gate.
+
+**Old numbers.** A number whose `as_of` is more than 30 days before the build
+day gets a build warning (typed numbers, counts file numbers and demographics
+alike). A date in the future also warns. Warnings do not fail the build.
+
+**Unified total.** Add up the value of every metric that has one and is not
+marked `in_total: false`; a metric without a value is ignored. With nothing to
+add there is no total (not zero). The total is worked out at build time and is
+never stored.
+
+```yaml
+features:
+  kit_gate: true
+kit:
+  title: Example Creator media kit
+  about: A fake creator used to show the settings.
+  metrics:
+    - {platform: twitch, label: Followers, value: 1200, as_of: 2027-03-01}
+    - {platform: bluesky, label: Followers, source: counts}
+  partners:
+    - {name: Acme Fake Co, url: "https://example.com/acme"}
+  rates:
+    - {item: Sponsored video, price_text: Ask me!}
+```
 
 ## `numbers`
 
