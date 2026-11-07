@@ -6,6 +6,10 @@
 //
 // Every statement is a constant string with bound parameters.
 //
+// RETENTION. The purge helpers below have no scheduled caller on purpose: Task
+// 20 (#265) owns wiring them into the hourly run. Cutoffs are inclusive, so a
+// lead exactly 30 (unverified) or 365 (any) days old is purged.
+//
 // EMAIL CONTRACT. These functions take an email that is ALREADY normalized by
 // Task 5 `normalizeEmail`: ASCII, lowercase, no whitespace or control
 // characters, at most 254 characters. They do not normalize. As a second
@@ -33,18 +37,41 @@ export interface Lead {
 export const UNVERIFIED_RETENTION_DAYS = 30;
 /** Hard maximum from creation for any lead (cutover slice D4). */
 export const HARD_RETENTION_DAYS = 365;
+/** The lead cap callers pass to upsertLead (cutover slice D3: MAX_LEADS 5000). */
+export const DEFAULT_MAX_LEADS = 5000;
+/** No caller may ask for more than this, whatever its configuration says. */
+export const MAX_LEADS_CEILING = 50_000;
 export const LIST_DEFAULT = 100;
 export const LIST_MAX = 500;
 
 const HOUR_MS = 60 * 60 * 1000;
-const EMAIL_RE = /^[\x21-\x7e]{3,254}$/;
+
+// Mirrors the A3 normalizer grammar (ASCII 0x21-0x7e; one @; local part of at
+// most 64 characters made of dot-atoms of [a-z0-9_+-]; domain labels of 1-63
+// alphanumerics with inner hyphens; at least two labels; last label letters
+// 2-63 or xn--). Replace with the shared normalizer once it is on main.
+const LOCAL_RE = /^[a-z0-9_+-]+(?:\.[a-z0-9_+-]+)*$/;
+const LABEL_RE = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
+const TLD_RE = /^(?:[a-z]{2,63}|xn--[a-z0-9-]{1,59})$/;
+
+function isNormalizedEmail(email: string): boolean {
+  if (email.length > 254 || email !== email.toLowerCase()) return false;
+  const at = email.indexOf("@");
+  if (at < 1 || at !== email.lastIndexOf("@")) return false;
+  const local = email.slice(0, at);
+  if (local.length > 64 || !LOCAL_RE.test(local)) return false;
+  const labels = email.slice(at + 1).split(".");
+  if (labels.length < 2) return false;
+  if (!labels.every((l) => LABEL_RE.test(l))) return false;
+  return TLD_RE.test(labels[labels.length - 1]!);
+}
 const COUNTRY_RE = /^[A-Z]{2}$/;
 const ID_RE = /^[0-9a-f]{32}$/;
 const SOURCES: readonly string[] = ["gate", "email"];
 const KINDS: readonly string[] = ["unlock", "view", "verify"];
 
 function checkEmail(email: unknown): asserts email is string {
-  if (typeof email !== "string" || !EMAIL_RE.test(email) || email !== email.toLowerCase()) {
+  if (typeof email !== "string" || !isNormalizedEmail(email)) {
     throw new RangeError("email must be a normalized ASCII lowercase address");
   }
 }
@@ -60,9 +87,9 @@ function newLeadId(): string {
 }
 
 /**
- * Insert a lead, or refresh `last_seen_ts` of the existing one. Returns null
- * only when `maxLeads` is set, the table is at that size, and the address is
- * new (a known address is always refreshed). The cap check, the insert and the
+ * Insert a lead, or refresh `last_seen_ts` of the existing one. `maxLeads` is
+ * required (pass DEFAULT_MAX_LEADS unless configured lower). Returns null when
+ * the table is at that size and the address is new (a known address is always refreshed). The cap check, the insert and the
  * duplicate handling are one statement, so concurrent calls cannot overshoot
  * or duplicate.
  */
@@ -72,7 +99,7 @@ export async function upsertLead(
   source: LeadSource,
   country: string | null,
   nowMs: number,
-  maxLeads?: number,
+  maxLeads: number,
 ): Promise<{ id: string; created: boolean } | null> {
   checkEmail(email);
   if (!SOURCES.includes(source)) throw new RangeError("unknown lead source");
@@ -80,8 +107,10 @@ export async function upsertLead(
     throw new RangeError("country must be two uppercase letters or null");
   }
   checkTs(nowMs, "nowMs");
-  const cap = maxLeads === undefined ? Number.MAX_SAFE_INTEGER : maxLeads;
-  if (!Number.isInteger(cap) || cap < 1) throw new RangeError("maxLeads must be a positive integer");
+  const cap: unknown = maxLeads;
+  if (typeof cap !== "number" || !Number.isInteger(cap) || cap < 1 || cap > MAX_LEADS_CEILING) {
+    throw new RangeError(`maxLeads must be an integer from 1 to ${MAX_LEADS_CEILING}`);
+  }
   const now = Math.floor(nowMs);
   const id = newLeadId();
   const row = await db
@@ -185,23 +214,23 @@ export async function deleteLeadByEmail(db: D1Database, email: string): Promise<
 }
 
 /**
- * Delete unverified leads created strictly before `cutoffMs` (compute it as
+ * Delete unverified leads created at or before `cutoffMs` (compute it as
  * now minus UNVERIFIED_RETENTION_DAYS). Verified leads are untouched.
  */
 export async function purgeUnverifiedLeads(db: D1Database, cutoffMs: number): Promise<number> {
   checkTs(cutoffMs, "cutoffMs");
   const r = await db
-    .prepare("DELETE FROM leads WHERE verified_ts IS NULL AND created_ts < ? RETURNING id")
+    .prepare("DELETE FROM leads WHERE verified_ts IS NULL AND created_ts <= ? RETURNING id")
     .bind(Math.floor(cutoffMs))
     .all();
   return r.results.length;
 }
 
-/** Hard maximum: delete every lead created strictly before `cutoffMs`. */
-export async function purgeLeadsCreatedBefore(db: D1Database, cutoffMs: number): Promise<number> {
+/** Hard maximum: delete every lead created at or before `cutoffMs`. */
+export async function purgeLeadsCreatedAtOrBefore(db: D1Database, cutoffMs: number): Promise<number> {
   checkTs(cutoffMs, "cutoffMs");
   const r = await db
-    .prepare("DELETE FROM leads WHERE created_ts < ? RETURNING id")
+    .prepare("DELETE FROM leads WHERE created_ts <= ? RETURNING id")
     .bind(Math.floor(cutoffMs))
     .all();
   return r.results.length;

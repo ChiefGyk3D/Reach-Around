@@ -11,15 +11,28 @@ import {
   getLeadByEmail,
   listLeads,
   markVerified,
-  purgeLeadsCreatedBefore,
+  purgeLeadsCreatedAtOrBefore,
   purgeUnverifiedLeads,
   recordKitEvent,
   touchLead,
-  upsertLead,
+  DEFAULT_MAX_LEADS,
+  MAX_LEADS_CEILING,
+  upsertLead as upsertLeadStrict,
+  type LeadSource,
 } from "../../src/kit/leads";
 import leadsSource from "../../src/kit/leads.ts?raw";
 
 const DB = testEnv.DB;
+
+/** Test shorthand: the production function requires the cap, tests default it. */
+const upsertLead = (
+  db: D1Database,
+  email: string,
+  source: LeadSource,
+  country: string | null,
+  nowMs: number,
+  maxLeads: number = DEFAULT_MAX_LEADS,
+) => upsertLeadStrict(db, email, source, country, nowMs, maxLeads);
 const DAY = 24 * 60 * 60 * 1000;
 const HOUR = 60 * 60 * 1000;
 const NOW = Date.UTC(2027, 0, 1, 12, 34, 56, 789);
@@ -56,6 +69,32 @@ describe("upsertLead", () => {
 
   it("treats the address as already normalized: it refuses what Task 5 would have rejected", async () => {
     const bad = [
+      "1.2.3.4",
+      "mozilla/5.0",
+      "http://example.com/a",
+      "a@1.2.3.4",
+      "a@[1.2.3.4]",
+      "a@b",
+      "a@b.c",
+      "a@b.c1",
+      "a@@b.com",
+      "a@b.com@c.com",
+      "@b.com",
+      "a@",
+      "a..b@c.com",
+      ".a@c.com",
+      "a.@c.com",
+      "a@-b.com",
+      "a@b-.com",
+      "a@b..com",
+      "a@.b.com",
+      "a@b.com.",
+      "a,b@c.com",
+      "a;b@c.com",
+      "<a@b.com>",
+      "\"a\"@b.com",
+      "a".repeat(65) + "@b.com",
+      "a@" + "b".repeat(64) + ".com",
       "Partner@Example.com",
       " a@b.com",
       "a@b.com\n",
@@ -73,11 +112,17 @@ describe("upsertLead", () => {
     expect(await countLeads(DB)).toBe(0);
   });
 
-  it("stores injection-shaped (but normalized) input as inert data", async () => {
+  it("accepts well-formed normalized addresses", async () => {
+    const good = ["partner@example.com", "a+tag@sub.example.com", "a.b_c-d@x-y.example.org", "a@b.xn--p1ai", "a".repeat(64) + "@b.co"];
+    for (const e of good) expect((await upsertLead(DB, e, "gate", null, NOW))!.created).toBe(true);
+  });
+
+  it("statement-shaped input is refused on write and inert on read and delete", async () => {
     const evil = "x');drop/**/table/**/leads;--@example.com";
-    const r = await upsertLead(DB, evil, "gate", null, NOW);
+    await expect(upsertLead(DB, evil, "gate", null, NOW)).rejects.toThrow(RangeError);
+    const r = await upsertLead(DB, "real@example.com", "gate", null, NOW);
     expect(r!.created).toBe(true);
-    expect((await getLeadByEmail(DB, evil))!.id).toBe(r!.id);
+    expect(await getLeadByEmail(DB, evil)).toBeNull();
     const probe = "' or '1'='1@example.com";
     expect(await getLeadByEmail(DB, probe)).toBeNull();
     expect(await deleteLeadByEmail(DB, "' or '1'='1")).toBe(0);
@@ -103,6 +148,18 @@ describe("upsertLead", () => {
     expect(again!.created).toBe(false);
     await expect(upsertLead(DB, "four@example.com", "gate", null, NOW, 0)).rejects.toThrow(RangeError);
     await expect(upsertLead(DB, "four@example.com", "gate", null, NOW, 1.5)).rejects.toThrow(RangeError);
+  });
+
+  it("the cap is required and bounded", async () => {
+    expect(DEFAULT_MAX_LEADS).toBe(5000);
+    expect(MAX_LEADS_CEILING).toBeGreaterThanOrEqual(DEFAULT_MAX_LEADS);
+    // @ts-expect-error maxLeads is required: omitting it is a compile error
+    const omitted = upsertLeadStrict(DB, "cap@example.com", "gate", null, NOW);
+    await expect(omitted).rejects.toThrow(RangeError);
+    for (const bad of [undefined, null, Number.NaN, Number.POSITIVE_INFINITY, -1, 0, Number.MAX_SAFE_INTEGER, MAX_LEADS_CEILING + 1]) {
+      await expect(upsertLeadStrict(DB, "cap@example.com", "gate", null, NOW, bad as never)).rejects.toThrow(RangeError);
+    }
+    expect((await upsertLeadStrict(DB, "cap@example.com", "gate", null, NOW, MAX_LEADS_CEILING))!.created).toBe(true);
   });
 });
 
@@ -192,34 +249,37 @@ describe("retention purge", () => {
     expect(UNVERIFIED_RETENTION_DAYS).toBe(30);
   });
 
-  it("purgeUnverifiedLeads deletes strictly older than the cutoff and never verified rows", async () => {
+  it("purgeUnverifiedLeads deletes rows at or older than the cutoff and never verified rows", async () => {
     const cutoff = NOW - 30 * DAY;
     const older = await seed("older@example.com", cutoff - 1);
     const exact = await seed("exact@example.com", cutoff);
     const newer = await seed("newer@example.com", cutoff + 1);
     const verifiedOld = await seed("verified@example.com", cutoff - 100 * DAY, true);
     await recordKitEvent(DB, older, "unlock", cutoff);
-    expect(await purgeUnverifiedLeads(DB, cutoff)).toBe(1);
+    expect(await purgeUnverifiedLeads(DB, cutoff)).toBe(2);
     expect(await getLead(DB, older)).toBeNull();
-    for (const id of [exact, newer, verifiedOld]) expect(await getLead(DB, id)).not.toBeNull();
+    expect(await getLead(DB, exact)).toBeNull();
+    for (const id of [newer, verifiedOld]) expect(await getLead(DB, id)).not.toBeNull();
     expect((await DB.prepare("SELECT COUNT(*) AS n FROM kit_events").first<{ n: number }>())!.n).toBe(0);
     expect(await purgeUnverifiedLeads(DB, cutoff)).toBe(0);
   });
 
-  it("purgeLeadsCreatedBefore is the hard maximum and also takes verified rows", async () => {
+  it("purgeLeadsCreatedAtOrBefore is the hard maximum and also takes verified rows", async () => {
     const cutoff = NOW - 365 * DAY;
     const old = await seed("old@example.com", cutoff - 1, true);
     const edge = await seed("edge@example.com", cutoff, true);
-    expect(await purgeLeadsCreatedBefore(DB, cutoff)).toBe(1);
+    const inside = await seed("inside@example.com", cutoff + 1, true);
+    expect(await purgeLeadsCreatedAtOrBefore(DB, cutoff)).toBe(2);
     expect(await getLead(DB, old)).toBeNull();
-    expect(await getLead(DB, edge)).not.toBeNull();
+    expect(await getLead(DB, edge)).toBeNull();
+    expect(await getLead(DB, inside)).not.toBeNull();
   });
 
   it("refuses a cutoff that is not a finite number (it would wipe or keep everything)", async () => {
     await seed("keep@example.com", NOW);
     for (const bad of [Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY, "1" as never]) {
       await expect(purgeUnverifiedLeads(DB, bad)).rejects.toThrow(RangeError);
-      await expect(purgeLeadsCreatedBefore(DB, bad)).rejects.toThrow(RangeError);
+      await expect(purgeLeadsCreatedAtOrBefore(DB, bad)).rejects.toThrow(RangeError);
     }
     expect(await countLeads(DB)).toBe(1);
   });
@@ -243,25 +303,78 @@ describe("schema", () => {
     }
   });
 
-  it("the free-text columns refuse an address or agent string even when written directly", async () => {
-    const insert = (cols: string, vals: unknown[]) =>
-      DB.prepare(`INSERT INTO leads (id, email, created_ts, last_seen_ts, ${cols}) VALUES (?, ?, 1, 1, ${vals.map(() => "?").join(",")})`);
-    const id = "a".repeat(32);
-    await expect(insert("country", ["203.0.113.9"]).bind(id, "x@y.com", "203.0.113.9").run()).rejects.toThrow();
-    await expect(insert("country", ["2001:db8::1"]).bind(id, "x@y.com", "2001:db8::1").run()).rejects.toThrow();
-    await expect(insert("source", ["Mozilla/5.0"]).bind(id, "x@y.com", "Mozilla/5.0").run()).rejects.toThrow();
-    await expect(
-      DB.prepare("INSERT INTO leads (id, email, created_ts, last_seen_ts, source) VALUES (?, ?, 1, 1, 'gate')")
-        .bind("short", "x@y.com").run(),
-    ).rejects.toThrow();
-    await expect(
-      DB.prepare("INSERT INTO leads (id, email, created_ts, last_seen_ts, source) VALUES (?, ?, 1, 1, 'gate')")
-        .bind(id, "UPPER@y.com").run(),
-    ).rejects.toThrow();
-    await expect(
-      DB.prepare("INSERT INTO kit_events (ts, lead_id, kind) VALUES (1, ?, 'Mozilla/5.0')").bind(id).run(),
-    ).rejects.toThrow();
+  const ID = "a".repeat(32);
+  const SHAPES = {
+    ip4: "203.0.113.9",
+    ip6: "2001:db8::1",
+    ua: "Mozilla/5.0 (X11; Linux x86_64)",
+    url: "https://example.com/path?q=1",
+    ms: "1700000000123",
+  };
+  const run = (sql: string, ...binds: unknown[]) => DB.prepare(sql).bind(...binds).run();
+  const LEAD = "INSERT INTO leads (id, email, created_ts, last_seen_ts, source, country) VALUES (?, ?, ?, ?, ?, ?)";
+
+  it("every text column of every kit table refuses IP, UA and URL shaped values", async () => {
+    for (const v of [SHAPES.ip4, SHAPES.ip6, SHAPES.ua, SHAPES.url, "1.2.3.4", "a@1.2.3.4"]) {
+      await expect(run(LEAD, ID, v, 1, 1, "gate", null), `leads.email ${v}`).rejects.toThrow();
+      await expect(run(LEAD, v.padEnd(32, "a").slice(0, 32), "x@y.com", 1, 1, "gate", null), `leads.id ${v}`).rejects.toThrow();
+      await expect(run(LEAD, ID, "x@y.com", 1, 1, v, null), `leads.source ${v}`).rejects.toThrow();
+      await expect(run(LEAD, ID, "x@y.com", 1, 1, "gate", v), `leads.country ${v}`).rejects.toThrow();
+      await expect(run("INSERT INTO kit_events (ts, lead_id, kind) VALUES (3600000, ?, ?)", ID, v), `kit_events.kind ${v}`).rejects.toThrow();
+      await expect(run("INSERT INTO counters (key, day, count) VALUES (?, '2027-01-01', 1)", v), `counters.key ${v}`).rejects.toThrow();
+      await expect(run("INSERT INTO counters (key, day, count) VALUES ('gate', ?, 1)", v), `counters.day ${v}`).rejects.toThrow();
+      await expect(run("INSERT INTO kit_meta (key, value) VALUES (?, 1)", v), `kit_meta.key ${v}`).rejects.toThrow();
+      await expect(run("INSERT INTO kit_meta (key, value) VALUES ('last_purge_ts', ?)", v), `kit_meta.value ${v}`).rejects.toThrow();
+    }
     expect(await countLeads(DB)).toBe(0);
+  });
+
+  it("the tables are STRICT, so text cannot land in an integer column", async () => {
+    const t = await DB.prepare("SELECT name, strict FROM pragma_table_list WHERE schema = 'main' AND name IN ('leads','kit_events','counters','kit_meta')").all<{ name: string; strict: number }>();
+    expect(t.results.length).toBe(4);
+    for (const r of t.results) expect(r.strict, r.name).toBe(1);
+    await expect(run(LEAD, ID, "x@y.com", "Mozilla/5.0", 1, "gate", null)).rejects.toThrow();
+    await expect(run(LEAD, ID, "x@y.com", 1, "1.2.3.4", "gate", null)).rejects.toThrow();
+    await expect(run(LEAD, ID, "x@y.com", 1.5, 1, "gate", null)).rejects.toThrow();
+    await run(LEAD, ID, "x@y.com", 1, 1, "gate", null);
+    await expect(run("UPDATE leads SET verified_ts = ? WHERE id = ?", "1.2.3.4", ID)).rejects.toThrow();
+    await expect(run("INSERT INTO kit_events (ts, lead_id, kind) VALUES (?, ?, 'view')", "1.2.3.4", ID)).rejects.toThrow();
+    await expect(run("INSERT INTO counters (key, day, count) VALUES ('gate', '2027-01-01', ?)", "Mozilla/5.0")).rejects.toThrow();
+    await expect(run("INSERT INTO kit_meta (key, value) VALUES ('last_purge_ts', ?)", "Mozilla/5.0")).rejects.toThrow();
+  });
+
+  it("kit_events.ts must be a whole-hour integer", async () => {
+    await run(LEAD, ID, "x@y.com", 1, 1, "gate", null);
+    const ins = "INSERT INTO kit_events (ts, lead_id, kind) VALUES (?, ?, 'view')";
+    for (const bad of [1700000000123, 3600001, 3599999, 1, -3600000, 3600000.5]) {
+      await expect(run(ins, bad, ID), String(bad)).rejects.toThrow();
+    }
+    await run(ins, 3600000, ID);
+    await run(ins, 0, ID);
+  });
+
+  it("counters and kit_meta take only allow-listed keys and integer values", async () => {
+    await run("INSERT INTO counters (key, day, count) VALUES ('gate_hour', '2027-01-01T05', 3)");
+    await run("INSERT INTO counters (key, day, count) VALUES ('gate_day', '2027-01-01', 3)");
+    await run("INSERT INTO kit_meta (key, value) VALUES ('last_purge_ts', 1700000000000)");
+    for (const key of ["", "Gate", "a b", "a.b", "a:b", "a/b", "x".repeat(65)]) {
+      await expect(run("INSERT INTO counters (key, day, count) VALUES (?, '2027-01-02', 1)", key), key).rejects.toThrow();
+      await expect(run("INSERT INTO kit_meta (key, value) VALUES (?, 1)", key), key).rejects.toThrow();
+    }
+    for (const day of ["", "2027-1-1", "2027-01-01 05:00", "2027-01-01T05:00:00", "today"]) {
+      await expect(run("INSERT INTO counters (key, day, count) VALUES ('gate', ?, 1)", day), day).rejects.toThrow();
+    }
+    await expect(run("INSERT INTO counters (key, day, count) VALUES ('gate', '2027-01-03', -1)")).rejects.toThrow();
+  });
+
+  it("leads reject uppercase, malformed and non-email text, lowercase millisecond-free ids, and bad ranges", async () => {
+    const bad = ["UPPER@y.com", "a@b", "a@b.c", "a@@b.com", "a@b.com@c.com", "a b@c.com", "a@b.c1", "a@1.2.3.4", "mozilla/5.0", "a@b.com\n", "é@b.com", "a@b..com", ".a@b.com", "a@-b.com", "a@b.com."];
+    for (const e of bad) await expect(run(LEAD, ID, e, 1, 1, "gate", null), e).rejects.toThrow();
+    await expect(run(LEAD, "short", "x@y.com", 1, 1, "gate", null)).rejects.toThrow();
+    await expect(run(LEAD, "A".repeat(32), "x@y.com", 1, 1, "gate", null)).rejects.toThrow();
+    await expect(run(LEAD, ID, "x@y.com", -1, 1, "gate", null)).rejects.toThrow();
+    await run(LEAD, ID, "x@y.com", 1, 1, "gate", "US");
+    expect(await countLeads(DB)).toBe(1);
   });
 
   it("the migration declares the columns later tasks write", async () => {
