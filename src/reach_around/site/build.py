@@ -44,6 +44,7 @@ from reach_around.site.kit import (
     check_no_gated_text,
     check_private_root,
     check_roots,
+    gate_path_extras,
     public_paths,
     render_kit,
     stage_gated,
@@ -722,7 +723,7 @@ def build_site(
         published, {path.as_posix() for path in named.hashed}
     )
     files[Path("_headers")] = render_headers(
-        path_extras=_live_path_extras(config, shown),
+        path_extras={**_live_path_extras(config, shown), **gate_path_extras(config)},
         noindex_paths=robots.noindex_paths if robots else (),
         immutable_paths=immutable,
         revalidate_paths=revalidate,
