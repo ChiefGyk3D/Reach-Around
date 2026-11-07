@@ -41,7 +41,9 @@ TODAY = date(2027, 3, 10)
 CANARY = "CANARY-GATED-7f3a"
 
 
-def manual(platform: str = "twitch", value: int | None = 100, **kw: Any) -> dict:
+def manual(
+    platform: str = "twitch", value: int | None = 100, **kw: Any
+) -> dict[str, Any]:
     out: dict[str, Any] = {
         "platform": platform,
         "label": "Followers",

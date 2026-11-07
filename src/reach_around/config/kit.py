@@ -316,7 +316,10 @@ def unified_total(resolved: Sequence[ResolvedMetric]) -> UnifiedTotal:
 def _age_warning(what: str, as_of: date, today: date) -> str | None:
     age = (today - as_of).days
     if age > STALE_DAYS:
-        return f"{what}: as_of {as_of.isoformat()} is {age} days old (over {STALE_DAYS}); refresh it"
+        return (
+            f"{what}: as_of {as_of.isoformat()} is {age} days old "
+            f"(over {STALE_DAYS}); refresh it"
+        )
     if age < 0:
         return f"{what}: as_of {as_of.isoformat()} is in the future; check the date"
     return None
