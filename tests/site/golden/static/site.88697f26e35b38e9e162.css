@@ -375,6 +375,26 @@ a:focus-visible, summary:focus-visible, button:focus-visible {
   font-weight: 700;
 }
 
+/* The LIVE badge inside a tab link: a text badge with a dot, so it never relies
+   on color. It sits on the tab bar's own accent pair, inverted, which keeps the
+   same contrast as the tab labels. It is hidden until a script shows it. */
+.live-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35em;
+  margin-inline-start: var(--ra-space-2);
+  padding: 0.1em 0.55em;
+  border-radius: 999px;
+  background-color: var(--ra-color-on-accent);
+  color: var(--ra-color-accent);
+  font-size: var(--ra-text-xs);
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  line-height: 1.5;
+}
+.live-badge[hidden] { display: none; }
+.live-dot { width: 0.5em; height: 0.5em; border-radius: 50%; background-color: currentColor; }
+
 @media (max-width: 26.875rem) {
   .tabs a {
     padding: 0 var(--ra-space-2);

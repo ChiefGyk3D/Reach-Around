@@ -1,0 +1,54 @@
+{# SPDX-License-Identifier: Apache-2.0 #}
+{# The live block, rendered statically. The page starts in the degraded state
+   (status unknown, no script): the watch links and the offline layout show,
+   the facades stay hidden. A later script only flips `hidden` and the state. #}
+{% set names = {"kick": "Kick", "twitch": "Twitch", "youtube": "YouTube", "tiktok": "TikTok", "instagram": "Instagram"} %}
+<li class="block block-live" data-live data-live-id="{{ block.id }}" data-live-state="degraded">
+<div class="live-panel live-panel-live" data-live-panel="live" hidden>
+<h2 class="live-heading">Live now</h2>
+<ul class="live-grid">
+{% for player in block.players %}
+<li class="live-card">
+<button type="button" class="live-facade" data-platform="{{ player.platform }}" data-channel="{{ player.channel }}" aria-describedby="{{ block.id }}-{{ player.platform }}-privacy">
+<span class="live-art" aria-hidden="true"><span class="icon icon-{{ player.platform }}"></span><span class="live-play"></span></span>
+<span class="live-action">Load the {{ names[player.platform] }} player</span>
+</button>
+<p class="live-privacy" id="{{ block.id }}-{{ player.platform }}-privacy">Loads the player from {{ names[player.platform] }}. {{ names[player.platform] }} will see your IP address.</p>
+</li>
+{% endfor %}
+</ul>
+</div>
+<div class="live-panel live-panel-degraded" data-live-panel="degraded">
+<ul class="live-watch">
+{% for player in block.players %}
+{% set url = ("https://kick.com/" if player.platform == "kick" else "https://www.twitch.tv/") ~ player.channel %}
+<li><a class="live-watch-link" href="{{ url }}" rel="noopener noreferrer"><span class="live-link-icon" aria-hidden="true"><span class="icon icon-{{ player.platform }}"></span></span><span>Watch live on {{ names[player.platform] }}</span></a></li>
+{% endfor %}
+</ul>
+<p class="live-status-note">Live status unavailable.</p>
+</div>
+{% if block.vods %}
+<div class="live-panel live-panel-offline" data-live-panel="offline">
+<h2 class="live-heading">Past streams</h2>
+<ul class="live-vods">
+{% for platform in ["youtube", "kick", "twitch"] %}
+<li><a class="live-vod-link" href="{{ block.vods[platform] }}" rel="noopener noreferrer"><span class="live-link-icon" aria-hidden="true"><span class="icon icon-{{ platform }}"></span></span><span class="live-vod-text"><span class="live-vod-name">{{ names[platform] }}</span>
+<span class="live-vod-sub">Past streams</span></span></a></li>
+{% endfor %}
+</ul>
+</div>
+{% endif %}
+{% if block.also_on or block.fediverse_note %}
+<div class="live-also">
+{% if block.also_on %}
+<p class="live-also-label">Also on</p>
+<ul class="live-also-links">
+{% for item in block.also_on %}
+<li><a class="live-also-link" href="{{ item.url }}" rel="noopener noreferrer">{{ names[item.platform] }}</a></li>
+{% endfor %}
+</ul>
+{% endif %}
+{% if block.fediverse_note %}<p class="live-note">{{ block.fediverse_note }}</p>{% endif %}
+</div>
+{% endif %}
+</li>

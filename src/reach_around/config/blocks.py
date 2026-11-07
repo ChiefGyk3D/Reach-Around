@@ -563,7 +563,11 @@ class Live(_BlockModel):
         return self
 
 
-LIVE_NOT_RENDERED = (
-    "the live block is configuration only in this release; rendering arrives "
-    "with the Live page slice, so remove the live block to build the site"
-)
+# The two hosts a player frame may load from, alphabetical like the players.
+# The Twitch one is Twitch's documented embed host. The Kick one is INFERRED
+# from common practice and must be confirmed by a plain header probe before a
+# release (docs/live.md, "Before a release").
+LIVE_PLAYER_ORIGINS: dict[str, str] = {
+    "kick": "https://player.kick.com",
+    "twitch": "https://player.twitch.tv",
+}

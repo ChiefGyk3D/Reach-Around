@@ -1,0 +1,184 @@
+/* SPDX-License-Identifier: Apache-2.0 */
+/* The live block. Loaded only on the page that has one, after site.css, so it
+   reads the same --ra-* tokens and holds no color of its own. Nothing here
+   points at another site: the art is drawn with local icons and gradients.
+
+   Equal treatment is structural: both player cards are one component in one
+   grid with two identical tracks, so neither platform can be larger, earlier
+   or louder than the other. The page uses a wide column so two players fit
+   side by side on a desktop; below 56rem they stack at the full column width. */
+
+main.main-wide { max-width: min(112rem, 100%); }
+/* Tight top and bottom, so two players and the line under them fit one screen. */
+main.main-wide { padding-bottom: var(--ra-space-3); }
+main.main-wide > .site-header { padding-top: var(--ra-space-4); }
+main.main-wide > footer { margin-top: var(--ra-space-2); }
+/* A phone: 16 px on each side (the default gutter is a touch more). */
+@media (max-width: 47.99rem) {
+  main.main-wide { --ra-gutter: 1rem; }
+}
+
+.blocks > .block-live { grid-column: 1 / -1; display: flex; flex-direction: column; gap: var(--ra-space-3); min-width: 0; }
+.live-panel[hidden] { display: none; }
+.live-heading {
+  margin: 0 0 var(--ra-space-3);
+  font-size: var(--ra-text-lg);
+  font-weight: 700;
+  line-height: 1.25;
+}
+/* The live heading is for assistive technology only: the players are the page,
+   and the room they would take is what lets them fit a 1920 x 930 screen. */
+.live-panel-live .live-heading {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+/* The live state: two identical click-to-load cards. */
+.live-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--ra-space-4);
+}
+@media (min-width: 56rem) {
+  /* Two equal tracks, each capped (55rem is 1100 px on a 2560 px screen) and
+     the pair centered, so a very wide screen never stretches a player. */
+  .live-grid { grid-template-columns: repeat(2, minmax(0, 55rem)); justify-content: center; }
+}
+.live-card { min-width: 0; }
+.live-facade {
+  position: relative;
+  display: grid;
+  place-items: center;
+  align-content: center;
+  gap: var(--ra-space-3);
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  padding: var(--ra-space-4);
+  border: 1px solid var(--ra-color-border);
+  border-radius: var(--ra-card-radius);
+  background-color: var(--ra-color-surface);
+  background-image:
+    radial-gradient(60% 80% at 50% 40%, var(--ra-color-glow), transparent 75%),
+    linear-gradient(160deg, var(--ra-color-raised), var(--ra-color-surface));
+  box-shadow: var(--ra-shadow-card);
+  color: var(--ra-color-text);
+  font: inherit;
+  cursor: pointer;
+  transition: transform var(--ra-duration) var(--ra-ease), box-shadow var(--ra-duration) var(--ra-ease);
+}
+.live-facade:hover { box-shadow: var(--ra-shadow-lift); }
+.live-facade:active { transform: scale(0.99); }
+.live-art { display: grid; place-items: center; gap: var(--ra-space-3); }
+.live-art .icon { width: clamp(2rem, 6vw, 4rem); height: clamp(2rem, 6vw, 4rem); color: var(--ra-color-muted); }
+/* The play mark: a disc with a triangle, drawn with a clip so it needs no file. */
+.live-play {
+  position: relative;
+  width: clamp(2.75rem, 7vw, 4.5rem);
+  height: clamp(2.75rem, 7vw, 4.5rem);
+  border-radius: 50%;
+  background-color: var(--ra-color-accent);
+}
+.live-play::after {
+  content: "";
+  position: absolute;
+  inset: 28% 22% 28% 36%;
+  background-color: var(--ra-color-on-accent);
+  clip-path: polygon(0 0, 100% 50%, 0 100%);
+}
+.live-action { font-size: var(--ra-text-md); font-weight: 600; text-align: center; }
+.live-privacy {
+  margin: var(--ra-space-2) 0 0;
+  color: var(--ra-color-muted);
+  font-size: var(--ra-text-sm);
+  text-align: center;
+}
+
+/* The degraded state: two equal watch links. */
+.live-watch {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(14rem, 100%), 1fr));
+  gap: var(--ra-space-3);
+}
+.live-watch li { min-width: 0; }
+.live-watch-link {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--ra-space-3);
+  min-height: max(3.5rem, var(--ra-tap));
+  height: 100%;
+  padding: var(--ra-space-2) var(--ra-space-4);
+  border: 1px solid var(--ra-color-accent-edge);
+  border-radius: var(--ra-button-radius);
+  background-color: var(--ra-color-accent);
+  box-shadow: var(--ra-shadow-pill);
+  color: var(--ra-color-on-accent);
+  font-size: var(--ra-text-md);
+  font-weight: 600;
+  text-align: center;
+  text-decoration: none;
+}
+.live-watch-link:focus-visible { outline-color: var(--ra-color-link); }
+.live-status-note {
+  margin: var(--ra-space-2) 0 0;
+  color: var(--ra-color-muted);
+  font-size: var(--ra-text-xs);
+  text-align: center;
+}
+
+/* The offline layout: three equal VOD cards. */
+.live-vods {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--ra-space-3);
+}
+@media (min-width: 40rem) {
+  .live-vods { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
+.live-vods li { min-width: 0; }
+.live-vod-link {
+  display: flex;
+  align-items: center;
+  gap: var(--ra-space-3);
+  min-height: max(4rem, var(--ra-tap));
+  height: 100%;
+  padding: var(--ra-space-3) var(--ra-space-4);
+  border: 1px solid var(--ra-color-border);
+  border-radius: var(--ra-card-radius);
+  background-color: var(--ra-color-surface);
+  box-shadow: var(--ra-shadow-card);
+  color: var(--ra-color-text);
+  text-decoration: none;
+}
+.live-link-icon {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: var(--ra-thumb);
+  height: var(--ra-thumb);
+  border-radius: 50%;
+  background-color: var(--ra-color-chip);
+  color: var(--ra-color-accent);
+}
+.live-watch-link .live-link-icon { background-color: var(--ra-color-on-accent); }
+.live-vod-text { display: flex; flex-direction: column; min-width: 0; }
+.live-vod-name { font-size: var(--ra-text-md); font-weight: 600; line-height: 1.25; }
+.live-vod-sub { color: var(--ra-color-muted); font-size: var(--ra-text-sm); }
+
+/* The also-on line and the fediverse note. */
+.live-also { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: var(--ra-space-1) var(--ra-space-4); }
+.live-also p { margin: 0; }
+.live-also-label { color: var(--ra-color-muted); }
+.live-also-links { display: flex; flex-wrap: wrap; gap: 0 var(--ra-space-2); }
+.live-also-link {
+  display: inline-flex;
+  align-items: center;
+  min-height: var(--ra-tap);
+  padding-inline: var(--ra-space-2);
+}
+.live-note { color: var(--ra-color-muted); font-size: var(--ra-text-sm); }

@@ -3,7 +3,7 @@
 <nav class="tabs" aria-label="Pages">
 <ul>
 {% for item in nav %}
-<li><a href="{{ item.href }}"{% if item.current %} aria-current="page"{% endif %}>{{ item.title }}</a></li>
+<li><a href="{{ item.href }}"{% if item.current %} aria-current="page"{% endif %}>{{ item.title }}{% if item.live %}<span class="live-badge" data-live-badge hidden><span class="live-dot" aria-hidden="true"></span>LIVE</span>{% endif %}</a></li>
 {% endfor %}
 </ul>
 </nav>
