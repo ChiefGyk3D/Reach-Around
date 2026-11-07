@@ -23,6 +23,9 @@ export interface BodyOptions {
 const DEFAULT_DEADLINE_MS = 10_000;
 /** More consecutive zero-length chunks than this is a hostile stream. */
 const MAX_EMPTY_CHUNKS = 8;
+/** More non-empty chunks than this is refused, whatever the byte cap. */
+const MAX_CHUNKS = 4096;
+const INITIAL_BUFFER = 4096;
 
 const STATUS: Record<BodyErrorCode, 400 | 408 | 411 | 413> = {
   too_large: 413,
@@ -86,9 +89,11 @@ export async function readBoundedBody(request: Request, maxBytes: number, opts: 
     const expired = new Promise<"timeout">((resolve) => {
       timer = setTimeout(() => resolve("timeout"), deadlineMs);
     });
-    const chunks: Uint8Array[] = [];
+    // One growing buffer: no per-chunk objects are retained.
+    let buf = new Uint8Array(Math.min(cap, declared !== null ? declared : INITIAL_BUFFER));
     let total = 0;
     let empties = 0;
+    let chunks = 0;
     try {
       for (;;) {
         const step = await Promise.race([reader.read(), expired]);
@@ -115,7 +120,16 @@ export async function readBoundedBody(request: Request, maxBytes: number, opts: 
           discard(reader); // CONTROL:body-cap
           return fail("too_large");
         }
-        chunks.push(value);
+        if (++chunks > MAX_CHUNKS) {
+          discard(reader);
+          return fail("bad_stream");
+        }
+        if (total > buf.length) {
+          const grown = new Uint8Array(Math.min(cap, Math.max(total, buf.length * 2)));
+          grown.set(buf.subarray(0, total - value.byteLength));
+          buf = grown;
+        }
+        buf.set(value, total - value.byteLength);
       }
     } catch {
       discard(reader);
@@ -126,12 +140,7 @@ export async function readBoundedBody(request: Request, maxBytes: number, opts: 
 
     if (declared !== null && declared !== total) return fail("length_mismatch");
 
-    const bytes = new Uint8Array(total);
-    let at = 0;
-    for (const c of chunks) {
-      bytes.set(c, at);
-      at += c.byteLength;
-    }
+    const bytes = buf.length === total ? buf : buf.slice(0, total);
     return { ok: true, bytes };
   } catch {
     discard(body);

@@ -182,3 +182,95 @@ describe("readBoundedBody: stalls and empty chunks", () => {
     expect(r).toMatchObject({ ok: false, code: "too_large" });
   });
 });
+
+describe("readBoundedBody: chunk count is bounded", () => {
+  it("thousands of one-byte chunks inside the byte cap are refused as a bad stream and cancelled", async () => {
+    let cancelled = false;
+    let n = 0;
+    const body = new ReadableStream<Uint8Array>({
+      pull(c) {
+        n++;
+        c.enqueue(new Uint8Array([97]));
+      },
+      cancel() {
+        cancelled = true;
+      },
+    }, { highWaterMark: 0 });
+    const r = await readBoundedBody(req(body), 65_536);
+    expect(r).toMatchObject({ ok: false, code: "bad_stream", status: 400 });
+    expect(cancelled).toBe(true);
+    expect(n).toBeLessThanOrEqual(4100);
+  });
+  it("a body of many small chunks under the chunk limit is returned intact", async () => {
+    let sent = 0;
+    const body = new ReadableStream<Uint8Array>({
+      pull(c) {
+        if (sent >= 1000) return c.close();
+        c.enqueue(new Uint8Array([sent++ % 256]));
+      },
+    }, { highWaterMark: 0 });
+    const r = await readBoundedBody(req(body), 65_536);
+    expect(r.ok && r.bytes.length).toBe(1000);
+    if (r.ok) expect(r.bytes[257]).toBe(1);
+  });
+});
+
+describe("readBoundedBody: cancellation happens on every refusal path", () => {
+  function watched(make: (c: ReadableStreamDefaultController<Uint8Array>) => void): { body: ReadableStream<Uint8Array>; spy: { cancelled: number } } {
+    const spy = { cancelled: 0 };
+    const body = new ReadableStream<Uint8Array>({
+      pull: make,
+      cancel() {
+        spy.cancelled++;
+      },
+    }, { highWaterMark: 0 });
+    return { body, spy };
+  }
+  const chunk = (n: number) => (c: ReadableStreamDefaultController<Uint8Array>) => c.enqueue(new Uint8Array(n).fill(1));
+
+  it("declared length over the cap", async () => {
+    const { body, spy } = watched(chunk(1));
+    await readBoundedBody(req(body, { "Content-Length": "5000" }), 1024);
+    expect(spy.cancelled).toBe(1);
+  });
+  it("malformed declared length", async () => {
+    const { body, spy } = watched(chunk(1));
+    await readBoundedBody(req(body, { "Content-Length": "abc" }), 1024);
+    expect(spy.cancelled).toBe(1);
+  });
+  it("missing length when required", async () => {
+    const { body, spy } = watched(chunk(1));
+    await readBoundedBody(req(body), 1024, { requireLength: true });
+    expect(spy.cancelled).toBe(1);
+  });
+  it("streamed bytes over the cap", async () => {
+    const { body, spy } = watched(chunk(512));
+    await readBoundedBody(req(body), 1024);
+    expect(spy.cancelled).toBe(1);
+  });
+  it("stalled stream at the deadline", async () => {
+    const { body, spy } = watched(() => new Promise(() => undefined) as never);
+    const r = await readBoundedBody(req(body), 1024, { deadlineMs: 20 });
+    expect(r).toMatchObject({ code: "timeout" });
+    expect(spy.cancelled).toBe(1);
+  });
+  it("too many empty chunks", async () => {
+    const { body, spy } = watched((c) => c.enqueue(new Uint8Array(0)));
+    await readBoundedBody(req(body), 1024);
+    expect(spy.cancelled).toBe(1);
+  });
+  it("a chunk that is not bytes", async () => {
+    const spy = { cancelled: 0 };
+    const body = new ReadableStream<unknown>({
+      pull(c) {
+        c.enqueue("text");
+      },
+      cancel() {
+        spy.cancelled++;
+      },
+    }, { highWaterMark: 0 }) as unknown as ReadableStream<Uint8Array>;
+    const r = await readBoundedBody(req(body), 1024);
+    expect(r).toMatchObject({ code: "aborted" });
+    expect(spy.cancelled).toBe(1);
+  });
+});
