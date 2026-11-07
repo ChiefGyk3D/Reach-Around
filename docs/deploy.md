@@ -249,14 +249,95 @@ Put the identity UUID in the repository variable `DOPPLER_IDENTITY_ID`. A
 Doppler service token in the secret `DOPPLER_TOKEN` also works, but it is a
 long-lived credential in GitHub; use it only in an emergency and prefer OIDC.
 
+## Daily follower counts (test deployment)
+
+`deploy-test.yml` also runs once a day (06:23 UTC) and by hand. Its `counts`
+job runs first, refreshes the numbers, and hands one `numbers.json` to the
+build, which reads it with `--numbers`. Every deployment, manual or scheduled,
+therefore carries fresh numbers. The job can only read the repository; the keys
+reach one step only (`Refresh the counts`), after every install step.
+
+What it needs from `examples/instance/site.yaml`: a `numbers:` block naming the
+sources, and platform items for the page. Neither exists in the shipped example,
+so until the maintainer adds them (with the real public handles) the job only
+passes through a hand-kept `examples/instance/numbers.json`, if there is one.
+Hand-kept platforms (TikTok, Instagram, X, Threads, LinkedIn, Kick: the engine
+has no source for them) stay in that file with their `as_of` date; the run
+prints a warning for every entry older than 30 days.
+
+**Keyless sources** (Mastodon-compatible servers, Bluesky, GitHub, Discord
+invites, Matrix) need nothing.
+
+**Keyed sources** read `YOUTUBE_API_KEY`, `TWITCH_CLIENT_ID` and
+`TWITCH_CLIENT_SECRET`. Pick where they come from:
+
+1. **GitHub Actions secrets (default).** Add the secrets of those names under
+   Settings > Secrets and variables > Actions. Nothing else to set. A name you
+   do not set is empty and its source is skipped.
+2. **Doppler over GitHub OIDC (opt in).** Set three repository **variables**:
+   `DOPPLER_COUNTS_IDENTITY_ID` (the UUID of a Service Account Identity made
+   for this job alone; not the `DOPPLER_IDENTITY_ID` the deploy job uses),
+   `DOPPLER_COUNTS_PROJECT` and `DOPPLER_COUNTS_CONFIG`. There is no default
+   project or config: use a dedicated project that holds social-media
+   credentials only, not the shared `ci` project. The Doppler step runs only
+   when all three are set; otherwise the GitHub secrets above are used. No
+   long-lived token is stored. `COUNTS_SECRET_NAMES` (optional variable,
+   comma-separated) limits which names are fetched; the default is the three
+   above, and a name missing from the Doppler config fails the run. The values
+   come back as one masked step output read by the refresh step; nothing is
+   written to the job environment. A value in Doppler wins over a GitHub secret
+   of the same name.
+
+**Trust policy for the Doppler identity.** Create a separate Service Account
+Identity for this job, never reuse the one the `ci` project uses. Bind its OIDC
+trust to this repository and the `main` ref (subject
+`repo:OWNER/REPO:ref:refs/heads/main`), and give it read access to the
+dedicated social-media project and config only. The job that can request the
+token (`counts`) installs wheels only (`--no-index --only-binary`); the job that
+builds from source (`wheels`) has no `id-token` permission and no keys. The one
+step that holds the keys is dependency code that runs with them, so the Doppler
+config must hold only the count-source keys. The keys cannot go to another job:
+GitHub drops job outputs that contain masked values, so the fetch and the
+refresh stay in one job.
+
+**Accepted tradeoff.** The refresh job installs the engine from wheels built
+earlier in the same run, without a per-wheel hash for the engine itself (its
+dependencies are hashed). That trust is in the workflow run, not in a separate
+registry; a stricter option would be to publish and hash-pin the engine.
+
+**Skipping the counts.** A manual run has a `skip_counts` input (default off).
+Turn it on to redeploy with the `numbers.json` committed beside the config when
+a count source or the Doppler step is down. The wheels and counts jobs do not
+run, and the build does not wait for them. A scheduled run never skips, and a
+failed counts job stops the deployment unless the run asked to skip it.
+
+**When the counts stop.** GitHub disables scheduled workflows after 60 days
+without repository activity, and nothing alerts you. The run also warns when a
+hand-kept entry's `as_of` is over 30 days old, but only while the job runs.
+If the numbers look frozen, check the Actions tab for a disabled schedule and
+re-enable it.
+
+A scheduled run waits for the `test` environment's reviewer on the `deploy` job
+if one is required (section 2); remove the required reviewer there if the test
+site should update unattended. A source that fails keeps its old number and
+shows as a warning; the deployment continues.
+
 ## Egress control
 
-Both jobs start with `step-security/harden-runner`, followed by an egress
+The jobs start with `step-security/harden-runner`, followed by an egress
 canary that says whether a failure is a broken runner network or a wrong list.
 
 - **`deploy` is in block mode** with an explicit allow-list of `host:443`
   entries (no wildcards): GitHub, the npm registry, `api.doppler.com` and
   `api.cloudflare.com`. This is the job that holds the Cloudflare token.
+- **`counts` is in audit mode** for two reasons that cannot be listed: the
+  wheels artifact comes from a blob host whose name varies per run, and the
+  Mastodon and Matrix sources use hosts named in the config. It needs no PyPI
+  host, because it installs from the artifact. The fixed hosts it uses are
+  GitHub, the Doppler API, and per source kind `public.api.bsky.app`,
+  `discord.com`, `www.googleapis.com`, `id.twitch.tv` and `api.twitch.tv`. The
+  script also hands the refresh only a short list of environment variables, so
+  the runner's tokens never reach the engine.
 - **`build` is in audit mode.** Artifact upload goes to a blob host whose name
   varies per run and cannot be listed without a wildcard, so a block-mode list
   would stop every build at upload. The build job holds no secrets and installs
