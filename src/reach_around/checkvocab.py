@@ -187,6 +187,31 @@ VOCAB: dict[str, tuple[str, str]] = {
         "has a { } placeholder that is not allowed",
         "Only {tab}, {creator} and {site} may appear in braces.",
     ),
+    "no_html": (
+        "contains HTML characters (< or >)",
+        "Write plain text; the page adds any formatting itself.",
+    ),
+    "kit_manual_date": (
+        "a number you type in needs an as_of date",
+        "Add as_of with the day you read the number, like 2027-03-01.",
+    ),
+    "kit_counts_value": (
+        "a number read from the counts file cannot also have a value or as_of",
+        "Delete value and as_of, or change source to manual.",
+    ),
+    "kit_gate_off": (
+        "the kit has partners, case studies, rates or demographics, which need "
+        "the gate",
+        "Set features.kit_gate to true, or remove those entries.",
+    ),
+    "kit_metric_twice": (
+        "the same platform and label are listed more than once",
+        "Give each number its own platform and label pair.",
+    ),
+    "kit_platform": (
+        "the platform name is not one Reach Around knows",
+        f"Use a platform name from the platforms block; see {DOCS}.",
+    ),
     "robots": ("the robots setting is not allowed", f"See robots in {DOCS}."),
     # --- validators that look at the whole config
     "duplicate_id": (

@@ -32,3 +32,19 @@ def test_customizing_doc_example_validates(tmp_path: Path) -> None:
     )
     config = load_site_config(sample)
     assert config.tabs
+
+
+def test_kit_doc_example_validates(tmp_path: Path) -> None:
+    text = (ROOT / "docs" / "config.md").read_text(encoding="utf-8")
+    section = text[text.index("## `kit`") : text.index("## `numbers`")]
+    match = _YAML_BLOCK.search(section)
+    assert match is not None
+    body = (
+        "version: 1\ncreator: {name: Example}\ntabs:\n  - id: links\n    title: Links\n"
+        "    blocks:\n      - {id: home, title: Home, url: 'https://example.com/'}\n"
+        + match.group(1)
+    )
+    sample = tmp_path / "site.yaml"
+    sample.write_text(body, encoding="utf-8")
+    config = load_site_config(sample)
+    assert config.kit is not None and config.kit.rates
