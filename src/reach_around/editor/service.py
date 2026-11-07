@@ -655,7 +655,12 @@ class EditorService:
 
         try:
             result = editing.apply(
-                self.config, compute, dry_run=False, backup=True, force_path=True
+                self.config,
+                compute,
+                dry_run=False,
+                backup=True,
+                force_path=True,
+                no_symlinks=True,
             )
         except _Stale as stale:
             raise RouteError(
@@ -675,7 +680,7 @@ class EditorService:
             # read the reply is built from, so no cooperating writer slips in.
             lock: int | None = None
             try:
-                lock = editing.lock_config(self.config)
+                lock = editing.lock_config(self.config, no_symlinks=True)
                 History(self.config).record_write(result.old, result.new, label)
                 recorded = True
                 loaded = self._load()
@@ -779,6 +784,7 @@ class EditorService:
                 dry_run=False,
                 backup=True,
                 force_path=True,
+                no_symlinks=True,
                 restore=True,
             )
 

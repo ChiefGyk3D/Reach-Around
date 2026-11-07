@@ -36,6 +36,7 @@ from socketserver import BaseServer
 from types import FrameType
 from typing import Any, Protocol
 
+from reach_around import editing
 from reach_around.editor.guard import (
     JSON_CAP,
     MAX_HEADER_BYTES,
@@ -630,7 +631,10 @@ class EditorSession:
         if host != BIND_ADDRESS:
             raise EditorError(f"the editor binds {BIND_ADDRESS} only, not {host!r}")
         self.address = host
-        self.config = config.resolve()
+        try:
+            self.config = editing.safe_config_path(config)
+        except editing.EditError as exc:
+            raise EditorError(str(exc)) from None
         if read_config_bytes(self.config) is None:
             raise EditorError(f"cannot read the config file {config}")
         self.service = EditorService(

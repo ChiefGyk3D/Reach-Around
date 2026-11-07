@@ -80,7 +80,9 @@ Compute = Callable[[str, dict[str, Any]], tuple[str, dict[str, Any]]]
 # ---- path and file handling ----
 
 
-def resolve_config(path: Path, *, force_path: bool) -> Path:
+def resolve_config(path: Path, *, force_path: bool, no_symlinks: bool = False) -> Path:
+    if no_symlinks:
+        return safe_config_path(path)
     if path.is_symlink():
         if not force_path:
             raise EditError(
@@ -95,6 +97,64 @@ def resolve_config(path: Path, *, force_path: bool) -> Path:
             "folder or pass --force-path"
         )
     return resolved
+
+
+def _unsafe(path: Path, why: str) -> EditError:
+    return EditError(f"{path}: unsafe config path ({why}); give the real file path")
+
+
+def safe_config_path(path: Path) -> Path:
+    """Return the absolute config path, or refuse a path that crosses a symlink.
+
+    The path is walked one component at a time, each opened relative to the
+    previous directory descriptor with ``O_NOFOLLOW``, so a check and the
+    following step are one operation on a descriptor. The last component and
+    every directory component must be a real file or folder. The one exception
+    is a link owned by root (``/home`` pointing at ``/var/home`` on some
+    systems): an ordinary user cannot make one, so it is followed.
+    """
+    base = Path(os.path.abspath(path))
+    parts = list(base.parts[1:])
+    if not parts:
+        raise _unsafe(base, "not a file")
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC
+    cur = os.open("/", flags)
+    hops = 0
+    out: list[str] = []
+    try:
+        while parts:
+            name = parts.pop(0)
+            last = not parts
+            if name in ("", "."):
+                continue
+            if name == "..":
+                raise _unsafe(base, "contains '..'")
+            try:
+                info = os.stat(name, dir_fd=cur, follow_symlinks=False)
+            except OSError as exc:
+                raise _unsafe(base, exc.strerror or "cannot stat") from exc
+            if stat.S_ISLNK(info.st_mode):
+                hops += 1
+                if last or info.st_uid != 0 or hops > 20:
+                    raise _unsafe(base, "a symlink")
+                target = os.readlink(name, dir_fd=cur)
+                if target.startswith("/"):
+                    os.close(cur)
+                    cur = os.open("/", flags)
+                    out = []
+                parts = [t for t in Path(target).parts if t != "/"] + parts
+                continue
+            out.append(name)
+            if not last:
+                try:
+                    nxt = os.open(name, flags | os.O_NOFOLLOW, dir_fd=cur)
+                except OSError as exc:
+                    raise _unsafe(base, exc.strerror or "cannot open") from exc
+                os.close(cur)
+                cur = nxt
+    finally:
+        os.close(cur)
+    return Path("/", *out)
 
 
 def _decode(path: Path, data: bytes) -> str:
@@ -118,9 +178,11 @@ class _Snapshot:
     sha256: str
 
 
-def lock_config(config: Path) -> int:
+def lock_config(config: Path, *, no_symlinks: bool = False) -> int:
     """Lock the config (as ``apply`` does) and return the descriptor to close."""
-    return _open_locked(resolve_config(config, force_path=True))
+    return _open_locked(
+        resolve_config(config, force_path=True, no_symlinks=no_symlinks)
+    )
 
 
 def _read_fd(fd: int, path: Path) -> bytes:
@@ -378,6 +440,7 @@ def apply(
     dry_run: bool,
     backup: bool,
     force_path: bool,
+    no_symlinks: bool = False,
     validate_slot: Callable[[str, Any], None] | None = None,
     restore: bool = False,
 ) -> Result:
@@ -392,7 +455,7 @@ def apply(
     run one after the other. Against any other writer, the file's identity and
     hash are re-checked right before the rename; a change is refused.
     """
-    path = resolve_config(config, force_path=force_path)
+    path = resolve_config(config, force_path=force_path, no_symlinks=no_symlinks)
     lock = _open_locked(path)
     try:
         data = _read_fd(lock, path)
@@ -441,6 +504,8 @@ def apply(
                 raise
             try:
                 _before_replace(path)
+                if no_symlinks:
+                    safe_config_path(path)  # still a plain path right before the swap
                 _verify_unchanged(path, snap)
             except BaseException:
                 # A refused edit must not cost the previous backup.
