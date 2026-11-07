@@ -1652,6 +1652,42 @@
           "default": null,
           "title": "Mascot"
         },
+        "mascot_opacity": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Mascot Opacity"
+        },
+        "mascot_position": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Mascot Position"
+        },
+        "mascot_size": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Mascot Size"
+        },
         "mode": {
           "default": "auto",
           "enum": [
@@ -1876,6 +1912,9 @@
           "license": null
         },
         "mascot": null,
+        "mascot_opacity": null,
+        "mascot_position": null,
+        "mascot_size": null,
         "mode": "auto",
         "radius": "0.5rem"
       }

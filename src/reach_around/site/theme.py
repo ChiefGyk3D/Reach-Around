@@ -41,11 +41,15 @@ RESERVED_FOLDERS: frozenset[str] = frozenset({"static", "privacy"})
 DEFAULT_FONT_BODY = "system-ui, sans-serif"
 DEFAULT_COLUMN_WIDTH = "35rem"
 MAX_BACKGROUND_DIM = 0.9
+MAX_MASCOT_OPACITY = 0.4  # keeps text over the faded mascot readable (AA)
 
 ALLOWED_PROPERTIES: frozenset[str] = frozenset(
     {f"--ra-color-{key.replace('_', '-')}" for key in COLOR_KEYS}
     | {
         "--ra-mascot-image",
+        "--ra-mascot-opacity",
+        "--ra-mascot-size",
+        "--ra-mascot-position",
         "--ra-bg-dim",
         "--ra-font-body",
         "--ra-font-heading",
@@ -164,6 +168,75 @@ def check_length(value: str) -> str:
             f"not {value[:40]!r}"
         )
     return value
+
+
+_MASCOT_SIZE_LENGTH = re.compile(r"^(\d{1,3}(?:\.\d{1,3})?)rem$")
+_POSITION_X = frozenset({"left", "right"})
+_POSITION_Y = frozenset({"top", "bottom"})
+_POSITION_KEYWORDS = _POSITION_X | _POSITION_Y | {"center"}
+_PERCENT = re.compile(r"^(\d{1,3}(?:\.\d{1,3})?)%$")
+
+
+def check_mascot_opacity(value: float) -> float:
+    """Return ``value`` if it is a finite number from 0 to ``MAX_MASCOT_OPACITY``."""
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, (int, float))
+        or not 0.0 <= value <= MAX_MASCOT_OPACITY
+    ):
+        raise ValueError(f"must be a number from 0 to {MAX_MASCOT_OPACITY}")
+    return value
+
+
+def check_mascot_size(value: str) -> str:
+    """Return ``value`` if it is ``cover``, ``contain`` or 1rem to 200rem."""
+    if not isinstance(value, str):
+        raise ValueError("must be text")
+    check_css_value(value)
+    if value in ("cover", "contain"):
+        return value
+    match = _MASCOT_SIZE_LENGTH.match(value)
+    if match and 1.0 <= float(match.group(1)) <= 200.0:
+        return value
+    raise ValueError(
+        f"must be cover, contain or a length from 1rem to 200rem, not {value[:40]!r}"
+    )
+
+
+def check_mascot_position(value: str) -> str:
+    """Return ``value`` (single-spaced) if it is one or two position terms.
+
+    A term is ``center``, ``top``, ``bottom``, ``left``, ``right`` or a
+    percentage from 0% to 100%.
+    """
+    if not isinstance(value, str):
+        raise ValueError("must be text")
+    check_css_value(value)
+    terms = value.split(" ")
+    terms = [t for t in terms if t]
+    if value != value.strip() or not 1 <= len(terms) <= 2:
+        raise ValueError(f"must be one or two position terms, not {value[:40]!r}")
+    for term in terms:
+        percent = _PERCENT.match(term)
+        if term in _POSITION_KEYWORDS or (percent and float(percent.group(1)) <= 100.0):
+            continue
+        raise ValueError(
+            "terms must be center, top, bottom, left, right or 0% to 100%, "
+            f"not {term[:40]!r}"
+        )
+    if len(terms) == 2:
+        first, second = terms
+        # Horizontal term first, vertical second, unless both are keywords.
+        keyword_pair = first in _POSITION_KEYWORDS and second in _POSITION_KEYWORDS
+        if keyword_pair:
+            bad = (first in _POSITION_X and second in _POSITION_X) or (
+                first in _POSITION_Y and second in _POSITION_Y
+            )
+        else:
+            bad = first in _POSITION_Y or second in _POSITION_X
+        if bad:
+            raise ValueError(f"the two terms clash, not {value[:40]!r}")
+    return " ".join(terms)
 
 
 def _check_asset_path(value: str, extensions: tuple[str, ...], what: str) -> str:
@@ -313,6 +386,24 @@ def theme_css(theme: Theme) -> str:
         declarations["--ra-bg-dim"] = f"{dim:g}"
     if theme.mascot is not None:
         declarations["--ra-mascot-image"] = _css_url(check_image_path(theme.mascot))
+    if theme.mascot_opacity is not None:
+        try:
+            opacity = check_mascot_opacity(theme.mascot_opacity)
+        except ValueError as exc:
+            raise ValueError(f"mascot_opacity {exc}") from None
+        declarations["--ra-mascot-opacity"] = f"{opacity:g}"
+    if theme.mascot_size is not None:
+        try:
+            declarations["--ra-mascot-size"] = check_mascot_size(theme.mascot_size)
+        except ValueError as exc:
+            raise ValueError(f"mascot_size {exc}") from None
+    if theme.mascot_position is not None:
+        try:
+            declarations["--ra-mascot-position"] = check_mascot_position(
+                theme.mascot_position
+            )
+        except ValueError as exc:
+            raise ValueError(f"mascot_position {exc}") from None
     if theme.background is not None:
         declarations["--ra-bg-image"] = _css_url(check_background(theme.background))
     if theme.column_width != DEFAULT_COLUMN_WIDTH:

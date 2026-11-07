@@ -641,6 +641,9 @@ theme:
     heading: fonts/heading.woff2
   background: media/background.webp
   mascot: media/mascot.svg
+  mascot_opacity: 0.2
+  mascot_size: contain
+  mascot_position: center top
   background_dim: 0.6
   column_width: 40rem
   radius: 1rem
@@ -663,6 +666,9 @@ tabs:
 | `background` | string | none | The full-bleed page background, drawn under the carbon-fiber texture. A relative image path (preferred) or an `https://` URL. |
 | `background_dim` | number 0 to 0.9 | `0` | A plain number (`0.6`, not `"0.6"` or `true`). Darkens the page background image with a black overlay, in CSS only. If your background image has a bright subject behind the header, raise this. The mascot is not affected. |
 | `mascot` | string | none | The giant faded image behind the column. A relative image path only. |
+| `mascot_opacity` | number 0 to 0.4 | `0.12` | A plain number. How visible the mascot is. Capped at 0.4 so text over it stays readable. Unset keeps the stylesheet's `0.12`. |
+| `mascot_size` | `cover`, `contain` or a `rem` length | `cover` | A length is `1rem` to `200rem` (`40rem`). Anything else is refused. |
+| `mascot_position` | one or two terms | `center` | Each term is `center`, `top`, `bottom`, `left`, `right` or `0%` to `100%`, such as `center top` or `20% 80%`. A horizontal term comes before a vertical one when you mix a percentage with a keyword. |
 | `column_width` | length | `35rem` (560 px) | `px`, `rem`, `em`, `ch`, `%` or `vw`. |
 | `radius` | length | `0.5rem` | Base corner radius for cards and sections. |
 | `button_style` | `pill`, `rounded`, `square` | `rounded` | `rounded` is the 36 px pill radius, `pill` is fully round, `square` has no radius. |
