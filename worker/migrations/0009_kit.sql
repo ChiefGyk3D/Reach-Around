@@ -33,6 +33,10 @@ CREATE TABLE leads (
       AND length(email) - length(replace(email, '@', '')) = 1
       AND instr(email, '@') BETWEEN 2 AND 65
       AND substr(email, instr(email, '@') + 1) GLOB '*.*'
+      AND substr(email, instr(email, '@') + 1) NOT GLOB '*[^a-z0-9.-]*'
+      -- No label over 63 characters. D1 caps a GLOB pattern at 50 bytes, so map every
+      -- label character to x, fold each run of eight x into one y, and refuse eight y.
+      AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(substr(email, instr(email, '@') + 1), 'a', 'x'), 'b', 'x'), 'c', 'x'), 'd', 'x'), 'e', 'x'), 'f', 'x'), 'g', 'x'), 'h', 'x'), 'i', 'x'), 'j', 'x'), 'k', 'x'), 'l', 'x'), 'm', 'x'), 'n', 'x'), 'o', 'x'), 'p', 'x'), 'q', 'x'), 'r', 'x'), 's', 'x'), 't', 'x'), 'u', 'x'), 'v', 'x'), 'w', 'x'), 'x', 'x'), 'y', 'x'), 'z', 'x'), '0', 'x'), '1', 'x'), '2', 'x'), '3', 'x'), '4', 'x'), '5', 'x'), '6', 'x'), '7', 'x'), '8', 'x'), '9', 'x'), '-', 'x'), 'xxxxxxxx', 'y') NOT GLOB '*yyyyyyyy*'
       AND email NOT GLOB '*..*'
       AND email NOT GLOB '.*' AND email NOT GLOB '*.@*'
       AND email NOT GLOB '*@.*' AND email NOT GLOB '*.'
@@ -44,10 +48,10 @@ CREATE TABLE leads (
   verified_ts INTEGER CHECK (verified_ts IS NULL OR verified_ts >= 0),
   source TEXT NOT NULL CHECK (source IN ('gate', 'email')),
   country TEXT CHECK (country IS NULL OR (length(country) = 2 AND country NOT GLOB '*[^A-Z]*')),
-  last_view_alert_ts INTEGER,
-  last_view_event_ts INTEGER,
-  last_cc_alert_ts INTEGER,
-  session_floor_ts INTEGER
+  last_view_alert_ts INTEGER CHECK (last_view_alert_ts IS NULL OR last_view_alert_ts >= 0),
+  last_view_event_ts INTEGER CHECK (last_view_event_ts IS NULL OR last_view_event_ts >= 0),
+  last_cc_alert_ts INTEGER CHECK (last_cc_alert_ts IS NULL OR last_cc_alert_ts >= 0),
+  session_floor_ts INTEGER CHECK (session_floor_ts IS NULL OR session_floor_ts >= 0)
 ) STRICT;
 CREATE INDEX idx_leads_created_ts ON leads (created_ts);
 CREATE INDEX idx_leads_verified_ts ON leads (verified_ts);
@@ -70,6 +74,13 @@ CREATE TABLE counters (
     length(day) IN (10, 13)
     AND day GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]*'
     AND (length(day) = 10 OR substr(day, 11) GLOB 'T[0-9][0-9]')
+    -- A real calendar day: month 01-12, day 01-31, short months, and February at
+    -- most 29 (leap years are not checked), hour 00-23.
+    AND substr(day, 6, 2) BETWEEN '01' AND '12'
+    AND substr(day, 9, 2) BETWEEN '01' AND '31'
+    AND NOT (substr(day, 6, 2) = '02' AND substr(day, 9, 2) > '29')
+    AND NOT (substr(day, 6, 2) IN ('04', '06', '09', '11') AND substr(day, 9, 2) = '31')
+    AND (length(day) = 10 OR substr(day, 12, 2) <= '23')
   ),
   count INTEGER NOT NULL CHECK (count >= 0),
   PRIMARY KEY (key, day)

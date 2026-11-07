@@ -58,6 +58,17 @@ describe("upsertLead", () => {
     expect(row!.source).toBe("gate");
   });
 
+  it("distinct addresses racing for the last slot never exceed the cap", async () => {
+    const cap = 5;
+    for (let i = 0; i < cap - 1; i++) await upsertLead(DB, `seed${i}@example.com`, "gate", null, NOW, cap);
+    const rs = await Promise.all(
+      Array.from({ length: 8 }, (_, i) => upsertLead(DB, `racer${i}@example.com`, "gate", null, NOW, cap)),
+    );
+    expect(rs.filter((r) => r !== null).length).toBe(1);
+    expect(rs.filter((r) => r === null).length).toBe(7);
+    expect(await countLeads(DB)).toBe(cap);
+  });
+
   it("concurrent upserts of one address produce one row and one created", async () => {
     const rs = await Promise.all(
       Array.from({ length: 8 }, () => upsertLead(DB, "race@example.com", "gate", null, NOW)),
@@ -365,6 +376,43 @@ describe("schema", () => {
       await expect(run("INSERT INTO counters (key, day, count) VALUES ('gate', ?, 1)", day), day).rejects.toThrow();
     }
     await expect(run("INSERT INTO counters (key, day, count) VALUES ('gate', '2027-01-03', -1)")).rejects.toThrow();
+  });
+
+  it("the email CHECK holds the domain to the helper grammar", async () => {
+    const label63 = "b".repeat(63);
+    const bad = [
+      "a@b_c.com",
+      "a@b+c.com",
+      "a@" + "b".repeat(64) + ".com",
+      "a@x." + "b".repeat(64) + ".com",
+      "a@" + "b".repeat(70) + ".com",
+      "a@b.com" + "x".repeat(0) + ".-com",
+    ];
+    for (const e of bad) await expect(run(LEAD, ID, e, 1, 1, "gate", null), e).rejects.toThrow();
+    // the local part stays permissive, as in the helper
+    await run(LEAD, "b".repeat(32), "a_b+c.d-e@" + label63 + ".com", 1, 1, "gate", null);
+    expect(await countLeads(DB)).toBe(1);
+  });
+
+  it("every nullable timestamp column is NULL or non-negative", async () => {
+    await run(LEAD, ID, "x@y.com", 1, 1, "gate", null);
+    for (const col of ["verified_ts", "last_view_alert_ts", "last_view_event_ts", "last_cc_alert_ts", "session_floor_ts"]) {
+      await expect(run(`UPDATE leads SET ${col} = -9 WHERE id = ?`, ID), col).rejects.toThrow();
+      await run(`UPDATE leads SET ${col} = 0 WHERE id = ?`, ID);
+      await run(`UPDATE leads SET ${col} = NULL WHERE id = ?`, ID);
+    }
+  });
+
+  it("counters.day is a real UTC day or hour", async () => {
+    const ins = "INSERT INTO counters (key, day, count) VALUES ('gate', ?, 1)";
+    const bad = [
+      "2027-00-10", "2027-13-10", "2027-01-00", "2027-01-32", "2027-02-30", "2027-02-31",
+      "2027-04-31", "2027-06-31", "2027-09-31", "2027-11-31", "2027-01-01T24", "2027-01-01T99",
+    ];
+    for (const d of bad) await expect(run(ins, d), d).rejects.toThrow();
+    for (const d of ["2027-01-31", "2027-02-28", "2028-02-29", "2027-04-30", "2027-12-31", "2027-01-01T00", "2027-01-01T23"]) {
+      await run(ins, d);
+    }
   });
 
   it("leads reject uppercase, malformed and non-email text, lowercase millisecond-free ids, and bad ranges", async () => {
