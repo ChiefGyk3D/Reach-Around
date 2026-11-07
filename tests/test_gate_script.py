@@ -201,3 +201,14 @@ def test_missing_base_ref_is_an_error(repo: Path) -> None:
         check=False,
     )
     assert res.returncode == 2
+
+
+def test_full_gate_runs_plain_mypy_like_ci(repo: Path) -> None:
+    """CI runs bare `mypy` (src and tests, per pyproject); the gate must match."""
+    line = next(
+        ln
+        for ln in _gate(repo, "--plan").stdout.splitlines()
+        if ln.startswith("plan: mypy:")
+    )
+    assert line.split("plan: mypy:", 1)[1].strip().endswith("mypy")
+    assert " src" not in line

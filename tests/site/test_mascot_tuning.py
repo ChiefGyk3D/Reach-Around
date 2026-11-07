@@ -8,7 +8,7 @@ from typing import Any
 import pytest
 from pydantic import ValidationError
 
-from reach_around.config.theme import Theme
+from reach_around.config.theme import FontStack, Theme
 from reach_around.site.theme import theme_css
 
 
@@ -161,3 +161,11 @@ def test_theme_css_rechecks_values_set_past_validation() -> None:
     for field, theme in forged:
         with pytest.raises(ValueError, match=field):
             theme_css(theme)
+
+
+def test_heading_font_file_falls_back_to_a_valid_family_list() -> None:
+    # `inherit` is a CSS-wide keyword and is invalid inside a font-family list,
+    # which made the browser drop the whole declaration and never use the font.
+    css = theme_css(Theme(fonts=FontStack(heading="fonts/orbitron.woff2")))
+    assert '--ra-font-heading: "ra-heading", var(--ra-font-body);' in css
+    assert "inherit" not in css
