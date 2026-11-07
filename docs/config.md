@@ -593,9 +593,12 @@ stays otherwise. The date shown is the date of the value that won.
 
 The data a Live tab shows: Twitch and Kick as two co-equal players, a line of
 link-outs to the other platforms, a short fediverse note and, for when neither
-channel is live, one VOD link per platform. This block only carries the
-settings and refuses bad ones; the page, the player embeds and the live check
-are separate changes.
+channel is live, one VOD link per platform. The block renders a static Live
+page: the offline layout (three equal VOD cards, the also-on line and the
+fediverse note), a "status unavailable" pair of equal watch links, and the live
+state as two identical click-to-load cards that are hidden until a script (a
+later change) shows them. No player is loaded and no third-party request is
+made until a visitor clicks. See [Live tab](live.md).
 
 ```yaml
 blocks:
