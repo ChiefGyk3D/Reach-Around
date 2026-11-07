@@ -132,7 +132,7 @@ What the build enforces:
    HTML-escaped, and in a canonical form: entities, percent-encoding and JSON,
    JavaScript (`\x`, `\u`) and CSS escapes decoded until the text stops changing
    (at most 10 rounds), tags removed, Unicode NFKC, case and whitespace ignored.
-   Known text types (html, css, js, json, xml, svg, txt, webmanifest, map,
+   Known text types (html, css, js, json, xml, svg, txt, webmanifest, xhtml, map,
    `_headers`, `_redirects`) are always canonicalized; one that holds a NUL byte
    or invalid UTF-8 fails the build, naming the file and the reason. Any other
    file is sniffed by content: valid UTF-8 with no NUL byte near the start is
@@ -157,6 +157,18 @@ scope), and values under 6 characters are not searched. Those rest on the
 structure in points 1 and 2. If you use an override template for the kit pages,
 review it as code that handles gated-adjacent text. If the same wording must
 appear on a public page, reword one of them.
+
+Two tradeoffs are deliberate and not changed:
+
+- **Encoding depth is bounded.** Decoding stops after 10 rounds, so a value
+  wrapped in more than 10 layers of encoding is not recognized. The structure,
+  not the search, is what keeps such text out.
+- **Whitespace is ignored, so the search can over-match.** Comparing with all
+  whitespace removed means two different phrases can collide (for example
+  "the rapist" and "therapist", or "no where" and "nowhere"). A false positive
+  fails the build, which is the safe direction; the fix is to reword one side.
+  Invisible format characters (zero-width, joiners, bidi controls, soft hyphen)
+  are dropped in the same comparison.
 
 ### Trust assumptions
 

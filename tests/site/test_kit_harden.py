@@ -651,3 +651,149 @@ def test_a_large_text_file_hits_the_per_file_limit(
         kit_module.check_no_gated_text(
             {Path("static/x.png"): b"y" * 500}, make_config().kit
         )
+
+
+# --- final round ----------------------------------------------------------------------
+
+REMOTE_FORMS = {
+    "srcset-second": '<img srcset="/a.png 1x, https://example.com/b.png 2x" alt="">',
+    "picture-source": (
+        '<picture><source srcset="/a.webp, //example.com/b.webp"></picture>'
+    ),
+    "preload": '<link rel="preload" href="https://example.com/f.woff2" as="font">',
+    "prefetch": '<link rel="prefetch" href="//example.com/n">',
+    "icon": '<link rel="icon" href="https://example.com/i.ico">',
+    "stylesheet": '<link rel="stylesheet" href="https://example.com/s.css">',
+    "base": '<base href="https://example.com/">',
+    "meta-refresh": '<meta http-equiv="refresh" content="0; url=https://example.com/">',
+    "form-action": '<form action="https://example.com/p"></form>',
+    "object": '<object data="https://example.com/o"></object>',
+    "embed": '<embed src="https://example.com/e">',
+    "iframe": '<iframe src="//example.com/f"></iframe>',
+    "audio": '<audio src="https://example.com/a.mp3"></audio>',
+    "video-src": '<video src="https://example.com/v.mp4"></video>',
+    "video-poster": '<video poster="https://example.com/p.png"></video>',
+    "track": '<video><track src="https://example.com/t.vtt"></video>',
+    "svg-use": '<svg><use href="//example.com/a.svg#x"></use></svg>',
+    "svg-image": '<svg><image xlink:href="https://example.com/i.png"></image></svg>',
+    "style-attr-image-set": (
+        "<p style=\"background:image-set('https://example.com/a.png' 1x)\">x</p>"
+    ),
+    "style-attr-escape": '<p style="background:url(\\68 ttps://example.com/a)">x</p>',
+    "font-face": "<style>@font-face{src:url(https://example.com/f.woff2)}</style>",
+    "style-import": "<style>@import url(x.css);</style>",
+}
+
+
+@pytest.mark.parametrize("name", list(REMOTE_FORMS))
+def test_each_remote_request_form_fails_the_gated_page(name: str) -> None:
+    with pytest.raises(kit_module.KitRemoteRequestError) as caught:
+        kit_module.check_gated_requests(REMOTE_FORMS[name], {})
+    assert "example.com" not in str(caught.value)
+
+
+def test_local_request_forms_are_fine() -> None:
+    page = (
+        '<base href="/"><meta http-equiv="refresh" content="5; url=/kit/">'
+        '<img srcset="/a.png 1x, /b.png 2x" alt=""><form action="/kit/retry/"></form>'
+        '<link rel="preload" href="/static/f.woff2" as="font">'
+        '<svg><use href="#x"></use></svg><video poster="/p.png"></video>'
+    )
+    kit_module.check_gated_requests(page, {})
+
+
+def test_the_build_runs_the_request_check_on_the_gated_page(tmp_path: Path) -> None:
+    overrides = tmp_path / "overrides"
+    (overrides / "templates").mkdir(parents=True)
+    (overrides / "templates" / "kit_gated.html").write_text(
+        '{% extends "base.html" %}{% block content %}'
+        '<img srcset="/a.png 1x, https://example.com/b.png 2x" alt="">'
+        "{% endblock %}",
+        encoding="utf-8",
+    )
+    with pytest.raises(kit_module.KitRemoteRequestError):
+        build_site(
+            make_config(),
+            tmp_path / "public",
+            today=TODAY,
+            gated_out=tmp_path / "gated",
+            overrides=overrides,
+        )
+
+
+def test_the_build_runs_the_leak_search(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[int] = []
+    real = kit_module.check_no_gated_text
+
+    def spy(files: Any, kit: Any) -> None:
+        calls.append(len(files))
+        real(files, kit)
+
+    monkeypatch.setattr(build_module, "check_no_gated_text", spy)
+    build_site(
+        make_config(), tmp_path / "public", today=TODAY, gated_out=tmp_path / "gated"
+    )
+    assert calls and calls[0] > 3
+
+
+def test_zero_width_and_format_characters_do_not_hide_a_value() -> None:
+    kit = make_config().kit
+    for filler in ("​", "­", "⁠", "‍", "‮", "﻿"):
+        hidden = filler.join(PARTNER)
+        with pytest.raises(KitLeakError):
+            kit_module.check_no_gated_text({Path("index.html"): hidden.encode()}, kit)
+
+
+def test_the_floor_is_enforced_not_just_named() -> None:
+    def kit_with(name: str) -> Any:
+        return make_config(kit_doc(partners=[{"name": name}])).kit
+
+    page = {Path("index.html"): b"<p>abcde and abcdef</p>"}
+    kit_module.check_no_gated_text(page, kit_with("abcde"))  # 5 characters: skipped
+    with pytest.raises(KitLeakError):
+        kit_module.check_no_gated_text(page, kit_with("abcdef"))  # 6: searched
+
+
+@pytest.mark.parametrize("name", ["page.xhtml", "noext", "payload.html.bin", "x.dat"])
+def test_unknown_types_that_fail_strict_utf8_are_still_canonicalized(
+    name: str,
+) -> None:
+    body = b"x " + quote(PARTNER, safe="").encode() + b" \xff"
+    expected = (KitLeakError, kit_module.KitSuspiciousFileError)
+    with pytest.raises(expected):
+        kit_module.check_no_gated_text({Path("static") / name: body}, make_config().kit)
+    if name != "page.xhtml":
+        with pytest.raises(KitLeakError):
+            kit_module.check_no_gated_text(
+                {Path("static") / name: body}, make_config().kit
+            )
+
+
+def test_xhtml_is_a_known_text_type() -> None:
+    with pytest.raises(kit_module.KitSuspiciousFileError):
+        kit_module.check_no_gated_text(
+            {Path("static/p.xhtml"): b"hello \xff"}, make_config().kit
+        )
+
+
+def test_a_nul_in_the_first_chunk_is_the_only_binary_signal_for_unknown_types() -> None:
+    kit = make_config().kit
+    text = quote(PARTNER, safe="").encode()
+    kit_module.check_no_gated_text(
+        {Path("static/blob"): b"\x00" + b"z" * 100 + text}, kit
+    )  # binary: raw search only, the encoded form is not searched
+    with pytest.raises(KitLeakError):
+        kit_module.check_no_gated_text(
+            {Path("static/blob"): b"z" * 9000 + text + b"\x00"}, kit
+        )  # a NUL after the first chunk does not downgrade it
+
+
+def test_raw_scanning_of_binary_files_has_a_limit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(kit_module, "GUARD_MAX_BINARY_BYTES", 1000)
+    files = {Path("a.png"): b"\x00" * 800, Path("b.png"): b"\x00" * 800}
+    with pytest.raises(kit_module.KitGuardLimitError, match=r"GUARD_MAX_BINARY_BYTES"):
+        kit_module.check_no_gated_text(files, make_config().kit)

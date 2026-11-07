@@ -185,6 +185,7 @@ TEXT_SUFFIXES = frozenset(
         ".svg",
         ".txt",
         ".webmanifest",
+        ".xhtml",
         ".map",
     }
 )
@@ -194,6 +195,7 @@ SNIFF_BYTES = 8192
 # error that names the limit.
 GUARD_MAX_BYTES = 64 * 1024 * 1024
 GUARD_MAX_FILE_BYTES = 8 * 1024 * 1024
+GUARD_MAX_BINARY_BYTES = 512 * 1024 * 1024
 GUARD_MAX_NEEDLES = 1000
 
 
@@ -225,6 +227,9 @@ def canonical(text: str, tags: str = "") -> str:
         text = decoded
     text = _TAG.sub(tags, text)
     text = unicodedata.normalize("NFKC", text).casefold()
+    # drop invisible format characters (zero-width, joiners, bidi controls,
+    # soft hyphen) so they cannot split a value
+    text = "".join(ch for ch in text if unicodedata.category(ch) != "Cf")
     return _SPACE.sub("", text)
 
 
@@ -260,10 +265,7 @@ def _as_text(data: bytes) -> str | None:
     ``SNIFF_BYTES``), else None (searched for raw bytes only)."""
     if b"\x00" in data[:SNIFF_BYTES]:
         return None
-    try:
-        return data.decode("utf-8")
-    except UnicodeDecodeError:
-        return None
+    return data.decode("utf-8", errors="replace")
 
 
 def _public_values(kit: KitConfig) -> set[str]:
@@ -304,6 +306,7 @@ def check_no_gated_text(files: Mapping[Path, bytes], kit: KitConfig | None) -> N
             f"limit of {GUARD_MAX_NEEDLES} (GUARD_MAX_NEEDLES)"
         )
     scanned = 0
+    binary = 0
     for rel, data in sorted(files.items()):
         for where, needle in raw:
             if needle in data:
@@ -314,6 +317,13 @@ def check_no_gated_text(files: Mapping[Path, bytes], kit: KitConfig | None) -> N
         else:
             decoded = _as_text(data)
         if decoded is None:
+            binary += len(data)
+            if binary > GUARD_MAX_BINARY_BYTES:
+                raise KitGuardLimitError(
+                    f"the public binary files total more than "
+                    f"{GUARD_MAX_BINARY_BYTES} bytes, over the leak search limit "
+                    "(GUARD_MAX_BINARY_BYTES)"
+                )
             continue
         if len(data) > GUARD_MAX_FILE_BYTES:
             raise KitGuardLimitError(
@@ -406,6 +416,9 @@ _REQUEST_ATTRS: dict[str, tuple[str, ...]] = {
     "track": ("src",),
     "input": ("src",),
     "link": ("href",),
+    "base": ("href",),
+    "form": ("action",),
+    "frame": ("src",),
     "image": ("href", "xlink:href"),
     "use": ("href", "xlink:href"),
 }
@@ -438,15 +451,23 @@ class _Requests(HTMLParser):
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         values = dict(attrs)
+        if tag == "meta" and "refresh" in (values.get("http-equiv") or "").lower():
+            target = re.search(r"url\s*=\s*(.*)", values.get("content") or "", re.I)
+            if target and _REMOTE_URL.match(target.group(1).strip("'\" ")):
+                self.remote.append("<meta http-equiv=refresh>")
         for name in _REQUEST_ATTRS.get(tag, ()):
             value = values.get(name)
             if value is None:
                 continue
-            first = value.split(",")[0] if name == "srcset" else value
-            if _REMOTE_URL.match(first):
+            candidates = (
+                [part.strip().split(" ")[0] for part in value.split(",")]
+                if name == "srcset"
+                else [value]
+            )
+            if any(_REMOTE_URL.match(item) for item in candidates):
                 self.remote.append(f"<{tag} {name}>")
             elif tag == "link" and "stylesheet" in (values.get("rel") or ""):
-                self.sheets.append(first.strip())
+                self.sheets.append(value.strip())
         if values.get("style"):
             self.styles.append(values["style"] or "")
         self._in_style = tag == "style"
