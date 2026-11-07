@@ -341,6 +341,7 @@ _VALUE_ERRORS: tuple[tuple[re.Pattern[str], str], ...] = tuple(
         (r"^a typed number needs an as_of", "kit_manual_date"),
         (r"^a number read from the counts file", "kit_counts_value"),
         (r"^the kit has gated content", "kit_gate_off"),
+        (r"^unlock_link: true is not available", "kit_unlock_link"),
         (r"^the metric .* is listed more than once", "kit_metric_twice"),
         (r"^platform must be a platform name", "kit_platform"),
         (r"^(must be at most|must not contain|background)", "style_value"),

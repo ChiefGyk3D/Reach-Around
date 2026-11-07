@@ -659,6 +659,18 @@
           "title": "Title",
           "type": "string"
         },
+        "turnstile_site_key": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Turnstile Site Key"
+        },
         "unlock_link": {
           "default": false,
           "title": "Unlock Link",
