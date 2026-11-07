@@ -67,7 +67,9 @@ def test_guard_bites() -> None:
     assert violations({"a": good + " # v1.30.0\n"}) == []
     assert violations({"a": good.replace("a" * 40, "main") + " # v1.30.0\n"})
     assert violations({"a": good + "\n"})
-    assert violations({"a": good + " # v1.30.0\n", "b": good.replace("a", "b") + " # v1.30.0\n"})
+    assert violations(
+        {"a": good + " # v1.30.0\n", "b": good.replace("a", "b") + " # v1.30.0\n"}
+    )
     assert violations({"a": "name: nothing\n"})
 
 
