@@ -249,6 +249,10 @@ VOCAB: dict[str, tuple[str, str]] = {
         "which need the gate",
         "Set features.kit_gate to true, or remove those entries.",
     ),
+    "kit_unlock_link": (
+        "unlock_link: true is not available yet (the emailed unlock link is not built)",
+        "Set unlock_link to false or remove it.",
+    ),
     "kit_metric_twice": (
         "the same platform and label are listed more than once",
         "Give each number its own platform and label pair.",
@@ -462,6 +466,7 @@ KNOWN_FIELDS: frozenset[str] = frozenset(
         "timezone",
         "title",
         "title_template",
+        "turnstile_site_key",
         "unlock_link",
         "url",
         "user",
