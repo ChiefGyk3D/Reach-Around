@@ -72,15 +72,46 @@ describe("fails closed", () => {
 });
 
 describe("kill switch", () => {
-  it("is off by default and for unrecognized values", () => {
-    for (const v of [undefined, "", "0", "false", "yes", "2", " "]) expect(isKitKilled({ KIT_KILL: v } as never)).toBe(false);
+  // Policy: unset or "" is off. Otherwise the value must be an explicit form,
+  // matched exactly (no trimming), any case. Anything else is invalid.
+  const TRUE_FORMS = ["1", "true", "TRUE", "True", "on", "ON", "yes", "Yes"];
+  const FALSE_FORMS = ["0", "false", "FALSE", "False", "off", "OFF", "no", "No"];
+  const INVALID = ["treu", "True ", " true", "2", " ", "\t1", "1\n", "tru", "yes!", "enabled", "-1", "00", "null"];
+
+  it("is off when unset or empty", () => {
+    for (const v of [undefined, ""]) expect(isKitKilled({ KIT_KILL: v } as never)).toBe(false);
     expect(isKitKilled({} as never)).toBe(false);
+    expect(load(env()).killed).toBe(false);
+    expect(load(env({ KIT_KILL: "" })).killed).toBe(false);
   });
-  it('engages on "1" or "true" in any case', () => {
-    for (const v of ["1", "true", "TRUE", "True"]) expect(isKitKilled({ KIT_KILL: v } as never)).toBe(true);
+  it.each(TRUE_FORMS)("true form %j engages", (v) => {
+    expect(isKitKilled({ KIT_KILL: v } as never)).toBe(true);
+    expect(load(env({ KIT_KILL: v })).killed).toBe(true);
   });
-  it("is reported by loadKitEnv and does not stop it loading", () => {
-    expect(load(env({ KIT_KILL: "1" })).killed).toBe(true);
+  it.each(FALSE_FORMS)("false form %j is off", (v) => {
+    expect(isKitKilled({ KIT_KILL: v } as never)).toBe(false);
+    expect(load(env({ KIT_KILL: v })).killed).toBe(false);
+  });
+  it.each(INVALID)("malformed value %j: loadKitEnv rejects, isKitKilled fails closed", (v) => {
+    expect(() => load(env({ KIT_KILL: v }))).toThrow(KitEnvError);
+    expect(isKitKilled({ KIT_KILL: v } as never)).toBe(true);
+  });
+  it("non-string values are malformed too", () => {
+    for (const v of [1, true, 0, null, {}, []]) {
+      expect(() => load(env({ KIT_KILL: v }))).toThrow(KitEnvError);
+      expect(isKitKilled({ KIT_KILL: v } as never)).toBe(true);
+    }
+  });
+  it("the rejection names the variable and never echoes the value", () => {
+    let err: unknown;
+    try {
+      load(env({ KIT_KILL: "treu-SECRETISH" }));
+    } catch (e) {
+      err = e;
+    }
+    expect((err as KitEnvError).fields).toEqual(["KIT_KILL"]);
+    expect((err as Error).message).toContain("KIT_KILL");
+    expect(`${(err as Error).message} ${JSON.stringify(err)}`).not.toContain("SECRETISH");
   });
   it("is read on every call, not cached", () => {
     const e = { KIT_KILL: "0" } as { KIT_KILL: string };
