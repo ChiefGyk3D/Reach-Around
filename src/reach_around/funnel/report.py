@@ -1,0 +1,375 @@
+# SPDX-License-Identifier: Apache-2.0
+"""Build and render the owner report from a validated export.
+
+The privacy floor is label suppression, like the Worker's small-cell fold: a
+row under ``floor`` views is never printed (default and minimum 5), and the
+rows under it are merged into one "below the floor" line only when together
+they reach the floor. It is not k-anonymity. A reader who has two tables can
+still subtract one total from another, so share the report, not the export.
+"""
+
+from __future__ import annotations
+
+from collections import defaultdict
+from collections.abc import Iterable, Mapping
+from dataclasses import dataclass, field
+from datetime import UTC, date, datetime, timedelta
+from typing import Any
+
+from reach_around.funnel.export import CLASSES, Export
+
+FLOOR = 5
+REPORT_VERSION = 1
+CLASS_NAMES = {
+    "h": "likely human",
+    "v": "verified crawler (claimed)",
+    "a": "automated",
+    "s": "suspicious",
+}
+
+
+@dataclass(frozen=True)
+class Floored:
+    shown: list[tuple[str, int]] = field(default_factory=list)
+    other: int = 0  # merged views of hidden rows; 0 unless they reach the floor
+    hidden_rows: int = 0
+
+    @property
+    def withheld(self) -> bool:
+        return not self.shown and self.other == 0
+
+
+def floor_cells(cells: Mapping[str, int], floor: int) -> Floored:
+    """Keep rows of at least ``floor`` views, largest first; merge the rest."""
+    items = sorted(
+        ((label, views) for label, views in cells.items() if views > 0),
+        key=lambda item: (-item[1], item[0]),
+    )
+    shown = [item for item in items if item[1] >= floor]
+    hidden = [item for item in items if item[1] < floor]
+    merged = sum(views for _, views in hidden)
+    return Floored(shown, merged if merged >= floor else 0, len(hidden))
+
+
+def _count(n: int, floor: int) -> int | None:
+    """A count that may be printed: zero, or at least the floor."""
+    return n if n == 0 or n >= floor else None
+
+
+def _utc_day(ts_ms: int) -> str:
+    return datetime.fromtimestamp(ts_ms / 1000, UTC).date().isoformat()
+
+
+def _in_window(day: str, since: str | None, until: str | None) -> bool:
+    return (since is None or day >= since) and (until is None or day <= until)
+
+
+def _section(
+    cells: Mapping[str, int], floor: int, top: int, present: bool
+) -> dict[str, Any]:
+    if not present:
+        return {
+            "state": "not_in_export",
+            "rows": [],
+            "other_below_floor": 0,
+            "more_rows": 0,
+        }
+    result = floor_cells(cells, floor)
+    return {
+        "state": "withheld" if result.withheld and cells else "ok",
+        "rows": [
+            {"label": label, "views": views} for label, views in result.shown[:top]
+        ],
+        "other_below_floor": result.other,
+        "more_rows": max(0, len(result.shown) - top),
+    }
+
+
+def _source_label(src_kind: str, src: str) -> str:
+    if src_kind == "d":
+        return "(direct)"
+    if src_kind == "i":
+        return "(internal)"
+    if src_kind == "u":
+        return f"utm:{src}"
+    if src_kind == "o":
+        return "(other)"
+    return src or "(unknown)"
+
+
+def _geo_label(country: str, region: str, city: str, level: str) -> str:
+    parts = [country]
+    if level in ("region", "city"):
+        parts.append(region)
+    if level == "city":
+        parts.append(city)
+    out: list[str] = []
+    for part in parts:
+        if part:
+            out.append(part)
+        else:
+            out.append("other")
+            break
+    return " / ".join(out)
+
+
+def _ratio(num: int | None, den: int | None) -> float | None:
+    if num is None or den is None or den == 0:
+        return None
+    return round(num * 100 / den, 1)
+
+
+def build_report(
+    export: Export,
+    *,
+    site: str = "links",
+    since: str | None = None,
+    until: str | None = None,
+    days: int | None = None,
+    geo: str = "country",
+    include_bots: bool = False,
+    top: int = 10,
+    floor: int = FLOOR,
+) -> dict[str, Any]:
+    if floor < FLOOR:
+        raise ValueError(f"the floor cannot be below {FLOOR}")
+    view_rows = [r for r in export.view_daily if r["site"] == site]
+    dim_rows = [r for r in export.view_dim_daily if r["site"] == site]
+    geo_rows = [r for r in export.view_geo_daily if r["site"] == site]
+    click_rows = [
+        {**r, "day": _utc_day(r["ts"])}
+        for r in export.click_events
+        if r.get("site", "links") == site
+    ]
+    kit_rows = [{**r, "day": _utc_day(r["ts"])} for r in export.kit_events]
+
+    if days is not None:
+        every = [r["day"] for r in view_rows + dim_rows + geo_rows + click_rows]
+        if every:
+            end = date.fromisoformat(until) if until else date.fromisoformat(max(every))
+            since = (end - timedelta(days=days - 1)).isoformat()
+            until = end.isoformat()
+
+    def window(rows: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
+        return [r for r in rows if _in_window(r["day"], since, until)]
+
+    view_rows, dim_rows, geo_rows = (
+        window(view_rows),
+        window(dim_rows),
+        window(geo_rows),
+    )
+    click_rows, kit_rows = window(click_rows), window(kit_rows)
+    seen_days = sorted(
+        {r["day"] for r in view_rows + dim_rows + geo_rows + click_rows + kit_rows}
+    )
+    wanted = set(CLASSES) if include_bots else {"h"}
+
+    # bot share: every class, regardless of the page tables' class filter
+    by_class: dict[str, int] = defaultdict(int)
+    for r in view_rows:
+        by_class[r["bot_class"]] += r["views"]
+    total_views = sum(by_class.values())
+    classes = floor_cells({c: by_class[c] for c in CLASSES if by_class[c]}, floor)
+    reasons: dict[str, int] = defaultdict(int)
+    for r in dim_rows:
+        if r["dim"] == "reason" and r["bot_class"] != "h":
+            reasons[r["value"]] += r["views"]
+
+    pages: dict[str, int] = defaultdict(int)
+    sources: dict[str, int] = defaultdict(int)
+    for r in view_rows:
+        if r["bot_class"] in wanted:
+            pages[r["page"]] += r["views"]
+            sources[_source_label(r["src_kind"], r["src"])] += r["views"]
+    places: dict[str, int] = defaultdict(int)
+    for r in geo_rows:
+        if r["bot_class"] in wanted:
+            places[_geo_label(r["country"], r["region"], r["city"], geo)] += r["views"]
+    links: dict[str, int] = defaultdict(int)
+    for r in click_rows:
+        links[r["link_id"]] += 1
+    kit: dict[str, int] = defaultdict(int)
+    for r in kit_rows:
+        kit[r["kind"]] += 1
+
+    human = by_class["h"]
+    human_shown = dict(classes.shown).get("h")
+    missing = [
+        t
+        for t in (
+            "view_daily",
+            "view_geo_daily",
+            "view_dim_daily",
+            "click_events",
+            "kit_events",
+        )
+        if t not in export.present
+    ]
+    page_views = human_shown if "view_daily" in export.present else None
+    click_total = (
+        _count(len(click_rows), floor) if "click_events" in export.present else None
+    )
+    kit_views = _count(kit["view"], floor) if "kit_events" in export.present else None
+    kit_unlocks = (
+        _count(kit["unlock"], floor) if "kit_events" in export.present else None
+    )
+    withheld = []
+    if "view_daily" in export.present and page_views is None and human:
+        withheld.append("page_views")
+    if "click_events" in export.present and click_total is None:
+        withheld.append("clicks")
+    if "kit_events" in export.present:
+        if kit_views is None:
+            withheld.append("kit_views")
+        if kit_unlocks is None:
+            withheld.append("kit_unlocks")
+
+    return {
+        "version": REPORT_VERSION,
+        "site": site,
+        "floor": floor,
+        "period": {
+            "since": seen_days[0] if seen_days else None,
+            "until": seen_days[-1] if seen_days else None,
+            "days_with_data": len(seen_days),
+        },
+        "counted_classes": sorted(wanted),
+        "funnel": {
+            "page_views": page_views,
+            "clicks": click_total,
+            "kit_views": kit_views,
+            "kit_unlocks": kit_unlocks,
+            "clicks_per_100_views": _ratio(click_total, page_views),
+            "kit_views_per_100_views": _ratio(kit_views, page_views),
+            "withheld": withheld,
+            "missing": missing,
+        },
+        "pages": _section(pages, floor, top, "view_daily" in export.present),
+        "sources": _section(sources, floor, top, "view_daily" in export.present),
+        "geography": {
+            "level": geo,
+            **_section(places, floor, top, "view_geo_daily" in export.present),
+        },
+        "links": _section(links, floor, top, "click_events" in export.present),
+        "bots": {
+            "total_views": _count(total_views, floor),
+            "classes": [
+                {
+                    "class": label,
+                    "name": CLASS_NAMES[label],
+                    "views": views,
+                    "share": round(views * 100 / total_views, 1),
+                }
+                for label, views in classes.shown
+            ],
+            "other_below_floor": classes.other,
+            "reasons": _section(
+                reasons, floor, top, "view_dim_daily" in export.present
+            ),
+            "human_views_seen": bool(human),
+        },
+    }
+
+
+# ---- text -----------------------------------------------------------------
+
+
+def _fmt(value: int | float | None, state: str = "below the privacy floor") -> str:
+    return state if value is None else str(value)
+
+
+def _table(title: str, section: dict[str, Any], lines: list[str]) -> None:
+    lines.append("")
+    lines.append(title)
+    state = section["state"]
+    if state == "not_in_export":
+        lines.append("  not in this export")
+        return
+    if state == "withheld":
+        lines.append("  every row is below the privacy floor; nothing shown")
+        return
+    if not section["rows"] and not section["other_below_floor"]:
+        lines.append("  no data in this period")
+        return
+    width = max([len(r["label"]) for r in section["rows"]] + [8])
+    for row in section["rows"]:
+        lines.append(f"  {row['label']:<{width}}  {row['views']:>8}")
+    if section["more_rows"]:
+        lines.append(f"  ... {section['more_rows']} more rows (raise --top)")
+    if section["other_below_floor"]:
+        lines.append(
+            f"  {'(rows below the floor)':<{width}}  {section['other_below_floor']:>8}"
+        )
+
+
+def render_text(report: dict[str, Any]) -> str:
+    period = report["period"]
+    funnel = report["funnel"]
+    floor = report["floor"]
+    lines: list[str] = []
+    if period["since"] is None:
+        span = "no data in this period"
+    else:
+        span = (
+            f"{period['since']} to {period['until']} UTC, "
+            f"{period['days_with_data']} days with data"
+        )
+    lines.append(f"Reach Around report: site {report['site']}, {span}")
+    lines.append(f"Privacy floor: nothing under {floor} views is ever shown.")
+    lines.append("")
+    lines.append("Funnel")
+    steps = [
+        ("Page views (likely human)", "page_views", "view_daily"),
+        ("Link clicks", "clicks", "click_events"),
+        ("Kit views", "kit_views", "kit_events"),
+        ("Kit unlocks", "kit_unlocks", "kit_events"),
+    ]
+    for label, key, table in steps:
+        if table in funnel["missing"]:
+            text = "not in this export"
+        else:
+            text = _fmt(funnel[key])
+        lines.append(f"  {label:<28} {text}")
+    per = funnel["clicks_per_100_views"]
+    if per is not None:
+        lines.append(f"  Clicks per 100 views: {per} (a ratio, not a conversion rate)")
+        if per > 100:
+            lines.append(
+                "  Note: more than 100 per 100 views; some visitors click without "
+                "the page-view script running."
+            )
+    kper = funnel["kit_views_per_100_views"]
+    if kper is not None:
+        lines.append(f"  Kit views per 100 page views: {kper}")
+    if funnel["withheld"]:
+        lines.append("  A figure marked below the privacy floor is not printed.")
+    lines.append("  Clicks are not tied to a source: no 'visitors from X clicked Y'.")
+
+    classes = ", ".join(report["counted_classes"])
+    _table(f"Pages (classes: {classes})", report["pages"], lines)
+    _table(f"Sources (classes: {classes})", report["sources"], lines)
+    geo = report["geography"]
+    _table(f"Geography by {geo['level']} (classes: {classes})", geo, lines)
+    _table("Link clicks by link", report["links"], lines)
+
+    bots = report["bots"]
+    lines.append("")
+    lines.append("Bots (share of all recorded page views)")
+    if "view_daily" in funnel["missing"]:
+        lines.append("  not in this export")
+    elif not bots["classes"] and not bots["other_below_floor"]:
+        lines.append("  no data or every class is below the privacy floor")
+    else:
+        for row in bots["classes"]:
+            lines.append(f"  {row['name']:<28} {row['views']:>8}  {row['share']:>5}%")
+        if bots["other_below_floor"]:
+            lines.append(
+                f"  {'(classes below the floor)':<28} {bots['other_below_floor']:>8}"
+            )
+    _table("Bot reasons (not human-likely)", bots["reasons"], lines)
+    lines.append("")
+    lines.append(
+        "Human-likely is an estimate; crawlers that never run the script are "
+        "invisible to page views."
+    )
+    return "\n".join(lines) + "\n"
