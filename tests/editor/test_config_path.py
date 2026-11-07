@@ -268,7 +268,7 @@ def _as_root_owned(real: Any, names: set[str]) -> Any:
     """A stat seam that reports ``names`` as owned by root (tests cannot chown)."""
 
     def fake(name: str, dir_fd: int) -> os.stat_result:
-        info = real(name, dir_fd)
+        info: os.stat_result = real(name, dir_fd)
         if name not in names:
             return info
         fields = list(info)
@@ -437,3 +437,108 @@ def test_the_swap_helper_really_redirects_the_path(tmp_path: Path) -> None:
     assert cfg.read_text(encoding="utf-8") == CONFIG_TEXT + "# other\n"
     with pytest.raises(editing.EditError):
         editing.safe_config_path(cfg)
+
+
+# ---- relative links whose target has '..' (finding 3 of round 3) ----
+
+
+def _open_fds() -> int:
+    return len(os.listdir("/proc/self/fd"))
+
+
+def _opt_layout(tmp_path: Path, target: str) -> Path:
+    """tmp/opt/current -> ``target``; the real config is tmp/srv/application."""
+    (tmp_path / "opt").mkdir()
+    app = tmp_path / "srv" / "application"
+    app.mkdir(parents=True)
+    (app / "site.yaml").write_text(CONFIG_TEXT, encoding="utf-8")
+    (tmp_path / "opt" / "current").symlink_to(target, target_is_directory=True)
+    return app
+
+
+def _trust(monkeypatch: pytest.MonkeyPatch, names: set[str]) -> None:
+    monkeypatch.setattr(editing, "_stat_at", _as_root_owned(editing._stat_at, names))
+    monkeypatch.setattr(editing, "_fstat_dir", _root_folder(0o755))
+
+
+def test_a_root_link_with_a_parent_step_in_its_target_is_followed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    app = _opt_layout(tmp_path, "../srv/application")
+    _trust(monkeypatch, {"current"})
+    before = _open_fds()
+    fd, resolved = editing.open_config_dir(tmp_path / "opt" / "current" / "site.yaml")
+    try:
+        assert resolved == app / "site.yaml"
+        assert os.fstat(fd).st_ino == app.stat().st_ino  # the folder it names
+    finally:
+        os.close(fd)
+    assert _open_fds() == before
+
+
+def test_a_parent_step_inside_a_followed_target_resolves_in_the_walk(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    app = _opt_layout(tmp_path, "../srv/../srv/application")
+    _trust(monkeypatch, {"current"})
+    assert (
+        editing.safe_config_path(tmp_path / "opt" / "current" / "site.yaml")
+        == app / "site.yaml"
+    )
+
+
+def test_a_parent_step_never_climbs_above_the_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    app = _opt_layout(tmp_path, "../" * 80 + str(tmp_path / "srv" / "application")[1:])
+    _trust(monkeypatch, {"current"})
+    assert (
+        editing.safe_config_path(tmp_path / "opt" / "current" / "site.yaml")
+        == app / "site.yaml"
+    )
+
+
+def test_a_parent_step_through_a_missing_folder_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _opt_layout(tmp_path, "nowhere/../../srv/application")
+    _trust(monkeypatch, {"current"})
+    before = _open_fds()
+    with pytest.raises(editing.EditError, match="unsafe config path"):
+        editing.open_config_dir(tmp_path / "opt" / "current" / "site.yaml")
+    assert _open_fds() == before
+
+
+def test_a_parent_step_does_not_lead_past_an_untrusted_link(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The target lands on a user-owned link: refused as before."""
+    app = _opt_layout(tmp_path, "../srv/hop")
+    (tmp_path / "srv" / "hop").symlink_to(app, target_is_directory=True)
+    _trust(monkeypatch, {"current"})
+    before = _open_fds()
+    with pytest.raises(editing.EditError, match="unsafe config path"):
+        editing.open_config_dir(tmp_path / "opt" / "current" / "site.yaml")
+    assert _open_fds() == before
+
+
+def test_a_parent_step_link_in_a_user_writable_folder_is_still_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _opt_layout(tmp_path, "../srv/application")
+    monkeypatch.setattr(
+        editing, "_stat_at", _as_root_owned(editing._stat_at, {"current"})
+    )
+    with pytest.raises(editing.EditError, match="unsafe config path"):
+        editing.open_config_dir(tmp_path / "opt" / "current" / "site.yaml")
+
+
+def test_a_parent_step_in_the_given_path_is_still_normalized_first(
+    tmp_path: Path,
+) -> None:
+    cfg = make_real(tmp_path)
+    (tmp_path / "other").mkdir()
+    assert (
+        editing.safe_config_path(tmp_path / "other" / ".." / "real" / "site.yaml")
+        == cfg
+    )

@@ -28,7 +28,8 @@ import tempfile
 import threading
 import time
 from collections import deque
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -537,10 +538,24 @@ class EditorService:
         finally:
             os.close(dir_fd)
 
+    @contextmanager
+    def _history(self) -> Iterator[History]:
+        """A history on the config's folder, walked and verified just now.
+
+        The store is opened under that descriptor, never by the config's path,
+        so a folder swapped after this walk cannot redirect it.
+        """
+        dir_fd, _resolved = editing.open_config_dir(self.config)
+        try:
+            yield History(self.config, dir_fd=dir_fd)
+        finally:
+            os.close(dir_fd)
+
     def _summary(self, digest: str | None = None) -> Summary:
         try:
-            return History(self.config).summary(digest)
-        except (HistoryError, OSError):
+            with self._history() as history:
+                return history.summary(digest)
+        except (HistoryError, OSError, editing.EditError):
             return Summary((), False, False, None)
 
     @staticmethod
@@ -698,9 +713,12 @@ class EditorService:
             # Hold the config's own lock through the history commit and the one
             # read the reply is built from, so no cooperating writer slips in.
             lock: int | None = None
+            folder: int | None = None
             try:
-                lock = editing.lock_config(self.config, no_symlinks=True)
-                History(self.config).record_write(result.old, result.new, label)
+                lock, folder = editing.lock_config_in_dir(self.config)
+                History(self.config, dir_fd=folder).record_write(
+                    result.old, result.new, label
+                )
                 recorded = True
                 loaded = self._load()
                 if loaded[0] != sha256_text(result.new):
@@ -715,6 +733,8 @@ class EditorService:
             finally:
                 if lock is not None:
                     os.close(lock)
+                if folder is not None:
+                    os.close(folder)
         reply: dict[str, Any] = {
             "state": self.state(preview_host, preview_port, loaded),
             "history": {
@@ -807,14 +827,14 @@ class EditorService:
                 restore=True,
             )
 
-        history = History(self.config)
         try:
-            if kind == "redo":
-                outcome = history.redo(current, write)
-            elif anyway:
-                outcome = history.restore_anyway(current, write)
-            else:
-                outcome = history.undo(current, write)
+            with self._history() as history:
+                if kind == "redo":
+                    outcome = history.redo(current, write)
+                elif anyway:
+                    outcome = history.restore_anyway(current, write)
+                else:
+                    outcome = history.undo(current, write)
         except editing.EditError as exc:
             raise RouteError(422, "refused", self._clean(str(exc))) from None
         except HistoryError as exc:

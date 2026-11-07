@@ -19,7 +19,9 @@ fails, nothing is written.
 from __future__ import annotations
 
 import copy
+import ctypes
 import datetime
+import errno
 import fcntl
 import hashlib
 import json
@@ -164,7 +166,9 @@ def open_config_dir(path: Path) -> tuple[int, Path]:
     is a link owned by root inside a folder only root can change (``/home``
     pointing at ``/var/home`` on some systems): an ordinary user cannot
     replace one, so it is followed. The entry is checked again after the
-    target is read, and refused if it changed.
+    target is read, and refused if it changed. A ``..`` in such a target is
+    resolved against the folders this walk already holds (never above the
+    root), so it cannot lead anywhere the walk has not verified.
 
     The caller closes the descriptor and does every later step relative to it
     (``dir_fd=``): a pathname look-up after this point could name something
@@ -173,6 +177,7 @@ def open_config_dir(path: Path) -> tuple[int, Path]:
     base = Path(os.path.abspath(path))
     parts = list(base.parts[1:])
     cur = os.open("/", _WALK_FLAGS)
+    above: list[int] = []  # the verified folders from the root down to ``cur``
     hops = 0
     out: list[str] = []
     try:
@@ -182,7 +187,16 @@ def open_config_dir(path: Path) -> tuple[int, Path]:
             if name in ("", "."):
                 continue
             if name == "..":
-                raise _unsafe(base, "contains '..'")
+                # Only a followed link's target can hold one (the given path
+                # is normalized above). Step back to the folder already held;
+                # at the root it stays at the root, as the kernel does.
+                if last:
+                    raise _unsafe(base, "contains '..'")
+                if above:
+                    os.close(cur)
+                    cur = above.pop()
+                    out.pop()
+                continue
             try:
                 info = _stat_at(name, cur)
             except OSError as exc:
@@ -201,8 +215,9 @@ def open_config_dir(path: Path) -> tuple[int, Path]:
                 if not _same_entry(info, again):
                     raise _unsafe(base, "a symlink that changed")
                 if target.startswith("/"):
-                    os.close(cur)
-                    cur = os.open("/", _WALK_FLAGS)
+                    while above:
+                        os.close(cur)
+                        cur = above.pop()
                     out = []
                 parts = [t for t in Path(target).parts if t != "/"] + parts
                 continue
@@ -212,13 +227,17 @@ def open_config_dir(path: Path) -> tuple[int, Path]:
                     nxt = _open_dir(name, cur)
                 except OSError as exc:
                     raise _unsafe(base, exc.strerror or "cannot open") from exc
-                os.close(cur)
+                above.append(cur)
                 cur = nxt
         if not out:
             raise _unsafe(base, "not a file")
     except BaseException:
         os.close(cur)
+        for held in above:
+            os.close(held)
         raise
+    for held in above:
+        os.close(held)
     return cur, Path("/", *out)
 
 
@@ -254,11 +273,23 @@ def lock_config(config: Path, *, no_symlinks: bool = False) -> int:
     """Lock the config (as ``apply`` does) and return the descriptor to close."""
     if not no_symlinks:
         return _open_locked(resolve_config(config, force_path=True))
+    lock, dir_fd = lock_config_in_dir(config)
+    os.close(dir_fd)
+    return lock
+
+
+def lock_config_in_dir(config: Path) -> tuple[int, int]:
+    """Lock the config under its verified folder; return (lock, folder) to close.
+
+    The folder descriptor is the one the lock was taken under: later steps
+    (the history store) work relative to it instead of looking the path up.
+    """
     dir_fd, path = open_config_dir(config)
     try:
-        return _open_locked(path, dir_fd)
-    finally:
+        return _open_locked(path, dir_fd), dir_fd
+    except BaseException:
         os.close(dir_fd)
+        raise
 
 
 def _at(path: Path, dir_fd: int | None) -> Path | str:
@@ -545,22 +576,118 @@ def _keep_backup(path: Path, dir_fd: int | None = None) -> Path | None:
     return kept
 
 
-def _read_named(path: Path, dir_fd: int | None) -> bytes:
-    fd = os.open(_at(path, dir_fd), os.O_RDONLY | os.O_NOFOLLOW, dir_fd=dir_fd)
-    with os.fdopen(fd, "rb") as handle:
-        return handle.read()
+_RENAME_NOREPLACE = 1
+_AT_FDCWD = -100
 
 
-def _restore_backup(kept: Path, backup: Path, dir_fd: int | None = None) -> bool:
-    """Put the kept backup back; True if the backup is the previous one again."""
+def _load_renameat2() -> Any:
+    """The C library's ``renameat2``, or None where it is not there."""
     try:
-        _replace(kept, backup, dir_fd)
-        return True
+        function = ctypes.CDLL(None, use_errno=True).renameat2
+    except (OSError, AttributeError):
+        return None
+    function.argtypes = [
+        ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.c_uint,
+    ]
+    function.restype = ctypes.c_int
+    return function
+
+
+_RENAMEAT2 = _load_renameat2()
+_NO_FLAGS_ERRNOS = {errno.ENOSYS, errno.EINVAL, errno.ENOTSUP, errno.EPERM}
+
+
+def _rename_noreplace(src: Path, dst: Path, dir_fd: int | None) -> None:
+    """Rename ``src`` to ``dst``; ``FileExistsError`` if ``dst`` exists.
+
+    ``src`` must be a name only this call knows (a private name): the
+    fallback links it to ``dst`` (a link never replaces) and drops ``src``.
+    """
+    if _RENAMEAT2 is not None:
+        base = _AT_FDCWD if dir_fd is None else dir_fd
+        result = _RENAMEAT2(
+            base,
+            os.fsencode(_at(src, dir_fd)),
+            base,
+            os.fsencode(_at(dst, dir_fd)),
+            _RENAME_NOREPLACE,
+        )
+        if result == 0:
+            return
+        code = ctypes.get_errno()
+        if code not in _NO_FLAGS_ERRNOS:
+            raise OSError(code, os.strerror(code), str(dst))
+    if dir_fd is None:
+        os.link(src, dst, follow_symlinks=False)
+    else:
+        os.link(
+            src.name,
+            dst.name,
+            src_dir_fd=dir_fd,
+            dst_dir_fd=dir_fd,
+            follow_symlinks=False,
+        )
+    _unlink(src, dir_fd)
+
+
+def _before_aside(path: Path) -> None:
+    """Seam right before the backup name is moved aside (tests hook it)."""
+
+
+def _after_aside(path: Path, aside: Path) -> None:
+    """Seam right after the backup was moved aside (tests hook it)."""
+
+
+def _roll_back_backup(
+    bak: Path,
+    kept: Path | None,
+    mine: tuple[int, int] | None,
+    dir_fd: int | None,
+) -> bool:
+    """Take back the backup this save made, never touching anyone else's entry.
+
+    The name is first moved to a private one, which is one atomic step that
+    cannot hit a replacement: whatever it held is now ours to look at. If that
+    is the file this save made (or, with ``kept``, the previous backup), it is
+    dropped and ``kept`` is installed with a no-replace rename. Anything else
+    belongs to another process and is moved straight back, again without
+    replacing. Nothing is deleted or overwritten unless this call made it.
+
+    True if ``kept`` is no longer needed on disk (installed); False if it must
+    stay (a foreign entry holds the name, or the install failed).
+    """
+    aside = bak.with_name(f".{bak.name}.{secrets.token_hex(8)}.aside")
+    _before_aside(bak)
+    try:
+        _replace(bak, aside, dir_fd)
+    except FileNotFoundError:
+        found = None
     except OSError:
-        try:  # the rename may never have happened: then nothing was lost
-            return _read_named(backup, dir_fd) == _read_named(kept, dir_fd)
+        return False  # cannot move it: leave everything where it is
+    else:
+        found = _identity(aside, dir_fd)
+        _after_aside(bak, aside)
+    previous = _identity(kept, dir_fd) if kept is not None else None
+    ours = found is not None and (found == mine or (previous and found == previous))
+    if found is not None and not ours:
+        try:  # another process's entry: back under its name, replacing nothing
+            _rename_noreplace(aside, bak, dir_fd)
         except OSError:
-            return False
+            pass  # the name is taken again; the entry stays aside, undeleted
+        return False
+    installed = True
+    if kept is not None:
+        try:
+            _rename_noreplace(kept, bak, dir_fd)
+        except OSError:
+            installed = False  # a newer entry holds the name: leave it alone
+    if found is not None:
+        _unlink(aside, dir_fd)
+    return installed
 
 
 def _identity(path: Path, dir_fd: int | None) -> tuple[int, int] | None:
@@ -743,24 +870,12 @@ def _apply_at(
             nonlocal kept
             if not backup:
                 return
-            current = _identity(bak, dir_fd)
-            ours = bool(made) and current == made[0]
-            if kept is not None:
-                unchanged = current in (None, _identity(kept, dir_fd))
-                if made and not ours and not unchanged:
-                    kept = None  # another entry holds the name: leave it alone
-                    return
-                if not _restore_backup(kept, bak, dir_fd):
-                    kept = None  # leave the kept copy on disk; report the cause
-                return
-            if dir_fd is None:
+            if kept is None and dir_fd is None:
                 return  # the commands keep the backup of a refused edit (#197)
-            if not ours:
-                return  # not the file this call made: not ours to remove
-            try:
-                _unlink(bak, dir_fd)
-            except OSError:
-                pass
+            if not made:
+                return  # no backup of ours was installed: nothing to take back
+            if not _roll_back_backup(bak, kept, made[0], dir_fd):
+                kept = None  # leave the kept copy on disk; the cause is reported
 
         try:
             # Everything slow comes first. The check is the last step before the
