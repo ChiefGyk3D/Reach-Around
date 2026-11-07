@@ -120,6 +120,40 @@ def _open_dir(name: str, dir_fd: int) -> int:
     return fd
 
 
+def _stat_at(name: str, dir_fd: int) -> os.stat_result:
+    return os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
+
+
+def _readlink_at(name: str, dir_fd: int) -> str:
+    return os.readlink(name, dir_fd=dir_fd)
+
+
+def _fstat_dir(fd: int) -> os.stat_result:
+    return os.fstat(fd)
+
+
+def _root_link_is_fixed(link: os.stat_result, folder: os.stat_result) -> bool:
+    """True if only root could replace this link: root's link in root's folder.
+
+    The folder must have no group or other write, or be sticky (then only
+    the owner of an entry, the folder's owner or root can remove it).
+    """
+    if link.st_uid != 0 or folder.st_uid != 0:
+        return False
+    if not folder.st_mode & 0o022:
+        return True
+    return bool(folder.st_mode & stat.S_ISVTX)
+
+
+def _same_entry(a: os.stat_result, b: os.stat_result) -> bool:
+    return (a.st_dev, a.st_ino, a.st_uid, stat.S_IFMT(a.st_mode)) == (
+        b.st_dev,
+        b.st_ino,
+        b.st_uid,
+        stat.S_IFMT(b.st_mode),
+    ) and stat.S_ISLNK(b.st_mode)
+
+
 def open_config_dir(path: Path) -> tuple[int, Path]:
     """Walk to the config's folder; return its descriptor and the absolute path.
 
@@ -127,8 +161,10 @@ def open_config_dir(path: Path) -> tuple[int, Path]:
     previous directory descriptor with ``O_NOFOLLOW``, so a check and the
     following step are one operation on a descriptor. The last component and
     every directory component must be a real file or folder. The one exception
-    is a link owned by root (``/home`` pointing at ``/var/home`` on some
-    systems): an ordinary user cannot make one, so it is followed.
+    is a link owned by root inside a folder only root can change (``/home``
+    pointing at ``/var/home`` on some systems): an ordinary user cannot
+    replace one, so it is followed. The entry is checked again after the
+    target is read, and refused if it changed.
 
     The caller closes the descriptor and does every later step relative to it
     (``dir_fd=``): a pathname look-up after this point could name something
@@ -148,14 +184,22 @@ def open_config_dir(path: Path) -> tuple[int, Path]:
             if name == "..":
                 raise _unsafe(base, "contains '..'")
             try:
-                info = os.stat(name, dir_fd=cur, follow_symlinks=False)
+                info = _stat_at(name, cur)
             except OSError as exc:
                 raise _unsafe(base, exc.strerror or "cannot stat") from exc
             if stat.S_ISLNK(info.st_mode):
                 hops += 1
-                if last or info.st_uid != 0 or hops > 20:
+                if last or hops > 20:
                     raise _unsafe(base, "a symlink")
-                target = os.readlink(name, dir_fd=cur)
+                if not _root_link_is_fixed(info, _fstat_dir(cur)):
+                    raise _unsafe(base, "a symlink")
+                try:
+                    target = _readlink_at(name, cur)
+                    again = _stat_at(name, cur)
+                except OSError as exc:
+                    raise _unsafe(base, exc.strerror or "cannot read link") from exc
+                if not _same_entry(info, again):
+                    raise _unsafe(base, "a symlink that changed")
                 if target.startswith("/"):
                     os.close(cur)
                     cur = os.open("/", _WALK_FLAGS)
@@ -519,10 +563,30 @@ def _restore_backup(kept: Path, backup: Path, dir_fd: int | None = None) -> bool
             return False
 
 
-def _write_backup(path: Path, text: str, mode: int, dir_fd: int | None = None) -> Path:
+def _identity(path: Path, dir_fd: int | None) -> tuple[int, int] | None:
+    """(device, inode) of the entry ``path`` names, not following a link."""
+    try:
+        info = os.stat(_at(path, dir_fd), dir_fd=dir_fd, follow_symlinks=False)
+    except OSError:
+        return None
+    return info.st_dev, info.st_ino
+
+
+def _write_backup(
+    path: Path,
+    text: str,
+    mode: int,
+    dir_fd: int | None = None,
+    made: list[tuple[int, int]] | None = None,
+) -> Path:
+    """Write the backup; ``made`` receives the identity of the file this call made."""
     backup = path.with_name(path.name + ".bak")
     try:
         tmp = _stage(backup, text, mode, dir_fd)
+        if made is not None:
+            mine = _identity(tmp, dir_fd)
+            if mine is not None:
+                made.append(mine)
         try:
             _during_backup(path)
         except BaseException:
@@ -671,6 +735,7 @@ def _apply_at(
         except OSError as exc:
             raise EditError(f"{path}: cannot write: {exc.strerror or exc}") from exc
         kept: Path | None = None
+        made: list[tuple[int, int]] = []
         bak = path.with_name(path.name + ".bak")
 
         def undo_backup() -> None:
@@ -678,14 +743,22 @@ def _apply_at(
             nonlocal kept
             if not backup:
                 return
+            current = _identity(bak, dir_fd)
+            ours = bool(made) and current == made[0]
             if kept is not None:
+                unchanged = current in (None, _identity(kept, dir_fd))
+                if made and not ours and not unchanged:
+                    kept = None  # another entry holds the name: leave it alone
+                    return
                 if not _restore_backup(kept, bak, dir_fd):
                     kept = None  # leave the kept copy on disk; report the cause
                 return
             if dir_fd is None:
                 return  # the commands keep the backup of a refused edit (#197)
+            if not ours:
+                return  # not the file this call made: not ours to remove
             try:
-                _unlink(bak, dir_fd)  # none existed before, so this one is ours
+                _unlink(bak, dir_fd)
             except OSError:
                 pass
 
@@ -695,7 +768,7 @@ def _apply_at(
             # (it cannot be closed on POSIX).
             kept = _keep_backup(path, dir_fd) if backup else None
             try:
-                saved = _write_backup(path, old, mode, dir_fd) if backup else None
+                saved = _write_backup(path, old, mode, dir_fd, made) if backup else None
             except BaseException:
                 undo_backup()  # the new backup may already be renamed in
                 raise

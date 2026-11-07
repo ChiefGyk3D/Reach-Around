@@ -23,6 +23,7 @@ import math
 import os
 import re
 import shutil
+import stat
 import tempfile
 import threading
 import time
@@ -529,7 +530,8 @@ class EditorService:
         except (editing.EditError, OSError):
             return 0.0
         try:
-            return os.stat(resolved.name, dir_fd=dir_fd).st_mtime
+            info = os.stat(resolved.name, dir_fd=dir_fd, follow_symlinks=False)
+            return info.st_mtime if stat.S_ISREG(info.st_mode) else 0.0
         except OSError:
             return 0.0
         finally:

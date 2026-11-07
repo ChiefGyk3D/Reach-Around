@@ -261,6 +261,145 @@ def test_a_refused_save_leaves_no_file_behind(
     assert victim.read_text(encoding="utf-8") == CONFIG_TEXT
 
 
+# ---- root-owned links (findings 1 to 3 of round 3) ----
+
+
+def _as_root_owned(real: Any, names: set[str]) -> Any:
+    """A stat seam that reports ``names`` as owned by root (tests cannot chown)."""
+
+    def fake(name: str, dir_fd: int) -> os.stat_result:
+        info = real(name, dir_fd)
+        if name not in names:
+            return info
+        fields = list(info)
+        fields[4] = 0  # st_uid
+        return os.stat_result(fields)
+
+    return fake
+
+
+def _root_folder(mode_bits: int) -> Any:
+    def fake(fd: int) -> os.stat_result:
+        info = os.fstat(fd)
+        fields = list(info)
+        fields[0] = (info.st_mode & ~0o7777) | mode_bits
+        fields[4] = 0
+        return os.stat_result(fields)
+
+    return fake
+
+
+def test_a_root_owned_link_in_a_user_writable_folder_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg = make_real(tmp_path)
+    (tmp_path / "alias").symlink_to(cfg.parent, target_is_directory=True)
+    monkeypatch.setattr(
+        editing, "_stat_at", _as_root_owned(editing._stat_at, {"alias"})
+    )
+    with pytest.raises(editing.EditError, match="unsafe config path"):
+        editing.open_config_dir(tmp_path / "alias" / "site.yaml")
+
+
+def test_a_root_owned_link_in_a_root_only_folder_is_followed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Negative control: the allowance still works where only root can change it."""
+    cfg = make_real(tmp_path)
+    (tmp_path / "alias").symlink_to(cfg.parent, target_is_directory=True)
+    monkeypatch.setattr(
+        editing, "_stat_at", _as_root_owned(editing._stat_at, {"alias"})
+    )
+    monkeypatch.setattr(editing, "_fstat_dir", _root_folder(0o755))
+    fd, resolved = editing.open_config_dir(tmp_path / "alias" / "site.yaml")
+    os.close(fd)
+    assert resolved == cfg.resolve()
+
+
+def test_a_group_writable_root_folder_does_not_allow_a_link(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg = make_real(tmp_path)
+    (tmp_path / "alias").symlink_to(cfg.parent, target_is_directory=True)
+    monkeypatch.setattr(
+        editing, "_stat_at", _as_root_owned(editing._stat_at, {"alias"})
+    )
+    monkeypatch.setattr(editing, "_fstat_dir", _root_folder(0o775))
+    with pytest.raises(editing.EditError):
+        editing.open_config_dir(tmp_path / "alias" / "site.yaml")
+
+
+def test_a_root_owned_link_replaced_after_the_look_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg = make_real(tmp_path)
+    other = make_other(tmp_path)
+    alias = tmp_path / "alias"
+    alias.symlink_to(cfg.parent, target_is_directory=True)
+    monkeypatch.setattr(
+        editing, "_stat_at", _as_root_owned(editing._stat_at, {"alias"})
+    )
+    monkeypatch.setattr(editing, "_fstat_dir", _root_folder(0o755))
+    real_readlink = editing._readlink_at
+
+    def read_then_swap(name: str, dir_fd: int) -> str:
+        real_readlink(name, dir_fd)
+        alias.unlink()
+        alias.symlink_to(other, target_is_directory=True)
+        return str(other)
+
+    monkeypatch.setattr(editing, "_readlink_at", read_then_swap)
+    with pytest.raises(editing.EditError, match="unsafe config path"):
+        editing.open_config_dir(alias / "site.yaml")
+
+
+# ---- the state read ----
+
+
+def test_the_state_time_does_not_follow_a_final_name_swapped_after_the_check(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg = make_real(tmp_path)
+    victim = tmp_path / "victim.yaml"
+    victim.write_text(CONFIG_TEXT, encoding="utf-8")
+    os.utime(victim, (1_000_000, 1_000_000))
+    session = EditorSession(cfg)
+    assert session.service._mtime() > 1_000_000
+    real_open = editing.open_config_dir
+
+    def open_then_swap(path: Path) -> tuple[int, Path]:
+        out = real_open(path)
+        cfg.unlink()
+        cfg.symlink_to(victim)
+        return out
+
+    monkeypatch.setattr(editing, "open_config_dir", open_then_swap)
+    assert session.service._mtime() == 0.0
+
+
+# ---- the backup name ----
+
+
+@pytest.mark.parametrize("had_backup", [False, True])
+def test_a_refused_save_leaves_a_backup_another_process_made(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, had_backup: bool
+) -> None:
+    cfg = make_real(tmp_path)
+    bak = cfg.parent / "site.yaml.bak"
+    if had_backup:
+        bak.write_text("old backup\n", encoding="utf-8")
+
+    def interfere(path: Path) -> None:
+        bak.unlink()
+        bak.write_text("someone else\n", encoding="utf-8")  # a new entry
+        cfg.write_text(CONFIG_TEXT + "# elsewhere\n", encoding="utf-8")  # refuse
+
+    monkeypatch.setattr(editing, "_before_replace", interfere)
+    with pytest.raises(editing.EditError):
+        save(cfg, backup=True)
+    assert bak.read_text(encoding="utf-8") == "someone else\n"
+
+
 # ---- folders the user can only pass through ----
 
 
