@@ -73,7 +73,7 @@ def test_guard_bites() -> None:
     assert violations({"a": "name: nothing\n"})
 
 
-def load() -> dict[str, Any]:
+def load() -> dict[Any, Any]:
     data = yaml.safe_load(CHECK.read_text(encoding="utf-8"))
     assert isinstance(data, dict)
     return data
