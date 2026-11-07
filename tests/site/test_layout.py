@@ -129,7 +129,8 @@ def test_tab_bar_never_clips_a_tab_at_360px(browser: Browser, base_url: str) -> 
     )
     # The edge cue is a scroll-attached gradient, so it shows only when tabs hide.
     image = page.evaluate("(el) => getComputedStyle(el).backgroundImage", handle)
-    assert image.count("radial-gradient") == 2
+    # Two covers that hide the cue at the ends, two fades that are the cue.
+    assert image.count("linear-gradient") == 4
     first = page.locator(".tabs a").first.bounding_box()
     assert first is not None and first["x"] >= bar_box["x"]
     page.context.close()

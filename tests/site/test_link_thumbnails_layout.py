@@ -155,9 +155,16 @@ def test_image_replaces_the_chip_and_text_column_is_unchanged(
     assert links.nth(2).locator(".link-chip").count() == 1
     with_thumb = links.nth(0).locator(".link-text").bounding_box()
     with_chip = links.nth(2).locator(".link-text").bounding_box()
-    assert with_thumb is not None and with_chip is not None
-    assert abs(with_thumb["x"] - with_chip["x"]) < 0.5
-    assert abs(with_thumb["width"] - with_chip["width"]) < 0.5
+    card_thumb, card_chip = links.nth(0).bounding_box(), links.nth(2).bounding_box()
+    assert with_thumb and with_chip and card_thumb and card_chip
+    # Measured from each card's own left edge: a lone last card spans the row on
+    # desktop (#280), so the two cards can differ in width.
+    assert (
+        abs((with_thumb["x"] - card_thumb["x"]) - (with_chip["x"] - card_chip["x"]))
+        < 0.5
+    )
+    if abs(card_thumb["width"] - card_chip["width"]) < 0.5:
+        assert abs(with_thumb["width"] - with_chip["width"]) < 0.5
     page.context.close()
 
 
