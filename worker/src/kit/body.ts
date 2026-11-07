@@ -96,11 +96,20 @@ export async function readBoundedBody(request: Request, maxBytes: number, opts: 
     } catch {
       byob = null;
     }
-    const reader: { cancel(): Promise<void> } = byob ?? body.getReader();
+    const reader: { cancel(): Promise<void>; releaseLock(): void } = byob ?? body.getReader();
     const defaultReader = byob === null ? (reader as ReadableStreamDefaultReader<Uint8Array>) : null;
     let spare = new ArrayBuffer(Math.min(cap + 1, BYOB_READ_SIZE));
     const readNext = (): Promise<ReadableStreamReadResult<Uint8Array>> =>
       byob !== null ? byob.read(new Uint8Array(spare)) : defaultReader!.read();
+    const release = (): void => {
+      try {
+        reader.releaseLock();
+      } catch {
+        // Already released, or still settling: nothing more to do.
+      }
+    };
+    let pendingRead: Promise<unknown> | null = null;
+    let timedOut = false;
     const deadlineMs = clampDeadline(opts.deadlineMs);
     let timer: ReturnType<typeof setTimeout> | undefined;
     const expired = new Promise<"timeout">((resolve) => {
@@ -113,8 +122,11 @@ export async function readBoundedBody(request: Request, maxBytes: number, opts: 
     let chunks = 0;
     try {
       for (;;) {
-        const step = await Promise.race([readNext(), expired]);
+        const rp = readNext();
+        pendingRead = rp;
+        const step = await Promise.race([rp, expired]);
         if (step === "timeout") {
+          timedOut = true;
           discard(reader);
           return fail("timeout");
         }
@@ -154,6 +166,11 @@ export async function readBoundedBody(request: Request, maxBytes: number, opts: 
       return fail("aborted");
     } finally {
       clearTimeout(timer);
+      // Release the lock once no read is pending. After a timeout the read is
+      // still in flight (the cancel above settles it), so release when it does;
+      // the response is never held up for that.
+      if (timedOut && pendingRead !== null) pendingRead.then(release, release);
+      else release();
     }
 
     if (declared !== null && declared !== total) return fail("length_mismatch");

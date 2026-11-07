@@ -373,6 +373,19 @@ describe("readBoundedBody: no single read exceeds the bound (BYOB)", () => {
     expect(rec.sizes.length).toBeGreaterThan(0);
     expect(Math.max(...rec.sizes)).toBeLessThanOrEqual(16 * 1024);
   });
+  it("with a larger cap, no single read exceeds 16 KiB even for a multi-megabyte body", async () => {
+    for (const body of [hugeByteStream(), new Request("https://example.test/", { method: "POST", body: new Uint8Array(HUGE) }).body!]) {
+      const rec = recordReads();
+      try {
+        const r = await readBoundedBody(req(body), 65_536);
+        expect(r).toMatchObject({ ok: false, code: "too_large" });
+      } finally {
+        rec.restore();
+      }
+      expect(rec.modes).toContain("byob");
+      expect(Math.max(...rec.sizes)).toBeLessThanOrEqual(16 * 1024);
+    }
+  });
   it("a byte-stream body is returned intact through BYOB reads", async () => {
     const data = new Uint8Array(40_000).map((_, i) => i % 249);
     const body = new ReadableStream({
@@ -405,5 +418,52 @@ describe("readBoundedBody: no single read exceeds the bound (BYOB)", () => {
     }
     expect(r.ok && r.bytes.length).toBe(100);
     expect(rec.modes).toContain("default");
+  });
+});
+
+describe("readBoundedBody: the reader lock is released", () => {
+  async function locked(body: BodyInit | null, headers: Record<string, string>, cap: number, opts = {}): Promise<{ code: string; locked: boolean }> {
+    const r = req(body, headers);
+    const res = await readBoundedBody(r, cap, opts);
+    await new Promise((x) => setTimeout(x, 30));
+    return { code: res.ok ? "ok" : res.code, locked: r.body?.locked ?? false };
+  }
+  const bytes = (n: number) => new Uint8Array(n).fill(1);
+
+  it("after a successful read", async () => {
+    expect(await locked(bytes(10), { "Content-Length": "10" }, 1024)).toEqual({ code: "ok", locked: false });
+  });
+  it("after a length mismatch", async () => {
+    expect(await locked(bytes(10), { "Content-Length": "5" }, 1024)).toEqual({ code: "length_mismatch", locked: false });
+  });
+  it("after the streamed cap is hit", async () => {
+    expect(await locked(bytes(5000), {}, 1024)).toEqual({ code: "too_large", locked: false });
+  });
+  it("after the chunk-count limit", async () => {
+    const { body } = stream(60_000, 1);
+    expect(await locked(body, {}, 65_536)).toEqual({ code: "bad_stream", locked: false });
+  });
+  it("after the empty-chunk limit", async () => {
+    const body = new ReadableStream<Uint8Array>({ pull: (c) => c.enqueue(new Uint8Array(0)) }, { highWaterMark: 0 });
+    expect(await locked(body, {}, 1024)).toEqual({ code: "bad_stream", locked: false });
+  });
+  it("after a chunk that is not bytes", async () => {
+    const body = new ReadableStream({ pull: (c) => c.enqueue("text") }, { highWaterMark: 0 }) as unknown as ReadableStream<Uint8Array>;
+    expect(await locked(body, {}, 1024)).toEqual({ code: "aborted", locked: false });
+  });
+  it("after a stream error", async () => {
+    let n = 0;
+    const body = new ReadableStream<Uint8Array>({ pull: (c) => (n++ ? c.error(new Error("x")) : c.enqueue(bytes(3))) }, { highWaterMark: 0 });
+    expect(await locked(body, {}, 1024)).toEqual({ code: "aborted", locked: false });
+  });
+  it("after a stall, once the pending read settles, without blocking the response", async () => {
+    const body = new ReadableStream<Uint8Array>({ pull: () => new Promise(() => undefined) }, { highWaterMark: 0 });
+    const r = req(body, {});
+    const t0 = Date.now();
+    const res = await readBoundedBody(r, 1024, { deadlineMs: 20 });
+    expect(res).toMatchObject({ code: "timeout" });
+    expect(Date.now() - t0).toBeLessThan(1000);
+    await new Promise((x) => setTimeout(x, 50));
+    expect(r.body?.locked).toBe(false);
   });
 });
