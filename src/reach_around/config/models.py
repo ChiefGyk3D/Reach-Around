@@ -33,6 +33,7 @@ from reach_around.config.blocks import (
     Divider,
     Email,
     Image,
+    Live,
     Platforms,
     Text,
 )
@@ -173,6 +174,7 @@ _NEW_BLOCK_KEYS = {
     "coins": "crypto",
     "address": "email",
     "items": "platforms",
+    "players": "live",
 }
 
 
@@ -194,6 +196,7 @@ def _block_kind(value: Any) -> str | None:
         (Crypto, "crypto"),
         (Email, "email"),
         (Platforms, "platforms"),
+        (Live, "live"),
         (Divider, "divider"),
     ):
         if isinstance(value, model):
@@ -210,6 +213,7 @@ Block = Annotated[
     | Annotated[Crypto, Tag("crypto")]
     | Annotated[Email, Tag("email")]
     | Annotated[Platforms, Tag("platforms")]
+    | Annotated[Live, Tag("live")]
     | Annotated[Divider, Tag("divider")],
     Discriminator(
         _block_kind,
@@ -368,6 +372,18 @@ class SiteConfig(_Model):
         return self
 
     @model_validator(mode="after")
+    def _live_block_fits_the_layout(self) -> SiteConfig:
+        lives = [b for tab in self.tabs for b in tab.blocks if isinstance(b, Live)]
+        if lives and self.page_layout == "sections":
+            raise ValueError(
+                "a live block needs page_layout: tabs; page_layout: sections "
+                "cannot show it"
+            )
+        if len(lives) > 1:
+            raise ValueError("a site may have only one live block")
+        return self
+
+    @model_validator(mode="after")
     def _tab_links_resolve(self) -> SiteConfig:
         known = [tab.id for tab in self.tabs]
         problems = [
@@ -451,6 +467,7 @@ _BLOCK_TAGS = {
     "crypto",
     "email",
     "platforms",
+    "live",
     "divider",
 }
 

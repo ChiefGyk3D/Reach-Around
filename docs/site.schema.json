@@ -826,6 +826,141 @@
       "title": "Link",
       "type": "object"
     },
+    "Live": {
+      "additionalProperties": false,
+      "description": "Twitch and Kick as co-equal players, link-outs, and VOD links.\n\nBoth players are required and keep the order written here; nothing at run\ntime reorders them. Channels are bare handles, never URLs.",
+      "properties": {
+        "also_on": {
+          "items": {
+            "$ref": "#/$defs/LiveAlsoOn"
+          },
+          "maxItems": 3,
+          "title": "Also On",
+          "type": "array"
+        },
+        "fediverse_note": {
+          "anyOf": [
+            {
+              "maxLength": 80,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": "Fediverse coming soon",
+          "title": "Fediverse Note"
+        },
+        "id": {
+          "pattern": "^[a-z0-9][a-z0-9-]{0,39}$",
+          "title": "Id",
+          "type": "string"
+        },
+        "players": {
+          "items": {
+            "$ref": "#/$defs/LivePlayer"
+          },
+          "maxItems": 2,
+          "minItems": 2,
+          "title": "Players",
+          "type": "array"
+        },
+        "vods": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/LiveVods"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "id",
+        "players"
+      ],
+      "title": "Live",
+      "type": "object"
+    },
+    "LiveAlsoOn": {
+      "additionalProperties": false,
+      "properties": {
+        "platform": {
+          "enum": [
+            "youtube",
+            "tiktok",
+            "instagram"
+          ],
+          "title": "Platform",
+          "type": "string"
+        },
+        "url": {
+          "maxLength": 2048,
+          "title": "Url",
+          "type": "string"
+        }
+      },
+      "required": [
+        "platform",
+        "url"
+      ],
+      "title": "LiveAlsoOn",
+      "type": "object"
+    },
+    "LivePlayer": {
+      "additionalProperties": false,
+      "properties": {
+        "channel": {
+          "title": "Channel",
+          "type": "string"
+        },
+        "platform": {
+          "enum": [
+            "twitch",
+            "kick"
+          ],
+          "title": "Platform",
+          "type": "string"
+        }
+      },
+      "required": [
+        "channel",
+        "platform"
+      ],
+      "title": "LivePlayer",
+      "type": "object"
+    },
+    "LiveVods": {
+      "additionalProperties": false,
+      "description": "One VOD link per platform, all three or none: equal weight.",
+      "properties": {
+        "kick": {
+          "maxLength": 2048,
+          "title": "Kick",
+          "type": "string"
+        },
+        "twitch": {
+          "maxLength": 2048,
+          "title": "Twitch",
+          "type": "string"
+        },
+        "youtube": {
+          "maxLength": 2048,
+          "title": "Youtube",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kick",
+        "twitch",
+        "youtube"
+      ],
+      "title": "LiveVods",
+      "type": "object"
+    },
     "MastodonSource": {
       "additionalProperties": false,
       "description": "Any server with the Mastodon API (Pixelfed and others included).",
@@ -1533,6 +1668,9 @@
               },
               {
                 "$ref": "#/$defs/Platforms"
+              },
+              {
+                "$ref": "#/$defs/Live"
               },
               {
                 "$ref": "#/$defs/Divider"

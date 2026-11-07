@@ -228,6 +228,31 @@ VOCAB: dict[str, tuple[str, str]] = {
         "the block id is too long for a platforms block",
         "Shorten the block id.",
     ),
+    "live_channel": (
+        "the live channel is not a plain channel name",
+        "Write only the channel name, not a web address.",
+    ),
+    "live_players": (
+        "the live block does not list both twitch and kick once each",
+        "List one twitch player and one kick player.",
+    ),
+    "live_host": (
+        "the web address is not on that platform's own site",
+        "Use an https address on the platform's own site, with no port.",
+    ),
+    "live_note": (
+        "the fediverse note is not plain text",
+        "Use a few plain words with no link, address or markup.",
+    ),
+    "live_layout": (
+        "a live block needs page_layout: tabs",
+        "Set page_layout to tabs, or remove the live block.",
+    ),
+    "live_count": ("the site has more than one live block", "Keep one live block."),
+    "live_also_on_twice": (
+        "also_on lists a platform more than once",
+        "List each platform once.",
+    ),
     "placeholder": (
         "has a { } placeholder that is not allowed",
         "Only {tab}, {creator} and {site} may appear in braces.",
@@ -359,6 +384,7 @@ KNOWN_FIELDS: frozenset[str] = frozenset(
         "affiliate",
         "ai_crawlers",
         "allow_all",
+        "also_on",
         "alt",
         "always",
         "analytics",
@@ -374,6 +400,7 @@ KNOWN_FIELDS: frozenset[str] = frozenset(
         "button",
         "button_style",
         "case_studies",
+        "channel",
         "channel_id",
         "click_tracking",
         "client_id_env",
@@ -395,6 +422,7 @@ KNOWN_FIELDS: frozenset[str] = frozenset(
         "favicon",
         "featured",
         "features",
+        "fediverse_note",
         "fonts",
         "footer",
         "handle",
@@ -410,6 +438,7 @@ KNOWN_FIELDS: frozenset[str] = frozenset(
         "invite",
         "item",
         "items",
+        "kick",
         "kind",
         "kit",
         "kit_gate",
@@ -440,6 +469,7 @@ KNOWN_FIELDS: frozenset[str] = frozenset(
         "partners",
         "path",
         "platform",
+        "players",
         "price_text",
         "privacy",
         "profile_card",
@@ -473,11 +503,14 @@ KNOWN_FIELDS: frozenset[str] = frozenset(
         "title",
         "title_template",
         "turnstile_site_key",
+        "twitch",
         "unlock_link",
         "url",
         "user",
         "value",
         "version",
+        "vods",
+        "youtube",
     ]
 )
 # --- end generated -----------------------------------------------------------

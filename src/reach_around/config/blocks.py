@@ -443,3 +443,127 @@ class Platforms(_BlockModel):
                 f"characters; the limit is {MAX_DERIVED_ID}, so shorten the block id"
             )
         return self
+
+
+# --- live -------------------------------------------------------------------
+
+# Twitch logins are letters, digits and underscore, 1 to 25. A Kick slug also
+# allows a dash, up to 40. Matched with ``fullmatch`` (a ``$`` would accept a
+# trailing newline) and never a URL: the page builds the player address itself.
+_TWITCH_CHANNEL = re.compile(r"[A-Za-z0-9_]{1,25}")
+_KICK_CHANNEL = re.compile(r"[A-Za-z0-9_-]{1,40}")
+_CHANNEL_RULES = {"twitch": _TWITCH_CHANNEL, "kick": _KICK_CHANNEL}
+_CHANNEL_HELP = {
+    "twitch": "a Twitch channel is 1 to 25 letters, digits or underscores",
+    "kick": "a Kick channel is 1 to 40 letters, digits, dashes or underscores",
+}
+# Each platform's own hosts, exact match after lower-casing: no sub-domain
+# tricks, no port, no look-alike. The hosts a link-out or a VOD link may use.
+LIVE_HOSTS: dict[str, frozenset[str]] = {
+    "youtube": frozenset(
+        {"youtube.com", "www.youtube.com", "m.youtube.com", "youtu.be"}
+    ),
+    "tiktok": frozenset({"tiktok.com", "www.tiktok.com"}),
+    "instagram": frozenset({"instagram.com", "www.instagram.com"}),
+    "kick": frozenset({"kick.com", "www.kick.com"}),
+    "twitch": frozenset({"twitch.tv", "www.twitch.tv"}),
+}
+DEFAULT_FEDIVERSE_NOTE = "Fediverse coming soon"
+MAX_NOTE = 80
+# Anything that could start a link or markup, or a bare domain name.
+_NOTE_FORBIDDEN = re.compile(r"[<>:/\\@]|[A-Za-z0-9-]\.[A-Za-z]|www\.", re.IGNORECASE)
+LiveAlsoOnKind = Literal["youtube", "tiktok", "instagram"]
+
+
+def _check_platform_url(value: str, platform: str) -> str:
+    from urllib.parse import urlsplit
+
+    url = _check_https(value)
+    if "\\" in url:
+        raise ValueError("url must not contain a backslash")
+    parts = urlsplit(url)
+    if parts.port is not None:
+        raise ValueError("url must not name a port")
+    if (parts.hostname or "") not in LIVE_HOSTS[platform]:
+        hosts = ", ".join(sorted(LIVE_HOSTS[platform]))
+        raise ValueError(f"url must be on the {platform} host: one of {hosts}")
+    return url
+
+
+class LivePlayer(_BlockModel):
+    platform: Literal["twitch", "kick"]
+    channel: StrictStr
+
+    @model_validator(mode="after")
+    def _channel_shape(self) -> LivePlayer:
+        if not _CHANNEL_RULES[self.platform].fullmatch(self.channel):
+            raise ValueError(f"channel is not valid: {_CHANNEL_HELP[self.platform]}")
+        return self
+
+
+class LiveAlsoOn(_BlockModel):
+    platform: LiveAlsoOnKind
+    url: Annotated[str, Field(max_length=2048)]
+
+    @model_validator(mode="after")
+    def _url_on_own_host(self) -> LiveAlsoOn:
+        _check_platform_url(self.url, self.platform)
+        return self
+
+
+class LiveVods(_BlockModel):
+    """One VOD link per platform, all three or none: equal weight."""
+
+    youtube: Annotated[str, Field(max_length=2048)]
+    kick: Annotated[str, Field(max_length=2048)]
+    twitch: Annotated[str, Field(max_length=2048)]
+
+    @model_validator(mode="after")
+    def _urls_on_own_hosts(self) -> LiveVods:
+        for platform in ("youtube", "kick", "twitch"):
+            _check_platform_url(getattr(self, platform), platform)
+        return self
+
+
+class Live(_BlockModel):
+    """Twitch and Kick as co-equal players, link-outs, and VOD links.
+
+    Both players are required and keep the order written here; nothing at run
+    time reorders them. Channels are bare handles, never URLs.
+    """
+
+    id: BlockId
+    players: Annotated[list[LivePlayer], Field(min_length=2, max_length=2)]
+    also_on: Annotated[list[LiveAlsoOn], Field(max_length=3)] = Field(
+        default_factory=list
+    )
+    fediverse_note: (
+        Annotated[str, StringConstraints(min_length=1, max_length=MAX_NOTE)] | None
+    ) = DEFAULT_FEDIVERSE_NOTE
+    vods: LiveVods | None = None
+
+    @field_validator("fediverse_note")
+    @classmethod
+    def _note_is_plain(cls, value: str | None) -> str | None:
+        _plain_text(value)
+        if value is not None and _NOTE_FORBIDDEN.search(value):
+            raise ValueError(
+                "fediverse_note must be plain text with no link, address, "
+                "markup, colon, slash or domain name"
+            )
+        return value
+
+    @model_validator(mode="after")
+    def _both_players_once(self) -> Live:
+        if sorted(p.platform for p in self.players) != ["kick", "twitch"]:
+            raise ValueError("players must list both twitch and kick, once each")
+        platforms = [item.platform for item in self.also_on]
+        if len(set(platforms)) != len(platforms):
+            raise ValueError("also_on lists a platform more than once")
+        return self
+
+
+LIVE_NOT_RENDERED = (
+    "the live block is configuration only in this release; rendering arrives "
+    "with the Live page slice, so remove the live block to build the site"
+)

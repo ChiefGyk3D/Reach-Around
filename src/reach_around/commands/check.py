@@ -355,6 +355,13 @@ _VALUE_ERRORS: tuple[tuple[re.Pattern[str], str], ...] = tuple(
         (r"^must be 1 to 20 characters", "spelled_address"),
         (r"^note must not contain", "note_address"),
         (r"^item ids are the block id", "platforms_id_long"),
+        (r"^channel is not valid", "live_channel"),
+        (r"^players must list both", "live_players"),
+        (r"^also_on lists a platform", "live_also_on_twice"),
+        (r"^url must (be on the|not name a port|not contain a backslash)", "live_host"),
+        (r"^fediverse_note must be", "live_note"),
+        (r"^a live block needs page_layout", "live_layout"),
+        (r"^a site may have only one live", "live_count"),
         (r"^only the placeholders", "placeholder"),
         (
             r"(sitemap generation|user-agent|allow_all|path prefix|segments|"
@@ -608,6 +615,17 @@ def _counts(config: SiteConfig) -> tuple[int, int]:
     return len(config.tabs), sum(len(tab.blocks) for tab in config.tabs)
 
 
+def _has_live(raw: object) -> bool:
+    """True when a (valid) config has a live block, found by its ``players`` key."""
+    tabs = raw.get("tabs") if isinstance(raw, dict) else None
+    return isinstance(tabs, list) and any(
+        isinstance(tab, dict)
+        and isinstance(tab.get("blocks"), list)
+        and any(isinstance(b, dict) and "players" in b for b in tab["blocks"])
+        for tab in tabs
+    )
+
+
 def _plural(count: int, word: str) -> str:
     return f"{count} {word}" + ("" if count == 1 else "s")
 
@@ -616,6 +634,10 @@ def _display_name(path: Path) -> str:
     return path.name if _FILE.fullmatch(path.name) else "the config file"
 
 
+LIVE_NOTE = (
+    "Note: the live block is accepted but not yet rendered; a build refuses it "
+    "until the Live page slice ships."
+)
 _NOTE_TEXT = {
     "compare_failed": "Could not compare with the base: its config could not be read.",
 }
@@ -664,6 +686,7 @@ def _run(args: argparse.Namespace) -> int:
             seen.add(problem)
             ordered.append(problem)
 
+    notes = [LIVE_NOTE] if not ordered and _has_live(raw) else []
     comparison = _compare(args.against, raw) if args.against is not None else None
 
     if args.format == "json":
@@ -673,6 +696,8 @@ def _run(args: argparse.Namespace) -> int:
             "errors": [p.as_dict() for p in ordered],
             "error_count": len(ordered),
         }
+        if notes:
+            report["notes"] = notes
         if counts is not None:
             report["tabs"], report["blocks"] = counts
         if comparison is not None:
@@ -693,6 +718,7 @@ def _run(args: argparse.Namespace) -> int:
                 f"{name} is valid: {_plural(tabs, 'tab')} and "
                 f"{_plural(blocks, 'block')}."
             )
+        lines.extend(notes)
         if comparison is not None:
             lines.append("")
             if comparison.note:

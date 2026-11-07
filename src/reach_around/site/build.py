@@ -21,7 +21,7 @@ from typing import Any
 
 from jinja2 import Environment
 
-from reach_around.config.blocks import Crypto, Email, Platforms
+from reach_around.config.blocks import LIVE_NOT_RENDERED, Crypto, Email, Live, Platforms
 from reach_around.config.footer import CREDIT_URL
 from reach_around.config.models import Block, Link, Section, SiteConfig, Tab
 from reach_around.config.numbers import Numbers
@@ -620,6 +620,8 @@ def build_site(
             "that is never published: pass --gated-out DIR (a directory outside "
             "the output directory)"
         )
+    if any(isinstance(b, Live) for tab in config.tabs for b in tab.blocks):
+        raise ValueError(LIVE_NOT_RENDERED)
     shown = [list(visible_blocks(tab.blocks, today)) for tab in config.tabs]
     manifest = _manifest(config, shown)
     custom_css = load_custom_css(overrides)

@@ -183,6 +183,34 @@ VOCAB: dict[str, tuple[str, str]] = {
         "the block id is too long for a platforms block",
         "Shorten the block id.",
     ),
+    "live_channel": (
+        "the live channel is not a plain channel name",
+        "Write only the channel name, not a web address.",
+    ),
+    "live_players": (
+        "the live block does not list both twitch and kick once each",
+        "List one twitch player and one kick player.",
+    ),
+    "live_host": (
+        "the web address is not on that platform's own site",
+        "Use an https address on the platform's own site, with no port.",
+    ),
+    "live_note": (
+        "the fediverse note is not plain text",
+        "Use a few plain words with no link, address or markup.",
+    ),
+    "live_layout": (
+        "a live block needs page_layout: tabs",
+        "Set page_layout to tabs, or remove the live block.",
+    ),
+    "live_count": (
+        "the site has more than one live block",
+        "Keep one live block.",
+    ),
+    "live_also_on_twice": (
+        "also_on lists a platform more than once",
+        "List each platform once.",
+    ),
     "placeholder": (
         "has a { } placeholder that is not allowed",
         "Only {tab}, {creator} and {site} may appear in braces.",
