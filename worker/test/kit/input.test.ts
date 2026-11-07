@@ -239,6 +239,50 @@ describe("readForm", () => {
       expect(await readForm(req)).toBeNull();
       expect(pulled).toBeLessThanOrEqual(MAX_FORM_BYTES + 8);
     });
+    it("refuses a long run of small non-empty chunks well before the byte cap", async () => {
+      const body = new TextEncoder().encode(`${FIELD_TURNSTILE}=${"t".repeat(400)}`);
+      let n = 0;
+      const req = streamReq({
+        pull(c) {
+          if (n >= body.length) c.close();
+          else c.enqueue(body.subarray(n, ++n));
+        },
+      });
+      expect(await readForm(req)).toBeNull();
+      expect(n).toBeLessThan(400);
+    });
+    it("accepts the same body in a handful of chunks", async () => {
+      const body = new TextEncoder().encode(`${FIELD_TURNSTILE}=${"t".repeat(400)}`);
+      const parts = [body.subarray(0, 100), body.subarray(100, 250), body.subarray(250)];
+      const req = streamReq({
+        pull(c) {
+          const p = parts.shift();
+          if (p === undefined) c.close();
+          else c.enqueue(p);
+        },
+      });
+      expect((await readForm(req))?.turnstile).toBe("t".repeat(400));
+    });
+    it("releases the reader lock after a normal read, a refusal and a stall", async () => {
+      const ok = post(`${FIELD_EMAIL}=a%40b.com`);
+      expect(await readForm(ok)).not.toBeNull();
+      expect(ok.body!.locked).toBe(false);
+
+      const big = streamReq({
+        pull(c) {
+          c.enqueue(new TextEncoder().encode("a".repeat(2048)));
+        },
+        cancel: () => new Promise<void>(() => undefined),
+      });
+      expect(await readForm(big)).toBeNull();
+      await new Promise((r) => setTimeout(r, 20));
+      expect(big.body!.locked).toBe(false);
+
+      const stall = streamReq({ pull: () => new Promise<void>(() => undefined), cancel: () => new Promise<void>(() => undefined) });
+      expect(await readForm(stall, { deadlineMs: 30 })).toBeNull();
+      await new Promise((r) => setTimeout(r, 20));
+      expect(stall.body!.locked).toBe(false);
+    });
     it("returns null at the deadline when a pull never settles", async () => {
       const req = streamReq({ pull: () => new Promise<void>(() => undefined) });
       const t0 = Date.now();

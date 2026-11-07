@@ -16,6 +16,8 @@
 // configuration once at load; an unset or blank host makes every check fail.
 
 import type { KitEnv } from "./env";
+import { dnsLabelOk } from "./punycode";
+import { readCappedBytes } from "./streamread";
 
 export const SITEVERIFY_URL = "https://challenges.cloudflare.com/turnstile/v0/siteverify";
 export const TURNSTILE_TIMEOUT_MS = 3000;
@@ -23,7 +25,6 @@ const MAX_TOKEN_LENGTH = 2048;
 const MAX_RESPONSE_BYTES = 16 * 1024;
 const MAX_JSON_DEPTH = 32;
 const TOKEN_RE = /^[\x21-\x7e]{1,2048}$/;
-const LABEL_RE = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
 
 export type TurnstileAction = "gate" | "send";
 
@@ -49,7 +50,7 @@ export function expectedHostname(env: { SITE_HOST?: unknown } | undefined, opts:
   // At least two labels: a kit page is never served from a bare single-label host.
   if (labels.length < 2) return null;
   for (const l of labels) {
-    if (!LABEL_RE.test(l)) return null;
+    if (!dnsLabelOk(l)) return null;
   }
   return h;
 }
@@ -67,31 +68,6 @@ function wellFormed(s: string): boolean {
     }
   }
   return true;
-}
-
-/** Read a response body as text, at most `max` bytes; null when longer. */
-async function readText(res: Response, max: number): Promise<string | null> {
-  if (res.body === null) return "";
-  const reader = res.body.getReader();
-  const chunks: Uint8Array[] = [];
-  let total = 0;
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    total += value.byteLength;
-    if (total > max) {
-      await reader.cancel().catch(() => undefined);
-      return null;
-    }
-    chunks.push(value);
-  }
-  const all = new Uint8Array(total);
-  let off = 0;
-  for (const c of chunks) {
-    all.set(c, off);
-    off += c.byteLength;
-  }
-  return new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(all);
 }
 
 const NUMBER_RE = /^-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?/;
@@ -255,15 +231,31 @@ export async function verifyTurnstile(
     form.set("secret", secret);
     form.set("response", token);
 
-    const res = await fetchFn(SITEVERIFY_URL, {
-      method: "POST",
-      body: form,
-      redirect: "error",
-      signal: AbortSignal.timeout(opts.timeoutMs ?? TURNSTILE_TIMEOUT_MS),
+    const timeoutMs = opts.timeoutMs ?? TURNSTILE_TIMEOUT_MS;
+    const started = Date.now();
+    let fetchTimer: ReturnType<typeof setTimeout> | undefined;
+    const fetchExpired = new Promise<"timeout">((resolve) => {
+      fetchTimer = setTimeout(() => resolve("timeout"), timeoutMs);
     });
-    if (res.status !== 200) return false;
-    const text = await readText(res, MAX_RESPONSE_BYTES);
-    if (text === null) return false;
+    let res: Response | "timeout";
+    try {
+      res = await Promise.race([
+        fetchFn(SITEVERIFY_URL, {
+          method: "POST",
+          body: form,
+          redirect: "error",
+          signal: AbortSignal.timeout(timeoutMs),
+        }),
+        fetchExpired,
+      ]);
+    } finally {
+      clearTimeout(fetchTimer);
+    }
+    if (res === "timeout" || res.status !== 200) return false;
+    // One deadline covers the fetch and the body read.
+    const bytes = await readCappedBytes(res.body, MAX_RESPONSE_BYTES, timeoutMs - (Date.now() - started));
+    if (bytes === null) return false;
+    const text = new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(bytes);
 
     const parsed = parseStrictJson(text);
     if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return false;

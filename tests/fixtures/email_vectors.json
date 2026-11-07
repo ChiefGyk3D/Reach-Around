@@ -1,12 +1,41 @@
 {
   "valid": [
-    ["Partner@Example.COM", "partner@example.com"],
-    ["a+tag@sub.example.com", "a+tag@sub.example.com"],
-    ["A+Tag@Sub.Example.Com", "a+tag@sub.example.com"],
-    ["first.last@example.org", "first.last@example.org"],
-    ["a_b-c@xn--bcher-kva.example", "a_b-c@xn--bcher-kva.example"],
-    ["x@a-b.example.io", "x@a-b.example.io"],
-    ["a@b.co", "a@b.co"]
+    [
+      "Partner@Example.COM",
+      "partner@example.com"
+    ],
+    [
+      "a+tag@sub.example.com",
+      "a+tag@sub.example.com"
+    ],
+    [
+      "A+Tag@Sub.Example.Com",
+      "a+tag@sub.example.com"
+    ],
+    [
+      "first.last@example.org",
+      "first.last@example.org"
+    ],
+    [
+      "a_b-c@xn--bcher-kva.example",
+      "a_b-c@xn--bcher-kva.example"
+    ],
+    [
+      "x@a-b.example.io",
+      "x@a-b.example.io"
+    ],
+    [
+      "a@b.co",
+      "a@b.co"
+    ],
+    [
+      "a@xn--bcher-kva.example",
+      "a@xn--bcher-kva.example"
+    ],
+    [
+      "a@b.xn--p1ai",
+      "a@b.xn--p1ai"
+    ]
   ],
   "invalid": [
     "a@b.com\r\nBcc: x@y.com",
@@ -27,12 +56,12 @@
     " a@b.com",
     "\ta@b.com",
     "a@b.com\t",
-    " a@b.com",
-    "é@b.com",
-    "a@bé.com",
-    "a@b.cоm",
-    "K@b.com",
-    "Ａ@b.com",
+    "\u00a0a@b.com",
+    "\u00e9@b.com",
+    "a@b\u00e9.com",
+    "a@b.c\u043em",
+    "\u212a@b.com",
+    "\uff21@b.com",
     "@b.com",
     "a@",
     "",
@@ -40,10 +69,10 @@
     "@",
     "a\u0000@b.com",
     "a@b.com\u0000",
-    "a@b.com‮",
-    "a​@b.com",
-    "a⁦@b.com",
-    "a﻿@b.com",
+    "a@b.com\u202e",
+    "a\u200b@b.com",
+    "a\u2066@b.com",
+    "a\ufeff@b.com",
     "a\u007f@b.com",
     "a@[127.0.0.1]",
     "a@127.0.0.1",
@@ -69,6 +98,13 @@
     "a@b.com?x",
     "a@b.com#x",
     "a@b.com\\x",
-    "a@b.com|x"
+    "a@b.com|x",
+    "a@b.xn--a",
+    "a@xn--a.example",
+    "a@b.xn--",
+    "a@xn--.example",
+    "a@xn--bcher-kva9.example",
+    "a@ab--cd.example",
+    "a@b.xn--abc-"
   ]
 }

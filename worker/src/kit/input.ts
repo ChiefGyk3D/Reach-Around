@@ -7,6 +7,9 @@
 //
 // Nothing here logs.
 
+import { dnsLabelOk } from "./punycode";
+import { readCappedBytes } from "./streamread";
+
 export const FIELD_EMAIL = "email";
 /** The name the Turnstile widget gives its hidden field. */
 export const FIELD_TURNSTILE = "cf-turnstile-response";
@@ -21,7 +24,6 @@ export const MAX_TURNSTILE_TOKEN_LENGTH = 2048;
 const FORM_CONTENT_TYPE = "application/x-www-form-urlencoded";
 const MAX_LOCAL_LENGTH = 64;
 const MAX_DOMAIN_LENGTH = 253;
-const MAX_LABEL_LENGTH = 63;
 
 // Printable ASCII without space: 0x21 to 0x7e. Checked on the RAW string, before
 // any case mapping, so characters that lowercase into ASCII never get that far.
@@ -29,7 +31,6 @@ const PRINTABLE_ASCII = /^[\x21-\x7e]+$/;
 // Local part: dot-separated atoms of letters, digits and `_+-`. No quoting,
 // comments, percent routing or other specials.
 const LOCAL_RE = /^[a-z0-9_+-]+(?:\.[a-z0-9_+-]+)*$/;
-const LABEL_RE = /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/;
 // Final label: letters only, or a punycode label. Rules out IP literals and
 // all-numeric hosts.
 const TLD_RE = /^(?:[a-z]{2,63}|xn--[a-z0-9-]{1,59})$/;
@@ -56,7 +57,7 @@ export function normalizeEmail(raw: unknown): string | null {
   const labels = domain.split(".");
   if (labels.length < 2) return null;
   for (const l of labels) {
-    if (l.length > MAX_LABEL_LENGTH || !LABEL_RE.test(l)) return null;
+    if (!dnsLabelOk(l)) return null;
   }
   if (!TLD_RE.test(labels[labels.length - 1]!)) return null;
   return s;
@@ -80,76 +81,6 @@ const MAX_EMPTY_CHUNKS = 8;
 /** More non-empty chunks than this is refused, whatever the byte cap. */
 const MAX_CHUNKS = 4096;
 
-/** Cancel without waiting: a cancel that never settles must not hold up the answer. */
-function discard(reader: ReadableStreamDefaultReader<Uint8Array>): void {
-  try {
-    reader.cancel().catch(() => undefined);
-  } catch {
-    // The request is being refused anyway.
-  }
-}
-
-/**
- * Read at most `max` bytes. Null if the body is longer, the stream is hostile
- * (empty-chunk or tiny-chunk floods), errors, or does not finish by the
- * deadline. Cancellation is fire and forget.
- * TODO: switch to the shared readBoundedBody (worker/src/kit/body.ts) once that
- * module lands, so this guard is not implemented twice.
- */
-async function readCapped(body: ReadableStream<Uint8Array> | null, max: number, deadlineMs: number): Promise<Uint8Array | null> {
-  if (body === null) return new Uint8Array(0);
-  const reader = body.getReader();
-  const chunks: Uint8Array[] = [];
-  let total = 0;
-  let empties = 0;
-  let count = 0;
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const expired = new Promise<"timeout">((resolve) => {
-    timer = setTimeout(() => resolve("timeout"), deadlineMs);
-  });
-  try {
-    for (;;) {
-      const step = await Promise.race([reader.read(), expired]);
-      if (step === "timeout") {
-        discard(reader);
-        return null;
-      }
-      const { done, value } = step;
-      if (done) break;
-      if (!(value instanceof Uint8Array)) {
-        discard(reader);
-        return null;
-      }
-      if (value.byteLength === 0) {
-        if (++empties > MAX_EMPTY_CHUNKS) {
-          discard(reader);
-          return null;
-        }
-        continue;
-      }
-      empties = 0;
-      total += value.byteLength;
-      if (total > max || ++count > MAX_CHUNKS) {
-        discard(reader);
-        return null;
-      }
-      chunks.push(value);
-    }
-  } catch {
-    discard(reader);
-    return null;
-  } finally {
-    clearTimeout(timer);
-  }
-  const out = new Uint8Array(total);
-  let off = 0;
-  for (const c of chunks) {
-    out.set(c, off);
-    off += c.byteLength;
-  }
-  return out;
-}
-
 export interface GateForm {
   /** Normalized, or null when absent or invalid. */
   email: string | null;
@@ -170,7 +101,7 @@ export async function readForm(request: Request, opts: { deadlineMs?: number } =
   const declared = request.headers.get("content-length");
   if (declared !== null && (!/^[0-9]{1,9}$/.test(declared) || Number(declared) > MAX_FORM_BYTES)) return null;
 
-  const bytes = await readCapped(request.body, MAX_FORM_BYTES, clampDeadline(opts.deadlineMs));
+  const bytes = await readCappedBytes(request.body, MAX_FORM_BYTES, clampDeadline(opts.deadlineMs));
   if (bytes === null) return null;
   let text: string;
   try {

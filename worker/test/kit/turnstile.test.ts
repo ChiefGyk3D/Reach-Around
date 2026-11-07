@@ -407,3 +407,115 @@ describe("verifyTurnstile: secret handling", () => {
     expect(thrown).toBeNull();
   });
 });
+
+describe("verifyTurnstile: bounded response read", () => {
+  const stream = (src: UnderlyingSource<Uint8Array>) => new Response(new ReadableStream<Uint8Array>(src), { status: 200 });
+  const never = () => new Promise<void>(() => undefined);
+  const settles = async (p: Promise<boolean>, ms = 2000) => Promise.race([p, new Promise<"hung">((r) => setTimeout(() => r("hung"), ms))]);
+
+  it("returns false when the body never produces data", async () => {
+    const f = fake(() => stream({ pull: never }));
+    expect(await settles(verifyTurnstile(env, TOKEN, "gate", f.fn, { timeoutMs: 30 }))).toBe(false);
+  });
+  it("returns false when the body is over the cap and cancel never settles", async () => {
+    const f = fake(() =>
+      stream({
+        start(c) {
+          c.enqueue(new Uint8Array(16 * 1024 + 1));
+        },
+        cancel: never,
+      }),
+    );
+    expect(await settles(verifyTurnstile(env, TOKEN, "gate", f.fn, { timeoutMs: 30 }))).toBe(false);
+  });
+  it("returns false when the body dribbles bytes past the deadline", async () => {
+    const text = new TextEncoder().encode(`{"success":true,"hostname":"${HOST}","action":"gate"}`);
+    let n = 0;
+    const f = fake(() =>
+      stream({
+        async pull(c) {
+          await new Promise((r) => setTimeout(r, 8));
+          if (n >= text.length) c.close();
+          else c.enqueue(text.subarray(n, ++n));
+        },
+      }),
+    );
+    expect(await settles(verifyTurnstile(env, TOKEN, "gate", f.fn, { timeoutMs: 60 }))).toBe(false);
+  });
+  it("returns false for an unending stream of empty chunks", async () => {
+    const f = fake(() => stream({ pull: (c) => c.enqueue(new Uint8Array(0)) }));
+    expect(await settles(verifyTurnstile(env, TOKEN, "gate", f.fn))).toBe(false);
+  });
+  it("returns false for a long run of tiny chunks", async () => {
+    const text = new TextEncoder().encode(`{"success":true,"hostname":"${HOST}","action":"gate","pad":"${"x".repeat(400)}"}`);
+    let n = 0;
+    const f = fake(() =>
+      stream({
+        pull(c) {
+          if (n >= text.length) c.close();
+          else c.enqueue(text.subarray(n, ++n));
+        },
+      }),
+    );
+    expect(await settles(verifyTurnstile(env, TOKEN, "gate", f.fn))).toBe(false);
+    expect(n).toBeLessThan(text.length);
+  });
+  it("still accepts a normal answer delivered in a few chunks", async () => {
+    const text = new TextEncoder().encode(`{"success":true,"hostname":"${HOST}","action":"gate"}`);
+    const parts = [text.subarray(0, 10), text.subarray(10, 30), text.subarray(30)];
+    const f = fake(() =>
+      stream({
+        pull(c) {
+          const p = parts.shift();
+          if (p === undefined) c.close();
+          else c.enqueue(p);
+        },
+      }),
+    );
+    expect(await verifyTurnstile(env, TOKEN, "gate", f.fn)).toBe(true);
+  });
+  it("releases the reader lock after success, refusal, oversize and stall", async () => {
+    const cases: Array<[() => Response, boolean]> = [
+      [() => ok(), true],
+      [() => json({ success: false }), false],
+      [
+        () =>
+          stream({
+            start(c) {
+              c.enqueue(new Uint8Array(16 * 1024 + 1));
+            },
+            cancel: never,
+          }),
+        false,
+      ],
+      [() => stream({ pull: never, cancel: never }), false],
+    ];
+    for (const [mk, want] of cases) {
+      const res = mk();
+      const f = fake(() => res);
+      expect(await settles(verifyTurnstile(env, TOKEN, "gate", f.fn, { timeoutMs: 30 }))).toBe(want);
+      await new Promise((r) => setTimeout(r, 20));
+      expect(res.body!.locked).toBe(false);
+    }
+  });
+  it("shares one deadline between the fetch and the body read", async () => {
+    const f = fake(
+      () =>
+        new Promise<Response>((r) =>
+          setTimeout(() => r(stream({ pull: never })), 40),
+        ),
+    );
+    const t0 = Date.now();
+    expect(await settles(verifyTurnstile(env, TOKEN, "gate", f.fn, { timeoutMs: 80 }))).toBe(false);
+    expect(Date.now() - t0).toBeLessThan(500);
+  });
+});
+
+describe("expectedHostname: A-labels", () => {
+  it("rejects invalid or non round-tripping xn-- labels, accepts valid ones", () => {
+    for (const h of ["xn--a.example.test", "xn--.example.test", "a.xn--", "xn--abc-.example.test", "ab--cd.example.test", "xn--bcher-kva9.example.test"]) {
+      expect(expectedHostname({ SITE_HOST: h }, {}), h).toBeNull();
+    }
+    expect(expectedHostname({ SITE_HOST: "xn--bcher-kva.example.test" }, {})).toBe("xn--bcher-kva.example.test");
+  });
+});
