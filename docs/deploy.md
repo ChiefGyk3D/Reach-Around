@@ -110,6 +110,22 @@ your own; never commit real account ids, database ids or tokens.
    The workflow validates each value's shape before using it and fails with a
    clear message if a required one is missing.
 
+## Live status (`GET /e/live`), not deployed
+
+Code only for now (issue #297, slice 4). Nothing below is set up; each step needs the owner.
+
+The Worker's rule is that every request gets the same empty 204 and no route returns stored data. `GET /e/live` is the one deliberate exception: it returns booleans and timestamps only, `{"v":1,"as_of":..,"ttl":30,"kick":{"live":..,"since":..},"twitch":{"live":..,"since":..}}`, where `live` is `true`, `false` or `null` (unknown) and `since` is Unix seconds or `null`. It takes no parameters (the query string is ignored), sends `Cache-Control: public, max-age=30`, `X-Content-Type-Options: nosniff` and no CORS header, and keeps an edge copy so KV reads stay small. Any other method on it, and every other path, is the usual empty 204.
+
+| Name | Kind | What it does |
+|---|---|---|
+| `LIVE_KV` | binding | KV namespace holding the state and the cached app tokens. Placeholder in `wrangler.toml`. Unbound: the route serves the all-unknown body |
+| `LIVE_KILL` | var | Strict: `1`/`true`/`on`/`yes` or `0`/`false`/`off`/`no` (any case, no spaces). Unset or empty is off. Anything else fails closed: the route serves the all-unknown body and the poller does nothing. Read per request |
+| `LIVE_TWITCH_HANDLE`, `LIVE_KICK_HANDLE` | var | Channel handles, checked by the config model's patterns (Twitch `[A-Za-z0-9_]{1,25}`, Kick `[A-Za-z0-9_-]{1,40}`). A bad or missing handle means that platform is never polled and shows as unknown. Never taken from a request |
+| `TWITCH_CLIENT_ID`, `TWITCH_CLIENT_SECRET`, `KICK_CLIENT_ID`, `KICK_CLIENT_SECRET` | **secret** | App (client-credentials) credentials, set with `npx wrangler secret put <NAME>`; never in a file, log or chat |
+| second cron `*/2 * * * *` | trigger | Runs ONLY the poller. The hourly trigger still runs only the purge and rollup. Free allows 5 cron triggers per account |
+
+The poller writes KV only when a platform's state changes, plus a heartbeat every 10 minutes, and skips the heartbeat past about 800 state writes in a UTC day (the data then goes stale and the page degrades: an outage, not a bill). The Worker serves a platform as unknown when `as_of` is older than 30 minutes (three heartbeats; three 2-minute polls would flap between heartbeats). The request builders for both platforms are small functions in `worker/src/live.ts`, each marked "verify against the current Twitch (Kick) docs before deploy": the token and stream endpoints were partly inferred, not confirmed. The Kick channel response carries a stream key; only `is_live` and `start_time` are read and nothing else is kept, logged or returned.
+
 ## Page views (`POST /e/v/:pageId`)
 
 The Worker also has a write-only page-view route (Plan 4 Tasks A3 and A4; the browser script that calls it is a later task). It needs migrations `0005` and `0006` applied to the same D1 database, and the same `/e/*` zone route as clicks.
