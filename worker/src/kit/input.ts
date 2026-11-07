@@ -76,10 +76,6 @@ function clampDeadline(v: unknown): number {
   if (typeof v !== "number" || !Number.isFinite(v)) return DEFAULT_DEADLINE_MS;
   return Math.min(30_000, Math.max(10, Math.floor(v)));
 }
-/** More consecutive zero-length chunks than this is a hostile stream. */
-const MAX_EMPTY_CHUNKS = 8;
-/** More non-empty chunks than this is refused, whatever the byte cap. */
-const MAX_CHUNKS = 4096;
 
 export interface GateForm {
   /** Normalized, or null when absent or invalid. */

@@ -499,15 +499,21 @@ describe("verifyTurnstile: bounded response read", () => {
     }
   });
   it("shares one deadline between the fetch and the body read", async () => {
-    const f = fake(
-      () =>
-        new Promise<Response>((r) =>
-          setTimeout(() => r(stream({ pull: never })), 40),
-        ),
-    );
-    const t0 = Date.now();
-    expect(await settles(verifyTurnstile(env, TOKEN, "gate", f.fn, { timeoutMs: 80 }))).toBe(false);
-    expect(Date.now() - t0).toBeLessThan(500);
+    vi.useFakeTimers();
+    try {
+      const f = fake(() => new Promise<Response>((r) => setTimeout(() => r(stream({ pull: never })), 50)));
+      let settled: boolean | null = null;
+      const p = verifyTurnstile(env, TOKEN, "gate", f.fn, { timeoutMs: 100 }).then((v) => (settled = v));
+      await vi.advanceTimersByTimeAsync(50);
+      expect(settled).toBeNull();
+      await vi.advanceTimersByTimeAsync(49);
+      expect(settled).toBeNull();
+      await vi.advanceTimersByTimeAsync(3);
+      expect(await p).toBe(false);
+      expect(settled).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

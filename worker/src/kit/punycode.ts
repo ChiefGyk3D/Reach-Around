@@ -17,7 +17,7 @@ const INITIAL_N = 128;
 const MAX_CP = 0x10ffff;
 
 function adapt(delta: number, numPoints: number, first: boolean): number {
-  delta = first ? Math.floor(delta / DAMP) : delta >> 1;
+  delta = first ? Math.floor(delta / DAMP) : Math.floor(delta / 2);
   delta += Math.floor(delta / numPoints);
   let k = 0;
   while (delta > ((BASE - TMIN) * TMAX) >> 1) {
@@ -37,8 +37,24 @@ function digitChar(d: number): string {
   return String.fromCharCode(d < 26 ? d + 0x61 : d + 22);
 }
 
-/** Decode the part after `xn--`. Null on any malformed input. Lowercase ASCII only. */
+/**
+ * Longest input either function accepts. A DNS label is at most 63 octets, so
+ * this is generous. It also bounds the work: the insertion step below is
+ * quadratic in the output length, which is at most this many code points.
+ */
+export const MAX_PUNYCODE_INPUT = 256;
+
+/** Decode the part after `xn--`. Null on any malformed or over-long input; never throws. Lowercase ASCII only. */
 export function punycodeDecode(input: string): string | null {
+  try {
+    if (typeof input !== "string" || input.length > MAX_PUNYCODE_INPUT) return null;
+    return decodeBounded(input);
+  } catch {
+    return null;
+  }
+}
+
+function decodeBounded(input: string): string | null {
   const out: number[] = [];
   const basic = input.lastIndexOf("-");
   if (basic > 0) {
@@ -74,11 +90,28 @@ export function punycodeDecode(input: string): string | null {
     if (n > MAX_CP || (n >= 0xd800 && n <= 0xdfff)) return null;
     out.splice(i++, 0, n);
   }
-  return String.fromCodePoint(...out);
+  let s = "";
+  for (let j = 0; j < out.length; j += 1024) s += String.fromCodePoint(...out.slice(j, j + 1024));
+  return s;
 }
 
-/** Encode a string (without the `xn--` prefix). Lowercase output. */
-export function punycodeEncode(input: string): string {
+const MAX_INT = 0x7fffffff;
+
+/**
+ * Encode a string (without the `xn--` prefix). Lowercase output. Null when the
+ * input is over-long or the arithmetic would leave the signed 32-bit range, as
+ * RFC 3492 requires an encoder to report.
+ */
+export function punycodeEncode(input: string): string | null {
+  try {
+    if (typeof input !== "string" || input.length > MAX_PUNYCODE_INPUT * 16) return null;
+    return encodeChecked(input);
+  } catch {
+    return null;
+  }
+}
+
+function encodeChecked(input: string): string | null {
   const cps = Array.from(input, (c) => c.codePointAt(0)!);
   let out = "";
   for (const c of cps) if (c < 0x80) out += String.fromCharCode(c);
@@ -91,10 +124,13 @@ export function punycodeEncode(input: string): string {
   while (h < cps.length) {
     let m = MAX_CP + 1;
     for (const c of cps) if (c >= n && c < m) m = c;
+    // Doubles are exact far past 2^31, so the range check can wait for the
+    // increment below; no value is used before it is checked.
     delta += (m - n) * (h + 1);
+    if (delta > MAX_INT) return null;
     n = m;
     for (const c of cps) {
-      if (c < n) delta++;
+      if (c < n && ++delta > MAX_INT) return null;
       if (c === n) {
         let q = delta;
         for (let k = BASE; ; k += BASE) {
@@ -109,7 +145,7 @@ export function punycodeEncode(input: string): string {
         h++;
       }
     }
-    delta++;
+    if (++delta > MAX_INT) return null;
     n++;
   }
   return out;
@@ -118,15 +154,28 @@ export function punycodeEncode(input: string): string {
 const LABEL_RE = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
 const UNICODE_OK = /^[\p{L}\p{M}\p{N}-]+$/u;
 const NON_ASCII = /[^\x00-\x7f]/;
+// Right-to-left scripts, plus the explicit direction controls. v1 refuses every
+// right-to-left label rather than implementing the IDNA bidi rules, so such
+// domains are out of scope for the gate's email field. (The controls are format
+// characters, already outside UNICODE_OK; they are listed for clarity.)
+const RTL =
+  /[\p{Script_Extensions=Arab}\p{Script_Extensions=Hebr}\p{Script_Extensions=Syrc}\p{Script_Extensions=Thaa}\p{Script_Extensions=Nkoo}\p{Script_Extensions=Samr}\p{Script_Extensions=Mand}\p{Script_Extensions=Adlm}\p{Script_Extensions=Rohg}\p{Script_Extensions=Mend}\p{Script_Extensions=Phnx}\p{Script_Extensions=Lydi}\p{Script_Extensions=Armi}\p{Script_Extensions=Avst}\p{Script_Extensions=Nbat}\p{Script_Extensions=Palm}\p{Script_Extensions=Hatr}\p{Script_Extensions=Prti}\p{Script_Extensions=Phli}\p{Script_Extensions=Phlp}\p{Script_Extensions=Sogd}\p{Script_Extensions=Sogo}\p{Script_Extensions=Mani}\p{Script_Extensions=Elym}\p{Script_Extensions=Chrs}\p{Script_Extensions=Yezi}\p{Script_Extensions=Orkh}\p{Script_Extensions=Hung}\p{Script_Extensions=Cprt}\p{Script_Extensions=Khar}\p{Script_Extensions=Sarb}\p{Script_Extensions=Narb}\p{Script_Extensions=Mero}\p{Script_Extensions=Merc}؜‎‏‪-‮⁦-⁩]/u;
+const LEADING_MARK = /^\p{M}/u;
 
-/** True when `label` (lowercase, no dots) is a valid `xn--` A-label by round trip. */
+/**
+ * True when `label` (lowercase, no dots) is a valid `xn--` A-label: at most 63
+ * characters, decodes, and the decoded text has a non-ASCII letter, mark or
+ * digit, no right-to-left script, no leading combining mark, is lowercase and
+ * NFC, and encodes back to the same ASCII.
+ */
 export function isValidALabel(label: string): boolean {
-  if (!label.startsWith("xn--")) return false;
+  if (typeof label !== "string" || label.length > 63 || !label.startsWith("xn--")) return false;
   const rest = label.slice(4);
   if (rest === "") return false;
   const u = punycodeDecode(rest);
   if (u === null) return false;
   if (!NON_ASCII.test(u) || !UNICODE_OK.test(u)) return false;
+  if (RTL.test(u) || LEADING_MARK.test(u)) return false;
   if (u !== u.toLowerCase() || u !== u.normalize("NFC")) return false;
   return punycodeEncode(u) === rest;
 }

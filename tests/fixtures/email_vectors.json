@@ -105,6 +105,10 @@
     "a@xn--.example",
     "a@xn--bcher-kva9.example",
     "a@ab--cd.example",
-    "a@b.xn--abc-"
+    "a@b.xn--abc-",
+    "a@xn--abc-spef.example",
+    "a@xn--a-ubb.example",
+    "a@xn--1-ymc2p.example",
+    "a@b.xn--abc-spef"
   ]
 }
