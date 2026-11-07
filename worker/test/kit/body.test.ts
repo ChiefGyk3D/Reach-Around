@@ -329,3 +329,81 @@ describe("readBoundedBody: exact content across buffer growth", () => {
     expect(r).toMatchObject({ ok: false, code: "length_mismatch" });
   });
 });
+
+describe("readBoundedBody: no single read exceeds the bound (BYOB)", () => {
+  const HUGE = 4 * 1024 * 1024;
+
+  /** Records the size of every value a reader hands back. */
+  function recordReads(): { sizes: number[]; modes: string[]; restore: () => void } {
+    const sizes: number[] = [];
+    const modes: string[] = [];
+    const orig = ReadableStream.prototype.getReader as (this: ReadableStream, o?: unknown) => { read: (...a: unknown[]) => Promise<{ value?: Uint8Array }> };
+    ReadableStream.prototype.getReader = function (this: ReadableStream, o?: unknown) {
+      modes.push((o as { mode?: string } | undefined)?.mode ?? "default");
+      const rd = orig.call(this, o);
+      const read = rd.read.bind(rd);
+      rd.read = async (...a: unknown[]) => {
+        const res = await read(...a);
+        sizes.push(res.value?.byteLength ?? 0);
+        return res;
+      };
+      return rd as never;
+    } as never;
+    return { sizes, modes, restore: () => void (ReadableStream.prototype.getReader = orig as never) };
+  }
+
+  function hugeByteStream(): ReadableStream<Uint8Array> {
+    return new ReadableStream({
+      type: "bytes",
+      pull(c: ReadableByteStreamController) {
+        c.enqueue(new Uint8Array(HUGE).fill(1));
+      },
+    } as never, { highWaterMark: 0 } as never) as ReadableStream<Uint8Array>;
+  }
+
+  it("a byte stream offering one huge chunk is read in pieces no larger than the read size", async () => {
+    const rec = recordReads();
+    try {
+      const r = await readBoundedBody(req(hugeByteStream()), 1024);
+      expect(r).toMatchObject({ ok: false, code: "too_large", status: 413 });
+    } finally {
+      rec.restore();
+    }
+    expect(rec.modes).toContain("byob");
+    expect(rec.sizes.length).toBeGreaterThan(0);
+    expect(Math.max(...rec.sizes)).toBeLessThanOrEqual(16 * 1024);
+  });
+  it("a byte-stream body is returned intact through BYOB reads", async () => {
+    const data = new Uint8Array(40_000).map((_, i) => i % 249);
+    const body = new ReadableStream({
+      type: "bytes",
+      pull(c: ReadableByteStreamController) {
+        c.enqueue(data.slice());
+        c.close();
+      },
+    } as never) as ReadableStream<Uint8Array>;
+    const r = await readBoundedBody(req(body), 65_536);
+    expect(r.ok && Buffer.from(r.bytes).equals(Buffer.from(data))).toBe(true);
+  });
+  it("a string body (a byte stream in this runtime) is read intact", async () => {
+    const r = await readBoundedText(req("héllo wörld"), 1024);
+    expect(r).toEqual({ ok: true, text: "héllo wörld" });
+  });
+  it("the runtime assumption: a Request built from bytes exposes a BYOB capable body", () => {
+    const reader = new Request("https://example.test/", { method: "POST", body: new Uint8Array(4) }).body!.getReader({ mode: "byob" });
+    expect(typeof reader.read).toBe("function");
+    reader.releaseLock();
+  });
+  it("a body that is not a byte stream falls back to the default reader", async () => {
+    const rec = recordReads();
+    let r;
+    try {
+      const { body } = stream(100);
+      r = await readBoundedBody(req(body), 1024);
+    } finally {
+      rec.restore();
+    }
+    expect(r.ok && r.bytes.length).toBe(100);
+    expect(rec.modes).toContain("default");
+  });
+});

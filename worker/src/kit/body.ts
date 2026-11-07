@@ -26,6 +26,8 @@ const MAX_EMPTY_CHUNKS = 8;
 /** More non-empty chunks than this is refused, whatever the byte cap. */
 const MAX_CHUNKS = 4096;
 const INITIAL_BUFFER = 4096;
+/** Largest single BYOB read. */
+const BYOB_READ_SIZE = 16 * 1024;
 
 const STATUS: Record<BodyErrorCode, 400 | 408 | 411 | 413> = {
   too_large: 413,
@@ -83,7 +85,22 @@ export async function readBoundedBody(request: Request, maxBytes: number, opts: 
       return declared !== null && declared !== 0 ? fail("length_mismatch") : { ok: true, bytes: new Uint8Array(0) };
     }
 
-    const reader = body.getReader();
+    // Prefer a BYOB reader (a byte-stream body, which is what the Workers runtime
+    // gives a real request): no single read can then return more than
+    // `readSize` bytes, whatever the sender offers. Bodies that are not byte
+    // streams fall back to the default reader, where the platform's own
+    // chunking and the post-read cap apply.
+    let byob: ReadableStreamBYOBReader | null = null;
+    try {
+      byob = body.getReader({ mode: "byob" });
+    } catch {
+      byob = null;
+    }
+    const reader: { cancel(): Promise<void> } = byob ?? body.getReader();
+    const defaultReader = byob === null ? (reader as ReadableStreamDefaultReader<Uint8Array>) : null;
+    let spare = new ArrayBuffer(Math.min(cap + 1, BYOB_READ_SIZE));
+    const readNext = (): Promise<ReadableStreamReadResult<Uint8Array>> =>
+      byob !== null ? byob.read(new Uint8Array(spare)) : defaultReader!.read();
     const deadlineMs = clampDeadline(opts.deadlineMs);
     let timer: ReturnType<typeof setTimeout> | undefined;
     const expired = new Promise<"timeout">((resolve) => {
@@ -96,13 +113,14 @@ export async function readBoundedBody(request: Request, maxBytes: number, opts: 
     let chunks = 0;
     try {
       for (;;) {
-        const step = await Promise.race([reader.read(), expired]);
+        const step = await Promise.race([readNext(), expired]);
         if (step === "timeout") {
           discard(reader);
           return fail("timeout");
         }
         const { done, value } = step;
         if (done) break;
+        if (byob !== null && value instanceof Uint8Array) spare = value.buffer as ArrayBuffer;
         if (!(value instanceof Uint8Array)) {
           discard(reader);
           return fail("aborted");
