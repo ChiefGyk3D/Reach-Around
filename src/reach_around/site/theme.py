@@ -371,7 +371,7 @@ def theme_css(theme: Theme) -> str:
                 "  font-display: swap;\n"
                 "}\n"
             )
-            fallback = DEFAULT_FONT_BODY if slot == "body" else "inherit"
+            fallback = DEFAULT_FONT_BODY if slot == "body" else "var(--ra-font-body)"
             declarations[f"--ra-font-{slot}"] = f'"{family}", {fallback}'
         else:
             declarations[f"--ra-font-{slot}"] = _family_list(value)
