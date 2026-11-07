@@ -39,7 +39,7 @@ Cutover words: **v1** means required before DNS moves. **Deferred** names a reas
 
 | Feature | Beacons behavior | Reach Around on main | Cutover state | How we verify |
 |---|---|---|---|---|
-| Links match Beacons | The live set of links is the reference. | PARTLY. `reach-around build` writes a link manifest (`--manifest`, `manifest_json` in `src/reach_around/site/build.py`), but it is only an id-to-URL map serialized with sorted keys. It has no page, no order, no affiliate flag, and it omits `tab:` links (icon targets such as the email icon) and tab-bar entries. It cannot prove order, placement, affiliate flags or internal targets. The comparison script is NOT BUILT. | v1 | **Scripted link check, in two parts.** (a) Parse the built HTML for each page and collect the ordered anchors (page, section, position, text, `href`, `rel`, whether the page shows the disclosure); this covers order, placement, `rel="sponsored"` and internal `tab:` targets. (b) Use the manifest for the external id-to-URL map as a cross-check. Compare against the private Beacons snapshot: fail on any missing, extra, reordered or changed target (tracking parameters stripped), then request every external URL once. Building the check is a task that must finish before it is relied on as the cutover gate: either write the HTML parser (preferred, no engine change) or extend the manifest with page, order, affiliate flag and every anchor target including internal ones. Output goes in the PR as counts and ids, never URLs. |
+| Links match Beacons | The live set of links is the reference. | PARTLY. `reach-around build` writes a link manifest (`--manifest`, `manifest_json` in `src/reach_around/site/build.py`), but it is only an id-to-URL map serialized with sorted keys. It has no page, no order, no affiliate flag, and it omits `tab:` links (icon targets such as the email icon) and tab-bar entries. It cannot prove order, placement, affiliate flags or internal targets. The comparison script is NOT BUILT. | v1 | **Scripted link check, in two parts.** Parity scope: only the header icon row, the tab bar, the links inside sections, the profile card button, and the support and contact links are compared. Ignored: the skip link, the footer privacy link, the optional project credit link, the affiliate disclosure text and any other Reach Around-only anchor. The scope is a fixed list in the script, so a new anchor outside it is not silently compared. (a) Parse the built HTML for each page and collect the ordered anchors (page, section, position, text, `href`, `rel`, whether the page shows the disclosure); this covers order, placement, `rel="sponsored"` and internal `tab:` targets. (b) Use the manifest for the external id-to-URL map as a cross-check. Compare against the private Beacons snapshot: fail on any missing, extra, reordered or changed target (tracking parameters stripped), then request every external URL once. Building the check is a task that must finish before it is relied on as the cutover gate: either write the HTML parser (preferred, no engine change) or extend the manifest with page, order, affiliate flag and every anchor target including internal ones. Output goes in the PR as counts and ids, never URLs. |
 | Click tracking | Click counts per link. | DONE. Worker click route and D1 (`worker/src/click.ts`, `worker/migrations/0001_click_events.sql`), kill switch `CLICKS_KILL` (#108). | v1 | Scripted: a test click on a staging host shows in D1 within one minute. |
 
 ### Media kit
@@ -77,31 +77,32 @@ Cutover words: **v1** means required before DNS moves. **Deferred** names a reas
 
 ## Every Beacons sidebar section
 
-Sections as listed in issue #22 (seen 2026-10-23). The maintainer has not ruled on rows marked "proposed"; the owner confirms each one.
+Sections as listed in issue #22 (seen 2026-10-23). The owner ruled on 2026-11-06 ("Accept all as proposed") on every disposition that had been proposed; those rows are marked "Owner ruled 2026-11-06". The table has 22 rows, one per sidebar entry or sub-page.
 
 | Beacons section | What it is | Reach Around state | Disposition |
 |---|---|---|---|
-| Home | Dashboard landing with summary and shortcuts. | NOT BUILT; a reporting command is planned. | Covered by the v1 report. Proposed, owner to confirm. |
+| Home | Dashboard landing with summary and shortcuts. | NOT BUILT; a reporting command is planned. | Covered by the v1 report. Owner ruled 2026-11-06. |
 | Link in Bio (link page) | The tabbed link page and its editor. | DONE (see Link page); the local editor exists (#198, #241). | Covered, v1. |
-| Website | A small site builder. | Out of this tool's purpose; the link page and the maintainer's blog cover it. | Deliberately not included. Proposed, owner to confirm. |
-| Media Kit and Brand Deal Profile | Public kit page, gated detail, PDF. | NOT BUILT (see Media kit). | Covered, v1. The kit-viewed alert is also v1 (chat first, email when the mail domain is ready). |
-| Smart Reply | Automated replies to social messages and comments. | NOT BUILT. Needs write access to platform accounts. | Deliberately not included. Proposed, owner to confirm. |
-| Affiliate Products | A catalog and tracking of affiliate offers. | PARTLY. Affiliate links with `rel="sponsored"` and a disclosure are DONE; clicks are counted; no earnings tracking. | Links covered, v1. Earnings tracking is later (see issue #5). Proposed, owner to confirm. |
-| Digital Products | Selling files and courses. | NOT BUILT. | Deliberately not included; external stores cover it. Proposed, owner to confirm. |
-| Marketing | Email and campaign tools. | NOT BUILT. | Deliberately not included. Proposed, owner to confirm. |
+| Website | A small site builder. | Out of this tool's purpose; the link page and the maintainer's blog cover it. | Deliberately not included. Owner ruled 2026-11-06. |
+| Media Kit | Public kit page, gated detail, PDF export. | NOT BUILT (see Media kit). | Covered, v1. The kit-viewed alert is also v1 (chat first, email when the mail domain is ready). |
+| Brand Deal Profile | A profile of the creator's brand for sponsors, part of the kit. | NOT BUILT; it would be a section of the kit page. | Covered, v1, as part of the kit content. Owner ruled 2026-11-06. |
+| Smart Reply | Automated replies to social messages and comments. | NOT BUILT. Needs write access to platform accounts. | Deliberately not included. Owner ruled 2026-11-06. |
+| Affiliate Products | A catalog and tracking of affiliate offers. | PARTLY. Affiliate links with `rel="sponsored"` and a disclosure are DONE; clicks are counted; no earnings tracking. | Links covered, v1. Earnings tracking is later (see issue #5). Owner ruled 2026-11-06. |
+| Digital Products | Selling files and courses. | NOT BUILT. | Deliberately not included; external stores cover it. Owner ruled 2026-11-06. |
+| Marketing | Email and campaign tools. | NOT BUILT. | Deliberately not included. Owner ruled 2026-11-06. |
 | Analytics: socials | Follower counts and history per platform. | PARTLY (see Analytics). | Counts in v1; history later. |
 | Analytics: link in bio | Views, clicks, CTR, sources, devices, location, CSV. | PARTLY (see Analytics). | Covered, v1. |
 | Analytics: website | Visits to the Beacons-hosted website. | Page views support more than one site (#235). | Covered for the maintainer's own sites; blog collector is v1. |
-| Analytics: digital products | Sales analytics. | NOT BUILT. | Out of scope with Digital Products. Proposed, owner to confirm. |
-| Analytics: affiliate products | Clicks and earnings per offer. | PARTLY. Clicks only. | Clicks in v1; earnings later. Proposed, owner to confirm. |
+| Analytics: digital products | Sales analytics. | NOT BUILT. | Out of scope with Digital Products. Owner ruled 2026-11-06. |
+| Analytics: affiliate products | Clicks and earnings per offer. | PARTLY. Clicks only. | Clicks in v1; earnings later. Owner ruled 2026-11-06. |
 | Analytics: media kit | Kit views and visitors. | NOT BUILT. | Covered, v1, as part of the kit work and report. |
-| Sales and Payouts | Revenue from Beacons products and payout settings. | NOT BUILT. | Out of scope; no products are sold here. Income tracking is a later idea (issue #5). Proposed, owner to confirm. |
-| Audience: members | A contact list. | Gate leads only (planned, v1). | Leads covered, v1; a general list is not included. Proposed, owner to confirm. |
-| Audience: groups | Segments of contacts. | NOT BUILT. | Deliberately not included. Proposed, owner to confirm. |
-| Audience: memberships | Paid memberships. | NOT BUILT. Direct and platform memberships appear as links (`docs/research/support-embeds.md`). | Links only. Proposed, owner to confirm. |
-| Audience: forms | Sign-up and contact forms. | NOT BUILT; the kit gate is the only form planned. | Deliberately not included beyond the gate. Proposed, owner to confirm. |
+| Sales and Payouts | Revenue from Beacons products and payout settings. | NOT BUILT. | Out of scope; no products are sold here. Income tracking is a later idea (issue #5). Owner ruled 2026-11-06. |
+| Audience: members | A contact list. | Gate leads only (planned, v1). | Leads covered, v1; a general list is not included. Owner ruled 2026-11-06. |
+| Audience: groups | Segments of contacts. | NOT BUILT. | Deliberately not included. Owner ruled 2026-11-06. |
+| Audience: memberships | Paid memberships. | NOT BUILT. Direct and platform memberships appear as links (`docs/research/support-embeds.md`). | Links only. Owner ruled 2026-11-06. |
+| Audience: forms | Sign-up and contact forms. | NOT BUILT; the kit gate is the only form planned. | Deliberately not included beyond the gate. Owner ruled 2026-11-06. |
 | Business Tools and invoice generator | Invoices and small business helpers. | NOT BUILT. | Out of scope: Zoho Books handles invoicing (earlier ruling, issue #3). |
-| Referrals | Beacons' own referral program. | n/a | Out of scope. Proposed, owner to confirm. |
+| Referrals | Beacons' own referral program. | n/a | Out of scope. Owner ruled 2026-11-06. |
 | Settings | Account, domain, connected platforms, billing. | PARTLY. Site config and the local editor replace page settings; connected platforms are collector config. | Covered by config files. Account and billing are not applicable. |
 
 ## Beacons weaknesses worth beating
