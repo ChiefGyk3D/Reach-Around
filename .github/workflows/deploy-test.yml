@@ -43,8 +43,51 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # Builds the engine and its hashed dependencies into wheels. This is the only
+  # job that runs build scripts for the counts refresh, and it has no OIDC
+  # permission and no keys. The counts job below installs wheels only.
+  wheels:
+    name: Build the engine wheels
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43 # v2.22.3
+        with:
+          egress-policy: audit # as in the build job: artifact hosts vary per run
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+
+      - name: Build wheels
+        run: |
+          set -eu
+          python -m pip install --require-hashes -r requirements-build.txt
+          python -m pip download --only-binary :all: --no-deps --require-hashes -r requirements.txt -d wheels-out
+          python -m pip wheel --no-deps --no-build-isolation . -w wheels-out
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: engine-wheels
+          path: wheels-out
+          if-no-files-found: error
+          retention-days: 1
+
+  # The keys are fetched and used in this one job. It can only read the
+  # repository, installs no source code (wheels only), and its single OIDC use
+  # is the optional Doppler step. A job output cannot carry the keys to another
+  # job (GitHub drops outputs that contain masked values, and the fetch action
+  # forbids it), so the fetch and the one step that uses them stay together.
   counts:
     name: Refresh follower counts
+    needs: wheels
     # Refuse any ref other than main.
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
@@ -68,13 +111,19 @@ jobs:
         with:
           python-version: "3.12"
 
-      # All installs happen before any key is fetched.
-      - name: Install the engine
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: engine-wheels
+          path: wheels-in
+
+      # Installs happen before any key is fetched, and only from the wheels
+      # the `wheels` job built: --no-index --only-binary means no setup script
+      # and no build backend runs in this job, which can ask for an OIDC token.
+      - name: Install the engine from wheels
         run: |
           set -eu
-          python -m pip install --require-hashes -r requirements-build.txt
-          python -m pip install --require-hashes -r requirements.txt
-          python -m pip install --no-deps --no-build-isolation .
+          python -m pip install --no-index --find-links wheels-in --only-binary :all: --require-hashes -r requirements.txt
+          python -m pip install --no-index --only-binary :all: --no-deps --find-links wheels-in reach_around
 
       # Optional (Doppler). Runs only when the repository variables
       # DOPPLER_IDENTITY_ID, DOPPLER_COUNTS_PROJECT and DOPPLER_COUNTS_CONFIG

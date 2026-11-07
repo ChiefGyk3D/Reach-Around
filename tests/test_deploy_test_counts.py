@@ -121,11 +121,71 @@ def test_the_key_guard_bites() -> None:
     assert key_holders(hostile) == [("build", "x")]
 
 
-def test_no_install_runs_after_the_keys_and_installs_are_hashed() -> None:
+PIP_LINE = re.compile(r"\bpip3?\s+(install|download|wheel)\b")
+# Anything that can run code from a package at install time.
+SOURCE_BUILD = re.compile(r"\bpip3?\s+wheel\b|--no-build-isolation|\bnpm\b|\s\.\s*$")
+
+
+def runs_source_code(job: dict[str, Any]) -> list[str]:
+    """Run lines in a job that could build or install from source."""
+    found: list[str] = []
+    for s in job["steps"]:
+        for line in str(s.get("run", "")).splitlines():
+            if PIP_LINE.search(line) and (
+                SOURCE_BUILD.search(line)
+                or "--only-binary" not in line
+                or "--no-index" not in line
+            ):
+                found.append(line.strip())
+    return found
+
+
+def test_the_job_that_can_ask_for_an_oidc_token_installs_no_source_code() -> None:
+    # A package build script or setup.py run in a job with id-token: write
+    # could request a token for the Doppler identity.
+    for name, job in jobs().items():
+        if "write" in str(job.get("permissions", {}).get("id-token", "")):
+            assert runs_source_code(job) == [], name
+    # The job that builds from source must not be able to ask for one.
+    wheels = jobs()["wheels"]
+    assert runs_source_code(wheels)  # it does build (the guard has something to see)
+    assert "id-token" not in wheels["permissions"]
+    assert wheels["permissions"] == {"contents": "read"}
+    assert "secrets." not in yaml.safe_dump(wheels)
+    assert "counts" not in jobs()["wheels"].get("needs", [])
+    assert jobs()["counts"]["needs"] == "wheels"
+
+
+def test_id_token_is_in_no_job_that_runs_pip_from_source_or_the_build() -> None:
+    allowed = {"counts", "deploy"}
+    for name, job in jobs().items():
+        if "id-token" in job.get("permissions", {}):
+            assert name in allowed, name
+        if runs_source_code(job):
+            assert "id-token" not in job.get("permissions", {}), name
+
+
+def test_the_id_token_guard_bites() -> None:
+    hostile = {"steps": [{"run": "python -m pip install --no-deps --no-build-isolation ."}]}
+    assert runs_source_code(hostile)
+    sloppy = {"steps": [{"run": "python -m pip install -r requirements.txt"}]}
+    assert runs_source_code(sloppy)
+    clean = {
+        "steps": [
+            {
+                "run": "python -m pip install --no-index --only-binary :all: "
+                "--require-hashes -r requirements.txt"
+            }
+        ]
+    }
+    assert runs_source_code(clean) == []
+
+
+def test_no_install_runs_after_the_keys_and_installs_are_wheels_only() -> None:
     steps = jobs()["counts"]["steps"]
     at = [s.get("name") for s in steps].index(REFRESH_STEP)
     for later in steps[at + 1 :]:
-        assert not re.search(r"\bpip3?\s+install\b|\bnpm\b", str(later.get("run", "")))
+        assert not re.search(r"\bpip3?\b|\bnpm\b", str(later.get("run", "")))
     installs = [
         line.strip()
         for s in steps
@@ -134,7 +194,17 @@ def test_no_install_runs_after_the_keys_and_installs_are_hashed() -> None:
     ]
     assert installs
     for line in installs:
-        assert "--require-hashes" in line or re.search(r"--no-deps\b.*\s\.$", line)
+        assert "--no-index" in line
+    hashed = [ln for ln in installs if "-r requirements.txt" in ln]
+    assert hashed and all("--require-hashes" in ln for ln in hashed)
+    # The wheels job installs and downloads only from hashed requirements.
+    builder = [
+        line
+        for s in jobs()["wheels"]["steps"]
+        for line in str(s.get("run", "")).splitlines()
+        if re.search(r"\bpip3?\s+(install|download)\b", line)
+    ]
+    assert builder and all("--require-hashes" in ln for ln in builder)
 
 
 def test_the_counts_job_starts_hardened_and_every_action_is_pinned() -> None:

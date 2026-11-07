@@ -287,6 +287,18 @@ invites, Matrix) need nothing.
    written to the job environment. A value in Doppler wins over a GitHub secret
    of the same name.
 
+**Trust policy for the Doppler identity.** Create a separate Service Account
+Identity for this job, never reuse the one the `ci` project uses. Bind its OIDC
+trust to this repository and the `main` ref (subject
+`repo:OWNER/REPO:ref:refs/heads/main`), and give it read access to the
+dedicated social-media project and config only. The job that can request the
+token (`counts`) installs wheels only (`--no-index --only-binary`); the job that
+builds from source (`wheels`) has no `id-token` permission and no keys. The one
+step that holds the keys is dependency code that runs with them, so the Doppler
+config must hold only the count-source keys. The keys cannot go to another job:
+GitHub drops job outputs that contain masked values, so the fetch and the
+refresh stay in one job.
+
 A scheduled run waits for the `test` environment's reviewer on the `deploy` job
 if one is required (section 2); remove the required reviewer there if the test
 site should update unattended. A source that fails keeps its old number and
