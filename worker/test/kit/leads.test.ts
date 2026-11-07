@@ -325,6 +325,23 @@ describe("schema", () => {
   const run = (sql: string, ...binds: unknown[]) => DB.prepare(sql).bind(...binds).run();
   const LEAD = "INSERT INTO leads (id, email, created_ts, last_seen_ts, source, country) VALUES (?, ?, ?, ?, ?, ?)";
 
+  it("every key column refuses NULL", async () => {
+    await expect(run(LEAD, null, "x@y.com", 1, 1, "gate", null), "leads.id NULL").rejects.toThrow();
+    await expect(run("INSERT INTO kit_events (ts, lead_id, kind) VALUES (3600000, NULL, 'view')"), "kit_events.lead_id NULL").rejects.toThrow();
+    await expect(run("INSERT INTO counters (key, day, count) VALUES (NULL, '2027-01-01', 1)"), "counters.key NULL").rejects.toThrow();
+    await expect(run("INSERT INTO counters (key, day, count) VALUES ('gate', NULL, 1)"), "counters.day NULL").rejects.toThrow();
+    await expect(run("INSERT INTO kit_meta (key, value) VALUES (NULL, 1)"), "kit_meta.key NULL").rejects.toThrow();
+    // declared, not only enforced by the engine's STRICT handling
+    for (const [t, c] of [["leads", "id"], ["kit_events", "lead_id"], ["counters", "key"], ["counters", "day"], ["kit_meta", "key"]]) {
+      const r = await DB.prepare(`SELECT "notnull" AS nn FROM pragma_table_info('${t}') WHERE name = ?`).bind(c).first<{ nn: number }>();
+      expect(r?.nn, `${t}.${c} declared NOT NULL`).toBe(1);
+    }
+    // negative control: the same statements with real values are accepted
+    await run(LEAD, ID, "x@y.com", 1, 1, "gate", null);
+    expect(await countLeads(DB)).toBe(1);
+    await DB.prepare("DELETE FROM leads").run();
+  });
+
   it("every text column of every kit table refuses IP, UA and URL shaped values", async () => {
     for (const v of [SHAPES.ip4, SHAPES.ip6, SHAPES.ua, SHAPES.url, "1.2.3.4", "a@1.2.3.4"]) {
       await expect(run(LEAD, ID, v, 1, 1, "gate", null), `leads.email ${v}`).rejects.toThrow();

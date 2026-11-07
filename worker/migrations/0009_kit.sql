@@ -23,7 +23,7 @@
 -- the v1 slice. A later migration adds it if the flow returns.
 
 CREATE TABLE leads (
-  id TEXT PRIMARY KEY
+  id TEXT NOT NULL PRIMARY KEY
     CHECK (length(id) = 32 AND id NOT GLOB '*[^0-9a-f]*'),
   email TEXT NOT NULL UNIQUE
     CHECK (
@@ -88,6 +88,6 @@ CREATE TABLE counters (
 
 -- Heartbeats such as last_purge_ts: a short lowercase key and an integer.
 CREATE TABLE kit_meta (
-  key TEXT PRIMARY KEY CHECK (length(key) BETWEEN 1 AND 64 AND key NOT GLOB '*[^a-z0-9_]*'),
+  key TEXT NOT NULL PRIMARY KEY CHECK (length(key) BETWEEN 1 AND 64 AND key NOT GLOB '*[^a-z0-9_]*'),
   value INTEGER NOT NULL
 ) WITHOUT ROWID, STRICT;
