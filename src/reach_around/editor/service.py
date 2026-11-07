@@ -22,6 +22,7 @@ import json
 import math
 import os
 import re
+import shutil
 import tempfile
 import threading
 import time
@@ -494,9 +495,13 @@ class EditorService:
         """
         config: dict[str, Any] = {}
         tmp: Path | None = None
+        scratch: str | None = None
         try:
+            # A private folder, not the config's: the config's path is not looked
+            # up again here, so a swapped folder cannot receive a copy.
+            scratch = tempfile.mkdtemp(prefix="reach-around-view-")
             fd, name = tempfile.mkstemp(
-                dir=self.config.parent, prefix=f".{self.config.name}.", suffix=".view"
+                dir=scratch, prefix=f".{self.config.name}.", suffix=".view"
             )
             tmp = Path(name)
             with os.fdopen(fd, "wb") as handle:
@@ -513,7 +518,22 @@ class EditorService:
         finally:
             if tmp is not None:
                 tmp.unlink(missing_ok=True)
+            if scratch is not None:
+                shutil.rmtree(scratch, ignore_errors=True)
         return config, None
+
+    def _mtime(self) -> float:
+        """The config's modification time, read under its verified folder."""
+        try:
+            dir_fd, resolved = editing.open_config_dir(self.config)
+        except (editing.EditError, OSError):
+            return 0.0
+        try:
+            return os.stat(resolved.name, dir_fd=dir_fd).st_mtime
+        except OSError:
+            return 0.0
+        finally:
+            os.close(dir_fd)
 
     def _summary(self, digest: str | None = None) -> Summary:
         try:
@@ -561,10 +581,7 @@ class EditorService:
         loaded: tuple[str, dict[str, Any], str | None] | None = None,
     ) -> dict[str, Any]:
         digest, config, error = loaded if loaded is not None else self._load()
-        try:
-            mtime = os.stat(self.config).st_mtime
-        except OSError:
-            mtime = 0.0
+        mtime = self._mtime()
         summary = self._summary(digest)
         return {
             "hash": digest,

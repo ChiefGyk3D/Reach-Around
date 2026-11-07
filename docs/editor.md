@@ -53,8 +53,8 @@ command prints an error and exits with status 1.
 
 A config path that is a symlink, or that passes through a symlinked folder, is
 refused: the editor prints `error: ... unsafe config path ...` and exits with
-status 1. Give the real path of the file. The path is checked again right
-before each save. (A link owned by root, such as `/home` pointing to
+status 1. Give the real path of the file. The path is checked again on every
+read and before each save. (A link owned by root, such as `/home` pointing to
 `/var/home` on some systems, is allowed.)
 
 ## What you can change today
