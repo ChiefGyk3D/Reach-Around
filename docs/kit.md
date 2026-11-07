@@ -132,10 +132,13 @@ What the build enforces:
    HTML-escaped, and in a canonical form: entities, percent-encoding and JSON,
    JavaScript (`\x`, `\u`) and CSS escapes decoded until the text stops changing
    (at most 10 rounds), tags removed, Unicode NFKC, case and whitespace ignored.
-   A file's content, not its name, decides how it is searched: a file that is
-   valid UTF-8 with no NUL byte near the start is canonicalized; any other file
-   (an image, a font) is searched for the raw bytes of each value in UTF-8 and
-   UTF-16, which finds a value stored in metadata or a name table. The search has
+   Known text types (html, css, js, json, xml, svg, txt, webmanifest, map,
+   `_headers`, `_redirects`) are always canonicalized; one that holds a NUL byte
+   or invalid UTF-8 fails the build, naming the file and the reason. Any other
+   file is sniffed by content: valid UTF-8 with no NUL byte near the start is
+   canonicalized; otherwise (an image, a font) it is searched for the raw bytes of
+   each value in UTF-8 and UTF-16, which finds a value stored in metadata or a
+   name table. The search has
    work limits (text size per file and in total, and number of gated values);
    over a limit the build stops with an error that names the limit. A
    hit stops the build and names the field, not the text. A value that is also

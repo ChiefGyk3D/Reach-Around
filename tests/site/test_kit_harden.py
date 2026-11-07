@@ -608,12 +608,39 @@ def test_a_genuinely_binary_file_is_cheap_whatever_its_name(
     monkeypatch.setattr(kit_module, "canonical", spy)
     big = b"\x89PNG\x00" + bytes(range(256)) * 20000
     files = {
-        Path("static/a.html"): big,
+        Path("static/a.dat"): big,
         Path("static/b.png"): big,
         Path("index.html"): b"<p>hello</p>",
     }
     kit_module.check_no_gated_text(files, make_config().kit)
     assert seen and max(seen) < 1000
+
+
+TEXT_NAMES = ["a.html", "a.js", "a.css", "a.json", "a.svg", "a.map", "_headers"]
+
+
+@pytest.mark.parametrize("name", TEXT_NAMES)
+@pytest.mark.parametrize("flaw", [b"\x00", b"\xff\xfe\xc3("])
+def test_a_known_text_file_with_nul_or_bad_utf8_fails_the_build(
+    name: str, flaw: bytes
+) -> None:
+    kit = make_config().kit
+    body = b"x " + quote(PARTNER, safe="").encode() + flaw
+    with pytest.raises((KitLeakError, kit_module.KitSuspiciousFileError)):
+        kit_module.check_no_gated_text({Path("static") / name: body}, kit)
+    # without the canary the file is refused for being suspicious, by name
+    with pytest.raises(kit_module.KitSuspiciousFileError, match=name) as caught:
+        kit_module.check_no_gated_text({Path("static") / name: b"hello" + flaw}, kit)
+    assert "hello" not in str(caught.value)
+
+
+@pytest.mark.parametrize("name", TEXT_NAMES)
+def test_a_known_text_file_is_always_canonicalized(name: str) -> None:
+    text = quote(PARTNER, safe="").encode()
+    with pytest.raises(KitLeakError):
+        kit_module.check_no_gated_text(
+            {Path("static") / name: b"x " + text}, make_config().kit
+        )
 
 
 def test_a_large_text_file_hits_the_per_file_limit(

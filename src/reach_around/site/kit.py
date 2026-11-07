@@ -168,9 +168,27 @@ _SPACE = re.compile(r"\s+")
 
 # Decoding repeats until the text stops changing, at most this many rounds.
 DECODE_ROUNDS = 10
-# A file is canonicalized when its content is text: no NUL byte in the first
-# chunk and valid UTF-8. Anything else is binary and is searched only for the raw
-# bytes of each gated value (UTF-8, UTF-16 little and big endian).
+# Known text types are always canonicalized; one with a NUL byte or invalid
+# UTF-8 fails the build. Every other file is sniffed by content: valid UTF-8
+# with no NUL byte in the first chunk is canonicalized; anything else is binary
+# and is searched only for the raw bytes of each gated value (UTF-8, UTF-16
+# little and big endian).
+TEXT_SUFFIXES = frozenset(
+    {
+        ".html",
+        ".htm",
+        ".css",
+        ".js",
+        ".mjs",
+        ".json",
+        ".xml",
+        ".svg",
+        ".txt",
+        ".webmanifest",
+        ".map",
+    }
+)
+TEXT_NAMES = frozenset({"_headers", "_redirects"})
 SNIFF_BYTES = 8192
 # Work limits for the canonical search; a build over either limit stops with an
 # error that names the limit.
@@ -210,9 +228,36 @@ def canonical(text: str, tags: str = "") -> str:
     return _SPACE.sub("", text)
 
 
+class KitSuspiciousFileError(ValueError):
+    """A public text file holds NUL bytes or is not valid UTF-8."""
+
+
+def _is_known_text(rel: Path) -> bool:
+    return rel.suffix.lower() in TEXT_SUFFIXES or rel.name in TEXT_NAMES
+
+
+def _strict_text(rel: Path, data: bytes) -> str:
+    """The text of a file whose type is known to be text. Such a file is always
+    canonicalized, never downgraded by its content; one with a NUL byte or
+    invalid UTF-8 fails the build instead."""
+    reason = "contains a NUL byte" if b"\x00" in data else ""
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError:
+        reason = reason or "is not valid UTF-8"
+        text = ""
+    if reason:
+        raise KitSuspiciousFileError(
+            f"the public file {rel.as_posix()} is a text type but {reason}; a "
+            "text file like that is not expected in the public tree. Remove it "
+            "or fix its encoding."
+        )
+    return text
+
+
 def _as_text(data: bytes) -> str | None:
-    """The file's text if its content is text (see ``SNIFF_BYTES``), else None.
-    The file name decides nothing."""
+    """The text of a file of unknown type if its content is text (see
+    ``SNIFF_BYTES``), else None (searched for raw bytes only)."""
     if b"\x00" in data[:SNIFF_BYTES]:
         return None
     try:
@@ -263,7 +308,11 @@ def check_no_gated_text(files: Mapping[Path, bytes], kit: KitConfig | None) -> N
         for where, needle in raw:
             if needle in data:
                 raise _leak(where, rel)
-        decoded = _as_text(data)
+        decoded: str | None
+        if _is_known_text(rel):
+            decoded = _strict_text(rel, data)
+        else:
+            decoded = _as_text(data)
         if decoded is None:
             continue
         if len(data) > GUARD_MAX_FILE_BYTES:
