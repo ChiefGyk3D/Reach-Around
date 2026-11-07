@@ -25,9 +25,32 @@ describe("loadKitEnv", () => {
   it("treats an empty previous key as unset", () => {
     expect(load(env({ TOKEN_HMAC_KEY_PREVIOUS: "" })).keys).toEqual([KEY]);
   });
-  it("accepts TOKEN_TTL_SECONDS inside 60..168 h", () => {
-    expect(load(env({ TOKEN_TTL_SECONDS: "3600" })).tokenTtlSeconds).toBe(3600);
+  it.each([["3600", 3600], ["86400", 86_400], ["604800", 604_800]])("accepts TOKEN_TTL_SECONDS %s (1 h to 168 h)", (v, n) => {
+    expect(load(env({ TOKEN_TTL_SECONDS: v })).tokenTtlSeconds).toBe(n);
   });
+  it.each(["3599", "60", "604801"])("rejects TOKEN_TTL_SECONDS %s (outside 1 h to 168 h)", (v) => {
+    expect(() => load(env({ TOKEN_TTL_SECONDS: v }))).toThrow(KitEnvError);
+  });
+  it("SEND_LIMITER is optional in v1: absent loads fine", () => {
+    expect(() => load(env())).not.toThrow();
+    expect(() => load(env({ SEND_LIMITER: undefined }))).not.toThrow();
+  });
+  it("SEND_LIMITER with a valid shape loads", () => {
+    expect(() => load(env({ SEND_LIMITER: { limit: async () => ({ success: true }) } }))).not.toThrow();
+  });
+  it.each([["empty object", {}], ["string", "x"], ["null", null], ["limit not a function", { limit: 1 }]])(
+    "SEND_LIMITER present but malformed (%s) is rejected by name",
+    (_n, v) => {
+      let err: unknown;
+      try {
+        load(env({ SEND_LIMITER: v }));
+      } catch (e) {
+        err = e;
+      }
+      expect(err).toBeInstanceOf(KitEnvError);
+      expect((err as KitEnvError).fields).toEqual(["SEND_LIMITER"]);
+    },
+  );
 });
 
 describe("fails closed", () => {
