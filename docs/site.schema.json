@@ -57,6 +57,36 @@
       "title": "BlueskySource",
       "type": "object"
     },
+    "CaseStudy": {
+      "additionalProperties": false,
+      "properties": {
+        "result": {
+          "maxLength": 300,
+          "minLength": 1,
+          "title": "Result",
+          "type": "string"
+        },
+        "summary": {
+          "maxLength": 500,
+          "minLength": 1,
+          "title": "Summary",
+          "type": "string"
+        },
+        "title": {
+          "maxLength": 100,
+          "minLength": 1,
+          "title": "Title",
+          "type": "string"
+        }
+      },
+      "required": [
+        "result",
+        "summary",
+        "title"
+      ],
+      "title": "CaseStudy",
+      "type": "object"
+    },
     "Creator": {
       "additionalProperties": false,
       "properties": {
@@ -261,6 +291,35 @@
         "coin"
       ],
       "title": "CryptoCoin",
+      "type": "object"
+    },
+    "Demographic": {
+      "additionalProperties": false,
+      "properties": {
+        "as_of": {
+          "format": "date",
+          "title": "As Of",
+          "type": "string"
+        },
+        "label": {
+          "maxLength": 60,
+          "minLength": 1,
+          "title": "Label",
+          "type": "string"
+        },
+        "value": {
+          "maxLength": 80,
+          "minLength": 1,
+          "title": "Value",
+          "type": "string"
+        }
+      },
+      "required": [
+        "as_of",
+        "label",
+        "value"
+      ],
+      "title": "Demographic",
       "type": "object"
     },
     "DiscordSource": {
@@ -545,6 +604,74 @@
       "title": "Image",
       "type": "object"
     },
+    "KitConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "about": {
+          "maxLength": 1000,
+          "minLength": 1,
+          "title": "About",
+          "type": "string"
+        },
+        "case_studies": {
+          "items": {
+            "$ref": "#/$defs/CaseStudy"
+          },
+          "maxItems": 20,
+          "title": "Case Studies",
+          "type": "array"
+        },
+        "demographics": {
+          "items": {
+            "$ref": "#/$defs/Demographic"
+          },
+          "maxItems": 30,
+          "title": "Demographics",
+          "type": "array"
+        },
+        "metrics": {
+          "items": {
+            "$ref": "#/$defs/PlatformMetric"
+          },
+          "maxItems": 30,
+          "title": "Metrics",
+          "type": "array"
+        },
+        "partners": {
+          "items": {
+            "$ref": "#/$defs/Partner"
+          },
+          "maxItems": 50,
+          "title": "Partners",
+          "type": "array"
+        },
+        "rates": {
+          "items": {
+            "$ref": "#/$defs/Rate"
+          },
+          "maxItems": 30,
+          "title": "Rates",
+          "type": "array"
+        },
+        "title": {
+          "maxLength": 120,
+          "minLength": 1,
+          "title": "Title",
+          "type": "string"
+        },
+        "unlock_link": {
+          "default": false,
+          "title": "Unlock Link",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "about",
+        "title"
+      ],
+      "title": "KitConfig",
+      "type": "object"
+    },
     "Link": {
       "additionalProperties": false,
       "properties": {
@@ -766,6 +893,49 @@
       "title": "NumbersConfig",
       "type": "object"
     },
+    "Partner": {
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "maxLength": 80,
+          "minLength": 1,
+          "title": "Name",
+          "type": "string"
+        },
+        "note": {
+          "anyOf": [
+            {
+              "maxLength": 200,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Note"
+        },
+        "url": {
+          "anyOf": [
+            {
+              "maxLength": 2048,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Url"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "title": "Partner",
+      "type": "object"
+    },
     "PlatformItem": {
       "additionalProperties": false,
       "properties": {
@@ -861,6 +1031,69 @@
         "url"
       ],
       "title": "PlatformItem",
+      "type": "object"
+    },
+    "PlatformMetric": {
+      "additionalProperties": false,
+      "description": "One headline number for one platform.\n\n``source: manual`` takes ``value`` and a required ``as_of`` from the config.\n``source: counts`` takes both from the numbers file at build time, so the\nconfig must not carry them.",
+      "properties": {
+        "as_of": {
+          "anyOf": [
+            {
+              "format": "date",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "As Of"
+        },
+        "in_total": {
+          "default": true,
+          "title": "In Total",
+          "type": "boolean"
+        },
+        "label": {
+          "maxLength": 60,
+          "minLength": 1,
+          "title": "Label",
+          "type": "string"
+        },
+        "platform": {
+          "title": "Platform",
+          "type": "string"
+        },
+        "source": {
+          "default": "manual",
+          "enum": [
+            "manual",
+            "counts"
+          ],
+          "title": "Source",
+          "type": "string"
+        },
+        "value": {
+          "anyOf": [
+            {
+              "maximum": 10000000000,
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Value"
+        }
+      },
+      "required": [
+        "label",
+        "platform"
+      ],
+      "title": "PlatformMetric",
       "type": "object"
     },
     "Platforms": {
@@ -1038,6 +1271,30 @@
         }
       },
       "title": "ProfileCard",
+      "type": "object"
+    },
+    "Rate": {
+      "additionalProperties": false,
+      "description": "One rates-card line. ``price_text`` is text, so ``Ask me!`` is fine.",
+      "properties": {
+        "item": {
+          "maxLength": 80,
+          "minLength": 1,
+          "title": "Item",
+          "type": "string"
+        },
+        "price_text": {
+          "maxLength": 80,
+          "minLength": 1,
+          "title": "Price Text",
+          "type": "string"
+        }
+      },
+      "required": [
+        "item",
+        "price_text"
+      ],
+      "title": "Rate",
       "type": "object"
     },
     "Robots": {
@@ -1514,6 +1771,17 @@
         "credit": true,
         "credit_text": null
       }
+    },
+    "kit": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/KitConfig"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
     },
     "numbers": {
       "anyOf": [
