@@ -168,26 +168,14 @@ _SPACE = re.compile(r"\s+")
 
 # Decoding repeats until the text stops changing, at most this many rounds.
 DECODE_ROUNDS = 10
-# Output types the search canonicalizes; binary assets (images, fonts) are only
-# searched for the raw bytes.
-TEXT_SUFFIXES = frozenset(
-    {
-        ".html",
-        ".htm",
-        ".css",
-        ".js",
-        ".mjs",
-        ".json",
-        ".xml",
-        ".svg",
-        ".txt",
-        ".webmanifest",
-    }
-)
-TEXT_NAMES = frozenset({"_redirects", "_headers"})
+# A file is canonicalized when its content is text: no NUL byte in the first
+# chunk and valid UTF-8. Anything else is binary and is searched only for the raw
+# bytes of each gated value (UTF-8, UTF-16 little and big endian).
+SNIFF_BYTES = 8192
 # Work limits for the canonical search; a build over either limit stops with an
 # error that names the limit.
 GUARD_MAX_BYTES = 64 * 1024 * 1024
+GUARD_MAX_FILE_BYTES = 8 * 1024 * 1024
 GUARD_MAX_NEEDLES = 1000
 
 
@@ -222,8 +210,15 @@ def canonical(text: str, tags: str = "") -> str:
     return _SPACE.sub("", text)
 
 
-def _is_text(rel: Path) -> bool:
-    return rel.suffix.lower() in TEXT_SUFFIXES or rel.name in TEXT_NAMES
+def _as_text(data: bytes) -> str | None:
+    """The file's text if its content is text (see ``SNIFF_BYTES``), else None.
+    The file name decides nothing."""
+    if b"\x00" in data[:SNIFF_BYTES]:
+        return None
+    try:
+        return data.decode("utf-8")
+    except UnicodeDecodeError:
+        return None
 
 
 def _public_values(kit: KitConfig) -> set[str]:
@@ -255,7 +250,8 @@ def check_no_gated_text(files: Mapping[Path, bytes], kit: KitConfig | None) -> N
         if canonical(text) in allowed:
             continue
         for variant in {text, html.escape(text), html.escape(text, quote=False)}:
-            raw.append((where, variant.encode("utf-8")))
+            for codec in ("utf-8", "utf-16-le", "utf-16-be"):
+                raw.append((where, variant.encode(codec)))
         folded.append((where, canonical(text)))
     if len(folded) > GUARD_MAX_NEEDLES:
         raise KitGuardLimitError(
@@ -267,15 +263,20 @@ def check_no_gated_text(files: Mapping[Path, bytes], kit: KitConfig | None) -> N
         for where, needle in raw:
             if needle in data:
                 raise _leak(where, rel)
-        if not _is_text(rel):
+        decoded = _as_text(data)
+        if decoded is None:
             continue
+        if len(data) > GUARD_MAX_FILE_BYTES:
+            raise KitGuardLimitError(
+                f"the public text file {rel.as_posix()} is over the leak search "
+                f"limit of {GUARD_MAX_FILE_BYTES} bytes (GUARD_MAX_FILE_BYTES)"
+            )
         scanned += len(data)
         if scanned > GUARD_MAX_BYTES:
             raise KitGuardLimitError(
                 f"the public text files total more than {GUARD_MAX_BYTES} bytes, "
                 "over the leak search limit (GUARD_MAX_BYTES)"
             )
-        decoded = data.decode("utf-8", errors="ignore")
         for tags in ("", " "):
             view = canonical(decoded, tags)
             for where, needle_text in folded:

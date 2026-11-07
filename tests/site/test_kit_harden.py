@@ -574,3 +574,53 @@ def test_identity_alone_catches_an_alias_that_spelling_cannot(
         kit_module.check_roots(out, tmp_path / "alias")
     with pytest.raises(ValueError, match=r"gated"):
         kit_module.check_roots(tmp_path / "alias", out)
+
+
+# --- content, not file name, decides how a file is searched -------------------------
+
+
+@pytest.mark.parametrize("name", ["static/pic.png", "static/f.woff", "data.bin"])
+def test_text_content_under_a_binary_looking_name_is_canonicalized(name: str) -> None:
+    text = quote(PARTNER, safe="").encode()
+    with pytest.raises(KitLeakError):
+        kit_module.check_no_gated_text({Path(name): b"x " + text}, make_config().kit)
+
+
+@pytest.mark.parametrize("codec", ["utf-8", "utf-16-le", "utf-16-be"])
+def test_gated_bytes_inside_a_binary_file_are_found(codec: str) -> None:
+    blob = b"\x89PNG\x00\x01" + PARTNER.encode(codec) + b"\x00\xff" * 100
+    with pytest.raises(KitLeakError):
+        kit_module.check_no_gated_text(
+            {Path("static/pic.png"): blob}, make_config().kit
+        )
+
+
+def test_a_genuinely_binary_file_is_cheap_whatever_its_name(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen: list[int] = []
+    real = kit_module.canonical
+
+    def spy(text: str, tags: str = "") -> str:
+        seen.append(len(text))
+        return real(text, tags)
+
+    monkeypatch.setattr(kit_module, "canonical", spy)
+    big = b"\x89PNG\x00" + bytes(range(256)) * 20000
+    files = {
+        Path("static/a.html"): big,
+        Path("static/b.png"): big,
+        Path("index.html"): b"<p>hello</p>",
+    }
+    kit_module.check_no_gated_text(files, make_config().kit)
+    assert seen and max(seen) < 1000
+
+
+def test_a_large_text_file_hits_the_per_file_limit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(kit_module, "GUARD_MAX_FILE_BYTES", 100)
+    with pytest.raises(kit_module.KitGuardLimitError, match=r"GUARD_MAX_FILE_BYTES"):
+        kit_module.check_no_gated_text(
+            {Path("static/x.png"): b"y" * 500}, make_config().kit
+        )
