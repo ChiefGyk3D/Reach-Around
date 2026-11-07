@@ -36,6 +36,7 @@ from socketserver import BaseServer
 from types import FrameType
 from typing import Any, Protocol
 
+from reach_around import editing
 from reach_around.editor.guard import (
     JSON_CAP,
     MAX_HEADER_BYTES,
@@ -106,13 +107,23 @@ class EditorError(Exception):
 def read_config_bytes(path: Path) -> bytes | None:
     """The config bytes, or None for a missing, symlinked, special or huge file.
 
+    The whole path is walked again on every call (a symlink anywhere on it is
+    refused) and the file is opened relative to the folder that walk verified,
+    so the folder cannot be swapped between the check and the open.
     ``O_NONBLOCK`` keeps a FIFO from blocking the open; ``fstat`` then refuses it.
     """
-    flags = os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW | os.O_CLOEXEC
     try:
-        fd = os.open(path, flags)
-    except OSError:
+        dir_fd, resolved = editing.open_config_dir(path)
+    except (editing.EditError, OSError):
         return None
+    try:
+        flags = os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW | os.O_CLOEXEC
+        try:
+            fd = os.open(resolved.name, flags, dir_fd=dir_fd)
+        except OSError:
+            return None
+    finally:
+        os.close(dir_fd)
     try:
         with os.fdopen(fd, "rb") as handle:
             if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
@@ -630,7 +641,10 @@ class EditorSession:
         if host != BIND_ADDRESS:
             raise EditorError(f"the editor binds {BIND_ADDRESS} only, not {host!r}")
         self.address = host
-        self.config = config.resolve()
+        try:
+            self.config = editing.safe_config_path(config)
+        except editing.EditError as exc:
+            raise EditorError(str(exc)) from None
         if read_config_bytes(self.config) is None:
             raise EditorError(f"cannot read the config file {config}")
         self.service = EditorService(

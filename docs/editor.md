@@ -51,9 +51,11 @@ It listens on `127.0.0.1` only; any other host is refused at start. If the
 config file is missing, is not a regular file or is larger than 8 MiB, the
 command prints an error and exits with status 1.
 
-A config path that is a symlink is followed: the editor resolves it and edits
-(and keeps its `.bak` and history beside) the file it points to. Point
-`--config` at the real file if you want it edited where you can see it.
+A config path that is a symlink, or that passes through a symlinked folder, is
+refused: the editor prints `error: ... unsafe config path ...` and exits with
+status 1. Give the real path of the file. The path is checked again on every
+read and before each save. (A link owned by root, such as `/home` pointing to
+`/var/home` on some systems, is allowed.)
 
 ## What you can change today
 

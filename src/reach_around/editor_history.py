@@ -296,10 +296,19 @@ class History:
         self,
         config: Path,
         *,
+        dir_fd: int | None = None,
         max_entries: int = MAX_ENTRIES,
         max_total_bytes: int = MAX_TOTAL_BYTES,
     ) -> None:
+        """``dir_fd`` is the config's folder as the caller verified it.
+
+        With it, the store is opened under that descriptor and the config's
+        path is never looked up again (the caller keeps the descriptor open
+        and closes it). Without it the folder is opened from the path, which
+        only a caller that does not guard against a swapped path may use.
+        """
         self.config = Path(os.path.abspath(config))
+        self._dir_fd = dir_fd
         self.max_entries = max_entries
         self.max_total_bytes = max_total_bytes
 
@@ -310,7 +319,12 @@ class History:
     # -- directory and lock --
 
     def _open_dir(self, *, create: bool) -> int | None:
-        parent = os.open(self.config.parent, os.O_RDONLY | os.O_DIRECTORY)
+        held = self._dir_fd is not None
+        parent = (
+            self._dir_fd
+            if self._dir_fd is not None
+            else os.open(self.config.parent, os.O_RDONLY | os.O_DIRECTORY)
+        )
         try:
             try:
                 info = os.stat(HISTORY_DIRNAME, dir_fd=parent, follow_symlinks=False)
@@ -343,7 +357,8 @@ class History:
                 f"{self.directory}: cannot use the history folder: {exc.strerror}"
             ) from exc
         finally:
-            os.close(parent)
+            if not held:
+                os.close(parent)
         try:
             if os.fstat(fd).st_uid != os.geteuid():
                 raise HistoryError(f"{self.directory}: not owned by you; refusing")

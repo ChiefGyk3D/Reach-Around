@@ -19,7 +19,9 @@ fails, nothing is written.
 from __future__ import annotations
 
 import copy
+import ctypes
 import datetime
+import errno
 import fcntl
 import hashlib
 import json
@@ -27,6 +29,7 @@ import math
 import os
 import re
 import secrets
+import shutil
 import stat
 import tempfile
 import time
@@ -97,6 +100,166 @@ def resolve_config(path: Path, *, force_path: bool) -> Path:
     return resolved
 
 
+def _unsafe(path: Path, why: str) -> EditError:
+    return EditError(f"{path}: unsafe config path ({why}); give the real file path")
+
+
+# A directory is walked with ``O_PATH`` where it exists (Linux): that needs
+# only search permission, so a folder the user may pass through but not list
+# works. Elsewhere the walk falls back to a read-only open.
+_WALK_FLAGS = getattr(os, "O_PATH", os.O_RDONLY) | os.O_DIRECTORY | os.O_CLOEXEC
+
+
+def _open_dir(name: str, dir_fd: int) -> int:
+    """Open the real directory ``name`` under ``dir_fd``; never through a link."""
+    fd = os.open(name, _WALK_FLAGS | os.O_NOFOLLOW, dir_fd=dir_fd)
+    try:
+        if not stat.S_ISDIR(os.fstat(fd).st_mode):
+            raise NotADirectoryError(20, "not a directory", name)
+    except BaseException:
+        os.close(fd)
+        raise
+    return fd
+
+
+def _stat_at(name: str, dir_fd: int) -> os.stat_result:
+    return os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
+
+
+def _readlink_at(name: str, dir_fd: int) -> str:
+    return os.readlink(name, dir_fd=dir_fd)
+
+
+def _fstat_dir(fd: int) -> os.stat_result:
+    return os.fstat(fd)
+
+
+def _root_link_is_fixed(link: os.stat_result, folder: os.stat_result) -> bool:
+    """True if only root could replace this link: root's link in root's folder.
+
+    The folder must have no group or other write, or be sticky (then only
+    the owner of an entry, the folder's owner or root can remove it).
+    """
+    if link.st_uid != 0 or folder.st_uid != 0:
+        return False
+    if not folder.st_mode & 0o022:
+        return True
+    return bool(folder.st_mode & stat.S_ISVTX)
+
+
+def _same_entry(a: os.stat_result, b: os.stat_result) -> bool:
+    return (a.st_dev, a.st_ino, a.st_uid, stat.S_IFMT(a.st_mode)) == (
+        b.st_dev,
+        b.st_ino,
+        b.st_uid,
+        stat.S_IFMT(b.st_mode),
+    ) and stat.S_ISLNK(b.st_mode)
+
+
+def open_config_dir(path: Path) -> tuple[int, Path]:
+    """Walk to the config's folder; return its descriptor and the absolute path.
+
+    The path is walked one component at a time, each opened relative to the
+    previous directory descriptor with ``O_NOFOLLOW``, so a check and the
+    following step are one operation on a descriptor. The last component and
+    every directory component must be a real file or folder. The one exception
+    is a link owned by root inside a folder only root can change (``/home``
+    pointing at ``/var/home`` on some systems): an ordinary user cannot
+    replace one, so it is followed. The entry is checked again after the
+    target is read, and refused if it changed. A ``..`` in such a target is
+    resolved against the folders this walk already holds (never above the
+    root), so it cannot lead anywhere the walk has not verified.
+
+    The caller closes the descriptor and does every later step relative to it
+    (``dir_fd=``): a pathname look-up after this point could name something
+    else by then.
+    """
+    base = Path(os.path.abspath(path))
+    parts = list(base.parts[1:])
+    cur = os.open("/", _WALK_FLAGS)
+    above: list[int] = []  # the verified folders from the root down to ``cur``
+    hops = 0
+    out: list[str] = []
+    try:
+        while parts:
+            name = parts.pop(0)
+            last = not parts
+            if name in ("", "."):
+                continue
+            if name == "..":
+                # Only a followed link's target can hold one (the given path
+                # is normalized above). Step back to the folder already held;
+                # at the root it stays at the root, as the kernel does.
+                if last:
+                    raise _unsafe(base, "contains '..'")
+                if above:
+                    os.close(cur)
+                    cur = above.pop()
+                    out.pop()
+                continue
+            try:
+                info = _stat_at(name, cur)
+            except OSError as exc:
+                raise _unsafe(base, exc.strerror or "cannot stat") from exc
+            if stat.S_ISLNK(info.st_mode):
+                hops += 1
+                if last or hops > 20:
+                    raise _unsafe(base, "a symlink")
+                if not _root_link_is_fixed(info, _fstat_dir(cur)):
+                    raise _unsafe(base, "a symlink")
+                try:
+                    # Held open across the look so its inode number cannot be
+                    # handed to a replacement link between the two stats.
+                    pin = _pin(Path(name), cur)
+                except OSError as exc:
+                    raise _unsafe(base, exc.strerror or "cannot read link") from exc
+                try:
+                    pinned = os.fstat(pin)
+                    if (pinned.st_dev, pinned.st_ino) != (info.st_dev, info.st_ino):
+                        raise _unsafe(base, "a symlink that changed")
+                    try:
+                        target = _readlink_at(name, cur)
+                        again = _stat_at(name, cur)
+                    except OSError as exc:
+                        raise _unsafe(base, exc.strerror or "cannot read link") from exc
+                    if not _same_entry(info, again):
+                        raise _unsafe(base, "a symlink that changed")
+                finally:
+                    os.close(pin)
+                if target.startswith("/"):
+                    while above:
+                        os.close(cur)
+                        cur = above.pop()
+                    out = []
+                parts = [t for t in Path(target).parts if t != "/"] + parts
+                continue
+            out.append(name)
+            if not last:
+                try:
+                    nxt = _open_dir(name, cur)
+                except OSError as exc:
+                    raise _unsafe(base, exc.strerror or "cannot open") from exc
+                above.append(cur)
+                cur = nxt
+        if not out:
+            raise _unsafe(base, "not a file")
+    except BaseException:
+        os.close(cur)
+        for held in above:
+            os.close(held)
+        raise
+    for held in above:
+        os.close(held)
+    return cur, Path("/", *out)
+
+
+def safe_config_path(path: Path) -> Path:
+    """Return the absolute config path, or refuse a path that crosses a symlink."""
+    fd, resolved = open_config_dir(path)
+    os.close(fd)
+    return resolved
+
+
 def _decode(path: Path, data: bytes) -> str:
     try:
         text = data.decode("utf-8")
@@ -118,9 +281,46 @@ class _Snapshot:
     sha256: str
 
 
-def lock_config(config: Path) -> int:
+def lock_config(config: Path, *, no_symlinks: bool = False) -> int:
     """Lock the config (as ``apply`` does) and return the descriptor to close."""
-    return _open_locked(resolve_config(config, force_path=True))
+    if not no_symlinks:
+        return _open_locked(resolve_config(config, force_path=True))
+    lock, dir_fd = lock_config_in_dir(config)
+    os.close(dir_fd)
+    return lock
+
+
+def lock_config_in_dir(config: Path) -> tuple[int, int]:
+    """Lock the config under its verified folder; return (lock, folder) to close.
+
+    The folder descriptor is the one the lock was taken under: later steps
+    (the history store) work relative to it instead of looking the path up.
+    """
+    dir_fd, path = open_config_dir(config)
+    try:
+        return _open_locked(path, dir_fd), dir_fd
+    except BaseException:
+        os.close(dir_fd)
+        raise
+
+
+def _at(path: Path, dir_fd: int | None) -> Path | str:
+    """``path`` itself, or just its name when it is looked up under ``dir_fd``."""
+    return path if dir_fd is None else path.name
+
+
+def _replace(src: Path, dst: Path, dir_fd: int | None) -> None:
+    if dir_fd is None:
+        os.replace(src, dst)
+    else:
+        os.replace(src.name, dst.name, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
+
+
+def _unlink(path: Path, dir_fd: int | None) -> None:
+    try:
+        os.unlink(_at(path, dir_fd), dir_fd=dir_fd)
+    except FileNotFoundError:
+        pass
 
 
 def _read_fd(fd: int, path: Path) -> bytes:
@@ -154,8 +354,10 @@ def _snapshot(fd: int, data: bytes) -> _Snapshot:
     )
 
 
-def _open_locked(path: Path) -> int:
+def _open_locked(path: Path, dir_fd: int | None = None) -> int:
     """Open ``path`` (never through a symlink) and hold an exclusive lock.
+
+    With ``dir_fd`` the file is looked up by name under that verified folder.
 
     The lock is on the config's own descriptor. A writer replaces the file by
     rename, so after the lock is granted the path is checked to still name
@@ -165,7 +367,7 @@ def _open_locked(path: Path) -> int:
     deadline = time.monotonic() + LOCK_TIMEOUT
     for _ in range(20):
         try:
-            fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+            fd = os.open(_at(path, dir_fd), os.O_RDONLY | os.O_NOFOLLOW, dir_fd=dir_fd)
         except OSError as exc:
             raise EditError(f"{path}: cannot open: {exc.strerror}") from exc
         while True:
@@ -184,7 +386,7 @@ def _open_locked(path: Path) -> int:
                 os.close(fd)
                 raise EditError(f"{path}: cannot lock: {exc.strerror}") from exc
         try:
-            held, named = os.fstat(fd), os.stat(path)
+            held, named = os.fstat(fd), os.stat(_at(path, dir_fd), dir_fd=dir_fd)
         except OSError as exc:
             os.close(fd)
             raise EditError(f"{path}: cannot lock: {exc.strerror}") from exc
@@ -201,9 +403,10 @@ def _changed(path: Path) -> EditError:
     )
 
 
-def _verify_unchanged(path: Path, snap: _Snapshot) -> None:
+def _verify_unchanged(path: Path, snap: _Snapshot, dir_fd: int | None = None) -> None:
+    """The name still holds the file that was read: same identity and bytes."""
     try:
-        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+        fd = os.open(_at(path, dir_fd), os.O_RDONLY | os.O_NOFOLLOW, dir_fd=dir_fd)
     except OSError:
         raise _changed(path) from None
     try:
@@ -231,9 +434,42 @@ def _fsync_dir(directory: Path) -> None:
         os.close(fd)
 
 
-def _check_candidate(path: Path, text: str) -> dict[str, Any]:
-    """Write ``text`` to a temp file beside ``path`` and load it for real."""
-    fd, name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
+def _fsync_dirfd(dir_fd: int) -> None:
+    """Sync the folder ``dir_fd`` names.
+
+    A folder the user may pass through but not list cannot be reopened for
+    reading; its entry sync is then skipped (the file itself was synced).
+    """
+    try:
+        fd = os.open(".", os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC, dir_fd=dir_fd)
+    except PermissionError:
+        return
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def _load_private(scratch: Path, path: Path, data: bytes) -> object:
+    """Load ``data`` as the config from a private copy; no look-up of ``path``."""
+    copy_path = scratch / "current.yaml"
+    copy_path.write_bytes(data)
+    try:
+        load_site_config(copy_path)
+        return load_yaml(copy_path)
+    except ConfigError as exc:
+        raise ConfigError(str(path), exc.line, exc.message) from None
+
+
+def _check_candidate(
+    path: Path, text: str, scratch: Path | None = None
+) -> dict[str, Any]:
+    """Write ``text`` to a temp file beside ``path`` (or in ``scratch``), load it."""
+    fd, name = tempfile.mkstemp(
+        dir=path.parent if scratch is None else scratch,
+        prefix=f".{path.name}.",
+        suffix=".tmp",
+    )
     tmp = Path(name)
     try:
         with os.fdopen(fd, "w", encoding="utf-8", newline="") as handle:
@@ -252,11 +488,24 @@ def _check_candidate(path: Path, text: str) -> dict[str, Any]:
     return loaded
 
 
-def _stage(target: Path, text: str, mode: int) -> Path:
-    """Write ``text`` to a synced temp file beside ``target``; return its path."""
-    fd, name = tempfile.mkstemp(
-        dir=target.parent, prefix=f".{target.name}.", suffix=".tmp"
-    )
+def _stage(target: Path, text: str, mode: int, dir_fd: int | None = None) -> Path:
+    """Write ``text`` to a synced temp file beside ``target``; return its path.
+
+    With ``dir_fd`` the file is made under that folder and the result is its
+    bare name.
+    """
+    if dir_fd is None:
+        fd, name = tempfile.mkstemp(
+            dir=target.parent, prefix=f".{target.name}.", suffix=".tmp"
+        )
+    else:
+        name = f".{target.name}.{secrets.token_hex(6)}.tmp"
+        fd = os.open(
+            name,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
+            0o600,
+            dir_fd=dir_fd,
+        )
     tmp = Path(name)
     try:
         with os.fdopen(fd, "w", encoding="utf-8", newline="") as handle:
@@ -265,38 +514,46 @@ def _stage(target: Path, text: str, mode: int) -> Path:
             os.fchmod(handle.fileno(), mode)
             os.fsync(handle.fileno())
     except BaseException:
-        tmp.unlink(missing_ok=True)
+        _unlink(tmp, dir_fd)
         raise
     return tmp
 
 
-def _commit(tmp: Path, target: Path) -> None:
+def _commit(tmp: Path, target: Path, dir_fd: int | None = None) -> None:
     """Rename ``tmp`` over ``target`` and sync the folder; drop ``tmp`` on failure."""
     try:
-        os.replace(tmp, target)
+        _replace(tmp, target, dir_fd)
     except BaseException:
-        tmp.unlink(missing_ok=True)
+        _unlink(tmp, dir_fd)
         raise
-    _fsync_dir(target.parent)
+    if dir_fd is None:
+        _fsync_dir(target.parent)
+    else:
+        _fsync_dirfd(dir_fd)
 
 
-def _copy_aside(backup: Path, kept: Path) -> None:
+def _copy_aside(backup: Path, kept: Path, dir_fd: int | None = None) -> None:
     """Copy ``backup`` to ``kept`` (synced); the fallback where links fail."""
-    fd = os.open(backup, os.O_RDONLY | os.O_NOFOLLOW)
+    fd = os.open(_at(backup, dir_fd), os.O_RDONLY | os.O_NOFOLLOW, dir_fd=dir_fd)
     with os.fdopen(fd, "rb") as source:
         data = source.read()
-    out = os.open(kept, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    out = os.open(
+        _at(kept, dir_fd),
+        os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+        0o600,
+        dir_fd=dir_fd,
+    )
     try:
         with os.fdopen(out, "wb") as target:
             target.write(data)
             target.flush()
             os.fsync(target.fileno())
     except BaseException:
-        kept.unlink(missing_ok=True)
+        _unlink(kept, dir_fd)
         raise
 
 
-def _keep_backup(path: Path) -> Path | None:
+def _keep_backup(path: Path, dir_fd: int | None = None) -> Path | None:
     """Keep an existing backup aside so an aborted edit can put it back.
 
     None means there is no backup to keep. If one exists but cannot be kept
@@ -305,16 +562,25 @@ def _keep_backup(path: Path) -> Path | None:
     backup = path.with_name(path.name + ".bak")
     kept = path.with_name(f".{path.name}.bak.{secrets.token_hex(8)}.keep")
     try:
-        os.link(backup, kept, follow_symlinks=False)
+        if dir_fd is None:
+            os.link(backup, kept, follow_symlinks=False)
+        else:
+            os.link(
+                backup.name,
+                kept.name,
+                src_dir_fd=dir_fd,
+                dst_dir_fd=dir_fd,
+                follow_symlinks=False,
+            )
     except FileNotFoundError:
         return None
     except OSError:
         try:
-            _copy_aside(backup, kept)
+            _copy_aside(backup, kept, dir_fd)
         except FileNotFoundError:
             return None
         except OSError as exc:
-            kept.unlink(missing_ok=True)
+            _unlink(kept, dir_fd)
             raise EditError(
                 f"{backup}: cannot keep the previous backup safe, so nothing was "
                 f"written: {exc.strerror or exc}"
@@ -322,28 +588,168 @@ def _keep_backup(path: Path) -> Path | None:
     return kept
 
 
-def _restore_backup(kept: Path, backup: Path) -> bool:
-    """Put the kept backup back; True if the backup is the previous one again."""
+_RENAME_NOREPLACE = 1
+_AT_FDCWD = -100
+
+
+def _load_renameat2() -> Any:
+    """The C library's ``renameat2``, or None where it is not there."""
     try:
-        os.replace(kept, backup)
-        return True
+        function = ctypes.CDLL(None, use_errno=True).renameat2
+    except (OSError, AttributeError):
+        return None
+    function.argtypes = [
+        ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.c_uint,
+    ]
+    function.restype = ctypes.c_int
+    return function
+
+
+_RENAMEAT2 = _load_renameat2()
+_NO_FLAGS_ERRNOS = {errno.ENOSYS, errno.EINVAL, errno.ENOTSUP, errno.EPERM}
+
+
+def _rename_noreplace(src: Path, dst: Path, dir_fd: int | None) -> None:
+    """Rename ``src`` to ``dst``; ``FileExistsError`` if ``dst`` exists.
+
+    ``src`` must be a name only this call knows (a private name): the
+    fallback links it to ``dst`` (a link never replaces) and drops ``src``.
+    """
+    if _RENAMEAT2 is not None:
+        base = _AT_FDCWD if dir_fd is None else dir_fd
+        result = _RENAMEAT2(
+            base,
+            os.fsencode(_at(src, dir_fd)),
+            base,
+            os.fsencode(_at(dst, dir_fd)),
+            _RENAME_NOREPLACE,
+        )
+        if result == 0:
+            return
+        code = ctypes.get_errno()
+        if code not in _NO_FLAGS_ERRNOS:
+            raise OSError(code, os.strerror(code), str(dst))
+    if dir_fd is None:
+        os.link(src, dst, follow_symlinks=False)
+    else:
+        os.link(
+            src.name,
+            dst.name,
+            src_dir_fd=dir_fd,
+            dst_dir_fd=dir_fd,
+            follow_symlinks=False,
+        )
+    _unlink(src, dir_fd)
+
+
+def _before_aside(path: Path) -> None:
+    """Seam right before the backup name is moved aside (tests hook it)."""
+
+
+def _after_aside(path: Path, aside: Path) -> None:
+    """Seam right after the backup was moved aside (tests hook it)."""
+
+
+def _roll_back_backup(
+    bak: Path,
+    kept: Path | None,
+    mine: tuple[int, int] | None,
+    dir_fd: int | None,
+) -> bool:
+    """Take back the backup this save made, never touching anyone else's entry.
+
+    The name is first moved to a private one, which is one atomic step that
+    cannot hit a replacement: whatever it held is now ours to look at. If that
+    is the file this save made (or, with ``kept``, the previous backup), it is
+    dropped and ``kept`` is installed with a no-replace rename. Anything else
+    belongs to another process and is moved straight back, again without
+    replacing. Nothing is deleted or overwritten unless this call made it.
+
+    True if ``kept`` is no longer needed on disk (installed); False if it must
+    stay (a foreign entry holds the name, or the install failed).
+    """
+    aside = bak.with_name(f".{bak.name}.{secrets.token_hex(8)}.aside")
+    _before_aside(bak)
+    try:
+        _replace(bak, aside, dir_fd)
+    except FileNotFoundError:
+        found = None
     except OSError:
-        try:  # the rename may never have happened: then nothing was lost
-            return backup.read_bytes() == kept.read_bytes()
+        return False  # cannot move it: leave everything where it is
+    else:
+        found = _identity(aside, dir_fd)
+        _after_aside(bak, aside)
+    previous = _identity(kept, dir_fd) if kept is not None else None
+    ours = found is not None and (found == mine or (previous and found == previous))
+    if found is not None and not ours:
+        try:  # another process's entry: back under its name, replacing nothing
+            _rename_noreplace(aside, bak, dir_fd)
         except OSError:
-            return False
+            pass  # the name is taken again; the entry stays aside, undeleted
+        return False
+    installed = True
+    if kept is not None:
+        try:
+            _rename_noreplace(kept, bak, dir_fd)
+        except OSError:
+            installed = False  # a newer entry holds the name: leave it alone
+    if found is not None:
+        _unlink(aside, dir_fd)
+    return installed
 
 
-def _write_backup(path: Path, text: str, mode: int) -> Path:
+def _pin(path: Path, dir_fd: int | None) -> int:
+    """Open the entry ``path`` names, not following a link, only to keep it alive.
+
+    Where an open entry cannot be freed, its (device, inode) number cannot be
+    reused by a different entry while the descriptor is held.
+    """
+    flags = getattr(os, "O_PATH", os.O_RDONLY) | os.O_NOFOLLOW | os.O_CLOEXEC
+    return os.open(_at(path, dir_fd), flags, dir_fd=dir_fd)
+
+
+def _identity(path: Path, dir_fd: int | None) -> tuple[int, int] | None:
+    """(device, inode) of the entry ``path`` names, not following a link."""
+    try:
+        info = os.stat(_at(path, dir_fd), dir_fd=dir_fd, follow_symlinks=False)
+    except OSError:
+        return None
+    return info.st_dev, info.st_ino
+
+
+def _write_backup(
+    path: Path,
+    text: str,
+    mode: int,
+    dir_fd: int | None = None,
+    made: list[tuple[int, int]] | None = None,
+    pins: list[int] | None = None,
+) -> Path:
+    """Write the backup; ``made`` receives the identity of the file this call made.
+
+    The file is also kept open (its descriptor is added to ``pins``, which the
+    caller closes): while it is open, its inode number cannot be given to a
+    new file, so the identity in ``made`` can only match this very file.
+    """
     backup = path.with_name(path.name + ".bak")
     try:
-        tmp = _stage(backup, text, mode)
+        tmp = _stage(backup, text, mode, dir_fd)
+        if made is not None:
+            mine = _identity(tmp, dir_fd)
+            if mine is not None:
+                made.append(mine)
+                if pins is not None:
+                    pins.append(_pin(tmp, dir_fd))
         try:
             _during_backup(path)
         except BaseException:
-            tmp.unlink(missing_ok=True)
+            _unlink(tmp, dir_fd)
             raise
-        _commit(tmp, backup)
+        _commit(tmp, backup, dir_fd)
     except OSError as exc:
         raise EditError(
             f"{backup}: cannot write backup (the previous backup and the "
@@ -371,6 +777,17 @@ def _check_slots(
             validate(key, value)
 
 
+def _same_folder(config: Path, dir_fd: int) -> None:
+    """Refuse if the config's path no longer names the folder ``dir_fd`` holds."""
+    now_fd, now = open_config_dir(config)
+    try:
+        held, named = os.fstat(dir_fd), os.fstat(now_fd)
+    finally:
+        os.close(now_fd)
+    if (held.st_dev, held.st_ino) != (named.st_dev, named.st_ino):
+        raise _changed(now)
+
+
 def apply(
     config: Path,
     compute: Compute,
@@ -378,6 +795,7 @@ def apply(
     dry_run: bool,
     backup: bool,
     force_path: bool,
+    no_symlinks: bool = False,
     validate_slot: Callable[[str, Any], None] | None = None,
     restore: bool = False,
 ) -> Result:
@@ -391,16 +809,64 @@ def apply(
     The config is locked from the read to the rename, so two of our commands
     run one after the other. Against any other writer, the file's identity and
     hash are re-checked right before the rename; a change is refused.
+
+    ``no_symlinks=True`` (the editor) refuses a config path that crosses a
+    symlink. The folder is then walked once and held as a descriptor, and
+    every read, staged file, backup and rename is relative to it, so a path
+    swapped after the walk cannot redirect a write. The config is validated
+    from a private copy, never by looking the path up again.
     """
-    path = resolve_config(config, force_path=force_path)
-    lock = _open_locked(path)
+    dir_fd: int | None = None
+    scratch: Path | None = None
+    if no_symlinks:
+        dir_fd, path = open_config_dir(config)
+    else:
+        path = resolve_config(config, force_path=force_path)
+    try:
+        if no_symlinks:
+            scratch = Path(tempfile.mkdtemp(prefix="reach-around-edit-"))
+        return _apply_at(
+            config,
+            path,
+            dir_fd,
+            scratch,
+            compute,
+            dry_run=dry_run,
+            backup=backup,
+            validate_slot=validate_slot,
+            restore=restore,
+        )
+    finally:
+        if dir_fd is not None:
+            os.close(dir_fd)
+        if scratch is not None:
+            shutil.rmtree(scratch, ignore_errors=True)
+
+
+def _apply_at(
+    config: Path,
+    path: Path,
+    dir_fd: int | None,
+    scratch: Path | None,
+    compute: Compute,
+    *,
+    dry_run: bool,
+    backup: bool,
+    validate_slot: Callable[[str, Any], None] | None,
+    restore: bool,
+) -> Result:
+    lock = _open_locked(path, dir_fd)
+    verify_kw: dict[str, Any] = {} if dir_fd is None else {"dir_fd": dir_fd}
     try:
         data = _read_fd(lock, path)
         snap = _snapshot(lock, data)
         raw: Any = {}
         try:
-            load_site_config(path)  # the file must be valid before it is edited
-            raw = load_yaml(path)
+            if scratch is None:
+                load_site_config(path)  # the file must be valid before it is edited
+                raw = load_yaml(path)
+            else:
+                raw = _load_private(scratch, path, data)
         except ConfigError as exc:
             if not restore:
                 raise EditError(str(exc)) from None
@@ -410,7 +876,7 @@ def apply(
             raw = {}
         old = _decode(path, data)
         new, expected = compute(old, raw)
-        candidate = _check_candidate(path, new)
+        candidate = _check_candidate(path, new, scratch)
         if not restore and candidate != expected:
             raise EditError(
                 f"{path}: internal check failed: the edited file does not match "
@@ -422,39 +888,64 @@ def apply(
             return Result(path, old, new, False, None)
         mode = stat.S_IMODE(os.fstat(lock).st_mode)
         try:
-            staged = _stage(path, new, mode)
+            staged = _stage(path, new, mode, dir_fd)
         except OSError as exc:
             raise EditError(f"{path}: cannot write: {exc.strerror or exc}") from exc
         kept: Path | None = None
+        made: list[tuple[int, int]] = []
+        pins: list[int] = []
+        bak = path.with_name(path.name + ".bak")
+
+        def undo_backup() -> None:
+            """Leave the backup as this call found it: put back or remove."""
+            nonlocal kept
+            if not backup:
+                return
+            if kept is None and dir_fd is None:
+                return  # the commands keep the backup of a refused edit (#197)
+            if not made:
+                return  # no backup of ours was installed: nothing to take back
+            if not _roll_back_backup(bak, kept, made[0], dir_fd):
+                kept = None  # leave the kept copy on disk; the cause is reported
+
         try:
             # Everything slow comes first. The check is the last step before the
             # rename, so the window for a writer that ignores the lock is tiny
             # (it cannot be closed on POSIX).
-            kept = _keep_backup(path) if backup else None
+            kept = _keep_backup(path, dir_fd) if backup else None
             try:
-                saved = _write_backup(path, old, mode) if backup else None
+                saved = (
+                    _write_backup(path, old, mode, dir_fd, made, pins)
+                    if backup
+                    else None
+                )
             except BaseException:
-                # The new backup may already be renamed in; put the old one back.
-                if kept is not None:
-                    if not _restore_backup(kept, path.with_name(path.name + ".bak")):
-                        kept = None  # leave the kept copy on disk; report the cause
+                undo_backup()  # the new backup may already be renamed in
                 raise
             try:
                 _before_replace(path)
-                _verify_unchanged(path, snap)
+                if dir_fd is not None:
+                    _same_folder(config, dir_fd)
+                _verify_unchanged(path, snap, **verify_kw)
             except BaseException:
-                # A refused edit must not cost the previous backup.
-                if saved is not None and kept is not None:
-                    os.replace(kept, saved)
+                # A refused edit must not cost the previous backup, nor leave one.
+                undo_backup()
                 raise
             try:
-                _commit(staged, path)
+                _commit(staged, path, dir_fd)
             except OSError as exc:
+                try:  # still the old file: the edit did not happen
+                    _verify_unchanged(path, snap, **verify_kw)
+                    undo_backup()
+                except EditError:
+                    pass
                 raise EditError(f"{path}: cannot write: {exc.strerror or exc}") from exc
         finally:
-            staged.unlink(missing_ok=True)
+            for pin in pins:
+                os.close(pin)
+            _unlink(staged, dir_fd)
             if kept is not None:
-                kept.unlink(missing_ok=True)
+                _unlink(kept, dir_fd)
         return Result(path, old, new, True, saved)
     finally:
         os.close(lock)
