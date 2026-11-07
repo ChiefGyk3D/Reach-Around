@@ -9,9 +9,11 @@ from __future__ import annotations
 
 import functools
 import os
+import shutil
 import threading
 from collections.abc import Iterator
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 
 import pytest
 from playwright.sync_api import Browser, sync_playwright
@@ -77,3 +79,37 @@ def test_kit_pages_fit_the_screen_and_make_no_outside_request(
     honeypot = page.locator(".kit-hp").bounding_box()
     assert honeypot is None or (honeypot["width"] <= 1 and honeypot["height"] <= 1)
     context.close()
+
+
+def test_the_gated_page_makes_no_third_party_request(
+    browser: Browser, tmp_path: Path
+) -> None:
+    config = make_config(
+        creator={"name": "Example Creator", "avatar": "https://example.com/a.png"}
+    )
+    out, gated = tmp_path / "out", tmp_path / "gated"
+    build_site(config, out, today=TODAY, gated_out=gated)
+    # Test-only: serve the stylesheet tree plus the gated page, the way the
+    # Worker would serve it, from one loopback directory.
+    root = tmp_path / "served"
+    shutil.copytree(out, root)
+    shutil.copy(gated / "kit.html", root / "kit.html")
+    server = ThreadingHTTPServer(
+        ("127.0.0.1", 0), functools.partial(_Quiet, directory=str(root))
+    )
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        base = f"http://127.0.0.1:{server.server_address[1]}"
+        context = browser.new_context(reduced_motion="reduce")
+        page = context.new_page()
+        hosts: set[str] = set()
+        page.on("request", lambda r: hosts.add(r.url.split("/")[2]))
+        page.goto(base + "/kit.html")
+        assert page.get_by_role(
+            "heading", name="Example Creator media kit"
+        ).is_visible()
+        assert hosts == {base.split("/")[2]}
+        context.close()
+    finally:
+        server.shutdown()
+        server.server_close()

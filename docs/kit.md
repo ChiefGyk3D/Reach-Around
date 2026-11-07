@@ -109,25 +109,53 @@ links open with `rel="noopener noreferrer"`. It contains no script and no form.
 
 ## The wall between the two
 
-The rule for what is public is the display policy table in
-`reach_around/config/kit.py`; the public page is rendered from
+The boundary is structural. The rule for what is public is the display policy
+table in `reach_around/config/kit.py`; the public page is rendered from
 `public_projection` and the gated page from `gated_projection`, so a template
-cannot reach a gated field. Three build-time checks back that up:
+cannot reach a gated field, and the two pages go to two separate directories.
 
-1. the gated directory cannot be, contain or sit inside the public output;
-2. no public file may be named `kit.html` at the site root (the gated file name);
-3. before anything is written, every gated string of at least 6 characters
-   (partner name, note and URL; case study text; rate text; demographic text) is
-   searched for in every public file, as written and HTML-escaped. A hit stops
-   the build and names the field (`kit.partners[0].name`), not the text.
+What the build enforces:
 
-Consequence of check 3: if the same wording must appear on a public page (a
-partner you also name on a link), reword one of them. Short strings under 6
-characters are not searched, since a short word would match ordinary text; they
-are still kept out by the structure, not by the search.
+1. **Separate roots, checked by filesystem identity.** The gated directory may
+   not be the public output, inside it or around it, however it is spelled:
+   links and other aliases of one directory are compared by device and inode,
+   not by name. The build also refuses a public output that already holds an
+   entry named `kit.html`.
+2. **Safe writes.** The gated directory is created owner-only. The page is
+   written to a new temporary file there and renamed into place after the public
+   tree is written, so a failure to write it leaves the public tree as it was. A
+   symbolic link at `kit.html` in the gated directory is refused, never written
+   through.
+3. **A search as defense in depth.** Before anything is written, each gated
+   value of at least 6 characters (partner text, case study text, rate text,
+   demographic text and dates) is searched for in every public file: as written,
+   HTML-escaped, and in a canonical form (entities, percent-encoding and JSON
+   escapes decoded, tags removed, Unicode NFKC, case and whitespace ignored). A
+   hit stops the build and names the field, not the text. A value that is also
+   public by policy (the kit title and description, a metric label or date) is
+   not a leak and is skipped.
 
-An override template for `kit.html` is still checked: if it prints a gated
-string, the build fails.
+What is **not** guaranteed: the search cannot catch every transformation a
+custom template could apply, and values under 6 characters are not searched.
+Those rest on the structure in points 1 and 2. If you use an override template
+for the kit pages, review it as code that handles gated-adjacent text. If the same wording must appear on a public page, reword one of them.
+
+### Removing a gated page
+
+`reach-around build` records where it wrote the gated page, in
+`<out>.gated.json` beside `--out` (never inside it, so never published). While
+that record exists, every build must pass `--gated-out` with the same
+directory; without it the build stops with an error and changes nothing. A build
+whose kit no longer has gated content then removes the old `kit.html` and
+deletes the record, after which plain builds work again. If you moved the gated
+directory on purpose, delete the old page and the record first. Code that calls
+`build_site` directly has no record and must pass the old directory itself.
+
+### The gated page and requests
+
+The gated page makes no third-party request. A remote (`https://`) creator
+avatar is left out of it; the public pages keep the avatar, like every other
+page. Use a local avatar file if you want it on the gated page too.
 
 ## Old numbers
 

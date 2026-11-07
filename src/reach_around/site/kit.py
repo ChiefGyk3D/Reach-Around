@@ -26,6 +26,11 @@ makes no third-party request and ``_headers`` is unchanged.
 from __future__ import annotations
 
 import html
+import os
+import re
+import secrets
+import unicodedata
+import urllib.parse
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import date
@@ -90,58 +95,199 @@ def public_paths(config: SiteConfig) -> set[Path]:
 # --- the wall ----------------------------------------------------------------
 
 
+def _chain(path: Path) -> set[tuple[int, int]]:
+    """Filesystem identities (device, inode) of ``path`` and every existing
+    ancestor, after following symbolic links. Identity, not spelling, so an
+    alias (a link, a bind mount, a case-folded name) of one directory matches."""
+    found: set[tuple[int, int]] = set()
+    current = Path(os.path.realpath(path))
+    for candidate in (current, *current.parents):
+        try:
+            info = os.stat(candidate)
+        except OSError:
+            continue
+        found.add((info.st_dev, info.st_ino))
+    return found
+
+
+def _own(path: Path) -> tuple[int, int] | None:
+    try:
+        info = os.stat(os.path.realpath(path))
+    except OSError:
+        return None
+    return (info.st_dev, info.st_ino)
+
+
 def check_roots(out_dir: Path, gated_out: Path) -> None:
-    """Refuse a gated directory that is, contains or sits inside the public one."""
-    out, gated = out_dir.resolve(), gated_out.resolve()
+    """Refuse a gated directory that is, contains or sits inside the public one.
+
+    Compared by filesystem identity as well as by resolved path, so links and
+    other aliases of one directory are caught. Also refuses a public output that
+    already holds an entry with the gated file's name, of any kind."""
+    problem = (
+        f"gated output directory {gated_out} is the public output directory "
+        f"{out_dir}, inside it or around it; the gated page must never be "
+        "published, so choose a separate directory"
+    )
+    out, gated = Path(os.path.realpath(out_dir)), Path(os.path.realpath(gated_out))
     if gated == out or out in gated.parents or gated in out.parents:
+        raise ValueError(problem)
+    out_id, gated_id = _own(out_dir), _own(gated_out)
+    if (out_id is not None and out_id in _chain(gated_out)) or (
+        gated_id is not None and gated_id in _chain(out_dir)
+    ):
+        raise ValueError(problem)
+    if os.path.lexists(out_dir / GATED_FILE):
         raise ValueError(
-            f"gated output directory {gated_out} is the public output directory "
-            f"{out_dir}, inside it or around it; the gated page must never be "
-            "published, so choose a separate directory"
+            f"the public output {out_dir} already holds an entry named "
+            f"{GATED_FILE}, which is reserved for the gated page; remove it"
         )
 
 
 def _gated_strings(kit: KitConfig) -> list[tuple[str, str]]:
-    """(where, text) for every gated string long enough to search for."""
+    """(where, text) for every gated value long enough to search for. Values
+    that are not text (dates) are searched in the form the templates print."""
     found: list[tuple[str, str]] = []
     for name in ("partners", "case_studies", "rates", "demographics"):
         for index, item in enumerate(getattr(kit, name)):
             for field, value in item.model_dump().items():
-                if isinstance(value, str) and len(value) >= GUARD_MIN_LENGTH:
-                    found.append((f"kit.{name}[{index}].{field}", value))
+                text = value.isoformat() if isinstance(value, date) else value
+                if isinstance(text, str) and len(text) >= GUARD_MIN_LENGTH:
+                    found.append((f"kit.{name}[{index}].{field}", text))
     return found
 
 
+_TAG = re.compile(r"<[^>]*>")
+_JSON_U = re.compile(r"\\u([0-9a-fA-F]{4})")
+_JSON_C = re.compile(r'\\(["\\/bfnrt])')
+_JSON_MAP = {"b": "\b", "f": "\f", "n": "\n", "r": "\r", "t": "\t"}
+_SPACE = re.compile(r"\s+")
+
+
+def _decode_once(text: str) -> str:
+    text = html.unescape(text)
+    text = urllib.parse.unquote(text)
+    text = _JSON_U.sub(lambda m: chr(int(m.group(1), 16)), text)
+    return _JSON_C.sub(lambda m: _JSON_MAP.get(m.group(1), m.group(1)), text)
+
+
+def canonical(text: str, tags: str = "") -> str:
+    """A comparison form: entities, percent-encoding and JSON escapes decoded
+    (three rounds, for doubled encodings), tags replaced by ``tags``, Unicode
+    NFKC, case-folded, all whitespace removed."""
+    for _ in range(3):
+        text = _decode_once(text)
+    text = _TAG.sub(tags, text)
+    text = unicodedata.normalize("NFKC", text).casefold()
+    return _SPACE.sub("", text)
+
+
+def _public_values(kit: KitConfig) -> set[str]:
+    """Canonical forms of the values that are public by policy; a gated value
+    that equals one of them is not a leak."""
+    values = {kit.title, kit.about}
+    for metric in kit.metrics:
+        values.add(metric.label)
+        if metric.as_of is not None:
+            values.add(metric.as_of.isoformat())
+    return {canonical(v) for v in values}
+
+
 def check_no_gated_text(files: Mapping[Path, bytes], kit: KitConfig | None) -> None:
-    """Raise ``KitLeakError`` if a gated file name or string is in ``files``."""
+    """Raise ``KitLeakError`` if a gated file name or string is in ``files``.
+
+    Defense in depth: the separate output roots are the boundary. This search
+    compares the raw and HTML-escaped bytes and the canonical forms (see
+    ``canonical``), also with markup removed, so equivalent encodings and values
+    split by tags are caught. It does not claim to catch every transformation."""
     if GATED_FILE in files:
         raise KitLeakError(f"the public output would contain {GATED_FILE}")
     if kit is None:
         return
-    needles = [
-        (where, variant.encode("utf-8"))
-        for where, text in _gated_strings(kit)
-        for variant in {text, html.escape(text), html.escape(text, quote=False)}
-    ]
+    allowed = _public_values(kit)
+    raw: list[tuple[str, bytes]] = []
+    folded: list[tuple[str, str]] = []
+    for where, text in _gated_strings(kit):
+        if canonical(text) in allowed:
+            continue
+        for variant in {text, html.escape(text), html.escape(text, quote=False)}:
+            raw.append((where, variant.encode("utf-8")))
+        folded.append((where, canonical(text)))
     for rel, data in sorted(files.items()):
-        for where, needle in needles:
+        for where, needle in raw:
             if needle in data:
-                raise KitLeakError(
-                    f"gated text from {where} would appear in the public file "
-                    f"{rel.as_posix()}; gated text may only go to the gated "
-                    "output. Reword the public text or the gated entry."
-                )
+                raise _leak(where, rel)
+        decoded = data.decode("utf-8", errors="ignore")
+        for tags in ("", " "):
+            view = canonical(decoded, tags)
+            for where, needle_text in folded:
+                if needle_text in view:
+                    raise _leak(where, rel)
 
 
-def write_gated(gated_out: Path, page: str | None) -> None:
-    """Write the gated page, or remove a stale one. Touches no other file."""
+def _leak(where: str, rel: Path) -> KitLeakError:
+    return KitLeakError(
+        f"gated text from {where} would appear in the public file "
+        f"{rel.as_posix()}; gated text may only go to the gated "
+        "output. Reword the public text or the gated entry."
+    )
+
+
+@dataclass
+class StagedGated:
+    """A gated page written to a temporary name in the gated root, or a pending
+    removal. ``commit`` makes it the real file; ``discard`` removes the temp."""
+
+    root: Path
+    temp: Path | None
+
+    def commit(self) -> None:
+        target = self.root / GATED_FILE
+        if self.temp is None:
+            if os.path.lexists(target):
+                target.unlink()
+            return
+        try:
+            os.replace(self.temp, target)
+        except OSError:
+            self.discard()
+            raise
+        self.temp = None
+
+    def discard(self) -> None:
+        if self.temp is not None:
+            self.temp.unlink(missing_ok=True)
+            self.temp = None
+
+
+def stage_gated(gated_out: Path, page: str | None) -> StagedGated:
+    """Prepare the gated page without touching the destination name.
+
+    A symbolic link at the destination is refused. The page is written to a new
+    file (never following a link, owner-only) beside the destination and renamed
+    into place by ``commit``, after the public tree is written."""
     target = gated_out / GATED_FILE
+    if target.is_symlink():
+        raise ValueError(
+            f"{target} is a symbolic link; the gated page is never written "
+            "through a link. Remove it and build again."
+        )
     if page is None:
-        if target.is_file() or target.is_symlink():
-            target.unlink()
-        return
-    gated_out.mkdir(parents=True, exist_ok=True)
-    target.write_text(page, encoding="utf-8")
+        return StagedGated(gated_out, None)
+    if not gated_out.exists():
+        gated_out.mkdir(parents=True, mode=0o700)
+    temp = gated_out / f".{GATED_FILE.name}.{secrets.token_hex(8)}.tmp"
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+    fd = os.open(temp, flags, 0o600)
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(page.encode("utf-8"))
+            handle.flush()
+            os.fsync(handle.fileno())
+    except BaseException:
+        temp.unlink(missing_ok=True)
+        raise
+    return StagedGated(gated_out, temp)
 
 
 # --- content -----------------------------------------------------------------
@@ -216,7 +362,7 @@ def plan_warnings(
     return found
 
 
-BaseContext = Callable[[str, str], dict[str, Any]]
+BaseContext = Callable[[str, str, bool], dict[str, Any]]
 
 
 def render_kit(
@@ -226,7 +372,7 @@ def render_kit(
     today: date,
     base: BaseContext,
 ) -> KitRender:
-    """Render the kit. ``base(root, tab_name)`` is the context every page shares
+    """Render the kit. ``base(root, tab_name, gated)`` is the context every page shares
     (navigation, titles, footer flags); the kit adds its own content."""
     kit = config.kit
     if kit is None:
@@ -241,12 +387,12 @@ def render_kit(
             "categories": _categories(kit),
         }
     pages: dict[Path, str] = {}
-    ctx = base("../", "Media kit")
+    ctx = base("../", "Media kit", False)
     pages[KIT_PAGE] = env.get_template("kit.html").render(
         **{**ctx, "root": "../", "kit": public, "form": form}
     )
     if form is not None:
-        ctx = base("../../", "Try again")
+        ctx = base("../../", "Try again", False)
         pages[RETRY_PAGE] = env.get_template("kit_retry.html").render(
             **{**ctx, "root": "../../", "kit": public, "form": form, "noindex": True}
         )
@@ -263,7 +409,7 @@ def render_kit(
                 for d in data["demographics"]
             ],
         )
-        ctx = base("/", "Media kit details")
+        ctx = base("/", "Media kit details", True)
         gated = env.get_template("kit_gated.html").render(
             **{**ctx, "root": "/", "kit": content, "noindex": True}
         )

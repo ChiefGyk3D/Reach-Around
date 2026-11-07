@@ -33,11 +33,12 @@ from reach_around.site.cachepolicy import cache_patterns
 from reach_around.site.fingerprint import AssetMap, fingerprint
 from reach_around.site.inventory import InventoryEntry, build_inventory
 from reach_around.site.kit import (
+    GATED_FILE,
     check_no_gated_text,
     check_roots,
     public_paths,
     render_kit,
-    write_gated,
+    stage_gated,
 )
 from reach_around.site.overrides import (
     load_custom_css,
@@ -65,6 +66,9 @@ class BuildManifest:
     inventory: dict[str, InventoryEntry] = field(default_factory=dict)
     # Build warnings the caller should show (for example an old kit number).
     warnings: tuple[str, ...] = ()
+    # The gated page written by this build, or None when none was (a kit with no
+    # gated content removes any old one). Never part of the published site.
+    gated_page: Path | None = None
 
 
 def _links_in(blocks: Iterable[Block]) -> list[Link]:
@@ -405,9 +409,13 @@ def _render_not_found(
     )
 
 
+def _is_remote(value: str) -> bool:
+    return ":" in value or value.startswith("//")
+
+
 def _kit_base(
     config: SiteConfig, shown: list[list[Block]], custom_css: bool
-) -> Callable[[str, str], dict[str, Any]]:
+) -> Callable[[str, str, bool], dict[str, Any]]:
     """The context shared by the kit pages: ``base(root, tab_name)``.
 
     ``root`` is ``../``, ``../../`` or (for the gated page, which the Worker
@@ -415,9 +423,14 @@ def _kit_base(
     profile card: the kit pages carry none of them.
     """
 
-    def base(root: str, tab_name: str) -> dict[str, Any]:
+    def base(root: str, tab_name: str, gated: bool) -> dict[str, Any]:
+        creator = config.creator
+        if gated and creator.avatar is not None and _is_remote(creator.avatar):
+            # The gated page makes no third-party request: a remote avatar is
+            # left out there (the public pages keep it, like every other page).
+            creator = creator.model_copy(update={"avatar": None})
         return {
-            "creator": config.creator,
+            "creator": creator,
             "nav": _nav(config, -1, root),
             "tab_href": _internal_href(config, root, shown),
             "page_title": page_title(config, tab_name, home=False, own=None),
@@ -672,12 +685,30 @@ def build_site(
     # in-memory tree, before anything on disk is touched.
     check_no_gated_text(files, kit)
     out = _check_out_dir(out_dir, protect)
-    _empty(out)
-    _write(out, files)
+    staged = None
     if gated_out is not None:
-        write_gated(gated_root, kit_render.gated)
+        # Stage the gated page before the public tree is touched, so a failure
+        # to write it leaves the public tree as it was; make the public root
+        # exist and compare the two roots again by identity now that both do.
+        out.mkdir(parents=True, exist_ok=True)
+        check_roots(out, gated_root)
+        staged = stage_gated(gated_root, kit_render.gated)
+    try:
+        _empty(out)
+        _write(out, files)
+        if staged is not None:
+            staged.commit()
+    except BaseException:
+        if staged is not None:
+            staged.discard()
+        raise
     return replace(
         manifest,
+        gated_page=(
+            gated_root / GATED_FILE
+            if staged is not None and kit_render.gated is not None
+            else None
+        ),
         inventory=build_inventory(files, named.hashed),
         warnings=tuple(kit_render.warnings),
     )

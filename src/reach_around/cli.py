@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import importlib
+import json
 import math
 import os
 import pkgutil
@@ -194,6 +195,49 @@ def _write_inventory(
         )
 
 
+def _gated_record(out_dir: Path) -> Path:
+    """Where the build remembers its gated directory: beside ``--out``, never
+    inside it (``--out`` is published)."""
+    out = out_dir.resolve()
+    return out.parent / f"{out.name}.gated.json"
+
+
+def _check_gated_record(record: Path, gated_out: Path | None) -> None:
+    """Refuse a build that would forget a gated page an earlier build wrote.
+
+    The earlier build recorded where it put the page. A later build must name
+    the same directory, so the page is rewritten or, when the kit no longer has
+    gated content, removed; omitting the flag would leave it behind."""
+    if not os.path.lexists(record):
+        return
+    try:
+        recorded = json.loads(record.read_text(encoding="utf-8"))["gated_out"]
+        if not isinstance(recorded, str):
+            raise TypeError
+    except (OSError, ValueError, KeyError, TypeError):
+        raise ValueError(
+            f"{record} exists but cannot be read; it records where an earlier "
+            "build wrote the gated page. Check that directory, then delete the "
+            "record and build again."
+        ) from None
+    if gated_out is None or os.path.realpath(gated_out) != os.path.realpath(recorded):
+        raise ValueError(
+            f"an earlier build wrote a gated page to {recorded}; pass "
+            f"--gated-out {recorded} so it is updated or removed. If you moved "
+            f"it on purpose, delete that page and {record}, then build again."
+        )
+
+
+def _update_gated_record(record: Path, gated_page: Path | None) -> None:
+    if gated_page is None:
+        record.unlink(missing_ok=True)
+        return
+    record.write_text(
+        json.dumps({"gated_out": str(gated_page.parent)}, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+
 def _build(
     config_path: Path,
     out_dir: Path,
@@ -209,6 +253,8 @@ def _build(
             out_dir, inventory_path, target, config_path
         )
         source = _numbers_source(out_dir, numbers_path, config_path)
+        record = _gated_record(out_dir)
+        _check_gated_record(record, gated_out)
         config = load_site_config(config_path)
         numbers: Numbers | None = None
         if source is not None:
@@ -233,6 +279,7 @@ def _build(
         )
         for warning in manifest.warnings:
             print(f"warning: {warning}", file=sys.stderr)
+        _update_gated_record(record, manifest.gated_page)
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(manifest_json(manifest), encoding="utf-8")
         _write_inventory(inventory_target, manifest.inventory, inventory_path is None)
