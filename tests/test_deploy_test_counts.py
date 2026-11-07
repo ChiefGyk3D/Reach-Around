@@ -70,10 +70,55 @@ def test_a_counts_job_runs_before_the_build_and_cannot_write() -> None:
     counts = jobs()["counts"]
     # id-token is for the optional Doppler OIDC login; nothing here can write.
     assert counts["permissions"] == {"contents": "read", "id-token": "write"}
-    assert counts["if"] == "github.ref == 'refs/heads/main'"
+    assert "github.ref == 'refs/heads/main'" in counts["if"]
     assert "environment" not in counts and "env" not in counts
     assert "counts" in jobs()["build"]["needs"]
     assert "id-token" not in yaml.safe_dump(jobs()["build"])
+
+
+def dispatch_inputs() -> dict[str, Any]:
+    data: dict[Any, Any] = load()
+    triggers: dict[str, Any] = data.get("on") or data[True]
+    inputs: dict[str, Any] = triggers["workflow_dispatch"]["inputs"]
+    return inputs
+
+
+def test_a_manual_run_can_skip_the_counts() -> None:
+    skip = dispatch_inputs()["skip_counts"]
+    assert skip["type"] == "boolean"
+    assert skip["default"] is False
+    assert skip.get("required", False) is False
+    ref = "github.ref == 'refs/heads/main'"
+    # wheels and counts do not run when skipped, and still only on main.
+    for name in ("wheels", "counts"):
+        cond = jobs()[name]["if"]
+        assert ref in cond and "!inputs.skip_counts" in cond, name
+
+
+def test_the_build_runs_when_counts_are_skipped_but_never_after_a_failure() -> None:
+    build = jobs()["build"]
+    cond = build["if"]
+    assert "!cancelled()" in cond  # else a skipped dependency skips the build
+    assert "github.ref == 'refs/heads/main'" in cond
+    # Skipped on purpose, or the counts job itself succeeded. A bare
+    # "skipped" result would also let a failed wheels job through.
+    assert "inputs.skip_counts" in cond
+    assert "needs.counts.result == 'success'" in cond
+    assert "'skipped'" not in cond and "always()" not in cond
+    steps = build["steps"]
+    download = next(
+        s
+        for s in steps
+        if str(s.get("uses", "")).startswith("actions/download-artifact@")
+        and s["with"]["name"] == "counts-numbers"
+    )
+    assert "inputs.skip_counts" in download["if"]
+    run = next(s for s in steps if s.get("name") == "Build the site")["run"]
+    # Both forms exist: with the counts file, and without (the committed file).
+    assert run.count("reach-around build") == 2
+    assert "--numbers counts-in/numbers.json" in run
+    # The deploy waits for the build only; a skipped counts job is not in its path.
+    assert jobs()["deploy"]["needs"] == "build"
 
 
 def test_the_keys_reach_exactly_one_step_through_env() -> None:
@@ -96,7 +141,7 @@ def test_the_github_secrets_path_needs_no_doppler_setup() -> None:
     )
     condition = doppler["if"]
     for var in (
-        "DOPPLER_IDENTITY_ID",
+        "DOPPLER_COUNTS_IDENTITY_ID",
         "DOPPLER_COUNTS_PROJECT",
         "DOPPLER_COUNTS_CONFIG",
     ):
@@ -112,13 +157,49 @@ def test_the_doppler_path_is_oidc_outputs_only_and_has_no_default_project() -> N
     withs = doppler["with"]
     assert withs["export"] == "outputs"  # nothing goes to the job environment
     assert "token" not in withs  # no long-lived token, OIDC only
-    assert withs["identity-id"] == "${{ vars.DOPPLER_IDENTITY_ID }}"
+    assert withs["identity-id"] == "${{ vars.DOPPLER_COUNTS_IDENTITY_ID }}"
     assert withs["project"] == "${{ vars.DOPPLER_COUNTS_PROJECT }}"
     assert withs["config"] == "${{ vars.DOPPLER_COUNTS_CONFIG }}"
     assert "secrets." not in yaml.safe_dump(doppler)
     assert steps.index(doppler) < [s.get("name") for s in steps].index(REFRESH_STEP)
     # No environment-wide export: no GITHUB_ENV write anywhere in the job.
     assert "GITHUB_ENV" not in yaml.safe_dump(jobs()["counts"])
+
+
+def variables_used(job: dict[str, Any]) -> set[str]:
+    return set(re.findall(r"vars\.(DOPPLER_\w+)", yaml.safe_dump(job)))
+
+
+def test_counts_and_deploy_use_different_doppler_identities() -> None:
+    counts = variables_used(jobs()["counts"])
+    deploy = variables_used(jobs()["deploy"])
+    assert "DOPPLER_COUNTS_IDENTITY_ID" in counts
+    assert "DOPPLER_IDENTITY_ID" in deploy
+    assert "DOPPLER_IDENTITY_ID" not in counts
+    assert "DOPPLER_COUNTS_IDENTITY_ID" not in deploy
+    # The same value in both would give the counts code the deploy token.
+    assert not any(v.startswith("DOPPLER_IDENTITY") for v in counts)
+
+
+def test_the_identity_guard_bites() -> None:
+    shared = {"steps": [{"with": {"identity-id": "${{ vars.DOPPLER_IDENTITY_ID }}"}}]}
+    assert "DOPPLER_IDENTITY_ID" in variables_used(shared)
+
+
+def test_the_counts_egress_policy_states_why_it_is_audit() -> None:
+    first = jobs()["counts"]["steps"][0]
+    policy = first["with"]["egress-policy"]
+    assert policy in ("audit", "block")
+    if policy == "audit":
+        # Only the unknowable reasons justify audit: the blob host for the
+        # wheels artifact varies per run, and mastodon/matrix hosts come from
+        # the config. The comment in the workflow must say so.
+        text = WORKFLOW.read_text(encoding="utf-8")
+        job = text.split("  counts:")[1].split("  build:")[0]
+        assert "blob host" in job and "varies per run" in job
+        assert "configurable" in job
+    else:
+        assert "allowed-endpoints" in first["with"]
 
 
 def test_the_key_guard_bites() -> None:
@@ -252,12 +333,24 @@ def test_the_numbers_cross_to_the_build_as_data_and_are_passed_explicitly() -> N
 # ---- the script -----------------------------------------------------------
 
 
-def fake_engine(tmp_path: Path, exit_code: int, platforms: dict[str, Any]) -> Path:
-    """A stand-in `reach-around`: writes --out and exits as told."""
+NO_SOURCES = "error: the config has no numbers.sources to refresh"
+
+
+def fake_engine(
+    tmp_path: Path,
+    exit_code: int,
+    platforms: dict[str, Any],
+    stderr: str = "",
+) -> Path:
+    """A stand-in `reach-around`: records its environment, writes --out, exits."""
     path = tmp_path / "fake-engine"
     body = (
         f"#!{sys.executable}\n"
-        "import json, sys\n"
+        "import json, os, sys\n"
+        f"open({str(tmp_path / 'engine-env.json')!r}, 'w').write("
+        "json.dumps(sorted(os.environ)))\n"
+        f"sys.stderr.write({stderr!r})\n"
+        f"if {stderr!r}: sys.exit({exit_code})\n"
         "out = sys.argv[sys.argv.index('--out') + 1]\n"
         f"json.dump({{'version': 1, 'platforms': {platforms!r}}}, open(out, 'w'))\n"
         f"sys.exit({exit_code})\n"
@@ -268,7 +361,11 @@ def fake_engine(tmp_path: Path, exit_code: int, platforms: dict[str, Any]) -> Pa
 
 
 def run(
-    tmp_path: Path, config_text: str, engine: Path, seed: dict[str, Any] | None = None
+    tmp_path: Path,
+    config_text: str,
+    engine: Path,
+    seed: dict[str, Any] | None = None,
+    extra_env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     site = tmp_path / "site"
     site.mkdir(exist_ok=True)
@@ -287,7 +384,7 @@ def run(
             "--engine",
             str(engine),
         ],
-        env={"PATH": "/usr/bin:/bin"},
+        env={"PATH": "/usr/bin:/bin", **(extra_env or {})},
         capture_output=True,
         text=True,
         check=False,
@@ -312,13 +409,15 @@ def test_with_no_numbers_block_the_hand_kept_file_passes_through(
     tmp_path: Path,
 ) -> None:
     seed = {"version": 1, "platforms": {"tiktok": {"count": 5, "as_of": stamp(1)}}}
-    proc = run(tmp_path, "version: 1\n", fake_engine(tmp_path, 9, {}), seed)
+    engine = fake_engine(tmp_path, 2, {}, NO_SOURCES)
+    proc = run(tmp_path, "version: 1\n", engine, seed)
     assert proc.returncode == 0, proc.stderr
-    assert result(tmp_path) == seed  # the engine (exit 9) was never called
+    assert result(tmp_path) == seed  # the engine said there is nothing to refresh
 
 
 def test_with_nothing_at_all_an_empty_valid_file_is_written(tmp_path: Path) -> None:
-    proc = run(tmp_path, "version: 1\n", fake_engine(tmp_path, 9, {}))
+    engine = fake_engine(tmp_path, 2, {}, NO_SOURCES)
+    proc = run(tmp_path, "version: 1\n", engine)
     assert proc.returncode == 0, proc.stderr
     assert result(tmp_path) == {"version": 1, "platforms": {}}
 
@@ -353,7 +452,7 @@ def test_hand_kept_numbers_older_than_30_days_get_a_warning(tmp_path: Path) -> N
             "instagram": {"count": 6, "as_of": stamp(29)},
         },
     }
-    proc = run(tmp_path, "version: 1\n", fake_engine(tmp_path, 0, {}), seed)
+    proc = run(tmp_path, "version: 1\n", fake_engine(tmp_path, 2, {}, NO_SOURCES), seed)
     assert proc.returncode == 0, proc.stderr
     warned = [ln for ln in proc.stdout.splitlines() if ln.startswith("::warning")]
     assert len(warned) == 1 and "tiktok" in warned[0] and "instagram" not in warned[0]
@@ -362,5 +461,97 @@ def test_hand_kept_numbers_older_than_30_days_get_a_warning(tmp_path: Path) -> N
 def test_a_hostile_platform_key_is_not_echoed(tmp_path: Path) -> None:
     evil = "x\n::error::pwned"
     seed = {"version": 1, "platforms": {evil: {"count": 1, "as_of": stamp(90)}}}
-    proc = run(tmp_path, "version: 1\n", fake_engine(tmp_path, 0, {}), seed)
+    proc = run(tmp_path, "version: 1\n", fake_engine(tmp_path, 2, {}, NO_SOURCES), seed)
     assert "pwned" not in proc.stdout and "pwned" not in proc.stderr
+
+
+def test_a_quoted_numbers_key_still_refreshes(tmp_path: Path) -> None:
+    # The old regex looked for a bare `numbers:` at the start of a line; a
+    # quoted key is the same YAML and must reach the engine.
+    fresh = {"bluesky": {"count": 7, "as_of": stamp(0)}}
+    config = 'version: 1\n"numbers":\n  sources: []\n'
+    proc = run(tmp_path, config, fake_engine(tmp_path, 0, fresh))
+    assert proc.returncode == 0, proc.stderr
+    assert result(tmp_path)["platforms"] == fresh
+
+
+def test_an_engine_config_error_is_not_mistaken_for_no_block(tmp_path: Path) -> None:
+    engine = fake_engine(tmp_path, 2, {}, "error: version: unsupported")
+    proc = run(tmp_path, "version: 1\n", engine)
+    assert proc.returncode != 0
+    assert "::error" in proc.stdout
+
+
+YT_CONFIG = (
+    "version: 1\nnumbers:\n  sources:\n"
+    "    - {platform: youtube, kind: youtube, channel_id: UCxxxxxxxxxxxxxxxxxxxxxx,"
+    " api_key_env: MY_YT_KEY}\n"
+    "    - {platform: twitch, kind: twitch, login: abc,"
+    " client_id_env: MY_TW_ID, client_secret_env: MY_TW_SECRET}\n"
+)
+
+
+def engine_env(tmp_path: Path) -> list[str]:
+    names: list[str] = json.loads((tmp_path / "engine-env.json").read_text())
+    return names
+
+
+def test_the_engine_gets_only_an_allow_list_of_the_environment(
+    tmp_path: Path,
+) -> None:
+    proc = run(
+        tmp_path,
+        YT_CONFIG,
+        fake_engine(tmp_path, 0, {}),
+        extra_env={
+            "HOME": str(tmp_path),
+            "LANG": "C.UTF-8",
+            "MY_YT_KEY": "k",
+            "MY_TW_ID": "i",
+            "MY_TW_SECRET": "s",
+            "UNRELATED_SECRET": "x",
+            "ACTIONS_ID_TOKEN_REQUEST_URL": "u",
+            "ACTIONS_ID_TOKEN_REQUEST_TOKEN": "t",
+            "GITHUB_TOKEN": "g",
+            "RUNNER_TEMP": "r",
+        },
+    )
+    assert proc.returncode == 0, proc.stderr
+    got = set(engine_env(tmp_path))
+    assert {"MY_YT_KEY", "MY_TW_ID", "MY_TW_SECRET", "PATH", "HOME", "LANG"} <= got
+    for bad in (
+        "UNRELATED_SECRET",
+        "ACTIONS_ID_TOKEN_REQUEST_URL",
+        "ACTIONS_ID_TOKEN_REQUEST_TOKEN",
+        "GITHUB_TOKEN",
+        "RUNNER_TEMP",
+    ):
+        assert bad not in got
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "ACTIONS_ID_TOKEN_REQUEST_TOKEN",
+        "ACTIONS_RUNTIME_TOKEN",
+        "GITHUB_TOKEN",
+        "RUNNER_TEMP",
+        "lowercase",
+        "BAD-NAME",
+        "A",
+    ],
+)
+def test_env_names_that_could_expose_runner_credentials_are_refused(
+    tmp_path: Path, name: str
+) -> None:
+    config = YT_CONFIG.replace("MY_YT_KEY", name)
+    proc = run(
+        tmp_path,
+        config,
+        fake_engine(tmp_path, 0, {}),
+        extra_env={name: "secret-value-123"},
+    )
+    assert proc.returncode != 0
+    assert "::error" in proc.stdout
+    assert "secret-value-123" not in proc.stdout + proc.stderr
+    assert not (tmp_path / "engine-env.json").exists()  # the engine never ran
