@@ -22,13 +22,13 @@ Cutover words: **v1** means required before DNS moves. **Deferred** names a reas
 |---|---|---|---|---|
 | Tabs | Four tabs (support, socials, product recommendations, contact), default tab first, each with its own URL. | DONE. `tabs` layout with a page per tab (`src/reach_around/site/templates/tab.html`, `tests/site/test_build.py`). | v1 | Scripted: build the production config and assert one `index.html` per tab and that the tab titles and order match the Beacons list in the private snapshot. |
 | Single-page option | Not offered. | DONE. `page_layout: sections` (#220, #221). | Not required. The page keeps the tabs layout to match Beacons. | Config choice, covered by the existing golden tests. |
-| Header icon row | Social icons repeated on every tab; the email icon leads to the contact tab instead of a mail link. | DONE. `creator.socials` with `tab:` links (`src/reach_around/config/models.py`, `docs/config.md`, `tests/site/test_internal_links.py`); icons in `src/reach_around/site/icons.py`. | v1 | Scripted link check (below) covers every icon target on every tab. Observable: open each tab on desktop and phone and compare the icon row. |
+| Header icon row | Social icons repeated on every tab; the email icon leads to the contact tab instead of a mail link. | DONE. `creator.socials` with `tab:` links (`src/reach_around/config/models.py`, `docs/config.md`, `tests/site/test_internal_links.py`); icons in `src/reach_around/site/icons.py`. | v1 | The scripted link check (HTML part) covers every icon target, internal ones included, on every tab. Observable: open each tab on desktop and phone and compare the icon row. |
 | Link cards | Title, optional subtitle, optional thumbnail, a featured pill. | DONE. `src/reach_around/site/templates/blocks/link.html` and `_macros.html`; thumbnails (#113). | v1 | Link check; visual comparison on desktop and phone. |
-| Eight support links | A support tab with eight links, one featured. | DONE as a capability (link blocks, `featured`). Content is entered in the private instance. | v1 | Scripted link check against the manifest. |
+| Eight support links | A support tab with eight links, one featured. | DONE as a capability (link blocks, `featured`). Content is entered in the private instance. | v1 | Scripted link check (HTML anchors plus manifest). |
 | Collapsible sections | Groups on the socials and recommendations tabs open and close. | DONE. `<details>` section block (`src/reach_around/site/templates/blocks/section.html`, `collapsed` option). | v1 | Observable: sections start open or closed as on Beacons, and work with the keyboard. Golden test covers the markup. |
 | Per-link menu | A per-link three-dot menu. | NOT BUILT. Links are plain anchors; there is no menu. | Deliberately not included in v1. A menu adds script and page surface, and nothing in the cutover criteria needs it. The maintainer can reverse this. | Recorded in the "Not included" list; no check. |
 | Affiliate disclosure | A sentence shown on pages that carry affiliate links. | DONE. `affiliate` flag per link, `rel="sponsored"` on those links, and a `disclosure` text in the footer when a page has any (`models.py`, `_footer.html`, `_macros.html`). | v1 (wording needs the maintainer's approval) | Scripted: every link marked affiliate has `rel` containing `sponsored`, and every page with one shows the disclosure. |
-| Profile card | Name, topic tags and a media kit button at the bottom of each tab. | DONE (#116, `profile_card.py`, `_profile_card.html`). | v1 | Observable on every tab. The button target is checked by the link check. |
+| Profile card | Name, topic tags and a media kit button at the bottom of each tab. | DONE (#116, `profile_card.py`, `_profile_card.html`). | v1 | Observable on every tab. The button target is checked by the link check (manifest has it under the reserved id). |
 | Follower counts on the socials tab | Count chips for connected platforms. | DONE for platforms with a collector or typed number (#143 platforms block, #154 `counts refresh`, #176 scheduled refresh). | v1 for the platforms Beacons shows; manual numbers with an as-of date for those with no usable API. | Scripted: `counts` output is fresh (as-of within 30 days) for each platform shown. |
 | Contact by email | An email entry that is not a mail link. | DONE (#149 email block: spelled-out address, reveal on click, nothing for scrapers in the HTML; `tests/site/test_email.py`). | v1 | Scripted: built HTML contains no `mailto:` and no plain address; click reveals it. |
 | Phone layout | Centered column on desktop, full width on phone, tab bar scrolls sideways, icon row wraps. | DONE (#147 responsive layout, #90 tabs fit phone, #179). `tests/site/test_layout.py` and visual tests. | v1 | Observable on a real phone and a desktop browser against Beacons side by side. |
@@ -39,7 +39,7 @@ Cutover words: **v1** means required before DNS moves. **Deferred** names a reas
 
 | Feature | Beacons behavior | Reach Around on main | Cutover state | How we verify |
 |---|---|---|---|---|
-| Links match Beacons | The live set of links is the reference. | PARTLY. `reach-around build` writes a link manifest (`--manifest`, `manifest_json` in `src/reach_around/site/build.py`, id to URL). The comparison against the Beacons list is NOT BUILT. | v1 | **Scripted link check.** A script reads the manifest and the private Beacons snapshot, then fails on any missing, extra, reordered or changed target (tracking parameters stripped, affiliate flags compared), and requests every URL once for a non-error response. To be written as part of cutover; output goes in the PR, never the URLs. |
+| Links match Beacons | The live set of links is the reference. | PARTLY. `reach-around build` writes a link manifest (`--manifest`, `manifest_json` in `src/reach_around/site/build.py`), but it is only an id-to-URL map serialized with sorted keys. It has no page, no order, no affiliate flag, and it omits `tab:` links (icon targets such as the email icon) and tab-bar entries. It cannot prove order, placement, affiliate flags or internal targets. The comparison script is NOT BUILT. | v1 | **Scripted link check, in two parts.** (a) Parse the built HTML for each page and collect the ordered anchors (page, section, position, text, `href`, `rel`, whether the page shows the disclosure); this covers order, placement, `rel="sponsored"` and internal `tab:` targets. (b) Use the manifest for the external id-to-URL map as a cross-check. Compare against the private Beacons snapshot: fail on any missing, extra, reordered or changed target (tracking parameters stripped), then request every external URL once. Building the check is a task that must finish before it is relied on as the cutover gate: either write the HTML parser (preferred, no engine change) or extend the manifest with page, order, affiliate flag and every anchor target including internal ones. Output goes in the PR as counts and ids, never URLs. |
 | Click tracking | Click counts per link. | DONE. Worker click route and D1 (`worker/src/click.ts`, `worker/migrations/0001_click_events.sql`), kill switch `CLICKS_KILL` (#108). | v1 | Scripted: a test click on a staging host shows in D1 within one minute. |
 
 ### Media kit
@@ -74,6 +74,41 @@ Cutover words: **v1** means required before DNS moves. **Deferred** names a reas
 | Blog page views | Not offered. | PARTLY. The collector accepts several sites (#235). The blog's own wiring is outside this repo. | v1, required by the owner's ruling of 2026-11-06. | Scripted: a test view from the blog lands under the blog's site id. |
 | Connected platforms | Seven connected platforms with follower history. | PARTLY. Counts exist for several platforms (#154); history, Instagram, TikTok, X, Threads and LinkedIn depend on API access or typed numbers. | v1 for counts with as-of dates; automated history is deferred (API access, review, cost). | Each platform shown has a number and an as-of date under 30 days. |
 | Privacy page | Beacons policy. | DONE. Generated from enabled features (`src/reach_around/site/privacy.py`). | v1, wording approved by the maintainer. | Observable: page lists every feature that is on. |
+
+## Every Beacons sidebar section
+
+Sections as listed in issue #22 (seen 2026-10-23). The maintainer has not ruled on rows marked "proposed"; the owner confirms each one.
+
+| Beacons section | What it is | Reach Around state | Disposition |
+|---|---|---|---|
+| Home | Dashboard landing with summary and shortcuts. | NOT BUILT; a reporting command is planned. | Covered by the v1 report. Proposed, owner to confirm. |
+| Link in Bio (link page) | The tabbed link page and its editor. | DONE (see Link page); the local editor exists (#198, #241). | Covered, v1. |
+| Website | A small site builder. | Out of this tool's purpose; the link page and the maintainer's blog cover it. | Deliberately not included. Proposed, owner to confirm. |
+| Media Kit and Brand Deal Profile | Public kit page, gated detail, PDF. | NOT BUILT (see Media kit). | Covered, v1. The kit-viewed alert is also v1 (chat first, email when the mail domain is ready). |
+| Smart Reply | Automated replies to social messages and comments. | NOT BUILT. Needs write access to platform accounts. | Deliberately not included. Proposed, owner to confirm. |
+| Affiliate Products | A catalog and tracking of affiliate offers. | PARTLY. Affiliate links with `rel="sponsored"` and a disclosure are DONE; clicks are counted; no earnings tracking. | Links covered, v1. Earnings tracking is later (see issue #5). Proposed, owner to confirm. |
+| Digital Products | Selling files and courses. | NOT BUILT. | Deliberately not included; external stores cover it. Proposed, owner to confirm. |
+| Marketing | Email and campaign tools. | NOT BUILT. | Deliberately not included. Proposed, owner to confirm. |
+| Analytics: socials | Follower counts and history per platform. | PARTLY (see Analytics). | Counts in v1; history later. |
+| Analytics: link in bio | Views, clicks, CTR, sources, devices, location, CSV. | PARTLY (see Analytics). | Covered, v1. |
+| Analytics: website | Visits to the Beacons-hosted website. | Page views support more than one site (#235). | Covered for the maintainer's own sites; blog collector is v1. |
+| Analytics: digital products | Sales analytics. | NOT BUILT. | Out of scope with Digital Products. Proposed, owner to confirm. |
+| Analytics: affiliate products | Clicks and earnings per offer. | PARTLY. Clicks only. | Clicks in v1; earnings later. Proposed, owner to confirm. |
+| Analytics: media kit | Kit views and visitors. | NOT BUILT. | Covered, v1, as part of the kit work and report. |
+| Sales and Payouts | Revenue from Beacons products and payout settings. | NOT BUILT. | Out of scope; no products are sold here. Income tracking is a later idea (issue #5). Proposed, owner to confirm. |
+| Audience: members | A contact list. | Gate leads only (planned, v1). | Leads covered, v1; a general list is not included. Proposed, owner to confirm. |
+| Audience: groups | Segments of contacts. | NOT BUILT. | Deliberately not included. Proposed, owner to confirm. |
+| Audience: memberships | Paid memberships. | NOT BUILT. Direct and platform memberships appear as links (`docs/research/support-embeds.md`). | Links only. Proposed, owner to confirm. |
+| Audience: forms | Sign-up and contact forms. | NOT BUILT; the kit gate is the only form planned. | Deliberately not included beyond the gate. Proposed, owner to confirm. |
+| Business Tools and invoice generator | Invoices and small business helpers. | NOT BUILT. | Out of scope: Zoho Books handles invoicing (earlier ruling, issue #3). |
+| Referrals | Beacons' own referral program. | n/a | Out of scope. Proposed, owner to confirm. |
+| Settings | Account, domain, connected platforms, billing. | PARTLY. Site config and the local editor replace page settings; connected platforms are collector config. | Covered by config files. Account and billing are not applicable. |
+
+## Beacons weaknesses worth beating
+
+- The PDF export prints the gate and blurs gated content even after unlock; the target is a complete, paginated, offline PDF.
+- Platforms Beacons does not connect (for example Bluesky, Mastodon, Kick, Discord and Matrix community sizes) can be added.
+- Visitor data stays in the maintainer's own store, with no raw address or user agent kept.
 
 ## Cutover checklist
 
