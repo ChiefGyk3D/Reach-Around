@@ -9,6 +9,11 @@ import { MAX_TOKEN_AGE_SECONDS, MIN_KEY_BYTES } from "./token";
 export interface KitEnv extends Env {
   KIT: KVNamespace;
   GATE_LIMITER: RateLimiter;
+  /**
+   * Optional. Not bound in v1, because the emailed-link flow (`/k/send`) is not
+   * built. Required once that route exists; shape-checked whenever present.
+   */
+  SEND_LIMITER?: RateLimiter;
   /** 1/true/on/yes (any case) stops the kit routes; 0/false/off/no or unset leaves them on. Any other value is rejected at load and treated as engaged. */
   KIT_KILL?: string;
   /** SECRET. Signs unlock tokens. At least 32 bytes. */
@@ -17,12 +22,12 @@ export interface KitEnv extends Env {
   TOKEN_HMAC_KEY_PREVIOUS?: string;
   /** SECRET. Turnstile verification. */
   TURNSTILE_SECRET: string;
-  /** Unlock cookie lifetime in seconds. Default 86400, at most 168 hours. */
+  /** Unlock cookie lifetime in seconds. Default 86400; 3600 (1 h) to 604800 (168 h). */
   TOKEN_TTL_SECONDS?: string;
 }
 
 export const DEFAULT_TOKEN_TTL_SECONDS = 86_400;
-const MIN_TTL_SECONDS = 60;
+const MIN_TTL_SECONDS = 3600;
 
 /** The kit configuration is unusable. Carries field names only, never values. */
 export class KitEnvError extends Error {
@@ -50,6 +55,10 @@ const KILL_OFF = new Set(["0", "false", "off", "no"]);
  * Unset or "" is off. Otherwise the value must be exactly one of
  * 1/true/on/yes (engaged) or 0/false/off/no (off), in any case, with no
  * surrounding whitespace. Anything else, including a non-string, is invalid.
+ *
+ * This is intentionally stricter than the click and view kill switches, which
+ * trim and accept only "1" or "true": a malformed kill switch must fail closed,
+ * not silently leave the kit open. The other switches are unchanged.
  */
 function killState(v: unknown): KillState {
   if (v === undefined || v === "") return "off";
@@ -84,6 +93,11 @@ export function loadKitEnv(env: KitEnv): KitConfig {
   if (e.KIT === undefined || e.KIT === null || typeof e.KIT !== "object") bad.push("KIT");
   const lim = e.GATE_LIMITER as { limit?: unknown } | undefined;
   if (lim === undefined || lim === null || typeof lim.limit !== "function") bad.push("GATE_LIMITER");
+
+  if (e.SEND_LIMITER !== undefined) {
+    const send = e.SEND_LIMITER as { limit?: unknown } | null;
+    if (send === null || typeof send !== "object" || typeof send.limit !== "function") bad.push("SEND_LIMITER");
+  }
 
   const keys: string[] = [];
   if (keyOk(e.TOKEN_HMAC_KEY)) keys.push(e.TOKEN_HMAC_KEY);
