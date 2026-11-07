@@ -1,0 +1,11 @@
+{# SPDX-License-Identifier: Apache-2.0 #}
+{% extends "base.html" %}
+{% from "_kit_parts.html" import gate_form %}
+{% block content %}
+<section class="kit" aria-labelledby="kit-retry-title">
+<h2 id="kit-retry-title">That did not go through</h2>
+<p>Please try again. If it keeps happening, wait a moment, check that JavaScript is on for this page, or come back later.</p>
+{{ gate_form(form) }}
+<p><a href="{{ root }}kit/">Back to the media kit</a></p>
+</section>
+{% endblock %}

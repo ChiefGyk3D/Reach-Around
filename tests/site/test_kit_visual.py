@@ -1,0 +1,79 @@
+# SPDX-License-Identifier: Apache-2.0
+"""Browser checks for the media kit pages. Run with ``pytest --run-visual``.
+
+Headless only, on loopback. The gate form is never submitted, and every request
+the page makes must go to the loopback server (no third-party request).
+"""
+
+from __future__ import annotations
+
+import functools
+import os
+import threading
+from collections.abc import Iterator
+from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
+
+import pytest
+from playwright.sync_api import Browser, sync_playwright
+from test_kit_build import TODAY, make_config
+
+from reach_around.site.build import build_site
+
+pytestmark = pytest.mark.visual
+
+
+class _Quiet(SimpleHTTPRequestHandler):
+    def log_message(self, format: str, *args: object) -> None:
+        return
+
+
+@pytest.fixture(scope="module")
+def site(tmp_path_factory: pytest.TempPathFactory) -> Iterator[str]:
+    base = tmp_path_factory.mktemp("kit")
+    out = base / "out"
+    build_site(make_config(), out, today=TODAY, gated_out=base / "gated")
+    server = ThreadingHTTPServer(
+        ("127.0.0.1", 0), functools.partial(_Quiet, directory=str(out))
+    )
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    yield f"http://127.0.0.1:{server.server_address[1]}"
+    server.shutdown()
+    server.server_close()
+
+
+@pytest.fixture(scope="module")
+def browser() -> Iterator[Browser]:
+    with sync_playwright() as p:
+        binary = os.environ.get("RA_CHROMIUM")
+        instance = p.chromium.launch(
+            args=["--no-sandbox"], executable_path=binary or None
+        )
+        yield instance
+        instance.close()
+
+
+@pytest.mark.parametrize("path", ["/kit/", "/kit/retry/"])
+@pytest.mark.parametrize("width", [320, 390, 1280])
+def test_kit_pages_fit_the_screen_and_make_no_outside_request(
+    browser: Browser, site: str, path: str, width: int
+) -> None:
+    context = browser.new_context(
+        viewport={"width": width, "height": 900}, reduced_motion="reduce"
+    )
+    page = context.new_page()
+    hosts: set[str] = set()
+    page.on("request", lambda r: hosts.add(r.url.split("/")[2]))
+    page.goto(site + path)
+    assert hosts == {site.split("/")[2]}
+    assert page.evaluate(
+        "document.documentElement.scrollWidth <= document.documentElement.clientWidth"
+    )
+    email = page.get_by_label("Email address")
+    assert email.is_visible()
+    button = page.get_by_role("button", name="Show the details")
+    box = button.bounding_box()
+    assert box is not None
+    assert box["height"] >= 44
+    honeypot = page.locator(".kit-hp").bounding_box()
+    assert honeypot is None or (honeypot["width"] <= 1 and honeypot["height"] <= 1)
+    context.close()

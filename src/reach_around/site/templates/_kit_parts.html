@@ -1,0 +1,39 @@
+{# SPDX-License-Identifier: Apache-2.0 #}
+{% macro numbers(kit, heading_id) %}
+{% if kit.metrics %}
+<section class="kit-numbers" aria-labelledby="{{ heading_id }}">
+<h3 id="{{ heading_id }}">Audience numbers</h3>
+{% if kit.total %}
+<p class="kit-total"><span class="kit-total-label">Combined audience</span> <strong class="kit-total-value">{{ kit.total.value }}</strong></p>
+<p class="kit-note">Added up from {{ kit.total.counted }} {{ "number" if kit.total.counted == 1 else "numbers" }}{% if kit.total.oldest %}; the oldest is dated {{ kit.total.oldest }}{% endif %}. People who follow on more than one platform are counted more than once.</p>
+{% endif %}
+<table class="kit-table">
+<caption class="sr-only">Audience numbers by platform, each with the date it was read</caption>
+<thead>
+<tr><th scope="col">Platform</th><th scope="col">Measure</th><th scope="col">Number</th><th scope="col">As of</th></tr>
+</thead>
+<tbody>
+{% for row in kit.metrics %}
+<tr><th scope="row">{{ row.platform or row.label }}</th><td>{{ row.label if row.platform else "" }}</td><td class="kit-figure">{{ row.value }}</td><td><time datetime="{{ row.as_of }}">{{ row.as_of }}</time></td></tr>
+{% endfor %}
+</tbody>
+</table>
+</section>
+{% endif %}
+{% endmacro %}
+
+{% macro gate_form(form) %}
+<form class="kit-gate" method="post" action="{{ form.action }}">
+<p class="kit-field">
+<label for="kit-email">Email address</label>
+<input id="kit-email" name="email" type="email" inputmode="email" autocomplete="email" maxlength="254" required>
+</p>
+<div class="kit-hp" aria-hidden="true">
+<label for="kit-website">Leave this field empty</label>
+<input id="kit-website" name="website" type="text" tabindex="-1" autocomplete="off">
+</div>
+<div class="cf-turnstile" data-action="gate"{% if form.site_key %} data-sitekey="{{ form.site_key }}"{% endif %}></div>
+<noscript><p class="kit-note">The check before the details needs JavaScript. Turn it on for this page, or ask the owner of this site for the details.</p></noscript>
+<button class="kit-submit" type="submit">Show the details</button>
+</form>
+{% endmacro %}

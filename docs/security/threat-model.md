@@ -227,6 +227,8 @@ Paths: (a) the gated bundle is accidentally included in the Pages deploy; (b) th
 
 Status: **[planned: Phase 3, work package "Gated bundle and Worker serving"]** for all items; no gated bundle, kit route or gate exists on `main` today. The only Worker route that exists is the click route, and it returns data to no one.
 
+Build status (2026-11-06, #256): mitigation 1 is built as far as the builder goes. `reach-around build --gated-out DIR` writes the gated page to a directory that may not be, contain or sit inside the public output, and the build fails if any gated string of 6 characters or more is found in any public file (`tests/site/test_kit_build.py`). The deploy-step refusal, the Worker store and everything after item 1 are still planned.
+
 Mitigations:
 1. The builder writes the gated bundle to a separate directory and never to the Pages output. The Pages deploy step refuses to run if the output directory contains any file listed in the gated manifest.
 2. The gated store has no public access. Documentation requires R2 public access off and no custom domain on the bucket; the Worker binding is the only reader.

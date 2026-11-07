@@ -1,0 +1,65 @@
+{# SPDX-License-Identifier: Apache-2.0 #}
+{% extends "base.html" %}
+{% from "_kit_parts.html" import numbers %}
+{% block content %}
+<section class="kit" aria-labelledby="kit-title">
+<h2 id="kit-title">{{ kit.title }}</h2>
+<p class="kit-about">{{ kit.about }}</p>
+{{ numbers(kit, "kit-numbers-title") }}
+{% if kit.partners %}
+<section class="kit-partners" aria-labelledby="kit-partners-title">
+<h3 id="kit-partners-title">Past partners</h3>
+<ul class="kit-list">
+{% for partner in kit.partners %}
+<li>{% if partner.url %}<a href="{{ partner.url }}" rel="noopener noreferrer">{{ partner.name }}</a>{% else %}<strong>{{ partner.name }}</strong>{% endif %}{% if partner.note %}<span class="kit-note"> {{ partner.note }}</span>{% endif %}</li>
+{% endfor %}
+</ul>
+</section>
+{% endif %}
+{% if kit.case_studies %}
+<section class="kit-cases" aria-labelledby="kit-cases-title">
+<h3 id="kit-cases-title">Case studies</h3>
+{% for case in kit.case_studies %}
+<article class="kit-case">
+<h4>{{ case.title }}</h4>
+<p>{{ case.summary }}</p>
+<p><strong>Result:</strong> {{ case.result }}</p>
+</article>
+{% endfor %}
+</section>
+{% endif %}
+{% if kit.rates %}
+<section class="kit-rates" aria-labelledby="kit-rates-title">
+<h3 id="kit-rates-title">Rates</h3>
+<table class="kit-table">
+<caption class="sr-only">Rates by item</caption>
+<thead>
+<tr><th scope="col">Item</th><th scope="col">Price</th></tr>
+</thead>
+<tbody>
+{% for rate in kit.rates %}
+<tr><th scope="row">{{ rate.item }}</th><td>{{ rate.price_text }}</td></tr>
+{% endfor %}
+</tbody>
+</table>
+</section>
+{% endif %}
+{% if kit.demographics %}
+<section class="kit-demographics" aria-labelledby="kit-demographics-title">
+<h3 id="kit-demographics-title">Audience details</h3>
+<table class="kit-table">
+<caption class="sr-only">Audience details, each with the date it was read</caption>
+<thead>
+<tr><th scope="col">Detail</th><th scope="col">Value</th><th scope="col">As of</th></tr>
+</thead>
+<tbody>
+{% for demo in kit.demographics %}
+<tr><th scope="row">{{ demo.label }}</th><td>{{ demo.value }}</td><td><time datetime="{{ demo.as_of }}">{{ demo.as_of }}</time></td></tr>
+{% endfor %}
+</tbody>
+</table>
+</section>
+{% endif %}
+<p><a href="{{ root }}kit/">Back to the public kit page</a></p>
+</section>
+{% endblock %}

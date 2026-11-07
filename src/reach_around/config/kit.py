@@ -16,6 +16,9 @@ date. A *counts* number is read at build time from the numbers file
 than ``STALE_DAYS`` days is reported by ``kit_warnings``; it never fails the
 build.
 
+Unlock link. ``unlock_link: true`` is refused until the emailed link exists
+(it is a v1.1 feature); the build never reads the switch.
+
 Unified total. ``unified_total`` adds up the headline metrics that have a value
 and are not marked ``in_total: false``. A metric with no value (a manual metric
 left empty, or a counts metric the numbers file does not hold) is ignored and
@@ -24,6 +27,7 @@ counted in ``ignored``. With nothing to add the total is ``None``, never 0.
 
 from __future__ import annotations
 
+import re
 import unicodedata
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
@@ -47,6 +51,10 @@ from reach_around.config.numbers import Numbers
 
 STALE_DAYS = 30
 
+# A Turnstile site key is public by design (it ships in the page). Plain
+# characters only, so it can sit in an attribute with no escaping surprises.
+_SITE_KEY = re.compile(r"[0-9A-Za-z_-]{1,64}")
+
 Visibility = Literal["public", "gated", "private"]
 
 # Every KitConfig field, plus the computed ``unified_total``, has exactly one
@@ -57,6 +65,7 @@ DISPLAY_POLICY: Mapping[str, Visibility] = {
     "about": "public",
     "metrics": "public",
     "unified_total": "public",
+    "turnstile_site_key": "public",
     "partners": "gated",
     "case_studies": "gated",
     "rates": "gated",
@@ -214,8 +223,30 @@ class KitConfig(_Model):
     case_studies: list[CaseStudy] = Field(default_factory=list, max_length=20)
     rates: list[Rate] = Field(default_factory=list, max_length=30)
     demographics: list[Demographic] = Field(default_factory=list, max_length=30)
-    # v1 has no emailed unlock link; nothing reads this switch yet.
+    # Public key of the Turnstile widget on the gate form. Optional: without it
+    # the form renders an empty widget slot and the build warns.
+    turnstile_site_key: StrictStr | None = None
+    # v1 has no emailed unlock link, so true is refused (see the validator).
     unlock_link: StrictBool = False
+
+    @field_validator("turnstile_site_key")
+    @classmethod
+    def _site_key_is_plain(cls, value: str | None) -> str | None:
+        if value is not None and not _SITE_KEY.fullmatch(value):
+            raise ValueError(
+                "turnstile_site_key must be 1 to 64 letters, digits, - or _"
+            )
+        return value
+
+    @field_validator("unlock_link")
+    @classmethod
+    def _no_unlock_link_yet(cls, value: bool) -> bool:
+        if value:
+            raise ValueError(
+                "unlock_link: true is not available yet: the emailed unlock link "
+                "arrives in a later release. Leave it false or remove it."
+            )
+        return value
 
     @model_validator(mode="after")
     def _metrics_are_unique(self) -> KitConfig:

@@ -121,9 +121,31 @@ def test_a_full_kit_validates() -> None:
 
 def test_unlock_link_defaults_false_and_must_be_a_real_bool() -> None:
     assert KitConfig.model_validate(kit_doc()).unlock_link is False
-    assert KitConfig.model_validate(kit_doc(unlock_link=True)).unlock_link is True
     with pytest.raises(ValidationError):
         KitConfig.model_validate(kit_doc(unlock_link="yes"))
+
+
+def test_unlock_link_true_is_refused_until_the_emailed_link_exists() -> None:
+    with pytest.raises(ValidationError, match=r"emailed unlock link") as caught:
+        KitConfig.model_validate(kit_doc(unlock_link=True))
+    assert "unlock_link" in str(caught.value)
+    assert "false" in str(caught.value)
+    raw = site_doc(kit=kit_doc(unlock_link=True))
+    with pytest.raises(ValidationError) as again:
+        SiteConfig.model_validate(raw)
+    kinds = {p.kind for p in _schema_problems(raw, again.value)}
+    assert kinds == {"kit_unlock_link"}
+
+
+def test_site_key_is_optional_public_and_plain() -> None:
+    assert KitConfig.model_validate(kit_doc()).turnstile_site_key is None
+    key = "0x4AAAAAAAexample-key_1"
+    kit = KitConfig.model_validate(kit_doc(turnstile_site_key=key))
+    assert kit.turnstile_site_key == key
+    assert visibility("turnstile_site_key") == "public"
+    for bad in ("", "has space", 'quo"te', "x" * 65, "<b>", 5):
+        with pytest.raises(ValidationError):
+            KitConfig.model_validate(kit_doc(turnstile_site_key=bad))
 
 
 @pytest.mark.parametrize(
@@ -317,6 +339,7 @@ def test_policy_classifies_every_field() -> None:
         "about",
         "metrics",
         "unified_total",
+        "turnstile_site_key",
     }
     for name in ("partners", "case_studies", "rates", "demographics"):
         assert visibility(name) == "gated"
@@ -343,14 +366,19 @@ def kit_with_canaries() -> KitConfig:
             demographics=[
                 {"label": f"{CANARY}-demo", "value": "x", "as_of": "2027-03-01"}
             ],
-            unlock_link=True,
         )
     )
 
 
 def test_public_projection_has_only_header_and_headline_numbers() -> None:
     out = public_projection(kit_with_canaries(), None)
-    assert set(out) == {"title", "about", "metrics", "unified_total"}
+    assert set(out) == {
+        "title",
+        "about",
+        "metrics",
+        "unified_total",
+        "turnstile_site_key",
+    }
     assert CANARY not in json.dumps(out, default=str)
 
 
@@ -361,6 +389,7 @@ def test_gated_projection_adds_gated_fields_but_never_private() -> None:
         "about",
         "metrics",
         "unified_total",
+        "turnstile_site_key",
         "partners",
         "case_studies",
         "rates",

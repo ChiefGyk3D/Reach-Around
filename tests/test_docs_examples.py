@@ -48,3 +48,16 @@ def test_kit_doc_example_validates(tmp_path: Path) -> None:
     sample.write_text(body, encoding="utf-8")
     config = load_site_config(sample)
     assert config.kit is not None and config.kit.rates
+
+
+def test_kit_guide_example_validates(tmp_path: Path) -> None:
+    body = (
+        "version: 1\ncreator: {name: Example}\ntabs:\n  - id: links\n    title: Links\n"
+        "    blocks:\n      - {id: home, title: Home, url: 'https://example.com/'}\n"
+        + first_yaml_block(ROOT / "docs" / "kit.md")
+    )
+    sample = tmp_path / "site.yaml"
+    sample.write_text(body, encoding="utf-8")
+    config = load_site_config(sample)
+    assert config.kit is not None and config.kit.has_gated_content
+    assert config.kit.turnstile_site_key is not None

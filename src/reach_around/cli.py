@@ -68,6 +68,12 @@ def _parser() -> argparse.ArgumentParser:
         "which is published",
     )
     build.add_argument(
+        "--gated-out",
+        type=Path,
+        help="directory for the gated media kit page; required when the kit has "
+        "gated content. It must be outside --out: it is never published",
+    )
+    build.add_argument(
         "--numbers",
         type=Path,
         help="JSON file of platform counts (default: numbers.json beside the "
@@ -195,6 +201,7 @@ def _build(
     manifest_path: Path | None = None,
     numbers_path: Path | None = None,
     inventory_path: Path | None = None,
+    gated_out: Path | None = None,
 ) -> int:
     try:
         target = _manifest_target(out_dir, manifest_path, config_path)
@@ -222,7 +229,10 @@ def _build(
             overrides=overrides,
             assets_dir=config_path.parent,
             numbers=numbers,
+            gated_out=gated_out,
         )
+        for warning in manifest.warnings:
+            print(f"warning: {warning}", file=sys.stderr)
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(manifest_json(manifest), encoding="utf-8")
         _write_inventory(inventory_target, manifest.inventory, inventory_path is None)
@@ -252,6 +262,7 @@ def main(argv: list[str] | None = None) -> int:
             args.manifest,
             args.numbers,
             args.assets_inventory,
+            args.gated_out,
         )
     if args.command == "serve":
         return _serve(args.config, args.host, args.port, args.overrides)

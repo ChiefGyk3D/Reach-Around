@@ -331,6 +331,13 @@ _PLATFORM_NAMES = {
     "linkedin": "LinkedIn",
     "rss": "RSS",
 }
+
+
+def platform_name(slug: str) -> str:
+    """The display name of a platform slug (``youtube`` -> ``YouTube``)."""
+    return _PLATFORM_NAMES.get(slug, slug)
+
+
 PlatformKind = Literal[
     "twitch",
     "kick",
