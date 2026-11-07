@@ -355,6 +355,13 @@ _VALUE_ERRORS: tuple[tuple[re.Pattern[str], str], ...] = tuple(
         (r"^must be 1 to 20 characters", "spelled_address"),
         (r"^note must not contain", "note_address"),
         (r"^item ids are the block id", "platforms_id_long"),
+        (r"^channel is not valid", "live_channel"),
+        (r"^players must list both", "live_players"),
+        (r"^also_on lists a platform", "live_also_on_twice"),
+        (r"^url must (be on the|not name a port|not contain a backslash)", "live_host"),
+        (r"^fediverse_note must be", "live_note"),
+        (r"^a live block needs page_layout", "live_layout"),
+        (r"^a site may have only one live", "live_count"),
         (r"^only the placeholders", "placeholder"),
         (
             r"(sitemap generation|user-agent|allow_all|path prefix|segments|"

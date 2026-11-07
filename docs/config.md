@@ -365,9 +365,10 @@ has, and every `id` must be unique across the whole site.
 | crypto | `id`, `coins`, optional `title`, `note` | addresses to copy; see [Crypto](#crypto) |
 | email | `id`, `address`, optional `title`, `note`, `reveal`, `spell` | a contact address kept off the page; see [Email](#email) |
 | platforms | `id`, `items`, optional `title`, `layout`, `note` | handles with counts; see [Platforms](#platforms) |
+| live | `id`, `players`, optional `also_on`, `fediverse_note`, `vods` | Twitch and Kick as co-equal players, link-outs and VOD links; see [Live](#live) |
 | divider | `id` only | a horizontal rule |
 
-Text, image, crypto, email, platforms and divider blocks have no `show_from` or `show_until`; they always
+Text, image, crypto, email, platforms, live and divider blocks have no `show_from` or `show_until`; they always
 show.
 
 ```yaml
@@ -587,6 +588,52 @@ Which value wins: with no typed `count`, the file's value is used. With a typed
 `count` and no `as_of`, the file wins. With both, the file wins when its date
 (UTC) is the same day or later than the typed `as_of`, and the typed value
 stays otherwise. The date shown is the date of the value that won.
+
+#### Live
+
+The data a Live tab shows: Twitch and Kick as two co-equal players, a line of
+link-outs to the other platforms, a short fediverse note and, for when neither
+channel is live, one VOD link per platform. This block only carries the
+settings and refuses bad ones; the page, the player embeds and the live check
+are separate changes.
+
+```yaml
+blocks:
+  - id: live
+    players:
+      - platform: kick
+        channel: example_kick
+      - platform: twitch
+        channel: example_twitch
+    also_on:
+      - platform: youtube
+        url: https://www.youtube.com/@example
+      - platform: tiktok
+        url: https://www.tiktok.com/@example
+      - platform: instagram
+        url: https://www.instagram.com/example
+    fediverse_note: Fediverse coming soon
+    vods:
+      youtube: https://www.youtube.com/@example/streams
+      kick: https://kick.com/example_kick/videos
+      twitch: https://www.twitch.tv/example_twitch/videos
+```
+
+| Key | Rule |
+| --- | --- |
+| `id` | a slug, unique across the site |
+| `players` | required: exactly one `twitch` and one `kick` entry. Both or the block is refused, so neither platform can be left out. The order you write is the order shown; nothing reorders it at run time |
+| `players[].platform` | `twitch` or `kick` |
+| `players[].channel` | a bare handle, never a URL. Twitch: 1 to 25 letters, digits or underscores. Kick: 1 to 40 letters, digits, dashes or underscores |
+| `also_on` | optional, up to 3 plain link-outs, each platform once |
+| `also_on[].platform` | `youtube`, `tiktok` or `instagram` |
+| `also_on[].url` | `https` on that platform's own site only (YouTube: `youtube.com`, `www.youtube.com`, `m.youtube.com`, `youtu.be`; TikTok and Instagram: the bare name or `www.`). No port, no user name, no look-alike host |
+| `fediverse_note` | optional plain text, 1 to 80 characters, default `Fediverse coming soon`. No link, address, markup, colon, slash or domain name. `null` turns it off |
+| `vods` | optional; `youtube`, `kick` and `twitch` together or not at all (equal weight). Each is an `https` URL on that platform's own site (`kick.com`, `twitch.tv` and the `www.` forms) |
+
+Only one live block is allowed on a site, and it needs `page_layout: tabs`: a
+live block with `page_layout: sections` is refused when the config loads. Any
+other key (an embed address, autoplay, a title) is refused.
 
 #### Markdown
 
