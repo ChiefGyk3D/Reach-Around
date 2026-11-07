@@ -249,6 +249,49 @@ Put the identity UUID in the repository variable `DOPPLER_IDENTITY_ID`. A
 Doppler service token in the secret `DOPPLER_TOKEN` also works, but it is a
 long-lived credential in GitHub; use it only in an emergency and prefer OIDC.
 
+## Daily follower counts (test deployment)
+
+`deploy-test.yml` also runs once a day (06:23 UTC) and by hand. Its `counts`
+job runs first, refreshes the numbers, and hands one `numbers.json` to the
+build, which reads it with `--numbers`. Every deployment, manual or scheduled,
+therefore carries fresh numbers. The job can only read the repository; the keys
+reach one step only (`Refresh the counts`), after every install step.
+
+What it needs from `examples/instance/site.yaml`: a `numbers:` block naming the
+sources, and platform items for the page. Neither exists in the shipped example,
+so until the maintainer adds them (with the real public handles) the job only
+passes through a hand-kept `examples/instance/numbers.json`, if there is one.
+Hand-kept platforms (TikTok, Instagram, X, Threads, LinkedIn, Kick: the engine
+has no source for them) stay in that file with their `as_of` date; the run
+prints a warning for every entry older than 30 days.
+
+**Keyless sources** (Mastodon-compatible servers, Bluesky, GitHub, Discord
+invites, Matrix) need nothing.
+
+**Keyed sources** read `YOUTUBE_API_KEY`, `TWITCH_CLIENT_ID` and
+`TWITCH_CLIENT_SECRET`. Pick where they come from:
+
+1. **GitHub Actions secrets (default).** Add the secrets of those names under
+   Settings > Secrets and variables > Actions. Nothing else to set. A name you
+   do not set is empty and its source is skipped.
+2. **Doppler over GitHub OIDC (opt in).** Set three repository **variables**:
+   `DOPPLER_IDENTITY_ID` (the Service Account Identity UUID),
+   `DOPPLER_COUNTS_PROJECT` and `DOPPLER_COUNTS_CONFIG`. There is no default
+   project or config: use a dedicated project that holds social-media
+   credentials only, not the shared `ci` project. The Doppler step runs only
+   when all three are set; otherwise the GitHub secrets above are used. No
+   long-lived token is stored. `COUNTS_SECRET_NAMES` (optional variable,
+   comma-separated) limits which names are fetched; the default is the three
+   above, and a name missing from the Doppler config fails the run. The values
+   come back as one masked step output read by the refresh step; nothing is
+   written to the job environment. A value in Doppler wins over a GitHub secret
+   of the same name.
+
+A scheduled run waits for the `test` environment's reviewer on the `deploy` job
+if one is required (section 2); remove the required reviewer there if the test
+site should update unattended. A source that fails keeps its old number and
+shows as a warning; the deployment continues.
+
 ## Egress control
 
 Both jobs start with `step-security/harden-runner`, followed by an egress

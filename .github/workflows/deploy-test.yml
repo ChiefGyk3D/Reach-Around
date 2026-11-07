@@ -1,10 +1,20 @@
 # SPDX-License-Identifier: Apache-2.0
 #
-# Manual deploy of the Worker and the static site to the TEST subdomain.
-# One-time Cloudflare setup is in docs/deploy.md. Nothing here runs on a
-# push or a pull request; a maintainer starts it by hand from main.
+# Deploy of the Worker and the static site to the TEST subdomain, by hand from
+# main and once a day on a schedule (so the follower counts stay fresh). One-time
+# Cloudflare setup is in docs/deploy.md. Nothing here runs on a push or a pull
+# request.
 #
-# Two jobs: `build` has no secrets and no environment, so pip install scripts
+# A `counts` job runs first (issue #288). It holds the count-source keys, can
+# only read the repository, and hands one numbers.json to the build as data.
+# Where the keys come from is the maintainer's choice: GitHub Actions secrets
+# (the default, nothing else to set up) or Doppler over GitHub OIDC (opt in by
+# setting the repository variables DOPPLER_IDENTITY_ID, DOPPLER_COUNTS_PROJECT
+# and DOPPLER_COUNTS_CONFIG; no long-lived token). With neither, the keyless
+# sources (Mastodon, Bluesky, GitHub) still refresh and keyed sources are
+# skipped. Setup: docs/deploy.md, "Daily follower counts".
+#
+# Then two more jobs: `build` has no secrets and no environment, so pip install scripts
 # never see the Cloudflare token. `deploy` fetches the token from Doppler after
 # the last install step; the Doppler action exports its whole config into the
 # job environment, so from that step on the token is inherited by every later
@@ -21,6 +31,9 @@ name: Deploy to test
 
 on:
   workflow_dispatch:
+  schedule:
+    # Once a day, 06:23 UTC (off the top of the hour, when runs start late).
+    - cron: "23 6 * * *"
 
 permissions:
   contents: read
@@ -30,8 +43,81 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  counts:
+    name: Refresh follower counts
+    # Refuse any ref other than main.
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read # the keys are in this job, so it cannot write
+      id-token: write # Doppler OIDC (optional); never a write to the repository
+    # No `environment` and no job-level env, on purpose.
+    steps:
+      - uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43 # v2.22.3
+        with:
+          # audit, not block: the count sources are configurable hosts, so a
+          # fixed allow-list cannot be written here.
+          egress-policy: audit
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+
+      # All installs happen before any key is fetched.
+      - name: Install the engine
+        run: |
+          set -eu
+          python -m pip install --require-hashes -r requirements-build.txt
+          python -m pip install --require-hashes -r requirements.txt
+          python -m pip install --no-deps --no-build-isolation .
+
+      # Optional (Doppler). Runs only when the repository variables
+      # DOPPLER_IDENTITY_ID, DOPPLER_COUNTS_PROJECT and DOPPLER_COUNTS_CONFIG
+      # are all set (no default: use a dedicated project that holds social-media
+      # credentials only, never the shared `ci` project); otherwise the
+      # keys come from GitHub Actions secrets in the next step. COUNTS_SECRET_NAMES
+      # (default: the three names below) is the allow-list to fetch; a name
+      # missing from the Doppler config fails the run. Values come back as one
+      # masked output that only the next step reads; nothing is written to the
+      # job environment, and no long-lived token is used.
+      - name: Fetch count-source keys from Doppler
+        id: doppler
+        if: ${{ vars.DOPPLER_IDENTITY_ID != '' && vars.DOPPLER_COUNTS_PROJECT != '' && vars.DOPPLER_COUNTS_CONFIG != '' }}
+        uses: ChiefGyk3D/git-your-ship-together/.github/actions/doppler-secrets@f9a1ac2596926cc2e4fc8bd1e025f8d9c38c8ea1 # v1.30.0
+        with:
+          project: ${{ vars.DOPPLER_COUNTS_PROJECT }}
+          config: ${{ vars.DOPPLER_COUNTS_CONFIG }}
+          identity-id: ${{ vars.DOPPLER_IDENTITY_ID }}
+          export: outputs
+          names: ${{ vars.COUNTS_SECRET_NAMES || 'YOUTUBE_API_KEY,TWITCH_CLIENT_ID,TWITCH_CLIENT_SECRET' }}
+
+      # The only step with the keys. Each comes from Doppler when that step
+      # ran, else from the GitHub Actions secret of the same name; a key that
+      # is not set is empty and its source is skipped by the engine. A failed
+      # source keeps its old number. The suspect-value guard is never
+      # overridden.
+      - name: Refresh the counts
+        env:
+          YOUTUBE_API_KEY: ${{ fromJSON(steps.doppler.outputs.secrets || '{}').YOUTUBE_API_KEY || secrets.YOUTUBE_API_KEY }}
+          TWITCH_CLIENT_ID: ${{ fromJSON(steps.doppler.outputs.secrets || '{}').TWITCH_CLIENT_ID || secrets.TWITCH_CLIENT_ID }}
+          TWITCH_CLIENT_SECRET: ${{ fromJSON(steps.doppler.outputs.secrets || '{}').TWITCH_CLIENT_SECRET || secrets.TWITCH_CLIENT_SECRET }}
+        run: python3 -I .github/scripts/test-counts.py --config examples/instance/site.yaml --out "$RUNNER_TEMP/counts"
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: counts-numbers
+          path: ${{ runner.temp }}/counts/numbers.json
+          if-no-files-found: error
+          retention-days: 1
+
   build:
     name: Build the site
+    needs: counts
     # Refuse any ref other than main.
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
@@ -107,6 +193,14 @@ jobs:
         with:
           python-version: "3.12"
 
+      # The numbers file from the counts job is data: it goes into its own
+      # empty directory and the build reads it only through --numbers, which
+      # validates it. It is never copied into the output.
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: counts-numbers
+          path: counts-in
+
       # The link manifest and the assets inventory are written next to the
       # site directory (site-out.manifest.json, site-out.assets.json), never
       # inside it, so Pages cannot publish them.
@@ -116,7 +210,7 @@ jobs:
           python -m pip install --require-hashes -r requirements-build.txt
           python -m pip install --require-hashes -r requirements.txt
           python -m pip install --no-deps --no-build-isolation .
-          reach-around build --config examples/instance/site.yaml --out site-out
+          reach-around build --config examples/instance/site.yaml --numbers counts-in/numbers.json --out site-out
           test -z "$(find site-out -iname '*manifest*')"
           test -z "$(find site-out -iname '*assets.json')"
           test -f site-out.manifest.json
