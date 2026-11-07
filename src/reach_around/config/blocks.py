@@ -561,3 +561,9 @@ class Live(_BlockModel):
         if len(set(platforms)) != len(platforms):
             raise ValueError("also_on lists a platform more than once")
         return self
+
+
+LIVE_NOT_RENDERED = (
+    "the live block is configuration only in this release; rendering arrives "
+    "with the Live page slice, so remove the live block to build the site"
+)

@@ -443,3 +443,57 @@ def test_check_names_each_live_problem(
     out = _check_text(tmp_path, capsys, data)
     assert sentence in out, (label, out)
     assert "Fix: " in out
+
+
+# --- configuration only in this release -----------------------------------------
+
+
+def test_build_refuses_a_live_block_with_a_plain_error(tmp_path: Path) -> None:
+    from datetime import date
+
+    from reach_around.site.build import build_site
+
+    site = load(tmp_path, config())
+    with pytest.raises(ValueError, match="configuration only in this release"):
+        build_site(site, tmp_path / "out", today=date(2027, 1, 1))
+
+
+def test_build_cli_shows_it_as_an_error_not_a_traceback(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from reach_around.cli import main
+
+    path = tmp_path / "site.yaml"
+    path.write_text(yaml.safe_dump(config()), encoding="utf-8")
+    code = main(["build", "--config", str(path), "--out", str(tmp_path / "out")])
+    err = capsys.readouterr()
+    assert code != 0
+    assert "configuration only in this release" in err.err + err.out
+    assert "Traceback" not in err.err + err.out
+    assert "TemplateNotFound" not in err.err + err.out
+
+
+def test_check_notes_that_live_is_accepted_but_not_rendered(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from reach_around.cli import main
+
+    path = tmp_path / "site.yaml"
+    path.write_text(yaml.safe_dump(config()), encoding="utf-8")
+    assert main(["check", "--config", str(path)]) == 0
+    out = capsys.readouterr().out
+    assert "is valid" in out
+    assert "accepted but not yet rendered" in out
+
+
+def test_check_has_no_live_note_without_a_live_block(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from reach_around.cli import main
+
+    data = config()
+    data["tabs"][1]["blocks"] = [{"id": "rule"}]
+    path = tmp_path / "site.yaml"
+    path.write_text(yaml.safe_dump(data), encoding="utf-8")
+    assert main(["check", "--config", str(path)]) == 0
+    assert "not yet rendered" not in capsys.readouterr().out
