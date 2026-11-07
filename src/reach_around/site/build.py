@@ -264,8 +264,8 @@ def _render_page(
         tab_href=_internal_href(config, root or "./"),
         root=root,
         page_title=page_title(config, tab.title, home=index == 0, own=tab.page_title),
-        disclosure=config.disclosure,
-        show_disclosure=has_affiliate and bool(config.disclosure),
+        disclosure=_disclosure_line(config),
+        show_disclosure=_show_disclosure(config, has_affiliate),
         show_cookie_banner=sets_cookies(config),
         click_tracking=config.features.click_tracking,
         footer_credit=config.footer.credit,
@@ -282,6 +282,14 @@ def _render_page(
         cookie_text=intro_text(config),
         custom_css=custom_css,
     )
+
+
+def _disclosure_line(config: SiteConfig) -> str:
+    return config.disclosure.line if config.disclosure else ""
+
+
+def _show_disclosure(config: SiteConfig, has_affiliate: bool) -> bool:
+    return config.disclosure is not None and config.disclosure.visible(has_affiliate)
 
 
 def _render_sections_page(
@@ -302,9 +310,10 @@ def _render_sections_page(
         tab_href=_internal_href(config, "./", shown),
         root="",
         page_title=page_title(config, tab.title, home=True, own=tab.page_title),
-        disclosure=config.disclosure,
-        show_disclosure=any(link.affiliate for link in _links_in(every))
-        and bool(config.disclosure),
+        disclosure=_disclosure_line(config),
+        show_disclosure=_show_disclosure(
+            config, any(link.affiliate for link in _links_in(every))
+        ),
         show_cookie_banner=sets_cookies(config),
         click_tracking=config.features.click_tracking,
         footer_credit=config.footer.credit,
@@ -335,8 +344,8 @@ def _render_privacy(
         tab_href=_internal_href(config, "../", shown),
         root="../",
         page_title=page_title(config, "Privacy", home=False, own=None),
-        disclosure=config.disclosure,
-        show_disclosure=False,
+        disclosure=_disclosure_line(config),
+        show_disclosure=_show_disclosure(config, False),
         show_cookie_banner=False,
         click_tracking=config.features.click_tracking,
         footer_credit=config.footer.credit,
@@ -374,8 +383,8 @@ def _render_not_found(
         tab_href=_internal_href(config, "/", shown),
         root="/",
         page_title=page_title(config, "Not found", home=False, own=None),
-        disclosure=config.disclosure,
-        show_disclosure=False,
+        disclosure=_disclosure_line(config),
+        show_disclosure=_show_disclosure(config, False),
         show_cookie_banner=sets_cookies(config),
         click_tracking=False,
         footer_credit=config.footer.credit,
