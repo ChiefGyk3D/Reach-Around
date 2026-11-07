@@ -1,0 +1,18 @@
+{# SPDX-License-Identifier: Apache-2.0 #}
+{% extends "base.html" %}
+{% from "_kit_parts.html" import numbers, gate_form %}
+{% block content %}
+<section class="kit" aria-labelledby="kit-title">
+<h2 id="kit-title">{{ kit.title }}</h2>
+<p class="kit-about">{{ kit.about }}</p>
+{{ numbers(kit, "kit-numbers-title") }}
+{% if form %}
+<section class="kit-gate-box" aria-labelledby="kit-gate-title">
+<h3 id="kit-gate-title">More details</h3>
+<p>{{ form.categories | capitalize }} are shown after a short check. Enter an email address and pass the check to see them.</p>
+<p class="kit-note">The address is not checked, and nothing is sent to it. It is kept for a limited time so the owner can follow up; see the <a href="{{ root }}privacy/">privacy page</a> for what is kept and for how long.</p>
+{{ gate_form(form) }}
+</section>
+{% endif %}
+</section>
+{% endblock %}

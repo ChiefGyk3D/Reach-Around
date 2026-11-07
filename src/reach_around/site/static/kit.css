@@ -1,0 +1,91 @@
+/* SPDX-License-Identifier: Apache-2.0 */
+/* The media kit pages (public kit, retry and the gated page). Published only on
+   a site with a kit, after site.css, so it reads the same --ra-* tokens and holds
+   no color of its own. Mobile first; tables scroll inside their own box rather
+   than push the page sideways. No script and no inline style are needed. */
+
+.kit { display: grid; gap: var(--ra-space-5); min-width: 0; }
+.kit h2, .kit h3, .kit h4 { margin: 0; line-height: 1.25; overflow-wrap: anywhere; }
+.kit h2 { font-size: var(--ra-text-xl); }
+.kit h3 { font-size: var(--ra-text-lg); }
+.kit h4 { font-size: var(--ra-text-md); }
+.kit p { margin: 0; overflow-wrap: anywhere; }
+.kit section { display: grid; gap: var(--ra-space-3); min-width: 0; }
+.kit-about { font-size: var(--ra-text-md); }
+.kit-note { color: var(--ra-color-muted); font-size: var(--ra-text-sm); }
+
+.kit-total { display: flex; flex-flow: row wrap; align-items: baseline; gap: var(--ra-space-2); }
+.kit-total-value { font-size: var(--ra-text-xl); font-variant-numeric: tabular-nums; }
+
+.kit-table {
+  display: block;
+  max-width: 100%;
+  overflow-x: auto;
+  border-collapse: collapse;
+  font-size: var(--ra-text-base);
+}
+.kit-table th, .kit-table td {
+  padding: var(--ra-space-2) var(--ra-space-3);
+  border-bottom: 1px solid var(--ra-color-border);
+  text-align: start;
+  vertical-align: top;
+}
+.kit-table thead th { color: var(--ra-color-muted); font-size: var(--ra-text-sm); }
+.kit-figure { font-weight: 700; font-variant-numeric: tabular-nums; }
+
+.kit-list { display: grid; gap: var(--ra-space-2); }
+.kit-case {
+  display: grid;
+  gap: var(--ra-space-2);
+  padding: var(--ra-space-4);
+  border: 1px solid var(--ra-color-border);
+  border-radius: var(--ra-card-radius);
+  background-color: var(--ra-color-surface);
+}
+
+.kit-gate { display: grid; gap: var(--ra-space-3); max-width: 28rem; }
+.kit-field { display: grid; gap: var(--ra-space-1); }
+.kit-gate label { font-weight: 600; }
+.kit-gate input[type="email"] {
+  min-height: var(--ra-tap);
+  padding: var(--ra-space-2) var(--ra-space-3);
+  border: 1px solid var(--ra-color-border);
+  border-radius: var(--ra-button-radius);
+  background-color: var(--ra-color-surface);
+  color: var(--ra-color-text);
+  font: inherit;
+}
+.kit-gate input:focus-visible {
+  outline: 3px solid var(--ra-color-link);
+  outline-offset: 3px;
+}
+.kit-submit {
+  min-height: var(--ra-tap);
+  padding: var(--ra-space-2) var(--ra-space-5);
+  border: 0;
+  border-radius: var(--ra-button-radius);
+  background-color: var(--ra-color-accent);
+  color: var(--ra-color-on-accent);
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+/* The honeypot: out of sight and out of the tab order for people, still a
+   field for a bot that fills every input. Not display:none, which many bots
+   skip. */
+.kit-hp {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+}
+
+@media print {
+  .kit-gate-box, .kit-gate, .skip-link { display: none; }
+  .kit-case { break-inside: avoid; border-color: CanvasText; background: none; }
+  .kit-table th, .kit-table td { border-color: CanvasText; }
+  .kit-note, .kit-table thead th { color: CanvasText; }
+}

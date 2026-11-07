@@ -788,10 +788,11 @@ the page (see [design](design.md)), so a theme's colors and `mode` apply.
 
 ## `kit`
 
-Media kit content. Optional: leave it out and nothing changes. This release
-adds the settings and their rules only; the pages that show the kit and the gate
-come in later releases, so a `kit` section is checked but not yet rendered.
-Unknown keys are refused everywhere in it. All text is plain: 1 character up to
+Media kit content. Optional: leave it out and nothing changes. With a `kit`
+section the build writes the public kit page at `/kit/`, and, when the kit has
+gated content, a retry page at `/kit/retry/` and the gated page into a separate
+directory (`--gated-out`) that is never published. The pages and the build flag
+are described in the [media kit guide](kit.md). Unknown keys are refused everywhere in it. All text is plain: 1 character up to
 its limit, no `<` or `>`, no control or hidden characters, no space at either
 end. Text must be quoted if YAML would read it as a number.
 
@@ -804,7 +805,8 @@ end. Text must be quoted if YAML would read it as a number.
 | `case_studies` | list of case study | none | at most 20 |
 | `rates` | list of rate | none | at most 30 |
 | `demographics` | list of demographic | none | at most 30 |
-| `unlock_link` | true or false | `false` | v1 has no emailed unlock link; nothing reads this switch yet |
+| `turnstile_site_key` | text | none | public key of the Turnstile widget on the gate form; 1 to 64 letters, digits, `-` or `_`. Without it the form has an empty widget slot and the build warns |
+| `unlock_link` | true or false | `false` | v1 has no emailed unlock link, so `true` is refused with a clear error until it exists |
 
 A **metric** is one headline number: `platform` (a platform name such as
 `twitch`, `youtube` or `other`), `label` (at most 60 characters, such as
@@ -832,6 +834,7 @@ A **rate** has `item` (80) and `price_text` (80); the price is text, so
 | --- | --- |
 | `title`, `about`, `metrics`, the unified total | public |
 | `partners`, `case_studies`, `rates`, `demographics` | gated (only after the gate) |
+| `turnstile_site_key` | public (it ships in the gate form; the key is public by design) |
 | `unlock_link` | private (configuration, never shown) |
 
 The public half therefore shows the header and the headline numbers and nothing

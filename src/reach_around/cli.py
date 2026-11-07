@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import importlib
+import json
 import math
 import os
 import pkgutil
@@ -66,6 +67,12 @@ def _parser() -> argparse.ArgumentParser:
         help="where to write the published-file inventory (default: "
         "<out>.assets.json beside --out); it is never written inside --out, "
         "which is published",
+    )
+    build.add_argument(
+        "--gated-out",
+        type=Path,
+        help="directory for the gated media kit page; required when the kit has "
+        "gated content. It must be outside --out: it is never published",
     )
     build.add_argument(
         "--numbers",
@@ -188,6 +195,54 @@ def _write_inventory(
         )
 
 
+def _gated_record(out_dir: Path, manifest: Path) -> Path:
+    """Where the build remembers its gated directory: beside the manifest, which
+    is already refused inside ``--out`` (published) and is a location the caller
+    chose to be writable. By default that is beside ``--out``; a container with a
+    read-only root passes ``--manifest`` to a mounted volume."""
+    out = out_dir.resolve()
+    return manifest.resolve().parent / f"{out.name}.gated.json"
+
+
+def _check_gated_record(record: Path, gated_out: Path | None) -> None:
+    """Refuse a build that would forget a gated page an earlier build wrote.
+
+    The earlier build recorded where it put the page. A later build must name
+    the same directory, so the page is rewritten or, when the kit no longer has
+    gated content, removed; omitting the flag would leave it behind."""
+    if not os.path.lexists(record):
+        return
+    try:
+        recorded = json.loads(record.read_text(encoding="utf-8"))["gated_out"]
+        if not isinstance(recorded, str):
+            raise TypeError
+    except (OSError, ValueError, KeyError, TypeError):
+        raise ValueError(
+            f"{record} exists but cannot be read; it records where an earlier "
+            "build wrote the gated page. Check that directory, then delete the "
+            "record and build again."
+        ) from None
+    if gated_out is None or os.path.realpath(gated_out) != os.path.realpath(recorded):
+        raise ValueError(
+            f"an earlier build wrote a gated page to {recorded}; pass "
+            f"--gated-out {recorded} so it is updated or removed. If you moved "
+            f"it on purpose, delete that page and {record}, then build again."
+        )
+
+
+def _update_gated_record(record: Path, gated_page: Path | None) -> None:
+    if gated_page is None:
+        # nothing to remove: do not touch a directory that may be read-only
+        if os.path.lexists(record):
+            record.unlink()
+        return
+    record.parent.mkdir(parents=True, exist_ok=True)
+    record.write_text(
+        json.dumps({"gated_out": str(gated_page.parent)}, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+
 def _build(
     config_path: Path,
     out_dir: Path,
@@ -195,6 +250,7 @@ def _build(
     manifest_path: Path | None = None,
     numbers_path: Path | None = None,
     inventory_path: Path | None = None,
+    gated_out: Path | None = None,
 ) -> int:
     try:
         target = _manifest_target(out_dir, manifest_path, config_path)
@@ -202,6 +258,8 @@ def _build(
             out_dir, inventory_path, target, config_path
         )
         source = _numbers_source(out_dir, numbers_path, config_path)
+        record = _gated_record(out_dir, target)
+        _check_gated_record(record, gated_out)
         config = load_site_config(config_path)
         numbers: Numbers | None = None
         if source is not None:
@@ -222,7 +280,11 @@ def _build(
             overrides=overrides,
             assets_dir=config_path.parent,
             numbers=numbers,
+            gated_out=gated_out,
         )
+        for warning in manifest.warnings:
+            print(f"warning: {warning}", file=sys.stderr)
+        _update_gated_record(record, manifest.gated_page)
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(manifest_json(manifest), encoding="utf-8")
         _write_inventory(inventory_target, manifest.inventory, inventory_path is None)
@@ -252,6 +314,7 @@ def main(argv: list[str] | None = None) -> int:
             args.manifest,
             args.numbers,
             args.assets_inventory,
+            args.gated_out,
         )
     if args.command == "serve":
         return _serve(args.config, args.host, args.port, args.overrides)

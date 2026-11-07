@@ -32,6 +32,16 @@ from reach_around.site.assets import collect_assets
 from reach_around.site.cachepolicy import cache_patterns
 from reach_around.site.fingerprint import AssetMap, fingerprint
 from reach_around.site.inventory import InventoryEntry, build_inventory
+from reach_around.site.kit import (
+    GATED_FILE,
+    check_gated_requests,
+    check_no_gated_text,
+    check_private_root,
+    check_roots,
+    public_paths,
+    render_kit,
+    stage_gated,
+)
 from reach_around.site.overrides import (
     load_custom_css,
     make_environment,
@@ -56,6 +66,11 @@ class BuildManifest:
     # Every published file with its hash, size and cache class (see
     # ``reach_around.site.inventory``); filled in by ``build_site``.
     inventory: dict[str, InventoryEntry] = field(default_factory=dict)
+    # Build warnings the caller should show (for example an old kit number).
+    warnings: tuple[str, ...] = ()
+    # The gated page written by this build, or None when none was (a kit with no
+    # gated content removes any old one). Never part of the published site.
+    gated_page: Path | None = None
 
 
 def _links_in(blocks: Iterable[Block]) -> list[Link]:
@@ -90,6 +105,8 @@ def _has_platforms(blocks: Iterable[Block]) -> bool:
 # Published only for a site with a crypto block on a page; see ``build_site``.
 _CRYPTO_FILES = (Path("static") / "copy.js", Path("static") / "crypto.css")
 _PLATFORMS_FILES = (Path("static") / "platforms.css",)
+# Published only for a site with a kit.
+_KIT_STYLE = Path("static") / "kit.css"
 
 
 # Published only for a site with an email block; the script only if one uses it.
@@ -103,13 +120,14 @@ def _page_path(tab_index: int, tab: Tab) -> Path:
     return Path(tab.id) / "index.html"
 
 
-def _page_paths(config: SiteConfig) -> set[Path]:
-    """Every HTML file the build writes."""
+def _page_paths(config: SiteConfig, with_kit: bool = True) -> set[Path]:
+    """Every HTML file the build writes (``with_kit`` adds the kit's pages)."""
     if config.page_layout == "sections":
         pages = {Path("index.html")}
     else:
         pages = {_page_path(i, tab) for i, tab in enumerate(config.tabs)}
-    return pages | {Path("privacy") / "index.html", Path("404.html")}
+    pages |= {Path("privacy") / "index.html", Path("404.html")}
+    return pages | public_paths(config) if with_kit else pages
 
 
 def _asset_url(assets: AssetMap) -> Callable[[str, str], str]:
@@ -402,6 +420,53 @@ def _render_not_found(
     )
 
 
+def _is_remote(value: str) -> bool:
+    return ":" in value or value.startswith("//")
+
+
+def _kit_base(
+    config: SiteConfig, shown: list[list[Block]], custom_css: bool
+) -> Callable[[str, str, bool], dict[str, Any]]:
+    """The context shared by the kit pages: ``base(root, tab_name)``.
+
+    ``root`` is ``../``, ``../../`` or (for the gated page, which the Worker
+    serves at any depth) ``/``. No script, no click or view tracking and no
+    profile card: the kit pages carry none of them.
+    """
+
+    def base(root: str, tab_name: str, gated: bool) -> dict[str, Any]:
+        creator = config.creator
+        if gated and creator.avatar is not None and _is_remote(creator.avatar):
+            # The gated page makes no third-party request: a remote avatar is
+            # left out there (the public pages keep it, like every other page).
+            creator = creator.model_copy(update={"avatar": None})
+        return {
+            "creator": creator,
+            "nav": _nav(config, -1, root),
+            "tab_href": _internal_href(config, root, shown),
+            "page_title": page_title(config, tab_name, home=False, own=None),
+            "disclosure": config.disclosure,
+            "show_disclosure": False,
+            "show_cookie_banner": sets_cookies(config),
+            "click_tracking": False,
+            "footer_credit": config.footer.credit,
+            "footer_credit_text": config.footer.text,
+            "footer_credit_url": CREDIT_URL,
+            "page_views": False,
+            "has_crypto": False,
+            "has_email": False,
+            "has_email_script": False,
+            "has_platforms": False,
+            "has_kit": True,
+            "skip_label": "Skip to the kit",
+            "profile_card": None,
+            "cookie_text": intro_text(config),
+            "custom_css": custom_css,
+        }
+
+    return base
+
+
 def _render_pages(
     env: Environment,
     config: SiteConfig,
@@ -515,6 +580,7 @@ def build_site(
     overrides: Path | None = None,
     assets_dir: Path | None = None,
     numbers: Numbers | None = None,
+    gated_out: Path | None = None,
 ) -> BuildManifest:
     """Write the site for ``today`` into ``out_dir`` and return the manifest.
 
@@ -536,7 +602,24 @@ def build_site(
     same relative path in ``out_dir``. It is required when the config names any.
     ``numbers`` is the loaded numbers file; its counts fill platform blocks and
     only the resulting text is published, never the file.
+
+    ``gated_out`` is the directory for the gated kit page (see
+    ``reach_around.site.kit``). It is a separate root from ``out_dir``, which is
+    all that is published; it is required when the kit has gated content, may not
+    be, contain or sit inside ``out_dir``, and the build touches only the one
+    file it writes there. The gated page is never written into ``out_dir``.
     """
+    kit = config.kit
+    if gated_out is not None:
+        check_roots(out_dir, gated_out)
+        check_private_root(gated_out)
+        gated_root = _check_out_dir(gated_out, protect)
+    if kit is not None and kit.has_gated_content and gated_out is None:
+        raise ValueError(
+            "the kit has gated content, which is built into a separate directory "
+            "that is never published: pass --gated-out DIR (a directory outside "
+            "the output directory)"
+        )
     shown = [list(visible_blocks(tab.blocks, today)) for tab in config.tabs]
     manifest = _manifest(config, shown)
     custom_css = load_custom_css(overrides)
@@ -545,6 +628,14 @@ def build_site(
     # exist before any page is rendered. Nothing is written yet.
     static = _static_files()
     pages_at = _page_paths(config)
+    if config.kit is not None:
+        taken = public_paths(config) & _page_paths(config, with_kit=False)
+        if taken:
+            raise ValueError(
+                f"{sorted(taken)[0]} is used by both the kit and a tab; the media "
+                "kit page lives at /kit/, so rename the tab (its id must not be "
+                "'kit')"
+            )
     for rel, data in collect_assets(config, assets_dir).items():
         if rel in static or rel in pages_at:
             raise ValueError(f"{rel} would overwrite a file the build writes itself")
@@ -563,6 +654,8 @@ def build_site(
     if not any(_has_platforms(blocks) for blocks in shown):
         for rel in _PLATFORMS_FILES:
             static.pop(rel, None)
+    if kit is None:
+        static.pop(_KIT_STYLE, None)
     static[Path("static") / "theme.css"] = theme_css(config.theme).encode("utf-8")
     if custom_css is not None:
         static[Path("static") / "custom.css"] = custom_css.encode("utf-8")
@@ -577,6 +670,12 @@ def build_site(
             env, config, shown, custom_css is not None
         ).items()
     }
+    kit_render = render_kit(
+        env, config, numbers, today, _kit_base(config, shown, custom_css is not None)
+    )
+    files.update(
+        {page: html.encode("utf-8") for page, html in kit_render.public.items()}
+    )
     files.update(named.files)
     robots = config.robots
     if robots is not None:
@@ -594,7 +693,36 @@ def build_site(
         immutable_paths=immutable,
         revalidate_paths=revalidate,
     ).encode("utf-8")
+    # The wall: nothing gated may be in the public files. Checked on the finished
+    # in-memory tree, before anything on disk is touched.
+    check_no_gated_text(files, kit)
+    if kit_render.gated is not None:
+        check_gated_requests(kit_render.gated, files)
     out = _check_out_dir(out_dir, protect)
-    _empty(out)
-    _write(out, files)
-    return replace(manifest, inventory=build_inventory(files, named.hashed))
+    staged = None
+    if gated_out is not None:
+        # Stage the gated page before the public tree is touched, so a failure
+        # to write it leaves the public tree as it was; make the public root
+        # exist and compare the two roots again by identity now that both do.
+        out.mkdir(parents=True, exist_ok=True)
+        check_roots(out, gated_root)
+        staged = stage_gated(gated_root, kit_render.gated)
+    try:
+        _empty(out)
+        _write(out, files)
+        if staged is not None:
+            staged.commit()
+    except BaseException:
+        if staged is not None:
+            staged.discard()
+        raise
+    return replace(
+        manifest,
+        gated_page=(
+            gated_root / GATED_FILE
+            if staged is not None and kit_render.gated is not None
+            else None
+        ),
+        inventory=build_inventory(files, named.hashed),
+        warnings=tuple(kit_render.warnings),
+    )
