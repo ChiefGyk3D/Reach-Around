@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { readBoundedBody, readBoundedText } from "../../src/kit/body";
 
 interface Spy {
@@ -465,5 +465,58 @@ describe("readBoundedBody: the reader lock is released", () => {
     expect(Date.now() - t0).toBeLessThan(1000);
     await new Promise((x) => setTimeout(x, 50));
     expect(r.body?.locked).toBe(false);
+  });
+});
+
+describe("readBoundedBody: deferred release and timer cleanup", () => {
+  it("on a timeout the lock is released only after the pending read settles, with no rejection", async () => {
+    const rejections: unknown[] = [];
+    const onRej = (e: unknown) => rejections.push(e);
+    process.on("unhandledRejection", onRej);
+    try {
+      const body = new ReadableStream<Uint8Array>({ pull: () => new Promise(() => undefined) }, { highWaterMark: 0 });
+      const r = req(body, {});
+      const orig = ReadableStreamDefaultReader.prototype.read;
+      let readOutcome: Promise<string> | null = null;
+      ReadableStreamDefaultReader.prototype.read = function (this: ReadableStreamDefaultReader<Uint8Array>) {
+        const p = orig.call(this);
+        readOutcome = p.then(() => "settled", (e: unknown) => `rejected:${(e as Error).message}`);
+        return p;
+      } as never;
+      let res;
+      try {
+        res = await readBoundedBody(r, 1024, { deadlineMs: 20 });
+      } finally {
+        ReadableStreamDefaultReader.prototype.read = orig;
+      }
+      expect(res).toMatchObject({ code: "timeout" });
+      expect(readOutcome).not.toBeNull();
+      expect(r.body?.locked).toBe(true);
+      const outcome = await readOutcome!;
+      await new Promise((x) => setTimeout(x, 20));
+      expect(outcome).toBe("settled");
+      expect(r.body?.locked).toBe(false);
+      expect(rejections).toEqual([]);
+    } finally {
+      process.off("unhandledRejection", onRej);
+    }
+  });
+
+  describe("the deadline timer is cleared", () => {
+    it("after a successful read and after a cap refusal", async () => {
+      const set = vi.spyOn(globalThis, "setTimeout");
+      const clear = vi.spyOn(globalThis, "clearTimeout");
+      try {
+        await readBoundedBody(req(new Uint8Array(10), { "Content-Length": "10" }), 1024);
+        await readBoundedBody(req(new Uint8Array(5000), {}), 1024);
+        const mine = set.mock.results.map((x) => x.value).filter((id) => id !== undefined);
+        expect(mine.length).toBeGreaterThanOrEqual(2);
+        const cleared = clear.mock.calls.map((c) => c[0]);
+        for (const id of mine) expect(cleared).toContain(id);
+      } finally {
+        set.mockRestore();
+        clear.mockRestore();
+      }
+    });
   });
 });
