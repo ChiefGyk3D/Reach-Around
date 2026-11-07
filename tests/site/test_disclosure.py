@@ -103,6 +103,15 @@ def test_text_is_escaped_and_not_a_link(tmp_path: Path) -> None:
         "see http://evil.example",
         "see www.evil.example",
         "mail me@evil.example",
+        "see //evil.example",
+        "//evil.example",
+        "see \\\\host\\share",
+        "javascript:alert(1)",
+        "click JavaScript:alert(1)",
+        "data:text/html,x",
+        "see DATA:text/plain;base64,AAAA",
+        "vbscript:x",
+        "file:///etc/passwd",
     ],
 )
 def test_bad_text_is_refused(text: str) -> None:
@@ -151,3 +160,17 @@ def test_other_pages_without_affiliates_hide_it(tmp_path: Path) -> None:
     build_site(config, tmp_path, today=TODAY, assets_dir=ASSETS)
     assert DEFAULT in (tmp_path / "index.html").read_text()
     assert DEFAULT not in (tmp_path / "b" / "index.html").read_text()
+
+
+def test_schema_accepts_both_forms() -> None:
+    from reach_around.schema import build_schema
+
+    schema = build_schema()
+    options = schema["properties"]["disclosure"]["anyOf"]
+    kinds = {o.get("type") or o.get("$ref") for o in options}
+    assert kinds == {"string", "#/$defs/Disclosure", "null"}
+    string_form = next(o for o in options if o.get("type") == "string")
+    assert string_form["minLength"] == 1
+    assert string_form["maxLength"] == MAX_DISCLOSURE_TEXT
+    # The runtime accepts what the schema advertises.
+    assert cfg("Some text").disclosure is not None

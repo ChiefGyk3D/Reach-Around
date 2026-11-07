@@ -30,8 +30,12 @@ DEFAULT_DISCLOSURE_TEXT = (
     "buyer, without affecting their recommendations."
 )
 
-# A scheme, a www host or an address: the disclosure never carries a link.
-_LINKISH = re.compile(r"://|\bwww\.|@|\bmailto:", re.IGNORECASE)
+# A scheme, a protocol-relative or UNC path, a www host or an address: the
+# disclosure never carries a link. "//" and a backslash have no place in prose.
+_LINKISH = re.compile(
+    r"://|//|\\|\bwww\.|@|\b(?:mailto|javascript|vbscript|data|file|blob):",
+    re.IGNORECASE,
+)
 
 
 def _check_text(value: str) -> str:
@@ -80,4 +84,9 @@ def _from_string(value: Any) -> Any:
     return {"text": value} if isinstance(value, str) else value
 
 
-DisclosureField = Annotated[Disclosure, BeforeValidator(_from_string)]
+# The runtime also takes the plain string, so the exported schema advertises
+# both forms (the object, or the text) for editors and other consumers.
+DisclosureField = Annotated[
+    Disclosure,
+    BeforeValidator(_from_string, json_schema_input_type=Disclosure | DisclosureText),
+]
