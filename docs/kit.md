@@ -175,7 +175,7 @@ Two tradeoffs are deliberate and not changed:
 - The gated directory must be owner-only. An existing directory that group or
   others can enter is refused; the build removes only its own leftover staging
   files (`.kit.html.<16 hex>.tmp`) from it.
-- The directory that holds `<out>.gated.json` is a trusted state directory. Someone
+- The directory that holds `<out>.gated.json` (the manifest's directory) is a trusted state directory. Someone
   who can remove the record can defeat the stale-page check and leave an old
   gated page in place.
 - Replacing a parent directory of either root while a build runs is out of scope:
@@ -188,7 +188,7 @@ Two tradeoffs are deliberate and not changed:
 ### Removing a gated page
 
 `reach-around build` records where it wrote the gated page, in
-`<out>.gated.json` beside `--out` (never inside it, so never published). While
+`<out>.gated.json` beside the manifest (beside `--out` unless you pass `--manifest`; the manifest may not be inside `--out`, so the record is never published). While
 that record exists, every build must pass `--gated-out` with the same
 directory; without it the build stops with an error and changes nothing. A build
 whose kit no longer has gated content then removes the old `kit.html` and

@@ -244,6 +244,58 @@ def test_a_site_that_never_had_a_gated_page_needs_no_flag(tmp_path: Path) -> Non
     assert not (tmp_path / "out.gated.json").exists()
 
 
+def run_with_manifest(config: Path, out: Path, gated: Path | None, mdir: Path) -> int:
+    argv = [
+        "build", "--config", str(config), "--out", str(out),
+        "--manifest", str(mdir / "manifest.json"),
+        "--assets-inventory", str(mdir / "assets.json"),
+    ]  # fmt: skip
+    if gated is not None:
+        argv += ["--gated-out", str(gated)]
+    return main(argv)
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root ignores directory modes")
+@pytest.mark.parametrize("with_gated", [False, True])
+def test_the_record_is_not_written_beside_a_read_only_parent_of_out(
+    tmp_path: Path, with_gated: bool
+) -> None:
+    # the container shape: --out is a mounted volume, its parent (/) is read-only
+    ro, mdir, gated = tmp_path / "ro", tmp_path / "state", tmp_path / "gated"
+    (ro / "out").mkdir(parents=True)
+    mdir.mkdir()
+    config = write_instance(
+        tmp_path, gated_doc() if with_gated else kit_doc(), gate=with_gated
+    )
+    ro.chmod(0o555)
+    try:
+        assert (
+            run_with_manifest(config, ro / "out", gated if with_gated else None, mdir)
+            == 0
+        )
+    finally:
+        ro.chmod(0o755)
+    assert not (ro / "out.gated.json").exists()
+    assert (mdir / "out.gated.json").exists() == with_gated
+    # the record is never published
+    assert not list((ro / "out").rglob("*.gated.json"))
+
+
+def test_a_later_build_finds_the_record_beside_the_manifest(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    out, gated, mdir = tmp_path / "out", tmp_path / "gated", tmp_path / "state"
+    config = write_instance(tmp_path, gated_doc())
+    assert run_with_manifest(config, out, gated, mdir) == 0
+    record = mdir / "out.gated.json"
+    assert json.loads(record.read_text(encoding="utf-8")) == {
+        "gated_out": str(gated.resolve())
+    }
+    capsys.readouterr()
+    assert run_with_manifest(config, out, None, mdir) == 1
+    assert "--gated-out" in capsys.readouterr().err
+
+
 # --- 4: the leak guard compares canonical forms -----------------------------------
 
 

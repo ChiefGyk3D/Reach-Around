@@ -195,11 +195,13 @@ def _write_inventory(
         )
 
 
-def _gated_record(out_dir: Path) -> Path:
-    """Where the build remembers its gated directory: beside ``--out``, never
-    inside it (``--out`` is published)."""
+def _gated_record(out_dir: Path, manifest: Path) -> Path:
+    """Where the build remembers its gated directory: beside the manifest, which
+    is already refused inside ``--out`` (published) and is a location the caller
+    chose to be writable. By default that is beside ``--out``; a container with a
+    read-only root passes ``--manifest`` to a mounted volume."""
     out = out_dir.resolve()
-    return out.parent / f"{out.name}.gated.json"
+    return manifest.resolve().parent / f"{out.name}.gated.json"
 
 
 def _check_gated_record(record: Path, gated_out: Path | None) -> None:
@@ -230,8 +232,11 @@ def _check_gated_record(record: Path, gated_out: Path | None) -> None:
 
 def _update_gated_record(record: Path, gated_page: Path | None) -> None:
     if gated_page is None:
-        record.unlink(missing_ok=True)
+        # nothing to remove: do not touch a directory that may be read-only
+        if os.path.lexists(record):
+            record.unlink()
         return
+    record.parent.mkdir(parents=True, exist_ok=True)
     record.write_text(
         json.dumps({"gated_out": str(gated_page.parent)}, sort_keys=True) + "\n",
         encoding="utf-8",
@@ -253,7 +258,7 @@ def _build(
             out_dir, inventory_path, target, config_path
         )
         source = _numbers_source(out_dir, numbers_path, config_path)
-        record = _gated_record(out_dir)
+        record = _gated_record(out_dir, target)
         _check_gated_record(record, gated_out)
         config = load_site_config(config_path)
         numbers: Numbers | None = None
