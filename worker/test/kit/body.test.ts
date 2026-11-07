@@ -274,3 +274,58 @@ describe("readBoundedBody: cancellation happens on every refusal path", () => {
     expect(spy.cancelled).toBe(1);
   });
 });
+
+describe("readBoundedBody: exact content across buffer growth", () => {
+  function chunked(parts: Uint8Array[]): ReadableStream<Uint8Array> {
+    const q = [...parts];
+    return new ReadableStream<Uint8Array>({
+      pull(c) {
+        const p = q.shift();
+        if (p) c.enqueue(p);
+        else c.close();
+      },
+    }, { highWaterMark: 0 });
+  }
+  const fill = (n: number, v: number) => new Uint8Array(n).fill(v);
+  const join = (parts: Uint8Array[]) => {
+    const out = new Uint8Array(parts.reduce((a, p) => a + p.length, 0));
+    let at = 0;
+    for (const p of parts) {
+      out.set(p, at);
+      at += p.length;
+    }
+    return out;
+  };
+
+  it("undeclared: a 4096 byte chunk then one more byte returns every byte", async () => {
+    const parts = [fill(4096, 7), new Uint8Array([9])];
+    const r = await readBoundedBody(req(chunked(parts)), 8192);
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(Array.from(r.bytes)).toEqual(Array.from(join(parts)));
+  });
+  it("undeclared: several doublings with a distinct pattern per chunk", async () => {
+    const parts = [fill(4096, 1), fill(3000, 2), fill(5000, 3), fill(7000, 4), fill(100, 5)];
+    const r = await readBoundedBody(req(chunked(parts)), 65_536);
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      const want = join(parts);
+      expect(r.bytes.length).toBe(want.length);
+      expect(Buffer.from(r.bytes).equals(Buffer.from(want))).toBe(true);
+    }
+  });
+  it("a single chunk bigger than double the buffer lands intact", async () => {
+    const big = new Uint8Array(20_000).map((_, i) => i % 251);
+    const r = await readBoundedBody(req(chunked([big])), 65_536);
+    expect(r.ok && Buffer.from(r.bytes).equals(Buffer.from(big))).toBe(true);
+  });
+  it("declared length that fills exactly returns every byte", async () => {
+    const parts = [fill(2000, 11), fill(2000, 12), fill(1000, 13)];
+    const r = await readBoundedBody(req(chunked(parts), { "Content-Length": "5000" }), 8192);
+    expect(r.ok && Buffer.from(r.bytes).equals(Buffer.from(join(parts)))).toBe(true);
+  });
+  it("declared smaller than what arrives but inside the cap is a mismatch, after growing", async () => {
+    const parts = [fill(100, 1), fill(300, 2)];
+    const r = await readBoundedBody(req(chunked(parts), { "Content-Length": "100" }), 8192);
+    expect(r).toMatchObject({ ok: false, code: "length_mismatch" });
+  });
+});
