@@ -109,7 +109,7 @@ export async function readBoundedText(request: Request, maxBytes: number, opts: 
   const r = await readBoundedBody(request, maxBytes, opts);
   if (!r.ok) return r;
   try {
-    return { ok: true, text: new TextDecoder("utf-8", { fatal: true }).decode(r.bytes) };
+    return { ok: true, text: new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(r.bytes) };
   } catch {
     return fail("bad_utf8");
   }
