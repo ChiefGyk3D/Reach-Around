@@ -53,7 +53,8 @@ def key_holders(all_jobs: dict[str, Any]) -> list[tuple[str, str]]:
 
 
 def test_the_workflow_runs_daily_and_by_hand() -> None:
-    triggers = load().get("on", load().get(True))
+    data: dict[Any, Any] = load()
+    triggers: dict[str, Any] = data.get("on") or data[True]
     assert "workflow_dispatch" in triggers
     crons = [item["cron"] for item in triggers["schedule"]]
     assert len(crons) == 1
@@ -90,9 +91,15 @@ def test_the_keys_reach_exactly_one_step_through_env() -> None:
 def test_the_github_secrets_path_needs_no_doppler_setup() -> None:
     # With no variables set the Doppler step is skipped and the secrets above
     # are the only source; keyless sources need neither.
-    doppler = next(s for s in jobs()["counts"]["steps"] if s.get("name") == DOPPLER_STEP)
+    doppler = next(
+        s for s in jobs()["counts"]["steps"] if s.get("name") == DOPPLER_STEP
+    )
     condition = doppler["if"]
-    for var in ("DOPPLER_IDENTITY_ID", "DOPPLER_COUNTS_PROJECT", "DOPPLER_COUNTS_CONFIG"):
+    for var in (
+        "DOPPLER_IDENTITY_ID",
+        "DOPPLER_COUNTS_PROJECT",
+        "DOPPLER_COUNTS_CONFIG",
+    ):
         assert f"vars.{var} != ''" in condition
     step = next(s for s in jobs()["counts"]["steps"] if s.get("name") == REFRESH_STEP)
     assert "if" not in step  # the refresh runs with or without keys
@@ -166,7 +173,9 @@ def test_id_token_is_in_no_job_that_runs_pip_from_source_or_the_build() -> None:
 
 
 def test_the_id_token_guard_bites() -> None:
-    hostile = {"steps": [{"run": "python -m pip install --no-deps --no-build-isolation ."}]}
+    hostile = {
+        "steps": [{"run": "python -m pip install --no-deps --no-build-isolation ."}]
+    }
     assert runs_source_code(hostile)
     sloppy = {"steps": [{"run": "python -m pip install -r requirements.txt"}]}
     assert runs_source_code(sloppy)

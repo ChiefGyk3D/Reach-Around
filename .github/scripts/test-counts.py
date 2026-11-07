@@ -121,7 +121,9 @@ def main(argv: list[str] | None = None) -> int:
         elif proc.returncode != 0:
             return fail(f"counts refresh stopped with exit code {proc.returncode}.")
     else:
-        print("::notice::The config has no numbers block; only the hand-kept file is used.")
+        print(
+            "::notice::No numbers block in the config; using the hand-kept file only."
+        )
 
     for line in stale_warnings(out, datetime.now(UTC)):
         print(line)
