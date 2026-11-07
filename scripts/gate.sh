@@ -158,7 +158,7 @@ if [ "$fast" -eq 0 ]; then
     step "pytest" "$py" "${pytest_args[@]}"
     step "ruff check" "$ruff" check .
     step "ruff format" "$ruff" format --check .
-    step "mypy" "$mypy" src
+    step "mypy" "$mypy"
     step "schema" bash "$0" --internal schema
     worker_steps
 else
