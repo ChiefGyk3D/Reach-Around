@@ -1687,6 +1687,8 @@
         "mascot_opacity": {
           "anyOf": [
             {
+              "maximum": 0.4,
+              "minimum": 0.0,
               "type": "number"
             },
             {

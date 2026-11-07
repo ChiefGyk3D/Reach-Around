@@ -18,6 +18,7 @@ from reach_around.site.theme import (
     DEFAULT_COLUMN_WIDTH,
     FONT_FILE_EXTENSIONS,
     MAX_BACKGROUND_DIM,
+    MAX_MASCOT_OPACITY,
     check_background,
     check_color,
     check_font,
@@ -79,8 +80,17 @@ class Theme(_Model):
         strict=True,  # a plain number only: no "0.5" string, no true/false
     )
     # Optional tuning of the mascot layer; unset leaves the stylesheet's own
-    # opacity, size and position.
-    mascot_opacity: float | None = Field(default=None, allow_inf_nan=False, strict=True)
+    # opacity, size and position. The opacity range is published in the schema;
+    # size and position stay plain strings there because their rules (a numeric
+    # 1rem to 200rem range, term order for two-term positions) cannot be
+    # written as an exact pattern. The validators below enforce them.
+    mascot_opacity: float | None = Field(
+        default=None,
+        ge=0.0,
+        le=MAX_MASCOT_OPACITY,
+        allow_inf_nan=False,
+        strict=True,
+    )
     mascot_size: str | None = None
     mascot_position: str | None = None
     column_width: str = DEFAULT_COLUMN_WIDTH
