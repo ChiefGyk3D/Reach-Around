@@ -34,7 +34,9 @@ from reach_around.site.fingerprint import AssetMap, fingerprint
 from reach_around.site.inventory import InventoryEntry, build_inventory
 from reach_around.site.kit import (
     GATED_FILE,
+    check_gated_requests,
     check_no_gated_text,
+    check_private_root,
     check_roots,
     public_paths,
     render_kit,
@@ -601,6 +603,7 @@ def build_site(
     kit = config.kit
     if gated_out is not None:
         check_roots(out_dir, gated_out)
+        check_private_root(gated_out)
         gated_root = _check_out_dir(gated_out, protect)
     if kit is not None and kit.has_gated_content and gated_out is None:
         raise ValueError(
@@ -684,6 +687,8 @@ def build_site(
     # The wall: nothing gated may be in the public files. Checked on the finished
     # in-memory tree, before anything on disk is touched.
     check_no_gated_text(files, kit)
+    if kit_render.gated is not None:
+        check_gated_requests(kit_render.gated, files)
     out = _check_out_dir(out_dir, protect)
     staged = None
     if gated_out is not None:

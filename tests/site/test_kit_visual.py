@@ -113,3 +113,47 @@ def test_the_gated_page_makes_no_third_party_request(
     finally:
         server.shutdown()
         server.server_close()
+
+
+def test_a_remote_stylesheet_url_is_refused_and_a_local_one_loads_nothing_outside(
+    browser: Browser, tmp_path: Path
+) -> None:
+    remote = tmp_path / "remote" / "overrides"
+    remote.mkdir(parents=True)
+    (remote / "custom.css").write_text(
+        "body { background: url(https://example.com/x.png); }", encoding="utf-8"
+    )
+    with pytest.raises(ValueError, match=r"custom\.css"):
+        build_site(
+            make_config(),
+            tmp_path / "r-out",
+            today=TODAY,
+            gated_out=tmp_path / "r-gated",
+            overrides=remote,
+        )
+    local = tmp_path / "local" / "overrides"
+    local.mkdir(parents=True)
+    (local / "custom.css").write_text(
+        "body { background: url(bg.png) no-repeat; }", encoding="utf-8"
+    )
+    out, gated = tmp_path / "out", tmp_path / "gated"
+    build_site(make_config(), out, today=TODAY, gated_out=gated, overrides=local)
+    root = tmp_path / "served"
+    shutil.copytree(out, root)
+    shutil.copy(gated / "kit.html", root / "kit.html")
+    server = ThreadingHTTPServer(
+        ("127.0.0.1", 0), functools.partial(_Quiet, directory=str(root))
+    )
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        base = f"http://127.0.0.1:{server.server_address[1]}"
+        context = browser.new_context(reduced_motion="reduce")
+        page = context.new_page()
+        hosts: set[str] = set()
+        page.on("request", lambda r: hosts.add(r.url.split("/")[2]))
+        page.goto(base + "/kit.html")
+        assert hosts == {base.split("/")[2]}
+        context.close()
+    finally:
+        server.shutdown()
+        server.server_close()

@@ -129,16 +129,44 @@ What the build enforces:
 3. **A search as defense in depth.** Before anything is written, each gated
    value of at least 6 characters (partner text, case study text, rate text,
    demographic text and dates) is searched for in every public file: as written,
-   HTML-escaped, and in a canonical form (entities, percent-encoding and JSON
-   escapes decoded, tags removed, Unicode NFKC, case and whitespace ignored). A
+   HTML-escaped, and in a canonical form: entities, percent-encoding and JSON,
+   JavaScript (`\x`, `\u`) and CSS escapes decoded until the text stops changing
+   (at most 10 rounds), tags removed, Unicode NFKC, case and whitespace ignored.
+   Only text output (html, css, js, json, xml, svg, txt, webmanifest, `_headers`,
+   `_redirects`) is canonicalized; images and fonts are only searched for the
+   raw bytes. The search has work limits (total text size and number of gated
+   values); over a limit the build stops with an error that names the limit. A
    hit stops the build and names the field, not the text. A value that is also
    public by policy (the kit title and description, a metric label or date) is
    not a leak and is skipped.
+4. **No remote requests from the gated page.** The page and each local
+   stylesheet it links are checked: a build fails, naming the file or element
+   and never the address, if the page or a stylesheet imports anything or names
+   an `http(s)` or protocol-relative target (a remote theme background image
+   counts), or if the page has a request-bearing element pointing at another
+   host. Use local files.
 
 What is **not** guaranteed: the search cannot catch every transformation a
-custom template could apply, and values under 6 characters are not searched.
-Those rest on the structure in points 1 and 2. If you use an override template
-for the kit pages, review it as code that handles gated-adjacent text. If the same wording must appear on a public page, reword one of them.
+custom template could apply (base64 and other arbitrary transforms are out of
+scope), and values under 6 characters are not searched. Those rest on the
+structure in points 1 and 2. If you use an override template for the kit pages,
+review it as code that handles gated-adjacent text. If the same wording must
+appear on a public page, reword one of them.
+
+### Trust assumptions
+
+- The gated directory must be owner-only. An existing directory that group or
+  others can enter is refused; the build removes only its own leftover staging
+  files (`.kit.html.<16 hex>.tmp`) from it.
+- The directory that holds `<out>.gated.json` is a trusted state directory. Someone
+  who can remove the record can defeat the stale-page check and leave an old
+  gated page in place.
+- Replacing a parent directory of either root while a build runs is out of scope:
+  this is a local build tool run by the owner, not a service.
+- The public tree is rewritten in place, not atomically. If a build fails part
+  way, the public tree may be partial: rebuild before publishing. If the final
+  rename of the gated page fails, or recording the destination fails, the new
+  public output can sit beside the previous gated page: rebuild.
 
 ### Removing a gated page
 

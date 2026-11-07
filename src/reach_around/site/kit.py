@@ -34,6 +34,7 @@ import urllib.parse
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import date
+from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any
 
@@ -158,28 +159,71 @@ def _gated_strings(kit: KitConfig) -> list[tuple[str, str]]:
 
 
 _TAG = re.compile(r"<[^>]*>")
-_JSON_U = re.compile(r"\\u([0-9a-fA-F]{4})")
-_JSON_C = re.compile(r'\\(["\\/bfnrt])')
-_JSON_MAP = {"b": "\b", "f": "\f", "n": "\n", "r": "\r", "t": "\t"}
+_ESC_U = re.compile(r"\\u([0-9a-fA-F]{4})")
+_ESC_X = re.compile(r"\\x([0-9a-fA-F]{2})")
+_ESC_CSS = re.compile(r"\\([0-9a-fA-F]{1,6})[ \t\n\r\f]?")
+_ESC_SIMPLE = re.compile(r'\\(["\\/nrt])')
+_SIMPLE_MAP = {"n": "\n", "r": "\r", "t": "\t"}
 _SPACE = re.compile(r"\s+")
+
+# Decoding repeats until the text stops changing, at most this many rounds.
+DECODE_ROUNDS = 10
+# Output types the search canonicalizes; binary assets (images, fonts) are only
+# searched for the raw bytes.
+TEXT_SUFFIXES = frozenset(
+    {
+        ".html",
+        ".htm",
+        ".css",
+        ".js",
+        ".mjs",
+        ".json",
+        ".xml",
+        ".svg",
+        ".txt",
+        ".webmanifest",
+    }
+)
+TEXT_NAMES = frozenset({"_redirects", "_headers"})
+# Work limits for the canonical search; a build over either limit stops with an
+# error that names the limit.
+GUARD_MAX_BYTES = 64 * 1024 * 1024
+GUARD_MAX_NEEDLES = 1000
+
+
+class KitGuardLimitError(ValueError):
+    """The leak search would do more work than its limits allow."""
+
+
+def _code_point(value: int) -> str:
+    return chr(value) if 0 < value <= 0x10FFFF else "�"
 
 
 def _decode_once(text: str) -> str:
     text = html.unescape(text)
     text = urllib.parse.unquote(text)
-    text = _JSON_U.sub(lambda m: chr(int(m.group(1), 16)), text)
-    return _JSON_C.sub(lambda m: _JSON_MAP.get(m.group(1), m.group(1)), text)
+    text = _ESC_U.sub(lambda m: chr(int(m.group(1), 16)), text)
+    text = _ESC_X.sub(lambda m: chr(int(m.group(1), 16)), text)
+    text = _ESC_CSS.sub(lambda m: _code_point(int(m.group(1), 16)), text)
+    return _ESC_SIMPLE.sub(lambda m: _SIMPLE_MAP.get(m.group(1), m.group(1)), text)
 
 
 def canonical(text: str, tags: str = "") -> str:
-    """A comparison form: entities, percent-encoding and JSON escapes decoded
-    (three rounds, for doubled encodings), tags replaced by ``tags``, Unicode
-    NFKC, case-folded, all whitespace removed."""
-    for _ in range(3):
-        text = _decode_once(text)
+    """A comparison form: entities, percent-encoding and JSON, JavaScript and CSS
+    escapes decoded to a fixed point (at most ``DECODE_ROUNDS`` rounds), tags
+    replaced by ``tags``, Unicode NFKC, case-folded, all whitespace removed."""
+    for _ in range(DECODE_ROUNDS):
+        decoded = _decode_once(text)
+        if decoded == text:
+            break
+        text = decoded
     text = _TAG.sub(tags, text)
     text = unicodedata.normalize("NFKC", text).casefold()
     return _SPACE.sub("", text)
+
+
+def _is_text(rel: Path) -> bool:
+    return rel.suffix.lower() in TEXT_SUFFIXES or rel.name in TEXT_NAMES
 
 
 def _public_values(kit: KitConfig) -> set[str]:
@@ -213,10 +257,24 @@ def check_no_gated_text(files: Mapping[Path, bytes], kit: KitConfig | None) -> N
         for variant in {text, html.escape(text), html.escape(text, quote=False)}:
             raw.append((where, variant.encode("utf-8")))
         folded.append((where, canonical(text)))
+    if len(folded) > GUARD_MAX_NEEDLES:
+        raise KitGuardLimitError(
+            f"the kit has {len(folded)} gated values to search for, over the "
+            f"limit of {GUARD_MAX_NEEDLES} (GUARD_MAX_NEEDLES)"
+        )
+    scanned = 0
     for rel, data in sorted(files.items()):
         for where, needle in raw:
             if needle in data:
                 raise _leak(where, rel)
+        if not _is_text(rel):
+            continue
+        scanned += len(data)
+        if scanned > GUARD_MAX_BYTES:
+            raise KitGuardLimitError(
+                f"the public text files total more than {GUARD_MAX_BYTES} bytes, "
+                "over the leak search limit (GUARD_MAX_BYTES)"
+            )
         decoded = data.decode("utf-8", errors="ignore")
         for tags in ("", " "):
             view = canonical(decoded, tags)
@@ -260,6 +318,129 @@ class StagedGated:
             self.temp = None
 
 
+def check_private_root(gated_out: Path) -> None:
+    """Refuse an existing gated directory that group or others can enter."""
+    if gated_out.is_dir() and gated_out.stat().st_mode & 0o077:
+        raise ValueError(
+            f"the gated output directory {gated_out} has permissions that "
+            "let other users in; the gated page is private. Run "
+            f"chmod 700 {gated_out} and build again."
+        )
+
+
+_STAGING = re.compile(rf"\.{re.escape(GATED_FILE.name)}\.[0-9a-f]{{16}}\.tmp")
+
+
+def _remove_stale_staging(gated_out: Path) -> None:
+    """Delete staging files a crashed build left behind: regular files whose
+    name is exactly the temporary pattern, nothing else."""
+    for entry in gated_out.iterdir():
+        if _STAGING.fullmatch(entry.name) and not entry.is_symlink():
+            if entry.is_file():
+                entry.unlink()
+
+
+class KitRemoteRequestError(ValueError):
+    """The gated page would make a request to another host."""
+
+
+_REQUEST_ATTRS: dict[str, tuple[str, ...]] = {
+    "img": ("src", "srcset"),
+    "script": ("src",),
+    "iframe": ("src",),
+    "source": ("src", "srcset"),
+    "video": ("src", "poster"),
+    "audio": ("src",),
+    "embed": ("src",),
+    "object": ("data",),
+    "track": ("src",),
+    "input": ("src",),
+    "link": ("href",),
+    "image": ("href", "xlink:href"),
+    "use": ("href", "xlink:href"),
+}
+_REMOTE_URL = re.compile(r"\s*(?:[a-zA-Z][a-zA-Z0-9+.-]*:)?//|\s*https?:", re.I)
+_CSS_COMMENT = re.compile(r"/\*.*?\*/", re.S)
+_CSS_REMOTE = re.compile(
+    r"url\(\s*[\"']?\s*(?:https?:|//)|[\"']\s*(?:https?:)?//[^\s\"']", re.I
+)
+
+
+def _css_is_remote(css: str) -> bool:
+    """True if a stylesheet imports anything or names an http(s) or
+    protocol-relative target, after CSS escapes are decoded."""
+    text = _CSS_COMMENT.sub("", css)
+    for _ in range(DECODE_ROUNDS):
+        decoded = _ESC_CSS.sub(lambda m: _code_point(int(m.group(1), 16)), text)
+        if decoded == text:
+            break
+        text = decoded
+    return "@import" in text.lower() or bool(_CSS_REMOTE.search(text))
+
+
+class _Requests(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__()
+        self.remote: list[str] = []
+        self.styles: list[str] = []
+        self.sheets: list[str] = []
+        self._in_style = False
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        values = dict(attrs)
+        for name in _REQUEST_ATTRS.get(tag, ()):
+            value = values.get(name)
+            if value is None:
+                continue
+            first = value.split(",")[0] if name == "srcset" else value
+            if _REMOTE_URL.match(first):
+                self.remote.append(f"<{tag} {name}>")
+            elif tag == "link" and "stylesheet" in (values.get("rel") or ""):
+                self.sheets.append(first.strip())
+        if values.get("style"):
+            self.styles.append(values["style"] or "")
+        self._in_style = tag == "style"
+
+    def handle_endtag(self, tag: str) -> None:
+        self._in_style = False
+
+    def handle_data(self, data: str) -> None:
+        if self._in_style:
+            self.styles.append(data)
+
+
+def check_gated_requests(page: str, files: Mapping[Path, bytes]) -> None:
+    """Refuse a gated page that would make a request to another host.
+
+    The page and every local stylesheet it links are checked: a request-bearing
+    element or a stylesheet that imports or names an http(s) or protocol-relative
+    target fails the build. The message names the file or element, never the
+    address."""
+    parser = _Requests()
+    parser.feed(page)
+    parser.close()
+    if parser.remote:
+        raise KitRemoteRequestError(
+            f"the gated page ({GATED_FILE}) would make a request to another host "
+            f"from {parser.remote[0]}; the gated page makes no third-party "
+            "request. Use a local file."
+        )
+    if any(_css_is_remote(text) for text in parser.styles):
+        raise KitRemoteRequestError(
+            f"the gated page ({GATED_FILE}) has inline style that imports or "
+            "loads from another host; use a local file."
+        )
+    for href in parser.sheets:
+        rel = Path(href.split("?")[0].split("#")[0].lstrip("/"))
+        data = files.get(rel)
+        if data is not None and _css_is_remote(data.decode("utf-8", errors="ignore")):
+            raise KitRemoteRequestError(
+                f"the stylesheet {rel.as_posix()}, which the gated page loads, "
+                "imports or loads from another host; the gated page makes no "
+                "third-party request. Use local files only."
+            )
+
+
 def stage_gated(gated_out: Path, page: str | None) -> StagedGated:
     """Prepare the gated page without touching the destination name.
 
@@ -272,6 +453,9 @@ def stage_gated(gated_out: Path, page: str | None) -> StagedGated:
             f"{target} is a symbolic link; the gated page is never written "
             "through a link. Remove it and build again."
         )
+    check_private_root(gated_out)
+    if gated_out.is_dir():
+        _remove_stale_staging(gated_out)
     if page is None:
         return StagedGated(gated_out, None)
     if not gated_out.exists():

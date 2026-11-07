@@ -25,6 +25,7 @@ from test_kit_build import (
 )
 
 from reach_around.cli import main
+from reach_around.site import build as build_module
 from reach_around.site import kit as kit_module
 from reach_around.site.build import build_site
 from reach_around.site.kit import GATED_FILE, KitLeakError
@@ -261,6 +262,12 @@ def encodings(text: str) -> dict[str, str]:
         "whitespace": text.replace(" ", "\n  "),
         "split-by-markup": f"{half}<span></span>{rest}",
         "split-by-block": f"{half}</p><p>{rest}",
+        "percent-four-levels": quote(
+            quote(quote(quote(text, safe=""), safe=""), safe=""), safe=""
+        ),
+        "js-hex": "".join(f"\\x{ord(c):02x}" for c in text),
+        "js-unicode": "".join(f"\\u{ord(c):04x}" for c in text),
+        "css-escape": "".join(f"\\{ord(c):x} " for c in text),
     }
 
 
@@ -355,3 +362,215 @@ def test_the_gated_page_drops_a_remote_avatar_but_public_pages_keep_it(
     assert "https://example.com/a.png" in (out / "kit" / "index.html").read_text(
         encoding="utf-8"
     )
+
+
+# --- round 2 ------------------------------------------------------------------------
+
+
+def test_decoding_runs_to_a_bounded_fixed_point() -> None:
+    deep = PARTNER
+    for _ in range(9):
+        deep = quote(deep, safe="")
+    assert kit_module.canonical(deep) == kit_module.canonical(PARTNER)
+    too_deep = deep
+    for _ in range(3):
+        too_deep = quote(too_deep, safe="")
+    assert kit_module.canonical(too_deep) != kit_module.canonical(PARTNER)
+
+
+def test_binary_assets_are_not_canonicalized(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: list[int] = []
+    real = kit_module.canonical
+
+    def spy(text: str, tags: str = "") -> str:
+        seen.append(len(text))
+        return real(text, tags)
+
+    monkeypatch.setattr(kit_module, "canonical", spy)
+    big = b"\x89PNG" + b"\x00" * (4 * 1024 * 1024)
+    files = {
+        Path("static/big.png"): big,
+        Path("static/font.woff2"): big,
+        Path("index.html"): b"<p>hello</p>",
+    }
+    kit_module.check_no_gated_text(files, make_config().kit)
+    assert seen and max(seen) < 1000
+
+
+def test_work_limits_fail_with_a_clear_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    kit = make_config().kit
+    files = {Path("index.html"): b"<p>" + b"x" * 5000 + b"</p>"}
+    with monkeypatch.context() as patch:
+        patch.setattr(kit_module, "GUARD_MAX_BYTES", 1000)
+        with pytest.raises(kit_module.KitGuardLimitError, match=r"byte"):
+            kit_module.check_no_gated_text(files, kit)
+    monkeypatch.setattr(kit_module, "GUARD_MAX_NEEDLES", 2)
+    with pytest.raises(kit_module.KitGuardLimitError, match=r"value"):
+        kit_module.check_no_gated_text({Path("index.html"): b"x"}, kit)
+
+
+def test_stale_staging_files_are_removed_and_nothing_else(tmp_path: Path) -> None:
+    gated = tmp_path / "gated"
+    gated.mkdir(mode=0o700)
+    stale = gated / ".kit.html.0123456789abcdef.tmp"
+    stale.write_text("old", encoding="utf-8")
+    keep = [gated / ".kit.html.zz.tmp", gated / "notes.tmp", gated / "other.txt"]
+    for path in keep:
+        path.write_text("mine", encoding="utf-8")
+    build_site(make_config(), tmp_path / "public", today=TODAY, gated_out=gated)
+    assert not stale.exists()
+    assert all(path.read_text(encoding="utf-8") == "mine" for path in keep)
+
+
+def test_an_existing_gated_root_open_to_others_is_refused(tmp_path: Path) -> None:
+    gated = tmp_path / "gated"
+    gated.mkdir()
+    gated.chmod(0o755)
+    out = tmp_path / "public"
+    with pytest.raises(ValueError, match=r"permissions"):
+        build_site(make_config(), out, today=TODAY, gated_out=gated)
+    assert not out.exists()
+    gated.chmod(0o700)
+    build_site(make_config(), out, today=TODAY, gated_out=gated)
+
+
+def css_overrides(tmp_path: Path, css: str) -> Path:
+    overrides = tmp_path / "overrides"
+    overrides.mkdir(parents=True, exist_ok=True)
+    (overrides / "custom.css").write_text(css, encoding="utf-8")
+    return overrides
+
+
+REMOTE_CSS = [
+    '@import "local.css";',
+    "body { background: url(https://example.com/x.png); }",
+    "body { background: url( 'HTTP://example.com/x.png' ); }",
+    'body { background: url("//example.com/x.png"); }',
+    "body { background: u\\72 l(https://example.com/x.png); }",
+    'body { background: image-set("https://example.com/x.png" 1x); }',
+    "body { background: url(\\68 ttps://example.com/x.png); }",
+    "/* c */ @IMPORT url(x.css);",
+]
+
+
+@pytest.mark.parametrize("css", REMOTE_CSS)
+def test_a_linked_stylesheet_with_remote_loads_is_refused(css: str) -> None:
+    page = '<link rel="stylesheet" href="/static/x.css">'
+    files = {Path("static/x.css"): css.encode()}
+    with pytest.raises(kit_module.KitRemoteRequestError, match=r"static/x\.css") as e:
+        kit_module.check_gated_requests(page, files)
+    assert "example.com" not in str(e.value)
+
+
+def test_local_stylesheets_and_anchors_are_fine() -> None:
+    page = (
+        '<link rel="stylesheet" href="/static/x.css"><a href="https://example.com/">'
+        'p</a><img src="/static/a.png" alt=""><style>a{background:url(b.png)}</style>'
+    )
+    css = b"a { background: url(fonts/a.woff2); } /* https://example.com */"
+    kit_module.check_gated_requests(page, {Path("static/x.css"): css})
+
+
+@pytest.mark.parametrize(
+    "style", ["a{background:url(https://example.com/x)}", "@import 'x';"]
+)
+def test_inline_style_with_remote_loads_is_refused(style: str) -> None:
+    with pytest.raises(kit_module.KitRemoteRequestError, match=r"inline style"):
+        kit_module.check_gated_requests(f"<style>{style}</style>", {})
+    with pytest.raises(kit_module.KitRemoteRequestError, match=r"inline style"):
+        kit_module.check_gated_requests(f'<p style="{style}">x</p>', {})
+
+
+def test_the_build_refuses_remote_css_in_custom_css(tmp_path: Path) -> None:
+    overrides = css_overrides(
+        tmp_path, "body { background: url(https://example.com/x); }"
+    )
+    with pytest.raises(ValueError, match=r"custom\.css") as caught:
+        build_site(
+            make_config(),
+            tmp_path / "public",
+            today=TODAY,
+            gated_out=tmp_path / "gated",
+            overrides=overrides,
+        )
+    assert "example.com" not in str(caught.value)
+    assert not (tmp_path / "public").exists()
+
+
+def test_the_build_refuses_a_remote_theme_image_on_the_gated_page(
+    tmp_path: Path,
+) -> None:
+    config = make_config(theme={"background": "https://example.com/bg.png"})
+    with pytest.raises(
+        kit_module.KitRemoteRequestError, match=r"theme\.[0-9a-f]+\.css"
+    ):
+        build_site(
+            config,
+            tmp_path / "public",
+            today=TODAY,
+            gated_out=tmp_path / "gated",
+        )
+    assert not (tmp_path / "public").exists()
+    # without gated content there is no gated page to protect
+    build_site(
+        make_config(
+            kit_doc(), features={"kit_gate": False}, theme=config.theme.model_dump()
+        ),
+        tmp_path / "ok",
+        today=TODAY,
+    )
+
+
+def test_remote_markup_in_the_gated_page_fails_the_build(tmp_path: Path) -> None:
+    overrides = tmp_path / "overrides"
+    (overrides / "templates").mkdir(parents=True)
+    (overrides / "templates" / "kit_gated.html").write_text(
+        '{% extends "base.html" %}{% block content %}'
+        '<img src="https://example.com/p.png" alt="">{% endblock %}',
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match=r"gated page") as caught:
+        build_site(
+            make_config(),
+            tmp_path / "public",
+            today=TODAY,
+            gated_out=tmp_path / "gated",
+            overrides=overrides,
+        )
+    assert "example.com" not in str(caught.value)
+
+
+def test_a_root_that_changes_between_the_two_checks_is_caught(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    out, gated = tmp_path / "public", tmp_path / "gated"
+    out.mkdir()
+    calls: list[int] = []
+    real = kit_module.check_roots
+
+    def swapping(public: Path, private: Path) -> None:
+        calls.append(1)
+        if len(calls) == 2:
+            private.symlink_to(out, target_is_directory=True)
+        real(public, private)
+
+    monkeypatch.setattr(build_module, "check_roots", swapping)
+    with pytest.raises(ValueError, match=r"gated"):
+        build_site(make_config(), out, today=TODAY, gated_out=gated)
+    assert len(calls) == 2
+    assert not list(out.rglob(GATED_FILE.name))
+
+
+def test_identity_alone_catches_an_alias_that_spelling_cannot(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    out = tmp_path / "public"
+    out.mkdir()
+    (tmp_path / "alias").symlink_to(out, target_is_directory=True)
+    # With name resolution switched off, only the (device, inode) comparison can
+    # tell that the alias is the public directory.
+    monkeypatch.setattr(os.path, "realpath", lambda p, **kw: str(p))
+    with pytest.raises(ValueError, match=r"gated"):
+        kit_module.check_roots(out, tmp_path / "alias")
+    with pytest.raises(ValueError, match=r"gated"):
+        kit_module.check_roots(tmp_path / "alias", out)

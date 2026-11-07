@@ -326,7 +326,7 @@ def test_build_only_touches_its_own_file_in_the_gated_directory(
     tmp_path: Path,
 ) -> None:
     gated = tmp_path / "gated"
-    gated.mkdir()
+    gated.mkdir(mode=0o700)
     (gated / "keep.txt").write_text("mine", encoding="utf-8")
     build_site(make_config(), tmp_path / "public", today=TODAY, gated_out=gated)
     assert (gated / "keep.txt").read_text(encoding="utf-8") == "mine"
