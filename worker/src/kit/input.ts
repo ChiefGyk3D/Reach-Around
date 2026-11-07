@@ -8,7 +8,7 @@
 // Nothing here logs.
 
 import { dnsLabelOk } from "./punycode";
-import { readCappedBytes } from "./streamread";
+import { readBoundedText } from "./body";
 
 export const FIELD_EMAIL = "email";
 /** The name the Turnstile widget gives its hidden field. */
@@ -97,14 +97,9 @@ export async function readForm(request: Request, opts: { deadlineMs?: number } =
   const declared = request.headers.get("content-length");
   if (declared !== null && (!/^[0-9]{1,9}$/.test(declared) || Number(declared) > MAX_FORM_BYTES)) return null;
 
-  const bytes = await readCappedBytes(request.body, MAX_FORM_BYTES, clampDeadline(opts.deadlineMs));
-  if (bytes === null) return null;
-  let text: string;
-  try {
-    text = new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(bytes);
-  } catch {
-    return null;
-  }
+  const read = await readBoundedText(request, MAX_FORM_BYTES, { deadlineMs: clampDeadline(opts.deadlineMs) });
+  if (!read.ok) return null;
+  const text = read.text;
   // URLSearchParams passes a stray percent sign through; refuse it instead.
   if (BAD_PERCENT.test(text)) return null;
 

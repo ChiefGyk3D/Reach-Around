@@ -17,7 +17,7 @@
 
 import type { KitEnv } from "./env";
 import { dnsLabelOk } from "./punycode";
-import { readCappedBytes } from "./streamread";
+import { readBoundedBody } from "./body";
 
 export const SITEVERIFY_URL = "https://challenges.cloudflare.com/turnstile/v0/siteverify";
 export const TURNSTILE_TIMEOUT_MS = 3000;
@@ -253,9 +253,11 @@ export async function verifyTurnstile(
     }
     if (res === "timeout" || res.status !== 200) return false;
     // One deadline covers the fetch and the body read.
-    const bytes = await readCappedBytes(res.body, MAX_RESPONSE_BYTES, timeoutMs - (Date.now() - started));
-    if (bytes === null) return false;
-    const text = new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(bytes);
+    // The upstream length header is not trusted: re-wrap the stream so only the byte cap applies.
+    const wrapped = new Request(SITEVERIFY_URL, { method: "POST", body: res.body, duplex: "half" } as RequestInit);
+    const read = await readBoundedBody(wrapped, MAX_RESPONSE_BYTES, { deadlineMs: timeoutMs - (Date.now() - started) });
+    if (!read.ok) return false;
+    const text = new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(read.bytes);
 
     const parsed = parseStrictJson(text);
     if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return false;

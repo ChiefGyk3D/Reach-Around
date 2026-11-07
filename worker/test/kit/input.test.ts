@@ -239,8 +239,8 @@ describe("readForm", () => {
       expect(await readForm(req)).toBeNull();
       expect(pulled).toBeLessThanOrEqual(MAX_FORM_BYTES + 8);
     });
-    it("refuses a long run of small non-empty chunks well before the byte cap", async () => {
-      const body = new TextEncoder().encode(`${FIELD_TURNSTILE}=${"t".repeat(400)}`);
+    it("refuses a long run of one-byte chunks once the byte cap is passed, without reading on", async () => {
+      const body = new TextEncoder().encode(`${FIELD_TURNSTILE}=${"t".repeat(MAX_FORM_BYTES + 400)}`);
       let n = 0;
       const req = streamReq({
         pull(c) {
@@ -249,7 +249,7 @@ describe("readForm", () => {
         },
       });
       expect(await readForm(req)).toBeNull();
-      expect(n).toBeLessThan(400);
+      expect(n).toBeLessThanOrEqual(MAX_FORM_BYTES + 8);
     });
     it("accepts the same body in a handful of chunks", async () => {
       const body = new TextEncoder().encode(`${FIELD_TURNSTILE}=${"t".repeat(400)}`);

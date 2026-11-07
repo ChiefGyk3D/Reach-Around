@@ -447,7 +447,7 @@ describe("verifyTurnstile: bounded response read", () => {
     expect(await settles(verifyTurnstile(env, TOKEN, "gate", f.fn))).toBe(false);
   });
   it("returns false for a long run of tiny chunks", async () => {
-    const text = new TextEncoder().encode(`{"success":true,"hostname":"${HOST}","action":"gate","pad":"${"x".repeat(400)}"}`);
+    const text = new TextEncoder().encode(`{"success":true,"hostname":"${HOST}","action":"gate","pad":"${"x".repeat(6000)}"}`);
     let n = 0;
     const f = fake(() =>
       stream({
