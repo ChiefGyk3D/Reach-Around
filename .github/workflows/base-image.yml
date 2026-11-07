@@ -1,0 +1,27 @@
+# SPDX-License-Identifier: Apache-2.0
+# Scheduled check that the Containerfile's pinned base image is not behind its tag (#231).
+# The digest pin freezes the build; when the maintainers republish python:3.13-slim with a
+# fix, this run goes red (a pinned digest with a fixable HIGH or CRITICAL finding that the
+# current digest lacks) a week at most before a release tag would hit it. The check is
+# ChiefGyk3D/git-your-ship-together's base-image-digest.yml, pinned by commit. It is
+# read-only and opens no pull request or issue: a red scheduled run notifies watchers, and
+# the job summary names the line to change. Egress is harden-runner block with the
+# workflow's default allow-list (Docker Hub and GHCR are covered; no extra hosts).
+name: Base image
+
+on:
+  schedule:
+    - cron: "17 5 * * 1"  # Mondays, after Dependabot's weekly run
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  base-image:
+    uses: ChiefGyk3D/git-your-ship-together/.github/workflows/base-image-digest.yml@f9a1ac2596926cc2e4fc8bd1e025f8d9c38c8ea1 # v1.30.0
+    permissions:
+      contents: read
+    with:
+      dockerfile: Containerfile
+      egress-policy: block
