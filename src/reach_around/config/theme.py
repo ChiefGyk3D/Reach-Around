@@ -18,12 +18,16 @@ from reach_around.site.theme import (
     DEFAULT_COLUMN_WIDTH,
     FONT_FILE_EXTENSIONS,
     MAX_BACKGROUND_DIM,
+    MAX_MASCOT_OPACITY,
     check_background,
     check_color,
     check_font,
     check_image_path,
     check_length,
     check_license_path,
+    check_mascot_opacity,
+    check_mascot_position,
+    check_mascot_size,
 )
 
 
@@ -75,6 +79,20 @@ class Theme(_Model):
         allow_inf_nan=False,
         strict=True,  # a plain number only: no "0.5" string, no true/false
     )
+    # Optional tuning of the mascot layer; unset leaves the stylesheet's own
+    # opacity, size and position. The opacity range is published in the schema;
+    # size and position stay plain strings there because their rules (a numeric
+    # 1rem to 200rem range, term order for two-term positions) cannot be
+    # written as an exact pattern. The validators below enforce them.
+    mascot_opacity: float | None = Field(
+        default=None,
+        ge=0.0,
+        le=MAX_MASCOT_OPACITY,
+        allow_inf_nan=False,
+        strict=True,
+    )
+    mascot_size: str | None = None
+    mascot_position: str | None = None
     column_width: str = DEFAULT_COLUMN_WIDTH
     radius: str = "0.5rem"
     button_style: Literal["pill", "rounded", "square"] = "rounded"
@@ -103,6 +121,21 @@ class Theme(_Model):
     @classmethod
     def _mascot_is_local(cls, value: str | None) -> str | None:
         return None if value is None else check_image_path(value)
+
+    @field_validator("mascot_opacity")
+    @classmethod
+    def _mascot_opacity_in_range(cls, value: float | None) -> float | None:
+        return None if value is None else check_mascot_opacity(value)
+
+    @field_validator("mascot_size")
+    @classmethod
+    def _mascot_size_is_safe(cls, value: str | None) -> str | None:
+        return None if value is None else check_mascot_size(value)
+
+    @field_validator("mascot_position")
+    @classmethod
+    def _mascot_position_is_safe(cls, value: str | None) -> str | None:
+        return None if value is None else check_mascot_position(value)
 
     @field_validator("column_width", "radius")
     @classmethod

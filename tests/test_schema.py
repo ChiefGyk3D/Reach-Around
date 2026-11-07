@@ -55,3 +55,16 @@ def test_schema_command_reports_an_unwritable_out(
     code = main(["schema", "--out", str(tmp_path / "missing" / "s.json")])
     assert code == 1
     assert "Traceback" not in capsys.readouterr().err
+
+
+def test_mascot_opacity_range_is_in_the_schema() -> None:
+    from reach_around.site.theme import MAX_MASCOT_OPACITY
+
+    theme = json.loads(render_schema())["$defs"]["Theme"]["properties"]
+    number = next(
+        branch
+        for branch in theme["mascot_opacity"]["anyOf"]
+        if branch.get("type") == "number"
+    )
+    assert number["minimum"] == 0.0
+    assert number["maximum"] == MAX_MASCOT_OPACITY
