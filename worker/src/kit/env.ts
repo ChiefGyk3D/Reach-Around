@@ -9,7 +9,7 @@ import { MAX_TOKEN_AGE_SECONDS, MIN_KEY_BYTES } from "./token";
 export interface KitEnv extends Env {
   KIT: KVNamespace;
   GATE_LIMITER: RateLimiter;
-  /** "1" or "true" (any case) stops the kit routes. Read on every request. */
+  /** 1/true/on/yes (any case) stops the kit routes; 0/false/off/no or unset leaves them on. Any other value is rejected at load and treated as engaged. */
   KIT_KILL?: string;
   /** SECRET. Signs unlock tokens. At least 32 bytes. */
   TOKEN_HMAC_KEY: string;
@@ -41,12 +41,31 @@ export interface KitConfig {
   killed: boolean;
 }
 
-/** Same truthy rule as the other kill switches. Cheap, so call it per request. */
+type KillState = "on" | "off" | "invalid";
+
+const KILL_ON = new Set(["1", "true", "on", "yes"]);
+const KILL_OFF = new Set(["0", "false", "off", "no"]);
+
+/**
+ * Unset or "" is off. Otherwise the value must be exactly one of
+ * 1/true/on/yes (engaged) or 0/false/off/no (off), in any case, with no
+ * surrounding whitespace. Anything else, including a non-string, is invalid.
+ */
+function killState(v: unknown): KillState {
+  if (v === undefined || v === "") return "off";
+  if (typeof v !== "string") return "invalid";
+  const s = v.toLowerCase();
+  if (KILL_ON.has(s)) return "on";
+  if (KILL_OFF.has(s)) return "off";
+  return "invalid";
+}
+
+/**
+ * True when the kit must stay closed. Fails closed: a configured value that is
+ * not an explicit form counts as engaged. Cheap, so call it per request.
+ */
 export function isKitKilled(env: Pick<KitEnv, "KIT_KILL">): boolean {
-  const v = env?.KIT_KILL;
-  if (typeof v !== "string") return false;
-  const s = v.trim().toLowerCase();
-  return s === "1" || s === "true";
+  return killState(env?.KIT_KILL) !== "off";
 }
 
 function keyOk(v: unknown): v is string {
@@ -88,6 +107,8 @@ export function loadKitEnv(env: KitEnv): KitConfig {
       else bad.push("TOKEN_TTL_SECONDS");
     } else bad.push("TOKEN_TTL_SECONDS");
   }
+
+  if (killState(e.KIT_KILL) === "invalid") bad.push("KIT_KILL");
 
   if (bad.length > 0) throw new KitEnvError(bad);
   return { keys, tokenTtlSeconds: ttl, killed: isKitKilled(env) };
