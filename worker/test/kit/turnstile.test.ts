@@ -190,6 +190,21 @@ describe("parseStrictJson", () => {
     expect(Object.getPrototypeOf(v)).toBeNull();
     expect(Object.getPrototypeOf(v.a)).toBeNull();
   });
+  it("rejects lone surrogates in values and keys, accepts valid pairs", () => {
+    for (const s of [
+      '{"k":"\\ud800"}',
+      '{"k":"\\udc00"}',
+      '{"k":"\\ud800x"}',
+      '{"k":"\\udc00\\ud800"}',
+      '{"k":"\\ud800\\ud800"}',
+      '{"k":"x\\udbff"}',
+      '{"\\ud800":1}',
+      '{"\\udfff":1}',
+      '{"a":["\\ud83d"]}',
+    ]) expect(() => parseStrictJson(s), s).toThrow();
+    expect(parseStrictJson('{"k":"\\ud83d\\ude00"}')).toBeTruthy();
+    expect(parseStrictJson('{"\\ud83d\\ude00":1}')).toBeTruthy();
+  });
   it("throws on a prototype key, plain or escaped", () => {
     expect(() => parseStrictJson('{"__proto__":{}}')).toThrow();
     expect(() => parseStrictJson('{"\\u005f_proto__":{}}')).toThrow();
@@ -204,6 +219,11 @@ describe("expectedHostname", () => {
     expect(expectedHostname({ SITE_HOST: " Kit.Example.TEST " }, {})).toBe("kit.example.test");
     expect(expectedHostname({ SITE_HOST: "a.example.test" }, { hostname: "B.example.test" })).toBe("b.example.test");
   });
+  it("accepts label edges that are legal", () => {
+    expect(expectedHostname({ SITE_HOST: "a".repeat(63) + ".example.test" }, {})).toBe("a".repeat(63) + ".example.test");
+    expect(expectedHostname({ SITE_HOST: "a-b.x1.example" }, {})).toBe("a-b.x1.example");
+    expect(expectedHostname({ SITE_HOST: "xn--bcher-kva.example" }, {})).toBe("xn--bcher-kva.example");
+  });
   it("returns null when nothing usable is configured", () => {
     for (const [e, o] of [
       [{}, {}],
@@ -214,6 +234,16 @@ describe("expectedHostname", () => {
       [{ SITE_HOST: "a.example.test" }, { hostname: "  " }],
       [{ SITE_HOST: "a.example.test" }, { hostname: 7 }],
       [{ SITE_HOST: "bad host.example.test" }, {}],
+      [{ SITE_HOST: "a..example.test" }, {}],
+      [{ SITE_HOST: ".example.test" }, {}],
+      [{ SITE_HOST: "example.test." }, {}],
+      [{ SITE_HOST: "a.-bad.example" }, {}],
+      [{ SITE_HOST: "bad-.example" }, {}],
+      [{ SITE_HOST: "-bad.example" }, {}],
+      [{ SITE_HOST: "a_b.example" }, {}],
+      [{ SITE_HOST: "a".repeat(64) + ".example" }, {}],
+      [{ SITE_HOST: "localhost" }, {}],
+      [{ SITE_HOST: ("a".repeat(60) + ".").repeat(5) + "com" }, {}],
       [{ SITE_HOST: "a.example.test/path" }, {}],
       [{ SITE_HOST: "a.example.test:8443" }, {}],
       [{ SITE_HOST: "é.example.test" }, {}],

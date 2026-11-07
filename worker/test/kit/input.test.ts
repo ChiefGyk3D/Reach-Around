@@ -183,6 +183,90 @@ describe("readForm", () => {
     expect(await readForm(req)).toBeNull();
     expect(pulled).toBeLessThan(20);
   });
+  it("rejects malformed percent escapes in any key or value, accepts valid ones", async () => {
+    for (const body of [
+      `${FIELD_TURNSTILE}=%`,
+      `${FIELD_TURNSTILE}=%ZZ`,
+      `${FIELD_TURNSTILE}=%4`,
+      `${FIELD_TURNSTILE}=abc%`,
+      `${FIELD_TURNSTILE}=%4Z`,
+      `${FIELD_EMAIL}=a%40b.com&${FIELD_TURNSTILE}=%g1`,
+      `${FIELD_EMAIL}%=a%40b.com`,
+      `%=x`,
+    ]) expect(await readForm(post(body)), body).toBeNull();
+    expect((await readForm(post(`${FIELD_TURNSTILE}=%41`)))?.turnstile).toBe("A");
+    expect((await readForm(post(`${FIELD_TURNSTILE}=%4a%4A`)))?.turnstile).toBe("JJ");
+  });
+  describe("hostile streams", () => {
+    function streamReq(src: UnderlyingSource<Uint8Array>): Request {
+      return new Request("https://kit.example.test/gate", {
+        method: "POST",
+        headers: { "content-type": CT },
+        body: new ReadableStream<Uint8Array>(src),
+        duplex: "half",
+      } as RequestInit);
+    }
+    it("refuses an unending stream of empty chunks without pulling forever", async () => {
+      let pulled = 0;
+      const req = streamReq({
+        pull(c) {
+          pulled++;
+          c.enqueue(new Uint8Array(0));
+        },
+      });
+      expect(await readForm(req)).toBeNull();
+      expect(pulled).toBeLessThan(100);
+    });
+    it("lets a few empty chunks between real ones through", async () => {
+      const parts = [new Uint8Array(0), new TextEncoder().encode("email=a%40"), new Uint8Array(0), new Uint8Array(0), new TextEncoder().encode("b.com")];
+      const req = streamReq({
+        pull(c) {
+          const p = parts.shift();
+          if (p === undefined) c.close();
+          else c.enqueue(p);
+        },
+      });
+      expect(await readForm(req)).toEqual({ email: "a@b.com", turnstile: null });
+    });
+    it("refuses a flood of one-byte chunks", async () => {
+      let pulled = 0;
+      const req = streamReq({
+        pull(c) {
+          pulled++;
+          c.enqueue(new Uint8Array([0x61]));
+        },
+      });
+      expect(await readForm(req)).toBeNull();
+      expect(pulled).toBeLessThanOrEqual(MAX_FORM_BYTES + 8);
+    });
+    it("returns null at the deadline when a pull never settles", async () => {
+      const req = streamReq({ pull: () => new Promise<void>(() => undefined) });
+      const t0 = Date.now();
+      expect(await readForm(req, { deadlineMs: 50 })).toBeNull();
+      expect(Date.now() - t0).toBeLessThan(2000);
+    });
+    it("does not wait on a cancel that never settles", async () => {
+      const req = streamReq({
+        pull: () => new Promise<void>(() => undefined),
+        cancel: () => new Promise<void>(() => undefined),
+      });
+      const t0 = Date.now();
+      expect(await readForm(req, { deadlineMs: 50 })).toBeNull();
+      expect(Date.now() - t0).toBeLessThan(2000);
+    });
+    it("does not wait on a cancel that never settles after the cap is passed", async () => {
+      const chunk = new TextEncoder().encode("a".repeat(2048));
+      const req = streamReq({
+        pull(c) {
+          c.enqueue(chunk);
+        },
+        cancel: () => new Promise<void>(() => undefined),
+      });
+      const t0 = Date.now();
+      expect(await readForm(req)).toBeNull();
+      expect(Date.now() - t0).toBeLessThan(2000);
+    });
+  });
   it("rejects invalid UTF-8 and over-long or odd tokens as null", async () => {
     expect(await readForm(post(new Uint8Array([0x65, 0x6d, 0x61, 0x69, 0x6c, 0x3d, 0xff, 0xfe])))).toBeNull();
     for (const t of ["", "a b", "a\nb", "a\u0000b", "t".repeat(2049), "é".normalize()]) {

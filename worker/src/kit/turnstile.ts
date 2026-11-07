@@ -23,7 +23,7 @@ const MAX_TOKEN_LENGTH = 2048;
 const MAX_RESPONSE_BYTES = 16 * 1024;
 const MAX_JSON_DEPTH = 32;
 const TOKEN_RE = /^[\x21-\x7e]{1,2048}$/;
-const HOSTNAME_RE = /^[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?$/;
+const LABEL_RE = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
 
 export type TurnstileAction = "gate" | "send";
 
@@ -44,7 +44,29 @@ export function expectedHostname(env: { SITE_HOST?: unknown } | undefined, opts:
   const raw = opts.hostname !== undefined ? opts.hostname : env?.SITE_HOST;
   if (typeof raw !== "string") return null;
   const h = raw.trim().toLowerCase();
-  return HOSTNAME_RE.test(h) ? h : null;
+  if (h.length > 253) return null;
+  const labels = h.split(".");
+  // At least two labels: a kit page is never served from a bare single-label host.
+  if (labels.length < 2) return null;
+  for (const l of labels) {
+    if (!LABEL_RE.test(l)) return null;
+  }
+  return h;
+}
+
+/** True when every UTF-16 surrogate in `s` is half of a valid pair. */
+function wellFormed(s: string): boolean {
+  for (let n = 0; n < s.length; n++) {
+    const c = s.charCodeAt(n);
+    if (c >= 0xd800 && c <= 0xdbff) {
+      const d = s.charCodeAt(n + 1);
+      if (!(d >= 0xdc00 && d <= 0xdfff)) return false;
+      n++;
+    } else if (c >= 0xdc00 && c <= 0xdfff) {
+      return false;
+    }
+  }
+  return true;
 }
 
 /** Read a response body as text, at most `max` bytes; null when longer. */
@@ -103,7 +125,7 @@ export function parseStrictJson(text: string): unknown {
       const c = text.charCodeAt(i);
       if (ch === '"') {
         i++;
-        return out;
+        return wellFormed(out) ? out : fail();
       }
       if (c < 0x20) return fail();
       if (ch !== "\\") {

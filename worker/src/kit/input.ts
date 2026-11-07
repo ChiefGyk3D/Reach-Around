@@ -68,25 +68,78 @@ function cleanToken(v: string): string | null {
   return TOKEN_RE.test(v) ? v : null;
 }
 
-/** Read at most `max` bytes. Null if the body is longer; stops pulling at the cap. */
-async function readCapped(body: ReadableStream<Uint8Array> | null, max: number): Promise<Uint8Array | null> {
+const BAD_PERCENT = /%(?![0-9a-fA-F]{2})/;
+const DEFAULT_DEADLINE_MS = 5000;
+
+function clampDeadline(v: unknown): number {
+  if (typeof v !== "number" || !Number.isFinite(v)) return DEFAULT_DEADLINE_MS;
+  return Math.min(30_000, Math.max(10, Math.floor(v)));
+}
+/** More consecutive zero-length chunks than this is a hostile stream. */
+const MAX_EMPTY_CHUNKS = 8;
+/** More non-empty chunks than this is refused, whatever the byte cap. */
+const MAX_CHUNKS = 4096;
+
+/** Cancel without waiting: a cancel that never settles must not hold up the answer. */
+function discard(reader: ReadableStreamDefaultReader<Uint8Array>): void {
+  try {
+    reader.cancel().catch(() => undefined);
+  } catch {
+    // The request is being refused anyway.
+  }
+}
+
+/**
+ * Read at most `max` bytes. Null if the body is longer, the stream is hostile
+ * (empty-chunk or tiny-chunk floods), errors, or does not finish by the
+ * deadline. Cancellation is fire and forget.
+ * TODO: switch to the shared readBoundedBody (worker/src/kit/body.ts) once that
+ * module lands, so this guard is not implemented twice.
+ */
+async function readCapped(body: ReadableStream<Uint8Array> | null, max: number, deadlineMs: number): Promise<Uint8Array | null> {
   if (body === null) return new Uint8Array(0);
   const reader = body.getReader();
   const chunks: Uint8Array[] = [];
   let total = 0;
+  let empties = 0;
+  let count = 0;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const expired = new Promise<"timeout">((resolve) => {
+    timer = setTimeout(() => resolve("timeout"), deadlineMs);
+  });
   try {
     for (;;) {
-      const { done, value } = await reader.read();
+      const step = await Promise.race([reader.read(), expired]);
+      if (step === "timeout") {
+        discard(reader);
+        return null;
+      }
+      const { done, value } = step;
       if (done) break;
+      if (!(value instanceof Uint8Array)) {
+        discard(reader);
+        return null;
+      }
+      if (value.byteLength === 0) {
+        if (++empties > MAX_EMPTY_CHUNKS) {
+          discard(reader);
+          return null;
+        }
+        continue;
+      }
+      empties = 0;
       total += value.byteLength;
-      if (total > max) {
-        await reader.cancel().catch(() => undefined);
+      if (total > max || ++count > MAX_CHUNKS) {
+        discard(reader);
         return null;
       }
       chunks.push(value);
     }
   } catch {
+    discard(reader);
     return null;
+  } finally {
+    clearTimeout(timer);
   }
   const out = new Uint8Array(total);
   let off = 0;
@@ -111,13 +164,13 @@ export interface GateForm {
  * non-empty honeypot. An absent or invalid email or token comes back as null
  * inside the result, so the caller decides how to answer.
  */
-export async function readForm(request: Request): Promise<GateForm | null> {
+export async function readForm(request: Request, opts: { deadlineMs?: number } = {}): Promise<GateForm | null> {
   if (request.method !== "POST") return null;
   if (request.headers.get("content-type") !== FORM_CONTENT_TYPE) return null;
   const declared = request.headers.get("content-length");
   if (declared !== null && (!/^[0-9]{1,9}$/.test(declared) || Number(declared) > MAX_FORM_BYTES)) return null;
 
-  const bytes = await readCapped(request.body, MAX_FORM_BYTES);
+  const bytes = await readCapped(request.body, MAX_FORM_BYTES, clampDeadline(opts.deadlineMs));
   if (bytes === null) return null;
   let text: string;
   try {
@@ -125,6 +178,8 @@ export async function readForm(request: Request): Promise<GateForm | null> {
   } catch {
     return null;
   }
+  // URLSearchParams passes a stray percent sign through; refuse it instead.
+  if (BAD_PERCENT.test(text)) return null;
 
   const seen = new Map<string, string>();
   for (const [k, v] of new URLSearchParams(text)) {
