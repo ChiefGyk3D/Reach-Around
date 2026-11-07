@@ -342,11 +342,11 @@ a:focus-visible, summary:focus-visible, button:focus-visible {
   background-image:
     linear-gradient(to right, var(--ra-color-accent) 30%, transparent),
     linear-gradient(to left, var(--ra-color-accent) 30%, transparent),
-    radial-gradient(farthest-side at 0 50%, var(--ra-color-edge), transparent),
-    radial-gradient(farthest-side at 100% 50%, var(--ra-color-edge), transparent);
+    linear-gradient(to right, color-mix(in srgb, var(--ra-color-on-accent) 38%, transparent), transparent),
+    linear-gradient(to left, color-mix(in srgb, var(--ra-color-on-accent) 38%, transparent), transparent);
   background-repeat: no-repeat;
   background-position: left center, right center, left center, right center;
-  background-size: 2.5rem 100%, 2.5rem 100%, 0.9rem 100%, 0.9rem 100%;
+  background-size: 2.5rem 100%, 2.5rem 100%, 1.75rem 100%, 1.75rem 100%;
   background-attachment: local, local, scroll, scroll;
   box-shadow: var(--ra-shadow-pill);
 }
@@ -466,7 +466,11 @@ a.link:not(:has(.link-chip, .link-thumb)) .link-text { grid-column: 1; }
   font-size: var(--ra-text-sm);
   line-height: 1.3;
   overflow-wrap: anywhere;
+  text-wrap: balance;
 }
+/* A subtitle makes the pill taller, and a fully round end on a tall box turns
+   it into a slab. The round ends are capped at the card radius then. */
+a.link:has(.link-subtitle) { border-radius: min(var(--ra-button-radius), var(--ra-card-radius)); }
 .section-subtitle {
   display: block;
   margin-top: var(--ra-space-1);
@@ -474,6 +478,7 @@ a.link:not(:has(.link-chip, .link-thumb)) .link-text { grid-column: 1; }
   font-size: var(--ra-text-sm);
   line-height: 1.35;
   overflow-wrap: anywhere;
+  text-wrap: pretty;
 }
 /* The highlighted top link: taller, no border, no dots. */
 a.link-featured {
@@ -524,6 +529,8 @@ a.link:active, .social:active { transform: translateY(0) scale(0.985); }
   border-radius: var(--ra-card-radius);
   cursor: pointer;
   list-style: none;
+  min-width: 0;
+  overflow-wrap: anywhere;
   font-family: var(--ra-font-heading);
   font-size: var(--ra-text-lg);
   font-weight: 700;
@@ -565,7 +572,7 @@ a.link:active, .social:active { transform: translateY(0) scale(0.985); }
    the link buttons above it (`main > :not(.tabs)` would pad the box instead). */
 main > .tab-section { padding-inline: 0; margin-inline: var(--ra-gutter); }
 .tab-section:last-of-type { margin-bottom: auto; }
-.tab-section-title { margin: 0; font: inherit; letter-spacing: inherit; }
+.tab-section-title { flex: 1 1 auto; min-width: 0; margin: 0; font: inherit; letter-spacing: inherit; overflow-wrap: anywhere; text-wrap: balance; }
 .tab-section > .blocks { flex: none; padding: 0 var(--ra-space-3) var(--ra-space-3); }
 .blocks:has(~ .tab-section) { flex: 0 0 auto; }
 
@@ -626,7 +633,7 @@ main > .tab-section { padding-inline: 0; margin-inline: var(--ra-gutter); }
 
 /* Footer, cookie notice, privacy page. */
 main > footer { margin-top: var(--ra-space-5); color: var(--ra-color-muted); font-size: var(--ra-text-sm); text-align: center; }
-.disclosure { max-width: min(30rem, 100%); margin: 0 auto var(--ra-space-3); color: var(--ra-color-muted); font-size: var(--ra-text-xs); }
+.disclosure { max-width: min(30rem, 100%); margin: 0 auto var(--ra-space-3); color: var(--ra-color-muted); font-size: var(--ra-text-xs); text-wrap: balance; }
 .credit a { display: inline-block; padding: var(--ra-space-3); color: var(--ra-color-muted); }
 .privacy-link a { display: inline-block; padding: var(--ra-space-3); color: var(--ra-color-muted); }
 .cookie-banner {
@@ -750,6 +757,9 @@ main > footer { margin-top: var(--ra-space-5); color: var(--ra-color-muted); fon
   .layout-list > .block-divider, .layout-list > .block-crypto,
   .layout-list > .block-link:has(> a.link-featured) { grid-column: 1 / -1; }
   .layout-list > .block-section { align-self: start; }
+  /* A lone last card spans the row instead of leaving a hole beside it. */
+  .blocks.layout-list > .block-link:last-child:nth-child(odd),
+  .section-links.layout-list > li:last-child:nth-child(odd) { grid-column: 1 / -1; }
   .hero-card:has(> .avatar) { flex-direction: row; justify-content: center; gap: var(--ra-space-6); }
   .hero-card:has(> .avatar) h1 { text-align: left; }
 }
