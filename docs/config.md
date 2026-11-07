@@ -81,7 +81,7 @@ escapes it when it renders.
 | `version` | integer | required | must be exactly `1` |
 | `creator` | Creator | required | see below |
 | `tabs` | list of Tab | required | at least one tab |
-| `disclosure` | text | none | at most 2000 characters; shown when affiliate links exist |
+| `disclosure` | text or Disclosure | none | the footer line for affiliate links; see [`disclosure`](#disclosure) |
 | `timezone` | text | `America/New_York` | must be a known IANA zone name; decides which calendar day "today" is for scheduled links |
 | `page_layout` | `tabs` or `sections` | `tabs` | `sections` puts every tab after the first on one page as native `<details>` sections; see [`page_layout`](#page_layout) |
 | `title_template` | text | `{tab} - {creator}` | how page titles are built; see [Page titles](#page-titles) |
@@ -103,6 +103,27 @@ id anywhere is refused, with the message `duplicate id 'x': ids must be unique`.
 ```yaml
 timezone: Europe/Berlin
 disclosure: Some links are affiliate links.
+```
+
+### `disclosure`
+
+A small line at the bottom of the page. Write it as plain text, or as a
+mapping. Leave the key out and no disclosure is ever shown.
+
+| Key | Type | Default | Constraints |
+| --- | --- | --- | --- |
+| `text` | text, 1-500 characters | a neutral built-in sentence | Plain text: no control, bidi or zero-width characters, no leading or trailing space, no links, `www.` hosts or `@` addresses. Escaped on the page. |
+| `show` | `true` or `false` | `true` | `false` hides it without deleting the text. |
+| `always` | `true` or `false` | `false` | `true` shows it on every page; otherwise only on a page with a visible affiliate link. |
+
+The built-in sentence is: "Some links on this page may be affiliate links.
+Purchases made through them may earn the creator a small commission at no extra
+cost to the buyer, without affecting their recommendations." Your own wording
+belongs in your config, for example:
+
+```yaml
+disclosure:
+  text: Some links here are affiliate links. If you buy through them, I may earn a small commission at no extra cost to you, but it NEVER changes what I recommend.
 ```
 
 ### `store`

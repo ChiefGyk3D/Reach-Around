@@ -36,6 +36,7 @@ from reach_around.config.blocks import (
     Platforms,
     Text,
 )
+from reach_around.config.disclosure import DisclosureField
 from reach_around.config.footer import Footer
 from reach_around.config.kit import KitConfig
 from reach_around.config.loader import ConfigError, load_yaml
@@ -318,7 +319,7 @@ class SiteConfig(_Model):
     creator: Creator
     tabs: list[Tab] = Field(min_length=1)
     page_layout: PageLayout = "tabs"
-    disclosure: Annotated[str, StringConstraints(max_length=2000)] | None = None
+    disclosure: DisclosureField | None = None
     timezone: str = "America/New_York"
     title_template: TitleTemplate | None = None
     theme: Theme = Theme()

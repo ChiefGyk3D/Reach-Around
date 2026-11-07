@@ -322,6 +322,38 @@
       "title": "Demographic",
       "type": "object"
     },
+    "Disclosure": {
+      "additionalProperties": false,
+      "description": "The disclosure line.\n\n``show`` switches it off without deleting the text. ``always`` shows it on\npages with no affiliate link too.",
+      "properties": {
+        "always": {
+          "default": false,
+          "title": "Always",
+          "type": "boolean"
+        },
+        "show": {
+          "default": true,
+          "title": "Show",
+          "type": "boolean"
+        },
+        "text": {
+          "anyOf": [
+            {
+              "maxLength": 500,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Text"
+        }
+      },
+      "title": "Disclosure",
+      "type": "object"
+    },
     "DiscordSource": {
       "additionalProperties": false,
       "properties": {
@@ -1796,15 +1828,18 @@
     "disclosure": {
       "anyOf": [
         {
-          "maxLength": 2000,
+          "$ref": "#/$defs/Disclosure"
+        },
+        {
+          "maxLength": 500,
+          "minLength": 1,
           "type": "string"
         },
         {
           "type": "null"
         }
       ],
-      "default": null,
-      "title": "Disclosure"
+      "default": null
     },
     "features": {
       "$ref": "#/$defs/Features",
