@@ -208,12 +208,24 @@ def open_config_dir(path: Path) -> tuple[int, Path]:
                 if not _root_link_is_fixed(info, _fstat_dir(cur)):
                     raise _unsafe(base, "a symlink")
                 try:
-                    target = _readlink_at(name, cur)
-                    again = _stat_at(name, cur)
+                    # Held open across the look so its inode number cannot be
+                    # handed to a replacement link between the two stats.
+                    pin = _pin(Path(name), cur)
                 except OSError as exc:
                     raise _unsafe(base, exc.strerror or "cannot read link") from exc
-                if not _same_entry(info, again):
-                    raise _unsafe(base, "a symlink that changed")
+                try:
+                    pinned = os.fstat(pin)
+                    if (pinned.st_dev, pinned.st_ino) != (info.st_dev, info.st_ino):
+                        raise _unsafe(base, "a symlink that changed")
+                    try:
+                        target = _readlink_at(name, cur)
+                        again = _stat_at(name, cur)
+                    except OSError as exc:
+                        raise _unsafe(base, exc.strerror or "cannot read link") from exc
+                    if not _same_entry(info, again):
+                        raise _unsafe(base, "a symlink that changed")
+                finally:
+                    os.close(pin)
                 if target.startswith("/"):
                     while above:
                         os.close(cur)
@@ -690,6 +702,16 @@ def _roll_back_backup(
     return installed
 
 
+def _pin(path: Path, dir_fd: int | None) -> int:
+    """Open the entry ``path`` names, not following a link, only to keep it alive.
+
+    Where an open entry cannot be freed, its (device, inode) number cannot be
+    reused by a different entry while the descriptor is held.
+    """
+    flags = getattr(os, "O_PATH", os.O_RDONLY) | os.O_NOFOLLOW | os.O_CLOEXEC
+    return os.open(_at(path, dir_fd), flags, dir_fd=dir_fd)
+
+
 def _identity(path: Path, dir_fd: int | None) -> tuple[int, int] | None:
     """(device, inode) of the entry ``path`` names, not following a link."""
     try:
@@ -705,8 +727,14 @@ def _write_backup(
     mode: int,
     dir_fd: int | None = None,
     made: list[tuple[int, int]] | None = None,
+    pins: list[int] | None = None,
 ) -> Path:
-    """Write the backup; ``made`` receives the identity of the file this call made."""
+    """Write the backup; ``made`` receives the identity of the file this call made.
+
+    The file is also kept open (its descriptor is added to ``pins``, which the
+    caller closes): while it is open, its inode number cannot be given to a
+    new file, so the identity in ``made`` can only match this very file.
+    """
     backup = path.with_name(path.name + ".bak")
     try:
         tmp = _stage(backup, text, mode, dir_fd)
@@ -714,6 +742,8 @@ def _write_backup(
             mine = _identity(tmp, dir_fd)
             if mine is not None:
                 made.append(mine)
+                if pins is not None:
+                    pins.append(_pin(tmp, dir_fd))
         try:
             _during_backup(path)
         except BaseException:
@@ -863,6 +893,7 @@ def _apply_at(
             raise EditError(f"{path}: cannot write: {exc.strerror or exc}") from exc
         kept: Path | None = None
         made: list[tuple[int, int]] = []
+        pins: list[int] = []
         bak = path.with_name(path.name + ".bak")
 
         def undo_backup() -> None:
@@ -883,7 +914,11 @@ def _apply_at(
             # (it cannot be closed on POSIX).
             kept = _keep_backup(path, dir_fd) if backup else None
             try:
-                saved = _write_backup(path, old, mode, dir_fd, made) if backup else None
+                saved = (
+                    _write_backup(path, old, mode, dir_fd, made, pins)
+                    if backup
+                    else None
+                )
             except BaseException:
                 undo_backup()  # the new backup may already be renamed in
                 raise
@@ -906,6 +941,8 @@ def _apply_at(
                     pass
                 raise EditError(f"{path}: cannot write: {exc.strerror or exc}") from exc
         finally:
+            for pin in pins:
+                os.close(pin)
             _unlink(staged, dir_fd)
             if kept is not None:
                 _unlink(kept, dir_fd)

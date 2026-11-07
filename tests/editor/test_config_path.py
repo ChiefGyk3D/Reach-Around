@@ -353,6 +353,44 @@ def test_a_root_owned_link_replaced_after_the_look_is_refused(
         editing.open_config_dir(alias / "site.yaml")
 
 
+def _held_entries() -> set[tuple[int, int]]:
+    """(device, inode) of everything this process holds open right now."""
+    held: set[tuple[int, int]] = set()
+    for name in os.listdir("/proc/self/fd"):
+        try:
+            info = os.fstat(int(name))
+        except OSError:
+            continue  # the listing's own descriptor, or one closed meanwhile
+        held.add((info.st_dev, info.st_ino))
+    return held
+
+
+def test_a_root_owned_link_is_held_while_it_is_checked(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A freed inode number can be handed to a replacement on some filesystems,
+    so the checked link is kept open: its number cannot be reused meanwhile."""
+    cfg = make_real(tmp_path)
+    alias = tmp_path / "alias"
+    alias.symlink_to(cfg.parent, target_is_directory=True)
+    monkeypatch.setattr(
+        editing, "_stat_at", _as_root_owned(editing._stat_at, {"alias"})
+    )
+    monkeypatch.setattr(editing, "_fstat_dir", _root_folder(0o755))
+    seen: list[bool] = []
+    real_readlink = editing._readlink_at
+
+    def look(name: str, dir_fd: int) -> str:
+        info = os.stat(alias, follow_symlinks=False)
+        seen.append((info.st_dev, info.st_ino) in _held_entries())
+        return real_readlink(name, dir_fd)
+
+    monkeypatch.setattr(editing, "_readlink_at", look)
+    fd, _ = editing.open_config_dir(alias / "site.yaml")
+    os.close(fd)
+    assert seen == [True]
+
+
 # ---- the state read ----
 
 
@@ -398,6 +436,29 @@ def test_a_refused_save_leaves_a_backup_another_process_made(
     with pytest.raises(editing.EditError):
         save(cfg, backup=True)
     assert bak.read_text(encoding="utf-8") == "someone else\n"
+
+
+@pytest.mark.parametrize("had_backup", [False, True])
+def test_the_backup_this_save_made_is_held_open_until_the_save_ends(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, had_backup: bool
+) -> None:
+    """The save recognizes its own backup by (device, inode); keeping it open
+    stops a filesystem from handing that number to someone else's new file."""
+    cfg = make_real(tmp_path)
+    bak = cfg.parent / "site.yaml.bak"
+    if had_backup:
+        bak.write_text("old backup\n", encoding="utf-8")
+    seen: list[bool] = []
+
+    def look(path: Path) -> None:
+        info = bak.stat()
+        seen.append((info.st_dev, info.st_ino) in _held_entries())
+
+    monkeypatch.setattr(editing, "_before_replace", look)
+    assert save(cfg, backup=True).written
+    assert seen == [True]
+    after = bak.stat()
+    assert (after.st_dev, after.st_ino) not in _held_entries()
 
 
 # ---- folders the user can only pass through ----
