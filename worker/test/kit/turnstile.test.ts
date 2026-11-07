@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { SITEVERIFY_URL, TURNSTILE_TIMEOUT_MS, verifyTurnstile } from "../../src/kit/turnstile";
+import { SITEVERIFY_URL, TURNSTILE_TIMEOUT_MS, expectedHostname, parseStrictJson, verifyTurnstile } from "../../src/kit/turnstile";
 
 const SECRET = "0x4AAAAAAA-secret-value-for-tests";
 const HOST = "kit.example.test";
@@ -46,10 +46,13 @@ describe("verifyTurnstile: accept", () => {
     expect(await verifyTurnstile(env, TOKEN, "gate", f.fn, { hostname: "other.example.test" })).toBe(true);
     expect(await verifyTurnstile(env, TOKEN, "gate", f.fn, { hostname: HOST })).toBe(false);
   });
-  it("skips the hostname check only when no hostname is configured at all", async () => {
-    const f = fake(() => ok({ hostname: "anything.example.test" }));
-    expect(await verifyTurnstile({ TURNSTILE_SECRET: SECRET }, TOKEN, "gate", f.fn)).toBe(true);
-    expect(await verifyTurnstile({ TURNSTILE_SECRET: SECRET, SITE_HOST: "  " }, TOKEN, "gate", f.fn)).toBe(true);
+  it("fails closed, with no network call, when no expected hostname is configured", async () => {
+    for (const e of [{ TURNSTILE_SECRET: SECRET }, { TURNSTILE_SECRET: SECRET, SITE_HOST: "" }, { TURNSTILE_SECRET: SECRET, SITE_HOST: "  " }]) {
+      const f = fake(() => ok({ hostname: "anything.example.test" }));
+      expect(await verifyTurnstile(e, TOKEN, "gate", f.fn)).toBe(false);
+      expect(await verifyTurnstile(e, TOKEN, "gate", f.fn, { hostname: " " })).toBe(false);
+      expect(f.calls).toHaveLength(0);
+    }
   });
 });
 
@@ -111,10 +114,111 @@ describe("verifyTurnstile: reject", () => {
     const f = fake(() => json({ success: true, hostname: HOST, action: "gate", pad }));
     expect(await verifyTurnstile(env, TOKEN, "gate", f.fn)).toBe(false);
   });
-  it("rejects a repeated success key that smuggles a true after a false", async () => {
-    const f = fake(() => new Response(`{"success":false,"success":true,"hostname":"${HOST}","action":"gate"}`, { status: 200 }));
-    // JSON.parse keeps the last duplicate; the strict parser must not let it through
-    expect(await verifyTurnstile(env, TOKEN, "gate", f.fn)).toBe(false);
+  const raw = (s: string) => fake(() => new Response(s, { status: 200 })).fn;
+  it("rejects a repeated decision key, however it is spelled", async () => {
+    const good = `"hostname":"${HOST}","action":"gate"`;
+    const bodies = [
+      `{"success":false,"success":true,${good}}`,
+      `{"success":false,"\\u0073uccess":true,${good}}`,
+      `{"success":false,"succ\\u0065ss":true,${good}}`,
+      `{"success":true,"hostname":"evil.example.test","\\u0068ostname":"${HOST}","action":"gate"}`,
+      `{"success":true,"hostname":"${HOST}","action":"send","\\u0061ction":"gate"}`,
+      `{"success":true,${good},"error-codes":["x"],"error\\u002dcodes":[]}`,
+      `{"success":true,${good},"error-codes":["x"],"error-codes":[]}`,
+    ];
+    for (const b of bodies) expect(await verifyTurnstile(env, TOKEN, "gate", raw(b)), b).toBe(false);
+  });
+  it("rejects a duplicate key at any nesting level", async () => {
+    const good = `"success":true,"hostname":"${HOST}","action":"gate"`;
+    for (const b of [
+      `{${good},"metadata":{"a":1,"a":2}}`,
+      `{${good},"metadata":{"a":{"b":1,"\\u0062":2}}}`,
+      `{${good},"list":[{"k":1,"k":2}]}`,
+    ]) expect(await verifyTurnstile(env, TOKEN, "gate", raw(b)), b).toBe(false);
+  });
+  it("compares decoded keys, including surrogate pairs", async () => {
+    const good = `"success":true,"hostname":"${HOST}","action":"gate"`;
+    expect(await verifyTurnstile(env, TOKEN, "gate", raw(`{${good},"\\ud83d\\ude00":1,"\u{1F600}":2}`))).toBe(false);
+    expect(await verifyTurnstile(env, TOKEN, "gate", raw(`{${good},"\\ud83d\\ude00":1,"\\uD83D\\uDE00":2}`))).toBe(false);
+    expect(await verifyTurnstile(env, TOKEN, "gate", raw(`{${good},"\\ud83d\\ude00":1,"\\ud83d\\ude01":2}`))).toBe(true);
+  });
+  it("accepts an escaped spelling of a key when it appears once", async () => {
+    expect(await verifyTurnstile(env, TOKEN, "gate", raw(`{"\\u0073uccess":true,"hostname":"${HOST}","action":"gate"}`))).toBe(true);
+  });
+  it("rejects malformed JSON and trailing content", async () => {
+    const good = `"success":true,"hostname":"${HOST}","action":"gate"`;
+    for (const b of [
+      `{${good}} x`,
+      `{${good}}{}`,
+      `{${good},}`,
+      `{${good}\n`,
+      `{'success':true}`,
+      `{${good},"n":01}`,
+      `{${good},"n":1.}`,
+      `{${good},"n":+1}`,
+      `{${good},"s":"a\tb"}`,
+      `{${good},"s":"\\x41"}`,
+      `{${good},"s":"\\u12"}`,
+      `{${good},"s":"\\ud83"}`,
+      `{${good},"v":NaN}`,
+      `{${good},"v":undefined}`,
+      ` {${good}}`,
+      `{${good}}//c`,
+      `{${good},"a":[1,]}`,
+      `{${good},"a":${"[".repeat(200)}${"]".repeat(200)}}`,
+    ]) expect(await verifyTurnstile(env, TOKEN, "gate", raw(b)), JSON.stringify(b)).toBe(false);
+  });
+  it("accepts ordinary whitespace and nested values", async () => {
+    const b = ` \n{ "success" : true , "hostname":"${HOST}", "action":"gate", "metadata":{"n":[1,-2.5e3,null,true,"x"]} }\r\n`;
+    expect(await verifyTurnstile(env, TOKEN, "gate", raw(b))).toBe(true);
+  });
+  it("does not let a prototype key through or pollute the runtime", async () => {
+    for (const b of [
+      `{"__proto__":{"success":true,"hostname":"${HOST}","action":"gate"}}`,
+      `{"__proto__":{"success":true},"hostname":"${HOST}","action":"gate"}`,
+      `{"\\u005f_proto__":{"success":true},"hostname":"${HOST}","action":"gate"}`,
+      `{"constructor":{"prototype":{"success":true}},"hostname":"${HOST}","action":"gate"}`,
+    ]) expect(await verifyTurnstile(env, TOKEN, "gate", raw(b)), b).toBe(false);
+    expect(({} as Record<string, unknown>).success).toBeUndefined();
+    expect(Object.prototype.hasOwnProperty.call(Object.prototype, "success")).toBe(false);
+  });
+});
+
+describe("parseStrictJson", () => {
+  it("builds objects without a prototype", () => {
+    const v = parseStrictJson('{"a":{"b":1}}') as Record<string, Record<string, unknown>>;
+    expect(Object.getPrototypeOf(v)).toBeNull();
+    expect(Object.getPrototypeOf(v.a)).toBeNull();
+  });
+  it("throws on a prototype key, plain or escaped", () => {
+    expect(() => parseStrictJson('{"__proto__":{}}')).toThrow();
+    expect(() => parseStrictJson('{"\\u005f_proto__":{}}')).toThrow();
+  });
+  it("throws on a duplicate decoded key", () => {
+    expect(() => parseStrictJson('{"a":1,"\\u0061":2}')).toThrow();
+  });
+});
+
+describe("expectedHostname", () => {
+  it("prefers the option, then SITE_HOST, lowercased and trimmed", () => {
+    expect(expectedHostname({ SITE_HOST: " Kit.Example.TEST " }, {})).toBe("kit.example.test");
+    expect(expectedHostname({ SITE_HOST: "a.example.test" }, { hostname: "B.example.test" })).toBe("b.example.test");
+  });
+  it("returns null when nothing usable is configured", () => {
+    for (const [e, o] of [
+      [{}, {}],
+      [{ SITE_HOST: "" }, {}],
+      [{ SITE_HOST: "   " }, {}],
+      [{ SITE_HOST: 5 }, {}],
+      [{ SITE_HOST: "a.example.test" }, { hostname: "" }],
+      [{ SITE_HOST: "a.example.test" }, { hostname: "  " }],
+      [{ SITE_HOST: "a.example.test" }, { hostname: 7 }],
+      [{ SITE_HOST: "bad host.example.test" }, {}],
+      [{ SITE_HOST: "a.example.test/path" }, {}],
+      [{ SITE_HOST: "a.example.test:8443" }, {}],
+      [{ SITE_HOST: "é.example.test" }, {}],
+      [undefined, {}],
+    ] as Array<[never, never]>) expect(expectedHostname(e, o)).toBeNull();
   });
 });
 
@@ -215,7 +319,7 @@ describe("verifyTurnstile: request shape", () => {
   });
   it("never sends remoteip, in the body, the URL or the headers", async () => {
     const f = fake(() => ok());
-    await verifyTurnstile(env, TOKEN, "gate", f.fn, { idempotencyKey: "123e4567-e89b-12d3-a456-426614174000" });
+    await verifyTurnstile(env, TOKEN, "gate", f.fn);
     const c = f.calls[0]!;
     expect(c.body.has("remoteip")).toBe(false);
     expect(c.url).not.toMatch(/remoteip|\?/i);
@@ -223,14 +327,10 @@ describe("verifyTurnstile: request shape", () => {
     expect(h).not.toMatch(/remoteip|connecting-ip|forwarded|real-ip/);
     expect(String(c.init.body)).not.toMatch(/remoteip/i);
   });
-  it("adds an idempotency key only when given a UUID, and refuses anything else", async () => {
-    const uuid = "123e4567-e89b-12d3-a456-426614174000";
+  it("offers no idempotency option and sends exactly two fields", async () => {
     const f = fake(() => ok());
-    await verifyTurnstile(env, TOKEN, "gate", f.fn, { idempotencyKey: uuid });
-    expect(f.calls[0]!.body.get("idempotency_key")).toBe(uuid);
-    const g = fake(() => ok());
-    expect(await verifyTurnstile(env, TOKEN, "gate", g.fn, { idempotencyKey: "not a uuid\r\n" })).toBe(false);
-    expect(g.calls).toHaveLength(0);
+    await verifyTurnstile(env, TOKEN, "gate", f.fn, { idempotencyKey: "123e4567-e89b-12d3-a456-426614174000" } as never);
+    expect([...f.calls[0]!.body.keys()].sort()).toEqual(["response", "secret"]);
   });
   it("does not follow redirects", async () => {
     const f = fake(() => ok());
