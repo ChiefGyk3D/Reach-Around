@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 import { describe, expect, it, vi } from "vitest";
-import { guardRequest, killedResponse } from "../../src/kit/guard";
+import { guardRequest, killedResponse, originAllowList } from "../../src/kit/guard";
 
 const ALLOW = ["POST", "GET"] as const;
+const OK = () => true;
 
 async function snap(r: Response): Promise<string> {
   return JSON.stringify({
@@ -30,7 +31,7 @@ describe("killed kit", () => {
     for (const value of ["1", "true", "TRUE", "on", "yes", "garbage"]) {
       for (const p of paths) {
         for (const m of methods) {
-          const d = guardRequest(mk(m, p), { KIT_KILL: value }, { methods: ALLOW });
+          const d = guardRequest(mk(m, p), { KIT_KILL: value }, { methods: ALLOW, originCheck: OK });
           expect(d.allow).toBe(false);
           if (!d.allow) seen.add(await snap(d.response));
         }
@@ -68,7 +69,7 @@ describe("killed kit", () => {
 
   it("is read on every request, no module cache", () => {
     const env: { KIT_KILL?: string } = {};
-    const run = () => guardRequest(mk("POST", "/k/gate"), env, { methods: ALLOW }).allow;
+    const run = () => guardRequest(mk("POST", "/k/gate"), env, { methods: ALLOW, originCheck: OK }).allow;
     expect(run()).toBe(true);
     env.KIT_KILL = "1";
     expect(run()).toBe(false);
@@ -83,11 +84,11 @@ describe("killed kit", () => {
 
 describe("not killed", () => {
   it.each([undefined, "", "0", "false", "off", "no"])("KIT_KILL=%j passes a listed method", (v) => {
-    expect(guardRequest(mk("POST", "/k/gate"), { KIT_KILL: v }, { methods: ALLOW }).allow).toBe(true);
+    expect(guardRequest(mk("POST", "/k/gate"), { KIT_KILL: v }, { methods: ALLOW, originCheck: OK }).allow).toBe(true);
   });
   it("refuses a method outside the allow-list with a fixed response that does not echo input", async () => {
-    const a = guardRequest(mk("PURGE", "/k/gate"), {}, { methods: ALLOW });
-    const b = guardRequest(mk("DELETE", "/k/other"), {}, { methods: ALLOW });
+    const a = guardRequest(mk("PURGE", "/k/gate"), {}, { methods: ALLOW, originCheck: OK });
+    const b = guardRequest(mk("DELETE", "/k/other"), {}, { methods: ALLOW, originCheck: OK });
     expect(a.allow || b.allow).toBe(false);
     if (!a.allow && !b.allow) {
       expect(a.response.status).toBe(405);
@@ -96,7 +97,7 @@ describe("not killed", () => {
     }
   });
   it("matches methods case-sensitively against the normalized request method", () => {
-    expect(guardRequest(mk("post", "/k/gate"), {}, { methods: ALLOW }).allow).toBe(true);
+    expect(guardRequest(mk("post", "/k/gate"), {}, { methods: ALLOW, originCheck: OK }).allow).toBe(true);
   });
   it("runs the injected origin check after the method check and refuses with a fixed 403", async () => {
     const originCheck = vi.fn(() => false);
@@ -120,11 +121,25 @@ describe("not killed", () => {
     });
     expect(d.allow).toBe(false);
   });
-  it("without an origin hook, the request passes", () => {
-    expect(guardRequest(mk("GET", "/k/view"), {}, { methods: ALLOW }).allow).toBe(true);
+  it("a missing hook (untyped caller) refuses a state-changing method and a throwing-free safe one passes", () => {
+    const post = guardRequest(mk("POST", "/k/gate"), {}, { methods: ALLOW } as never);
+    expect(post.allow).toBe(false);
+    if (!post.allow) expect(post.response.status).toBe(403);
+    expect(guardRequest(mk("GET", "/k/view"), {}, { methods: ALLOW } as never).allow).toBe(true);
+  });
+  it("originAllowList refuses a missing or different Origin on POST, allows a listed one, and GET without Origin", () => {
+    const hook = originAllowList(["https://example.test"]);
+    const run = (m: string, origin?: string) =>
+      guardRequest(mk(m, "/k/gate", undefined, origin === undefined ? {} : { headers: { Origin: origin } }), {}, { methods: ALLOW, originCheck: hook }).allow;
+    expect(run("POST")).toBe(false);
+    expect(run("POST", "https://evil.test")).toBe(false);
+    expect(run("POST", "null")).toBe(false);
+    expect(run("POST", "https://example.test")).toBe(true);
+    expect(run("GET")).toBe(true);
+    expect(originAllowList([])(mk("POST", "/k/gate"))).toBe(false);
   });
   it("every refusal carries Cache-Control private, no-store", () => {
-    const a = guardRequest(mk("PURGE", "/k/x"), {}, { methods: ALLOW });
+    const a = guardRequest(mk("PURGE", "/k/x"), {}, { methods: ALLOW, originCheck: OK });
     const b = guardRequest(mk("POST", "/k/x"), {}, { methods: ALLOW, originCheck: () => false });
     for (const d of [a, b]) {
       expect(d.allow).toBe(false);

@@ -7,36 +7,50 @@
  * carries request-derived text.
  */
 
-export type BodyErrorCode = "too_large" | "bad_length" | "length_required" | "length_mismatch" | "aborted" | "bad_utf8";
+export type BodyErrorCode = "too_large" | "bad_length" | "length_required" | "length_mismatch" | "aborted" | "bad_utf8" | "bad_stream" | "timeout";
 
-export type BodyFailure = { ok: false; code: BodyErrorCode; status: 400 | 411 | 413 };
+export type BodyFailure = { ok: false; code: BodyErrorCode; status: 400 | 408 | 411 | 413 };
 export type BodyResult = { ok: true; bytes: Uint8Array } | BodyFailure;
 export type TextResult = { ok: true; text: string } | BodyFailure;
 
 export interface BodyOptions {
   /** Refuse with 411 when no Content-Length is sent. Default false: a streamed body is still capped. */
   requireLength?: boolean;
+  /** Deadline for the whole read in milliseconds. Default 10000, clamped to 10..60000. */
+  deadlineMs?: number;
 }
 
-const STATUS: Record<BodyErrorCode, 400 | 411 | 413> = {
+const DEFAULT_DEADLINE_MS = 10_000;
+/** More consecutive zero-length chunks than this is a hostile stream. */
+const MAX_EMPTY_CHUNKS = 8;
+
+const STATUS: Record<BodyErrorCode, 400 | 408 | 411 | 413> = {
   too_large: 413,
   bad_length: 400,
   length_required: 411,
   length_mismatch: 400,
   aborted: 400,
   bad_utf8: 400,
+  bad_stream: 400,
+  timeout: 408,
 };
 
 function fail(code: BodyErrorCode): BodyFailure {
   return { ok: false, code, status: STATUS[code] };
 }
 
-async function discard(body: ReadableStream<Uint8Array> | null): Promise<void> {
+/** Cancel without waiting: a cancel that never settles must not hold up the answer. */
+function discard(body: { cancel(): Promise<void> } | null): void {
   try {
-    await body?.cancel();
+    body?.cancel().catch(() => undefined);
   } catch {
     // The request is being refused anyway.
   }
+}
+
+function clampDeadline(v: unknown): number {
+  if (typeof v !== "number" || !Number.isFinite(v)) return DEFAULT_DEADLINE_MS;
+  return Math.min(60_000, Math.max(10, Math.floor(v)));
 }
 
 export async function readBoundedBody(request: Request, maxBytes: number, opts: BodyOptions = {}): Promise<BodyResult> {
@@ -49,16 +63,16 @@ export async function readBoundedBody(request: Request, maxBytes: number, opts: 
     let declared: number | null = null;
     if (declaredRaw !== null) {
       if (!/^\d{1,10}$/.test(declaredRaw)) {
-        await discard(body);
+        discard(body);
         return fail("bad_length");
       }
       declared = Number(declaredRaw);
       if (declared > cap) {
-        await discard(body);
+        discard(body);
         return fail("too_large");
       }
     } else if (opts.requireLength === true) {
-      await discard(body);
+      discard(body);
       return fail("length_required");
     }
 
@@ -67,26 +81,47 @@ export async function readBoundedBody(request: Request, maxBytes: number, opts: 
     }
 
     const reader = body.getReader();
+    const deadlineMs = clampDeadline(opts.deadlineMs);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const expired = new Promise<"timeout">((resolve) => {
+      timer = setTimeout(() => resolve("timeout"), deadlineMs);
+    });
     const chunks: Uint8Array[] = [];
     let total = 0;
+    let empties = 0;
     try {
       for (;;) {
-        const { done, value } = await reader.read();
+        const step = await Promise.race([reader.read(), expired]);
+        if (step === "timeout") {
+          discard(reader);
+          return fail("timeout");
+        }
+        const { done, value } = step;
         if (done) break;
         if (!(value instanceof Uint8Array)) {
-          await reader.cancel().catch(() => undefined);
+          discard(reader);
           return fail("aborted");
         }
+        if (value.byteLength === 0) {
+          if (++empties > MAX_EMPTY_CHUNKS) {
+            discard(reader);
+            return fail("bad_stream");
+          }
+          continue;
+        }
+        empties = 0;
         total += value.byteLength;
         if (total > cap) {
-          await reader.cancel().catch(() => undefined); // CONTROL:body-cap
+          discard(reader); // CONTROL:body-cap
           return fail("too_large");
         }
         chunks.push(value);
       }
     } catch {
-      await reader.cancel().catch(() => undefined);
+      discard(reader);
       return fail("aborted");
+    } finally {
+      clearTimeout(timer);
     }
 
     if (declared !== null && declared !== total) return fail("length_mismatch");
@@ -99,7 +134,7 @@ export async function readBoundedBody(request: Request, maxBytes: number, opts: 
     }
     return { ok: true, bytes };
   } catch {
-    await discard(body);
+    discard(body);
     return fail("aborted");
   }
 }

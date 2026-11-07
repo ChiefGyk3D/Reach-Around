@@ -21,11 +21,17 @@ export function killedResponse(): Response {
   });
 }
 
+const SAFE_METHODS: ReadonlySet<string> = new Set(["GET", "HEAD", "OPTIONS"]);
+
 export interface GuardOptions {
   /** Upper-case methods the kit accepts. */
   methods: readonly string[];
-  /** Return true to allow. Injected; absent means no origin check at this layer. A throw refuses. */
-  originCheck?: (request: Request) => boolean;
+  /**
+   * Required: omitting it is a compile error. Return true to allow. A throw,
+   * a non-true result, or (for an untyped caller) a missing hook refuses a
+   * state-changing method.
+   */
+  originCheck: (request: Request) => boolean;
 }
 
 export type GuardDecision = { allow: true } | { allow: false; response: Response };
@@ -45,18 +51,31 @@ function refuse(status: number, extra?: Record<string, string>): GuardDecision {
 export function guardRequest(request: Request, env: Pick<KitEnv, "KIT_KILL">, opts: GuardOptions): GuardDecision {
   if (isKitKilled(env)) return { allow: false, response: killedResponse() }; // CONTROL:kill-switch
 
-  if (!opts.methods.includes(request.method.toUpperCase())) {
+  const method = request.method.toUpperCase();
+  if (!opts.methods.includes(method)) {
     return refuse(405, { Allow: opts.methods.join(", ") });
   }
 
-  if (opts.originCheck) {
-    let ok = false;
-    try {
-      ok = opts.originCheck(request) === true; // CONTROL:origin
-    } catch {
-      ok = false;
-    }
-    if (!ok) return refuse(403);
+  let ok = false;
+  try {
+    ok = typeof opts.originCheck === "function" ? opts.originCheck(request) === true : SAFE_METHODS.has(method); // CONTROL:origin
+  } catch {
+    ok = false;
   }
+  if (!ok) return refuse(403);
   return { allow: true };
+}
+
+/**
+ * An origin hook for a fixed allow-list. A state-changing request must carry an
+ * Origin header that exactly matches one entry; a missing or "null" Origin is
+ * refused. Safe methods pass.
+ */
+export function originAllowList(allowed: readonly string[]): (request: Request) => boolean {
+  const set = new Set(allowed);
+  return (request) => {
+    if (SAFE_METHODS.has(request.method.toUpperCase())) return true;
+    const origin = request.headers.get("Origin");
+    return origin !== null && set.has(origin);
+  };
 }

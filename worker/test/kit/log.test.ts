@@ -119,6 +119,59 @@ describe("caps", () => {
   });
 });
 
+describe("suppressed calls do no work", () => {
+  it("after the minute cap, no validation lookup or serialization happens", () => {
+    const { logger } = make({ max: 2 });
+    logger.log("gate", "ok");
+    logger.log("gate", "ok");
+    const has = vi.spyOn(Set.prototype, "has");
+    const str = vi.spyOn(JSON, "stringify");
+    try {
+      for (let i = 0; i < 1000; i++) logger.log("x".repeat(10_000) as never, "y" as never, "z" as never, i);
+      expect(has.mock.calls.filter((c) => typeof c[0] === "string" && c[0].length > 16)).toEqual([]);
+      expect(str).not.toHaveBeenCalled();
+    } finally {
+      has.mockRestore();
+      str.mockRestore();
+    }
+  });
+  it("after the per-request cap, no validation lookup happens", () => {
+    const { logger } = make({ max: 600, perRequest: 1 });
+    const r = logger.forRequest();
+    r.log("gate", "ok");
+    const has = vi.spyOn(Set.prototype, "has");
+    try {
+      for (let i = 0; i < 1000; i++) r.log("gate", "ok");
+      expect(has).not.toHaveBeenCalled();
+    } finally {
+      has.mockRestore();
+    }
+  });
+  it("an over-long string is rejected by length before any set lookup", () => {
+    const { logger, lines } = make();
+    const has = vi.spyOn(Set.prototype, "has");
+    try {
+      logger.log("q".repeat(100_000) as never, "q".repeat(100_000) as never, "q".repeat(100_000) as never);
+      expect(has.mock.calls.filter((c) => typeof c[0] === "string" && c[0].length > 16)).toEqual([]);
+    } finally {
+      has.mockRestore();
+    }
+    expect(lines.length).toBe(1);
+  });
+  it("the shared logEvent stops after its per-minute cap without further sink calls", () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(Date.now() + 3_600_000);
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    try {
+      for (let i = 0; i < 5000; i++) logEvent("gate", "rejected", "origin");
+      expect(log.mock.calls.length).toBeLessThanOrEqual(61);
+    } finally {
+      vi.useRealTimers();
+      log.mockRestore();
+    }
+  });
+});
+
 describe("no personal data reaches the sink", () => {
   it("an Error carrying an address, token, IP and user agent produces no such text", () => {
     const { logger, lines } = make();
@@ -138,6 +191,8 @@ describe("no personal data reaches the sink", () => {
   });
   it("the default logger writes only through console.log, never error or warn", () => {
     const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(Date.now() + 7_200_000);
     const err = vi.spyOn(console, "error").mockImplementation(() => {});
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     try {
@@ -148,6 +203,7 @@ describe("no personal data reaches the sink", () => {
       expect(warn).not.toHaveBeenCalled();
       for (const c of log.mock.calls) for (const s of SENTINELS) expect(String(c[0])).not.toContain(s);
     } finally {
+      vi.useRealTimers();
       log.mockRestore();
       err.mockRestore();
       warn.mockRestore();

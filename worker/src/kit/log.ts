@@ -65,8 +65,11 @@ function clamp(v: unknown, lo: number, hi: number, fallback: number): number {
   return Math.min(hi, Math.max(lo, Math.floor(v)));
 }
 
+/** No enum value is longer than this; longer strings are rejected before any lookup. */
+const MAX_VALUE_LENGTH = 16;
+
 function pick<T extends string>(set: ReadonlySet<string>, v: unknown, fallback: T): T {
-  return typeof v === "string" && set.has(v) ? (v as T) : fallback;
+  return typeof v === "string" && v.length <= MAX_VALUE_LENGTH && set.has(v) ? (v as T) : fallback;
 }
 
 export interface LoggerOptions {
@@ -92,7 +95,7 @@ export interface Logger extends RequestLogger {
 
 export function createLogger(opts: LoggerOptions = {}): Logger {
   const sink = opts.sink ?? ((s: string) => console.log(s));
-  const now = opts.now ?? Date.now;
+  const now = opts.now ?? (() => Date.now());
   const cap = clamp(opts.maxPerMinute, 1, MAX_PER_MINUTE_CEILING, DEFAULT_LOG_MAX_PER_MINUTE);
   const perRequest = clamp(opts.maxPerRequest, 1, 16, DEFAULT_LOG_MAX_PER_REQUEST);
 
@@ -124,19 +127,21 @@ export function createLogger(opts: LoggerOptions = {}): Logger {
   }
 
   function write(event: unknown, outcome: unknown, reason: unknown, n: unknown): void {
+    // Cheap early exit first: once the minute cap is reached a call does no
+    // validation, lookup or string building.
+    roll();
+    if (emitted >= cap) {
+      dropped++; // CONTROL:log-cap
+      return;
+    }
     const e = pick<LogEvent>(EVENTS, event, "log");
     const o = pick<Outcome>(OUTCOMES, outcome, "failed");
     const line: Record<string, unknown> = { e, o };
     if (reason !== undefined && reason !== null) line.r = pick<Reason>(REASONS, reason, "other");
     if (COUNTED.has(e) && typeof n === "number" && Number.isSafeInteger(n) && n >= 0 && n <= MAX_COUNTER) line.n = n;
-    roll();
     if (ONCE_PER_MINUTE.has(e)) {
       if (onceSeen.has(e)) return;
       onceSeen.add(e);
-    }
-    if (emitted >= cap) {
-      dropped++; // CONTROL:log-cap
-      return;
     }
     emitted++;
     emit(line);

@@ -131,3 +131,54 @@ describe("readBoundedText", () => {
     expect(await readBoundedText(req(body), 1024)).toMatchObject({ ok: false, code: "too_large" });
   });
 });
+
+describe("readBoundedBody: stalls and empty chunks", () => {
+  it("many zero-length chunks are refused, not accumulated", async () => {
+    let n = 0;
+    const body = new ReadableStream<Uint8Array>({
+      pull(c) {
+        if (n++ < 100_000) c.enqueue(new Uint8Array(0));
+        else c.close();
+      },
+    });
+    const r = await readBoundedBody(req(body), 1024);
+    expect(r).toMatchObject({ ok: false, code: "bad_stream", status: 400 });
+    expect(n).toBeLessThan(100);
+  });
+  it("a few empty chunks between data are tolerated and dropped", async () => {
+    const parts = [new Uint8Array(0), new Uint8Array([1, 2]), new Uint8Array(0), new Uint8Array([3])];
+    const body = new ReadableStream<Uint8Array>({
+      pull(c) {
+        const p = parts.shift();
+        if (p) c.enqueue(p);
+        else c.close();
+      },
+    });
+    const r = await readBoundedBody(req(body), 1024);
+    expect(r.ok && Array.from(r.bytes)).toEqual([1, 2, 3]);
+  });
+  it("a pull that never settles returns timeout at the deadline", async () => {
+    const body = new ReadableStream<Uint8Array>({ pull: () => new Promise(() => undefined) }, { highWaterMark: 0 });
+    const r = await readBoundedBody(req(body), 1024, { deadlineMs: 30 });
+    expect(r).toMatchObject({ ok: false, code: "timeout", status: 408 });
+  });
+  it("a cancel that never settles does not hold up the refusal", async () => {
+    let sent = false;
+    const body = new ReadableStream<Uint8Array>({
+      pull(c) {
+        if (!sent) {
+          sent = true;
+          c.enqueue(new Uint8Array(2000));
+        }
+      },
+      cancel: () => new Promise(() => undefined),
+    });
+    const r = await readBoundedBody(req(body), 1024, { deadlineMs: 5000 });
+    expect(r).toMatchObject({ ok: false, code: "too_large", status: 413 });
+  });
+  it("a header refusal with a never-settling cancel still returns", async () => {
+    const body = new ReadableStream<Uint8Array>({ cancel: () => new Promise(() => undefined) });
+    const r = await readBoundedBody(req(body, { "Content-Length": "999999" }), 1024);
+    expect(r).toMatchObject({ ok: false, code: "too_large" });
+  });
+});
