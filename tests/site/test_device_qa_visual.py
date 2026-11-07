@@ -350,3 +350,94 @@ def test_long_paragraphs_balance_or_pretty(browser: Browser, base_url: str) -> N
         )
         assert wrap == expected, (selector, wrap)
     page.context.close()
+
+
+def _link(n: int) -> dict[str, Any]:
+    return {"id": f"l{n}", "title": f"Link {n}", "url": f"https://example.com/{n}"}
+
+
+_TEXT: dict[str, Any] = {"id": "t", "markdown": "Some text"}
+# name -> (blocks, which link cards (0-based) must span the row)
+_ROW_CASES: dict[str, tuple[list[dict[str, Any]], set[int]]] = {
+    "ll": ([_link(1), _link(2)], set()),
+    "lll": ([_link(1), _link(2), _link(3)], {2}),
+    "tll": ([_TEXT, _link(1), _link(2)], set()),
+    "ltl": ([_link(1), _TEXT, _link(2)], {0, 1}),
+    "tlll": ([_TEXT, _link(1), _link(2), _link(3)], {2}),
+    "l": ([_link(1)], {0}),
+}
+
+
+@pytest.fixture(scope="module")
+def cases_url(tmp_path_factory: pytest.TempPathFactory) -> Iterator[str]:
+    tabs: list[dict[str, Any]] = [
+        {"id": "home", "title": "Home", "blocks": [_TEXT]},
+    ]
+    for name, (blocks, _) in _ROW_CASES.items():
+        unique = [{**b, "id": f"{name}-{b['id']}"} for b in blocks]
+        tabs.append({"id": name, "title": name.upper(), "blocks": unique})
+    for n in (2, 3):
+        tabs.append(
+            {
+                "id": f"sec{n}",
+                "title": f"Sec{n}",
+                "blocks": [
+                    {
+                        "id": f"s{n}",
+                        "title": "Group",
+                        "collapsed": False,
+                        "links": [
+                            {**_link(i), "id": f"s{n}-{i}"} for i in range(1, n + 1)
+                        ],
+                    }
+                ],
+            }
+        )
+    config = SiteConfig.model_validate(
+        {
+            "version": 1,
+            "creator": {"name": "Example Creator", "header": "centered"},
+            "tabs": tabs,
+        }
+    )
+    out = tmp_path_factory.mktemp("cases") / "out"
+    build_site(config, out, today=TODAY)
+    server = ThreadingHTTPServer(
+        ("127.0.0.1", 0), functools.partial(_Quiet, directory=str(out))
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{server.server_address[1]}/"
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join()
+
+
+@pytest.mark.parametrize("name", list(_ROW_CASES))
+def test_only_a_card_alone_in_its_row_spans(
+    browser: Browser, cases_url: str, name: str
+) -> None:
+    _, spans = _ROW_CASES[name]
+    page = _open(browser, cases_url + name + "/", 1440)
+    inner = _inner_width(page, ".blocks")
+    cards = page.locator(".blocks > .block-link a.link")
+    assert cards.count() == len([b for b in _ROW_CASES[name][0] if "title" in b])
+    for i in range(cards.count()):
+        box = cards.nth(i).bounding_box()
+        assert box is not None
+        assert (box["width"] >= inner - 1) == (i in spans), (name, i, box, inner)
+    page.context.close()
+
+
+@pytest.mark.parametrize(("name", "spans"), [("sec2", False), ("sec3", True)])
+def test_section_links_span_only_when_last_is_alone(
+    browser: Browser, cases_url: str, name: str, spans: bool
+) -> None:
+    page = _open(browser, cases_url + name + "/", 1440)
+    inner = _inner_width(page, ".section-links")
+    last = page.locator(".section-links > li a.link").last.bounding_box()
+    assert last is not None
+    assert (last["width"] >= inner - 1) == spans, (last, inner)
+    page.context.close()
