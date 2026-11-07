@@ -718,7 +718,9 @@ main > footer { margin-top: var(--ra-space-5); color: var(--ra-color-muted); fon
   main { max-width: max(var(--ra-column-width), var(--ra-column-tablet)); }
   .site-header { padding-top: var(--ra-space-6); }
   .tabs a { padding: 0 var(--ra-space-5); }
-  /* The centered header lays the avatar beside the name and icons. */
+  /* The centered header lays the avatar beside the name and icons. Without an
+     avatar it stays the centered column, so these child rules need the guard
+     (align-self would otherwise beat the column's align-items, #236). */
   .header-centered:has(> .avatar) {
     display: grid;
     grid-template-columns: auto minmax(0, 1fr);
@@ -729,9 +731,9 @@ main > footer { margin-top: var(--ra-space-5); color: var(--ra-color-muted); fon
     row-gap: var(--ra-space-2);
     text-align: left;
   }
-  .header-centered > .avatar { grid-area: avatar; align-self: center; }
-  .header-centered > h1 { grid-area: name; align-self: end; }
-  .header-centered > .socials {
+  .header-centered:has(> .avatar) > .avatar { grid-area: avatar; align-self: center; }
+  .header-centered:has(> .avatar) > h1 { grid-area: name; align-self: end; }
+  .header-centered:has(> .avatar) > .socials {
     grid-area: socials;
     align-self: start;
     justify-content: flex-start;
