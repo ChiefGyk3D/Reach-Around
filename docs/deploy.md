@@ -510,6 +510,16 @@ if one is required (section 2); remove the required reviewer there if the test
 site should update unattended. A source that fails keeps its old number and
 shows as a warning; the deployment continues.
 
+## Post-deploy smoke and the no-address dump check
+
+Two read-only checks you run by hand against a deployed site (issue #272). Neither needs a credential and neither is run by the workflow yet.
+
+`bash scripts/smoke.sh https://links.example.test` asks the site for its page and the Worker's write-only routes. It checks that the page answers 200 as HTML with a Content-Security-Policy and `nosniff`; that `POST /e/c/<unknown id>`, `POST /e/v/<unknown id>` and `GET /e/v/<unknown id>` each answer an empty 204 (an unknown id records nothing); that no response sets a cookie; and that no response echoes a request header back (the probe header carries `198.51.100.77`, a documentation address). Every check runs even after a failure. Exit 0 passes, 1 fails, 2 is bad usage. `--timeout SECONDS` (default 15) bounds each request. Point it at the test site, not at production.
+
+`python3 -I scripts/check-dump.py dump.sql` scans a SQL dump of the D1 database (for example `npx wrangler d1 export reach-around-clicks --remote --output dump.sql`, run by you with your own login) and fails on an IPv4 or IPv6 address, a user-agent string, a column named like an address, user agent or referrer, or any `--forbid VALUE` you planted. It prints the line number and the kind, never the value, and it fails on a dump with no `INSERT` row (a truncated export must not read as clean; `--allow-empty` overrides). The same rule runs in the Worker test suite against a database filled through the click and view routes and the rollup (`worker/test/dump_no_raw_ip.test.ts`).
+
+Wiring into `deploy-test.yml` is deliberately not done: the deploy job runs under `harden-runner` in block mode with a fixed allow-list that cannot name the site host, and it holds the Cloudflare token. A smoke step there needs the host added to the allow-list and the token blanked for that step (as the purge step does).
+
 ## Egress control
 
 The jobs start with `step-security/harden-runner`, followed by an egress
