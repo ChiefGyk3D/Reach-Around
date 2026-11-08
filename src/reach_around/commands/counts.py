@@ -16,7 +16,7 @@ from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
 from pathlib import Path
 
-from reach_around.config import ConfigError, load_site_config
+from reach_around.config import ConfigError, SiteConfig, load_site_config
 from reach_around.config.numbers import load_numbers
 from reach_around.counts.files import (
     LOCK_WAIT_SECONDS,
@@ -26,7 +26,15 @@ from reach_around.counts.files import (
     Paths,
     dump_numbers,
     plan_paths,
+    utc_stamp,
     write_atomic,
+)
+from reach_around.counts.history import (
+    HistoryError,
+    Record,
+    append_records,
+    new_run_id,
+    read_history,
 )
 from reach_around.counts.refresh import (
     SUSPECT_KINDS,
@@ -38,6 +46,9 @@ from reach_around.counts.refresh import (
     select,
 )
 from reach_around.net.egress import Transport
+
+# What each kind of source counts, as named in the history file.
+HISTORY_METRIC = {"youtube": "subscribers", "discord": "members", "matrix": "members"}
 
 EXIT_OK = 0
 EXIT_WRITE = 1
@@ -79,6 +90,7 @@ def run_refresh(
                 f"--accept-drop names no configured source: {', '.join(unknown)}"
             )
         paths = plan_paths(config_path, out)
+        history = history_path(config, config_path)
     except (ConfigError, ValueError, OSError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return EXIT_USAGE
@@ -103,6 +115,7 @@ def run_refresh(
                 os.environ if env is None else env,
                 transport,
                 now,
+                history,
             )
     except LockBusy:
         print(
@@ -130,6 +143,7 @@ def _cycle(
     environment: Mapping[str, str],
     transport: Transport | None,
     now: Callable[[], datetime],
+    history: Path | None = None,
 ) -> int:
     try:
         previous = (
@@ -139,6 +153,7 @@ def _cycle(
         print(f"error: {exc}", file=sys.stderr)
         return EXIT_USAGE
     stamp = now()
+    run_id = new_run_id(stamp)
     numbers, outcomes = refresh(
         sources,
         previous,
@@ -186,8 +201,144 @@ def _cycle(
                 pass  # the numbers file is untouched either way
             _write_failed(exc)
             return EXIT_WRITE
+    if history is not None and changed:
+        # Only values that were fetched and accepted. A failed or skipped source
+        # leaves a gap; it is never written as zero.
+        fetched = [
+            Record(
+                platform=outcome.platform,
+                metric=HISTORY_METRIC.get(outcome.kind, "followers"),
+                value=outcome.count,
+                as_of_utc=utc_stamp(stamp),
+                source="api",
+                run_id=run_id,
+            )
+            for outcome in outcomes
+            if outcome.status == "ok" and outcome.count is not None
+        ]
+        try:
+            append_records(history, fetched, now=stamp)
+        except HistoryError as exc:
+            print(f"error: history not written: {exc}", file=sys.stderr)
+            return EXIT_WRITE
     failed = any(outcome.status == "error" for outcome in outcomes)
     return EXIT_SOURCE_FAILED if failed else EXIT_OK
+
+
+def history_path(config: SiteConfig, config_path: Path) -> Path | None:
+    """The history file named in the config (relative to it), or ``None``."""
+    if config.numbers is None or config.numbers.history_file is None:
+        return None
+    named = Path(config.numbers.history_file)
+    return named if named.is_absolute() else config_path.parent / named
+
+
+def _history_target(args: argparse.Namespace) -> Path:
+    if args.file is not None:
+        return Path(args.file)
+    config = load_site_config(args.config)
+    target = history_path(config, args.config)
+    if target is None:
+        raise ValueError("the config has no numbers.history_file; the store is off")
+    return target
+
+
+def _as_of(text: str) -> str:
+    return f"{text}T00:00:00Z" if len(text) == 10 else text
+
+
+def run_history_add(args: argparse.Namespace) -> int:
+    try:
+        target = _history_target(args)
+    except (ConfigError, ValueError, OSError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return EXIT_USAGE
+    record = Record(
+        platform=args.platform,
+        metric=args.metric,
+        value=args.value,
+        as_of_utc=_as_of(args.as_of),
+        source=args.source,
+        run_id=new_run_id(datetime.now(UTC)),
+        note=args.note,
+        era=args.era,
+        type="correction" if args.correction else "record",
+    )
+    try:
+        append_records(target, [record])
+    except HistoryError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return EXIT_WRITE
+    print(f"{args.platform} {args.metric}: appended {args.value}")
+    return EXIT_OK
+
+
+def run_history_verify(args: argparse.Namespace) -> int:
+    try:
+        target = _history_target(args)
+    except (ConfigError, ValueError, OSError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return EXIT_USAGE
+    try:
+        history = read_history(target)
+    except HistoryError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return EXIT_WRITE
+    print(f"ok: {len(history.records)} records, hash chain intact")
+    return EXIT_OK
+
+
+def _dispatch(args: argparse.Namespace) -> int:
+    if args.counts_command == "history-add":
+        return run_history_add(args)
+    if args.counts_command == "history-verify":
+        return run_history_verify(args)
+    return _run(args)
+
+
+def _where(parser: argparse.ArgumentParser) -> None:
+    group = parser.add_mutually_exclusive_group(required=True)
+    group.add_argument(
+        "--config", type=Path, help="site config naming numbers.history_file"
+    )
+    group.add_argument("--file", type=Path, help="the history file itself")
+
+
+def _register_history(
+    actions: argparse._SubParsersAction[argparse.ArgumentParser],
+) -> None:
+    add = actions.add_parser(
+        "history-add",
+        help="append one hand-kept value to the history file",
+        description="Append a value you read yourself (a LinkedIn or Kick follower "
+        "count, say). Exit 0 appended, 1 refused (duplicate, damaged file, ...), "
+        "2 usage or config error. Earlier lines are never changed.",
+    )
+    _where(add)
+    add.add_argument("--platform", required=True)
+    add.add_argument("--metric", default="followers")
+    add.add_argument("--value", type=int, required=True)
+    add.add_argument(
+        "--as-of",
+        required=True,
+        help="UTC time YYYY-MM-DDTHH:MM:SSZ, or a UTC date YYYY-MM-DD",
+    )
+    add.add_argument("--source", choices=("hand_kept", "api"), default="hand_kept")
+    add.add_argument("--note")
+    add.add_argument("--era", help="label a definition change, e.g. a vendor rule")
+    add.add_argument(
+        "--correction",
+        action="store_true",
+        help="correct an earlier record with the same platform, metric, time and "
+        "source (needs --note); the original line stays",
+    )
+    verify = actions.add_parser(
+        "history-verify",
+        help="check the whole history file",
+        description="Exit 0 when every line parses and the hash chain is intact, "
+        "1 when the file is damaged (including a truncated last line).",
+    )
+    _where(verify)
 
 
 def _run(args: argparse.Namespace) -> int:
@@ -242,4 +393,5 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
         action="store_true",
         help="print hosts and kinds that would be fetched; fetch and write nothing",
     )
-    counts.set_defaults(func=_run)
+    _register_history(actions)
+    counts.set_defaults(func=_dispatch)
