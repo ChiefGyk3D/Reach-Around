@@ -114,6 +114,25 @@ crons = ["5 * * * *"]
 # D1_DAILY_WRITE_QUOTA = "100000"  # worst-case daily writes must fit under this
 # LEAD_RETENTION_DAYS = "30"       # days a lead is kept (1 to 365); invalid falls back to 30
 
+# Media kit gate (POST /k/gate, GET /k/view; docs/kit.md, docs/deploy.md). Placeholders
+# only; nothing here ships, and none of these is deployed by this file.
+# [[kv_namespaces]]
+# binding = "KIT"                  # gated page at key kit/v1
+# id = "00000000000000000000000000000000" # placeholder, not a real id
+# [[ratelimits]]
+# name = "GATE_LIMITER"
+# namespace_id = "1003" # placeholder, not a real id
+#   [ratelimits.simple]
+#   limit = 5
+#   period = 60
+# KIT_KILL = "1"                   # strict: 1/true/on/yes closes /k/; 0/false/off/no or unset leaves it open
+# KIT_HOST = "kit.example.test"    # only when the form page host differs from SITE_HOST
+# ALERT_MATRIX_HOMESERVER = "https://matrix.example.test"
+# ALERT_MATRIX_ROOM_ID = "!room:matrix.example.test"
+# SECRETS, by name only, stored with the wrangler secret command (never in this file):
+#   TOKEN_HMAC_KEY, TURNSTILE_SECRET, ALERT_DISCORD_WEBHOOK, ALERT_MATRIX_ACCESS_TOKEN
+# Route: add "<kit host>/k/*" next to the /e/* route below.
+
 # The click pings use the relative path /e/c/<id>, so the browser sends them to
 # the site's own host. Route the Worker there in your deployment (placeholder
 # host; replace it with your site host and zone):

@@ -222,6 +222,65 @@ prints them as `warning: ...` on standard error and the build still succeeds.
 A kit with `features.kit_gate: true` but nothing gated warns that no form is
 built, and a gated kit with no `turnstile_site_key` warns about the empty slot.
 
+## The gate route and the gated page (Worker)
+
+The Worker (`worker/src/kit/gate.ts`) serves two routes under `/k/`; every other
+`/k/` path is an empty 404, and every path outside `/k/`, `/e/c/`, `/e/v/` and
+`/e/live` is still the Worker's empty 204.
+
+| Request | Answer |
+| --- | --- |
+| `POST /k/gate` (form: `email`, `cf-turnstile-response`, honeypot `website`) | success: `303 /k/view` and the `__Host-ra_kit` cookie. **Any** failure: `303 /kit/retry/`, empty body, no cookie |
+| `GET /k/view` (and `HEAD`) | a valid cookie: `200` with the gated page. No or bad cookie: `303 /kit/`. A missing page: `404` |
+| `KIT_KILL` engaged | every `/k/` route and method: the fixed `503` page, no database, KV or network call |
+
+Every response carries `Cache-Control: private, no-store`.
+
+**How the unlock proof reaches a static page.** The gated page is not a static
+file on the public host. The deploy uploads `kit.html` from `--gated-out` to the
+Workers KV key `kit/v1` (binding `KIT`); `GET /k/view` reads it and returns it
+only for a valid cookie. The cookie is `HttpOnly`, `Secure`, `SameSite=Lax`,
+host-only, set by `/k/gate`, and never appears in a URL, a body or a log. The
+public `/kit/` page needs no script for this: the form posts to the Worker and
+the browser follows the 303. The Worker route must cover `/k/*` on the same host
+as the kit page (see `docs/deploy.md`).
+
+**Guard order** (cheap first, a refusal costs nothing): kill switch, route and
+method, environment and bindings, exact `Origin`, bot user agent, exact content
+type and a declared length within 4096 bytes, the per-client minute limiter, the
+combined daily D1 write budget and the hourly route budget (the first D1 write),
+the bounded body read with honeypot and email normalization, Turnstile (the
+hostname and the `gate` action must match), the lead insert (lead cap), the
+unlock event, the cookie. The owner alert is sent in the background for a new
+address only.
+
+**Unverified address.** The gate proves a client passed a bot challenge and typed
+an address. It does not prove ownership of the address. Put only material you
+are willing to show to anyone who passes the challenge on the gated page. The
+emailed link that closes this is v1.1.
+
+**Wiring the form.** The builder still posts to the placeholder `/kit/retry/`
+(`GATE_ACTION` in `src/reach_around/site/kit.py`). It has no configured action.
+After the Worker is deployed with its `/k/*` route, the one-line follow-up is:
+change `GATE_ACTION` to `"/k/gate"` and update the expectations that name it
+(`tests/site/test_kit_build.py`) and the two golden pages
+(`tests/site/golden_kit/public/kit/index.html` and `.../kit/retry/index.html`).
+Do not change it before the route is live, or the form posts to a path that
+Pages does not serve.
+
+### Owner alerts
+
+`worker/src/kit/alert.ts` sends a short notice to a Discord webhook and/or a
+Matrix room. It is fire-and-forget (`ctx.waitUntil`): an alert never delays or
+fails a visitor. The text is fixed (it never holds an address, id, hash, IP,
+token or country). Each alert uses one unit of `DAILY_ALERT_BUDGET`; when the
+budget is spent, the first refused alert of the UTC day sends one "daily alert
+limit reached" notice and the rest are dropped. With no sink configured nothing
+is sent or counted. Kinds today: a new lead, and the budget warning. The
+Discord and Matrix request shapes are written from memory and marked INFERRED in
+the code until the smoke test confirms a real delivery. Email (Mailgun) is added
+later behind the same function.
+
 ## Lead retention and deletion
 
 The Worker deletes every lead (the address, its country code and its kit

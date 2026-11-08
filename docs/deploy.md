@@ -286,6 +286,42 @@ That is 78.1 percent of the default quota of 100000. Raising a budget raises thi
 
 **For the route code that uses these limits:** run the per-client throttle (`checkIpMinute`) before taking from a global route counter, so one client cannot spend the shared budget. A request refused by the throttle must not touch a counter.
 
+## Kit gate: bindings, variables and secrets (names only)
+
+Nothing is deployed by this repository's change; this table is what the owner
+sets up. Values are never written in a file. Secrets are stored with the
+`wrangler secret` command or the repository's Doppler path, never in
+`wrangler.toml`.
+
+| Name | Kind | Meaning |
+|---|---|---|
+| `KIT` | KV binding | Holds the gated page at key `kit/v1` (uploaded from `--gated-out`, never by the Pages deploy) |
+| `GATE_LIMITER` | rate limit binding | Per-client burst limit for `POST /k/gate` (for example 5 per 60 seconds) |
+| `TOKEN_HMAC_KEY` | secret | Signs unlock cookies; at least 32 bytes |
+| `TOKEN_HMAC_KEY_PREVIOUS` | secret, optional | The key being rotated out; verifies only |
+| `TURNSTILE_SECRET` | secret | Turnstile server-side check |
+| `VIEW_HASH_SECRET` | secret, optional here | Keyed hash for the limiter key (shared with the click route) |
+| `KIT_KILL` | variable | `1`/`true`/`on`/`yes` closes every `/k/` route; `0`/`false`/`off`/`no` or unset leaves them open; anything else counts as closed |
+| `KIT_HOST` | variable, optional | Host of the page that carries the form, when it differs from `SITE_HOST`; checked against `Origin` and the Turnstile answer |
+| `TOKEN_TTL_SECONDS` | variable, optional | Cookie lifetime, 3600 to 604800, default 86400 |
+| `ALERT_DISCORD_WEBHOOK` | secret, optional | The Discord webhook URL for owner alerts |
+| `ALERT_MATRIX_HOMESERVER` | variable, optional | `https://` origin of the Matrix server (no port or path) |
+| `ALERT_MATRIX_ROOM_ID` | variable, optional | Room id, `!opaque:server` |
+| `ALERT_MATRIX_ACCESS_TOKEN` | secret, optional | Access token of the posting account |
+
+The limits in the previous section also apply (`ROUTE_BUDGET_GATE`,
+`DAILY_ALERT_BUDGET`, `MAX_LEADS` and the rest). The Worker route must include
+`/k/*` on the kit host (`<host>/k/*`). A missing or invalid binding, secret or
+limit makes the gate answer with the retry redirect for everyone (fail closed).
+One alert sink is enough; with neither configured, no alert is sent. The alert
+path adds at most one extra D1 write a day (the once-a-day budget warning
+counter).
+
+**Not verified until a real deploy:** the Discord and Matrix request shapes, the
+Turnstile widget on the kit page (the page does not load its script yet), the
+CSP `connect-src` need, the KV upload step in the deploy workflow (it does not
+exist yet), D1 write counts, and the "alert within a minute" smoke test.
+
 ## Secrets and Doppler
 
 Project secrets (this Cloudflare token, later the Mailgun and collector
