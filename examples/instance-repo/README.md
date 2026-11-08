@@ -175,9 +175,10 @@ secrets, the default that needs nothing else. The engine's own test deployment
 (`.github/workflows/deploy-test.yml`, documented in the engine's
 `docs/deploy.md`, "Daily follower counts (test deployment)") can also fetch them
 from Doppler over GitHub OIDC, with no long-lived token, when you set the
-repository variables `DOPPLER_IDENTITY_ID`, `DOPPLER_COUNTS_PROJECT` and
-`DOPPLER_COUNTS_CONFIG` (a dedicated project for social-media credentials; no
-default). With those unset it falls back to GitHub secrets. In both cases the
+repository variables `DOPPLER_COUNTS_IDENTITY_ID` (an identity made for the
+counts job alone, not the deploy job's `DOPPLER_IDENTITY_ID`),
+`DOPPLER_COUNTS_PROJECT` and `DOPPLER_COUNTS_CONFIG` (a dedicated project for
+social-media credentials; no default). With those unset it falls back to GitHub secrets. In both cases the
 keys reach one step only.
 
 Sources that need no key (Bluesky, Mastodon-compatible servers, GitHub, Discord

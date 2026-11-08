@@ -257,10 +257,16 @@ build, which reads it with `--numbers`. Every deployment, manual or scheduled,
 therefore carries fresh numbers. The job can only read the repository; the keys
 reach one step only (`Refresh the counts`), after every install step.
 
-What it needs from `examples/instance/site.yaml`: a `numbers:` block naming the
-sources, and platform items for the page. Neither exists in the shipped example,
-so until the maintainer adds them (with the real public handles) the job only
-passes through a hand-kept `examples/instance/numbers.json`, if there is one.
+**As shipped, this refreshes nothing.** `examples/instance/site.yaml` has no
+`numbers:` block and no platform items, and there is no
+`examples/instance/numbers.json`. Until the owner adds them, the job writes an
+empty numbers file and the page shows no follower statistic. The owner must add:
+the `numbers:` block naming each source with its real public handle, the
+platform items that display the numbers, and a hand-kept
+`examples/instance/numbers.json` for platforms with no source. This repository
+does not invent those handles.
+What the job reads from `examples/instance/site.yaml`: the `numbers:` block.
+With no block it only passes through the hand-kept file, if there is one.
 Hand-kept platforms (TikTok, Instagram, X, Threads, LinkedIn, Kick: the engine
 has no source for them) stay in that file with their `as_of` date; the run
 prints a warning for every entry older than 30 days.
@@ -293,11 +299,31 @@ Identity for this job, never reuse the one the `ci` project uses. The `counts`
 job runs in its own GitHub environment, `counts-secrets`. Create it under
 Settings > Environments, restrict its deployment branches to `main`, and
 optionally add a required reviewer (a scheduled run then waits for approval).
-Bind the identity's OIDC trust to that environment's subject alone,
+Set the identity's subject to the environment form,
 `repo:OWNER/REPO:environment:counts-secrets` (in the immutable form described
-above if your repository uses it), so no other job or workflow, on `main` or
-elsewhere, can assume it. Give it read access to the dedicated social-media
-project and config only. The job that can request the
+above if your repository uses it). **That subject does not name a workflow.**
+Any workflow in this repository that requests `id-token: write` and targets the
+`counts-secrets` environment on an allowed branch gets the same subject and can
+assume the identity.
+
+Doppler's Service Account Identities page (docs.doppler.com, read 2026-11-07)
+says an identity validates every claim rule you configure, that custom claims
+can be added for a provider, and that each claim can list several accepted
+values. GitHub's token also carries a `job_workflow_ref` claim (the workflow
+file and ref). Adding it as a custom claim, with the value
+`OWNER/REPO/.github/workflows/deploy-test.yml@refs/heads/main`, would narrow the
+identity to this workflow file. Verified: Doppler supports custom claim rules.
+Inferred, not tested here: that `job_workflow_ref` is accepted and matches. Try
+it and confirm a run still authenticates before relying on it.
+
+Even with that claim, the real limit is write access to `main`: whoever can
+change the workflow on `main` can change what the `counts` job does. What limits
+that: the `counts-secrets` environment restricted to `main`; a required reviewer
+set by the owner on that environment; CODEOWNERS covering `.github/workflows/`
+with branch protection requiring code-owner review, so a new workflow that can
+target the environment needs review; and the identity's read access limited to
+the dedicated social-media project and config. Those are owner settings, not
+something this repository enforces. The job that can request the
 token (`counts`) installs wheels only (`--no-index --only-binary`); the job that
 builds from source (`wheels`) has no `id-token` permission and no keys. The one
 step that holds the keys is dependency code that runs with them, so the Doppler

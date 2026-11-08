@@ -37,7 +37,7 @@ import re
 import shutil
 import subprocess
 import sys
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import yaml
@@ -80,7 +80,7 @@ def stale_warnings(path: Path, now: datetime) -> list[str]:
     odd = 0
     for key, entry in sorted(platforms.items()):
         when = parse_when(entry.get("as_of")) if isinstance(entry, dict) else None
-        if when is None or (now - when).days <= STALE_DAYS:
+        if when is None or now - when <= timedelta(days=STALE_DAYS):
             continue
         if not SLUG.match(str(key)):
             odd += 1

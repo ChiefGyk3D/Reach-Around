@@ -121,9 +121,10 @@ jobs:
       contents: read # the keys are in this job, so it cannot write
       id-token: write # Doppler OIDC (optional); never a write to the repository
     # A protected environment of its own (restrict it to the main branch; a
-    # required reviewer is optional, docs/deploy.md). The Doppler identity
-    # trusts this environment's subject only, so no other job or workflow can
-    # assume it. No job-level env, on purpose.
+    # required reviewer is optional, docs/deploy.md). The environment subject
+    # does not name a workflow, so docs/deploy.md also covers the workflow
+    # claim and the review settings that limit who can target it. No
+    # job-level env, on purpose.
     environment: counts-secrets
     steps:
       - uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43 # v2.22.3

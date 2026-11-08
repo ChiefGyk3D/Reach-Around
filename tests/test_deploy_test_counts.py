@@ -597,3 +597,45 @@ def test_the_engine_wheel_is_hash_checked_before_it_is_installed() -> None:
     assert len(engine) == 1
     assert "--no-index" in engine[0] and "--find-links" not in engine[0]
     assert names.index("Install the engine from wheels") < names.index(REFRESH_STEP)
+
+
+def load_script() -> Any:
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("test_counts_script", SCRIPT)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+@pytest.mark.parametrize(
+    ("age", "warned"),
+    [
+        (timedelta(days=30), False),
+        (timedelta(days=30, seconds=1), True),
+        (timedelta(days=30, hours=1), True),
+        (timedelta(days=29, hours=23), False),
+    ],
+)
+def test_the_stale_threshold_is_over_30_days_not_31_whole_days(
+    tmp_path: Path, age: timedelta, warned: bool
+) -> None:
+    script = load_script()
+    now = datetime(2026, 6, 1, 12, 0, 0, tzinfo=UTC)
+    when = (now - age).strftime("%Y-%m-%dT%H:%M:%SZ")
+    path = tmp_path / "numbers.json"
+    path.write_text(
+        json.dumps({"version": 1, "platforms": {"tiktok": {"as_of": when}}}),
+        encoding="utf-8",
+    )
+    assert bool(script.stale_warnings(path, now)) is warned
+
+
+def test_the_docs_name_the_counts_identity_variable_and_claim_no_more() -> None:
+    readme = (ROOT / "examples" / "instance-repo" / "README.md").read_text("utf-8")
+    assert "DOPPLER_COUNTS_IDENTITY_ID" in readme
+    docs = (ROOT / "docs" / "deploy.md").read_text("utf-8")
+    assert "does not name a workflow" in docs
+    assert "no other job or workflow, on `main` or" not in docs
+    assert "As shipped, this refreshes nothing" in docs
