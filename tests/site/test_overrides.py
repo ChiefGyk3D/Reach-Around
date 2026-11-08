@@ -399,6 +399,7 @@ def running(tmp_path: Path, overrides: Path) -> Iterator[Preview]:
     config = tmp_path / "site.yaml"
     config.write_text(EXAMPLE.read_text())
     shutil.copytree(EXAMPLE.parent / "media", tmp_path / "media")
+    shutil.copytree(EXAMPLE.parent / "fonts", tmp_path / "fonts")
     (overrides / "templates" / "_footer.html").write_text("<footer>PREVIEWED</footer>")
     preview = Preview(config, "127.0.0.1", 0, overrides=overrides)
     thread = threading.Thread(target=preview.serve_forever, daemon=True)

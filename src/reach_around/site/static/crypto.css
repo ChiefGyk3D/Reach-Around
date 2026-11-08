@@ -122,6 +122,12 @@
    its QR open does not stretch its neighbor. Same breakpoint as site.css. */
 @media (min-width: 56rem) {
   .crypto-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start; }
+  /* An odd last card is centered at one column width. */
+  .crypto-list > .crypto-card:last-child:nth-child(odd) {
+    grid-column: 1 / -1;
+    justify-self: center;
+    width: calc((100% - var(--ra-space-3)) / 2);
+  }
 }
 
 @media print {

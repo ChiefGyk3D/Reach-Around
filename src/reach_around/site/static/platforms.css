@@ -107,6 +107,12 @@
    keep their own height. */
 @media (min-width: 56rem) {
   .platforms-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  /* An odd last row is centered at one column width. */
+  .platforms-list > .platform:last-child:nth-child(odd) {
+    grid-column: 1 / -1;
+    justify-self: center;
+    width: calc((100% - var(--ra-space-3)) / 2);
+  }
 }
 
 /* Hover only where there is a pointer that can hover, so it never sticks. */

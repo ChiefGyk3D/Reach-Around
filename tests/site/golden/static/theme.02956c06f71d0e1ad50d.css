@@ -1,0 +1,22 @@
+@font-face {
+  font-family: "ra-heading";
+  src: url("../fonts/orbitron-wght.f42db2dd16e642258e35.ttf");
+  font-display: swap;
+}
+:root {
+  --ra-color-bg: #0F0F0F;
+  --ra-color-text: #F0F0F0;
+  --ra-color-accent: #FBB03B;
+  --ra-color-on-accent: #1A1A1A;
+  --ra-color-surface: #202020;
+  --ra-color-border: #3A3530;
+  --ra-color-muted: #B5ADA2;
+  --ra-font-heading: "ra-heading", var(--ra-font-body);
+  --ra-mascot-image: url("../media/mascot.73e9847dc87705f6e9f1.svg");
+  --ra-mascot-opacity: 0.12;
+  --ra-mascot-size: 40rem;
+  --ra-mascot-position: center bottom;
+  --ra-radius: 0.25rem;
+  --ra-button-radius: 0;
+  color-scheme: dark;
+}
