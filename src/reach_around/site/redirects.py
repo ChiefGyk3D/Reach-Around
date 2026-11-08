@@ -5,9 +5,9 @@ One rule today: the old ``/socials`` page, with and without the trailing slash,
 goes to a root-relative target. Each line is ``source destination status``, the
 format Cloudflare Pages documents for ``_redirects`` (checked against the Pages
 docs, see ``docs/deploy.md``, "Redirecting the old /socials path"). The file
-lists the two source paths with no query part, so the build itself never drops a query string; whether the host
-carries the visitor's query string to the destination is a host behavior that a
-live check must confirm.
+lists the two source paths with no query part, so the build itself never drops a
+query string; whether the host carries the visitor's query string to the
+destination is a host behavior that a live check must confirm.
 """
 
 from __future__ import annotations
