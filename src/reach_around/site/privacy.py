@@ -30,8 +30,10 @@ def collected_items(config: SiteConfig) -> list[Disclosure]:
         items.append(
             Disclosure(
                 what=(
-                    "A count of link clicks: which link was clicked and the "
-                    "visitor's country only, with no IP address stored."
+                    "A count of link clicks: which link was clicked, the "
+                    "visitor's country, and the short source label the link "
+                    "you came in on carried (from a fixed list), with the "
+                    "time rounded to the hour, with no IP address stored."
                 ),
                 why="To see which links are useful. The counts are anonymous.",
                 kept=f"{config.privacy.retention_days} days",

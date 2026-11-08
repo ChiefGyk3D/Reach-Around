@@ -102,3 +102,12 @@ def test_ping_paths_use_only_ids_from_the_manifest(tmp_path: Path) -> None:
     for ping in pings:
         match = re.fullmatch(r"/e/c/([a-z0-9-]+)", ping)
         assert match and match.group(1) in ids
+
+
+def test_click_script_sends_a_source_only_when_exactly_one_s_value() -> None:
+    from pathlib import Path
+
+    import reach_around
+
+    js = (Path(reach_around.__file__).parent / "site/static/click.js").read_text()
+    assert 'getAll("s")' in js and "all.length !== 1" in js

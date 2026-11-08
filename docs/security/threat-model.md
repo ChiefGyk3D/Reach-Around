@@ -472,7 +472,7 @@ Verification:
 
 #### T-17 additions: analytics data (B1 to B5)
 
-Status: **[shipped]** except B2's local-copy parts, which wait for the local pull (**[planned]**). Provisional defaults: hour-rounded timestamps (D-A1), 7 days raw and 90 days aggregates (D-A2), raw `net` cleared once counted (D-A7), no source on click rows (D-A5).
+Status: **[shipped]** except B2's local-copy parts, which wait for the local pull (**[planned]**). Provisional defaults: hour-rounded timestamps (D-A1), 7 days raw and 90 days aggregates (D-A2), raw `net` cleared once counted (D-A7), a click row carries at most a closed-set source label from the site list or a country, never both, so no source-by-country pair is stored (#329, #408; supersedes the earlier "no source on click rows", D-A5).
 
 | Id | Threat | Mitigation | Verification |
 |---|---|---|---|
