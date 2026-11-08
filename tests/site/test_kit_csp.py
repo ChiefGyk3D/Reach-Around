@@ -62,6 +62,8 @@ def test_gate_paths_have_exactly_the_turnstile_origin(tmp_path: Path) -> None:
         assert d["form-action"] == "'self'"
         assert d["object-src"] == "'none'"
         assert csp.count(ORIGIN) == 2
+        # third-party script code is not covered by the Trusted Types directive
+        assert "require-trusted-types-for" not in csp
 
 
 def test_no_other_path_gets_the_origin(tmp_path: Path) -> None:
@@ -70,6 +72,7 @@ def test_no_other_path_gets_the_origin(tmp_path: Path) -> None:
     strict = blocks["/*"]["Content-Security-Policy"]
     assert strict == build_csp()
     assert ORIGIN not in strict
+    assert "require-trusted-types-for 'script'" in strict
     carrying = sorted(
         path
         for path, h in blocks.items()
