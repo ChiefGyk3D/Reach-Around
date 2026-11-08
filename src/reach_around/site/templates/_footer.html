@@ -3,6 +3,9 @@
 {% if show_disclosure %}
 <p class="disclosure">{{ disclosure }}</p>
 {% endif %}
+{% if footer_copyright %}
+<p class="disclosure copyright">{{ footer_copyright }}</p>
+{% endif %}
 <p class="privacy-link"><a href="{{ root }}privacy/">Privacy</a></p>
 {% if footer_credit %}
 <p class="credit"><a href="{{ footer_credit_url }}" rel="noopener noreferrer">{{ footer_credit_text }}</a></p>

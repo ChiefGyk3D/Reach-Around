@@ -545,6 +545,20 @@
       "additionalProperties": false,
       "description": "What the footer of every page shows besides the privacy link.",
       "properties": {
+        "copyright": {
+          "anyOf": [
+            {
+              "maxLength": 120,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Copyright"
+        },
         "credit": {
           "default": true,
           "title": "Credit",
@@ -1991,6 +2005,7 @@
     "footer": {
       "$ref": "#/$defs/Footer",
       "default": {
+        "copyright": null,
         "credit": true,
         "credit_text": null
       }
