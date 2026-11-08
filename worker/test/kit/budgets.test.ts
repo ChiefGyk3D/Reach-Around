@@ -5,6 +5,11 @@ import {
   DEFAULTS,
   KitLimitsError,
   PURGE_RESERVE,
+  PAGE_VIEW_DAILY_WRITES,
+  CLICK_DAILY_WRITES,
+  COMBINED_MARGIN,
+  combinedDailyWrites,
+  resetEventCapCache,
   WRITES_PER_OP,
   loadKitLimits,
   recordKitEventCapped,
@@ -21,6 +26,7 @@ const T0 = Date.UTC(2027, 2, 14, 5, 30);
 const HOUR = 3_600_000;
 
 beforeEach(async () => {
+  resetEventCapCache();
   await DB.prepare("DELETE FROM counters").run();
   await DB.prepare("DELETE FROM kit_events").run();
   await DB.prepare("DELETE FROM leads").run();
@@ -66,6 +72,8 @@ describe("loadKitLimits", () => {
     ["DAILY_ALERT_BUDGET", "1001"],
     ["DAILY_SEND_BUDGET", "-0"],
     ["D1_DAILY_WRITE_QUOTA", "999"],
+    ["D1_DAILY_WRITE_QUOTA", "1000000000"],
+    ["D1_DAILY_WRITE_QUOTA", "10000000000"],
   ])("rejects %s=%j and names only the variable", (name, value) => {
     try {
       L({ [name]: value });
@@ -86,22 +94,38 @@ describe("loadKitLimits", () => {
       expect((e as KitLimitsError).fields).toEqual(["ROUTE_BUDGET_GATE", "MAX_LEADS"]);
     }
   });
-  it("refuses a configuration whose worst case exceeds the quota, naming the quota", () => {
+  it("the quota boundaries parse: 1000 is the minimum (too small to hold the defaults), 999999999 the maximum", () => {
+    expect(() => L({ D1_DAILY_WRITE_QUOTA: "1000" })).toThrow(KitLimitsError);
+    expect(L({ D1_DAILY_WRITE_QUOTA: "999999999" }).d1DailyWriteQuota).toBe(999_999_999);
+  });
+  it("refuses a configuration whose COMBINED worst case exceeds the quota, naming the quota", () => {
     expect(() => L({ ROUTE_BUDGET_GATE: "100000" })).toThrow(KitLimitsError);
     try {
       L({ ROUTE_BUDGET_VIEW: "100000" });
+      throw new Error("did not throw");
     } catch (e) {
       expect((e as KitLimitsError).fields).toEqual(["D1_DAILY_WRITE_QUOTA"]);
     }
   });
-  it("a raised quota lets the same budgets pass", () => {
-    expect(() => L({ ROUTE_BUDGET_GATE: "100000", D1_DAILY_WRITE_QUOTA: "100000000" })).not.toThrow();
+  it("the kit alone fits, but kit plus page views, clicks and margin does not: refused", () => {
+    // gate 700/h: kit = 24*(3500+600)+20+10000 = 108420 > 100000 would fail alone; use 480:
+    // kit = 24*(2400+600)+20+10000 = 82020 (<100000) but combined = 82020 + 35700 = 117720
+    const kitOnly = 24 * (480 * 5 + 300 * 2) + 20 + 10_000;
+    expect(kitOnly).toBeLessThan(100_000);
+    expect(() => L({ ROUTE_BUDGET_GATE: "480" })).toThrow(KitLimitsError);
+    // exact boundary: the combined figure equal to the quota passes, one above fails
+    const q = combinedDailyWrites(L());
+    expect(() => L({ D1_DAILY_WRITE_QUOTA: String(q) })).not.toThrow();
+    expect(() => L({ D1_DAILY_WRITE_QUOTA: String(q - 1) })).toThrow(KitLimitsError);
   });
-  it("warns above 70 percent of the quota", () => {
-    // 24*(5*g + 2*300) + 10000 = 70000+ -> g = 400: 24*(2000+600)+20+10000 = 72420
-    const c = L({ ROUTE_BUDGET_GATE: "400" });
-    expect(worstCaseDailyWrites(c)).toBe(72_420);
-    expect(c.warnings).toEqual(["worst-case daily D1 writes are above 70 percent of D1_DAILY_WRITE_QUOTA"]);
+  it("a raised quota lets the same budgets pass", () => {
+    expect(() => L({ ROUTE_BUDGET_GATE: "100000", D1_DAILY_WRITE_QUOTA: "999999999" })).not.toThrow();
+  });
+  it("warns above 80 percent of the quota", () => {
+    const c = L({ ROUTE_BUDGET_GATE: "200" });
+    expect(combinedDailyWrites(c)).toBe(84_120);
+    expect(c.warnings).toEqual(["combined worst-case daily D1 writes are above 80 percent of D1_DAILY_WRITE_QUOTA"]);
+    expect(L().warnings).toEqual([]);
   });
 });
 
@@ -112,6 +136,13 @@ describe("worstCaseDailyWrites", () => {
     expect(worstCaseDailyWrites(c)).toBe(expected);
     expect(expected).toBe(42_420);
     expect(expected).toBeLessThan(c.d1DailyWriteQuota);
+  });
+  it("combines kit, page views, clicks and a margin into one figure under the quota", () => {
+    const c = L();
+    expect(PAGE_VIEW_DAILY_WRITES).toBe(22_700);
+    expect(combinedDailyWrites(c)).toBe(worstCaseDailyWrites(c) + 22_700 + CLICK_DAILY_WRITES + COMBINED_MARGIN);
+    expect(combinedDailyWrites(c)).toBe(78_120);
+    expect(combinedDailyWrites(c)).toBeLessThan(c.d1DailyWriteQuota * 0.8);
   });
   it("storage worst case is far under the 500 MB database limit at the defaults", () => {
     expect(worstCaseStorageBytes(L())).toBeLessThan(100 * 1024 * 1024);
@@ -220,6 +251,39 @@ describe("recordKitEventCapped", () => {
     for (let i = 0; i < 3; i++) await recordKitEventCapped(DB, id, "view", T0, 3);
     expect(await recordKitEventCapped(DB, id, "view", T0, 3)).toBe(false);
     await DB.prepare("DELETE FROM kit_events").run();
+    resetEventCapCache();
+    expect(await recordKitEventCapped(DB, id, "view", T0, 3)).toBe(true);
+  });
+  it("sparse table: a few endpoint rows left by retention do not block new events", async () => {
+    const id = await lead(1);
+    for (let i = 0; i < 6; i++) await recordKitEventCapped(DB, id, "view", T0, 6);
+    expect(await recordKitEventCapped(DB, id, "view", T0, 6)).toBe(false);
+    // retention removes the middle: ids 1 and 6 stay, span is still 6, live rows are 2
+    await DB.prepare("DELETE FROM kit_events WHERE id NOT IN (1, 6)").run();
+    resetEventCapCache();
+    expect(await recordKitEventCapped(DB, id, "view", T0, 6)).toBe(true);
+    expect(await count()).toBe(3);
+  });
+  it("cascade deletion of a lead frees its events and room returns", async () => {
+    const a = await lead(1);
+    const b = await lead(2);
+    for (let i = 0; i < 2; i++) await recordKitEventCapped(DB, a, "view", T0, 4);
+    for (let i = 0; i < 2; i++) await recordKitEventCapped(DB, b, "view", T0, 4);
+    expect(await recordKitEventCapped(DB, b, "view", T0, 4)).toBe(false);
+    await DB.prepare("DELETE FROM leads WHERE id = ?").bind(a).run();
+    resetEventCapCache();
+    expect(await recordKitEventCapped(DB, b, "view", T0, 4)).toBe(true);
+    expect(await recordKitEventCapped(DB, b, "view", T0, 4)).toBe(true);
+    expect(await recordKitEventCapped(DB, b, "view", T0, 4)).toBe(false);
+    expect(await count()).toBe(4);
+  });
+  it("a refusal is remembered briefly so a flood at the cap does not rescan the table", async () => {
+    const id = await lead(1);
+    for (let i = 0; i < 3; i++) await recordKitEventCapped(DB, id, "view", T0, 3);
+    expect(await recordKitEventCapped(DB, id, "view", T0, 3)).toBe(false);
+    await DB.prepare("DELETE FROM kit_events").run();
+    expect(await recordKitEventCapped(DB, id, "view", T0, 3)).toBe(false); // within the memory window
+    resetEventCapCache();
     expect(await recordKitEventCapped(DB, id, "view", T0, 3)).toBe(true);
   });
   it("floors the time to the hour like recordKitEvent", async () => {

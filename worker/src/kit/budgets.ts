@@ -20,16 +20,25 @@
 //   MAX_KIT_EVENTS       1..500000, default 50000 (cap on stored kit_events)
 //   DAILY_ALERT_BUDGET   0..1000 per UTC day, default 20 (owner alerts)
 //   DAILY_SEND_BUDGET    0..1000 per UTC day, default 0 (no send route in v1)
-//   D1_DAILY_WRITE_QUOTA 1000..1000000000, default 100000 (the free D1 plan's
+//   D1_DAILY_WRITE_QUOTA 1000..999999999, default 100000 (the free D1 plan's
 //                        daily rows-written figure; re-check against Cloudflare)
 //
-// The load REFUSES a configuration whose worst-case daily D1 writes exceed the
-// quota, and warns above 70 percent.
+// The load REFUSES a configuration whose COMBINED worst-case daily D1 writes
+// (kit, page views, clicks, a margin) exceed the quota, and warns above 80
+// percent. The D1 write allowance is one per account, so the kit never gets to
+// count only itself.
 //
 // COST. Counters are one row per (key, hour or day), written by one conditional
-// upsert; a refused reservation writes nothing. Event storage is capped with a
-// rowid span (MAX(id) - MIN(id) + 1), which is O(1) and never smaller than the
-// row count, so it can only refuse early, never overshoot.
+// upsert; a refused reservation writes nothing. Event storage is capped by the
+// LIVE row count. The rowid span (MAX(id) - MIN(id) + 1) is O(1) and never
+// smaller than the row count, so a span under the cap proves there is room;
+// only when the span is at or over the cap is the exact count taken (bounded
+// to `cap` rows by a LIMIT), so deletes that leave sparse rows free room again.
+// A refusal is remembered for EVENT_FULL_MEMORY_MS so a flood at the cap does
+// not rescan the table on every request; the memory only ever refuses.
+//
+// WIRING. Per-client throttling (checkIpMinute) must run BEFORE a global route
+// counter is consumed, so one client cannot spend the shared budget.
 
 import { MAX_LEADS_CEILING } from "./leads";
 import { reserveBudget, utcDay, utcHour, MAX_RESERVE_LIMIT } from "./limits";
@@ -50,10 +59,16 @@ export const DEFAULTS = {
 export const MAX_KIT_EVENTS_CEILING = 500_000;
 const MAX_DAILY_BUDGET = 1000;
 const MIN_QUOTA = 1000;
-const MAX_QUOTA = 1_000_000_000;
+const MAX_QUOTA = 999_999_999; // nine digits, the most parseStrict accepts
 
 /** Worst-case rows written by one accepted operation (the row, its indexes, the counter). */
 export const WRITES_PER_OP = { gate: 5, view: 2, send: 7, alert: 1 } as const;
+/** Page-view feature, rollup and purge worst case per day (docs/deploy.md, page views). */
+export const PAGE_VIEW_DAILY_WRITES = 22_700;
+/** Click route allowance per day. The click route has no global budget, only a per-client limiter, so this is a reserve, not a measured bound. */
+export const CLICK_DAILY_WRITES = 8_000;
+/** Headroom over everything above. */
+export const COMBINED_MARGIN = 5_000;
 /** Daily reserve for the purge and the hourly rollup, counted against the quota. */
 export const PURGE_RESERVE = 10_000;
 /** Pessimistic stored size per row, indexes included. */
@@ -113,6 +128,11 @@ export function worstCaseDailyWrites(
   );
 }
 
+/** The figure checked against the quota: the kit plus everything else sharing the allowance. */
+export function combinedDailyWrites(c: Parameters<typeof worstCaseDailyWrites>[0]): number {
+  return worstCaseDailyWrites(c) + PAGE_VIEW_DAILY_WRITES + CLICK_DAILY_WRITES + COMBINED_MARGIN;
+}
+
 export function worstCaseStorageBytes(c: Pick<KitLimits, "maxLeads" | "maxKitEvents">): number {
   return c.maxLeads * BYTES_PER_LEAD + c.maxKitEvents * BYTES_PER_EVENT;
 }
@@ -140,9 +160,9 @@ export function loadKitLimits(env: KitLimitsEnv): KitLimits {
   };
   if (bad.length > 0) throw new KitLimitsError(bad);
 
-  const worst = worstCaseDailyWrites(c);
+  const worst = combinedDailyWrites(c);
   if (worst > c.d1DailyWriteQuota) throw new KitLimitsError(["D1_DAILY_WRITE_QUOTA"]);
-  const warnings = worst * 10 > c.d1DailyWriteQuota * 7 ? ["worst-case daily D1 writes are above 70 percent of D1_DAILY_WRITE_QUOTA"] : [];
+  const warnings = worst * 10 > c.d1DailyWriteQuota * 8 ? ["combined worst-case daily D1 writes are above 80 percent of D1_DAILY_WRITE_QUOTA"] : [];
   return { ...c, warnings };
 }
 
@@ -185,10 +205,17 @@ export function reserveAlert(env: DbEnv, nowMs: number): Promise<boolean> {
 
 const KINDS: readonly string[] = ["unlock", "view", "verify"];
 const HOUR_MS = 3_600_000;
+const EVENT_FULL_MEMORY_MS = 30_000;
+let eventsFullUntil = 0;
+
+/** Forget a remembered refusal. For tests. */
+export function resetEventCapCache(): void {
+  eventsFullUntil = 0;
+}
 
 /**
- * Record a kit event only while the table is below `maxEvents` (the rowid span
- * test in the header). The check and the insert are one statement, so
+ * Record a kit event only while the live row count is below `maxEvents` (see
+ * the header). The check and the insert are one statement, so
  * concurrent callers cannot overshoot. Returns false when full. The time is
  * rounded down to the hour, as recordKitEvent does.
  */
@@ -206,13 +233,17 @@ export async function recordKitEventCapped(
     throw new RangeError(`maxEvents must be an integer from 1 to ${MAX_KIT_EVENTS_CEILING}`);
   }
   const ts = Math.floor(nowMs / HOUR_MS) * HOUR_MS;
+  if (Date.now() < eventsFullUntil) return false;
   const r = await db
     .prepare(
       `INSERT INTO kit_events (ts, lead_id, kind)
        SELECT ?1, ?2, ?3
-       WHERE (SELECT COALESCE(MAX(id) - MIN(id) + 1, 0) FROM kit_events) < ?4`,
+       WHERE (SELECT COALESCE(MAX(id) - MIN(id) + 1, 0) FROM kit_events) < ?4
+          OR (SELECT COUNT(*) FROM (SELECT 1 FROM kit_events LIMIT ?4)) < ?4`,
     )
     .bind(ts, leadId, kind, cap)
     .run();
-  return r.meta.changes === 1;
+  if (r.meta.changes === 1) return true;
+  eventsFullUntil = Date.now() + EVENT_FULL_MEMORY_MS;
+  return false;
 }

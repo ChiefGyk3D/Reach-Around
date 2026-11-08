@@ -11,6 +11,9 @@ _START = "## Kit limits and the free-plan budget"
 _END = "## Secrets and Doppler"
 _WRITES = {"gate": 5, "view": 2, "alert": 1, "send": 7}
 _RESERVE = 10_000
+_PAGE_VIEWS = 22_700
+_CLICKS = 8_000
+_MARGIN = 5_000
 
 
 def _section() -> str:
@@ -52,9 +55,14 @@ def test_worst_case_table_adds_up_and_is_under_the_warning_line() -> None:
     }
     assert rows == expected
     total = sum(expected.values()) + _RESERVE
-    assert f"**{total}**" in section
-    assert total < d["D1_DAILY_WRITE_QUOTA"] * 0.7
-    assert f"{round(100 * total / d['D1_DAILY_WRITE_QUOTA'], 1)} percent" in section
+    combined = total + _PAGE_VIEWS + _CLICKS + _MARGIN
+    assert f"**{combined}**" in section
+    assert f"| page views, rollup and purge | | | {_PAGE_VIEWS} |" in section
+    assert f"| clicks (reserve) | | | {_CLICKS} |" in section
+    assert f"| margin | | | {_MARGIN} |" in section
+    assert f"| kit purge reserve | | | {_RESERVE} |" in section
+    assert combined <= d["D1_DAILY_WRITE_QUOTA"] * 0.8
+    assert f"{round(100 * combined / d['D1_DAILY_WRITE_QUOTA'], 1)} percent" in section
 
 
 def test_doc_defaults_match_the_worker_source() -> None:
@@ -78,3 +86,6 @@ def test_doc_defaults_match_the_worker_source() -> None:
     for name, n in _WRITES.items():
         assert re.search(rf"{name}: {n}\b", wr), name
     assert f"PURGE_RESERVE = {_RESERVE:_}" in src
+    assert f"PAGE_VIEW_DAILY_WRITES = {_PAGE_VIEWS:_}" in src
+    assert f"CLICK_DAILY_WRITES = {_CLICKS:_}" in src
+    assert f"COMBINED_MARGIN = {_MARGIN:_}" in src
