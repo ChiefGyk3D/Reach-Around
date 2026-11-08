@@ -782,30 +782,21 @@ main > footer { margin-top: var(--ra-space-5); color: var(--ra-color-muted); fon
 /* Desktop (896 px): the column grows again and link groups take two columns. */
 @media (min-width: 56rem) {
   main { max-width: max(var(--ra-column-width), var(--ra-column-desktop)); }
-  .blocks.layout-list, .section-links.layout-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--ra-space-3); }
+  /* Two columns by wrapping flex, like grid and cards: a row that is not full
+     (an odd run of link cards before a full-width block, or at the end) is
+     centered at one column width instead of leaving a hole, wherever it falls
+     and however long the run is. Source order is the visual order. */
+  .blocks.layout-list, .section-links.layout-list {
+    display: flex; flex-direction: row; flex-wrap: wrap; justify-content: center;
+    gap: var(--ra-space-3);
+  }
   .blocks.layout-list { gap: var(--ra-space-4) var(--ra-space-3); }
+  .layout-list > * { flex: 0 0 calc((100% - var(--ra-space-3)) / 2); max-width: 100%; min-width: 0; }
   .layout-list > .block-section, .layout-list > .block-text, .layout-list > .block-image,
-  .layout-list > .block-divider, .layout-list > .block-crypto,
-  .layout-list > .block-link:has(> a.link-featured) { grid-column: 1 / -1; }
-  .layout-list > .block-section { align-self: start; }
-  /* A card alone in its row is centered at one column width instead of leaving
-     a hole beside it. Only
-     link cards are counted (`of .block-link`, Chromium 111, Firefox 113,
-     Safari 9). A card is alone when no link card follows it and it starts a
-     row: it is odd among link cards with no full-width block before it, or it
-     comes right after a full-width block (first, or third after one). A longer
-     run after a full-width block is not detected and keeps its hole. */
-  .blocks.layout-list > .block-link:not(:has(> a.link-featured), :has(+ .block-link)):is(
-      :nth-child(odd of .block-link):not(
-        :is(.block-text, .block-section, .block-image, .block-divider, .block-crypto,
-            .block-platforms, .block-link:has(> a.link-featured)) ~ .block-link
-      ),
-      :is(.block-text, .block-section, .block-image, .block-divider, .block-crypto,
-          .block-platforms, .block-link:has(> a.link-featured)) + .block-link,
-      :is(.block-text, .block-section, .block-image, .block-divider, .block-crypto,
-          .block-platforms, .block-link:has(> a.link-featured)) + .block-link + .block-link + .block-link
-    ) { grid-column: 1 / -1; justify-self: center; width: calc((100% - var(--ra-space-3)) / 2); }
-  .section-links.layout-list > li:last-child:nth-child(odd) { grid-column: 1 / -1; justify-self: center; width: calc((100% - var(--ra-space-3)) / 2); }
+  .layout-list > .block-divider, .layout-list > .block-crypto, .layout-list > .block-platforms,
+  .layout-list > .block-email, .layout-list > .block-live,
+  .layout-list > .block-link:has(> a.link-featured) { flex: 0 0 100%; width: 100%; }
+  .layout-list > .block-section { align-self: flex-start; }
   .hero-card:has(> .avatar) { flex-direction: row; justify-content: center; gap: var(--ra-space-6); }
   .hero-card:has(> .avatar) h1 { text-align: left; }
 }
