@@ -44,6 +44,7 @@ from typing import Any
 from jinja2 import Environment
 
 from reach_around.config.blocks import platform_name
+from reach_around.config.cutover import cutover_label, live_since, utc_today
 from reach_around.config.kit import (
     KitConfig,
     ResolvedMetric,
@@ -601,9 +602,16 @@ def _total(total: UnifiedTotal, metrics: list[ResolvedMetric]) -> dict[str, Any]
     }
 
 
-def _content(projection: dict[str, Any]) -> dict[str, Any]:
+def _content(
+    projection: dict[str, Any], live_day: date | None = None
+) -> dict[str, Any]:
     metrics: list[ResolvedMetric] = projection["metrics"]
     return {
+        "live_since": (
+            {"iso": live_day.isoformat(), "text": cutover_label(live_day)}
+            if live_day is not None
+            else None
+        ),
         "title": projection["title"],
         "about": projection["about"],
         "metrics": _metric_rows(metrics),
@@ -662,7 +670,9 @@ def render_kit(
     if kit is None:
         return KitRender({}, None, [])
     warnings = plan_warnings(config, numbers, today)
-    public = _content(public_projection(kit, numbers))
+    # A UTC day, not ``today`` (the scheduling day in the config's time zone).
+    live_day = live_since(config, utc_today())
+    public = _content(public_projection(kit, numbers), live_day)
     form: dict[str, Any] | None = None
     if has_gate_form(kit):
         form = {
@@ -683,7 +693,7 @@ def render_kit(
     gated: str | None = None
     if has_gate_form(kit):
         data = gated_projection(kit, numbers)
-        content = _content(data)
+        content = _content(data, live_day)
         content.update(
             partners=data["partners"],
             case_studies=data["case_studies"],

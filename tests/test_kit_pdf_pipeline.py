@@ -13,7 +13,7 @@ import socket
 import stat
 import time
 from collections.abc import Callable
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 from typing import Any, NoReturn
 
@@ -30,7 +30,8 @@ from kitpdfharness import (
     make_pdf,
 )
 from reach_around.cli import main
-from reach_around.config import load_site_config
+from reach_around.config import SiteConfig, load_site_config
+from reach_around.config.cutover import utc_today
 from reach_around.config.kit import (
     DISPLAY_POLICY,
     PDF_EXCLUDED,
@@ -299,6 +300,63 @@ def test_a_renderer_that_loses_text_fails_the_completeness_check(
 
     with pytest.raises(PdfError, match="missing"):
         run(tmp_path, lossy)
+
+
+def with_cutover(day: str | None) -> SiteConfig:
+    return SiteConfig.model_validate(
+        {
+            **make_config().model_dump(mode="json", exclude_unset=True),
+            "cutover_date": day,
+        }
+    )
+
+
+def _pdf_text(tmp_path: Path, **config: Any) -> str:
+    config_obj, site, gated = build_instance(
+        tmp_path, with_cutover(config.get("cutover_date"))
+    )
+    result = build_kit_pdf(
+        config_obj,
+        gated_dir=gated,
+        site_dir=site,
+        out_dir=tmp_path / "private",
+        name="kit.pdf",
+        created=CREATED,
+        renderer=fake_renderer,
+    )
+    return "".join("".join(extract_pages(result.path.read_bytes())).split())
+
+
+def test_the_pdf_prints_the_live_since_line_when_the_day_has_arrived(
+    tmp_path: Path,
+) -> None:
+    text = _pdf_text(tmp_path, cutover_date="2026-11-08")
+    assert "".join("Live since 2026-11-08 (UTC)".split()) in text
+
+
+def test_the_pdf_has_no_line_when_unset_or_in_the_future(tmp_path: Path) -> None:
+    assert "Livesince" not in _pdf_text(tmp_path / "a")
+    future = (utc_today() + timedelta(days=5)).isoformat()
+    assert "Livesince" not in _pdf_text(tmp_path / "b", cutover_date=future)
+
+
+def test_a_renderer_that_drops_the_live_since_line_fails_the_check(
+    tmp_path: Path,
+) -> None:
+    def without_line(html: str, work: Path) -> bytes:
+        return fake_renderer(html.replace("Live since", "Zzz"), work)
+
+    config_obj, site, gated = build_instance(tmp_path, with_cutover("2026-11-08"))
+    with pytest.raises(PdfError, match="live-since"):
+        build_kit_pdf(
+            config_obj,
+            gated_dir=gated,
+            site_dir=site,
+            out_dir=tmp_path / "private",
+            name="kit.pdf",
+            created=CREATED,
+            renderer=without_line,
+        )
 
 
 def test_a_kit_with_nothing_gated_is_an_error(tmp_path: Path) -> None:

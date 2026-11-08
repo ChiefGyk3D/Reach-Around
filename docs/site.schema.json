@@ -2032,6 +2032,19 @@
     "creator": {
       "$ref": "#/$defs/Creator"
     },
+    "cutover_date": {
+      "anyOf": [
+        {
+          "format": "date",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Cutover Date"
+    },
     "disclosure": {
       "anyOf": [
         {

@@ -935,6 +935,21 @@ Single Redirect instead. That is a Cloudflare write and an owner decision, and
 this repository does not make it. The tests check the `_redirects` text and
 that nothing else in the build changes; they do not call a live host.
 
+### Setting the cutover date
+
+On the day the DNS switch is verified end to end (the site answers on the public
+hostname through the new path), add the UTC day to the instance config and
+redeploy:
+
+```yaml
+cutover_date: 2026-11-08
+```
+
+Use the UTC day, not the local one, which can differ near midnight. Then run
+`reach-around check --config site.yaml --production`; it warns until the date is
+set. The media kit page and PDF then print "Live since <date> (UTC)". See
+[`cutover_date`](config.md#cutover_date).
+
 ## 4. Rolling back
 
 - **Site.** Pages project > Deployments > pick the previous deployment >

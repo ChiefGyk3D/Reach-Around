@@ -37,9 +37,10 @@ from reach_around.config.blocks import (
     Platforms,
     Text,
 )
+from reach_around.config.cutover import check_cutover_day
 from reach_around.config.disclosure import DisclosureField
 from reach_around.config.footer import Footer
-from reach_around.config.kit import KitConfig
+from reach_around.config.kit import KitConfig, _iso_date
 from reach_around.config.loader import ConfigError, load_yaml
 from reach_around.config.numbers_sources import NumbersConfig
 from reach_around.config.page_title import PageDescription, PageTitle, TitleTemplate
@@ -339,6 +340,18 @@ class SiteConfig(_Model):
     numbers: NumbersConfig | None = None
     analytics: Analytics = Analytics()
     kit: KitConfig | None = None
+    # The UTC calendar day the site went live; see reach_around.config.cutover.
+    cutover_date: date | None = None
+
+    @field_validator("cutover_date", mode="before")
+    @classmethod
+    def _cutover_is_a_day(cls, value: object) -> object:
+        return _iso_date(value)
+
+    @field_validator("cutover_date")
+    @classmethod
+    def _cutover_in_range(cls, value: date | None) -> date | None:
+        return check_cutover_day(value)
 
     @field_validator("timezone")
     @classmethod

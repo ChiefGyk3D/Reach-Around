@@ -42,6 +42,7 @@ from pydantic import ValidationError
 
 from reach_around.checkvocab import say
 from reach_around.config import ConfigError, SiteConfig, load_yaml
+from reach_around.config.cutover import cutover_date, live_since
 from reach_around.config.models import error_path
 from reach_around.config.numbers import (
     NumberNote,
@@ -338,6 +339,8 @@ _VALUE_ERRORS: tuple[tuple[re.Pattern[str], str], ...] = tuple(
         (r"^show_until must not be before", "date_order"),
         (r"^image_alt needs an image", "alt_without_image"),
         (r"^unknown time zone", "timezone"),
+        (r"^cutover_date must be 2000", "cutover_early"),
+        (r"^cutover_date is too far", "cutover_far"),
         (r"^must not be empty or only whitespace", "empty"),
         (r"^must not start or end with whitespace", "space_edge"),
         (r"^must be plain text", "hidden_chars"),
@@ -695,6 +698,16 @@ def _number_findings(
     return errors, warnings
 
 
+def _cutover_findings(config: SiteConfig, production: bool) -> list[Problem]:
+    """Warnings about the cutover date: unset in production, or still ahead."""
+    day = cutover_date(config)
+    if day is None:
+        return [Problem("cutover_unset", field="cutover_date")] if production else []
+    if live_since(config, datetime.now(UTC).date()) is None:
+        return [Problem("cutover_future", field="cutover_date")]
+    return []
+
+
 def _run(args: argparse.Namespace) -> int:
     path: Path = args.config
     name = _display_name(path)
@@ -714,6 +727,7 @@ def _run(args: argparse.Namespace) -> int:
             problems, warnings = _number_findings(
                 config, numbers_path, args.numbers is not None
             )
+            warnings.extend(_cutover_findings(config, args.production))
         except ValidationError as exc:
             problems = _schema_problems(raw, exc)
         except (ValueError, TypeError, RecursionError, OverflowError):
@@ -801,5 +815,11 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
         type=Path,
         help="the numbers file to read for old follower numbers (default: "
         "numbers.json beside the config, if it exists)",
+    )
+    check.add_argument(
+        "--production",
+        action="store_true",
+        help="check as the production site: also warn when cutover_date is not "
+        "set (a staging site may leave it out)",
     )
     check.set_defaults(func=_run)

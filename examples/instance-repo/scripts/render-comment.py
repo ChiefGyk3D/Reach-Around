@@ -211,6 +211,23 @@ VOCAB: dict[str, tuple[str, str]] = {
         "the as_of date for {ident} is more than a day in the future",
         "Write the day you read the number, like 2027-03-01.",
     ),
+    "cutover_early": (
+        "the cutover date is before 2000-01-01",
+        "Write the UTC day the site went live, like 2026-11-08.",
+    ),
+    "cutover_far": (
+        "the cutover date is more than a year in the future",
+        "Write the UTC day the site went live, like 2026-11-08, or remove it.",
+    ),
+    "cutover_unset": (
+        "no cutover date is set",
+        "Once the switch is verified, add cutover_date with that UTC "
+        "day, like 2026-11-08, and redeploy.",
+    ),
+    "cutover_future": (
+        "the cutover date is in the future (UTC), so the kit does not show it yet",
+        "Correct the date, or leave it until the day arrives.",
+    ),
     "stale_number": (
         "the number for {ident} is {limit} days old (over 30)",
         "Read it again and update the count and its as_of date, or remove it.",
@@ -436,6 +453,7 @@ KNOWN_FIELDS: frozenset[str] = frozenset(
         "creator",
         "credit",
         "credit_text",
+        "cutover_date",
         "demographics",
         "description",
         "disclosure",

@@ -358,6 +358,7 @@ def hostile_variants() -> dict[str, dict[str, Any]]:
     add("color value", lambda d: d.update(theme={"colors": {"accent": SENTINEL}}))
     add("font", lambda d: d.update(theme={"fonts": {"body": f"{SENTINEL}; x"}}))
     add("timezone", lambda d: d.update(timezone=SENTINEL))
+    add("cutover date", lambda d: d.update(cutover_date=SENTINEL))
     add("version", lambda d: d.update(version=SENTINEL))
     add("tab ref", lambda d: d["tabs"][0]["blocks"][0].update(url=f"tab:{SENTINEL}"))
     add(

@@ -65,6 +65,11 @@ the oldest one, and notes that people who follow on several platforms are
 counted more than once. A number with no value is left out. With nothing to add
 there is no total line.
 
+When the config sets [`cutover_date`](config.md#cutover_date) and that UTC day
+has arrived, a small line "Live since 2026-11-08 (UTC)" sits above the numbers
+(on the gated page and in the private PDF too). Without the date, or while it is
+still ahead, there is no line.
+
 If the kit has gated content, the page explains the gate and shows the form.
 
 ### The gate form
