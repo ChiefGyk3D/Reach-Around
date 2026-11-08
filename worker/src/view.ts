@@ -67,6 +67,7 @@ import { classifyUserAgent, primaryLanguage } from "./ua";
 import { normalizeAddress } from "./address";
 import { limiterKey, secretBytes } from "./ratekey";
 import { padHour } from "./viewretention";
+import { DEFAULT_BOT_PER_HOUR, DEFAULT_HUMAN_PER_HOUR, positiveInt } from "./pvlimits";
 import { killedSites, loadSites, siteForRequest } from "./sites";
 
 export { normalizeAddress } from "./address";
@@ -115,8 +116,6 @@ const CAP_HASH_BITS = 64;
 const MAX_HOST_LENGTH = 80;
 const MAX_CITY_LENGTH = 60;
 const MAX_CITY_INPUT = 200;
-const DEFAULT_HUMAN_PER_HOUR = 120;
-const DEFAULT_BOT_PER_HOUR = 30;
 /** The shared ceiling above the per-site budgets: the account's request quota is one resource (T-07). */
 const DEFAULT_ACCOUNT_HUMAN_PER_HOUR = 480;
 const DEFAULT_ACCOUNT_BOT_PER_HOUR = 120;
@@ -185,12 +184,6 @@ async function discard(body: ReadableStream<Uint8Array> | null): Promise<void> {
   } catch {
     // The request is being ignored anyway.
   }
-}
-
-function positiveInt(v: string | undefined, fallback: number, max: number): number {
-  if (typeof v !== "string" || !/^\d{1,9}$/.test(v)) return fallback;
-  const n = Number(v);
-  return n <= max ? n : fallback;
 }
 
 // ----------------------------------------------------------------- fields

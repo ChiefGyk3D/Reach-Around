@@ -528,6 +528,15 @@ nothing; it does not tell the sender.
 
 - The collector runs on the existing Worker and D1 database; a second site adds
   routes or a service binding and one config variable, not a new service.
+- Test-site enablement (#260, #261): `deploy-test.yml` turns page views on for
+  the staging deploy from the repository variable `PAGE_VIEWS` (exact `true`),
+  with `PAGE_IDS` and `VIEW_LIMITER_NAMESPACE_ID`, and refuses to deploy when
+  the projected combined D1 writes pass the quota (warning above 80 percent).
+  `VIEW_HASH_SECRET` stays a Worker secret the owner sets once. Steps and the
+  arithmetic: `docs/deploy.md`. To confirm data lands after the first deploy:
+  one visit, then
+  `npx wrangler d1 execute DB --remote --command "SELECT page, bot_class, country, browser FROM view_events ORDER BY id DESC LIMIT 5"`
+  shows category columns only (the table has no address or user-agent column).
 - Cron stays at one hourly trigger (the Free plan allows five per account;
   repo research, fetched 2026-10-24, not re-read). The weekly network-data
   refresh from Plan 4 needs a second trigger.
