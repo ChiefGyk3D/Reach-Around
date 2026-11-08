@@ -16,6 +16,7 @@ import sys
 from datetime import date
 from pathlib import Path
 
+from reach_around.funnel.csvout import csv_files, utc_now, write_csv_dir
 from reach_around.funnel.export import ExportError, load_exports
 from reach_around.funnel.report import FLOOR, build_report, render_text
 
@@ -54,6 +55,8 @@ def run_report(args: argparse.Namespace) -> int:
             raise ValueError("--top must be between 1 and 100")
         if args.floor < FLOOR:
             raise ValueError(f"--floor cannot be below {FLOOR}")
+        if args.csv is not None and args.json:
+            raise ValueError("--csv and --json cannot be combined")
         export = load_exports(list(args.input))
         report = build_report(
             export,
@@ -69,6 +72,19 @@ def run_report(args: argparse.Namespace) -> int:
     except (ExportError, ValueError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return EXIT_USAGE
+    if args.csv is not None:
+        files = csv_files(
+            report,
+            generated_at=utc_now(),
+            requested={"since": since, "until": until, "days": args.days},
+        )
+        try:
+            names = write_csv_dir(args.csv, files)
+        except (OSError, ValueError) as exc:
+            print(f"error: cannot write CSV: {exc.__class__.__name__}", file=sys.stderr)
+            return EXIT_USAGE
+        print(f"wrote {len(names)} CSV files to {args.csv} (UTC dates)")
+        return EXIT_OK
     if args.json:
         print(json.dumps(report, indent=2, sort_keys=True))
     else:
@@ -128,4 +144,12 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
         help=f"privacy floor in views (default and minimum {FLOOR}); raise only",
     )
     parser.add_argument("--json", action="store_true", help="print JSON, not text")
+    parser.add_argument(
+        "--csv",
+        type=Path,
+        metavar="DIR",
+        help="write one CSV file per section into DIR (same floor and "
+        "suppression; dates are UTC; metadata.csv holds generated_at_utc and "
+        "the window); cannot be combined with --json",
+    )
     parser.set_defaults(func=run_report)

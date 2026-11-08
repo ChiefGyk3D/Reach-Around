@@ -19,6 +19,8 @@ from typing import Any
 from reach_around.funnel.export import CLASSES, Export
 
 FLOOR = 5
+# Report section -> the ``dim`` value in view_dim_daily it is built from.
+DEVICE_SECTIONS = {"devices": "device", "browsers": "browser", "systems": "os"}
 REPORT_VERSION = 1
 CLASS_NAMES = {
     "h": "likely human",
@@ -114,7 +116,7 @@ def _withhold_views(report: dict[str, Any]) -> None:
     funnel["kit_views_per_100_views"] = None
     if "view_daily" not in funnel["missing"] and "page_views" not in funnel["withheld"]:
         funnel["withheld"].append("page_views")
-    for key in ("pages", "sources", "geography"):
+    for key in ("pages", "sources", "geography", *DEVICE_SECTIONS):
         if report[key]["state"] != "not_in_export":
             report[key].update(
                 state="withheld", rows=[], other_below_floor=0, more_rows=0
@@ -300,6 +302,14 @@ def build_report(
         if r["dim"] == "reason" and r["bot_class"] != "h":
             reasons[r["value"]] += r["views"]
 
+    cuts: dict[str, dict[str, int]] = {
+        name: defaultdict(int) for name in DEVICE_SECTIONS
+    }
+    for r in dim_rows:
+        for name, dim_name in DEVICE_SECTIONS.items():
+            if r["dim"] == dim_name and r["bot_class"] in wanted:
+                cuts[name][r["value"]] += r["views"]
+
     pages: dict[str, int] = defaultdict(int)
     sources: dict[str, int] = defaultdict(int)
     for r in view_rows:
@@ -384,6 +394,10 @@ def build_report(
         },
         "links": links_section,
         "click_sources": {},  # joint suppression with "links", filled below
+        **{
+            name: _section(cuts[name], floor, top, "view_dim_daily" in export.present)
+            for name in DEVICE_SECTIONS
+        },
         "bots": {
             "total_views": (_count(total_views, floor) if total_printable else None),
             "classes": [
@@ -408,7 +422,8 @@ def build_report(
         click_sources, links_section, floor, top, "click_events" in export.present
     )
     unsafe = any(
-        _suppress(cells, floor).dropped for cells in (pages, sources, places)
+        _suppress(cells, floor).dropped
+        for cells in (pages, sources, places, *cuts.values())
     ) or (include_bots and classes.dropped)
     if unsafe:
         _withhold_views(report)
@@ -518,6 +533,9 @@ def render_text(report: dict[str, Any]) -> str:
             "  A link's breakdown is shown only when every part is at or above the "
             "floor; other links show their total above."
         )
+    _table(f"Device classes (classes: {classes})", report["devices"], lines)
+    _table(f"Browsers (classes: {classes})", report["browsers"], lines)
+    _table(f"Operating systems (classes: {classes})", report["systems"], lines)
 
     bots = report["bots"]
     lines.append("")
