@@ -2,6 +2,8 @@
 import { QueryMeter, meteredDb, queryBudget } from "./d1budget";
 import { handleClick, MAX_URL_LENGTH, type Env as ClickEnv } from "./click";
 import { handleLive, LIVE_CRON, LIVE_ROUTE, runLivePoller, type LiveEnv } from "./live";
+import { LEAD_PURGE_QUERIES, purgeExpiredLeads } from "./kit/leadretention";
+import { logEvent } from "./kit/log";
 import { purgeOldEvents } from "./retention";
 import { handleView, type ViewEnv } from "./view";
 import { purgeViews } from "./viewretention";
@@ -57,8 +59,8 @@ export default {
    * The 2-minute live cron (LIVE_CRON) runs ONLY the live poller. Any other
    * trigger runs the hourly jobs below exactly as before.
    *
-   * Hourly cron, in this order: click purge, page-view purge, page-view
-   * rollup. The purge comes BEFORE the rollup so a rollup that fails, runs out
+   * Hourly cron, in this order: click purge, page-view purge, lead purge,
+   * page-view rollup. The purge comes BEFORE the rollup so a rollup that fails, runs out
    * of CPU or is cut off can never block retention (the purge only deletes
    * days that are already rolled, plus rows past the hard ceiling). Each step
    * is isolated: one failing never stops the others, and nothing here throws.
@@ -75,6 +77,7 @@ export default {
       QUERY_BUDGET?: string;
       ROLLUP_MAX_ROWS_PER_DAY?: string;
       UTM_ALLOWLIST?: string;
+      LEAD_RETENTION_DAYS?: string;
     },
     ctx: ExecutionContext,
   ): Promise<void> {
@@ -101,6 +104,14 @@ export default {
           await purgeViews({ ...env, DB: purgeDb }, now);
         } catch {
           // Same.
+        }
+        try {
+          // Lead retention (issue #265): bounded, and on the same meter. Its own
+          // slice keeps it from eating the rollup's queries.
+          const leadDb = meteredDb(env.DB, meter.slice(Math.min(LEAD_PURGE_QUERIES, Math.floor(budget / 4))));
+          await purgeExpiredLeads({ DB: leadDb, LEAD_RETENTION_DAYS: env.LEAD_RETENTION_DAYS }, now);
+        } catch {
+          logEvent("purge", "failed", "other");
         }
         try {
           await rollupClosedDays({ ...env, DB: whole }, now);
