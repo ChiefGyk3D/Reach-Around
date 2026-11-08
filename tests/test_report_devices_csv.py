@@ -357,8 +357,6 @@ def test_swap_between_create_and_open_is_refused(
     capsys: pytest.CaptureFixture[str],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from reach_around.funnel import csvout
-
     target = tmp_path / "target"
     target.mkdir()
     real_mkdir = os.mkdir
@@ -369,7 +367,7 @@ def test_swap_between_create_and_open_is_refused(
             os.rmdir(name, dir_fd=dir_fd)
             os.symlink(target, name, dir_fd=dir_fd)
 
-    monkeypatch.setattr(csvout.os, "mkdir", swapping_mkdir)
+    monkeypatch.setattr(os, "mkdir", swapping_mkdir)
     path = export(tmp_path, GOOD)
     code, _, _ = run(capsys, "--input", str(path), "--csv", str(tmp_path / "swapme"))
     assert code == 2
