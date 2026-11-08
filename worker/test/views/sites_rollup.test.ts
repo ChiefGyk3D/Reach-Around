@@ -309,6 +309,33 @@ describe("rollup with a sources list", () => {
     expect(await srcs("links")).toEqual([{ src_kind: "o", src: "other", views: 3 }]);
   });
 
+  it("the_global_utm_list_does_not_apply_to_a_site_that_declares_sources", async () => {
+    for (const sources of [[], ["bio-ig"]]) {
+      await clearAll();
+      const closed = JSON.stringify({ links: { hosts: ["links.example.test"], mode: "beacon", pages: ["home"], sources } });
+      await insert([
+        ...many("links", D13 + 1000, 2, { src_kind: "u", src: "mail" }),
+        ...many("links", D13 + 1000, 1, { src_kind: "u", src: "bio-ig" }),
+      ]);
+      await rollupClosedDays(env({ SITES: closed, MIN_CELL: "1", UTM_ALLOWLIST: "mail" }), NOW);
+      const kept = sources.length === 0 ? [] : [{ src_kind: "u", src: "bio-ig", views: 1 }];
+      expect(await srcs("links"), JSON.stringify(sources)).toEqual([...kept, { src_kind: "o", src: "other", views: sources.length === 0 ? 3 : 2 }]);
+    }
+  });
+
+  it("a_per_site_utm_list_still_applies_next_to_sources_and_beats_the_global_one", async () => {
+    const both = JSON.stringify({ links: { hosts: ["links.example.test"], mode: "beacon", pages: ["home"], sources: [], utm_allowlist: ["news"] } });
+    await insert([
+      ...many("links", D13 + 1000, 1, { src_kind: "u", src: "news" }),
+      ...many("links", D13 + 1000, 1, { src_kind: "u", src: "mail" }),
+    ]);
+    await rollupClosedDays(env({ SITES: both, MIN_CELL: "1", UTM_ALLOWLIST: "mail" }), NOW);
+    expect(await srcs("links")).toEqual([
+      { src_kind: "u", src: "news", views: 1 },
+      { src_kind: "o", src: "other", views: 1 },
+    ]);
+  });
+
   it("with_only_sources_set_other_utm_labels_fold_to_other", async () => {
     await insert([
       ...many("links", D13 + 1000, 1, { src_kind: "u", src: "bio-ig" }),

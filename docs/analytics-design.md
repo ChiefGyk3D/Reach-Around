@@ -247,8 +247,11 @@ that one site rather than the whole collector):
   then the referrer host, then direct. A label not on the list is stored as
   `other` and its text is dropped at once; a site with no `sources` never
   reads `s`, and an explicit empty list is still a closed list (every valid `s` is `other`). Listed labels are kept as themselves in the aggregates next to
-  the site's `utm_allowlist`; once a site lists `sources`, any other
-  `utm_source` label folds to `other` too.
+  the site's own `utm_allowlist` (which, when set, replaces the global
+  `UTM_ALLOWLIST`); a site that declares `sources`, even an empty list, never
+  inherits the global list, and any `utm_source` label on neither list folds to
+  `other`. Source labels are forgeable by anyone who can send a beacon, which
+  is inherent to an unauthenticated collector.
 - Per-site overrides: `geo`, `utm_allowlist`,
   `min_cell`, and the raw keep days, each clamped to the global ceilings (raw
   keep at most 90 days, as shipped).

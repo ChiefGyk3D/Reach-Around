@@ -349,11 +349,17 @@ const NO_LABEL = "!";
 
 /**
  * The labels kept as themselves in the aggregates: the utm list (the site's
- * own, else the global one) plus the site's `s` sources. A site that lists
+ * own, else the global one unless the site declares sources) plus the site's `s` sources. A site that lists
  * sources therefore folds every other utm label to "other" too.
  */
 function allowFor(env: RollupEnv, site: Site | undefined): string[] {
-  const utm = (site?.utmAllowlist !== undefined ? site.utmAllowlist : utmAllowlist(env.UTM_ALLOWLIST)) ?? [];
+  // A site that declares sources (even an empty list) never inherits the global list.
+  const utm =
+    site?.utmAllowlist !== undefined
+      ? site.utmAllowlist
+      : site?.sources !== undefined
+        ? []
+        : (utmAllowlist(env.UTM_ALLOWLIST) ?? []);
   if (site?.sources === undefined) return utm;
   const all = [...new Set([...utm, ...site.sources])];
   // A site that lists sources, even an empty list, is closed: an empty filter
