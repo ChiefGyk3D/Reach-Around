@@ -58,6 +58,7 @@ On `main` (from `worker/src/view.ts`, `viewrollup.ts`, `viewretention.ts`,
 | Piece | State |
 |---|---|
 | `POST /e/v/:pageId`: write-only, one uniform empty 204 for every outcome | Shipped |
+| `GET /e/live` (issue #297): the one route that returns stored data, booleans and timestamps only; every other request keeps the empty 204 | Code only, not deployed (`docs/deploy.md`) |
 | Raw table `view_events`, daily-hash table `visitor_seen`, state table `view_meta` | Shipped |
 | Daily rollup into three marginal tables (`view_daily`, `view_dim_daily`, `view_geo_daily`) plus a log | Shipped |
 | Retention job (raw rows 7 days by default, ceiling 90; aggregates 90 days) | Shipped |
