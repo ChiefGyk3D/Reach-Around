@@ -400,3 +400,70 @@ def test_a_symlinked_csv_is_refused(tmp_path: Path) -> None:
     link = tmp_path / "link.csv"
     link.symlink_to(real)
     assert main(["counts", "import", "--config", str(site), "--csv", str(link)]) == 2
+
+
+def test_a_fetched_alias_is_refused_both_ways() -> None:
+    config = cfg([item("github")], numbers=GITHUB_SOURCE)
+    with pytest.raises(ImportFailed, match="fetch source"):
+        imp(HEADER + "socials-github,followers,1,2027-03-09\n", config)
+    by_id = cfg(
+        [item("github")],
+        numbers={
+            "sources": [{"platform": "socials-github", "kind": "github", "user": "u"}]
+        },
+    )
+    with pytest.raises(ImportFailed, match="fetch source"):
+        imp(HEADER + "github,followers,1,2027-03-09\n", by_id)
+
+
+def test_a_kit_counts_metric_only_takes_its_own_label() -> None:
+    kit = {
+        "title": "Kit",
+        "about": "About",
+        "metrics": [{"platform": "kick", "label": "Subscribers", "source": "counts"}],
+    }
+    config = cfg([item("tiktok")], kit=kit)
+    with pytest.raises(ImportFailed, match="label"):
+        imp(HEADER + "kick,followers,1,2027-03-09\n", config)
+    assert imp(HEADER + "kick,subscribers,1,2027-03-09\n", config)[0].key == "kick"
+
+
+def test_the_platform_limit_decides_which_value_wins() -> None:
+    config = cfg(
+        [item("kick", count=9, as_of=ago(5))], numbers={"stale_days": {"kick": 365}}
+    )
+    book = numbers_of(kick=(7, TODAY - timedelta(days=60)))
+    block: Any = config.tabs[0].blocks[0]
+    row = platform_rows(block, book, TODAY, config)[0]
+    assert row.count == 7 and not row.stale
+
+
+def test_a_history_failure_is_a_clean_exit(tmp_path: Path) -> None:
+    (tmp_path / "hist").mkdir()
+    (tmp_path / "hist" / "h.jsonl").write_text("not json\n", encoding="utf-8")
+    site = write(
+        tmp_path,
+        config_doc(
+            [item("kick", label="subscribers")],
+            numbers={"history_file": "hist/h.jsonl"},
+        ),
+    )
+    data = tmp_path / "in.csv"
+    data.write_text(HEADER + f"kick,subscribers,1,{real_today()}\n", encoding="utf-8")
+    code = main(["counts", "import", "--config", str(site), "--csv", str(data)])
+    assert code == 1 and not (tmp_path / "numbers.json").exists()
+
+
+def test_the_kit_warning_follows_the_platform_limit() -> None:
+    from reach_around.site.kit import plan_warnings
+
+    kit = {
+        "title": "Kit",
+        "about": "About",
+        "metrics": [
+            {"platform": "kick", "label": "Subscribers", "value": 3, "as_of": ago(60)}
+        ],
+    }
+    wide = cfg([item("kick")], kit=kit, numbers={"stale_days": {"kick": 365}})
+    assert plan_warnings(wide, None, TODAY) == []
+    assert plan_warnings(cfg([item("kick")], kit=kit), None, TODAY)

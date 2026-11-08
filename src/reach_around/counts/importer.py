@@ -71,7 +71,20 @@ def _labels_by_key(config: Any) -> dict[str, set[str]]:
     if kit is not None:
         for metric in kit.metrics:
             if metric.source == "counts":
-                out.setdefault(metric.platform, set()).update(_METRICS)
+                out.setdefault(metric.platform, set()).add(metric.label.lower())
+    return out
+
+
+def _aliases(config: Any) -> dict[str, set[str]]:
+    """Each key with every other key that reads the same number: an item id and
+    its platform slug (and, for a slug, every item id using it)."""
+    out: dict[str, set[str]] = {}
+    for tab in config.tabs:
+        for block in tab.blocks:
+            if isinstance(block, Platforms):
+                for ident, item in zip(block.item_ids, block.items, strict=True):
+                    for key, other in ((ident, item.platform), (item.platform, ident)):
+                        out.setdefault(key, {key}).add(other)
     return out
 
 
@@ -110,6 +123,7 @@ def parse_import(
     if len(body) > MAX_ROWS:
         raise ImportFailed([f"too many rows (limit {MAX_ROWS})"])
     labels = _labels_by_key(config)
+    aliases = _aliases(config)
     fetched = source_platforms(config)
     problems: list[str] = []
     found: list[ImportedRow] = []
@@ -126,7 +140,7 @@ def parse_import(
         before = len(problems)
         if _KEY.fullmatch(platform) is None or platform not in labels:
             bad(number, "platform", "not a platform or item id in the config")
-        elif platform in fetched:
+        elif fetched & aliases.get(platform, {platform}):
             bad(number, "platform", "a fetch source writes this number; refresh it")
         elif platform in seen:
             bad(number, "platform", "listed more than once")

@@ -695,7 +695,8 @@ def _number_findings(
         except ConfigError:
             errors.append(Problem("numbers_invalid"))
     warnings = []
-    for note in all_numbers(config, numbers, today):
+    # Hand-kept numbers are judged on the UTC day, whatever the site's zone.
+    for note in all_numbers(config, numbers, datetime.now(UTC).date()):
         if not note.stale:
             continue
         if fail_stale and note.hand_kept:

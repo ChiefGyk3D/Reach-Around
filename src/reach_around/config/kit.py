@@ -354,19 +354,26 @@ def unified_total(resolved: Sequence[ResolvedMetric]) -> UnifiedTotal:
     )
 
 
-def _age_warning(what: str, as_of: date, today: date) -> str | None:
+def _age_warning(
+    what: str, as_of: date, today: date, limit: int = STALE_DAYS
+) -> str | None:
     age = (today - as_of).days
-    if age > STALE_DAYS:
+    if age > limit:
         return (
             f"{what}: as_of {as_of.isoformat()} is {age} days old "
-            f"(over {STALE_DAYS}); refresh it"
+            f"(over {limit}); refresh it"
         )
     if age < 0:
         return f"{what}: as_of {as_of.isoformat()} is in the future; check the date"
     return None
 
 
-def kit_warnings(kit: KitConfig, numbers: Numbers | None, today: date) -> list[str]:
+def kit_warnings(
+    kit: KitConfig,
+    numbers: Numbers | None,
+    today: date,
+    limits: Mapping[str, int] | None = None,
+) -> list[str]:
     """Build warnings: old or future dates, and counts metrics with no value."""
     found: list[str | None] = []
     for metric in resolve_metrics(kit, numbers):
@@ -374,7 +381,8 @@ def kit_warnings(kit: KitConfig, numbers: Numbers | None, today: date) -> list[s
         if metric.value is None and metric.source == "counts":
             found.append(f"{what}: no value in the numbers file; it is left out")
         elif metric.value is not None and metric.as_of is not None:
-            found.append(_age_warning(what, metric.as_of, today))
+            limit = (limits or {}).get(metric.platform, STALE_DAYS)
+            found.append(_age_warning(what, metric.as_of, today, limit))
     for demo in kit.demographics:
         found.append(_age_warning(f"kit demographic {demo.label!r}", demo.as_of, today))
     return [w for w in found if w is not None]

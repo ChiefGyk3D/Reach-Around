@@ -386,6 +386,12 @@ _BASE_CSP: dict[str, tuple[str, ...]] = {
     "base-uri": ("'none'",),
     "form-action": ("'self'",),
 }
+# Browsers block string assignment to DOM injection sinks (innerHTML, eval,
+# script src, ...). The site scripts use none of them (see docs/performance.md),
+# so the directive costs nothing. A path that allows a third-party script origin
+# runs code this repo does not control and cannot vouch for, so that path does
+# not get the directive until the code is tested under it.
+_TRUSTED_TYPES = "require-trusted-types-for 'script'"
 # Directives a per-path extra may add sources to. The rest stay locked.
 _EXTENDABLE = frozenset(
     {
@@ -443,7 +449,10 @@ def build_csp(extra: Mapping[str, Sequence[str]] | None = None) -> str:
             _check_source(directive, source)
             if source not in target:
                 target.append(source)
-    return "; ".join(f"{name} {' '.join(srcs)}" for name, srcs in policy.items())
+    parts = [f"{name} {' '.join(srcs)}" for name, srcs in policy.items()]
+    if all(src == "'self'" for src in policy["script-src"]):
+        parts.append(_TRUSTED_TYPES)
+    return "; ".join(parts)
 
 
 def _covers(pattern: str, other: str) -> bool:

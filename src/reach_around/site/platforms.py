@@ -47,7 +47,9 @@ def platform_rows(
     rows = []
     for ident, entry in zip(block.item_ids, block.items, strict=True):
         found = None if numbers is None else numbers.lookup(ident, entry.platform)
-        count, stamp = resolve_count(entry.count, entry.as_of, found, today)
+        count, stamp = resolve_count(
+            entry.count, entry.as_of, found, today, stale_limit(config, entry.platform)
+        )
         rows.append(
             PlatformRow(
                 id=ident,

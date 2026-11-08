@@ -281,6 +281,7 @@ def _build(
             assets_dir=config_path.parent,
             numbers=numbers,
             gated_out=gated_out,
+            number_day=datetime.now(UTC).date(),
         )
         for warning in manifest.warnings:
             print(f"warning: {warning}", file=sys.stderr)

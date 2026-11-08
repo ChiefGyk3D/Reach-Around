@@ -1422,12 +1422,16 @@ Every build writes a Cloudflare Pages `_headers` file for `/*`:
 
 | Header | Value |
 | --- | --- |
-| `Content-Security-Policy` | `default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' https:; font-src 'self'; connect-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'` |
+| `Content-Security-Policy` | `default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' https:; font-src 'self'; connect-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'; require-trusted-types-for 'script'` |
 | `X-Content-Type-Options` | `nosniff` |
 | `Referrer-Policy` | `strict-origin-when-cross-origin` |
 | `Permissions-Policy` | `camera=(), microphone=(), geolocation=(), payment=()` |
 | `Cross-Origin-Opener-Policy` | `same-origin` |
 | `Strict-Transport-Security` | `max-age=31536000; includeSubDomains` |
+
+The gate pages (`/kit/`, `/kit/retry/`) add the Turnstile origin and leave out
+`require-trusted-types-for`: a path that allows a third-party script origin does not get
+the directive (see [performance](performance.md)).
 
 When `robots.noindex_paths` is set, each prefix also gets its own block with
 `X-Robots-Tag: noindex` (see [`robots`](#robots)).

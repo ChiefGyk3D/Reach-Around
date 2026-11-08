@@ -475,6 +475,12 @@ def run_import(
     except ConfigError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return EXIT_USAGE
+    except HistoryError as exc:
+        print(
+            f"error: history not written, nothing else was changed: {exc}",
+            file=sys.stderr,
+        )
+        return EXIT_WRITE
     except LockBusy:
         print(
             "error: another counts run holds the lock; try again shortly",

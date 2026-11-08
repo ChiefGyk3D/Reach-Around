@@ -657,7 +657,8 @@ def plan_warnings(
     kit = config.kit
     if kit is None:
         return []
-    found = kit_warnings(kit, numbers, today)
+    limits = dict(config.numbers.stale_days) if config.numbers is not None else None
+    found = kit_warnings(kit, numbers, today, limits)
     if config.features.kit_gate and not kit.has_gated_content:
         found.append(
             "features.kit_gate is on but the kit has no partners, case studies, "

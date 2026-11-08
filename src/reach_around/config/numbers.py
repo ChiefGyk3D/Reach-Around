@@ -73,6 +73,7 @@ def _resolve(
     manual_as_of: date | None,
     entry: NumbersEntry | None,
     today: date,
+    limit: int = STALE_DAYS,
 ) -> tuple[int | None, date | None, str]:
     """``resolve_count`` plus where the shown value came from: ``file`` (the
     numbers file) or ``typed`` (the config)."""
@@ -80,9 +81,9 @@ def _resolve(
         return manual, manual_as_of, "typed"
     if manual is None or manual_as_of is None:
         return entry.count, entry.as_of_date, "file"
-    if _age(entry.as_of_date, today) <= STALE_DAYS:
+    if _age(entry.as_of_date, today) <= limit:
         return entry.count, entry.as_of_date, "file"
-    if _age(manual_as_of, today) <= STALE_DAYS:
+    if _age(manual_as_of, today) <= limit:
         return manual, manual_as_of, "typed"
     return entry.count, entry.as_of_date, "file"
 
@@ -92,6 +93,7 @@ def resolve_count(
     manual_as_of: date | None,
     entry: NumbersEntry | None,
     today: date,
+    limit: int = STALE_DAYS,
 ) -> tuple[int | None, date | None]:
     """The count and date to show.
 
@@ -102,7 +104,7 @@ def resolve_count(
     itself. With two stale values the file's is shown (the run warns). A typed
     value alone is shown, stale or not (the run warns).
     """
-    count, stamp, _ = _resolve(manual, manual_as_of, entry, today)
+    count, stamp, _ = _resolve(manual, manual_as_of, entry, today, limit)
     return count, stamp
 
 
@@ -178,7 +180,8 @@ def shown_numbers(
     for tab, block, pairs in _platform_items(config):
         for ident, item in pairs:
             entry = None if numbers is None else numbers.lookup(ident, item.platform)
-            count, stamp, origin = _resolve(item.count, item.as_of, entry, today)
+            limit = stale_limit(config, item.platform)
+            count, stamp, origin = _resolve(item.count, item.as_of, entry, today, limit)
             if count is None or stamp is None:
                 continue
             by_hand = origin == "typed" or not ({ident, item.platform} & fetched)
@@ -189,7 +192,7 @@ def shown_numbers(
                     ident,
                     item.platform,
                     _age(stamp, today),
-                    stale_limit(config, item.platform),
+                    limit,
                     by_hand,
                     stamp,
                 )
