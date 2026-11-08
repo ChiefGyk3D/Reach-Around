@@ -49,8 +49,8 @@ from reach_around.config.numbers import (
     Numbers,
     future_typed_dates,
     load_numbers,
-    old_numbers,
 )
+from reach_around.config.stale import all_numbers
 from reach_around.schema import build_schema
 from reach_around.site.visibility import today_in
 
@@ -663,6 +663,8 @@ def _compare(base_path: Path, raw: object) -> Comparison:
 
 def _note_problem(config: SiteConfig, note: NumberNote, kind: str) -> Problem:
     """A finding for one number: tab, block and platform; never the value."""
+    if note.scope == "kit":
+        return Problem(kind, field="kit.metrics", ident=note.platform, limit=note.days)
     tab_pos = next(i for i, t in enumerate(config.tabs) if t.id == note.tab_id)
     tab = config.tabs[tab_pos]
     block_pos = next(i for i, b in enumerate(tab.blocks) if b.id == note.block_id)
@@ -676,10 +678,11 @@ def _note_problem(config: SiteConfig, note: NumberNote, kind: str) -> Problem:
 
 
 def _number_findings(
-    config: SiteConfig, numbers_path: Path, explicit: bool
+    config: SiteConfig, numbers_path: Path, explicit: bool, fail_stale: bool = False
 ) -> tuple[list[Problem], list[Problem]]:
     """(errors, warnings) about follower numbers: a future date or a bad numbers
-    file is an error; a number over 30 days old is a warning."""
+    file is an error; a number past its stale limit is a warning, and an error
+    when ``fail_stale`` is on and a person keeps that number by hand."""
     today = today_in(config.timezone, datetime.now(UTC))
     errors = [
         _note_problem(config, note, "as_of_future")
@@ -691,10 +694,15 @@ def _number_findings(
             numbers = load_numbers(numbers_path)
         except ConfigError:
             errors.append(Problem("numbers_invalid"))
-    warnings = [
-        _note_problem(config, note, "stale_number")
-        for note in old_numbers(config, numbers, today)
-    ]
+    warnings = []
+    # Hand-kept numbers are judged on the UTC day, whatever the site's zone.
+    for note in all_numbers(config, numbers, datetime.now(UTC).date()):
+        if not note.stale:
+            continue
+        if fail_stale and note.hand_kept:
+            errors.append(_note_problem(config, note, "stale_hand_kept"))
+        else:
+            warnings.append(_note_problem(config, note, "stale_number"))
     return errors, warnings
 
 
@@ -715,6 +723,7 @@ def _run(args: argparse.Namespace) -> int:
     warnings: list[Problem] = []
     counts: tuple[int, int] | None = None
     raw: object = None
+    fail_stale = (args.stale or ("fail" if args.production else "warn")) == "fail"
     try:
         raw = load_yaml(path)
     except ConfigError as exc:
@@ -725,7 +734,7 @@ def _run(args: argparse.Namespace) -> int:
             counts = _counts(config)
             numbers_path = args.numbers or path.parent / "numbers.json"
             problems, warnings = _number_findings(
-                config, numbers_path, args.numbers is not None
+                config, numbers_path, args.numbers is not None, fail_stale
             )
             warnings.extend(_cutover_findings(config, args.production))
         except ValidationError as exc:
@@ -821,5 +830,11 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
         action="store_true",
         help="check as the production site: also warn when cutover_date is not "
         "set (a staging site may leave it out)",
+    )
+    check.add_argument(
+        "--stale",
+        choices=("warn", "fail"),
+        help="what a hand-kept number past its stale limit does: warn, or fail "
+        "the check (default: fail with --production, warn otherwise)",
     )
     check.set_defaults(func=_run)

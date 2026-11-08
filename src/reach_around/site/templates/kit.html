@@ -2,6 +2,7 @@
 {% extends "base.html" %}
 {% from "_kit_parts.html" import numbers, gate_form %}
 {% import "_frames.html" as frames %}
+{% set page_frames = "hero" in frame_plan or ("stat" in frame_plan and kit.total) %}
 {% block content %}
 <section class="kit" aria-labelledby="kit-title">
 {% if "hero" in frame_plan %}
@@ -10,6 +11,9 @@
 {% endif %}
 <h2 id="kit-title">{{ kit.title }}</h2>
 <p class="kit-about">{{ kit.about }}</p>
+{% if kit.contact %}
+<p class="kit-about kit-contact">{{ kit.contact }}</p>
+{% endif %}
 {% if "hero" in frame_plan %}
 </div>
 {% endif %}

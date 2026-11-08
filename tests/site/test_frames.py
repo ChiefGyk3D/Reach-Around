@@ -225,3 +225,30 @@ def test_golden_pages_with_frames_on(tmp_path: Path, update_golden: bool) -> Non
             golden.write_bytes(built.read_bytes())
         assert golden.is_file(), "no golden file; run pytest --update-golden"
         assert built.read_bytes() == golden.read_bytes(), name
+
+
+def test_a_page_with_nothing_to_frame_does_not_load_the_stylesheet(
+    tmp_path: Path,
+) -> None:
+    data = config("l3").model_dump(mode="json", exclude_none=True)
+    data["tabs"][0]["blocks"] = [{"id": "words", "markdown": "Just some words."}]
+    del data["kit"]["metrics"]
+    data["kit"]["metrics"] = []
+    data["theme"] = {"frame": "l1"}
+    out = tmp_path / "out"
+    build_site(SiteConfig.model_validate(data), out, today=TODAY)
+    every = pages(out)
+    assert "frame." not in every["index.html"]
+    assert "frame." not in every["kit/index.html"]
+
+
+def test_print_keeps_the_link_address_rule() -> None:
+    css = (
+        Path(__file__).parents[2] / "src/reach_around/site/static/frame.css"
+    ).read_text(encoding="utf-8")
+    after = re.findall(r"([^{}]*::after[^{}]*)\{\s*display:\s*none", css)
+    for selector in after:
+        assert ".ra-l3::after" in selector or "a.link.ra-bx::after" in selector
+    assert css.index("a.link.ra-bx::after") > css.rindex(
+        "@media screen", 0, css.index("a.link.ra-bx::after")
+    )

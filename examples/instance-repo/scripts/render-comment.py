@@ -229,8 +229,14 @@ VOCAB: dict[str, tuple[str, str]] = {
         "Correct the date, or leave it until the day arrives.",
     ),
     "stale_number": (
-        "the number for {ident} is {limit} days old (over 30)",
+        "the number for {ident} is {limit} days old, past its stale limit",
         "Read it again and update the count and its as_of date, or remove it.",
+    ),
+    "stale_hand_kept": (
+        "the hand-kept number for {ident} is {limit} days old, past its stale limit",
+        "Read it again and update the count and its as_of date, or "
+        "import it with reach-around counts import. See reach-around "
+        "counts stale.",
     ),
     "numbers_invalid": (
         "the numbers file could not be read or is not valid",
@@ -535,6 +541,7 @@ KNOWN_FIELDS: frozenset[str] = frozenset(
         "sources",
         "spell",
         "src",
+        "stale_days",
         "status",
         "store",
         "subtitle",

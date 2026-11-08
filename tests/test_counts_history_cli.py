@@ -205,3 +205,30 @@ def test_a_second_refresh_the_same_day_keeps_the_first_value(
     values = [r.value for r in read_history(setup / "history" / "social.jsonl").records]
     assert values == [5, 6]
     assert "already recorded" in capsys.readouterr().out
+
+
+def test_import_appends_hand_kept_rows_to_the_history(setup: Path) -> None:
+    from datetime import UTC, datetime
+
+    cfg = setup / "kick.yaml"
+    cfg.write_text(
+        CONFIG.replace(
+            "          - {platform: github",
+            '          - {platform: kick, label: subscribers, handle: "@e",'
+            ' url: "https://example.com/k"}\n          - {platform: github',
+        ),
+        encoding="utf-8",
+    )
+    day = datetime.now(UTC).date().isoformat()
+    data = setup / "in.csv"
+    data.write_text(
+        f"platform,metric,value,as_of\nkick,subscribers,41,{day}\n", encoding="utf-8"
+    )
+    argv = ["counts", "import", "--config", str(cfg), "--csv", str(data)]
+    assert main(argv) == 0
+    records = read_history(setup / "history" / "social.jsonl").records
+    assert [(r.platform, r.metric, r.value, r.source) for r in records] == [
+        ("kick", "subscribers", 41, "hand_kept")
+    ]
+    assert main(argv) == 0  # the same day again keeps the first, no error
+    assert len(read_history(setup / "history" / "social.jsonl").records) == 1

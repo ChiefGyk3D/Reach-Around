@@ -18,7 +18,7 @@
 </thead>
 <tbody>
 {% for row in kit.metrics %}
-<tr><th scope="row">{{ row.platform or row.label }}</th><td>{{ row.label if row.platform else "" }}</td><td class="kit-figure">{{ row.value }}</td><td><time datetime="{{ row.as_of }}">{{ row.as_of }}</time></td></tr>
+<tr><th scope="row">{{ row.platform or row.label }}</th><td>{{ row.label if row.platform else "" }}</td><td class="kit-figure">{{ row.value }}</td><td><time datetime="{{ row.as_of }}">{{ row.as_of }}</time>{% if row.stale %} (out of date){% endif %}</td></tr>
 {% endfor %}
 </tbody>
 </table>

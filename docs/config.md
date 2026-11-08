@@ -565,6 +565,11 @@ a `Warning:` finding (exit status stays 0). Both name the block and the
 platform, never the value. This covers typed numbers and numbers-file entries.
 A stale value that loses to a fresh one is not reported.
 
+**Stale marks.** A shown number older than its stale limit is marked on the
+page: the list layout adds `(out of date)` after the `as of` date, and the chips
+layout drops the visible count and says `out of date` in the spoken text, so an
+old number is never presented as current. See [Hand-kept numbers](#hand-kept-numbers).
+
 **Click ids.** With click tracking on, an item's link carries `ping` and
 `data-link-id` set to `<block id>-<platform>`; a repeat of the same platform in
 one block gets `-2`, `-3`. These ids are in the manifest, must not collide with
@@ -906,6 +911,7 @@ end. Text must be quoted if YAML would read it as a number.
 | --- | --- | --- | --- |
 | `title` | text | required | at most 120 characters |
 | `about` | text | required | at most 1000 characters |
+| `contact` | text | none | one plain-text line for brands, at most 200 characters; see the note below |
 | `metrics` | list of metric | none | at most 30; each `platform` and `label` pair once |
 | `partners` | list of partner | none | at most 50 |
 | `case_studies` | list of case study | none | at most 20 |
@@ -938,7 +944,7 @@ A **rate** has `item` (80) and `price_text` (80); the price is text, so
 
 | Field | Shown |
 | --- | --- |
-| `title`, `about`, `metrics`, the unified total | public |
+| `title`, `about`, `contact`, `metrics`, the unified total | public |
 | `partners`, `case_studies`, `rates`, `demographics` | gated (only after the gate) |
 | `turnstile_site_key` | public (it ships in the gate form; the key is public by design) |
 | `unlock_link` | private (configuration, never shown) |
@@ -948,9 +954,23 @@ else. If `partners`, `case_studies`, `rates` or `demographics` is not empty,
 `features.kit_gate` must be `true`; the config is refused otherwise, so gated
 content can never be published with no gate.
 
-**Old numbers.** A number whose `as_of` is more than 30 days before the build
-day gets a build warning (typed numbers, counts file numbers and demographics
-alike). A date in the future also warns. Warnings do not fail the build.
+**Contact line.** `contact` is optional and is yours to decide: write whatever
+you are willing to publish, such as `Brand deals: partners at example.com`.
+An email address written as plain text is fine. It is printed escaped as text on
+the public page, the gated page and the private PDF; it is never turned into a
+`mailto:` or `tel:` link, and Reach Around does not ask for, check or require a
+postal address or phone number (some kits elsewhere publish a postal address;
+here that is your choice, not a requirement). Control and hidden characters,
+`<` and `>`, and surrounding whitespace are refused. Without it nothing is
+printed.
+
+**Old numbers.** A number whose `as_of` is older than its stale limit (30 days
+unless [`numbers.stale_days`](#numbers) says otherwise for that platform) gets a
+build warning (typed numbers, counts file numbers and demographics alike), and
+the kit table marks it `(out of date)` next to its date. A date in the future
+also warns. Warnings do not fail the build; the production check does (see
+[Hand-kept numbers](#hand-kept-numbers)). Kit subscribers are labeled as
+subscribers, never as followers: use the label the platform really reports.
 
 **Unified total.** Add up the value of every metric that has one and is not
 marked `in_total: false`; a metric without a value is ignored. With nothing to
@@ -980,7 +1000,8 @@ each source for one number and writes a validated numbers file (see
 [Daily follower counts](customizing.md#daily-follower-counts) for the command,
 the exit codes and a scheduled workflow). Unknown keys are refused.
 
-`numbers.sources` is a list of 1 to 50 sources, one per `platform`. Every
+`numbers.sources` is a list of up to 50 sources (it may be left out when the
+block only sets `stale_days`), one per `platform`. Every
 source has a `platform` and a `kind` that decides which other keys it takes.
 Keys that a kind does not list are refused.
 
@@ -1099,6 +1120,47 @@ instead of being overwritten. There is one definition of the shape and one
 reader, `load_numbers` in `reach_around/config/numbers.py`, which the build uses;
 refresh reads with it and checks what it writes by parsing it with the same
 parser. A manual or item-id entry in the file that no source touches is kept.
+
+`numbers.stale_days` (optional) maps a platform name to the number of days
+(1 to 365) after which a hand-kept number for it counts as stale; platforms not
+listed use 30. Example: `stale_days: {kick: 14}`.
+
+### Hand-kept numbers
+
+A number is **hand-kept** when a person maintains it: a `count` typed on a
+platform item or a kit metric with `source: manual`, or a numbers-file entry no
+configured source writes (Kick, TikTok, a LinkedIn follower count). Every one
+carries an `as_of` day. All dates are UTC days.
+
+- **The gate.** `reach-around check --production` fails (exit 2, finding
+  `stale_hand_kept`) when a hand-kept number is older than its limit. Plain
+  `check` only warns. `--stale fail` or `--stale warn` overrides either default.
+  Fetched numbers that go stale stay a warning, because the fix is the source,
+  not a person. Findings name the block, platform and age, never the value.
+- **The build.** It never fails on a stale number; it marks it on the page (see
+  above) so a stale number is not shown as current.
+- **The reminder.** `reach-around counts stale --config site.yaml [--numbers
+  numbers.json] [--remind-days 21] [--json]` lists the hand-kept numbers that are
+  stale or at least `--remind-days` (default 21, never later than the platform's
+  limit) old, with days old and days over the limit, never the value. Exit 0
+  means nothing is due, 4 that something is, 2 a usage or config problem. The
+  `--json` form is `{date, remind_days, due: [{scope, platform, id, as_of, days,
+  limit, status, days_over}], stale_count}` for a scheduler or notifier to read.
+  Sending the alert is a separate job (#252).
+- **The import.** `reach-around counts import --config site.yaml --csv FILE
+  [--out numbers.json] [--dry-run]` updates the numbers file from a CSV with the
+  header `platform,metric,value,as_of`: `platform` is a platform name or item id
+  in the config, `metric` is `followers`, `subscribers` or `members` and must
+  match the label the config gives that platform, `value` is digits only, and
+  `as_of` is a UTC day (`YYYY-MM-DD`), not in the future and not older than the
+  entry already on file. The file is capped at 64 KiB and 200 rows, must be UTF-8
+  without control characters, and is checked whole: one bad row refuses the file
+  and nothing is written. Errors give row and column, never the cell. A platform
+  that a fetch source writes is refused. It writes through the same locked,
+  atomic writer as `counts refresh`. When `numbers.history_file` is set, each
+  imported row is also appended to the [history store](social-history.md) as
+  `source: hand_kept` (history first; one value per platform, metric and UTC day,
+  a repeat the same day keeps the first).
 
 ## `features`
 

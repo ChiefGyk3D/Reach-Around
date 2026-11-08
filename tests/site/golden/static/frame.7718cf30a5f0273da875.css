@@ -37,7 +37,9 @@
   box-shadow: none;
   color: var(--ra-color-text);
 }
-a.link.ra-bx::after { display: none; }
+@media screen {
+  a.link.ra-bx::after { display: none; }
+}
 a.link.ra-bx .link-subtitle { color: var(--ra-color-muted); }
 :is(a.link, .platform-link, .kit-total, .kit-head).ra-l1 {
   border-color: var(--ra-fr-edge);
@@ -149,11 +151,13 @@ a.link.ra-bx .link-subtitle { color: var(--ra-color-muted); }
 .section-links:has(.ra-bx) { padding-top: var(--ra-space-2); }
 
 @media (forced-colors: active) {
-  .ra-fr, .ra-bx::before, .ra-bx::after { display: none; }
+  .ra-fr, .ra-bx::before, .ra-l3::after { display: none; }
   :is(a.link, .platform-link, .kit-total, .kit-head).ra-bx { border-color: CanvasText; }
 }
+/* Print keeps the ::after that site.css and platforms.css use to print a link's
+   address; only the glow (L3) is dropped. */
 @media print {
-  .ra-fr, .ra-bx::before, .ra-bx::after { display: none; }
+  .ra-fr, .ra-bx::before, .ra-l3::after { display: none; }
   :is(a.link, .platform-link, .kit-total, .kit-head).ra-bx {
     border-color: CanvasText;
     background: none;

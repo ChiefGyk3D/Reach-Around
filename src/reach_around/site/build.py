@@ -104,6 +104,14 @@ def _links_in(blocks: Iterable[Block]) -> list[Link]:
     return links
 
 
+def _page_has_frames(config: SiteConfig, blocks: Iterable[Block]) -> bool:
+    """Whether a link page has an element that can carry a frame."""
+    if config.theme.frame == "none":
+        return False
+    shown = list(blocks)
+    return bool(_links_in(shown)) or _has_platforms(shown)
+
+
 def _has_crypto(blocks: Iterable[Block]) -> bool:
     return any(isinstance(block, Crypto) for block in blocks)
 
@@ -344,6 +352,7 @@ def _render_page(
         profile_card=_profile_card(config),
         cookie_text=intro_text(config),
         custom_css=custom_css,
+        page_frames=_page_has_frames(config, blocks),
     )
 
 
@@ -392,6 +401,7 @@ def _render_sections_page(
         profile_card=_profile_card(config),
         cookie_text=intro_text(config),
         custom_css=custom_css,
+        page_frames=_page_has_frames(config, every),
     )
 
 
@@ -650,8 +660,12 @@ def build_site(
     assets_dir: Path | None = None,
     numbers: Numbers | None = None,
     gated_out: Path | None = None,
+    number_day: date | None = None,
 ) -> BuildManifest:
     """Write the site for ``today`` into ``out_dir`` and return the manifest.
+
+    ``number_day`` is the day number ages are judged on (the stale marks and
+    old-number warnings); callers pass the UTC day. It defaults to ``today``.
 
     The manifest is returned, never written into ``out_dir``: the caller
     decides where it goes (see ``manifest_json``). It also carries the
@@ -741,7 +755,9 @@ def build_site(
         static[Path("static") / "custom.css"] = custom_css.encode("utf-8")
     named = fingerprint(static)
     env = make_environment(overrides)
-    env.globals["platform_rows"] = lambda block: platform_rows(block, numbers, today)
+    env.globals["platform_rows"] = lambda block: platform_rows(
+        block, numbers, number_day or today, config
+    )
     env.globals["asset"] = named.assets
     env.globals["footer_copyright"] = config.footer.copyright_line(today.year)
     # Every page with a tab bar carries the nav badge, so every such page gets the
@@ -760,7 +776,11 @@ def build_site(
         ).items()
     }
     kit_render = render_kit(
-        env, config, numbers, today, _kit_base(config, shown, custom_css is not None)
+        env,
+        config,
+        numbers,
+        number_day or today,
+        _kit_base(config, shown, custom_css is not None),
     )
     files.update(
         {page: html.encode("utf-8") for page, html in kit_render.public.items()}
@@ -837,7 +857,7 @@ def build_site(
         ),
         inventory=build_inventory(files, named.hashed),
         warnings=(
-            *number_warnings(config, numbers, today),
+            *number_warnings(config, numbers, number_day or today),
             *kit_render.warnings,
         ),
     )

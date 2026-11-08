@@ -681,6 +681,20 @@
           "title": "Case Studies",
           "type": "array"
         },
+        "contact": {
+          "anyOf": [
+            {
+              "maxLength": 200,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Contact"
+        },
         "demographics": {
           "items": {
             "$ref": "#/$defs/Demographic"
@@ -1103,14 +1117,22 @@
             ]
           },
           "maxItems": 50,
-          "minItems": 1,
           "title": "Sources",
           "type": "array"
+        },
+        "stale_days": {
+          "maxProperties": 50,
+          "patternProperties": {
+            "^[a-z0-9][a-z0-9-]{0,39}$": {
+              "maximum": 365,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          "title": "Stale Days",
+          "type": "object"
         }
       },
-      "required": [
-        "sources"
-      ],
       "title": "NumbersConfig",
       "type": "object"
     },
