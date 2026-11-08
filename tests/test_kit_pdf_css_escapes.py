@@ -90,3 +90,41 @@ def test_a_decoded_comment_opener_is_refused() -> None:
 def test_more_legitimate_escapes_still_work() -> None:
     out = clean_css(b".a\\2f b{content:\\201C hi\\201D}.w-1\\/2{width:50%}", "s")
     assert out == ".a/b{content:“hi”}.w-1/2{width:50%}"
+
+
+SPLICE_FORMS = [
+    # removing the middle construct would join "/" and "*" into an opener
+    b"a{b:c}/@import 'x.css';*/ d{e:f}",
+    b"a{b:/@font-face{x:y}* c}",
+    b"a{b:/url(x)* c}",
+    # ... or "*" and "/" into a closer
+    b"a{b:c *@import 'x.css';/ d}",
+    b"a{b:*url(x)/ c}",
+]
+
+
+@pytest.mark.parametrize("sheet", SPLICE_FORMS)
+def test_removing_a_construct_cannot_splice_a_comment_delimiter(sheet: bytes) -> None:
+    try:
+        out = clean_css(sheet, "a stylesheet")
+    except StageError:
+        return
+    assert "/*" not in out and "*/" not in out
+
+
+def test_removal_leaves_a_separator_not_a_join() -> None:
+    out = clean_css(b"a{b:u@import 'x.css';rl(y)}", "a stylesheet")
+    assert "url(" not in out.lower()
+    assert "u rl" in out or "u " in out
+
+
+def test_the_image_function_is_refused() -> None:
+    with pytest.raises(StageError):
+        clean_css(b"a{background:image('https://x.test/a.png')}", "a stylesheet")
+    with pytest.raises(StageError):
+        clean_css(b"a{background:IMAGE ( 'https://x.test/a.png')}", "a stylesheet")
+
+
+def test_background_image_property_is_not_blanket_rejected() -> None:
+    out = clean_css(b"a{background-image:none}", "a stylesheet")
+    assert out == "a{background-image:none}"

@@ -226,7 +226,9 @@ _CSS_ESCAPE = re.compile(r"\\([0-9a-fA-F]{1,6})[ \t\n\r\f]?|\\(.)", re.S)
 _FONT_FACE = re.compile(r"@font-face\s*\{[^{}]*\}", re.I)
 _IMPORT = re.compile(r"@import\b[^;{}]*;?", re.I)
 _URL = re.compile(r"url\s*\((?:[^()\\]|\\.)*\)", re.I)
-_REMOTE_FUNCTIONS = re.compile(r"url\s*\(|@import|image-set\s*\(|\bsrc\s*\(", re.I)
+_REMOTE_FUNCTIONS = re.compile(
+    r"url\s*\(|@import|image-set\s*\(|\bimage\s*\(|\bsrc\s*\(", re.I
+)
 
 
 def _unescape_css(match: re.Match[str]) -> str:
@@ -258,9 +260,13 @@ def clean_css(raw: bytes, what: str) -> str:
     # string. Refuse it (fail closed) instead of stripping again.
     if "/*" in text:
         raise StageError(f"{what} has a comment that appears after unescaping")
-    text = _FONT_FACE.sub("", text)
-    text = _IMPORT.sub("", text)
-    text = _URL.sub("none", text)
+    # A removal leaves a space, never a join, so the text on either side cannot
+    # fuse into a new token or comment delimiter; the final text is re-checked.
+    text = _FONT_FACE.sub(" ", text)
+    text = _IMPORT.sub(" ", text)
+    text = _URL.sub(" none ", text)
+    if "/*" in text or "*/" in text:
+        raise StageError(f"{what} has a comment delimiter after filtering")
     if _REMOTE_FUNCTIONS.search(text):
         raise StageError(f"{what} has a reference that could not be removed")
     if "<" in text:
