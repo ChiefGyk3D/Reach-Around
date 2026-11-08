@@ -400,6 +400,17 @@ site the same way the view route does:
   bound forged clicks.
 - Blog clicks (outbound or call-to-action links) use `ping` anchors to the
   same route on the blog's host or collector host (section 15, item 7).
+- Source-attributed clicks (#329): `click_events` also gets a nullable `src`, the
+  closed-set label of the page's `s` parameter. `click.js` appends that one label
+  to the ping (`/e/c/<id>?s=<label>`); the Worker reads it only for a site that
+  lists `sources`, keeps a listed label as itself and anything else valid as the
+  fixed `other`, and stores nothing for a missing, repeated or malformed value.
+  What is collected: one label from a closed list per click. What is not: no
+  cookie, no stored id, no referrer text, no join between a click and a view or a
+  person; a click on a page opened without the label reads as no source. Raw
+  click times are rounded down to the hour (as views are). The aggregate is a
+  report-side count of `source -> link`; the rollup tables, caps and seal for
+  it are #331.
 - `click_events` gets `site` in the migration (3.5). The funnel joins clicks to
   views on `(site, day, page)` through each site's link-to-page map.
 

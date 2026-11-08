@@ -790,6 +790,10 @@ def test_docs_state_the_real_guarantee() -> None:
 
 
 FIELD_CASES = [
+    ("ip click src", "click_events", {"ts": TS, "link_id": "a", "src": "198.51.100.7"}),
+    ("ua click src", "click_events", {"ts": TS, "link_id": "a", "src": "Mozilla/5.0"}),
+    ("upper click src", "click_events", {"ts": TS, "link_id": "a", "src": "Instagram"}),
+    ("long click src", "click_events", {"ts": TS, "link_id": "a", "src": "a" * 31}),
     ("email link id", "click_events", {"ts": TS, "link_id": "alice@example.com"}),
     ("email pct", "click_events", {"ts": TS, "link_id": "alice%40example.com"}),
     ("upper link id", "click_events", {"ts": TS, "link_id": "Alice"}),
@@ -892,3 +896,28 @@ def test_error_messages_never_echo_table_or_column_names(
     csv_path.write_text("ts,link_id,Alice_Smith\n1,a,b\n", encoding="utf-8")
     code, _, err = run(capsys, "--input", str(csv_path))
     assert code == 2 and "alice" not in err.lower()
+
+
+def test_click_sources_are_reported_per_link_with_the_floor(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    rows = (
+        [{"ts": TS, "link_id": "twitch", "src": "instagram"}] * 7
+        + [{"ts": TS, "link_id": "twitch", "src": None}] * 5
+        + [{"ts": TS, "link_id": "kick", "src": "other"}] * 6
+        + [{"ts": TS, "link_id": "kick", "src": "bluesky"}] * 2
+        + [{"ts": TS, "link_id": "kick", "src": "tiktok"}] * 3
+    )
+    path = write(tmp_path, {"tables": {"click_events": rows}})
+    code, out, _ = run(capsys, "--input", str(path), "--json")
+    assert code == 0
+    section = json.loads(out)["click_sources"]
+    labels = {r["label"]: r["views"] for r in section["rows"]}
+    # Cells under the floor merge into one line, and the largest shown cell
+    # joins them (the report's complementary rule), so no small cell is
+    # recoverable from the printed total.
+    assert labels == {"none -> twitch": 5, "other -> kick": 6}
+    assert section["other_below_floor"] == 12
+    code, out, _ = run(capsys, "--input", str(path))
+    assert "other -> kick" in out
+    assert "bluesky" not in out and "tiktok" not in out

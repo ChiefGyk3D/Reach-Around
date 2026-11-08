@@ -255,8 +255,10 @@ def build_report(
         if r["bot_class"] in wanted:
             places[_geo_label(r["country"], r["region"], r["city"], geo)] += r["views"]
     links: dict[str, int] = defaultdict(int)
+    click_sources: dict[str, int] = defaultdict(int)
     for r in click_rows:
         links[r["link_id"]] += 1
+        click_sources[f"{r.get('src') or 'none'} -> {r['link_id']}"] += 1
     kit: dict[str, int] = defaultdict(int)
     for r in kit_rows:
         kit[r["kind"]] += 1
@@ -324,6 +326,9 @@ def build_report(
             **_section(places, floor, top, "view_geo_daily" in export.present),
         },
         "links": _section(links, floor, top, "click_events" in export.present),
+        "click_sources": _section(
+            click_sources, floor, top, "click_events" in export.present
+        ),
         "bots": {
             "total_views": (_count(total_views, floor) if total_printable else None),
             "classes": [
@@ -438,7 +443,10 @@ def render_text(report: dict[str, Any]) -> str:
         )
     if funnel["withheld"]:
         lines.append("  A figure marked below the privacy floor is not printed.")
-    lines.append("  Clicks are not tied to a source: no 'visitors from X clicked Y'.")
+    lines.append(
+        "  Clicks are counts, not people; a click's source is the label on the "
+        "link it came in on."
+    )
 
     classes = ", ".join(report["counted_classes"])
     _table(f"Pages (classes: {classes})", report["pages"], lines)
@@ -446,6 +454,7 @@ def render_text(report: dict[str, Any]) -> str:
     geo = report["geography"]
     _table(f"Geography by {geo['level']} (classes: {classes})", geo, lines)
     _table("Link clicks by link", report["links"], lines)
+    _table("Link clicks by source -> link", report["click_sources"], lines)
 
     bots = report["bots"]
     lines.append("")

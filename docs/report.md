@@ -20,10 +20,11 @@ the file.
 
 | Section | Source table | Notes |
 |---|---|---|
-| Funnel | `view_daily`, `click_events`, `kit_events` | Page views are likely-human views (bot class `h`). Clicks per 100 views is a ratio, not a conversion rate, and a note appears above 100. Clicks are not tied to a source. |
+| Funnel | `view_daily`, `click_events`, `kit_events` | Page views are likely-human views (bot class `h`). Clicks per 100 views is a ratio, not a conversion rate, and a note appears above 100. Clicks are counts, not people. |
 | Pages, Sources | `view_daily` | Likely-human only, unless `--include-bots`. Sources are direct, internal, a referrer host, or `utm:<label>`. |
 | Geography | `view_geo_daily` | `--geo country` (default), `region` or `city`. The Worker folds small cities and regions upward before the export, so a finer level may show `other`. Country codes only, no coordinates. |
 | Link clicks | `click_events` | Per link id. |
+| Link clicks by source | `click_events` | `source -> link` pairs, from the closed source label the page sent with the click (the `s` parameter; `none` when the link carried no label, `other` for a label not on the site's list). A count of clicks, never of people, and not tied to any view. Same floor as the other tables. The matrix presentation is a later change (#409). |
 | Bots | `view_daily`, `view_dim_daily` | Share of all recorded views per class (likely human, verified crawler as claimed, automated, suspicious) and the reason codes. |
 
 Human-likely is an estimate. Crawlers that never run the page-view script are
@@ -71,7 +72,7 @@ agent, so a correct export never trips this. If it does, the export is wrong.
 | `view_daily` | `day, page, src_kind, src, country, bot_class, views` [`site, day_tz, uniques`] |
 | `view_dim_daily` | `day, dim, value, bot_class, views` [`site, day_tz, uniques`] |
 | `view_geo_daily` | `day, country, region, city, bot_class, views` [`site, day_tz, uniques`] |
-| `click_events` | `ts, link_id` [`site, country`] |
+| `click_events` | `ts, link_id` [`site, country, src`] |
 | `kit_events` | `ts, kind` [`site`] |
 
 `kit_events` also has a `lead_id` column in the database. Do not select it; a

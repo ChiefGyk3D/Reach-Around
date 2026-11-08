@@ -92,7 +92,7 @@ describe("click endpoint", () => {
       name: string;
     }>();
     expect(cols.results.map((c) => c.name).sort()).toEqual(
-      ["country", "id", "link_id", "site", "ts"].sort(),
+      ["country", "id", "link_id", "site", "src", "ts"].sort(),
     );
     expect(JSON.stringify(r)).not.toContain("198.51.100.7");
   });
