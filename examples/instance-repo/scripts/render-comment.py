@@ -468,6 +468,7 @@ KNOWN_FIELDS: frozenset[str] = frozenset(
         "handle",
         "header",
         "heading",
+        "history_file",
         "host",
         "icon",
         "id",
