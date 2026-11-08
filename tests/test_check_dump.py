@@ -9,6 +9,7 @@ supported encodings before it looks for an address.
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 import subprocess
 import sys
@@ -27,11 +28,68 @@ UA = (
 )
 
 
+def nesting_depth(sql: str) -> int:
+    depth = peak = 0
+    for c in sql:
+        if c == "(":
+            depth += 1
+            peak = max(peak, depth)
+        elif c == ")":
+            depth -= 1
+    return peak
+
+
+def schema_sql(sql: str) -> str:
+    """The migration without its CHECK constraints. Migration 0009 nests about
+    forty replace() calls inside one CHECK; that is fine for D1 but overflows the
+    parser stack of the SQLite some CI images ship ("parser stack overflow").
+    Constraints do not change a table's columns or types, which is all these
+    tests read, so they are cut out before the SQL is handed to sqlite3."""
+    out: list[str] = []
+    i = 0
+    while i < len(sql):
+        m = re.compile(r"\bCHECK\s*\(", re.IGNORECASE).search(sql, i)
+        if not m:
+            out.append(sql[i:])
+            break
+        out.append(sql[i : m.start()])
+        depth = 1
+        j = m.end()
+        quote = ""
+        while j < len(sql) and depth:
+            c = sql[j]
+            if quote:
+                quote = "" if c == quote else quote
+            elif c in "'\"":
+                quote = c
+            elif c == "(":
+                depth += 1
+            elif c == ")":
+                depth -= 1
+            j += 1
+        i = j
+    return "".join(out)
+
+
 def real_db() -> sqlite3.Connection:
     db = sqlite3.connect(":memory:")
     for m in MIGRATIONS:
-        db.executescript(m.read_text())
+        db.executescript(schema_sql(m.read_text()))
     return db
+
+
+def test_the_schema_loader_never_hands_sqlite_deeply_nested_sql() -> None:
+    # Collected loosely, asserted strictly: the raw migration really is deep (so
+    # the guard is needed) and what we execute is shallow.
+    assert MIGRATIONS, "no migrations collected"
+    raw = max(nesting_depth(m.read_text()) for m in MIGRATIONS)
+    assert raw > 30, "the migrations no longer nest deeply; this guard can go"
+    for m in MIGRATIONS:
+        assert nesting_depth(schema_sql(m.read_text())) <= 10, m.name
+    # The cut leaves the tables' columns intact.
+    db = real_db()
+    cols = [c[1] for c in db.execute("PRAGMA table_info('leads')")]
+    assert cols[:3] == ["id", "email", "created_ts"]
 
 
 def schema_dump() -> str:
@@ -880,3 +938,24 @@ def test_the_wrangler_export_shape_passes_by_default(tmp_path: Path) -> None:
     )
     r = run(export, tmp_path=tmp_path)
     assert r.returncode == 0, r.stdout + r.stderr
+
+
+def test_the_checker_parses_the_raw_migration_tables_with_their_nested_checks() -> None:
+    # real_db() cuts CHECK clauses so old SQLite builds can load the schema; the
+    # checker itself must still read the untouched CREATE TABLE text (an export
+    # keeps it) and find exactly the allowlisted columns.
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("check_dump", SCRIPT)
+    assert spec and spec.loader
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    allow = json.loads(SCHEMA.read_text())["tables"]
+    leads = next(
+        st
+        for m in MIGRATIONS
+        for _l, st in mod.statements(m.read_text())
+        if st.upper().startswith("CREATE TABLE LEADS")
+    )
+    assert nesting_depth(leads) > 30
+    assert [c.lower() for c in mod.parse_create(leads)[1]] == allow["leads"]
