@@ -1064,6 +1064,20 @@
     "NumbersConfig": {
       "additionalProperties": false,
       "properties": {
+        "history_file": {
+          "anyOf": [
+            {
+              "maxLength": 300,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "History File"
+        },
         "sources": {
           "items": {
             "discriminator": {

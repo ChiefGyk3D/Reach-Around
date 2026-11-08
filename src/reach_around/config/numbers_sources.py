@@ -184,6 +184,26 @@ class NumbersConfig(BaseModel):
         Field(default_factory=dict, max_length=MAX_SOURCES)
     )
 
+    history_file: str | None = Field(default=None, min_length=1, max_length=300)
+
+    @field_validator("history_file")
+    @classmethod
+    def _history_file(cls, value: str | None) -> str | None:
+        if value is None:
+            return value
+        if (
+            "\x00" in value
+            or "\n" in value
+            or "\\" in value
+            or value.startswith("/")
+            or any(part in ("", ".", "..") for part in value.split("/"))
+        ):
+            raise ValueError(
+                "history_file must be a relative file path inside the folder of "
+                "the config, with no '..'"
+            )
+        return value
+
     @model_validator(mode="after")
     def _sources_not_written_empty(self) -> NumbersConfig:
         # Leaving ``sources`` out is fine (only ``stale_days``); writing an

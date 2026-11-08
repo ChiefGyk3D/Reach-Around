@@ -53,6 +53,7 @@ class ImportFailed(Exception):
 @dataclass(frozen=True)
 class ImportedRow:
     key: str
+    metric: str
     count: int
     as_of: date
 
@@ -149,7 +150,7 @@ def parse_import(
             bad(number, "as_of", "is older than the number already on file")
         if len(problems) == before and stamp is not None:
             seen.add(platform)
-            found.append(ImportedRow(platform, count, stamp))
+            found.append(ImportedRow(platform, metric, count, stamp))
     if problems:
         shown = problems[:MAX_ERRORS]
         if len(problems) > MAX_ERRORS:

@@ -1024,6 +1024,10 @@ the number would never be shown. (`kind` is separate: `kind: mastodon` with
 | `youtube` | `channel_id`: the `UC...` id; `api_key_env`: the NAME of an environment variable | YouTube Data API v3 `channels.list`, `statistics.subscriberCount` | yes |
 | `twitch` | `login`; `client_id_env` and `client_secret_env`: environment variable NAMES that must differ | app token, then `helix/channels/followers` `total` | yes, and see the limit below |
 
+`numbers.history_file` (optional) is a path to an append-only history file in
+your private instance repo; relative paths are relative to the config file. Unset
+means no history is written. See [Social-stats history](social-history.md).
+
 Credentials are never in the config. A keyed source names an environment
 variable (capital letters, digits and underscores, starting with a letter); the
 value is read when the command runs, sent in a header or a POST body (never in
@@ -1152,8 +1156,10 @@ carries an `as_of` day. All dates are UTC days.
   without control characters, and is checked whole: one bad row refuses the file
   and nothing is written. Errors give row and column, never the cell. A platform
   that a fetch source writes is refused. It writes through the same locked,
-  atomic writer as `counts refresh`. Appending to the history store is tracked in
-  #437.
+  atomic writer as `counts refresh`. When `numbers.history_file` is set, each
+  imported row is also appended to the [history store](social-history.md) as
+  `source: hand_kept` (history first; one value per platform, metric and UTC day,
+  a repeat the same day keeps the first).
 
 ## `features`
 
