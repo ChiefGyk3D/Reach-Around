@@ -1,5 +1,6 @@
 {# SPDX-License-Identifier: Apache-2.0 #}
-{% macro numbers(kit, heading_id) %}
+{% import "_frames.html" as frames %}
+{% macro numbers(kit, heading_id, framed=false) %}
 {% if kit.metrics %}
 <section class="kit-numbers" aria-labelledby="{{ heading_id }}">
 <h3 id="{{ heading_id }}">Audience numbers</h3>
@@ -7,7 +8,7 @@
 <p class="kit-note kit-live-since"><time datetime="{{ kit.live_since.iso }}">{{ kit.live_since.text }}</time></p>
 {% endif %}
 {% if kit.total %}
-<p class="kit-total"><span class="kit-total-label">Combined audience</span> <strong class="kit-total-value">{{ kit.total.value }}</strong></p>
+<p class="kit-total{% if framed %}{{ frames.cls("stat") }}{% endif %}"><span class="kit-total-label">Combined audience</span> <strong class="kit-total-value">{{ kit.total.value }}</strong></p>
 <p class="kit-note">Added up from {{ kit.total.counted }} {{ "number" if kit.total.counted == 1 else "numbers" }}{% if kit.total.oldest %}; the oldest is dated {{ kit.total.oldest }}{% endif %}. People who follow on more than one platform are counted more than once.</p>
 {% endif %}
 <table class="kit-table">

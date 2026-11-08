@@ -41,6 +41,12 @@ from reach_around.config.tablinks import is_tab_ref, parse_tab_ref
 from reach_around.site.assets import collect_assets
 from reach_around.site.cachepolicy import cache_patterns
 from reach_around.site.fingerprint import AssetMap, fingerprint
+from reach_around.site.frames import (
+    SIZE_SCALES,
+    SLOT_SIZES,
+    check_frames,
+    frame_plan,
+)
 from reach_around.site.inventory import InventoryEntry, build_inventory
 from reach_around.site.kit import (
     GATED_FILE,
@@ -130,6 +136,7 @@ _LIVE_STYLE = Path("static") / "live.css"
 _LIVE_SCRIPT = Path("static") / "live.js"
 # Published only for a site with a kit.
 _KIT_STYLE = Path("static") / "kit.css"
+_FRAME_STYLE = Path("static") / "frame.css"
 
 
 # Published only for a site with an email block; the script only if one uses it.
@@ -727,6 +734,8 @@ def build_site(
         static.pop(_LIVE_SCRIPT, None)
     if kit is None:
         static.pop(_KIT_STYLE, None)
+    if config.theme.frame == "none":
+        static.pop(_FRAME_STYLE, None)
     static[Path("static") / "theme.css"] = theme_css(config.theme).encode("utf-8")
     if custom_css is not None:
         static[Path("static") / "custom.css"] = custom_css.encode("utf-8")
@@ -740,6 +749,10 @@ def build_site(
     env.globals["has_live_script"] = any(_has_live(blocks) for blocks in shown)
     env.globals["asset_url"] = _asset_url(named.assets)
     env.globals["font_preloads"] = _font_preloads(config, named.assets)
+    plan = frame_plan(config.theme.frame)
+    env.globals["frame_plan"] = plan
+    env.globals["frame_sizes"] = {slot: SLOT_SIZES[slot] for slot in plan}
+    env.globals["frame_scales"] = SIZE_SCALES
     files: dict[Path, bytes] = {
         page: html.encode("utf-8")
         for page, html in _render_pages(
@@ -753,6 +766,15 @@ def build_site(
         {page: html.encode("utf-8") for page, html in kit_render.public.items()}
     )
     files.update(named.files)
+    check_frames(
+        {
+            path.as_posix(): data.decode("utf-8")
+            for path, data in files.items()
+            if path.suffix == ".html"
+        }
+    )
+    if kit_render.gated is not None:
+        check_frames({"kit.html (gated)": kit_render.gated})
     robots = config.robots
     if robots is not None:
         if Path("robots.txt") in files:

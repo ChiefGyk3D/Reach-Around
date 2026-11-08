@@ -767,6 +767,7 @@ tabs:
 | `column_width` | length | `35rem` (560 px) | `px`, `rem`, `em`, `ch`, `%` or `vw`. |
 | `radius` | length | `0.5rem` | Base corner radius for cards and sections. |
 | `button_style` | `pill`, `rounded`, `square` | `rounded` | `rounded` is the 36 px pill radius, `pill` is fully round, `square` has no radius. |
+| `frame` | `none`, `l1`, `l2`, `l3` | `none` | Optional border frames: the strongest level the build may use. `none` writes no frame markup and does not load the frame stylesheet. See [Border frames](customizing.md#border-frames). |
 | `mode` | `auto`, `light`, `dark` | `auto` | `auto` is the stylesheet's own choice, which is dark. `light` forces the light palette. |
 
 ### What is accepted

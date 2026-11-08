@@ -341,8 +341,8 @@ def test_featured_link_gets_its_own_pill_class_and_others_do_not(
 ) -> None:
     out = build_example(tmp_path / "out")
     html = (out / "index.html").read_text()
-    featured = re.findall(r'<a class="link link-featured"', html)
-    plain = re.findall(r'<a class="link"', html)
+    featured = re.findall(r'<a class="link link-featured[ "]', html)
+    plain = re.findall(r'<a class="link[ "](?!link-featured)', html)
     assert len(featured) == 1 and len(plain) >= 2
     raw = yaml.safe_load(EXAMPLE.read_text())
     assert raw["tabs"][0]["blocks"][0]["featured"] is True

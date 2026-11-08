@@ -225,6 +225,49 @@ Fonts are a system font stack or a font file inside your instance folder.
 A font on someone else's server is refused. See
 [`theme` in the config reference](config.md#theme) for every key.
 
+### Border frames
+
+An optional look, off by default: `theme.frame` puts one border system on the
+buttons and cards of the link page and the media kit. It is one frame in three
+amounts (stepped, chamfered corner brackets that split at the middle of each
+edge, thin accent rules, a translucent accent fill):
+
+| Level | What it draws | Where it goes |
+| --- | --- | --- |
+| `l1` | Four corner ticks on a hairline box. CSS only, no extra markup. | Link buttons, platform cards, the combined audience number on the kit page |
+| `l2` | The same layout with plain brackets and two thin rules, no glow. One small inline SVG. | The featured link |
+| `l3` | The full frame: stepped brackets with a graphite sheen, end-cap plates, center rules and a faint glow under the bottom rule. | The media kit title tile |
+
+`theme.frame` is the strongest level the build may use. `l1` frames everything
+at L1. `l2` adds L2 on the featured link. `l3` adds the one L3 tile on the kit
+page (a site with no kit builds the same as `l2`). The link page has no L3,
+and the build refuses a page with a second L3 frame (an override template
+that calls the frame macros twice stops the build, naming the page).
+
+```yaml
+theme:
+  frame: l3
+```
+
+What to know:
+
+- The frame takes the place of the button radius on framed elements (it has
+  chamfered corners). Unframed elements keep `button_style` and `radius`.
+- Colors follow your theme: the accent draws the rules, ticks and dashes; the
+  text stays the theme text color on a translucent accent fill. On hover the
+  panel fills with the accent and the text turns to `on_accent`. There is no
+  amber lettering, so nothing depends on the accent contrasting with a light
+  page. Brackets are graphite, lighter on dark pages.
+- The frames are inline SVG elements and CSS classes in the packaged
+  fingerprinted `static/frame.css`, loaded only on pages that have a framed
+  element. There is no `style` attribute and no image, font or third-party
+  request, so the CSP is unchanged. Nothing animates. Focus rings stay clear of
+  the frame, tap targets stay at least 44 px, and forced-colors and print drop
+  the artwork for a plain border.
+- The gated media kit page (the one the PDF renderer prints) carries no frame.
+- Your own `custom.css` is still checked by the same rules as before; the
+  frame adds nothing to what it may contain.
+
 ## Your own images: avatar, favicon, background, mascot
 
 The engine ships no artwork. Four image slots are config keys, and each takes

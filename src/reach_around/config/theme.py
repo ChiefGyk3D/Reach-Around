@@ -97,6 +97,10 @@ class Theme(_Model):
     radius: str = "0.5rem"
     button_style: Literal["pill", "rounded", "square"] = "rounded"
     mode: Literal["auto", "light", "dark"] = "auto"
+    # Optional border frames (docs/customizing.md, "Border frames"): the
+    # strongest level the build may use. "none" (the default) writes no frame
+    # markup and does not load the frame stylesheet.
+    frame: Literal["none", "l1", "l2", "l3"] = "none"
 
     @field_validator("colors")
     @classmethod

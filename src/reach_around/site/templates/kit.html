@@ -1,11 +1,19 @@
 {# SPDX-License-Identifier: Apache-2.0 #}
 {% extends "base.html" %}
 {% from "_kit_parts.html" import numbers, gate_form %}
+{% import "_frames.html" as frames %}
 {% block content %}
 <section class="kit" aria-labelledby="kit-title">
+{% if "hero" in frame_plan %}
+<div class="kit-head{{ frames.cls("hero") }}">
+{{ frames.art("hero") }}
+{% endif %}
 <h2 id="kit-title">{{ kit.title }}</h2>
 <p class="kit-about">{{ kit.about }}</p>
-{{ numbers(kit, "kit-numbers-title") }}
+{% if "hero" in frame_plan %}
+</div>
+{% endif %}
+{{ numbers(kit, "kit-numbers-title", true) }}
 {% if form %}
 <section class="kit-gate-box" aria-labelledby="kit-gate-title">
 <h3 id="kit-gate-title">More details</h3>
