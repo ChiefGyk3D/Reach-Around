@@ -1,5 +1,5 @@
 {
-  "_comment": "Allowlist for scripts/check-dump.py. tables: every table and column order the Worker's migrations create (a test keeps this equal to them) plus Cloudflare's own bookkeeping tables. A new table or column needs a reviewed edit here. hex_ids: columns that hold an opaque 32-hex id or keyed hash. numeric: every numeric column (and the text columns that hold a counter or a timestamp) with the kind of value it may hold; numeric_kinds gives the allowed inclusive ranges (small stays under 2^24 and ms is epoch milliseconds from 2020 to 2099, so no value can be a 32-bit address). A numeric value outside its range fails. patterns: a regex a value in that column (any table) must fully match. spaces_ok: column names (any table) whose values may hold spaces (place names).",
+  "_comment": "Allowlist for scripts/check-dump.py. tables: every table and column order the Worker's migrations create (a test keeps this equal to them) plus Cloudflare's own bookkeeping tables. A new table or column needs a reviewed edit here. hex_ids: columns that hold an opaque 32-hex id or keyed hash. numeric: every numeric column (and the text columns that hold a counter or a timestamp) with the kind of value it may hold; numeric_kinds gives the allowed inclusive ranges (small stays under 2^24 and ms is epoch milliseconds from 2020 to 2099, so no value can be a 32-bit address). A numeric value outside its range fails. patterns: a regex a value in that column (any table) must fully match. spaces_ok: column names (any table) whose values may hold spaces (place names). label_columns: column names (any table) that hold enum or label text; an 8-character all-hex token (digits included) is refused there, except in a column that has a numeric rule or is in hex_ids. A numeric value in a column with no numeric rule is always an error.",
   "tables": {
     "_cf_KV": [
       "key",
@@ -190,6 +190,7 @@
     "leads.last_view_event_ts": "ms_or_small",
     "leads.session_floor_ts": "ms_or_small",
     "leads.verified_ts": "ms_or_small",
+    "sqlite_sequence.seq": "small",
     "view_daily.uniques": "small",
     "view_daily.views": "small",
     "view_dim_daily.uniques": "small",
@@ -210,5 +211,21 @@
     "view_rollup_log.rows_geo": "small",
     "view_rollup_log.uniques": "small",
     "view_rollup_log.views": "small"
-  }
+  },
+  "label_columns": [
+    "src",
+    "page",
+    "reason",
+    "site",
+    "link_id",
+    "region",
+    "city",
+    "value",
+    "key",
+    "kind",
+    "source",
+    "dim",
+    "vp",
+    "name"
+  ]
 }

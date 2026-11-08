@@ -66,6 +66,8 @@ UA = re.compile(
 BAD_CHARS = re.compile(r"[/()\\;<>\"\x00-\x08\x0b-\x1f]")
 MAX_VALUE = 256
 MAX_DECODE = 4096  # longer values are refused without decoding
+NUMBER_TEXT = re.compile(r"[+-]?\d+(?:\.\d+)?")
+HEX8_ANY = re.compile(r"(?<![0-9a-z])[0-9a-f]{8}(?![0-9a-z])", re.IGNORECASE)
 HEX8 = re.compile(
     r"(?<![0-9a-z])(?=[0-9a-f]*[a-f])[0-9a-f]{8}(?![0-9a-z])", re.IGNORECASE
 )
@@ -328,16 +330,17 @@ def decode(text: str) -> str:
         cur = nxt
 
 
-def number_ok(text: str, colkey: str, cfg: dict[str, Any]) -> bool:
-    """A number must sit inside its column's declared ranges. A column with no
-    declared rule only has to stay out of the 32-bit address range."""
+def number_ok(text: str, colkey: str, cfg: dict[str, Any], literal: bool) -> bool:
+    """A number must sit inside its column's declared ranges. A numeric literal
+    in a column with no declared rule is always refused (fail closed); a number
+    written as text in such a column only has to stay below 2^24 in size."""
     try:
         n = float(text)
     except ValueError:
         return False
     kind = cfg["numeric"].get(colkey)
     if kind is None:
-        return not 2**24 <= n < 2**32
+        return False if literal else abs(n) < 2**24
     return any(lo <= n <= hi for lo, hi in cfg["numeric_kinds"][kind])
 
 
@@ -349,7 +352,7 @@ def value_kinds(
     if val.kind == "null":
         return kinds
     if val.kind == "num":
-        if not number_ok(val.text, colkey, cfg):
+        if not number_ok(val.text, colkey, cfg, True):
             kinds.append("numeric value out of range")
         return kinds
     text = val.text
@@ -372,11 +375,18 @@ def value_kinds(
     if IPV4.search(text) or HEX_IP.search(text):
         kinds.append("ipv4 address")
     stripped = text.strip()
-    if stripped.isdigit() and not number_ok(stripped, colkey, cfg):
+    if NUMBER_TEXT.fullmatch(stripped) and not number_ok(stripped, colkey, cfg, False):
         kinds.append(
             "numeric value out of range" if colkey in cfg["numeric"] else "ipv4 address"
         )
     if colkey not in cfg["hex_ids"] and HEX8.search(text):
+        kinds.append("bare hex token")
+    elif (
+        col in cfg["label_columns"]
+        and colkey not in cfg["hex_ids"]
+        and colkey not in cfg["numeric"]
+        and HEX8_ANY.search(text)
+    ):
         kinds.append("bare hex token")
     if IPV6.search(text) or (colkey not in cfg["hex_ids"] and HEX32.search(text)):
         kinds.append("ipv6 address")
@@ -401,6 +411,7 @@ def load_cfg(path: Path) -> dict[str, Any]:
         t.lower(): [c.lower() for c in cols] for t, cols in cfg["tables"].items()
     }
     cfg["hex_ids"] = {x.lower() for x in cfg["hex_ids"]}
+    cfg["label_columns"] = {x.lower() for x in cfg["label_columns"]}
     cfg["numeric"] = {k.lower(): v for k, v in cfg["numeric"].items()}
     cfg["numeric_kinds"] = {
         k: [tuple(r) for r in v] for k, v in cfg["numeric_kinds"].items()

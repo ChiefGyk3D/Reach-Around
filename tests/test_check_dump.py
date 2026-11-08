@@ -473,3 +473,107 @@ def test_absurd_nesting_is_refused_not_looped_on(tmp_path: Path) -> None:
     r = run(SCHEMA_DUMP + row(f"'{v}'"), tmp_path=tmp_path)
     assert r.returncode == 1
     assert "oversize value" in r.stdout or "unstable encoding" in r.stdout
+
+
+# ---- round 4: undeclared numeric columns fail closed; all-digit hex tokens ----
+
+NEG32 = IPV4_INT - 2**32  # the same address as a signed 32-bit integer
+OVER32 = IPV4_INT + 2**32
+
+
+@pytest.mark.parametrize("n", [IPV4_INT, NEG32, OVER32, 7, 0, -1, 1792000000000])
+@pytest.mark.parametrize(
+    "stmt",
+    [
+        "INSERT INTO view_meta (key, value) VALUES ({n}, 'v');\n",
+        "INSERT INTO sqlite_sequence VALUES ({n}, 5);\n",
+        "INSERT INTO leads (id, email) VALUES ({n}, 'a@b.cc');\n",
+    ],
+)
+def test_a_number_in_a_column_with_no_rule_is_refused(
+    stmt: str, n: int, tmp_path: Path
+) -> None:
+    # Fail closed: a column that may hold numbers must be declared in the schema
+    # file. Label columns (key, name, id of text type) take no number at all.
+    r = run(SCHEMA_DUMP + stmt.format(n=n), tmp_path=tmp_path)
+    assert r.returncode == 1, r.stdout + r.stderr
+    assert "numeric value out of range" in r.stdout
+    assert abs(n) < 1000 or str(abs(n)) not in r.stdout + r.stderr
+
+
+@pytest.mark.parametrize("n", [NEG32, OVER32, -(2**31), -(2**24), 2**32, -1])
+@pytest.mark.parametrize(
+    "table_values",
+    [
+        ("counters", "'x', '2026-01-01', {n}"),
+        ("kit_meta", "'k', {n}"),
+        ("click_events", "1, {n}, 'a', 'US', 'main'"),
+        ("view_meta", "'k', '{n}'"),
+    ],
+)
+def test_signed_and_wide_forms_are_refused_in_declared_columns(
+    table_values: tuple[str, str], n: int, tmp_path: Path
+) -> None:
+    table, values = table_values
+    r = run(SCHEMA_DUMP + insert(table, values.format(n=n)), tmp_path=tmp_path)
+    assert r.returncode == 1, r.stdout + r.stderr
+    assert "numeric value out of range" in r.stdout
+
+
+def test_sqlite_sequence_seq_has_a_rule(tmp_path: Path) -> None:
+    ok = insert("sqlite_sequence", "'click_events', 5")
+    assert run(SCHEMA_DUMP + ok, tmp_path=tmp_path).returncode == 0
+    bad = insert("sqlite_sequence", f"'click_events', {IPV4_INT}")
+    assert run(SCHEMA_DUMP + bad, tmp_path=tmp_path).returncode == 1
+
+
+def test_every_numeric_or_untyped_column_has_a_rule() -> None:
+    cfg = json.loads(SCHEMA.read_text())
+    db = real_db()
+    for (name,) in db.execute("SELECT name FROM sqlite_master WHERE type='table'"):
+        for c in db.execute(f"PRAGMA table_info('{name}')"):  # noqa: S608
+            if f"{name}.{c[1]}" == "sqlite_sequence.name":
+                continue  # a table name: text, takes no number
+            if c[2].upper() in ("INTEGER", "REAL", "NUMERIC", ""):
+                assert f"{name}.{c[1]}" in cfg["numeric"], f"{name}.{c[1]}"
+
+
+# Eight hex digits that are all 0-9, so they carry no a-f letter: the hex form of
+# an address such as 203.0.113.211 is cb0071d3, but 10.0.0.1 is 0a000001 and
+# 100.101.102.103 is 64656667. Both shapes must be refused in label columns.
+DIGIT_HEX = ["64656667", "01020304", "10101010", "0xC6336407", "00000001"]
+
+
+@pytest.mark.parametrize("token", DIGIT_HEX[:3] + DIGIT_HEX[4:])
+@pytest.mark.parametrize("col", ["src", "page", "reason"])
+def test_an_all_digit_eight_char_hex_token_is_refused_in_label_columns(
+    token: str, col: str, tmp_path: Path
+) -> None:
+    r = run(SCHEMA_DUMP + row(f"'{token}'", col), tmp_path=tmp_path)
+    assert r.returncode == 1, r.stdout + r.stderr
+    assert "hex token" in r.stdout
+    assert token not in r.stdout + r.stderr
+
+
+@pytest.mark.parametrize(
+    "value", ["2027-03-14", "home", "bluesky", "news.example.test", "1234567", "ok"]
+)
+def test_ordinary_labels_still_pass(value: str, tmp_path: Path) -> None:
+    for col in ("src", "page", "reason"):
+        r = run(SCHEMA_DUMP + row(f"'{value}'", col), tmp_path=tmp_path)
+        if col == "src" or col == "page":
+            assert r.returncode == 0, (col, r.stdout)
+
+
+def test_an_eight_digit_value_in_a_ruled_text_column_is_a_range_matter(
+    tmp_path: Path,
+) -> None:
+    # view_meta.value is a declared counter column: 12 passes, an address-sized
+    # number fails by range, and it is not also called a hex token.
+    ok = insert("view_meta", "'k', '12'")
+    assert run(SCHEMA_DUMP + ok, tmp_path=tmp_path).returncode == 0
+    bad = insert("view_meta", "'k', '99999999'")
+    r = run(SCHEMA_DUMP + bad, tmp_path=tmp_path)
+    assert r.returncode == 1
+    assert "numeric value out of range" in r.stdout
+    assert "hex token" not in r.stdout
