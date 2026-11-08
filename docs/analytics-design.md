@@ -407,7 +407,8 @@ site the same way the view route does:
   fixed `other`, and stores nothing for a missing, repeated or malformed value.
   What is collected: one label from a closed list per click. What is not: no
   cookie, no stored id, no referrer text, no join between a click and a view or a
-  person; a click on a page opened without the label reads as no source. Raw
+  person; a click row holds a source or a country, never both (no
+  source-by-country pair); a click on a page opened without the label reads as no source. Raw
   click times are rounded down to the hour (as views are). The aggregate is a
   report-side count of `source -> link`; the rollup tables, caps and seal for
   it are #331.

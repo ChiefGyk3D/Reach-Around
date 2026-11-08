@@ -207,9 +207,12 @@ export async function handleClick(request: Request, env: Env): Promise<Response>
 
     // 6. Insert: hour-rounded timestamp, link id, optional country and optional
     // closed-set source label only.
+    // A row never holds both a source and a country: no source-by-country pair
+    // is stored (#408). A click with a source keeps no country.
     const now = Date.now();
+    const src = clickSource(new URL(request.url), site.sources);
     await env.DB.prepare("INSERT INTO click_events (ts, link_id, country, site, src) VALUES (?, ?, ?, ?, ?)")
-      .bind(now - (now % HOUR_MS), linkId, countryOf(request), site.id, clickSource(new URL(request.url), site.sources))
+      .bind(now - (now % HOUR_MS), linkId, src === null ? countryOf(request) : null, site.id, src)
       .run();
   } catch {
     // A failure must look the same as success from the outside.

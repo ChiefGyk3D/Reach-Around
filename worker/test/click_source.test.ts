@@ -127,3 +127,31 @@ describe("the click route stores the source", () => {
     expect(d.results.map((r) => r.src)).toEqual(["other"]);
   });
 });
+
+describe("no source-by-country pair", () => {
+  const withCountry = (qs: string) => {
+    const r = click(qs);
+    const h = new Headers(r.headers);
+    h.set("CF-IPCountry", "DE");
+    return new Request(r.url, { method: "POST", headers: h });
+  };
+  const pairs = async () =>
+    (await testEnv.DB.prepare("SELECT src, country FROM click_events ORDER BY id").all<{ src: string | null; country: string | null }>()).results;
+
+  it("a_click_with_a_source_keeps_no_country_and_one_without_keeps_it", async () => {
+    await handleClick(withCountry("?s=instagram"), env());
+    await handleClick(withCountry(""), env());
+    await handleClick(withCountry("?s=tiktok"), env());
+    expect(await pairs()).toEqual([
+      { src: "instagram", country: null },
+      { src: null, country: "DE" },
+      { src: "other", country: null },
+    ]);
+  });
+
+  it("the_database_refuses_a_row_with_both", async () => {
+    await expect(
+      testEnv.DB.prepare("INSERT INTO click_events (ts, link_id, country, src) VALUES (0, 'x', 'DE', 'instagram')").run(),
+    ).rejects.toThrow();
+  });
+});

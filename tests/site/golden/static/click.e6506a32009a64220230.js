@@ -15,10 +15,12 @@
 
   function sourceLabel() {
     try {
-      var value = new URLSearchParams(location.search).get("s");
-      if (value === null) {
+      var all = new URLSearchParams(location.search).getAll("s");
+      // Exactly one value; a repeated parameter is malformed and sends nothing.
+      if (all.length !== 1) {
         return "";
       }
+      var value = all[0];
       // Judge the raw text first: some non-ASCII letters (the Kelvin sign,
       // dotless i, long s) turn into ASCII ones when lowered.
       return /^[A-Za-z0-9-]{1,30}$/.test(value) ? value.toLowerCase() : "";
