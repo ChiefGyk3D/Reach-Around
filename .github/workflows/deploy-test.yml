@@ -484,7 +484,7 @@ jobs:
         run: |
           set -eu
           for name in CLOUDFLARE_ACCOUNT_ID PAGES_PROJECT D1_DATABASE_ID \
-                      RATELIMIT_NAMESPACE_ID SITE_HOST LINK_IDS; do
+                      RATELIMIT_NAMESPACE_ID SITE_HOST; do
             eval "value=\${$name:-}"
             if [ -z "$value" ]; then
               echo "::error::$name is not set (see docs/deploy.md)"
@@ -504,8 +504,12 @@ jobs:
           fi
           printf '%s' "$PAGES_PROJECT" | grep -Eq '^[a-z0-9-]{1,58}$' \
             || { echo "::error::PAGES_PROJECT is not a valid project name"; exit 1; }
-          printf '%s' "$LINK_IDS" | grep -Eq '^\[("[a-z0-9-]{1,40}"(, ?)?)+\]$' \
-            || { echo "::error::LINK_IDS must be a JSON array of link ids"; exit 1; }
+          # LINK_IDS is optional: the deployed list comes from the build itself.
+          # If set it is only compared (warnings), but must be valid.
+          if [ -n "${LINK_IDS:-}" ]; then
+            printf '%s' "$LINK_IDS" | grep -Eq '^\[("[a-z0-9-]{1,40}"(, ?)?)+\]$' \
+              || { echo "::error::LINK_IDS must be a JSON array of link ids"; exit 1; }
+          fi
           # Live Worker: enabled by a handle. Fail closed: no KV id, no deploy.
           if [ -n "${LIVE_TWITCH_HANDLE:-}" ] || [ -n "${LIVE_KICK_HANDLE:-}" ]; then
             if [ -z "${LIVE_KV_ID:-}" ]; then
@@ -532,9 +536,12 @@ jobs:
 
       # Reads the downloaded manifest. No secret is in this step's env, and
       # python runs isolated (-I: no working-directory imports), so a hostile
-      # artifact file cannot execute with the token present. A mismatch is a
-      # warning: clicks on unlisted ids are rejected by the Worker.
+      # artifact file cannot execute with the token present. The script also
+      # derives the Worker's LINK_IDS from the manifest (output link_ids): every
+      # id passed the closed grammar and the Worker's cap, or the step fails.
+      # A difference from the optional LINK_IDS variable is a warning only.
       - name: Verify the build manifest
+        id: manifest
         env:
           LINK_IDS: ${{ vars.LINK_IDS }}
         run: |
@@ -565,13 +572,17 @@ jobs:
           D1_DATABASE_ID: ${{ vars.D1_DATABASE_ID }}
           RATELIMIT_NAMESPACE_ID: ${{ vars.RATELIMIT_NAMESPACE_ID }}
           SITE_HOST: ${{ vars.SITE_HOST }}
-          LINK_IDS: ${{ vars.LINK_IDS }}
+          LINK_IDS: ${{ steps.manifest.outputs.link_ids }}
           ZONE_NAME: ${{ vars.ZONE_NAME }}
           LIVE_TWITCH_HANDLE: ${{ vars.LIVE_TWITCH_HANDLE }}
           LIVE_KICK_HANDLE: ${{ vars.LIVE_KICK_HANDLE }}
           LIVE_KV_ID: ${{ vars.LIVE_KV_ID }}
         run: |
           set -eu
+          # Second lock on the derived list (the script already validated it).
+          # [[ =~ ]] tests the whole value (grep is line by line).
+          [[ "${LINK_IDS:-}" =~ ^\[\"[a-z0-9-]{1,40}\"(,\"[a-z0-9-]{1,40}\"){0,199}\]$ ]] \
+            || { echo "::error::the derived link id list is missing or invalid"; exit 1; }
           sed \
             -e "s|^database_id = \"[^\"]*\"|database_id = \"${D1_DATABASE_ID}\"|" \
             -e "s|^namespace_id = \"[^\"]*\"|namespace_id = \"${RATELIMIT_NAMESPACE_ID}\"|" \
