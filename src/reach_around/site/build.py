@@ -61,6 +61,7 @@ from reach_around.site.overrides import (
 )
 from reach_around.site.platforms import platform_rows
 from reach_around.site.privacy import collected_items, intro_text, sets_cookies
+from reach_around.site.redirects import render_redirects
 from reach_around.site.robots import render_robots
 from reach_around.site.theme import theme_css
 from reach_around.site.visibility import visible_blocks
@@ -747,6 +748,19 @@ def build_site(
             )
         files[Path("robots.txt")] = render_robots(robots).encode("ascii")
     published = {path.as_posix() for path in files}
+    socials = config.redirects.socials if config.redirects else None
+    if socials is not None:
+        shadowed = sorted(
+            p
+            for p in published
+            if p in ("socials.html", "socials/index.html") or p.startswith("socials/")
+        )
+        if shadowed:
+            raise ValueError(
+                f"redirects.socials would hide {shadowed[0]}: rename the tab "
+                "(its id must not be 'socials') or turn the redirect off"
+            )
+        files[Path("_redirects")] = render_redirects(socials).encode("ascii")
     immutable, revalidate = cache_patterns(
         published, {path.as_posix() for path in named.hashed}
     )

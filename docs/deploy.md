@@ -876,6 +876,49 @@ temporary `wrangler.deploy.toml` on the runner only.
 Note: the build command arrives in plan Task 6 (and `pyproject.toml` in Task
 1). Until both are on `main`, the build step fails by design.
 
+## Redirecting the old /socials path
+
+Cutover item for issue #356 (epic #246). The link page replaces an older page at
+`/socials` on the same host, so `/socials` and `/socials/` must redirect to `/`
+and keep working for links people already shared. Reach Around only writes the
+rule into the build output; it creates nothing in Cloudflare.
+
+1. In the site config add the switch ([`redirects`](config.md#redirects)):
+
+   ```yaml
+   redirects:
+     socials:
+       status: 302
+   ```
+
+2. Build. `out/_redirects` now holds two lines, `/socials / 302` and
+   `/socials/ / 302`. Without the key there is no `_redirects` file.
+3. While testing on the staging host keep `302`. Check by hand with
+   `curl -sI "https://YOUR-HOST/socials?x=1"` and `.../socials/`: expect the
+   status you set, a `Location` that ends at `/`, and your query string still
+   on it. Check one other path (a tab, `/kit/`) still answers 200.
+4. For production change `status` to `301` (or delete the line; 301 is the
+   default), rebuild and deploy with the cutover.
+5. Rollback: remove the `redirects` key and redeploy, or restore the DNS record
+   as in the parity doc's rollback plan. A `301` can stay cached in browsers,
+   which is why testing uses `302`.
+
+**Not verified.** The `source destination status` line format is the Cloudflare
+Pages `_redirects` format as the maintainers understand it; it was not checked
+against the Pages documentation or a live host when this was written, because
+no host was touched. These must be confirmed on the first staging deploy:
+
+- Pages reads `out/_redirects` and applies both lines, with and without the
+  trailing slash.
+- The visitor's query string is carried to the destination. The file has no
+  query part; whether the host forwards it is host behavior.
+- A redirect to `/` does not loop or get rewritten by any rule in the zone.
+
+If the host does not behave this way, the owner may prefer a dashboard-level
+Single Redirect instead. That is a Cloudflare write and an owner decision, and
+this repository does not make it. The tests check the `_redirects` text and
+that nothing else in the build changes; they do not call a live host.
+
 ## 4. Rolling back
 
 - **Site.** Pages project > Deployments > pick the previous deployment >

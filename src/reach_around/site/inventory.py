@@ -29,6 +29,8 @@ from typing import Any
 from reach_around.site.cachepolicy import url_variants
 
 HEADERS_FILE = "_headers"
+# Host configuration files: written to the output, never served as a URL.
+NOT_SERVED = frozenset({HEADERS_FILE, "_redirects"})
 VERSION = 1
 MAX_INVENTORY_BYTES = 4 * 1024 * 1024
 MAX_ENTRIES = 20000
@@ -57,7 +59,10 @@ Inventory = dict[str, InventoryEntry]
 
 
 def build_inventory(files: Mapping[Path, bytes], hashed: Iterable[Path]) -> Inventory:
-    """Describe every file the site publishes (``_headers`` is not served)."""
+    """Describe every file the site publishes.
+
+    ``_headers`` and ``_redirects`` are host configuration and are left out.
+    """
     hashed_set = set(hashed)
     return {
         path.as_posix(): InventoryEntry(
@@ -66,7 +71,7 @@ def build_inventory(files: Mapping[Path, bytes], hashed: Iterable[Path]) -> Inve
             kind="hashed" if path in hashed_set else "stable",
         )
         for path, data in sorted(files.items())
-        if path.as_posix() != HEADERS_FILE
+        if path.as_posix() not in NOT_SERVED
     }
 
 
