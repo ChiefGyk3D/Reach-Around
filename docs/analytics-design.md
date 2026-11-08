@@ -251,7 +251,9 @@ that one site rather than the whole collector):
   `UTM_ALLOWLIST`); a site that declares `sources`, even an empty list, never
   inherits the global list, and any `utm_source` label on neither list folds to
   `other`. Source labels are forgeable by anyone who can send a beacon, which
-  is inherent to an unauthenticated collector.
+  is inherent to an unauthenticated collector. At rollup time, events of a
+  site whose config is gone (removed from `SITES`, or `SITES` unusable) fold
+  every `utm_source` label to `other` rather than using the global list.
 - Per-site overrides: `geo`, `utm_allowlist`,
   `min_cell`, and the raw keep days, each clamped to the global ceilings (raw
   keep at most 90 days, as shipped).

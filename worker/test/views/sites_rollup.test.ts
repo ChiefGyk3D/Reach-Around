@@ -109,13 +109,14 @@ describe("rollup per site", () => {
     expect(m.rollup_err).toBe("none");
   });
 
-  it("a_site_removed_from_the_config_is_still_rolled_with_the_global_options", async () => {
+  // Rolled up, but no longer with the global options for utm labels: see the sources tests below.
+  it("a_site_removed_from_the_config_is_still_rolled_up", async () => {
     await insert(many("retired", D13 + 1000, 3));
     await rollupClosedDays(env({ SITES: JSON.stringify({ links: { hosts: ["links.example.test"], mode: "beacon", pages: ["home"] } }) }), NOW);
     expect(await q("SELECT site, raw_views FROM view_rollup_log")).toEqual([{ site: "retired", raw_views: 3 }]);
   });
 
-  it("a_broken_SITES_still_rolls_every_site_in_the_data_with_global_options", async () => {
+  it("a_broken_SITES_still_rolls_every_site_in_the_data", async () => {
     await insert(many("links", D13 + 1000, 2));
     await rollupClosedDays(env({ SITES: "{nope" }), NOW);
     expect(await q("SELECT site, raw_views FROM view_rollup_log")).toEqual([{ site: "links", raw_views: 2 }]);
@@ -334,6 +335,26 @@ describe("rollup with a sources list", () => {
       { src_kind: "u", src: "news", views: 1 },
       { src_kind: "o", src: "other", views: 1 },
     ]);
+  });
+
+  it("events_of_a_site_whose_config_is_gone_fold_utm_labels_to_other_instead_of_using_the_global_list", async () => {
+    // Raw events were stored under a closed list; the rollup must not loosen
+    // them just because the site entry is removed or SITES is unusable.
+    const other = JSON.stringify({ blog: { hosts: ["blog.example.test"], mode: "beacon", pages: ["post-one"] } });
+    for (const sites of [other, "{nope"]) {
+      await clearAll();
+      await insert([
+        ...many("links", D13 + 1000, 2, { src_kind: "u", src: "mail" }),
+        ...many("links", D13 + 1000, 1, { src_kind: "r", src: "news.example.test" }),
+        ...many("links", D13 + 1000, 1, { src_kind: "i" }),
+      ]);
+      await rollupClosedDays(env({ SITES: sites, MIN_CELL: "1", UTM_ALLOWLIST: "mail" }), NOW);
+      expect(await srcs("links"), sites).toEqual([
+        { src_kind: "i", src: "", views: 1 },
+        { src_kind: "r", src: "news.example.test", views: 1 },
+        { src_kind: "o", src: "other", views: 2 },
+      ]);
+    }
   });
 
   it("with_only_sources_set_other_utm_labels_fold_to_other", async () => {

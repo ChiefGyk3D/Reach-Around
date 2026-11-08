@@ -353,6 +353,10 @@ const NO_LABEL = "!";
  * sources therefore folds every other utm label to "other" too.
  */
 function allowFor(env: RollupEnv, site: Site | undefined): string[] {
+  // Fail closed: the site's config is gone (removed, or SITES unusable), so we
+  // cannot know whether its events were stored under a closed list. Never fall
+  // back to the global list; fold every utm label to "other".
+  if (site === undefined) return [NO_LABEL];
   // A site that declares sources (even an empty list) never inherits the global list.
   const utm =
     site?.utmAllowlist !== undefined
