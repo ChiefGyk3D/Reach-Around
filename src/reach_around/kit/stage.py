@@ -246,6 +246,12 @@ def clean_css(raw: bytes, what: str) -> str:
         raise StageError(f"{what} contains a NUL byte")
     text = _CSS_COMMENT.sub("", text)
     text = _CSS_ESCAPE.sub(_unescape_css, text)
+    # One unescape pass is not a fixed point: a backslash left over (written
+    # directly, doubled, or produced by an escape) means the text would read
+    # differently if unescaped again, so the filters below could be judging a
+    # different string than a consumer sees. Refuse it rather than loop.
+    if "\\" in text:
+        raise StageError(f"{what} has a backslash that remains after unescaping")
     text = _FONT_FACE.sub("", text)
     text = _IMPORT.sub("", text)
     text = _URL.sub("none", text)
