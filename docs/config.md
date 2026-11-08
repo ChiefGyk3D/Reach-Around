@@ -1090,11 +1090,13 @@ on by default and you can turn it off or reword it. Unknown keys are refused.
 | --- | --- | --- | --- |
 | `credit` | boolean | `true` | Show the credit link. When `false`, nothing is rendered for it. |
 | `credit_text` | text, 1-60 characters | `Made with Reach Around` | The link label. Plain text only: no control, bidi or zero-width characters, no leading or trailing space. Escaped, never treated as HTML. Ignored when `credit` is `false`. |
+| `copyright` | text, 1-120 characters | none | An optional copyright line, shown once in the footer after the disclosure. Absent by default, and then nothing is rendered. Plain text only (no HTML, no control, bidi or zero-width characters, no leading or trailing space), escaped on the page, no inline style. The literal token `{year}` is replaced with the build year; nothing else is interpolated. |
 
 ```yaml
 footer:
   credit: true
   credit_text: Built with Reach Around
+  copyright: "© {year} Example Creator"
 ```
 
 The link goes to `https://github.com/ChiefGyk3D/Reach-Around` and is an
