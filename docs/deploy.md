@@ -193,6 +193,40 @@ Convert `rollup_last_ok` with `date -u -d @$((VALUE/1000))`. More than about 2 d
 
 The route stores no address, user agent or referrer URL. After a deploy, one beacon from a browser should give a 204 and one `view_events` row with categories only; the same request with `Sec-GPC: 1` should leave no row.
 
+## Kit limits and the free-plan budget
+
+The media kit Worker is sized for the Cloudflare free plan, and the ruling is: **when a limit is reached the kit goes unavailable; it never costs money.** Every limit below fails closed. A request over a route budget, a lead or event over its cap, an alert or email over the daily budget, and any invalid setting all get a refusal, never a pass. No paid feature is switched on by any of these settings.
+
+All values are plain decimal integers (digits only, no sign, space, exponent or unit). An unset or empty value takes the default. Any other value is rejected as a whole: every limit then refuses until it is fixed. Nothing is clamped or guessed, and a rejected value is never printed, only its variable name.
+
+| Variable | Range | Default | Meaning |
+|---|---|---|---|
+| `ROUTE_BUDGET_GATE` | 0 to 100000 | 150 | Gate requests per UTC hour |
+| `ROUTE_BUDGET_VIEW` | 0 to 100000 | 300 | Gated-page views per UTC hour |
+| `MAX_LEADS` | 1 to 50000 | 5000 | Stored leads; at the cap a new address is refused, a known one still works |
+| `MAX_KIT_EVENTS` | 1 to 500000 | 50000 | Stored kit events; at the cap events are skipped |
+| `DAILY_ALERT_BUDGET` | 0 to 1000 | 20 | Owner alerts per UTC day |
+| `DAILY_SEND_BUDGET` | 0 to 1000 | 0 | Emails per UTC day (0: none; the send route is not in v1) |
+| `D1_DAILY_WRITE_QUOTA` | 1000 to 999999999 | 100000 | The free D1 plan's daily rows-written figure. Re-check it against Cloudflare's current limits before relying on it |
+
+**Worst-case daily writes.** The D1 write allowance is one per account, shared by the kit, page views, clicks, the rollup and every purge, so the check adds them all. Settings are checked when a limit is used, not at deploy: if the combined worst case is over `D1_DAILY_WRITE_QUOTA`, or any value is invalid, every reservation refuses (fail closed) until it is fixed. The loader also reports a warning above 80 percent. The kit part is `24 x (gate x 5 + view x 2) + alerts x 1 + sends x 7 + 10000`, where each number is the most rows one accepted operation writes (the row, its indexes and the counter) and 10000 is a reserve for the kit purge. To it are added the page-view feature with its rollup and purge (22700, from the page-view write budget above), a click reserve (8000; the click route has only a per-client limiter and no global budget, so this is an allowance, not a measured bound) and a margin (5000). A refused request writes nothing, so a flood over a budget costs reads only.
+
+| Part | Budget | Writes each | Worst case per day |
+|---|---|---|---|
+| gate | 150 per hour | 5 | 18000 |
+| view | 300 per hour | 2 | 14400 |
+| alert | 20 per day | 1 | 20 |
+| send | 0 per day | 7 | 0 |
+| kit purge reserve | | | 10000 |
+| page views, rollup and purge | | | 22700 |
+| clicks (reserve) | | | 8000 |
+| margin | | | 5000 |
+| **Total** | | | **78120** |
+
+That is 78.1 percent of the default quota of 100000. Raising a budget raises this number; raise `D1_DAILY_WRITE_QUOTA` only on a plan that allows it. Counters live in the `counters` table, one row per route and hour or per day, and are purged after two days. A viral spike over a budget makes the gate unavailable until the next hour; that is the accepted trade.
+
+**For the route code that uses these limits:** run the per-client throttle (`checkIpMinute`) before taking from a global route counter, so one client cannot spend the shared budget. A request refused by the throttle must not touch a counter.
+
 ## Secrets and Doppler
 
 Project secrets (this Cloudflare token, later the Mailgun and collector
@@ -265,14 +299,137 @@ Put the identity UUID in the repository variable `DOPPLER_IDENTITY_ID`. A
 Doppler service token in the secret `DOPPLER_TOKEN` also works, but it is a
 long-lived credential in GitHub; use it only in an emergency and prefer OIDC.
 
+## Daily follower counts (test deployment)
+
+`deploy-test.yml` also runs once a day (06:23 UTC) and by hand. Its `counts`
+job runs first, refreshes the numbers, and hands one `numbers.json` to the
+build, which reads it with `--numbers`. Every deployment, manual or scheduled,
+therefore carries fresh numbers. The job can only read the repository; the keys
+reach one step only (`Refresh the counts`), after every install step.
+
+**As shipped, this refreshes nothing.** `examples/instance/site.yaml` has no
+`numbers:` block and no platform items, and there is no
+`examples/instance/numbers.json`. Until the owner adds them, the job writes an
+empty numbers file and the page shows no follower statistic. The owner must add:
+the `numbers:` block naming each source with its real public handle, the
+platform items that display the numbers, and a hand-kept
+`examples/instance/numbers.json` for platforms with no source. This repository
+does not invent those handles.
+What the job reads from `examples/instance/site.yaml`: the `numbers:` block.
+With no block it only passes through the hand-kept file, if there is one.
+Hand-kept platforms (TikTok, Instagram, X, Threads, LinkedIn, Kick: the engine
+has no source for them) stay in that file with their `as_of` date; the run
+prints a warning for every entry older than 30 days.
+
+**Keyless sources** (Mastodon-compatible servers, Bluesky, GitHub, Discord
+invites, Matrix) need nothing.
+
+**Keyed sources** read `YOUTUBE_API_KEY`, `TWITCH_CLIENT_ID` and
+`TWITCH_CLIENT_SECRET`. Pick where they come from:
+
+1. **GitHub Actions secrets (default).** Add the secrets of those names under
+   Settings > Secrets and variables > Actions. Nothing else to set. A name you
+   do not set is empty and its source is skipped.
+2. **Doppler over GitHub OIDC (opt in).** Set three repository **variables**:
+   `DOPPLER_COUNTS_IDENTITY_ID` (the UUID of a Service Account Identity made
+   for this job alone; not the `DOPPLER_IDENTITY_ID` the deploy job uses),
+   `DOPPLER_COUNTS_PROJECT` and `DOPPLER_COUNTS_CONFIG`. There is no default
+   project or config: use a dedicated project that holds social-media
+   credentials only, not the shared `ci` project. The Doppler step runs only
+   when all three are set; otherwise the GitHub secrets above are used. No
+   long-lived token is stored. `COUNTS_SECRET_NAMES` (optional variable,
+   comma-separated) limits which names are fetched; the default is the three
+   above, and a name missing from the Doppler config fails the run. The values
+   come back as one masked step output read by the refresh step; nothing is
+   written to the job environment. A value in Doppler wins over a GitHub secret
+   of the same name.
+
+**Trust policy for the Doppler identity.** Create a separate Service Account
+Identity for this job, never reuse the one the `ci` project uses. The `counts`
+job runs in its own GitHub environment, `counts-secrets`. Create it under
+Settings > Environments, restrict its deployment branches to `main`, and
+optionally add a required reviewer (a scheduled run then waits for approval).
+Set the identity's subject to the environment form,
+`repo:OWNER/REPO:environment:counts-secrets` (in the immutable form described
+above if your repository uses it). **That subject does not name a workflow.**
+Any workflow in this repository that requests `id-token: write` and targets the
+`counts-secrets` environment on an allowed branch gets the same subject and can
+assume the identity.
+
+Doppler's Service Account Identities page (docs.doppler.com, read 2026-11-07)
+says an identity validates every claim rule you configure, that custom claims
+can be added for a provider, and that each claim can list several accepted
+values. GitHub's token also carries a `job_workflow_ref` claim (the workflow
+file and ref). Adding it as a custom claim, with the value
+`OWNER/REPO/.github/workflows/deploy-test.yml@refs/heads/main`, would narrow the
+identity to this workflow file. Verified: Doppler supports custom claim rules.
+Inferred, not tested here: that `job_workflow_ref` is accepted and matches. Try
+it and confirm a run still authenticates before relying on it.
+
+Even with that claim, the real limit is write access to `main`: whoever can
+change the workflow on `main` can change what the `counts` job does. What limits
+that: the `counts-secrets` environment restricted to `main`; a required reviewer
+set by the owner on that environment; CODEOWNERS covering `.github/workflows/`
+with branch protection requiring code-owner review, so a new workflow that can
+target the environment needs review; and the identity's read access limited to
+the dedicated social-media project and config. Those are owner settings, not
+something this repository enforces. The job that can request the
+token (`counts`) installs wheels only (`--no-index --only-binary`); the job that
+builds from source (`wheels`) has no `id-token` permission and no keys. The one
+step that holds the keys is dependency code that runs with them, so the Doppler
+config must hold only the count-source keys. The keys cannot go to another job:
+GitHub drops job outputs that contain masked values, so the fetch and the
+refresh stay in one job.
+
+**Engine wheel check.** The `wheels` job publishes the SHA-256 of the engine
+wheel as a job output (not a secret). The `counts` job recomputes it from the
+downloaded artifact and stops on a mismatch, then installs that one file with
+`--no-index --no-deps`. Its dependencies are installed with `--require-hashes`.
+This catches a swapped artifact; it does not make the same-run build trusted by
+itself.
+
+**Residual risk.** Anyone with write access to `main` already controls the
+workflow, so they can change what runs in the `counts` job. What limits the
+damage: branch protection on `main`, the `counts-secrets` environment
+(branch-restricted, optional reviewer), a Doppler identity that can read only
+the social-media project, and keys that are read-only API keys for public
+counts. The `counts` job's harden-runner stays in audit mode because its hosts
+cannot all be listed: the artifact blob host changes per run and the Mastodon
+and Matrix hosts come from the config (see Egress control).
+
+**Skipping the counts.** A manual run has a `skip_counts` input (default off).
+Turn it on to redeploy with the `numbers.json` committed beside the config when
+a count source or the Doppler step is down. The wheels and counts jobs do not
+run, and the build does not wait for them. A scheduled run never skips, and a
+failed counts job stops the deployment unless the run asked to skip it.
+
+**When the counts stop.** GitHub disables scheduled workflows after 60 days
+without repository activity, and nothing alerts you. The run also warns when a
+hand-kept entry's `as_of` is over 30 days old, but only while the job runs.
+If the numbers look frozen, check the Actions tab for a disabled schedule and
+re-enable it.
+
+A scheduled run waits for the `test` environment's reviewer on the `deploy` job
+if one is required (section 2); remove the required reviewer there if the test
+site should update unattended. A source that fails keeps its old number and
+shows as a warning; the deployment continues.
+
 ## Egress control
 
-Both jobs start with `step-security/harden-runner`, followed by an egress
+The jobs start with `step-security/harden-runner`, followed by an egress
 canary that says whether a failure is a broken runner network or a wrong list.
 
 - **`deploy` is in block mode** with an explicit allow-list of `host:443`
   entries (no wildcards): GitHub, the npm registry, `api.doppler.com` and
   `api.cloudflare.com`. This is the job that holds the Cloudflare token.
+- **`counts` is in audit mode** for two reasons that cannot be listed: the
+  wheels artifact comes from a blob host whose name varies per run, and the
+  Mastodon and Matrix sources use hosts named in the config. It needs no PyPI
+  host, because it installs from the artifact. The fixed hosts it uses are
+  GitHub, the Doppler API, and per source kind `public.api.bsky.app`,
+  `discord.com`, `www.googleapis.com`, `id.twitch.tv` and `api.twitch.tv`. The
+  script also hands the refresh only a short list of environment variables, so
+  the runner's tokens never reach the engine.
 - **`build` is in audit mode.** Artifact upload goes to a blob host whose name
   varies per run and cannot be listed without a wildcard, so a block-mode list
   would stop every build at upload. The build job holds no secrets and installs
