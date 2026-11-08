@@ -635,6 +635,7 @@ jobs:
         id: manifest
         env:
           LINK_IDS: ${{ vars.LINK_IDS }}
+          LEAD_RETENTION_DAYS: ${{ vars.LEAD_RETENTION_DAYS }}
         run: |
           set -eu
           manifest="manifest-in/site-out.manifest.json"
@@ -707,6 +708,7 @@ jobs:
           RATELIMIT_NAMESPACE_ID: ${{ vars.RATELIMIT_NAMESPACE_ID }}
           SITE_HOST: ${{ vars.SITE_HOST }}
           LINK_IDS: ${{ steps.manifest.outputs.link_ids }}
+          LEAD_RETENTION_DAYS: ${{ steps.manifest.outputs.lead_retention_days }}
           ZONE_NAME: ${{ vars.ZONE_NAME }}
           LIVE_TWITCH_HANDLE: ${{ vars.LIVE_TWITCH_HANDLE }}
           LIVE_KICK_HANDLE: ${{ vars.LIVE_KICK_HANDLE }}
@@ -739,6 +741,16 @@ jobs:
             wrangler.toml > wrangler.deploy.toml
           grep -qF "${D1_DATABASE_ID}" wrangler.deploy.toml
           grep -qF "${SITE_HOST}" wrangler.deploy.toml
+          # Lead retention: the site config's privacy.lead_retention_days, as
+          # recorded in the build manifest and checked by verify-manifest.py
+          # (second lock here). The privacy page prints the same number, so
+          # the page and the purge cannot disagree. Always written.
+          if ! [[ "${LEAD_RETENTION_DAYS:-}" =~ ^[1-9][0-9]{0,2}$ ]] || [ "${LEAD_RETENTION_DAYS}" -gt 365 ]; then
+            echo "::error::the lead retention from the build manifest is missing or invalid"
+            exit 1
+          fi
+          sed -i "/^\[vars\]$/a LEAD_RETENTION_DAYS = \"${LEAD_RETENTION_DAYS}\"" wrangler.deploy.toml
+          grep -qxF "LEAD_RETENTION_DAYS = \"${LEAD_RETENTION_DAYS}\"" wrangler.deploy.toml
           # Optional route so click pings to /e/c/<id> on the site host reach
           # the Worker. Values were validated in "Check configuration".
           if [ -n "${ZONE_NAME:-}" ]; then

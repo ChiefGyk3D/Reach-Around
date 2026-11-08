@@ -74,6 +74,9 @@ class BuildManifest:
     """
 
     links: dict[str, str]
+    # Days the Worker keeps a lead: the same config value the privacy page
+    # prints. The deploy writes it to the Worker as LEAD_RETENTION_DAYS.
+    lead_retention_days: int
     # Every published file with its hash, size and cache class (see
     # ``reach_around.site.inventory``); filled in by ``build_site``.
     inventory: dict[str, InventoryEntry] = field(default_factory=dict)
@@ -547,12 +550,18 @@ def _manifest(config: SiteConfig, shown: list[list[Block]]) -> BuildManifest:
     card = config.profile_card
     if card is not None and card.button is not None:
         links[MEDIA_KIT_ID] = card.button.url
-    return BuildManifest(links=links)
+    return BuildManifest(
+        links=links, lead_retention_days=config.privacy.lead_retention_days
+    )
 
 
 def manifest_json(manifest: BuildManifest) -> str:
     """The manifest file text. It is never written into the published site."""
-    return json.dumps({"links": manifest.links}, sort_keys=True, indent=2) + "\n"
+    body = {
+        "links": manifest.links,
+        "lead_retention_days": manifest.lead_retention_days,
+    }
+    return json.dumps(body, sort_keys=True, indent=2) + "\n"
 
 
 # Packaged subfolders of static/ and the file endings each one publishes.

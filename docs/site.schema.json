@@ -1384,8 +1384,8 @@
           "title": "Intro"
         },
         "lead_retention_days": {
-          "default": 365,
-          "maximum": 3650,
+          "default": 30,
+          "maximum": 365,
           "minimum": 1,
           "title": "Lead Retention Days",
           "type": "integer"
@@ -2046,7 +2046,7 @@
       "default": {
         "contact": null,
         "intro": null,
-        "lead_retention_days": 365,
+        "lead_retention_days": 30,
         "retention_days": 90
       }
     },

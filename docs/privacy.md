@@ -22,9 +22,21 @@ The hourly scheduled job deletes every lead older than `LEAD_RETENTION_DAYS`,
 counted from the lead's `created_ts`. Seeing the same address again does not
 extend it.
 
-| Variable | Range | Default | Meaning |
+| Setting | Range | Default | Meaning |
 |---|---|---|---|
-| `LEAD_RETENTION_DAYS` | 1 to 365 | 30 | Days a lead is kept, for every lead |
+| `privacy.lead_retention_days` in `site.yaml` | 1 to 365 | 30 | Days a lead is kept, for every lead |
+
+This is the one source of truth. The build prints it on the generated privacy
+page and records it in the build manifest, and the deploy writes the same number
+to the Worker as `LEAD_RETENTION_DAYS` (the Worker's variable, below). The
+repository variable `LEAD_RETENTION_DAYS` is optional; when it is set and differs
+from `privacy.lead_retention_days` the deploy stops and names both numbers, so
+the page can never promise one period while the purge uses another. A config
+value above 365 (the old limit was 3650) is refused when the config is loaded:
+the Worker never keeps a lead longer than 365 days, so a larger number could only
+have been a false promise. Lower it to 365 or less.
+
+The Worker reads the variable `LEAD_RETENTION_DAYS`:
 
 - The default is 30 days. The hard maximum is 365 days; there is no setting
   above it.

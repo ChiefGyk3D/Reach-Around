@@ -32,6 +32,7 @@ BASE = {
     "RATELIMIT_NAMESPACE_ID": NS_ID,
     "SITE_HOST": HOST,
     "LINK_IDS": '["alpha"]',
+    "LEAD_RETENTION_DAYS": "30",
     "CLOUDFLARE_ACCOUNT_ID": "acct",
     "PAGES_PROJECT": "proj",
     "ZONE_NAME": ZONE,

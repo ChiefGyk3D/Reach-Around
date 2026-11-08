@@ -34,7 +34,8 @@ def test_build_writes_the_manifest_next_to_out_by_default(tmp_path: Path) -> Non
     sibling = tmp_path / "site-out.manifest.json"
     assert sibling.is_file()
     data = json.loads(sibling.read_text())
-    assert list(data) == ["links"] and data["links"]
+    assert sorted(data) == ["lead_retention_days", "links"] and data["links"]
+    assert data["lead_retention_days"] == 30
     assert not [p for p in out.rglob("*") if "manifest" in p.name.lower()]
 
 

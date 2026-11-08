@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
-"""Derive the Worker's LINK_IDS from the build manifest, and compare it.
+"""Derive the Worker's LINK_IDS and LEAD_RETENTION_DAYS from the build manifest.
 
 Run as `python3 -I .github/scripts/verify-manifest.py <manifest>`. The ids in
 the manifest are the list the deploy gives the Worker: they are written to
@@ -16,6 +16,15 @@ build's). Any id outside the closed
 grammar ^[a-z0-9-]{1,40}$ (the grammar the workflow enforces for LINK_IDS) is
 refused with a fixed error that never echoes the value, so a hostile name in a
 downloaded artifact cannot forge a workflow command (a newline plus `::...`).
+
+Lead retention has ONE source: the site config's privacy.lead_retention_days,
+which the build prints on the privacy page and records in the manifest. This
+script checks it is a whole number from 1 to MAX_LEAD_RETENTION_DAYS (the
+Worker's own maximum) and writes it as `lead_retention_days=<n>`; the deploy
+gives that value to the Worker as LEAD_RETENTION_DAYS. The repository variable
+LEAD_RETENTION_DAYS is optional and only compared: when set (plain digits, in
+range) and different from the config, the deploy fails, naming both, so the
+page can never promise one number while the Worker deletes at another.
 """
 
 from __future__ import annotations
@@ -27,6 +36,9 @@ import sys
 
 ID = re.compile(r"[a-z0-9-]{1,40}")  # used with fullmatch: `$` would allow "\n"
 MAX_LINK_IDS = 200  # worker/src/sites.ts MAX_LINK_IDS (a test keeps them equal)
+# worker/src/kit/leadretention.ts MAX_LEAD_RETENTION_DAYS (a test keeps them equal)
+MAX_LEAD_RETENTION_DAYS = 365
+PLAIN_DAYS = re.compile(r"[1-9][0-9]{0,2}")  # used with fullmatch
 
 
 def escape(text: str) -> str:
@@ -50,16 +62,48 @@ def valid_ids(value: object) -> set[str] | None:
     return set(names)
 
 
+def retention_days(value: object) -> int | None:
+    """A whole number 1..MAX in the manifest (never a bool), else None."""
+    if type(value) is not int or not 1 <= value <= MAX_LEAD_RETENTION_DAYS:
+        return None
+    return value
+
+
 def main(argv: list[str]) -> int:
     if len(argv) != 2:
         return refuse("usage: verify-manifest.py <manifest>")
     try:
         with open(argv[1], encoding="utf-8") as handle:
-            built = valid_ids(json.load(handle)["links"])
+            document = json.load(handle)
+        built = valid_ids(document["links"])
+        days = retention_days(document["lead_retention_days"])
         raw = os.environ.get("LINK_IDS", "")
         allowed = valid_ids(json.loads(raw)) if raw else set()
     except (OSError, ValueError, KeyError, TypeError):
         return refuse("the manifest or LINK_IDS could not be read")
+    if days is None:
+        return refuse(
+            "the manifest has no valid lead_retention_days "
+            f"(a whole number from 1 to {MAX_LEAD_RETENTION_DAYS})"
+        )
+    variable = os.environ.get("LEAD_RETENTION_DAYS", "")
+    if variable:
+        if (
+            not PLAIN_DAYS.fullmatch(variable)
+            or int(variable) > MAX_LEAD_RETENTION_DAYS
+        ):
+            return refuse(
+                "the repository variable LEAD_RETENTION_DAYS is not a whole "
+                f"number from 1 to {MAX_LEAD_RETENTION_DAYS}"
+            )
+        if int(variable) != days:
+            return refuse(
+                f"the repository variable LEAD_RETENTION_DAYS ({int(variable)}) "
+                f"differs from privacy.lead_retention_days in the site config "
+                f"({days}); the privacy page prints the config value and the "
+                "Worker deletes by the deployed value, so set both to the same "
+                "number or delete the variable"
+            )
     if built is None:
         return refuse("the manifest holds a link id outside the allowed grammar")
     if allowed is None:
@@ -82,6 +126,7 @@ def main(argv: list[str]) -> int:
         derived = json.dumps(sorted(built), separators=(",", ":"))
         with open(out, "a", encoding="utf-8") as handle:
             handle.write(f"link_ids={derived}\n")
+            handle.write(f"lead_retention_days={days}\n")
     return 0
 
 
