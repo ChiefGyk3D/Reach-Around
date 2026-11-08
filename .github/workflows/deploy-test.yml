@@ -215,14 +215,18 @@ jobs:
 
   build:
     name: Build the site
-    needs: counts
-    # Refuse any ref other than main. !cancelled() lets the build run when the
-    # counts job was skipped on request; it still needs the counts job to have
-    # succeeded unless the run asked to skip it (a failed wheels or counts job
-    # blocks the build, never a silent pass).
+    needs: [wheels, counts]
+    # Refuse any ref other than main. A failed counts job does NOT block the
+    # build (issue #317): the page keeps the numbers committed beside the config,
+    # exactly as with skip_counts, and a failed scheduled run raises an alert in
+    # the notify job. !cancelled() lets the build run when a dependency was
+    # skipped or failed, but a cancelled run never builds. Without skip_counts
+    # the wheels job must have succeeded (a failed wheels job skips counts and
+    # so blocks the build, never a silent pass), and counts is success or failure.
     if: >-
       ${{ !cancelled() && github.ref == 'refs/heads/main'
-      && (inputs.skip_counts || needs.counts.result == 'success') }}
+      && (inputs.skip_counts || (needs.wheels.result == 'success'
+      && (needs.counts.result == 'success' || needs.counts.result == 'failure'))) }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -298,9 +302,11 @@ jobs:
 
       # The numbers file from the counts job is data: it goes into its own
       # empty directory and the build reads it only through --numbers, which
-      # validates it. It is never copied into the output. With skip_counts the
-      # build reads the committed numbers.json beside the config instead.
-      - if: ${{ !inputs.skip_counts }}
+      # validates it. It is never copied into the output. With skip_counts, or
+      # when the counts job did not succeed, the build reads the committed
+      # numbers.json beside the config instead and downloads nothing: a failed
+      # job never hands the build a partial artifact.
+      - if: ${{ !inputs.skip_counts && needs.counts.result == 'success' }}
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: counts-numbers
@@ -311,16 +317,16 @@ jobs:
       # inside it, so Pages cannot publish them.
       - name: Build the site
         env:
-          SKIP_COUNTS: ${{ inputs.skip_counts && 'true' || 'false' }}
+          USE_COUNTS: ${{ !inputs.skip_counts && needs.counts.result == 'success' && 'true' || 'false' }}
         run: |
           set -eu
           python -m pip install --require-hashes -r requirements-build.txt
           python -m pip install --require-hashes -r requirements.txt
           python -m pip install --no-deps --no-build-isolation .
-          if [ "$SKIP_COUNTS" = "true" ]; then
-            reach-around build --config examples/instance/site.yaml --out site-out
-          else
+          if [ "$USE_COUNTS" = "true" ]; then
             reach-around build --config examples/instance/site.yaml --numbers counts-in/numbers.json --out site-out
+          else
+            reach-around build --config examples/instance/site.yaml --out site-out
           fi
           test -z "$(find site-out -iname '*manifest*')"
           test -z "$(find site-out -iname '*assets.json')"
@@ -692,3 +698,62 @@ jobs:
           ZONE_ID: ${{ vars.ZONE_ID }}
           SITE_HOST: ${{ vars.SITE_HOST }}
         run: bash .github/scripts/purge-cache.sh purge-in/site-purge-list.txt
+
+  # One visible alert when a SCHEDULED counts refresh failed, in the counts or
+  # the wheels job (issue #317). After a counts failure the build and deploy
+  # carry on with the committed numbers, and after a wheels failure they are
+  # skipped, so nothing else would show it. It opens one issue, or adds a
+  # comment to the open one, and never opens a duplicate. The body holds only
+  # values GitHub provides (run URL, date, the wheels and counts results): no
+  # secret, no job log, no text from a count source. The job can only write
+  # issues. It runs on schedule only; a manual run shows its own red job to
+  # the person who started it. It needs wheels and counts only: the deploy job
+  # waits for the approval-gated `test` environment, and an alert must not wait
+  # for a human to approve a deployment.
+  notify:
+    name: Alert on a failed counts refresh
+    needs: [wheels, counts]
+    # A failed wheels job skips counts, build and deploy, so it needs its own
+    # trigger: otherwise a scheduled run would stop with no alert at all.
+    if: >-
+      ${{ !cancelled() && github.event_name == 'schedule'
+      && github.ref == 'refs/heads/main'
+      && (needs.wheels.result == 'failure' || needs.counts.result == 'failure') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      issues: write
+    steps:
+      - uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43 # v2.22.3
+        with:
+          # audit, as in the build job: the host list is not measured yet.
+          egress-policy: audit
+
+      - name: Open or update the alert issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          WHEELS_RESULT: ${{ needs.wheels.result }}
+          COUNTS_RESULT: ${{ needs.counts.result }}
+        run: |
+          set -euo pipefail
+          PATH=/usr/bin:/bin
+          export PATH
+          title="Counts refresh failed"
+          when="$(date -u +%Y-%m-%d)"
+          body="The scheduled follower-counts refresh failed on ${when}. Run: ${RUN_URL} (wheels: ${WHEELS_RESULT}, counts: ${COUNTS_RESULT}). See docs/deploy.md, Daily follower counts."
+          # Capture the whole listing first: a failed gh stops the step here
+          # (set -e with pipefail) instead of looking like "no issue found" and
+          # opening a duplicate. The issues list also returns pull requests;
+          # skip those. sed reads to the end, so no pipe closes early.
+          listing="$(/usr/bin/gh api --paginate "repos/${GH_REPO}/issues?state=open&per_page=100" \
+            --jq ".[] | select(.pull_request | not) | select(.title == \"${title}\") | .number")"
+          existing="$(printf '%s\n' "$listing" | sed -n 1p)"
+          if [ -n "$existing" ]; then
+            /usr/bin/gh api -X POST "repos/${GH_REPO}/issues/${existing}/comments" -f body="$body" > /dev/null
+            echo "::notice::commented on issue #${existing}"
+          else
+            /usr/bin/gh api -X POST "repos/${GH_REPO}/issues" -f title="$title" -f body="$body" > /dev/null
+            echo "::notice::opened the alert issue"
+          fi

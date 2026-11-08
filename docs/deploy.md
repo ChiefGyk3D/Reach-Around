@@ -412,8 +412,31 @@ and Matrix hosts come from the config (see Egress control).
 **Skipping the counts.** A manual run has a `skip_counts` input (default off).
 Turn it on to redeploy with the `numbers.json` committed beside the config when
 a count source or the Doppler step is down. The wheels and counts jobs do not
-run, and the build does not wait for them. A scheduled run never skips, and a
-failed counts job stops the deployment unless the run asked to skip it.
+run, and the build does not wait for them. A scheduled run never skips.
+
+**When the counts job fails.** A failed `counts` job does not stop the build or
+the deployment (issue #317). The build downloads nothing from that job and
+uses the `numbers.json` committed beside the config, the same path as
+`skip_counts`, so the page keeps the last committed numbers. A failed `wheels`
+job, a run on any ref other than `main`, and a cancelled run still do not
+build. When a scheduled run's `counts` or `wheels` job fails, the `notify` job
+opens one issue titled "Counts refresh failed", or adds a comment to the open
+one with the run link, the date and the wheels and counts results; it never
+opens a duplicate. It waits for those two jobs only, not for the build or the
+deploy: the deploy job can sit pending on the `test` environment's reviewer, and
+the alert must not wait for that approval. If listing the open issues fails, the
+step fails (red) instead of opening a possible duplicate. A failed `wheels` job also skips the build and the deploy (the site
+stays as last deployed), which is why it raises the same alert. The job can only write issues and
+the text holds only values GitHub provides. A manual run raises no issue: the
+person who started it sees the red job. Close the issue once the counts work
+again; the next failure opens a new one.
+
+A 404 from the Doppler step in the counts job means the counts identity cannot
+see the project and config named in `DOPPLER_COUNTS_PROJECT` and
+`DOPPLER_COUNTS_CONFIG`: the identity needs access to that project and that
+config. Fix the access in Doppler, or unset the three variables to fall back to
+GitHub Actions secrets. Until then the site builds with the committed numbers
+and the alert issue stays open.
 
 **When the counts stop.** GitHub disables scheduled workflows after 60 days
 without repository activity, and nothing alerts you. The run also warns when a
