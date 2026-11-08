@@ -31,6 +31,9 @@ export const PV_WRITES_PER_VIEW = { num: 28, den: 5 } as const;
 /** Rollup, purge and idle-hour heartbeat rows per day, whatever the traffic (2,200 + 250 + rounding, docs/deploy.md). */
 export const PV_FIXED_DAILY_WRITES = 2_540;
 
+/** Every page-view variable pageViewDailyWrites reads. A test keeps this equal to the environment names read below. */
+export const PAGE_VIEW_VARS = ["VIEWS_PER_HOUR", "BOT_VIEWS_PER_HOUR", "ACCOUNT_VIEWS_PER_HOUR", "ACCOUNT_BOT_VIEWS_PER_HOUR"] as const;
+
 export interface PageViewBudgetEnv extends SitesEnv {
   VIEWS_PER_HOUR?: string;
   BOT_VIEWS_PER_HOUR?: string;

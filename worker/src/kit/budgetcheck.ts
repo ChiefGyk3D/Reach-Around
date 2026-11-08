@@ -7,37 +7,24 @@
 // commands. Code 1 when the Worker would refuse the configuration (an invalid
 // value, or over the quota); a warning with code 0 above 80 percent. Values are
 // never printed, only names and totals.
-import { MAX_VIEWS_PER_HOUR } from "../pvlimits";
+import { MAX_VIEWS_PER_HOUR, PAGE_VIEW_VARS } from "../pvlimits";
 import { loadSites } from "../sites";
-import { assessDailyBudget, type KitLimitsEnv } from "./budgets";
+import { KIT_LIMIT_VARS, assessDailyBudget, type KitLimitsEnv } from "./budgets";
 
-const NAMES = [
-  "VIEWS_PER_HOUR",
-  "BOT_VIEWS_PER_HOUR",
-  "ACCOUNT_VIEWS_PER_HOUR",
-  "ACCOUNT_BOT_VIEWS_PER_HOUR",
-  // The site list, read by the Worker's own loader to count the sites that
-  // share the account ceilings.
-  "SITES",
-  "SITE_HOST",
-  "PAGE_IDS",
-  "LINK_IDS",
-  "ROUTE_BUDGET_GATE",
-  "ROUTE_BUDGET_VIEW",
-  "MAX_LEADS",
-  "MAX_KIT_EVENTS",
-  "DAILY_ALERT_BUDGET",
-  "DAILY_SEND_BUDGET",
-  "D1_DAILY_WRITE_QUOTA",
-] as const;
+/**
+ * Everything the Worker's loader reads for this verdict: the kit limits, the
+ * page-view budgets and ceilings, and the site list (counted by loadSites).
+ * Derived from the loader's own lists, so a new limit cannot be forgotten.
+ */
+export const BUDGET_ENV_VARS: readonly string[] = [...PAGE_VIEW_VARS, "SITES", "SITE_HOST", "PAGE_IDS", "LINK_IDS", ...KIT_LIMIT_VARS];
 
 export function runBudgetCheck(source: Record<string, string | undefined>): { code: 0 | 1; lines: string[] } {
   const env: Record<string, string> = {};
-  for (const n of NAMES) {
+  for (const n of BUDGET_ENV_VARS) {
     const v = source[n];
     if (v !== undefined && v !== "") env[n] = v;
   }
-  const badPv = ["VIEWS_PER_HOUR", "BOT_VIEWS_PER_HOUR", "ACCOUNT_VIEWS_PER_HOUR", "ACCOUNT_BOT_VIEWS_PER_HOUR"].filter((n) => {
+  const badPv = PAGE_VIEW_VARS.filter((n) => {
     const v = env[n];
     return v !== undefined && !(/^[0-9]{1,6}$/.test(v) && Number(v) <= MAX_VIEWS_PER_HOUR);
   });

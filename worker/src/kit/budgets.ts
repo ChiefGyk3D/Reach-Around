@@ -57,6 +57,17 @@ export const DEFAULTS = {
   d1DailyWriteQuota: 100_000,
 } as const;
 
+/** Every variable parseKitLimits reads. A test keeps this equal to the names parseKitLimits asks for below. */
+export const KIT_LIMIT_VARS = [
+  "ROUTE_BUDGET_GATE",
+  "ROUTE_BUDGET_VIEW",
+  "MAX_LEADS",
+  "MAX_KIT_EVENTS",
+  "DAILY_ALERT_BUDGET",
+  "DAILY_SEND_BUDGET",
+  "D1_DAILY_WRITE_QUOTA",
+] as const;
+
 export const MAX_KIT_EVENTS_CEILING = 500_000;
 const MAX_DAILY_BUDGET = 1000;
 const MIN_QUOTA = 1000;

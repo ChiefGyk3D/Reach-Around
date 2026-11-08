@@ -6,6 +6,7 @@ Worker's own function. The shell is run for real, with sample values."""
 
 from __future__ import annotations
 
+import json
 import re
 import subprocess
 import tomllib
@@ -449,3 +450,130 @@ def test_no_and_or_chain_stands_in_for_if_else() -> None:
         r"\]\] && \[ \"\$x\" -gt 1 \] \\\n\s*\|\| ",
         '[[ a ]] && [ "$x" -gt 1 ] \\\n  || z',
     )
+
+
+# ---- verify-page-ids.py scans every page and caps the id set ------------------
+
+
+def _many(tmp_path: Path, tabs: int, filler: int = 0) -> dict[str, str]:
+    pages = {f"a{i:03d}/index.html": "<body>" for i in range(filler)}
+    pages.update({f"t{i:03d}/index.html": _page(f"tab-{i:03d}") for i in range(tabs)})
+    return pages
+
+
+def test_the_cap_matches_the_worker() -> None:
+    source = (ROOT / "worker" / "src" / "sites.ts").read_text(encoding="utf-8")
+    match = re.search(r"export const MAX_PAGES = (\d+);", source)
+    assert match is not None
+    script = VERIFY.read_text(encoding="utf-8")
+    assert f"MAX_PAGE_IDS = {match.group(1)}" in script
+    assert "[:MAX_" not in script  # no slicing of the file list
+
+
+def test_a_tab_page_past_the_two_hundredth_file_is_still_checked(
+    tmp_path: Path,
+) -> None:
+    # 100 pages without a tab id sort first, then 150 tab pages: the last is
+    # file 250. The last tab is left out of PAGE_IDS and must be reported.
+    ids = [f"tab-{i:03d}" for i in range(149)]
+    done = _verify(tmp_path, _many(tmp_path, 150, filler=100), json.dumps(ids))
+    assert done.returncode == 1
+    assert "tab-149" in done.stdout
+
+
+def test_two_hundred_and_one_tab_pages_with_the_last_missing_fail(
+    tmp_path: Path,
+) -> None:
+    ids = [f"tab-{i:03d}" for i in range(200)]
+    done = _verify(tmp_path, _many(tmp_path, 201), json.dumps(ids))
+    assert done.returncode == 1
+    assert "more than 200 tab ids" in done.stdout
+
+
+def test_an_over_cap_page_ids_list_fails_with_a_clear_message(tmp_path: Path) -> None:
+    ids = [f"tab-{i:03d}" for i in range(201)]
+    done = _verify(tmp_path, {"index.html": _page("tab-000")}, json.dumps(ids))
+    assert done.returncode == 1
+    assert "more than 200 ids" in done.stdout
+
+
+def test_exactly_the_cap_passes_and_404_and_privacy_are_not_tab_pages(
+    tmp_path: Path,
+) -> None:
+    pages = _many(tmp_path, 200)
+    pages["404.html"] = "<body>"
+    pages["privacy/index.html"] = "<body>"
+    ids = [f"tab-{i:03d}" for i in range(200)]
+    done = _verify(tmp_path, pages, json.dumps(ids))
+    assert done.returncode == 0
+    assert done.stdout == ""
+
+
+# ---- the gate and the Worker see one environment ---------------------------------
+
+
+def _loader_vars() -> set[str]:
+    """Every variable the Worker's budget loader reads, enumerated from source."""
+    budgets = (ROOT / "worker" / "src" / "kit" / "budgets.ts").read_text("utf-8")
+    pv = (ROOT / "worker" / "src" / "pvlimits.ts").read_text("utf-8")
+    names = set(re.findall(r'\bget\("([A-Z0-9_]+)"', budgets))
+    names |= set(re.findall(r"\be\.([A-Z_]+)", pv))
+    return names
+
+
+def test_the_loader_variables_were_collected() -> None:
+    names = _loader_vars()
+    assert {
+        "D1_DAILY_WRITE_QUOTA",
+        "ROUTE_BUDGET_GATE",
+        "ACCOUNT_VIEWS_PER_HOUR",
+    } <= names
+    assert len(names) >= 11
+
+
+def test_the_gate_receives_every_variable_the_worker_loader_reads() -> None:
+    wanted = _loader_vars()
+    for step in ("Check the page-view write budget", "Write deploy config"):
+        env = _step("deploy", step)["env"]
+        for name in wanted:
+            assert env[name] == "${{ vars." + name + " }}", (step, name)
+    # and Check configuration validates them
+    assert wanted <= set(_step("deploy", "Check configuration")["env"])
+
+
+KIT_VARS = [
+    "ROUTE_BUDGET_GATE",
+    "ROUTE_BUDGET_VIEW",
+    "MAX_LEADS",
+    "MAX_KIT_EVENTS",
+    "DAILY_ALERT_BUDGET",
+    "DAILY_SEND_BUDGET",
+    "D1_DAILY_WRITE_QUOTA",
+]
+
+
+def test_a_kit_limit_override_reaches_the_deploy_config(tmp_path: Path) -> None:
+    extra = {**ON, "ROUTE_BUDGET_GATE": "180", "D1_DAILY_WRITE_QUOTA": "150000"}
+    assert _check(extra).returncode == 0
+    assert _write(tmp_path, extra).returncode == 0
+    data = tomllib.loads(_out(tmp_path))
+    assert data["vars"]["ROUTE_BUDGET_GATE"] == "180"
+    assert data["vars"]["D1_DAILY_WRITE_QUOTA"] == "150000"
+    assert "MAX_LEADS" not in data["vars"]
+
+
+def test_kit_overrides_are_not_written_when_page_views_are_off(tmp_path: Path) -> None:
+    extra = {"ROUTE_BUDGET_GATE": "180"}
+    assert _check(extra).returncode == 0
+    assert _write(tmp_path, extra).returncode == 0
+    assert "ROUTE_BUDGET_GATE" not in tomllib.loads(_out(tmp_path))["vars"]
+
+
+@pytest.mark.parametrize("name", KIT_VARS)
+@pytest.mark.parametrize("bad", ["12x", "-1", "1e3", "1234567890", "1\n2"])
+def test_an_invalid_kit_override_fails_closed(
+    tmp_path: Path, name: str, bad: str
+) -> None:
+    extra = {**ON, name: bad}
+    assert _check(extra).returncode != 0
+    assert _write(tmp_path, extra).returncode != 0

@@ -216,3 +216,54 @@ describe("the deploy check counts sites and ceilings", () => {
     expect(lo.pageViews).toBeLessThan(hi.pageViews);
   });
 });
+
+// ---- the gate sees the same environment the Worker's loader reads ----
+
+import budgetsSrc from "../../src/kit/budgets.ts?raw";
+import pvSrc from "../../src/pvlimits.ts?raw";
+import { KIT_LIMIT_VARS } from "../../src/kit/budgets";
+import { PAGE_VIEW_VARS } from "../../src/pvlimits";
+import { BUDGET_ENV_VARS } from "../../src/kit/budgetcheck";
+
+describe("the deploy gate reads every variable the Worker's loader reads", () => {
+  it("KIT_LIMIT_VARS is exactly the set parseKitLimits reads (enumerated from the source)", () => {
+    const read = [...budgetsSrc.matchAll(/\bget\("([A-Z0-9_]+)"/g)].map((m) => m[1]);
+    expect(read.length).toBeGreaterThan(0);
+    expect([...read].sort()).toEqual([...KIT_LIMIT_VARS].sort());
+  });
+  it("PAGE_VIEW_VARS is exactly the set pageViewDailyWrites reads", () => {
+    const read = [...pvSrc.matchAll(/\be\.([A-Z_]+)/g)].map((m) => m[1]);
+    expect(read.length).toBeGreaterThan(0);
+    expect([...new Set(read)].sort()).toEqual([...PAGE_VIEW_VARS].sort());
+  });
+  it("the gate passes on all of them", () => {
+    for (const n of [...KIT_LIMIT_VARS, ...PAGE_VIEW_VARS, "SITES", "SITE_HOST", "PAGE_IDS", "LINK_IDS"]) {
+      expect(BUDGET_ENV_VARS).toContain(n);
+    }
+  });
+  it("an override of each kit limit reaches the verdict (a value the Worker refuses fails the gate)", () => {
+    const bad: Record<string, string> = {
+      ROUTE_BUDGET_GATE: "100001",
+      ROUTE_BUDGET_VIEW: "100001",
+      MAX_LEADS: "0",
+      MAX_KIT_EVENTS: "0",
+      DAILY_ALERT_BUDGET: "1001",
+      DAILY_SEND_BUDGET: "1001",
+      D1_DAILY_WRITE_QUOTA: "999",
+    };
+    for (const n of KIT_LIMIT_VARS) {
+      expect(bad[n], n).toBeDefined();
+      const r = runBudgetCheck({ [n]: bad[n] });
+      expect(r.code, n).toBe(1);
+      expect(r.lines[0], n).toContain(n);
+    }
+  });
+  it("a kit limit override changes the verdict, not just the validation", () => {
+    expect(runBudgetCheck({}).code).toBe(0);
+    const warn = runBudgetCheck({ ROUTE_BUDGET_GATE: "200" });
+    expect(warn.lines[0]).toMatch(/^::warning::/);
+    expect(runBudgetCheck({ ROUTE_BUDGET_GATE: "400" }).code).toBe(1);
+    expect(runBudgetCheck({ D1_DAILY_WRITE_QUOTA: "50000" }).code).toBe(1);
+    expect(runBudgetCheck({ D1_DAILY_WRITE_QUOTA: "200000" }).lines[0]).toMatch(/: ok$/);
+  });
+});

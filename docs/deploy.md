@@ -130,6 +130,7 @@ your own; never commit real account ids, database ids or tokens.
    | `VIEW_LIMITER_NAMESPACE_ID` | a number, not `1001` | **required when on.** Namespace id of the per-client `VIEW_LIMITER` rate limiter (5 views per client per 60 s). It must differ from `RATELIMIT_NAMESPACE_ID` and is not the `1002` placeholder in `wrangler.toml` |
    | `VIEWS_PER_HOUR`, `BOT_VIEWS_PER_HOUR` | whole numbers, 0 to 100000 | optional hourly budgets of likely-human and bot views (defaults 120 and 30); written to the Worker and used by the budget check below |
    | `ACCOUNT_VIEWS_PER_HOUR`, `ACCOUNT_BOT_VIEWS_PER_HOUR` | whole numbers, 0 to 100000 | optional account-wide ceilings above the per-site budgets (defaults 480 and 120); written to the Worker and used by the budget check below |
+   | `ROUTE_BUDGET_GATE`, `ROUTE_BUDGET_VIEW`, `MAX_LEADS`, `MAX_KIT_EVENTS`, `DAILY_ALERT_BUDGET`, `DAILY_SEND_BUDGET`, `D1_DAILY_WRITE_QUOTA` | digits only | optional kit limits and the D1 quota (see Kit limits below). With page views on they are written to the Worker **and** given to the budget check, so the check sees the same values the Worker loads; the check applies the Worker's exact ranges and stops the deploy on a value the Worker would refuse |
 
    Page views also need `ZONE_NAME` (the `/e/*` route; the deploy stops
    without it) and the Worker secret `VIEW_HASH_SECRET`, which you set once

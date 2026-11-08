@@ -513,6 +513,13 @@ jobs:
           BOT_VIEWS_PER_HOUR: ${{ vars.BOT_VIEWS_PER_HOUR }}
           ACCOUNT_VIEWS_PER_HOUR: ${{ vars.ACCOUNT_VIEWS_PER_HOUR }}
           ACCOUNT_BOT_VIEWS_PER_HOUR: ${{ vars.ACCOUNT_BOT_VIEWS_PER_HOUR }}
+          ROUTE_BUDGET_GATE: ${{ vars.ROUTE_BUDGET_GATE }}
+          ROUTE_BUDGET_VIEW: ${{ vars.ROUTE_BUDGET_VIEW }}
+          MAX_LEADS: ${{ vars.MAX_LEADS }}
+          MAX_KIT_EVENTS: ${{ vars.MAX_KIT_EVENTS }}
+          DAILY_ALERT_BUDGET: ${{ vars.DAILY_ALERT_BUDGET }}
+          DAILY_SEND_BUDGET: ${{ vars.DAILY_SEND_BUDGET }}
+          D1_DAILY_WRITE_QUOTA: ${{ vars.D1_DAILY_WRITE_QUOTA }}
         run: |
           set -eu
           for name in CLOUDFLARE_ACCOUNT_ID PAGES_PROJECT D1_DATABASE_ID \
@@ -599,6 +606,18 @@ jobs:
                   fi
                 fi
               done
+              # The kit limits and the D1 quota the Worker's loader also reads
+              # (worker/src/kit/budgets.ts): the same values go to the budget
+              # check and into the deploy config, so the gate and the Worker see
+              # one environment. Shape only here; the exact ranges are the
+              # Worker's own, applied by the budget check.
+              for name in ROUTE_BUDGET_GATE ROUTE_BUDGET_VIEW MAX_LEADS MAX_KIT_EVENTS DAILY_ALERT_BUDGET DAILY_SEND_BUDGET D1_DAILY_WRITE_QUOTA; do
+                eval "value=\${$name:-}"
+                if [ -n "$value" ] && ! [[ "$value" =~ ^[0-9]{1,9}$ ]]; then
+                  echo "::error::$name must be digits only"
+                  exit 1
+                fi
+              done
               ;;
             *)
               echo "::error::PAGE_VIEWS must be exactly true or false (or unset)"
@@ -666,6 +685,13 @@ jobs:
           BOT_VIEWS_PER_HOUR: ${{ vars.BOT_VIEWS_PER_HOUR }}
           ACCOUNT_VIEWS_PER_HOUR: ${{ vars.ACCOUNT_VIEWS_PER_HOUR }}
           ACCOUNT_BOT_VIEWS_PER_HOUR: ${{ vars.ACCOUNT_BOT_VIEWS_PER_HOUR }}
+          ROUTE_BUDGET_GATE: ${{ vars.ROUTE_BUDGET_GATE }}
+          ROUTE_BUDGET_VIEW: ${{ vars.ROUTE_BUDGET_VIEW }}
+          MAX_LEADS: ${{ vars.MAX_LEADS }}
+          MAX_KIT_EVENTS: ${{ vars.MAX_KIT_EVENTS }}
+          DAILY_ALERT_BUDGET: ${{ vars.DAILY_ALERT_BUDGET }}
+          DAILY_SEND_BUDGET: ${{ vars.DAILY_SEND_BUDGET }}
+          D1_DAILY_WRITE_QUOTA: ${{ vars.D1_DAILY_WRITE_QUOTA }}
         run: |
           set -eu
           npx --no-install esbuild scripts/check-budget.ts --bundle --platform=node \
@@ -692,6 +718,13 @@ jobs:
           BOT_VIEWS_PER_HOUR: ${{ vars.BOT_VIEWS_PER_HOUR }}
           ACCOUNT_VIEWS_PER_HOUR: ${{ vars.ACCOUNT_VIEWS_PER_HOUR }}
           ACCOUNT_BOT_VIEWS_PER_HOUR: ${{ vars.ACCOUNT_BOT_VIEWS_PER_HOUR }}
+          ROUTE_BUDGET_GATE: ${{ vars.ROUTE_BUDGET_GATE }}
+          ROUTE_BUDGET_VIEW: ${{ vars.ROUTE_BUDGET_VIEW }}
+          MAX_LEADS: ${{ vars.MAX_LEADS }}
+          MAX_KIT_EVENTS: ${{ vars.MAX_KIT_EVENTS }}
+          DAILY_ALERT_BUDGET: ${{ vars.DAILY_ALERT_BUDGET }}
+          DAILY_SEND_BUDGET: ${{ vars.DAILY_SEND_BUDGET }}
+          D1_DAILY_WRITE_QUOTA: ${{ vars.D1_DAILY_WRITE_QUOTA }}
         run: |
           set -eu
           # Second lock on the derived list (the script already validated it).
@@ -771,6 +804,16 @@ jobs:
               if [ -n "$value" ]; then
                 if ! [[ "$value" =~ ^[0-9]{1,6}$ ]] || [ "$value" -gt 100000 ]; then
                   echo "::error::$name must be a whole number from 0 to 100000"
+                  exit 1
+                fi
+                sed -i "/^\[vars\]$/a $name = \"$value\"" wrangler.deploy.toml
+              fi
+            done
+            for name in ROUTE_BUDGET_GATE ROUTE_BUDGET_VIEW MAX_LEADS MAX_KIT_EVENTS DAILY_ALERT_BUDGET DAILY_SEND_BUDGET D1_DAILY_WRITE_QUOTA; do
+              eval "value=\${$name:-}"
+              if [ -n "$value" ]; then
+                if ! [[ "$value" =~ ^[0-9]{1,9}$ ]]; then
+                  echo "::error::$name must be digits only"
                   exit 1
                 fi
                 sed -i "/^\[vars\]$/a $name = \"$value\"" wrangler.deploy.toml

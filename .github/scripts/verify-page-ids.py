@@ -21,7 +21,7 @@ from pathlib import Path
 
 ID = re.compile(r"[a-z0-9][a-z0-9-]{0,39}")  # used with fullmatch: `$` would allow "\n"
 ATTR = re.compile(r'data-page-id="([^"]{1,80})"')
-MAX_PAGES = 200
+MAX_PAGE_IDS = 200  # worker/src/sites.ts MAX_PAGES (a test keeps them equal)
 MAX_BYTES = 2_000_000
 
 
@@ -31,9 +31,11 @@ def refuse(reason: str) -> int:
 
 
 def built_ids(site: Path) -> set[str] | None:
-    """The page ids on the site's html pages, or None if any is outside the grammar."""
+    """The page ids on ALL the site's html pages (never a truncated list), or None
+    if any is outside the grammar. Only tab pages carry the attribute; 404.html
+    and the privacy page do not."""
     found: set[str] = set()
-    for path in sorted(site.rglob("*.html"))[:MAX_PAGES]:
+    for path in sorted(site.rglob("*.html")):
         if path.is_symlink() or not path.is_file():
             continue
         with path.open(encoding="utf-8", errors="replace") as handle:
@@ -66,6 +68,13 @@ def main(argv: list[str]) -> int:
         return refuse(
             "the build carries no page id: page views are not on in the build"
         )
+    if len(built) > MAX_PAGE_IDS:
+        return refuse(
+            f"the build has more than {MAX_PAGE_IDS} tab ids, more than the Worker "
+            "accepts: its views would be dropped"
+        )
+    if len(allowed_raw) > MAX_PAGE_IDS:
+        return refuse(f"PAGE_IDS lists more than {MAX_PAGE_IDS} ids")
     allowed = set(allowed_raw)
     missing = sorted(built - allowed)
     for name in sorted(allowed - built):
