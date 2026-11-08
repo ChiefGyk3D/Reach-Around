@@ -702,14 +702,17 @@ jobs:
   # One visible alert when a SCHEDULED counts refresh failed, in the counts or
   # the wheels job (issue #317). After a counts failure the build and deploy
   # carry on with the committed numbers, and after a wheels failure they are
-  # skipped, so nothing else would show it. It opens one issue, or adds a comment to the open one, and never
-  # opens a duplicate. The body holds only values GitHub provides (run URL,
-  # date, job results): no secret, no job log, no text from a count source.
-  # The job can only write issues. It runs on schedule only; a manual run
-  # shows its own red job to the person who started it.
+  # skipped, so nothing else would show it. It opens one issue, or adds a
+  # comment to the open one, and never opens a duplicate. The body holds only
+  # values GitHub provides (run URL, date, the wheels and counts results): no
+  # secret, no job log, no text from a count source. The job can only write
+  # issues. It runs on schedule only; a manual run shows its own red job to
+  # the person who started it. It needs wheels and counts only: the deploy job
+  # waits for the approval-gated `test` environment, and an alert must not wait
+  # for a human to approve a deployment.
   notify:
     name: Alert on a failed counts refresh
-    needs: [wheels, counts, build, deploy]
+    needs: [wheels, counts]
     # A failed wheels job skips counts, build and deploy, so it needs its own
     # trigger: otherwise a scheduled run would stop with no alert at all.
     if: >-
@@ -733,18 +736,20 @@ jobs:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           WHEELS_RESULT: ${{ needs.wheels.result }}
           COUNTS_RESULT: ${{ needs.counts.result }}
-          BUILD_RESULT: ${{ needs.build.result }}
-          DEPLOY_RESULT: ${{ needs.deploy.result }}
         run: |
-          set -eu
+          set -euo pipefail
           PATH=/usr/bin:/bin
           export PATH
           title="Counts refresh failed"
           when="$(date -u +%Y-%m-%d)"
-          body="The scheduled follower-counts refresh failed on ${when}. Run: ${RUN_URL} (wheels: ${WHEELS_RESULT}, counts: ${COUNTS_RESULT}, build: ${BUILD_RESULT}, deploy: ${DEPLOY_RESULT}). A failed counts job leaves the site on the last committed numbers; a failed wheels job also skips the build and deploy. See docs/deploy.md, Daily follower counts."
-          # The issues list also returns pull requests; skip those.
-          existing="$(/usr/bin/gh api --paginate "repos/${GH_REPO}/issues?state=open&per_page=100" \
-            --jq ".[] | select(.pull_request | not) | select(.title == \"${title}\") | .number" | head -n 1)"
+          body="The scheduled follower-counts refresh failed on ${when}. Run: ${RUN_URL} (wheels: ${WHEELS_RESULT}, counts: ${COUNTS_RESULT}). See docs/deploy.md, Daily follower counts."
+          # Capture the whole listing first: a failed gh stops the step here
+          # (set -e with pipefail) instead of looking like "no issue found" and
+          # opening a duplicate. The issues list also returns pull requests;
+          # skip those. sed reads to the end, so no pipe closes early.
+          listing="$(/usr/bin/gh api --paginate "repos/${GH_REPO}/issues?state=open&per_page=100" \
+            --jq ".[] | select(.pull_request | not) | select(.title == \"${title}\") | .number")"
+          existing="$(printf '%s\n' "$listing" | sed -n 1p)"
           if [ -n "$existing" ]; then
             /usr/bin/gh api -X POST "repos/${GH_REPO}/issues/${existing}/comments" -f body="$body" > /dev/null
             echo "::notice::commented on issue #${existing}"

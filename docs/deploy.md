@@ -421,8 +421,11 @@ uses the `numbers.json` committed beside the config, the same path as
 job, a run on any ref other than `main`, and a cancelled run still do not
 build. When a scheduled run's `counts` or `wheels` job fails, the `notify` job
 opens one issue titled "Counts refresh failed", or adds a comment to the open
-one with the run link, the date and each job's result; it never opens a
-duplicate. A failed `wheels` job also skips the build and the deploy (the site
+one with the run link, the date and the wheels and counts results; it never
+opens a duplicate. It waits for those two jobs only, not for the build or the
+deploy: the deploy job can sit pending on the `test` environment's reviewer, and
+the alert must not wait for that approval. If listing the open issues fails, the
+step fails (red) instead of opening a possible duplicate. A failed `wheels` job also skips the build and the deploy (the site
 stays as last deployed), which is why it raises the same alert. The job can only write issues and
 the text holds only values GitHub provides. A manual run raises no issue: the
 person who started it sees the red job. Close the issue once the counts work

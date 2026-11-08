@@ -244,7 +244,13 @@ def test_one_alert_job_runs_only_for_a_failed_scheduled_refresh() -> None:
     assert not notify_runs(
         cond, event="schedule", wheels="failure", counts="skipped", cancelled=True
     )
-    assert set(notify["needs"]) == {"wheels", "counts", "build", "deploy"}
+    # Exactly wheels and counts. The deploy job waits for the approval-gated
+    # `test` environment; with it in needs, a scheduled run pending approval
+    # would hold the alert back forever. The condition decides on wheels and
+    # counts alone, so a deploy still waiting does not matter.
+    assert notify["needs"] == ["wheels", "counts"]
+    assert "needs.deploy" not in cond and "needs.build" not in cond
+    assert notify_runs(cond, event="schedule", counts="failure")  # deploy pending
 
 
 def test_the_alert_job_can_only_write_issues_and_holds_no_secret() -> None:
@@ -267,6 +273,118 @@ def test_the_alert_job_can_only_write_issues_and_holds_no_secret() -> None:
     assert "pull_request" in step["run"]  # the issues list also holds PRs
     # One issue: it looks for an open one first, then comments or creates.
     assert step["run"].index("issues?state=open") < step["run"].index("-X POST")
+    # Only what is known when the job starts goes into the body.
+    assert set(step["env"]) == {
+        "GH_TOKEN",
+        "GH_REPO",
+        "RUN_URL",
+        "WHEELS_RESULT",
+        "COUNTS_RESULT",
+    }
+
+
+def alert_script() -> str:
+    notify = jobs()["notify"]
+    step = next(s for s in notify["steps"] if "run" in s)
+    run: str = step["run"]
+    return run
+
+
+def test_the_alert_step_fails_on_a_failed_listing_and_never_pipes_to_head() -> None:
+    run = alert_script()
+    lines = [ln.strip() for ln in run.splitlines()]
+    assert "set -euo pipefail" in lines
+    # Capture the whole listing into a variable, then select from it. A pipe
+    # into head (or any early-closing reader) is what masked a failed gh.
+    assert 'listing="$(' in run
+    assert not re.search(r"\|\s*head\b", run)
+    assert "sed -n 1p" in run
+    assert run.index('listing="$(') < run.index('existing="$(')
+
+
+def run_alert(tmp_path: Path, script: str, list_exit: int, list_out: str) -> list[str]:
+    """Run the alert step's script with a stub `gh`; return the calls it made."""
+    log = tmp_path / "calls.log"
+    stub = tmp_path / "gh"
+    stub.write_text(
+        "#!/bin/bash\n"
+        f'echo "$*" >> "{log}"\n'
+        'case "$*" in\n'
+        f'  *"issues?state=open"*) printf "%s" "{list_out}"; exit {list_exit};;\n'
+        "esac\n"
+        "exit 0\n",
+        encoding="utf-8",
+    )
+    stub.chmod(0o755)
+    # The workflow calls /usr/bin/gh by absolute path; point it at the stub.
+    patched = script.replace("/usr/bin/gh", str(stub))
+    assert str(stub) in patched
+    env = {
+        "GH_TOKEN": "not-a-token",
+        "GH_REPO": "owner/repo",
+        "RUN_URL": "https://example.invalid/run/1",
+        "WHEELS_RESULT": "success",
+        "COUNTS_RESULT": "failure",
+    }
+    result = subprocess.run(  # noqa: S603 - fixed argv, synthetic input
+        ["/bin/bash", "-c", patched],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    calls = log.read_text(encoding="utf-8").splitlines() if log.exists() else []
+    (tmp_path / "rc").write_text(str(result.returncode), encoding="utf-8")
+    return calls
+
+
+def alert_rc(tmp_path: Path) -> int:
+    return int((tmp_path / "rc").read_text(encoding="utf-8"))
+
+
+def test_a_failed_issue_listing_fails_the_step_and_creates_nothing(
+    tmp_path: Path,
+) -> None:
+    calls = run_alert(tmp_path, alert_script(), 1, "")
+    assert alert_rc(tmp_path) != 0
+    assert len(calls) == 1 and "issues?state=open" in calls[0]
+    assert not any("-X POST" in c for c in calls)
+
+
+def test_the_alert_step_creates_once_or_comments_on_the_open_issue(
+    tmp_path: Path,
+) -> None:
+    fresh = tmp_path / "fresh"
+    fresh.mkdir()
+    calls = run_alert(fresh, alert_script(), 0, "")
+    assert alert_rc(fresh) == 0
+    posts = [c for c in calls if "-X POST" in c]
+    assert len(posts) == 1 and posts[0].split()[3] == "repos/owner/repo/issues"
+    assert "title=Counts refresh failed" in posts[0]
+    known = tmp_path / "known"
+    known.mkdir()
+    calls = run_alert(known, alert_script(), 0, "42\n57\n")
+    assert alert_rc(known) == 0
+    posts = [c for c in calls if "-X POST" in c]
+    assert len(posts) == 1 and "issues/42/comments" in posts[0]
+    assert "title=" not in posts[0]
+
+
+def test_the_failed_listing_check_bites_without_pipefail(tmp_path: Path) -> None:
+    # The old shape (a pipe into head, no pipefail) swallows the failure and
+    # goes on to create an issue: the behavior test above would catch that.
+    script = alert_script()
+    head, rest = script.split('listing="$(', 1)
+    tail = rest[rest.index('if [ -n "$existing" ]') :]
+    old = (
+        head.replace("set -euo pipefail", "set -eu")
+        + 'existing="$(/usr/bin/gh api --paginate '
+        + '"repos/${GH_REPO}/issues?state=open&per_page=100" | head -n 1)"\n'
+        + tail
+    )
+    assert "set -euo pipefail" not in old and "| head -n 1" in old
+    calls = run_alert(tmp_path, old, 1, "")
+    assert any("-X POST" in c for c in calls)
 
 
 def test_the_keys_reach_exactly_one_step_through_env() -> None:
