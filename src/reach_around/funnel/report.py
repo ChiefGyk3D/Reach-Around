@@ -354,7 +354,8 @@ def build_report(
         if kit_unlocks is None:
             withheld.append("kit_unlocks")
 
-    report = {
+    links_section = _section(links, floor, top, "click_events" in export.present)
+    report: dict[str, Any] = {
         "version": REPORT_VERSION,
         "site": site,
         "floor": floor,
@@ -381,7 +382,7 @@ def build_report(
             "level": geo,
             **_section(places, floor, top, "view_geo_daily" in export.present),
         },
-        "links": _section(links, floor, top, "click_events" in export.present),
+        "links": links_section,
         "click_sources": {},  # joint suppression with "links", filled below
         "bots": {
             "total_views": (_count(total_views, floor) if total_printable else None),
@@ -404,7 +405,7 @@ def build_report(
         },
     }
     report["click_sources"] = _joint_click_sources(
-        click_sources, report["links"], floor, top, "click_events" in export.present
+        click_sources, links_section, floor, top, "click_events" in export.present
     )
     unsafe = any(
         _suppress(cells, floor).dropped for cells in (pages, sources, places)

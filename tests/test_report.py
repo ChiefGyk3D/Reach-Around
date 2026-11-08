@@ -973,7 +973,7 @@ def test_joint_suppression_random_data(
 ) -> None:
     import random
 
-    rng = random.Random(329)
+    rng = random.Random(329)  # noqa: S311 - test data
     srcs = [None, "instagram", "bluesky", "other", "tiktok"]
     for _ in range(40):
         spec = {
