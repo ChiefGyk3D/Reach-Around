@@ -1526,6 +1526,9 @@ def _platform_parts(item: dict[str, Any]) -> list[tuple[str, str, Any]]:
         if shown is None:
             continue
         parts.append((key, shown, python_value))
+    present = {key for key, _, _ in parts}
+    if "count" in present and "as_of" not in present:
+        raise EditError("a count needs an as_of date (YYYY-MM-DD)")
     return parts
 
 
@@ -1610,12 +1613,40 @@ def set_platform_item_field(
     index: int,
     field: str,
     value: object,
+    today: datetime.date | None = None,
 ) -> tuple[str, dict[str, Any]]:
     """Set one field of item ``index`` (1-based) of a platforms block.
 
     ``name``, ``label``, ``count`` and ``as_of`` are cleared by a blank value:
-    the line is removed, so a blank count is never written as 0.
+    the line is removed, so a blank count is never written as 0. A count always
+    travels with its ``as_of`` date (the config requires both): setting a count
+    on an item with no date also writes ``as_of`` as ``today`` (UTC by
+    default), and clearing the count also removes the date. Clearing only the
+    date of an item that still has a count is refused.
     """
+    return _set_item_field(
+        text,
+        raw,
+        block=block,
+        index=index,
+        field=field,
+        value=value,
+        today=today,
+        chain=True,
+    )
+
+
+def _set_item_field(
+    text: str,
+    raw: dict[str, Any],
+    *,
+    block: str,
+    index: int,
+    field: str,
+    value: object,
+    today: datetime.date | None,
+    chain: bool,
+) -> tuple[str, dict[str, Any]]:
     if field not in PLATFORM_FIELDS:
         raise EditError(
             f"{field!r} cannot be set on a platform item; allowed fields: "
@@ -1630,10 +1661,32 @@ def set_platform_item_field(
     if not isinstance(node, MappingNode):  # _items already refused anything else
         raise EditError(f"item {index} is not a block mapping")
     present = {k: _get(node, k) is not None for k in ("count", "as_of")}
+
+    def again(field: str, value: object) -> tuple[str, dict[str, Any]]:
+        return _set_item_field(
+            text,
+            raw,
+            block=block,
+            index=index,
+            field=field,
+            value=value,
+            today=today,
+            chain=False,
+        )
+
+    if field == "count" and shown is None and present["as_of"] and chain:
+        text, raw = again("as_of", None)
+        return again("count", None)
     if field == "count" and shown is None and present["as_of"]:
         raise EditError("clear as_of before count: a date needs a count")
     if field == "as_of" and shown is not None and not present["count"]:
         raise EditError("as_of needs a count; set the count first")
+    if field == "as_of" and shown is None and present["count"] and chain:
+        raise EditError("a count needs an as_of date; clear the count to remove both")
+    if field == "count" and shown is not None and not present["as_of"] and chain:
+        text, raw = again("count", value)
+        day = today if today is not None else datetime.datetime.now(datetime.UTC).date()
+        return again("as_of", day)
     _set_field(
         lines,
         node,

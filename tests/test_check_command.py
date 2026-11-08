@@ -241,6 +241,7 @@ def test_the_json_format(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> 
         "blocks": 3,
         "errors": [],
         "error_count": 0,
+        "warnings": [],
     }
 
 
@@ -588,3 +589,98 @@ def test_against_a_hostile_base_prints_nothing_from_it(
     assert code == 0
     assert "`" not in out
     assert "](" not in out
+
+
+# --- hand-kept follower numbers ---------------------------------------------
+
+
+def with_platforms(*items: dict[str, Any]) -> dict[str, Any]:
+    data = good()
+    data["timezone"] = "UTC"  # the day count must not depend on the zone
+    data["tabs"][0]["blocks"].append({"id": "socials", "items": list(items)})
+    return data
+
+
+def plat(platform: str = "tiktok", **over: Any) -> dict[str, Any]:
+    item: dict[str, Any] = {
+        "platform": platform,
+        "handle": "@example",
+        "url": "https://example.com/p",
+    }
+    item.update(over)
+    return item
+
+
+def days_ago(days: int) -> str:
+    from datetime import UTC, datetime, timedelta
+
+    return (datetime.now(UTC) - timedelta(days=days)).date().isoformat()
+
+
+def test_a_fresh_hand_kept_number_is_clean(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    data = with_platforms(plat(count=1234, as_of=days_ago(3)))
+    code, out = check(capsys, write(tmp_path, data))
+    assert code == 0 and "Warning" not in out
+
+
+def test_a_stale_hand_kept_number_is_a_finding_naming_the_platform_not_the_value(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    data = with_platforms(plat("instagram", count=424242, as_of=days_ago(45)))
+    code, out = check(capsys, write(tmp_path, data))
+    assert code == 0  # a warning, not an error
+    assert "Warning" in out and "instagram" in out and "45 days" in out
+    assert "424242" not in out and days_ago(45) not in out
+
+
+def test_the_stale_finding_is_in_the_json_report(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    data = with_platforms(plat("x", count=5, as_of=days_ago(31)))
+    code, out = check(capsys, write(tmp_path, data), "--format", "json")
+    report = json.loads(out)
+    assert code == 0 and report["valid"] is True
+    assert [w["kind"] for w in report["warnings"]] == ["stale_number"]
+    assert report["warnings"][0]["ident"] == "x"
+    assert report["warnings"][0]["block"] == "socials"
+
+
+def test_a_stale_numbers_file_entry_is_a_finding(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from datetime import UTC, datetime, timedelta
+
+    stamp = (datetime.now(UTC) - timedelta(days=60)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    (tmp_path / "numbers.json").write_text(
+        json.dumps(
+            {"version": 1, "platforms": {"threads": {"count": 77, "as_of": stamp}}}
+        )
+    )
+    data = with_platforms(plat("threads"))
+    code, out = check(capsys, write(tmp_path, data))
+    assert code == 0 and "threads" in out and "60 days" in out and "77" not in out
+
+
+def test_a_bad_numbers_file_is_an_error(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    (tmp_path / "numbers.json").write_text("{nope")
+    code, out = check(capsys, write(tmp_path, with_platforms(plat())))
+    assert code == 2 and "numbers file" in out
+
+
+def test_a_count_without_a_date_is_an_error(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    code, out = check(capsys, write(tmp_path, with_platforms(plat(count=5))))
+    assert code == 2 and "needs an as_of date" in out
+
+
+def test_a_future_date_is_an_error(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    data = with_platforms(plat("kick", count=5, as_of=days_ago(-5)))
+    code, out = check(capsys, write(tmp_path, data))
+    assert code == 2 and "future" in out and "kick" in out

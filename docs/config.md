@@ -518,7 +518,7 @@ blocks:
         handle: examplecreator
         url: https://example.com/twitch
         count: 3812
-        as_of: 2027-03-01
+        as_of: 2026-01-01
       - platform: youtube
         handle: "@examplecreator"
         url: https://example.com/youtube
@@ -541,10 +541,26 @@ blocks:
 | `items[].handle` | the text shown, 1 to 80 characters, plain: no control, bidirectional or zero-width characters |
 | `items[].url` | `https` only, or an internal `tab:<id>` link (same rules as a link) |
 | `items[].label` | what the number counts: `followers` (default), `subscribers` or `members` |
-| `items[].count` | optional whole number from 0 to 10,000,000,000. A float, a string or a boolean is refused |
-| `items[].as_of` | optional `YYYY-MM-DD`; needs a `count` |
+| `items[].count` | optional whole number from 0 to 10,000,000,000. A float, a string or a boolean is refused. Needs an `as_of` |
+| `items[].as_of` | `YYYY-MM-DD`, a real calendar day from 2000-01-01 to one day after the build day; required with a `count`, refused without one |
 
 A platform with no count (typed or from the numbers file) shows no number.
+
+**Typed (hand-kept) numbers.** Any platform can carry a typed `count` with its
+`as_of` day, which is how you show Kick, TikTok, Instagram, X, Threads and
+LinkedIn (the engine has no source for them). Both are checked when the config
+is loaded; a count with no date, an impossible date such as `2027-02-30`, a
+date before 2000 or a date more than a day in the future stops the build and is
+reported by `reach-around check` (the future date is checked against the build
+day in the config's time zone). The number on the button is the abbreviated
+count; the date is the small `as of` line in the list layout and part of the
+spoken text (`3,812 followers, as of 2026-01-01`) in the chips layout.
+
+**Old numbers.** A number shown on a platform button whose date is more than 30
+days before the build day gets a build warning, and `reach-around check` prints
+a `Warning:` finding (exit status stays 0). Both name the block and the
+platform, never the value. This covers typed numbers and numbers-file entries.
+A stale value that loses to a fresh one is not reported.
 
 **Click ids.** With click tracking on, an item's link carries `ping` and
 `data-link-id` set to `<block id>-<platform>`; a repeat of the same platform in
@@ -584,10 +600,15 @@ manifest, and a path inside `--out` is refused.
 | Size and shape | up to 256 KiB, 1000 entries, no duplicate keys, no `NaN` or `Infinity`, deeply nested input is an error |
 | Unknown keys | a key that is neither a platform slug nor an item id in the config is ignored; the build prints how many |
 
-Which value wins: with no typed `count`, the file's value is used. With a typed
-`count` and no `as_of`, the file wins. With both, the file wins when its date
-(UTC) is the same day or later than the typed `as_of`, and the typed value
-stays otherwise. The date shown is the date of the value that won.
+Which value wins: with no typed `count`, the file's value is used. The file's
+value always beats the typed one while it is fresh (at most 30 days old),
+whatever the two dates are: a typed value never replaces a fresh fetched one.
+If the file's value is older than 30 days (for example its source has been
+failing and refresh kept the last good number) and the typed value is not, the
+typed value is shown instead. If both are old, the file's value is shown and the
+build warns. A typed value with no file entry is always shown, with a warning
+once it is old. With neither, the button shows no number. The date shown is the
+date of the value that won.
 
 #### Live
 
@@ -1015,8 +1036,9 @@ Limits worth knowing:
   federation mode) answers 401; the source fails with `http_401`.
 - **GitHub.** Unauthenticated calls are limited to 60 an hour per address.
   Shared CI runners can hit that; a failure keeps the old number.
-- **TikTok, Instagram, Threads, Kick** have no source kind. Their approval paths
-  do not exist yet. Put the number in the numbers file by hand (below).
+- **TikTok, Instagram, Threads, Kick** (and X and LinkedIn) have no source kind.
+  Their approval paths do not exist yet. Put the number in the numbers file by
+  hand (below), or type `count` and `as_of` on the platform item.
 
 ### The numbers file
 

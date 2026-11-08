@@ -30,7 +30,11 @@ from reach_around.config.blocks import (
 )
 from reach_around.config.footer import CREDIT_URL
 from reach_around.config.models import Block, Link, Section, SiteConfig, Tab
-from reach_around.config.numbers import Numbers
+from reach_around.config.numbers import (
+    Numbers,
+    future_typed_dates,
+    number_warnings,
+)
 from reach_around.config.page_title import DEFAULT_TEMPLATE, render_template
 from reach_around.config.profile_card import MEDIA_KIT_ID
 from reach_around.config.tablinks import is_tab_ref, parse_tab_ref
@@ -656,6 +660,12 @@ def build_site(
             "that is never published: pass --gated-out DIR (a directory outside "
             "the output directory)"
         )
+    future = future_typed_dates(config, today)
+    if future:
+        names = ", ".join(f"{n.block_id!r} {n.platform}" for n in future)
+        raise ValueError(
+            f"as_of is in the future (more than one day after {today}) for: {names}"
+        )
     shown = [list(visible_blocks(tab.blocks, today)) for tab in config.tabs]
     manifest = _manifest(config, shown)
     custom_css = load_custom_css(overrides)
@@ -700,7 +710,7 @@ def build_site(
         static[Path("static") / "custom.css"] = custom_css.encode("utf-8")
     named = fingerprint(static)
     env = make_environment(overrides)
-    env.globals["platform_rows"] = lambda block: platform_rows(block, numbers)
+    env.globals["platform_rows"] = lambda block: platform_rows(block, numbers, today)
     env.globals["asset"] = named.assets
     env.globals["footer_copyright"] = config.footer.copyright_line(today.year)
     # Every page with a tab bar carries the nav badge, so every such page gets the
@@ -768,5 +778,8 @@ def build_site(
             else None
         ),
         inventory=build_inventory(files, named.hashed),
-        warnings=tuple(kit_render.warnings),
+        warnings=(
+            *number_warnings(config, numbers, today),
+            *kit_render.warnings,
+        ),
     )

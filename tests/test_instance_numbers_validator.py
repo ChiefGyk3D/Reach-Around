@@ -131,3 +131,41 @@ def test_the_guard_bites() -> None:
     # The table above must hold real cases, and a good file must not be in it.
     assert len(BAD) > 20
     assert GOOD not in BAD.values()
+
+
+def stamp_days_ago(days: int) -> str:
+    from datetime import timedelta
+
+    moment = datetime.now(UTC) - timedelta(days=days)
+    return moment.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def test_an_entry_over_thirty_days_old_warns_by_id_and_still_passes(
+    tmp_path: Path,
+) -> None:
+    doc = {
+        "version": 1,
+        "platforms": {
+            "tiktok": {"count": 424242, "as_of": stamp_days_ago(45)},
+            "kick": {"count": 7, "as_of": stamp_days_ago(30)},
+            "x": {"count": 8, "as_of": stamp_days_ago(31)},
+        },
+    }
+    out = tmp_path / "numbers.json"
+    done = run(put(tmp_path, doc), out)
+    assert done.returncode == 0, done.stderr
+    warnings = [ln for ln in done.stdout.splitlines() if ln.startswith("::warning::")]
+    assert len(warnings) == 2
+    assert any("tiktok is 45 days old" in w for w in warnings)
+    assert any("x is 31 days old" in w for w in warnings)
+    assert "424242" not in done.stdout + done.stderr  # the platform, never the value
+    assert out.exists()
+
+
+def test_fresh_entries_do_not_warn(tmp_path: Path) -> None:
+    doc = {
+        "version": 1,
+        "platforms": {"kick": {"count": 7, "as_of": stamp_days_ago(2)}},
+    }
+    done = run(put(tmp_path, doc), tmp_path / "numbers.json")
+    assert done.returncode == 0 and "::warning::" not in done.stdout
