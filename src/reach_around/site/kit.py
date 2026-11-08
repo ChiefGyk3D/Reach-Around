@@ -18,9 +18,12 @@ The wall is structural and checked at build time:
   ``GUARD_MIN_LENGTH`` are skipped, since a short word would match ordinary text;
   the structural separation, not this search, is what keeps them out.
 
-Not here, on purpose: the Turnstile script and the CSP exception it needs are a
-separate task (Plan 3, Task 2A). The widget slot is markup only, so this build
-makes no third-party request and ``_headers`` is unchanged.
+The CSP exception for the Turnstile widget lives here too (``gate_path_extras``,
+#257): ``_headers`` gives ``https://challenges.cloudflare.com`` to ``script-src``
+and ``frame-src`` on the two exact widget paths (``GATE_PATHS``), and only when
+the kit has a gate form and a ``turnstile_site_key``. No other path gets it.
+Not here, on purpose: the Turnstile script tag. The widget slot is markup only,
+so the pages still make no third-party request.
 """
 
 from __future__ import annotations

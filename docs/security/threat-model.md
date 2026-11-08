@@ -399,7 +399,7 @@ Verification:
 - `tests/site/test_build.py::test_html_in_titles_is_escaped` (plan Task 6)
 - `tests/site/test_templates.py::test_no_safe_filter_or_from_string_on_config_values` (greps templates and `build.py`)
 - exists: `tests/site/test_overrides.py::test_headers_file_has_a_strict_csp` (the revision 1 name `tests/site/test_headers.py::test_headers_file_sets_csp_frame_ancestors_and_nosniff` was never created)
-- proposed: `tests/site/test_overrides.py::test_gate_page_csp_allows_only_the_turnstile_origin_in_script_frame_and_connect_src`
+- exists (#257), all in `tests/site/test_kit_csp.py`: `test_the_origin_and_paths_are_exactly_these`, `test_gate_paths_have_exactly_the_turnstile_origin` (script-src and frame-src carry it; connect-src stays `'self'`), `test_no_other_path_gets_the_origin`, `test_public_kit_without_a_gate_stays_strict`, `test_no_site_key_means_no_widget_and_no_relaxation`, `test_a_site_without_a_kit_has_no_relaxation`, `test_the_relaxed_policy_has_no_unsafe_source`, `test_the_gated_page_and_public_pages_load_no_script_yet`; and `tests/site/test_kit_build.py::test_no_script_and_no_third_party_request_anywhere`
 - proposed: `worker/test/headers.test.ts::all_worker_responses_carry_nosniff_and_no_store_where_private` and `::emailed_link_page_sends_no_referrer`
 - `tests/site/test_privacy.py::test_banner_text_comes_from_config_when_set` (plan Task 6A; confirm it asserts escaping)
 

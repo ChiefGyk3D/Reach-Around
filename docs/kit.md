@@ -97,8 +97,9 @@ read 2026-11-07; verified). `connect-src` is not widened: that page does not lis
 it for the normal widget (it needs `'self'` only for pre-clearance, which this
 site does not use). If a browser run ever names a `connect-src` violation, add
 that one origin in `reach_around/site/kit.py::gate_path_extras` with a test.
-Every other path, including every other kit-adjacent page, keeps the strict
-site-wide policy; no `unsafe-*`, wildcard or `data:` source is added. The gated
+No other path gets the Turnstile origin, and no `unsafe-*`, wildcard or `data:`
+source is added. The existing per-path exception for live-tab pages (their own
+`frame-src` for the player origins) is unchanged. The gated
 page (`kit.html`, served by the Worker) is not part of `_headers`; the Worker
 sets its headers. This change only allows the origin. The page does not load
 Turnstile's script yet, so the build still makes no third-party request and the
