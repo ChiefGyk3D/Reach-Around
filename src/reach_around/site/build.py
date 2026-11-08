@@ -21,7 +21,13 @@ from typing import Any
 
 from jinja2 import Environment
 
-from reach_around.config.blocks import LIVE_NOT_RENDERED, Crypto, Email, Live, Platforms
+from reach_around.config.blocks import (
+    LIVE_PLAYER_ORIGINS,
+    Crypto,
+    Email,
+    Live,
+    Platforms,
+)
 from reach_around.config.footer import CREDIT_URL
 from reach_around.config.models import Block, Link, Section, SiteConfig, Tab
 from reach_around.config.numbers import Numbers
@@ -38,6 +44,7 @@ from reach_around.site.kit import (
     check_no_gated_text,
     check_private_root,
     check_roots,
+    gate_path_extras,
     public_paths,
     render_kit,
     stage_gated,
@@ -102,9 +109,17 @@ def _has_platforms(blocks: Iterable[Block]) -> bool:
     return any(isinstance(block, Platforms) for block in blocks)
 
 
+def _has_live(blocks: Iterable[Block]) -> bool:
+    return any(isinstance(block, Live) for block in blocks)
+
+
 # Published only for a site with a crypto block on a page; see ``build_site``.
 _CRYPTO_FILES = (Path("static") / "copy.js", Path("static") / "crypto.css")
 _PLATFORMS_FILES = (Path("static") / "platforms.css",)
+# Published only for a site with a live block; linked from the live page only.
+_LIVE_STYLE = Path("static") / "live.css"
+# The live script (status badge, click-to-load) goes on every page of such a site.
+_LIVE_SCRIPT = Path("static") / "live.js"
 # Published only for a site with a kit.
 _KIT_STYLE = Path("static") / "kit.css"
 
@@ -153,6 +168,7 @@ def _nav(config: SiteConfig, current: int, root: str) -> list[dict[str, Any]]:
             "title": tab.title,
             "href": root if i == 0 else f"{root}{tab.id}/",
             "current": i == current,
+            "live": _has_live(tab.blocks),
         }
         for i, tab in enumerate(config.tabs)
     ]
@@ -296,6 +312,8 @@ def _render_page(
         has_email=_has_email(blocks),
         has_email_script=_has_email_script(blocks),
         has_platforms=_has_platforms(blocks),
+        has_live=_has_live(blocks),
+        wide=_has_live(blocks),
         profile_card=_profile_card(config),
         cookie_text=intro_text(config),
         custom_css=custom_css,
@@ -412,6 +430,7 @@ def _render_not_found(
         has_crypto=False,
         has_email=False,
         has_email_script=False,
+        has_live_script=False,
         has_platforms=False,
         noindex=True,
         profile_card=_profile_card(config),
@@ -456,6 +475,7 @@ def _kit_base(
             "has_crypto": False,
             "has_email": False,
             "has_email_script": False,
+            "has_live_script": False,
             "has_platforms": False,
             "has_kit": True,
             "skip_label": "Skip to the kit",
@@ -465,6 +485,22 @@ def _kit_base(
         }
 
     return base
+
+
+def _live_path_extras(
+    config: SiteConfig, shown: list[list[Block]]
+) -> dict[str, dict[str, list[str]]]:
+    """The CSP extra for the live page: ``frame-src`` for the two player origins.
+
+    Only the path of a tab that shows a live block gets it, and only that one
+    directive; every other page keeps the site-wide policy.
+    """
+    origins = [LIVE_PLAYER_ORIGINS[name] for name in sorted(LIVE_PLAYER_ORIGINS)]
+    extras: dict[str, dict[str, list[str]]] = {}
+    for i, (tab, blocks) in enumerate(zip(config.tabs, shown, strict=True)):
+        if _has_live(blocks):
+            extras["/" if i == 0 else f"/{tab.id}/"] = {"frame-src": origins}
+    return extras
 
 
 def _render_pages(
@@ -620,8 +656,6 @@ def build_site(
             "that is never published: pass --gated-out DIR (a directory outside "
             "the output directory)"
         )
-    if any(isinstance(b, Live) for tab in config.tabs for b in tab.blocks):
-        raise ValueError(LIVE_NOT_RENDERED)
     shown = [list(visible_blocks(tab.blocks, today)) for tab in config.tabs]
     manifest = _manifest(config, shown)
     custom_css = load_custom_css(overrides)
@@ -656,6 +690,9 @@ def build_site(
     if not any(_has_platforms(blocks) for blocks in shown):
         for rel in _PLATFORMS_FILES:
             static.pop(rel, None)
+    if not any(_has_live(blocks) for blocks in shown):
+        static.pop(_LIVE_STYLE, None)
+        static.pop(_LIVE_SCRIPT, None)
     if kit is None:
         static.pop(_KIT_STYLE, None)
     static[Path("static") / "theme.css"] = theme_css(config.theme).encode("utf-8")
@@ -665,6 +702,9 @@ def build_site(
     env = make_environment(overrides)
     env.globals["platform_rows"] = lambda block: platform_rows(block, numbers)
     env.globals["asset"] = named.assets
+    # Every page with a tab bar carries the nav badge, so every such page gets the
+    # live script; the 404 page and the kit pages say False for themselves.
+    env.globals["has_live_script"] = any(_has_live(blocks) for blocks in shown)
     env.globals["asset_url"] = _asset_url(named.assets)
     files: dict[Path, bytes] = {
         page: html.encode("utf-8")
@@ -691,6 +731,7 @@ def build_site(
         published, {path.as_posix() for path in named.hashed}
     )
     files[Path("_headers")] = render_headers(
+        path_extras={**_live_path_extras(config, shown), **gate_path_extras(config)},
         noindex_paths=robots.noindex_paths if robots else (),
         immutable_paths=immutable,
         revalidate_paths=revalidate,

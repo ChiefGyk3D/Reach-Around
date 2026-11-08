@@ -55,12 +55,13 @@ overrides directory, the build ignores it and prints a warning naming the
 file (`test_no_custom_javascript_is_loaded`). If you override a template and
 add a script tag anyway, the browser blocks it.
 
-The one planned exception is the gate page, which needs the Turnstile script
-from one named https origin. The CSP builder takes a per-path extra for that,
+The one exception is the gate pages (`/kit/` and `/kit/retry/`, only when the
+kit has a gate form and a site key), which need Cloudflare's Turnstile origin
+in `script-src` and `frame-src`. The CSP builder takes a per-path extra for that,
 accepts only `'self'` or an exact https origin, and refuses `*`, `data:`,
 `unsafe-inline` and `unsafe-eval`
-(`test_build_csp_refuses_wildcards_and_unsafe_sources`). The relaxation is one
-page wide, not site wide.
+(`test_build_csp_refuses_wildcards_and_unsafe_sources`). The relaxation is two
+exact paths wide, not site wide (`tests/site/test_kit_csp.py`).
 
 ## How overrides work
 

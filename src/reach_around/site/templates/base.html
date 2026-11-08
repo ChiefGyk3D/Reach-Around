@@ -22,6 +22,9 @@
 {% if has_platforms %}
 <link rel="stylesheet" href="{{ root }}{{ asset("static/platforms.css") }}">
 {% endif %}
+{% if has_live is defined and has_live %}
+<link rel="stylesheet" href="{{ root }}{{ asset("static/live.css") }}">
+{% endif %}
 {% if has_kit is defined and has_kit %}
 <link rel="stylesheet" href="{{ root }}{{ asset("static/kit.css") }}">
 {% endif %}
@@ -34,6 +37,9 @@
 {% if page_views %}
 <script src="{{ root }}{{ asset("static/view.js") }}" defer></script>
 {% endif %}
+{% if has_live_script is defined and has_live_script %}
+<script src="{{ root }}{{ asset("static/live.js") }}" defer></script>
+{% endif %}
 {% if has_crypto %}
 <script src="{{ root }}{{ asset("static/copy.js") }}" defer></script>
 {% endif %}
@@ -43,7 +49,7 @@
 </head>
 <body{% if page_views and page_id %} data-page-id="{{ page_id }}" data-view-route="{{ view_route }}"{% endif %}>
 <a class="skip-link" href="#content">{{ skip_label if skip_label is defined else "Skip to links" }}</a>
-<main id="content">
+<main id="content"{% if wide is defined and wide %} class="main-wide"{% endif %}>
 {% include "_nav.html" %}
 {% include "_header.html" %}
 {% block content %}{% endblock %}
