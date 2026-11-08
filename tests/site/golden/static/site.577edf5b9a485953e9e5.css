@@ -406,11 +406,22 @@ a:focus-visible, summary:focus-visible, button:focus-visible {
 /* Link buttons: full-width accent pills. The thumbnail slot sits at the left,
    the three-dot glyph at the right, and the text stays centered between them. */
 .blocks { display: flex; flex-direction: column; gap: var(--ra-space-4); }
-.blocks.layout-grid, .blocks.layout-cards, .section-links.layout-grid, .section-links.layout-cards { display: grid; }
-.blocks.layout-grid, .section-links.layout-grid { grid-template-columns: repeat(auto-fill, minmax(min(10rem, 100%), 1fr)); gap: var(--ra-space-3); }
-.blocks.layout-cards, .section-links.layout-cards { grid-template-columns: repeat(auto-fill, minmax(min(15rem, 100%), 1fr)); gap: var(--ra-space-3); }
+/* Grid and card layouts wrap in a centered flex row with a fixed column basis,
+   so a short last row sits in the middle instead of hugging the left edge. */
+.blocks.layout-grid, .blocks.layout-cards, .section-links.layout-grid, .section-links.layout-cards {
+  flex-direction: row;
+  flex-wrap: wrap;
+  justify-content: center;
+  align-items: stretch;
+  gap: var(--ra-space-3);
+}
+.blocks.layout-grid > *, .section-links.layout-grid > * { flex: 0 0 min(10rem, 100%); }
+.blocks.layout-cards > *, .section-links.layout-cards > * { flex: 0 0 min(15rem, 100%); }
+/* Every block that spans a whole row in the other layouts does the same here. */
 .layout-grid > .block-section, .layout-grid > .block-text, .layout-grid > .block-image, .layout-grid > .block-divider,
-.layout-cards > .block-section, .layout-cards > .block-text, .layout-cards > .block-image, .layout-cards > .block-divider { grid-column: 1 / -1; }
+.layout-grid > .block-platforms, .layout-grid > .block-crypto, .layout-grid > .block-email, .layout-grid > .block-live,
+.layout-cards > .block-section, .layout-cards > .block-text, .layout-cards > .block-image, .layout-cards > .block-divider,
+.layout-cards > .block-platforms, .layout-cards > .block-crypto, .layout-cards > .block-email, .layout-cards > .block-live { flex: 0 0 100%; width: 100%; }
 .section-links { display: flex; flex-direction: column; gap: var(--ra-space-2); }
 
 a.link {
@@ -777,7 +788,8 @@ main > footer { margin-top: var(--ra-space-5); color: var(--ra-color-muted); fon
   .layout-list > .block-divider, .layout-list > .block-crypto,
   .layout-list > .block-link:has(> a.link-featured) { grid-column: 1 / -1; }
   .layout-list > .block-section { align-self: start; }
-  /* A card alone in its row spans it instead of leaving a hole beside it. Only
+  /* A card alone in its row is centered at one column width instead of leaving
+     a hole beside it. Only
      link cards are counted (`of .block-link`, Chromium 111, Firefox 113,
      Safari 9). A card is alone when no link card follows it and it starts a
      row: it is odd among link cards with no full-width block before it, or it
@@ -792,8 +804,8 @@ main > footer { margin-top: var(--ra-space-5); color: var(--ra-color-muted); fon
           .block-platforms, .block-link:has(> a.link-featured)) + .block-link,
       :is(.block-text, .block-section, .block-image, .block-divider, .block-crypto,
           .block-platforms, .block-link:has(> a.link-featured)) + .block-link + .block-link + .block-link
-    ) { grid-column: 1 / -1; }
-  .section-links.layout-list > li:last-child:nth-child(odd) { grid-column: 1 / -1; }
+    ) { grid-column: 1 / -1; justify-self: center; width: calc((100% - var(--ra-space-3)) / 2); }
+  .section-links.layout-list > li:last-child:nth-child(odd) { grid-column: 1 / -1; justify-self: center; width: calc((100% - var(--ra-space-3)) / 2); }
   .hero-card:has(> .avatar) { flex-direction: row; justify-content: center; gap: var(--ra-space-6); }
   .hero-card:has(> .avatar) h1 { text-align: left; }
 }

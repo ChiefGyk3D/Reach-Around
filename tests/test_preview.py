@@ -25,6 +25,7 @@ def config(tmp_path: Path) -> Path:
     path = tmp_path / "site.yaml"
     path.write_text(EXAMPLE.read_text())
     shutil.copytree(EXAMPLE.parent / "media", tmp_path / "media")
+    shutil.copytree(EXAMPLE.parent / "fonts", tmp_path / "fonts")
     return path
 
 
