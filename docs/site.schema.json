@@ -1504,6 +1504,24 @@
       "title": "Rate",
       "type": "object"
     },
+    "Redirects": {
+      "additionalProperties": false,
+      "properties": {
+        "socials": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SocialsRedirect"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "title": "Redirects",
+      "type": "object"
+    },
     "Robots": {
       "additionalProperties": false,
       "properties": {
@@ -1632,6 +1650,27 @@
         "url"
       ],
       "title": "Social",
+      "type": "object"
+    },
+    "SocialsRedirect": {
+      "additionalProperties": false,
+      "properties": {
+        "status": {
+          "default": 301,
+          "enum": [
+            301,
+            302
+          ],
+          "title": "Status",
+          "type": "integer"
+        },
+        "target": {
+          "default": "/",
+          "title": "Target",
+          "type": "string"
+        }
+      },
+      "title": "SocialsRedirect",
       "type": "object"
     },
     "StoreConfig": {
@@ -2068,6 +2107,17 @@
       "anyOf": [
         {
           "$ref": "#/$defs/ProfileCard"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "redirects": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Redirects"
         },
         {
           "type": "null"

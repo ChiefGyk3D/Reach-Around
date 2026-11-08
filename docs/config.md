@@ -90,6 +90,7 @@ escapes it when it renders.
 | `privacy` | Privacy | defaults | wording and retention for the privacy page; see [`privacy`](#privacy) |
 | `footer` | Footer | credit on | the "Made with Reach Around" link in the footer; see [`footer`](#footer) |
 | `robots` | Robots | absent | optional; when present the build writes `robots.txt`; see [`robots`](#robots) |
+| `redirects` | Redirects | absent | optional; `redirects.socials` writes a `_redirects` file that sends the old `/socials` path to the link page; see [`redirects`](#redirects) |
 | `analytics` | Analytics | page views off | optional page-view counting; see [`analytics`](#analytics) |
 | `store` | StoreConfig | SQLite at `data/reach-around.db` | where the snapshot store lives; see [`store`](#store) |
 | `profile_card` | ProfileCard | none | name, topic chips and a media-kit button after the content of every page; see [`profile_card`](#profile_card) |
@@ -1218,6 +1219,36 @@ It leaves out user-initiated fetchers, which some operators say may bypass
 `robots.txt`. Blocking bots at Cloudflare is a separate step in the Cloudflare
 dashboard that this tool neither performs nor checks: see Cloudflare's current
 documentation for what is available on your plan.
+
+## `redirects`
+
+Optional. When the `redirects` key is **absent** (or has no `socials`), the build
+writes no `_redirects` file and the output is byte-for-byte what it was before
+this key existed. Unknown keys are refused.
+
+`redirects.socials` is for the cutover: the link page replaces an old page at
+`/socials` on the same host, and shared links to it must keep working. Turning
+it on writes a `_redirects` file with one rule for `/socials` and one for
+`/socials/`, both to `target`. Every other path is untouched.
+
+| Key | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| `status` | `301` or `302` | `301` | `301` for production. Use `302` while testing, so a browser or cache does not keep the redirect after you turn it off. It must be the number, not text (`"301"`) or a boolean. |
+| `target` | root-relative path | `/` | Where the old path goes. Starts with a single `/`, at most 200 characters, plain characters only (`A-Z a-z 0-9 . _ ~ - /`). No scheme or host, no `//`, no `\`, no query, fragment, whitespace, wildcard or `.` / `..` segment. |
+
+```yaml
+redirects:
+  socials:
+    status: 302   # switch to 301 (or delete this line) for production
+    target: /
+```
+
+The build refuses a site that also has a page under `/socials/` (a tab whose id
+is `socials`): the redirect would hide it. Rename the tab or leave the redirect
+off. The file is host configuration like `_headers`: it is not listed in the
+assets inventory and gets no cache rule. See
+[deploy.md](deploy.md#redirecting-the-old-socials-path) for the cutover step and
+what has not been verified against the host.
 
 ## What the loader refuses
 

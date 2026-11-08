@@ -50,6 +50,7 @@ from reach_around.config.profile_card import (
     ButtonLabel,
     ProfileTag,
 )
+from reach_around.config.redirects import Redirects
 from reach_around.config.robots import Robots
 from reach_around.config.tablinks import is_tab_ref, parse_tab_ref
 from reach_around.config.theme import Theme
@@ -332,6 +333,7 @@ class SiteConfig(_Model):
     privacy: Privacy = Privacy()
     footer: Footer = Footer()
     robots: Robots | None = None
+    redirects: Redirects | None = None
     store: StoreConfig = StoreConfig()
     profile_card: ProfileCard | None = None
     numbers: NumbersConfig | None = None

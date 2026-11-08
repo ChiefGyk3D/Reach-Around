@@ -24,6 +24,7 @@ Cutover words: **v1** means required before DNS moves. **Deferred** names a reas
 | Single-page option | Not offered. | DONE. `page_layout: sections` (#220, #221). | Not required. The page keeps the tabs layout to match Beacons. | Config choice, covered by the existing golden tests. |
 | Header icon row | Social icons repeated on every tab; the email icon leads to the contact tab instead of a mail link. | DONE. `creator.socials` with `tab:` links (`src/reach_around/config/models.py`, `docs/config.md`, `tests/site/test_internal_links.py`); icons in `src/reach_around/site/icons.py`. | v1 | The scripted link check (HTML part) covers every icon target, internal ones included, on every tab. Observable: open each tab on desktop and phone and compare the icon row. |
 | Link cards | Title, optional subtitle, optional thumbnail, a featured pill. | DONE. `src/reach_around/site/templates/blocks/link.html` and `_macros.html`; thumbnails (#113). | v1 | Link check; visual comparison on desktop and phone. |
+| Old `/socials` path | The old page lives at `/socials` on the same host; shared links point there. | DONE as a build option (#356): `redirects.socials` writes a `_redirects` file sending `/socials` and `/socials/` to `/` (301, or 302 while testing). `tests/site/test_redirects.py`. Host behavior is unverified (`docs/deploy.md`, "Redirecting the old /socials path"). | v1 | Scripted: the build test above. Observable on the staging host with 302: `/socials` and `/socials/` land on `/` with a query string kept, other paths answer as before. Repeat with 301 after DNS moves. |
 | Eight support links | A support tab with eight links, one featured. | DONE as a capability (link blocks, `featured`). Content is entered in the private instance. | v1 | Scripted link check (HTML anchors plus manifest). |
 | Collapsible sections | Groups on the socials and recommendations tabs open and close. | DONE. `<details>` section block (`src/reach_around/site/templates/blocks/section.html`, `collapsed` option). | v1 | Observable: sections start open or closed as on Beacons, and work with the keyboard. Golden test covers the markup. |
 | Per-link menu | A per-link three-dot menu. | NOT BUILT. Links are plain anchors; there is no menu. | Deliberately not included in v1. A menu adds script and page surface, and nothing in the cutover criteria needs it. The maintainer can reverse this. | Recorded in the "Not included" list; no check. |
@@ -113,7 +114,7 @@ Sections as listed in issue #22 (seen 2026-10-23). The owner ruled on 2026-11-06
 
 ## Cutover checklist
 
-All six must hold, with Beacons still live.
+All seven must hold, with Beacons still live.
 
 1. **Parity doc is green.** Every v1 row above has been checked and its result recorded in the cutover pull request.
 2. **The page equals Beacons.** The scripted link check passes: no missing, extra, reordered or changed link, affiliate flags match, every URL answers. Desktop and phone look-alike review done by the maintainer.
@@ -121,6 +122,7 @@ All six must hold, with Beacons still live.
 4. **The PDF is complete.** Paginated, readable offline, scrubbed, and reviewed by the maintainer.
 5. **Analytics are real.** 48 hours of click and page-view data on the staging host. The report shows funnel, geography and bots. A dump of the database contains no raw address and no user agent.
 6. **Safety and release.** Kill switch tested. Security review findings closed. Privacy page approved. `v0.3.0` tagged.
+7. **The old path redirects.** `/socials` and `/socials/` redirect to `/` with the query string kept, other paths unaffected (#356). Checked on the staging host with `status: 302`, then switched to `301` for the cutover build. See `docs/deploy.md`, "Redirecting the old /socials path".
 
 ## Rollback plan
 
