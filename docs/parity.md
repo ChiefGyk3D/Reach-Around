@@ -83,3 +83,4 @@ The script never follows a redirect. If you know the old page used a URL that no
 - Whether a link works. The plan's second step, requesting each external URL once, is a separate manual or scripted check; this tool does not do it.
 - Affiliate flags and `rel` values: the plan checks those by their own scripted step.
 - Order of tabs and tab titles.
+- Analytics numbers. `scripts/check-analytics.py` compares daily views and clicks with the old provider's export; see `docs/analytics-acceptance.md`.

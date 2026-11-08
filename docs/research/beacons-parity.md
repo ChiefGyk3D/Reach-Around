@@ -73,7 +73,7 @@ Cutover words: **v1** means required before DNS moves. **Deferred** names a reas
 | CSV export | Download of the data. | NOT BUILT. | v1 as report output the maintainer can save; a file export is allowed to follow. | Observable: the report can be saved as CSV and opens in a spreadsheet. |
 | Funnel | Not offered. | PARTLY. Source to page to click is stored; the report is missing. | v1 | Report shows the funnel. |
 | Blog page views | Not offered. | PARTLY. The collector accepts several sites (#235). The blog's own wiring is outside this repo. | v1, required by the owner's ruling of 2026-11-06. | Scripted: a test view from the blog lands under the blog's site id. |
-| Connected platforms | Seven connected platforms with follower history. | PARTLY. Counts exist for several platforms (#154); history, Instagram, TikTok, X, Threads and LinkedIn depend on API access or typed numbers. | v1 for counts with as-of dates; automated history is deferred (API access, review, cost). | Each platform shown has a number and an as-of date under 30 days. |
+| Connected platforms | Seven connected platforms with follower history. | PARTLY. Counts exist for several platforms (#154); history, Instagram, TikTok, X, Threads and LinkedIn depend on API access or typed numbers. | v1 for counts with as-of dates. History for the Tier 1 platforms (Twitch, YouTube, TikTok, Threads, Instagram) is also v1 and blocks v0.3.0; see "Owner requirements of 2026-11-08". Tier 2 history is a bonus. | Each platform shown has a number and an as-of date under 30 days. |
 | Privacy page | Beacons policy. | DONE. Generated from enabled features (`src/reach_around/site/privacy.py`). | v1, wording approved by the maintainer. | Observable: page lists every feature that is on. |
 
 ## Every Beacons sidebar section
@@ -91,7 +91,7 @@ Sections as listed in issue #22 (seen 2026-10-23). The owner ruled on 2026-11-06
 | Affiliate Products | A catalog and tracking of affiliate offers. | PARTLY. Affiliate links with `rel="sponsored"` and a disclosure are DONE; clicks are counted; no earnings tracking. | Links covered, v1. Earnings tracking is later (see issue #5). Owner ruled 2026-11-06. |
 | Digital Products | Selling files and courses. | NOT BUILT. | Deliberately not included; external stores cover it. Owner ruled 2026-11-06. |
 | Marketing | Email and campaign tools. | NOT BUILT. | Deliberately not included. Owner ruled 2026-11-06. |
-| Analytics: socials | Follower counts and history per platform. | PARTLY (see Analytics). | Counts in v1; history later. |
+| Analytics: socials | Follower counts and history per platform. | PARTLY (see Analytics). | Counts and Tier 1 history in v1 (owner, 2026-11-08, supersedes "history later"). Tier 2 history is a bonus. |
 | Analytics: link in bio | Views, clicks, CTR, sources, devices, location, CSV. | PARTLY (see Analytics). | Covered, v1. |
 | Analytics: website | Visits to the Beacons-hosted website. | Page views support more than one site (#235). | Covered for the maintainer's own sites; blog collector is v1. |
 | Analytics: digital products | Sales analytics. | NOT BUILT. | Out of scope with Digital Products. Owner ruled 2026-11-06. |
@@ -112,15 +112,57 @@ Sections as listed in issue #22 (seen 2026-10-23). The owner ruled on 2026-11-06
 - Platforms Beacons does not connect (for example Bluesky, Mastodon, Kick, Discord and Matrix community sizes) can be added.
 - Visitor data stays in the maintainer's own store, with no raw address or user agent kept.
 
+## Owner requirements of 2026-11-08
+
+These amend the table above. Where a row above says "history later" or "deferred", this section wins. Each item is a checkbox with an owner, a way to verify it and the issue that delivers it. Tier 1 items are blockers for v0.3.0 (#274): the tag is not cut while one is open. Epic: #246; platform tiers: #364.
+
+Tiers (owner's order of priority):
+
+- **Tier 1, cutover-critical:** Twitch, YouTube, TikTok, Threads, Instagram. Their numbers must match what Beacons shows.
+- **Tier 2, bonus:** Bluesky and Mastodon first, then Kick, Discord and GitHub. None blocks cutover.
+- **LinkedIn:** the existing hand-kept follower count only. No collector.
+- **Later:** PeerTube. Not on the cutover path.
+
+Rules that apply to every item: all times are stored and reported in UTC; no paid API; no visitor identifier is stored or reported.
+
+### Requirement A: analytics from the owner's socials
+
+- [ ] **A1. Tier 1 history store exists** (BLOCKER for v0.3.0). Owner: maintainer, built by the agents. Verify: after two daily refreshes, the store holds one dated row per Tier 1 platform per day, in UTC, appended and never rewritten. Delivered by #383 (store), gated by the research issues #380, #382, #385.
+- [ ] **A2. Tier 1 collectors run** (BLOCKER). Owner: maintainer. Verify: each of Twitch, YouTube, TikTok, Threads and Instagram has a followers value with an `as_of` day within the last 30 days in the report; a platform that cannot be collected says so by name instead of showing zero. Delivered by #387, #388, #390 and the views collectors #391, #392, #393, #394, #395; hand-kept hygiene for numbers typed by hand is #389.
+- [ ] **A3. Tier 1 numbers match Beacons** (BLOCKER). Owner: maintainer, with Beacons still live. Verify: `scripts/check-analytics.py` over the 48 hour window and again at day 30, exit 0, result recorded in the cutover pull request (`docs/analytics-acceptance.md`). Delivered by #378 (the script) and #376 (the importer that maps the export).
+- [ ] **A4. Views, watch time and demographics shown with privacy floors** (BLOCKER for the Tier 1 platforms that offer them). Owner: maintainer. Verify: the kit and `reach-around report` show them and print nothing under the floor. Delivered by #384 and #397.
+- [ ] **A5. Tier 2 platforms** (bonus, not a blocker). Verify: Bluesky and Mastodon first, then Kick, Discord, GitHub each show a followers value with an `as_of` day. Delivered by #396, #381, #386.
+- [ ] **A6. LinkedIn stays hand-kept** (not a blocker). Verify: the follower count shows with its `as_of` day, and no LinkedIn collector exists. Delivered by existing hand-kept counts (#258).
+- [ ] **A7. PeerTube** is tracked as a backlog item and is not scheduled (not a blocker). Verify: the backlog issue exists and is linked from #364.
+
+### Requirement B: funnel traffic
+
+- [ ] **B1. Source to destination is reported** (BLOCKER). Owner: maintainer. Verify: after a synthetic visit from a labeled source and a click on an outbound link on staging, the report shows that source against that destination ("came from Instagram, went to Twitch") within the hour. Delivered by #329 (source on clicks), #409 (source by destination table) and #398 (one unified report).
+- [ ] **B2. Aggregate only, no identifiers** (BLOCKER). Verify: a database dump passes `scripts/check-dump.py`; the report prints no row under the floor; no cookie is set (`scripts/smoke.sh`). Delivered by #408 (do-not-collect list and the test) and #331 (rollups with caps and retention).
+- [ ] **B3. Synthetic visit and click appear in the report** (BLOCKER). Verify: the step in `docs/analytics-acceptance.md`. Delivered by #378 with #366 (analytics enabled on staging, 48 hour proof).
+
+### Requirement C: the cutover date and the Beacons history
+
+- [ ] **C1. The kit shows "Live since <date> (UTC)"** (BLOCKER). Verify: with `cutover_date` set, the built kit page and the PDF print the line; `reach-around check --production` has no unset warning. Delivered by #374 (PR #404, merged).
+- [ ] **C2. Every public number carries a before or after mark** (BLOCKER). Verify: a number computed from both eras is labeled as such in the kit and the report. Delivered by #375, with the report and Grafana marker in #371.
+- [ ] **C3. Beacons history sits in its own labeled block** (BLOCKER). Verify: the kit shows pre-cutover link-page history in a separate block labeled as imported from the old provider; it is never summed into collected numbers. Delivered by #377 (kit block) and #376 (importer with provenance, kept apart from collected data).
+
+### Handling the old provider's data
+
+- [ ] **D1. Export in week 1.** Owner: maintainer. Verify: the export file exists in the private instance repository (never this one) before the end of the first week after cutover. Tracked by #347.
+- [ ] **D2. Import by day 30.** Owner: maintainer. Verify: the importer (#376) has run and `scripts/check-analytics.py` passes on the imported window.
+- [ ] **D3. Cancel the old provider only after verification.** Owner: maintainer. Verify: A3, C3, D1 and D2 are all checked, with the day-30 comparison recorded in the cutover pull request. Cancelling earlier is a rollback hazard (see the rollback plan).
+- [ ] **D4. No paid APIs.** Verify: every collector uses a free tier or a public endpoint; the research issues #380 and #382 record the terms. A platform that needs a paid API is reported as not collected, and the owner decides.
+
 ## Cutover checklist
 
-All seven must hold, with Beacons still live.
+All seven must hold, with Beacons still live. The items under "Owner requirements of 2026-11-08" are part of items 1 and 5.
 
 1. **Parity doc is green.** Every v1 row above has been checked and its result recorded in the cutover pull request.
 2. **The page equals Beacons.** The scripted link check passes: no missing, extra, reordered or changed link, affiliate flags match, every URL answers. Desktop and phone look-alike review done by the maintainer.
 3. **The kit gate works on desktop and phone.** Gated text is absent until unlock. A test lead raises an alert in under a minute. The delete command removes the lead.
 4. **The PDF is complete.** Paginated, readable offline, scrubbed, and reviewed by the maintainer.
-5. **Analytics are real.** 48 hours of click and page-view data on the staging host. The report shows funnel, geography and bots. A dump of the database contains no raw address and no user agent.
+5. **Analytics are real.** 48 hours of click and page-view data on the staging host. The report shows funnel, geography and bots. A dump of the database contains no raw address and no user agent. Tier 1 numbers match Beacons within the tolerance (A3), and a source-to-destination pair shows in the report (B1). Items A1 to A4, B1 to B3 and C1 to C3 above are blockers for `v0.3.0` (#274).
 6. **Safety and release.** Kill switch tested. Security review findings closed. Privacy page approved. `v0.3.0` tagged.
 7. **The old path redirects.** `/socials` and `/socials/` redirect to `/` with the query string kept, other paths unaffected (#356). Checked on the staging host with `status: 302`, then switched to `301` for the cutover build. See `docs/deploy.md`, "Redirecting the old /socials path".
 
@@ -139,7 +181,7 @@ Owner rulings, 2026-11-06 unless noted:
 
 - **Emailed unlock link is v1.1.** v1 reveals after email plus Turnstile. The gap (the address is not proven to belong to the visitor) goes in the threat model.
 - **Network-type dataset later.** VPN, proxy and hosting detection from local IP-range data (`ip-network-datasets.md`) is not needed for cutover. The ruling on this item is still open and this line records the current plan.
-- **Collectors and the dashboard later.** Automated platform history, Grafana, an executive summary, Social Blade, StreamElements alerts and the remaining platform collectors are not part of cutover.
+- **Tier 2 collectors and the dashboard later.** Grafana, an executive summary, Social Blade, StreamElements alerts and the Tier 2 platform collectors (Bluesky, Mastodon, Kick, Discord, GitHub) are not part of cutover. Tier 1 platform history is part of cutover (owner, 2026-11-08, which replaces the earlier ruling that all automated history was deferred). LinkedIn stays a hand-kept follower count. PeerTube is later.
 - **Blog collector is required.** Blog page views must flow into the same collector before cutover (owner ruling, 2026-11-06). This is in v1, not deferred.
 - **Per-link menu is not copied.** See the table; reversible on request.
 - **Anything not in the tables above** is out of scope for cutover.
