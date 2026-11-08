@@ -79,10 +79,45 @@ export function validKickHandle(v: unknown): v is string {
   return typeof v === "string" && KICK_HANDLE.test(v);
 }
 
-/** live: null means unknown. since: unix seconds, only when live. */
-export interface Platform {
+/**
+ * The closed set of failure codes served per platform. Fixed strings only: the
+ * poller maps what it observed to one of these and nothing else (no status
+ * number, handle, URL, upstream text or error message ever becomes a code).
+ * Read by operators looking at the JSON; the page ignores them.
+ */
+export const LIVE_CODES = [
+  "ok",
+  "not_configured",
+  "auth_failed",
+  "rate_limited",
+  "upstream_error",
+  "redirect",
+  "too_large",
+  "bad_record",
+  "timeout",
+] as const;
+export type LiveCode = (typeof LIVE_CODES)[number];
+
+function liveCodeOrNull(v: unknown): LiveCode | null {
+  return typeof v === "string" && (LIVE_CODES as readonly string[]).includes(v) ? (v as LiveCode) : null;
+}
+
+/** What a parser reads out of an upstream record. */
+export interface Parsed {
   live: boolean | null;
   since: number | null;
+}
+
+/** live: null means unknown. since: unix seconds, only when live. code: why, or null when not known. */
+export interface Platform extends Parsed {
+  code: LiveCode | null;
+}
+
+/** Internal only: carries a code out of the helpers. Its message is never read. */
+class PollFailure extends Error {
+  constructor(readonly code: LiveCode) {
+    super(code);
+  }
 }
 
 interface StoredState {
@@ -94,7 +129,7 @@ interface StoredState {
   writes: number;
 }
 
-const UNKNOWN: Platform = { live: null, since: null };
+const UNKNOWN: Platform = { live: null, since: null, code: null };
 
 // ---------------------------------------------------------------- kill switch
 
@@ -124,8 +159,8 @@ function body(asOf: number | null, kick: Platform, twitch: Platform): string {
     v: 1,
     as_of: asOf,
     ttl: SERVE_TTL_SECONDS,
-    kick: { live: kick.live, since: kick.since },
-    twitch: { live: twitch.live, since: twitch.since },
+    kick: { live: kick.live, since: kick.since, code: kick.code },
+    twitch: { live: twitch.live, since: twitch.since, code: twitch.code },
   });
 }
 
@@ -155,7 +190,8 @@ function platformOrNull(v: unknown): Platform | null {
   const since = o.since;
   if (live !== true && live !== false && live !== null) return null;
   if (since !== null && !(typeof since === "number" && Number.isFinite(since))) return null;
-  return { live, since: live === true ? (since as number | null) : null };
+  // An absent or unrecognized stored code is null; free text can never come through.
+  return { live, since: live === true ? (since as number | null) : null, code: liveCodeOrNull(o.code) };
 }
 
 function parseState(raw: string | null): StoredState | null {
@@ -270,7 +306,7 @@ export interface PollDeps {
  */
 async function readLimited(res: Response): Promise<unknown> {
   const stream = res.body;
-  if (stream === null) throw new Error("no body");
+  if (stream === null) throw new PollFailure("bad_record");
   const reader = stream.getReader();
   const chunks: Uint8Array[] = [];
   let total = 0;
@@ -281,7 +317,7 @@ async function readLimited(res: Response): Promise<unknown> {
       total += value.byteLength;
       if (total > MAX_BODY_BYTES) {
         await reader.cancel().catch(() => undefined);
-        throw new Error("body too large");
+        throw new PollFailure("too_large");
       }
       chunks.push(value);
     }
@@ -294,7 +330,34 @@ async function readLimited(res: Response): Promise<unknown> {
     buf.set(c, at);
     at += c.byteLength;
   }
-  return JSON.parse(new TextDecoder().decode(buf));
+  try {
+    return JSON.parse(new TextDecoder().decode(buf));
+  } catch {
+    throw new PollFailure("bad_record");
+  }
+}
+
+/** Map an error thrown by fetch or a helper to a fixed code. The message is inspected, never kept. */
+function codeFromError(e: unknown): LiveCode {
+  if (e instanceof PollFailure) return e.code;
+  const name = typeof e === "object" && e !== null ? String((e as { name?: unknown }).name) : "";
+  if (name === "TimeoutError" || name === "AbortError") return "timeout";
+  const msg = e instanceof Error ? e.message : "";
+  if (/redirect/i.test(msg)) return "redirect";
+  return "upstream_error";
+}
+
+/** Map a non-ok upstream status to a fixed code. */
+function codeFromStatus(status: number): LiveCode {
+  if (status >= 300 && status < 400) return "redirect";
+  if (status === 401 || status === 403) return "auth_failed";
+  if (status === 429) return "rate_limited";
+  return "upstream_error";
+}
+
+/** The token endpoints also answer 400 for a bad client id or secret. */
+function tokenCodeFromStatus(status: number): LiveCode {
+  return status === 400 ? "auth_failed" : codeFromStatus(status);
 }
 
 function toSeconds(iso: unknown): number | null {
@@ -338,7 +401,7 @@ export function twitchStreamsRequest(
 }
 
 /** verify against the current Twitch docs before deploy: response shape (data[], type, started_at). Allowlist only. */
-export function parseTwitchStreams(json: unknown): Platform | null {
+export function parseTwitchStreams(json: unknown): Parsed | null {
   const root = asObject(json);
   if (!root || !Array.isArray(root.data)) return null;
   // Only an EMPTY array means offline; an invalid first record is unknown.
@@ -378,7 +441,7 @@ export function kickChannelRequest(handle: string, token: string): { url: string
  * The channel's stream object carries a stream KEY. Only is_live and start_time
  * are read; every other field is discarded unread and never logged or stored.
  */
-export function parseKickChannel(json: unknown): Platform | null {
+export function parseKickChannel(json: unknown): Parsed | null {
   const root = asObject(json);
   if (!root || !Array.isArray(root.data) || root.data.length === 0) return null;
   const channel = asObject(root.data[0]);
@@ -397,7 +460,7 @@ async function appToken(
   request: { url: string; init: RequestInit },
   nowSeconds: number,
   f: FetchFn,
-): Promise<string | null> {
+): Promise<string> {
   try {
     const cached = JSON.parse((await kv.get(TOKEN_KEY[which])) ?? "null") as Record<string, unknown> | null;
     if (
@@ -412,11 +475,13 @@ async function appToken(
     // Unreadable cache entry: fetch a fresh token.
   }
   const res = await f(request.url, { ...request.init, redirect: "error", signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
-  if (!res.ok) return null;
+  if (!res.ok) throw new PollFailure(tokenCodeFromStatus(res.status));
   const json = asObject(await readLimited(res));
   const token = json?.access_token;
   const ttl = json?.expires_in;
-  if (typeof token !== "string" || token.length === 0 || typeof ttl !== "number" || !(ttl > 0)) return null;
+  if (typeof token !== "string" || token.length === 0 || typeof ttl !== "number" || !(ttl > 0)) {
+    throw new PollFailure("bad_record");
+  }
   const exp = nowSeconds + Math.floor(ttl);
   // KV needs at least 60 s of TTL.
   await kv.put(TOKEN_KEY[which], JSON.stringify({ t: token, exp }), {
@@ -429,20 +494,20 @@ async function pollTwitch(env: LiveEnv, kv: LiveKV, nowSeconds: number, f: Fetch
   const handle = env.LIVE_TWITCH_HANDLE;
   const id = env.TWITCH_CLIENT_ID;
   const secret = env.TWITCH_CLIENT_SECRET;
-  if (!validTwitchHandle(handle) || !id || !secret) return UNKNOWN;
+  if (!validTwitchHandle(handle) || !id || !secret) return { ...UNKNOWN, code: "not_configured" };
   try {
     const token = await appToken(kv, "twitch", twitchTokenRequest(id, secret), nowSeconds, f);
-    if (token === null) return UNKNOWN;
     const req = twitchStreamsRequest(handle, id, token);
     const res = await f(req.url, { ...req.init, redirect: "error", signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
     if (res.status === 401) {
       await kv.delete(TOKEN_KEY.twitch);
-      return UNKNOWN;
+      return { ...UNKNOWN, code: "auth_failed" };
     }
-    if (!res.ok) return UNKNOWN;
-    return parseTwitchStreams(await readLimited(res)) ?? UNKNOWN;
-  } catch {
-    return UNKNOWN;
+    if (!res.ok) return { ...UNKNOWN, code: codeFromStatus(res.status) };
+    const parsed = parseTwitchStreams(await readLimited(res));
+    return parsed === null ? { ...UNKNOWN, code: "bad_record" } : { ...parsed, code: "ok" };
+  } catch (e) {
+    return { ...UNKNOWN, code: codeFromError(e) };
   }
 }
 
@@ -450,25 +515,25 @@ async function pollKick(env: LiveEnv, kv: LiveKV, nowSeconds: number, f: FetchFn
   const handle = env.LIVE_KICK_HANDLE;
   const id = env.KICK_CLIENT_ID;
   const secret = env.KICK_CLIENT_SECRET;
-  if (!validKickHandle(handle) || !id || !secret) return UNKNOWN;
+  if (!validKickHandle(handle) || !id || !secret) return { ...UNKNOWN, code: "not_configured" };
   try {
     const token = await appToken(kv, "kick", kickTokenRequest(id, secret), nowSeconds, f);
-    if (token === null) return UNKNOWN;
     const req = kickChannelRequest(handle, token);
     const res = await f(req.url, { ...req.init, redirect: "error", signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
     if (res.status === 401) {
       await kv.delete(TOKEN_KEY.kick);
-      return UNKNOWN;
+      return { ...UNKNOWN, code: "auth_failed" };
     }
-    if (!res.ok) return UNKNOWN;
-    return parseKickChannel(await readLimited(res)) ?? UNKNOWN;
-  } catch {
-    return UNKNOWN;
+    if (!res.ok) return { ...UNKNOWN, code: codeFromStatus(res.status) };
+    const parsed = parseKickChannel(await readLimited(res));
+    return parsed === null ? { ...UNKNOWN, code: "bad_record" } : { ...parsed, code: "ok" };
+  } catch (e) {
+    return { ...UNKNOWN, code: codeFromError(e) };
   }
 }
 
 function same(a: Platform, b: Platform): boolean {
-  return a.live === b.live && a.since === b.since;
+  return a.live === b.live && a.since === b.since && a.code === b.code;
 }
 
 /**

@@ -29,7 +29,7 @@ def _step(name: str) -> dict[str, Any]:
     return step
 
 
-def _run(tmp_path: Path, zone: str | None) -> str:
+def _run(tmp_path: Path, zone: str | None, extra: dict[str, str] | None = None) -> str:
     script = _step("Write deploy config")["run"]
     (tmp_path / "wrangler.toml").write_text(
         (ROOT / "worker" / "wrangler.toml").read_text(encoding="utf-8"),
@@ -44,6 +44,7 @@ def _run(tmp_path: Path, zone: str | None) -> str:
     }
     if zone is not None:
         env["ZONE_NAME"] = zone
+    env.update(extra or {})
     subprocess.run(  # noqa: S603 - fixed argv and sample values
         ["/bin/bash", "-c", script], cwd=tmp_path, env=env, check=True
     )
@@ -191,3 +192,143 @@ def test_manifest_is_read_by_a_tokenless_isolated_step() -> None:
     for step in carrying:
         body = str(step.get("run", ""))
         assert "python" not in body and "manifest-in" not in body
+
+
+# --- the Live Worker (issue #314) ---------------------------------------------
+
+KV_ID = "0123456789abcdef0123456789abcdef"
+LIVE_ON = {"LIVE_TWITCH_HANDLE": "example_channel", "LIVE_KV_ID": KV_ID}
+CHECK_BASE = {
+    "CLOUDFLARE_ACCOUNT_ID": "acct",
+    "PAGES_PROJECT": "proj",
+    "D1_DATABASE_ID": D1_ID,
+    "RATELIMIT_NAMESPACE_ID": NS_ID,
+    "SITE_HOST": HOST,
+    "LINK_IDS": LINKS,
+}
+
+
+def _check(extra: dict[str, str]) -> subprocess.CompletedProcess[str]:
+    """Run the real 'Check configuration' script with sample values."""
+    script = _step("Check configuration")["run"]
+    return subprocess.run(  # noqa: S603 - fixed argv and sample values
+        ["/bin/bash", "-c", script],
+        env={"PATH": "/usr/bin:/bin", **CHECK_BASE, **extra},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+def test_live_off_changes_nothing_even_with_a_kv_id(tmp_path: Path) -> None:
+    out = _run(tmp_path, None, {"LIVE_KV_ID": KV_ID})
+    assert "kv_namespaces" not in tomllib.loads(out)
+    assert KV_ID not in out
+    assert _check({"LIVE_KV_ID": KV_ID}).returncode == 0
+
+
+@pytest.mark.parametrize(
+    "handles",
+    [
+        {"LIVE_TWITCH_HANDLE": "example_channel"},
+        {"LIVE_KICK_HANDLE": "example-channel"},
+        {
+            "LIVE_TWITCH_HANDLE": "example_channel",
+            "LIVE_KICK_HANDLE": "example-channel",
+        },
+    ],
+)
+def test_live_on_fills_the_kv_id_handles_and_cron(
+    tmp_path: Path, handles: dict[str, str]
+) -> None:
+    out = _run(tmp_path, ZONE, {**handles, "LIVE_KV_ID": KV_ID})
+    data = tomllib.loads(out)
+    assert data["kv_namespaces"] == [{"binding": "LIVE_KV", "id": KV_ID}]
+    assert data["triggers"]["crons"] == ["5 * * * *", "*/2 * * * *"]
+    for name, value in handles.items():
+        assert data["vars"][name] == value
+    # the other substitutions and the route are still there
+    assert data["d1_databases"][0]["database_id"] == D1_ID
+    assert data["routes"] == [{"pattern": f"{HOST}/e/*", "zone_name": ZONE}]
+    # no all-zero placeholder id on an active line
+    active = [ln for ln in out.splitlines() if not ln.lstrip().startswith("#")]
+    assert "0" * 32 not in "\n".join(active)
+    assert _check({**handles, "LIVE_KV_ID": KV_ID}).returncode == 0
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        "",
+        "0" * 32,
+        KV_ID[:-1],
+        KV_ID + "0",
+        KV_ID.upper(),
+        "g" * 32,
+        "../" + KV_ID[3:],
+        KV_ID + "\nname = 'x'",
+        f'{KV_ID[:-2]}"x',
+        "11111111-2222-3333-4444-555555555555",
+    ],
+)
+def test_live_on_with_an_empty_or_bad_kv_id_fails_closed(
+    tmp_path: Path, bad: str
+) -> None:
+    extra = {"LIVE_TWITCH_HANDLE": "example_channel", "LIVE_KV_ID": bad}
+    checked = _check(extra)
+    assert checked.returncode != 0
+    assert "LIVE_KV_ID" in checked.stdout + checked.stderr
+    # the writer refuses on its own as well (second lock)
+    with pytest.raises(subprocess.CalledProcessError):
+        _run(tmp_path, None, extra)
+
+
+def test_live_on_with_the_variable_unset_fails_closed(tmp_path: Path) -> None:
+    checked = _check({"LIVE_KICK_HANDLE": "example-channel"})
+    assert checked.returncode != 0
+    assert "LIVE_KV_ID is not set" in checked.stdout + checked.stderr
+    with pytest.raises(subprocess.CalledProcessError):
+        _run(tmp_path, None, {"LIVE_KICK_HANDLE": "example-channel"})
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        {"LIVE_TWITCH_HANDLE": "bad handle"},
+        {"LIVE_TWITCH_HANDLE": "x" * 26},
+        {"LIVE_TWITCH_HANDLE": "a-b"},
+        {"LIVE_KICK_HANDLE": "a.b"},
+        {"LIVE_KICK_HANDLE": "x" * 41},
+        {"LIVE_KICK_HANDLE": 'a"\n[vars]'},
+    ],
+)
+def test_live_bad_handles_fail_closed(tmp_path: Path, extra: dict[str, str]) -> None:
+    both = {**extra, "LIVE_KV_ID": KV_ID}
+    assert _check(both).returncode != 0
+    with pytest.raises(subprocess.CalledProcessError):
+        _run(tmp_path, None, both)
+
+
+def test_live_negative_cases_do_bite() -> None:
+    """The guard is not vacuous: a good value passes the same check script."""
+    assert _check(LIVE_ON).returncode == 0
+    assert _check({**LIVE_ON, "LIVE_KV_ID": ""}).returncode != 0
+
+
+def test_live_variables_are_plain_variables_in_two_steps_only() -> None:
+    text = WORKFLOW.read_text(encoding="utf-8")
+    assert "vars.LIVE_KV_ID" in text
+    assert "secrets.LIVE_KV_ID" not in text
+    for name in ("Check configuration", "Write deploy config"):
+        env = _step(name)["env"]
+        for var in ("LIVE_KV_ID", "LIVE_TWITCH_HANDLE", "LIVE_KICK_HANDLE"):
+            assert env[var] == "${{ vars." + var + " }}"
+    for name in (
+        "Apply D1 migrations",
+        "Deploy the Worker",
+        "Publish the site to Pages",
+    ):
+        assert "LIVE_KV_ID" not in str(_step(name))
+    # still no write to the runner's shared files
+    assert "GITHUB_ENV" not in str(_step("Write deploy config"))
+    assert "GITHUB_PATH" not in str(_step("Write deploy config"))

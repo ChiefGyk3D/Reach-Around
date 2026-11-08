@@ -59,6 +59,25 @@ test("stale data can never say live", () => {
   assert.equal(live.parseStatus(t, NOW), null);
 });
 
+test("an operator failure code is accepted, ignored and never returned", () => {
+  const codes = ["ok", "not_configured", "auth_failed", "rate_limited", "upstream_error", "redirect", "too_large", "bad_record", "timeout"];
+  for (const code of codes) {
+    const t = body({ kick: { live: true, since: NOW - 5, code }, twitch: { live: false, since: null, code } });
+    assert.deepEqual(live.parseStatus(t, NOW), { kick: true, twitch: false }, code);
+  }
+  const t = body({ kick: { live: null, since: null, code: "auth_failed" }, twitch: { live: null, since: null, code: null } });
+  assert.deepEqual(live.parseStatus(t, NOW), { kick: null, twitch: null });
+});
+
+test("an unknown or odd code value is dropped: same result, no code, nothing rendered", () => {
+  for (const code of ["SENTINEL free text", "AUTH_FAILED", "", 5, true, {}, [], null, "<img src=x onerror=1>"]) {
+    const t = body({ kick: { live: true, since: NOW - 5, code }, twitch: { live: false, since: null } });
+    const s = live.parseStatus(t, NOW);
+    assert.deepEqual(s, { kick: true, twitch: false });
+    assert.equal(JSON.stringify(s).includes("SENTINEL"), false);
+  }
+});
+
 const BAD = {
   "not json": "{nope",
   "empty": "",
@@ -71,6 +90,10 @@ const BAD = {
   "extra top key": body({ title: "x" }),
   "extra platform key": body({ kick: { live: true, since: NOW, title: "x" } }),
   "missing platform key": body({ kick: { live: true } }),
+  "code plus another extra key": body({ kick: { live: false, since: null, code: "ok", detail: "x" } }),
+  "extra key instead of code": body({ kick: { live: false, since: null, detail: "ok" } }),
+  "code but missing since": body({ kick: { live: false, code: "ok" } }),
+  "since on not-live with a code": body({ kick: { live: false, since: NOW, code: "ok" } }),
   "missing platform": JSON.stringify({ v: 1, as_of: NOW, ttl: 30, kick: { live: false, since: null } }),
   "live as string": body({ kick: { live: "true", since: null } }),
   "live as number": body({ kick: { live: 1, since: null } }),
