@@ -44,3 +44,26 @@ The example site has no post pages or search page; its page types are the tab pa
 | Unminified CSS (`unminified-css`, est. 2 KiB) | `site.css` is 33 KB source, 9.5 KB transferred with gzip | The audit is informational and weightless; savings after compression are small. Minifying would add a CSS parser to the build | None |
 | Compression, HTTP version, TLS, HSTS preload | Emulated locally; not measurable here | Set by the host. `_headers` already sends HSTS, a one-year `immutable` cache for hashed files and `max-age=0, must-revalidate` for pages | Run PageSpeed Insights against the staging hostname once it exists and compare |
 | Media kit, Turnstile | The built kit page has a `cf-turnstile` container but no script tag, and its CSP allows `https://challenges.cloudflare.com` | If a Turnstile script is added later it is third-party code outside the repo, and the measured scores above do not include it | Re-measure on staging when the widget is wired in |
+
+## Sweep 2 (#363)
+
+Measured 2026-11-08, Lighthouse 13.6.0, Chromium 156, three runs per page and strategy, median. Local pages were served with the build's own `_headers` and gzip. Pages: the default link page (first tab, second tab, privacy), the same instance with a `kit:` section (kit page and `/kit/retry/`), the 404 page (served as `/404.html`, because Lighthouse refuses a page that answers with status 404) and the `dark-hero` example (a themed link page with no favicon configured). The gated kit page is served by the Worker after the gate and was not measured.
+
+| Page | Mobile before | Mobile after | Desktop before | Desktop after |
+| --- | --- | --- | --- | --- |
+| Home, events, privacy, kit | 100/100/100/100 | 100/100/100/100 | 100/100/100/100 | 100/100/100/100 |
+| Themed link page (`dark-hero`, no favicon) | 100/100/96/100 | 100/100/100/100 | 100/100/96/100 | 100/100/100/100 |
+| `/kit/retry/` | 100/100/100/63 | 100/100/100/63 | 100/100/100/63 | 100/100/100/63 |
+| 404 | 100/100/100/63 | 100/100/100/63 | 100/100/100/63 | 100/100/100/63 |
+| Test host, link page (not built from this branch) | 98-99/100/92/92 | n/a | 100/100/92/92 | n/a |
+
+What changed: a page with no `creator.favicon` made the browser request `/favicon.ico`, the host answered 404 and Best Practices lost 4 points (`errors-in-console`). Every page now links a packaged default icon (`static/favicon.svg`, fingerprinted, same origin) when no favicon is configured. A configured favicon still wins. No CSP, budget or script change.
+
+Remaining items:
+
+| Item | Page | Reason | Who |
+| --- | --- | --- | --- |
+| `is-crawlable` (SEO 63) | 404, `/kit/retry/` | Both carry `noindex` on purpose; the audit fails for any `noindex` page | Nobody; keep `noindex` |
+| Best Practices 92: `errors-in-console`, `inspector-issues` | test host | The host injects Cloudflare's analytics script (`static.cloudflareinsights.com`); the page CSP blocks it. Not in the built output | Owner, host setting (#405) |
+| SEO 92: `meta-description` | test host | The deployed build predates #359; the current build has the description | Redeploy from main |
+| Performance 98 to 99 on mobile | test host | LCP and FCP scores of 0.94 to 0.97 on the network path; run to run variance | Host and network |

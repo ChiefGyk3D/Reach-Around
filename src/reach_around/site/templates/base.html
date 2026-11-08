@@ -14,6 +14,8 @@
 {% endif %}
 {% if creator.favicon %}
 <link rel="icon" href="{{ asset_url(creator.favicon, root) }}">
+{% else %}
+<link rel="icon" href="{{ root }}{{ asset("static/favicon.svg") }}" type="image/svg+xml">
 {% endif %}
 <link rel="stylesheet" href="{{ root }}{{ asset("static/site.css") }}">
 <link rel="stylesheet" href="{{ root }}{{ asset("static/theme.css") }}">
