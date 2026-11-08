@@ -384,19 +384,36 @@ def reads_as_ipv6(tok: str) -> bool:
     return True
 
 
-def address_kinds(text: str) -> list[str]:
+def address_kinds(text: str, bare_number_ok: bool = False) -> list[str]:
     """Check every decoding layer, and within it every token, with the semantics
-    of an address parser rather than a pattern for each spelling."""
+    of an address parser rather than a pattern for each spelling. A token may
+    hold colons (IPv6, or text joined to an address by a colon), so IPv6 is
+    tried on the whole token and on every run of its colon-separated pieces,
+    and IPv4 on every single piece. bare_number_ok skips the lone-number test
+    (a column that may hold a digits-only name, such as an email local part)."""
     kinds: list[str] = []
     for layer in decode_layers(text):
-        candidates = {layer.strip()}
+        v4: set[str] = set()
+        v6: set[str] = {layer.strip()}
         for tok in TOKEN.findall(layer):
-            candidates.update({tok, tok.strip("."), tok.rstrip("."), tok.strip(":.")})
-            if tok.startswith("::"):
-                candidates.add(tok.rstrip(":."))
-        for tok in candidates:
-            if tok and reads_as_ipv4(tok.strip(".")):
+            parts = tok.split(":")
+            v6.update({tok, tok.strip("."), tok.strip(":."), tok.rstrip(":.")})
+            for i in range(len(parts)):
+                for j in range(i + 1, len(parts) + 1):
+                    run = ":".join(parts[i:j])
+                    v6.add(run)
+                    v6.add(run.strip("."))
+            for piece in parts:
+                v4.update({piece, piece.strip(".")})
+        for tok in v4 | v6:
+            tok = tok.strip(".")
+            if not tok or ":" in tok:
+                continue
+            if bare_number_ok and "." not in tok:
+                continue
+            if reads_as_ipv4(tok):
                 kinds.append("ipv4 address")
+        for tok in v6:
             if tok and reads_as_ipv6(tok):
                 kinds.append("ipv6 address")
     return kinds
@@ -423,24 +440,39 @@ def token_kinds(text: str, colkey: str, cfg: dict[str, Any]) -> list[str]:
     if colkey in cfg["hex_ids"]:
         return kinds
     digits_ok = colkey in cfg["digit_tokens_ok"]
+    whole_number = bool(NUMBER_TEXT.fullmatch(text.strip()))
     hex_ok = colkey in cfg["hex_tokens_ok"]
+    names_ok = colkey in cfg["bare_number_ok"]  # may hold a digits-only name
     for m in HEX8_ANY.finditer(text):
         tok = m.group(0)
         if tok.isdigit():
-            if digits_ok or hex_ok:
+            if (
+                (digits_ok and (whole_number or colkey not in cfg["numeric"]))
+                or hex_ok
+                or names_ok
+            ):
                 continue
         elif hex_ok:
             continue
         kinds.append("bare hex token")
+    if digits_ok and colkey in cfg["numeric"] and not whole_number:
+        # A counter column holds one number; a digit run inside other text, even
+        # one glued to letters, is not a counter.
+        if re.search(r"\d{8,}", text):
+            kinds.append("long digit token")
+        return kinds
     for m in DIGIT_RUN.finditer(text):
+        if names_ok:
+            continue
         if len(m.group(0)) == 8 and not (digits_ok or hex_ok):
             continue  # already reported as a hex token
         if hex_ok:
             continue
-        if digits_ok and int(m.group(0)) < 2**24:
-            continue
         if digits_ok and colkey in cfg["numeric"]:
-            continue  # held to its range by the whole-value check
+            if whole_number:
+                continue  # held to its range by the whole-value check
+        elif digits_ok and int(m.group(0)) < 2**24:
+            continue
         kinds.append("long digit token")
     return kinds
 
@@ -475,7 +507,7 @@ def value_kinds(
         kinds.append("oversize value")
     if IPV4.search(text) or HEX_IP.search(text):
         kinds.append("ipv4 address")
-    kinds.extend(address_kinds(text))
+    kinds.extend(address_kinds(text, colkey in cfg["bare_number_ok"]))
     stripped = text.strip()
     if NUMBER_TEXT.fullmatch(stripped) and not number_ok(stripped, colkey, cfg, False):
         kinds.append(
@@ -505,7 +537,7 @@ def load_cfg(path: Path) -> dict[str, Any]:
         t.lower(): [c.lower() for c in cols] for t, cols in cfg["tables"].items()
     }
     cfg["hex_ids"] = {x.lower() for x in cfg["hex_ids"]}
-    for k in ("digit_tokens_ok", "hex_tokens_ok", "optional_tables"):
+    for k in ("digit_tokens_ok", "hex_tokens_ok", "optional_tables", "bare_number_ok"):
         cfg[k] = {x.lower() for x in cfg[k]}
     cfg["numeric"] = {k.lower(): v for k, v in cfg["numeric"].items()}
     cfg["numeric_kinds"] = {

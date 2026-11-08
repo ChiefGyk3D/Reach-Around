@@ -731,3 +731,90 @@ def test_schema_comparison_is_two_way(tmp_path: Path) -> None:
     # (no CREATE TABLE at all) has no schema to compare.
     assert run(SCHEMA_DUMP + GOOD_ROW, tmp_path=tmp_path).returncode == 0
     assert run(GOOD_ROW, tmp_path=tmp_path).returncode == 0
+
+
+# ---- round 6: colon-joined addresses, embedded digit runs, the email column ----
+
+COLON_FORMS = [
+    ("label:203.0.113.211", "ipv4"),
+    ("203.0.113.211:443", "ipv4"),
+    ("host:0313.0.0161.0323:80", "ipv4"),
+    ("a:3325256711", "ipv4"),
+    ("ip:0xcb0071d3", "ipv4"),
+    ("x:203.29139:1", "ipv4"),
+    ("label:2001:db8::7", "ipv6"),
+    ("label:fe80::1", "ipv6"),
+    ("2001:db8::7:", "ipv6"),
+    ("a:b:::ffff:203.0.113.211", "ipv4"),
+]
+
+
+@pytest.mark.parametrize(("value", "kind"), COLON_FORMS)
+def test_an_address_joined_to_other_text_by_a_colon_is_refused(
+    value: str, kind: str, tmp_path: Path
+) -> None:
+    r = run(SCHEMA_DUMP + row(f"'{value}'"), tmp_path=tmp_path)
+    assert r.returncode == 1, r.stdout + r.stderr
+    assert kind in r.stdout
+    assert value not in r.stdout + r.stderr
+
+
+@pytest.mark.parametrize("value", ["bud:1:view", "note:ok", "a:b:c", "12:30:45", "k:v"])
+def test_ordinary_colon_text_passes(value: str, tmp_path: Path) -> None:
+    r = run(SCHEMA_DUMP + row(f"'{value}'"), tmp_path=tmp_path)
+    assert r.returncode == 0, (value, r.stdout)
+
+
+def test_a_digit_run_embedded_in_a_numeric_column_value_is_checked(
+    tmp_path: Path,
+) -> None:
+    for v in ("abc:3325256711", "x12345678901", "ts=1792000000000", "3325256711 "):
+        r = run(SCHEMA_DUMP + insert("view_meta", f"'k', '{v}'"), tmp_path=tmp_path)
+        assert r.returncode == 1, v
+    # A whole value that is a number in range still passes.
+    for v in ("12", "1792000000000"):
+        r = run(SCHEMA_DUMP + insert("view_meta", f"'k', '{v}'"), tmp_path=tmp_path)
+        assert r.returncode == 0, v
+
+
+def lead(email: str) -> str:
+    return insert(
+        "leads",
+        "'" + "a" * 32 + f"', '{email}', 1792000000000, 1792000000000, NULL, "
+        "'gate', 'US', NULL, NULL, NULL, NULL",
+    )
+
+
+@pytest.mark.parametrize(
+    "email",
+    [
+        "deadbeef@example.cc",
+        "203.0.113.211@example.cc",
+        "0313.0.0161.0323@example.cc",
+        "0xcb.0x00.0x71.0xd3@example.cc",
+        "203.29139@example.cc",
+        "x@203.0.113.211.cc",
+        "c6336407+tag@example.cc",
+    ],
+)
+def test_the_email_column_is_not_exempt_from_the_address_and_hex_rules(
+    email: str, tmp_path: Path
+) -> None:
+    r = run(SCHEMA_DUMP + lead(email), tmp_path=tmp_path)
+    assert r.returncode == 1, (email, r.stdout)
+    assert email not in r.stdout + r.stderr
+
+
+@pytest.mark.parametrize(
+    "email",
+    [
+        "alice@example.cc",
+        "12345678@example.cc",  # a digits-only local part (for example a chat number)
+        "3325256711@example.cc",
+        "john19850312@example.cc",
+        "a.b+c@mail.example.cc",
+    ],
+)
+def test_ordinary_emails_still_pass(email: str, tmp_path: Path) -> None:
+    r = run(SCHEMA_DUMP + lead(email), tmp_path=tmp_path)
+    assert r.returncode == 0, (email, r.stdout)

@@ -1,5 +1,5 @@
 {
-  "_comment": "Allowlist for scripts/check-dump.py. tables: every table and column order the Worker's migrations create (a test keeps this equal to them) plus Cloudflare's own bookkeeping tables. A new table or column needs a reviewed edit here. hex_ids: columns that hold an opaque 32-hex id or keyed hash. numeric: every numeric column (and the text columns that hold a counter or a timestamp) with the kind of value it may hold; numeric_kinds gives the allowed inclusive ranges (small stays under 2^24 and ms is epoch milliseconds from 2020 to 2099, so no value can be a 32-bit address). A numeric value outside its range fails. patterns: a regex a value in that column (any table) must fully match. spaces_ok: column names (any table) whose values may hold spaces (place names). digit_tokens_ok / hex_tokens_ok: columns (table.column) allowed to hold a long digit run (hour counters, timestamps, an email local part) / any 8-character hex token; every other text column refuses an 8-character all-hex token and a run of 9 or more digits. optional_tables: tables a Cloudflare export may leave out. A numeric value in a column with no numeric rule is always an error.",
+  "_comment": "Allowlist for scripts/check-dump.py. tables: every table and column order the Worker's migrations create (a test keeps this equal to them) plus Cloudflare's own bookkeeping tables. A new table or column needs a reviewed edit here. hex_ids: columns that hold an opaque 32-hex id or keyed hash. numeric: every numeric column (and the text columns that hold a counter or a timestamp) with the kind of value it may hold; numeric_kinds gives the allowed inclusive ranges (small stays under 2^24 and ms is epoch milliseconds from 2020 to 2099, so no value can be a 32-bit address). A numeric value outside its range fails. patterns: a regex a value in that column (any table) must fully match. spaces_ok: column names (any table) whose values may hold spaces (place names). digit_tokens_ok / hex_tokens_ok: columns (table.column) allowed to hold a long digit run (hour counters, timestamps, an email local part) / any 8-character hex token; every other text column refuses an 8-character all-hex token and a run of 9 or more digits. optional_tables: tables a Cloudflare export may leave out. A numeric value in a column with no numeric rule is always an error. bare_number_ok: columns whose values may be a lone digits-only name (an email local part), so a single bare number is not read as an address there; dotted and hex forms still are.",
   "tables": {
     "_cf_KV": [
       "key",
@@ -217,12 +217,13 @@
     "view_meta.key",
     "leads.email"
   ],
-  "hex_tokens_ok": [
-    "leads.email"
-  ],
+  "hex_tokens_ok": [],
   "optional_tables": [
     "d1_migrations",
     "_cf_KV",
     "sqlite_sequence"
+  ],
+  "bare_number_ok": [
+    "leads.email"
   ]
 }
