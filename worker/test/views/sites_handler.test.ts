@@ -303,4 +303,20 @@ describe("the s source label", () => {
     }
     expect(await rows()).toEqual([]);
   });
+
+  it("an_explicit_empty_sources_list_still_closes_the_policy", async () => {
+    const closed = JSON.stringify({ links: { hosts: ["links.example.test"], mode: "beacon", pages: ["home"], sources: [] } });
+    const e = env({ SITES: closed, UTM_ALLOWLIST: "mail" });
+    await post(e, "links.example.test", "home", 21, { body: "s=mail&u=mail&r=news.example.test" });
+    expect((await rows()).map((r) => [r.src_kind, r.src])).toEqual([["u", "other"]]);
+  });
+
+  it("case_folding_oddities_record_nothing", async () => {
+    const e = env();
+    let n = 40;
+    for (const bad of ["%E2%84%AA", "ma%C4%B1l", "%C5%BFo", "%C4%B0nfo"]) {
+      await post(e, "blog.example.test", "post-one", n++, { body: `s=${bad}` });
+    }
+    expect(await rows()).toEqual([]);
+  });
 });

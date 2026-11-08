@@ -140,6 +140,8 @@ const HOUR_MS = 3_600_000;
 
 const ROUTE = /^\/e\/v\/([a-z0-9][a-z0-9-]{0,39})$/;
 const UTM = /^[a-z0-9-]{1,30}$/;
+/** The same rule applied to the raw text, before lower-casing, so characters that only become ASCII when lowered (Kelvin sign, dotless i, long s) are refused. */
+const UTM_RAW = /^[A-Za-z0-9-]{1,30}$/;
 const LABEL = /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/;
 const REGION = /^[A-Z0-9]{1,3}$/;
 const COUNTRY = /^[A-Z]{2}$/;
@@ -212,6 +214,7 @@ export function parseHost(raw: string): string | null {
 
 /** A utm label: [a-z0-9-]{1,30} after lowercasing. */
 export function parseUtm(raw: string): string | null {
+  if (!UTM_RAW.test(raw)) return null;
   const v = raw.toLowerCase();
   return UTM.test(v) ? v : null;
 }
@@ -220,8 +223,8 @@ export function parseUtm(raw: string): string | null {
  * The form body: only keys r, u, w (and s, for a site that lists sources) are
  * read, the first value of each wins, unknown keys are ignored. A key that is
  * present but invalid drops the whole beacon (null). Precedence: `s`, then `u`,
- * then `r`, then direct. `s` is read only when the site has a non-empty
- * `sources` list; a label not on the list is kept as "other" and the text is
+ * then `r`, then direct. `s` is read only when the site has a `sources` list
+ * (an empty list is still a closed list: every valid `s` is "other"); a label not on the list is kept as "other" and the text is
  * never stored. A host equal to the site's own is kind "i".
  */
 export function parseBeacon(text: string, siteHosts: string | readonly string[], sources?: readonly string[]): Beacon | null {
@@ -236,7 +239,7 @@ export function parseBeacon(text: string, siteHosts: string | readonly string[],
   const r = params.get("r");
   const u = params.get("u");
   const w = params.get("w");
-  const s = sources !== undefined && sources.length > 0 ? params.get("s") : null;
+  const s = sources !== undefined ? params.get("s") : null;
 
   let vp: Viewport = "";
   if (w !== null) {
@@ -258,7 +261,7 @@ export function parseBeacon(text: string, siteHosts: string | readonly string[],
   if (s !== null) {
     const label = parseUtm(s);
     if (label === null) return null;
-    return { kind: "u", src: sources !== undefined && sources.includes(label) ? label : "other", vp };
+    return { kind: "u", src: sources?.includes(label) ? label : "other", vp };
   }
   if (utm !== null) return { kind: "u", src: utm, vp };
   if (host !== null) {

@@ -58,7 +58,9 @@ def test_the_worker_route_is_the_default_route_plus_a_tab_id() -> None:
 
 def test_the_utm_rule_is_the_workers() -> None:
     assert ts_regex("UTM") == "^[a-z0-9-]{1,30}$"
-    assert "/^[a-z0-9-]{1,30}$/" in script()
+    # The raw text is judged before lower-casing, in the Worker and the script.
+    assert ts_regex("UTM_RAW") == "^[A-Za-z0-9-]{1,30}$"
+    assert "/^[A-Za-z0-9-]{1,30}$/" in script()
 
 
 def test_the_source_label_rule_is_the_workers() -> None:
@@ -67,7 +69,8 @@ def test_the_source_label_rule_is_the_workers() -> None:
     assert "parseUtm(s)" in src
     body = script().split("function sourceLabel()")[1].split("function widthLetter")[0]
     assert '.get("s")' in body
-    assert "/^[a-z0-9-]{1,30}$/" in body
+    assert "/^[A-Za-z0-9-]{1,30}$/" in body
+    assert body.index("test(value)") < body.index("toLowerCase()")
 
 
 def test_the_worker_reads_exactly_the_keys_the_script_sends() -> None:

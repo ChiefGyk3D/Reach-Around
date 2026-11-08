@@ -58,6 +58,16 @@ describe("parseUtm", () => {
   });
 });
 
+describe("parseUtm: case folding", () => {
+  it("only_ascii_input_is_accepted_before_lower_casing", () => {
+    expect(parseUtm("BlueSky")).toBe("bluesky");
+    const cp = (...n: number[]) => String.fromCodePoint(...n);
+    for (const t of [cp(0x212a), cp(0x212a) + "elvin", "ma" + cp(0x131) + "l", cp(0x130) + "nfo", cp(0x17f) + "o", cp(0xff21), cp(0xfb01)]) {
+      expect(parseUtm(t), t).toBeNull();
+    }
+  });
+});
+
 describe("parseBeacon", () => {
   it("unknown_keys_ignored_and_first_value_wins", () => {
     expect(parseBeacon("zzz=1&r=a.example.test&r=b.example.test&w=s&w=x", SITE)).toEqual({
@@ -201,12 +211,30 @@ describe("parseBeacon: the s source label", () => {
     expect(beacon("s=" + "x".repeat(30))).toEqual({ kind: "u", src: "other", vp: "" });
   });
 
-  it("a_site_without_sources_ignores_s_entirely", () => {
-    for (const none of [undefined, []]) {
-      expect(parseBeacon("s=bluesky&r=news.example.test", SITE, none)).toEqual({ kind: "r", src: "news.example.test", vp: "" });
-      expect(parseBeacon("s=bluesky&u=mail", SITE, none)).toEqual({ kind: "u", src: "mail", vp: "" });
-      expect(parseBeacon("s=not valid!&w=m", SITE, none)).toEqual({ kind: "d", src: "", vp: "m" });
-    }
+  it("a_site_without_a_sources_key_ignores_s_entirely", () => {
+    expect(parseBeacon("s=bluesky&r=news.example.test", SITE, undefined)).toEqual({ kind: "r", src: "news.example.test", vp: "" });
+    expect(parseBeacon("s=bluesky&u=mail", SITE, undefined)).toEqual({ kind: "u", src: "mail", vp: "" });
+    expect(parseBeacon("s=not valid!&w=m", SITE, undefined)).toEqual({ kind: "d", src: "", vp: "m" });
+  });
+
+  it("an_explicit_empty_list_is_a_closed_list_where_every_s_is_other", () => {
+    expect(parseBeacon("s=bluesky&u=mail&r=news.example.test", SITE, [])).toEqual({ kind: "u", src: "other", vp: "" });
+    expect(parseBeacon("s=a_b", SITE, [])).toBeNull();
+    expect(parseBeacon("u=mail", SITE, [])).toEqual({ kind: "u", src: "mail", vp: "" });
+  });
+
+  it("characters_that_only_become_ascii_when_lowercased_are_refused_not_folded", () => {
+    const listed = ["k", "kelvin", "mail", "so", "a", "fi", "info"];
+    const tricky = [
+      "%E2%84%AA", // KELVIN SIGN: lower-cases to k
+      "%E2%84%AAelvin",
+      "ma%C4%B1l", // dotless i
+      "%C4%B0nfo", // capital I with dot above
+      "%C5%BFo", // long s
+      "%EF%BC%A1", // fullwidth A
+      "%EF%AC%81", // ligature fi
+    ];
+    for (const t of tricky) expect(parseBeacon(`s=${t}`, SITE, listed), t).toBeNull();
   });
 
   it("a_key_that_only_looks_like_s_is_not_read", () => {

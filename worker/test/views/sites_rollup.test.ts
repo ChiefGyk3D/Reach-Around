@@ -299,6 +299,16 @@ describe("rollup with a sources list", () => {
     ]);
   });
 
+  it("an_explicit_empty_sources_list_folds_every_utm_label_to_other", async () => {
+    const closed = JSON.stringify({ links: { hosts: ["links.example.test"], mode: "beacon", pages: ["home"], sources: [] } });
+    await insert([
+      ...many("links", D13 + 1000, 2, { src_kind: "u", src: "mail" }),
+      ...many("links", D13 + 1000, 1, { src_kind: "u", src: "other" }),
+    ]);
+    await rollupClosedDays(env({ SITES: closed, MIN_CELL: "1" }), NOW);
+    expect(await srcs("links")).toEqual([{ src_kind: "o", src: "other", views: 3 }]);
+  });
+
   it("with_only_sources_set_other_utm_labels_fold_to_other", async () => {
     await insert([
       ...many("links", D13 + 1000, 1, { src_kind: "u", src: "bio-ig" }),

@@ -83,8 +83,9 @@
       if (value === null) {
         return null;
       }
-      value = value.toLowerCase();
-      return /^[a-z0-9-]{1,30}$/.test(value) ? value : null;
+      // Judge the raw text first: some non-ASCII letters (the Kelvin sign,
+      // dotless i, long s) turn into ASCII ones when lowered.
+      return /^[A-Za-z0-9-]{1,30}$/.test(value) ? value.toLowerCase() : null;
     } catch (ignored) {
       return null;
     }
@@ -96,8 +97,9 @@
       if (value === null) {
         return null;
       }
-      value = value.toLowerCase();
-      return /^[a-z0-9-]{1,30}$/.test(value) ? value : null;
+      // Judge the raw text first: some non-ASCII letters (the Kelvin sign,
+      // dotless i, long s) turn into ASCII ones when lowered.
+      return /^[A-Za-z0-9-]{1,30}$/.test(value) ? value.toLowerCase() : null;
     } catch (ignored) {
       return null;
     }

@@ -246,7 +246,7 @@ that one site rather than the whole collector):
   be attributed without storing anything. Precedence: `s`, then `utm_source`,
   then the referrer host, then direct. A label not on the list is stored as
   `other` and its text is dropped at once; a site with no `sources` never
-  reads `s`. Listed labels are kept as themselves in the aggregates next to
+  reads `s`, and an explicit empty list is still a closed list (every valid `s` is `other`). Listed labels are kept as themselves in the aggregates next to
   the site's `utm_allowlist`; once a site lists `sources`, any other
   `utm_source` label folds to `other` too.
 - Per-site overrides: `geo`, `utm_allowlist`,

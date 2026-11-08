@@ -344,6 +344,9 @@ interface Opts {
   min: number;
   allow: string[];
 }
+/** Never a valid label (labels are [a-z0-9-]), so it matches nothing. */
+const NO_LABEL = "!";
+
 /**
  * The labels kept as themselves in the aggregates: the utm list (the site's
  * own, else the global one) plus the site's `s` sources. A site that lists
@@ -351,8 +354,11 @@ interface Opts {
  */
 function allowFor(env: RollupEnv, site: Site | undefined): string[] {
   const utm = (site?.utmAllowlist !== undefined ? site.utmAllowlist : utmAllowlist(env.UTM_ALLOWLIST)) ?? [];
-  const src = site?.sources ?? [];
-  return src.length === 0 ? utm : [...new Set([...utm, ...src])];
+  if (site?.sources === undefined) return utm;
+  const all = [...new Set([...utm, ...site.sources])];
+  // A site that lists sources, even an empty list, is closed: an empty filter
+  // would mean "no filter", so use one entry no stored label can equal.
+  return all.length > 0 ? all : [NO_LABEL];
 }
 
 function optsFor(env: RollupEnv, site: Site | undefined): Opts {
