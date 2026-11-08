@@ -577,3 +577,157 @@ def test_an_eight_digit_value_in_a_ruled_text_column_is_a_range_matter(
     assert r.returncode == 1
     assert "numeric value out of range" in r.stdout
     assert "hex token" not in r.stdout
+
+
+# ---- round 5: resolver-semantics address check, every text column, two-way ----
+
+RESOLVER_FORMS = [
+    ("0313.0.0161.0323", "ipv4"),  # legacy octal, = 203.0.113.211
+    ("0xcb.0x00.0x71.0xd3", "ipv4"),  # hex components
+    ("0xCB.0.113.211", "ipv4"),
+    ("203.0.29139", "ipv4"),  # three components
+    ("203.7405907", "ipv4"),  # two components
+    ("3405803987", "ipv4"),  # one component
+    ("0xcb0071d3", "ipv4"),
+    ("031300070723", "ipv4"),  # one-component octal
+    ("0203.0.0113.0211", "ipv4"),  # leading zeros, not valid octal
+    ("0198.51.100.7", "ipv4"),
+    ("198.51.25607", "ipv4"),  # reviewer examples
+    ("198.3302407", "ipv4"),
+    ("ip-203.0.113.211-x", "ipv4"),  # embedded
+    ("see 203.0.113.211 ok", "ipv4"),
+    ("a,203.0.113.211;b", "ipv4"),
+    ("203.0.113.211.", "ipv4"),
+    ("[2001:db8::7]", "ipv6"),
+    ("fe80::1%eth0", "ipv6"),
+    ("fe80::1%25eth0", "ipv6"),
+    ("::ffff:203.0.113.211", "ipv4"),
+    ("::ffff:cb00:71d3", "ipv6"),
+    ("2001:DB8::7", "ipv6"),
+    ("2001:0db8:0000:0000:0000:0000:0000:0007", "ipv6"),
+    ("::1", "ipv6"),
+    ("x 2001:db8::7 y", "ipv6"),
+]
+
+
+@pytest.mark.parametrize(("value", "kind"), RESOLVER_FORMS)
+@pytest.mark.parametrize("col", ["src", "region"])
+def test_anything_a_resolver_reads_as_an_address_is_refused(
+    value: str, kind: str, col: str, tmp_path: Path
+) -> None:
+    r = run(SCHEMA_DUMP + row(f"'{value}'", col), tmp_path=tmp_path)
+    assert r.returncode == 1, r.stdout + r.stderr
+    assert kind in r.stdout
+    assert value not in r.stdout + r.stderr
+
+
+def test_every_resolver_form_also_hides_behind_percent_encoding(
+    tmp_path: Path,
+) -> None:
+    for value, _kind in RESOLVER_FORMS[:8]:
+        enc = "".join(f"%{b:02X}" for b in value.encode())
+        r = run(SCHEMA_DUMP + row(f"'{enc}'"), tmp_path=tmp_path)
+        assert r.returncode == 1, value
+        enc2 = enc.replace("%", "%25")
+        assert run(SCHEMA_DUMP + row(f"'{enc2}'"), tmp_path=tmp_path).returncode == 1
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "home",
+        "bluesky",
+        "news.example.test",
+        "2027-03-14",
+        "ok",
+        "en",
+        "v2.0-beta",
+        "São Paulo",
+        "a.b.c",
+        "example-one",
+        "1.2.3.x",
+        "x.example.test",
+    ],
+)
+def test_words_hosts_and_dates_are_not_addresses(value: str, tmp_path: Path) -> None:
+    col = "region" if " " in value else "src"
+    r = run(SCHEMA_DUMP + row(f"'{value}'", col), tmp_path=tmp_path)
+    assert r.returncode == 0, (value, r.stdout)
+
+
+@pytest.mark.parametrize("token", ["12345678", "0000000012", "99999999999", "00123456"])
+@pytest.mark.parametrize("col", ["src", "page", "reason", "region", "city"])
+def test_long_digit_tokens_are_refused_in_every_text_column(
+    token: str, col: str, tmp_path: Path
+) -> None:
+    r = run(SCHEMA_DUMP + row(f"'{token}'", col), tmp_path=tmp_path)
+    assert r.returncode == 1, r.stdout + r.stderr
+    assert "token" in r.stdout
+    assert token not in r.stdout + r.stderr
+
+
+@pytest.mark.parametrize("token", ["c6336407", "64656667", "0A0B0C0D", "deadbeef"])
+@pytest.mark.parametrize("col", ["region", "city", "reason"])
+def test_hex_tokens_are_refused_in_columns_outside_the_old_label_list(
+    token: str, col: str, tmp_path: Path
+) -> None:
+    r = run(SCHEMA_DUMP + row(f"'{token}'", col), tmp_path=tmp_path)
+    assert r.returncode == 1, r.stdout + r.stderr
+    assert "hex token" in r.stdout
+
+
+def test_text_in_a_numeric_rule_column_is_held_to_the_token_rules(
+    tmp_path: Path,
+) -> None:
+    # view_meta.value expects digit counters and timestamps, never a hex token.
+    for v in ("3a9f8c21", "c6336407", "0xcb0071d3", "203.0.113.211"):
+        r = run(SCHEMA_DUMP + insert("view_meta", f"'k', '{v}'"), tmp_path=tmp_path)
+        assert r.returncode == 1, v
+    # kit_meta.value is an integer column: a text value there is a token like any other.
+    r = run(SCHEMA_DUMP + insert("kit_meta", "'k', '12345678'"), tmp_path=tmp_path)
+    assert r.returncode == 1
+    for ok in ("12", "1792000000000", "00000012"):
+        r = run(SCHEMA_DUMP + insert("view_meta", f"'k', '{ok}'"), tmp_path=tmp_path)
+        assert r.returncode == 0, (ok, r.stdout)
+
+
+def test_the_hourly_counter_key_format_still_passes(tmp_path: Path) -> None:
+    for key in ("bud:00490000:view", "cap:00490000:0123456789abcdef"):
+        r = run(SCHEMA_DUMP + insert("view_meta", f"'{key}', '3'"), tmp_path=tmp_path)
+        assert r.returncode == 0, (key, r.stdout)
+    bad = insert("view_meta", "'bud:16909060:view', '3'")
+    assert run(SCHEMA_DUMP + bad, tmp_path=tmp_path).returncode == 1
+
+
+def test_an_email_local_part_of_digits_is_not_a_token_finding(tmp_path: Path) -> None:
+    ok = insert(
+        "leads",
+        "'" + "a" * 32 + "', 'x12345678@example.cc', 1792000000000, "
+        "1792000000000, NULL, 'gate', 'US', NULL, NULL, NULL, NULL",
+    )
+    assert run(SCHEMA_DUMP + ok, tmp_path=tmp_path).returncode == 0
+    bad = ok.replace("x12345678@example.cc", "203.0.113.211@example.cc")
+    assert run(SCHEMA_DUMP + bad, tmp_path=tmp_path).returncode == 1
+
+
+def test_schema_comparison_is_two_way(tmp_path: Path) -> None:
+    # A missing table fails.
+    start = SCHEMA_DUMP.index("CREATE TABLE view_events")
+    end = SCHEMA_DUMP.index(";", start) + 1
+    no_table = SCHEMA_DUMP[:start] + SCHEMA_DUMP[end:]
+    assert "CREATE TABLE view_events" not in no_table
+    r = run(no_table + GOOD_ROW.replace("view_events", "view_meta"), tmp_path=tmp_path)
+    assert r.returncode == 1
+    assert "missing table view_events" in r.stdout
+    # A missing column fails.
+    cut = SCHEMA_DUMP.replace(
+        "key TEXT PRIMARY KEY,\n  value TEXT NOT NULL", "key TEXT PRIMARY KEY"
+    )
+    assert cut != SCHEMA_DUMP
+    r = run(cut + insert("view_meta", "'k'"), tmp_path=tmp_path)
+    assert r.returncode == 1
+    assert "missing column value in view_meta" in r.stdout
+    # Cloudflare's own bookkeeping tables may be absent, and a data-only dump
+    # (no CREATE TABLE at all) has no schema to compare.
+    assert run(SCHEMA_DUMP + GOOD_ROW, tmp_path=tmp_path).returncode == 0
+    assert run(GOOD_ROW, tmp_path=tmp_path).returncode == 0

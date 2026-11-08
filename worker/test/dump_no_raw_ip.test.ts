@@ -49,6 +49,56 @@ function v4Int(ip: string): number | null {
   return ((+m[1]! * 256 + +m[2]!) * 256 + +m[3]!) * 256 + +m[4]!;
 }
 
+/** Percent-encode every byte that is not a letter or digit (encodeURIComponent leaves . - _ ~ ! * ' ( ) alone). */
+function pctAll(s: string): string[] {
+  const enc = [...new TextEncoder().encode(s)].map((b) =>
+    /[A-Za-z0-9]/.test(String.fromCharCode(b)) ? String.fromCharCode(b) : "%" + b.toString(16).toUpperCase().padStart(2, "0"),
+  );
+  const upper = enc.join("");
+  return [upper, upper.toLowerCase(), upper.replace(/%/g, "%25")];
+}
+
+/** Every spelling of an IPv4 address a resolver reads: dotted, legacy octal, hex components, 1 to 3 component shortenings. */
+function v4Spellings(ip: string): string[] {
+  const m = /^(\d+)\.(\d+)\.(\d+)\.(\d+)$/.exec(ip);
+  if (!m) return [];
+  const o = m.slice(1).map(Number) as [number, number, number, number];
+  const n = v4Int(ip)!;
+  const comp = (xs: number[], f: (x: number) => string) => xs.map(f).join(".");
+  const oct = (x: number) => "0" + x.toString(8);
+  const hex = (x: number) => "0x" + x.toString(16);
+  return [
+    comp(o, String),
+    comp(o, (x) => String(x).padStart(3, "0")),
+    comp(o, oct),
+    comp(o, (x) => (x === 0 ? "0" : oct(x))),
+    comp(o, hex),
+    comp(o, (x) => "0x" + x.toString(16).padStart(2, "0")),
+    comp(o, (x) => x.toString(16)), // not a valid form, but a split-hex copy
+    `${o[0]}.${o[1]}.${o[2] * 256 + o[3]}`,
+    `${o[0]}.${o[1] * 65536 + o[2] * 256 + o[3]}`,
+    `0${o[0].toString(8)}.0${(o[1] * 65536 + o[2] * 256 + o[3]).toString(8)}`,
+    `${hex(o[0])}.${hex(o[1] * 65536 + o[2] * 256 + o[3])}`,
+    String(n),
+    "0" + n.toString(8),
+    "0x" + n.toString(16).padStart(8, "0"),
+    n.toString(16).padStart(8, "0"),
+    "::ffff:" + ip,
+    "::ffff:" + (n >>> 16).toString(16) + ":" + (n & 0xffff).toString(16),
+  ];
+}
+
+/** Every spelling of an IPv6 address: compressed, fully expanded, unseparated, bracketed, with a zone. */
+function v6Spellings(ip: string): string[] {
+  if (!ip.includes(":") || ip.includes(".")) return [];
+  const [head = "", tail = ""] = ip.split("::");
+  const h = head ? head.split(":") : [];
+  const t = tail ? tail.split(":") : [];
+  const groups = ip.includes("::") ? [...h, ...Array(8 - h.length - t.length).fill("0"), ...t] : h;
+  const full = groups.map((g) => g.padStart(4, "0"));
+  return [full.join(":"), full.join(""), `[${ip}]`, `${ip}%eth0`, `${ip}%25eth0`, ip.toUpperCase()];
+}
+
 /** Every transformed form of a planted string, lower-cased for comparison. */
 function forms(s: string): string[] {
   const out = new Set<string>([
@@ -58,15 +108,12 @@ function forms(s: string): string[] {
     b64(s),
     b64url(s),
     encodeURIComponent(s),
+    ...pctAll(s),
     s.split("").reverse().join(""),
+    ...v4Spellings(s),
+    ...v6Spellings(s),
   ]);
-  const n = v4Int(s);
-  if (n !== null) {
-    out.add(String(n));
-    out.add(n.toString(16).padStart(8, "0"));
-    out.add("0x" + n.toString(16).padStart(8, "0"));
-    out.add(s.split(".").map((o) => o.padStart(3, "0")).join("."));
-  }
+  for (const sp of [...v4Spellings(s), ...v6Spellings(s)]) for (const p of pctAll(sp)) out.add(p);
   return [...out].map((f) => f.toLowerCase());
 }
 
@@ -75,7 +122,13 @@ function fragments(s: string): string[] {
   const out = new Set<string>();
   for (const f of forms(s)) {
     if (f.length <= WINDOW) out.add(f);
-    else for (let i = 0; i + WINDOW <= f.length; i++) out.add(f.slice(i, i + WINDOW));
+    else {
+      for (let i = 0; i + WINDOW <= f.length; i++) {
+        const w = f.slice(i, i + WINDOW);
+        // Padding such as 000000 is not evidence of anything.
+        if (new Set(w).size >= 3) out.add(w);
+      }
+    }
   }
   return [...out];
 }
@@ -139,9 +192,10 @@ async function realSchema(): Promise<Table[]> {
   return out;
 }
 
-/** Tables or columns outside the allowlist. */
+/** Tables or columns outside the allowlist, and tables or columns the allowlist expects but the schema lacks. */
 function schemaProblems(schema: Table[]): string[] {
   const tables = allow.tables as Record<string, string[]>;
+  const optional = new Set((allow.optional_tables as string[]).map((x) => x.toLowerCase()));
   const problems: string[] = [];
   for (const t of schema) {
     const cols = tables[t.name];
@@ -150,6 +204,11 @@ function schemaProblems(schema: Table[]): string[] {
       continue;
     }
     for (const c of t.columns) if (!cols.includes(c)) problems.push(`unexpected column ${t.name}.${c}`);
+    for (const c of cols) if (!t.columns.includes(c)) problems.push(`missing column ${t.name}.${c}`);
+  }
+  const have = new Set(schema.map((t) => t.name));
+  for (const name of Object.keys(tables)) {
+    if (!have.has(name) && !optional.has(name.toLowerCase())) problems.push(`missing table ${name}`);
   }
   return problems;
 }
@@ -274,6 +333,14 @@ describe("the guards bite", () => {
     }
     const extra = [...base, { name: "request_log", columns: ["id"] }];
     expect(schemaProblems(extra)).toEqual(["unexpected table request_log"]);
+    // The other direction: a missing table or column must fail too.
+    expect(schemaProblems(base.filter((t) => t.name !== "view_events"))).toEqual(["missing table view_events"]);
+    const noCol = base.map((t) =>
+      t.name === "view_events" ? { ...t, columns: t.columns.filter((c) => c !== "country") } : t,
+    );
+    expect(schemaProblems(noCol)).toEqual(["missing column view_events.country"]);
+    // Cloudflare's own bookkeeping tables may be absent.
+    expect(schemaProblems(base.filter((t) => t.name !== "d1_migrations" && t.name !== "_cf_KV"))).toEqual([]);
   });
 
   it("oracle_flags_every_transformed_form_of_each_probe", () => {
@@ -294,6 +361,31 @@ describe("the guards bite", () => {
     const n = v4Int(PROBE_V4)!;
     for (const s of [n, String(n), "0x" + n.toString(16), n.toString(16)]) {
       expect(leaks([s], PROBES, []), String(s)).not.toEqual([]);
+    }
+    // Resolver spellings of the planted address, including the reviewer's legacy octal one.
+    expect(v4Spellings(PROBE_V4)).toContain("0313.0.0161.0323");
+    for (const sp of [
+      "0313.0.0161.0323",
+      "0xcb.0x00.0x71.0xd3",
+      "0xcb.0.113.211",
+      "203.0.29139",
+      "203.29139",
+      "031300070723",
+      "::ffff:203.0.113.211",
+      "::ffff:cb00:71d3",
+      "203.000.113.211",
+    ]) {
+      expect(leaks([sp], PROBES, []), sp).not.toEqual([]);
+      expect(leaks([`ip=${sp};`], PROBES, []), sp).not.toEqual([]);
+    }
+    // Real percent-encoding: every dot and colon is encoded.
+    expect(pctAll(PROBE_V4)[0]).toBe("203%2E0%2E113%2E211");
+    for (const p of [PROBE_V4, PROBE_V6]) {
+      for (const e of pctAll(p)) expect(leaks([e], PROBES, []), e).not.toEqual([]);
+    }
+    expect(leaks(["203%2E0%2E113%2E211"], PROBES, [])).not.toEqual([]);
+    for (const sp of ["2001:0db8:abcd:0000:0000:0000:0000:0042", "2001db8abcd00000000000000000042".padStart(32, "0"), "[2001:db8:abcd::42]", "2001:db8:abcd::42%eth0"]) {
+      expect(leaks([sp], PROBES, []), sp).not.toEqual([]);
     }
     // Ordinary stored values are not flagged.
     expect(leaks(["chrome", "linux", "desktop", "bluesky", "US", 1792000000000, "h", "ok"], PROBES, REALISTIC)).toEqual([]);

@@ -37,6 +37,7 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import socket
 import sys
 from pathlib import Path
 from typing import Any
@@ -66,6 +67,8 @@ UA = re.compile(
 BAD_CHARS = re.compile(r"[/()\\;<>\"\x00-\x08\x0b-\x1f]")
 MAX_VALUE = 256
 MAX_DECODE = 4096  # longer values are refused without decoding
+TOKEN = re.compile(r"[0-9A-Za-z.:]+")
+DIGIT_RUN = re.compile(r"(?<![0-9a-z])\d{8,}(?![0-9a-z])", re.IGNORECASE)
 NUMBER_TEXT = re.compile(r"[+-]?\d+(?:\.\d+)?")
 HEX8_ANY = re.compile(r"(?<![0-9a-z])[0-9a-f]{8}(?![0-9a-z])", re.IGNORECASE)
 HEX8 = re.compile(
@@ -319,15 +322,84 @@ def parse_tuple(s: str, i: int) -> tuple[list[Val], int]:
         raise Finding("unsupported value expression")
 
 
-def decode(text: str) -> str:
-    """Percent-decode to a fixed point. Each pass that changes the text makes it
-    shorter, so the loop ends; the caller bounds the input at MAX_DECODE."""
-    cur = text
+def decode_layers(text: str) -> list[str]:
+    """The text and every percent-decoding of it, down to a fixed point. Each
+    pass that changes the text makes it shorter, so the loop ends; the caller
+    bounds the input at MAX_DECODE."""
+    layers = [text]
     while True:
-        nxt = unquote(cur)
-        if nxt == cur:
-            return cur
-        cur = nxt
+        nxt = unquote(layers[-1])
+        if nxt == layers[-1]:
+            return layers
+        layers.append(nxt)
+
+
+def decode(text: str) -> str:
+    return decode_layers(text)[-1]
+
+
+COMP_DEC = re.compile(r"\d+")
+COMP_HEX = re.compile(r"0[xX][0-9a-fA-F]*")
+
+
+def reads_as_ipv4(tok: str) -> bool:
+    """True when a resolver, or a lenient decimal parser, reads tok as an IPv4
+    address: 1 to 4 dot-separated components, each decimal, legacy octal (a
+    leading 0) or hex (0x), including the shortened forms 198.51.25607,
+    198.3302407 and 3325256711. One bare component only counts from 2^24 up, so
+    ordinary small numbers are not addresses."""
+    comps = tok.split(".")
+    if not 1 <= len(comps) <= 4 or any(
+        not (COMP_DEC.fullmatch(c) or COMP_HEX.fullmatch(c)) for c in comps
+    ):
+        return False
+    try:
+        packed = socket.inet_aton(tok)
+        value: int | None = int.from_bytes(packed, "big")
+    except OSError:
+        value = None
+    if value is None and all(COMP_DEC.fullmatch(c) for c in comps):
+        # Not valid octal (a 8 or 9 after a leading 0): read as plain decimal.
+        nums = [int(c, 10) for c in comps]
+        limit = 256 ** (5 - len(nums))
+        if all(n < 256 for n in nums[:-1]) and nums[-1] < limit:
+            value = 0
+            for n in nums[:-1]:
+                value = value * 256 + n
+            value = (
+                value * limit + nums[-1] if len(nums) < 4 else value * 256 + nums[-1]
+            )
+    if value is None:
+        return False
+    return len(comps) > 1 or value >= 2**24
+
+
+def reads_as_ipv6(tok: str) -> bool:
+    if ":" not in tok:
+        return False
+    try:
+        socket.inet_pton(socket.AF_INET6, tok)
+    except OSError:
+        return False
+    return True
+
+
+def address_kinds(text: str) -> list[str]:
+    """Check every decoding layer, and within it every token, with the semantics
+    of an address parser rather than a pattern for each spelling."""
+    kinds: list[str] = []
+    for layer in decode_layers(text):
+        candidates = {layer.strip()}
+        for tok in TOKEN.findall(layer):
+            candidates.update({tok, tok.strip("."), tok.rstrip("."), tok.strip(":.")})
+            if tok.startswith("::"):
+                candidates.add(tok.rstrip(":."))
+        for tok in candidates:
+            if tok and reads_as_ipv4(tok.strip(".")):
+                kinds.append("ipv4 address")
+            if tok and reads_as_ipv6(tok):
+                kinds.append("ipv6 address")
+    return kinds
 
 
 def number_ok(text: str, colkey: str, cfg: dict[str, Any], literal: bool) -> bool:
@@ -342,6 +414,35 @@ def number_ok(text: str, colkey: str, cfg: dict[str, Any], literal: bool) -> boo
     if kind is None:
         return False if literal else abs(n) < 2**24
     return any(lo <= n <= hi for lo, hi in cfg["numeric_kinds"][kind])
+
+
+def token_kinds(text: str, colkey: str, cfg: dict[str, Any]) -> list[str]:
+    """8-character hex tokens (digits only included) and long digit runs are
+    refused in every text column that does not declare it expects them."""
+    kinds: list[str] = []
+    if colkey in cfg["hex_ids"]:
+        return kinds
+    digits_ok = colkey in cfg["digit_tokens_ok"]
+    hex_ok = colkey in cfg["hex_tokens_ok"]
+    for m in HEX8_ANY.finditer(text):
+        tok = m.group(0)
+        if tok.isdigit():
+            if digits_ok or hex_ok:
+                continue
+        elif hex_ok:
+            continue
+        kinds.append("bare hex token")
+    for m in DIGIT_RUN.finditer(text):
+        if len(m.group(0)) == 8 and not (digits_ok or hex_ok):
+            continue  # already reported as a hex token
+        if hex_ok:
+            continue
+        if digits_ok and int(m.group(0)) < 2**24:
+            continue
+        if digits_ok and colkey in cfg["numeric"]:
+            continue  # held to its range by the whole-value check
+        kinds.append("long digit token")
+    return kinds
 
 
 def value_kinds(
@@ -374,20 +475,13 @@ def value_kinds(
         kinds.append("oversize value")
     if IPV4.search(text) or HEX_IP.search(text):
         kinds.append("ipv4 address")
+    kinds.extend(address_kinds(text))
     stripped = text.strip()
     if NUMBER_TEXT.fullmatch(stripped) and not number_ok(stripped, colkey, cfg, False):
         kinds.append(
             "numeric value out of range" if colkey in cfg["numeric"] else "ipv4 address"
         )
-    if colkey not in cfg["hex_ids"] and HEX8.search(text):
-        kinds.append("bare hex token")
-    elif (
-        col in cfg["label_columns"]
-        and colkey not in cfg["hex_ids"]
-        and colkey not in cfg["numeric"]
-        and HEX8_ANY.search(text)
-    ):
-        kinds.append("bare hex token")
+    kinds.extend(token_kinds(text, colkey, cfg))
     if IPV6.search(text) or (colkey not in cfg["hex_ids"] and HEX32.search(text)):
         kinds.append("ipv6 address")
     if UA.search(text):
@@ -411,7 +505,8 @@ def load_cfg(path: Path) -> dict[str, Any]:
         t.lower(): [c.lower() for c in cols] for t, cols in cfg["tables"].items()
     }
     cfg["hex_ids"] = {x.lower() for x in cfg["hex_ids"]}
-    cfg["label_columns"] = {x.lower() for x in cfg["label_columns"]}
+    for k in ("digit_tokens_ok", "hex_tokens_ok", "optional_tables"):
+        cfg[k] = {x.lower() for x in cfg[k]}
     cfg["numeric"] = {k.lower(): v for k, v in cfg["numeric"].items()}
     cfg["numeric_kinds"] = {
         k: [tuple(r) for r in v] for k, v in cfg["numeric_kinds"].items()
@@ -512,7 +607,35 @@ def scan(
                 findings.append((line, "unexpected statement"))
         except (Finding, IndexError) as e:
             findings.append((line, str(e) or "unsupported value expression"))
+    if seen_cols:
+        findings += missing_schema(seen_cols, cfg)
     return findings, rows
+
+
+def missing_schema(
+    seen_cols: dict[str, list[str]], cfg: dict[str, Any]
+) -> list[tuple[int, str]]:
+    """The other half of the comparison: what the allowlist expects but the dump
+    does not have. Only checked when the dump carries a schema at all."""
+    out: list[tuple[int, str]] = []
+    for table, cols in cfg["tables"].items():
+        if table not in seen_cols:
+            if table not in cfg["optional_tables"]:
+                out.append((0, f"missing table {name_for_report(table)}"))
+            continue
+        have = seen_cols[table]
+        for c in cols:
+            if c not in have:
+                out.append(
+                    (
+                        0,
+                        f"missing column {name_for_report(c)} "
+                        f"in {name_for_report(table)}",
+                    )
+                )
+        if all(c in have for c in cols) and [c for c in have if c in cols] != cols:
+            out.append((0, f"column order differs in {name_for_report(table)}"))
+    return out
 
 
 def main(argv: list[str]) -> int:
@@ -541,7 +664,7 @@ def main(argv: list[str]) -> int:
     forbid = [decode(v) for v in args.forbid if v]
     findings, rows = scan(text, cfg, forbid)
     for n, kind in sorted(set(findings)):
-        print(f"FAIL: line {n}: {kind}")
+        print(f"FAIL: line {n}: {kind}" if n else f"FAIL: {kind}")
     if rows == 0 and not args.allow_empty:
         print("FAIL: the dump has no INSERT row (empty or truncated export?)")
         return 1
