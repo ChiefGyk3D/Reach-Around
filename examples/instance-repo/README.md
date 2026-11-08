@@ -170,6 +170,17 @@ you use; a source whose secret is not set is skipped, not failed.
 | `TWITCH_CLIENT_ID` | `twitch` | The client id of an app in the Twitch developer console. |
 | `TWITCH_CLIENT_SECRET` | `twitch` | The client secret of the same app. |
 
+**Where the keys come from.** This template reads them from GitHub Actions
+secrets, the default that needs nothing else. The engine's own test deployment
+(`.github/workflows/deploy-test.yml`, documented in the engine's
+`docs/deploy.md`, "Daily follower counts (test deployment)") can also fetch them
+from Doppler over GitHub OIDC, with no long-lived token, when you set the
+repository variables `DOPPLER_COUNTS_IDENTITY_ID` (an identity made for the
+counts job alone, not the deploy job's `DOPPLER_IDENTITY_ID`),
+`DOPPLER_COUNTS_PROJECT` and `DOPPLER_COUNTS_CONFIG` (a dedicated project for
+social-media credentials; no default). With those unset it falls back to GitHub secrets. In both cases the
+keys reach one step only.
+
 Sources that need no key (Bluesky, Mastodon-compatible servers, GitHub, Discord
 invites, Matrix) need no secret. The names are fixed by the workflow, so in
 `site.yaml` set `api_key_env: YOUTUBE_API_KEY`, `client_id_env: TWITCH_CLIENT_ID`

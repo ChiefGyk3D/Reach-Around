@@ -1,7 +1,9 @@
 {# SPDX-License-Identifier: Apache-2.0 #}
 {# The live block, rendered statically. The page starts in the degraded state
    (status unknown, no script): the watch links and the offline layout show,
-   the facades stay hidden. A later script only flips `hidden` and the state. #}
+   the facades stay hidden. A later script (live.js) only flips `hidden` and the
+   state. Each card holds two slots, the player facade and a same-size "Not live
+   right now" card, for both platforms, so the cards never differ in structure. #}
 {% set names = {"kick": "Kick", "twitch": "Twitch", "youtube": "YouTube", "tiktok": "TikTok", "instagram": "Instagram"} %}
 <li class="block block-live" data-live data-live-id="{{ block.id }}" data-live-state="degraded">
 <div class="live-panel live-panel-live" data-live-panel="live" hidden>
@@ -9,11 +11,21 @@
 <ul class="live-grid">
 {% for player in block.players %}
 <li class="live-card">
+<div class="live-slot" data-live-slot="player">
 <button type="button" class="live-facade" data-platform="{{ player.platform }}" data-channel="{{ player.channel }}" aria-describedby="{{ block.id }}-{{ player.platform }}-privacy">
 <span class="live-art" aria-hidden="true"><span class="icon icon-{{ player.platform }}"></span><span class="live-play"></span></span>
 <span class="live-action">Load the {{ names[player.platform] }} player</span>
 </button>
 <p class="live-privacy" id="{{ block.id }}-{{ player.platform }}-privacy">Loads the player from {{ names[player.platform] }}. {{ names[player.platform] }} will see your IP address.</p>
+</div>
+<div class="live-slot" data-live-slot="offline" hidden>
+<div class="live-notlive">
+<span class="live-art" aria-hidden="true"><span class="icon icon-{{ player.platform }}"></span></span>
+<span class="live-action">Not live right now</span>
+{% if block.vods %}<a class="live-notlive-link" href="{{ block.vods[player.platform] }}" rel="noopener noreferrer">Past streams</a>{% endif %}
+</div>
+<p class="live-hint">The player appears here when the stream starts.</p>
+</div>
 </li>
 {% endfor %}
 </ul>

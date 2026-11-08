@@ -385,8 +385,10 @@ def test_no_script_and_no_third_party_request_anywhere(tmp_path: Path) -> None:
         assert Page(text).scripts == 0, path
         assert "challenges.cloudflare.com" not in text
         assert "style=" not in text and "onclick" not in text.lower()
+    # The CSP allows the Turnstile origin on the two gate paths only (#257;
+    # tests/site/test_kit_csp.py pins which); no page loads it yet.
     headers = (out / "_headers").read_text(encoding="utf-8")
-    assert "challenges.cloudflare.com" not in headers
+    assert headers.count("challenges.cloudflare.com") == 4
 
 
 def test_gate_page_explains_the_gate_and_noscript(tmp_path: Path) -> None:

@@ -1,10 +1,22 @@
 # SPDX-License-Identifier: Apache-2.0
 #
-# Manual deploy of the Worker and the static site to the TEST subdomain.
-# One-time Cloudflare setup is in docs/deploy.md. Nothing here runs on a
-# push or a pull request; a maintainer starts it by hand from main.
+# Deploy of the Worker and the static site to the TEST subdomain, by hand from
+# main and once a day on a schedule (so the follower counts stay fresh). One-time
+# Cloudflare setup is in docs/deploy.md. Nothing here runs on a push or a pull
+# request.
 #
-# Two jobs: `build` has no secrets and no environment, so pip install scripts
+# A `counts` job runs first (issue #288). It holds the count-source keys, can
+# only read the repository, and hands one numbers.json to the build as data.
+# Where the keys come from is the maintainer's choice: GitHub Actions secrets
+# (the default, nothing else to set up) or Doppler over GitHub OIDC (opt in by
+# setting the repository variables DOPPLER_COUNTS_IDENTITY_ID,
+# DOPPLER_COUNTS_PROJECT and DOPPLER_COUNTS_CONFIG; no long-lived token). The
+# counts identity is its own: never the DOPPLER_IDENTITY_ID the deploy job
+# uses. With neither, the keyless
+# sources (Mastodon, Bluesky, GitHub) still refresh and keyed sources are
+# skipped. Setup: docs/deploy.md, "Daily follower counts".
+#
+# Then two more jobs: `build` has no secrets and no environment, so pip install scripts
 # never see the Cloudflare token. `deploy` fetches the token from Doppler after
 # the last install step; the Doppler action exports its whole config into the
 # job environment, so from that step on the token is inherited by every later
@@ -21,6 +33,16 @@ name: Deploy to test
 
 on:
   workflow_dispatch:
+    inputs:
+      skip_counts:
+        description: >-
+          Skip the follower-counts refresh and build with the committed
+          numbers.json (for a manual redeploy when a count source is down).
+        type: boolean
+        default: false
+  schedule:
+    # Once a day, 06:23 UTC (off the top of the hour, when runs start late).
+    - cron: "23 6 * * *"
 
 permissions:
   contents: read
@@ -30,10 +52,177 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # Builds the engine and its hashed dependencies into wheels. This is the only
+  # job that runs build scripts for the counts refresh, and it has no OIDC
+  # permission and no keys. The counts job below installs wheels only.
+  wheels:
+    name: Build the engine wheels
+    if: github.ref == 'refs/heads/main' && !inputs.skip_counts
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    # The hash of the engine wheel (not a secret). The counts job refuses a
+    # wheel that does not match it.
+    outputs:
+      engine_sha256: ${{ steps.hash.outputs.engine_sha256 }}
+    steps:
+      - uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43 # v2.22.3
+        with:
+          egress-policy: audit # as in the build job: artifact hosts vary per run
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+
+      - name: Build wheels
+        run: |
+          set -eu
+          python -m pip install --require-hashes -r requirements-build.txt
+          python -m pip download --only-binary :all: --no-deps --require-hashes -r requirements.txt -d wheels-out
+          python -m pip wheel --no-deps --no-build-isolation . -w wheels-out
+
+      - name: Hash the engine wheel
+        id: hash
+        run: |
+          set -eu
+          set -- wheels-out/reach_around-*.whl
+          if [ "$#" != 1 ] || [ ! -f "$1" ]; then
+            echo "::error::expected exactly one reach_around wheel"
+            exit 1
+          fi
+          sum="$(sha256sum "$1")"
+          echo "engine_sha256=${sum%% *}" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: engine-wheels
+          path: wheels-out
+          if-no-files-found: error
+          retention-days: 1
+
+  # The keys are fetched and used in this one job. It can only read the
+  # repository, installs no source code (wheels only), and its single OIDC use
+  # is the optional Doppler step. A job output cannot carry the keys to another
+  # job (GitHub drops outputs that contain masked values, and the fetch action
+  # forbids it), so the fetch and the one step that uses them stay together.
+  counts:
+    name: Refresh follower counts
+    needs: wheels
+    # Refuse any ref other than main; skipped on request (manual runs only).
+    if: github.ref == 'refs/heads/main' && !inputs.skip_counts
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read # the keys are in this job, so it cannot write
+      id-token: write # Doppler OIDC (optional); never a write to the repository
+    # A protected environment of its own (restrict it to the main branch; a
+    # required reviewer is optional, docs/deploy.md). The environment subject
+    # does not name a workflow, so docs/deploy.md also covers the workflow
+    # claim and the review settings that limit who can target it. No
+    # job-level env, on purpose.
+    environment: counts-secrets
+    steps:
+      - uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43 # v2.22.3
+        with:
+          # audit, not block, for two reasons that cannot be listed: the wheels
+          # artifact download goes to a blob host whose name varies per run
+          # (no wildcards here), and the Mastodon and Matrix sources are
+          # configurable hosts named in the config. The fixed hosts it does
+          # use are github.com, api.github.com, the artifact hosts, the Doppler
+          # API, and per source kind: public.api.bsky.app, discord.com,
+          # www.googleapis.com, id.twitch.tv, api.twitch.tv. It needs no PyPI
+          # host: it installs from the artifact. See docs/deploy.md.
+          egress-policy: audit
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: engine-wheels
+          path: wheels-in
+
+      # Installs happen before any key is fetched, and only from the wheels
+      # the `wheels` job built: --no-index --only-binary means no setup script
+      # and no build backend runs in this job, which can ask for an OIDC token.
+      - name: Install the engine from wheels
+        env:
+          ENGINE_SHA256: ${{ needs.wheels.outputs.engine_sha256 }}
+        run: |
+          set -eu
+          python -m pip install --no-index --find-links wheels-in --only-binary :all: --require-hashes -r requirements.txt
+          set -- wheels-in/reach_around-*.whl
+          if [ "$#" != 1 ] || [ ! -f "$1" ]; then
+            echo "::error::expected exactly one reach_around wheel"
+            exit 1
+          fi
+          sum="$(sha256sum "$1")"
+          if [ -z "$ENGINE_SHA256" ] || [ "${sum%% *}" != "$ENGINE_SHA256" ]; then
+            echo "::error::the engine wheel does not match the hash from the wheels job"
+            exit 1
+          fi
+          python -m pip install --no-index --only-binary :all: --no-deps "$1"
+
+      # Optional (Doppler). Runs only when the repository variables
+      # DOPPLER_COUNTS_IDENTITY_ID, DOPPLER_COUNTS_PROJECT and
+      # DOPPLER_COUNTS_CONFIG are all set (the identity is separate from the
+      # deploy job's and limited to the social-media project) (no default: use a dedicated project that holds social-media
+      # credentials only, never the shared `ci` project); otherwise the
+      # keys come from GitHub Actions secrets in the next step. COUNTS_SECRET_NAMES
+      # (default: the three names below) is the allow-list to fetch; a name
+      # missing from the Doppler config fails the run. Values come back as one
+      # masked output that only the next step reads; nothing is written to the
+      # job environment, and no long-lived token is used.
+      - name: Fetch count-source keys from Doppler
+        id: doppler
+        if: ${{ vars.DOPPLER_COUNTS_IDENTITY_ID != '' && vars.DOPPLER_COUNTS_PROJECT != '' && vars.DOPPLER_COUNTS_CONFIG != '' }}
+        uses: ChiefGyk3D/git-your-ship-together/.github/actions/doppler-secrets@f9a1ac2596926cc2e4fc8bd1e025f8d9c38c8ea1 # v1.30.0
+        with:
+          project: ${{ vars.DOPPLER_COUNTS_PROJECT }}
+          config: ${{ vars.DOPPLER_COUNTS_CONFIG }}
+          identity-id: ${{ vars.DOPPLER_COUNTS_IDENTITY_ID }}
+          export: outputs
+          names: ${{ vars.COUNTS_SECRET_NAMES || 'YOUTUBE_API_KEY,TWITCH_CLIENT_ID,TWITCH_CLIENT_SECRET' }}
+
+      # The only step with the keys. Each comes from Doppler when that step
+      # ran, else from the GitHub Actions secret of the same name; a key that
+      # is not set is empty and its source is skipped by the engine. A failed
+      # source keeps its old number. The suspect-value guard is never
+      # overridden.
+      - name: Refresh the counts
+        env:
+          YOUTUBE_API_KEY: ${{ fromJSON(steps.doppler.outputs.secrets || '{}').YOUTUBE_API_KEY || secrets.YOUTUBE_API_KEY }}
+          TWITCH_CLIENT_ID: ${{ fromJSON(steps.doppler.outputs.secrets || '{}').TWITCH_CLIENT_ID || secrets.TWITCH_CLIENT_ID }}
+          TWITCH_CLIENT_SECRET: ${{ fromJSON(steps.doppler.outputs.secrets || '{}').TWITCH_CLIENT_SECRET || secrets.TWITCH_CLIENT_SECRET }}
+        run: python3 -I .github/scripts/test-counts.py --config examples/instance/site.yaml --out "$RUNNER_TEMP/counts"
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: counts-numbers
+          path: ${{ runner.temp }}/counts/numbers.json
+          if-no-files-found: error
+          retention-days: 1
+
   build:
     name: Build the site
-    # Refuse any ref other than main.
-    if: github.ref == 'refs/heads/main'
+    needs: counts
+    # Refuse any ref other than main. !cancelled() lets the build run when the
+    # counts job was skipped on request; it still needs the counts job to have
+    # succeeded unless the run asked to skip it (a failed wheels or counts job
+    # blocks the build, never a silent pass).
+    if: >-
+      ${{ !cancelled() && github.ref == 'refs/heads/main'
+      && (inputs.skip_counts || needs.counts.result == 'success') }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -107,16 +296,32 @@ jobs:
         with:
           python-version: "3.12"
 
+      # The numbers file from the counts job is data: it goes into its own
+      # empty directory and the build reads it only through --numbers, which
+      # validates it. It is never copied into the output. With skip_counts the
+      # build reads the committed numbers.json beside the config instead.
+      - if: ${{ !inputs.skip_counts }}
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: counts-numbers
+          path: counts-in
+
       # The link manifest and the assets inventory are written next to the
       # site directory (site-out.manifest.json, site-out.assets.json), never
       # inside it, so Pages cannot publish them.
       - name: Build the site
+        env:
+          SKIP_COUNTS: ${{ inputs.skip_counts && 'true' || 'false' }}
         run: |
           set -eu
           python -m pip install --require-hashes -r requirements-build.txt
           python -m pip install --require-hashes -r requirements.txt
           python -m pip install --no-deps --no-build-isolation .
-          reach-around build --config examples/instance/site.yaml --out site-out
+          if [ "$SKIP_COUNTS" = "true" ]; then
+            reach-around build --config examples/instance/site.yaml --out site-out
+          else
+            reach-around build --config examples/instance/site.yaml --numbers counts-in/numbers.json --out site-out
+          fi
           test -z "$(find site-out -iname '*manifest*')"
           test -z "$(find site-out -iname '*assets.json')"
           test -f site-out.manifest.json
