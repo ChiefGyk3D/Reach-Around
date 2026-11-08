@@ -260,7 +260,7 @@ What it guarantees, and how each part is checked:
 - **Only your files.** Stylesheets come from `<site-out>/static/*.css` and images
   from `<site-out>/static/*.png|jpg|jpeg`, never through a symbolic link (the site output directory and its
   `static` directory included, which are not canonicalized away), with
-  size limits. PNG text chunks, JPEG EXIF and comments are dropped. Fonts are the
+  size limits. PNG text chunks are dropped, and a JPEG is rebuilt segment by segment (EXIF, XMP, ICC profiles and comments are dropped wherever they sit, including between the scans of a progressive file; an unknown marker is refused). Fonts are the
   system fonts: the site's web fonts are not embedded, so the PDF will not use
   the site's typeface.
 - **Scrubbed and reproducible.** The Info dictionary is rewritten to a title, the

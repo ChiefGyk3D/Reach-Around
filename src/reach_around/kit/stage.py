@@ -287,23 +287,60 @@ def _scrub_png(data: bytes) -> bytes:
     return bytes(out)
 
 
+# JPEG markers, every one classified: anything else stops the build.
+_JPEG_STANDALONE = frozenset({0x01, *range(0xD0, 0xD8)})  # TEM and RSTn
+_JPEG_STRUCTURE = frozenset(
+    {
+        0xC0, 0xC1, 0xC2, 0xC3, 0xC5, 0xC6, 0xC7, 0xC9, 0xCA, 0xCB, 0xCD, 0xCE,
+        0xCF,  # frame headers (SOFn)
+        0xC4,  # DHT
+        0xCC,  # DAC
+        0xDB,  # DQT
+        0xDC,  # DNL
+        0xDD,  # DRI
+        0xDE,  # DHP
+        0xDF,  # EXP
+    }
+)  # fmt: skip
+
+
 def _scrub_jpeg(data: bytes) -> bytes:
+    """Rebuild a JPEG from its structural segments only.
+
+    Every segment is classified: structure the decoder needs is kept, EXIF, XMP,
+    ICC and other application segments and comments are dropped (JFIF and the
+    Adobe colour flag stay), and a marker that is not classified stops the build.
+    After a start-of-scan header the entropy-coded data is copied up to the next
+    real marker (an FF not followed by 00, a restart marker or another FF), so a
+    segment between scans of a progressive file is scrubbed like any other and
+    bytes that look like an end marker inside one are never mistaken for it.
+    Only bytes through the end-of-image marker are kept."""
+    if not data.startswith(b"\xff\xd8"):
+        raise StageError("an image (JPEG) is not well formed")
     out = bytearray(b"\xff\xd8")
     pos = 2
     while pos < len(data):
         if data[pos] != 0xFF or pos + 1 >= len(data):
             raise StageError("an image (JPEG) is not well formed")
         marker = data[pos + 1]
-        if marker == 0xFF:
+        if marker == 0xFF:  # fill byte before a marker
             pos += 1
             continue
         if marker == 0xD9:
             out += b"\xff\xd9"
             return bytes(out)
-        if marker in (0x01, *range(0xD0, 0xD8)):
+        if marker in _JPEG_STANDALONE:
             out += data[pos : pos + 2]
             pos += 2
             continue
+        known = (
+            marker in _JPEG_STRUCTURE
+            or marker == 0xDA
+            or 0xE0 <= marker <= 0xEF
+            or marker == 0xFE
+        )
+        if not known:
+            raise StageError("an image (JPEG) has a marker that is not accepted")
         if pos + 4 > len(data):
             raise StageError("an image (JPEG) is cut short")
         (length,) = struct.unpack(">H", data[pos + 2 : pos + 4])
@@ -311,22 +348,26 @@ def _scrub_jpeg(data: bytes) -> bytes:
         if length < 2 or end > len(data):
             raise StageError("an image (JPEG) is cut short")
         segment = data[pos:end]
-        if marker == 0xDA:  # start of scan: image data runs to the end marker
-            stop = data.find(b"\xff\xd9", end)
-            if stop == -1:
-                raise StageError("an image (JPEG) has no end marker")
-            out += data[pos : stop + 2]  # nothing after the end marker is kept
-            return bytes(out)
-        # keep the file header (JFIF) and the Adobe colour flag; drop EXIF, XMP,
-        # ICC profiles, comments and every other application segment
-        keep = not (0xE0 <= marker <= 0xEF or marker == 0xFE) or (
-            (marker == 0xE0 and segment[4:9] == b"JFIF\x00")
-            or (marker == 0xEE and segment[4:9] == b"Adobe")
-        )
-        if keep:
-            out += segment
         pos = end
-    raise StageError("an image (JPEG) has no end")
+        if 0xE0 <= marker <= 0xEF or marker == 0xFE:
+            if (marker == 0xE0 and segment[4:9] == b"JFIF\x00") or (
+                marker == 0xEE and segment[4:9] == b"Adobe"
+            ):
+                out += segment
+            continue
+        out += segment
+        if marker == 0xDA:  # entropy-coded data up to the next real marker
+            start = pos
+            while pos + 1 < len(data):
+                if data[pos] == 0xFF and not (
+                    data[pos + 1] == 0x00 or 0xD0 <= data[pos + 1] <= 0xD7
+                ):
+                    break
+                pos += 1
+            else:
+                raise StageError("an image (JPEG) has no end marker")
+            out += data[start:pos]
+    raise StageError("an image (JPEG) has no end marker")
 
 
 def embed_image(site_dir: Path, src: str) -> str:
