@@ -42,8 +42,8 @@ things:
   every 60 s while the tab is visible; a hidden tab pauses and one request is made
   when it is visible again. Each request times out after 5 s. The document is
   checked strictly before anything in it is used: exact keys, `v` 1, booleans or
-  null, whole numbers in a bounded range, `since` only while live, a 2048
-  character cap. A non-200, a timeout, a network error, malformed data, a
+  null, whole numbers in a bounded range, `since` only while live. The body is
+  read incrementally and cut off at 2048 bytes. A non-200, a timeout, a network error, malformed data, a
   document with a null `as_of` (the kill switch), one older than 30 minutes (the
   Worker's stale rule, 3 heartbeats) or more than 5 minutes ahead of the visitor's
   clock all count as **degraded**: the script never shows live on a guess.

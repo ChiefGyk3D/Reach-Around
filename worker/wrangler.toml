@@ -39,6 +39,11 @@ namespace_id = "1001" # placeholder, not a real id
 # 00:05 UTC keeps the daily visitor hash within about an hour of its day ending.
 [triggers]
 crons = ["5 * * * *"]
+# Live tab status poller (issue #297). NOT enabled: add the second cron only when
+# the owner deploys it. The Worker runs ONLY the poller for this exact expression
+# (LIVE_CRON in src/live.ts) and only the hourly jobs for any other trigger. Mind
+# the Free plan's 5 cron triggers per account.
+# crons = ["5 * * * *", "*/2 * * * *"]
 
 # Page views (POST /e/v/:pageId). Placeholders only; real values come from the
 # build manifest and `wrangler secret`, never from this file.
@@ -79,6 +84,16 @@ crons = ["5 * * * *"]
 #   [ratelimits.simple]
 #   limit = 5
 #   period = 60
+
+# Live status (GET /e/live, src/live.ts). Placeholders only; not deployed.
+# [[kv_namespaces]]
+# binding = "LIVE_KV"
+# id = "00000000000000000000000000000000" # placeholder, not a real id
+# LIVE_KILL = "1"                  # strict: 1/true/on/yes or 0/false/off/no; anything else serves the degraded body
+# LIVE_TWITCH_HANDLE = "example_channel"   # [A-Za-z0-9_]{1,25}
+# LIVE_KICK_HANDLE = "example-channel"     # [A-Za-z0-9_-]{1,40}
+# SECRETS, by name only, set with `npx wrangler secret put <NAME>` (never in this file):
+#   TWITCH_CLIENT_ID, TWITCH_CLIENT_SECRET, KICK_CLIENT_ID, KICK_CLIENT_SECRET
 
 # Media kit limits (docs/deploy.md, "Kit limits and the free-plan budget"). Placeholders
 # only. Digits only; anything else is rejected and every limit then refuses. Free plan:
