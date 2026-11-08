@@ -417,8 +417,11 @@ a:focus-visible, summary:focus-visible, button:focus-visible {
 }
 .blocks.layout-grid > *, .section-links.layout-grid > * { flex: 0 0 min(10rem, 100%); }
 .blocks.layout-cards > *, .section-links.layout-cards > * { flex: 0 0 min(15rem, 100%); }
+/* Every block that spans a whole row in the other layouts does the same here. */
 .layout-grid > .block-section, .layout-grid > .block-text, .layout-grid > .block-image, .layout-grid > .block-divider,
-.layout-cards > .block-section, .layout-cards > .block-text, .layout-cards > .block-image, .layout-cards > .block-divider { flex: 0 0 100%; }
+.layout-grid > .block-platforms, .layout-grid > .block-crypto, .layout-grid > .block-email, .layout-grid > .block-live,
+.layout-cards > .block-section, .layout-cards > .block-text, .layout-cards > .block-image, .layout-cards > .block-divider,
+.layout-cards > .block-platforms, .layout-cards > .block-crypto, .layout-cards > .block-email, .layout-cards > .block-live { flex: 0 0 100%; width: 100%; }
 .section-links { display: flex; flex-direction: column; gap: var(--ra-space-2); }
 
 a.link {
