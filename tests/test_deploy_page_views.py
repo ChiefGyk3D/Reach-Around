@@ -6,6 +6,7 @@ Worker's own function. The shell is run for real, with sample values."""
 
 from __future__ import annotations
 
+import re
 import subprocess
 import tomllib
 from pathlib import Path
@@ -435,3 +436,16 @@ def test_a_hostile_built_id_cannot_forge_a_workflow_command(tmp_path: Path) -> N
     done = _verify(tmp_path, {"index.html": _page("x::error::boom")}, PAGES)
     assert done.returncode == 1
     assert "boom" not in done.stdout
+
+
+def test_no_and_or_chain_stands_in_for_if_else() -> None:
+    """shellcheck SC2015 (actionlint fails the CI lint on it): `[[ ]] && [ ] || x`
+    is not if/else. The budget checks use an explicit `if ! ... || ...; then`."""
+    text = WORKFLOW.read_text(encoding="utf-8")
+    assert "if ! [[ " in text  # something was collected: the page-view guards
+    bad = re.findall(r"\]\] && \[ [^\n]* \]\s*\\\n\s*\|\| ", text)
+    assert bad == []
+    assert re.findall(
+        r"\]\] && \[ \"\$x\" -gt 1 \] \\\n\s*\|\| ",
+        '[[ a ]] && [ "$x" -gt 1 ] \\\n  || z',
+    )

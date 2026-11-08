@@ -593,8 +593,10 @@ jobs:
               for name in VIEWS_PER_HOUR BOT_VIEWS_PER_HOUR ACCOUNT_VIEWS_PER_HOUR ACCOUNT_BOT_VIEWS_PER_HOUR; do
                 eval "value=\${$name:-}"
                 if [ -n "$value" ]; then
-                  [[ "$value" =~ ^[0-9]{1,6}$ ]] && [ "$value" -le 100000 ] \
-                    || { echo "::error::$name must be a whole number from 0 to 100000"; exit 1; }
+                  if ! [[ "$value" =~ ^[0-9]{1,6}$ ]] || [ "$value" -gt 100000 ]; then
+                    echo "::error::$name must be a whole number from 0 to 100000"
+                    exit 1
+                  fi
                 fi
               done
               ;;
@@ -767,8 +769,10 @@ jobs:
             for name in VIEWS_PER_HOUR BOT_VIEWS_PER_HOUR ACCOUNT_VIEWS_PER_HOUR ACCOUNT_BOT_VIEWS_PER_HOUR; do
               eval "value=\${$name:-}"
               if [ -n "$value" ]; then
-                [[ "$value" =~ ^[0-9]{1,6}$ ]] && [ "$value" -le 100000 ] \
-                  || { echo "::error::$name must be a whole number from 0 to 100000"; exit 1; }
+                if ! [[ "$value" =~ ^[0-9]{1,6}$ ]] || [ "$value" -gt 100000 ]; then
+                  echo "::error::$name must be a whole number from 0 to 100000"
+                  exit 1
+                fi
                 sed -i "/^\[vars\]$/a $name = \"$value\"" wrangler.deploy.toml
               fi
             done
