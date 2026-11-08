@@ -15,7 +15,7 @@ collects:
   country only. No IP address is stored. Kept for `privacy.retention_days`
   (default 90).
 - **Kit gate** (off by default): the email address a visitor enters, kept for
-  `privacy.lead_retention_days` (default 365), and the cookie that remembers
+  `privacy.lead_retention_days` (default 30, the same number the deploy gives the Worker), and the cookie that remembers
   the kit is unlocked.
 
 Turn a feature off and its item disappears. With everything off, the page says

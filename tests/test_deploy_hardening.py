@@ -119,18 +119,88 @@ def test_every_pip_install_is_hashed_except_the_project_itself() -> None:
 
 
 def run_script(
-    tmp_path: Path, links: Any, link_ids: str
+    tmp_path: Path,
+    links: Any,
+    link_ids: str,
+    retention: Any = 30,
+    retention_var: str | None = None,
+    output: Path | None = None,
 ) -> subprocess.CompletedProcess[str]:
     manifest = tmp_path / "site-out.manifest.json"
-    manifest.write_text(json.dumps({"links": links}), encoding="utf-8")
+    body: dict[str, Any] = {"links": links}
+    if retention is not MISSING:
+        body["lead_retention_days"] = retention
+    manifest.write_text(json.dumps(body), encoding="utf-8")
+    env = {"LINK_IDS": link_ids, "PATH": "/usr/bin:/bin"}
+    if retention_var is not None:
+        env["LEAD_RETENTION_DAYS"] = retention_var
+    if output is not None:
+        env["GITHUB_OUTPUT"] = str(output)
     return subprocess.run(  # noqa: S603 - fixed argv, synthetic input
         [sys.executable, "-I", str(SCRIPT), str(manifest)],
-        env={"LINK_IDS": link_ids, "PATH": "/usr/bin:/bin"},
+        env=env,
         capture_output=True,
         text=True,
         check=False,
         timeout=60,
     )
+
+
+MISSING = object()
+
+
+def test_the_manifest_retention_is_written_as_a_step_output(tmp_path: Path) -> None:
+    out = tmp_path / "gh-output"
+    done = run_script(tmp_path, {"alpha": {}}, "", retention=45, output=out)
+    assert done.returncode == 0, done.stderr
+    assert "lead_retention_days=45\n" in out.read_text()
+
+
+@pytest.mark.parametrize("var", ["45", "045"])
+def test_a_variable_equal_to_the_config_passes(tmp_path: Path, var: str) -> None:
+    done = run_script(tmp_path, {"alpha": {}}, "", retention=45, retention_var=var)
+    if var == "45":
+        assert done.returncode == 0, done.stdout
+    else:  # not plain canonical digits: refused, never reinterpreted
+        assert done.returncode == 1
+
+
+def test_a_variable_that_differs_from_the_config_fails_naming_both(
+    tmp_path: Path,
+) -> None:
+    done = run_script(tmp_path, {"alpha": {}}, "", retention=45, retention_var="90")
+    assert done.returncode == 1
+    out = done.stdout + done.stderr
+    assert out.startswith("::error::") and len(out.splitlines()) == 1
+    assert "LEAD_RETENTION_DAYS" in out and "privacy.lead_retention_days" in out
+    assert "90" in out and "45" in out
+
+
+def test_an_unset_or_empty_variable_is_not_a_mismatch(tmp_path: Path) -> None:
+    assert run_script(tmp_path, {"alpha": {}}, "", retention=45).returncode == 0
+    assert (
+        run_script(tmp_path, {"alpha": {}}, "", retention=45, retention_var="")
+    ).returncode == 0
+
+
+@pytest.mark.parametrize("var", ["0", "366", "abc", "4 5", "-1", "45\n::error::x"])
+def test_a_malformed_variable_is_refused_without_echo(tmp_path: Path, var: str) -> None:
+    done = run_script(tmp_path, {"alpha": {}}, "", retention=45, retention_var=var)
+    assert done.returncode == 1
+    out = done.stdout + done.stderr
+    assert out.startswith("::error::") and len(out.splitlines()) == 1
+    assert "abc" not in out and "4 5" not in out
+
+
+@pytest.mark.parametrize(
+    "bad", [MISSING, 0, 366, -1, "30", True, False, 1.5, None, [30], 10**30]
+)
+def test_a_bad_manifest_retention_is_refused(tmp_path: Path, bad: Any) -> None:
+    done = run_script(tmp_path, {"alpha": {}}, "", retention=bad)
+    assert done.returncode == 1
+    out = done.stdout + done.stderr
+    assert out.startswith("::error::") and len(out.splitlines()) == 1
+    assert "Traceback" not in done.stderr
 
 
 def test_matching_ids_print_nothing(tmp_path: Path) -> None:
@@ -271,7 +341,9 @@ def run_derive(
 ) -> tuple[subprocess.CompletedProcess[str], str]:
     """Run the script with a GITHUB_OUTPUT file; return the result and its text."""
     manifest = tmp_path / "site-out.manifest.json"
-    manifest.write_text(json.dumps({"links": links}), encoding="utf-8")
+    manifest.write_text(
+        json.dumps({"links": links, "lead_retention_days": 30}), encoding="utf-8"
+    )
     out = tmp_path / "github-output"
     out.write_text("", encoding="utf-8")
     env = {"GITHUB_OUTPUT": str(out), "PATH": "/usr/bin:/bin"}
@@ -285,7 +357,9 @@ def run_derive(
         check=False,
         timeout=60,
     )
-    return done, out.read_text(encoding="utf-8")
+    text = out.read_text(encoding="utf-8")
+    # The retention line is covered by its own tests; these look at link_ids.
+    return done, text.replace("lead_retention_days=30\n", "")
 
 
 def test_the_derived_list_is_the_builds_ids_sorted_and_compact(tmp_path: Path) -> None:

@@ -1085,7 +1085,7 @@ Wording and retention for the generated privacy page. Unknown keys are refused.
 | `contact` | text, 1-200 characters | none | How visitors can reach you about privacy. Shown as plain text. |
 | `intro` | text, 1-2000 characters | neutral default | Replaces the opening text of the privacy page and the cookie notice. Escaped, never treated as HTML. |
 | `retention_days` | integer, 1-3650 | `90` | How long click counts are kept. |
-| `lead_retention_days` | integer, 1-3650 | `365` | How long a kit email address is kept. |
+| `lead_retention_days` | integer, 1-365 | `30` | How long a kit email address is kept. This is the one lead retention setting: the privacy page prints it and the deploy gives the same number to the Worker as `LEAD_RETENTION_DAYS`. The range and default are the Worker's own. Quoted numbers and booleans are refused. A value above 365 (allowed before this change, up to 3650) is now an error, because the Worker deletes leads after at most 365 days. |
 
 ```yaml
 features:
@@ -1095,7 +1095,7 @@ privacy:
   contact: privacy@example.com
   intro: Here is exactly what this site collects.
   retention_days: 90
-  lead_retention_days: 365
+  lead_retention_days: 30
 ```
 
 The privacy page at `/privacy/` and the cookie notice are generated from the

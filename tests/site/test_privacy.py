@@ -1,14 +1,20 @@
 # SPDX-License-Identifier: Apache-2.0
+import json
 import re
 from datetime import date
 from pathlib import Path
 from typing import Any
 
 import pytest
+from pydantic import ValidationError
 
 from assetpaths import asset_file, has_asset
 from reach_around.config import SiteConfig
-from reach_around.site.build import build_site
+from reach_around.config.privacy import (
+    DEFAULT_LEAD_RETENTION_DAYS,
+    MAX_LEAD_RETENTION_DAYS,
+)
+from reach_around.site.build import build_site, manifest_json
 from reach_around.site.privacy import Disclosure, collected_items, sets_cookies
 
 TODAY = date(2027, 3, 10)
@@ -151,6 +157,58 @@ def test_privacy_page_states_the_retention_numbers_from_config(
     page = (tmp_path / "privacy" / "index.html").read_text()
     assert "30 days" in page and "45 days" in page
     assert "90 days" not in page and "365 days" not in page
+
+
+def test_default_lead_retention_prints_the_workers_default_30_days(
+    tmp_path: Path,
+) -> None:
+    config = make_config(features={"kit_gate": True})
+    assert config.privacy.lead_retention_days == 30
+    build_site(config, tmp_path, today=TODAY)
+    page = (tmp_path / "privacy" / "index.html").read_text()
+    assert "30 days" in page and "365 days" not in page
+
+
+def test_lead_retention_45_prints_45_and_lands_in_the_manifest(
+    tmp_path: Path,
+) -> None:
+    config = make_config(
+        features={"kit_gate": True}, privacy={"lead_retention_days": 45}
+    )
+    manifest = build_site(config, tmp_path, today=TODAY)
+    page = (tmp_path / "privacy" / "index.html").read_text()
+    assert "45 days" in page
+    assert manifest.lead_retention_days == 45
+    assert json.loads(manifest_json(manifest))["lead_retention_days"] == 45
+
+
+@pytest.mark.parametrize("bad", [0, -1, 366, 3650, "30", True, 1.5, None])
+def test_lead_retention_outside_the_workers_range_is_refused(bad: Any) -> None:
+    with pytest.raises(ValidationError, match="lead_retention_days"):
+        make_config(privacy={"lead_retention_days": bad})
+
+
+@pytest.mark.parametrize("ok", [1, 30, 365])
+def test_lead_retention_range_ends_are_accepted(ok: int) -> None:
+    assert (
+        make_config(privacy={"lead_retention_days": ok}).privacy.lead_retention_days
+        == ok
+    )
+
+
+def test_config_limits_equal_the_workers_constants() -> None:
+    source = (
+        Path(__file__).resolve().parents[2]
+        / "worker"
+        / "src"
+        / "kit"
+        / "leadretention.ts"
+    ).read_text(encoding="utf-8")
+    default = re.search(r"DEFAULT_LEAD_RETENTION_DAYS = (\d+);", source)
+    maximum = re.search(r"MAX_LEAD_RETENTION_DAYS = (\d+);", source)
+    assert default and maximum  # the guard collected something
+    assert int(default.group(1)) == DEFAULT_LEAD_RETENTION_DAYS == 30
+    assert int(maximum.group(1)) == MAX_LEAD_RETENTION_DAYS == 365
 
 
 def test_disabling_click_tracking_removes_the_click_item(tmp_path: Path) -> None:

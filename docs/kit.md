@@ -226,7 +226,8 @@ built, and a gated kit with no `turnstile_site_key` warns about the empty slot.
 
 The Worker deletes every lead (the address, its country code and its kit
 events) once it is older than `LEAD_RETENTION_DAYS`: 30 days by default, 365 at
-most, run by the hourly job in bounded batches. To honor a person's request to
+most (set it with `privacy.lead_retention_days` in `site.yaml`; the deploy passes the
+same number to the Worker and the privacy page prints it), run by the hourly job in bounded batches. To honor a person's request to
 delete their address sooner, use `reach-around leads delete` (dry run by
 default, SQL only with `--yes`, applied by you with `wrangler`). The numbers,
 the steps and what is not covered are in [privacy.md](privacy.md).

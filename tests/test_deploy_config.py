@@ -41,6 +41,7 @@ def _run(tmp_path: Path, zone: str | None, extra: dict[str, str] | None = None) 
         "RATELIMIT_NAMESPACE_ID": NS_ID,
         "SITE_HOST": HOST,
         "LINK_IDS": LINKS,
+        "LEAD_RETENTION_DAYS": "30",
     }
     if zone is not None:
         env["ZONE_NAME"] = zone
@@ -49,6 +50,33 @@ def _run(tmp_path: Path, zone: str | None, extra: dict[str, str] | None = None) 
         ["/bin/bash", "-c", script], cwd=tmp_path, env=env, check=True
     )
     return (tmp_path / "wrangler.deploy.toml").read_text(encoding="utf-8")
+
+
+def test_lead_retention_from_the_manifest_output_lands_in_the_worker_vars(
+    tmp_path: Path,
+) -> None:
+    data = tomllib.loads(_run(tmp_path, None, {"LEAD_RETENTION_DAYS": "45"}))
+    assert data["vars"]["LEAD_RETENTION_DAYS"] == "45"
+
+
+def test_the_write_step_reads_retention_from_the_manifest_step_output() -> None:
+    step = _step("Write deploy config")
+    assert (
+        step["env"]["LEAD_RETENTION_DAYS"]
+        == "${{ steps.manifest.outputs.lead_retention_days }}"
+    )
+    # never from the repository variable: that one is only compared
+    assert "vars.LEAD_RETENTION_DAYS" not in str(step)
+    verify = _step("Verify the build manifest")
+    assert verify["env"]["LEAD_RETENTION_DAYS"] == "${{ vars.LEAD_RETENTION_DAYS }}"
+
+
+@pytest.mark.parametrize("bad", ["", "0", "366", "abc", "4 5"])
+def test_the_write_step_refuses_a_missing_or_bad_retention(
+    tmp_path: Path, bad: str
+) -> None:
+    with pytest.raises(subprocess.CalledProcessError):
+        _run(tmp_path, None, {"LEAD_RETENTION_DAYS": bad})
 
 
 def test_values_are_replaced(tmp_path: Path) -> None:
@@ -65,9 +93,13 @@ def test_no_zone_name_leaves_output_unchanged(tmp_path: Path, zone: str | None) 
     out = _run(tmp_path, zone)
     assert "[[routes]]\npattern" not in out
     base = (ROOT / "worker" / "wrangler.toml").read_text(encoding="utf-8")
-    # Same line count, and only the four substituted lines differ.
-    assert len(out.splitlines()) == len(base.splitlines())
-    pairs = zip(base.splitlines(), out.splitlines(), strict=True)
+    # One added line (LEAD_RETENTION_DAYS), and only the four substituted lines
+    # differ from the template otherwise.
+    added = [ln for ln in out.splitlines() if ln.startswith("LEAD_RETENTION_DAYS =")]
+    assert added == ['LEAD_RETENTION_DAYS = "30"']
+    rest = [ln for ln in out.splitlines() if ln not in added]
+    assert len(rest) == len(base.splitlines())
+    pairs = zip(base.splitlines(), rest, strict=True)
     differing = [a for a, b in pairs if a != b]
     assert len(differing) == 4
     assert out.endswith("\n")
