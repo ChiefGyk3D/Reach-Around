@@ -17,8 +17,8 @@ type WorkerEnv = ClickEnv &
   Omit<ViewEnv, "DB" | "SITES" | "SITE_HOST" | "PAGE_IDS" | "LINK_IDS"> &
   LiveEnv;
 
-/** Query budgets below this run the lead purge after the rollup (see scheduled()). */
-const LEAD_FIRST_MIN_BUDGET = 20;
+/** The smallest QUERY_BUDGET that guarantees the lead purge its query (see scheduled()). */
+export const LEAD_FIRST_MIN_BUDGET = 9;
 
 const VIEW_PREFIX = "/e/v/";
 
@@ -62,8 +62,8 @@ export default {
    * The 2-minute live cron (LIVE_CRON) runs ONLY the live poller. Any other
    * trigger runs the hourly jobs below exactly as before.
    *
-   * Hourly cron, in this order: click purge, page-view purge, lead purge,
-   * page-view rollup (the lead purge moves after the rollup under a QUERY_BUDGET below 20). The purge comes BEFORE the rollup so a rollup that fails, runs out
+   * Hourly cron, in this order: lead purge (one guaranteed query at QUERY_BUDGET 9
+   * or more; last under 9), click purge, page-view purge, page-view rollup. The purges come BEFORE the rollup so a rollup that fails, runs out
    * of CPU or is cut off can never block retention (the purge only deletes
    * days that are already rolled, plus rows past the hard ceiling). Each step
    * is isolated: one failing never stops the others, and nothing here throws.
@@ -98,32 +98,35 @@ export default {
         const meter = new QueryMeter(budget);
         const whole = meteredDb(env.DB, meter);
         const purgeDb = meteredDb(env.DB, meter.slice(Math.floor(budget / 2)));
-        try {
-          await purgeOldEvents({ ...env, DB: whole }, now);
-        } catch {
-          // Next run retries; nothing request-derived to report.
-        }
-        // Lead retention (issue #265), bounded and on the same meter. With the
-        // default budget it runs before the rollup on a small slice, so a cut-off
-        // rollup cannot block retention. Under a tight budget (below
-        // LEAD_FIRST_MIN_BUDGET) it would take queries the rollup needs, so it
-        // runs after the rollup on whatever is left.
+        // Lead retention (issue #265). GUARANTEE: at QUERY_BUDGET 9 or more it
+        // runs FIRST and takes exactly one bounded, metered D1 query
+        // (LEAD_PURGE_QUERIES) before any other job can spend the meter, so a
+        // busy purge or rollup can never starve it; the rollup gets the budget
+        // minus one. WHICH ONE WINS BELOW 9: the smallest budget in which one
+        // rollup day still completes is 8 (worker/test/views/rollup_budget.test.ts),
+        // so under 9 the rollup keeps its queries and the lead purge runs last,
+        // on whatever is left, with no guarantee. Keep QUERY_BUDGET at 9 or more
+        // (default 40); docs/deploy.md says so.
         const leadsFirst = budget >= LEAD_FIRST_MIN_BUDGET;
         const purgeLeads = async (): Promise<void> => {
           try {
-            const size = leadsFirst ? Math.min(LEAD_PURGE_QUERIES, Math.floor(budget / 10)) : LEAD_PURGE_QUERIES;
-            const leadDb = meteredDb(env.DB, meter.slice(size));
+            const leadDb = meteredDb(env.DB, meter.slice(LEAD_PURGE_QUERIES));
             await purgeExpiredLeads({ DB: leadDb, LEAD_RETENTION_DAYS: env.LEAD_RETENTION_DAYS }, now);
           } catch {
             logEvent("purge", "failed", "other");
           }
         };
+        if (leadsFirst) await purgeLeads();
+        try {
+          await purgeOldEvents({ ...env, DB: whole }, now);
+        } catch {
+          // Next run retries; nothing request-derived to report.
+        }
         try {
           await purgeViews({ ...env, DB: purgeDb }, now);
         } catch {
           // Same.
         }
-        if (leadsFirst) await purgeLeads();
         try {
           await rollupClosedDays({ ...env, DB: whole }, now);
         } catch {

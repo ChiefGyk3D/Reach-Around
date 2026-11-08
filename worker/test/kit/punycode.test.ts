@@ -24,7 +24,7 @@ describe("dnsLabelOk", () => {
     for (const l of ["a", "abc", "a-b", "a1", "xn--bcher-kva", "xn--p1ai", "xn--fiq228c"]) expect(dnsLabelOk(l), l).toBe(true);
   });
   it("rejects bad shapes, reserved prefixes and invalid A-labels", () => {
-    for (const l of ["", "-a", "a-", "a_b", "A", "a".repeat(64), "xn--", "xn--a", "xn--abc-", "xn--bcher-kva9", "ab--cd", "xn--ASCII-", "xn--ab-"]) {
+    for (const l of ["", "-a", "a-", "a_b", "A", "a".repeat(64), "xn--", "xn--a", "xn--abc-", "xn--abc", "xn--bcher-kva9", "ab--cd", "xn--ASCII-", "xn--ab-"]) {
       expect(dnsLabelOk(l), l).toBe(false);
     }
   });

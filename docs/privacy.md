@@ -33,11 +33,13 @@ extend it.
   never keeps data longer and never wipes the table.
 - A lead exactly at the limit is kept; one second older is deleted. The kit
   events of a deleted lead go with it.
-- Each run deletes at most 50 leads (25 per batch). A bigger backlog continues
-  on the next hourly run, so deletion can lag by hours when many leads expire at
-  once. This keeps the purge inside the free D1 query and write allowance
-  (docs/deploy.md, "Kit limits and the free-plan budget"). The same run records
-  `last_purge_ts` in `kit_meta`; a stale value means the job is not running.
+- Each run is one D1 query that deletes at most 80 kit events of expired leads
+  and at most 20 expired leads. A lead is deleted only once its events are gone,
+  so a lead with many events takes several runs, and a big backlog continues on
+  the next hourly runs: deletion can lag by hours or, with very many events,
+  days. This keeps the purge inside the free D1 write allowance (docs/deploy.md,
+  "Kit limits and the free-plan budget"). The same run records `last_purge_ts` in
+  `kit_meta`; a stale value means the job is not running.
 - The job runs on the hourly cron only. The 2-minute live-poller cron never
   touches leads.
 - The purge logs a fixed word and a count, never an address.
@@ -98,7 +100,7 @@ You run a local command, and then apply the SQL it prints with `wrangler`.
 The command reads only the file you give it. It makes no network call, needs no
 token and writes no file. It refuses an address that is not valid (ASCII, one
 `@`, a dotted domain; whitespace around it and upper case are normalized), and
-refuses an export that has a column other than the `leads` columns, a duplicate
+refuses an export that has a result block without `success: true`, a column other than the `leads` columns, a duplicate
 key, or an id that is not 32 lowercase hex characters. If you type the address
 on the command line (`--email ADDR`) instead of through stdin, your shell keeps
 it in its history; argparse can also repeat an unrecognized extra word in its

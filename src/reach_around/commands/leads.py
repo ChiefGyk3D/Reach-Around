@@ -18,9 +18,12 @@ Safety rules, all tested:
   check (the export is semi-trusted input; wrangler cannot bind parameters on
   the command line, so the id is the one validated constant).
 * The address is validated and normalized the way the Worker does it (ASCII,
-  lowercase, one ``@``, dotted domain). A bad address is refused with a fixed
-  message that never repeats the value. ``--email -`` reads it from stdin so it
+  lowercase, one ``@``, dotted domain, ``xn--`` labels checked by the same
+  round-trip A-label rules as worker/src/kit/punycode.ts). A bad address is
+  refused with a fixed message that never repeats the value. ``--email -`` reads it from stdin so it
   stays out of argv and shell history.
+* Every wrangler result block must say ``"success": true``; anything else
+  refuses the export before a row is read.
 * Exactly one match is required. None is exit 1; more than one is exit 2.
 
 Exit codes: 0 done (dry run or SQL printed); 1 no lead matches; 2 usage problem
@@ -33,6 +36,7 @@ import argparse
 import json
 import re
 import sys
+import unicodedata
 from pathlib import Path
 from typing import Any
 
@@ -73,6 +77,49 @@ LEAD_COLUMNS = frozenset(
 )
 
 
+def _is_valid_a_label(label: str) -> bool:
+    """The Worker's isValidALabel (worker/src/kit/punycode.ts), round trip included.
+
+    A label that starts ``xn--`` must decode, hold a non-ASCII letter, mark or
+    digit (hyphen allowed) and no right-to-left character, not start with a
+    combining mark, be lowercase and NFC, and encode back to the same ASCII.
+    Right-to-left is judged by bidi class, which is a superset of the Worker's
+    script list: it can only refuse more, never accept what the Worker refuses.
+    """
+    rest = label[4:]
+    if len(label) > 63 or not label.startswith("xn--") or not rest:
+        return False
+    try:
+        text = rest.encode("ascii").decode("punycode")
+        if text.encode("punycode").decode("ascii") != rest:
+            return False
+    except (UnicodeError, ValueError):
+        return False
+    if (
+        text.isascii()
+        or text != text.lower()
+        or text != unicodedata.normalize("NFC", text)
+    ):
+        return False
+    if unicodedata.category(text[0]).startswith("M"):
+        return False
+    for char in text:
+        if char != "-" and unicodedata.category(char)[0] not in ("L", "M", "N"):
+            return False
+        if unicodedata.bidirectional(char) in ("R", "AL", "AN"):
+            return False
+    return True
+
+
+def _label_ok(label: str) -> bool:
+    """The Worker's dnsLabelOk."""
+    if not _LABEL.fullmatch(label):
+        return False
+    if label.startswith("xn--"):
+        return _is_valid_a_label(label)
+    return label[2:4] != "--"
+
+
 class LeadsError(ValueError):
     """A refusal. The message is fixed text and never holds an address or an id."""
 
@@ -90,7 +137,7 @@ def normalize_email(raw: str) -> str:
     if not _LOCAL.fullmatch(local) or len(domain) > 253:
         raise bad
     labels = domain.split(".")
-    if len(labels) < 2 or not all(_LABEL.fullmatch(part) for part in labels):
+    if len(labels) < 2 or not all(_label_ok(part) for part in labels):
         raise bad
     if not _TLD.fullmatch(labels[-1]):
         raise bad
@@ -175,6 +222,10 @@ def load_leads(path: Path) -> list[tuple[str, str]]:
         if isinstance(item, dict) and "results" in item:
             if not set(item) <= {"results", "success", "meta"}:
                 raise LeadsError("export: unexpected key in a result block")
+            # Fail closed: a failed or partial wrangler answer must never
+            # become deletion SQL. Only the JSON true counts.
+            if item.get("success") is not True:
+                raise LeadsError("export: a result block is missing success: true")
             results = item["results"]
             if not isinstance(results, list):
                 raise LeadsError("export: 'results' must be a list")

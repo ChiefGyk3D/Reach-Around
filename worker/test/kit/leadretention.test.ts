@@ -1,15 +1,17 @@
 // SPDX-License-Identifier: Apache-2.0
 import { env as testEnv } from "cloudflare:workers";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import worker from "../../src/index";
+import worker, { LEAD_FIRST_MIN_BUDGET } from "../../src/index";
 import { QueryMeter, meteredDb } from "../../src/d1budget";
 import { LIVE_CRON } from "../../src/live";
 import { PURGE_RESERVE } from "../../src/kit/budgets";
 import {
   DEFAULT_LEAD_RETENTION_DAYS,
-  LEAD_DELETE_WRITES,
   LEAD_PURGE_BATCH,
-  LEAD_PURGE_MAX_PER_RUN,
+  LEAD_PURGE_DAILY_WRITES,
+  LEAD_PURGE_EVENT_BATCH,
+  LEAD_PURGE_QUERIES,
+  LEAD_PURGE_RUN_WRITES,
   MAX_LEAD_RETENTION_DAYS,
   leadRetentionDays,
   purgeExpiredLeads,
@@ -117,42 +119,92 @@ describe("purgeExpiredLeads", () => {
   });
 
   it("deletes at most the per-run cap and the next run continues", async () => {
-    const total = LEAD_PURGE_MAX_PER_RUN * 2 + 17;
+    const total = LEAD_PURGE_BATCH * 2 + 7;
     await seedMany(total, NOW - 60 * DAY);
-    expect(await purgeExpiredLeads(env(), NOW)).toBe(LEAD_PURGE_MAX_PER_RUN);
-    expect(await countLeads(DB)).toBe(total - LEAD_PURGE_MAX_PER_RUN);
-    expect(await purgeExpiredLeads(env(), NOW)).toBe(LEAD_PURGE_MAX_PER_RUN);
-    expect(await purgeExpiredLeads(env(), NOW)).toBe(17);
+    expect(await purgeExpiredLeads(env(), NOW)).toBe(LEAD_PURGE_BATCH);
+    expect(await countLeads(DB)).toBe(total - LEAD_PURGE_BATCH);
+    expect(await purgeExpiredLeads(env(), NOW)).toBe(LEAD_PURGE_BATCH);
+    expect(await purgeExpiredLeads(env(), NOW)).toBe(7);
     expect(await countLeads(DB)).toBe(0);
   });
 
-  it("caller options can only lower the batch and the run cap", async () => {
-    await seedMany(LEAD_PURGE_MAX_PER_RUN + 20, NOW - 60 * DAY);
-    expect(await purgeExpiredLeads(env(), NOW, { batch: 1_000_000, maxPerRun: 1_000_000 })).toBe(LEAD_PURGE_MAX_PER_RUN);
-    expect(await purgeExpiredLeads(env(), NOW, { batch: 3, maxPerRun: 4 })).toBe(4);
+  it("caller options can only lower the batches", async () => {
+    await seedMany(LEAD_PURGE_BATCH + 20, NOW - 60 * DAY);
+    expect(await purgeExpiredLeads(env(), NOW, { leadBatch: 1_000_000, eventBatch: 1_000_000 })).toBe(LEAD_PURGE_BATCH);
+    expect(await purgeExpiredLeads(env(), NOW, { leadBatch: 3 })).toBe(3);
+    expect(await purgeExpiredLeads(env(), NOW, { leadBatch: 0 as never })).toBe(LEAD_PURGE_BATCH > 17 ? 17 : LEAD_PURGE_BATCH);
   });
 
-  it("respects the query budget: each batch is one metered query", async () => {
-    await seedMany(LEAD_PURGE_MAX_PER_RUN * 2, NOW - 60 * DAY);
-    // One query allowed: exactly one batch, no heartbeat.
+  it("takes exactly one metered query per run, and none when the meter is empty", async () => {
+    await seedMany(LEAD_PURGE_BATCH * 2, NOW - 60 * DAY);
+    expect(LEAD_PURGE_QUERIES).toBe(1);
     const one = new QueryMeter(1);
     expect(await purgeExpiredLeads({ DB: meteredDb(DB, one) }, NOW)).toBe(LEAD_PURGE_BATCH);
     expect(one.used).toBe(1);
-    // Zero allowed: nothing happens and nothing throws.
     const none = new QueryMeter(0);
     expect(await purgeExpiredLeads({ DB: meteredDb(DB, none) }, NOW)).toBe(0);
     expect(none.used).toBe(0);
-    expect(await countLeads(DB)).toBe(LEAD_PURGE_MAX_PER_RUN * 2 - LEAD_PURGE_BATCH);
-    // A parent meter that is nearly spent also stops it.
-    const parent = new QueryMeter(2);
-    const child = parent.slice(10);
-    await purgeExpiredLeads({ DB: meteredDb(DB, child) }, NOW);
-    expect(parent.used).toBeLessThanOrEqual(2);
+    expect(await countLeads(DB)).toBe(LEAD_PURGE_BATCH);
+    // A nearly spent parent also stops it.
+    const parent = new QueryMeter(1);
+    parent.take();
+    expect(await purgeExpiredLeads({ DB: meteredDb(DB, parent.slice(5)) }, NOW)).toBe(0);
   });
 
-  it("the worst-case daily writes of the run cap fit inside half of the purge reserve", () => {
-    expect(LEAD_PURGE_MAX_PER_RUN * 24 * LEAD_DELETE_WRITES).toBeLessThanOrEqual(PURGE_RESERVE / 2);
-    expect(LEAD_PURGE_BATCH).toBeLessThanOrEqual(LEAD_PURGE_MAX_PER_RUN);
+  async function addEvents(leadId: string, n: number): Promise<void> {
+    const stmts = [];
+    for (let i = 0; i < n; i++) {
+      stmts.push(DB.prepare("INSERT INTO kit_events (ts, lead_id, kind) VALUES (?, ?, 'view')").bind((i % 1000) * 3_600_000, leadId));
+    }
+    await DB.batch(stmts);
+  }
+  const eventCount = async () => (await DB.prepare("SELECT COUNT(*) AS n FROM kit_events").first<{ n: number }>())!.n;
+
+  it("a lead that owns many events is purged incrementally: bounded event deletes per run, the lead goes when its events are gone", async () => {
+    const heavy = await seed("heavy", NOW - 60 * DAY);
+    const light = await seed("light", NOW - 59 * DAY);
+    const total = LEAD_PURGE_EVENT_BATCH * 3 + 10;
+    await addEvents(heavy, total);
+    await addEvents(light, 2);
+    let before = await eventCount();
+    let runs = 0;
+    while ((await countLeads(DB)) > 0 && runs < 10) {
+      await purgeExpiredLeads(env(), NOW);
+      runs += 1;
+      const after = await eventCount();
+      // The cascade must never be the thing that deletes events in bulk.
+      expect(before - after).toBeLessThanOrEqual(LEAD_PURGE_EVENT_BATCH);
+      before = after;
+    }
+    expect(runs).toBe(4);
+    expect(await countLeads(DB)).toBe(0);
+    expect(await eventCount()).toBe(0);
+  });
+
+  it("while a lead still has events it is not deleted", async () => {
+    const heavy = await seed("heavy", NOW - 60 * DAY);
+    await addEvents(heavy, LEAD_PURGE_EVENT_BATCH + 5);
+    expect(await purgeExpiredLeads(env(), NOW)).toBe(0);
+    expect(await ids()).toEqual([heavy]);
+    expect(await eventCount()).toBe(5);
+    expect(await purgeExpiredLeads(env(), NOW)).toBe(1);
+  });
+
+  it("never deletes the events of a current lead", async () => {
+    const fresh = await seed("fresh", NOW - DAY);
+    await addEvents(fresh, 5);
+    const old = await seed("old", NOW - 40 * DAY);
+    await addEvents(old, 5);
+    await purgeExpiredLeads(env(), NOW);
+    expect(await ids()).toEqual([fresh]);
+    expect(await eventCount()).toBe(5);
+  });
+
+  it("the quota model is true: per-run writes follow from the batch sizes and 24 runs fit the kit purge reserve", () => {
+    expect(LEAD_PURGE_RUN_WRITES).toBe(LEAD_PURGE_BATCH * 4 + LEAD_PURGE_EVENT_BATCH * 3 + 1);
+    expect(LEAD_PURGE_DAILY_WRITES).toBe(24 * LEAD_PURGE_RUN_WRITES);
+    // At most 80 percent of the reserve; the rest is left for the counter purge.
+    expect(LEAD_PURGE_DAILY_WRITES).toBeLessThanOrEqual(PURGE_RESERVE * 0.8);
   });
 
   it("records a heartbeat without any lead data", async () => {
@@ -244,49 +296,108 @@ describe("scheduled wiring", () => {
     expect(clicks?.n).toBe(0);
   });
 
-  it("a tiny QUERY_BUDGET never throws or overruns the meter", async () => {
-    await seedMany(LEAD_PURGE_MAX_PER_RUN, Date.now() - 60 * DAY);
-    let queries = 0;
-    const counting = new Proxy(DB, {
+  function counted(): { db: D1Database; stats: { queries: number; first: string } } {
+    const stats = { queries: 0, first: "" };
+    const texts = new WeakMap<object, string>();
+    const hit = (q: string) => {
+      stats.queries++;
+      if (stats.first === "") stats.first = q;
+    };
+    const db = new Proxy(DB, {
       get(t, p) {
         if (p === "prepare") {
           return (q: string) => {
-            const st = t.prepare(q);
-            return new Proxy(st, {
-              get(s, k) {
-                if (k === "bind") return (...a: unknown[]) => { const b = s.bind(...a); return new Proxy(b, { get(x, kk) { if (kk === "run" || kk === "all" || kk === "first") queries++; const v = Reflect.get(x, kk, x); return typeof v === "function" ? v.bind(x) : v; } }); };
-                if (k === "run" || k === "all" || k === "first") queries++;
-                const v = Reflect.get(s, k, s);
-                return typeof v === "function" ? v.bind(s) : v;
-              },
-            });
+            const wrap = (st: D1PreparedStatement): D1PreparedStatement => {
+              const proxy: D1PreparedStatement = new Proxy(st, {
+                get(x, k) {
+                  if (k === "bind") return (...a: unknown[]) => wrap(x.bind(...a));
+                  if (k === "run" || k === "all" || k === "first" || k === "raw") {
+                    return (...a: unknown[]) => { hit(q); return (x as never as Record<string, (...b: unknown[]) => unknown>)[k as string]!(...a); };
+                  }
+                  const v = Reflect.get(x, k, x);
+                  return typeof v === "function" ? v.bind(x) : v;
+                },
+              });
+              texts.set(proxy, q);
+              return proxy;
+            };
+            return wrap(t.prepare(q));
           };
         }
-        if (p === "batch") return async (s: D1PreparedStatement[]) => { queries++; return t.batch(s); };
+        if (p === "batch") {
+          return async (s: D1PreparedStatement[]) => { hit(s.map((x) => texts.get(x) ?? "").join(" | ")); return t.batch(s); };
+        }
         const v = Reflect.get(t, p, t);
         return typeof v === "function" ? v.bind(t) : v;
       },
     });
-    const { c, waits } = ctx();
-    await worker.scheduled({} as ScheduledController, full({ DB: counting, QUERY_BUDGET: "5" }), c);
+    return { db: db as D1Database, stats };
+  }
+
+  it("a tiny QUERY_BUDGET never throws or overruns the meter", async () => {
+    await seedMany(LEAD_PURGE_BATCH, Date.now() - 60 * DAY);
+    const c = counted();
+    const { c: cx, waits } = ctx();
+    await worker.scheduled({} as ScheduledController, full({ DB: c.db, QUERY_BUDGET: "5" }), cx);
     await expect(Promise.all(waits)).resolves.toBeDefined();
-    expect(queries).toBeLessThanOrEqual(5);
+    expect(c.stats.queries).toBeLessThanOrEqual(5);
   });
 
-  it("under a tight budget the lead purge runs after the rollup on what is left, and still runs", async () => {
+  it("at QUERY_BUDGET 9 or more the lead purge gets its query even when the other jobs have plenty to do", async () => {
+    expect(LEAD_FIRST_MIN_BUDGET).toBe(9);
+    const now = Date.now();
+    for (const budget of ["9", "10", "20", "40", "900"]) {
+      await DB.prepare("DELETE FROM leads").run();
+      await DB.prepare("DELETE FROM click_events").run();
+      await DB.prepare("DELETE FROM view_events").run();
+      await DB.prepare("DELETE FROM view_rollup_log").run();
+      await seed("old", now - 40 * DAY);
+      // A backlog the click and view purges (and the rollup) would each spend a tiny meter on.
+      const stmts = [];
+      for (let i = 0; i < 1500; i++) {
+        stmts.push(DB.prepare("INSERT INTO click_events (ts, link_id) VALUES (?, 'example-one')").bind(now - 200 * DAY - i));
+        stmts.push(
+          DB.prepare("INSERT INTO view_events (ts, page, src_kind, bot_class, reason) VALUES (?, 'home', 'd', 'h', 'none')").bind(
+            now - 40 * DAY - i,
+          ),
+        );
+      }
+      await DB.batch(stmts);
+      const { c, waits } = ctx();
+      await worker.scheduled({} as ScheduledController, full({ QUERY_BUDGET: budget }), c);
+      await Promise.all(waits);
+      expect(await countLeads(DB), `budget ${budget}`).toBe(0);
+    }
+  });
+
+  it("below 9 the rollup wins its queries and the lead purge runs last on what is left (no guarantee)", async () => {
     await seed("old", Date.now() - 40 * DAY);
-    const { c, waits } = ctx();
-    await worker.scheduled({} as ScheduledController, full({ QUERY_BUDGET: "10" }), c);
+    const c = counted();
+    const { c: cx, waits } = ctx();
+    await worker.scheduled({} as ScheduledController, full({ DB: c.db, QUERY_BUDGET: "8" }), cx);
     await Promise.all(waits);
+    expect(c.stats.first).not.toContain("DELETE FROM leads");
+    expect(c.stats.queries).toBeLessThanOrEqual(8);
+    expect(await countLeads(DB)).toBe(0); // idle system: the leftover query is enough
+  });
+
+  it("the lead purge runs before every other job and takes one query", async () => {
+    await seed("old", Date.now() - 40 * DAY);
+    const c = counted();
+    const { c: cx, waits } = ctx();
+    await worker.scheduled({} as ScheduledController, full({ DB: c.db }), cx);
+    await Promise.all(waits);
+    expect(c.stats.first).toContain("DELETE FROM leads");
+    expect(c.stats.first).toContain("kit_events");
     expect(await countLeads(DB)).toBe(0);
   });
 
-  it("with the default budget the lead purge takes at most 3 queries", async () => {
-    await seedMany(LEAD_PURGE_MAX_PER_RUN * 2, Date.now() - 60 * DAY);
+  it("with the default budget a backlog drains one bounded batch per run", async () => {
+    await seedMany(LEAD_PURGE_BATCH * 2, Date.now() - 60 * DAY);
     const { c, waits } = ctx();
     await worker.scheduled({} as ScheduledController, full(), c);
     await Promise.all(waits);
-    expect(await countLeads(DB)).toBe(LEAD_PURGE_MAX_PER_RUN);
+    expect(await countLeads(DB)).toBe(LEAD_PURGE_BATCH);
   });
 });
 

@@ -83,6 +83,21 @@ class TestNormalize:
             "<a@example.test>",
             "a@example.test,b@example.test",
             "a%40example.test",
+            # Malformed A-labels: the Worker's isValidALabel rejects these too
+            # (shared vectors, see worker/test/kit/punycode.test.ts).
+            "a@xn--abc.com",
+            "a@xn--a.example.test",
+            "a@xn--abc-.example.test",
+            "a@xn--bcher-kva9.example.test",
+            "a@xn--ascii-.example.test",
+            "a@example.xn--abc",
+            "a@ab--cd.example.test",
+            # Valid shape that decodes but does not round trip (Worker vectors).
+            "a@xn--abc-spef.example.test",
+            "a@xn--a-ubb.example.test",
+            "a@xn--1-ymc2p.example.test",
+            # Right-to-left labels are out of scope for the gate (Worker too).
+            "a@xn--" + "אב".encode("punycode").decode() + ".example.test",
         ],
     )
     def test_refuses_bad_addresses_without_echoing_them(self, bad: str) -> None:
@@ -91,6 +106,17 @@ class TestNormalize:
         shown = bad.strip()
         if shown:
             assert shown not in str(info.value)
+
+    @pytest.mark.parametrize(
+        "good",
+        [
+            "a@xn--bcher-kva.example.test",
+            "a@example.xn--p1ai",
+            "a@xn--fiq228c.xn--fiq228c",
+        ],
+    )
+    def test_accepts_valid_a_labels(self, good: str) -> None:
+        assert normalize_email(good) == good
 
     def test_mask_hides_local_part_and_domain_name(self) -> None:
         masked = mask_email(ADDR)
@@ -307,6 +333,47 @@ class TestHostileExport:
         code, out, err = run(capsys, "--input", str(path), "--email", ADDR, "--yes")
         assert code == 2 and out == ""
         assert "192.0.2.1" not in err and "NOT AN" not in err
+
+    def test_a_stored_address_with_a_malformed_a_label_refuses_the_file(
+        self, capsys: pytest.CaptureFixture[str], tmp_path: Path
+    ) -> None:
+        path = write(
+            tmp_path / "x.json", block([{"id": ID_A, "email": "a@xn--abc.com"}])
+        )
+        code, out, err = run(capsys, "--input", str(path), "--email", ADDR, "--yes")
+        assert code == 2 and out == "" and "xn--abc" not in err
+
+    @pytest.mark.parametrize(
+        "extra",
+        [
+            {"success": False},
+            {},
+            {"success": "true"},
+            {"success": 1},
+            {"success": None},
+        ],
+    )
+    def test_a_result_block_must_have_success_true(
+        self,
+        capsys: pytest.CaptureFixture[str],
+        tmp_path: Path,
+        extra: dict[str, Any],
+    ) -> None:
+        blocks = [{"results": [{"id": ID_A, "email": ADDR}], **extra}]
+        path = write(tmp_path / "x.json", blocks)
+        for flags in ((), ("--yes",)):
+            code, out, err = run(capsys, "--input", str(path), "--email", ADDR, *flags)
+            assert code == 2 and out == ""
+            assert "success" in err
+
+    def test_one_failed_block_among_good_ones_refuses_everything(
+        self, capsys: pytest.CaptureFixture[str], tmp_path: Path
+    ) -> None:
+        good = {"results": [{"id": ID_A, "email": ADDR}], "success": True}
+        bad = {"results": [], "success": False}
+        path = write(tmp_path / "x.json", [good, bad])
+        code, out, _ = run(capsys, "--input", str(path), "--email", ADDR, "--yes")
+        assert code == 2 and out == ""
 
     def test_full_lead_rows_from_select_star_are_accepted(
         self, capsys: pytest.CaptureFixture[str], tmp_path: Path
