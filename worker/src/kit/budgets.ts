@@ -103,7 +103,7 @@ export interface KitLimits {
   dailyAlertBudget: number;
   dailySendBudget: number;
   d1DailyWriteQuota: number;
-  /** Non-fatal notes, e.g. worst-case writes above 70 percent of the quota. */
+  /** Non-fatal notes, e.g. worst-case writes above 80 percent of the quota. */
   warnings: readonly string[];
 }
 
@@ -206,11 +206,12 @@ export function reserveAlert(env: DbEnv, nowMs: number): Promise<boolean> {
 const KINDS: readonly string[] = ["unlock", "view", "verify"];
 const HOUR_MS = 3_600_000;
 const EVENT_FULL_MEMORY_MS = 30_000;
-let eventsFullUntil = 0;
+/** Refusal memory per database object and cap: a new cap or another database is always checked. */
+let eventsFull = new WeakMap<object, { cap: number; until: number }>();
 
 /** Forget a remembered refusal. For tests. */
 export function resetEventCapCache(): void {
-  eventsFullUntil = 0;
+  eventsFull = new WeakMap();
 }
 
 /**
@@ -233,7 +234,8 @@ export async function recordKitEventCapped(
     throw new RangeError(`maxEvents must be an integer from 1 to ${MAX_KIT_EVENTS_CEILING}`);
   }
   const ts = Math.floor(nowMs / HOUR_MS) * HOUR_MS;
-  if (Date.now() < eventsFullUntil) return false;
+  const seen = eventsFull.get(db);
+  if (seen !== undefined && seen.cap === cap && Date.now() < seen.until) return false;
   const r = await db
     .prepare(
       `INSERT INTO kit_events (ts, lead_id, kind)
@@ -244,6 +246,6 @@ export async function recordKitEventCapped(
     .bind(ts, leadId, kind, cap)
     .run();
   if (r.meta.changes === 1) return true;
-  eventsFullUntil = Date.now() + EVENT_FULL_MEMORY_MS;
+  eventsFull.set(db, { cap, until: Date.now() + EVENT_FULL_MEMORY_MS });
   return false;
 }

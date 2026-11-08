@@ -75,6 +75,20 @@ describe("reserveBudget", () => {
   it.each(["", "UP", "a:b", "x".repeat(65), "a b", "a'b"])("rejects key %j", async (key) => {
     await expect(reserveBudget(DB, key, D, 1)).rejects.toThrow(RangeError);
   });
+  it.each(["2028-02-29", "2027-02-28", "2027-04-30", "2027-01-31", "2000-02-29", "2028-02-29T23"])(
+    "accepts the real calendar date %s",
+    async (day) => {
+      expect(await reserveBudget(DB, "mail", day, 1)).toBe(true);
+    },
+  );
+  it.each(["2027-02-29", "2027-02-30", "2027-04-31", "2027-06-31", "2027-09-31", "2027-11-31", "1900-02-29", "2100-02-29", "2027-02-29T05", "0000-01-01"])(
+    "rejects the impossible date %s and stores nothing",
+    async (day) => {
+      await expect(reserveBudget(DB, "mail", day, 1)).rejects.toThrow(RangeError);
+      const n = await DB.prepare("SELECT COUNT(*) AS n FROM counters").first<{ n: number }>();
+      expect(n!.n).toBe(0);
+    },
+  );
   it.each(["2027-3-14", "2027-13-01", "2027-03-14T5", "'; DROP", "2027-03-14x"])("rejects day %j", async (day) => {
     await expect(reserveBudget(DB, "mail", day, 1)).rejects.toThrow(RangeError);
   });

@@ -23,6 +23,16 @@ const MAX_TIME_MS = Date.UTC(9999, 11, 31, 23, 59, 59, 999);
 const KEY_RE = /^[a-z0-9_-]{1,64}$/;
 const DAY_RE = /^[0-9]{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12][0-9]|3[01])(?:T(?:[01][0-9]|2[0-3]))?$/;
 
+/** The date part names a real calendar day (leap years included), from 1970 on. */
+function isRealUtcDate(label: string): boolean {
+  const y = Number(label.slice(0, 4));
+  const m = Number(label.slice(5, 7));
+  const d = Number(label.slice(8, 10));
+  if (y < 1970) return false;
+  const t = new Date(Date.UTC(y, m - 1, d));
+  return t.getUTCFullYear() === y && t.getUTCMonth() === m - 1 && t.getUTCDate() === d;
+}
+
 function checkTime(nowMs: unknown): asserts nowMs is number {
   if (typeof nowMs !== "number" || !Number.isFinite(nowMs) || nowMs < 0 || nowMs > MAX_TIME_MS) {
     throw new RangeError("time must be a finite number of milliseconds since 1970 and before year 10000");
@@ -50,7 +60,9 @@ export function utcHour(nowMs: number): string {
  */
 export async function reserveBudget(db: D1Database, key: string, day: string, limit: number): Promise<boolean> {
   if (typeof key !== "string" || !KEY_RE.test(key)) throw new RangeError("budget key must be 1-64 of a-z 0-9 _ -");
-  if (typeof day !== "string" || !DAY_RE.test(day)) throw new RangeError("budget day must be YYYY-MM-DD or YYYY-MM-DDTHH");
+  if (typeof day !== "string" || !DAY_RE.test(day) || !isRealUtcDate(day)) {
+    throw new RangeError("budget day must be a real UTC date as YYYY-MM-DD or YYYY-MM-DDTHH");
+  }
   const lim: unknown = limit;
   if (typeof lim !== "number" || !Number.isInteger(lim) || lim < 0 || lim > MAX_RESERVE_LIMIT) {
     throw new RangeError(`limit must be an integer from 0 to ${MAX_RESERVE_LIMIT}`);

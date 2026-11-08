@@ -121,6 +121,10 @@ describe("loadKitLimits", () => {
   it("a raised quota lets the same budgets pass", () => {
     expect(() => L({ ROUTE_BUDGET_GATE: "100000", D1_DAILY_WRITE_QUOTA: "999999999" })).not.toThrow();
   });
+  it("the warnings contract says 80 percent, like the code and the docs", async () => {
+    const src = (await import("../../src/kit/budgets.ts?raw")).default as string;
+    expect(src).not.toContain("above 70 percent");
+  });
   it("warns above 80 percent of the quota", () => {
     const c = L({ ROUTE_BUDGET_GATE: "200" });
     expect(combinedDailyWrites(c)).toBe(84_120);
@@ -285,6 +289,25 @@ describe("recordKitEventCapped", () => {
     expect(await recordKitEventCapped(DB, id, "view", T0, 3)).toBe(false); // within the memory window
     resetEventCapCache();
     expect(await recordKitEventCapped(DB, id, "view", T0, 3)).toBe(true);
+  });
+  it("the refusal memory is scoped to the database: another database is still checked", async () => {
+    const id = await lead(1);
+    for (let i = 0; i < 3; i++) await recordKitEventCapped(DB, id, "view", T0, 3);
+    expect(await recordKitEventCapped(DB, id, "view", T0, 3)).toBe(false);
+    let ran = 0;
+    const other = {
+      prepare: () => ({ bind: () => ({ run: async () => (ran++, { meta: { changes: 1 } }) }) }),
+    } as unknown as D1Database;
+    expect(await recordKitEventCapped(other, id, "view", T0, 3)).toBe(true);
+    expect(ran).toBe(1);
+  });
+  it("the refusal memory is scoped to the cap: a raised cap is checked at once", async () => {
+    const id = await lead(1);
+    for (let i = 0; i < 3; i++) await recordKitEventCapped(DB, id, "view", T0, 3);
+    expect(await recordKitEventCapped(DB, id, "view", T0, 3)).toBe(false);
+    expect(await recordKitEventCapped(DB, id, "view", T0, 4)).toBe(true);
+    expect(await recordKitEventCapped(DB, id, "view", T0, 4)).toBe(false);
+    expect(await count()).toBe(4);
   });
   it("floors the time to the hour like recordKitEvent", async () => {
     const id = await lead(1);
