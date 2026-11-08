@@ -273,6 +273,7 @@ def test_headers_file_has_a_strict_csp(tmp_path: Path) -> None:
         "base-uri 'none'",
         "form-action 'self'",
         "object-src 'none'",
+        "require-trusted-types-for 'script'",
         "X-Content-Type-Options: nosniff",
         "Referrer-Policy: strict-origin-when-cross-origin",
         "Permissions-Policy: camera=(), microphone=(), geolocation=(), payment=()",
@@ -296,8 +297,14 @@ def test_csp_is_exactly_the_specified_policy() -> None:
         "default-src 'self'; script-src 'self'; style-src 'self'; "
         "img-src 'self' https:; font-src 'self'; connect-src 'self'; "
         "object-src 'none'; frame-ancestors 'none'; base-uri 'none'; "
-        "form-action 'self'"
+        "form-action 'self'; require-trusted-types-for 'script'"
     )
+
+
+def test_trusted_types_is_dropped_only_where_a_third_party_script_loads() -> None:
+    tt = "require-trusted-types-for 'script'"
+    assert tt in build_csp({"frame-src": ["https://player.example.com"]})
+    assert tt not in build_csp({"script-src": ["https://challenges.example.com"]})
 
 
 def test_build_csp_accepts_a_narrow_https_extra() -> None:
