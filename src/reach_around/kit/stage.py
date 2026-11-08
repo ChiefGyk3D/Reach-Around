@@ -205,7 +205,10 @@ def _static_file(site_dir: Path, url_path: str, suffixes: tuple[str, ...]) -> Pa
     if match is None or ".." in match.group(1).split("/"):
         raise StageError("a page asset link is not a plain /static/ path")
     if not match.group(1).lower().endswith(suffixes):
-        raise StageError("a page asset link has a type that is not allowed")
+        raise StageError(
+            "a page asset link has a file type that is not allowed; stylesheets "
+            "must be .css and images must be .png, .jpg or .jpeg"
+        )
     current = site_dir / "static"
     for part in match.group(1).split("/"):
         current = current / part
@@ -328,7 +331,10 @@ def embed_image(site_dir: Path, src: str) -> str:
         return "data:image/png;base64," + base64.b64encode(_scrub_png(data)).decode()
     if data.startswith(b"\xff\xd8") and path.suffix.lower() in (".jpg", ".jpeg"):
         return "data:image/jpeg;base64," + base64.b64encode(_scrub_jpeg(data)).decode()
-    raise StageError("an image is not a PNG or JPEG that matches its name")
+    raise StageError(
+        "an image must be a PNG (.png) or JPEG (.jpg, .jpeg) whose contents "
+        "match its name; GIF, WebP and SVG are not accepted"
+    )
 
 
 # --- the page ------------------------------------------------------------------

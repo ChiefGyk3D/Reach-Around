@@ -288,6 +288,15 @@ What it guarantees, and how each part is checked:
   PDF) is owner-only, under `XDG_RUNTIME_DIR` when that is private, and is
   removed on every exit, including `SIGTERM`.
 
+Defaults the owner may change (set by delegated decision, 2026-11-07):
+
+- Isolation stays `off` with the browser sandbox on. `--isolation netns` is the
+  stronger option for the network (its own namespace) but turns the sandbox off.
+- Local images must be PNG or JPEG; GIF, WebP and SVG are refused, and the error
+  names the accepted formats.
+- The creation date defaults to the day the gated page was built.
+- The site's web fonts are not embedded (follow-up, not built).
+
 Not covered: text drawn as an image, which no text search can see; the content of
 a local image beyond dropping its metadata; a browser bug (the sealed page, the
 policy and the optional namespace are the defenses); and what you do with the
