@@ -261,3 +261,98 @@ def test_the_after_doppler_guard_bites() -> None:
     ]
     clean = [hostile[0], {"name": "w", "run": "npx --no-install wrangler deploy"}]
     assert violations_after_doppler(clean) == []
+
+
+# ---- 4. the deployed LINK_IDS is derived from the build (issue #319) --------
+
+
+def run_derive(
+    tmp_path: Path, links: Any, link_ids: str | None
+) -> tuple[subprocess.CompletedProcess[str], str]:
+    """Run the script with a GITHUB_OUTPUT file; return the result and its text."""
+    manifest = tmp_path / "site-out.manifest.json"
+    manifest.write_text(json.dumps({"links": links}), encoding="utf-8")
+    out = tmp_path / "github-output"
+    out.write_text("", encoding="utf-8")
+    env = {"GITHUB_OUTPUT": str(out), "PATH": "/usr/bin:/bin"}
+    if link_ids is not None:
+        env["LINK_IDS"] = link_ids
+    done = subprocess.run(  # noqa: S603 - fixed argv, synthetic input
+        [sys.executable, "-I", str(SCRIPT), str(manifest)],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=60,
+    )
+    return done, out.read_text(encoding="utf-8")
+
+
+def test_the_derived_list_is_the_builds_ids_sorted_and_compact(tmp_path: Path) -> None:
+    built: dict[str, Any] = {
+        "example-stand": {},
+        "home-page": {},
+        "example-cable": {},
+        "example-mic": {},
+    }
+    done, out = run_derive(tmp_path, built, None)
+    assert done.returncode == 0, done.stdout + done.stderr
+    assert done.stdout == ""  # an unset LINK_IDS is not a mismatch
+    assert (
+        out == 'link_ids=["example-cable","example-mic","example-stand","home-page"]\n'
+    )
+    assert json.loads(out.removeprefix("link_ids=")) == sorted(built)
+
+
+def test_a_stale_link_ids_variable_warns_but_the_build_wins(tmp_path: Path) -> None:
+    built: dict[str, Any] = {"example-mic": {}, "example-cable": {}}
+    done, out = run_derive(tmp_path, built, '["example-mic","gone"]')
+    assert done.returncode == 0
+    assert done.stdout.splitlines() == [
+        "::warning::link id example-cable is in the build but not in LINK_IDS",
+        "::warning::LINK_IDS lists gone, which is not in the build",
+    ]
+    assert out == 'link_ids=["example-cable","example-mic"]\n'
+
+
+def test_the_worker_cap_is_honored_and_in_step_with_the_worker(tmp_path: Path) -> None:
+    source = (ROOT / "worker" / "src" / "sites.ts").read_text(encoding="utf-8")
+    match = re.search(r"export const MAX_LINK_IDS = (\d+);", source)
+    assert match, "the Worker cap was not found; the guard would be vacuous"
+    cap = int(match.group(1))
+    at_cap: dict[str, Any] = {f"link-{n}": {} for n in range(cap)}
+    done, out = run_derive(tmp_path, at_cap, None)
+    assert done.returncode == 0, done.stdout
+    assert len(json.loads(out.removeprefix("link_ids="))) == cap
+    over: dict[str, Any] = {f"link-{n}": {} for n in range(cap + 1)}
+    done, out = run_derive(tmp_path, over, None)
+    assert done.returncode == 1
+    assert done.stdout.startswith("::error::") and out == ""
+
+
+@pytest.mark.parametrize("links", [{}, []])
+def test_an_empty_build_derives_nothing_and_fails(tmp_path: Path, links: Any) -> None:
+    done, out = run_derive(tmp_path, links, None)
+    assert done.returncode == 1
+    assert done.stdout.startswith("::error::") and out == ""
+
+
+@pytest.mark.parametrize("hostile", HOSTILE)
+def test_a_hostile_id_never_reaches_the_derived_output(
+    tmp_path: Path, hostile: str
+) -> None:
+    done, out = run_derive(tmp_path, {"alpha": {}, hostile: {}}, None)
+    assert done.returncode == 1
+    assert out == ""  # fail closed: nothing derived, nothing exported
+
+
+def test_the_deploy_config_gets_the_derived_list_not_the_variable() -> None:
+    manifest = next(
+        s for s in steps("deploy") if s.get("name") == "Verify the build manifest"
+    )
+    assert manifest.get("id") == "manifest"
+    write = next(s for s in steps("deploy") if s.get("name") == "Write deploy config")
+    assert write["env"]["LINK_IDS"] == "${{ steps.manifest.outputs.link_ids }}"
+    # and the variable is no longer required (it is a comparison only)
+    check = next(s for s in steps("deploy") if s.get("name") == "Check configuration")
+    assert "SITE_HOST; do" in check["run"] and "SITE_HOST LINK_IDS" not in check["run"]

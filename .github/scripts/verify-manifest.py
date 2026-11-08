@@ -1,10 +1,18 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
-"""Compare the build manifest's link ids with the LINK_IDS variable.
+"""Derive the Worker's LINK_IDS from the build manifest, and compare it.
 
-Run as `python3 -I .github/scripts/verify-manifest.py <manifest>` with LINK_IDS
-in the environment (a JSON array). A difference is a workflow warning: clicks on
-unlisted ids are rejected by the Worker anyway. Any id outside the closed
+Run as `python3 -I .github/scripts/verify-manifest.py <manifest>`. The ids in
+the manifest are the list the deploy gives the Worker: they are written to
+$GITHUB_OUTPUT as `link_ids=<compact JSON array>` (sorted), so the allow-list
+cannot fall behind the build. The list must hold 1 to MAX_LINK_IDS ids (the
+Worker's own cap in worker/src/sites.ts, which would drop the rest silently,
+so more is an error here). The Worker still rejects every id that is not on
+the list, so the click route never accepts an arbitrary id.
+
+LINK_IDS in the environment (a JSON array) is optional. When set, a
+difference from the build is a workflow warning only (the deployed list is the
+build's). Any id outside the closed
 grammar ^[a-z0-9-]{1,40}$ (the grammar the workflow enforces for LINK_IDS) is
 refused with a fixed error that never echoes the value, so a hostile name in a
 downloaded artifact cannot forge a workflow command (a newline plus `::...`).
@@ -18,6 +26,7 @@ import re
 import sys
 
 ID = re.compile(r"[a-z0-9-]{1,40}")  # used with fullmatch: `$` would allow "\n"
+MAX_LINK_IDS = 200  # worker/src/sites.ts MAX_LINK_IDS (a test keeps them equal)
 
 
 def escape(text: str) -> str:
@@ -47,17 +56,32 @@ def main(argv: list[str]) -> int:
     try:
         with open(argv[1], encoding="utf-8") as handle:
             built = valid_ids(json.load(handle)["links"])
-        allowed = valid_ids(json.loads(os.environ["LINK_IDS"]))
+        raw = os.environ.get("LINK_IDS", "")
+        allowed = valid_ids(json.loads(raw)) if raw else set()
     except (OSError, ValueError, KeyError, TypeError):
         return refuse("the manifest or LINK_IDS could not be read")
     if built is None:
         return refuse("the manifest holds a link id outside the allowed grammar")
     if allowed is None:
         return refuse("LINK_IDS holds a value outside the allowed grammar")
-    for name in sorted(built - allowed):
-        print(f"::warning::link id {escape(name)} is in the build but not in LINK_IDS")
-    for name in sorted(allowed - built):
-        print(f"::warning::LINK_IDS lists {escape(name)}, which is not in the build")
+    if not built:
+        return refuse("the manifest holds no link ids")
+    if len(built) > MAX_LINK_IDS:
+        return refuse(f"the manifest holds more than {MAX_LINK_IDS} link ids")
+    if raw:
+        for name in sorted(built - allowed):
+            print(
+                f"::warning::link id {escape(name)} is in the build but not in LINK_IDS"
+            )
+        for name in sorted(allowed - built):
+            print(
+                f"::warning::LINK_IDS lists {escape(name)}, which is not in the build"
+            )
+    out = os.environ.get("GITHUB_OUTPUT")
+    if out:
+        derived = json.dumps(sorted(built), separators=(",", ":"))
+        with open(out, "a", encoding="utf-8") as handle:
+            handle.write(f"link_ids={derived}\n")
     return 0
 
 

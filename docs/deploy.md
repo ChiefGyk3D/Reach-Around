@@ -92,7 +92,7 @@ your own; never commit real account ids, database ids or tokens.
    | `D1_DATABASE_ID` | the D1 UUID | written into a throwaway deploy config |
    | `RATELIMIT_NAMESPACE_ID` | `1001` | rate limiter namespace |
    | `SITE_HOST` | `links-test.example.invalid` | the only origin the Worker accepts clicks from |
-   | `LINK_IDS` | `["example-one","example-two"]` | link ids the Worker accepts; copy them from the build manifest (`site-out.manifest.json`, beside the site folder, never inside it) |
+   | `LINK_IDS` | optional: `["example-one","example-two"]` | not needed. The deploy gives the Worker the link ids of the build itself (read from `site-out.manifest.json`). If you set it, a difference from the build is a warning only and the build wins |
 
    Optional variable, set it to count clicks:
 
@@ -412,8 +412,31 @@ and Matrix hosts come from the config (see Egress control).
 **Skipping the counts.** A manual run has a `skip_counts` input (default off).
 Turn it on to redeploy with the `numbers.json` committed beside the config when
 a count source or the Doppler step is down. The wheels and counts jobs do not
-run, and the build does not wait for them. A scheduled run never skips, and a
-failed counts job stops the deployment unless the run asked to skip it.
+run, and the build does not wait for them. A scheduled run never skips.
+
+**When the counts job fails.** A failed `counts` job does not stop the build or
+the deployment (issue #317). The build downloads nothing from that job and
+uses the `numbers.json` committed beside the config, the same path as
+`skip_counts`, so the page keeps the last committed numbers. A failed `wheels`
+job, a run on any ref other than `main`, and a cancelled run still do not
+build. When a scheduled run's `counts` or `wheels` job fails, the `notify` job
+opens one issue titled "Counts refresh failed", or adds a comment to the open
+one with the run link, the date and the wheels and counts results; it never
+opens a duplicate. It waits for those two jobs only, not for the build or the
+deploy: the deploy job can sit pending on the `test` environment's reviewer, and
+the alert must not wait for that approval. If listing the open issues fails, the
+step fails (red) instead of opening a possible duplicate. A failed `wheels` job also skips the build and the deploy (the site
+stays as last deployed), which is why it raises the same alert. The job can only write issues and
+the text holds only values GitHub provides. A manual run raises no issue: the
+person who started it sees the red job. Close the issue once the counts work
+again; the next failure opens a new one.
+
+A 404 from the Doppler step in the counts job means the counts identity cannot
+see the project and config named in `DOPPLER_COUNTS_PROJECT` and
+`DOPPLER_COUNTS_CONFIG`: the identity needs access to that project and that
+config. Fix the access in Doppler, or unset the three variables to fall back to
+GitHub Actions secrets. Until then the site builds with the committed numbers
+and the alert issue stays open.
 
 **When the counts stop.** GitHub disables scheduled workflows after 60 days
 without repository activity, and nothing alerts you. The run also warns when a
@@ -595,7 +618,7 @@ How it differs from the CI workflow:
 | Values | environment variables in GitHub | a private settings file |
 | Token | `test` environment secret | Doppler, injected per command |
 | Approval | environment reviewer | typed confirmation |
-| Link ids | copied by hand into `LINK_IDS` | read from the build manifest |
+| Link ids | read from the build manifest (a `LINK_IDS` variable is optional, a comparison only) | read from the build manifest |
 | Config file | `wrangler.deploy.toml` in `worker/` on the runner | in the private directory |
 | Provenance | Actions run log | none beyond your shell history |
 
@@ -758,9 +781,10 @@ jobs:
    the same way and uploaded as `site-assets-inventory`; the job also compares
    it with the last deployment's to build the optional purge list.
 2. **`deploy`** waits for `build`, then waits for a reviewer to approve the
-   `test` environment. It downloads both artifacts (a script, `.github/scripts/verify-manifest.py`, warns when `LINK_IDS`
-   and `site-out.manifest.json` disagree, and refuses any link id outside
-   `[a-z0-9-]{1,40}` without echoing it), installs the Worker
+   `test` environment. It downloads both artifacts (a script, `.github/scripts/verify-manifest.py`, derives the Worker's `LINK_IDS`
+   from `site-out.manifest.json`, refuses any link id outside
+   `[a-z0-9-]{1,40}` (without echoing it), an empty list, or more ids than the
+   Worker's cap of 200, and only warns when the optional `LINK_IDS` variable differs), installs the Worker
    dependencies with `npm ci --ignore-scripts`, applies D1 migrations,
    deploys the Worker, publishes the site with `wrangler pages deploy`, and,
    when `CLOUDFLARE_PURGE_TOKEN` and `ZONE_ID` are set, purges the changed paths
