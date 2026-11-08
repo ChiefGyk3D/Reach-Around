@@ -7,6 +7,7 @@ import {
   LIVE_CRON,
   STALE_AFTER_SECONDS,
   handleLive,
+  parseTwitchStreams,
   isLiveKilled,
   runLivePoller,
   validKickHandle,
@@ -466,5 +467,139 @@ describe("cron dispatch", () => {
     expect(prepared.length).toBeGreaterThan(0);
     expect(fetchSpy).not.toHaveBeenCalled();
     expect(kv.puts).toEqual([]);
+  });
+});
+
+describe("redirects", () => {
+  // A fake platform that answers the API/token URL with a redirect to a second host. Like a
+  // real fetch, it only follows when redirect is not "error"; the second host records what it gets.
+  function redirecting(status: number, matchPrefix: string) {
+    const second: Array<{ body: unknown; auth: unknown }> = [];
+    const inits: Array<RequestInit | undefined> = [];
+    const net = fakeFetch({ twitchLive: true, kickLive: true });
+    const f = async (u: string, i?: RequestInit): Promise<Response> => {
+      inits.push(i);
+      if (u.startsWith(matchPrefix)) {
+        if (i?.redirect === "error") throw new TypeError("redirect refused");
+        second.push({ body: i?.body, auth: (i?.headers as Record<string, string> | undefined)?.Authorization });
+        return Response.json({ access_token: "x", expires_in: 3600, data: [] });
+      }
+      return net.f(u, i);
+    };
+    return { f, second, inits };
+  }
+
+  it.each([307, 308])("a %i from a token endpoint never forwards the secret and is unknown", async (status) => {
+    for (const prefix of ["https://id.twitch.tv/", "https://id.kick.com/"]) {
+      const kv = new FakeKV();
+      const r = redirecting(status, prefix);
+      await runLivePoller(baseEnv(kv), NOW, { fetch: r.f });
+      expect(r.second).toEqual([]);
+      const s = JSON.parse(kv.store.get("live:state")!);
+      const hit = prefix.includes("twitch") ? s.twitch : s.kick;
+      expect(hit.live).toBeNull();
+    }
+  });
+
+  it.each([307, 308])("a %i from an API endpoint never forwards the bearer and is unknown", async (status) => {
+    for (const prefix of ["https://api.twitch.tv/", "https://api.kick.com/"]) {
+      const kv = new FakeKV();
+      const r = redirecting(status, prefix);
+      await runLivePoller(baseEnv(kv), NOW, { fetch: r.f });
+      expect(r.second).toEqual([]);
+      const s = JSON.parse(kv.store.get("live:state")!);
+      expect((prefix.includes("twitch") ? s.twitch : s.kick).live).toBeNull();
+    }
+  });
+
+  it("every outbound call asks for redirect: error", async () => {
+    const kv = new FakeKV();
+    const r = redirecting(307, "https://never.test/");
+    await runLivePoller(baseEnv(kv), NOW, { fetch: r.f });
+    expect(r.inits.length).toBe(4);
+    for (const i of r.inits) expect(i?.redirect).toBe("error");
+  });
+});
+
+describe("bounded upstream body", () => {
+  const LIMIT = 65536;
+  function streamOf(chunks: Uint8Array[], onCancel?: () => void, headers: Record<string, string> = {}) {
+    let i = 0;
+    const body = new ReadableStream<Uint8Array>({
+      pull(c) {
+        if (i < chunks.length) c.enqueue(chunks[i++]);
+        else c.close();
+      },
+      cancel() {
+        onCancel?.();
+      },
+    });
+    return new Response(body, { status: 200, headers });
+  }
+  function twitchJsonPadded(totalBytes: number): Uint8Array {
+    const head = '{"data":[],"pad":"';
+    const tail = '"}';
+    const pad = "a".repeat(totalBytes - head.length - tail.length);
+    return new TextEncoder().encode(head + pad + tail);
+  }
+  async function pollWithTwitchBody(make: () => Response) {
+    const kv = new FakeKV();
+    const net = fakeFetch({ twitchLive: false, kickLive: false });
+    const f = async (u: string, i?: RequestInit) =>
+      u.startsWith("https://api.twitch.tv/helix") ? make() : net.f(u, i);
+    await runLivePoller(baseEnv(kv), NOW, { fetch: f });
+    return JSON.parse(kv.store.get("live:state")!).twitch.live as boolean | null;
+  }
+
+  it("a body exactly at the limit is accepted, one byte over is unknown", async () => {
+    expect(await pollWithTwitchBody(() => streamOf([twitchJsonPadded(LIMIT)]))).toBe(false);
+    expect(await pollWithTwitchBody(() => streamOf([twitchJsonPadded(LIMIT + 1)]))).toBeNull();
+  });
+
+  it("a huge chunked body is cancelled early and never fully read", async () => {
+    let cancelled = false;
+    let pulled = 0;
+    const chunk = new Uint8Array(16384).fill(97);
+    const body = new ReadableStream<Uint8Array>({
+      pull(c) {
+        pulled++;
+        c.enqueue(chunk); // endless
+      },
+      cancel() {
+        cancelled = true;
+      },
+    });
+    expect(await pollWithTwitchBody(() => new Response(body))).toBeNull();
+    expect(cancelled).toBe(true);
+    expect(pulled).toBeLessThan(20);
+  });
+
+  it("a dishonest or missing Content-Length does not change the outcome", async () => {
+    const big = twitchJsonPadded(LIMIT + 10);
+    const ok = new TextEncoder().encode('{"data":[]}');
+    expect(await pollWithTwitchBody(() => streamOf([big], undefined, { "Content-Length": "10" }))).toBeNull();
+    expect(await pollWithTwitchBody(() => streamOf([big]))).toBeNull();
+    expect(await pollWithTwitchBody(() => streamOf([ok], undefined, { "Content-Length": "999999" }))).toBe(false);
+  });
+
+  it("a body-less response is unknown", async () => {
+    expect(await pollWithTwitchBody(() => new Response(null, { status: 200 }))).toBeNull();
+  });
+});
+
+describe("malformed platform records", () => {
+  it.each([[[null]], [[1]], [["x"]], [[{}]], [[[]]], [[{ type: 5 }]]])("twitch data %j is unknown", (data) => {
+    expect(parseTwitchStreams({ data })).toBeNull();
+  });
+
+  it("twitch: only an empty array is offline; valid records parse", () => {
+    expect(parseTwitchStreams({ data: [] })).toEqual({ live: false, since: null });
+    expect(parseTwitchStreams({ data: [{ type: "live", started_at: "2027-01-01T10:00:00Z" }] })).toEqual({
+      live: true,
+      since: Date.UTC(2027, 0, 1, 10) / 1000,
+    });
+    expect(parseTwitchStreams({ data: [{ type: "" }] })).toEqual({ live: false, since: null });
+    expect(parseTwitchStreams({ data: "x" })).toBeNull();
+    expect(parseTwitchStreams(null)).toBeNull();
   });
 });

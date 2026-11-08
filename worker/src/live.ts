@@ -66,7 +66,7 @@ const TOKEN_KEY = { twitch: "live:token:twitch", kick: "live:token:kick" } as co
 /** Refresh a cached app token this long before it expires. */
 const TOKEN_MARGIN_SECONDS = 300;
 const FETCH_TIMEOUT_MS = 5000;
-const MAX_BODY_CHARS = 65536;
+const MAX_BODY_BYTES = 65536;
 
 // Same patterns as src/reach_around/config/blocks.py, anchored.
 const TWITCH_HANDLE = /^[A-Za-z0-9_]{1,25}$/;
@@ -263,10 +263,38 @@ export interface PollDeps {
   fetch?: FetchFn;
 }
 
+/**
+ * Read the upstream body incrementally and parse only a bounded buffer. The
+ * Content-Length header is never trusted: bytes are counted as they arrive and
+ * the stream is cancelled the moment the cap is passed.
+ */
 async function readLimited(res: Response): Promise<unknown> {
-  const text = await res.text();
-  if (text.length > MAX_BODY_CHARS) throw new Error("body too large");
-  return JSON.parse(text);
+  const stream = res.body;
+  if (stream === null) throw new Error("no body");
+  const reader = stream.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > MAX_BODY_BYTES) {
+        await reader.cancel().catch(() => undefined);
+        throw new Error("body too large");
+      }
+      chunks.push(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  const buf = new Uint8Array(total);
+  let at = 0;
+  for (const c of chunks) {
+    buf.set(c, at);
+    at += c.byteLength;
+  }
+  return JSON.parse(new TextDecoder().decode(buf));
 }
 
 function toSeconds(iso: unknown): number | null {
@@ -313,8 +341,10 @@ export function twitchStreamsRequest(
 export function parseTwitchStreams(json: unknown): Platform | null {
   const root = asObject(json);
   if (!root || !Array.isArray(root.data)) return null;
-  const first = root.data.length > 0 ? asObject(root.data[0]) : null;
-  if (first === null) return { live: false, since: null };
+  // Only an EMPTY array means offline; an invalid first record is unknown.
+  if (root.data.length === 0) return { live: false, since: null };
+  const first = asObject(root.data[0]);
+  if (first === null || typeof first.type !== "string") return null;
   if (first.type !== "live") return { live: false, since: null };
   return { live: true, since: toSeconds(first.started_at) };
 }
@@ -381,7 +411,7 @@ async function appToken(
   } catch {
     // Unreadable cache entry: fetch a fresh token.
   }
-  const res = await f(request.url, { ...request.init, signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
+  const res = await f(request.url, { ...request.init, redirect: "error", signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
   if (!res.ok) return null;
   const json = asObject(await readLimited(res));
   const token = json?.access_token;
@@ -404,7 +434,7 @@ async function pollTwitch(env: LiveEnv, kv: LiveKV, nowSeconds: number, f: Fetch
     const token = await appToken(kv, "twitch", twitchTokenRequest(id, secret), nowSeconds, f);
     if (token === null) return UNKNOWN;
     const req = twitchStreamsRequest(handle, id, token);
-    const res = await f(req.url, { ...req.init, signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
+    const res = await f(req.url, { ...req.init, redirect: "error", signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
     if (res.status === 401) {
       await kv.delete(TOKEN_KEY.twitch);
       return UNKNOWN;
@@ -425,7 +455,7 @@ async function pollKick(env: LiveEnv, kv: LiveKV, nowSeconds: number, f: FetchFn
     const token = await appToken(kv, "kick", kickTokenRequest(id, secret), nowSeconds, f);
     if (token === null) return UNKNOWN;
     const req = kickChannelRequest(handle, token);
-    const res = await f(req.url, { ...req.init, signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
+    const res = await f(req.url, { ...req.init, redirect: "error", signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
     if (res.status === 401) {
       await kv.delete(TOKEN_KEY.kick);
       return UNKNOWN;
