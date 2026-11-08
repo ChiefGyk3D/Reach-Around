@@ -419,9 +419,11 @@ the deployment (issue #317). The build downloads nothing from that job and
 uses the `numbers.json` committed beside the config, the same path as
 `skip_counts`, so the page keeps the last committed numbers. A failed `wheels`
 job, a run on any ref other than `main`, and a cancelled run still do not
-build. When a scheduled run's `counts` job fails, the `notify` job opens one
-issue titled "Counts refresh failed", or adds a comment to the open one with the
-run link and date; it never opens a duplicate. The job can only write issues and
+build. When a scheduled run's `counts` or `wheels` job fails, the `notify` job
+opens one issue titled "Counts refresh failed", or adds a comment to the open
+one with the run link, the date and each job's result; it never opens a
+duplicate. A failed `wheels` job also skips the build and the deploy (the site
+stays as last deployed), which is why it raises the same alert. The job can only write issues and
 the text holds only values GitHub provides. A manual run raises no issue: the
 person who started it sees the red job. Close the issue once the counts work
 again; the next failure opens a new one.

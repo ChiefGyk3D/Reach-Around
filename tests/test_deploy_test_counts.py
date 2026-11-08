@@ -199,31 +199,52 @@ def test_the_build_uses_counts_artifacts_only_after_a_counts_success() -> None:
 
 NOTIFY_IF = (
     "${{ !cancelled() && github.event_name == 'schedule'"
-    " && github.ref == 'refs/heads/main' && needs.counts.result == 'failure' }}"
+    " && github.ref == 'refs/heads/main'"
+    " && (needs.wheels.result == 'failure' || needs.counts.result == 'failure') }}"
 )
 
 
-def notify_runs(cond: str, *, event: str, counts: str, cancelled: bool = False) -> bool:
+def notify_runs(
+    cond: str,
+    *,
+    event: str,
+    counts: str = "success",
+    wheels: str = "success",
+    cancelled: bool = False,
+) -> bool:
     expr = cond.strip().removeprefix("${{").removesuffix("}}").strip()
-    expr = expr.replace("&&", " and ")
+    expr = expr.replace("&&", " and ").replace("||", " or ")
     expr = expr.replace("!cancelled()", str(not cancelled))
     expr = expr.replace("github.event_name", repr(event))
     expr = expr.replace("github.ref", repr("refs/heads/main"))
     expr = expr.replace("needs.counts.result", repr(counts))
+    expr = expr.replace("needs.wheels.result", repr(wheels))
     return _truth(ast.parse(expr, mode="eval").body)
 
 
-def test_one_alert_job_runs_only_for_a_failed_scheduled_counts_job() -> None:
+def test_one_alert_job_runs_only_for_a_failed_scheduled_refresh() -> None:
     notify = jobs()["notify"]
     assert " ".join(notify["if"].split()) == " ".join(NOTIFY_IF.split())
     cond = notify["if"]
+    # A counts failure alerts.
     assert notify_runs(cond, event="schedule", counts="failure")
+    # A wheels failure (counts is then skipped) alerts too.
+    assert notify_runs(cond, event="schedule", wheels="failure", counts="skipped")
+    # Manual runs never alert.
     assert not notify_runs(cond, event="workflow_dispatch", counts="failure")
-    assert not notify_runs(cond, event="schedule", counts="success")
+    assert not notify_runs(
+        cond, event="workflow_dispatch", wheels="failure", counts="skipped"
+    )
+    # Success, skips and cancellations never alert.
+    assert not notify_runs(cond, event="schedule")
     assert not notify_runs(cond, event="schedule", counts="skipped")
     assert not notify_runs(cond, event="schedule", counts="cancelled")
+    assert not notify_runs(cond, event="schedule", wheels="cancelled", counts="skipped")
     assert not notify_runs(cond, event="schedule", counts="failure", cancelled=True)
-    assert set(notify["needs"]) == {"counts", "build", "deploy"}
+    assert not notify_runs(
+        cond, event="schedule", wheels="failure", counts="skipped", cancelled=True
+    )
+    assert set(notify["needs"]) == {"wheels", "counts", "build", "deploy"}
 
 
 def test_the_alert_job_can_only_write_issues_and_holds_no_secret() -> None:

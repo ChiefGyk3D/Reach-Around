@@ -699,19 +699,23 @@ jobs:
           SITE_HOST: ${{ vars.SITE_HOST }}
         run: bash .github/scripts/purge-cache.sh purge-in/site-purge-list.txt
 
-  # One visible alert when a SCHEDULED counts refresh failed (issue #317). The
-  # build and deploy carry on with the committed numbers, so nothing else would
-  # show it. It opens one issue, or adds a comment to the open one, and never
+  # One visible alert when a SCHEDULED counts refresh failed, in the counts or
+  # the wheels job (issue #317). After a counts failure the build and deploy
+  # carry on with the committed numbers, and after a wheels failure they are
+  # skipped, so nothing else would show it. It opens one issue, or adds a comment to the open one, and never
   # opens a duplicate. The body holds only values GitHub provides (run URL,
   # date, job results): no secret, no job log, no text from a count source.
   # The job can only write issues. It runs on schedule only; a manual run
   # shows its own red job to the person who started it.
   notify:
     name: Alert on a failed counts refresh
-    needs: [counts, build, deploy]
+    needs: [wheels, counts, build, deploy]
+    # A failed wheels job skips counts, build and deploy, so it needs its own
+    # trigger: otherwise a scheduled run would stop with no alert at all.
     if: >-
       ${{ !cancelled() && github.event_name == 'schedule'
-      && github.ref == 'refs/heads/main' && needs.counts.result == 'failure' }}
+      && github.ref == 'refs/heads/main'
+      && (needs.wheels.result == 'failure' || needs.counts.result == 'failure') }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -727,6 +731,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          WHEELS_RESULT: ${{ needs.wheels.result }}
           COUNTS_RESULT: ${{ needs.counts.result }}
           BUILD_RESULT: ${{ needs.build.result }}
           DEPLOY_RESULT: ${{ needs.deploy.result }}
@@ -736,7 +741,7 @@ jobs:
           export PATH
           title="Counts refresh failed"
           when="$(date -u +%Y-%m-%d)"
-          body="The scheduled follower-counts refresh failed on ${when}. The site kept the last committed numbers. Run: ${RUN_URL} (counts: ${COUNTS_RESULT}, build: ${BUILD_RESULT}, deploy: ${DEPLOY_RESULT}). See docs/deploy.md, Daily follower counts."
+          body="The scheduled follower-counts refresh failed on ${when}. Run: ${RUN_URL} (wheels: ${WHEELS_RESULT}, counts: ${COUNTS_RESULT}, build: ${BUILD_RESULT}, deploy: ${DEPLOY_RESULT}). A failed counts job leaves the site on the last committed numbers; a failed wheels job also skips the build and deploy. See docs/deploy.md, Daily follower counts."
           # The issues list also returns pull requests; skip those.
           existing="$(/usr/bin/gh api --paginate "repos/${GH_REPO}/issues?state=open&per_page=100" \
             --jq ".[] | select(.pull_request | not) | select(.title == \"${title}\") | .number" | head -n 1)"
