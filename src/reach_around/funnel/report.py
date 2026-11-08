@@ -144,6 +144,62 @@ def _section(
     }
 
 
+def _joint_click_sources(
+    by_link: Mapping[str, Mapping[str, int]],
+    links_section: Mapping[str, Any],
+    floor: int,
+    top: int,
+    present: bool,
+) -> dict[str, Any]:
+    """Source -> link cells, suppressed jointly with the per-link section.
+
+    The two sections share a population (the clicks), so a cell hidden in one
+    must not be recoverable from the other. A link's whole breakdown is printed
+    or none of it: it is printed only when every one of its cells is at least
+    the floor and the link's own total is a printed row of the links section.
+    A link with any small cell prints its total (or its place in the merged
+    line) there and no breakdown here. Truncation by ``top`` also drops whole
+    links, never single cells.
+    """
+    if not present:
+        return {
+            "state": "not_in_export",
+            "rows": [],
+            "other_below_floor": 0,
+            "more_rows": 0,
+            "links_withheld": 0,
+        }
+    printed = [row["label"] for row in links_section["rows"]]
+    rows: list[dict[str, Any]] = []
+    shown_links = 0
+    more = 0
+    for link in printed:
+        cells = by_link.get(link, {})
+        if not cells or any(n < floor for n in cells.values()):
+            continue
+        if shown_links >= top:
+            more += len(cells)
+            continue
+        shown_links += 1
+        rows += [
+            {"label": f"{src} -> {link}", "views": n}
+            for src, n in sorted(cells.items(), key=lambda kv: (-kv[1], kv[0]))
+        ]
+    printable = {
+        link
+        for link in printed
+        if by_link.get(link) and all(n >= floor for n in by_link[link].values())
+    }
+    withheld = sum(1 for link, cells in by_link.items() if cells) - len(printable)
+    return {
+        "state": "withheld" if by_link and not rows and not more else "ok",
+        "rows": rows,
+        "other_below_floor": 0,
+        "more_rows": more,
+        "links_withheld": withheld,
+    }
+
+
 def _source_label(src_kind: str, src: str) -> str:
     if src_kind == "d":
         return "(direct)"
@@ -255,10 +311,10 @@ def build_report(
         if r["bot_class"] in wanted:
             places[_geo_label(r["country"], r["region"], r["city"], geo)] += r["views"]
     links: dict[str, int] = defaultdict(int)
-    click_sources: dict[str, int] = defaultdict(int)
+    click_sources: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
     for r in click_rows:
         links[r["link_id"]] += 1
-        click_sources[f"{r.get('src') or 'none'} -> {r['link_id']}"] += 1
+        click_sources[r["link_id"]][r.get("src") or "none"] += 1
     kit: dict[str, int] = defaultdict(int)
     for r in kit_rows:
         kit[r["kind"]] += 1
@@ -326,9 +382,7 @@ def build_report(
             **_section(places, floor, top, "view_geo_daily" in export.present),
         },
         "links": _section(links, floor, top, "click_events" in export.present),
-        "click_sources": _section(
-            click_sources, floor, top, "click_events" in export.present
-        ),
+        "click_sources": {},  # joint suppression with "links", filled below
         "bots": {
             "total_views": (_count(total_views, floor) if total_printable else None),
             "classes": [
@@ -349,6 +403,9 @@ def build_report(
             "human_views_seen": bool(human),
         },
     }
+    report["click_sources"] = _joint_click_sources(
+        click_sources, report["links"], floor, top, "click_events" in export.present
+    )
     unsafe = any(
         _suppress(cells, floor).dropped for cells in (pages, sources, places)
     ) or (include_bots and classes.dropped)
@@ -455,6 +512,11 @@ def render_text(report: dict[str, Any]) -> str:
     _table(f"Geography by {geo['level']} (classes: {classes})", geo, lines)
     _table("Link clicks by link", report["links"], lines)
     _table("Link clicks by source -> link", report["click_sources"], lines)
+    if report["click_sources"].get("links_withheld"):
+        lines.append(
+            "  A link's breakdown is shown only when every part is at or above the "
+            "floor; other links show their total above."
+        )
 
     bots = report["bots"]
     lines.append("")
