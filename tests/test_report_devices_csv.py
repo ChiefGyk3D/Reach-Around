@@ -311,3 +311,30 @@ def test_docs_describe_devices_and_csv() -> None:
     for needle in ("--csv", "metadata.csv", "generated_at_utc", "formula", "Devices"):
         assert needle in doc
     assert "does not show browsers" not in doc
+
+
+def test_existing_file_is_tightened_to_0600(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    out_dir = tmp_path / "csv"
+    out_dir.mkdir()
+    old = out_dir / "devices.csv"
+    old.write_text("old")
+    old.chmod(0o644)
+    path = export(tmp_path, GOOD)
+    code, _, _ = run(capsys, "--input", str(path), "--csv", str(out_dir))
+    assert code == 0
+    assert old.stat().st_mode & 0o777 == 0o600
+
+
+def test_symlinked_ancestor_is_refused(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    real = tmp_path / "real"
+    real.mkdir()
+    link = tmp_path / "link"
+    os.symlink(real, link)
+    path = export(tmp_path, GOOD)
+    code, _, _ = run(capsys, "--input", str(path), "--csv", str(link / "sub"))
+    assert code == 2
+    assert list(real.iterdir()) == []

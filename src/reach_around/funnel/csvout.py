@@ -23,7 +23,7 @@ from __future__ import annotations
 import csv
 import io
 import os
-from collections.abc import Callable, Sequence
+from collections.abc import Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -158,32 +158,37 @@ def csv_files(
     return files
 
 
-def write_csv_dir(
-    out_dir: Path,
-    files: dict[str, bytes],
-    *,
-    opener: Callable[..., int] = os.open,
-) -> list[str]:
+def write_csv_dir(out_dir: Path, files: dict[str, bytes]) -> list[str]:
     """Write the files into ``out_dir`` (created owner-only if missing).
 
-    A symlinked directory or file is refused; an existing regular file of the
-    same name is replaced.
+    A symlink anywhere in the path (an ancestor included) is refused, the
+    directory is then opened with ``O_DIRECTORY | O_NOFOLLOW`` and every file
+    is created relative to that descriptor, so a swap after the check cannot
+    redirect a write. A file link is refused and an existing regular file of
+    the same name is replaced and set to mode 0600 (failing closed).
     """
-    if out_dir.is_symlink():
-        raise ValueError("--csv directory must not be a symlink")
-    out_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
-    if not out_dir.is_dir():
-        raise ValueError("--csv path is not a directory")
+    absolute = Path(os.path.abspath(out_dir))
+    for part in (absolute, *absolute.parents):
+        if part.is_symlink():
+            raise ValueError("--csv path must not contain a symlink")
+    absolute.mkdir(mode=0o700, parents=True, exist_ok=True)
+    flags = os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0)
+    dir_fd = os.open(absolute, flags)
     written: list[str] = []
-    for name, data in files.items():
-        fd = opener(
-            out_dir / name,
-            os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0),
-            0o600,
-        )
-        with os.fdopen(fd, "wb") as handle:
-            handle.write(data)
-        written.append(name)
+    try:
+        for name, data in files.items():
+            fd = os.open(
+                name,
+                os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0),
+                0o600,
+                dir_fd=dir_fd,
+            )
+            with os.fdopen(fd, "wb") as handle:
+                os.fchmod(handle.fileno(), 0o600)
+                handle.write(data)
+            written.append(name)
+    finally:
+        os.close(dir_fd)
     return written
 
 
