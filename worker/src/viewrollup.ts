@@ -344,11 +344,38 @@ interface Opts {
   min: number;
   allow: string[];
 }
+/** Never a valid label (labels are [a-z0-9-]), so it matches nothing. */
+const NO_LABEL = "!";
+
+/**
+ * The labels kept as themselves in the aggregates: the utm list (the site's
+ * own, else the global one unless the site declares sources) plus the site's `s` sources. A site that lists
+ * sources therefore folds every other utm label to "other" too.
+ */
+function allowFor(env: RollupEnv, site: Site | undefined): string[] {
+  // Fail closed: the site's config is gone (removed, or SITES unusable), so we
+  // cannot know whether its events were stored under a closed list. Never fall
+  // back to the global list; fold every utm label to "other".
+  if (site === undefined) return [NO_LABEL];
+  // A site that declares sources (even an empty list) never inherits the global list.
+  const utm =
+    site?.utmAllowlist !== undefined
+      ? site.utmAllowlist
+      : site?.sources !== undefined
+        ? []
+        : (utmAllowlist(env.UTM_ALLOWLIST) ?? []);
+  if (site?.sources === undefined) return utm;
+  const all = [...new Set([...utm, ...site.sources])];
+  // A site that lists sources, even an empty list, is closed: an empty filter
+  // would mean "no filter", so use one entry no stored label can equal.
+  return all.length > 0 ? all : [NO_LABEL];
+}
+
 function optsFor(env: RollupEnv, site: Site | undefined): Opts {
   return {
     geo: geoLevel(site?.geo ?? env.GEO_LEVEL),
     min: site?.minCell !== undefined ? site.minCell : minCell(env.MIN_CELL),
-    allow: (site?.utmAllowlist !== undefined ? site.utmAllowlist : utmAllowlist(env.UTM_ALLOWLIST)) ?? [],
+    allow: allowFor(env, site),
   };
 }
 

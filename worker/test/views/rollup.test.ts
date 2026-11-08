@@ -59,7 +59,8 @@ async function insert(list: Raw[]) {
 
 const q = async <T>(sql: string) => (await DB.prepare(sql).all<T>()).results;
 const meta = async () => Object.fromEntries((await q<{ key: string; value: string }>("SELECT * FROM view_meta")).map((m) => [m.key, m.value]));
-const envOf = (over: Record<string, unknown> = {}) => ({ DB, TOP_SOURCES: "1000", MIN_CELL: "1", ...over });
+// The default site is configured through the one-site shorthand: a site with no config is rolled up with every utm label folded to other.
+const envOf = (over: Record<string, unknown> = {}) => ({ DB, SITE_HOST: "links.example.test", TOP_SOURCES: "1000", MIN_CELL: "1", ...over });
 
 /** Small seeded PRNG so a failure is reproducible. */
 function prng(seed: number) {
