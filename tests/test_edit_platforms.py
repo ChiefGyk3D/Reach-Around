@@ -264,7 +264,7 @@ def test_set_field_count_and_as_of(cfg: Path) -> None:
 
 def test_set_field_adds_count_then_as_of_in_order(cfg: Path) -> None:
     set_field(cfg, 2, "count", "99")
-    set_field(cfg, 2, "as_of", "2027-05-06")
+    set_field(cfg, 2, "as_of", "2027-05-06")  # replaces the date written with it
     after = lines(cfg)
     at = after.index("            url: https://example.com/kick\n")
     assert after[at + 1 : at + 3] == [
@@ -286,8 +286,7 @@ def test_set_field_adds_label_between_url_and_count(cfg: Path) -> None:
 def test_set_field_blank_count_removes_the_line_never_writes_zero(
     cfg: Path, blank: object
 ) -> None:
-    set_field(cfg, 1, "as_of", blank)
-    set_field(cfg, 1, "count", blank)
+    set_field(cfg, 1, "count", blank)  # the date goes with it
     text = cfg.read_text(encoding="utf-8")
     assert "3812" not in text and "as_of" not in text
     assert text.count("count:") == 0
@@ -298,16 +297,41 @@ def test_set_field_blank_count_removes_the_line_never_writes_zero(
     assert cfg.read_bytes() == now
 
 
-def test_set_field_blank_count_with_a_date_is_refused(cfg: Path) -> None:
+def test_set_field_blank_as_of_while_a_count_exists_is_refused(cfg: Path) -> None:
     message = refused(
         cfg,
         editing.set_platform_item_field,
         block=BLOCK,
         index=1,
-        field="count",
+        field="as_of",
         value="",
     )
-    assert "clear as_of before count" in message
+    assert "needs an as_of date" in message
+
+
+def test_set_field_count_alone_also_writes_todays_date(cfg: Path) -> None:
+    edit(
+        cfg,
+        editing.set_platform_item_field,
+        block=BLOCK,
+        index=2,
+        field="count",
+        value="99",
+        today=datetime.date(2027, 5, 6),
+    )
+    item = items_of(cfg)[1]
+    assert item["count"] == 99 and item["as_of"] == datetime.date(2027, 5, 6)
+
+
+def test_add_with_a_count_and_no_date_is_refused(cfg: Path) -> None:
+    message = refused(
+        cfg,
+        editing.add_platform_item,
+        block=BLOCK,
+        item=new_item(count=120),
+        position=2,
+    )
+    assert "needs an as_of" in message
 
 
 def test_set_field_as_of_without_a_count_is_refused(cfg: Path) -> None:

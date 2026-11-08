@@ -360,6 +360,7 @@ PlatformKind = Literal[
 CountLabel = Literal["followers", "subscribers", "members"]
 MAX_COUNT = 10**10
 _ISO_DAY = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+_EARLIEST_AS_OF = date(2000, 1, 1)
 
 
 class PlatformItem(_BlockModel):
@@ -400,6 +401,10 @@ class PlatformItem(_BlockModel):
             raise ValueError("name is only used when platform is 'other'")
         if self.as_of is not None and self.count is None:
             raise ValueError("as_of needs a count")
+        if self.count is not None and self.as_of is None:
+            raise ValueError("a typed count needs an as_of date (YYYY-MM-DD)")
+        if self.as_of is not None and self.as_of < _EARLIEST_AS_OF:
+            raise ValueError("as_of must be 2000-01-01 or later")
         return self
 
     @property

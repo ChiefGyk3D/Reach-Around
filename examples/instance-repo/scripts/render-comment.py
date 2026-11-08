@@ -199,6 +199,26 @@ VOCAB: dict[str, tuple[str, str]] = {
         "as_of is set without a count",
         "Add the count line, or delete as_of.",
     ),
+    "count_needs_date": (
+        "a number you type in needs an as_of date",
+        "Add as_of with the day you read the number, like 2027-03-01.",
+    ),
+    "as_of_early": (
+        "the as_of date is before 2000-01-01",
+        "Write the day you read the number, like 2027-03-01.",
+    ),
+    "as_of_future": (
+        "the as_of date for {ident} is more than a day in the future",
+        "Write the day you read the number, like 2027-03-01.",
+    ),
+    "stale_number": (
+        "the number for {ident} is {limit} days old (over 30)",
+        "Read it again and update the count and its as_of date, or remove it.",
+    ),
+    "numbers_invalid": (
+        "the numbers file could not be read or is not valid",
+        "Run reach-around build to see the exact problem, or restore the file.",
+    ),
     "profile_card_empty": (
         "the profile card is empty",
         "Add tags or a button, or delete profile_card.",
@@ -674,7 +694,15 @@ def check_report(raw: Any) -> dict[str, Any]:
     rep = as_dict(
         raw,
         {"valid", "file", "errors", "error_count"},
-        {"tabs", "blocks", "changes", "change_records", "more_changes", "note"},
+        {
+            "tabs",
+            "blocks",
+            "changes",
+            "change_records",
+            "more_changes",
+            "note",
+            "warnings",
+        },
     )
     if not isinstance(rep["valid"], bool) or not is_str(rep["file"], 100):
         raise Invalid("report")
