@@ -5,6 +5,7 @@ handed to the build as data, and the script that does the work."""
 
 from __future__ import annotations
 
+import ast
 import json
 import re
 import stat
@@ -95,16 +96,88 @@ def test_a_manual_run_can_skip_the_counts() -> None:
         assert ref in cond and "!inputs.skip_counts" in cond, name
 
 
-def test_the_build_runs_when_counts_are_skipped_but_never_after_a_failure() -> None:
+def _truth(node: ast.expr) -> bool:
+    """Evaluate a parsed boolean expression made only of and/or/==/constants."""
+    if isinstance(node, ast.Constant):
+        return bool(node.value)
+    if isinstance(node, ast.BoolOp):
+        parts = [_truth(v) for v in node.values]
+        return all(parts) if isinstance(node.op, ast.And) else any(parts)
+    if isinstance(node, ast.Compare) and len(node.ops) == 1:
+        left, right = node.left, node.comparators[0]
+        assert isinstance(left, ast.Constant) and isinstance(right, ast.Constant)
+        same = left.value == right.value
+        if isinstance(node.ops[0], ast.Eq):
+            return same
+        assert isinstance(node.ops[0], ast.NotEq)
+        return not same
+    raise AssertionError(f"unsupported expression: {ast.dump(node)}")
+
+
+BUILD_IF = (
+    "${{ !cancelled() && github.ref == 'refs/heads/main'"
+    " && (inputs.skip_counts || (needs.wheels.result == 'success'"
+    " && (needs.counts.result == 'success' || needs.counts.result == 'failure'))) }}"
+)
+USE_COUNTS = "!inputs.skip_counts && needs.counts.result == 'success'"
+
+
+def build_runs(
+    cond: str,
+    *,
+    cancelled: bool = False,
+    ref: str = "refs/heads/main",
+    skip: bool = False,
+    wheels: str = "success",
+    counts: str = "success",
+) -> bool:
+    """Evaluate the build's `if` for one combination (the expression is small
+    and fixed, so it is rewritten into Python rather than parsed)."""
+    expr = cond.strip().removeprefix("${{").removesuffix("}}").strip()
+    expr = expr.replace("&&", " and ").replace("||", " or ")
+    expr = expr.replace("!cancelled()", str(not cancelled))
+    expr = expr.replace("!inputs.skip_counts", str(not skip))
+    expr = expr.replace("inputs.skip_counts", str(skip))
+    expr = expr.replace("github.ref", repr(ref))
+    expr = expr.replace("needs.wheels.result", repr(wheels))
+    expr = expr.replace("needs.counts.result", repr(counts))
+    assert not re.search(r"[A-Za-z_]+\(", expr), expr  # no unevaluated calls
+    return _truth(ast.parse(expr, mode="eval").body)
+
+
+def test_the_build_condition_is_exactly_the_reviewed_one() -> None:
+    assert " ".join(jobs()["build"]["if"].split()) == " ".join(BUILD_IF.split())
+    assert jobs()["build"]["needs"] == ["wheels", "counts"]
+
+
+def test_the_build_runs_after_a_counts_success_failure_or_skip() -> None:
+    cond = jobs()["build"]["if"]
+    assert build_runs(cond)
+    # Owner decision (#317): a failed counts job does not block the deploy.
+    assert build_runs(cond, counts="failure")
+    # Skipped on purpose: wheels and counts are both skipped.
+    assert build_runs(cond, skip=True, wheels="skipped", counts="skipped")
+
+
+def test_the_build_never_runs_when_a_guard_fails() -> None:
+    cond = jobs()["build"]["if"]
+    assert not build_runs(cond, cancelled=True)
+    assert not build_runs(cond, cancelled=True, counts="failure")
+    assert not build_runs(cond, ref="refs/heads/feature")
+    assert not build_runs(cond, ref="refs/heads/feature", counts="failure")
+    assert not build_runs(cond, ref="refs/heads/feature", skip=True)
+    assert not build_runs(cond, wheels="failure", counts="skipped")
+    assert not build_runs(cond, wheels="cancelled", counts="skipped")
+    assert not build_runs(cond, counts="cancelled")
+    assert not build_runs(cond, counts="skipped")
+    # The guard bites: loosening it to a bare failure-tolerant form lets
+    # a failed wheels job through, which the checks above would catch.
+    loose = "${{ !cancelled() && github.ref == 'refs/heads/main' }}"
+    assert build_runs(loose, wheels="failure", counts="skipped")
+
+
+def test_the_build_uses_counts_artifacts_only_after_a_counts_success() -> None:
     build = jobs()["build"]
-    cond = build["if"]
-    assert "!cancelled()" in cond  # else a skipped dependency skips the build
-    assert "github.ref == 'refs/heads/main'" in cond
-    # Skipped on purpose, or the counts job itself succeeded. A bare
-    # "skipped" result would also let a failed wheels job through.
-    assert "inputs.skip_counts" in cond
-    assert "needs.counts.result == 'success'" in cond
-    assert "'skipped'" not in cond and "always()" not in cond
     steps = build["steps"]
     download = next(
         s
@@ -112,13 +185,67 @@ def test_the_build_runs_when_counts_are_skipped_but_never_after_a_failure() -> N
         if str(s.get("uses", "")).startswith("actions/download-artifact@")
         and s["with"]["name"] == "counts-numbers"
     )
-    assert "inputs.skip_counts" in download["if"]
-    run = next(s for s in steps if s.get("name") == "Build the site")["run"]
+    assert download["if"] == "${{ " + USE_COUNTS + " }}"
+    step = next(s for s in steps if s.get("name") == "Build the site")
+    assert step["env"]["USE_COUNTS"] == "${{ " + USE_COUNTS + " && 'true' || 'false' }}"
+    run = step["run"]
     # Both forms exist: with the counts file, and without (the committed file).
     assert run.count("reach-around build") == 2
     assert "--numbers counts-in/numbers.json" in run
+    assert 'if [ "$USE_COUNTS" = "true" ]' in run
     # The deploy waits for the build only; a skipped counts job is not in its path.
     assert jobs()["deploy"]["needs"] == "build"
+
+
+NOTIFY_IF = (
+    "${{ !cancelled() && github.event_name == 'schedule'"
+    " && github.ref == 'refs/heads/main' && needs.counts.result == 'failure' }}"
+)
+
+
+def notify_runs(cond: str, *, event: str, counts: str, cancelled: bool = False) -> bool:
+    expr = cond.strip().removeprefix("${{").removesuffix("}}").strip()
+    expr = expr.replace("&&", " and ")
+    expr = expr.replace("!cancelled()", str(not cancelled))
+    expr = expr.replace("github.event_name", repr(event))
+    expr = expr.replace("github.ref", repr("refs/heads/main"))
+    expr = expr.replace("needs.counts.result", repr(counts))
+    return _truth(ast.parse(expr, mode="eval").body)
+
+
+def test_one_alert_job_runs_only_for_a_failed_scheduled_counts_job() -> None:
+    notify = jobs()["notify"]
+    assert " ".join(notify["if"].split()) == " ".join(NOTIFY_IF.split())
+    cond = notify["if"]
+    assert notify_runs(cond, event="schedule", counts="failure")
+    assert not notify_runs(cond, event="workflow_dispatch", counts="failure")
+    assert not notify_runs(cond, event="schedule", counts="success")
+    assert not notify_runs(cond, event="schedule", counts="skipped")
+    assert not notify_runs(cond, event="schedule", counts="cancelled")
+    assert not notify_runs(cond, event="schedule", counts="failure", cancelled=True)
+    assert set(notify["needs"]) == {"counts", "build", "deploy"}
+
+
+def test_the_alert_job_can_only_write_issues_and_holds_no_secret() -> None:
+    notify = jobs()["notify"]
+    assert notify["permissions"] == {"issues": "write"}
+    assert "id-token" not in yaml.safe_dump(notify)
+    assert "environment" not in notify and "env" not in notify
+    text = yaml.safe_dump(notify)
+    assert "secrets." not in text
+    assert "counts-numbers" not in text
+    for s in notify["steps"]:
+        if "uses" in s:
+            assert re.fullmatch(r"[\w./-]+@[0-9a-f]{40}", s["uses"]), s["uses"]
+        # Values reach the shell only through env, never spliced into run.
+        assert "${{" not in s.get("run", ""), s.get("name")
+    step = next(s for s in notify["steps"] if "run" in s)
+    assert "github.token" in str(step["env"].get("GH_TOKEN"))
+    assert "Counts refresh failed" in step["run"]
+    assert "gh api" in step["run"]
+    assert "pull_request" in step["run"]  # the issues list also holds PRs
+    # One issue: it looks for an open one first, then comments or creates.
+    assert step["run"].index("issues?state=open") < step["run"].index("-X POST")
 
 
 def test_the_keys_reach_exactly_one_step_through_env() -> None:
