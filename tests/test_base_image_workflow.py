@@ -64,11 +64,11 @@ def test_guard_bites() -> None:
     good = "    uses: ChiefGyk3D/git-your-ship-together/.github/workflows/x.yml@" + (
         "a" * 40
     )
-    assert violations({"a": good + " # v1.30.0\n"}) == []
-    assert violations({"a": good.replace("a" * 40, "main") + " # v1.30.0\n"})
+    assert violations({"a": good + " # v1.31.0\n"}) == []
+    assert violations({"a": good.replace("a" * 40, "main") + " # v1.31.0\n"})
     assert violations({"a": good + "\n"})
     assert violations(
-        {"a": good + " # v1.30.0\n", "b": good.replace("a", "b") + " # v1.30.0\n"}
+        {"a": good + " # v1.31.0\n", "b": good.replace("a", "b") + " # v1.31.0\n"}
     )
     assert violations({"a": "name: nothing\n"})
 
