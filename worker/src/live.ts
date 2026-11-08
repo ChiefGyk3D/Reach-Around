@@ -129,12 +129,12 @@ function body(asOf: number | null, kick: Platform, twitch: Platform): string {
   });
 }
 
-function jsonResponse(text: string): Response {
+function jsonResponse(text: string, maxAge: number = SERVE_TTL_SECONDS): Response {
   return new Response(text, {
     status: 200,
     headers: {
       "Content-Type": "application/json",
-      "Cache-Control": `public, max-age=${SERVE_TTL_SECONDS}`,
+      "Cache-Control": `public, max-age=${maxAge}`,
       "X-Content-Type-Options": "nosniff",
     },
   });
@@ -188,6 +188,15 @@ export function bodyFromState(state: StoredState | null, nowSeconds: number): st
   return body(state.as_of, state.kick, state.twitch);
 }
 
+function cachedAsOf(text: string): number | null {
+  try {
+    const a = (JSON.parse(text) as { as_of?: unknown }).as_of;
+    return typeof a === "number" && Number.isFinite(a) ? a : null;
+  } catch {
+    return null;
+  }
+}
+
 export interface LiveDeps {
   cache?: Pick<Cache, "match" | "put">;
   now?: () => number;
@@ -210,8 +219,18 @@ export async function handleLive(
     const key = new Request(url.toString(), { method: "GET" });
     const cache = deps.cache ?? caches.default;
 
+    const nowSeconds = Math.floor((deps.now ? deps.now() : Date.now()) / 1000);
     const hit = await cache.match(key);
-    if (hit) return hit;
+    if (hit) {
+      // A cached copy never outlives the freshness cutoff: re-check the as_of
+      // it carries before serving it.
+      const text = await hit.clone().text();
+      const asOf = cachedAsOf(text);
+      if (asOf !== null && nowSeconds - asOf > STALE_AFTER_SECONDS) {
+        return jsonResponse(body(asOf, UNKNOWN, UNKNOWN));
+      }
+      return hit;
+    }
 
     let state: StoredState | null = null;
     try {
@@ -219,8 +238,12 @@ export async function handleLive(
     } catch {
       state = null;
     }
-    const nowSeconds = Math.floor((deps.now ? deps.now() : Date.now()) / 1000);
-    const res = jsonResponse(bodyFromState(state, nowSeconds));
+    const fresh = state !== null && nowSeconds - state.as_of <= STALE_AFTER_SECONDS;
+    // A fresh state may be cached only until its cutoff.
+    const maxAge = fresh
+      ? Math.min(SERVE_TTL_SECONDS, Math.max(0, state!.as_of + STALE_AFTER_SECONDS - nowSeconds))
+      : SERVE_TTL_SECONDS;
+    const res = jsonResponse(bodyFromState(state, nowSeconds), maxAge);
     try {
       await cache.put(key, res.clone());
     } catch {

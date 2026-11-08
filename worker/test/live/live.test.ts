@@ -203,6 +203,40 @@ describe("GET /e/live", () => {
   });
 });
 
+describe("freshness cutoff and the edge cache", () => {
+  const CUT = STALE_AFTER_SECONDS * 1000;
+  async function seeded() {
+    const kv = new FakeKV();
+    await runLivePoller(baseEnv(kv), NOW, { fetch: fakeFetch({ twitchLive: true, kickLive: true }).f });
+    return kv;
+  }
+  const unknownBody = {
+    v: 1, as_of: NOW_S, ttl: 30, kick: { live: null, since: null }, twitch: { live: null, since: null },
+  };
+
+  it("caps max-age at the time left before the cutoff", async () => {
+    const kv = await seeded();
+    const at = (ms: number) => handleLive(get(), baseEnv(kv), { cache: new FakeCache(), now: () => NOW + ms });
+    expect((await at(0)).headers.get("Cache-Control")).toBe("public, max-age=30");
+    expect((await at(CUT - 10_000)).headers.get("Cache-Control")).toBe("public, max-age=10");
+    expect((await at(CUT - 1000)).headers.get("Cache-Control")).toBe("public, max-age=1");
+    expect((await at(CUT)).headers.get("Cache-Control")).toBe("public, max-age=0");
+  });
+
+  it("a copy cached at cutoff minus 1 s is live at the cutoff and unknown after it", async () => {
+    const kv = await seeded();
+    const cache = new FakeCache();
+    const first = await handleLive(get(), baseEnv(kv), { cache, now: () => NOW + CUT - 1000 });
+    expect(((await first.json()) as { kick: { live: boolean } }).kick.live).toBe(true);
+    const atCut = await handleLive(get(), baseEnv(kv), { cache, now: () => NOW + CUT });
+    expect(((await atCut.json()) as { kick: { live: boolean } }).kick.live).toBe(true);
+    const after = await handleLive(get(), baseEnv(kv), { cache, now: () => NOW + CUT + 1000 });
+    expect(await after.json()).toEqual(unknownBody);
+    // Even though the stored state is untouched, the hit never served live.
+    expect(cache.m.size).toBe(1);
+  });
+});
+
 describe("kill switch", () => {
   it.each([["1", true], ["true", true], ["TRUE", true], ["on", true], ["yes", true], ["0", false], ["false", false], ["off", false], ["no", false], [undefined, false], ["", false]])(
     "parses %s",
