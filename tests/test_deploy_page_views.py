@@ -216,7 +216,7 @@ def _run_build_selector(
     """Run only the config-selection part of the build step with stubbed tools."""
     run = _build_script()
     start = run.index("CONFIG=examples/instance/site.yaml")
-    end = run.index('if [ "$SKIP_COUNTS"')
+    end = run.index('if [ "$USE_COUNTS"')
     inst = tmp_path / "examples" / "instance"
     inst.mkdir(parents=True, exist_ok=True)
     (inst / "site.yaml").write_text("version: 1\n", encoding="utf-8")
@@ -271,7 +271,7 @@ def test_build_refuses_when_the_example_already_has_analytics(tmp_path: Path) ->
     )
     script = (
         "set -eu\n"
-        + run[run.index("CONFIG=examples") : run.index('if [ "$SKIP_COUNTS"')]
+        + run[run.index("CONFIG=examples") : run.index('if [ "$USE_COUNTS"')]
     )
     done = subprocess.run(  # noqa: S603 - fixed argv and sample values
         ["/bin/bash", "-c", script],
@@ -306,13 +306,18 @@ def test_budget_and_page_id_steps_are_conditional_tokenless_and_ordered() -> Non
     for var in (
         "SITE_HOST",
         "PAGE_IDS",
-        "LINK_IDS",
         "VIEWS_PER_HOUR",
         "BOT_VIEWS_PER_HOUR",
         "ACCOUNT_VIEWS_PER_HOUR",
         "ACCOUNT_BOT_VIEWS_PER_HOUR",
     ):
         assert budget_env[var] == "${{ vars." + var + " }}"
+    # the link ids are the ones derived from the manifest, as in the deploy config
+    assert budget_env["LINK_IDS"] == "${{ steps.manifest.outputs.link_ids }}"
+    names = [s.get("name") for s in _workflow()["jobs"]["deploy"]["steps"]]
+    assert names.index("Verify the build manifest") < names.index(
+        "Check the page-view write budget"
+    )
     # the budget step builds the Worker's own function, never a copy of the limits
     run = _step("deploy", "Check the page-view write budget")["run"]
     assert "scripts/check-budget.ts" in run

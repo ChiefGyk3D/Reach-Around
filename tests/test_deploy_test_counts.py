@@ -5,6 +5,7 @@ handed to the build as data, and the script that does the work."""
 
 from __future__ import annotations
 
+import ast
 import json
 import re
 import stat
@@ -95,16 +96,88 @@ def test_a_manual_run_can_skip_the_counts() -> None:
         assert ref in cond and "!inputs.skip_counts" in cond, name
 
 
-def test_the_build_runs_when_counts_are_skipped_but_never_after_a_failure() -> None:
+def _truth(node: ast.expr) -> bool:
+    """Evaluate a parsed boolean expression made only of and/or/==/constants."""
+    if isinstance(node, ast.Constant):
+        return bool(node.value)
+    if isinstance(node, ast.BoolOp):
+        parts = [_truth(v) for v in node.values]
+        return all(parts) if isinstance(node.op, ast.And) else any(parts)
+    if isinstance(node, ast.Compare) and len(node.ops) == 1:
+        left, right = node.left, node.comparators[0]
+        assert isinstance(left, ast.Constant) and isinstance(right, ast.Constant)
+        same = left.value == right.value
+        if isinstance(node.ops[0], ast.Eq):
+            return same
+        assert isinstance(node.ops[0], ast.NotEq)
+        return not same
+    raise AssertionError(f"unsupported expression: {ast.dump(node)}")
+
+
+BUILD_IF = (
+    "${{ !cancelled() && github.ref == 'refs/heads/main'"
+    " && (inputs.skip_counts || (needs.wheels.result == 'success'"
+    " && (needs.counts.result == 'success' || needs.counts.result == 'failure'))) }}"
+)
+USE_COUNTS = "!inputs.skip_counts && needs.counts.result == 'success'"
+
+
+def build_runs(
+    cond: str,
+    *,
+    cancelled: bool = False,
+    ref: str = "refs/heads/main",
+    skip: bool = False,
+    wheels: str = "success",
+    counts: str = "success",
+) -> bool:
+    """Evaluate the build's `if` for one combination (the expression is small
+    and fixed, so it is rewritten into Python rather than parsed)."""
+    expr = cond.strip().removeprefix("${{").removesuffix("}}").strip()
+    expr = expr.replace("&&", " and ").replace("||", " or ")
+    expr = expr.replace("!cancelled()", str(not cancelled))
+    expr = expr.replace("!inputs.skip_counts", str(not skip))
+    expr = expr.replace("inputs.skip_counts", str(skip))
+    expr = expr.replace("github.ref", repr(ref))
+    expr = expr.replace("needs.wheels.result", repr(wheels))
+    expr = expr.replace("needs.counts.result", repr(counts))
+    assert not re.search(r"[A-Za-z_]+\(", expr), expr  # no unevaluated calls
+    return _truth(ast.parse(expr, mode="eval").body)
+
+
+def test_the_build_condition_is_exactly_the_reviewed_one() -> None:
+    assert " ".join(jobs()["build"]["if"].split()) == " ".join(BUILD_IF.split())
+    assert jobs()["build"]["needs"] == ["wheels", "counts"]
+
+
+def test_the_build_runs_after_a_counts_success_failure_or_skip() -> None:
+    cond = jobs()["build"]["if"]
+    assert build_runs(cond)
+    # Owner decision (#317): a failed counts job does not block the deploy.
+    assert build_runs(cond, counts="failure")
+    # Skipped on purpose: wheels and counts are both skipped.
+    assert build_runs(cond, skip=True, wheels="skipped", counts="skipped")
+
+
+def test_the_build_never_runs_when_a_guard_fails() -> None:
+    cond = jobs()["build"]["if"]
+    assert not build_runs(cond, cancelled=True)
+    assert not build_runs(cond, cancelled=True, counts="failure")
+    assert not build_runs(cond, ref="refs/heads/feature")
+    assert not build_runs(cond, ref="refs/heads/feature", counts="failure")
+    assert not build_runs(cond, ref="refs/heads/feature", skip=True)
+    assert not build_runs(cond, wheels="failure", counts="skipped")
+    assert not build_runs(cond, wheels="cancelled", counts="skipped")
+    assert not build_runs(cond, counts="cancelled")
+    assert not build_runs(cond, counts="skipped")
+    # The guard bites: loosening it to a bare failure-tolerant form lets
+    # a failed wheels job through, which the checks above would catch.
+    loose = "${{ !cancelled() && github.ref == 'refs/heads/main' }}"
+    assert build_runs(loose, wheels="failure", counts="skipped")
+
+
+def test_the_build_uses_counts_artifacts_only_after_a_counts_success() -> None:
     build = jobs()["build"]
-    cond = build["if"]
-    assert "!cancelled()" in cond  # else a skipped dependency skips the build
-    assert "github.ref == 'refs/heads/main'" in cond
-    # Skipped on purpose, or the counts job itself succeeded. A bare
-    # "skipped" result would also let a failed wheels job through.
-    assert "inputs.skip_counts" in cond
-    assert "needs.counts.result == 'success'" in cond
-    assert "'skipped'" not in cond and "always()" not in cond
     steps = build["steps"]
     download = next(
         s
@@ -112,13 +185,206 @@ def test_the_build_runs_when_counts_are_skipped_but_never_after_a_failure() -> N
         if str(s.get("uses", "")).startswith("actions/download-artifact@")
         and s["with"]["name"] == "counts-numbers"
     )
-    assert "inputs.skip_counts" in download["if"]
-    run = next(s for s in steps if s.get("name") == "Build the site")["run"]
+    assert download["if"] == "${{ " + USE_COUNTS + " }}"
+    step = next(s for s in steps if s.get("name") == "Build the site")
+    assert step["env"]["USE_COUNTS"] == "${{ " + USE_COUNTS + " && 'true' || 'false' }}"
+    run = step["run"]
     # Both forms exist: with the counts file, and without (the committed file).
     assert run.count("reach-around build") == 2
     assert "--numbers counts-in/numbers.json" in run
+    assert 'if [ "$USE_COUNTS" = "true" ]' in run
     # The deploy waits for the build only; a skipped counts job is not in its path.
     assert jobs()["deploy"]["needs"] == "build"
+
+
+NOTIFY_IF = (
+    "${{ !cancelled() && github.event_name == 'schedule'"
+    " && github.ref == 'refs/heads/main'"
+    " && (needs.wheels.result == 'failure' || needs.counts.result == 'failure') }}"
+)
+
+
+def notify_runs(
+    cond: str,
+    *,
+    event: str,
+    counts: str = "success",
+    wheels: str = "success",
+    cancelled: bool = False,
+) -> bool:
+    expr = cond.strip().removeprefix("${{").removesuffix("}}").strip()
+    expr = expr.replace("&&", " and ").replace("||", " or ")
+    expr = expr.replace("!cancelled()", str(not cancelled))
+    expr = expr.replace("github.event_name", repr(event))
+    expr = expr.replace("github.ref", repr("refs/heads/main"))
+    expr = expr.replace("needs.counts.result", repr(counts))
+    expr = expr.replace("needs.wheels.result", repr(wheels))
+    return _truth(ast.parse(expr, mode="eval").body)
+
+
+def test_one_alert_job_runs_only_for_a_failed_scheduled_refresh() -> None:
+    notify = jobs()["notify"]
+    assert " ".join(notify["if"].split()) == " ".join(NOTIFY_IF.split())
+    cond = notify["if"]
+    # A counts failure alerts.
+    assert notify_runs(cond, event="schedule", counts="failure")
+    # A wheels failure (counts is then skipped) alerts too.
+    assert notify_runs(cond, event="schedule", wheels="failure", counts="skipped")
+    # Manual runs never alert.
+    assert not notify_runs(cond, event="workflow_dispatch", counts="failure")
+    assert not notify_runs(
+        cond, event="workflow_dispatch", wheels="failure", counts="skipped"
+    )
+    # Success, skips and cancellations never alert.
+    assert not notify_runs(cond, event="schedule")
+    assert not notify_runs(cond, event="schedule", counts="skipped")
+    assert not notify_runs(cond, event="schedule", counts="cancelled")
+    assert not notify_runs(cond, event="schedule", wheels="cancelled", counts="skipped")
+    assert not notify_runs(cond, event="schedule", counts="failure", cancelled=True)
+    assert not notify_runs(
+        cond, event="schedule", wheels="failure", counts="skipped", cancelled=True
+    )
+    # Exactly wheels and counts. The deploy job waits for the approval-gated
+    # `test` environment; with it in needs, a scheduled run pending approval
+    # would hold the alert back forever. The condition decides on wheels and
+    # counts alone, so a deploy still waiting does not matter.
+    assert notify["needs"] == ["wheels", "counts"]
+    assert "needs.deploy" not in cond and "needs.build" not in cond
+    assert notify_runs(cond, event="schedule", counts="failure")  # deploy pending
+
+
+def test_the_alert_job_can_only_write_issues_and_holds_no_secret() -> None:
+    notify = jobs()["notify"]
+    assert notify["permissions"] == {"issues": "write"}
+    assert "id-token" not in yaml.safe_dump(notify)
+    assert "environment" not in notify and "env" not in notify
+    text = yaml.safe_dump(notify)
+    assert "secrets." not in text
+    assert "counts-numbers" not in text
+    for s in notify["steps"]:
+        if "uses" in s:
+            assert re.fullmatch(r"[\w./-]+@[0-9a-f]{40}", s["uses"]), s["uses"]
+        # Values reach the shell only through env, never spliced into run.
+        assert "${{" not in s.get("run", ""), s.get("name")
+    step = next(s for s in notify["steps"] if "run" in s)
+    assert "github.token" in str(step["env"].get("GH_TOKEN"))
+    assert "Counts refresh failed" in step["run"]
+    assert "gh api" in step["run"]
+    assert "pull_request" in step["run"]  # the issues list also holds PRs
+    # One issue: it looks for an open one first, then comments or creates.
+    assert step["run"].index("issues?state=open") < step["run"].index("-X POST")
+    # Only what is known when the job starts goes into the body.
+    assert set(step["env"]) == {
+        "GH_TOKEN",
+        "GH_REPO",
+        "RUN_URL",
+        "WHEELS_RESULT",
+        "COUNTS_RESULT",
+    }
+
+
+def alert_script() -> str:
+    notify = jobs()["notify"]
+    step = next(s for s in notify["steps"] if "run" in s)
+    run: str = step["run"]
+    return run
+
+
+def test_the_alert_step_fails_on_a_failed_listing_and_never_pipes_to_head() -> None:
+    run = alert_script()
+    lines = [ln.strip() for ln in run.splitlines()]
+    assert "set -euo pipefail" in lines
+    # Capture the whole listing into a variable, then select from it. A pipe
+    # into head (or any early-closing reader) is what masked a failed gh.
+    assert 'listing="$(' in run
+    assert not re.search(r"\|\s*head\b", run)
+    assert "sed -n 1p" in run
+    assert run.index('listing="$(') < run.index('existing="$(')
+
+
+def run_alert(tmp_path: Path, script: str, list_exit: int, list_out: str) -> list[str]:
+    """Run the alert step's script with a stub `gh`; return the calls it made."""
+    log = tmp_path / "calls.log"
+    stub = tmp_path / "gh"
+    stub.write_text(
+        "#!/bin/bash\n"
+        f'echo "$*" >> "{log}"\n'
+        'case "$*" in\n'
+        f'  *"issues?state=open"*) printf "%s" "{list_out}"; exit {list_exit};;\n'
+        "esac\n"
+        "exit 0\n",
+        encoding="utf-8",
+    )
+    stub.chmod(0o755)
+    # The workflow calls /usr/bin/gh by absolute path; point it at the stub.
+    patched = script.replace("/usr/bin/gh", str(stub))
+    assert str(stub) in patched
+    env = {
+        "GH_TOKEN": "not-a-token",
+        "GH_REPO": "owner/repo",
+        "RUN_URL": "https://example.invalid/run/1",
+        "WHEELS_RESULT": "success",
+        "COUNTS_RESULT": "failure",
+    }
+    result = subprocess.run(  # noqa: S603 - fixed argv, synthetic input
+        ["/bin/bash", "-c", patched],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    calls = log.read_text(encoding="utf-8").splitlines() if log.exists() else []
+    (tmp_path / "rc").write_text(str(result.returncode), encoding="utf-8")
+    return calls
+
+
+def alert_rc(tmp_path: Path) -> int:
+    return int((tmp_path / "rc").read_text(encoding="utf-8"))
+
+
+def test_a_failed_issue_listing_fails_the_step_and_creates_nothing(
+    tmp_path: Path,
+) -> None:
+    calls = run_alert(tmp_path, alert_script(), 1, "")
+    assert alert_rc(tmp_path) != 0
+    assert len(calls) == 1 and "issues?state=open" in calls[0]
+    assert not any("-X POST" in c for c in calls)
+
+
+def test_the_alert_step_creates_once_or_comments_on_the_open_issue(
+    tmp_path: Path,
+) -> None:
+    fresh = tmp_path / "fresh"
+    fresh.mkdir()
+    calls = run_alert(fresh, alert_script(), 0, "")
+    assert alert_rc(fresh) == 0
+    posts = [c for c in calls if "-X POST" in c]
+    assert len(posts) == 1 and posts[0].split()[3] == "repos/owner/repo/issues"
+    assert "title=Counts refresh failed" in posts[0]
+    known = tmp_path / "known"
+    known.mkdir()
+    calls = run_alert(known, alert_script(), 0, "42\n57\n")
+    assert alert_rc(known) == 0
+    posts = [c for c in calls if "-X POST" in c]
+    assert len(posts) == 1 and "issues/42/comments" in posts[0]
+    assert "title=" not in posts[0]
+
+
+def test_the_failed_listing_check_bites_without_pipefail(tmp_path: Path) -> None:
+    # The old shape (a pipe into head, no pipefail) swallows the failure and
+    # goes on to create an issue: the behavior test above would catch that.
+    script = alert_script()
+    head, rest = script.split('listing="$(', 1)
+    tail = rest[rest.index('if [ -n "$existing" ]') :]
+    old = (
+        head.replace("set -euo pipefail", "set -eu")
+        + 'existing="$(/usr/bin/gh api --paginate '
+        + '"repos/${GH_REPO}/issues?state=open&per_page=100" | head -n 1)"\n'
+        + tail
+    )
+    assert "set -euo pipefail" not in old and "| head -n 1" in old
+    calls = run_alert(tmp_path, old, 1, "")
+    assert any("-X POST" in c for c in calls)
 
 
 def test_the_keys_reach_exactly_one_step_through_env() -> None:
