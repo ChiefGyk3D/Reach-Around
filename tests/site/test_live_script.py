@@ -141,6 +141,17 @@ def test_the_source_never_uses(banned: str) -> None:
     assert banned not in source()
 
 
+def test_the_body_is_read_incrementally_and_never_buffered_whole() -> None:
+    text = source()
+    assert ".getReader()" in text
+    assert ".cancel()" in text
+    assert ".text()" not in text
+    assert ".json()" not in text
+    assert "arrayBuffer" not in text
+    assert "blob()" not in text
+    assert not re.search(r"content-length", text, re.IGNORECASE)
+
+
 def test_exactly_one_fetch_and_it_is_the_same_origin_status_route() -> None:
     text = source()
     assert text.count("fetch(") == 1

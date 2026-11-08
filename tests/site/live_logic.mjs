@@ -174,3 +174,70 @@ test("the platform table is two entries, frozen", () => {
   assert.equal(live.PLATFORMS.length, 2);
   assert.equal(Object.isFrozen(live.PLATFORMS), true);
 });
+
+// ---- the bounded body read --------------------------------------------------
+
+const enc = new TextEncoder();
+
+// A fake response whose body is a reader over the given chunks; it records what
+// the script did (reads made, cancel called) and never trusts any header.
+function fakeResponse(chunks, opts = {}) {
+  const state = { reads: 0, cancelled: false };
+  const reader = {
+    read() {
+      state.reads += 1;
+      if (opts.failAt !== undefined && state.reads > opts.failAt) {
+        return Promise.reject(new Error("stream error"));
+      }
+      const next = chunks.shift();
+      return Promise.resolve(next === undefined ? { done: true } : { done: false, value: next });
+    },
+    cancel() {
+      state.cancelled = true;
+      return Promise.resolve();
+    },
+  };
+  return { response: { body: { getReader: () => reader }, headers: { get: () => "5" } }, state };
+}
+
+test("a small body is read whole", async () => {
+  const { response } = fakeResponse([enc.encode('{"a":'), enc.encode("1}")]);
+  assert.equal(await live.readBounded(response), '{"a":1}');
+});
+
+test("a body of exactly the limit is accepted, one byte more is not", async () => {
+  assert.equal(live.MAX_BODY_BYTES, 2048);
+  const ok = fakeResponse([new Uint8Array(2048).fill(32)]);
+  assert.equal((await live.readBounded(ok.response)).length, 2048);
+  assert.equal(ok.state.cancelled, false);
+  const over = fakeResponse([new Uint8Array(2048).fill(32), new Uint8Array(1).fill(32)]);
+  assert.equal(await live.readBounded(over.response), null);
+  assert.equal(over.state.cancelled, true);
+});
+
+test("an over-limit stream is cancelled and no further chunk is read", async () => {
+  const chunks = [];
+  for (let i = 0; i < 1000; i++) chunks.push(new Uint8Array(1024).fill(32));
+  const { response, state } = fakeResponse(chunks);
+  assert.equal(await live.readBounded(response), null);
+  assert.equal(state.cancelled, true);
+  assert.ok(state.reads <= 4, `read ${state.reads} chunks`);
+});
+
+test("the Content-Length header is never trusted", async () => {
+  const { response } = fakeResponse([new Uint8Array(5000).fill(32)]);
+  assert.equal(response.headers.get("content-length"), "5");
+  assert.equal(await live.readBounded(response), null);
+});
+
+test("an unreadable body is degraded", async () => {
+  assert.equal(await live.readBounded({ body: null }), null);
+  assert.equal(await live.readBounded({}), null);
+  assert.equal(await live.readBounded(null), null);
+  const failing = fakeResponse([enc.encode("{")], { failAt: 1 });
+  assert.equal(await live.readBounded(failing.response), null);
+  const bad = fakeResponse([new Uint8Array([0xff, 0xfe])]);
+  assert.equal(await live.readBounded(bad.response), null);
+  const odd = fakeResponse(["text, not bytes"]);
+  assert.equal(await live.readBounded(odd.response), null);
+});

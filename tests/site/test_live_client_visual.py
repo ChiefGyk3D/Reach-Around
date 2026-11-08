@@ -41,9 +41,34 @@ HANG: Reply = (0, "")  # never answered: the request hangs until the script give
 SMALL = (320, 640)
 
 
+PASS: Reply = (-1, "")  # not stubbed: the local test server answers /e/live itself
+
+
 class _Quiet(SimpleHTTPRequestHandler):
+    """Static files, plus /e/live from ``STREAM["fn"]`` when a test sets one."""
+
+    protocol_version = "HTTP/1.1"  # chunked bodies need it
+
     def log_message(self, format: str, *args: object) -> None:
         return
+
+    def do_GET(self) -> None:
+        fn = STREAM.get("fn")
+        if self.path == "/e/live" and fn is not None:
+            try:
+                fn(self)
+            except (BrokenPipeError, ConnectionResetError):
+                STREAM["broken"] = True
+            return
+        super().do_GET()
+
+
+class _Server(ThreadingHTTPServer):
+    daemon_threads = True
+    block_on_close = False
+
+
+STREAM: dict[str, Any] = {}
 
 
 def _config() -> SiteConfig:
@@ -91,7 +116,7 @@ def base_url(tmp_path_factory: pytest.TempPathFactory) -> Iterator[str]:
     out = tmp_path_factory.mktemp("liveclient") / "out"
     build_site(_config(), out, today=TODAY)
     handler = functools.partial(_Quiet, directory=str(out))
-    server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    server = _Server(("127.0.0.1", 0), handler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
@@ -179,6 +204,9 @@ def open_page(
             hits.append(route.request.url)
             answer = reply() if callable(reply) else reply
             if answer == HANG:
+                return
+            if answer == PASS:
+                route.continue_()
                 return
             if answer is None:
                 route.abort()
@@ -665,4 +693,130 @@ def test_a_non_live_page_makes_no_player_request_ever(
     site = open_page(browser, base_url, DESKTOP, (200, doc(False, False)))
     site.page.wait_for_timeout(300)
     assert site.foreign == []
+    site.page.context.close()
+
+
+# --- the bounded body read (a real streaming server, no stub) ---------------------
+
+
+@pytest.fixture
+def stream() -> Iterator[dict[str, Any]]:
+    STREAM.clear()
+    yield STREAM
+    STREAM.clear()
+
+
+def _chunked_head(handler: SimpleHTTPRequestHandler, length: int | None) -> None:
+    handler.send_response(200)
+    handler.send_header("Content-Type", "application/json")
+    if length is None:
+        handler.send_header("Transfer-Encoding", "chunked")
+    else:
+        handler.send_header("Content-Length", str(length))
+    handler.end_headers()
+
+
+def _chunk(handler: SimpleHTTPRequestHandler, data: bytes) -> None:
+    handler.wfile.write(f"{len(data):x}\r\n".encode() + data + b"\r\n")
+    handler.wfile.flush()
+
+
+def test_a_huge_chunked_body_is_cut_off_and_degraded_quickly(
+    browser: Browser, base_url: str, stream: dict[str, Any]
+) -> None:
+    """No Content-Length, an endless stream: the read stops at the limit."""
+    sent = {"bytes": 0}
+
+    def serve(handler: SimpleHTTPRequestHandler) -> None:
+        _chunked_head(handler, None)
+        first = doc(True, True).encode()
+        _chunk(handler, first)
+        sent["bytes"] += len(first)
+        deadline = time.time() + 20
+        while time.time() < deadline:
+            _chunk(handler, b" " * 1024)
+            sent["bytes"] += 1024
+            time.sleep(0.01)
+
+    stream["fn"] = serve
+    site = open_page(browser, base_url, DESKTOP, PASS, wait=False)
+    # well before the 5 s timeout: only a bounded read can finish this fast
+    site.page.wait_for_function(
+        "Number(document.documentElement.dataset.liveChecks || 0) >= 1",
+        timeout=3000,
+    )
+    assert _panels(site.page)["degraded"] and not _panels(site.page)["live"]
+    assert not _badge(site.page)
+    deadline = time.time() + 3
+    while not stream.get("broken") and time.time() < deadline:
+        time.sleep(0.05)
+    assert stream.get("broken"), "the script cancelled the read"
+    assert sent["bytes"] < 64 * 1024, sent
+    assert site.foreign == []
+    site.page.context.close()
+
+
+def test_a_dishonest_small_content_length_with_a_big_body_is_degraded(
+    browser: Browser, base_url: str, stream: dict[str, Any]
+) -> None:
+    def serve(handler: SimpleHTTPRequestHandler) -> None:
+        body = doc(True, True).encode() + b" " * 200_000
+        handler.send_response(200)
+        handler.send_header("Content-Type", "application/json")
+        handler.send_header("Content-Length", "100")
+        handler.end_headers()
+        handler.wfile.write(body)
+        handler.close_connection = True
+
+    stream["fn"] = serve
+    site = open_page(browser, base_url, DESKTOP, PASS)
+    assert _panels(site.page)["degraded"] and not _panels(site.page)["live"]
+    assert not _badge(site.page)
+    site.page.context.close()
+
+
+def test_a_stalled_stream_still_times_out_to_degraded(
+    browser: Browser, base_url: str, stream: dict[str, Any]
+) -> None:
+    release = threading.Event()
+
+    def serve(handler: SimpleHTTPRequestHandler) -> None:
+        _chunked_head(handler, None)
+        _chunk(handler, doc(True, True).encode()[:40])  # a head, then silence
+        release.wait(30)
+
+    stream["fn"] = serve
+    site = open_page(browser, base_url, DESKTOP, PASS, wait=False)
+    started = time.time()
+    site.page.wait_for_function(
+        "Number(document.documentElement.dataset.liveChecks || 0) >= 1",
+        timeout=9000,
+    )
+    assert 4 <= time.time() - started < 9, "the 5 s guard ended the read"
+    assert _panels(site.page)["degraded"] and not _badge(site.page)
+    release.set()
+    site.page.context.close()
+
+
+@pytest.mark.parametrize(("extra", "live"), [(0, True), (1, False)])
+def test_a_body_exactly_at_the_limit_is_read_and_one_byte_more_is_not(
+    browser: Browser,
+    base_url: str,
+    stream: dict[str, Any],
+    extra: int,
+    live: bool,
+) -> None:
+    def serve(handler: SimpleHTTPRequestHandler) -> None:
+        body = doc(True, True).encode()
+        body += b" " * (2048 + extra - len(body))
+        assert len(body) == 2048 + extra
+        _chunked_head(handler, None)
+        for i in range(0, len(body), 500):  # several chunks, no Content-Length
+            _chunk(handler, body[i : i + 500])
+        handler.wfile.write(b"0\r\n\r\n")
+
+    stream["fn"] = serve
+    site = open_page(browser, base_url, DESKTOP, PASS)
+    assert _badge(site.page) is live
+    assert _panels(site.page)["live"] is live
     site.page.context.close()

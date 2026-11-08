@@ -18,6 +18,9 @@
   var POLL_MS = 60000;
   var TIMEOUT_MS = 5000;
   var MAX_BODY_CHARS = 2048;
+  // The read is cut off at this many bytes (a real document is ASCII and well
+  // under 200), whatever the headers claim.
+  var MAX_BODY_BYTES = 2048;
   // The Worker serves a document older than three heartbeats (3 x 600 s) as
   // unknown; the page applies the same rule on its own clock, so a stale
   // document or a stuck cache can never show live.
@@ -152,6 +155,53 @@
     return result;
   }
 
+  // Read a response body as UTF-8 text, a chunk at a time, and give up (cancel
+  // the stream, resolve null) the moment more than MAX_BODY_BYTES have arrived.
+  // No header is trusted and the body is never buffered whole. An unreadable
+  // body, a stream error or bytes that are not UTF-8 also give null.
+  function readBounded(response) {
+    var body = response ? response.body : null;
+    if (!body || typeof body.getReader !== "function") {
+      return Promise.resolve(null);
+    }
+    var reader;
+    var decoder;
+    try {
+      reader = body.getReader();
+      decoder = new TextDecoder("utf-8", { fatal: true });
+    } catch (ignored) {
+      return Promise.resolve(null);
+    }
+    var total = 0;
+    var text = "";
+    function stop() {
+      try {
+        Promise.resolve(reader.cancel()).catch(function () {});
+      } catch (ignored) {
+        // Nothing more to release.
+      }
+      return null;
+    }
+    function step() {
+      return reader.read().then(function (part) {
+        if (part.done) {
+          return text + decoder.decode();
+        }
+        var chunk = part.value;
+        if (!(chunk instanceof Uint8Array)) {
+          return stop();
+        }
+        total += chunk.length;
+        if (total > MAX_BODY_BYTES) {
+          return stop();
+        }
+        text += decoder.decode(chunk, { stream: true });
+        return step();
+      });
+    }
+    return step().catch(stop);
+  }
+
   function anyLive(status) {
     if (status === null || typeof status !== "object") {
       return false;
@@ -219,6 +269,8 @@
       PLATFORMS: PLATFORMS,
       STALE_AFTER_SECONDS: STALE_AFTER_SECONDS,
       MAX_BODY_CHARS: MAX_BODY_CHARS,
+      MAX_BODY_BYTES: MAX_BODY_BYTES,
+      readBounded: readBounded,
       parseStatus: parseStatus,
       viewState: viewState,
       badgeOn: badgeOn,
@@ -352,12 +404,14 @@
         referrerPolicy: "no-referrer",
         signal: control.signal
       }).then(function (response) {
-        var length = Number(response.headers.get("content-length"));
-        if (response.status !== 200 || length > MAX_BODY_CHARS) {
+        if (response.status !== 200) {
           finish(null);
+          if (response.body) {
+            response.body.cancel().catch(function () {});
+          }
           return;
         }
-        response.text().then(finish, function () {
+        readBounded(response).then(finish, function () {
           finish(null);
         });
       }, function () {
