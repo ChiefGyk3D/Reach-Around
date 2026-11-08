@@ -83,9 +83,10 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
         description="Read an export of the Worker's aggregate tables (JSON or "
         "CSV, made by you with a read-only query; see docs/report.md) and print "
         "the funnel (page views, clicks, kit views), geography and bot share. "
-        "No network call, no token. Nothing under the privacy floor of "
-        f"{FLOOR} views is printed. An export that carries an IP address, a "
-        "user agent or any column outside the allowed list is refused. "
+        "No network call, no token. No row under the privacy floor of "
+        f"{FLOOR} views is printed (label suppression, not k-anonymity; see "
+        "docs/report.md for what it does not cover). An export that carries an "
+        "IP address, a user agent or any column outside the allowed list is refused. "
         "Exit 0 on success, 2 for a usage problem or a refused export.",
     )
     parser.add_argument(

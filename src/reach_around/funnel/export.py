@@ -24,14 +24,17 @@ No network, no clock and no Cloudflare call is involved.
 from __future__ import annotations
 
 import csv
+import hashlib
 import io
 import ipaddress
 import json
 import re
+import unicodedata
 from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
 from typing import Any
+from urllib.parse import unquote
 
 from reach_around.config.loader import ConfigError, _read
 
@@ -66,9 +69,9 @@ SPECS: dict[str, Spec] = {
             "site": "site",
             "day": "day",
             "day_tz": "tz",
-            "page": "label",
+            "page": "path",
             "src_kind": "src_kind",
-            "src": "label0",
+            "src": "src",
             "country": "country",
             "bot_class": "class",
             "views": "pos",
@@ -86,7 +89,7 @@ SPECS: dict[str, Spec] = {
             "day": "day",
             "day_tz": "tz",
             "dim": "dim",
-            "value": "label",
+            "value": "dimvalue",
             "bot_class": "class",
             "views": "pos",
             "uniques": "uint",
@@ -101,8 +104,8 @@ SPECS: dict[str, Spec] = {
             "day": "day",
             "day_tz": "tz",
             "country": "country",
-            "region": "label0",
-            "city": "label0",
+            "region": "region",
+            "city": "city",
             "bot_class": "class",
             "views": "pos",
             "uniques": "uint",
@@ -113,7 +116,7 @@ SPECS: dict[str, Spec] = {
     # Raw rows: select only these columns. There is no key; rows may repeat.
     "click_events": Spec(
         marker="link_id",
-        columns={"site": "site", "ts": "ts", "link_id": "label", "country": "country0"},
+        columns={"site": "site", "ts": "ts", "link_id": "slug", "country": "country0"},
         required=frozenset({"ts", "link_id"}),
     ),
     "kit_events": Spec(
@@ -143,7 +146,9 @@ _FORBIDDEN_NAME = re.compile(
 
 
 def _safe_name(name: str) -> str:
-    return name if re.fullmatch(r"[A-Za-z0-9_ .-]{1,30}", name) else "<odd name>"
+    """A fixed-length stand-in for an untrusted name; never the name itself."""
+    digest = hashlib.sha256(name.encode("utf-8", "replace")).hexdigest()[:8]
+    return f"<name {digest}>"
 
 
 @dataclass
@@ -158,19 +163,83 @@ class Export:
     present: set[str] = field(default_factory=set)
 
 
-def _check_text(value: Any, *, empty_ok: bool, where: str) -> str:
+_PATH = re.compile(r"[a-z0-9/_.-]{1,96}")
+_SLUG = re.compile(r"[a-z0-9][a-z0-9-]{0,39}")
+_HOST = re.compile(r"[a-z0-9](?:[a-z0-9.-]{0,78}[a-z0-9])?")
+_UTM = re.compile(r"[a-z0-9-]{1,30}")
+_REGION = re.compile(r"[A-Z0-9]{0,3}")
+_CITY = re.compile(r"(?:[^\W\d_]|[ .'\u2019-]){0,60}")
+_DIMVALUE = re.compile(r"[a-z0-9_.-]{1,30}")
+_SRC = re.compile(r"[a-z0-9.-]{0,80}")
+_LONG_RUN = re.compile(r"[A-Za-z0-9]{24,}")
+BOT_REASONS = (
+    "ua-declared-bot",
+    "ua-headless",
+    "ua-missing",
+    "ua-too-long",
+    "no-lang",
+    "no-sec-fetch",
+    "datacenter",
+    "tor",
+    "no-js",
+    "click-without-view",
+    "rate",
+    "paid-score",
+    "verified-crawler-ua",
+    "none",
+)
+_MAX_DECODE_ROUNDS = 3
+_TEXT_KINDS = {
+    "path": _PATH,
+    "slug": _SLUG,
+    "region": _REGION,
+    "city": _CITY,
+    "dimvalue": _DIMVALUE,
+    "src": _SRC,
+}
+
+
+def _screen_text(value: str, where: str) -> None:
+    """Defense in depth behind the strict per-field formats.
+
+    The text is percent-decoded a bounded number of times, NFKC-normalized and
+    case-folded before the address, user-agent, email and token patterns are
+    applied, so encoded, full-width and compatibility forms are seen as what
+    they are.
+    """
+    text = value
+    for _ in range(_MAX_DECODE_ROUNDS):
+        decoded = unquote(text)
+        if decoded == text:
+            break
+        text = decoded
+    else:
+        if unquote(text) != text:
+            raise ExportError(f"{where}: text is encoded too deeply")
+    text = unicodedata.normalize("NFKC", text).casefold()
+    if "@" in text:
+        raise ExportError(f"{where}: a value looks like an email address")
+    if _UA.search(text):
+        raise ExportError(f"{where}: a value looks like a user-agent string")
+    if _IPV4.search(text) or _IPV6.search(text) or _is_ip(text):
+        raise ExportError(f"{where}: a value looks like an IP address")
+    if _LONG_RUN.search(text):
+        raise ExportError(f"{where}: a value looks like a token")
+
+
+def _check_text(value: Any, *, pattern: re.Pattern[str], where: str) -> str:
+    """Strict format first, then the screen."""
     if not isinstance(value, str):
         raise ExportError(f"{where}: text expected")
-    if not value and not empty_ok:
-        raise ExportError(f"{where}: empty text")
     if len(value) > MAX_LABEL:
         raise ExportError(f"{where}: text longer than {MAX_LABEL} characters")
     if not value.isprintable():
         raise ExportError(f"{where}: control or invisible characters in text")
-    if _UA.search(value):
-        raise ExportError(f"{where}: a value looks like a user-agent string")
-    if _IPV4.search(value) or _IPV6.search(value) or _is_ip(value):
-        raise ExportError(f"{where}: a value looks like an IP address")
+    if unicodedata.normalize("NFKC", value) != value:
+        raise ExportError(f"{where}: text is not in normalized form")
+    if not pattern.fullmatch(value):
+        raise ExportError(f"{where}: value has the wrong form")
+    _screen_text(value, where)
     return value
 
 
@@ -191,10 +260,8 @@ def _check_int(value: Any, *, low: int, high: int, where: str) -> int:
 
 
 def _check_value(kind: str, value: Any, where: str) -> Any:
-    if kind == "label":
-        return _check_text(value, empty_ok=False, where=where)
-    if kind == "label0":
-        return _check_text(value, empty_ok=True, where=where)
+    if kind in _TEXT_KINDS:
+        return _check_text(value, pattern=_TEXT_KINDS[kind], where=where)
     if kind == "pos":
         return _check_int(value, low=1, high=MAX_INT, where=where)
     if kind == "uint":
@@ -255,6 +322,26 @@ def screen_columns(names: Any, where: str) -> None:
             )
 
 
+def _cross_check(table: str, row: dict[str, Any], where: str) -> None:
+    """Rules that tie one column to another."""
+    if table == "view_daily":
+        kind, src = row["src_kind"], row["src"]
+        if kind in ("d", "i") and src:
+            raise ExportError(f"{where}: a direct or internal view has no source")
+        if kind == "o" and src not in ("", "other"):
+            raise ExportError(f"{where}: source of kind 'o' must be empty or 'other'")
+        if kind == "u" and not _UTM.fullmatch(src):
+            raise ExportError(f"{where}: utm source has the wrong form")
+        if kind == "r":
+            if not _HOST.fullmatch(src) or not re.search(
+                r"[a-z]", src.rsplit(".", 1)[-1]
+            ):
+                raise ExportError(f"{where}: referrer must be a host name")
+    elif table == "view_dim_daily":
+        if row["dim"] == "reason" and row["value"] not in (*BOT_REASONS, "other"):
+            raise ExportError(f"{where}: unknown reason code")
+
+
 def _validate_row(table: str, row: Any, where: str) -> dict[str, Any]:
     if not isinstance(row, dict):
         raise ExportError(f"{where}: a row must be an object")
@@ -271,6 +358,7 @@ def _validate_row(table: str, row: Any, where: str) -> dict[str, Any]:
         if name in row:
             out[name] = _check_value(kind, row[name], f"{where}, column {name!r}")
     # The kit has no site in the database. A kit row without one stays unscoped.
+    _cross_check(table, out, where)
     if "site" in spec.columns and table != "kit_events":
         out.setdefault("site", "links")
     return out

@@ -31,21 +31,36 @@ invisible to page views. Days are UTC days.
 
 ## The privacy floor
 
-Nothing under 5 views is ever printed: not a page, a source, a country, a city,
-a link, a class, a reason, or a funnel step. `--floor` can raise the number and
-cannot lower it. Rows under the floor are dropped; if together they reach the
-floor they appear as one "rows below the floor" line. A section where every row
-is under the floor says so and prints no row.
+No row under 5 views is printed: not a page, a source, a country, a city, a
+link, a class, a reason, or a funnel step. `--floor` can raise the number and
+cannot lower it. Rows under the floor are merged into one "rows below the floor"
+line. Because that line sits beside an exact total, a merged remainder under the
+floor could be recovered by subtracting the shown rows from the total, so the
+smallest shown rows join the merged line until it reaches the floor (this is
+why a small neighbour can disappear along with a tiny row). The human class is
+printed on its own in the funnel and never joins that line; if the other classes
+cannot reach the floor without it, the class total and shares are withheld. A
+section whose every row is under the floor prints no row.
 
-The floor is label suppression, the same kind the Worker applies when it folds
-small cells (`MIN_CELL`). It is not k-anonymity: someone holding two tables of
-the report can still subtract one total from another. Share the report, not the
-export.
+That is the whole guarantee, and it is label suppression, the same kind the
+Worker applies when it folds small cells (`MIN_CELL`). It is not k-anonymity and
+it is not differential privacy. It holds inside one report. It does not hold
+against a reader who gets overlapping reports (for example the same export with
+two windows one day apart, which differ by that day's exact totals), or who
+joins different tables of the same report (a country table and a page table
+cut the same views two ways). Publish one fixed-window report, not a series,
+and share the report, never the export.
 
 ## Making the export
 
-The export holds only the columns below. Anything else is refused, and so is a
-text value that looks like an IP address or a browser user-agent string, or that
+The export holds only the columns below. Anything else is refused. Every text
+column also has a strict format: pages and click link ids are lowercase slugs or
+paths, a referrer is a host name, a UTM source is a short slug, a region is a
+code of up to three capital letters or digits, a city is letters, spaces and
+apostrophes, a dimension value is a short lowercase code and a reason must be
+one of the Worker's reason codes. Email-like and token-like values, and values
+that look like an IP address or a browser user-agent string after percent
+decoding and Unicode normalization, are refused too. A text value that
 contains a control character. The Worker never stores an address or a user
 agent, so a correct export never trips this. If it does, the export is wrong.
 
@@ -80,7 +95,7 @@ Accepted file shapes: JSON `{"version": 1, "tables": {"<table>": [rows]}}`, a
 JSON list of rows or of result blocks, or a CSV with a header row (one table per
 CSV). Limits: 16 MiB per file, 200,000 rows per table, no duplicate JSON keys,
 no `NaN`, a repeated primary key in an aggregate table is refused, files must be
-regular files (no symlinks, no pipes).
+regular files. A symlink as the final path component is refused and so is a pipe; directories earlier in the path are followed as the operating system resolves them, so keep the export in a directory you control.
 
 ## Example with synthetic data
 
@@ -103,7 +118,7 @@ Everything below is made up. Save it as `export.json`.
       {"day": "2026-11-01", "country": "DE", "region": "", "city": "", "bot_class": "h", "views": 60}
     ],
     "view_dim_daily": [
-      {"day": "2026-11-01", "dim": "reason", "value": "ua-script", "bot_class": "a", "views": 30}
+      {"day": "2026-11-01", "dim": "reason", "value": "ua-declared-bot", "bot_class": "a", "views": 30}
     ],
     "click_events": [
       {"ts": 1793491200000, "link_id": "shop"},
@@ -126,7 +141,7 @@ Everything below is made up. Save it as `export.json`.
 
 `reach-around report --input export.json` prints the funnel with 223 likely-human
 page views, 6 clicks and 5 kit views; the geography table shows US and DE and
-leaves out FR (3 views, under the floor); the bots section shows the automated
+leaves nothing under the floor out of sight; the bots section shows the automated
 share. Add `--json` for the same data as JSON, `--geo city` for cities.
 
 ## Not covered

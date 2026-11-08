@@ -100,7 +100,7 @@ def sample() -> dict[str, Any]:
                 geo("DE", "BE", "Berlin", views=60),
                 geo("FR", "", "", views=3),
             ],
-            "view_dim_daily": [dim("ua-script", 25), dim("net-dc", 6, "s")],
+            "view_dim_daily": [dim("ua-declared-bot", 25), dim("datacenter", 6, "s")],
             "click_events": [
                 {"ts": TS, "link_id": "shop", "country": "US"} for _ in range(50)
             ]
@@ -139,10 +139,10 @@ def test_text_report_shows_funnel_geo_and_bots(
     assert "Link clicks" in out
     assert "Kit views" in out
     assert "Geography" in out
-    assert "US" in out and "DE" in out
+    assert "US" in out
+    assert "(rows below the floor)" in out  # DE and FR merged, "shop" and "rare"
     assert "Bots" in out
-    assert "ua-script" in out
-    assert "shop" in out
+    assert "ua-declared-bot" in out
 
 
 def test_json_report_matches_the_data(
@@ -182,7 +182,9 @@ def test_geo_levels(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     assert "DE / BE / Berlin" in labels
     _, out, _ = run(capsys, "--input", str(path), "--json", "--geo", "country")
     rows = {r["label"]: r["views"] for r in json.loads(out)["geography"]["rows"]}
-    assert rows == {"US": 130, "DE": 60}
+    assert rows == {"US": 130}  # FR (3) is merged with DE, never alone
+    other = json.loads(out)["geography"]["other_below_floor"]
+    assert other == 63
 
 
 def test_csv_input_and_two_inputs(
@@ -220,8 +222,10 @@ def test_floor_cells_hides_small_and_merges() -> None:
     assert [label for label, _ in result.shown] == ["a"]
     assert result.other == 5  # b and c merged, never shown apart
     result = floor_cells({"a": 100, "b": 6, "c": 2}, 5)
-    assert [label for label, _ in result.shown] == ["a", "b"]
-    assert result.other == 0  # a merged cell under the floor is dropped, not shown
+    # a lone small remainder could be recovered by subtracting the shown rows
+    # from the total, so the smallest shown row joins it
+    assert [label for label, _ in result.shown] == ["a"]
+    assert result.other == 8
     assert floor_cells({"a": 2, "b": 1}, 5).withheld
 
 
@@ -485,14 +489,13 @@ def test_same_table_in_two_inputs_refused(
     assert code == 2 and "twice" in err
 
 
-def test_hostile_labels_never_break_the_terminal(
+def test_markup_in_a_label_is_refused_not_printed(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     data = {"tables": {"view_daily": [vd(page="<script>alert(1)</script>", views=50)]}}
     path = write(tmp_path, data)
-    code, out, _ = run(capsys, "--input", str(path))
-    assert code == 0
-    assert all(ch.isprintable() or ch == "\n" for ch in out)
+    code, out, err = run(capsys, "--input", str(path))
+    assert code == 2 and out == "" and "script" not in err
 
 
 def test_load_exports_needs_an_input(tmp_path: Path) -> None:
@@ -663,3 +666,229 @@ def test_zero_is_printed_and_a_suppressed_count_is_withheld(
     five = write(tmp_path, {"tables": {"view_daily": [vd(views=5)]}}, "five.json")
     _, out, _ = run(capsys, "--input", str(five), "--json")
     assert json.loads(out)["funnel"]["page_views"] == 5
+
+
+# ---- security review: subtraction, field formats, encodings, names ----------
+
+
+def invariants(report: dict[str, Any], floor: int = 5) -> None:
+    """No table may let total minus shown rows isolate a cell under the floor."""
+    sections = [report[k] for k in ("pages", "sources", "geography", "links")]
+    sections.append(report["bots"]["reasons"])
+    for sec in sections:
+        for row in sec["rows"]:
+            assert row["views"] >= floor
+        assert sec["other_below_floor"] == 0 or sec["other_below_floor"] >= floor
+
+
+def test_floor_cells_remainder_is_never_a_recoverable_small_cell() -> None:
+    import itertools
+
+    for values in itertools.product(range(0, 10), repeat=4):
+        cells = {f"c{i}": v for i, v in enumerate(values)}
+        total = sum(cells.values())
+        result = floor_cells(cells, 5)
+        shown = sum(v for _, v in result.shown)
+        assert all(v >= 5 for _, v in result.shown)
+        if result.shown or result.other:
+            # everything not shown is accounted for in the merged line
+            assert total - shown == result.other
+            assert result.other == 0 or result.other >= 5
+        else:
+            assert total - shown == total  # withheld: nothing to subtract from
+
+
+def test_subtraction_across_tables_recovers_nothing(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    data = {
+        "tables": {
+            "view_daily": [
+                vd(page="home", views=60, country="US"),
+                vd(page="kit", views=2, country="DE"),
+                vd(page="blog", views=40, src_kind="r", src="news.example"),
+                vd(page="blog", views=1, src_kind="r", src="tiny.example"),
+            ],
+            "view_geo_daily": [geo("US", views=90), geo("DE", views=3)],
+            "click_events": [{"ts": TS, "link_id": "big"}] * 20
+            + [{"ts": TS, "link_id": "small"}] * 3,
+        }
+    }
+    path = write(tmp_path, data)
+    _, out, _ = run(capsys, "--input", str(path), "--json")
+    report = json.loads(out)
+    invariants(report)
+    funnel_total = report["funnel"]["page_views"]
+    for key in ("pages", "sources"):
+        sec = report[key]
+        listed = sum(r["views"] for r in sec["rows"]) + sec["other_below_floor"]
+        assert listed == funnel_total  # the remainder is merged, not isolated
+        assert sec["other_below_floor"] >= 5
+    assert report["links"]["other_below_floor"] >= 5
+
+
+def test_class_total_does_not_isolate_a_small_class(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    data = {
+        "tables": {
+            "view_daily": [
+                vd(views=10),
+                vd(page="x", views=100, bot_class="a"),
+                vd(page="y", views=3, bot_class="s"),
+            ]
+        }
+    }
+    path = write(tmp_path, data)
+    _, out, _ = run(capsys, "--input", str(path), "--json")
+    funnel = json.loads(out)
+    bots = funnel["bots"]
+    shown = sum(c["views"] for c in bots["classes"])
+    assert funnel["funnel"]["page_views"] == 10  # the human figure stays exact
+    # the human class is printed alone, so the small class sits with the large one
+    assert [c["class"] for c in bots["classes"]] == ["h"]
+    assert bots["other_below_floor"] == 103
+    assert shown + bots["other_below_floor"] == bots["total_views"]
+
+
+def test_class_total_withheld_when_remainder_cannot_reach_floor(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    data = {
+        "tables": {"view_daily": [vd(views=40), vd(page="y", views=3, bot_class="s")]}
+    }
+    path = write(tmp_path, data)
+    _, out, _ = run(capsys, "--input", str(path), "--json")
+    bots = json.loads(out)["bots"]
+    assert bots["total_views"] is None
+    assert all(c["share"] is None for c in bots["classes"])
+    assert bots["other_below_floor"] == 0
+
+
+def test_overlapping_windows_hold_the_invariant_each(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    rows = [
+        vd(page="home", views=30, day=DAY1),
+        vd(page="kit", views=2, day=DAY1),
+        vd(page="home", views=30, day=DAY2),
+        vd(page="kit", views=4, day=DAY2),
+    ]
+    path = write(tmp_path, {"tables": {"view_daily": rows}})
+    for flags in ([], ["--since", DAY2], ["--until", DAY1]):
+        _, out, _ = run(capsys, "--input", str(path), "--json", *flags)
+        invariants(json.loads(out))
+
+
+def test_docs_state_the_real_guarantee() -> None:
+    doc = (Path(__file__).resolve().parent.parent / "docs" / "report.md").read_text(
+        encoding="utf-8"
+    )
+    assert "nothing under 5 views is ever printed" not in doc.lower()
+    assert "not k-anonymity" in doc
+    assert "overlapping" in doc and "final path component" in doc
+
+
+FIELD_CASES = [
+    ("email link id", "click_events", {"ts": TS, "link_id": "alice@example.com"}),
+    ("email pct", "click_events", {"ts": TS, "link_id": "alice%40example.com"}),
+    ("upper link id", "click_events", {"ts": TS, "link_id": "Alice"}),
+    (
+        "token link id",
+        "click_events",
+        {"ts": TS, "link_id": "a1b2c3d4e5f6a7b8c9d0e1f2a3"},
+    ),
+    ("space link id", "click_events", {"ts": TS, "link_id": "john smith"}),
+    ("pct ip src", "view_daily", vd(src_kind="r", src="203%2E0%2E113%2E7")),
+    (
+        "fullwidth ip",
+        "view_daily",
+        vd(
+            src_kind="r",
+            src="".join(
+                chr(0xFF10 + int(c)) if c.isdigit() else c for c in "203.0.113.7"
+            ),
+        ),
+    ),
+    ("pct ua", "view_daily", vd(src_kind="r", src="Mozilla%2F5.0")),
+    ("double pct ua", "view_daily", vd(src_kind="r", src="Mozilla%252F5.0")),
+    (
+        "greek omicron ua",
+        "view_daily",
+        vd(src_kind="r", src="M" + chr(0x3BF) + "zilla/5.0"),
+    ),
+    ("numeric tld src", "view_daily", vd(src_kind="r", src="198.51.100.9")),
+    ("direct with source", "view_daily", vd(src_kind="d", src="news.example")),
+    ("utm with dots", "view_daily", vd(src_kind="u", src="a.b")),
+    ("page with space", "view_daily", vd(page="john smith")),
+    ("page token", "view_daily", vd(page="a" * 30)),
+    ("region long", "view_geo_daily", geo(region="NYC1")),
+    ("city digits", "view_geo_daily", geo(city="Room 101")),
+    ("city email", "view_geo_daily", geo(city="bob@x")),
+    ("city fullwidth", "view_geo_daily", geo(city=chr(0xFF21) + "mber")),
+    ("unknown reason", "view_dim_daily", dim("alice-smith", 9)),
+    (
+        "dim value upper",
+        "view_dim_daily",
+        {**dim("x", 9), "dim": "browser", "value": "Chrome"},
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    ("name", "table", "row"), FIELD_CASES, ids=[c[0] for c in FIELD_CASES]
+)
+def test_field_formats_refuse_personal_and_encoded_values(
+    name: str,
+    table: str,
+    row: dict[str, Any],
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    path = write(
+        tmp_path, {"tables": {table: [row] * (1 if table == "view_daily" else 6)}}
+    )
+    code, out, err = run(capsys, "--input", str(path))
+    assert code == 2, name
+    assert out == "" and err.startswith("error:")
+    for secret in ("alice", "john", "203", "Mozilla", "bob", "Room"):
+        assert secret.lower() not in err.lower(), (name, secret)
+
+
+def test_good_values_still_pass(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    sao = "S" + chr(0xE3) + "o Paulo"
+    data = {
+        "tables": {
+            "view_daily": [
+                vd(src_kind="r", src="news.example.com", views=20),
+                vd(page="blog/post-1.html", src_kind="u", src="spring-promo", views=20),
+            ],
+            "view_geo_daily": [geo("BR", "SP", sao, views=20)],
+            "view_dim_daily": [dim("ua-declared-bot", 9)],
+            "click_events": [{"ts": TS, "link_id": "my-shop-2"}] * 6,
+        }
+    }
+    path = write(tmp_path, data)
+    code, out, err = run(capsys, "--input", str(path), "--geo", "city")
+    assert code == 0, err
+    assert sao in out
+
+
+def test_error_messages_never_echo_table_or_column_names(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    cases = [
+        {"tables": {"Alice_Smith": []}},
+        {"tables": {"click_events": [{"ts": TS, "link_id": "a", "Alice_Smith": 1}]}},
+        [{"link_id": "a", "ts": TS, "Alice_Smith": 1}],
+    ]
+    for data in cases:
+        path = write(tmp_path, data)
+        code, _, err = run(capsys, "--input", str(path))
+        assert code == 2 and "Alice" not in err and "alice" not in err.lower()
+    csv_path = tmp_path / "n.csv"
+    csv_path.write_text("ts,link_id,Alice_Smith\n1,a,b\n", encoding="utf-8")
+    code, _, err = run(capsys, "--input", str(csv_path))
+    assert code == 2 and "alice" not in err.lower()

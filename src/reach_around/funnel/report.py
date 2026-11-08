@@ -48,6 +48,39 @@ def floor_cells(cells: Mapping[str, int], floor: int) -> Floored:
     shown = [item for item in items if item[1] >= floor]
     hidden = [item for item in items if item[1] < floor]
     merged = sum(views for _, views in hidden)
+    # Complementary suppression. The rows plus the merged line add up to the
+    # table total, which the report prints elsewhere. If the merged remainder
+    # were under the floor, subtracting the shown rows from that total would
+    # reveal it, so the smallest shown rows join it until it reaches the floor.
+    # A remainder that stays under the floor means the table is withheld.
+    while hidden and merged < floor and shown:
+        label, views = shown.pop()
+        hidden.append((label, views))
+        merged += views
+    return Floored(shown, merged if merged >= floor else 0, len(hidden))
+
+
+def _floor_classes(cells: Mapping[str, int], floor: int) -> Floored:
+    """``floor_cells`` for the four bot classes, where the human class is also
+    printed on its own in the funnel. The human class therefore never joins the
+    merged line, or the funnel figure would undo the merge. When the remainder
+    cannot reach the floor without it, the class total and shares are withheld.
+    """
+    items = sorted(
+        ((label, views) for label, views in cells.items() if views > 0),
+        key=lambda item: (-item[1], item[0]),
+    )
+    shown = [item for item in items if item[1] >= floor]
+    hidden = [item for item in items if item[1] < floor]
+    merged = sum(views for _, views in hidden)
+    while hidden and merged < floor:
+        movable = [item for item in shown if item[0] != "h"]
+        if not movable:
+            break
+        pick = movable[-1]
+        shown.remove(pick)
+        hidden.append(pick)
+        merged += pick[1]
     return Floored(shown, merged if merged >= floor else 0, len(hidden))
 
 
@@ -178,7 +211,8 @@ def build_report(
     for r in view_rows:
         by_class[r["bot_class"]] += r["views"]
     total_views = sum(by_class.values())
-    classes = floor_cells({c: by_class[c] for c in CLASSES if by_class[c]}, floor)
+    classes = _floor_classes({c: by_class[c] for c in CLASSES if by_class[c]}, floor)
+    total_printable = not classes.hidden_rows or classes.other > 0
     reasons: dict[str, int] = defaultdict(int)
     for r in dim_rows:
         if r["dim"] == "reason" and r["bot_class"] != "h":
@@ -265,13 +299,15 @@ def build_report(
         },
         "links": _section(links, floor, top, "click_events" in export.present),
         "bots": {
-            "total_views": _count(total_views, floor),
+            "total_views": (_count(total_views, floor) if total_printable else None),
             "classes": [
                 {
                     "class": label,
                     "name": CLASS_NAMES[label],
                     "views": views,
-                    "share": round(views * 100 / total_views, 1),
+                    "share": (
+                        round(views * 100 / total_views, 1) if total_printable else None
+                    ),
                 }
                 for label, views in classes.shown
             ],
@@ -328,7 +364,9 @@ def render_text(report: dict[str, Any]) -> str:
             f"{period['days_with_data']} days with data"
         )
     lines.append(f"Reach Around report: site {report['site']}, {span}")
-    lines.append(f"Privacy floor: nothing under {floor} views is ever shown.")
+    lines.append(
+        f"Privacy floor: no row under {floor} views is shown (see docs/report.md)."
+    )
     lines.append("")
     lines.append("Funnel")
     steps = [
@@ -381,7 +419,8 @@ def render_text(report: dict[str, Any]) -> str:
         lines.append("  no data or every class is below the privacy floor")
     else:
         for row in bots["classes"]:
-            lines.append(f"  {row['name']:<28} {row['views']:>8}  {row['share']:>5}%")
+            share = "" if row["share"] is None else f"  {row['share']:>5}%"
+            lines.append(f"  {row['name']:<28} {row['views']:>8}{share}")
         if bots["other_below_floor"]:
             lines.append(
                 f"  {'(classes below the floor)':<28} {bots['other_below_floor']:>8}"
