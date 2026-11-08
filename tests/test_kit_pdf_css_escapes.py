@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import re
+
 import pytest
 
 from reach_around.kit.stage import StageError, clean_css
@@ -50,3 +52,41 @@ def test_plain_escapes_still_work() -> None:
 
 def test_a_plain_remote_url_is_still_removed() -> None:
     assert "x.test" not in clean_css(b"a{b:url(http://x.test/a)}", "a stylesheet")
+
+
+def _comment_free(text: str) -> str:
+    return re.sub(r"/\*.*?\*/", "", text, flags=re.S)
+
+
+COMMENT_FORMS = [
+    "a{background-image:u/\\2a x*/rl(https://x.test/a)}",
+    "a{background-image:u/\\2A x\\2a /rl(https://x.test/a)}",
+    '@im/\\2a x*/port "https://x.test/a.css";',
+    '@im/\\2f\\2a x\\2a \\2f port "https://x.test/a.css";',
+    "@font-/\\2a x*/face{src:u/\\2a x*/rl(https://x.test/f)}",
+    "a{background-image:u\\2f\\2a x*\\2f rl(https://x.test/a)}",
+]
+
+
+@pytest.mark.parametrize("sheet", COMMENT_FORMS)
+def test_escapes_that_make_comment_delimiters_cannot_split_a_token(
+    sheet: str,
+) -> None:
+    try:
+        out = clean_css(sheet.encode(), "a stylesheet")
+    except StageError:
+        return
+    seen = _comment_free(out).lower()
+    assert "https://x.test" not in seen
+    for token in ("url(", "@import", "@font-face"):
+        assert token not in seen
+
+
+def test_a_decoded_comment_opener_is_refused() -> None:
+    with pytest.raises(StageError, match="comment"):
+        clean_css(b"a{b:u/\\2a x*/rl(https://x.test/a)}", "a stylesheet")
+
+
+def test_more_legitimate_escapes_still_work() -> None:
+    out = clean_css(b".a\\2f b{content:\\201C hi\\201D}.w-1\\/2{width:50%}", "s")
+    assert out == ".a/b{content:“hi”}.w-1/2{width:50%}"

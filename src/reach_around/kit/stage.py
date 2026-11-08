@@ -252,6 +252,12 @@ def clean_css(raw: bytes, what: str) -> str:
     # different string than a consumer sees. Refuse it rather than loop.
     if "\\" in text:
         raise StageError(f"{what} has a backslash that remains after unescaping")
+    # Comments were removed before decoding, so decoding must not make new ones:
+    # a comment opener that appears now would be skipped by a consumer and join
+    # the text on either side, so the filters below would judge a different
+    # string. Refuse it (fail closed) instead of stripping again.
+    if "/*" in text:
+        raise StageError(f"{what} has a comment that appears after unescaping")
     text = _FONT_FACE.sub("", text)
     text = _IMPORT.sub("", text)
     text = _URL.sub("none", text)
