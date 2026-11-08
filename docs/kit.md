@@ -20,6 +20,7 @@ features:
 kit:
   title: Example Creator media kit
   about: A fake creator who streams games and talks about gear.
+  contact: Brand deals - partners at example.com
   turnstile_site_key: 0x4AAAAAAAexampleKey
   metrics:
     - {platform: twitch, label: Followers, value: 1200, as_of: 2027-03-01}
@@ -314,13 +315,24 @@ policy and the optional namespace are the defenses); and what you do with the
 file afterwards. Exit code 0 on success, 1 for any refusal (one line on standard
 error), 2 for a usage error.
 
+## Contact line
+
+`kit.contact` is one optional plain-text line (at most 200 characters) printed
+under the introduction on the public page, the gated page and the owner PDF. It
+is escaped text, never a `mailto:` or `tel:` link. The owner decides what goes
+there; an email address as plain text is acceptable, and no postal address or
+phone number is required or checked (the Beacons kit publishes a postal address;
+Reach Around does not need one). Left out, nothing is printed.
+
 ## Old numbers
 
-A number older than 30 days, a date in the future, and a `counts` metric the
+A number older than its stale limit (30 days by default; see
+[Hand-kept numbers](config.md#hand-kept-numbers)), a date in the future, and a `counts` metric the
 numbers file does not hold each produce a build warning. `reach-around build`
 prints them as `warning: ...` on standard error and the build still succeeds.
 A kit with `features.kit_gate: true` but nothing gated warns that no form is
 built, and a gated kit with no `turnstile_site_key` warns about the empty slot.
+The kit table also marks an old number `(out of date)` beside its date.
 
 ## Lead retention and deletion
 

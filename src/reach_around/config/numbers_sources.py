@@ -177,7 +177,13 @@ Source = Annotated[
 class NumbersConfig(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    sources: list[Source] = Field(min_length=1, max_length=MAX_SOURCES)
+    sources: list[Source] = Field(default_factory=list, max_length=MAX_SOURCES)
+    # Per-platform stale limit in days for hand-kept numbers (default 30). The
+    # key is a platform slug; a number older than its limit is stale.
+    stale_days: dict[Platform, Annotated[int, Field(strict=True, ge=1, le=365)]] = (
+        Field(default_factory=dict, max_length=MAX_SOURCES)
+    )
+
     history_file: str | None = Field(default=None, min_length=1, max_length=300)
 
     @field_validator("history_file")
@@ -197,6 +203,14 @@ class NumbersConfig(BaseModel):
                 "the config, with no '..'"
             )
         return value
+
+    @model_validator(mode="after")
+    def _sources_not_written_empty(self) -> NumbersConfig:
+        # Leaving ``sources`` out is fine (only ``stale_days``); writing an
+        # empty list is almost certainly a mistake.
+        if "sources" in self.model_fields_set and not self.sources:
+            raise ValueError("sources must list at least one source, or be left out")
+        return self
 
     @model_validator(mode="after")
     def _one_source_per_platform(self) -> NumbersConfig:

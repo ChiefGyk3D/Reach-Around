@@ -54,7 +54,7 @@ from reach_around.config.kit import (
     public_projection,
 )
 from reach_around.config.models import SiteConfig
-from reach_around.config.numbers import Numbers
+from reach_around.config.numbers import Numbers, stale_limit
 
 KIT_PAGE = Path("kit") / "index.html"
 RETRY_PAGE = Path("kit") / "retry" / "index.html"
@@ -302,6 +302,8 @@ def _public_values(kit: KitConfig) -> set[str]:
     """Canonical forms of the values that are public by policy; a gated value
     that equals one of them is not a leak."""
     values = {kit.title, kit.about}
+    if kit.contact is not None:
+        values.add(kit.contact)
     for metric in kit.metrics:
         values.add(metric.label)
         if metric.as_of is not None:
@@ -578,13 +580,23 @@ def stage_gated(gated_out: Path, page: str | None) -> StagedGated:
 # --- content -----------------------------------------------------------------
 
 
-def _metric_rows(metrics: list[ResolvedMetric]) -> list[dict[str, str]]:
+def _metric_rows(
+    metrics: list[ResolvedMetric],
+    config: Any = None,
+    today: date | None = None,
+) -> list[dict[str, Any]]:
     return [
         {
             "platform": "" if m.platform == "other" else platform_name(m.platform),
             "label": m.label,
             "value": f"{m.value:,}",
             "as_of": m.as_of.isoformat() if m.as_of is not None else "",
+            "stale": (
+                config is not None
+                and today is not None
+                and m.as_of is not None
+                and (today - m.as_of).days > stale_limit(config, m.platform)
+            ),
         }
         for m in metrics
         if m.value is not None
@@ -603,7 +615,10 @@ def _total(total: UnifiedTotal, metrics: list[ResolvedMetric]) -> dict[str, Any]
 
 
 def _content(
-    projection: dict[str, Any], live_day: date | None = None
+    projection: dict[str, Any],
+    live_day: date | None = None,
+    config: Any = None,
+    today: date | None = None,
 ) -> dict[str, Any]:
     metrics: list[ResolvedMetric] = projection["metrics"]
     return {
@@ -614,7 +629,8 @@ def _content(
         ),
         "title": projection["title"],
         "about": projection["about"],
-        "metrics": _metric_rows(metrics),
+        "contact": projection["contact"],
+        "metrics": _metric_rows(metrics, config, today),
         "total": _total(projection["unified_total"], metrics),
     }
 
@@ -641,7 +657,8 @@ def plan_warnings(
     kit = config.kit
     if kit is None:
         return []
-    found = kit_warnings(kit, numbers, today)
+    limits = dict(config.numbers.stale_days) if config.numbers is not None else None
+    found = kit_warnings(kit, numbers, today, limits)
     if config.features.kit_gate and not kit.has_gated_content:
         found.append(
             "features.kit_gate is on but the kit has no partners, case studies, "
@@ -672,7 +689,7 @@ def render_kit(
     warnings = plan_warnings(config, numbers, today)
     # A UTC day, not ``today`` (the scheduling day in the config's time zone).
     live_day = live_since(config, utc_today())
-    public = _content(public_projection(kit, numbers), live_day)
+    public = _content(public_projection(kit, numbers), live_day, config, today)
     form: dict[str, Any] | None = None
     if has_gate_form(kit):
         form = {
@@ -693,7 +710,7 @@ def render_kit(
     gated: str | None = None
     if has_gate_form(kit):
         data = gated_projection(kit, numbers)
-        content = _content(data, live_day)
+        content = _content(data, live_day, config, today)
         content.update(
             partners=data["partners"],
             case_studies=data["case_studies"],

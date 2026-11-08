@@ -68,11 +68,32 @@ def _age(stamp: date, today: date) -> int:
     return (today - stamp).days
 
 
+def _resolve(
+    manual: int | None,
+    manual_as_of: date | None,
+    entry: NumbersEntry | None,
+    today: date,
+    limit: int = STALE_DAYS,
+) -> tuple[int | None, date | None, str]:
+    """``resolve_count`` plus where the shown value came from: ``file`` (the
+    numbers file) or ``typed`` (the config)."""
+    if entry is None:
+        return manual, manual_as_of, "typed"
+    if manual is None or manual_as_of is None:
+        return entry.count, entry.as_of_date, "file"
+    if _age(entry.as_of_date, today) <= limit:
+        return entry.count, entry.as_of_date, "file"
+    if _age(manual_as_of, today) <= limit:
+        return manual, manual_as_of, "typed"
+    return entry.count, entry.as_of_date, "file"
+
+
 def resolve_count(
     manual: int | None,
     manual_as_of: date | None,
     entry: NumbersEntry | None,
     today: date,
+    limit: int = STALE_DAYS,
 ) -> tuple[int | None, date | None]:
     """The count and date to show.
 
@@ -83,26 +104,50 @@ def resolve_count(
     itself. With two stale values the file's is shown (the run warns). A typed
     value alone is shown, stale or not (the run warns).
     """
-    if entry is None:
-        return manual, manual_as_of
-    if manual is None or manual_as_of is None:
-        return entry.count, entry.as_of_date
-    if _age(entry.as_of_date, today) <= STALE_DAYS:
-        return entry.count, entry.as_of_date
-    if _age(manual_as_of, today) <= STALE_DAYS:
-        return manual, manual_as_of
-    return entry.count, entry.as_of_date
+    count, stamp, _ = _resolve(manual, manual_as_of, entry, today, limit)
+    return count, stamp
+
+
+def stale_limit(config: Any, platform: str) -> int:
+    """Days after which a number for ``platform`` is stale: the per-platform
+    ``numbers.stale_days`` entry, else ``STALE_DAYS``."""
+    numbers = getattr(config, "numbers", None)
+    if numbers is None:
+        return STALE_DAYS
+    return int(numbers.stale_days.get(platform, STALE_DAYS))
+
+
+def source_platforms(config: Any) -> frozenset[str]:
+    """The keys a configured fetch source writes (platform slug or item id)."""
+    numbers = getattr(config, "numbers", None)
+    if numbers is None:
+        return frozenset()
+    return frozenset(source.platform for source in numbers.sources)
 
 
 @dataclass(frozen=True)
 class NumberNote:
-    """One old or future number: where it is and for which platform. No value."""
+    """One shown number: where it is and for which platform. No value.
+
+    ``scope`` is ``platforms`` (a platforms block item) or ``kit`` (a kit
+    metric; ``item_id`` is then its label and the tab and block are empty).
+    ``hand_kept`` is true when a person keeps the number (typed in the config,
+    or a numbers-file entry no configured source writes).
+    """
 
     tab_id: str
     block_id: str
     item_id: str
     platform: str
     days: int  # negative when the date is in the future
+    limit: int = STALE_DAYS
+    hand_kept: bool = False
+    as_of: date | None = None
+    scope: str = "platforms"
+
+    @property
+    def stale(self) -> bool:
+        return self.days > self.limit
 
 
 def _platform_items(config: Any) -> Any:
@@ -126,31 +171,49 @@ def future_typed_dates(config: Any, today: date) -> list[NumberNote]:
     return found
 
 
-def old_numbers(config: Any, numbers: Numbers | None, today: date) -> list[NumberNote]:
-    """The shown numbers that are more than ``STALE_DAYS`` old.
-
-    Only the value that wins is judged: a stale value that loses to a fresh one
-    produces nothing.
-    """
+def shown_numbers(
+    config: Any, numbers: Numbers | None, today: date
+) -> list[NumberNote]:
+    """Every shown platform number with its age, limit and who keeps it."""
+    fetched = source_platforms(config)
     found = []
     for tab, block, pairs in _platform_items(config):
         for ident, item in pairs:
             entry = None if numbers is None else numbers.lookup(ident, item.platform)
-            count, stamp = resolve_count(item.count, item.as_of, entry, today)
-            if count is not None and stamp is not None:
-                days = _age(stamp, today)
-                if days > STALE_DAYS:
-                    found.append(
-                        NumberNote(tab.id, block.id, ident, item.platform, days)
-                    )
+            limit = stale_limit(config, item.platform)
+            count, stamp, origin = _resolve(item.count, item.as_of, entry, today, limit)
+            if count is None or stamp is None:
+                continue
+            by_hand = origin == "typed" or not ({ident, item.platform} & fetched)
+            found.append(
+                NumberNote(
+                    tab.id,
+                    block.id,
+                    ident,
+                    item.platform,
+                    _age(stamp, today),
+                    limit,
+                    by_hand,
+                    stamp,
+                )
+            )
     return found
+
+
+def old_numbers(config: Any, numbers: Numbers | None, today: date) -> list[NumberNote]:
+    """The shown numbers that are older than their stale limit.
+
+    Only the value that wins is judged: a stale value that loses to a fresh one
+    produces nothing.
+    """
+    return [note for note in shown_numbers(config, numbers, today) if note.stale]
 
 
 def number_warnings(config: Any, numbers: Numbers | None, today: date) -> list[str]:
     """Build warnings for old numbers; they name the platform, never the value."""
     return [
         f"platforms {note.block_id!r} {note.platform}: the number is {note.days} "
-        f"days old (over {STALE_DAYS}); update it by hand or fix its source"
+        f"days old (over {note.limit}); update it by hand or fix its source"
         for note in old_numbers(config, numbers, today)
     ]
 

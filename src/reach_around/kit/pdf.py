@@ -343,6 +343,8 @@ def _expected_text(kit: KitConfig, numbers: Numbers | None) -> list[tuple[str, s
     the order the page prints them) and one for the combined total, computed
     from the same resolved values the page was built from."""
     found: list[tuple[str, str]] = [("kit.title", kit.title), ("kit.about", kit.about)]
+    if kit.contact is not None:
+        found.append(("kit.contact", kit.contact))
     resolved = resolve_metrics(kit, numbers)
     for row in _metric_rows(resolved):
         found.append(

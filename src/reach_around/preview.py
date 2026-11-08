@@ -333,6 +333,7 @@ class Preview:
                 overrides=self.overrides,
                 assets_dir=self.config.parent,
                 gated_out=self._tmp / "gated",
+                number_day=datetime.now(UTC).date(),
             )
         except (ConfigError, ValueError, OSError) as exc:
             shutil.rmtree(new_root, ignore_errors=True)

@@ -1,23 +1,32 @@
 # SPDX-License-Identifier: Apache-2.0
 """``reach-around counts refresh --config PATH [--out numbers.json] ...``.
 
-Exit codes: 0 every source succeeded or was intentionally skipped; 3 at least
-one source failed (its previous number is kept); 2 usage or config problem;
-1 the result files could not be written or another refresh holds the lock.
+Also ``counts import`` (hand-kept numbers from a CSV file) and ``counts stale``
+(hand-kept numbers due for an update). ``counts stale`` exits 0 when nothing is
+due, 4 when something is, 2 for usage or config problems.
+
+Exit codes of ``refresh``: 0 every source succeeded or was intentionally
+skipped; 3 at least one source failed (its previous number is kept); 2 usage or
+config problem; 1 the result files could not be written or another refresh
+holds the lock.
 """
 
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sys
 import time
 from collections.abc import Callable, Mapping
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 
 from reach_around.config import ConfigError, SiteConfig, load_site_config
+from reach_around.config.cutover import utc_today
+from reach_around.config.loader import _read
 from reach_around.config.numbers import load_numbers
+from reach_around.config.stale import REMIND_DAYS, due_numbers
 from reach_around.counts.files import (
     LOCK_WAIT_SECONDS,
     FileLock,
@@ -35,6 +44,12 @@ from reach_around.counts.history import (
     append_records,
     new_run_id,
     read_history,
+)
+from reach_around.counts.importer import (
+    MAX_CSV_BYTES,
+    ImportFailed,
+    merge,
+    parse_import,
 )
 from reach_around.counts.refresh import (
     SUSPECT_KINDS,
@@ -54,6 +69,7 @@ EXIT_OK = 0
 EXIT_WRITE = 1
 EXIT_USAGE = 2
 EXIT_SOURCE_FAILED = 3
+EXIT_DUE = 4
 
 
 def default_transport() -> Transport | None:
@@ -80,7 +96,7 @@ def run_refresh(
 ) -> int:
     try:
         config = load_site_config(config_path)
-        if config.numbers is None:
+        if config.numbers is None or not config.numbers.sources:
             raise ValueError("the config has no numbers.sources to refresh")
         sources = select(config.numbers, only)
         known = {source.platform for source in config.numbers.sources}
@@ -328,6 +344,10 @@ def _dispatch(args: argparse.Namespace) -> int:
         return run_history_add(args)
     if args.counts_command == "history-verify":
         return run_history_verify(args)
+    if args.counts_command == "import":
+        return _run_import(args)
+    if args.counts_command == "stale":
+        return _run_stale(args)
     return _run(args)
 
 
@@ -388,6 +408,159 @@ def _run(args: argparse.Namespace) -> int:
     )
 
 
+def run_import(
+    config_path: Path,
+    csv_path: Path,
+    out: Path | None,
+    dry_run: bool,
+    *,
+    today: date | None = None,
+    lock_wait: float = LOCK_WAIT_SECONDS,
+) -> int:
+    """Import hand-kept numbers from ``csv_path`` into the numbers file.
+
+    Exit 0 done (or a dry run that would succeed), 2 the file or config is
+    refused (nothing written), 1 the file could not be written.
+    """
+    try:
+        config = load_site_config(config_path)
+        paths = plan_paths(config_path, out)
+        history = history_path(config, config_path, paths)
+        data = _read(csv_path, MAX_CSV_BYTES)
+    except (ConfigError, ValueError, OSError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return EXIT_USAGE
+    day = today if today is not None else utc_today()
+    try:
+        with FileLock(paths.lock, wait=lock_wait):
+            previous = (
+                dict(load_numbers(paths.target).entries)
+                if paths.target.exists()
+                else {}
+            )
+            rows = parse_import(data, config, previous, day)
+            if dry_run:
+                print(
+                    f"dry run: {len(rows)} number(s) would be imported; nothing written"
+                )
+                return EXIT_OK
+            if history is not None:
+                # History first, as in refresh: if it cannot be written, the
+                # numbers file is left as it was. One value per platform, metric
+                # and UTC day; a retry the same day keeps the first.
+                stamp = datetime.now(UTC)
+                run_id = new_run_id(stamp)
+                append_records(
+                    history,
+                    [
+                        Record(
+                            platform=row.key,
+                            metric=row.metric,
+                            value=row.count,
+                            as_of_utc=f"{row.as_of.isoformat()}T00:00:00Z",
+                            source="hand_kept",
+                            run_id=run_id,
+                        )
+                        for row in rows
+                    ],
+                    now=stamp,
+                    skip_days=True,
+                )
+            write_atomic(paths.target, dump_numbers(merge(previous, rows)))
+    except ImportFailed as exc:
+        print("error: the file was not imported; nothing was written", file=sys.stderr)
+        for problem in exc.problems:
+            print(f"  {problem}", file=sys.stderr)
+        return EXIT_USAGE
+    except ConfigError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return EXIT_USAGE
+    except HistoryError as exc:
+        print(
+            f"error: history not written, nothing else was changed: {exc}",
+            file=sys.stderr,
+        )
+        return EXIT_WRITE
+    except LockBusy:
+        print(
+            "error: another counts run holds the lock; try again shortly",
+            file=sys.stderr,
+        )
+        return EXIT_WRITE
+    except LockLost as exc:
+        print(f"error: {exc}; nothing was written", file=sys.stderr)
+        return EXIT_WRITE
+    except OSError as exc:
+        print(f"error: cannot write the numbers file: {exc.strerror}", file=sys.stderr)
+        return EXIT_WRITE
+    for row in rows:
+        print(f"{row.key}: imported (as of {row.as_of.isoformat()})")
+    return EXIT_OK
+
+
+def run_stale(
+    config_path: Path,
+    numbers_path: Path | None,
+    remind_days: int,
+    as_json: bool,
+    *,
+    today: date | None = None,
+) -> int:
+    """List hand-kept numbers due for an update. Values are never printed.
+
+    Exit 0 nothing is due, 4 something is, 2 usage or config problem.
+    """
+    try:
+        config = load_site_config(config_path)
+        path = numbers_path or config_path.parent / "numbers.json"
+        numbers = load_numbers(path) if numbers_path or path.exists() else None
+    except (ConfigError, ValueError, OSError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return EXIT_USAGE
+    day = today if today is not None else utc_today()
+    notes = due_numbers(config, numbers, day, remind_days)
+    items = [
+        {
+            "scope": note.scope,
+            "platform": note.platform,
+            "id": note.item_id,
+            "as_of": note.as_of.isoformat() if note.as_of else None,
+            "days": note.days,
+            "limit": note.limit,
+            "status": "stale" if note.stale else "reminder",
+            "days_over": max(0, note.days - note.limit),
+        }
+        for note in sorted(
+            notes, key=lambda n: (-n.days, n.scope, n.platform, n.item_id)
+        )
+    ]
+    if as_json:
+        report = {
+            "date": day.isoformat(),
+            "remind_days": remind_days,
+            "due": items,
+            "stale_count": sum(1 for i in items if i["status"] == "stale"),
+        }
+        print(json.dumps(report, indent=2, sort_keys=True))
+    elif not items:
+        print("no hand-kept number is due")
+    else:
+        for item in items:
+            print(
+                f"{item['status']}: {item['platform']} ({item['scope']} {item['id']}) "
+                f"as of {item['as_of']}, {item['days']} days old, limit {item['limit']}"
+            )
+    return EXIT_DUE if items else EXIT_OK
+
+
+def _run_import(args: argparse.Namespace) -> int:
+    return run_import(args.config, args.csv, args.out, args.dry_run)
+
+
+def _run_stale(args: argparse.Namespace) -> int:
+    return run_stale(args.config, args.numbers, args.remind_days, args.json)
+
+
 def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
     counts = subparsers.add_parser(
         "counts", help="pull follower counts into a numbers file"
@@ -430,5 +603,33 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
         action="store_true",
         help="print hosts and kinds that would be fetched; fetch and write nothing",
     )
+    import_parser = actions.add_parser(
+        "import",
+        help="import hand-kept numbers from a CSV file (platform,metric,value,as_of)",
+        description="Strict batch import: all rows are checked first and one bad "
+        "row refuses the file. as_of is a UTC day and may not be in the future. "
+        "Exit 0 done, 2 refused (nothing written), 1 write failed.",
+    )
+    import_parser.add_argument("--config", type=Path, required=True)
+    import_parser.add_argument("--csv", type=Path, required=True, help="the CSV file")
+    import_parser.add_argument(
+        "--out", type=Path, help="numbers file to update (default: beside the config)"
+    )
+    import_parser.add_argument("--dry-run", action="store_true")
+    stale_parser = actions.add_parser(
+        "stale",
+        help="list hand-kept numbers due for an update",
+        description="Prints the hand-kept numbers that are stale or old enough for "
+        "a reminder, never their values. Exit 0 nothing due, 4 something due.",
+    )
+    stale_parser.add_argument("--config", type=Path, required=True)
+    stale_parser.add_argument("--numbers", type=Path, help="numbers file to read")
+    stale_parser.add_argument(
+        "--remind-days",
+        type=int,
+        default=REMIND_DAYS,
+        help=f"remind when a number is this many days old (default {REMIND_DAYS})",
+    )
+    stale_parser.add_argument("--json", action="store_true", help="machine-readable")
     _register_history(actions)
     counts.set_defaults(func=_dispatch)

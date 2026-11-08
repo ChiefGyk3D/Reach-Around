@@ -337,6 +337,7 @@ def test_policy_classifies_every_field() -> None:
     assert {k for k, v in DISPLAY_POLICY.items() if v == "public"} == {
         "title",
         "about",
+        "contact",
         "metrics",
         "unified_total",
         "turnstile_site_key",
@@ -375,6 +376,7 @@ def test_public_projection_has_only_header_and_headline_numbers() -> None:
     assert set(out) == {
         "title",
         "about",
+        "contact",
         "metrics",
         "unified_total",
         "turnstile_site_key",
@@ -387,6 +389,7 @@ def test_gated_projection_adds_gated_fields_but_never_private() -> None:
     assert set(out) == {
         "title",
         "about",
+        "contact",
         "metrics",
         "unified_total",
         "turnstile_site_key",
