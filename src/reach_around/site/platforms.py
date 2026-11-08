@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from datetime import date
 
 from reach_around.config.blocks import Platforms
-from reach_around.config.numbers import Numbers, resolve_count
+from reach_around.config.numbers import Numbers, resolve_count, stale_limit
 from reach_around.config.tablinks import is_tab_ref
 
 _UNITS = ((10**3, "k"), (10**6, "M"), (10**9, "B"))
@@ -38,10 +38,11 @@ class PlatformRow:
     short: str | None
     exact: str | None
     as_of: str | None
+    stale: bool = False
 
 
 def platform_rows(
-    block: Platforms, numbers: Numbers | None, today: date
+    block: Platforms, numbers: Numbers | None, today: date, config: object = None
 ) -> list[PlatformRow]:
     rows = []
     for ident, entry in zip(block.item_ids, block.items, strict=True):
@@ -60,6 +61,9 @@ def platform_rows(
                 short=None if count is None else abbreviate(count),
                 exact=None if count is None else f"{count:,}",
                 as_of=None if count is None or stamp is None else stamp.isoformat(),
+                stale=count is not None
+                and stamp is not None
+                and (today - stamp).days > stale_limit(config, entry.platform),
             )
         )
     return rows

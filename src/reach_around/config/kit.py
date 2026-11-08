@@ -62,6 +62,7 @@ Visibility = Literal["public", "gated", "private"]
 DISPLAY_POLICY: Mapping[str, Visibility] = {
     "title": "public",
     "about": "public",
+    "contact": "public",
     "metrics": "public",
     "unified_total": "public",
     "turnstile_site_key": "public",
@@ -223,6 +224,10 @@ class PlatformMetric(_Model):
 class KitConfig(_Model):
     title: Text120
     about: Text1000
+    # One plain-text line a brand can read to reach the owner. Never a link:
+    # the page prints it escaped. The owner decides what goes here (an email
+    # written as text is fine); no address or phone is required or checked.
+    contact: Text200 | None = None
     metrics: list[PlatformMetric] = Field(default_factory=list, max_length=30)
     partners: list[Partner] = Field(default_factory=list, max_length=50)
     case_studies: list[CaseStudy] = Field(default_factory=list, max_length=20)

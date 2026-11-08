@@ -5,6 +5,9 @@
 <section class="kit" aria-labelledby="kit-title">
 <h2 id="kit-title">{{ kit.title }}</h2>
 <p class="kit-about">{{ kit.about }}</p>
+{% if kit.contact %}
+<p class="kit-about kit-contact">{{ kit.contact }}</p>
+{% endif %}
 {{ numbers(kit, "kit-numbers-title") }}
 {% if form %}
 <section class="kit-gate-box" aria-labelledby="kit-gate-title">

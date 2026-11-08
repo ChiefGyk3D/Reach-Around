@@ -215,7 +215,7 @@ def test_a_stale_number_warning_appears_in_the_comment(
     text = body(out)
     assert "## The preview is ready" in text
     assert "Warnings" in text
-    assert "the number for tiktok is 60 days old \\(over 30\\)" in text
+    assert "the number for tiktok is 60 days old\\, past its stale limit" in text
     assert "424242" not in text
     allowed_markup(text)
 

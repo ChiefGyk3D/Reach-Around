@@ -732,7 +732,9 @@ def build_site(
         static[Path("static") / "custom.css"] = custom_css.encode("utf-8")
     named = fingerprint(static)
     env = make_environment(overrides)
-    env.globals["platform_rows"] = lambda block: platform_rows(block, numbers, today)
+    env.globals["platform_rows"] = lambda block: platform_rows(
+        block, numbers, today, config
+    )
     env.globals["asset"] = named.assets
     env.globals["footer_copyright"] = config.footer.copyright_line(today.year)
     # Every page with a tab bar carries the nav badge, so every such page gets the
