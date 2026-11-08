@@ -43,6 +43,7 @@ kit:
 | `kit/index.html` | `--out` (published) | everyone |
 | `kit/retry/index.html` | `--out` (published) | everyone; only when the kit has gated content |
 | `kit.html` | `--gated-out` (never published) | a visitor who passed the gate, served by the Worker |
+| `kit.pdf` | `kit pdf --out-dir` (private, never published) | you, the owner (see [The private PDF](#the-private-pdf)) |
 
 ```sh
 reach-around build --config site.yaml --out site-out --gated-out gated-out
@@ -213,6 +214,85 @@ directory on purpose, delete the old page and the record first. Code that calls
 The gated page makes no third-party request. A remote (`https://`) creator
 avatar is left out of it; the public pages keep the avatar, like every other
 page. Use a local avatar file if you want it on the gated page too.
+
+## The private PDF
+
+`reach-around kit pdf` prints the whole gated kit (the numbers, partners, case
+studies, rates and audience details) to a PDF for you, the owner. It is never
+published and never linked from a page.
+
+```sh
+reach-around build --config site.yaml --out site-out --gated-out gated-out
+reach-around kit pdf --config site.yaml --site-out site-out \
+  --gated-out gated-out --out-dir ~/private/kit
+```
+
+It prints the path of the file and nothing else on standard output. It needs a
+Chromium or Chrome binary (the one the visual tests already use): pass
+`--chromium PATH`, set `RA_CHROMIUM`, or have `chromium` on `PATH`. It adds no
+Python dependency.
+
+| Option | Meaning |
+| --- | --- |
+| `--config` | the site config (for the kit text the PDF is checked against) |
+| `--gated-out` | the gated directory of the same build (holds `kit.html`) |
+| `--site-out` | the public output of the same build (the stylesheets and local images the gated page uses) |
+| `--out-dir` | where the PDF goes; created owner-only if missing |
+| `--name` | file name, default `kit.pdf`; one plain name ending `.pdf` |
+| `--date` | the creation date written into the PDF, `YYYY-MM-DD`; default `SOURCE_DATE_EPOCH`, else the day `kit.html` was built |
+| `--overwrite` | replace an existing file (never a link or a directory) |
+| `--isolation netns` | also run the browser in its own network namespace (see below) |
+
+What it guarantees, and how each part is checked:
+
+- **Offline.** The browser gets a sealed copy of the page, built from an
+  allowlist: no script, form, frame, remote stylesheet, remote image, `@import`,
+  `@font-face` or `url(...)` survives, and a page that has one of the dangerous
+  tags stops the build instead of being cleaned. The copy carries a
+  Content-Security-Policy that allows no load at all except embedded images. The
+  browser also runs with DNS mapped to nothing, a dead proxy that covers
+  loopback, no JavaScript, a fresh empty profile and a scrubbed environment.
+  `--isolation netns` adds a network namespace of its own (it needs unprivileged
+  user namespaces, and the browser's own sandbox is off in that mode because it
+  cannot nest here; the default keeps the sandbox). The tests prove the
+  Python side makes no socket call and that the browser never calls a local
+  server the page points at.
+- **Only your files.** Stylesheets come from `<site-out>/static/*.css` and images
+  from `<site-out>/static/*.png|jpg|jpeg`, never through a symbolic link, with
+  size limits. PNG text chunks, JPEG EXIF and comments are dropped. Fonts are the
+  system fonts: the site's web fonts are not embedded, so the PDF will not use
+  the site's typeface.
+- **Scrubbed and reproducible.** The Info dictionary is rewritten to a title, the
+  producer `Reach Around` and the creation date. No author, creator, browser
+  version, modification time, XMP block or document id is kept, and the build
+  fails if any such trace, your user name, your home directory or the work
+  directory is in the file. The same gated page and the same `--date` give the
+  same bytes, on the same machine and browser build (a different browser or
+  system font set draws differently).
+- **Leak check.** The text is extracted from the finished PDF and searched for
+  every string value of a field the config marks private or not-for-PDF (the
+  Turnstile site key today, listed in `PDF_EXCLUDED` in
+  `reach_around/config/kit.py`; `unlock_link` is a switch and has no text) and
+  for gate-form words. A hit fails the build and names the field, never the
+  value; nothing is written. The same pass checks that every gated text in the
+  config is in the PDF, which catches a stale `--gated-out` (rebuild first) and
+  text the renderer lost. Values under 6 characters are not searched.
+- **Limits.** The file is at most 20 MiB and 60 pages, the gated page at most
+  2 MiB, and the browser is stopped after 120 seconds.
+- **Where it may go.** The output directory may not be, hold or sit inside the
+  public output, the gated directory or the directory of the config, may not
+  be inside a git work tree (a `.git` in it or any parent), and may not go
+  through a symbolic link. An existing directory must be yours and closed to
+  others. The file is written owner-only to a temporary name and renamed into
+  place. The work directory (the page, the browser profile, the unscrubbed
+  PDF) is owner-only, under `XDG_RUNTIME_DIR` when that is private, and is
+  removed on every exit, including `SIGTERM`.
+
+Not covered: text drawn as an image, which no text search can see; the content of
+a local image beyond dropping its metadata; a browser bug (the sealed page, the
+policy and the optional namespace are the defenses); and what you do with the
+file afterwards. Exit code 0 on success, 1 for any refusal (one line on standard
+error), 2 for a usage error.
 
 ## Old numbers
 

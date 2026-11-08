@@ -73,6 +73,12 @@ DISPLAY_POLICY: Mapping[str, Visibility] = {
     "unlock_link": "private",
 }
 
+# Fields that are never printed in the private PDF although their level is not
+# ``private``. The Turnstile key belongs to the gate form, which the PDF does not
+# have. The PDF build searches its text for every string value of a field here or
+# marked ``private`` and fails if one is found (``reach_around.kit.pdf``).
+PDF_EXCLUDED: frozenset[str] = frozenset({"turnstile_site_key"})
+
 
 class _Model(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -396,3 +402,16 @@ def public_projection(kit: KitConfig, numbers: Numbers | None) -> dict[str, Any]
 def gated_projection(kit: KitConfig, numbers: Numbers | None) -> dict[str, Any]:
     """Public plus gated fields. Private fields are in neither."""
     return _project(kit, numbers, frozenset({"public", "gated"}))
+
+
+def pdf_excluded_values(kit: KitConfig) -> dict[str, str]:
+    """Field name to string value, for every field that must not reach the PDF:
+    those marked ``private`` and those in ``PDF_EXCLUDED``. Only strings can be
+    searched for; a switch such as ``unlock_link`` has no text to find."""
+    out: dict[str, str] = {}
+    for name, level in DISPLAY_POLICY.items():
+        if level == "private" or name in PDF_EXCLUDED:
+            value = getattr(kit, name, None)
+            if isinstance(value, str) and value:
+                out[name] = value
+    return out
