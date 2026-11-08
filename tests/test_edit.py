@@ -296,6 +296,12 @@ def test_set_replaces_a_value_and_keeps_the_trailing_comment(commented: Path) ->
 
 
 def test_set_adds_missing_keys_and_parents(cfg: Path) -> None:
+    # The example now carries a full theme; drop it so the keys really are missing.
+    text = cfg.read_text(encoding="utf-8")
+    start = text.index("theme:\n")
+    cfg.write_text(
+        text[:start] + text[text.index("disclosure:", start) :], encoding="utf-8"
+    )
     before = lines(cfg)
     for key, value in [
         ("theme.colors.accent", "#ff69b4"),
@@ -369,9 +375,9 @@ def test_dry_run_changes_nothing_but_prints_a_diff(
     cfg: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     before = cfg.read_bytes()
-    assert run("set", "--config", str(cfg), "theme.mode", "dark", "--dry-run") == 0
+    assert run("set", "--config", str(cfg), "theme.mode", "light", "--dry-run") == 0
     out = capsys.readouterr().out
-    assert "+  mode: dark" in out and "dry run" in out
+    assert "+  mode: light" in out and "dry run" in out
     others = [
         ["remove-link", "home-page"],
         ["move-link", "example-stand", "--position", "1"],
