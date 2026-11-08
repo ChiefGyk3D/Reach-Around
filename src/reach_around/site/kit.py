@@ -44,7 +44,7 @@ from typing import Any
 from jinja2 import Environment
 
 from reach_around.config.blocks import platform_name
-from reach_around.config.cutover import cutover_label, live_since
+from reach_around.config.cutover import cutover_label, live_since, utc_today
 from reach_around.config.kit import (
     KitConfig,
     ResolvedMetric,
@@ -670,7 +670,8 @@ def render_kit(
     if kit is None:
         return KitRender({}, None, [])
     warnings = plan_warnings(config, numbers, today)
-    live_day = live_since(config, today)
+    # A UTC day, not ``today`` (the scheduling day in the config's time zone).
+    live_day = live_since(config, utc_today())
     public = _content(public_projection(kit, numbers), live_day)
     form: dict[str, Any] | None = None
     if has_gate_form(kit):

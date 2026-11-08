@@ -236,5 +236,7 @@ def fake_renderer(html: str, work: Path) -> bytes:
     parser = _Text()
     parser.feed(html)
     lines = parser.lines
-    pages = [lines[i : i + 20] for i in range(0, len(lines), 20)] or [["empty"]]
+    # 40 lines a page: the first page ends with a ligature glyph, which must not
+    # land inside a table row.
+    pages = [lines[i : i + 40] for i in range(0, len(lines), 40)] or [["empty"]]
     return make_pdf(pages, title="Chromium title")

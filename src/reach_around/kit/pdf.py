@@ -43,6 +43,7 @@ from pathlib import Path
 from types import FrameType
 from typing import Literal, NoReturn
 
+from reach_around.config.cutover import cutover_label, live_since, utc_today
 from reach_around.config.kit import (
     KitConfig,
     pdf_excluded_values,
@@ -376,7 +377,12 @@ def _flat(text: str) -> str:
     )
 
 
-def check_text(kit: KitConfig, text: str, numbers: Numbers | None = None) -> None:
+def check_text(
+    kit: KitConfig,
+    text: str,
+    numbers: Numbers | None = None,
+    live_since_text: str | None = None,
+) -> None:
     """Fail if a private value is in ``text`` or configured gated text is not."""
     flat = _flat(text)
     for field, value in pdf_excluded_values(kit).items():
@@ -391,7 +397,10 @@ def check_text(kit: KitConfig, text: str, numbers: Numbers | None = None) -> Non
             raise PdfLeakError(
                 "text from the gate form appears in the PDF; nothing was written"
             )
-    for where, value in _expected_text(kit, numbers):
+    expected = _expected_text(kit, numbers)
+    if live_since_text is not None:
+        expected.append(("the live-since line", live_since_text))
+    for where, value in expected:
         if _flat(value) not in flat:
             raise PdfError(
                 f"{where} is missing from the PDF text; the staged page may be out "
@@ -441,6 +450,12 @@ def build_kit_pdf(
         raise PdfError(f"the PDF text could not be checked: {exc}") from exc
     if len(pages) > MAX_PAGES:
         raise PdfError(f"the PDF has {len(pages)} pages, more than {MAX_PAGES}")
-    check_text(kit, "\n".join(pages), numbers)
+    day = live_since(config, utc_today())
+    check_text(
+        kit,
+        "\n".join(pages),
+        numbers,
+        None if day is None else cutover_label(day),
+    )
     path = write_private(target_dir, name, final, overwrite=overwrite)
     return PdfResult(path=path, pages=len(pages), size=len(final))

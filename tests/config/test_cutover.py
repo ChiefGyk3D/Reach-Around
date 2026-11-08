@@ -21,6 +21,7 @@ from reach_around.config.cutover import (
     cutover_date,
     cutover_label,
     live_since,
+    utc_today,
 )
 from reach_around.schema import build_schema
 from reach_around.site.build import build_site
@@ -112,6 +113,27 @@ def test_live_since_is_none_for_a_future_day() -> None:
     assert live_since(config, date(2027, 3, 11)) == date(2027, 3, 11)
 
 
+def test_kit_visibility_follows_the_utc_day_not_the_build_day(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The build's ``today`` is the config-zone day; the line follows UTC."""
+    import reach_around.site.kit as kit_module
+
+    config = cfg(cutover_date="2026-11-08")
+    # build day (zone-local) is already the 8th, but UTC is still the 7th
+    monkeypatch.setattr(kit_module, "utc_today", lambda: date(2026, 11, 7))
+    out = tmp_path / "a"
+    build_site(config, out, today=date(2026, 11, 8))
+    assert "Live since" not in (out / "kit" / "index.html").read_text("utf-8")
+    # build day is still the 7th locally, but UTC has reached the 8th
+    monkeypatch.setattr(kit_module, "utc_today", lambda: date(2026, 11, 8))
+    out = tmp_path / "b"
+    build_site(config, out, today=date(2026, 11, 7))
+    assert "Live since 2026-11-08 (UTC)" in (out / "kit" / "index.html").read_text(
+        "utf-8"
+    )
+
+
 def test_label_says_utc() -> None:
     assert cutover_label(date(2026, 11, 8)) == "Live since 2026-11-08 (UTC)"
 
@@ -143,7 +165,8 @@ def test_kit_has_no_line_when_unset(tmp_path: Path) -> None:
 
 
 def test_kit_omits_the_line_for_a_future_day(tmp_path: Path) -> None:
-    assert "Live since" not in kit_html(tmp_path, cfg(cutover_date="2027-03-11"))
+    future = (utc_today() + timedelta(days=5)).isoformat()
+    assert "Live since" not in kit_html(tmp_path, cfg(cutover_date=future))
 
 
 def test_gated_page_carries_the_line_too(tmp_path: Path) -> None:
