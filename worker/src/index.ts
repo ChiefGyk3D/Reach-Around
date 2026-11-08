@@ -17,6 +17,9 @@ type WorkerEnv = ClickEnv &
   Omit<ViewEnv, "DB" | "SITES" | "SITE_HOST" | "PAGE_IDS" | "LINK_IDS"> &
   LiveEnv;
 
+/** Query budgets below this run the lead purge after the rollup (see scheduled()). */
+const LEAD_FIRST_MIN_BUDGET = 20;
+
 const VIEW_PREFIX = "/e/v/";
 
 function isViewRoute(request: Request): boolean {
@@ -60,7 +63,7 @@ export default {
    * trigger runs the hourly jobs below exactly as before.
    *
    * Hourly cron, in this order: click purge, page-view purge, lead purge,
-   * page-view rollup. The purge comes BEFORE the rollup so a rollup that fails, runs out
+   * page-view rollup (the lead purge moves after the rollup under a QUERY_BUDGET below 20). The purge comes BEFORE the rollup so a rollup that fails, runs out
    * of CPU or is cut off can never block retention (the purge only deletes
    * days that are already rolled, plus rows past the hard ceiling). Each step
    * is isolated: one failing never stops the others, and nothing here throws.
@@ -100,24 +103,33 @@ export default {
         } catch {
           // Next run retries; nothing request-derived to report.
         }
+        // Lead retention (issue #265), bounded and on the same meter. With the
+        // default budget it runs before the rollup on a small slice, so a cut-off
+        // rollup cannot block retention. Under a tight budget (below
+        // LEAD_FIRST_MIN_BUDGET) it would take queries the rollup needs, so it
+        // runs after the rollup on whatever is left.
+        const leadsFirst = budget >= LEAD_FIRST_MIN_BUDGET;
+        const purgeLeads = async (): Promise<void> => {
+          try {
+            const size = leadsFirst ? Math.min(LEAD_PURGE_QUERIES, Math.floor(budget / 10)) : LEAD_PURGE_QUERIES;
+            const leadDb = meteredDb(env.DB, meter.slice(size));
+            await purgeExpiredLeads({ DB: leadDb, LEAD_RETENTION_DAYS: env.LEAD_RETENTION_DAYS }, now);
+          } catch {
+            logEvent("purge", "failed", "other");
+          }
+        };
         try {
           await purgeViews({ ...env, DB: purgeDb }, now);
         } catch {
           // Same.
         }
-        try {
-          // Lead retention (issue #265): bounded, and on the same meter. Its own
-          // slice keeps it from eating the rollup's queries.
-          const leadDb = meteredDb(env.DB, meter.slice(Math.min(LEAD_PURGE_QUERIES, Math.floor(budget / 4))));
-          await purgeExpiredLeads({ DB: leadDb, LEAD_RETENTION_DAYS: env.LEAD_RETENTION_DAYS }, now);
-        } catch {
-          logEvent("purge", "failed", "other");
-        }
+        if (leadsFirst) await purgeLeads();
         try {
           await rollupClosedDays({ ...env, DB: whole }, now);
         } catch {
           // The heartbeat in view_meta records the failure class.
         }
+        if (!leadsFirst) await purgeLeads();
       })(),
     );
   },

@@ -244,11 +244,49 @@ describe("scheduled wiring", () => {
     expect(clicks?.n).toBe(0);
   });
 
-  it("the lead purge shares the invocation budget: a tiny QUERY_BUDGET still never throws or overruns", async () => {
+  it("a tiny QUERY_BUDGET never throws or overruns the meter", async () => {
     await seedMany(LEAD_PURGE_MAX_PER_RUN, Date.now() - 60 * DAY);
+    let queries = 0;
+    const counting = new Proxy(DB, {
+      get(t, p) {
+        if (p === "prepare") {
+          return (q: string) => {
+            const st = t.prepare(q);
+            return new Proxy(st, {
+              get(s, k) {
+                if (k === "bind") return (...a: unknown[]) => { const b = s.bind(...a); return new Proxy(b, { get(x, kk) { if (kk === "run" || kk === "all" || kk === "first") queries++; const v = Reflect.get(x, kk, x); return typeof v === "function" ? v.bind(x) : v; } }); };
+                if (k === "run" || k === "all" || k === "first") queries++;
+                const v = Reflect.get(s, k, s);
+                return typeof v === "function" ? v.bind(s) : v;
+              },
+            });
+          };
+        }
+        if (p === "batch") return async (s: D1PreparedStatement[]) => { queries++; return t.batch(s); };
+        const v = Reflect.get(t, p, t);
+        return typeof v === "function" ? v.bind(t) : v;
+      },
+    });
     const { c, waits } = ctx();
-    await worker.scheduled({} as ScheduledController, full({ QUERY_BUDGET: "5" }), c);
+    await worker.scheduled({} as ScheduledController, full({ DB: counting, QUERY_BUDGET: "5" }), c);
     await expect(Promise.all(waits)).resolves.toBeDefined();
+    expect(queries).toBeLessThanOrEqual(5);
+  });
+
+  it("under a tight budget the lead purge runs after the rollup on what is left, and still runs", async () => {
+    await seed("old", Date.now() - 40 * DAY);
+    const { c, waits } = ctx();
+    await worker.scheduled({} as ScheduledController, full({ QUERY_BUDGET: "10" }), c);
+    await Promise.all(waits);
+    expect(await countLeads(DB)).toBe(0);
+  });
+
+  it("with the default budget the lead purge takes at most 3 queries", async () => {
+    await seedMany(LEAD_PURGE_MAX_PER_RUN * 2, Date.now() - 60 * DAY);
+    const { c, waits } = ctx();
+    await worker.scheduled({} as ScheduledController, full(), c);
+    await Promise.all(waits);
+    expect(await countLeads(DB)).toBe(LEAD_PURGE_MAX_PER_RUN);
   });
 });
 
