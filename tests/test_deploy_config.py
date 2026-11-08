@@ -332,3 +332,52 @@ def test_live_variables_are_plain_variables_in_two_steps_only() -> None:
     # still no write to the runner's shared files
     assert "GITHUB_ENV" not in str(_step("Write deploy config"))
     assert "GITHUB_PATH" not in str(_step("Write deploy config"))
+
+
+# --- the derived LINK_IDS (issue #319) ----------------------------------------
+
+
+def test_check_configuration_does_not_need_the_link_ids_variable() -> None:
+    env = {k: v for k, v in CHECK_BASE.items() if k != "LINK_IDS"}
+    done = subprocess.run(  # noqa: S603 - fixed argv and sample values
+        ["/bin/bash", "-c", _step("Check configuration")["run"]],
+        env={"PATH": "/usr/bin:/bin", **env},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert done.returncode == 0, done.stdout + done.stderr
+
+
+def test_check_configuration_still_rejects_a_bad_link_ids_variable() -> None:
+    done = _check({"LINK_IDS": '["ok","BAD ID"]'})
+    assert done.returncode != 0
+    assert "LINK_IDS" in done.stdout + done.stderr
+
+
+def test_the_example_build_ids_survive_the_writer(tmp_path: Path) -> None:
+    ids = '["example-cable","example-mic","example-stand","home-page"]'
+    data = tomllib.loads(_run(tmp_path, None, {"LINK_IDS": ids}))
+    assert data["vars"]["LINK_IDS"] == ids
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        "",
+        "[]",
+        '["Bad"]',
+        '["a b"]',
+        '["a"],["b"]',
+        "['a']",
+        '["a"]\n[x]',
+        '["a' + "'" + '"]',
+        "[" + ",".join(f'"l{n}"' for n in range(201)) + "]",
+    ],
+)
+def test_the_writer_refuses_a_missing_or_invalid_derived_list(
+    tmp_path: Path, bad: str
+) -> None:
+    with pytest.raises(subprocess.CalledProcessError):
+        _run(tmp_path, None, {"LINK_IDS": bad})
+    assert not (tmp_path / "wrangler.deploy.toml").exists()
