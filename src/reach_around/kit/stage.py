@@ -223,10 +223,13 @@ def _static_file(site_dir: Path, url_path: str, suffixes: tuple[str, ...]) -> Pa
 
 _CSS_COMMENT = re.compile(r"/\*.*?\*/", re.S)
 _CSS_ESCAPE = re.compile(r"\\([0-9a-fA-F]{1,6})[ \t\n\r\f]?|\\(.)", re.S)
+_LINE_CONTINUATION = re.compile(r"\\[\n\r\f]")
 _FONT_FACE = re.compile(r"@font-face\s*\{[^{}]*\}", re.I)
 _IMPORT = re.compile(r"@import\b[^;{}]*;?", re.I)
 _URL = re.compile(r"url\s*\((?:[^()\\]|\\.)*\)", re.I)
-_REMOTE_FUNCTIONS = re.compile(r"url\s*\(|@import|image-set\s*\(|\bsrc\s*\(", re.I)
+_REMOTE_FUNCTIONS = re.compile(
+    r"url\s*\(|@import|image-set\s*\(|\bimage\s*\(|\bsrc\s*\(", re.I
+)
 
 
 def _unescape_css(match: re.Match[str]) -> str:
@@ -245,10 +248,30 @@ def clean_css(raw: bytes, what: str) -> str:
     if "\x00" in text:
         raise StageError(f"{what} contains a NUL byte")
     text = _CSS_COMMENT.sub("", text)
+    # A backslash before a line break is a CSS line continuation; the unescape
+    # pass would turn it into a bare line break, so refuse it before decoding.
+    if _LINE_CONTINUATION.search(text):
+        raise StageError(f"{what} has a line continuation")
     text = _CSS_ESCAPE.sub(_unescape_css, text)
-    text = _FONT_FACE.sub("", text)
-    text = _IMPORT.sub("", text)
-    text = _URL.sub("none", text)
+    # One unescape pass is not a fixed point: a backslash left over (written
+    # directly, doubled, or produced by an escape) means the text would read
+    # differently if unescaped again, so the filters below could be judging a
+    # different string than a consumer sees. Refuse it rather than loop.
+    if "\\" in text:
+        raise StageError(f"{what} has a backslash that remains after unescaping")
+    # Comments were removed before decoding, so decoding must not make new ones:
+    # a comment opener that appears now would be skipped by a consumer and join
+    # the text on either side, so the filters below would judge a different
+    # string. Refuse it (fail closed) instead of stripping again.
+    if "/*" in text:
+        raise StageError(f"{what} has a comment that appears after unescaping")
+    # A removal leaves a space, never a join, so the text on either side cannot
+    # fuse into a new token or comment delimiter; the final text is re-checked.
+    text = _FONT_FACE.sub(" ", text)
+    text = _IMPORT.sub(" ", text)
+    text = _URL.sub(" none ", text)
+    if "/*" in text or "*/" in text:
+        raise StageError(f"{what} has a comment delimiter after filtering")
     if _REMOTE_FUNCTIONS.search(text):
         raise StageError(f"{what} has a reference that could not be removed")
     if "<" in text:
