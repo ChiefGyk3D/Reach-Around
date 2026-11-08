@@ -398,6 +398,22 @@ def test_a_dump_filled_through_real_tables_is_clean(tmp_path: Path) -> None:
     assert run("\n".join(db.iterdump()) + "\n", tmp_path=tmp_path).returncode == 1
 
 
+def test_a_click_source_label_passes_and_an_address_or_agent_in_it_fails(
+    tmp_path: Path,
+) -> None:
+    db = real_db()
+    db.execute(
+        "INSERT INTO click_events (ts, link_id, country, site, src) "
+        "VALUES (1792000000000, 'a-b', 'US', 'links', 'instagram')"
+    )
+    db.commit()
+    assert run("\n".join(db.iterdump()) + "\n", tmp_path=tmp_path).returncode == 0
+    for bad in ("198.51.100.7", "Mozilla/5.0", "2001:db8::1"):
+        db.execute("UPDATE click_events SET src = ?", (bad,))
+        r = run("\n".join(db.iterdump()) + "\n", tmp_path=tmp_path)
+        assert r.returncode == 1, bad
+
+
 # ---- round 3: numeric columns, bare hex labels, nested encodings -------------
 
 IPV4_INT = 203 * 256**3 + 113 * 256 + 211  # 3405803987, the reviewer's example
@@ -412,8 +428,8 @@ def insert(table: str, values: str, cols: str = "") -> str:
     [
         insert("counters", f"'x', '2026-01-01', {IPV4_INT}"),
         insert("counters", "'x', '2026-01-01', 16777216"),
-        insert("click_events", f"1, {IPV4_INT}, 'a', 'US', 'main'"),
-        insert("click_events", f"{IPV4_INT}, 1792000000000, 'a', 'US', 'main'"),
+        insert("click_events", f"1, {IPV4_INT}, 'a', 'US', 'main', NULL"),
+        insert("click_events", f"{IPV4_INT}, 1792000000000, 'a', 'US', 'main', NULL"),
         insert("kit_meta", f"'k', {IPV4_INT}"),
         insert("view_meta", f"'k', '{IPV4_INT}'"),
         insert("view_meta", f"'k', {IPV4_INT}"),
@@ -441,7 +457,7 @@ def test_a_whole_number_address_in_a_numeric_column_is_caught(
     "stmt",
     [
         insert("counters", "'x', '2026-01-01', 1234"),
-        insert("click_events", "1, 1792000000000, 'a', 'US', 'main'"),
+        insert("click_events", "1, 1792000000000, 'a', 'US', 'main', NULL"),
         insert("kit_meta", "'last_purge_ts', 1792000000000"),
         insert("kit_meta", "'n', 12"),
         insert("view_meta", "'rolled_through', '2027-03-13'"),
@@ -458,7 +474,7 @@ def test_ordinary_numbers_pass(stmt: str, tmp_path: Path) -> None:
 def test_a_timestamp_outside_the_plausible_window_is_caught(tmp_path: Path) -> None:
     for ts in ("1792000000", "5", "99999999999999"):
         r = run(
-            SCHEMA_DUMP + insert("click_events", f"1, {ts}, 'a', 'US', 'main'"),
+            SCHEMA_DUMP + insert("click_events", f"1, {ts}, 'a', 'US', 'main', NULL"),
             tmp_path=tmp_path,
         )
         assert r.returncode == 1, ts
@@ -565,7 +581,7 @@ def test_a_number_in_a_column_with_no_rule_is_refused(
     [
         ("counters", "'x', '2026-01-01', {n}"),
         ("kit_meta", "'k', {n}"),
-        ("click_events", "1, {n}, 'a', 'US', 'main'"),
+        ("click_events", "1, {n}, 'a', 'US', 'main', NULL"),
         ("view_meta", "'k', '{n}'"),
     ],
 )

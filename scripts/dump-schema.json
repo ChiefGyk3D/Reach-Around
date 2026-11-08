@@ -10,7 +10,8 @@
       "ts",
       "link_id",
       "country",
-      "site"
+      "site",
+      "src"
     ],
     "counters": [
       "key",

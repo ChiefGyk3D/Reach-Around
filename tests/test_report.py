@@ -790,6 +790,10 @@ def test_docs_state_the_real_guarantee() -> None:
 
 
 FIELD_CASES = [
+    ("ip click src", "click_events", {"ts": TS, "link_id": "a", "src": "198.51.100.7"}),
+    ("ua click src", "click_events", {"ts": TS, "link_id": "a", "src": "Mozilla/5.0"}),
+    ("upper click src", "click_events", {"ts": TS, "link_id": "a", "src": "Instagram"}),
+    ("long click src", "click_events", {"ts": TS, "link_id": "a", "src": "a" * 31}),
     ("email link id", "click_events", {"ts": TS, "link_id": "alice@example.com"}),
     ("email pct", "click_events", {"ts": TS, "link_id": "alice%40example.com"}),
     ("upper link id", "click_events", {"ts": TS, "link_id": "Alice"}),
@@ -892,3 +896,103 @@ def test_error_messages_never_echo_table_or_column_names(
     csv_path.write_text("ts,link_id,Alice_Smith\n1,a,b\n", encoding="utf-8")
     code, _, err = run(capsys, "--input", str(csv_path))
     assert code == 2 and "alice" not in err.lower()
+
+
+def _clicks(spec: dict[str, dict[str | None, int]]) -> list[dict[str, Any]]:
+    return [
+        {"ts": TS, "link_id": link, "src": src}
+        for link, cells in spec.items()
+        for src, n in cells.items()
+        for _ in range(n)
+    ]
+
+
+def _joint(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    spec: dict[str, dict[str | None, int]],
+) -> dict[str, Any]:
+    path = write(tmp_path, {"tables": {"click_events": _clicks(spec)}})
+    code, out, _ = run(capsys, "--input", str(path), "--json")
+    assert code == 0
+    report: dict[str, Any] = json.loads(out)
+    return report
+
+
+def _assert_nothing_recoverable(
+    report: dict[str, Any], spec: dict[str, dict[str | None, int]]
+) -> None:
+    """Try the subtraction: no hidden cell may be derivable from printed numbers."""
+    floor = report["floor"]
+    link_rows = {r["label"]: r["views"] for r in report["links"]["rows"]}
+    printed: dict[str, dict[str, int]] = {}
+    for r in report["click_sources"]["rows"]:
+        src, link = r["label"].split(" -> ")
+        printed.setdefault(link, {})[src] = r["views"]
+    for link, cells in spec.items():
+        small = any(n < floor for n in cells.values())
+        if small:
+            # No part of a link with a small cell is printed, so there is
+            # nothing to subtract from the link total.
+            assert link not in printed
+        if link in printed:
+            # A printed breakdown is complete, every cell at the floor, and
+            # matches the link's own printed total: no remainder to solve.
+            assert not small
+            assert link in link_rows
+            assert sum(printed[link].values()) == link_rows[link]
+            assert set(printed[link]) == {k or "none" for k in cells}
+
+
+@pytest.mark.parametrize(
+    "spec",
+    [
+        # one small cell
+        {"twitch": {"instagram": 9, "bluesky": 3}},
+        # two small cells (their sum is at the floor)
+        {"twitch": {"instagram": 9, "bluesky": 2, "tiktok": 3}},
+        # single-source link, small and large
+        {"twitch": {"instagram": 4}, "kick": {"instagram": 8}},
+        # ties at the floor and below it
+        {"twitch": {"a": 5, "b": 5}, "kick": {"a": 4, "b": 4, "c": 4}},
+        # no source at all
+        {"twitch": {None: 12}, "kick": {None: 3, "instagram": 9}},
+        # all clean
+        {"twitch": {"instagram": 7, "bluesky": 6}, "kick": {"other": 5, None: 5}},
+    ],
+)
+def test_joint_suppression_leaves_no_recoverable_cell(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    spec: dict[str, dict[str | None, int]],
+) -> None:
+    _assert_nothing_recoverable(_joint(tmp_path, capsys, spec), spec)
+
+
+def test_joint_suppression_random_data(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import random
+
+    rng = random.Random(329)  # noqa: S311 - test data
+    srcs = [None, "instagram", "bluesky", "other", "tiktok"]
+    for _ in range(40):
+        spec = {
+            f"l{i}": {s: rng.randint(1, 9) for s in rng.sample(srcs, rng.randint(1, 4))}
+            for i in range(rng.randint(1, 4))
+        }
+        _assert_nothing_recoverable(_joint(tmp_path, capsys, spec), spec)
+
+
+def test_a_clean_link_prints_its_whole_breakdown_and_a_dirty_one_none(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    spec: dict[str, dict[str | None, int]] = {
+        "twitch": {"instagram": 7, None: 6},
+        "kick": {"instagram": 9, "bluesky": 2},
+    }
+    report = _joint(tmp_path, capsys, spec)
+    labels = {r["label"]: r["views"] for r in report["click_sources"]["rows"]}
+    assert labels == {"instagram -> twitch": 7, "none -> twitch": 6}
+    assert report["click_sources"]["links_withheld"] == 1
+    assert "bluesky" not in json.dumps(report)

@@ -170,7 +170,7 @@ describe("page view schema", () => {
   });
 
   it("existing_click_events_unchanged", async () => {
-    expect(await columnsOf("click_events")).toEqual(["id", "ts", "link_id", "country", "site"]);
+    expect(await columnsOf("click_events")).toEqual(["id", "ts", "link_id", "country", "site", "src"]);
   });
 
   it("view_events_defaults_are_closed_values", async () => {

@@ -116,7 +116,13 @@ SPECS: dict[str, Spec] = {
     # Raw rows: select only these columns. There is no key; rows may repeat.
     "click_events": Spec(
         marker="link_id",
-        columns={"site": "site", "ts": "ts", "link_id": "slug", "country": "country0"},
+        columns={
+            "site": "site",
+            "ts": "ts",
+            "link_id": "slug",
+            "country": "country0",
+            "src": "csrc",
+        },
         required=frozenset({"ts", "link_id"}),
     ),
     "kit_events": Spec(
@@ -276,6 +282,11 @@ def _check_value(kind: str, value: Any, where: str) -> Any:
         pattern = _DAY
     elif kind == "country":
         pattern = _COUNTRY
+    elif kind == "csrc":
+        # Nullable closed-set source label (issue #329); null or empty is none.
+        if value is None or value == "":
+            return ""
+        return _check_text(value, pattern=_UTM, where=where)
     elif kind == "country0":
         if value is None or value == "":
             return ""
