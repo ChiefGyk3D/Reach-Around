@@ -62,6 +62,10 @@ jobs:
     timeout-minutes: 10
     permissions:
       contents: read
+    # The hash of the engine wheel (not a secret). The counts job refuses a
+    # wheel that does not match it.
+    outputs:
+      engine_sha256: ${{ steps.hash.outputs.engine_sha256 }}
     steps:
       - uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43 # v2.22.3
         with:
@@ -81,6 +85,18 @@ jobs:
           python -m pip install --require-hashes -r requirements-build.txt
           python -m pip download --only-binary :all: --no-deps --require-hashes -r requirements.txt -d wheels-out
           python -m pip wheel --no-deps --no-build-isolation . -w wheels-out
+
+      - name: Hash the engine wheel
+        id: hash
+        run: |
+          set -eu
+          set -- wheels-out/reach_around-*.whl
+          if [ "$#" != 1 ] || [ ! -f "$1" ]; then
+            echo "::error::expected exactly one reach_around wheel"
+            exit 1
+          fi
+          sum="$(sha256sum "$1")"
+          echo "engine_sha256=${sum%% *}" >> "$GITHUB_OUTPUT"
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -104,7 +120,11 @@ jobs:
     permissions:
       contents: read # the keys are in this job, so it cannot write
       id-token: write # Doppler OIDC (optional); never a write to the repository
-    # No `environment` and no job-level env, on purpose.
+    # A protected environment of its own (restrict it to the main branch; a
+    # required reviewer is optional, docs/deploy.md). The Doppler identity
+    # trusts this environment's subject only, so no other job or workflow can
+    # assume it. No job-level env, on purpose.
+    environment: counts-secrets
     steps:
       - uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43 # v2.22.3
         with:
@@ -135,10 +155,22 @@ jobs:
       # the `wheels` job built: --no-index --only-binary means no setup script
       # and no build backend runs in this job, which can ask for an OIDC token.
       - name: Install the engine from wheels
+        env:
+          ENGINE_SHA256: ${{ needs.wheels.outputs.engine_sha256 }}
         run: |
           set -eu
           python -m pip install --no-index --find-links wheels-in --only-binary :all: --require-hashes -r requirements.txt
-          python -m pip install --no-index --only-binary :all: --no-deps --find-links wheels-in reach_around
+          set -- wheels-in/reach_around-*.whl
+          if [ "$#" != 1 ] || [ ! -f "$1" ]; then
+            echo "::error::expected exactly one reach_around wheel"
+            exit 1
+          fi
+          sum="$(sha256sum "$1")"
+          if [ -z "$ENGINE_SHA256" ] || [ "${sum%% *}" != "$ENGINE_SHA256" ]; then
+            echo "::error::the engine wheel does not match the hash from the wheels job"
+            exit 1
+          fi
+          python -m pip install --no-index --only-binary :all: --no-deps "$1"
 
       # Optional (Doppler). Runs only when the repository variables
       # DOPPLER_COUNTS_IDENTITY_ID, DOPPLER_COUNTS_PROJECT and

@@ -71,7 +71,7 @@ def test_a_counts_job_runs_before_the_build_and_cannot_write() -> None:
     # id-token is for the optional Doppler OIDC login; nothing here can write.
     assert counts["permissions"] == {"contents": "read", "id-token": "write"}
     assert "github.ref == 'refs/heads/main'" in counts["if"]
-    assert "environment" not in counts and "env" not in counts
+    assert "env" not in counts  # no job-level env, on purpose
     assert "counts" in jobs()["build"]["needs"]
     assert "id-token" not in yaml.safe_dump(jobs()["build"])
 
@@ -555,3 +555,45 @@ def test_env_names_that_could_expose_runner_credentials_are_refused(
     assert "::error" in proc.stdout
     assert "secret-value-123" not in proc.stdout + proc.stderr
     assert not (tmp_path / "engine-env.json").exists()  # the engine never ran
+
+
+# ---- environment binding and the engine wheel hash ------------------------
+
+
+def test_the_counts_job_has_its_own_protected_environment() -> None:
+    counts = jobs()["counts"]
+    assert counts["environment"] == "counts-secrets"
+    # Every job that can ask for an OIDC token names an environment, and no
+    # two share one, so the Doppler subject for one cannot be used by another.
+    seen: dict[str, str] = {}
+    for name, job in jobs().items():
+        if "id-token" in job.get("permissions", {}):
+            env = job.get("environment")
+            assert isinstance(env, str) and env, name
+            assert env not in seen, (name, seen.get(env))
+            seen[env] = name
+    assert seen == {"counts-secrets": "counts", "test": "deploy"}
+
+
+def test_the_engine_wheel_is_hash_checked_before_it_is_installed() -> None:
+    out = jobs()["wheels"]["outputs"]
+    assert "engine_sha256" in out and "steps." in out["engine_sha256"]
+    hash_step = next(s for s in jobs()["wheels"]["steps"] if s.get("id") == "hash")
+    assert "sha256sum" in hash_step["run"] and "GITHUB_OUTPUT" in hash_step["run"]
+    steps = jobs()["counts"]["steps"]
+    names = [s.get("name") for s in steps]
+    install = next(
+        s for s in steps if s.get("name") == "Install the engine from wheels"
+    )
+    assert install["env"]["ENGINE_SHA256"] == (
+        "${{ needs.wheels.outputs.engine_sha256 }}"
+    )
+    run = install["run"]
+    assert "sha256sum" in run and "ENGINE_SHA256" in run
+    # The check refuses on mismatch and comes before the engine is installed.
+    assert run.index("sha256sum") < run.index("--no-deps")
+    assert "exit 1" in run
+    engine = [ln for ln in run.splitlines() if "--no-deps" in ln]
+    assert len(engine) == 1
+    assert "--no-index" in engine[0] and "--find-links" not in engine[0]
+    assert names.index("Install the engine from wheels") < names.index(REFRESH_STEP)

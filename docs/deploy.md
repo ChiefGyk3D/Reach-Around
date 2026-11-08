@@ -289,10 +289,15 @@ invites, Matrix) need nothing.
    of the same name.
 
 **Trust policy for the Doppler identity.** Create a separate Service Account
-Identity for this job, never reuse the one the `ci` project uses. Bind its OIDC
-trust to this repository and the `main` ref (subject
-`repo:OWNER/REPO:ref:refs/heads/main`), and give it read access to the
-dedicated social-media project and config only. The job that can request the
+Identity for this job, never reuse the one the `ci` project uses. The `counts`
+job runs in its own GitHub environment, `counts-secrets`. Create it under
+Settings > Environments, restrict its deployment branches to `main`, and
+optionally add a required reviewer (a scheduled run then waits for approval).
+Bind the identity's OIDC trust to that environment's subject alone,
+`repo:OWNER/REPO:environment:counts-secrets` (in the immutable form described
+above if your repository uses it), so no other job or workflow, on `main` or
+elsewhere, can assume it. Give it read access to the dedicated social-media
+project and config only. The job that can request the
 token (`counts`) installs wheels only (`--no-index --only-binary`); the job that
 builds from source (`wheels`) has no `id-token` permission and no keys. The one
 step that holds the keys is dependency code that runs with them, so the Doppler
@@ -300,10 +305,21 @@ config must hold only the count-source keys. The keys cannot go to another job:
 GitHub drops job outputs that contain masked values, so the fetch and the
 refresh stay in one job.
 
-**Accepted tradeoff.** The refresh job installs the engine from wheels built
-earlier in the same run, without a per-wheel hash for the engine itself (its
-dependencies are hashed). That trust is in the workflow run, not in a separate
-registry; a stricter option would be to publish and hash-pin the engine.
+**Engine wheel check.** The `wheels` job publishes the SHA-256 of the engine
+wheel as a job output (not a secret). The `counts` job recomputes it from the
+downloaded artifact and stops on a mismatch, then installs that one file with
+`--no-index --no-deps`. Its dependencies are installed with `--require-hashes`.
+This catches a swapped artifact; it does not make the same-run build trusted by
+itself.
+
+**Residual risk.** Anyone with write access to `main` already controls the
+workflow, so they can change what runs in the `counts` job. What limits the
+damage: branch protection on `main`, the `counts-secrets` environment
+(branch-restricted, optional reviewer), a Doppler identity that can read only
+the social-media project, and keys that are read-only API keys for public
+counts. The `counts` job's harden-runner stays in audit mode because its hosts
+cannot all be listed: the artifact blob host changes per run and the Mastodon
+and Matrix hosts come from the config (see Egress control).
 
 **Skipping the counts.** A manual run has a `skip_counts` input (default off).
 Turn it on to redeploy with the `numbers.json` committed beside the config when
