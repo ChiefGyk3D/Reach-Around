@@ -223,6 +223,7 @@ def _static_file(site_dir: Path, url_path: str, suffixes: tuple[str, ...]) -> Pa
 
 _CSS_COMMENT = re.compile(r"/\*.*?\*/", re.S)
 _CSS_ESCAPE = re.compile(r"\\([0-9a-fA-F]{1,6})[ \t\n\r\f]?|\\(.)", re.S)
+_LINE_CONTINUATION = re.compile(r"\\[\n\r\f]")
 _FONT_FACE = re.compile(r"@font-face\s*\{[^{}]*\}", re.I)
 _IMPORT = re.compile(r"@import\b[^;{}]*;?", re.I)
 _URL = re.compile(r"url\s*\((?:[^()\\]|\\.)*\)", re.I)
@@ -247,6 +248,10 @@ def clean_css(raw: bytes, what: str) -> str:
     if "\x00" in text:
         raise StageError(f"{what} contains a NUL byte")
     text = _CSS_COMMENT.sub("", text)
+    # A backslash before a line break is a CSS line continuation; the unescape
+    # pass would turn it into a bare line break, so refuse it before decoding.
+    if _LINE_CONTINUATION.search(text):
+        raise StageError(f"{what} has a line continuation")
     text = _CSS_ESCAPE.sub(_unescape_css, text)
     # One unescape pass is not a fixed point: a backslash left over (written
     # directly, doubled, or produced by an escape) means the text would read
