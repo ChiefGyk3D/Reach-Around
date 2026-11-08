@@ -258,7 +258,8 @@ What it guarantees, and how each part is checked:
   Python side makes no socket call and that the browser never calls a local
   server the page points at.
 - **Only your files.** Stylesheets come from `<site-out>/static/*.css` and images
-  from `<site-out>/static/*.png|jpg|jpeg`, never through a symbolic link, with
+  from `<site-out>/static/*.png|jpg|jpeg`, never through a symbolic link (the site output directory and its
+  `static` directory included, which are not canonicalized away), with
   size limits. PNG text chunks, JPEG EXIF and comments are dropped. Fonts are the
   system fonts: the site's web fonts are not embedded, so the PDF will not use
   the site's typeface.
@@ -275,7 +276,10 @@ What it guarantees, and how each part is checked:
   `reach_around/config/kit.py`; `unlock_link` is a switch and has no text) and
   for gate-form words. A hit fails the build and names the field, never the
   value; nothing is written. The same pass checks that every gated text in the
-  config is in the PDF, which catches a stale `--gated-out` (rebuild first) and
+  config is in the PDF, including each headline-number row (platform, measure,
+  value and date together) and the combined total, computed from the same resolved
+  values the page was built from (`--numbers`, else `numbers.json` beside the
+  config, as `build` does). This catches a stale `--gated-out` (rebuild first) and
   text the renderer lost. Values under 6 characters are not searched.
 - **Limits.** The file is at most 20 MiB and 60 pages, the gated page at most
   2 MiB, and the browser is stopped after 120 seconds.
@@ -286,7 +290,9 @@ What it guarantees, and how each part is checked:
   others. The file is written owner-only to a temporary name and renamed into
   place. The work directory (the page, the browser profile, the unscrubbed
   PDF) is owner-only, under `XDG_RUNTIME_DIR` when that is private, and is
-  removed on every exit, including `SIGTERM`.
+  removed on every exit, including `SIGTERM`. If the removal fails the build
+  fails (or, when it was already failing, the original error carries a note), so a
+  leftover unscrubbed PDF is never silent.
 
 Defaults the owner may change (set by delegated decision, 2026-11-07):
 

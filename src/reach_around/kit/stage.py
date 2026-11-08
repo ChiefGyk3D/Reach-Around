@@ -210,6 +210,8 @@ def _static_file(site_dir: Path, url_path: str, suffixes: tuple[str, ...]) -> Pa
             "must be .css and images must be .png, .jpg or .jpeg"
         )
     current = site_dir / "static"
+    if current.is_symlink():
+        raise StageError("the site static directory is a symbolic link")
     for part in match.group(1).split("/"):
         current = current / part
         if current.is_symlink():
@@ -309,8 +311,11 @@ def _scrub_jpeg(data: bytes) -> bytes:
         if length < 2 or end > len(data):
             raise StageError("an image (JPEG) is cut short")
         segment = data[pos:end]
-        if marker == 0xDA:  # start of scan: the rest is image data
-            out += data[pos:]
+        if marker == 0xDA:  # start of scan: image data runs to the end marker
+            stop = data.find(b"\xff\xd9", end)
+            if stop == -1:
+                raise StageError("an image (JPEG) has no end marker")
+            out += data[pos : stop + 2]  # nothing after the end marker is kept
             return bytes(out)
         # keep the file header (JFIF) and the Adobe colour flag; drop EXIF, XMP,
         # ICC profiles, comments and every other application segment
@@ -351,7 +356,7 @@ class _Rebuild(HTMLParser):
         self._chrome_depth = 0
         self._open: list[tuple[str, bool]] = []  # (tag, emitted)
         self._skip_a = 0
-        self._hidden_depth = 0
+        self._hidden: list[str] = []
 
     # -- helpers
     def _attrs(self, tag: str, attrs: list[tuple[str, str | None]]) -> str:
@@ -408,9 +413,9 @@ class _Rebuild(HTMLParser):
             return
         if not self._in_body:
             return
-        if self._hidden_depth or "hidden" in names:
+        if self._hidden or "hidden" in names:
             if tag not in _VOID:
-                self._hidden_depth += 1
+                self._hidden.append(tag)
             return
         classes = dict(attrs).get("class") or ""
         if tag == "a" and "skip-link" in classes.split():
@@ -441,8 +446,12 @@ class _Rebuild(HTMLParser):
             if tag in _CHROME:
                 self._chrome_depth -= 1
             return
-        if self._hidden_depth:
-            self._hidden_depth -= 1
+        if self._hidden:
+            # close only the matching open element; a stray end tag changes
+            # nothing, so hidden content stays hidden until its own element ends
+            if tag in self._hidden:
+                index = len(self._hidden) - 1 - self._hidden[::-1].index(tag)
+                del self._hidden[index:]
             return
         if tag == "body":
             self._in_body = False
@@ -463,7 +472,7 @@ class _Rebuild(HTMLParser):
         if (
             self._in_body
             and not self._chrome_depth
-            and not self._hidden_depth
+            and not self._hidden
             and not self._skip_a
         ):
             self.body.append(html.escape(data, quote=False))
@@ -509,7 +518,13 @@ def stage_page(gated_dir: Path, site_dir: Path) -> StagedPage:
         raise StageError(f"{GATED_FILE} is not valid UTF-8") from exc
     if "\x00" in text:
         raise StageError(f"{GATED_FILE} contains a NUL byte")
-    parser = _Rebuild(Path(os.path.realpath(site_dir)))
+    site_root = Path(os.path.abspath(site_dir))
+    if site_root.is_symlink() or not site_root.is_dir():
+        raise StageError(
+            "the site output directory is a symbolic link or not a directory; "
+            "use the real path"
+        )
+    parser = _Rebuild(site_root)
     parser.feed(text)
     parser.close()
     if not parser.body:

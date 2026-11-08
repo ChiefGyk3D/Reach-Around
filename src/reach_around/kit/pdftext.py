@@ -99,6 +99,10 @@ class _Budget:
                 raise PdfTextError("a stream could not be decompressed") from exc
             if len(data) > MAX_STREAM_BYTES or inflater.unconsumed_tail:
                 raise PdfTextError("a stream is larger than the limit")
+            if not inflater.eof:
+                raise PdfTextError("a stream is truncated: it is not complete")
+            if inflater.unused_data:
+                raise PdfTextError("a stream has trailing bytes after its end")
         self.total += len(data)
         if self.total > MAX_TOTAL_BYTES:
             raise PdfTextError("the PDF is larger than the limit when unpacked")
@@ -183,9 +187,14 @@ class _CMap:
                         )
 
     def decode(self, raw: bytes) -> str:
+        if len(raw) % self.width:
+            raise PdfTextError("text has an incomplete character code")
         out: list[str] = []
-        for i in range(0, len(raw) - self.width + 1, self.width):
-            out.append(self.single.get(int.from_bytes(raw[i : i + self.width]), ""))
+        for i in range(0, len(raw), self.width):
+            code = int.from_bytes(raw[i : i + self.width])
+            if code not in self.single:
+                raise PdfTextError("text has an unmapped character code")
+            out.append(self.single[code])
         return "".join(out)
 
 
@@ -233,7 +242,7 @@ def _show(operand: tuple[str, bytes], cmap: _CMap | None) -> str:
     kind, raw = operand
     data = bytes.fromhex(re.sub(rb"\s", b"", raw).decode()) if kind == "hex" else raw
     if cmap is None:
-        return data.decode("latin-1")
+        raise PdfTextError("text uses a font with no ToUnicode map")
     return cmap.decode(data)
 
 

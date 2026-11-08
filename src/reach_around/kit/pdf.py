@@ -43,12 +43,18 @@ from pathlib import Path
 from types import FrameType
 from typing import Literal, NoReturn
 
-from reach_around.config.kit import KitConfig, pdf_excluded_values
+from reach_around.config.kit import (
+    KitConfig,
+    pdf_excluded_values,
+    resolve_metrics,
+    unified_total,
+)
 from reach_around.config.models import SiteConfig
+from reach_around.config.numbers import Numbers
 from reach_around.kit.output import check_name, confine_out_dir, write_private
 from reach_around.kit.pdftext import PdfTextError, extract_pages
 from reach_around.kit.stage import stage_page
-from reach_around.site.kit import GUARD_MIN_LENGTH
+from reach_around.site.kit import GUARD_MIN_LENGTH, _metric_rows, _total
 
 MAX_PDF_BYTES = 20 * 1024 * 1024
 MAX_PAGES = 60
@@ -103,12 +109,34 @@ def private_workdir() -> Iterator[Path]:
     previous = None
     with contextlib.suppress(ValueError):  # not the main thread: no handler
         previous = signal.signal(signal.SIGTERM, _terminate)
+    problem = ""
     try:
         yield work
+    except BaseException as exc:
+        problem = _remove(work)
+        if problem:
+            exc.add_note(problem)  # the original error stays the one raised
+        raise
+    else:
+        problem = _remove(work)
+        if problem:
+            raise PdfError(problem)
     finally:
         if previous is not None:
             signal.signal(signal.SIGTERM, previous)
-        shutil.rmtree(work, ignore_errors=True)
+
+
+def _remove(work: Path) -> str:
+    """Delete the work directory; the problem text if that failed, else empty.
+    A failure is never hidden: the unscrubbed PDF may still be in there."""
+    try:
+        shutil.rmtree(work)
+    except OSError as exc:
+        return (
+            f"the work directory {work} could not be fully removed "
+            f"({exc.strerror or exc}); it may hold the unscrubbed PDF, delete it"
+        )
+    return ""
 
 
 # --- the browser ----------------------------------------------------------------
@@ -308,11 +336,23 @@ def scrub_pdf(data: bytes, *, title: str, created: date) -> bytes:
 # --- the checks on the text -------------------------------------------------------
 
 
-def _expected_text(kit: KitConfig) -> list[tuple[str, str]]:
-    """(where, text) for everything the gated page must print."""
+def _expected_text(kit: KitConfig, numbers: Numbers | None) -> list[tuple[str, str]]:
+    """(where, text) for everything the gated page must print. A headline
+    number is one entry per row (platform, measure, value and date together, in
+    the order the page prints them) and one for the combined total, computed
+    from the same resolved values the page was built from."""
     found: list[tuple[str, str]] = [("kit.title", kit.title), ("kit.about", kit.about)]
-    for metric in kit.metrics:
-        found.append(("kit.metrics.label", metric.label))
+    resolved = resolve_metrics(kit, numbers)
+    for row in _metric_rows(resolved):
+        found.append(
+            (
+                f"the metric row {row['platform'] or row['label']!r}",
+                row["platform"] + row["label"] + row["value"] + row["as_of"],
+            )
+        )
+    total = _total(unified_total(resolved), resolved)
+    if total is not None:
+        found.append(("the metric total", total["value"]))
     for name in ("partners", "case_studies", "rates", "demographics"):
         for index, item in enumerate(getattr(kit, name)):
             for field, value in item.model_dump().items():
@@ -336,7 +376,7 @@ def _flat(text: str) -> str:
     )
 
 
-def check_text(kit: KitConfig, text: str) -> None:
+def check_text(kit: KitConfig, text: str, numbers: Numbers | None = None) -> None:
     """Fail if a private value is in ``text`` or configured gated text is not."""
     flat = _flat(text)
     for field, value in pdf_excluded_values(kit).items():
@@ -351,7 +391,7 @@ def check_text(kit: KitConfig, text: str) -> None:
             raise PdfLeakError(
                 "text from the gate form appears in the PDF; nothing was written"
             )
-    for where, value in _expected_text(kit):
+    for where, value in _expected_text(kit, numbers):
         if _flat(value) not in flat:
             raise PdfError(
                 f"{where} is missing from the PDF text; the staged page may be out "
@@ -374,6 +414,7 @@ def build_kit_pdf(
     renderer: Renderer,
     overwrite: bool = False,
     protect: Sequence[Path] = (),
+    numbers: Numbers | None = None,
 ) -> PdfResult:
     """Make the private PDF; see the module doc. ``protect`` lists more
     directories the output may not be in (the config's directory)."""
@@ -400,6 +441,6 @@ def build_kit_pdf(
         raise PdfError(f"the PDF text could not be checked: {exc}") from exc
     if len(pages) > MAX_PAGES:
         raise PdfError(f"the PDF has {len(pages)} pages, more than {MAX_PAGES}")
-    check_text(kit, "\n".join(pages))
+    check_text(kit, "\n".join(pages), numbers)
     path = write_private(target_dir, name, final, overwrite=overwrite)
     return PdfResult(path=path, pages=len(pages), size=len(final))

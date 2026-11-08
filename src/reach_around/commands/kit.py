@@ -10,6 +10,7 @@ from datetime import UTC, date, datetime
 from pathlib import Path
 
 from reach_around.config import ConfigError, load_site_config
+from reach_around.config.numbers import Numbers, load_numbers
 from reach_around.kit.pdf import (
     Isolation,
     build_kit_pdf,
@@ -47,6 +48,16 @@ def _creation_date(explicit: date | None, gated_dir: Path) -> date:
     return datetime.fromtimestamp(stamp, UTC).date()
 
 
+def _numbers(args: argparse.Namespace) -> Numbers | None:
+    """The numbers file the build used: ``--numbers``, else ``numbers.json`` beside
+    the config if it exists (the same default as ``build``)."""
+    path: Path | None = args.numbers
+    if path is None:
+        beside = args.config.parent / "numbers.json"
+        path = beside if os.path.lexists(beside) else None
+    return None if path is None else load_numbers(path)
+
+
 def _run(args: argparse.Namespace) -> int:
     try:
         config = load_site_config(args.config)
@@ -62,6 +73,7 @@ def _run(args: argparse.Namespace) -> int:
             renderer=chromium_renderer(args.chromium, isolation=isolation),
             overwrite=args.overwrite,
             protect=[args.config.resolve().parent],
+            numbers=_numbers(args),
         )
     except (ConfigError, ValueError, OSError) as exc:
         print("error: " + " ".join(str(exc).split()), file=sys.stderr)
@@ -103,6 +115,13 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
         type=Path,
         required=True,
         help="private directory for the PDF (created owner-only if missing)",
+    )
+    pdf.add_argument(
+        "--numbers",
+        type=Path,
+        help="the numbers file the build used (default: numbers.json beside the "
+        "config, if it exists); the printed headline numbers are checked "
+        "against it",
     )
     pdf.add_argument("--name", default="kit.pdf", help="file name (default kit.pdf)")
     pdf.add_argument(
