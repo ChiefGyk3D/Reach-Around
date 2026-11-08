@@ -33,38 +33,30 @@ class Floored:
     shown: list[tuple[str, int]] = field(default_factory=list)
     other: int = 0  # merged views of hidden rows; 0 unless they reach the floor
     hidden_rows: int = 0
+    dropped: bool = False  # a remainder could not be made safe
 
     @property
     def withheld(self) -> bool:
         return not self.shown and self.other == 0
 
 
-def floor_cells(cells: Mapping[str, int], floor: int) -> Floored:
-    """Keep rows of at least ``floor`` views, largest first; merge the rest."""
-    items = sorted(
-        ((label, views) for label, views in cells.items() if views > 0),
-        key=lambda item: (-item[1], item[0]),
-    )
-    shown = [item for item in items if item[1] >= floor]
-    hidden = [item for item in items if item[1] < floor]
-    merged = sum(views for _, views in hidden)
-    # Complementary suppression. The rows plus the merged line add up to the
-    # table total, which the report prints elsewhere. If the merged remainder
-    # were under the floor, subtracting the shown rows from that total would
-    # reveal it, so the smallest shown rows join it until it reaches the floor.
-    # A remainder that stays under the floor means the table is withheld.
-    while hidden and merged < floor and shown:
-        label, views = shown.pop()
-        hidden.append((label, views))
-        merged += views
-    return Floored(shown, merged if merged >= floor else 0, len(hidden))
+def _suppress(
+    cells: Mapping[str, int], floor: int, pinned: frozenset[str] = frozenset()
+) -> Floored:
+    """Keep rows of at least ``floor`` views, largest first; merge the rest.
 
+    The rows plus the merged line add up to a total that is printed elsewhere,
+    so the merged line must not reveal a cell. Whenever any row is under the
+    floor, the smallest shown row joins the merged line, always. That makes the
+    remainder at least the floor (subtracting the shown rows from the total
+    cannot isolate a small cell) and it removes the upper bound that a group of
+    only small cells has (a remainder of members times floor-minus-one would
+    pin every member). The rule never depends on the values, so the shape of
+    the output tells a reader nothing about them. With nothing to join, the
+    remainder is dropped and ``dropped`` is set.
 
-def _floor_classes(cells: Mapping[str, int], floor: int) -> Floored:
-    """``floor_cells`` for the four bot classes, where the human class is also
-    printed on its own in the funnel. The human class therefore never joins the
-    merged line, or the funnel figure would undo the merge. When the remainder
-    cannot reach the floor without it, the class total and shares are withheld.
+    Labels in ``pinned`` are printed exactly somewhere else (the funnel prints
+    the human class), so they never join the merged line.
     """
     items = sorted(
         ((label, views) for label, views in cells.items() if views > 0),
@@ -72,16 +64,27 @@ def _floor_classes(cells: Mapping[str, int], floor: int) -> Floored:
     )
     shown = [item for item in items if item[1] >= floor]
     hidden = [item for item in items if item[1] < floor]
-    merged = sum(views for _, views in hidden)
-    while hidden and merged < floor:
-        movable = [item for item in shown if item[0] != "h"]
-        if not movable:
-            break
-        pick = movable[-1]
-        shown.remove(pick)
-        hidden.append(pick)
-        merged += pick[1]
-    return Floored(shown, merged if merged >= floor else 0, len(hidden))
+    if not hidden:
+        return Floored(shown, 0, 0)
+    movable = [item for item in shown if item[0] not in pinned]
+    if not movable:
+        return Floored(shown, 0, len(hidden), dropped=True)
+    pick = movable[0]
+    shown.remove(pick)
+    hidden.append(pick)
+    return Floored(shown, sum(views for _, views in hidden), len(hidden))
+
+
+def floor_cells(cells: Mapping[str, int], floor: int) -> Floored:
+    return _suppress(cells, floor)
+
+
+def _floor_classes(cells: Mapping[str, int], floor: int) -> Floored:
+    """``floor_cells`` for the four bot classes. The human class is printed on
+    its own in the funnel, so it never joins the merged line (or the funnel
+    figure would undo the merge). When the remainder cannot be made safe without
+    it, the class total and shares are withheld."""
+    return _suppress(cells, floor, frozenset({"h"}))
 
 
 def _count(n: int, floor: int) -> int | None:
@@ -95,6 +98,29 @@ def _utc_day(ts_ms: int) -> str:
 
 def _in_window(day: str, since: str | None, until: str | None) -> bool:
     return (since is None or day >= since) and (until is None or day <= until)
+
+
+def _withhold_views(report: dict[str, Any]) -> None:
+    """Withhold every figure derived from the page-view population.
+
+    Used when a table over those views had a small remainder that no merge could
+    make safe. The views are printed as a total in the funnel, the class table
+    and every other cut, so a remainder left unsafe in one cut can be recovered
+    from another. Clicks, the kit and the bot reasons stay.
+    """
+    funnel = report["funnel"]
+    funnel["page_views"] = None
+    funnel["clicks_per_100_views"] = None
+    funnel["kit_views_per_100_views"] = None
+    if "view_daily" not in funnel["missing"] and "page_views" not in funnel["withheld"]:
+        funnel["withheld"].append("page_views")
+    for key in ("pages", "sources", "geography"):
+        if report[key]["state"] != "not_in_export":
+            report[key].update(
+                state="withheld", rows=[], other_below_floor=0, more_rows=0
+            )
+    bots = report["bots"]
+    bots.update(classes=[], other_below_floor=0, total_views=None, views_withheld=True)
 
 
 def _section(
@@ -270,7 +296,7 @@ def build_report(
         if kit_unlocks is None:
             withheld.append("kit_unlocks")
 
-    return {
+    report = {
         "version": REPORT_VERSION,
         "site": site,
         "floor": floor,
@@ -318,6 +344,12 @@ def build_report(
             "human_views_seen": bool(human),
         },
     }
+    unsafe = any(
+        _suppress(cells, floor).dropped for cells in (pages, sources, places)
+    ) or (include_bots and classes.dropped)
+    if unsafe:
+        _withhold_views(report)
+    return report
 
 
 # ---- text -----------------------------------------------------------------
@@ -394,6 +426,11 @@ def render_text(report: dict[str, Any]) -> str:
     kper = funnel["kit_views_per_100_views"]
     if kper is not None:
         lines.append(f"  Kit views per 100 page views: {kper}")
+    if report["bots"].get("views_withheld"):
+        lines.append(
+            "  Page-view figures are withheld: a small remainder could be "
+            "recovered from them."
+        )
     if funnel["not_scoped"]:
         lines.append(
             "  Kit figures cannot be scoped by site: the kit has no site column "

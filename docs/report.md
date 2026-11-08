@@ -34,17 +34,19 @@ invisible to page views. Days are UTC days.
 No row under 5 views is printed: not a page, a source, a country, a city, a
 link, a class, a reason, or a funnel step. `--floor` can raise the number and
 cannot lower it. Rows under the floor are merged into one "rows below the floor"
-line. Because that line sits beside an exact total, a merged remainder under the
-floor could be recovered by subtracting the shown rows from the total, so the
-smallest shown rows join the merged line until it reaches the floor (this is
-why a small neighbour can disappear along with a tiny row). The human class is
-printed on its own in the funnel and never joins that line; if the other classes
-cannot reach the floor without it, the class total and shares are withheld. A
-section whose every row is under the floor prints no row.
+line. That line sits beside exact totals, so a bare remainder could be recovered
+by subtracting the shown rows from a total. To prevent it, whenever a table has
+any row under the floor, the largest shown row joins the merged line too (this
+is why a big neighbour can disappear along with a tiny row). The rule does not
+depend on the values. The human class is printed on its own in the funnel and
+never joins that line. If a table has only small rows, or with `--include-bots`
+the non-human classes cannot be merged safely, every figure derived from page
+views (funnel page views and ratios, pages, sources, geography, class shares) is
+withheld and the report says so; clicks, kit figures and bot reasons stay.
 
 That is the whole guarantee, and it is label suppression, the same kind the
 Worker applies when it folds small cells (`MIN_CELL`). It is not k-anonymity and
-it is not differential privacy. It holds inside one report. It does not hold
+it is not differential privacy. It holds inside one report, and a test enumerates small datasets and checks that no printed report pins a hidden cell of 1 to the floor minus 1. It can still be beaten at the edges by a reader who knows more than the report shows (for example exact bounds on the other rows). It does not hold
 against a reader who gets overlapping reports (for example the same export with
 two windows one day apart, which differ by that day's exact totals), or who
 joins different tables of the same report (a country table and a page table

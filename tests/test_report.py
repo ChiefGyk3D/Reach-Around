@@ -139,7 +139,7 @@ def test_text_report_shows_funnel_geo_and_bots(
     assert "Link clicks" in out
     assert "Kit views" in out
     assert "Geography" in out
-    assert "US" in out
+    assert "DE" in out
     assert "(rows below the floor)" in out  # DE and FR merged, "shop" and "rare"
     assert "Bots" in out
     assert "ua-declared-bot" in out
@@ -179,12 +179,12 @@ def test_geo_levels(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     _, out, _ = run(capsys, "--input", str(path), "--json", "--geo", "city")
     labels = {row["label"] for row in json.loads(out)["geography"]["rows"]}
     assert "US / NY / Springfield" in labels
-    assert "DE / BE / Berlin" in labels
+    assert "DE / BE / Berlin" not in labels  # largest row, merged with FR
     _, out, _ = run(capsys, "--input", str(path), "--json", "--geo", "country")
     rows = {r["label"]: r["views"] for r in json.loads(out)["geography"]["rows"]}
-    assert rows == {"US": 130}  # FR (3) is merged with DE, never alone
+    assert rows == {"DE": 60}  # FR (3) is merged with the largest row, US
     other = json.loads(out)["geography"]["other_below_floor"]
-    assert other == 63
+    assert other == 133
 
 
 def test_csv_input_and_two_inputs(
@@ -218,15 +218,15 @@ def test_wrangler_style_list_infers_the_table(
 
 
 def test_floor_cells_hides_small_and_merges() -> None:
+    # the largest shown row always joins a remainder, so the remainder is never
+    # a bare small cell and never has a known upper bound
     result = floor_cells({"a": 100, "b": 3, "c": 2}, 5)
-    assert [label for label, _ in result.shown] == ["a"]
-    assert result.other == 5  # b and c merged, never shown apart
+    assert result.shown == [] and result.other == 105
     result = floor_cells({"a": 100, "b": 6, "c": 2}, 5)
-    # a lone small remainder could be recovered by subtracting the shown rows
-    # from the total, so the smallest shown row joins it
-    assert [label for label, _ in result.shown] == ["a"]
-    assert result.other == 8
-    assert floor_cells({"a": 2, "b": 1}, 5).withheld
+    assert result.shown == [("b", 6)] and result.other == 102
+    assert floor_cells({"a": 100, "b": 6}, 5).other == 0  # nothing hidden
+    only_small = floor_cells({"a": 2, "b": 1}, 5)
+    assert only_small.withheld and only_small.dropped
 
 
 def test_floor_cells_boundary() -> None:
