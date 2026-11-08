@@ -107,6 +107,18 @@ your own; never commit real account ids, database ids or tokens.
    hostname (`a-z`, `0-9`, `.`, `-`); when unset, the deploy config is
    unchanged.
 
+   Optional variables for the Live tab poller (issue #314; full setup in
+   [live.md](live.md#deploying-the-live-worker)). Plain **variables**, never
+   secrets:
+
+   | Variable | Value | What it does |
+   |---|---|---|
+   | `LIVE_TWITCH_HANDLE`, `LIVE_KICK_HANDLE` | your channel handles | **setting either one enables the Live Worker** for this deploy: the throwaway config gets the handle(s), the `LIVE_KV` binding and the second cron `*/2 * * * *` |
+   | `LIVE_KV_ID` | 32 lowercase hex characters, the KV namespace id | **required once Live is enabled**. Not a secret. The deploy fails closed before anything is fetched if it is unset, empty, all zeros or malformed; the placeholder id in `wrangler.toml` can never ship |
+
+   With neither handle set the deploy config is unchanged, even if
+   `LIVE_KV_ID` is set.
+
    The workflow validates each value's shape before using it and fails with a
    clear message if a required one is missing.
 
@@ -114,11 +126,11 @@ your own; never commit real account ids, database ids or tokens.
 
 Code only for now (issue #297, slice 4). Nothing below is set up; each step needs the owner.
 
-The Worker's rule is that every request gets the same empty 204 and no route returns stored data. `GET /e/live` is the one deliberate exception: it returns booleans and timestamps only, `{"v":1,"as_of":..,"ttl":30,"kick":{"live":..,"since":..},"twitch":{"live":..,"since":..}}`, where `live` is `true`, `false` or `null` (unknown) and `since` is Unix seconds or `null`. It takes no parameters (the query string is ignored), sends `Cache-Control: public, max-age=30`, `X-Content-Type-Options: nosniff` and no CORS header, and keeps an edge copy so KV reads stay small. Any other method on it, and every other path, is the usual empty 204.
+The Worker's rule is that every request gets the same empty 204 and no route returns stored data. `GET /e/live` is the one deliberate exception: it returns booleans and timestamps only, `{"v":1,"as_of":..,"ttl":30,"kick":{"live":..,"since":..,"code":..},"twitch":{"live":..,"since":..,"code":..}}`, where `live` is `true`, `false` or `null` (unknown), `since` is Unix seconds or `null`, and `code` is one fixed string from a closed list (or `null`) saying why a platform is unknown; it is for operators reading the JSON, the page ignores it (see [live.md](live.md#failure-codes)). It takes no parameters (the query string is ignored), sends `Cache-Control: public, max-age=30`, `X-Content-Type-Options: nosniff` and no CORS header, and keeps an edge copy so KV reads stay small. Any other method on it, and every other path, is the usual empty 204.
 
 | Name | Kind | What it does |
 |---|---|---|
-| `LIVE_KV` | binding | KV namespace holding the state and the cached app tokens. Placeholder in `wrangler.toml`. Unbound: the route serves the all-unknown body |
+| `LIVE_KV` | binding | KV namespace holding the state and the cached app tokens. The commented block in `wrangler.toml` is a placeholder; the deploy workflow writes the real binding from the repository variable `LIVE_KV_ID` (above). Unbound: the route serves the all-unknown body |
 | `LIVE_KILL` | var | Strict: `1`/`true`/`on`/`yes` or `0`/`false`/`off`/`no` (any case, no spaces). Unset or empty is off. Anything else fails closed: the route serves the all-unknown body and the poller does nothing. Read per request |
 | `LIVE_TWITCH_HANDLE`, `LIVE_KICK_HANDLE` | var | Channel handles, checked by the config model's patterns (Twitch `[A-Za-z0-9_]{1,25}`, Kick `[A-Za-z0-9_-]{1,40}`). A bad or missing handle means that platform is never polled and shows as unknown. Never taken from a request |
 | `TWITCH_CLIENT_ID`, `TWITCH_CLIENT_SECRET`, `KICK_CLIENT_ID`, `KICK_CLIENT_SECRET` | **secret** | App (client-credentials) credentials, set with `npx wrangler secret put <NAME>`; never in a file, log or chat |

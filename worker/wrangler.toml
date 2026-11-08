@@ -86,6 +86,9 @@ crons = ["5 * * * *"]
 #   period = 60
 
 # Live status (GET /e/live, src/live.ts). Placeholders only; not deployed.
+# deploy-test.yml writes the real binding, handles and second cron into its
+# throwaway wrangler.deploy.toml from the repository variables LIVE_KV_ID,
+# LIVE_TWITCH_HANDLE and LIVE_KICK_HANDLE (docs/live.md); nothing here ships.
 # [[kv_namespaces]]
 # binding = "LIVE_KV"
 # id = "00000000000000000000000000000000" # placeholder, not a real id

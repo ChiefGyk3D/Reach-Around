@@ -470,6 +470,11 @@ jobs:
           LINK_IDS: ${{ vars.LINK_IDS }}
           # Optional: set it to route /e/* on the site host to the Worker.
           ZONE_NAME: ${{ vars.ZONE_NAME }}
+          # Optional: the Live tab poller. It is ENABLED when LIVE_TWITCH_HANDLE
+          # or LIVE_KICK_HANDLE is set; then LIVE_KV_ID is required (docs/live.md).
+          LIVE_TWITCH_HANDLE: ${{ vars.LIVE_TWITCH_HANDLE }}
+          LIVE_KICK_HANDLE: ${{ vars.LIVE_KICK_HANDLE }}
+          LIVE_KV_ID: ${{ vars.LIVE_KV_ID }}
         run: |
           set -eu
           for name in CLOUDFLARE_ACCOUNT_ID PAGES_PROJECT D1_DATABASE_ID \
@@ -495,6 +500,29 @@ jobs:
             || { echo "::error::PAGES_PROJECT is not a valid project name"; exit 1; }
           printf '%s' "$LINK_IDS" | grep -Eq '^\[("[a-z0-9-]{1,40}"(, ?)?)+\]$' \
             || { echo "::error::LINK_IDS must be a JSON array of link ids"; exit 1; }
+          # Live Worker: enabled by a handle. Fail closed: no KV id, no deploy.
+          if [ -n "${LIVE_TWITCH_HANDLE:-}" ] || [ -n "${LIVE_KICK_HANDLE:-}" ]; then
+            if [ -z "${LIVE_KV_ID:-}" ]; then
+              echo "::error::The Live Worker is enabled (LIVE_TWITCH_HANDLE or LIVE_KICK_HANDLE is set) but the repository variable LIVE_KV_ID is not set (docs/live.md)"
+              exit 1
+            fi
+            # [[ =~ ]] tests the WHOLE value; grep tests line by line and would
+            # let a value with a valid first line and a second line through.
+            [[ "$LIVE_KV_ID" =~ ^[0-9a-f]{32}$ ]] \
+              || { echo "::error::LIVE_KV_ID must be 32 lowercase hex characters"; exit 1; }
+            if [[ "$LIVE_KV_ID" =~ ^0{32}$ ]]; then
+              echo "::error::LIVE_KV_ID is the all-zero placeholder"
+              exit 1
+            fi
+            if [ -n "${LIVE_TWITCH_HANDLE:-}" ]; then
+              [[ "$LIVE_TWITCH_HANDLE" =~ ^[A-Za-z0-9_]{1,25}$ ]] \
+                || { echo "::error::LIVE_TWITCH_HANDLE is not a valid Twitch login"; exit 1; }
+            fi
+            if [ -n "${LIVE_KICK_HANDLE:-}" ]; then
+              [[ "$LIVE_KICK_HANDLE" =~ ^[A-Za-z0-9_-]{1,40}$ ]] \
+                || { echo "::error::LIVE_KICK_HANDLE is not a valid Kick slug"; exit 1; }
+            fi
+          fi
 
       # Reads the downloaded manifest. No secret is in this step's env, and
       # python runs isolated (-I: no working-directory imports), so a hostile
@@ -533,6 +561,9 @@ jobs:
           SITE_HOST: ${{ vars.SITE_HOST }}
           LINK_IDS: ${{ vars.LINK_IDS }}
           ZONE_NAME: ${{ vars.ZONE_NAME }}
+          LIVE_TWITCH_HANDLE: ${{ vars.LIVE_TWITCH_HANDLE }}
+          LIVE_KICK_HANDLE: ${{ vars.LIVE_KICK_HANDLE }}
+          LIVE_KV_ID: ${{ vars.LIVE_KV_ID }}
         run: |
           set -eu
           sed \
@@ -549,6 +580,38 @@ jobs:
             printf '\n[[routes]]\npattern = "%s/e/*"\nzone_name = "%s"\n' \
               "${SITE_HOST}" "${ZONE_NAME}" >> wrangler.deploy.toml
             grep -qF "pattern = \"${SITE_HOST}/e/*\"" wrangler.deploy.toml
+          fi
+          # Live Worker (docs/live.md). Enabled by a handle; then the KV id is
+          # required and is checked again here (the values were validated in
+          # "Check configuration"; this is the second lock). Adds the LIVE_KV
+          # binding, the handles and the 2-minute cron. When not enabled the
+          # file is unchanged. A placeholder id can never ship.
+          if [ -n "${LIVE_TWITCH_HANDLE:-}" ] || [ -n "${LIVE_KICK_HANDLE:-}" ]; then
+            [[ "${LIVE_KV_ID:-}" =~ ^[0-9a-f]{32}$ ]] \
+              || { echo "::error::LIVE_KV_ID must be 32 lowercase hex characters when the Live Worker is enabled"; exit 1; }
+            if [[ "${LIVE_KV_ID}" =~ ^0{32}$ ]]; then
+              echo "::error::LIVE_KV_ID is the all-zero placeholder"
+              exit 1
+            fi
+            if [ -n "${LIVE_TWITCH_HANDLE:-}" ]; then
+              [[ "$LIVE_TWITCH_HANDLE" =~ ^[A-Za-z0-9_]{1,25}$ ]] \
+                || { echo "::error::LIVE_TWITCH_HANDLE is not a valid Twitch login"; exit 1; }
+              sed -i "/^\[vars\]$/a LIVE_TWITCH_HANDLE = \"${LIVE_TWITCH_HANDLE}\"" wrangler.deploy.toml
+            fi
+            if [ -n "${LIVE_KICK_HANDLE:-}" ]; then
+              [[ "$LIVE_KICK_HANDLE" =~ ^[A-Za-z0-9_-]{1,40}$ ]] \
+                || { echo "::error::LIVE_KICK_HANDLE is not a valid Kick slug"; exit 1; }
+              sed -i "/^\[vars\]$/a LIVE_KICK_HANDLE = \"${LIVE_KICK_HANDLE}\"" wrangler.deploy.toml
+            fi
+            sed -i 's|^crons = \["5 \* \* \* \*"\]$|crons = ["5 * * * *", "*/2 * * * *"]|' wrangler.deploy.toml
+            printf '\n[[kv_namespaces]]\nbinding = "LIVE_KV"\nid = "%s"\n' "${LIVE_KV_ID}" >> wrangler.deploy.toml
+            grep -qxF 'crons = ["5 * * * *", "*/2 * * * *"]' wrangler.deploy.toml
+            grep -qxF "id = \"${LIVE_KV_ID}\"" wrangler.deploy.toml
+            # No all-zero placeholder id may remain on an active line.
+            if grep -v '^[[:space:]]*#' wrangler.deploy.toml | grep -Eq '"0{32}"'; then
+              echo "::error::a placeholder KV id is still in the deploy config"
+              exit 1
+            fi
           fi
 
       # Smoke test with no secret in the environment.
