@@ -563,3 +563,103 @@ def test_address_and_agent_columns_get_the_forbidden_message(
         path = write(tmp_path, {"tables": {"click_events": [row]}})
         code, _, err = run(capsys, "--input", str(path))
         assert code == 2 and "forbidden column" in err, column
+
+
+# ---- review round: kit scope, window, zero ---------------------------------
+
+
+def kit_rows_at(ts: int, view: int, unlock: int, **extra: Any) -> list[dict[str, Any]]:
+    return [{"ts": ts, "kind": "view", **extra} for _ in range(view)] + [
+        {"ts": ts, "kind": "unlock", **extra} for _ in range(unlock)
+    ]
+
+
+def test_unscoped_kit_is_not_reported_for_another_site(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    data = {
+        "tables": {
+            "view_daily": [vd(views=50), vd(views=70, site="blog")],
+            "kit_events": kit_rows_at(TS, 12, 9),
+        }
+    }
+    path = write(tmp_path, data)
+    _, out, _ = run(capsys, "--input", str(path), "--json", "--site", "blog")
+    funnel = json.loads(out)["funnel"]
+    assert funnel["page_views"] == 70
+    assert funnel["kit_views"] is None and funnel["kit_unlocks"] is None
+    assert funnel["not_scoped"] == ["kit_views", "kit_unlocks"]
+    assert "kit_views" not in funnel["withheld"]
+    _, text, _ = run(capsys, "--input", str(path), "--site", "blog")
+    assert "cannot be scoped by site" in text
+    assert "below the privacy floor" not in text
+    _, out, _ = run(capsys, "--input", str(path), "--json")  # default site links
+    assert json.loads(out)["funnel"]["kit_views"] == 12
+
+
+def test_kit_site_column_scopes_the_kit(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    rows = kit_rows_at(TS, 12, 0, site="links") + kit_rows_at(TS, 7, 0, site="blog")
+    path = write(tmp_path, {"tables": {"kit_events": rows}})
+    for site, want in (("links", 12), ("blog", 7)):
+        _, out, _ = run(capsys, "--input", str(path), "--json", "--site", site)
+        funnel = json.loads(out)["funnel"]
+        assert funnel["kit_views"] == want
+        assert funnel["not_scoped"] == []
+
+
+def test_kit_bad_site_value_refused(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    rows = [{"ts": TS, "kind": "view", "site": "Bad Site"}]
+    path = write(tmp_path, {"tables": {"kit_events": rows}})
+    assert run(capsys, "--input", str(path))[0] == 2
+
+
+def test_days_window_uses_kit_days(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    day_ms = 86_400_000
+    # kit-only export: --days 1 keeps only the newest day
+    rows = kit_rows_at(TS, 6, 0) + kit_rows_at(TS + day_ms, 8, 0)
+    path = write(tmp_path, {"tables": {"kit_events": rows}})
+    _, out, _ = run(capsys, "--input", str(path), "--json", "--days", "1")
+    report = json.loads(out)
+    assert report["funnel"]["kit_views"] == 8
+    assert report["period"]["since"] == DAY2 == report["period"]["until"]
+    # a newer kit day moves the window end past the latest view day
+    data = {
+        "tables": {
+            "view_daily": [vd(views=50, day=DAY1)],
+            "kit_events": kit_rows_at(TS + day_ms, 9, 0),
+        }
+    }
+    path = write(tmp_path, data, "mixed.json")
+    _, out, _ = run(capsys, "--input", str(path), "--json", "--days", "1")
+    funnel = json.loads(out)["funnel"]
+    assert funnel["kit_views"] == 9
+    assert funnel["page_views"] == 0  # DAY1 views are outside the window
+
+
+def test_zero_is_printed_and_a_suppressed_count_is_withheld(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    only_bots = {"tables": {"view_daily": [vd(views=40, bot_class="a")]}}
+    path = write(tmp_path, only_bots)
+    _, out, _ = run(capsys, "--input", str(path), "--json")
+    funnel = json.loads(out)["funnel"]
+    assert funnel["page_views"] == 0
+    assert "page_views" not in funnel["withheld"]
+    _, text, _ = run(capsys, "--input", str(path))
+    assert "Page views (likely human)" in text
+    line = next(x for x in text.splitlines() if "Page views" in x)
+    assert line.split()[-1] == "0"
+    assert "below the privacy floor" not in text
+    four = write(tmp_path, {"tables": {"view_daily": [vd(views=4)]}}, "four.json")
+    _, out, _ = run(capsys, "--input", str(four), "--json")
+    funnel = json.loads(out)["funnel"]
+    assert funnel["page_views"] is None and "page_views" in funnel["withheld"]
+    five = write(tmp_path, {"tables": {"view_daily": [vd(views=5)]}}, "five.json")
+    _, out, _ = run(capsys, "--input", str(five), "--json")
+    assert json.loads(out)["funnel"]["page_views"] == 5

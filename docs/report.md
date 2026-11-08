@@ -55,10 +55,12 @@ agent, so a correct export never trips this. If it does, the export is wrong.
 | `view_dim_daily` | `day, dim, value, bot_class, views` [`site, day_tz, uniques`] |
 | `view_geo_daily` | `day, country, region, city, bot_class, views` [`site, day_tz, uniques`] |
 | `click_events` | `ts, link_id` [`site, country`] |
-| `kit_events` | `ts, kind` |
+| `kit_events` | `ts, kind` [`site`] |
 
 `kit_events` also has a `lead_id` column in the database. Do not select it; a
-file that has it is refused. Select `ts, kind` only. Rows of `click_events` and
+file that has it is refused. Select `ts, kind` only.
+
+The kit table has no site column in the database. A `kit_events` row with no `site` is counted for the default site (`links`) only. For `--site blog` the kit figures print "not available for this site" (JSON: `null`, listed under `funnel.not_scoped`), never zero, unless every kit row carries a `site` value. A real zero prints `0`; a count of 1 to 4 prints "below the privacy floor" (JSON: `null`, listed under `funnel.withheld`). `--days N` ends at the newest day in any table, kit included. Rows of `click_events` and
 `kit_events` are counted by the report; the aggregate tables are read as stored.
 
 Run each query read-only against a copy or with a read-only token, in a place

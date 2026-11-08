@@ -141,10 +141,19 @@ def build_report(
         for r in export.click_events
         if r.get("site", "links") == site
     ]
-    kit_rows = [{**r, "day": _utc_day(r["ts"])} for r in export.kit_events]
+    # Kit rows with a site belong to it. Rows without one (the database has no
+    # kit site) are counted for the default site only; see ``not_scoped``.
+    kit_rows = [
+        {**r, "day": _utc_day(r["ts"])}
+        for r in export.kit_events
+        if r.get("site") == site or ("site" not in r and site == "links")
+    ]
+    kit_unscoped = site != "links" and any("site" not in r for r in export.kit_events)
 
     if days is not None:
-        every = [r["day"] for r in view_rows + dim_rows + geo_rows + click_rows]
+        every = [
+            r["day"] for r in view_rows + dim_rows + geo_rows + click_rows + kit_rows
+        ]
         if every:
             end = date.fromisoformat(until) if until else date.fromisoformat(max(every))
             since = (end - timedelta(days=days - 1)).isoformat()
@@ -193,7 +202,6 @@ def build_report(
         kit[r["kind"]] += 1
 
     human = by_class["h"]
-    human_shown = dict(classes.shown).get("h")
     missing = [
         t
         for t in (
@@ -205,7 +213,7 @@ def build_report(
         )
         if t not in export.present
     ]
-    page_views = human_shown if "view_daily" in export.present else None
+    page_views = _count(human, floor) if "view_daily" in export.present else None
     click_total = (
         _count(len(click_rows), floor) if "click_events" in export.present else None
     )
@@ -213,12 +221,16 @@ def build_report(
     kit_unlocks = (
         _count(kit["unlock"], floor) if "kit_events" in export.present else None
     )
+    not_scoped: list[str] = []
+    if kit_unscoped and "kit_events" in export.present:
+        kit_views = kit_unlocks = None
+        not_scoped = ["kit_views", "kit_unlocks"]
     withheld = []
     if "view_daily" in export.present and page_views is None and human:
         withheld.append("page_views")
     if "click_events" in export.present and click_total is None:
         withheld.append("clicks")
-    if "kit_events" in export.present:
+    if "kit_events" in export.present and not not_scoped:
         if kit_views is None:
             withheld.append("kit_views")
         if kit_unlocks is None:
@@ -242,6 +254,7 @@ def build_report(
             "clicks_per_100_views": _ratio(click_total, page_views),
             "kit_views_per_100_views": _ratio(kit_views, page_views),
             "withheld": withheld,
+            "not_scoped": not_scoped,
             "missing": missing,
         },
         "pages": _section(pages, floor, top, "view_daily" in export.present),
@@ -329,6 +342,8 @@ def render_text(report: dict[str, Any]) -> str:
             text = "not in this export"
         else:
             text = _fmt(funnel[key])
+        if key in funnel["not_scoped"]:
+            text = "not available for this site"
         lines.append(f"  {label:<28} {text}")
     per = funnel["clicks_per_100_views"]
     if per is not None:
@@ -341,6 +356,11 @@ def render_text(report: dict[str, Any]) -> str:
     kper = funnel["kit_views_per_100_views"]
     if kper is not None:
         lines.append(f"  Kit views per 100 page views: {kper}")
+    if funnel["not_scoped"]:
+        lines.append(
+            "  Kit figures cannot be scoped by site: the kit has no site column "
+            "in the export. Add a site column to kit_events to see them."
+        )
     if funnel["withheld"]:
         lines.append("  A figure marked below the privacy floor is not printed.")
     lines.append("  Clicks are not tied to a source: no 'visitors from X clicked Y'.")

@@ -118,7 +118,7 @@ SPECS: dict[str, Spec] = {
     ),
     "kit_events": Spec(
         marker="kind",
-        columns={"ts": "ts", "kind": "kit_kind"},
+        columns={"site": "site", "ts": "ts", "kind": "kit_kind"},
         required=frozenset({"ts", "kind"}),
     ),
 }
@@ -270,7 +270,8 @@ def _validate_row(table: str, row: Any, where: str) -> dict[str, Any]:
     for name, kind in spec.columns.items():
         if name in row:
             out[name] = _check_value(kind, row[name], f"{where}, column {name!r}")
-    if "site" in spec.columns:
+    # The kit has no site in the database. A kit row without one stays unscoped.
+    if "site" in spec.columns and table != "kit_events":
         out.setdefault("site", "links")
     return out
 
