@@ -160,6 +160,7 @@ def test_metric_in_one_file_only_is_named_not_compared(tmp_path: Path) -> None:
         ("b.csv", "day,views\n2026-11-01,1.5\n"),
         ("b.csv", "day,views\n2026-11-01,5\n2026-11-01,6\n"),
         ("b.csv", "views\n5\n"),
+        ("b.csv", "day,views,views\n2026-11-01,5,6\n"),
         ("b.csv", "day,views\n2026-11-01,5,9\n"),
         ("b.csv", "day,views\n"),
         ("b.csv", ""),
@@ -236,3 +237,17 @@ def test_read_only_and_offline(tmp_path: Path) -> None:
     for banned in ("socket", "urllib", "http", "requests", "subprocess", "sqlite3"):
         assert not re.search(rf"^\s*(import|from)\s+{banned}\b", src, re.M), banned
     assert "write_text" not in src and ".write(" not in src
+
+
+def test_shift_past_the_calendar_end_exits_2_not_a_traceback(tmp_path: Path) -> None:
+    rows: Rows = [("9999-12-31", 5, 1)]
+    args = pair(tmp_path, rows, rows)
+    r = run(tmp_path, *args, "--shift-days", "3")
+    assert r.returncode == 2 and "Traceback" not in r.stderr
+    assert r.stderr.startswith("error: ")
+    # No shift: the last calendar day still compares (and the hint path is safe).
+    ok = run(tmp_path, *args)
+    assert ok.returncode == 0, ok.stderr
+    other: Rows = [("9999-12-31", 500, 1)]
+    bad = run(tmp_path, *pair(tmp_path, rows, other))
+    assert bad.returncode == 1 and "Traceback" not in bad.stderr

@@ -36,11 +36,11 @@ This page defines only the shape it needs. The Beacons export format itself is n
 Make `ours-days.csv` from the same local D1 export that `reach-around report` reads (see `docs/report.md`), with read-only queries run in a place you control:
 
 ```text
-SELECT day, SUM(views) AS views FROM view_daily WHERE bot_class = 'h' GROUP BY day
-SELECT date(ts / 1000, 'unixepoch') AS day, COUNT(*) AS clicks FROM click_events GROUP BY day
+SELECT day, SUM(views) AS views FROM view_daily WHERE site = 'links' AND bot_class = 'h' GROUP BY day
+SELECT date(ts / 1000, 'unixepoch') AS day, COUNT(*) AS clicks FROM click_events WHERE site = 'links' GROUP BY day
 ```
 
-Join the two results on `day` into one file. Click timestamps are stored in milliseconds; `date(..., 'unixepoch')` yields the UTC day. Views count the likely-human class only, which is the number to set against Beacons.
+Both queries are scoped to one site (`links` here; use the site id that matches the Beacons page). Without the filter, an export that also holds another site, such as a blog, inflates the numbers and can fail the run for no real reason. Join the two results on `day` into one file. Click timestamps are stored in milliseconds; `date(..., 'unixepoch')` yields the UTC day. Views count the likely-human class only, which is the number to set against Beacons.
 
 ## What it does
 
@@ -105,7 +105,7 @@ Keep Beacons live for both runs. Record each result in the cutover pull request 
 The script compares numbers; the second acceptance check proves the path. On the staging host, after `scripts/smoke.sh` passes:
 
 1. Open the page once from a labeled source (a URL with the configured source label) in a normal browser with Do Not Track off, and click one outbound link.
-2. Within the hour, make a fresh read-only export and run `reach-around report --input export.json --days 1`. The page view, the click and the source-to-destination pair appear. The hourly rollup runs on the Worker's cron, so a view can take up to an hour to show in the rollup tables; a click shows from the raw table at once.
+2. Within the hour, make a fresh read-only export and run `reach-around report --input export.json --days 1`. The page view (under its source) and the click (under its link id) appear. The report does not yet tie a click to its source, so the source-to-destination pair is parity item B1 and is checked when #329, #409 and #398 land, not here. The hourly rollup runs on the Worker's cron, so a view can take up to an hour to show in the rollup tables; a click shows from the raw table at once.
 3. Note the result in the cutover pull request. Do not paste the export.
 
 ## Not covered

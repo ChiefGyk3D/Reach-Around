@@ -150,6 +150,8 @@ def load_series(path: Path, label: str) -> dict[date, dict[str, int]]:
                     )
                 rows.append(dict(r))
             header = reader.fieldnames or []
+            if len(set(header)) != len(header):
+                raise InputError(f"{label}: header repeats a column")
         except csv.Error:
             raise InputError(f"{label}: not valid CSV") from None
         if "day" not in header:
@@ -192,6 +194,16 @@ def _cli_day(text: str, name: str) -> date:
     return d
 
 
+def shift_days(
+    series: dict[date, dict[str, int]], n: int, label: str
+) -> dict[date, dict[str, int]]:
+    """Move every day by n days; a day past the calendar's end is bad input."""
+    try:
+        return {d + timedelta(days=n): v for d, v in series.items()}
+    except OverflowError:
+        raise InputError(f"{label}: a shifted day is out of range") from None
+
+
 def _passes(a: int, b: int, tol_abs: float, tol_pct: float) -> bool:
     diff = abs(a - b)
     if diff <= tol_abs:
@@ -223,8 +235,8 @@ def compare(
 
     rows: list[dict[str, object]] = []
     gaps: list[dict[str, str]] = []
-    d = lo
-    while d <= hi:
+    for offset in range((hi - lo).days + 1):
+        d = lo + timedelta(days=offset)
         in_b, in_o = d in beacons, d in ours
         if not (in_b and in_o):
             gaps.append(
@@ -245,7 +257,6 @@ def compare(
                         "pass": _passes(a, b, tol_abs, tol_pct),
                     }
                 )
-        d += timedelta(days=1)
     return {
         "window": [lo.isoformat(), hi.isoformat()],
         "metrics": shared,
@@ -265,8 +276,8 @@ def _shift_hint(
 ) -> str | None:
     """Name a one-day shift that makes every overlapping day pass, if any."""
     for n in (-1, 1):
-        moved = {d + timedelta(days=n): v for d, v in beacons.items()}
         try:
+            moved = shift_days(beacons, n, "beacons file")
             res = compare(moved, ours, since, until, tol_abs, tol_pct)
         except InputError:
             continue
@@ -333,9 +344,7 @@ def main(argv: list[str]) -> int:
         beacons = load_series(Path(args.beacons), "beacons file")
         ours = load_series(Path(args.ours), "ours file")
         if args.shift_days:
-            beacons = {
-                d + timedelta(days=args.shift_days): v for d, v in beacons.items()
-            }
+            beacons = shift_days(beacons, args.shift_days, "beacons file")
         res = compare(
             beacons, ours, since, until, args.tolerance_abs, args.tolerance_pct
         )
