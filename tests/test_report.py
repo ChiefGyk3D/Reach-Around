@@ -915,7 +915,8 @@ def _joint(
     path = write(tmp_path, {"tables": {"click_events": _clicks(spec)}})
     code, out, _ = run(capsys, "--input", str(path), "--json")
     assert code == 0
-    return json.loads(out)
+    report: dict[str, Any] = json.loads(out)
+    return report
 
 
 def _assert_nothing_recoverable(
