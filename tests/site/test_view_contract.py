@@ -61,12 +61,21 @@ def test_the_utm_rule_is_the_workers() -> None:
     assert "/^[a-z0-9-]{1,30}$/" in script()
 
 
+def test_the_source_label_rule_is_the_workers() -> None:
+    # `s` is judged by the same label rule as utm_source, on both sides.
+    src = worker_source()
+    assert "parseUtm(s)" in src
+    body = script().split("function sourceLabel()")[1].split("function widthLetter")[0]
+    assert '.get("s")' in body
+    assert "/^[a-z0-9-]{1,30}$/" in body
+
+
 def test_the_worker_reads_exactly_the_keys_the_script_sends() -> None:
     src = worker_source()
-    for key in ("r", "u", "w"):
+    for key in ("r", "u", "s", "w"):
         assert f'params.get("{key}")' in src
         assert f'params.append("{key}"' in script()
-    assert len(re.findall(r"params\.append\(", script())) == 3
+    assert len(re.findall(r"params\.append\(", script())) == 4
     letters = re.search(r'w !== "s" && w !== "m" && w !== "l" && w !== "x"', src)
     assert letters
     sent = set(re.findall(r'return "([smlx])"', script()))
@@ -77,7 +86,7 @@ def test_the_longest_possible_body_fits_the_workers_cap() -> None:
     cap = ts_int("MAX_BODY")
     host = ts_int("MAX_HOST_LENGTH")
     assert f"host.length > {host}" in script()
-    longest = f"r={'a' * host}&u={'b' * 30}&w=x"
+    longest = f"r={'a' * host}&u={'b' * 30}&s={'c' * 30}&w=x"
     assert len(longest) <= cap
 
 

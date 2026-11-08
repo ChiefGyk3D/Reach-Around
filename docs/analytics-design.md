@@ -82,6 +82,7 @@ with them.
 | `site` | Slug, `^[a-z0-9][a-z0-9-]{0,19}$` | Derived by the Worker from the matched host (edge) or the route plus matched Origin (beacon). Never free text from the client | **New.** Must be in the primary key of every aggregate table |
 | `page` | Link page: tab id from the allowlist. Blog: normalized path (3.2) | Manifest (links); request URL path (blog edge) | Query string and fragment are never stored |
 | Referrer host | Host name only, lower case, at most 80 characters | `document.referrer` (beacon) or `Referer` header (edge), cut to the host at once | Never the path or query. `src_kind` `r`. Internal navigation is `i`, none is `d` |
+| Source label (`s`) | `^[a-z0-9-]{1,30}$`, kept only when on the site's `sources` list, else `other`; wins over `utm_source` | Query string of the viewed URL | `src_kind` `u`. Read only for a site that lists `sources` |
 | UTM source | Allowlisted `utm_source`, `^[a-z0-9-]{1,30}$`; anything not on `UTM_ALLOWLIST` is stored as `other` in aggregates | Query string of the viewed URL | `src_kind` `u`. No other `utm_*` key is read |
 | Time bucket | See 3.3 | Server clock | |
 | Country, region, city | Two-letter country, region code (at most 3 characters), city name (at most 60 characters) | Cloudflare request metadata (`cf.country`, `cf.regionCode`, `cf.city`), `GEO_LEVEL` per site | Never coordinates, postal code, metro code, organization or ASN number. `GEO_LEVEL=region` drops city; `country` drops both |
@@ -240,6 +241,14 @@ that one site rather than the whole collector):
   both sites and records `view_meta('config_err')`.
 - `mode`: `beacon` or `edge`. `pages`: an id list (beacon) or the literal
   `html-200` (edge: any path the origin served as a successful HTML page).
+- Per-site `sources`: a closed list (at most 40 labels, `^[a-z0-9-]{1,30}$`,
+  `other` reserved) of labels carried in the `s` parameter, so a bio link can
+  be attributed without storing anything. Precedence: `s`, then `utm_source`,
+  then the referrer host, then direct. A label not on the list is stored as
+  `other` and its text is dropped at once; a site with no `sources` never
+  reads `s`. Listed labels are kept as themselves in the aggregates next to
+  the site's `utm_allowlist`; once a site lists `sources`, any other
+  `utm_source` label folds to `other` too.
 - Per-site overrides: `geo`, `utm_allowlist`,
   `min_cell`, and the raw keep days, each clamped to the global ceilings (raw
   keep at most 90 days, as shipped).

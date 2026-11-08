@@ -2,8 +2,9 @@
 // Page-view counting, only on sites that turn it on. One small form-encoded
 // beacon per page load to a same-origin route; the server works out the rest.
 //
-// Sent: the referring site's host name, an allowlisted utm_source label, and
-// one letter for the window width. Never sent: the page address, the referrer
+// Sent: the referring site's host name, an allowlisted utm_source label, a
+// short source label from the link's own `s` parameter, and one letter for the
+// window width. Never sent: the page address, the referrer
 // path or query, or anything else. Nothing is stored in the browser and this
 // script reads no identifier. There is no fallback request: without
 // navigator.sendBeacon it does nothing.
@@ -89,6 +90,19 @@
     }
   }
 
+  function sourceLabel() {
+    try {
+      var value = new URLSearchParams(location.search).get("s");
+      if (value === null) {
+        return null;
+      }
+      value = value.toLowerCase();
+      return /^[a-z0-9-]{1,30}$/.test(value) ? value : null;
+    } catch (ignored) {
+      return null;
+    }
+  }
+
   function widthLetter() {
     var w = window.innerWidth;
     if (w < 480) {
@@ -112,11 +126,15 @@
       var params = new URLSearchParams();
       var r = referrerHost();
       var u = utmSource();
+      var sl = sourceLabel();
       if (r !== null) {
         params.append("r", r);
       }
       if (u !== null) {
         params.append("u", u);
+      }
+      if (sl !== null) {
+        params.append("s", sl);
       }
       params.append("w", widthLetter());
       navigator.sendBeacon(route + id, params);

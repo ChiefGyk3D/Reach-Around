@@ -276,3 +276,38 @@ describe("config errors are visible and closed", () => {
     expect(value).toMatch(/^[a-z0-9:,-]+$/);
   });
 });
+
+describe("rollup with a sources list", () => {
+  const WITH = JSON.stringify({
+    links: { hosts: ["links.example.test"], mode: "beacon", pages: ["home"], sources: ["bio-ig"] },
+    blog: { hosts: ["blog.example.test"], mode: "beacon", pages: ["post-one"], min_cell: 1, utm_allowlist: ["mail"], sources: ["bio-ig"] },
+  });
+  const srcs = (site: string) => q<{ src_kind: string; src: string; views: number }>(`SELECT src_kind, src, SUM(views) AS views FROM view_daily WHERE site = '${site}' GROUP BY src_kind, src ORDER BY src`);
+
+  it("listed_source_labels_survive_next_to_the_utm_list_and_anything_else_folds", async () => {
+    await insert([
+      ...many("blog", D13 + 1000, 2, { page: "post-one", src_kind: "u", src: "bio-ig" }),
+      ...many("blog", D13 + 1000, 2, { page: "post-one", src_kind: "u", src: "mail" }),
+      ...many("blog", D13 + 1000, 1, { page: "post-one", src_kind: "u", src: "john-doe" }),
+      ...many("blog", D13 + 1000, 1, { page: "post-one", src_kind: "u", src: "other" }),
+    ]);
+    await rollupClosedDays(env({ SITES: WITH }), NOW);
+    expect(await srcs("blog")).toEqual([
+      { src_kind: "u", src: "bio-ig", views: 2 },
+      { src_kind: "u", src: "mail", views: 2 },
+      { src_kind: "o", src: "other", views: 2 },
+    ]);
+  });
+
+  it("with_only_sources_set_other_utm_labels_fold_to_other", async () => {
+    await insert([
+      ...many("links", D13 + 1000, 1, { src_kind: "u", src: "bio-ig" }),
+      ...many("links", D13 + 1000, 1, { src_kind: "u", src: "john-doe" }),
+    ]);
+    await rollupClosedDays(env({ SITES: WITH, MIN_CELL: "1" }), NOW);
+    expect(await srcs("links")).toEqual([
+      { src_kind: "u", src: "bio-ig", views: 1 },
+      { src_kind: "o", src: "other", views: 1 },
+    ]);
+  });
+});

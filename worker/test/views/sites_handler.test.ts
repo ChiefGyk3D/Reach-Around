@@ -6,7 +6,7 @@ import { DB, IP4, NOW, SECRET, beacon, budgets, clearAll, dumpDatabase, fakeLimi
 
 const SITES = JSON.stringify({
   links: { hosts: ["links.example.test"], mode: "beacon", pages: ["home", "support"], link_ids: { "example-one": "home" } },
-  blog: { hosts: ["blog.example.test"], mode: "beacon", pages: ["post-one"], geo: "country", utm_allowlist: ["mail"] },
+  blog: { hosts: ["blog.example.test"], mode: "beacon", pages: ["post-one"], geo: "country", utm_allowlist: ["mail"], sources: ["bio-ig", "newsletter"] },
   edgy: { hosts: ["edge.example.test"], mode: "edge", pages: "html-200" },
 });
 const env = (over: Record<string, unknown> = {}) =>
@@ -268,5 +268,39 @@ describe("no raw value reaches the database on either site", () => {
     expect(dump).not.toContain("SENTINEL-LANG");
     expect(dump).not.toContain(IP4);
     expect(dump.length).toBeGreaterThan(100); // something real was scanned
+  });
+});
+
+describe("the s source label", () => {
+  const src = async (host: string, page: string, body: string, n = 3) => {
+    await post(env(), host, page, n, { body });
+    const all = await rows();
+    return all.map((r) => [r.src_kind, r.src]).at(-1);
+  };
+
+  it("a_listed_label_is_stored_and_beats_utm_and_referrer", async () => {
+    expect(await src("blog.example.test", "post-one", "s=bio-ig&u=mail&r=news.example.test")).toEqual(["u", "bio-ig"]);
+  });
+
+  it("an_unlisted_label_is_stored_as_other_and_the_raw_text_is_nowhere_in_the_database", async () => {
+    expect(await src("blog.example.test", "post-one", "s=Sneaky-Label&u=mail")).toEqual(["u", "other"]);
+    expect((await dumpDatabase()).toLowerCase()).not.toContain("sneaky");
+  });
+
+  it("a_site_without_sources_never_reads_s", async () => {
+    expect(await src("links.example.test", "home", "s=bio-ig&r=news.example.test")).toEqual(["r", "news.example.test"]);
+  });
+
+  it("a_label_listed_on_another_site_is_other_here", async () => {
+    expect(await src("blog.example.test", "post-one", "s=example-one")).toEqual(["u", "other"]);
+  });
+
+  it("hostile_values_record_nothing", async () => {
+    const e = env();
+    let n = 10;
+    for (const bad of ["a_b", "x".repeat(31), "%00", "%2e%2e", "a%20b", "%256dail", ""]) {
+      await post(e, "blog.example.test", "post-one", n++, { body: `s=${bad}` });
+    }
+    expect(await rows()).toEqual([]);
   });
 });

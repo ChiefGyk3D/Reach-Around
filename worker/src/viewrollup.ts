@@ -344,11 +344,22 @@ interface Opts {
   min: number;
   allow: string[];
 }
+/**
+ * The labels kept as themselves in the aggregates: the utm list (the site's
+ * own, else the global one) plus the site's `s` sources. A site that lists
+ * sources therefore folds every other utm label to "other" too.
+ */
+function allowFor(env: RollupEnv, site: Site | undefined): string[] {
+  const utm = (site?.utmAllowlist !== undefined ? site.utmAllowlist : utmAllowlist(env.UTM_ALLOWLIST)) ?? [];
+  const src = site?.sources ?? [];
+  return src.length === 0 ? utm : [...new Set([...utm, ...src])];
+}
+
 function optsFor(env: RollupEnv, site: Site | undefined): Opts {
   return {
     geo: geoLevel(site?.geo ?? env.GEO_LEVEL),
     min: site?.minCell !== undefined ? site.minCell : minCell(env.MIN_CELL),
-    allow: (site?.utmAllowlist !== undefined ? site.utmAllowlist : utmAllowlist(env.UTM_ALLOWLIST)) ?? [],
+    allow: allowFor(env, site),
   };
 }
 

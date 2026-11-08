@@ -153,3 +153,69 @@ describe("geoOf", () => {
     expect(touched).toEqual([]);
   });
 });
+
+describe("parseBeacon: the s source label", () => {
+  const SRC = ["bluesky", "mail", "bio-ig"];
+  const beacon = (text: string, sources: readonly string[] | undefined = SRC) => parseBeacon(text, SITE, sources);
+
+  it("a_listed_label_is_kept", () => {
+    expect(beacon("s=bluesky&w=m")).toEqual({ kind: "u", src: "bluesky", vp: "m" });
+    expect(beacon("s=bio-ig")).toEqual({ kind: "u", src: "bio-ig", vp: "" });
+  });
+
+  it("precedence_is_s_then_utm_then_referrer_then_direct", () => {
+    expect(beacon("s=mail&u=bluesky&r=news.example.test")).toEqual({ kind: "u", src: "mail", vp: "" });
+    expect(beacon("u=bluesky&r=news.example.test")).toEqual({ kind: "u", src: "bluesky", vp: "" });
+    expect(beacon("r=news.example.test")).toEqual({ kind: "r", src: "news.example.test", vp: "" });
+    expect(beacon("w=s")).toEqual({ kind: "d", src: "", vp: "s" });
+  });
+
+  it("an_unknown_label_folds_to_other_and_still_wins_over_utm_and_referrer", () => {
+    expect(beacon("s=unlisted&u=bluesky&r=news.example.test")).toEqual({ kind: "u", src: "other", vp: "" });
+    expect(beacon("s=other")).toEqual({ kind: "u", src: "other", vp: "" });
+  });
+
+  it("mixed_case_is_lowered_before_the_comparison", () => {
+    expect(beacon("s=BlueSky")).toEqual({ kind: "u", src: "bluesky", vp: "" });
+    expect(beacon("s=NOPE")).toEqual({ kind: "u", src: "other", vp: "" });
+  });
+
+  it("the_first_of_a_repeated_s_wins", () => {
+    expect(beacon("s=mail&s=bluesky")).toEqual({ kind: "u", src: "mail", vp: "" });
+    expect(beacon("s=nope&s=mail")).toEqual({ kind: "u", src: "other", vp: "" });
+  });
+
+  it("encoded_values_are_decoded_once_and_judged_as_text", () => {
+    expect(beacon("s=%6dail")).toEqual({ kind: "u", src: "mail", vp: "" });
+    // Double encoding is not decoded twice: the literal text "%6dail" is not a label.
+    expect(beacon("s=%256dail")).toBeNull();
+    for (const bad of ["a%20b", "mail%00", "mail%0a", "%2e%2e", "ma%2fil", "%e2%80%ae", "mail%3Bdrop", "%"]) {
+      expect(beacon(`s=${bad}`), bad).toBeNull();
+    }
+  });
+
+  it("a_malformed_or_oversized_value_drops_the_beacon", () => {
+    for (const bad of ["", "a_b", "x".repeat(31), "x".repeat(5000), "ünïcode", "a.b", "a b"]) {
+      expect(beacon(`s=${bad}&w=m`), JSON.stringify(bad.slice(0, 8))).toBeNull();
+    }
+    expect(beacon("s=" + "x".repeat(30))).toEqual({ kind: "u", src: "other", vp: "" });
+  });
+
+  it("a_site_without_sources_ignores_s_entirely", () => {
+    for (const none of [undefined, []]) {
+      expect(parseBeacon("s=bluesky&r=news.example.test", SITE, none)).toEqual({ kind: "r", src: "news.example.test", vp: "" });
+      expect(parseBeacon("s=bluesky&u=mail", SITE, none)).toEqual({ kind: "u", src: "mail", vp: "" });
+      expect(parseBeacon("s=not valid!&w=m", SITE, none)).toEqual({ kind: "d", src: "", vp: "m" });
+    }
+  });
+
+  it("a_key_that_only_looks_like_s_is_not_read", () => {
+    for (const k of ["S", "ss", "s%00", "source", "s[]", "%73x"]) {
+      expect(beacon(`${k}=bluesky`), k).toEqual({ kind: "d", src: "", vp: "" });
+    }
+  });
+
+  it("an_invalid_u_still_drops_the_beacon_even_when_s_is_listed", () => {
+    expect(beacon("s=mail&u=a_b")).toBeNull();
+  });
+});

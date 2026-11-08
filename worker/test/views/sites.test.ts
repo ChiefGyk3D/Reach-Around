@@ -14,6 +14,7 @@ const good = {
     link_ids: { "support-cta": "*" },
     geo: "region",
     utm_allowlist: ["bluesky", "mail"],
+    sources: ["bio-ig", "mail"],
     min_cell: 5,
     raw_keep_days: 3,
   },
@@ -29,10 +30,12 @@ describe("loadSites: valid config", () => {
     const blog = r.sites.find((s) => s.id === "blog")!;
     expect(blog).toMatchObject({ mode: "edge", pages: "html-200", geo: "region", minCell: 5, rawKeepDays: 3 });
     expect(blog.utmAllowlist).toEqual(["bluesky", "mail"]);
+    expect(blog.sources).toEqual(["bio-ig", "mail"]);
     expect(blog.linkIds.get("support-cta")).toBe("*");
     const links = r.sites.find((s) => s.id === "links")!;
     expect((links.pages as ReadonlySet<string>).has("home")).toBe(true);
     expect(links.geo).toBeUndefined();
+    expect(links.sources).toBeUndefined();
   });
 
   it("legacy_one_site_shorthand_still_works", () => {
@@ -148,6 +151,14 @@ describe("loadSites: one bad site is disabled, the others stay", () => {
     ["utm label bad", { ...good.links, utm_allowlist: ["Blue Sky"] }],
     ["utm label long", { ...good.links, utm_allowlist: ["a".repeat(31)] }],
     ["too many utm labels", { ...good.links, utm_allowlist: Array.from({ length: 41 }, (_, i) => `u${i}`) }],
+    ["sources not an array", { ...good.links, sources: "bluesky" }],
+    ["sources label upper", { ...good.links, sources: ["Bluesky"] }],
+    ["sources label bad char", { ...good.links, sources: ["a_b"] }],
+    ["sources label long", { ...good.links, sources: ["a".repeat(31)] }],
+    ["sources label empty", { ...good.links, sources: [""] }],
+    ["sources label not a string", { ...good.links, sources: [5] }],
+    ["sources reserved other", { ...good.links, sources: ["other"] }],
+    ["too many sources", { ...good.links, sources: Array.from({ length: 41 }, (_, i) => `s${i}`) }],
     ["min_cell string", { ...good.links, min_cell: "5" }],
     ["min_cell fraction", { ...good.links, min_cell: 2.5 }],
     ["min_cell zero", { ...good.links, min_cell: 0 }],
