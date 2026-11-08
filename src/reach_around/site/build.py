@@ -62,7 +62,7 @@ from reach_around.site.overrides import (
 from reach_around.site.platforms import platform_rows
 from reach_around.site.privacy import collected_items, intro_text, sets_cookies
 from reach_around.site.robots import render_robots
-from reach_around.site.theme import theme_css
+from reach_around.site.theme import preload_fonts, theme_css
 from reach_around.site.visibility import visible_blocks
 
 
@@ -165,6 +165,18 @@ def _asset_url(assets: AssetMap) -> Callable[[str, str], str]:
         return root + assets(value)
 
     return asset_url
+
+
+def _font_preloads(
+    config: SiteConfig, assets: AssetMap
+) -> Callable[[str], list[dict[str, str]]]:
+    """``font_preloads(root)``: the head preload links for this site's fonts."""
+    fonts = preload_fonts(config.theme)
+
+    def font_preloads(root: str) -> list[dict[str, str]]:
+        return [{"href": root + assets(path), "type": mime} for path, mime in fonts]
+
+    return font_preloads
 
 
 def _nav(config: SiteConfig, current: int, root: str) -> list[dict[str, Any]]:
@@ -726,6 +738,7 @@ def build_site(
     # live script; the 404 page and the kit pages say False for themselves.
     env.globals["has_live_script"] = any(_has_live(blocks) for blocks in shown)
     env.globals["asset_url"] = _asset_url(named.assets)
+    env.globals["font_preloads"] = _font_preloads(config, named.assets)
     files: dict[Path, bytes] = {
         page: html.encode("utf-8")
         for page, html in _render_pages(

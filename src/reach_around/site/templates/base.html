@@ -5,6 +5,10 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>{{ page_title }}</title>
+<meta name="description" content="{{ creator.description or ('Links and socials from ' ~ creator.name ~ '.') }}">
+{% for font in font_preloads(root) %}
+<link rel="preload" href="{{ font.href }}" as="font" type="{{ font.type }}" crossorigin>
+{% endfor %}
 {% if noindex is defined and noindex %}
 <meta name="robots" content="noindex">
 {% endif %}

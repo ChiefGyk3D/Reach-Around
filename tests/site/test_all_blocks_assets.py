@@ -48,6 +48,8 @@ LOGICAL = (
     "static/copy.js",
     "static/email.js",
     "static/view.js",
+    # linked from every page head by <link rel="preload"> (#358)
+    "static/fonts/jost-latin-wght-normal.woff2",
 )
 
 

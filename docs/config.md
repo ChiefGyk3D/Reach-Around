@@ -144,6 +144,7 @@ A SQLite store is copied to `<file>.pre-<version>` first (three copies kept).
 | --- | --- | --- | --- |
 | `name` | Title | required | |
 | `title` | page title text | none | The whole-site title; see [Page titles](#page-titles). |
+| `description` | plain text, 1 to 160 characters | `Links and socials from <name>.` | The short text search engines show under the page title (`<meta name="description">`). Every page carries it. One line, no control characters, no leading or trailing space. |
 | `avatar` | HTTPS URL or local image path | none | A relative path such as `media/avatar.png` is copied from the instance directory to the same path in the site. |
 | `favicon` | local image path | none | The browser tab icon. Same rules as a local `avatar`; an https URL is refused. |
 | `header` | `compact`, `centered`, `hero` | `compact` | See [layouts and headers](#blocks-layouts-and-headers). |
