@@ -18,9 +18,12 @@ The wall is structural and checked at build time:
   ``GUARD_MIN_LENGTH`` are skipped, since a short word would match ordinary text;
   the structural separation, not this search, is what keeps them out.
 
-Not here, on purpose: the Turnstile script and the CSP exception it needs are a
-separate task (Plan 3, Task 2A). The widget slot is markup only, so this build
-makes no third-party request and ``_headers`` is unchanged.
+The CSP exception for the Turnstile widget lives here too (``gate_path_extras``,
+#257): ``_headers`` gives ``https://challenges.cloudflare.com`` to ``script-src``
+and ``frame-src`` on the two exact widget paths (``GATE_PATHS``), and only when
+the kit has a gate form and a ``turnstile_site_key``. No other path gets it.
+Not here, on purpose: the Turnstile script tag. The widget slot is markup only,
+so the pages still make no third-party request.
 """
 
 from __future__ import annotations
@@ -64,6 +67,16 @@ GATE_ACTION = "/kit/retry/"
 
 GUARD_MIN_LENGTH = 6
 
+# The one third-party origin the gate pages may load from. Cloudflare's
+# Turnstile client-side docs (CSP reference page, last updated May 5, 2026,
+# read 2026-11-07) list exactly ``script-src`` and ``frame-src`` for this
+# origin and nothing for ``connect-src`` (verified). ``connect-src`` stays
+# ``'self'``: add the origin there only if a browser run names a violation.
+TURNSTILE_ORIGIN = "https://challenges.cloudflare.com"
+# The pages that render the widget, as ``_headers`` paths. Exact paths, no
+# splat: nothing else under /kit/ and no other page is relaxed.
+GATE_PATHS = ("/kit/", "/kit/retry/")
+
 
 class KitLeakError(ValueError):
     """Gated text was found in the public output; the build is refused."""
@@ -91,6 +104,22 @@ def public_paths(config: SiteConfig) -> set[Path]:
     if has_gate_form(config.kit):
         paths.add(RETRY_PAGE)
     return paths
+
+
+def gate_path_extras(config: SiteConfig) -> dict[str, dict[str, list[str]]]:
+    """The CSP extra for the gate pages: the Turnstile origin in ``script-src``
+    and ``frame-src``, on the pages that render the widget and no other.
+
+    Empty unless the kit has a gate form and a site key (without a key the
+    widget slot stays empty and nothing third-party is needed).
+    """
+    kit = config.kit
+    if kit is None or not has_gate_form(kit) or not kit.turnstile_site_key:
+        return {}
+    return {
+        path: {"script-src": [TURNSTILE_ORIGIN], "frame-src": [TURNSTILE_ORIGIN]}
+        for path in GATE_PATHS
+    }
 
 
 # --- the wall ----------------------------------------------------------------

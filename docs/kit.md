@@ -87,11 +87,23 @@ The page says plainly that the address is not checked and nothing is sent to it,
 and links to the privacy page, which lists what the gate collects and for how
 long.
 
-**Turnstile is not loaded yet.** The widget needs Cloudflare's script and a
-narrow Content-Security-Policy exception for the kit pages. That is a separate
-task (Plan 3, Task 2A) so the policy is widened in one reviewed place. Until it
-lands the build makes no third-party request, `_headers` is unchanged and the
-widget slot stays empty.
+**Turnstile and the Content-Security-Policy.** The build adds one narrow
+exception for the widget, on the pages that render it and nowhere else: the
+kit page (`/kit/`) and the retry page (`/kit/retry/`), and only when the kit
+has a gate form and `kit.turnstile_site_key` is set. On those two paths
+`script-src` and `frame-src` gain `https://challenges.cloudflare.com`, which is
+what Cloudflare's Turnstile CSP reference lists (page last updated May 5, 2026,
+read 2026-11-07; verified). `connect-src` is not widened: that page does not list
+it for the normal widget (it needs `'self'` only for pre-clearance, which this
+site does not use). If a browser run ever names a `connect-src` violation, add
+that one origin in `reach_around/site/kit.py::gate_path_extras` with a test.
+No other path gets the Turnstile origin, and no `unsafe-*`, wildcard or `data:`
+source is added. The existing per-path exception for live-tab pages (their own
+`frame-src` for the player origins) is unchanged. The gated
+page (`kit.html`, served by the Worker) is not part of `_headers`; the Worker
+sets its headers. This change only allows the origin. The page does not load
+Turnstile's script yet, so the build still makes no third-party request and the
+widget slot stays empty until that script tag lands.
 
 ### Retry page
 
