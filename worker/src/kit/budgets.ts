@@ -43,6 +43,7 @@
 import { MAX_LEADS_CEILING } from "./leads";
 import { reserveBudget, utcDay, utcHour, MAX_RESERVE_LIMIT } from "./limits";
 import type { KitEventKind } from "./leads";
+import { pageViewDailyWrites, type PageViewBudgetEnv } from "../pvlimits";
 
 export type RouteName = "gate" | "view";
 
@@ -56,6 +57,17 @@ export const DEFAULTS = {
   d1DailyWriteQuota: 100_000,
 } as const;
 
+/** Every variable parseKitLimits reads. A test keeps this equal to the names parseKitLimits asks for below. */
+export const KIT_LIMIT_VARS = [
+  "ROUTE_BUDGET_GATE",
+  "ROUTE_BUDGET_VIEW",
+  "MAX_LEADS",
+  "MAX_KIT_EVENTS",
+  "DAILY_ALERT_BUDGET",
+  "DAILY_SEND_BUDGET",
+  "D1_DAILY_WRITE_QUOTA",
+] as const;
+
 export const MAX_KIT_EVENTS_CEILING = 500_000;
 const MAX_DAILY_BUDGET = 1000;
 const MIN_QUOTA = 1000;
@@ -63,8 +75,12 @@ const MAX_QUOTA = 999_999_999; // nine digits, the most parseStrict accepts
 
 /** Worst-case rows written by one accepted operation (the row, its indexes, the counter). */
 export const WRITES_PER_OP = { gate: 5, view: 2, send: 7, alert: 1 } as const;
-/** Page-view feature, rollup and purge worst case per day (docs/deploy.md, page views). */
-export const PAGE_VIEW_DAILY_WRITES = 22_700;
+/**
+ * Page-view feature, rollup and purge worst case per day at the DEFAULT hourly
+ * budgets (docs/deploy.md, page views). The loader uses the configured
+ * VIEWS_PER_HOUR and BOT_VIEWS_PER_HOUR instead (pvlimits.ts).
+ */
+export const PAGE_VIEW_DAILY_WRITES = pageViewDailyWrites({});
 /** Click route allowance per day. The click route has no global budget, only a per-client limiter, so this is a reserve, not a measured bound. */
 export const CLICK_DAILY_WRITES = 8_000;
 /** Headroom over everything above. */
@@ -75,7 +91,7 @@ export const PURGE_RESERVE = 10_000;
 export const BYTES_PER_LEAD = 600;
 export const BYTES_PER_EVENT = 100;
 
-export interface KitLimitsEnv {
+export interface KitLimitsEnv extends PageViewBudgetEnv {
   ROUTE_BUDGET_GATE?: string;
   ROUTE_BUDGET_VIEW?: string;
   MAX_LEADS?: string;
@@ -128,17 +144,25 @@ export function worstCaseDailyWrites(
   );
 }
 
-/** The figure checked against the quota: the kit plus everything else sharing the allowance. */
-export function combinedDailyWrites(c: Parameters<typeof worstCaseDailyWrites>[0]): number {
-  return worstCaseDailyWrites(c) + PAGE_VIEW_DAILY_WRITES + CLICK_DAILY_WRITES + COMBINED_MARGIN;
+/**
+ * The figure checked against the quota: the kit plus everything else sharing the
+ * allowance. `pageViews` is the page-view feature's worst case (pageViewDailyWrites).
+ */
+export function combinedDailyWrites(
+  c: Parameters<typeof worstCaseDailyWrites>[0],
+  pageViews: number = PAGE_VIEW_DAILY_WRITES,
+): number {
+  return worstCaseDailyWrites(c) + pageViews + CLICK_DAILY_WRITES + COMBINED_MARGIN;
 }
 
 export function worstCaseStorageBytes(c: Pick<KitLimits, "maxLeads" | "maxKitEvents">): number {
   return c.maxLeads * BYTES_PER_LEAD + c.maxKitEvents * BYTES_PER_EVENT;
 }
 
-/** Parse and validate every limit. Throws KitLimitsError (names only). Cheap: call per request. */
-export function loadKitLimits(env: KitLimitsEnv): KitLimits {
+type Parsed = Omit<KitLimits, "warnings">;
+
+/** Parse every limit. `bad` names the variables that are not usable (never their values). */
+function parseKitLimits(env: KitLimitsEnv): { c: Parsed; bad: string[] } {
   const e = (env ?? {}) as unknown as Record<string, unknown>;
   const bad: string[] = [];
   const get = (name: string, lo: number, hi: number, fallback: number): number => {
@@ -149,7 +173,7 @@ export function loadKitLimits(env: KitLimitsEnv): KitLimits {
     }
     return n;
   };
-  const c = {
+  const c: Parsed = {
     routeGatePerHour: get("ROUTE_BUDGET_GATE", 0, MAX_RESERVE_LIMIT, DEFAULTS.routeGatePerHour),
     routeViewPerHour: get("ROUTE_BUDGET_VIEW", 0, MAX_RESERVE_LIMIT, DEFAULTS.routeViewPerHour),
     maxLeads: get("MAX_LEADS", 1, MAX_LEADS_CEILING, DEFAULTS.maxLeads),
@@ -158,12 +182,46 @@ export function loadKitLimits(env: KitLimitsEnv): KitLimits {
     dailySendBudget: get("DAILY_SEND_BUDGET", 0, MAX_DAILY_BUDGET, DEFAULTS.dailySendBudget),
     d1DailyWriteQuota: get("D1_DAILY_WRITE_QUOTA", MIN_QUOTA, MAX_QUOTA, DEFAULTS.d1DailyWriteQuota),
   };
+  return { c, bad };
+}
+
+/** True above 80 percent of the quota (integer math, no rounding). */
+const above80 = (worst: number, quota: number): boolean => worst * 10 > quota * 8;
+
+/** Parse and validate every limit. Throws KitLimitsError (names only). Cheap: call per request. */
+export function loadKitLimits(env: KitLimitsEnv): KitLimits {
+  const { c, bad } = parseKitLimits(env);
   if (bad.length > 0) throw new KitLimitsError(bad);
 
-  const worst = combinedDailyWrites(c);
+  const worst = combinedDailyWrites(c, pageViewDailyWrites(env));
   if (worst > c.d1DailyWriteQuota) throw new KitLimitsError(["D1_DAILY_WRITE_QUOTA"]);
-  const warnings = worst * 10 > c.d1DailyWriteQuota * 8 ? ["combined worst-case daily D1 writes are above 80 percent of D1_DAILY_WRITE_QUOTA"] : [];
+  const warnings = above80(worst, c.d1DailyWriteQuota) ? ["combined worst-case daily D1 writes are above 80 percent of D1_DAILY_WRITE_QUOTA"] : [];
   return { ...c, warnings };
+}
+
+export interface BudgetAssessment {
+  /** ok: at or under 80 percent. warn: above 80, within the quota. fail: invalid, or over the quota. */
+  level: "ok" | "warn" | "fail";
+  /** Names of unusable variables, if any (level is then fail). */
+  invalid: readonly string[];
+  /** Worst-case daily D1 writes: the kit, page views, clicks and the margin. */
+  combined: number;
+  /** The page-view part of `combined`. */
+  pageViews: number;
+  quota: number;
+}
+
+/**
+ * The same verdict loadKitLimits reaches, as data, for the deploy-time check
+ * (scripts/check-budget.ts). It calls the same functions on the same figures,
+ * so the deploy gate and the Worker's own refusal cannot drift apart.
+ */
+export function assessDailyBudget(env: KitLimitsEnv): BudgetAssessment {
+  const { c, bad } = parseKitLimits(env);
+  const pageViews = pageViewDailyWrites(env);
+  const combined = combinedDailyWrites(c, pageViews);
+  const level = bad.length > 0 || combined > c.d1DailyWriteQuota ? "fail" : above80(combined, c.d1DailyWriteQuota) ? "warn" : "ok";
+  return { level, invalid: bad, combined, pageViews, quota: c.d1DailyWriteQuota };
 }
 
 type DbEnv = KitLimitsEnv & { DB: D1Database };

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import date
 
 from reach_around.config.blocks import Platforms
 from reach_around.config.numbers import Numbers, resolve_count
@@ -39,11 +40,13 @@ class PlatformRow:
     as_of: str | None
 
 
-def platform_rows(block: Platforms, numbers: Numbers | None) -> list[PlatformRow]:
+def platform_rows(
+    block: Platforms, numbers: Numbers | None, today: date
+) -> list[PlatformRow]:
     rows = []
     for ident, entry in zip(block.item_ids, block.items, strict=True):
         found = None if numbers is None else numbers.lookup(ident, entry.platform)
-        count, stamp = resolve_count(entry.count, entry.as_of, found)
+        count, stamp = resolve_count(entry.count, entry.as_of, found, today)
         rows.append(
             PlatformRow(
                 id=ident,

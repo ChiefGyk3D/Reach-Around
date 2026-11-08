@@ -47,9 +47,8 @@ from pydantic import (
 )
 
 from reach_around.config.blocks import MAX_COUNT, PLATFORM_SLUGS
+from reach_around.config.numbers import STALE_DAYS as STALE_DAYS
 from reach_around.config.numbers import Numbers
-
-STALE_DAYS = 30
 
 # A Turnstile site key is public by design (it ships in the page). Plain
 # characters only, so it can sit in an attribute with no escaping surprises.

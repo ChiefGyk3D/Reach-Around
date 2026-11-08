@@ -248,39 +248,61 @@ def entry(stamp: str) -> NumbersEntry:
     return NumbersEntry(count=500, as_of=datetime.fromisoformat(stamp).astimezone(UTC))
 
 
+TODAY = date(2027, 3, 10)
+
+
 def test_no_numbers_entry_keeps_the_manual_value() -> None:
-    assert resolve_count(7, date(2027, 1, 1), None) == (7, date(2027, 1, 1))
-    assert resolve_count(None, None, None) == (None, None)
+    assert resolve_count(7, date(2027, 1, 1), None, TODAY) == (7, date(2027, 1, 1))
+    assert resolve_count(None, None, None, TODAY) == (None, None)
 
 
 def test_a_numbers_entry_fills_an_empty_count() -> None:
-    assert resolve_count(None, None, entry("2027-03-09T12:00:00+00:00")) == (
+    assert resolve_count(None, None, entry("2027-03-09T12:00:00+00:00"), TODAY) == (
         500,
         date(2027, 3, 9),
     )
 
 
-def test_a_manual_value_without_a_date_loses() -> None:
-    assert resolve_count(7, None, entry("2001-01-01T00:00:00+00:00")) == (
+def test_a_fresh_fetched_value_always_beats_a_hand_kept_one() -> None:
+    # even when the hand-kept date is newer: fetched wins, never the reverse
+    assert resolve_count(
+        7, date(2027, 3, 10), entry("2027-03-01T00:00:00+00:00"), TODAY
+    ) == (500, date(2027, 3, 1))
+    assert resolve_count(
+        7, date(2027, 3, 1), entry("2027-03-02T00:00:00+00:00"), TODAY
+    ) == (500, date(2027, 3, 2))
+
+
+def test_the_thirty_day_edge_is_still_fresh() -> None:
+    # 30 days old is fresh; 31 is stale
+    assert (
+        resolve_count(7, date(2027, 3, 9), entry("2027-02-08T00:00:00+00:00"), TODAY)[0]
+        == 500
+    )
+    assert (
+        resolve_count(7, date(2027, 3, 9), entry("2027-02-07T00:00:00+00:00"), TODAY)[0]
+        == 7
+    )
+
+
+def test_a_stale_fetched_value_falls_back_to_a_fresh_hand_kept_one() -> None:
+    assert resolve_count(
+        7, date(2027, 3, 1), entry("2027-01-01T00:00:00+00:00"), TODAY
+    ) == (7, date(2027, 3, 1))
+
+
+def test_a_stale_fetched_value_beats_a_stale_hand_kept_one() -> None:
+    assert resolve_count(
+        7, date(2026, 12, 1), entry("2027-01-01T00:00:00+00:00"), TODAY
+    ) == (500, date(2027, 1, 1))
+
+
+def test_a_hand_kept_value_without_a_date_never_wins() -> None:
+    assert resolve_count(7, None, entry("2001-01-01T00:00:00+00:00"), TODAY) == (
         500,
         date(2001, 1, 1),
     )
 
 
-def test_a_newer_numbers_date_wins() -> None:
-    assert (
-        resolve_count(7, date(2027, 3, 1), entry("2027-03-02T00:00:00+00:00"))[0] == 500
-    )
-
-
-def test_an_older_numbers_date_loses() -> None:
-    assert resolve_count(7, date(2027, 3, 2), entry("2027-03-01T23:59:59+00:00")) == (
-        7,
-        date(2027, 3, 2),
-    )
-
-
-def test_the_same_day_goes_to_the_numbers_file() -> None:
-    assert (
-        resolve_count(7, date(2027, 3, 2), entry("2027-03-02T00:00:00+00:00"))[0] == 500
-    )
+def test_a_stale_hand_kept_value_alone_still_shows() -> None:
+    assert resolve_count(7, date(2020, 1, 1), None, TODAY) == (7, date(2020, 1, 1))

@@ -193,6 +193,33 @@ def test_changed_blocks_are_listed(
     assert "- Tab `Links`: block `home` changed." in body(out)
 
 
+def stale_yaml() -> str:
+    from datetime import UTC, datetime, timedelta
+
+    day = (datetime.now(UTC) - timedelta(days=60)).date().isoformat()
+    return GOOD_YAML.replace("version: 1\n", "version: 1\ntimezone: UTC\n") + (
+        "  - id: more\n    title: More\n    blocks:\n"
+        "      - id: socials\n        items:\n"
+        "          - {platform: tiktok, handle: '@x', url: 'https://example.com/t',"
+        f" count: 424242, as_of: {day}}}\n"
+    )
+
+
+def test_a_stale_number_warning_appears_in_the_comment(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    code, report = engine_report(tmp_path, capsys, stale_yaml())
+    assert code == 0 and report["warnings"]
+    done, out = render(tmp_path, wrap(0, report, 0))
+    assert done.returncode == 0, done.stderr
+    text = body(out)
+    assert "## The preview is ready" in text
+    assert "Warnings" in text
+    assert "the number for tiktok is 60 days old \\(over 30\\)" in text
+    assert "424242" not in text
+    allowed_markup(text)
+
+
 def test_the_build_failure_and_the_cannot_run_comments(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -277,6 +304,16 @@ def change_record(**changes: Any) -> dict[str, Any]:
 FORGED: dict[str, Any] = {
     "unknown kind": wrap(2, forged_report(errors=[forged_error(kind="rm_rf")])),
     "kind is a sentence": wrap(2, forged_report(errors=[forged_error(kind=EVIL)])),
+    "unknown warning kind": wrap(
+        0, forged_report(errors=[], warnings=[forged_error(kind="rm_rf")]), 0
+    ),
+    "warning with extra key": wrap(
+        0, forged_report(errors=[], warnings=[forged_error(html=EVIL)]), 0
+    ),
+    "warnings not a list": wrap(0, forged_report(errors=[], warnings=EVIL), 0),
+    "too many warnings": wrap(
+        0, forged_report(errors=[], warnings=[forged_error()] * 101), 0
+    ),
     "extra key": wrap(2, forged_report(extra=EVIL)),
     "extra key in error": wrap(2, forged_report(errors=[forged_error(html=EVIL)])),
     "top level extra": {**wrap(2, None), "body": EVIL},

@@ -318,15 +318,37 @@ jobs:
       - name: Build the site
         env:
           USE_COUNTS: ${{ !inputs.skip_counts && needs.counts.result == 'success' && 'true' || 'false' }}
+          PAGE_VIEWS: ${{ vars.PAGE_VIEWS }}
         run: |
           set -eu
           python -m pip install --require-hashes -r requirements-build.txt
           python -m pip install --require-hashes -r requirements.txt
           python -m pip install --no-deps --no-build-isolation .
+          # Page views on the test site (docs/deploy.md): only the exact text
+          # "true" turns them on. The committed example config stays untouched;
+          # a copy beside it (so relative paths and numbers.json still resolve)
+          # gets the analytics section. An example that already sets one is an
+          # error, never a silent override.
+          CONFIG=examples/instance/site.yaml
+          case "${PAGE_VIEWS:-}" in
+            ""|false) ;;
+            true)
+              if grep -Eq '^analytics:' "$CONFIG"; then
+                echo "::error::$CONFIG already has an analytics section; PAGE_VIEWS cannot add one"
+                exit 1
+              fi
+              CONFIG=examples/instance/site.page-views.yaml
+              { cat examples/instance/site.yaml; printf '\nanalytics:\n  page_views: true\n'; } > "$CONFIG"
+              ;;
+            *)
+              echo "::error::PAGE_VIEWS must be exactly true or false (or unset)"
+              exit 1
+              ;;
+          esac
           if [ "$USE_COUNTS" = "true" ]; then
-            reach-around build --config examples/instance/site.yaml --numbers counts-in/numbers.json --out site-out
+            reach-around build --config "$CONFIG" --numbers counts-in/numbers.json --out site-out
           else
-            reach-around build --config examples/instance/site.yaml --out site-out
+            reach-around build --config "$CONFIG" --out site-out
           fi
           test -z "$(find site-out -iname '*manifest*')"
           test -z "$(find site-out -iname '*assets.json')"
@@ -481,6 +503,23 @@ jobs:
           LIVE_TWITCH_HANDLE: ${{ vars.LIVE_TWITCH_HANDLE }}
           LIVE_KICK_HANDLE: ${{ vars.LIVE_KICK_HANDLE }}
           LIVE_KV_ID: ${{ vars.LIVE_KV_ID }}
+          # Optional: page views (docs/deploy.md, "Page views on the test site").
+          # ENABLED only by PAGE_VIEWS=true; then the four below are required or
+          # validated. VIEW_HASH_SECRET is a Worker secret and is not read here.
+          PAGE_VIEWS: ${{ vars.PAGE_VIEWS }}
+          PAGE_IDS: ${{ vars.PAGE_IDS }}
+          VIEW_LIMITER_NAMESPACE_ID: ${{ vars.VIEW_LIMITER_NAMESPACE_ID }}
+          VIEWS_PER_HOUR: ${{ vars.VIEWS_PER_HOUR }}
+          BOT_VIEWS_PER_HOUR: ${{ vars.BOT_VIEWS_PER_HOUR }}
+          ACCOUNT_VIEWS_PER_HOUR: ${{ vars.ACCOUNT_VIEWS_PER_HOUR }}
+          ACCOUNT_BOT_VIEWS_PER_HOUR: ${{ vars.ACCOUNT_BOT_VIEWS_PER_HOUR }}
+          ROUTE_BUDGET_GATE: ${{ vars.ROUTE_BUDGET_GATE }}
+          ROUTE_BUDGET_VIEW: ${{ vars.ROUTE_BUDGET_VIEW }}
+          MAX_LEADS: ${{ vars.MAX_LEADS }}
+          MAX_KIT_EVENTS: ${{ vars.MAX_KIT_EVENTS }}
+          DAILY_ALERT_BUDGET: ${{ vars.DAILY_ALERT_BUDGET }}
+          DAILY_SEND_BUDGET: ${{ vars.DAILY_SEND_BUDGET }}
+          D1_DAILY_WRITE_QUOTA: ${{ vars.D1_DAILY_WRITE_QUOTA }}
         run: |
           set -eu
           for name in CLOUDFLARE_ACCOUNT_ID PAGES_PROJECT D1_DATABASE_ID \
@@ -533,6 +572,58 @@ jobs:
                 || { echo "::error::LIVE_KICK_HANDLE is not a valid Kick slug"; exit 1; }
             fi
           fi
+          # Page views. Fail closed: only the exact text "true" turns them on
+          # (unset, empty and "false" are off), any other text is an error, and
+          # on, every id the Worker needs must be valid (never a placeholder).
+          # [[ =~ ]] tests the WHOLE value, as for LIVE_KV_ID.
+          case "${PAGE_VIEWS:-}" in
+            ""|false) ;;
+            true)
+              [ -n "${PAGE_IDS:-}" ] \
+                || { echo "::error::Page views are enabled (PAGE_VIEWS=true) but the repository variable PAGE_IDS is not set (docs/deploy.md)"; exit 1; }
+              [[ "$PAGE_IDS" =~ ^\[(\"[a-z0-9][a-z0-9-]{0,39}\"(,\ ?)?)+\]$ ]] \
+                || { echo "::error::PAGE_IDS must be a JSON array of tab ids"; exit 1; }
+              [ -n "${VIEW_LIMITER_NAMESPACE_ID:-}" ] \
+                || { echo "::error::Page views are enabled but the repository variable VIEW_LIMITER_NAMESPACE_ID is not set (docs/deploy.md)"; exit 1; }
+              [[ "$VIEW_LIMITER_NAMESPACE_ID" =~ ^[0-9]{1,12}$ ]] \
+                || { echo "::error::VIEW_LIMITER_NAMESPACE_ID is not a number"; exit 1; }
+              if [ "$VIEW_LIMITER_NAMESPACE_ID" = "1002" ]; then
+                echo "::error::VIEW_LIMITER_NAMESPACE_ID is the placeholder from wrangler.toml"
+                exit 1
+              fi
+              if [ "$VIEW_LIMITER_NAMESPACE_ID" = "$RATELIMIT_NAMESPACE_ID" ]; then
+                echo "::error::VIEW_LIMITER_NAMESPACE_ID must differ from RATELIMIT_NAMESPACE_ID (one namespace would share the click and view allowances)"
+                exit 1
+              fi
+              [ -n "${ZONE_NAME:-}" ] \
+                || { echo "::error::Page views are enabled but ZONE_NAME is not set: without the /e/* route the beacon never reaches the Worker"; exit 1; }
+              for name in VIEWS_PER_HOUR BOT_VIEWS_PER_HOUR ACCOUNT_VIEWS_PER_HOUR ACCOUNT_BOT_VIEWS_PER_HOUR; do
+                eval "value=\${$name:-}"
+                if [ -n "$value" ]; then
+                  if ! [[ "$value" =~ ^[0-9]{1,6}$ ]] || [ "$value" -gt 100000 ]; then
+                    echo "::error::$name must be a whole number from 0 to 100000"
+                    exit 1
+                  fi
+                fi
+              done
+              # The kit limits and the D1 quota the Worker's loader also reads
+              # (worker/src/kit/budgets.ts): the same values go to the budget
+              # check and into the deploy config, so the gate and the Worker see
+              # one environment. Shape only here; the exact ranges are the
+              # Worker's own, applied by the budget check.
+              for name in ROUTE_BUDGET_GATE ROUTE_BUDGET_VIEW MAX_LEADS MAX_KIT_EVENTS DAILY_ALERT_BUDGET DAILY_SEND_BUDGET D1_DAILY_WRITE_QUOTA; do
+                eval "value=\${$name:-}"
+                if [ -n "$value" ] && ! [[ "$value" =~ ^[0-9]{1,9}$ ]]; then
+                  echo "::error::$name must be digits only"
+                  exit 1
+                fi
+              done
+              ;;
+            *)
+              echo "::error::PAGE_VIEWS must be exactly true or false (or unset)"
+              exit 1
+              ;;
+          esac
 
       # Reads the downloaded manifest. No secret is in this step's env, and
       # python runs isolated (-I: no working-directory imports), so a hostile
@@ -564,6 +655,49 @@ jobs:
         working-directory: worker
         run: npm ci --ignore-scripts
 
+      # Page views only (docs/deploy.md, "Page views on the test site"): the
+      # build must carry the tab ids the Worker was told about. A tab missing
+      # from PAGE_IDS has its views ignored, so say so. Tokenless and isolated
+      # like the manifest step; a hostile artifact file cannot run code.
+      - name: Verify the page ids
+        if: ${{ vars.PAGE_VIEWS == 'true' }}
+        env:
+          PAGE_IDS: ${{ vars.PAGE_IDS }}
+        run: python3 -I .github/scripts/verify-page-ids.py site-out
+
+      # Page views only: the projected daily D1 writes at the configured hourly
+      # budgets, checked with the Worker's own function (worker/src/kit/budgets.ts)
+      # against the same quota and the same 80 percent line. Over the quota, or
+      # an unusable value, stops the deploy. No secret is in this step's env.
+      - name: Check the page-view write budget
+        if: ${{ vars.PAGE_VIEWS == 'true' }}
+        working-directory: worker
+        env:
+          # The site list the Worker will load (the one-site shorthand written
+          # by "Write deploy config"), so the sites sharing the account ceilings
+          # are counted by the Worker's own loader.
+          SITE_HOST: ${{ vars.SITE_HOST }}
+          PAGE_IDS: ${{ vars.PAGE_IDS }}
+          # The link ids the deploy derives from the build manifest (the same
+          # output "Write deploy config" uses), not the optional variable.
+          LINK_IDS: ${{ steps.manifest.outputs.link_ids }}
+          VIEWS_PER_HOUR: ${{ vars.VIEWS_PER_HOUR }}
+          BOT_VIEWS_PER_HOUR: ${{ vars.BOT_VIEWS_PER_HOUR }}
+          ACCOUNT_VIEWS_PER_HOUR: ${{ vars.ACCOUNT_VIEWS_PER_HOUR }}
+          ACCOUNT_BOT_VIEWS_PER_HOUR: ${{ vars.ACCOUNT_BOT_VIEWS_PER_HOUR }}
+          ROUTE_BUDGET_GATE: ${{ vars.ROUTE_BUDGET_GATE }}
+          ROUTE_BUDGET_VIEW: ${{ vars.ROUTE_BUDGET_VIEW }}
+          MAX_LEADS: ${{ vars.MAX_LEADS }}
+          MAX_KIT_EVENTS: ${{ vars.MAX_KIT_EVENTS }}
+          DAILY_ALERT_BUDGET: ${{ vars.DAILY_ALERT_BUDGET }}
+          DAILY_SEND_BUDGET: ${{ vars.DAILY_SEND_BUDGET }}
+          D1_DAILY_WRITE_QUOTA: ${{ vars.D1_DAILY_WRITE_QUOTA }}
+        run: |
+          set -eu
+          npx --no-install esbuild scripts/check-budget.ts --bundle --platform=node \
+            --format=esm --log-level=warning --outfile="$RUNNER_TEMP/check-budget.mjs"
+          node "$RUNNER_TEMP/check-budget.mjs"
+
       # worker/wrangler.toml holds fake placeholder ids. Write a deploy copy
       # with the real values (none is a secret); it is never committed.
       - name: Write deploy config
@@ -577,6 +711,20 @@ jobs:
           LIVE_TWITCH_HANDLE: ${{ vars.LIVE_TWITCH_HANDLE }}
           LIVE_KICK_HANDLE: ${{ vars.LIVE_KICK_HANDLE }}
           LIVE_KV_ID: ${{ vars.LIVE_KV_ID }}
+          PAGE_VIEWS: ${{ vars.PAGE_VIEWS }}
+          PAGE_IDS: ${{ vars.PAGE_IDS }}
+          VIEW_LIMITER_NAMESPACE_ID: ${{ vars.VIEW_LIMITER_NAMESPACE_ID }}
+          VIEWS_PER_HOUR: ${{ vars.VIEWS_PER_HOUR }}
+          BOT_VIEWS_PER_HOUR: ${{ vars.BOT_VIEWS_PER_HOUR }}
+          ACCOUNT_VIEWS_PER_HOUR: ${{ vars.ACCOUNT_VIEWS_PER_HOUR }}
+          ACCOUNT_BOT_VIEWS_PER_HOUR: ${{ vars.ACCOUNT_BOT_VIEWS_PER_HOUR }}
+          ROUTE_BUDGET_GATE: ${{ vars.ROUTE_BUDGET_GATE }}
+          ROUTE_BUDGET_VIEW: ${{ vars.ROUTE_BUDGET_VIEW }}
+          MAX_LEADS: ${{ vars.MAX_LEADS }}
+          MAX_KIT_EVENTS: ${{ vars.MAX_KIT_EVENTS }}
+          DAILY_ALERT_BUDGET: ${{ vars.DAILY_ALERT_BUDGET }}
+          DAILY_SEND_BUDGET: ${{ vars.DAILY_SEND_BUDGET }}
+          D1_DAILY_WRITE_QUOTA: ${{ vars.D1_DAILY_WRITE_QUOTA }}
         run: |
           set -eu
           # Second lock on the derived list (the script already validated it).
@@ -629,6 +777,52 @@ jobs:
               echo "::error::a placeholder KV id is still in the deploy config"
               exit 1
             fi
+          fi
+          # Page views. Enabled only by PAGE_VIEWS=true (second lock: the values
+          # were validated in "Check configuration"). Adds the tab ids, the
+          # optional hourly budgets and the per-client VIEW_LIMITER binding (5
+          # views per client per 60 s, as in worker/wrangler.toml). The hourly
+          # cron already in wrangler.toml runs the rollup and purge; no new cron.
+          # VIEW_HASH_SECRET is a Worker secret set once by the owner; it is never
+          # in this file. Off, the file is unchanged.
+          if [ "${PAGE_VIEWS:-}" = "true" ]; then
+            [[ "${PAGE_IDS:-}" =~ ^\[(\"[a-z0-9][a-z0-9-]{0,39}\"(,\ ?)?)+\]$ ]] \
+              || { echo "::error::PAGE_IDS must be a JSON array of tab ids when page views are enabled"; exit 1; }
+            [[ "${VIEW_LIMITER_NAMESPACE_ID:-}" =~ ^[0-9]{1,12}$ ]] \
+              || { echo "::error::VIEW_LIMITER_NAMESPACE_ID must be a number when page views are enabled"; exit 1; }
+            if [ "${VIEW_LIMITER_NAMESPACE_ID}" = "1002" ]; then
+              echo "::error::VIEW_LIMITER_NAMESPACE_ID is the placeholder from wrangler.toml"
+              exit 1
+            fi
+            if [ "${VIEW_LIMITER_NAMESPACE_ID}" = "${RATELIMIT_NAMESPACE_ID}" ]; then
+              echo "::error::VIEW_LIMITER_NAMESPACE_ID must differ from RATELIMIT_NAMESPACE_ID"
+              exit 1
+            fi
+            sed -i "/^\[vars\]$/a PAGE_IDS = '${PAGE_IDS}'" wrangler.deploy.toml
+            for name in VIEWS_PER_HOUR BOT_VIEWS_PER_HOUR ACCOUNT_VIEWS_PER_HOUR ACCOUNT_BOT_VIEWS_PER_HOUR; do
+              eval "value=\${$name:-}"
+              if [ -n "$value" ]; then
+                if ! [[ "$value" =~ ^[0-9]{1,6}$ ]] || [ "$value" -gt 100000 ]; then
+                  echo "::error::$name must be a whole number from 0 to 100000"
+                  exit 1
+                fi
+                sed -i "/^\[vars\]$/a $name = \"$value\"" wrangler.deploy.toml
+              fi
+            done
+            for name in ROUTE_BUDGET_GATE ROUTE_BUDGET_VIEW MAX_LEADS MAX_KIT_EVENTS DAILY_ALERT_BUDGET DAILY_SEND_BUDGET D1_DAILY_WRITE_QUOTA; do
+              eval "value=\${$name:-}"
+              if [ -n "$value" ]; then
+                if ! [[ "$value" =~ ^[0-9]{1,9}$ ]]; then
+                  echo "::error::$name must be digits only"
+                  exit 1
+                fi
+                sed -i "/^\[vars\]$/a $name = \"$value\"" wrangler.deploy.toml
+              fi
+            done
+            printf '\n[[ratelimits]]\nname = "VIEW_LIMITER"\nnamespace_id = "%s"\n  [ratelimits.simple]\n  limit = 5\n  period = 60\n' \
+              "${VIEW_LIMITER_NAMESPACE_ID}" >> wrangler.deploy.toml
+            grep -qxF "PAGE_IDS = '${PAGE_IDS}'" wrangler.deploy.toml
+            grep -qxF "namespace_id = \"${VIEW_LIMITER_NAMESPACE_ID}\"" wrangler.deploy.toml
           fi
 
       # Smoke test with no secret in the environment.

@@ -311,6 +311,15 @@ prints them as `warning: ...` on standard error and the build still succeeds.
 A kit with `features.kit_gate: true` but nothing gated warns that no form is
 built, and a gated kit with no `turnstile_site_key` warns about the empty slot.
 
+## Lead retention and deletion
+
+The Worker deletes every lead (the address, its country code and its kit
+events) once it is older than `LEAD_RETENTION_DAYS`: 30 days by default, 365 at
+most, run by the hourly job in bounded batches. To honor a person's request to
+delete their address sooner, use `reach-around leads delete` (dry run by
+default, SQL only with `--yes`, applied by you with `wrangler`). The numbers,
+the steps and what is not covered are in [privacy.md](privacy.md).
+
 ## Accessibility and privacy
 
 - Landmarks: one `main`, a skip link, a `nav` when there are several tabs, and

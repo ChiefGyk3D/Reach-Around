@@ -119,6 +119,51 @@ your own; never commit real account ids, database ids or tokens.
    With neither handle set the deploy config is unchanged, even if
    `LIVE_KV_ID` is set.
 
+   Optional variables for page views on the test site (issues #260 and #261;
+   the Worker side is under [Page views](#page-views-post-evpageid)). Plain
+   **variables**, never secrets:
+
+   | Variable | Value | What it does |
+   |---|---|---|
+   | `PAGE_VIEWS` | exactly `true` | **enables page views for this deploy.** Unset, empty and `false` are off and leave the deploy config byte-for-byte unchanged; any other text (`True`, `1`, `yes`) stops the run before anything is fetched. On, the build adds `analytics: {page_views: true}` to a copy of `examples/instance/site.yaml` (the committed file is not edited) |
+   | `PAGE_IDS` | `["start-here","events"]` | **required when on.** The tab ids the Worker counts; a JSON array, each id lowercase letters, digits and `-`, 1 to 40 characters. The "Verify the page ids" step fails the deploy if the build has a tab that is not listed (its views would be dropped) and warns about a listed id the build lacks |
+   | `VIEW_LIMITER_NAMESPACE_ID` | a number, not `1001` | **required when on.** Namespace id of the per-client `VIEW_LIMITER` rate limiter (5 views per client per 60 s). It must differ from `RATELIMIT_NAMESPACE_ID` and is not the `1002` placeholder in `wrangler.toml` |
+   | `VIEWS_PER_HOUR`, `BOT_VIEWS_PER_HOUR` | whole numbers, 0 to 100000 | optional hourly budgets of likely-human and bot views (defaults 120 and 30); written to the Worker and used by the budget check below |
+   | `ACCOUNT_VIEWS_PER_HOUR`, `ACCOUNT_BOT_VIEWS_PER_HOUR` | whole numbers, 0 to 100000 | optional account-wide ceilings above the per-site budgets (defaults 480 and 120); written to the Worker and used by the budget check below |
+   | `ROUTE_BUDGET_GATE`, `ROUTE_BUDGET_VIEW`, `MAX_LEADS`, `MAX_KIT_EVENTS`, `DAILY_ALERT_BUDGET`, `DAILY_SEND_BUDGET`, `D1_DAILY_WRITE_QUOTA` | digits only | optional kit limits and the D1 quota (see Kit limits below). With page views on they are written to the Worker **and** given to the budget check, so the check sees the same values the Worker loads; the check applies the Worker's exact ranges and stops the deploy on a value the Worker would refuse |
+
+   Page views also need `ZONE_NAME` (the `/e/*` route; the deploy stops
+   without it) and the Worker secret `VIEW_HASH_SECRET`, which you set once
+   with `npx wrangler secret put VIEW_HASH_SECRET` (never in a variable, a file
+   or this workflow; without it the route records nothing). The hourly cron
+   already in `wrangler.toml` runs the rollup and the purge, so the deploy adds
+   no trigger. The page needs no CSP change: the beacon goes to the site's own
+   origin and `connect-src 'self'` is already there. The page-view migrations (`0005` to `0008`)
+   are applied by the existing "Apply D1 migrations" step; read the migration
+   `0007` warning under Page views before the first deploy on a database that
+   has ever rolled up a day.
+
+   **Write budget check.** When `PAGE_VIEWS` is `true`, the step "Check the
+   page-view write budget" bundles the Worker's own `assessDailyBudget`
+   (`worker/src/kit/budgets.ts`) and prints the projected worst-case daily D1
+   writes: the kit at its defaults, the page-view feature at the binding hourly ceiling
+   for humans and for bots separately (the lower of the sites' budgets added up
+   and the account ceiling; 24 x (human + bot) x 5.6 rows per view, plus 2,540
+   for the rollup, purge and heartbeat), the click reserve and
+   the margin, against the 100,000-row free plan figure. Over 100 percent, or an
+   unusable value, stops the deploy; above 80 percent is a warning. This is the
+   same function and the same lines the Worker applies to itself when it loads
+   its limits, and the page-view part now follows the configured budgets
+   instead of a fixed 22,700. There is no sampling: a view over the hourly
+   budget is dropped, so the budgets are the cap. The sites are counted by the Worker's own
+   site loader from the same `SITE_HOST`, `PAGE_IDS` and `LINK_IDS` (or a
+   `SITES` text); a site list that does not load stops the deploy, and the
+   Worker itself reads a list it cannot count as the maximum of 8 sites.
+   **Kill switch:** `VIEWS_KILL`, see below; `npx wrangler deploy --var
+   VIEWS_KILL:1` turns the route into an empty 204 that touches neither D1 nor
+   the limiter, and setting `PAGE_VIEWS` back to `false` stops the next build
+   from loading the script at all.
+
    The workflow validates each value's shape before using it and fails with a
    clear message if a required one is missing.
 
@@ -140,7 +185,7 @@ The poller writes KV only when a platform's state changes, plus a heartbeat ever
 
 ## Page views (`POST /e/v/:pageId`)
 
-The Worker also has a write-only page-view route (Plan 4 Tasks A3 and A4; the browser script that calls it is a later task). It needs migrations `0005` and `0006` applied to the same D1 database, and the same `/e/*` zone route as clicks.
+The Worker also has a write-only page-view route (Plan 4 Tasks A3 and A4; the browser script `static/view.js` calls it when `analytics.page_views` is on). `deploy-test.yml` wires it for the test site from repository variables (see the page-view variables in the GitHub steps above). It needs migrations `0005` and `0006` applied to the same D1 database, and the same `/e/*` zone route as clicks.
 
 | Variable | Kind | What it does |
 |---|---|---|
@@ -162,7 +207,7 @@ The Worker also has a write-only page-view route (Plan 4 Tasks A3 and A4; the br
 Retention runs from the cron (`17 4 * * *` and `5 0 * * *`): `visitor_seen` rows before today's UTC date, raw view rows past `RAW_KEEP_DAYS`, hourly budget counters older than 48 hours and client-cap counters older than the previous hour. Counter keys are `bud:<hour>:<route>` and `cap:<hour>:<hash>` (the hash is 16 hex characters, 64 bits; counters from before the widening expire within the hour) with the hour zero-padded, so expiry is a range delete on the primary key. A run that hits its batch budget records `purge_backlog` in `view_meta` and the next run continues. The daily rollup that should run before the raw purge (Task A5) is not built yet, so raw rows are deleted by age alone for now.
 Cron order (`17 4 * * *` and `5 0 * * *`): click purge, then the **daily rollup**, then the view purge. Each step is isolated, so one failing never stops the others, and none of them throws out of the handler.
 Cron: one hourly trigger, `5 * * * *` (so the pseudonymous daily visitor hash is deleted within about an hour of its UTC day ending). Each run does, in this order, the click purge, the **rollup**, then the view purge. Each step is isolated, so one failing never stops the others, and none of them throws out of the handler. Free allows 5 cron triggers per account in total, so this uses one.
-Cron: one hourly trigger, `5 * * * *` (so the pseudonymous daily visitor hash is deleted within about an hour of its UTC day ending). Each run does, in this order, the click purge, the **view purge**, then the **rollup**. The purge comes before the rollup on purpose: a rollup that fails, runs out of CPU or is cut off by the platform can never block retention (the view purge only deletes days that are already rolled, plus rows past the hard ceiling). Each step is isolated, so one failing never stops the others, and none of them throws out of the handler. Free allows 5 cron triggers per account in total, so this uses one.
+Cron: one hourly trigger, `5 * * * *` (so the pseudonymous daily visitor hash is deleted within about an hour of its UTC day ending). Each run does, in this order, the click purge, the **view purge**, the **lead purge** (media kit retention, see below) then the **rollup**. The purge comes before the rollup on purpose: a rollup that fails, runs out of CPU or is cut off by the platform can never block retention (the view purge only deletes days that are already rolled, plus rows past the hard ceiling). Each step is isolated, so one failing never stops the others, and none of them throws out of the handler. Free allows 5 cron triggers per account in total, so this uses one.
 
 **Hard per-invocation query budget.** The Cloudflare limits this is built on (read 2026-10-24): the D1 limits page (`developers.cloudflare.com/d1/platform/limits/`, last updated Oct 24, 2026) says a Worker may make 1000 D1 queries per invocation on Paid and 50 on Free, and that a `db.batch()` counts as ONE query, not one per statement. The Workers limits page (`developers.cloudflare.com/workers/platform/limits/`, last updated Oct 12, 2026) gives 50 subrequests per invocation on Free (10,000 on Paid, D1 included) and 5 Cron Triggers per account on Free. `worker/src/d1budget.ts` wraps the database once, so every `run`, `all`, `first`, `raw`, `exec` and `batch` is counted in one place and throws `BudgetExceeded` instead of making the call when the meter is empty. `QUERY_BUDGET` sets it: default 40 (Free, 10 left as margin), bad values fall back to 40, ceiling 900 (Paid). The handler gives the view purge at most half; the click purge, the purge and the rollup all draw from the same meter, and every unit of work checks what is left before it starts.
 
@@ -221,7 +266,7 @@ All values are plain decimal integers (digits only, no sign, space, exponent or 
 | `DAILY_SEND_BUDGET` | 0 to 1000 | 0 | Emails per UTC day (0: none; the send route is not in v1) |
 | `D1_DAILY_WRITE_QUOTA` | 1000 to 999999999 | 100000 | The free D1 plan's daily rows-written figure. Re-check it against Cloudflare's current limits before relying on it |
 
-**Worst-case daily writes.** The D1 write allowance is one per account, shared by the kit, page views, clicks, the rollup and every purge, so the check adds them all. Settings are checked when a limit is used, not at deploy: if the combined worst case is over `D1_DAILY_WRITE_QUOTA`, or any value is invalid, every reservation refuses (fail closed) until it is fixed. The loader also reports a warning above 80 percent. The kit part is `24 x (gate x 5 + view x 2) + alerts x 1 + sends x 7 + 10000`, where each number is the most rows one accepted operation writes (the row, its indexes and the counter) and 10000 is a reserve for the kit purge. To it are added the page-view feature with its rollup and purge (22700, from the page-view write budget above), a click reserve (8000; the click route has only a per-client limiter and no global budget, so this is an allowance, not a measured bound) and a margin (5000). A refused request writes nothing, so a flood over a budget costs reads only.
+**Worst-case daily writes.** The D1 write allowance is one per account, shared by the kit, page views, clicks, the rollup and every purge, so the check adds them all. Settings are checked when a limit is used, not at deploy: if the combined worst case is over `D1_DAILY_WRITE_QUOTA`, or any value is invalid, every reservation refuses (fail closed) until it is fixed. The loader also reports a warning above 80 percent. The kit part is `24 x (gate x 5 + view x 2) + alerts x 1 + sends x 7 + 10000`, where each number is the most rows one accepted operation writes (the row, its indexes and the counter) and 10000 is a reserve for the kit purge. To it are added the page-view feature with its rollup and purge (22700 at the default hourly budgets, from the page-view write budget above; the loader and the deploy check use the configured `VIEWS_PER_HOUR` and `BOT_VIEWS_PER_HOUR` instead, `worker/src/pvlimits.ts`), a click reserve (8000; the click route has only a per-client limiter and no global budget, so this is an allowance, not a measured bound) and a margin (5000). A refused request writes nothing, so a flood over a budget costs reads only.
 
 | Part | Budget | Writes each | Worst case per day |
 |---|---|---|---|
@@ -236,6 +281,8 @@ All values are plain decimal integers (digits only, no sign, space, exponent or 
 | **Total** | | | **78120** |
 
 That is 78.1 percent of the default quota of 100000. Raising a budget raises this number; raise `D1_DAILY_WRITE_QUOTA` only on a plan that allows it. Counters live in the `counters` table, one row per route and hour or per day, and are purged after two days. A viral spike over a budget makes the gate unavailable until the next hour; that is the accepted trade.
+
+**Lead retention.** `LEAD_RETENTION_DAYS` (1 to 365, default 30; digits only, an invalid value falls back to 30 and is logged as a fixed line, it is not part of the table above because it never closes the gate) sets how long a lead is kept. Each hourly run is ONE metered D1 query (a batch) that deletes at most 80 `kit_events` of expired leads, then at most 20 expired leads that have no events left (a lead goes only after its events, so the cascade never deletes events in bulk and a lead with many events is purged over several runs), and writes the heartbeat. Estimated writes per run: 20 x 4 + 80 x 3 + 1 = 321 (a lead row and its three indexes, an event row and its two indexes; an estimate, not measured on D1), so 24 runs are 7704 a day, within 80 percent of the 10000 kit purge reserve above; the rest is left for the counter purge. **Budget guarantee:** at `QUERY_BUDGET` 9 or more the lead purge runs first and always gets its one query, and the rest of the jobs share the remainder (the rollup gets the budget minus one). Below 9 the rollup wins (8 is the smallest budget in which one rollup day completes, `rollup_budget.test.ts`), the lead purge runs last on whatever is left with no guarantee, and logs `purge` / `over_budget` when it gets none; keep `QUERY_BUDGET` at 9 or more (default 40). It never runs on the 2-minute live cron. Details and the owner deletion command: [privacy.md](privacy.md).
 
 **For the route code that uses these limits:** run the per-client throttle (`checkIpMinute`) before taking from a global route counter, so one client cannot spend the shared budget. A request refused by the throttle must not touch a counter.
 
@@ -332,6 +379,20 @@ With no block it only passes through the hand-kept file, if there is one.
 Hand-kept platforms (TikTok, Instagram, X, Threads, LinkedIn, Kick: the engine
 has no source for them) stay in that file with their `as_of` date; the run
 prints a warning for every entry older than 30 days.
+
+To update a hand-kept number, read it from the platform, then edit
+`examples/instance/numbers.json` by hand: change that platform's `count` (a
+whole number) and set `as_of` to the time you read it, written like
+`2026-11-07T12:00:00Z` (a real date, not in the future). Commit it; the next
+deployment picks it up. The 30 day rule: an entry whose `as_of` is more than 30
+days old triggers a warning in the test deployment's `counts` job
+(`.github/scripts/test-counts.py`), in an instance repository's counts refresh
+(`scripts/validate-numbers.py` prints a `::warning::` annotation naming the
+platform and the age, never the count), in the build and in
+`reach-around check`; the number is still shown until you update it. A fetched
+number always wins over a hand-kept one while it is fresh (see
+[the numbers file](config.md#the-numbers-file)). The same rule applies to a
+`count` and `as_of` typed on a platform item in `site.yaml`.
 
 **Keyless sources** (Mastodon-compatible servers, Bluesky, GitHub, Discord
 invites, Matrix) need nothing.

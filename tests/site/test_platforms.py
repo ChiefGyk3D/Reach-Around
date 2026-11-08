@@ -191,7 +191,7 @@ def test_https_and_tab_urls_pass_and_unknown_tabs_are_named() -> None:
 
 @pytest.mark.parametrize("label", ["followers", "subscribers", "members"])
 def test_labels_are_a_closed_set(label: str) -> None:
-    cfg(block(item(label=label, count=5)))
+    cfg(block(item(label=label, count=5, as_of="2027-03-01")))
 
 
 def test_unknown_label_is_refused() -> None:
@@ -201,7 +201,7 @@ def test_unknown_label_is_refused() -> None:
 
 @pytest.mark.parametrize("count", [0, 1, 10**10])
 def test_counts_in_range_pass(count: int) -> None:
-    cfg(block(item(count=count)))
+    cfg(block(item(count=count, as_of="2027-03-01")))
 
 
 @pytest.mark.parametrize("count", [-1, 10**10 + 1, 1.5, 3.0, "5", True, [5]])
@@ -350,7 +350,7 @@ def test_list_rows_show_icon_name_handle_count_and_exact_text(tmp_path: Path) ->
 
 
 def test_default_label_is_followers(tmp_path: Path) -> None:
-    html = page(cfg(block(item(count=1000))), tmp_path)
+    html = page(cfg(block(item(count=1000, as_of="2027-03-01"))), tmp_path)
     assert '<span class="sr-only">1,000 followers</span>' in html
 
 
@@ -363,7 +363,7 @@ def test_a_missing_count_renders_no_number_at_all(tmp_path: Path) -> None:
 
 
 def test_a_zero_count_is_a_real_number(tmp_path: Path) -> None:
-    html = page(cfg(block(item(count=0))), tmp_path)
+    html = page(cfg(block(item(count=0, as_of="2027-03-01"))), tmp_path)
     assert 'aria-hidden="true">0</span>' in html
     assert "0 followers" in html
 
@@ -372,7 +372,7 @@ def test_chips_layout_is_a_compact_strip_with_accessible_names(tmp_path: Path) -
     html = page(
         cfg(
             block(
-                item(count=406_800),
+                item(count=406_800, as_of="2027-03-01"),
                 item(platform="kick", handle="k", url="https://example.com/k"),
                 layout="chips",
             )
@@ -387,7 +387,7 @@ def test_chips_layout_is_a_compact_strip_with_accessible_names(tmp_path: Path) -
 
 
 def test_the_whole_card_is_the_external_link(tmp_path: Path) -> None:
-    html = page(cfg(block(item(count=5))), tmp_path)
+    html = page(cfg(block(item(count=5, as_of="2027-03-01"))), tmp_path)
     anchor = re.search(r'<a class="platform-link"[^>]*>', html)
     assert anchor is not None
     tag = anchor.group(0)
@@ -496,29 +496,107 @@ def test_numbers_by_item_id_beat_numbers_by_slug(tmp_path: Path) -> None:
     assert "1,000 followers" in html and "2,000 followers" in html
 
 
-def test_a_newer_numbers_value_wins_over_a_manual_one(tmp_path: Path) -> None:
+def test_a_fresh_fetched_value_wins_over_a_hand_kept_one(tmp_path: Path) -> None:
     numbers = numbers_file(
-        tmp_path, {"twitch": {"count": 5000, "as_of": "2027-03-09T08:00:00Z"}}
+        tmp_path, {"twitch": {"count": 5000, "as_of": "2027-03-01T08:00:00Z"}}
     )
-    html = page(cfg(block(item(count=100, as_of="2027-03-01"))), tmp_path, numbers)
+    html = page(cfg(block(item(count=100, as_of="2027-03-09"))), tmp_path, numbers)
     assert "5,000 followers" in html and "100 followers" not in html
 
 
-def test_an_older_numbers_value_loses_to_a_manual_one(tmp_path: Path) -> None:
+def test_a_stale_fetched_value_falls_back_to_a_fresh_hand_kept_one(
+    tmp_path: Path,
+) -> None:
     numbers = numbers_file(
-        tmp_path, {"twitch": {"count": 5000, "as_of": "2027-02-01T08:00:00Z"}}
+        tmp_path, {"twitch": {"count": 5000, "as_of": "2027-01-01T08:00:00Z"}}
     )
     html = page(cfg(block(item(count=100, as_of="2027-03-01"))), tmp_path, numbers)
     assert "100 followers" in html and "5,000" not in html
     assert "as of 2027-03-01" in html
 
 
-def test_a_manual_count_without_a_date_always_loses(tmp_path: Path) -> None:
-    numbers = numbers_file(
-        tmp_path, {"twitch": {"count": 5000, "as_of": "2020-01-01T00:00:00Z"}}
+def test_a_count_needs_an_as_of() -> None:
+    with pytest.raises(ValueError, match="needs an as_of"):
+        cfg(block(item(count=100)))
+
+
+def test_as_of_must_be_a_real_calendar_day() -> None:
+    for bad in ("2027-02-30", "2027-13-01", "1999-12-31"):
+        with pytest.raises(ValueError, match="as_of"):
+            cfg(block(item(count=5, as_of=bad)))
+
+
+def test_a_future_as_of_is_refused_at_build_beyond_one_day(tmp_path: Path) -> None:
+    config = cfg(block(item(count=5, as_of="2027-03-12")))
+    with pytest.raises(ValueError, match="in the future"):
+        build_site(config, tmp_path / "out", today=TODAY)
+    ok = cfg(block(item(count=5, as_of="2027-03-11")))  # one day of skew
+    build_site(ok, tmp_path / "ok", today=TODAY)
+
+
+@pytest.mark.parametrize(
+    "slug", ["kick", "tiktok", "instagram", "x", "threads", "linkedin"]
+)
+def test_each_hand_kept_platform_shows_its_count_and_date(
+    slug: str, tmp_path: Path
+) -> None:
+    config = cfg(
+        block(item(platform=slug, count=4321, as_of="2027-03-01")),
+        block(
+            item(platform=slug, count=4321, as_of="2027-03-01"),
+            id="chips",
+            layout="chips",
+        ),
     )
-    html = page(cfg(block(item(count=100))), tmp_path, numbers)
-    assert "5,000 followers" in html
+    html = page(config, tmp_path)
+    assert html.count("4.3k") == 2
+    assert "4,321 followers" in html
+    assert "as of 2027-03-01" in html  # visible in the list, spoken in the chips
+    chips = html[html.index("platforms-chips") :]
+    assert "4,321 followers, as of 2027-03-01" in chips
+
+
+def test_nothing_renders_when_neither_source_has_a_count(tmp_path: Path) -> None:
+    html = page(cfg(block(item(platform="kick"))), tmp_path)
+    assert "platform-count" not in html and "as of" not in html
+
+
+def test_a_hand_kept_count_alone_renders_even_when_stale(tmp_path: Path) -> None:
+    html = page(cfg(block(item(count=100, as_of="2026-01-01"))), tmp_path)
+    assert "100 followers" in html
+
+
+def test_stale_hand_kept_numbers_warn_by_platform_not_value(tmp_path: Path) -> None:
+    config = cfg(
+        block(
+            item(platform="tiktok", count=424242, as_of="2027-01-01"),
+            item(platform="kick", count=1, as_of="2027-03-01"),
+        )
+    )
+    manifest = build_site(config, tmp_path / "out", today=TODAY)
+    mine = [w for w in manifest.warnings if "tiktok" in w]
+    assert len(mine) == 1 and "68 days" in mine[0]
+    assert not any("kick" in w for w in manifest.warnings)
+    assert "424242" not in " ".join(manifest.warnings)
+
+
+def test_a_stale_fetched_entry_warns_too(tmp_path: Path) -> None:
+    numbers = numbers_file(
+        tmp_path, {"threads": {"count": 777, "as_of": "2027-01-01T08:00:00Z"}}
+    )
+    config = cfg(block(item(platform="threads")))
+    manifest = build_site(config, tmp_path / "out", today=TODAY, numbers=numbers)
+    assert any("threads" in w and "days old" in w for w in manifest.warnings)
+    assert "777" not in " ".join(manifest.warnings)
+
+
+def test_a_stale_entry_that_loses_to_a_fresh_one_does_not_warn(tmp_path: Path) -> None:
+    numbers = numbers_file(
+        tmp_path, {"twitch": {"count": 5000, "as_of": "2027-01-01T08:00:00Z"}}
+    )
+    config = cfg(block(item(count=100, as_of="2027-03-01")))
+    manifest = build_site(config, tmp_path / "out", today=TODAY, numbers=numbers)
+    assert manifest.warnings == ()
 
 
 def test_numbers_for_other_platforms_leave_the_page_alone(tmp_path: Path) -> None:
@@ -572,7 +650,7 @@ def test_only_pages_with_the_block_link_the_stylesheet(tmp_path: Path) -> None:
 
 
 def test_the_404_page_builds_beside_a_platforms_block(tmp_path: Path) -> None:
-    out = build(cfg(block(item(count=5))), tmp_path)
+    out = build(cfg(block(item(count=5, as_of="2027-03-01"))), tmp_path)
     page_404 = (out / "404.html").read_text("utf-8")
     assert "That page does not exist." in page_404
     assert not CSS_REF.search(page_404)

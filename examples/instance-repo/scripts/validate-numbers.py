@@ -19,6 +19,9 @@ underscores (at most 40 characters); counts are whole numbers from 0 to
 2000 up to one day ahead; at most 1000 entries; at most 64 KiB; no duplicate
 keys, no NaN. The input must be a regular file, not a link.
 
+An entry whose stamp is more than 30 days old prints a `::warning::` line naming
+the id and the age (never the count) and does not fail the check.
+
 The output is not a copy of the input. It is written fresh in the engine's own
 format (sorted ids, two-space indent) to a new temporary file next to --out and
 moved over --out in one rename, so --out is either the old file or the whole
@@ -39,6 +42,7 @@ from typing import Any
 MAX_BYTES = 64 * 1024
 MAX_ENTRIES = 1000
 MAX_COUNT = 10**10
+STALE_DAYS = 30
 ID = re.compile(r"[a-z0-9][a-z0-9_-]{0,39}")
 STAMP = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z")
 EARLIEST = datetime(2000, 1, 1, tzinfo=UTC)
@@ -129,6 +133,21 @@ def parse(data: bytes, now: datetime) -> dict[str, tuple[int, str]]:
     return out
 
 
+def stale_warnings(entries: dict[str, tuple[int, str]], now: datetime) -> list[str]:
+    """One annotation per entry older than STALE_DAYS: the id and the age only.
+    The id already passed the ID pattern, so it is safe to print."""
+    lines = []
+    for key in sorted(entries):
+        moment = datetime.fromisoformat(entries[key][1])
+        days = (now - moment).days
+        if days > STALE_DAYS:
+            lines.append(
+                f"::warning::validate-numbers: {key} is {days} days old "
+                f"(over {STALE_DAYS}); update it by hand or fix its source."
+            )
+    return lines
+
+
 def write_atomic(path: str, text: str) -> None:
     directory = os.path.dirname(os.path.abspath(path))
     if os.path.islink(path):
@@ -156,13 +175,16 @@ def main() -> int:
     parser.add_argument("--out", dest="dest", required=True)
     args = parser.parse_args()
     try:
-        entries = parse(read_regular(args.source), datetime.now(UTC))
+        now = datetime.now(UTC)
+        entries = parse(read_regular(args.source), now)
         platforms = {
             key: {"count": entries[key][0], "as_of": entries[key][1]}
             for key in sorted(entries)
         }
         text = json.dumps({"version": 1, "platforms": platforms}, indent=2) + "\n"
         write_atomic(args.dest, text)
+        for line in stale_warnings(entries, now):
+            print(line)
     except Bad as exc:
         print(f"validate-numbers: refused: {exc}", file=sys.stderr)
         return 1
