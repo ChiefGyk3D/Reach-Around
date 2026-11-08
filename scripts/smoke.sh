@@ -3,7 +3,8 @@
 # Post-deploy smoke test for a Reach Around site and its Worker.
 #
 # Usage: scripts/smoke.sh [--timeout SECONDS] URL
-#   URL  the site root, e.g. https://links.example.test (http or https only)
+#   URL  the site root, e.g. https://links.example.test (http or https only;
+#        no credentials, query or fragment)
 #
 # It only reads the page and sends requests the Worker answers with an empty
 # 204 without storing anything (unknown ids, no Origin header). It never needs a
@@ -39,12 +40,17 @@ while [ $# -gt 0 ]; do
 done
 [ $# -eq 1 ] || usage
 case "$timeout" in '' | *[!0-9]*) usage ;; esac
+# curl reads --max-time 0 as "no limit"; every request must be bounded.
+[ "$((10#$timeout))" -gt 0 ] || usage
 base="$1"
 case "$base" in
 http://* | https://*) ;;
 *) usage ;;
 esac
-case "$base" in *[[:space:]]*) usage ;; esac
+# No credentials (an @ anywhere), backslash, query or fragment; a host is required.
+case "$base" in *[[:space:]@\\?#]*) usage ;; esac
+host_part="${base#*://}"
+case "$host_part" in '' | /* | :*) usage ;; esac
 base="${base%/}"
 
 probe="198.51.100.77"
@@ -62,7 +68,7 @@ fail() {
 # A transport error (no answer) is status 000.
 fetch() {
     local name="$1" method="$2" path="$3" status
-    status="$(curl -sS -o "$work/$name.body" -D "$work/$name.head" \
+    status="$(curl -sS --globoff -o "$work/$name.body" -D "$work/$name.head" \
         --max-time "$timeout" -X "$method" \
         -H "X-Smoke-Probe: $probe" -w '%{http_code}' \
         "$base$path" 2>"$work/$name.err")" || status="000"

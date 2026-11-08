@@ -25,6 +25,9 @@ GOOD_HEADERS = {
 }
 
 
+SEEN: list[str] = []
+
+
 def make_handler(mode: str) -> type[BaseHTTPRequestHandler]:
     class H(BaseHTTPRequestHandler):
         def log_message(self, *args: object) -> None:  # keep test output quiet
@@ -62,6 +65,7 @@ def make_handler(mode: str) -> type[BaseHTTPRequestHandler]:
                 self._send(204)
 
         def do_GET(self) -> None:
+            SEEN.append(self.path)
             if self.path.startswith("/e/"):
                 return self._worker()
             if mode == "root-500":
@@ -154,3 +158,44 @@ def test_bad_target_is_a_usage_error(bad: str) -> None:
     r = run(bad) if bad else run()
     assert r.returncode == 2
     assert "usage" in (r.stdout + r.stderr).lower()
+
+
+@pytest.mark.parametrize("zero", ["0", "00", "000", "0.0", "-1", "1e3", " 5", "5s"])
+def test_a_timeout_that_is_not_a_positive_whole_number_is_a_usage_error(
+    zero: str,
+) -> None:
+    # curl treats --max-time 0 as "no limit", which would break the guarantee
+    # that every request is bounded.
+    with serve("good") as url:
+        r = run("--timeout", zero, url)
+    assert r.returncode == 2, r.stdout + r.stderr
+    assert "usage" in (r.stdout + r.stderr).lower()
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        "http://user:pw@127.0.0.1:1",
+        "http://user@127.0.0.1:1",
+        "https://127.0.0.1:1@evil.example.test",
+        "http://:pw@127.0.0.1:1/",
+        "http://127.0.0.1:1/a?x=1@y",
+        "http://127.0.0.1:1\\@evil.example.test",
+        "http://",
+        "https:///path",
+    ],
+)
+def test_urls_with_credentials_or_no_host_are_refused(bad: str) -> None:
+    r = run(bad)
+    assert r.returncode == 2, r.stdout + r.stderr
+    assert "usage" in (r.stdout + r.stderr).lower()
+    assert "pw" not in r.stdout + r.stderr
+
+
+def test_url_globbing_is_off() -> None:
+    # Without --globoff curl expands [1-2] into two requests.
+    SEEN.clear()
+    with serve("good") as url:
+        run(url + "/[1-2]")
+    assert not any(p in ("/1", "/2", "/1/", "/2/") for p in SEEN), SEEN
+    assert any("[1-2]" in p or "%5B1-2%5D" in p for p in SEEN), SEEN

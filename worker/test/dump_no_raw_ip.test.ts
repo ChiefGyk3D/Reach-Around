@@ -1,129 +1,286 @@
 // SPDX-License-Identifier: Apache-2.0
-// Dump test (issue #272): drive every write route with distinctive addresses and
-// user agents, run the rollup, then read EVERY table (and the schema) back and
-// prove no address and no user agent is anywhere in it. The scanner mirrors
-// scripts/check-dump.py, which runs the same check on a real `wrangler d1 export`.
+// Dump test (issue #272). Two independent checks, neither a copy of the
+// scripts/check-dump.py patterns:
+//
+//  1. SCHEMA. Every table and column in the real database must be in the
+//     allowlist scripts/dump-schema.json (the same file the dump checker
+//     reads). A renamed or added column fails, whatever it is called.
+//  2. BIND VALUES. The database handed to the click route, the view route and
+//     the rollup records every value bound to every statement. Request data
+//     (addresses, a user agent, a header value) is planted in synthetic form;
+//     no persisted value may contain the planted text or a transformed form of
+//     it (upper/lower case, hex, base64, percent-encoding, an integer address,
+//     any 6-character fragment, which also covers truncated and split storage).
+//     The final database is searched for the same forms.
 import { env as testEnv } from "cloudflare:workers";
 import { beforeEach, describe, expect, it } from "vitest";
+import allow from "../../scripts/dump-schema.json";
 import { handleClick, type Env as ClickEnv } from "../src/click";
 import { rollupClosedDays } from "../src/viewrollup";
 import { handleView } from "../src/view";
-import { IP4, IP6, NOW, beacon, clearAll, fakeLimiter, makeEnv } from "./views/helpers";
+import { NOW, beacon, clearAll, fakeLimiter, makeEnv } from "./views/helpers";
 
 const DB = testEnv.DB;
 
-const OCTET = "(?:25[0-5]|2[0-4]\\d|1?\\d?\\d)";
-const IPV4 = new RegExp(`(?<![\\d.])${OCTET}(?:\\.${OCTET}){3}(?!\\d|\\.\\d)`);
-const IPV6 = new RegExp(
-  "(?<![0-9a-f:])(?:(?:[0-9a-f]{1,4}:){1,7}:(?:[0-9a-f]{1,4}(?::[0-9a-f]{1,4}){0,6})?" +
-    "|::(?:[0-9a-f]{1,4}:){0,6}[0-9a-f]{1,4}|(?:[0-9a-f]{1,4}:){7}[0-9a-f]{1,4})(?![0-9a-f:])",
-  "i",
-);
-const UA = /mozilla|applewebkit|gecko\/|\b[a-z][a-z0-9_-]*\/\d+(?:\.\d+)+|windows nt|\bx11;|linux x86_64|android \d|iphone os|\bmsie \d/i;
+// ---- the planted request data (synthetic; documentation ranges) -------------
+const PROBE_V4 = "203.0.113.211";
+const PROBE_V6 = "2001:db8:abcd::42";
+const PROBE_UA = "ZzProbeAgent/9.9 (Quux; Fnord 42)";
+const PROBE_HDR = "hdr-probe-QX7731";
+const PROBES = [PROBE_V4, PROBE_V6, PROBE_UA, PROBE_HDR];
+// Realistic strings that must also be absent whole (their short fragments are
+// ordinary words such as "chrome", so only the full text is searched).
+const REALISTIC = [
+  "198.51.100.7",
+  "2001:db8::7",
+  "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.6613.84 Safari/537.36",
+  "curl/8.5.0",
+];
+const WINDOW = 6;
 
-/** The guard under test: names of the kinds of leak found, never the values. */
-function findLeaks(text: string): string[] {
-  const out: string[] = [];
-  if (IPV4.test(text)) out.push("ipv4");
-  if (IPV6.test(text)) out.push("ipv6");
-  if (UA.test(text)) out.push("user agent");
+const utf8hex = (s: string) =>
+  [...new TextEncoder().encode(s)].map((b) => b.toString(16).padStart(2, "0")).join("");
+const b64 = (s: string) => btoa(String.fromCharCode(...new TextEncoder().encode(s)));
+const b64url = (s: string) => b64(s).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+
+function v4Int(ip: string): number | null {
+  const m = /^(\d+)\.(\d+)\.(\d+)\.(\d+)$/.exec(ip);
+  if (!m) return null;
+  return ((+m[1]! * 256 + +m[2]!) * 256 + +m[3]!) * 256 + +m[4]!;
+}
+
+/** Every transformed form of a planted string, lower-cased for comparison. */
+function forms(s: string): string[] {
+  const out = new Set<string>([
+    s,
+    s.toUpperCase(),
+    utf8hex(s),
+    b64(s),
+    b64url(s),
+    encodeURIComponent(s),
+    s.split("").reverse().join(""),
+  ]);
+  const n = v4Int(s);
+  if (n !== null) {
+    out.add(String(n));
+    out.add(n.toString(16).padStart(8, "0"));
+    out.add("0x" + n.toString(16).padStart(8, "0"));
+    out.add(s.split(".").map((o) => o.padStart(3, "0")).join("."));
+  }
+  return [...out].map((f) => f.toLowerCase());
+}
+
+/** Every WINDOW-long fragment of every form (a truncated or split copy shares one). */
+function fragments(s: string): string[] {
+  const out = new Set<string>();
+  for (const f of forms(s)) {
+    if (f.length <= WINDOW) out.add(f);
+    else for (let i = 0; i + WINDOW <= f.length; i++) out.add(f.slice(i, i + WINDOW));
+  }
+  return [...out];
+}
+
+/** The oracle: probes found in a list of persisted values (names only, never values). */
+function leaks(values: unknown[], probes: string[], whole: string[]): string[] {
+  const found: string[] = [];
+  const texts = values.map((v) => (typeof v === "string" ? v.toLowerCase() : String(v)));
+  for (const p of probes) {
+    const frags = fragments(p);
+    const nums = new Set(forms(p));
+    if (texts.some((t) => frags.some((f) => t.includes(f)) || nums.has(t))) found.push(p.slice(0, 4));
+  }
+  for (const w of whole) {
+    const fs = forms(w);
+    if (texts.some((t) => fs.some((f) => t.includes(f)))) found.push(w.slice(0, 4));
+  }
+  return found;
+}
+
+// ---- schema against the allowlist -------------------------------------------
+type Table = { name: string; columns: string[] };
+
+async function realSchema(): Promise<Table[]> {
+  const t = await DB.prepare(
+    "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE '_cf_%' ORDER BY name",
+  ).all<{ name: string }>();
+  const out: Table[] = [];
+  for (const { name } of t.results) {
+    const c = await DB.prepare(`SELECT name FROM pragma_table_info('${name}')`).all<{ name: string }>();
+    out.push({ name, columns: c.results.map((r) => r.name) });
+  }
   return out;
 }
 
-async function dumpAll(): Promise<{ text: string; tables: string[]; rowCount: number }> {
-  const master = await DB.prepare(
-    "SELECT name, sql FROM sqlite_master WHERE name NOT LIKE '_cf_%' AND name NOT LIKE 'sqlite_%'",
-  ).all<{ name: string; sql: string | null }>();
-  const out: Record<string, unknown> = { schema: master.results.map((m) => m.sql) };
-  const tables: string[] = [];
-  let rowCount = 0;
-  for (const m of master.results) {
-    if (!m.sql || !/^CREATE TABLE/i.test(m.sql)) continue;
-    tables.push(m.name);
-    const rows = (await DB.prepare(`SELECT * FROM "${m.name}"`).all()).results;
-    rowCount += rows.length;
-    out[m.name] = rows;
+/** Tables or columns outside the allowlist. */
+function schemaProblems(schema: Table[]): string[] {
+  const tables = allow.tables as Record<string, string[]>;
+  const problems: string[] = [];
+  for (const t of schema) {
+    const cols = tables[t.name];
+    if (!cols) {
+      problems.push(`unexpected table ${t.name}`);
+      continue;
+    }
+    for (const c of t.columns) if (!cols.includes(c)) problems.push(`unexpected column ${t.name}.${c}`);
   }
-  return { text: JSON.stringify(out), tables, rowCount };
+  return problems;
 }
 
-const UAS = [
-  "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.6613.84 Safari/537.36",
-  "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 Mobile/15E148",
-  "curl/8.5.0",
-  "Googlebot/2.1 (+http://www.google.com/bot.html)",
-];
-const IPS = [IP4, IP6, "203.0.113.9", "2001:db8:85a3:0:0:8a2e:370:7334"];
+// ---- a database that records every bound value --------------------------------
+function recordingDb(binds: unknown[], corrupt?: (args: unknown[]) => unknown[]): D1Database {
+  return new Proxy(DB, {
+    get(t, p) {
+      if (p === "prepare") {
+        return (sql: string) => {
+          const stmt = t.prepare(sql);
+          return new Proxy(stmt, {
+            get(s, q) {
+              if (q === "bind") {
+                return (...args: unknown[]) => {
+                  const a = corrupt ? corrupt(args) : args;
+                  binds.push(...a);
+                  return s.bind(...a);
+                };
+              }
+              const v = Reflect.get(s, q, s);
+              return typeof v === "function" ? v.bind(s) : v;
+            },
+          });
+        };
+      }
+      const v = Reflect.get(t, p, t);
+      return typeof v === "function" ? v.bind(t) : v;
+    },
+  });
+}
+
+async function wholeDatabase(): Promise<unknown[]> {
+  const values: unknown[] = [];
+  for (const t of await realSchema()) {
+    const rows = (await DB.prepare(`SELECT * FROM "${t.name}"`).all()).results;
+    for (const r of rows) values.push(...Object.values(r as Record<string, unknown>));
+  }
+  return values;
+}
+
+async function drive(binds: unknown[], corrupt?: (a: unknown[]) => unknown[]): Promise<void> {
+  const db = recordingDb(binds, corrupt);
+  const clickEnv: ClickEnv = {
+    DB: db,
+    SITE_HOST: "links.example.test",
+    LINK_IDS: JSON.stringify(["example-one"]),
+    CLICK_LIMITER: fakeLimiter(),
+  };
+  const who = [
+    { ip: PROBE_V4, ua: PROBE_UA },
+    { ip: PROBE_V6, ua: PROBE_UA },
+    { ip: REALISTIC[0]!, ua: REALISTIC[2]! },
+    { ip: REALISTIC[1]!, ua: REALISTIC[3]! },
+  ];
+  for (let i = 0; i < who.length; i++) {
+    const { ip, ua } = who[i]!;
+    const headers = {
+      "User-Agent": ua,
+      "CF-Connecting-IP": ip,
+      "CF-IPCountry": "US",
+      "X-Forwarded-For": ip,
+      "X-Real-IP": ip,
+      "True-Client-IP": ip,
+      "X-Probe": PROBE_HDR,
+    };
+    const c = await handleClick(
+      new Request("https://worker.example.test/e/c/example-one", {
+        method: "POST",
+        headers: { ...headers, "Ping-From": "https://links.example.test/" },
+      }),
+      clickEnv,
+    );
+    expect(c.status).toBe(204);
+    const v = await handleView(beacon({ headers }), makeEnv({ DB: db }), NOW + i * 1000);
+    expect(v.status).toBe(204);
+  }
+  await rollupClosedDays({ DB: db, TOP_SOURCES: "1000", MIN_CELL: "1" }, NOW + 3 * 86_400_000);
+}
 
 beforeEach(async () => {
   await clearAll();
   await DB.prepare("DELETE FROM click_events").run();
 });
 
-describe("no raw address or user agent in a database dump", () => {
-  it("dump_after_clicks_views_and_rollup_holds_none", async () => {
-    const clickEnv: ClickEnv = {
-      DB,
-      SITE_HOST: "links.example.test",
-      LINK_IDS: JSON.stringify(["example-one"]),
-      CLICK_LIMITER: fakeLimiter(),
-    };
-    for (let i = 0; i < IPS.length; i++) {
-      const headers = {
-        "User-Agent": UAS[i]!,
-        "Ping-From": "https://links.example.test/",
-        "CF-Connecting-IP": IPS[i]!,
-        "CF-IPCountry": "US",
-        "X-Forwarded-For": IPS[i]!,
-      };
-      const res = await handleClick(
-        new Request("https://worker.example.test/e/c/example-one", { method: "POST", headers }),
-        clickEnv,
-      );
-      expect(res.status).toBe(204);
-      const v = await handleView(
-        beacon({ headers: { "User-Agent": UAS[i]!, "CF-Connecting-IP": IPS[i]!, "X-Forwarded-For": IPS[i]! } }),
-        makeEnv(),
-        NOW + i * 1000,
-      );
-      expect(v.status).toBe(204);
-    }
-    // Loose collection: both raw tables and the visitor table really hold rows.
-    const clicks = await DB.prepare("SELECT COUNT(*) AS n FROM click_events").first<{ n: number }>();
-    const views = await DB.prepare("SELECT COUNT(*) AS n FROM view_events").first<{ n: number }>();
-    const seen = await DB.prepare("SELECT COUNT(*) AS n FROM visitor_seen").first<{ n: number }>();
-    expect(clicks?.n).toBeGreaterThanOrEqual(1);
-    expect(views?.n).toBeGreaterThanOrEqual(1);
-    expect(seen?.n).toBeGreaterThanOrEqual(1);
-
-    // Close the day so the aggregate tables are filled too.
-    await rollupClosedDays({ DB, TOP_SOURCES: "1000", MIN_CELL: "1" }, NOW + 3 * 86_400_000);
-    const rolled = await DB.prepare("SELECT COUNT(*) AS n FROM view_daily").first<{ n: number }>();
-    expect(rolled?.n).toBeGreaterThanOrEqual(1);
-
-    const dump = await dumpAll();
-    expect(dump.tables.length).toBeGreaterThanOrEqual(8);
-    expect(dump.rowCount).toBeGreaterThanOrEqual(3);
-    // Strict assertions.
-    expect(findLeaks(dump.text)).toEqual([]);
-    for (const s of [...IPS, ...UAS]) expect(dump.text.includes(s), "sentinel in dump").toBe(false);
+describe("no raw address, header or user agent is persisted", () => {
+  it("the_real_schema_is_exactly_the_allowlist", async () => {
+    const schema = await realSchema();
+    // Loose collection: the migrations really created the tables.
+    expect(schema.length).toBeGreaterThanOrEqual(8);
+    expect(schema.map((t) => t.name)).toContain("view_events");
+    // Strict assertion.
+    expect(schemaProblems(schema)).toEqual([]);
   });
 
-  it("the_scanner_bites_on_each_kind", async () => {
-    // Negative control: put each kind straight into a table and see it flagged.
-    const cases: Array<[string, string]> = [
-      ["ipv4", IP4],
-      ["ipv6", IP6],
-      ["user agent", UAS[0]!],
-      ["user agent", "curl/8.5.0"],
-    ];
-    for (const [kind, value] of cases) {
-      await DB.prepare("DELETE FROM view_meta").run();
-      await DB.prepare("INSERT INTO view_meta (key, value) VALUES ('probe', ?)").bind(value).run();
-      const dump = await dumpAll();
-      expect(findLeaks(dump.text), kind).toContain(kind);
+  it("no_bound_value_and_nothing_in_the_database_holds_request_data_in_any_form", async () => {
+    const binds: unknown[] = [];
+    await drive(binds);
+    // Loose collection: all three jobs really wrote through the recording DB,
+    // and the raw and aggregate tables hold rows.
+    expect(binds.length).toBeGreaterThanOrEqual(20);
+    for (const t of ["click_events", "view_events", "visitor_seen", "view_daily"]) {
+      const n = await DB.prepare(`SELECT COUNT(*) AS n FROM ${t}`).first<{ n: number }>();
+      expect(n?.n, t).toBeGreaterThanOrEqual(1);
     }
-    await DB.prepare("DELETE FROM view_meta").run();
-    expect(findLeaks((await dumpAll()).text)).toEqual([]);
+    // Strict assertions.
+    expect(leaks(binds, PROBES, REALISTIC)).toEqual([]);
+    expect(leaks(await wholeDatabase(), PROBES, REALISTIC)).toEqual([]);
+  });
+});
+
+describe("the guards bite", () => {
+  it("schema_check_flags_renamed_and_added_columns_and_tables", () => {
+    const base = Object.entries(allow.tables as Record<string, string[]>).map(([name, columns]) => ({
+      name,
+      columns,
+    }));
+    expect(schemaProblems(base)).toEqual([]);
+    for (const col of ["peer_ip", "client_address", "http_user_agent", "request_headers"]) {
+      const bad = base.map((t) => (t.name === "view_events" ? { ...t, columns: [...t.columns, col] } : t));
+      expect(schemaProblems(bad), col).toEqual([`unexpected column view_events.${col}`]);
+    }
+    const extra = [...base, { name: "request_log", columns: ["id"] }];
+    expect(schemaProblems(extra)).toEqual(["unexpected table request_log"]);
+  });
+
+  it("oracle_flags_every_transformed_form_of_each_probe", () => {
+    for (const p of PROBES) {
+      const stored = [
+        p,
+        p.toUpperCase(),
+        utf8hex(p),
+        b64(p),
+        b64url(p),
+        encodeURIComponent(p),
+        p.slice(0, 8), // truncated
+        p.slice(3, 11), // a middle fragment of a split copy
+        `prefix-${p}-suffix`,
+      ];
+      for (const s of stored) expect(leaks([s], PROBES, []), `${p.slice(0, 4)} as ${s.slice(0, 6)}`).not.toEqual([]);
+    }
+    const n = v4Int(PROBE_V4)!;
+    for (const s of [n, String(n), "0x" + n.toString(16), n.toString(16)]) {
+      expect(leaks([s], PROBES, []), String(s)).not.toEqual([]);
+    }
+    // Ordinary stored values are not flagged.
+    expect(leaks(["chrome", "linux", "desktop", "bluesky", "US", 1792000000000, "h", "ok"], PROBES, REALISTIC)).toEqual([]);
+  });
+
+  it("a_leak_through_the_real_handlers_is_seen_by_the_recording_database", async () => {
+    // Corrupt the 4th bound value (src) of every statement to a hex copy of the
+    // planted address, as a regression that stored it encoded would.
+    const binds: unknown[] = [];
+    await drive(binds, (args) => {
+      const a = [...args];
+      if (typeof a[3] === "string" && a.length === 19) a[3] = utf8hex(PROBE_V4);
+      return a;
+    });
+    expect(leaks(binds, PROBES, REALISTIC)).not.toEqual([]);
+    expect(leaks(await wholeDatabase(), PROBES, REALISTIC)).not.toEqual([]);
   });
 });
