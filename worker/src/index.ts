@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 import { QueryMeter, meteredDb, queryBudget } from "./d1budget";
 import { handleClick, MAX_URL_LENGTH, type Env as ClickEnv } from "./click";
+import { handleLive, LIVE_CRON, LIVE_ROUTE, runLivePoller, type LiveEnv } from "./live";
 import { purgeOldEvents } from "./retention";
 import { handleView, type ViewEnv } from "./view";
 import { purgeViews } from "./viewretention";
@@ -10,7 +11,9 @@ export type { Env } from "./click";
 export type { ViewEnv } from "./view";
 
 /** Everything the deployed Worker is bound to: the click route's plus the view route's. */
-type WorkerEnv = ClickEnv & Omit<ViewEnv, "DB" | "SITES" | "SITE_HOST" | "PAGE_IDS" | "LINK_IDS">;
+type WorkerEnv = ClickEnv &
+  Omit<ViewEnv, "DB" | "SITES" | "SITE_HOST" | "PAGE_IDS" | "LINK_IDS"> &
+  LiveEnv;
 
 const VIEW_PREFIX = "/e/v/";
 
@@ -24,18 +27,36 @@ function isViewRoute(request: Request): boolean {
   }
 }
 
+function isLiveRoute(request: Request): boolean {
+  // Exact path only (no trailing slash, no prefix). The query string is
+  // ignored by the handler. Oversize URLs are never parsed here.
+  if (request.url.length > MAX_URL_LENGTH) return false;
+  try {
+    return new URL(request.url).pathname === LIVE_ROUTE;
+  } catch {
+    return false;
+  }
+}
+
 export default {
   /**
    * Every request, to any path, gets the same empty 204; only
    * `POST /e/c/:linkId` and `POST /e/v/:pageId` can record anything. There is
-   * no redirect route and no route that returns stored data.
+   * no redirect route, and no route returns stored data with ONE deliberate
+   * exception: `GET /e/live` (src/live.ts), which returns only booleans and
+   * timestamps about whether two channels are live. Any other method on
+   * /e/live is the same empty 204.
    */
   async fetch(request: Request, env: WorkerEnv): Promise<Response> {
+    if (isLiveRoute(request)) return handleLive(request, env);
     if (isViewRoute(request)) return handleView(request, env);
     return handleClick(request, env);
   },
 
   /**
+   * The 2-minute live cron (LIVE_CRON) runs ONLY the live poller. Any other
+   * trigger runs the hourly jobs below exactly as before.
+   *
    * Hourly cron, in this order: click purge, page-view purge, page-view
    * rollup. The purge comes BEFORE the rollup so a rollup that fails, runs out
    * of CPU or is cut off can never block retention (the purge only deletes
@@ -43,8 +64,9 @@ export default {
    * is isolated: one failing never stops the others, and nothing here throws.
    */
   async scheduled(
-    _controller: ScheduledController,
-    env: ClickEnv & {
+    controller: ScheduledController,
+    env: ClickEnv &
+      LiveEnv & {
       RAW_KEEP_DAYS?: string;
       GEO_LEVEL?: string;
       TOP_SOURCES?: string;
@@ -56,6 +78,10 @@ export default {
     },
     ctx: ExecutionContext,
   ): Promise<void> {
+    if (controller.cron === LIVE_CRON) {
+      ctx.waitUntil(runLivePoller(env, Date.now()));
+      return;
+    }
     ctx.waitUntil(
       (async () => {
         const now = Date.now();
