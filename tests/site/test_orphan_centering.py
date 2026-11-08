@@ -48,16 +48,40 @@ def _centered(decls: str) -> bool:
     )
 
 
-def test_two_column_orphans_are_centered_not_stretched() -> None:
-    site = _rules((STATIC / "site.css").read_text())
+def _desktop(css: str) -> str:
+    """The text of the 56rem min-width media block."""
+    start = css.index("@media (min-width: 56rem)")
+    return css[start : css.index("/* Print", start)]
+
+
+def test_list_layouts_wrap_centered_so_any_orphan_row_is_centered() -> None:
+    site = _rules(_desktop((STATIC / "site.css").read_text()))
+    for head in (".blocks.layout-list", ".section-links.layout-list"):
+        decls = site[head]
+        assert "display: flex" in decls and "flex-wrap: wrap" in decls, head
+        assert "flex-direction: row" in decls, head
+        assert "justify-content: center" in decls, head
+        assert "display: grid" not in decls, head
+    half = site[".layout-list > *"]
+    assert "flex: 0 0 calc((100% - var(--ra-space-3)) / 2)" in half
+    full = [s for s in site if s.startswith(".layout-list > .block-")]
+    assert full, "collected"
+    for kind in ("section", "text", "crypto", "platforms", "email", "live", "image"):
+        decls = site[f".layout-list > .block-{kind}"]
+        assert "flex: 0 0 100%" in decls and "width: 100%" in decls, kind
+    assert "flex: 0 0 100%" in site[".layout-list > .block-link:has(> a.link-featured)"]
+
+
+def test_platforms_and_crypto_lists_still_center_their_orphan() -> None:
     platforms = _rules((STATIC / "platforms.css").read_text())
     crypto = _rules((STATIC / "crypto.css").read_text())
-    assert any(".section-links.layout-list" in s for s in site)  # collected
-    assert _centered(site[".section-links.layout-list > li:last-child:nth-child(odd)"])
-    alone = [s for s in site if s.startswith(".blocks.layout-list > .block-link:not(")]
-    assert alone and all(_centered(site[s]) for s in alone)
     assert _centered(platforms[".platforms-list > .platform:last-child:nth-child(odd)"])
     assert _centered(crypto[".crypto-list > .crypto-card:last-child:nth-child(odd)"])
+
+
+def test_list_guard_bites_on_a_grid_layout() -> None:
+    bad = _rules("@media x { }\n.blocks.layout-list { display: grid; }")
+    assert "display: flex" not in bad[".blocks.layout-list"]
 
 
 def test_grid_and_cards_wrap_centered_with_a_fixed_basis() -> None:
@@ -179,14 +203,16 @@ def test_last_button_is_centered_in_the_browser(
 def _full_row_types() -> set[str]:
     """Block types that spanned a whole row before the flex change.
 
-    Built from the old `grid-column: 1 / -1` rules, so a new type that gets
-    one in any stylesheet must also get its flex rule or this test fails.
+    Built from the `grid-column: 1 / -1` rules and the list layout's
+    `flex: 0 0 100%` rules, so a new type that gets one in any stylesheet must
+    also get its grid and cards rule or this test fails.
     """
     types: set[str] = set()
     for sheet in STATIC.glob("*.css"):
         for sel, body in _rules(sheet.read_text()).items():
             m = re.fullmatch(r"\.(?:blocks|layout-list) > \.block-(\w+)", sel)
-            if m and "grid-column: 1 / -1" in body:
+            full = "grid-column: 1 / -1" in body or "flex: 0 0 100%" in body
+            if m and full:
                 types.add(m.group(1))
     return types
 
@@ -278,3 +304,74 @@ def test_platforms_crypto_and_email_span_the_container_at_1280(
     for kind, box in spans.items():
         assert box is not None, kind
         assert box["width"] >= inner - 2, (kind, box, inner)
+
+
+# A Support-style tab (#324): a featured card, a pair, a full-width crypto block,
+# then an odd run of affiliate cards that ends the page.
+def _support_build(work: Path, tail: int) -> Path:
+    raw = yaml.safe_load(EXAMPLE.read_text())
+
+    def link(name: str, **extra: object) -> dict[str, object]:
+        return {
+            "id": name,
+            "title": f"Card {name}",
+            "subtitle": "A longer line of text that wraps inside a wide card.",
+            "url": f"https://example.com/{name}",
+            **extra,
+        }
+
+    raw["tabs"][0]["layout"] = "list"
+    raw["tabs"][0]["blocks"] = [
+        link("feat", featured=True),
+        link("a1"),
+        link("a2"),
+        {
+            "id": "pay",
+            "title": "Send crypto",
+            "coins": [{"coin": "btc", "address": "bc1qexampleexampleexample"}],
+        },
+        *[link(f"t{i}") for i in range(tail)],
+    ]
+    cfg = work / "site.yaml"
+    cfg.write_text(yaml.safe_dump(raw))
+    out = work / "out"
+    build_site(load_site_config(cfg), out, today=TODAY, assets_dir=EXAMPLE.parent)
+    return out
+
+
+@pytest.mark.visual
+@pytest.mark.parametrize("width", [1280, 1920])
+@pytest.mark.parametrize("tail", [7, 3])
+def test_last_card_after_a_full_width_block_is_centered(
+    tmp_path: Path, width: int, tail: int
+) -> None:
+    from playwright.sync_api import sync_playwright
+
+    server, thread = _serve(_support_build(tmp_path, tail))
+    try:
+        with sync_playwright() as p:
+            browser = p.chromium.launch(
+                args=["--no-sandbox"],
+                executable_path=os.environ.get("RA_CHROMIUM") or None,
+            )
+            page = browser.new_context(
+                viewport={"width": width, "height": 1000}, reduced_motion="reduce"
+            ).new_page()
+            page.goto(f"http://127.0.0.1:{server.server_address[1]}/")
+            boxes = [
+                b.bounding_box() for b in page.locator(".block-link > a.link").all()
+            ]
+            holder = page.locator("ul.blocks").bounding_box()
+            browser.close()
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join()
+    assert holder is not None and all(boxes) and len(boxes) == 3 + tail
+    last, prev = boxes[-1], boxes[-2]
+    assert last is not None and prev is not None
+    left = last["x"] - holder["x"]
+    right = holder["x"] + holder["width"] - (last["x"] + last["width"])
+    assert abs(left - right) <= 2, (left, right)
+    assert last["width"] < holder["width"] * 0.6, "one column wide"
+    assert last["y"] > prev["y"], "alone on its own row"
