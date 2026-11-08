@@ -23,6 +23,7 @@ from __future__ import annotations
 import csv
 import io
 import os
+import stat
 from collections.abc import Sequence
 from datetime import UTC, datetime
 from pathlib import Path
@@ -158,22 +159,50 @@ def csv_files(
     return files
 
 
+def _open_dir(out_dir: Path) -> int:
+    """Open ``out_dir`` one component at a time, never following a link.
+
+    Every step is an ``openat`` with ``O_DIRECTORY | O_NOFOLLOW`` relative to
+    the descriptor of the step before, and a missing component is created with
+    ``mkdirat`` (mode 0700) and then opened the same way, so there is no gap
+    between a check and the open. The result must be a directory owned by the
+    current user. Messages never repeat a path.
+    """
+    flags = os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0)
+    absolute = Path(os.path.abspath(out_dir))
+    fd = os.open(absolute.anchor, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        for part in absolute.parts[1:]:
+            try:
+                try:
+                    nxt = os.open(part, flags, dir_fd=fd)
+                except FileNotFoundError:
+                    os.mkdir(part, 0o700, dir_fd=fd)
+                    nxt = os.open(part, flags, dir_fd=fd)
+            except OSError:
+                raise ValueError(
+                    "--csv path must be a real directory (no symlinks)"
+                ) from None
+            os.close(fd)
+            fd = nxt
+        info = os.fstat(fd)
+        if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid():
+            raise ValueError("--csv directory must be a directory you own")
+    except BaseException:
+        os.close(fd)
+        raise
+    return fd
+
+
 def write_csv_dir(out_dir: Path, files: dict[str, bytes]) -> list[str]:
     """Write the files into ``out_dir`` (created owner-only if missing).
 
-    A symlink anywhere in the path (an ancestor included) is refused, the
-    directory is then opened with ``O_DIRECTORY | O_NOFOLLOW`` and every file
-    is created relative to that descriptor, so a swap after the check cannot
-    redirect a write. A file link is refused and an existing regular file of
+    The directory is walked with no-follow opens (see ``_open_dir``) and every
+    file is created relative to its descriptor with ``O_NOFOLLOW``: a link at
+    any component or at a file name is refused. An existing regular file of
     the same name is replaced and set to mode 0600 (failing closed).
     """
-    absolute = Path(os.path.abspath(out_dir))
-    for part in (absolute, *absolute.parents):
-        if part.is_symlink():
-            raise ValueError("--csv path must not contain a symlink")
-    absolute.mkdir(mode=0o700, parents=True, exist_ok=True)
-    flags = os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0)
-    dir_fd = os.open(absolute, flags)
+    dir_fd = _open_dir(out_dir)
     written: list[str] = []
     try:
         for name, data in files.items():

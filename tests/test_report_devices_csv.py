@@ -338,3 +338,54 @@ def test_symlinked_ancestor_is_refused(
     code, _, _ = run(capsys, "--input", str(path), "--csv", str(link / "sub"))
     assert code == 2
     assert list(real.iterdir()) == []
+
+
+def test_symlinked_final_directory_is_refused(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    real = tmp_path / "real"
+    real.mkdir()
+    os.symlink(real, tmp_path / "final")
+    path = export(tmp_path, GOOD)
+    code, _, err = run(capsys, "--input", str(path), "--csv", str(tmp_path / "final"))
+    assert code == 2 and str(real) not in err
+    assert list(real.iterdir()) == []
+
+
+def test_swap_between_create_and_open_is_refused(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from reach_around.funnel import csvout
+
+    target = tmp_path / "target"
+    target.mkdir()
+    real_mkdir = os.mkdir
+
+    def swapping_mkdir(name: Any, mode: int = 0o777, *, dir_fd: Any = None) -> None:
+        real_mkdir(name, mode, dir_fd=dir_fd)
+        if name == "swapme":
+            os.rmdir(name, dir_fd=dir_fd)
+            os.symlink(target, name, dir_fd=dir_fd)
+
+    monkeypatch.setattr(csvout.os, "mkdir", swapping_mkdir)
+    path = export(tmp_path, GOOD)
+    code, _, _ = run(capsys, "--input", str(path), "--csv", str(tmp_path / "swapme"))
+    assert code == 2
+    assert list(target.iterdir()) == []
+
+
+def test_directory_owned_by_someone_else_is_refused(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Ownership cannot be changed without privileges, so the current user id is
+    # faked: the directory then looks foreign to the check.
+    monkeypatch.setattr(os, "geteuid", lambda: os.stat(tmp_path).st_uid + 1)
+    path = export(tmp_path, GOOD)
+    out_dir = tmp_path / "csv"
+    code, _, err = run(capsys, "--input", str(path), "--csv", str(out_dir))
+    assert code == 2
+    assert list(out_dir.iterdir()) == []
