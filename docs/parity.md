@@ -52,6 +52,8 @@ The scope is a fixed list in `src/reach_around/linkparity.py`:
 
 The header icon row and the profile card repeat on every tab, so they are read from the root page once. If a later tab's icon row or button differs from the root page's, that is reported as "icon row differs on N pages". Link cards are read from every page, in page order (root first, then by path).
 
+Only tab pages are read (a page with a link list or the empty-tab note). The privacy page, the media kit pages and any other page are skipped, so they cannot cause a false icon-row difference. Internal icon targets are compared by where they resolve, not by their page-relative text. If no tab page is found, the result is exit 2.
+
 Ignored on purpose: the skip link, the tab bar, the footer links, the affiliate disclosure and any other Reach Around-only anchor. Anchors whose target is not an `http(s)` URL (internal `tab:` targets) are counted as "internal, not compared" so you can see them, but they are not matched against the export.
 
 Before comparing, URLs are normalized: scheme and host lower-cased, the default port and the fragment dropped, an empty path read as `/`, and tracking parameters (`utm_*`, `fbclid`, `gclid`, `dclid`, `msclkid`, `igshid`, `mc_cid`, `mc_eid`) removed. Labels are compared ignoring case and extra whitespace.

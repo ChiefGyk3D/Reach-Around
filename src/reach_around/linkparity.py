@@ -15,6 +15,7 @@ import csv
 import io
 import json
 import os
+import posixpath
 from dataclasses import dataclass, field
 from html.parser import HTMLParser
 from pathlib import Path
@@ -62,8 +63,6 @@ def normalize_url(url: str) -> str:
         if port is None or port == _DEFAULT_PORTS.get(scheme)
         else (f"{host}:{port}")
     )
-    if parts.username:
-        netloc = f"{parts.username}@{netloc}"
     query = [
         (k, v)
         for k, v in parse_qsl(parts.query, keep_blank_values=True)
@@ -85,6 +84,8 @@ def _valid_url(url: object) -> bool:
         return False
     try:
         parts = urlsplit(url.strip())
+        if parts.username is not None or parts.password is not None:
+            return False  # userinfo would be dropped by normalization
         return bool(parts.hostname) and parts.port != 0
     except ValueError:  # a bad port or bracketed host
         return False
@@ -220,6 +221,7 @@ class _Collector(HTMLParser):
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
         self.found: list[_Raw] = []
+        self.is_tab = False
         self._cur: _Raw | None = None
         self._span: list[bool] = []  # per open span: is it a link-title
         self._title_text: list[str] = []
@@ -228,6 +230,8 @@ class _Collector(HTMLParser):
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         a = {k: (v or "") for k, v in attrs}
         classes = a.get("class", "").split()
+        if (tag == "ul" and "blocks" in classes) or (tag == "p" and "empty" in classes):
+            self.is_tab = True  # tab.html and sections.html emit one of these
         if tag == "a" and self._cur is None:
             kind = next((k for k in SCOPE if k in classes), "")
             if kind:
@@ -254,18 +258,34 @@ class _Collector(HTMLParser):
             self._title_text.append(data)
 
 
-def _parse_page(path: Path) -> list[_Raw]:
+def _parse_page(path: Path) -> tuple[list[_Raw], bool]:
     collector = _Collector()
     collector.feed(_read_text(path, "a built page"))
     collector.close()
-    return collector.found
+    return collector.found, collector.is_tab
+
+
+def _unreadable(_: OSError) -> None:
+    raise ParityError("a directory in the site cannot be read")
+
+
+def _target_key(page: str, href: str) -> str:
+    """A page-independent form of a repeated anchor's target."""
+    if _is_external(href):
+        return normalize_url(href)
+    if urlsplit(href).scheme:
+        return href
+    path = urlsplit(href).path
+    return "internal:" + posixpath.normpath(posixpath.join(page, path))
 
 
 def _page_files(site: Path) -> list[tuple[str, Path]]:
     if not site.is_dir():
         raise ParityError("the site directory does not exist")
     found: list[tuple[str, Path]] = []
-    for dirpath, dirnames, filenames in os.walk(site, followlinks=False):
+    for dirpath, dirnames, filenames in os.walk(
+        site, followlinks=False, onerror=_unreadable
+    ):
         dirnames.sort()
         if "index.html" in filenames:
             path = Path(dirpath) / "index.html"
@@ -284,13 +304,16 @@ def read_site(site: Path) -> SiteLinks:
     result = SiteLinks()
     root_once: list[tuple[str, str]] | None = None
     for rel, path in _page_files(site):
-        result.pages += 1
         name = rel or "/"
         once_here: list[tuple[str, str]] = []
         position = 0
-        for raw in _parse_page(path):
+        raws, is_tab = _parse_page(path)
+        if not is_tab:
+            continue  # kit, privacy and other pages are not tab pages
+        result.pages += 1
+        for raw in raws:
             if SCOPE[raw.kind]:
-                once_here.append((raw.href, raw.text))
+                once_here.append((_target_key(rel, raw.href), raw.text))
                 if root_once is not None:
                     continue
             if not _is_external(raw.href):
@@ -307,8 +330,10 @@ def read_site(site: Path) -> SiteLinks:
             root_once = once_here
         elif once_here != root_once:
             result.icon_row_differs += 1
-    if not result.entries and not result.internal:
-        raise ParityError("no anchors found in the built pages; the parser is stale")
+    if result.pages == 0 or (not result.entries and not result.internal):
+        raise ParityError(
+            "no tab pages or anchors found in the built site; the parser may be stale"
+        )
     return result
 
 

@@ -514,3 +514,91 @@ def test_parity_against_a_real_build(
     code, out, _ = run(capsys, out_dir, write_json(tmp_path, rows[:3]))
     assert code == 1
     assert "extra: 1" in out
+
+
+# ---- review fixes (PR #353) -------------------------------------------------
+
+
+def test_userinfo_in_export_is_exit_2(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    site = write_site(tmp_path, links=[A])
+    export = write_json(tmp_path, [(f"https://user:pw@{SENTINEL}/a", "Alpha")])
+    code, out, err = run(capsys, site, export)
+    assert code == 2
+    no_leak(out, err)
+
+
+def test_userinfo_on_site_is_exit_2(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    site = write_site(tmp_path, links=[(f"https://u:pw@{SENTINEL}/a", "Alpha")])
+    assert run(capsys, site, write_json(tmp_path, [A]))[0] == 2
+
+
+def test_unreadable_nested_directory_is_exit_2(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import os
+
+    pages = {"": page(links=[A]), "more": page(links=[B])}
+    site = write_site(tmp_path, pages)
+    (site / "more" / "deeper").mkdir()
+    (site / "more" / "deeper").chmod(0)
+    try:
+        if os.access(site / "more" / "deeper", os.R_OK):
+            pytest.skip("directory permissions are not enforced here")
+        code, _, err = run(capsys, site, write_json(tmp_path, [A, B]))
+    finally:
+        (site / "more" / "deeper").chmod(0o755)
+    assert code == 2
+    assert "error" in err.lower()
+
+
+def test_non_tab_pages_do_not_trigger_icon_row_drift(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    kit = (
+        '<html><body><main id="content"><header><ul class="socials">'
+        + anchor_social(*S)
+        + '</ul></header><section class="kit"><h2>Kit</h2></section>'
+        "</main></body></html>"
+    )
+    pages = {"": page(socials=[S], links=[A], profile=C), "kit": kit}
+    site = write_site(tmp_path, pages)
+    code, out, err = run(capsys, site, write_json(tmp_path, [S, A, C]))
+    assert code == 0, out + err
+
+
+def test_internal_social_target_is_page_independent(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    def internal(href: str) -> str:
+        return page(links=[A]).replace(
+            '<ul class="socials">',
+            f'<ul class="socials"><li><a class="social" href="{href}">'
+            '<span class="sr-only">Contact</span></a></li>',
+        )
+
+    pages = {"": internal("contact/"), "more": internal("../contact/")}
+    site = write_site(tmp_path, pages)
+    code, out, err = run(capsys, site, write_json(tmp_path, [A, A]))
+    assert code == 0, out + err
+    assert "icon row differs" not in out
+
+
+def test_internal_social_pointing_elsewhere_still_drifts(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    def internal(href: str) -> str:
+        return page(links=[A]).replace(
+            '<ul class="socials">',
+            f'<ul class="socials"><li><a class="social" href="{href}">'
+            '<span class="sr-only">Contact</span></a></li>',
+        )
+
+    pages = {"": internal("contact/"), "more": internal("../other/")}
+    site = write_site(tmp_path, pages)
+    code, out, _ = run(capsys, site, write_json(tmp_path, [A, A]))
+    assert code == 1
+    assert "icon row differs on 1 page" in out
