@@ -37,7 +37,7 @@ MAX_TEXT = 200
 LOCK_WAIT_SECONDS = 30.0
 _LOCK_POLL = 0.02
 
-SOURCES = ("api", "hand_kept")
+SOURCES = ("api", "hand_kept", "imported")
 TYPES = ("record", "correction")
 
 _SLUG = re.compile(r"^[a-z0-9][a-z0-9-]{0,39}$")
@@ -64,6 +64,10 @@ class Record:
     note: str | None = None
     era: str | None = None
     type: str = "record"
+
+    @property
+    def day_key(self) -> tuple[str, str, str, str]:
+        return (self.platform, self.metric, self.as_of_utc[:10], self.source)
 
     @property
     def key(self) -> tuple[str, str, str, str]:
@@ -223,6 +227,7 @@ def _parse(data: bytes) -> tuple[tuple[Record, ...], str]:
         raise HistoryError("the last line is truncated (no newline); not repaired")
     records: list[Record] = []
     seen: set[tuple[str, str, str, str]] = set()
+    days: set[tuple[str, str, str, str]] = set()
     expect = GENESIS
     for number, raw in enumerate(data[:-1].split(b"\n"), start=1):
         record, prev = _parse_line(raw, number)
@@ -231,7 +236,10 @@ def _parse(data: bytes) -> tuple[tuple[Record, ...], str]:
         if record.type == "record":
             if record.key in seen:
                 raise HistoryError(f"line {number}: duplicate record")
+            if record.day_key in days:
+                raise HistoryError(f"line {number}: a second record for that UTC day")
             seen.add(record.key)
+            days.add(record.day_key)
         elif record.key not in seen:
             raise HistoryError(f"line {number}: a correction with no earlier record")
         records.append(record)
@@ -334,21 +342,33 @@ def _read_fd(fd: int, max_bytes: int) -> bytes:
     return b"".join(chunks)
 
 
+def _open_parent(path: Path) -> int:
+    """The folder of ``path`` as a descriptor; a symlink as the folder is refused."""
+    return os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+
+
 def read_history(path: Path, *, max_bytes: int = MAX_FILE_BYTES) -> History:
     """Validate the whole file and return it. A missing file is an empty history."""
     try:
-        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
-    except FileNotFoundError:
-        return History(())
+        dir_fd = _open_parent(path)
     except OSError:
-        raise HistoryError("cannot open the history file (a symlink?)") from None
+        raise HistoryError("cannot open the history folder") from None
     try:
-        _lock(fd, fcntl.LOCK_SH, LOCK_WAIT_SECONDS)
-        data = _read_fd(fd, max_bytes)
-    except OSError:
-        raise HistoryError("cannot read the history file") from None
+        try:
+            fd = os.open(path.name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=dir_fd)
+        except FileNotFoundError:
+            return History(())
+        except OSError:
+            raise HistoryError("cannot open the history file (a symlink?)") from None
+        try:
+            _lock(fd, fcntl.LOCK_SH, LOCK_WAIT_SECONDS)
+            data = _read_fd(fd, max_bytes)
+        except OSError:
+            raise HistoryError("cannot read the history file") from None
+        finally:
+            os.close(fd)
     finally:
-        os.close(fd)
+        os.close(dir_fd)
     return History(_parse(data)[0])
 
 
@@ -358,11 +378,15 @@ def append_records(
     *,
     now: datetime | None = None,
     max_bytes: int = MAX_FILE_BYTES,
-) -> None:
-    """Append ``records`` (all or none). Earlier lines are never rewritten.
+    skip_days: bool = False,
+) -> int:
+    """Append ``records`` (all or none) and return how many were written.
 
-    Refuses a damaged file, a duplicate (platform, metric, as_of_utc, source), a
-    correction without a note or an original, a future time and bad fields.
+    Earlier lines are never rewritten. Refuses a damaged file, a second normal
+    record for the same platform, metric, UTC day and source, a correction
+    without a note or an original, a future time and bad fields. With
+    ``skip_days`` a record whose day is already recorded is left out instead of
+    refused, so a refresh that runs twice in a day is safe to repeat.
     """
     if not records or len(records) > MAX_BATCH:
         raise HistoryError(f"append 1 to {MAX_BATCH} records at a time")
@@ -370,17 +394,44 @@ def append_records(
     for record in records:
         validate(record, moment)
     try:
+        dir_fd = _open_parent(path)
+    except OSError:
+        raise HistoryError("cannot open the history folder") from None
+    try:
+        return _append(dir_fd, path, records, max_bytes, skip_days)
+    finally:
+        os.close(dir_fd)
+
+
+def _append(
+    dir_fd: int,
+    path: Path,
+    records: Sequence[Record],
+    max_bytes: int,
+    skip_days: bool,
+) -> int:
+    try:
         fd = os.open(
-            path,
+            path.name,
             os.O_RDWR | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW,
             0o600,
+            dir_fd=dir_fd,
         )
     except OSError:
-        raise HistoryError("cannot open the history file (folder, symlink?)") from None
+        raise HistoryError("cannot open the history file (a symlink?)") from None
+    original = -1
     try:
         _lock(fd, fcntl.LOCK_EX, LOCK_WAIT_SECONDS)
+        os.fchmod(fd, 0o600)  # a pre-created file may be wider
         existing = _read_fd(fd, max_bytes)
-        _, prev = _parse(existing)
+        before, prev = _parse(existing)
+        if skip_days:
+            have = {r.day_key for r in before if r.type == "record"}
+            records = [
+                r for r in records if r.type != "record" or r.day_key not in have
+            ]
+            if not records:
+                return 0
         new = b""
         for record in records:
             line = _line_bytes(record, prev)
@@ -389,34 +440,33 @@ def append_records(
         _parse(existing + new)  # duplicates and corrections, before any write
         if len(existing) + len(new) > max_bytes:
             raise HistoryError("the history file would be too large")
-        _write_all(fd, new, len(existing))
+        original = len(existing)
+        _write_all(fd, new)
         os.fsync(fd)
         if not existing:
-            _fsync_dir(path)
+            os.fsync(dir_fd)
+        return len(records)
     except OSError:
+        if original >= 0:
+            _roll_back(fd, original)
         raise HistoryError("cannot write the history file") from None
     finally:
         os.close(fd)
 
 
-def _write_all(fd: int, data: bytes, original_size: int) -> None:
+def _write_all(fd: int, data: bytes) -> None:
     view = memoryview(data)
-    try:
-        while view:
-            written = os.write(fd, view)
-            view = view[written:]
-    except BaseException:
-        try:  # remove only the bytes this call added
-            os.ftruncate(fd, original_size)
-            os.fsync(fd)
-        except OSError:
-            pass
-        raise
+    while view:
+        written = os.write(fd, view)
+        view = view[written:]
 
 
-def _fsync_dir(path: Path) -> None:
-    dir_fd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+def _roll_back(fd: int, size: int) -> None:
+    """Remove only the bytes this call added; say so if that fails too."""
     try:
-        os.fsync(dir_fd)
-    finally:
-        os.close(dir_fd)
+        os.ftruncate(fd, size)
+        os.fsync(fd)
+    except OSError:
+        raise HistoryError(
+            "the write may be partly on disk; run history-verify before trying again"
+        ) from None

@@ -90,7 +90,7 @@ def run_refresh(
                 f"--accept-drop names no configured source: {', '.join(unknown)}"
             )
         paths = plan_paths(config_path, out)
-        history = history_path(config, config_path)
+        history = history_path(config, config_path, paths)
     except (ConfigError, ValueError, OSError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return EXIT_USAGE
@@ -180,6 +180,35 @@ def _cycle(
     # leave new numbers with no record of the run. If the numbers write fails, the
     # status is rewritten with ``committed: false`` (best effort) and the exit is 1.
     changed = any(outcome.status == "ok" for outcome in outcomes)
+    if history is not None and changed:
+        # History goes first: if it cannot be written, the status and numbers
+        # files are left exactly as they were. Only values that were fetched and
+        # accepted are recorded; a failed or skipped source leaves a gap (the
+        # status file holds its result), never a zero. One value per platform,
+        # metric and UTC day: a repeated run the same day keeps the first, so a
+        # retry after a later failure is safe.
+        fetched = [
+            Record(
+                platform=outcome.platform,
+                metric=HISTORY_METRIC.get(outcome.kind, "followers"),
+                value=outcome.count,
+                as_of_utc=utc_stamp(stamp),
+                source="api",
+                run_id=run_id,
+            )
+            for outcome in outcomes
+            if outcome.status == "ok" and outcome.count is not None
+        ]
+        try:
+            kept = append_records(history, fetched, now=stamp, skip_days=True)
+        except HistoryError as exc:
+            print(
+                f"error: history not written, nothing else was changed: {exc}",
+                file=sys.stderr,
+            )
+            return EXIT_WRITE
+        if kept < len(fetched):
+            print("history: today's value was already recorded; kept as it is")
     previous_status = load_status(paths.status)
     try:
         write_atomic(
@@ -201,36 +230,42 @@ def _cycle(
                 pass  # the numbers file is untouched either way
             _write_failed(exc)
             return EXIT_WRITE
-    if history is not None and changed:
-        # Only values that were fetched and accepted. A failed or skipped source
-        # leaves a gap; it is never written as zero.
-        fetched = [
-            Record(
-                platform=outcome.platform,
-                metric=HISTORY_METRIC.get(outcome.kind, "followers"),
-                value=outcome.count,
-                as_of_utc=utc_stamp(stamp),
-                source="api",
-                run_id=run_id,
-            )
-            for outcome in outcomes
-            if outcome.status == "ok" and outcome.count is not None
-        ]
-        try:
-            append_records(history, fetched, now=stamp)
-        except HistoryError as exc:
-            print(f"error: history not written: {exc}", file=sys.stderr)
-            return EXIT_WRITE
     failed = any(outcome.status == "error" for outcome in outcomes)
     return EXIT_SOURCE_FAILED if failed else EXIT_OK
 
 
-def history_path(config: SiteConfig, config_path: Path) -> Path | None:
-    """The history file named in the config (relative to it), or ``None``."""
+def history_path(
+    config: SiteConfig, config_path: Path, paths: Paths | None = None
+) -> Path | None:
+    """The history file named in the config, or ``None`` when the store is off.
+
+    The path is relative to the config file's folder and must stay inside it
+    once symlinks in its folders are resolved. It may not be a symlink, nor the
+    config, numbers, status or lock file.
+    """
     if config.numbers is None or config.numbers.history_file is None:
         return None
     named = Path(config.numbers.history_file)
-    return named if named.is_absolute() else config_path.parent / named
+    root = config_path.resolve(strict=True).parent
+    try:
+        parent = (root / named).parent.resolve(strict=True)
+    except OSError:
+        raise ValueError("the folder for numbers.history_file does not exist") from None
+    if not parent.is_relative_to(root):
+        raise ValueError("numbers.history_file leaves the config's folder")
+    target = parent / named.name
+    if target.is_symlink():
+        raise ValueError("numbers.history_file must not be a symbolic link")
+    if paths is not None:
+        for other in (paths.config, paths.target, paths.status, paths.lock):
+            if target == other or (
+                target.exists() and other.exists() and target.samefile(other)
+            ):
+                raise ValueError(
+                    "numbers.history_file must not be the config, numbers, "
+                    "status or lock file"
+                )
+    return target
 
 
 def _history_target(args: argparse.Namespace) -> Path:
@@ -323,7 +358,9 @@ def _register_history(
         required=True,
         help="UTC time YYYY-MM-DDTHH:MM:SSZ, or a UTC date YYYY-MM-DD",
     )
-    add.add_argument("--source", choices=("hand_kept", "api"), default="hand_kept")
+    add.add_argument(
+        "--source", choices=("hand_kept", "api", "imported"), default="hand_kept"
+    )
     add.add_argument("--note")
     add.add_argument("--era", help="label a definition change, e.g. a vendor rule")
     add.add_argument(

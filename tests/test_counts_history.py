@@ -2,7 +2,7 @@
 import json
 import multiprocessing
 import os
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -173,12 +173,87 @@ def test_gaps_are_gaps_never_zeros(tmp_path: Path) -> None:
     assert read_history(path).series("twitch", "nothing").points() == []
 
 
-def test_two_records_one_day_latest_wins(tmp_path: Path) -> None:
+def test_second_record_for_one_utc_day_is_refused(tmp_path: Path) -> None:
     path = tmp_path / "h.jsonl"
     add(path, rec(as_of_utc="2026-11-01T01:00:00Z", value=5))
-    add(path, rec(as_of_utc="2026-11-01T20:00:00Z", value=7))
-    series = read_history(path).series("twitch", "followers")
-    assert series.by_day()[date(2026, 11, 1)].value == 7
+    with pytest.raises(HistoryError, match="second record"):
+        add(path, rec(as_of_utc="2026-11-01T20:00:00Z", value=7))
+    add(path, rec(as_of_utc="2026-11-01T20:00:00Z", source="hand_kept"))
+    add(path, rec(as_of_utc="2026-11-02T00:00:00Z", value=9))
+    # a correction of that day's record is still allowed
+    add(
+        path,
+        rec(as_of_utc="2026-11-01T01:00:00Z", value=6, type="correction", note="x"),
+    )
+
+
+def test_skip_days_leaves_out_recorded_days_and_writes_the_rest(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "h.jsonl"
+    add(path, rec(as_of_utc="2026-11-01T01:00:00Z", value=5))
+    kept = append_records(
+        path,
+        [
+            rec(as_of_utc="2026-11-01T20:00:00Z", value=7),
+            rec(platform="github", as_of_utc="2026-11-01T20:00:00Z", value=3),
+        ],
+        now=NOW,
+        skip_days=True,
+    )
+    assert kept == 1
+    assert [r.platform for r in read_history(path).records] == ["twitch", "github"]
+    assert (
+        append_records(
+            path, [rec(as_of_utc="2026-11-01T22:00:00Z")], now=NOW, skip_days=True
+        )
+        == 0
+    )
+
+
+def test_imported_source_is_its_own_source(tmp_path: Path) -> None:
+    path = tmp_path / "h.jsonl"
+    add(path, rec(source="imported"), rec(source="api"))
+    assert {r.source for r in read_history(path).records} == {"imported", "api"}
+
+
+def test_existing_file_with_wide_mode_is_tightened(tmp_path: Path) -> None:
+    path = tmp_path / "h.jsonl"
+    path.write_bytes(b"")
+    path.chmod(0o644)
+    add(path, rec())
+    assert (os.stat(path).st_mode & 0o777) == 0o600
+
+
+def test_failed_fsync_rolls_the_append_back(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "h.jsonl"
+    add(path, rec())
+    before = path.read_bytes()
+    real = os.fsync
+    calls = {"n": 0}
+
+    def flaky(fd: int) -> None:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise OSError("disk")
+        real(fd)
+
+    monkeypatch.setattr(os, "fsync", flaky)
+    with pytest.raises(HistoryError):
+        add(path, rec(as_of_utc="2026-11-09T09:00:00Z"))
+    assert path.read_bytes() == before
+    add(path, rec(as_of_utc="2026-11-09T09:00:00Z"))  # a retry is clean
+
+
+def test_symlinked_folder_is_refused(tmp_path: Path) -> None:
+    real = tmp_path / "real"
+    real.mkdir()
+    (tmp_path / "link").symlink_to(real)
+    with pytest.raises(HistoryError):
+        add(tmp_path / "link" / "h.jsonl", rec())
+    assert list(real.iterdir()) == []
 
 
 def test_era_and_note_round_trip(tmp_path: Path) -> None:
@@ -191,7 +266,7 @@ def test_era_and_note_round_trip(tmp_path: Path) -> None:
 
 def _worker(args: tuple[str, int]) -> None:
     path, n = args
-    stamp = f"2026-11-08T09:{n // 60:02d}:{n % 60:02d}Z"
+    stamp = (date(2026, 1, 1) + timedelta(days=n)).isoformat() + "T09:00:00Z"
     append_records(Path(path), [rec(as_of_utc=stamp, value=n)], now=NOW)
 
 

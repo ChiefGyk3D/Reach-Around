@@ -183,10 +183,19 @@ class NumbersConfig(BaseModel):
     @field_validator("history_file")
     @classmethod
     def _history_file(cls, value: str | None) -> str | None:
-        if value is not None and (
-            "\x00" in value or "\n" in value or value.endswith("/")
+        if value is None:
+            return value
+        if (
+            "\x00" in value
+            or "\n" in value
+            or "\\" in value
+            or value.startswith("/")
+            or any(part in ("", ".", "..") for part in value.split("/"))
         ):
-            raise ValueError("history_file must be a file path")
+            raise ValueError(
+                "history_file must be a relative file path inside the folder of "
+                "the config, with no '..'"
+            )
         return value
 
     @model_validator(mode="after")

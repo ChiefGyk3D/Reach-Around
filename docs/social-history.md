@@ -25,7 +25,7 @@ UTC. Whole numbers only (no floats, no `NaN`).
 | `metric` | `followers` by default; `subscribers` (YouTube) and `members` (Discord, Matrix) from `counts refresh`; anything lowercase with digits and underscores for hand-kept values |
 | `value` | integer from 0 to 10^12 |
 | `as_of_utc` | `YYYY-MM-DDTHH:MM:SSZ`; never in the future when written |
-| `source` | `api` (fetched) or `hand_kept` (typed by you) |
+| `source` | `api` (fetched), `hand_kept` (typed by you) or `imported` (batch import, a later feature; the value is reserved so the three stay distinguishable) |
 | `run_id` | which run wrote it; fetched runs share one id per refresh |
 | `prev` | SHA-256 (hex) of the previous line's bytes, without the newline; 64 zeros for the first line |
 | `note` | optional text, up to 200 characters |
@@ -36,8 +36,13 @@ Unknown fields, duplicate keys, nesting, floats, `NaN`, control characters,
 lines over 2 KiB and files over 256 MiB are refused. Retention is unbounded
 append: the 25-month rule belongs to link-page traffic rollups, not to this file.
 
-A failed or skipped source writes nothing. The day stays a gap. A gap is never
-stored or reported as zero.
+One normal record per platform, metric, source and UTC day. A second one for the
+same day is refused; a correction of that day's record is allowed. A repeated
+`counts refresh` the same day keeps the first value and says so.
+
+A failed or skipped source writes nothing here. The day stays a gap. A gap is
+never stored or reported as zero. The per-source result of each run (ok, error
+class, skipped) is in the status file beside `numbers.json`.
 
 ### Definition breaks (`era`)
 
@@ -50,11 +55,14 @@ mark a fetched record with a correction (below).
 
 ## Append-only guarantees
 
-* An append opens the file in append mode, takes an exclusive `flock`, reads and
+* An append opens the folder without following a symlink, opens the file in
+  append mode (mode forced to 0600), takes an exclusive `flock`, reads and
   checks the whole file, then writes the new lines in one write and `fsync`s.
+  If the write or the `fsync` fails, only the bytes this call added are cut off
+  again; if even that fails the error says to run `history-verify`.
   Two writers at once take turns; neither loses a line.
 * It refuses a file that is already damaged, a duplicate
-  (`platform`, `metric`, `as_of_utc`, `source`), a future time, and bad fields.
+  (`platform`, `metric`, UTC day, `source`), a future time, and bad fields.
   A batch is all or nothing.
 * The `prev` hash chain makes a changed, removed, inserted or reordered earlier
   line fail `counts history-verify` with "the hash chain is broken". The last
@@ -96,13 +104,19 @@ for correcting a fetched record.
 
 ## How the instance repo commits it
 
-Your daily workflow runs `counts refresh`, then commits the changed history file
-(with `numbers.json`) to the private instance repo using the narrow credential
-you already use for that, and pushes. Run `reach-around counts history-verify`
-in that workflow before the commit so a damaged file is never committed over a
-good one. Commit with a plain fast-forward push; never force-push the history.
-Set `history_file` to a path inside the repo checkout (relative paths are
-relative to the config file).
+`counts refresh` writes the history file in place, before it touches
+`numbers.json`, so a history problem leaves every file as it was. `history_file`
+must be a relative path inside the config's folder (no `..`, no symlinked
+folder, not the config, numbers, status or lock file); put the config in your
+private instance checkout and the file lands there.
+
+The bundled example workflow (`examples/instance-repo`) does not carry the
+history file yet: it mounts only the config and `numbers.json` and stages only
+`numbers.json`. Until it does (tracked as its own issue), run the refresh where
+the checkout is writable and commit the file yourself. Run
+`reach-around counts history-verify` before the commit so a damaged file is
+never committed over a good one, and use a plain fast-forward push; never
+force-push the history.
 
 Keep the file out of anything public: it is not read by `reach-around build`,
 and a public site or artifact should only ever get floored, labeled aggregates.

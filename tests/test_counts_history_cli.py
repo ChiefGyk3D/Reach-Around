@@ -154,3 +154,54 @@ def test_history_file_config_rejects_junk(setup: Path) -> None:
         CONFIG.replace("history/social.jsonl", "history/"), encoding="utf-8"
     )
     assert refresh(setup) == 2
+
+
+def test_history_path_may_not_collide_with_other_outputs(setup: Path) -> None:
+    for name in ("numbers.json", "numbers.status.json", "site.yaml"):
+        (setup / "site.yaml").write_text(
+            CONFIG.replace("history/social.jsonl", name), encoding="utf-8"
+        )
+        assert refresh(setup) == 2
+    (setup / "site.yaml").write_text(
+        CONFIG.replace("history/social.jsonl", "numbers.json.lock"), encoding="utf-8"
+    )
+    assert refresh(setup) == 2
+
+
+def test_history_path_must_stay_inside_the_config_folder(
+    setup: Path, tmp_path_factory: pytest.TempPathFactory
+) -> None:
+    for bad in ("/var/x.jsonl", "../x.jsonl", "history/../../x.jsonl", "a\\b"):
+        (setup / "site.yaml").write_text(
+            CONFIG.replace("history/social.jsonl", bad), encoding="utf-8"
+        )
+        assert refresh(setup) == 2
+    outside = tmp_path_factory.mktemp("outside")
+    (setup / "escape").symlink_to(outside)
+    (setup / "site.yaml").write_text(
+        CONFIG.replace("history/social.jsonl", "escape/x.jsonl"), encoding="utf-8"
+    )
+    assert refresh(setup) == 2
+    assert list(outside.iterdir()) == []
+
+
+def test_history_failure_leaves_numbers_and_status_untouched(
+    setup: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (setup / "history" / "social.jsonl").write_bytes(b'{"half')
+    use(monkeypatch, {BSKY: reply({"followersCount": 5}), GH: reply({"followers": 6})})
+    assert refresh(setup) == 1
+    assert not (setup / "numbers.json").exists()
+    assert not (setup / "numbers.status.json").exists()
+
+
+def test_a_second_refresh_the_same_day_keeps_the_first_value(
+    setup: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    use(monkeypatch, {BSKY: reply({"followersCount": 5}), GH: reply({"followers": 6})})
+    assert refresh(setup) == 0
+    use(monkeypatch, {BSKY: reply({"followersCount": 7}), GH: reply({"followers": 8})})
+    assert refresh(setup) == 0
+    values = [r.value for r in read_history(setup / "history" / "social.jsonl").records]
+    assert values == [5, 6]
+    assert "already recorded" in capsys.readouterr().out
