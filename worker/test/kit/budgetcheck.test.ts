@@ -11,7 +11,8 @@ import {
   worstCaseDailyWrites,
 } from "../../src/kit/budgets";
 import { runBudgetCheck } from "../../src/kit/budgetcheck";
-import { pageViewDailyWrites } from "../../src/pvlimits";
+import { pageViewDailyWrites, pageViewSiteCount } from "../../src/pvlimits";
+import { MAX_SITES } from "../../src/sites";
 
 describe("pageViewDailyWrites", () => {
   it("is exactly the documented 22,700 at the default budgets (120 human + 30 bot per hour)", () => {
@@ -117,5 +118,101 @@ describe("runBudgetCheck (the deploy-time gate)", () => {
   });
   it("ignores variables it does not own", () => {
     expect(runBudgetCheck({ PATH: "x", VIEWS_KILL: "1" })).toEqual(runBudgetCheck({}));
+  });
+});
+
+// ---- the binding ceilings (account-wide ceiling and the number of sites) ----
+
+const siteList = (n: number) =>
+  JSON.stringify(
+    Object.fromEntries(
+      Array.from({ length: n }, (_, i) => [
+        `s${i}`,
+        { hosts: [`s${i}.example.test`], mode: "beacon", pages: ["home"], link_ids: {} },
+      ]),
+    ),
+  );
+/** Rows per day for a given accepted views per hour (humans + bots). */
+const rows = (perHour: number) => Math.ceil((24 * perHour * 28) / 5) + 2_540;
+
+describe("pageViewDailyWrites uses the binding ceiling per class", () => {
+  it("one site: the per-site budget binds below the account ceiling", () => {
+    expect(pageViewDailyWrites({ SITE_HOST: "links.example.test", PAGE_IDS: '["home"]' })).toBe(rows(150));
+    expect(pageViewDailyWrites({}, 1)).toBe(rows(150));
+  });
+  it("one site: an account ceiling below the per-site budget binds", () => {
+    expect(pageViewDailyWrites({ VIEWS_PER_HOUR: "400", ACCOUNT_VIEWS_PER_HOUR: "100" }, 1)).toBe(rows(100 + 30));
+    // the default account ceiling (480 / 120) binds a single site that asks for more
+    expect(pageViewDailyWrites({ VIEWS_PER_HOUR: "1000", BOT_VIEWS_PER_HOUR: "500" }, 1)).toBe(rows(480 + 120));
+  });
+  it("many sites where the per-site budgets bind: the sum of the sites", () => {
+    // 3 x 120 = 360 < 480 humans; 3 x 30 = 90 < 120 bots
+    expect(pageViewDailyWrites({}, 3)).toBe(rows(360 + 90));
+  });
+  it("many sites where the account ceiling binds", () => {
+    // 8 x 120 = 960 > 480, 8 x 30 = 240 > 120
+    expect(pageViewDailyWrites({}, 8)).toBe(rows(480 + 120));
+    expect(pageViewDailyWrites({ ACCOUNT_VIEWS_PER_HOUR: "200", ACCOUNT_BOT_VIEWS_PER_HOUR: "50" }, 4)).toBe(rows(200 + 50));
+  });
+  it("humans and bots are bound separately", () => {
+    // humans: 2 x 120 = 240 (sum binds); bots: 2 x 30 = 60 but ceiling 40 binds
+    expect(pageViewDailyWrites({ ACCOUNT_BOT_VIEWS_PER_HOUR: "40" }, 2)).toBe(rows(240 + 40));
+    // humans: ceiling 100 binds; bots: 2 x 30 = 60 (sum binds)
+    expect(pageViewDailyWrites({ ACCOUNT_VIEWS_PER_HOUR: "100" }, 2)).toBe(rows(100 + 60));
+  });
+  it("counts the sites from the SITES text with the Worker's own loader", () => {
+    expect(pageViewSiteCount({ SITES: siteList(4) })).toBe(4);
+    expect(pageViewDailyWrites({ SITES: siteList(4) })).toBe(rows(480 + 120));
+    expect(pageViewSiteCount({})).toBe(1);
+  });
+  it("fails closed: a site list that does not load, or a bad count, is the worst case", () => {
+    const worst = pageViewDailyWrites({}, MAX_SITES);
+    expect(pageViewSiteCount({ SITES: "{not json" })).toBe(MAX_SITES);
+    expect(pageViewDailyWrites({ SITES: "{not json" })).toBe(worst);
+    for (const bad of [0, -1, 1.5, Number.NaN, MAX_SITES + 1]) {
+      expect(pageViewDailyWrites({}, bad)).toBe(worst);
+    }
+  });
+  it("REGRESSION: N sites at the per-site cap project the account ceiling, never just one site's budget", () => {
+    const e = { VIEWS_PER_HOUR: "200", BOT_VIEWS_PER_HOUR: "50" };
+    // old projection: one site only = rows(250). Real worst case with 8 sites: ceilings 480 + 120.
+    expect(pageViewDailyWrites(e, 8)).toBe(rows(600));
+    expect(pageViewDailyWrites(e, 8)).toBeGreaterThan(rows(250));
+    // and the total is refused through the kit's own function
+    const sites = siteList(8);
+    expect(() => loadKitLimits({ ...e, SITES: sites })).toThrow(KitLimitsError);
+    expect(assessDailyBudget({ ...e, SITES: sites }).level).toBe("fail");
+    // one site at the same budgets is still within the quota
+    expect(assessDailyBudget(e).level).not.toBe("fail");
+  });
+});
+
+describe("the deploy check counts sites and ceilings", () => {
+  const one = { SITE_HOST: "links.example.test", PAGE_IDS: '["home"]', LINK_IDS: '["a"]' };
+  it("the one-site shorthand from the workflow is one site", () => {
+    expect(runBudgetCheck(one)).toEqual(runBudgetCheck({}));
+  });
+  it("refuses a SITES text that makes the total pass the quota", () => {
+    const r = runBudgetCheck({ SITES: siteList(8) });
+    expect(r.code).toBe(1);
+    expect(r.lines[0]).toMatch(/is over the quota$/);
+  });
+  it("fails closed when the site list does not load", () => {
+    for (const bad of [{ SITES: "{not json" }, { SITE_HOST: "NOT A HOST", PAGE_IDS: '["home"]' }, { SITE_HOST: "links.example.test", PAGE_IDS: "x" }]) {
+      const r = runBudgetCheck(bad);
+      expect(r.code).toBe(1);
+      expect(r.lines[0]).toContain("site list does not load");
+    }
+  });
+  it("fails closed on an unusable account ceiling, by name", () => {
+    for (const n of ["ACCOUNT_VIEWS_PER_HOUR", "ACCOUNT_BOT_VIEWS_PER_HOUR"]) {
+      const r = runBudgetCheck({ [n]: "12x" });
+      expect(r).toEqual({ code: 1, lines: [`::error::unusable budget settings: ${n}`] });
+    }
+  });
+  it("a lower account ceiling lowers the projection", () => {
+    const hi = assessDailyBudget({});
+    const lo = assessDailyBudget({ ACCOUNT_VIEWS_PER_HOUR: "50" });
+    expect(lo.pageViews).toBeLessThan(hi.pageViews);
   });
 });

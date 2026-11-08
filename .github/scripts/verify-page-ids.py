@@ -63,7 +63,9 @@ def main(argv: list[str]) -> int:
     if built is None:
         return refuse("the build holds a page id outside the allowed grammar")
     if not built:
-        return refuse("the build carries no page id: page views are not on in the build")
+        return refuse(
+            "the build carries no page id: page views are not on in the build"
+        )
     allowed = set(allowed_raw)
     missing = sorted(built - allowed)
     for name in sorted(allowed - built):

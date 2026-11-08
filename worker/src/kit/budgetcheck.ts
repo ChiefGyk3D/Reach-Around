@@ -8,11 +8,20 @@
 // value, or over the quota); a warning with code 0 above 80 percent. Values are
 // never printed, only names and totals.
 import { MAX_VIEWS_PER_HOUR } from "../pvlimits";
+import { loadSites } from "../sites";
 import { assessDailyBudget, type KitLimitsEnv } from "./budgets";
 
 const NAMES = [
   "VIEWS_PER_HOUR",
   "BOT_VIEWS_PER_HOUR",
+  "ACCOUNT_VIEWS_PER_HOUR",
+  "ACCOUNT_BOT_VIEWS_PER_HOUR",
+  // The site list, read by the Worker's own loader to count the sites that
+  // share the account ceilings.
+  "SITES",
+  "SITE_HOST",
+  "PAGE_IDS",
+  "LINK_IDS",
   "ROUTE_BUDGET_GATE",
   "ROUTE_BUDGET_VIEW",
   "MAX_LEADS",
@@ -28,13 +37,16 @@ export function runBudgetCheck(source: Record<string, string | undefined>): { co
     const v = source[n];
     if (v !== undefined && v !== "") env[n] = v;
   }
-  const badPv = ["VIEWS_PER_HOUR", "BOT_VIEWS_PER_HOUR"].filter((n) => {
+  const badPv = ["VIEWS_PER_HOUR", "BOT_VIEWS_PER_HOUR", "ACCOUNT_VIEWS_PER_HOUR", "ACCOUNT_BOT_VIEWS_PER_HOUR"].filter((n) => {
     const v = env[n];
     return v !== undefined && !(/^[0-9]{1,6}$/.test(v) && Number(v) <= MAX_VIEWS_PER_HOUR);
   });
   // The Worker falls back to the default for a bad page-view budget, so the
   // projection would silently be the wrong figure. Refuse here instead.
   if (badPv.length > 0) return { code: 1, lines: [`::error::unusable budget settings: ${badPv.join(", ")}`] };
+  // A site list that does not load cleanly cannot be counted: stop the deploy
+  // (the projection would otherwise have to guess how many sites share the ceilings).
+  if (loadSites(env).errors.length > 0) return { code: 1, lines: ["::error::the site list does not load (SITES, or SITE_HOST with PAGE_IDS and LINK_IDS)"] };
   const a = assessDailyBudget(env as KitLimitsEnv);
   const pct = ((100 * a.combined) / a.quota).toFixed(1);
   const sum = `combined worst-case daily D1 writes ${a.combined} of ${a.quota} (${pct} percent; page views ${a.pageViews})`;

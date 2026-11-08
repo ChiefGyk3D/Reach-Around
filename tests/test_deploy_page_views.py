@@ -96,7 +96,9 @@ def test_off_changes_nothing_even_with_ids_set(
     assert VIEW_NS not in _out(tmp_path)
 
 
-@pytest.mark.parametrize("bad", ["True", "TRUE", "1", "yes", "on", "tru", " true", "true\n"])
+@pytest.mark.parametrize(
+    "bad", ["True", "TRUE", "1", "yes", "on", "tru", " true", "true\n"]
+)
 def test_the_flag_is_exact_anything_else_fails_closed(tmp_path: Path, bad: str) -> None:
     extra = {**ON, "PAGE_VIEWS": bad}
     checked = _check(extra)
@@ -108,7 +110,13 @@ def test_the_flag_is_exact_anything_else_fails_closed(tmp_path: Path, bad: str) 
 
 
 def test_on_writes_ids_binding_and_keeps_the_hourly_cron(tmp_path: Path) -> None:
-    extra = {**ON, "VIEWS_PER_HOUR": "100", "BOT_VIEWS_PER_HOUR": "20"}
+    extra = {
+        **ON,
+        "VIEWS_PER_HOUR": "100",
+        "BOT_VIEWS_PER_HOUR": "20",
+        "ACCOUNT_VIEWS_PER_HOUR": "300",
+        "ACCOUNT_BOT_VIEWS_PER_HOUR": "60",
+    }
     assert _check(extra).returncode == 0
     done = _write(tmp_path, extra)
     assert done.returncode == 0, done.stderr
@@ -116,6 +124,8 @@ def test_on_writes_ids_binding_and_keeps_the_hourly_cron(tmp_path: Path) -> None
     assert data["vars"]["PAGE_IDS"] == PAGES
     assert data["vars"]["VIEWS_PER_HOUR"] == "100"
     assert data["vars"]["BOT_VIEWS_PER_HOUR"] == "20"
+    assert data["vars"]["ACCOUNT_VIEWS_PER_HOUR"] == "300"
+    assert data["vars"]["ACCOUNT_BOT_VIEWS_PER_HOUR"] == "60"
     limiter = {r["name"]: r for r in data["ratelimits"]}
     assert limiter["VIEW_LIMITER"]["namespace_id"] == VIEW_NS
     assert limiter["VIEW_LIMITER"]["simple"] == {"limit": 5, "period": 60}
@@ -136,15 +146,18 @@ def test_on_without_the_optional_budgets_sets_none(tmp_path: Path) -> None:
     data = tomllib.loads(_out(tmp_path))
     assert "VIEWS_PER_HOUR" not in data["vars"]
     assert "BOT_VIEWS_PER_HOUR" not in data["vars"]
+    assert "ACCOUNT_VIEWS_PER_HOUR" not in data["vars"]
 
 
 BAD_ON: list[tuple[str, dict[str, str]]] = [
     ("ids unset", {"PAGE_IDS": ""}),
     ("ids not json", {"PAGE_IDS": "start-here"}),
     ("ids empty array", {"PAGE_IDS": "[]"}),
-    ("ids quote injection", {"PAGE_IDS": "[\"a'b\"]"}),
+    ("ids quote injection", {"PAGE_IDS": '["a\'b"]'}),
     ("ids upper case", {"PAGE_IDS": '["Home"]'}),
     ("ids newline smuggle", {"PAGE_IDS": '["home"]\nname = "x"'}),
+    ("ids prefix junk", {"PAGE_IDS": 'x["home"]'}),
+    ("ids suffix junk", {"PAGE_IDS": '["home"]x'}),
     ("ids too long", {"PAGE_IDS": '["' + "a" * 41 + '"]'}),
     ("ids leading dash", {"PAGE_IDS": '["-a"]'}),
     ("limiter unset", {"VIEW_LIMITER_NAMESPACE_ID": ""}),
@@ -156,6 +169,8 @@ BAD_ON: list[tuple[str, dict[str, str]]] = [
     ("views not a number", {"VIEWS_PER_HOUR": "1e3"}),
     ("views over ceiling", {"VIEWS_PER_HOUR": "100001"}),
     ("bot views negative", {"BOT_VIEWS_PER_HOUR": "-1"}),
+    ("account ceiling bad", {"ACCOUNT_VIEWS_PER_HOUR": "abc"}),
+    ("account bot ceiling over", {"ACCOUNT_BOT_VIEWS_PER_HOUR": "100001"}),
 ]
 
 
@@ -165,7 +180,9 @@ def test_on_with_a_bad_or_missing_value_fails_closed(
 ) -> None:
     extra = {**ON, **change}
     assert _check(extra).returncode != 0, label
-    if "ZONE_NAME" not in change:  # the writer's own ZONE handling is older and separate
+    if (
+        "ZONE_NAME" not in change
+    ):  # the writer's own ZONE handling is older and separate
         assert _write(tmp_path, extra).returncode != 0, label
 
 
@@ -193,7 +210,9 @@ def test_the_build_adds_analytics_only_on_an_exact_true() -> None:
     assert env["PAGE_VIEWS"] == "${{ vars.PAGE_VIEWS }}"
 
 
-def _run_build_selector(tmp_path: Path, flag: str | None) -> subprocess.CompletedProcess[str]:
+def _run_build_selector(
+    tmp_path: Path, flag: str | None
+) -> subprocess.CompletedProcess[str]:
     """Run only the config-selection part of the build step with stubbed tools."""
     run = _build_script()
     start = run.index("CONFIG=examples/instance/site.yaml")
@@ -228,7 +247,9 @@ def test_build_on_appends_the_analytics_section_to_a_copy(tmp_path: Path) -> Non
     assert done.returncode == 0
     assert done.stdout == "examples/instance/site.page-views.yaml"
     copy = yaml.safe_load(
-        (tmp_path / "examples/instance/site.page-views.yaml").read_text(encoding="utf-8")
+        (tmp_path / "examples/instance/site.page-views.yaml").read_text(
+            encoding="utf-8"
+        )
     )
     assert copy == {"version": 1, "analytics": {"page_views": True}}
     assert (tmp_path / "examples/instance/site.yaml").read_text() == "version: 1\n"
@@ -245,7 +266,9 @@ def test_build_refuses_when_the_example_already_has_analytics(tmp_path: Path) ->
     run = _build_script()
     inst = tmp_path / "examples" / "instance"
     inst.mkdir(parents=True)
-    (inst / "site.yaml").write_text("analytics:\n  page_views: false\n", encoding="utf-8")
+    (inst / "site.yaml").write_text(
+        "analytics:\n  page_views: false\n", encoding="utf-8"
+    )
     script = (
         "set -eu\n"
         + run[run.index("CONFIG=examples") : run.index('if [ "$SKIP_COUNTS"')]
@@ -278,6 +301,18 @@ def test_budget_and_page_id_steps_are_conditional_tokenless_and_ordered() -> Non
         assert step["if"] == "${{ vars.PAGE_VIEWS == 'true' }}"
         assert "secrets." not in str(step) and "CLOUDFLARE" not in str(step)
         assert names.index(name) < names.index("Write deploy config")
+    # the budget step sees the site list and the ceilings the Worker will load
+    budget_env = _step("deploy", "Check the page-view write budget")["env"]
+    for var in (
+        "SITE_HOST",
+        "PAGE_IDS",
+        "LINK_IDS",
+        "VIEWS_PER_HOUR",
+        "BOT_VIEWS_PER_HOUR",
+        "ACCOUNT_VIEWS_PER_HOUR",
+        "ACCOUNT_BOT_VIEWS_PER_HOUR",
+    ):
+        assert budget_env[var] == "${{ vars." + var + " }}"
     # the budget step builds the Worker's own function, never a copy of the limits
     run = _step("deploy", "Check the page-view write budget")["run"]
     assert "scripts/check-budget.ts" in run
@@ -303,16 +338,23 @@ def test_budget_script_reuses_the_worker_function_and_holds_no_limits() -> None:
 
 def test_page_view_variables_are_plain_variables_not_secrets() -> None:
     text = WORKFLOW.read_text(encoding="utf-8")
-    for var in ("PAGE_VIEWS", "PAGE_IDS", "VIEW_LIMITER_NAMESPACE_ID", "VIEWS_PER_HOUR"):
+    for var in (
+        "PAGE_VIEWS",
+        "PAGE_IDS",
+        "VIEW_LIMITER_NAMESPACE_ID",
+        "VIEWS_PER_HOUR",
+    ):
         assert "vars." + var in text
         assert "secrets." + var not in text
     # VIEW_HASH_SECRET is a Worker secret the owner sets once: no workflow line
     # (comments aside) reads or writes it.
-    live = [
-        ln for ln in text.splitlines() if not ln.lstrip().startswith("#")
-    ]
+    live = [ln for ln in text.splitlines() if not ln.lstrip().startswith("#")]
     assert not any("VIEW_HASH_SECRET" in ln for ln in live)
-    for name in ("Apply D1 migrations", "Deploy the Worker", "Publish the site to Pages"):
+    for name in (
+        "Apply D1 migrations",
+        "Deploy the Worker",
+        "Publish the site to Pages",
+    ):
         body = str(_step("deploy", name))
         for var in ("PAGE_IDS", "VIEW_LIMITER_NAMESPACE_ID", "PAGE_VIEWS"):
             assert var not in body, (name, var)
@@ -322,7 +364,9 @@ def test_page_view_variables_are_plain_variables_not_secrets() -> None:
 # ---- verify-page-ids.py -----------------------------------------------------------
 
 
-def _verify(tmp_path: Path, pages: dict[str, str], ids: str) -> subprocess.CompletedProcess[str]:
+def _verify(
+    tmp_path: Path, pages: dict[str, str], ids: str
+) -> subprocess.CompletedProcess[str]:
     site = tmp_path / "site-out"
     site.mkdir()
     for rel, body in pages.items():
@@ -374,7 +418,7 @@ def test_a_build_without_page_views_is_an_error(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize(
-    "ids", ["", "not json", '"home"', '["Home"]', '["a b"]', '[1]', '["a\\nb"]']
+    "ids", ["", "not json", '"home"', '["Home"]', '["a b"]', "[1]", '["a\\nb"]']
 )
 def test_bad_page_ids_value_is_refused_without_echo(tmp_path: Path, ids: str) -> None:
     done = _verify(tmp_path, {"index.html": _page("home")}, ids)

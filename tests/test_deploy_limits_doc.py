@@ -99,9 +99,8 @@ def test_doc_defaults_match_the_worker_source() -> None:
     assert ratio is not None
     fixed = re.search(r"PV_FIXED_DAILY_WRITES = ([0-9_]+)", pv)
     assert fixed is not None
-    derived = (
-        -(-24 * (human + bot) * int(ratio.group(1)) // int(ratio.group(2)))
-        + int(fixed.group(1).replace("_", ""))
+    derived = -(-24 * (human + bot) * int(ratio.group(1)) // int(ratio.group(2))) + int(
+        fixed.group(1).replace("_", "")
     )
     assert derived == _PAGE_VIEWS
     assert "PAGE_VIEW_DAILY_WRITES = pageViewDailyWrites({})" in src

@@ -505,6 +505,8 @@ jobs:
           VIEW_LIMITER_NAMESPACE_ID: ${{ vars.VIEW_LIMITER_NAMESPACE_ID }}
           VIEWS_PER_HOUR: ${{ vars.VIEWS_PER_HOUR }}
           BOT_VIEWS_PER_HOUR: ${{ vars.BOT_VIEWS_PER_HOUR }}
+          ACCOUNT_VIEWS_PER_HOUR: ${{ vars.ACCOUNT_VIEWS_PER_HOUR }}
+          ACCOUNT_BOT_VIEWS_PER_HOUR: ${{ vars.ACCOUNT_BOT_VIEWS_PER_HOUR }}
         run: |
           set -eu
           for name in CLOUDFLARE_ACCOUNT_ID PAGES_PROJECT D1_DATABASE_ID \
@@ -578,7 +580,7 @@ jobs:
               fi
               [ -n "${ZONE_NAME:-}" ] \
                 || { echo "::error::Page views are enabled but ZONE_NAME is not set: without the /e/* route the beacon never reaches the Worker"; exit 1; }
-              for name in VIEWS_PER_HOUR BOT_VIEWS_PER_HOUR; do
+              for name in VIEWS_PER_HOUR BOT_VIEWS_PER_HOUR ACCOUNT_VIEWS_PER_HOUR ACCOUNT_BOT_VIEWS_PER_HOUR; do
                 eval "value=\${$name:-}"
                 if [ -n "$value" ]; then
                   [[ "$value" =~ ^[0-9]{1,6}$ ]] && [ "$value" -le 100000 ] \
@@ -637,8 +639,16 @@ jobs:
         if: ${{ vars.PAGE_VIEWS == 'true' }}
         working-directory: worker
         env:
+          # The site list the Worker will load (the one-site shorthand written
+          # by "Write deploy config"), so the sites sharing the account ceilings
+          # are counted by the Worker's own loader.
+          SITE_HOST: ${{ vars.SITE_HOST }}
+          PAGE_IDS: ${{ vars.PAGE_IDS }}
+          LINK_IDS: ${{ vars.LINK_IDS }}
           VIEWS_PER_HOUR: ${{ vars.VIEWS_PER_HOUR }}
           BOT_VIEWS_PER_HOUR: ${{ vars.BOT_VIEWS_PER_HOUR }}
+          ACCOUNT_VIEWS_PER_HOUR: ${{ vars.ACCOUNT_VIEWS_PER_HOUR }}
+          ACCOUNT_BOT_VIEWS_PER_HOUR: ${{ vars.ACCOUNT_BOT_VIEWS_PER_HOUR }}
         run: |
           set -eu
           npx --no-install esbuild scripts/check-budget.ts --bundle --platform=node \
@@ -663,6 +673,8 @@ jobs:
           VIEW_LIMITER_NAMESPACE_ID: ${{ vars.VIEW_LIMITER_NAMESPACE_ID }}
           VIEWS_PER_HOUR: ${{ vars.VIEWS_PER_HOUR }}
           BOT_VIEWS_PER_HOUR: ${{ vars.BOT_VIEWS_PER_HOUR }}
+          ACCOUNT_VIEWS_PER_HOUR: ${{ vars.ACCOUNT_VIEWS_PER_HOUR }}
+          ACCOUNT_BOT_VIEWS_PER_HOUR: ${{ vars.ACCOUNT_BOT_VIEWS_PER_HOUR }}
         run: |
           set -eu
           sed \
@@ -733,7 +745,7 @@ jobs:
               exit 1
             fi
             sed -i "/^\[vars\]$/a PAGE_IDS = '${PAGE_IDS}'" wrangler.deploy.toml
-            for name in VIEWS_PER_HOUR BOT_VIEWS_PER_HOUR; do
+            for name in VIEWS_PER_HOUR BOT_VIEWS_PER_HOUR ACCOUNT_VIEWS_PER_HOUR ACCOUNT_BOT_VIEWS_PER_HOUR; do
               eval "value=\${$name:-}"
               if [ -n "$value" ]; then
                 [[ "$value" =~ ^[0-9]{1,6}$ ]] && [ "$value" -le 100000 ] \

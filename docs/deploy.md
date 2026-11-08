@@ -129,6 +129,7 @@ your own; never commit real account ids, database ids or tokens.
    | `PAGE_IDS` | `["start-here","events"]` | **required when on.** The tab ids the Worker counts; a JSON array, each id lowercase letters, digits and `-`, 1 to 40 characters. The "Verify the page ids" step fails the deploy if the build has a tab that is not listed (its views would be dropped) and warns about a listed id the build lacks |
    | `VIEW_LIMITER_NAMESPACE_ID` | a number, not `1001` | **required when on.** Namespace id of the per-client `VIEW_LIMITER` rate limiter (5 views per client per 60 s). It must differ from `RATELIMIT_NAMESPACE_ID` and is not the `1002` placeholder in `wrangler.toml` |
    | `VIEWS_PER_HOUR`, `BOT_VIEWS_PER_HOUR` | whole numbers, 0 to 100000 | optional hourly budgets of likely-human and bot views (defaults 120 and 30); written to the Worker and used by the budget check below |
+   | `ACCOUNT_VIEWS_PER_HOUR`, `ACCOUNT_BOT_VIEWS_PER_HOUR` | whole numbers, 0 to 100000 | optional account-wide ceilings above the per-site budgets (defaults 480 and 120); written to the Worker and used by the budget check below |
 
    Page views also need `ZONE_NAME` (the `/e/*` route; the deploy stops
    without it) and the Worker secret `VIEW_HASH_SECRET`, which you set once
@@ -144,16 +145,19 @@ your own; never commit real account ids, database ids or tokens.
    **Write budget check.** When `PAGE_VIEWS` is `true`, the step "Check the
    page-view write budget" bundles the Worker's own `assessDailyBudget`
    (`worker/src/kit/budgets.ts`) and prints the projected worst-case daily D1
-   writes: the kit at its defaults, the page-view feature at your
-   `VIEWS_PER_HOUR` and `BOT_VIEWS_PER_HOUR` (24 x (human + bot) x 5.6 rows per
-   view, plus 2,540 for the rollup, purge and heartbeat), the click reserve and
+   writes: the kit at its defaults, the page-view feature at the binding hourly ceiling
+   for humans and for bots separately (the lower of the sites' budgets added up
+   and the account ceiling; 24 x (human + bot) x 5.6 rows per view, plus 2,540
+   for the rollup, purge and heartbeat), the click reserve and
    the margin, against the 100,000-row free plan figure. Over 100 percent, or an
    unusable value, stops the deploy; above 80 percent is a warning. This is the
    same function and the same lines the Worker applies to itself when it loads
    its limits, and the page-view part now follows the configured budgets
    instead of a fixed 22,700. There is no sampling: a view over the hourly
-   budget is dropped, so the budgets are the cap. The check assumes one site
-   (the `SITE_HOST` shorthand); a `SITES` deployment must sum its sites.
+   budget is dropped, so the budgets are the cap. The sites are counted by the Worker's own
+   site loader from the same `SITE_HOST`, `PAGE_IDS` and `LINK_IDS` (or a
+   `SITES` text); a site list that does not load stops the deploy, and the
+   Worker itself reads a list it cannot count as the maximum of 8 sites.
    **Kill switch:** `VIEWS_KILL`, see below; `npx wrangler deploy --var
    VIEWS_KILL:1` turns the route into an empty 204 that touches neither D1 nor
    the limiter, and setting `PAGE_VIEWS` back to `false` stops the next build

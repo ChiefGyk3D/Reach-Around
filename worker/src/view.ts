@@ -67,7 +67,13 @@ import { classifyUserAgent, primaryLanguage } from "./ua";
 import { normalizeAddress } from "./address";
 import { limiterKey, secretBytes } from "./ratekey";
 import { padHour } from "./viewretention";
-import { DEFAULT_BOT_PER_HOUR, DEFAULT_HUMAN_PER_HOUR, positiveInt } from "./pvlimits";
+import {
+  DEFAULT_ACCOUNT_BOT_PER_HOUR,
+  DEFAULT_ACCOUNT_HUMAN_PER_HOUR,
+  DEFAULT_BOT_PER_HOUR,
+  DEFAULT_HUMAN_PER_HOUR,
+  positiveInt,
+} from "./pvlimits";
 import { killedSites, loadSites, siteForRequest } from "./sites";
 
 export { normalizeAddress } from "./address";
@@ -117,8 +123,6 @@ const MAX_HOST_LENGTH = 80;
 const MAX_CITY_LENGTH = 60;
 const MAX_CITY_INPUT = 200;
 /** The shared ceiling above the per-site budgets: the account's request quota is one resource (T-07). */
-const DEFAULT_ACCOUNT_HUMAN_PER_HOUR = 480;
-const DEFAULT_ACCOUNT_BOT_PER_HOUR = 120;
 /**
  * One client may spend at most this many accepted views an hour, so a single
  * address cannot drain the global budget. The client is identified only by a

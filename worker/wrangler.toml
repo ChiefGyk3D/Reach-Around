@@ -76,7 +76,7 @@ crons = ["5 * * * *"]
 # (32 random bytes, base64). Never put it in this file. REQUIRED: without it
 # the page-view route records nothing (it fails closed).
 #
-# deploy-test.yml writes PAGE_IDS, the optional VIEWS_PER_HOUR and BOT_VIEWS_PER_HOUR and
+# deploy-test.yml writes PAGE_IDS, the optional hourly budgets and account ceilings and
 # this limiter (with VIEW_LIMITER_NAMESPACE_ID) into its throwaway wrangler.deploy.toml when the
 # repository variable PAGE_VIEWS is exactly "true" (docs/deploy.md); nothing here ships.
 #
