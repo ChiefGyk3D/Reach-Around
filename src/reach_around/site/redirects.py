@@ -3,17 +3,16 @@
 
 One rule today: the old ``/socials`` page, with and without the trailing slash,
 goes to a root-relative target. Each line is ``source destination status``, the
-format Cloudflare Pages documents for ``_redirects``. That format is NOT
-verified against the Pages docs in this repository (see ``docs/deploy.md``,
-"Redirecting the old /socials path"). The file lists the two source paths with no
-query part, so the build itself never drops a query string; whether the host
+format Cloudflare Pages documents for ``_redirects`` (checked against the Pages
+docs, see ``docs/deploy.md``, "Redirecting the old /socials path"). The file
+lists the two source paths with no query part, so the build itself never drops a query string; whether the host
 carries the visitor's query string to the destination is a host behavior that a
 live check must confirm.
 """
 
 from __future__ import annotations
 
-from reach_around.config.redirects import TARGET, SocialsRedirect
+from reach_around.config.redirects import SocialsRedirect, target_problem
 
 SOCIALS_SOURCES = ("/socials", "/socials/")
 REDIRECTS_FILE = "_redirects"
@@ -33,12 +32,9 @@ def render_redirects(socials: SocialsRedirect) -> str:
     destination.
     """
     target = socials.target
-    if (
-        type(target) is not str
-        or not TARGET.fullmatch(target)
-        or target.startswith("//")
-    ):
-        raise ValueError("redirect target must be a root-relative path")
+    problem = target_problem(target)
+    if problem:
+        raise ValueError(f"redirect target: {problem}")
     status = socials.status
     if type(status) is not int or status not in _STATUSES:
         raise ValueError("redirect status must be 301 or 302")

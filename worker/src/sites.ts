@@ -30,6 +30,7 @@ export const MAX_HOSTS_PER_SITE = 4;
 export const MAX_PAGES = 200;
 export const MAX_LINK_IDS = 200;
 export const MAX_UTM_LABELS = 40;
+export const MAX_SOURCES = 40;
 /** Largest SITES text that is parsed at all. */
 export const MAX_SITES_TEXT = 16_384;
 const MAX_DEPTH = 8;
@@ -48,6 +49,8 @@ export interface Site {
   linkIds: ReadonlyMap<string, string>;
   geo?: GeoLevel;
   utmAllowlist?: string[];
+  /** Closed list of `s` source labels (bio links and the like); absent means `s` is not read. */
+  sources?: string[];
   minCell?: number;
   rawKeepDays?: number;
 }
@@ -69,7 +72,7 @@ const SLUG = /^[a-z0-9][a-z0-9-]{0,39}$/;
 const SITE_ID = /^[a-z0-9][a-z0-9-]{0,19}$/;
 const UTM = /^[a-z0-9-]{1,30}$/;
 const LABEL = /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/;
-const SITE_KEYS = new Set(["hosts", "mode", "pages", "link_ids", "geo", "utm_allowlist", "min_cell", "raw_keep_days"]);
+const SITE_KEYS = new Set(["hosts", "mode", "pages", "link_ids", "geo", "utm_allowlist", "sources", "min_cell", "raw_keep_days"]);
 
 /** Lower-case host name: two or more labels, final label has a letter, no port, wildcard, path or IP literal. */
 export function validHost(host: unknown): host is string {
@@ -218,6 +221,17 @@ function buildSite(id: string, body: unknown): Site | null {
       if (!labels.includes(x)) labels.push(x);
     }
     site.utmAllowlist = labels;
+  }
+  if (body.sources !== undefined) {
+    const u = body.sources;
+    if (!Array.isArray(u) || u.length > MAX_SOURCES) return null;
+    const labels: string[] = [];
+    for (const x of u) {
+      // "other" is the fold target, so it cannot also be a listed label.
+      if (typeof x !== "string" || !UTM.test(x) || x === "other") return null;
+      if (!labels.includes(x)) labels.push(x);
+    }
+    site.sources = labels;
   }
   if (body.min_cell !== undefined) {
     const n = clampInt(body.min_cell, MAX_MIN_CELL);

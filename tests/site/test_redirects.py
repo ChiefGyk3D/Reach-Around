@@ -180,3 +180,23 @@ def test_render_guard_bites_on_a_bad_target() -> None:
     odd = SocialsRedirect.model_construct(status=307, target="/")
     with pytest.raises(ValueError, match="status"):
         render_redirects(odd)
+
+
+@pytest.mark.parametrize("target", ["/socials", "/socials/"])
+def test_a_self_target_is_refused(target: str) -> None:
+    with pytest.raises(ValidationError):
+        SocialsRedirect(target=target)
+
+
+@pytest.mark.parametrize("target", ["/../x", "/a/./b", "/" + "a" * 200])
+def test_render_refuses_an_unvalidated_bad_target(target: str) -> None:
+    rule = SocialsRedirect.model_construct(status=301, target=target)
+    with pytest.raises(ValueError):
+        render_redirects(rule)
+
+
+@pytest.mark.parametrize("target", ["/socials", "/socials/"])
+def test_render_refuses_an_unvalidated_self_target(target: str) -> None:
+    rule = SocialsRedirect.model_construct(status=301, target=target)
+    with pytest.raises(ValueError):
+        render_redirects(rule)

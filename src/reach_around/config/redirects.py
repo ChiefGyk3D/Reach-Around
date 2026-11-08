@@ -18,6 +18,31 @@ from pydantic import BaseModel, ConfigDict, field_validator
 # host, no query or fragment, no whitespace or control character, no backslash.
 TARGET = re.compile(r"/[A-Za-z0-9._~/-]*")
 MAX_TARGET = 200
+# The two paths this option owns. A target equal to either would redirect a
+# path to itself (a loop).
+SOCIALS_PATHS = ("/socials", "/socials/")
+
+
+def target_problem(value: object) -> str | None:
+    """Return why ``value`` is not a safe redirect target, or None if it is.
+
+    One predicate shared by config validation and the renderer's defense in
+    depth, so a model built without validation cannot emit a rule.
+    """
+    if type(value) is not str:
+        return "target must be a string"
+    if len(value) > MAX_TARGET or not TARGET.fullmatch(value):
+        return (
+            f"{value[:60]!r} is not a root-relative path: start with '/' and "
+            "use letters, digits, '.', '_', '~', '-' and '/' only"
+        )
+    if value.startswith("//"):
+        return "target must not start with '//' (a different host)"
+    if any(part in (".", "..") for part in value.split("/")):
+        return "target must not contain '.' or '..' segments"
+    if value in SOCIALS_PATHS:
+        return "target must not be /socials or /socials/ (a redirect loop)"
+    return None
 
 
 class SocialsRedirect(BaseModel):
@@ -38,15 +63,9 @@ class SocialsRedirect(BaseModel):
     @field_validator("target")
     @classmethod
     def _target_is_root_relative(cls, value: str) -> str:
-        if len(value) > MAX_TARGET or not TARGET.fullmatch(value):
-            raise ValueError(
-                f"{value[:60]!r} is not a root-relative path: start with '/' and "
-                "use letters, digits, '.', '_', '~', '-' and '/' only"
-            )
-        if value.startswith("//"):
-            raise ValueError("target must not start with '//' (a different host)")
-        if any(part in (".", "..") for part in value.split("/")):
-            raise ValueError("target must not contain '.' or '..' segments")
+        problem = target_problem(value)
+        if problem:
+            raise ValueError(problem)
         return value
 
 
