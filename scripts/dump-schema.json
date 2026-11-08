@@ -1,5 +1,5 @@
 {
-  "_comment": "Allowlist for scripts/check-dump.py. tables: every table and column order the Worker's migrations create (a test keeps this equal to them) plus Cloudflare's own bookkeeping tables. A new table or column needs a reviewed edit here. hex_ids: columns that hold an opaque 32-hex id or keyed hash. numeric_text: text columns that hold plain counters or timestamps. patterns: a regex a value in that column (any table) must fully match. spaces_ok: column names (any table) whose values may hold spaces (place names).",
+  "_comment": "Allowlist for scripts/check-dump.py. tables: every table and column order the Worker's migrations create (a test keeps this equal to them) plus Cloudflare's own bookkeeping tables. A new table or column needs a reviewed edit here. hex_ids: columns that hold an opaque 32-hex id or keyed hash. numeric: every numeric column (and the text columns that hold a counter or a timestamp) with the kind of value it may hold; numeric_kinds gives the allowed inclusive ranges (small stays under 2^24 and ms is epoch milliseconds from 2020 to 2099, so no value can be a 32-bit address). A numeric value outside its range fails. patterns: a regex a value in that column (any table) must fully match. spaces_ok: column names (any table) whose values may hold spaces (place names).",
   "tables": {
     "_cf_KV": [
       "key",
@@ -131,10 +131,6 @@
     "kit_events.lead_id",
     "visitor_seen.h"
   ],
-  "numeric_text": [
-    "view_meta.value",
-    "kit_meta.value"
-  ],
   "patterns": {
     "browser": "chrome|edge|firefox|safari|opera|samsung|brave|other",
     "os": "windows|macos|linux|android|ios|chromeos|other",
@@ -148,5 +144,71 @@
   "spaces_ok": [
     "city",
     "region"
-  ]
+  ],
+  "numeric_kinds": {
+    "small": [
+      [
+        0,
+        16777215
+      ]
+    ],
+    "ms": [
+      [
+        1600000000000,
+        4100000000000
+      ]
+    ],
+    "ms_or_small": [
+      [
+        0,
+        16777215
+      ],
+      [
+        1600000000000,
+        4100000000000
+      ]
+    ],
+    "flag": [
+      [
+        0,
+        1
+      ]
+    ]
+  },
+  "numeric": {
+    "click_events.id": "small",
+    "click_events.ts": "ms",
+    "counters.count": "small",
+    "d1_migrations.id": "small",
+    "kit_events.id": "small",
+    "kit_events.ts": "ms",
+    "kit_meta.value": "ms_or_small",
+    "leads.created_ts": "ms",
+    "leads.last_cc_alert_ts": "ms_or_small",
+    "leads.last_seen_ts": "ms",
+    "leads.last_view_alert_ts": "ms_or_small",
+    "leads.last_view_event_ts": "ms_or_small",
+    "leads.session_floor_ts": "ms_or_small",
+    "leads.verified_ts": "ms_or_small",
+    "view_daily.uniques": "small",
+    "view_daily.views": "small",
+    "view_dim_daily.uniques": "small",
+    "view_dim_daily.views": "small",
+    "view_events.bmajor": "small",
+    "view_events.first": "flag",
+    "view_events.id": "small",
+    "view_events.ts": "ms",
+    "view_geo_daily.uniques": "small",
+    "view_geo_daily.views": "small",
+    "view_meta.value": "ms_or_small",
+    "view_rollup_log.max_id": "small",
+    "view_rollup_log.raw_views": "small",
+    "view_rollup_log.rerolls": "small",
+    "view_rollup_log.rolled_at": "ms",
+    "view_rollup_log.rows_core": "small",
+    "view_rollup_log.rows_dim": "small",
+    "view_rollup_log.rows_geo": "small",
+    "view_rollup_log.uniques": "small",
+    "view_rollup_log.views": "small"
+  }
 }

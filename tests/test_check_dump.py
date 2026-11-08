@@ -329,7 +329,8 @@ def test_a_dump_filled_through_real_tables_is_clean(tmp_path: Path) -> None:
         "'bluesky', 'h', 'ok', 'chrome', 'linux', 'desktop', 'en', 'US')"
     )
     db.execute(
-        "INSERT INTO click_events (ts, link_id, country) VALUES (1, 'a-b', 'US')"
+        "INSERT INTO click_events (ts, link_id, country) "
+        "VALUES (1792000000000, 'a-b', 'US')"
     )
     db.commit()
     dump = "\n".join(db.iterdump()) + "\n"
@@ -337,3 +338,138 @@ def test_a_dump_filled_through_real_tables_is_clean(tmp_path: Path) -> None:
     assert r.returncode == 0, r.stdout + r.stderr
     db.execute("UPDATE view_events SET src = '198.51.100.7'")
     assert run("\n".join(db.iterdump()) + "\n", tmp_path=tmp_path).returncode == 1
+
+
+# ---- round 3: numeric columns, bare hex labels, nested encodings -------------
+
+IPV4_INT = 203 * 256**3 + 113 * 256 + 211  # 3405803987, the reviewer's example
+
+
+def insert(table: str, values: str, cols: str = "") -> str:
+    return f"INSERT INTO {table}{cols} VALUES ({values});\n"  # noqa: S608 - synthetic
+
+
+@pytest.mark.parametrize(
+    "stmt",
+    [
+        insert("counters", f"'x', '2026-01-01', {IPV4_INT}"),
+        insert("counters", "'x', '2026-01-01', 16777216"),
+        insert("click_events", f"1, {IPV4_INT}, 'a', 'US', 'main'"),
+        insert("click_events", f"{IPV4_INT}, 1792000000000, 'a', 'US', 'main'"),
+        insert("kit_meta", f"'k', {IPV4_INT}"),
+        insert("view_meta", f"'k', '{IPV4_INT}'"),
+        insert("view_meta", f"'k', {IPV4_INT}"),
+        insert(
+            "view_daily",
+            f"'m', '2026-01-01', 'UTC', 'home', 'd', '', 'US', 'h', {IPV4_INT}, 1",
+        ),
+        insert(
+            "view_events",
+            f"1, {IPV4_INT}, 'home', 'd', '', 'US', '', '', 'chrome', 1, 'linux', "
+            "'desktop', 'en', '', 'unknown', 'h', 'ok', 0, 'main'",
+        ),
+    ],
+)
+def test_a_whole_number_address_in_a_numeric_column_is_caught(
+    stmt: str, tmp_path: Path
+) -> None:
+    r = run(SCHEMA_DUMP + stmt, tmp_path=tmp_path)
+    assert r.returncode == 1, r.stdout + r.stderr
+    assert "numeric value out of range" in r.stdout
+    assert str(IPV4_INT) not in r.stdout + r.stderr
+
+
+@pytest.mark.parametrize(
+    "stmt",
+    [
+        insert("counters", "'x', '2026-01-01', 1234"),
+        insert("click_events", "1, 1792000000000, 'a', 'US', 'main'"),
+        insert("kit_meta", "'last_purge_ts', 1792000000000"),
+        insert("kit_meta", "'n', 12"),
+        insert("view_meta", "'rolled_through', '2027-03-13'"),
+        insert("view_meta", "'bud', '12'"),
+        insert("view_meta", "'ok', '1792000000000'"),
+        insert("sqlite_sequence", "'click_events', 5"),
+    ],
+)
+def test_ordinary_numbers_pass(stmt: str, tmp_path: Path) -> None:
+    r = run(SCHEMA_DUMP + stmt, tmp_path=tmp_path)
+    assert r.returncode == 0, r.stdout + r.stderr
+
+
+def test_a_timestamp_outside_the_plausible_window_is_caught(tmp_path: Path) -> None:
+    for ts in ("1792000000", "5", "99999999999999"):
+        r = run(
+            SCHEMA_DUMP + insert("click_events", f"1, {ts}, 'a', 'US', 'main'"),
+            tmp_path=tmp_path,
+        )
+        assert r.returncode == 1, ts
+        assert "numeric value out of range" in r.stdout
+
+
+def test_every_integer_column_has_a_numeric_rule_and_no_rule_is_stale() -> None:
+    cfg = json.loads(SCHEMA.read_text())
+    rules = cfg["numeric"]
+    kinds = cfg["numeric_kinds"]
+    assert set(rules.values()) <= set(kinds), "rule names an unknown kind"
+    db = real_db()
+    integer_cols = {
+        f"{name}.{c[1]}"
+        for (name,) in db.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        for c in db.execute(f"PRAGMA table_info('{name}')")  # noqa: S608
+        if c[2].upper() == "INTEGER"
+    }
+    assert integer_cols, "no integer columns collected"
+    for col in integer_cols:
+        assert col in rules, f"{col} has no numeric rule"
+    all_cols = {f"{t}.{c}" for t, cols in cfg["tables"].items() for c in cols}
+    for col in rules:
+        assert col in all_cols, f"stale numeric rule {col}"
+
+
+@pytest.mark.parametrize("token", ["c6336407", "C6336407", "0a0b0c0d", "deadbeef"])
+@pytest.mark.parametrize("col", ["src", "page", "reason"])
+def test_a_bare_eight_digit_hex_token_is_refused_in_label_columns(
+    token: str, col: str, tmp_path: Path
+) -> None:
+    r = run(SCHEMA_DUMP + row(f"'{token}'", col), tmp_path=tmp_path)
+    assert r.returncode == 1, r.stdout + r.stderr
+    assert "hex token" in r.stdout
+    assert token.lower() not in (r.stdout + r.stderr).lower()
+
+
+def test_hex_tokens_are_allowed_where_ids_live_and_ordinary_words_pass(
+    tmp_path: Path,
+) -> None:
+    # Longer hashes live in their own columns; short hex-looking words are fine.
+    for v in ("facade", "decade", "bluesky", "2027-03-14"):
+        assert run(SCHEMA_DUMP + row(f"'{v}'"), tmp_path=tmp_path).returncode == 0, v
+    h = "0123456789abcdef0123456789abcdef"
+    ok = insert("visitor_seen", f"'2027-03-14', '{h}'")
+    assert run(SCHEMA_DUMP + ok, tmp_path=tmp_path).returncode == 0
+
+
+def nest(s: str, levels: int) -> str:
+    for _ in range(levels):
+        s = s.replace("%", "%25")
+    return s
+
+
+@pytest.mark.parametrize("levels", [1, 4, 5, 6, 20, 100])
+def test_percent_encoding_is_decoded_to_a_fixed_point(
+    levels: int, tmp_path: Path
+) -> None:
+    v = nest("203%2E0%2E113%2E211", levels)
+    r = run(SCHEMA_DUMP + row(f"'{v}'"), tmp_path=tmp_path)
+    assert r.returncode == 1, r.stdout + r.stderr
+    assert "ipv4" in r.stdout
+
+
+def test_absurd_nesting_is_refused_not_looped_on(tmp_path: Path) -> None:
+    v = "%" * 3 + "2E"
+    for _ in range(300):
+        v = v.replace("%", "%25")
+    assert len(v) < 200_000
+    r = run(SCHEMA_DUMP + row(f"'{v}'"), tmp_path=tmp_path)
+    assert r.returncode == 1
+    assert "oversize value" in r.stdout or "unstable encoding" in r.stdout

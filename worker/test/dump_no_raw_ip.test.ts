@@ -80,10 +80,38 @@ function fragments(s: string): string[] {
   return [...out];
 }
 
+/** The bytes of a binary value (ArrayBuffer, typed array, DataView, or a byte array), else null. */
+function bytesOf(v: unknown): Uint8Array | null {
+  if (v instanceof ArrayBuffer) return new Uint8Array(v);
+  if (ArrayBuffer.isView(v)) return new Uint8Array(v.buffer, v.byteOffset, v.byteLength);
+  if (Array.isArray(v) && v.length > 0 && v.every((x) => Number.isInteger(x) && x >= 0 && x <= 255)) {
+    return Uint8Array.from(v as number[]);
+  }
+  return null;
+}
+
+/** Every text a persisted value can be read as (lower-cased): the value, and for bytes the decoded text, hex and base64. */
+function textsOf(v: unknown): string[] {
+  const b = bytesOf(v);
+  if (b) {
+    const hex = [...b].map((x) => x.toString(16).padStart(2, "0")).join("");
+    return [
+      new TextDecoder("utf-8").decode(b),
+      String.fromCharCode(...b),
+      new TextDecoder("utf-16le").decode(b.slice(0, b.length - (b.length % 2))),
+      String.fromCharCode(...b.filter((x) => x !== 0)),
+      hex,
+      btoa(String.fromCharCode(...b)),
+      [...b].join(","),
+    ].map((t) => t.toLowerCase());
+  }
+  return [typeof v === "string" ? v.toLowerCase() : String(v)];
+}
+
 /** The oracle: probes found in a list of persisted values (names only, never values). */
 function leaks(values: unknown[], probes: string[], whole: string[]): string[] {
   const found: string[] = [];
-  const texts = values.map((v) => (typeof v === "string" ? v.toLowerCase() : String(v)));
+  const texts = values.flatMap(textsOf);
   for (const p of probes) {
     const frags = fragments(p);
     const nums = new Set(forms(p));
@@ -269,6 +297,35 @@ describe("the guards bite", () => {
     }
     // Ordinary stored values are not flagged.
     expect(leaks(["chrome", "linux", "desktop", "bluesky", "US", 1792000000000, "h", "ok"], PROBES, REALISTIC)).toEqual([]);
+  });
+
+  it("binary_values_are_normalised_to_bytes_before_the_scan", () => {
+    const bytes = new TextEncoder().encode(PROBE_V4);
+    const wide = new Uint16Array([...bytes]); // 2 bytes per unit; low bytes still spell the probe
+    const forms2: unknown[] = [
+      bytes,
+      bytes.buffer,
+      new DataView(bytes.buffer),
+      Array.from(bytes), // how D1 returns a BLOB column
+      new TextEncoder().encode(utf8hex(PROBE_V4)), // bytes of the hex text
+      new TextEncoder().encode(b64(PROBE_V4)), // bytes of the base64 text
+      new Uint8Array(bytes.buffer, 4, 6), // a view onto part of the buffer
+      wide,
+    ];
+    for (const [i, v] of forms2.entries()) expect(leaks([v], PROBES, []), `form ${i}`).not.toEqual([]);
+    // Binary that is not request data is not flagged.
+    expect(leaks([new Uint8Array([1, 2, 3, 4]), new ArrayBuffer(8)], PROBES, REALISTIC)).toEqual([]);
+  });
+
+  it("binary_data_injected_through_the_real_bind_path_is_caught", async () => {
+    const binds: unknown[] = [];
+    await drive(binds, (args) => {
+      const a = [...args];
+      if (typeof a[3] === "string" && a.length === 19) a[3] = new TextEncoder().encode(PROBE_UA).buffer;
+      return a;
+    });
+    expect(binds.some((b) => b instanceof ArrayBuffer)).toBe(true);
+    expect(leaks(binds, PROBES, REALISTIC)).not.toEqual([]);
   });
 
   it("a_leak_through_the_real_handlers_is_seen_by_the_recording_database", async () => {
