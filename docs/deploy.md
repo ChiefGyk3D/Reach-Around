@@ -92,7 +92,7 @@ your own; never commit real account ids, database ids or tokens.
    | `D1_DATABASE_ID` | the D1 UUID | written into a throwaway deploy config |
    | `RATELIMIT_NAMESPACE_ID` | `1001` | rate limiter namespace |
    | `SITE_HOST` | `links-test.example.invalid` | the only origin the Worker accepts clicks from |
-   | `LINK_IDS` | `["example-one","example-two"]` | link ids the Worker accepts; copy them from the build manifest (`site-out.manifest.json`, beside the site folder, never inside it) |
+   | `LINK_IDS` | optional: `["example-one","example-two"]` | not needed. The deploy gives the Worker the link ids of the build itself (read from `site-out.manifest.json`). If you set it, a difference from the build is a warning only and the build wins |
 
    Optional variable, set it to count clicks:
 
@@ -162,7 +162,7 @@ The Worker also has a write-only page-view route (Plan 4 Tasks A3 and A4; the br
 Retention runs from the cron (`17 4 * * *` and `5 0 * * *`): `visitor_seen` rows before today's UTC date, raw view rows past `RAW_KEEP_DAYS`, hourly budget counters older than 48 hours and client-cap counters older than the previous hour. Counter keys are `bud:<hour>:<route>` and `cap:<hour>:<hash>` (the hash is 16 hex characters, 64 bits; counters from before the widening expire within the hour) with the hour zero-padded, so expiry is a range delete on the primary key. A run that hits its batch budget records `purge_backlog` in `view_meta` and the next run continues. The daily rollup that should run before the raw purge (Task A5) is not built yet, so raw rows are deleted by age alone for now.
 Cron order (`17 4 * * *` and `5 0 * * *`): click purge, then the **daily rollup**, then the view purge. Each step is isolated, so one failing never stops the others, and none of them throws out of the handler.
 Cron: one hourly trigger, `5 * * * *` (so the pseudonymous daily visitor hash is deleted within about an hour of its UTC day ending). Each run does, in this order, the click purge, the **rollup**, then the view purge. Each step is isolated, so one failing never stops the others, and none of them throws out of the handler. Free allows 5 cron triggers per account in total, so this uses one.
-Cron: one hourly trigger, `5 * * * *` (so the pseudonymous daily visitor hash is deleted within about an hour of its UTC day ending). Each run does, in this order, the click purge, the **view purge**, then the **rollup**. The purge comes before the rollup on purpose: a rollup that fails, runs out of CPU or is cut off by the platform can never block retention (the view purge only deletes days that are already rolled, plus rows past the hard ceiling). Each step is isolated, so one failing never stops the others, and none of them throws out of the handler. Free allows 5 cron triggers per account in total, so this uses one.
+Cron: one hourly trigger, `5 * * * *` (so the pseudonymous daily visitor hash is deleted within about an hour of its UTC day ending). Each run does, in this order, the click purge, the **view purge**, the **lead purge** (media kit retention, see below) then the **rollup**. The purge comes before the rollup on purpose: a rollup that fails, runs out of CPU or is cut off by the platform can never block retention (the view purge only deletes days that are already rolled, plus rows past the hard ceiling). Each step is isolated, so one failing never stops the others, and none of them throws out of the handler. Free allows 5 cron triggers per account in total, so this uses one.
 
 **Hard per-invocation query budget.** The Cloudflare limits this is built on (read 2026-10-24): the D1 limits page (`developers.cloudflare.com/d1/platform/limits/`, last updated Oct 24, 2026) says a Worker may make 1000 D1 queries per invocation on Paid and 50 on Free, and that a `db.batch()` counts as ONE query, not one per statement. The Workers limits page (`developers.cloudflare.com/workers/platform/limits/`, last updated Oct 12, 2026) gives 50 subrequests per invocation on Free (10,000 on Paid, D1 included) and 5 Cron Triggers per account on Free. `worker/src/d1budget.ts` wraps the database once, so every `run`, `all`, `first`, `raw`, `exec` and `batch` is counted in one place and throws `BudgetExceeded` instead of making the call when the meter is empty. `QUERY_BUDGET` sets it: default 40 (Free, 10 left as margin), bad values fall back to 40, ceiling 900 (Paid). The handler gives the view purge at most half; the click purge, the purge and the rollup all draw from the same meter, and every unit of work checks what is left before it starts.
 
@@ -236,6 +236,8 @@ All values are plain decimal integers (digits only, no sign, space, exponent or 
 | **Total** | | | **78120** |
 
 That is 78.1 percent of the default quota of 100000. Raising a budget raises this number; raise `D1_DAILY_WRITE_QUOTA` only on a plan that allows it. Counters live in the `counters` table, one row per route and hour or per day, and are purged after two days. A viral spike over a budget makes the gate unavailable until the next hour; that is the accepted trade.
+
+**Lead retention.** `LEAD_RETENTION_DAYS` (1 to 365, default 30; digits only, an invalid value falls back to 30 and is logged as a fixed line, it is not part of the table above because it never closes the gate) sets how long a lead is kept. Each hourly run is ONE metered D1 query (a batch) that deletes at most 80 `kit_events` of expired leads, then at most 20 expired leads that have no events left (a lead goes only after its events, so the cascade never deletes events in bulk and a lead with many events is purged over several runs), and writes the heartbeat. Estimated writes per run: 20 x 4 + 80 x 3 + 1 = 321 (a lead row and its three indexes, an event row and its two indexes; an estimate, not measured on D1), so 24 runs are 7704 a day, within 80 percent of the 10000 kit purge reserve above; the rest is left for the counter purge. **Budget guarantee:** at `QUERY_BUDGET` 9 or more the lead purge runs first and always gets its one query, and the rest of the jobs share the remainder (the rollup gets the budget minus one). Below 9 the rollup wins (8 is the smallest budget in which one rollup day completes, `rollup_budget.test.ts`), the lead purge runs last on whatever is left with no guarantee, and logs `purge` / `over_budget` when it gets none; keep `QUERY_BUDGET` at 9 or more (default 40). It never runs on the 2-minute live cron. Details and the owner deletion command: [privacy.md](privacy.md).
 
 **For the route code that uses these limits:** run the per-client throttle (`checkIpMinute`) before taking from a global route counter, so one client cannot spend the shared budget. A request refused by the throttle must not touch a counter.
 
@@ -423,8 +425,31 @@ and Matrix hosts come from the config (see Egress control).
 **Skipping the counts.** A manual run has a `skip_counts` input (default off).
 Turn it on to redeploy with the `numbers.json` committed beside the config when
 a count source or the Doppler step is down. The wheels and counts jobs do not
-run, and the build does not wait for them. A scheduled run never skips, and a
-failed counts job stops the deployment unless the run asked to skip it.
+run, and the build does not wait for them. A scheduled run never skips.
+
+**When the counts job fails.** A failed `counts` job does not stop the build or
+the deployment (issue #317). The build downloads nothing from that job and
+uses the `numbers.json` committed beside the config, the same path as
+`skip_counts`, so the page keeps the last committed numbers. A failed `wheels`
+job, a run on any ref other than `main`, and a cancelled run still do not
+build. When a scheduled run's `counts` or `wheels` job fails, the `notify` job
+opens one issue titled "Counts refresh failed", or adds a comment to the open
+one with the run link, the date and the wheels and counts results; it never
+opens a duplicate. It waits for those two jobs only, not for the build or the
+deploy: the deploy job can sit pending on the `test` environment's reviewer, and
+the alert must not wait for that approval. If listing the open issues fails, the
+step fails (red) instead of opening a possible duplicate. A failed `wheels` job also skips the build and the deploy (the site
+stays as last deployed), which is why it raises the same alert. The job can only write issues and
+the text holds only values GitHub provides. A manual run raises no issue: the
+person who started it sees the red job. Close the issue once the counts work
+again; the next failure opens a new one.
+
+A 404 from the Doppler step in the counts job means the counts identity cannot
+see the project and config named in `DOPPLER_COUNTS_PROJECT` and
+`DOPPLER_COUNTS_CONFIG`: the identity needs access to that project and that
+config. Fix the access in Doppler, or unset the three variables to fall back to
+GitHub Actions secrets. Until then the site builds with the committed numbers
+and the alert issue stays open.
 
 **When the counts stop.** GitHub disables scheduled workflows after 60 days
 without repository activity, and nothing alerts you. The run also warns when a
@@ -606,7 +631,7 @@ How it differs from the CI workflow:
 | Values | environment variables in GitHub | a private settings file |
 | Token | `test` environment secret | Doppler, injected per command |
 | Approval | environment reviewer | typed confirmation |
-| Link ids | copied by hand into `LINK_IDS` | read from the build manifest |
+| Link ids | read from the build manifest (a `LINK_IDS` variable is optional, a comparison only) | read from the build manifest |
 | Config file | `wrangler.deploy.toml` in `worker/` on the runner | in the private directory |
 | Provenance | Actions run log | none beyond your shell history |
 
@@ -769,9 +794,10 @@ jobs:
    the same way and uploaded as `site-assets-inventory`; the job also compares
    it with the last deployment's to build the optional purge list.
 2. **`deploy`** waits for `build`, then waits for a reviewer to approve the
-   `test` environment. It downloads both artifacts (a script, `.github/scripts/verify-manifest.py`, warns when `LINK_IDS`
-   and `site-out.manifest.json` disagree, and refuses any link id outside
-   `[a-z0-9-]{1,40}` without echoing it), installs the Worker
+   `test` environment. It downloads both artifacts (a script, `.github/scripts/verify-manifest.py`, derives the Worker's `LINK_IDS`
+   from `site-out.manifest.json`, refuses any link id outside
+   `[a-z0-9-]{1,40}` (without echoing it), an empty list, or more ids than the
+   Worker's cap of 200, and only warns when the optional `LINK_IDS` variable differs), installs the Worker
    dependencies with `npm ci --ignore-scripts`, applies D1 migrations,
    deploys the Worker, publishes the site with `wrangler pages deploy`, and,
    when `CLOUDFLARE_PURGE_TOKEN` and `ZONE_ID` are set, purges the changed paths

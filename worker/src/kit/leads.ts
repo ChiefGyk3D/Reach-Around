@@ -6,9 +6,10 @@
 //
 // Every statement is a constant string with bound parameters.
 //
-// RETENTION. The purge helpers below have no scheduled caller on purpose: Task
-// 20 (#265) owns wiring them into the hourly run. Cutoffs are inclusive, so a
-// lead exactly 30 (unverified) or 365 (any) days old is purged.
+// RETENTION. The scheduled purge is src/kit/leadretention.ts (issue #265): one
+// configurable retention for every lead, strict `<` at the boundary, bounded
+// batches. The two helpers below (inclusive cutoffs) have no scheduled caller;
+// they stay as tested primitives.
 //
 // EMAIL CONTRACT. These functions take an email that is ALREADY normalized by
 // Task 5 `normalizeEmail`: ASCII, lowercase, no whitespace or control

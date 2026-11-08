@@ -108,6 +108,7 @@ crons = ["5 * * * *"]
 # DAILY_ALERT_BUDGET = "20"        # owner alerts per UTC day (0 to 1000)
 # DAILY_SEND_BUDGET = "0"          # emails per UTC day; 0 = none (no send route in v1)
 # D1_DAILY_WRITE_QUOTA = "100000"  # worst-case daily writes must fit under this
+# LEAD_RETENTION_DAYS = "30"       # days a lead is kept (1 to 365); invalid falls back to 30
 
 # The click pings use the relative path /e/c/<id>, so the browser sends them to
 # the site's own host. Route the Worker there in your deployment (placeholder
