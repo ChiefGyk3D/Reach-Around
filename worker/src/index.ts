@@ -2,6 +2,7 @@
 import { QueryMeter, meteredDb, queryBudget } from "./d1budget";
 import { handleClick, MAX_URL_LENGTH, type Env as ClickEnv } from "./click";
 import { handleLive, LIVE_CRON, LIVE_ROUTE, runLivePoller, type LiveEnv } from "./live";
+import { handleKit, isKitRoute, type GateEnv } from "./kit/gate";
 import { LEAD_PURGE_QUERIES, purgeExpiredLeads } from "./kit/leadretention";
 import { logEvent } from "./kit/log";
 import { purgeOldEvents } from "./retention";
@@ -15,7 +16,9 @@ export type { ViewEnv } from "./view";
 /** Everything the deployed Worker is bound to: the click route's plus the view route's. */
 type WorkerEnv = ClickEnv &
   Omit<ViewEnv, "DB" | "SITES" | "SITE_HOST" | "PAGE_IDS" | "LINK_IDS"> &
-  LiveEnv;
+  LiveEnv &
+  Partial<Pick<GateEnv, "KIT" | "GATE_LIMITER" | "TOKEN_HMAC_KEY" | "TURNSTILE_SECRET">> &
+  Omit<GateEnv, "DB" | "SITES" | "SITE_HOST" | "PAGE_IDS" | "LINK_IDS" | "KIT" | "GATE_LIMITER" | "TOKEN_HMAC_KEY" | "TURNSTILE_SECRET">;
 
 /** The smallest QUERY_BUDGET that guarantees the lead purge its query (see scheduled()). */
 export const LEAD_FIRST_MIN_BUDGET = 9;
@@ -45,14 +48,19 @@ function isLiveRoute(request: Request): boolean {
 
 export default {
   /**
-   * Every request, to any path, gets the same empty 204; only
-   * `POST /e/c/:linkId` and `POST /e/v/:pageId` can record anything. There is
-   * no redirect route, and no route returns stored data with ONE deliberate
-   * exception: `GET /e/live` (src/live.ts), which returns only booleans and
-   * timestamps about whether two channels are live. Any other method on
-   * /e/live is the same empty 204.
+   * Every request, to any path, gets the same empty 204, EXCEPT the paths
+   * below; only `POST /e/c/:linkId`, `POST /e/v/:pageId` and `POST /k/gate` can
+   * record anything. No route returns stored data with TWO deliberate
+   * exceptions: `GET /e/live` (src/live.ts), which returns only booleans and
+   * timestamps about whether two channels are live (any other method on
+   * /e/live is the same empty 204), and the media kit under `/k/`
+   * (src/kit/gate.ts): `POST /k/gate` (a 303 with no body) and `GET /k/view`,
+   * which returns the gated page ONLY for a valid signed cookie. Every other
+   * `/k/` path is an empty 404 (or the fixed 503 while KIT_KILL is engaged);
+   * nothing outside `/k/`, `/e/live`, `/e/c/` and `/e/v/` changes.
    */
-  async fetch(request: Request, env: WorkerEnv): Promise<Response> {
+  async fetch(request: Request, env: WorkerEnv, ctx?: ExecutionContext): Promise<Response> {
+    if (isKitRoute(request)) return handleKit(request, env as unknown as GateEnv, ctx);
     if (isLiveRoute(request)) return handleLive(request, env);
     if (isViewRoute(request)) return handleView(request, env);
     return handleClick(request, env);

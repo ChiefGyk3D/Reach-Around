@@ -49,7 +49,7 @@ export const MAX_ORIGIN_HEADER = 256;
 export const MAX_URL_LENGTH = 2048;
 
 const ROUTE = /^\/e\/c\/([^/]+)$/;
-const MAX_UA_LENGTH = 512;
+export const MAX_UA_LENGTH = 512;
 const COUNTRY = /^[A-Z]{2}$/;
 /**
  * Known crawlers, link previewers, HTTP clients, headless browsers and
@@ -59,7 +59,7 @@ const COUNTRY = /^[A-Z]{2}$/;
  * sender says it is, so this cannot stop automation that sends a browser user
  * agent. It only keeps honest tools out of the counts.
  */
-const BOT_UA = new RegExp(
+export const BOT_UA = new RegExp(
   [
     // Link-preview and social crawlers.
     "facebookexternalhit", "facebot", "twitterbot", "slackbot", "slack-imgproxy",
