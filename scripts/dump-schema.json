@@ -1,0 +1,230 @@
+{
+  "_comment": "Allowlist for scripts/check-dump.py. tables: every table and column order the Worker's migrations create (a test keeps this equal to them) plus Cloudflare's own bookkeeping tables. A new table or column needs a reviewed edit here. hex_ids: columns that hold an opaque 32-hex id or keyed hash. numeric: every numeric column (and the text columns that hold a counter or a timestamp) with the kind of value it may hold; numeric_kinds gives the allowed inclusive ranges (small stays under 2^24 and ms is epoch milliseconds from 2020 to 2099, so no value can be a 32-bit address). A numeric value outside its range fails. patterns: a regex a value in that column (any table) must fully match. spaces_ok: column names (any table) whose values may hold spaces (place names, and a migration's applied_at timestamp). digit_tokens_ok / hex_tokens_ok: columns (table.column) allowed to hold a long digit run (hour counters, timestamps, an email local part) / any 8-character hex token; every other text column refuses an 8-character all-hex token and a run of 9 or more digits. optional_tables: tables a Cloudflare export may leave out. A numeric value in a column with no numeric rule is always an error. bare_number_ok: columns that may hold a digits-only name (an email local part) as long as it is below 2^24; larger digit runs and every dotted, octal or hex form are read as addresses there too.",
+  "tables": {
+    "_cf_KV": [
+      "key",
+      "value"
+    ],
+    "click_events": [
+      "id",
+      "ts",
+      "link_id",
+      "country",
+      "site"
+    ],
+    "counters": [
+      "key",
+      "day",
+      "count"
+    ],
+    "d1_migrations": [
+      "id",
+      "name",
+      "applied_at"
+    ],
+    "kit_events": [
+      "id",
+      "ts",
+      "lead_id",
+      "kind"
+    ],
+    "kit_meta": [
+      "key",
+      "value"
+    ],
+    "leads": [
+      "id",
+      "email",
+      "created_ts",
+      "last_seen_ts",
+      "verified_ts",
+      "source",
+      "country",
+      "last_view_alert_ts",
+      "last_view_event_ts",
+      "last_cc_alert_ts",
+      "session_floor_ts"
+    ],
+    "sqlite_sequence": [
+      "name",
+      "seq"
+    ],
+    "view_daily": [
+      "site",
+      "day",
+      "day_tz",
+      "page",
+      "src_kind",
+      "src",
+      "country",
+      "bot_class",
+      "views",
+      "uniques"
+    ],
+    "view_dim_daily": [
+      "site",
+      "day",
+      "day_tz",
+      "dim",
+      "value",
+      "bot_class",
+      "views",
+      "uniques"
+    ],
+    "view_events": [
+      "id",
+      "ts",
+      "page",
+      "src_kind",
+      "src",
+      "country",
+      "region",
+      "city",
+      "browser",
+      "bmajor",
+      "os",
+      "device",
+      "lang",
+      "vp",
+      "net",
+      "bot_class",
+      "reason",
+      "first",
+      "site"
+    ],
+    "view_geo_daily": [
+      "site",
+      "day",
+      "day_tz",
+      "country",
+      "region",
+      "city",
+      "bot_class",
+      "views",
+      "uniques"
+    ],
+    "view_meta": [
+      "key",
+      "value"
+    ],
+    "view_rollup_log": [
+      "site",
+      "day",
+      "day_tz",
+      "raw_views",
+      "views",
+      "uniques",
+      "rows_core",
+      "rows_dim",
+      "rows_geo",
+      "rolled_at",
+      "max_id",
+      "rerolls"
+    ],
+    "visitor_seen": [
+      "day",
+      "h"
+    ]
+  },
+  "hex_ids": [
+    "leads.id",
+    "kit_events.lead_id",
+    "visitor_seen.h"
+  ],
+  "patterns": {
+    "browser": "chrome|edge|firefox|safari|opera|samsung|brave|other",
+    "os": "windows|macos|linux|android|ios|chromeos|other",
+    "device": "mobile|tablet|desktop|other",
+    "net": "residential|mobile|vpn-proxy|hosting-datacenter|tor|unknown",
+    "bot_class": "[hvas]",
+    "src_kind": "[dirou]",
+    "lang": "([a-z]{2,3})?",
+    "country": "([A-Z]{2})?"
+  },
+  "spaces_ok": [
+    "applied_at",
+    "city",
+    "region"
+  ],
+  "numeric_kinds": {
+    "small": [
+      [
+        0,
+        16777215
+      ]
+    ],
+    "ms": [
+      [
+        1600000000000,
+        4100000000000
+      ]
+    ],
+    "ms_or_small": [
+      [
+        0,
+        16777215
+      ],
+      [
+        1600000000000,
+        4100000000000
+      ]
+    ],
+    "flag": [
+      [
+        0,
+        1
+      ]
+    ]
+  },
+  "numeric": {
+    "click_events.id": "small",
+    "click_events.ts": "ms",
+    "counters.count": "small",
+    "d1_migrations.id": "small",
+    "kit_events.id": "small",
+    "kit_events.ts": "ms",
+    "kit_meta.value": "ms_or_small",
+    "leads.created_ts": "ms",
+    "leads.last_cc_alert_ts": "ms_or_small",
+    "leads.last_seen_ts": "ms",
+    "leads.last_view_alert_ts": "ms_or_small",
+    "leads.last_view_event_ts": "ms_or_small",
+    "leads.session_floor_ts": "ms_or_small",
+    "leads.verified_ts": "ms_or_small",
+    "sqlite_sequence.seq": "small",
+    "view_daily.uniques": "small",
+    "view_daily.views": "small",
+    "view_dim_daily.uniques": "small",
+    "view_dim_daily.views": "small",
+    "view_events.bmajor": "small",
+    "view_events.first": "flag",
+    "view_events.id": "small",
+    "view_events.ts": "ms",
+    "view_geo_daily.uniques": "small",
+    "view_geo_daily.views": "small",
+    "view_meta.value": "ms_or_small",
+    "view_rollup_log.max_id": "small",
+    "view_rollup_log.raw_views": "small",
+    "view_rollup_log.rerolls": "small",
+    "view_rollup_log.rolled_at": "ms",
+    "view_rollup_log.rows_core": "small",
+    "view_rollup_log.rows_dim": "small",
+    "view_rollup_log.rows_geo": "small",
+    "view_rollup_log.uniques": "small",
+    "view_rollup_log.views": "small"
+  },
+  "digit_tokens_ok": [
+    "view_meta.value",
+    "view_meta.key",
+    "leads.email"
+  ],
+  "hex_tokens_ok": [],
+  "optional_tables": [
+    "d1_migrations",
+    "_cf_KV",
+    "sqlite_sequence"
+  ],
+  "bare_number_ok": [
+    "leads.email"
+  ]
+}

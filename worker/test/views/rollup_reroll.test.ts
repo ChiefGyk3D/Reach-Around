@@ -228,7 +228,7 @@ describe("SQL-side folding matches an independent model", () => {
         allow: pick([null, ["a", "b"]]) as string[] | null,
       };
       await rollupClosedDays(
-        { DB, TOP_SOURCES: String(opt.top), MIN_CELL: String(opt.min), GEO_LEVEL: opt.geoLevel, UTM_ALLOWLIST: opt.allow ? opt.allow.join(",") : undefined },
+        { DB, SITE_HOST: "links.example.test", TOP_SOURCES: String(opt.top), MIN_CELL: String(opt.min), GEO_LEVEL: opt.geoLevel, UTM_ALLOWLIST: opt.allow ? opt.allow.join(",") : undefined },
         NOW,
       );
       const full = (await q<RawRow>("SELECT * FROM view_events")).map((x) => ({ ...x }));
@@ -256,7 +256,8 @@ describe("UTM allowlist", () => {
       ...mk(4, { src_kind: "u", src: "john-doe" }, 10),
       ...mk(4, { src_kind: "r", src: "alice-smith.example.test" }, 20),
     ]);
-    await rollupClosedDays({ DB, TOP_SOURCES: "1000", MIN_CELL: "1", UTM_ALLOWLIST: "bluesky,mail" }, NOW);
+    // SITE_HOST makes "links" a configured site; an unconfigured site folds every utm label to other.
+    await rollupClosedDays({ DB, SITE_HOST: "links.example.test", TOP_SOURCES: "1000", MIN_CELL: "1", UTM_ALLOWLIST: "bluesky,mail" }, NOW);
     const out = (await q<{ src_kind: string; src: string; views: number }>("SELECT * FROM view_daily")).map((r) => `${r.src_kind}:${r.src}:${r.views}`).sort();
     expect(out).toEqual(["o:other:4", "r:alice-smith.example.test:4", "u:bluesky:4"].sort());
     expect(JSON.stringify(await q("SELECT * FROM view_daily"))).not.toContain("john-doe");

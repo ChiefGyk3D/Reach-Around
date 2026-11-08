@@ -109,13 +109,14 @@ describe("rollup per site", () => {
     expect(m.rollup_err).toBe("none");
   });
 
-  it("a_site_removed_from_the_config_is_still_rolled_with_the_global_options", async () => {
+  // Rolled up, but no longer with the global options for utm labels: see the sources tests below.
+  it("a_site_removed_from_the_config_is_still_rolled_up", async () => {
     await insert(many("retired", D13 + 1000, 3));
     await rollupClosedDays(env({ SITES: JSON.stringify({ links: { hosts: ["links.example.test"], mode: "beacon", pages: ["home"] } }) }), NOW);
     expect(await q("SELECT site, raw_views FROM view_rollup_log")).toEqual([{ site: "retired", raw_views: 3 }]);
   });
 
-  it("a_broken_SITES_still_rolls_every_site_in_the_data_with_global_options", async () => {
+  it("a_broken_SITES_still_rolls_every_site_in_the_data", async () => {
     await insert(many("links", D13 + 1000, 2));
     await rollupClosedDays(env({ SITES: "{nope" }), NOW);
     expect(await q("SELECT site, raw_views FROM view_rollup_log")).toEqual([{ site: "links", raw_views: 2 }]);
@@ -274,5 +275,97 @@ describe("config errors are visible and closed", () => {
     const value = (await meta()).config_err ?? "";
     expect(value).not.toMatch(/sentinel/i);
     expect(value).toMatch(/^[a-z0-9:,-]+$/);
+  });
+});
+
+describe("rollup with a sources list", () => {
+  const WITH = JSON.stringify({
+    links: { hosts: ["links.example.test"], mode: "beacon", pages: ["home"], sources: ["bio-ig"] },
+    blog: { hosts: ["blog.example.test"], mode: "beacon", pages: ["post-one"], min_cell: 1, utm_allowlist: ["mail"], sources: ["bio-ig"] },
+  });
+  const srcs = (site: string) => q<{ src_kind: string; src: string; views: number }>(`SELECT src_kind, src, SUM(views) AS views FROM view_daily WHERE site = '${site}' GROUP BY src_kind, src ORDER BY src`);
+
+  it("listed_source_labels_survive_next_to_the_utm_list_and_anything_else_folds", async () => {
+    await insert([
+      ...many("blog", D13 + 1000, 2, { page: "post-one", src_kind: "u", src: "bio-ig" }),
+      ...many("blog", D13 + 1000, 2, { page: "post-one", src_kind: "u", src: "mail" }),
+      ...many("blog", D13 + 1000, 1, { page: "post-one", src_kind: "u", src: "john-doe" }),
+      ...many("blog", D13 + 1000, 1, { page: "post-one", src_kind: "u", src: "other" }),
+    ]);
+    await rollupClosedDays(env({ SITES: WITH }), NOW);
+    expect(await srcs("blog")).toEqual([
+      { src_kind: "u", src: "bio-ig", views: 2 },
+      { src_kind: "u", src: "mail", views: 2 },
+      { src_kind: "o", src: "other", views: 2 },
+    ]);
+  });
+
+  it("an_explicit_empty_sources_list_folds_every_utm_label_to_other", async () => {
+    const closed = JSON.stringify({ links: { hosts: ["links.example.test"], mode: "beacon", pages: ["home"], sources: [] } });
+    await insert([
+      ...many("links", D13 + 1000, 2, { src_kind: "u", src: "mail" }),
+      ...many("links", D13 + 1000, 1, { src_kind: "u", src: "other" }),
+    ]);
+    await rollupClosedDays(env({ SITES: closed, MIN_CELL: "1" }), NOW);
+    expect(await srcs("links")).toEqual([{ src_kind: "o", src: "other", views: 3 }]);
+  });
+
+  it("the_global_utm_list_does_not_apply_to_a_site_that_declares_sources", async () => {
+    for (const sources of [[], ["bio-ig"]]) {
+      await clearAll();
+      const closed = JSON.stringify({ links: { hosts: ["links.example.test"], mode: "beacon", pages: ["home"], sources } });
+      await insert([
+        ...many("links", D13 + 1000, 2, { src_kind: "u", src: "mail" }),
+        ...many("links", D13 + 1000, 1, { src_kind: "u", src: "bio-ig" }),
+      ]);
+      await rollupClosedDays(env({ SITES: closed, MIN_CELL: "1", UTM_ALLOWLIST: "mail" }), NOW);
+      const kept = sources.length === 0 ? [] : [{ src_kind: "u", src: "bio-ig", views: 1 }];
+      expect(await srcs("links"), JSON.stringify(sources)).toEqual([...kept, { src_kind: "o", src: "other", views: sources.length === 0 ? 3 : 2 }]);
+    }
+  });
+
+  it("a_per_site_utm_list_still_applies_next_to_sources_and_beats_the_global_one", async () => {
+    const both = JSON.stringify({ links: { hosts: ["links.example.test"], mode: "beacon", pages: ["home"], sources: [], utm_allowlist: ["news"] } });
+    await insert([
+      ...many("links", D13 + 1000, 1, { src_kind: "u", src: "news" }),
+      ...many("links", D13 + 1000, 1, { src_kind: "u", src: "mail" }),
+    ]);
+    await rollupClosedDays(env({ SITES: both, MIN_CELL: "1", UTM_ALLOWLIST: "mail" }), NOW);
+    expect(await srcs("links")).toEqual([
+      { src_kind: "u", src: "news", views: 1 },
+      { src_kind: "o", src: "other", views: 1 },
+    ]);
+  });
+
+  it("events_of_a_site_whose_config_is_gone_fold_utm_labels_to_other_instead_of_using_the_global_list", async () => {
+    // Raw events were stored under a closed list; the rollup must not loosen
+    // them just because the site entry is removed or SITES is unusable.
+    const other = JSON.stringify({ blog: { hosts: ["blog.example.test"], mode: "beacon", pages: ["post-one"] } });
+    for (const sites of [other, "{nope"]) {
+      await clearAll();
+      await insert([
+        ...many("links", D13 + 1000, 2, { src_kind: "u", src: "mail" }),
+        ...many("links", D13 + 1000, 1, { src_kind: "r", src: "news.example.test" }),
+        ...many("links", D13 + 1000, 1, { src_kind: "i" }),
+      ]);
+      await rollupClosedDays(env({ SITES: sites, MIN_CELL: "1", UTM_ALLOWLIST: "mail" }), NOW);
+      expect(await srcs("links"), sites).toEqual([
+        { src_kind: "i", src: "", views: 1 },
+        { src_kind: "r", src: "news.example.test", views: 1 },
+        { src_kind: "o", src: "other", views: 2 },
+      ]);
+    }
+  });
+
+  it("with_only_sources_set_other_utm_labels_fold_to_other", async () => {
+    await insert([
+      ...many("links", D13 + 1000, 1, { src_kind: "u", src: "bio-ig" }),
+      ...many("links", D13 + 1000, 1, { src_kind: "u", src: "john-doe" }),
+    ]);
+    await rollupClosedDays(env({ SITES: WITH, MIN_CELL: "1" }), NOW);
+    expect(await srcs("links")).toEqual([
+      { src_kind: "u", src: "bio-ig", views: 1 },
+      { src_kind: "o", src: "other", views: 1 },
+    ]);
   });
 });

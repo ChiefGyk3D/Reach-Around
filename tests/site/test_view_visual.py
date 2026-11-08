@@ -229,6 +229,41 @@ def test_a_thirty_character_utm_label_is_sent(browser: Browser, base_url: str) -
     ctx.close()
 
 
+def test_a_source_label_is_sent_lowered_next_to_utm(
+    browser: Browser, base_url: str
+) -> None:
+    page, ctx, _ = _open(browser, base_url + "?s=Bio-IG&utm_source=Bluesky")
+    assert [c["body"] for c in _beacons(page)] == ["u=bluesky&s=bio-ig&w=l"]
+    ctx.close()
+
+
+def test_a_repeated_source_label_sends_only_the_first(
+    browser: Browser, base_url: str
+) -> None:
+    page, ctx, _ = _open(browser, base_url + "?s=first&s=second")
+    assert [c["body"] for c in _beacons(page)] == ["s=first&w=l"]
+    ctx.close()
+
+
+@pytest.mark.parametrize(
+    "label", ["a_b", "x" * 31, "x@y", "", "%E2%84%AA", "ma%C4%B1l", "%C5%BFo"]
+)
+def test_bad_source_labels_are_omitted(
+    browser: Browser, base_url: str, label: str
+) -> None:
+    page, ctx, _ = _open(browser, base_url + "?s=" + label)
+    assert [c["body"] for c in _beacons(page)] == ["w=l"]
+    ctx.close()
+
+
+def test_a_thirty_character_source_label_is_sent(
+    browser: Browser, base_url: str
+) -> None:
+    page, ctx, _ = _open(browser, base_url + "?s=" + "x" * 30)
+    assert [c["body"] for c in _beacons(page)] == ["s=" + "x" * 30 + "&w=l"]
+    ctx.close()
+
+
 GPC = (
     "Object.defineProperty(Navigator.prototype, 'globalPrivacyControl', "
     "{get: () => true});"
