@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""The kit limits table in docs/deploy.md must match its own arithmetic and the Worker."""
+"""The kit limits table in docs/deploy.md must match its arithmetic and the Worker."""
 
 from __future__ import annotations
 
@@ -51,7 +51,9 @@ def test_worst_case_table_adds_up_and_is_under_the_warning_line() -> None:
     }
     rows = {
         m.group(1): int(m.group(2))
-        for m in re.finditer(r"^\| (gate|view|alert|send) \|.*\| (\d+) \|$", section, re.M)
+        for m in re.finditer(
+            r"^\| (gate|view|alert|send) \|.*\| (\d+) \|$", section, re.M
+        )
     }
     assert rows == expected
     total = sum(expected.values()) + _RESERVE
