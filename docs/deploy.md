@@ -650,6 +650,13 @@ sanitized, generic version (placeholders only). It does this:
 2. **Derives the link ids from the build manifest** (`jq -c '.links | keys'`),
    so the Worker accepts exactly the links the page publishes and the two
    cannot drift.
+   It also reads `lead_retention_days` from the same manifest (the site
+   config's `privacy.lead_retention_days`, which the privacy page prints),
+   refuses anything but a whole number from 1 to 365, and writes it into the
+   generated Worker vars as `LEAD_RETENTION_DAYS`. An optional
+   `LEAD_RETENTION_DAYS` line in the settings file is only compared: if it
+   differs from the config the script stops and names both numbers. The
+   manifest is written beside the output with `--manifest`, never inside it.
 3. **Generates the wrangler config in the private directory** from
    `worker/wrangler.toml`, replacing the placeholder ids and making `main`
    and `migrations_dir` absolute because the file no longer sits in

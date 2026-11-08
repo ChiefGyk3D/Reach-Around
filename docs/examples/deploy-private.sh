@@ -7,7 +7,7 @@
 #
 # What it does:
 #   1. builds the site into a directory outside the repository,
-#   2. derives the link ids from the build manifest,
+#   2. derives the link ids and the lead retention from the build manifest,
 #   3. writes a wrangler config into a private directory,
 #   4. checks the shape of every value,
 #   5. shows the plan and asks for confirmation (or stops at --dry-run),
@@ -26,6 +26,8 @@
 #   RATELIMIT_NAMESPACE_ID=1001
 #   SITE_HOST=links.example.invalid
 #   ZONE_NAME=example.invalid                   # optional: creates the /e/* route
+#   LEAD_RETENTION_DAYS=30                      # optional: only COMPARED with the
+#                                               # config's privacy.lead_retention_days
 #   DOPPLER_CONFIG=prd                          # optional, default prd
 
 set -euo pipefail
@@ -95,14 +97,40 @@ wrangler_toml="$PRIVATE_DIR/wrangler.deploy.toml"
 
 # 1. Build outside the repository. No token exists in this process.
 rm -rf "$site_out"
-reach-around build --config "$INSTANCE_CONFIG" --out "$site_out"
+#    The manifest is written beside the output, never inside it (it would be
+#    published).
+manifest="$PRIVATE_DIR/manifest.json"
+rm -f "$manifest"
+reach-around build --config "$INSTANCE_CONFIG" --out "$site_out" \
+  --manifest "$manifest"
 
 # 2. Link ids come from the build manifest, so the Worker accepts exactly the
 #    links the page publishes.
-link_ids="$(jq -c '.links | keys' "$site_out/manifest.json")"
+link_ids="$(jq -c '.links | keys' "$manifest")"
 printf '%s' "$link_ids" \
   | grep -Eq '^\[("[a-z0-9-]{1,40}"(, ?)?)+\]$' \
   || fail "the manifest produced no valid link ids"
+
+# 2b. Lead retention has ONE source: privacy.lead_retention_days in the site
+#     config, recorded in the manifest. The privacy page prints it and this
+#     script gives the same number to the Worker as LEAD_RETENTION_DAYS. It must
+#     be a real whole number from 1 to 365 (the Worker's maximum): a string, a
+#     boolean, a fraction or a missing key is refused. A LEAD_RETENTION_DAYS in
+#     the settings file is optional and only compared, never used.
+lead_retention="$(jq -e -c \
+  '.lead_retention_days | select(type == "number" and . == floor and . >= 1 and . <= 365)' \
+  "$manifest" 2>/dev/null)" \
+  || fail "the manifest has no valid lead_retention_days (a whole number from 1 to 365)"
+printf '%s' "$lead_retention" | grep -Eq '^[1-9][0-9]{0,2}$' \
+  || fail "the manifest has no valid lead_retention_days (a whole number from 1 to 365)"
+if [ -n "${LEAD_RETENTION_DAYS:-}" ]; then
+  if ! printf '%s' "$LEAD_RETENTION_DAYS" | grep -Eq '^[1-9][0-9]{0,2}$' \
+    || [ "$LEAD_RETENTION_DAYS" -gt 365 ]; then
+    fail "LEAD_RETENTION_DAYS is not a whole number from 1 to 365"
+  fi
+  [ "$LEAD_RETENTION_DAYS" = "$lead_retention" ] \
+    || fail "LEAD_RETENTION_DAYS ($LEAD_RETENTION_DAYS) differs from privacy.lead_retention_days in the site config ($lead_retention); set both to the same number or remove LEAD_RETENTION_DAYS"
+fi
 
 # 3. Generate the wrangler config. Paths that wrangler resolves relative to
 #    the config file become absolute, because the file lives elsewhere.
@@ -114,6 +142,9 @@ sed \
   -e "s|^SITE_HOST = \"[^\"]*\"|SITE_HOST = \"${SITE_HOST}\"|" \
   -e "s|^LINK_IDS = '[^']*'|LINK_IDS = '${link_ids}'|" \
   "$REPO_DIR/worker/wrangler.toml" > "$wrangler_toml"
+sed -i "/^\[vars\]\$/a LEAD_RETENTION_DAYS = \"${lead_retention}\"" "$wrangler_toml"
+grep -qxF "LEAD_RETENTION_DAYS = \"${lead_retention}\"" "$wrangler_toml" \
+  || fail "lead retention not written"
 route_note="none (clicks are not counted)"
 if [ -n "$ZONE_NAME" ]; then
   printf '\n[[routes]]\npattern = "%s/e/*"\nzone_name = "%s"\n' \
@@ -130,6 +161,7 @@ Plan
   pages project    $PAGES_PROJECT
   worker config    $wrangler_toml
   link ids         $link_ids
+  lead retention   $lead_retention days
   route            $route_note
   token source     Doppler project reach-around, config $DOPPLER_CONFIG
 PLAN
