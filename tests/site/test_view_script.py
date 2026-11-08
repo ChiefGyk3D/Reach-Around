@@ -250,6 +250,7 @@ def test_every_key_the_script_sends_has_a_disclosure_phrase() -> None:
     phrases = {
         "r": "referring site",
         "u": "campaign label",
+        "s": "source label",
         "w": "window width",
     }
     sent = set(re.findall(r'params\.append\("(\w)"', script_text()))
@@ -261,6 +262,7 @@ def test_every_key_the_script_sends_has_a_disclosure_phrase() -> None:
     for key in sorted(sent):
         assert phrases[key] in text, key
     assert "utm_source" in text and "30 characters" in text
+    assert "s=" in text  # names the parameter the source label comes from
 
 
 def test_view_js_checks_opt_outs_when_it_sends_not_only_at_start() -> None:
