@@ -74,7 +74,7 @@ Measured 2026-11-08 with Lighthouse 13.6.0 (Chromium 156) against a local produc
 
 | Item | Link page before | Link page after | Kit page (`/kit/`) before and after |
 | --- | --- | --- | --- |
-| CSP host allowlist (`csp-xss`) | not applicable (no allowlist) | same | note shown: the page CSP names `https://challenges.cloudflare.com` for the Turnstile widget. Needed by the gate; it cannot be removed while the widget is used |
+| CSP host allowlist (`csp-xss`) | not applicable (no allowlist) | same | note shown: the page CSP pre-allows `https://challenges.cloudflare.com` for the planned Turnstile widget (no script is loaded by the current build). It cannot be removed once the widget is wired in |
 | HSTS (`has-hsts`) | "No `preload` directive found" | same | same |
 | COOP (`origin-isolation`) | not applicable (`same-origin` is sent) | same | same |
 | Clickjacking (`clickjacking-mitigation`) | not applicable (`frame-ancestors 'none'`) | same | same |
@@ -84,11 +84,11 @@ Best Practices score 100 before and after on both pages.
 
 ### Trusted Types
 
-Every page CSP now carries `require-trusted-types-for 'script'`, generated in the one place the CSP is built (`build_csp`). The page scripts (`click.js`, `view.js`, `live.js`, `copy.js`, `email.js`) were read for DOM injection sinks: none use `innerHTML`, `outerHTML`, `insertAdjacentHTML`, `document.write`, `eval`, `new Function`, a string `setTimeout`, or assign a script `src`. Text is written with `textContent`, elements are built with `createElement`, and the live player sets an iframe `src`, which is not a Trusted Types sink (only `srcdoc` is). No policy is needed, so no `trusted-types` directive is added.
+Every page CSP except the two gate paths (below) now carries `require-trusted-types-for 'script'`, generated in the one place the CSP is built (`build_csp`). The page scripts (`click.js`, `view.js`, `live.js`, `copy.js`, `email.js`) were read for DOM injection sinks: none use `innerHTML`, `outerHTML`, `insertAdjacentHTML`, `document.write`, `eval`, `new Function`, a string `setTimeout`, or assign a script `src`. Text is written with `textContent`, elements are built with `createElement`, and the live player sets an iframe `src`, which is not a Trusted Types sink (only `srcdoc` is). No policy is needed, so no `trusted-types` directive is added.
 
 Checked in headless Chromium 156 with the new header: the link page and its second tab, the copy buttons of the crypto example, the email reveal example, the public kit page and the retry page. No console warnings or errors and no `securitypolicyviolation` events.
 
-Declined: the two gate paths (`/kit/`, `/kit/retry/`) do not get the directive. They load the Cloudflare Turnstile widget script, which is third-party code. No source was found that says whether it works under `require-trusted-types-for` (two searches, one on Turnstile and Trusted Types, one on the TrustedHTML error with `api.js`; neither found a statement), and a break would stop the kit unlock. The rule in `build_csp` is general: a path that adds a third-party origin to `script-src` does not get the directive. Re-test with the live widget on staging, then drop the exception. The repo does not build a CSP for the Worker-served gated kit page, so there is nothing to change there; the Worker sends `default-src 'none'` only on its fixed 503 page.
+Declined: the two gate paths (`/kit/`, `/kit/retry/`) do not get the directive. The build does not load the Turnstile script today (the pages hold only the widget placeholder and make no third-party request), but their CSP pre-allows its origin for the planned widget, which would be third-party code. No source was found that says whether it works under `require-trusted-types-for` (two searches, one on Turnstile and Trusted Types, one on the TrustedHTML error with `api.js`; neither found a statement), and a break would stop the kit unlock once the widget is wired in. The rule in `build_csp` is general: a path that adds a third-party origin to `script-src` does not get the directive. Re-test with the live widget on staging, then drop the exception. The repo does not build a CSP for the Worker-served gated kit page, so there is nothing to change there; the Worker sends `default-src 'none'` only on its fixed 503 page.
 
 ### HSTS preload (not enabled)
 

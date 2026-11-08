@@ -1368,7 +1368,7 @@ Every build writes a Cloudflare Pages `_headers` file for `/*`:
 | `Strict-Transport-Security` | `max-age=31536000; includeSubDomains` |
 
 The gate pages (`/kit/`, `/kit/retry/`) add the Turnstile origin and leave out
-`require-trusted-types-for`: a path that loads a third-party script does not get
+`require-trusted-types-for`: a path that allows a third-party script origin does not get
 the directive (see [performance](performance.md)).
 
 When `robots.noindex_paths` is set, each prefix also gets its own block with

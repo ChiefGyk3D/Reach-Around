@@ -388,7 +388,7 @@ _BASE_CSP: dict[str, tuple[str, ...]] = {
 }
 # Browsers block string assignment to DOM injection sinks (innerHTML, eval,
 # script src, ...). The site scripts use none of them (see docs/performance.md),
-# so the directive costs nothing. A path that adds a third-party script origin
+# so the directive costs nothing. A path that allows a third-party script origin
 # runs code this repo does not control and cannot vouch for, so that path does
 # not get the directive until the code is tested under it.
 _TRUSTED_TYPES = "require-trusted-types-for 'script'"
