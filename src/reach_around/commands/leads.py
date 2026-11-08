@@ -20,8 +20,8 @@ Safety rules, all tested:
 * The address is validated and normalized the way the Worker does it (ASCII,
   lowercase, one ``@``, dotted domain, ``xn--`` labels checked by the same
   round-trip A-label rules as worker/src/kit/punycode.ts). A bad address is
-  refused with a fixed message that never repeats the value. ``--email -`` reads it from stdin so it
-  stays out of argv and shell history.
+  refused with a fixed message that never repeats the value. ``--email -``
+  reads it from stdin so it stays out of argv and shell history.
 * Every wrangler result block must say ``"success": true``; anything else
   refuses the export before a row is read.
 * Exactly one match is required. None is exit 1; more than one is exit 2.
