@@ -730,7 +730,6 @@ def test_schema_comparison_is_two_way(tmp_path: Path) -> None:
     # Cloudflare's own bookkeeping tables may be absent, and a data-only dump
     # (no CREATE TABLE at all) has no schema to compare.
     assert run(SCHEMA_DUMP + GOOD_ROW, tmp_path=tmp_path).returncode == 0
-    assert run(GOOD_ROW, tmp_path=tmp_path).returncode == 0
 
 
 # ---- round 6: colon-joined addresses, embedded digit runs, the email column ----
@@ -794,6 +793,9 @@ def lead(email: str) -> str:
         "0xcb.0x00.0x71.0xd3@example.cc",
         "203.29139@example.cc",
         "x@203.0.113.211.cc",
+        "3325256711@example.cc",  # an address as one integer: held for review
+        "16777216@example.cc",
+        "9999999999@example.cc",
         "c6336407+tag@example.cc",
     ],
 )
@@ -810,7 +812,7 @@ def test_the_email_column_is_not_exempt_from_the_address_and_hex_rules(
     [
         "alice@example.cc",
         "12345678@example.cc",  # a digits-only local part (for example a chat number)
-        "3325256711@example.cc",
+        "16777215@example.cc",  # largest digits-only name below 2^24
         "john19850312@example.cc",
         "a.b+c@mail.example.cc",
     ],
@@ -818,3 +820,63 @@ def test_the_email_column_is_not_exempt_from_the_address_and_hex_rules(
 def test_ordinary_emails_still_pass(email: str, tmp_path: Path) -> None:
     r = run(SCHEMA_DUMP + lead(email), tmp_path=tmp_path)
     assert r.returncode == 0, (email, r.stdout)
+
+
+# ---- round 7: a complete schema is required unless --data-only ---------------
+
+
+def test_a_dump_without_a_schema_fails_by_default(tmp_path: Path) -> None:
+    r = run(GOOD_ROW, tmp_path=tmp_path)
+    assert r.returncode == 1, r.stdout + r.stderr
+    assert "no schema" in r.stdout
+    assert "--data-only" in r.stdout
+
+
+def test_data_only_accepts_a_schema_free_dump_and_still_scans_it(
+    tmp_path: Path,
+) -> None:
+    assert run(GOOD_ROW, "--data-only", tmp_path=tmp_path).returncode == 0
+    bad = row("'203.0.113.211'")
+    r = run(bad, "--data-only", tmp_path=tmp_path)
+    assert r.returncode == 1
+    assert "ipv4" in r.stdout
+    # An unexpected column in an INSERT is still refused without a schema.
+    r = run(
+        "INSERT INTO view_events (ts, peer_ip) VALUES (1, 'x');\n",
+        "--data-only",
+        tmp_path=tmp_path,
+    )
+    assert r.returncode == 1
+
+
+def test_data_only_does_not_excuse_a_schema_that_is_present_but_wrong(
+    tmp_path: Path,
+) -> None:
+    start = SCHEMA_DUMP.index("CREATE TABLE view_events")
+    end = SCHEMA_DUMP.index(";", start) + 1
+    broken = SCHEMA_DUMP[:start] + SCHEMA_DUMP[end:]
+    r = run(
+        broken + insert("view_meta", "'k', 'v'"),
+        "--data-only",
+        tmp_path=tmp_path,
+    )
+    assert r.returncode == 1
+    assert "missing table view_events" in r.stdout
+
+
+def test_the_wrangler_export_shape_passes_by_default(tmp_path: Path) -> None:
+    # `wrangler d1 export` writes PRAGMA lines, then CREATE TABLE and CREATE INDEX
+    # statements, then INSERTs, with quoted table names. d1_migrations is exported.
+    export = (
+        "PRAGMA defer_foreign_keys=TRUE;\n"  # noqa: S608 - synthetic export text
+        + SCHEMA_DUMP.replace("BEGIN TRANSACTION;", "")
+        + "CREATE TABLE IF NOT EXISTS d1_migrations(\n"
+        "  id INTEGER PRIMARY KEY AUTOINCREMENT,\n"
+        "  name TEXT UNIQUE,\n"
+        "  applied_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP\n);\n"
+        "INSERT INTO d1_migrations VALUES (1, '0001_click_events.sql', "
+        "'2026-11-08 12:00:00');\n"
+        + GOOD_ROW.replace("INSERT INTO view_events", 'INSERT INTO "view_events"')
+    )
+    r = run(export, tmp_path=tmp_path)
+    assert r.returncode == 0, r.stdout + r.stderr

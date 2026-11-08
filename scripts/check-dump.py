@@ -3,7 +3,7 @@
 """Fail when a database dump holds a network address or a user agent.
 
 Usage: python3 -I scripts/check-dump.py [--forbid VALUE]... [--allow-empty]
-       [--schema FILE] DUMP|-
+       [--data-only] [--schema FILE] DUMP|-
 
 DUMP is a SQL dump (for example the output of ``wrangler d1 export``), or ``-``
 for stdin. Reads only; stdlib only. The dump is parsed, not grepped:
@@ -384,13 +384,12 @@ def reads_as_ipv6(tok: str) -> bool:
     return True
 
 
-def address_kinds(text: str, bare_number_ok: bool = False) -> list[str]:
+def address_kinds(text: str) -> list[str]:
     """Check every decoding layer, and within it every token, with the semantics
     of an address parser rather than a pattern for each spelling. A token may
     hold colons (IPv6, or text joined to an address by a colon), so IPv6 is
     tried on the whole token and on every run of its colon-separated pieces,
-    and IPv4 on every single piece. bare_number_ok skips the lone-number test
-    (a column that may hold a digits-only name, such as an email local part)."""
+    and IPv4 on every single piece. A lone number counts only from 2^24 up."""
     kinds: list[str] = []
     for layer in decode_layers(text):
         v4: set[str] = set()
@@ -408,8 +407,6 @@ def address_kinds(text: str, bare_number_ok: bool = False) -> list[str]:
         for tok in v4 | v6:
             tok = tok.strip(".")
             if not tok or ":" in tok:
-                continue
-            if bare_number_ok and "." not in tok:
                 continue
             if reads_as_ipv4(tok):
                 kinds.append("ipv4 address")
@@ -449,7 +446,7 @@ def token_kinds(text: str, colkey: str, cfg: dict[str, Any]) -> list[str]:
             if (
                 (digits_ok and (whole_number or colkey not in cfg["numeric"]))
                 or hex_ok
-                or names_ok
+                or (names_ok and int(tok) < 2**24)
             ):
                 continue
         elif hex_ok:
@@ -462,7 +459,7 @@ def token_kinds(text: str, colkey: str, cfg: dict[str, Any]) -> list[str]:
             kinds.append("long digit token")
         return kinds
     for m in DIGIT_RUN.finditer(text):
-        if names_ok:
+        if names_ok and int(m.group(0)) < 2**24:
             continue
         if len(m.group(0)) == 8 and not (digits_ok or hex_ok):
             continue  # already reported as a hex token
@@ -507,7 +504,7 @@ def value_kinds(
         kinds.append("oversize value")
     if IPV4.search(text) or HEX_IP.search(text):
         kinds.append("ipv4 address")
-    kinds.extend(address_kinds(text, colkey in cfg["bare_number_ok"]))
+    kinds.extend(address_kinds(text))
     stripped = text.strip()
     if NUMBER_TEXT.fullmatch(stripped) and not number_ok(stripped, colkey, cfg, False):
         kinds.append(
@@ -609,7 +606,7 @@ def scan_insert(
 
 
 def scan(
-    text: str, cfg: dict[str, Any], forbid: list[str]
+    text: str, cfg: dict[str, Any], forbid: list[str], data_only: bool = False
 ) -> tuple[list[tuple[int, str]], int]:
     """Return (findings as (line, message), count of INSERT statements)."""
     tables: dict[str, list[str]] = cfg["tables"]
@@ -641,6 +638,14 @@ def scan(
             findings.append((line, str(e) or "unsupported value expression"))
     if seen_cols:
         findings += missing_schema(seen_cols, cfg)
+    elif not data_only:
+        findings.append(
+            (
+                0,
+                "the dump has no schema "
+                "(use --data-only for an export made without one)",
+            )
+        )
     return findings, rows
 
 
@@ -674,6 +679,7 @@ def main(argv: list[str]) -> int:
     ap = argparse.ArgumentParser(description=(__doc__ or "").split("\n\n")[0])
     ap.add_argument("--forbid", action="append", default=[], metavar="VALUE")
     ap.add_argument("--allow-empty", action="store_true")
+    ap.add_argument("--data-only", action="store_true")
     ap.add_argument("--schema", default=str(DEFAULT_SCHEMA), metavar="FILE")
     ap.add_argument("file", help="SQL dump path, or - for stdin")
     try:
@@ -694,7 +700,7 @@ def main(argv: list[str]) -> int:
         print(f"usage error: cannot read the dump: {type(e).__name__}", file=sys.stderr)
         return 2
     forbid = [decode(v) for v in args.forbid if v]
-    findings, rows = scan(text, cfg, forbid)
+    findings, rows = scan(text, cfg, forbid, args.data_only)
     for n, kind in sorted(set(findings)):
         print(f"FAIL: line {n}: {kind}" if n else f"FAIL: {kind}")
     if rows == 0 and not args.allow_empty:
