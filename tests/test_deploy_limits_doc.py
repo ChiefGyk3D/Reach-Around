@@ -88,6 +88,21 @@ def test_doc_defaults_match_the_worker_source() -> None:
     for name, n in _WRITES.items():
         assert re.search(rf"{name}: {n}\b", wr), name
     assert f"PURGE_RESERVE = {_RESERVE:_}" in src
-    assert f"PAGE_VIEW_DAILY_WRITES = {_PAGE_VIEWS:_}" in src
+    # The page-view figure is derived (worker/src/pvlimits.ts) from the default
+    # hourly budgets; the derivation must still give the documented number.
+    pv = (ROOT / "worker" / "src" / "pvlimits.ts").read_text(encoding="utf-8")
+    human_m = re.search(r"DEFAULT_HUMAN_PER_HOUR = (\d+)", pv)
+    bot_m = re.search(r"DEFAULT_BOT_PER_HOUR = (\d+)", pv)
+    assert human_m is not None and bot_m is not None
+    human, bot = int(human_m.group(1)), int(bot_m.group(1))
+    ratio = re.search(r"num: (\d+), den: (\d+)", pv)
+    assert ratio is not None
+    fixed = re.search(r"PV_FIXED_DAILY_WRITES = ([0-9_]+)", pv)
+    assert fixed is not None
+    derived = -(-24 * (human + bot) * int(ratio.group(1)) // int(ratio.group(2))) + int(
+        fixed.group(1).replace("_", "")
+    )
+    assert derived == _PAGE_VIEWS
+    assert "PAGE_VIEW_DAILY_WRITES = pageViewDailyWrites({})" in src
     assert f"CLICK_DAILY_WRITES = {_CLICKS:_}" in src
     assert f"COMBINED_MARGIN = {_MARGIN:_}" in src

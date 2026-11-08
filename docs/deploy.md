@@ -119,6 +119,51 @@ your own; never commit real account ids, database ids or tokens.
    With neither handle set the deploy config is unchanged, even if
    `LIVE_KV_ID` is set.
 
+   Optional variables for page views on the test site (issues #260 and #261;
+   the Worker side is under [Page views](#page-views-post-evpageid)). Plain
+   **variables**, never secrets:
+
+   | Variable | Value | What it does |
+   |---|---|---|
+   | `PAGE_VIEWS` | exactly `true` | **enables page views for this deploy.** Unset, empty and `false` are off and leave the deploy config byte-for-byte unchanged; any other text (`True`, `1`, `yes`) stops the run before anything is fetched. On, the build adds `analytics: {page_views: true}` to a copy of `examples/instance/site.yaml` (the committed file is not edited) |
+   | `PAGE_IDS` | `["start-here","events"]` | **required when on.** The tab ids the Worker counts; a JSON array, each id lowercase letters, digits and `-`, 1 to 40 characters. The "Verify the page ids" step fails the deploy if the build has a tab that is not listed (its views would be dropped) and warns about a listed id the build lacks |
+   | `VIEW_LIMITER_NAMESPACE_ID` | a number, not `1001` | **required when on.** Namespace id of the per-client `VIEW_LIMITER` rate limiter (5 views per client per 60 s). It must differ from `RATELIMIT_NAMESPACE_ID` and is not the `1002` placeholder in `wrangler.toml` |
+   | `VIEWS_PER_HOUR`, `BOT_VIEWS_PER_HOUR` | whole numbers, 0 to 100000 | optional hourly budgets of likely-human and bot views (defaults 120 and 30); written to the Worker and used by the budget check below |
+   | `ACCOUNT_VIEWS_PER_HOUR`, `ACCOUNT_BOT_VIEWS_PER_HOUR` | whole numbers, 0 to 100000 | optional account-wide ceilings above the per-site budgets (defaults 480 and 120); written to the Worker and used by the budget check below |
+   | `ROUTE_BUDGET_GATE`, `ROUTE_BUDGET_VIEW`, `MAX_LEADS`, `MAX_KIT_EVENTS`, `DAILY_ALERT_BUDGET`, `DAILY_SEND_BUDGET`, `D1_DAILY_WRITE_QUOTA` | digits only | optional kit limits and the D1 quota (see Kit limits below). With page views on they are written to the Worker **and** given to the budget check, so the check sees the same values the Worker loads; the check applies the Worker's exact ranges and stops the deploy on a value the Worker would refuse |
+
+   Page views also need `ZONE_NAME` (the `/e/*` route; the deploy stops
+   without it) and the Worker secret `VIEW_HASH_SECRET`, which you set once
+   with `npx wrangler secret put VIEW_HASH_SECRET` (never in a variable, a file
+   or this workflow; without it the route records nothing). The hourly cron
+   already in `wrangler.toml` runs the rollup and the purge, so the deploy adds
+   no trigger. The page needs no CSP change: the beacon goes to the site's own
+   origin and `connect-src 'self'` is already there. The page-view migrations (`0005` to `0008`)
+   are applied by the existing "Apply D1 migrations" step; read the migration
+   `0007` warning under Page views before the first deploy on a database that
+   has ever rolled up a day.
+
+   **Write budget check.** When `PAGE_VIEWS` is `true`, the step "Check the
+   page-view write budget" bundles the Worker's own `assessDailyBudget`
+   (`worker/src/kit/budgets.ts`) and prints the projected worst-case daily D1
+   writes: the kit at its defaults, the page-view feature at the binding hourly ceiling
+   for humans and for bots separately (the lower of the sites' budgets added up
+   and the account ceiling; 24 x (human + bot) x 5.6 rows per view, plus 2,540
+   for the rollup, purge and heartbeat), the click reserve and
+   the margin, against the 100,000-row free plan figure. Over 100 percent, or an
+   unusable value, stops the deploy; above 80 percent is a warning. This is the
+   same function and the same lines the Worker applies to itself when it loads
+   its limits, and the page-view part now follows the configured budgets
+   instead of a fixed 22,700. There is no sampling: a view over the hourly
+   budget is dropped, so the budgets are the cap. The sites are counted by the Worker's own
+   site loader from the same `SITE_HOST`, `PAGE_IDS` and `LINK_IDS` (or a
+   `SITES` text); a site list that does not load stops the deploy, and the
+   Worker itself reads a list it cannot count as the maximum of 8 sites.
+   **Kill switch:** `VIEWS_KILL`, see below; `npx wrangler deploy --var
+   VIEWS_KILL:1` turns the route into an empty 204 that touches neither D1 nor
+   the limiter, and setting `PAGE_VIEWS` back to `false` stops the next build
+   from loading the script at all.
+
    The workflow validates each value's shape before using it and fails with a
    clear message if a required one is missing.
 
@@ -140,7 +185,7 @@ The poller writes KV only when a platform's state changes, plus a heartbeat ever
 
 ## Page views (`POST /e/v/:pageId`)
 
-The Worker also has a write-only page-view route (Plan 4 Tasks A3 and A4; the browser script that calls it is a later task). It needs migrations `0005` and `0006` applied to the same D1 database, and the same `/e/*` zone route as clicks.
+The Worker also has a write-only page-view route (Plan 4 Tasks A3 and A4; the browser script `static/view.js` calls it when `analytics.page_views` is on). `deploy-test.yml` wires it for the test site from repository variables (see the page-view variables in the GitHub steps above). It needs migrations `0005` and `0006` applied to the same D1 database, and the same `/e/*` zone route as clicks.
 
 | Variable | Kind | What it does |
 |---|---|---|
@@ -221,7 +266,7 @@ All values are plain decimal integers (digits only, no sign, space, exponent or 
 | `DAILY_SEND_BUDGET` | 0 to 1000 | 0 | Emails per UTC day (0: none; the send route is not in v1) |
 | `D1_DAILY_WRITE_QUOTA` | 1000 to 999999999 | 100000 | The free D1 plan's daily rows-written figure. Re-check it against Cloudflare's current limits before relying on it |
 
-**Worst-case daily writes.** The D1 write allowance is one per account, shared by the kit, page views, clicks, the rollup and every purge, so the check adds them all. Settings are checked when a limit is used, not at deploy: if the combined worst case is over `D1_DAILY_WRITE_QUOTA`, or any value is invalid, every reservation refuses (fail closed) until it is fixed. The loader also reports a warning above 80 percent. The kit part is `24 x (gate x 5 + view x 2) + alerts x 1 + sends x 7 + 10000`, where each number is the most rows one accepted operation writes (the row, its indexes and the counter) and 10000 is a reserve for the kit purge. To it are added the page-view feature with its rollup and purge (22700, from the page-view write budget above), a click reserve (8000; the click route has only a per-client limiter and no global budget, so this is an allowance, not a measured bound) and a margin (5000). A refused request writes nothing, so a flood over a budget costs reads only.
+**Worst-case daily writes.** The D1 write allowance is one per account, shared by the kit, page views, clicks, the rollup and every purge, so the check adds them all. Settings are checked when a limit is used, not at deploy: if the combined worst case is over `D1_DAILY_WRITE_QUOTA`, or any value is invalid, every reservation refuses (fail closed) until it is fixed. The loader also reports a warning above 80 percent. The kit part is `24 x (gate x 5 + view x 2) + alerts x 1 + sends x 7 + 10000`, where each number is the most rows one accepted operation writes (the row, its indexes and the counter) and 10000 is a reserve for the kit purge. To it are added the page-view feature with its rollup and purge (22700 at the default hourly budgets, from the page-view write budget above; the loader and the deploy check use the configured `VIEWS_PER_HOUR` and `BOT_VIEWS_PER_HOUR` instead, `worker/src/pvlimits.ts`), a click reserve (8000; the click route has only a per-client limiter and no global budget, so this is an allowance, not a measured bound) and a margin (5000). A refused request writes nothing, so a flood over a budget costs reads only.
 
 | Part | Budget | Writes each | Worst case per day |
 |---|---|---|---|
