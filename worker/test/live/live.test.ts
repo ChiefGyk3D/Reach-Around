@@ -4,6 +4,7 @@ import worker from "../../src/index";
 import {
   DAILY_WRITE_CAP,
   HEARTBEAT_SECONDS,
+  LIVE_CODES,
   LIVE_CRON,
   STALE_AFTER_SECONDS,
   handleLive,
@@ -132,10 +133,12 @@ describe("GET /e/live", () => {
       v: 1,
       as_of: NOW_S,
       ttl: 30,
-      kick: { live: false, since: null },
-      twitch: { live: true, since: Date.UTC(2027, 0, 1, 10) / 1000 },
+      kick: { live: false, since: null, code: "ok" },
+      twitch: { live: true, since: Date.UTC(2027, 0, 1, 10) / 1000, code: "ok" },
     });
     expect(Object.keys(JSON.parse(text))).toEqual(["v", "as_of", "ttl", "kick", "twitch"]);
+    expect(Object.keys(JSON.parse(text).kick)).toEqual(["live", "since", "code"]);
+    expect(Object.keys(JSON.parse(text).twitch)).toEqual(["live", "since", "code"]);
     expect(text).not.toContain(EXTRA_SENTINEL);
   });
 
@@ -182,7 +185,7 @@ describe("GET /e/live", () => {
   });
 
   it("serves unknown when no KV is bound or KV throws or holds junk", async () => {
-    const unknown = { v: 1, as_of: null, ttl: 30, kick: { live: null, since: null }, twitch: { live: null, since: null } };
+    const unknown = { v: 1, as_of: null, ttl: 30, kick: { live: null, since: null, code: null }, twitch: { live: null, since: null, code: null } };
     const noKv = await handleLive(get(), {}, { cache: new FakeCache() });
     expect(await noKv.json()).toEqual(unknown);
     const kv = new FakeKV();
@@ -199,7 +202,7 @@ describe("GET /e/live", () => {
     expect(((await fresh.json()) as { twitch: { live: boolean } }).twitch.live).toBe(true);
     const stale = await handleLive(get(), baseEnv(kv), { cache: new FakeCache(), now: () => NOW + (STALE_AFTER_SECONDS + 1) * 1000 });
     expect(await stale.json()).toEqual({
-      v: 1, as_of: NOW_S, ttl: 30, kick: { live: null, since: null }, twitch: { live: null, since: null },
+      v: 1, as_of: NOW_S, ttl: 30, kick: { live: null, since: null, code: null }, twitch: { live: null, since: null, code: null },
     });
   });
 });
@@ -212,7 +215,7 @@ describe("freshness cutoff and the edge cache", () => {
     return kv;
   }
   const unknownBody = {
-    v: 1, as_of: NOW_S, ttl: 30, kick: { live: null, since: null }, twitch: { live: null, since: null },
+    v: 1, as_of: NOW_S, ttl: 30, kick: { live: null, since: null, code: null }, twitch: { live: null, since: null, code: null },
   };
 
   it("caps max-age at the time left before the cutoff", async () => {
@@ -258,7 +261,7 @@ describe("kill switch", () => {
     for (const v of ["1", "garbage"]) {
       const res = await handleLive(get(), baseEnv(kv, { LIVE_KILL: v }), { cache, now: () => NOW });
       expect(await res.json()).toEqual({
-        v: 1, as_of: null, ttl: 30, kick: { live: null, since: null }, twitch: { live: null, since: null },
+        v: 1, as_of: null, ttl: 30, kick: { live: null, since: null, code: null }, twitch: { live: null, since: null, code: null },
       });
     }
   });
@@ -299,7 +302,7 @@ describe("poller secrecy", () => {
       u.startsWith("https://api.kick.com/") ? new Response(KEY_SENTINEL, { status: 500 }) : net.f(u, i);
     await runLivePoller(baseEnv(kv), NOW, { fetch: f });
     const stored = JSON.parse(kv.store.get("live:state")!);
-    expect(stored.kick).toEqual({ live: null, since: null });
+    expect(stored.kick).toEqual({ live: null, since: null, code: "upstream_error" });
     expect(stored.twitch.live).toBe(true);
     expect(JSON.stringify(kv.puts)).not.toContain(KEY_SENTINEL);
     expect(logs).not.toHaveBeenCalled();
@@ -340,7 +343,7 @@ describe("write budget", () => {
     const day = new Date(NOW).toISOString().slice(0, 10);
     kv.store.set(
       "live:state",
-      JSON.stringify({ v: 1, as_of: NOW_S - 700, kick: { live: false, since: null }, twitch: { live: false, since: null }, day, writes: DAILY_WRITE_CAP }),
+      JSON.stringify({ v: 1, as_of: NOW_S - 700, kick: { live: false, since: null, code: "ok" }, twitch: { live: false, since: null, code: "ok" }, day, writes: DAILY_WRITE_CAP }),
     );
     await runLivePoller(baseEnv(kv), NOW, { fetch: f });
     expect(kv.statePuts().length).toBe(0); // heartbeat skipped
@@ -601,5 +604,191 @@ describe("malformed platform records", () => {
     expect(parseTwitchStreams({ data: [{ type: "" }] })).toEqual({ live: false, since: null });
     expect(parseTwitchStreams({ data: "x" })).toBeNull();
     expect(parseTwitchStreams(null)).toBeNull();
+  });
+});
+
+describe("failure codes", () => {
+  const SECRET_TEXT = "SENTINEL_free_text_/secret/https://x.test/example_channel";
+  const hosts = {
+    twitch: { token: "https://id.twitch.tv/", api: "https://api.twitch.tv/" },
+    kick: { token: "https://id.kick.com/", api: "https://api.kick.com/" },
+  } as const;
+
+  // Each scenario replaces one upstream call for one platform.
+  type Scenario = { name: string; stage: "token" | "api"; make: () => Response | Promise<Response>; code: string };
+  const bigBody = () =>
+    new Response(JSON.stringify({ data: [], pad: "a".repeat(70000) }), { status: 200 });
+  const scenarios: Scenario[] = [
+    { name: "token 401", stage: "token", make: () => new Response(SECRET_TEXT, { status: 401 }), code: "auth_failed" },
+    { name: "token 400", stage: "token", make: () => new Response(SECRET_TEXT, { status: 400 }), code: "auth_failed" },
+    { name: "token 429", stage: "token", make: () => new Response(SECRET_TEXT, { status: 429 }), code: "rate_limited" },
+    { name: "token 500", stage: "token", make: () => new Response(SECRET_TEXT, { status: 500 }), code: "upstream_error" },
+    { name: "token 3xx", stage: "token", make: () => new Response(null, { status: 302 }), code: "redirect" },
+    { name: "token junk", stage: "token", make: () => new Response(SECRET_TEXT, { status: 200 }), code: "bad_record" },
+    { name: "token no access_token", stage: "token", make: () => Response.json({ x: SECRET_TEXT }), code: "bad_record" },
+    { name: "api 401", stage: "api", make: () => new Response(SECRET_TEXT, { status: 401 }), code: "auth_failed" },
+    { name: "api 403", stage: "api", make: () => new Response(SECRET_TEXT, { status: 403 }), code: "auth_failed" },
+    { name: "api 429", stage: "api", make: () => new Response(SECRET_TEXT, { status: 429 }), code: "rate_limited" },
+    { name: "api 503", stage: "api", make: () => new Response(SECRET_TEXT, { status: 503 }), code: "upstream_error" },
+    { name: "api 3xx", stage: "api", make: () => new Response(null, { status: 301 }), code: "redirect" },
+    { name: "api too large", stage: "api", make: bigBody, code: "too_large" },
+    { name: "api junk body", stage: "api", make: () => new Response(SECRET_TEXT, { status: 200 }), code: "bad_record" },
+    { name: "api wrong shape", stage: "api", make: () => Response.json({ data: [null] }), code: "bad_record" },
+    {
+      name: "api refused redirect (thrown)",
+      stage: "api",
+      make: () => {
+        throw new TypeError(SECRET_TEXT + " redirect");
+      },
+      code: "redirect",
+    },
+    {
+      name: "api timeout (thrown)",
+      stage: "api",
+      make: () => {
+        throw new DOMException(SECRET_TEXT, "TimeoutError");
+      },
+      code: "timeout",
+    },
+    {
+      name: "api network error (thrown)",
+      stage: "api",
+      make: () => {
+        throw new Error(SECRET_TEXT);
+      },
+      code: "upstream_error",
+    },
+  ];
+
+  async function pollWith(platform: "twitch" | "kick", sc: Scenario) {
+    const kv = new FakeKV();
+    const net = fakeFetch({ twitchLive: true, kickLive: true });
+    const prefix = hosts[platform][sc.stage];
+    const f = async (u: string, i?: RequestInit) => (u.startsWith(prefix) ? sc.make() : net.f(u, i));
+    await runLivePoller(baseEnv(kv), NOW, { fetch: f });
+    const res = await handleLive(get(), baseEnv(kv), { cache: new FakeCache(), now: () => NOW + 1000 });
+    return { text: await res.text(), kv };
+  }
+
+  for (const platform of ["twitch", "kick"] as const) {
+    for (const sc of scenarios) {
+      it(`${platform}: ${sc.name} -> ${sc.code}, nothing else leaks`, async () => {
+        const { text, kv } = await pollWith(platform, sc);
+        const body = JSON.parse(text);
+        expect(body[platform]).toEqual({ live: null, since: null, code: sc.code });
+        // The other platform is untouched.
+        const other = platform === "twitch" ? "kick" : "twitch";
+        expect(body[other].code).toBe("ok");
+        expect(text).not.toContain("SENTINEL");
+        expect(JSON.stringify(kv.puts)).not.toContain("SENTINEL");
+      });
+    }
+  }
+
+  it("every value of the enum is reachable from the poller", async () => {
+    const seen = new Set<string>();
+    for (const sc of scenarios) {
+      const { text } = await pollWith("twitch", sc);
+      seen.add(JSON.parse(text).twitch.code);
+    }
+    seen.add("ok");
+    // not_configured: no secrets for either platform.
+    const kv = new FakeKV();
+    await runLivePoller(baseEnv(kv, { TWITCH_CLIENT_SECRET: undefined }), NOW, {
+      fetch: fakeFetch({ twitchLive: true, kickLive: true }).f,
+    });
+    const res = await handleLive(get(), baseEnv(kv), { cache: new FakeCache(), now: () => NOW + 1000 });
+    seen.add(((await res.json()) as { twitch: { code: string } }).twitch.code);
+    expect([...seen].sort()).toEqual([...LIVE_CODES].sort());
+  });
+
+  it("the enum is exactly the documented closed set", () => {
+    expect([...LIVE_CODES]).toEqual([
+      "ok",
+      "not_configured",
+      "auth_failed",
+      "rate_limited",
+      "upstream_error",
+      "redirect",
+      "too_large",
+      "bad_record",
+      "timeout",
+    ]);
+  });
+
+  it("a stored code outside the enum, or any free text, is served as null", async () => {
+    for (const bad of [SECRET_TEXT, "AUTH_FAILED", "ok ", "", 5, true, {}, [], "__proto__", "constructor"]) {
+      const kv = new FakeKV();
+      kv.store.set(
+        "live:state",
+        JSON.stringify({
+          v: 1,
+          as_of: NOW_S,
+          kick: { live: false, since: null, code: bad },
+          twitch: { live: null, since: null, code: bad },
+          day: "2027-01-01",
+          writes: 1,
+        }),
+      );
+      const res = await handleLive(get(), baseEnv(kv), { cache: new FakeCache(), now: () => NOW + 1000 });
+      const text = await res.text();
+      const body = JSON.parse(text);
+      expect(body.kick.code).toBeNull();
+      expect(body.twitch.code).toBeNull();
+      expect(Object.keys(body.kick)).toEqual(["live", "since", "code"]);
+      expect(text).not.toContain("SENTINEL");
+    }
+  });
+
+  it("an extra field in a stored platform entry never reaches the response", async () => {
+    const kv = new FakeKV();
+    kv.store.set(
+      "live:state",
+      JSON.stringify({
+        v: 1,
+        as_of: NOW_S,
+        kick: { live: false, since: null, code: "ok", detail: SECRET_TEXT },
+        twitch: { live: false, since: null, code: "ok" },
+        day: "2027-01-01",
+        writes: 1,
+      }),
+    );
+    const res = await handleLive(get(), baseEnv(kv), { cache: new FakeCache(), now: () => NOW + 1000 });
+    const text = await res.text();
+    expect(text).not.toContain("SENTINEL");
+    expect(Object.keys(JSON.parse(text).kick)).toEqual(["live", "since", "code"]);
+  });
+
+  it("a state stored before codes existed is served with code null and rewritten once", async () => {
+    const kv = new FakeKV();
+    kv.store.set(
+      "live:state",
+      JSON.stringify({
+        v: 1,
+        as_of: NOW_S,
+        kick: { live: false, since: null },
+        twitch: { live: false, since: null },
+        day: new Date(NOW).toISOString().slice(0, 10),
+        writes: 1,
+      }),
+    );
+    const res = await handleLive(get(), baseEnv(kv), { cache: new FakeCache(), now: () => NOW + 1000 });
+    expect(((await res.json()) as { kick: unknown }).kick).toEqual({ live: false, since: null, code: null });
+    const f = fakeFetch({ twitchLive: false, kickLive: false }).f;
+    await runLivePoller(baseEnv(kv), NOW + 1000, { fetch: f });
+    await runLivePoller(baseEnv(kv), NOW + 2000, { fetch: f });
+    expect(kv.statePuts().length).toBe(1);
+  });
+
+  it("a code change alone is written once, not on every poll", async () => {
+    const kv = new FakeKV();
+    const net = fakeFetch({ twitchLive: false, kickLive: false });
+    await runLivePoller(baseEnv(kv), NOW, { fetch: net.f });
+    const limited = async (u: string, i?: RequestInit) =>
+      u.startsWith("https://api.kick.com/") ? new Response("x", { status: 429 }) : net.f(u, i);
+    await runLivePoller(baseEnv(kv), NOW + 120_000, { fetch: limited });
+    await runLivePoller(baseEnv(kv), NOW + 240_000, { fetch: limited });
+    expect(kv.statePuts().length).toBe(2);
+    expect(JSON.parse(kv.statePuts()[1].value).kick.code).toBe("rate_limited");
   });
 });

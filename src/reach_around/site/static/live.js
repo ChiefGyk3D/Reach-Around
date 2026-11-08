@@ -88,11 +88,21 @@
     );
   }
 
-  // One platform entry: {live: true|false|null, since: unix seconds or null}.
-  // `since` is only allowed while live. Returns true, false or null (unknown),
-  // or undefined when the entry is malformed.
+  // One platform entry: {live: true|false|null, since: unix seconds or null},
+  // plus an optional `code` (a failure code for operators reading the JSON).
+  // The code is never read, kept or shown: whether it is missing, known,
+  // unknown or the wrong type, it changes nothing. Any other extra key is still
+  // a malformed entry. `since` is only allowed while live. Returns true, false
+  // or null (unknown), or undefined when the entry is malformed.
   function platformState(entry) {
-    if (!isPlain(entry) || !hasExactKeys(entry, ["live", "since"])) {
+    if (!isPlain(entry)) {
+      return undefined;
+    }
+    var keys = ["live", "since"];
+    if (own(entry, "code")) {
+      keys.push("code");
+    }
+    if (!hasExactKeys(entry, keys)) {
       return undefined;
     }
     var live = entry.live;
