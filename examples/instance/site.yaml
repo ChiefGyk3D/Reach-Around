@@ -1,6 +1,10 @@
 # Synthetic example config. Every name and URL here is made up.
 version: 1
 timezone: America/New_York
+# Optional. The UTC day the site went live (YYYY-MM-DD); the media kit prints
+# "Live since <date> (UTC)". Set it on the day the switch is verified. Staging
+# may leave it out. See docs/config.md, "cutover_date".
+# cutover_date: 2026-11-08
 # Optional page titles. Uncomment to try; see docs/config.md, "Page titles".
 # title_template: "{tab} | {site}"
 creator:

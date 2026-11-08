@@ -83,6 +83,7 @@ escapes it when it renders.
 | `tabs` | list of Tab | required | at least one tab |
 | `disclosure` | text or Disclosure | none | the footer line for affiliate links; see [`disclosure`](#disclosure) |
 | `timezone` | text | `America/New_York` | must be a known IANA zone name; decides which calendar day "today" is for scheduled links |
+| `cutover_date` | date | absent | optional; the UTC calendar day the site went live (`YYYY-MM-DD`); see [`cutover_date`](#cutover_date) |
 | `page_layout` | `tabs` or `sections` | `tabs` | `sections` puts every tab after the first on one page as native `<details>` sections; see [`page_layout`](#page_layout) |
 | `title_template` | text | `{tab} - {creator}` | how page titles are built; see [Page titles](#page-titles) |
 | `theme` | Theme | defaults | colors, fonts, background and shape; see [`theme`](#theme) |
@@ -864,6 +865,31 @@ build adds `profile-media-kit` to the build manifest (the `links` map the
 click Worker is configured from), so the Worker counts it like any link. With click tracking off it carries neither. The card adds no
 JavaScript and no inline style; it is styled from the same tokens as the rest of
 the page (see [design](design.md)), so a theme's colors and `mode` apply.
+
+## `cutover_date`
+
+Optional. The day the DNS switch to Reach Around was verified end to end, as a
+**UTC calendar day**: `YYYY-MM-DD`, no time and no zone. Everything Reach Around
+stores and reports is UTC, so the date is a UTC day and is always printed with
+"(UTC)". Quote it or leave it bare; a timestamp, `2026-11-8` and `2026-02-30`
+are refused.
+
+```yaml
+cutover_date: 2026-11-08
+```
+
+- Real calendar day, 2000-01-01 or later, and at most 366 days after today's UTC
+  day. A day still in the future is accepted but is not shown anywhere until it
+  arrives, and `reach-around check` warns about it.
+- Shown on the media kit page, the gated kit page and the private kit PDF as a
+  small line, "Live since 2026-11-08 (UTC)", above the audience numbers. Absent,
+  no line is printed and the output is unchanged.
+- `reach-around check --production` warns (exit status stays 0) when it is not
+  set. Without `--production` (a staging site) an unset date is not mentioned.
+- The date is public. It is set on the day the switch is verified: add the line
+  and redeploy (see the runbook step in [Deploying](deploy.md#setting-the-cutover-date)).
+- Code that needs the date calls `reach_around.config.cutover.cutover_date` (the
+  day or `None`) or `live_since` (the day once it has arrived).
 
 ## `kit`
 
