@@ -451,3 +451,68 @@ def test_example_queries_in_the_doc_execute(tmp_path: Path) -> None:
             con.execute("SELECT * FROM view_geo_daily")
     finally:
         con.close()
+
+
+def test_rows_older_than_90_days_are_dropped(tmp_path: Path) -> None:
+    from reach_around.funnel.export import load_exports
+
+    data = {
+        "tables": {
+            "view_daily": [
+                vd(views=50, day="2026-08-01"),  # 122 days before the newest
+                vd(
+                    views=50, day="2026-08-04"
+                ),  # the 90th day counting the newest: kept
+                vd(views=50, day="2026-08-03"),  # the 91st day: dropped
+                vd(views=50, day="2026-11-01"),
+            ],
+            "click_events": [{"ts": 1_785_542_400_000, "link_id": "old"}] * 6,
+        }
+    }
+    subset = grafana.build_subset(load_exports([write(tmp_path, data)]))
+    days = sorted({row[0] for row in subset.views})
+    assert days == ["2026-08-04", "2026-11-01"]
+    assert subset.clicks == []  # 2026-08-01 is outside the window
+
+
+def test_symlinked_parent_directory_is_refused(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    src = write(tmp_path, sample())
+    real = tmp_path / "real"
+    real.mkdir()
+    (tmp_path / "linkdir").symlink_to(real)
+    code, _, err = run(
+        capsys, "--input", str(src), "--output", str(tmp_path / "linkdir" / "g.db")
+    )
+    assert code == 2 and err.startswith("error:")
+    assert list(real.iterdir()) == []
+
+
+def test_not_human_query_ignores_the_suppression_row(tmp_path: Path) -> None:
+    from reach_around.funnel.export import load_exports
+
+    # humans are under the floor, so their views sit in the suppression row
+    data = {
+        "tables": {
+            "view_daily": [
+                vd(views=2),
+                vd(page="x", views=2),
+                vd(bot_class="a", views=40),
+                vd(bot_class="s", views=20),
+            ]
+        }
+    }
+    db = tmp_path / "g.db"
+    grafana.write_store(db, grafana.build_subset(load_exports([write(tmp_path, data)])))
+    doc = (Path(__file__).resolve().parents[1] / "docs" / "grafana.md").read_text(
+        encoding="utf-8"
+    )
+    query = next(
+        q for q in re.findall(r"```sql\n(.*?)\n```", doc, re.S) if "not_human" in q
+    )
+    con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+    try:
+        assert con.execute(query).fetchall() == [(DAY1, 100.0)]
+    finally:
+        con.close()

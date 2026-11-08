@@ -27,10 +27,12 @@ reach-around grafana-export --input export.json --output grafana.sqlite3 \
   address, user agent, header, lead column or any column outside the list.
 - `--site` picks one site id (default `links`); one file holds one site.
 - `--floor` can only be raised (default and minimum 5).
-- `--output` must be in an existing directory. The file is built beside it and
-  moved into place whole, so Grafana never sees a half-written file. The job
-  replaces only a file it made (it carries a marker in the SQLite header) and
-  refuses a symbolic link, a directory, or any other file.
+- `--output` must be in an existing directory that is not itself a symbolic
+  link. The file is built in memory, written beside the target through that
+  directory (no link is followed) and moved into place whole, so Grafana never
+  sees a half-written file. The job replaces only a file it made (it carries a
+  marker in the SQLite header) and refuses a symbolic link, a directory, or any
+  other file.
 - Exit 0 on success; 2 for a usage problem, a refused export or an unusable
   output path. On failure nothing is written.
 - The output is deterministic: the same export gives the same bytes, whatever
@@ -60,14 +62,19 @@ Per day and per table, a cell under the floor is never written alone. The small
 cells of that day are merged into one row labeled `(below the floor)`, and only
 when the merge reaches the floor. To make that merge safe, whenever any cell is
 hidden the smallest shown cell joins the merged row too (the report does the
-same). In `grafana_views_daily` the `h` row never joins the merge, so if a
-remainder cannot be made safe without it, the small classes are dropped.
+same). In `grafana_views_daily` the `h` row is never the shown row that gets
+pulled into the merge, so if a remainder cannot be made safe without it, the
+small classes are dropped. When `h` itself is under the floor it is merged, so
+the `(below the floor)` row in that table (it sits in the `bot_class` column)
+can hold human views.
 
 This is label suppression, not k-anonymity. Someone who holds two days or two
-tables can still subtract one from another. Share a chart, not the file. The
-file follows the same 90 day ceiling as every other local copy
-(`docs/analytics-design.md`, threat B2): rebuild it from a fresh export and
-delete old copies.
+tables can still subtract one from another. Share a chart, not the file.
+
+The file follows the same 90 day ceiling as every other local copy
+(`docs/analytics-design.md`, threat B2): the job keeps only the newest 90 days,
+counted back from the newest day in the export for the site, and drops older
+rows. Rebuild it from a fresh export and delete old copies.
 
 ## Example queries
 
@@ -79,10 +86,12 @@ Likely-human views per day (a stat or time series panel):
 SELECT day AS time, views FROM grafana_views_daily WHERE bot_class = 'h' ORDER BY day;
 ```
 
-Share of automated traffic per day:
+Share of not-human traffic per day, among the classes shown. The suppression
+row is left out because it can hold human views too, so a day where `h` is
+hidden reads as a share of the visible classes only:
 
 ```sql
-SELECT day, SUM(CASE WHEN bot_class = 'h' THEN 0 ELSE views END) * 100.0 / SUM(views) AS not_human_percent FROM grafana_views_daily GROUP BY day ORDER BY day;
+SELECT day, SUM(CASE WHEN bot_class = 'h' THEN 0 ELSE views END) * 100.0 / SUM(views) AS not_human_percent FROM grafana_views_daily WHERE bot_class <> '(below the floor)' GROUP BY day ORDER BY day;
 ```
 
 Top pages:
