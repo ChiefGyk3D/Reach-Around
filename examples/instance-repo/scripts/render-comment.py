@@ -437,6 +437,7 @@ KNOWN_FIELDS: frozenset[str] = frozenset(
         "credit",
         "credit_text",
         "demographics",
+        "description",
         "disclosure",
         "dot",
         "dsn_env",

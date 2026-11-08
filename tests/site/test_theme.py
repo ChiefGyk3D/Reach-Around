@@ -336,7 +336,7 @@ def test_default_theme_builds_the_same_page_as_before(tmp_path: Path) -> None:
     html = (out / "index.html").read_text()
     theme_tag = f'<link rel="stylesheet" href="{asset(out, "static/theme.css")}">\n'
     assert html.count(theme_tag) == 1
-    assert html.replace(theme_tag, "").count("<link") == 1
+    assert html.replace(theme_tag, "").count('<link rel="stylesheet"') == 1
     assert html.count("theme.") == 1
     # The example instance still matches its golden output byte for byte.
     example = tmp_path / "example"

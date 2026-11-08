@@ -57,6 +57,7 @@ Replace the example mount with your own instance directory. Once `v0.1.0` is pub
 - [docs/containers.md](docs/containers.md): running the container image
 - [docs/config.md](docs/config.md) and [docs/customizing.md](docs/customizing.md): the site config and how to change the page
 - [docs/preview.md](docs/preview.md): the local preview server
+- [docs/performance.md](docs/performance.md): Lighthouse scores, how they were measured and what cannot reach 100
 
 ## License
 

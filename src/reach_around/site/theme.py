@@ -18,6 +18,7 @@ party host is refused so a visitor's browser never contacts one.
 from __future__ import annotations
 
 import re
+from pathlib import PurePosixPath
 from typing import TYPE_CHECKING
 
 from reach_around.config.pathlimits import check_path_bytes
@@ -123,6 +124,15 @@ _GENERIC_FONTS = frozenset(
 _FONT_NAME = re.compile(r"^[A-Za-z][A-Za-z0-9 -]{0,39}$")
 _FONT_EXTENSIONS = (".woff2", ".woff", ".ttf", ".otf")
 FONT_FILE_EXTENSIONS = _FONT_EXTENSIONS
+
+_FONT_MIME = {
+    ".woff2": "font/woff2",
+    ".woff": "font/woff",
+    ".ttf": "font/ttf",
+    ".otf": "font/otf",
+}
+# The font the stylesheet serves when the theme sets no body font.
+DEFAULT_BODY_FONT_FILE = "static/fonts/jost-latin-wght-normal.woff2"
 LICENSE_EXTENSIONS = (".txt",)
 IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg", ".webp", ".avif", ".gif", ".svg")
 _ASSET_PATH = re.compile(
@@ -422,3 +432,29 @@ def theme_css(theme: Theme) -> str:
         raise ValueError(f"refusing to emit {sorted(unknown)}")
     body = "".join(f"  {name}: {value};\n" for name, value in declarations.items())
     return "".join(faces) + ":root {\n" + body + "}\n"
+
+
+def preload_fonts(theme: Theme) -> list[tuple[str, str]]:
+    """The font files every page needs at first paint, as ``(path, mime type)``.
+
+    The browser finds a font only after it has parsed the stylesheet that names
+    it, so a ``<link rel="preload">`` in the page head starts the download
+    earlier and keeps the text swap from moving the layout. Only fonts the page
+    certainly uses are listed: the bundled body font when the theme sets no body
+    font, and any font *file* the theme sets for the body or the headings. A
+    system font stack needs nothing.
+    """
+    paths: list[str] = []
+    body = theme.fonts.body
+    if body is None:
+        paths.append(DEFAULT_BODY_FONT_FILE)
+    elif _font_kind(body) == "file":
+        paths.append(body)
+    heading = theme.fonts.heading
+    if heading is not None and _font_kind(heading) == "file":
+        paths.append(heading)
+    out: list[tuple[str, str]] = []
+    for path in dict.fromkeys(paths):
+        suffix = PurePosixPath(path).suffix.lower()
+        out.append((path, _FONT_MIME[suffix]))
+    return out

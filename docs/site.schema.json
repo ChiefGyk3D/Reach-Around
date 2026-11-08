@@ -103,6 +103,20 @@
           "default": null,
           "title": "Avatar"
         },
+        "description": {
+          "anyOf": [
+            {
+              "maxLength": 160,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Description"
+        },
         "favicon": {
           "anyOf": [
             {
