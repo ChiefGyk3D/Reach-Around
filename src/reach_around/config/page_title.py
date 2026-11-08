@@ -15,6 +15,7 @@ from typing import Annotated
 from pydantic import AfterValidator, Field, StrictStr
 
 MAX_TITLE = 80
+MAX_DESCRIPTION = 160
 MAX_TEMPLATE = 200
 DEFAULT_TEMPLATE = "{tab} - {creator}"
 PLACEHOLDERS = ("tab", "creator", "site")
@@ -48,6 +49,13 @@ def _check_template(value: str) -> str:
 PageTitle = Annotated[
     StrictStr,
     Field(min_length=1, max_length=MAX_TITLE),
+    AfterValidator(_check_plain),
+]
+# The search-result snippet (``<meta name="description">``): plain text, and no
+# longer than a snippet shows.
+PageDescription = Annotated[
+    StrictStr,
+    Field(min_length=1, max_length=MAX_DESCRIPTION),
     AfterValidator(_check_plain),
 ]
 TitleTemplate = Annotated[

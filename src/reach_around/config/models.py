@@ -42,7 +42,7 @@ from reach_around.config.footer import Footer
 from reach_around.config.kit import KitConfig
 from reach_around.config.loader import ConfigError, load_yaml
 from reach_around.config.numbers_sources import NumbersConfig
-from reach_around.config.page_title import PageTitle, TitleTemplate
+from reach_around.config.page_title import PageDescription, PageTitle, TitleTemplate
 from reach_around.config.privacy import Features, Privacy
 from reach_around.config.profile_card import (
     MAX_TAGS,
@@ -248,6 +248,7 @@ class Social(_Model):
 class Creator(_Model):
     name: Title
     title: PageTitle | None = None
+    description: PageDescription | None = None
     avatar: Annotated[str, Field(max_length=_MAX_URL)] | None = None
     favicon: str | None = None
     header: HeaderStyle = "compact"
