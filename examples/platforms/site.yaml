@@ -1,7 +1,9 @@
 # Synthetic example: Socials is the home page. A chips strip of the big
 # platforms with counts, then a row for every platform. Every handle, URL and
 # count below is made up. Run `reach-around build --numbers numbers.example.json`
-# to see the numbers file overlay the counts written here.
+# to see the numbers file overlay the counts written here. The dates are in
+# the past on purpose (a date in the future stops the build); a build warns
+# that these numbers are over 30 days old. Put your own counts and dates in.
 version: 1
 creator:
   name: Example Creator
@@ -17,28 +19,28 @@ tabs:
             handle: "@examplecreator"
             url: https://example.com/tiktok
             count: 406800
-            as_of: 2027-03-01
+            as_of: 2026-01-01
           - platform: instagram
             handle: "@examplecreator"
             url: https://example.com/instagram
             count: 38200
-            as_of: 2027-03-01
+            as_of: 2026-01-01
           - platform: youtube
             handle: "@examplecreator"
             url: https://example.com/youtube
             label: subscribers
             count: 1240000
-            as_of: 2027-03-01
+            as_of: 2026-01-01
           - platform: twitch
             handle: examplecreator
             url: https://example.com/twitch
             count: 3812
-            as_of: 2027-03-01
+            as_of: 2026-01-01
           - platform: threads
             handle: "@examplecreator"
             url: https://example.com/threads
             count: 999
-            as_of: 2027-03-01
+            as_of: 2026-01-01
       - id: everywhere
         title: Find me everywhere
         note: Counts are rounded and updated by hand or by a script.
@@ -47,7 +49,7 @@ tabs:
             handle: examplecreator
             url: https://example.com/twitch
             count: 3812
-            as_of: 2027-03-01
+            as_of: 2026-01-01
           - platform: kick
             handle: examplecreator
             url: https://example.com/kick
@@ -56,22 +58,22 @@ tabs:
             url: https://example.com/youtube
             label: subscribers
             count: 1240000
-            as_of: 2027-03-01
+            as_of: 2026-01-01
           - platform: tiktok
             handle: "@examplecreator"
             url: https://example.com/tiktok
             count: 406800
-            as_of: 2027-03-01
+            as_of: 2026-01-01
           - platform: instagram
             handle: "@examplecreator"
             url: https://example.com/instagram
             count: 38200
-            as_of: 2027-03-01
+            as_of: 2026-01-01
           - platform: threads
             handle: "@examplecreator"
             url: https://example.com/threads
             count: 999
-            as_of: 2027-03-01
+            as_of: 2026-01-01
           - platform: bluesky
             handle: examplecreator.example.com
             url: https://example.com/bluesky
@@ -83,7 +85,7 @@ tabs:
             url: https://example.com/discord
             label: members
             count: 2150
-            as_of: 2027-03-01
+            as_of: 2026-01-01
           - platform: github
             handle: examplecreator
             url: https://example.com/github
@@ -92,7 +94,7 @@ tabs:
             url: https://example.com/patreon
             label: members
             count: 120
-            as_of: 2027-03-01
+            as_of: 2026-01-01
           - platform: other
             name: Example Net
             handle: examplecreator

@@ -138,8 +138,8 @@ tabs:
       - id: top
         layout: chips
         items:
-          - {platform: tiktok, handle: "@examplecreator", url: "https://example.com/tiktok", count: 406800, as_of: 2027-03-01}
-          - {platform: twitch, handle: examplecreator, url: "https://example.com/twitch", count: 3812, as_of: 2027-03-01}
+          - {platform: tiktok, handle: "@examplecreator", url: "https://example.com/tiktok", count: 406800, as_of: 2026-01-01}
+          - {platform: twitch, handle: examplecreator, url: "https://example.com/twitch", count: 3812, as_of: 2026-01-01}
       - id: everywhere
         title: Find me everywhere
         items:

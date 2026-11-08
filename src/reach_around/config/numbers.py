@@ -26,6 +26,7 @@ from reach_around.config.blocks import MAX_COUNT, PLATFORM_SLUGS, Platforms
 from reach_around.config.loader import ConfigError, _read
 
 MAX_NUMBERS_BYTES = 256 * 1024
+STALE_DAYS = 30
 MAX_ENTRIES = 1000
 MAX_KEY = 64
 _EARLIEST = datetime(2000, 1, 1, tzinfo=UTC)
@@ -63,16 +64,95 @@ class Numbers:
         return sorted(key for key in self.entries if key not in known)
 
 
+def _age(stamp: date, today: date) -> int:
+    return (today - stamp).days
+
+
 def resolve_count(
-    manual: int | None, manual_as_of: date | None, entry: NumbersEntry | None
+    manual: int | None,
+    manual_as_of: date | None,
+    entry: NumbersEntry | None,
+    today: date,
 ) -> tuple[int | None, date | None]:
-    """The count and date to show. The numbers file wins when the manual value
-    has no date, or when its date is the same day or older."""
+    """The count and date to show.
+
+    The numbers file (fetched, or kept there by hand) always wins over the
+    typed value while it is fresh (at most ``STALE_DAYS`` old), whatever the two
+    dates are; a typed value never beats a fresh file value. When the file value
+    is stale the typed one takes over, but only if it is dated and not stale
+    itself. With two stale values the file's is shown (the run warns). A typed
+    value alone is shown, stale or not (the run warns).
+    """
     if entry is None:
         return manual, manual_as_of
-    if manual is None or manual_as_of is None or entry.as_of_date >= manual_as_of:
+    if manual is None or manual_as_of is None:
         return entry.count, entry.as_of_date
-    return manual, manual_as_of
+    if _age(entry.as_of_date, today) <= STALE_DAYS:
+        return entry.count, entry.as_of_date
+    if _age(manual_as_of, today) <= STALE_DAYS:
+        return manual, manual_as_of
+    return entry.count, entry.as_of_date
+
+
+@dataclass(frozen=True)
+class NumberNote:
+    """One old or future number: where it is and for which platform. No value."""
+
+    tab_id: str
+    block_id: str
+    item_id: str
+    platform: str
+    days: int  # negative when the date is in the future
+
+
+def _platform_items(config: Any) -> Any:
+    for tab in config.tabs:
+        for block in tab.blocks:
+            if isinstance(block, Platforms):
+                yield tab, block, zip(block.item_ids, block.items, strict=True)
+
+
+def future_typed_dates(config: Any, today: date) -> list[NumberNote]:
+    """Typed ``as_of`` dates more than one day after ``today``."""
+    found = []
+    for tab, block, pairs in _platform_items(config):
+        for ident, item in pairs:
+            if item.as_of is not None and _age(item.as_of, today) < -1:
+                found.append(
+                    NumberNote(
+                        tab.id, block.id, ident, item.platform, _age(item.as_of, today)
+                    )
+                )
+    return found
+
+
+def old_numbers(config: Any, numbers: Numbers | None, today: date) -> list[NumberNote]:
+    """The shown numbers that are more than ``STALE_DAYS`` old.
+
+    Only the value that wins is judged: a stale value that loses to a fresh one
+    produces nothing.
+    """
+    found = []
+    for tab, block, pairs in _platform_items(config):
+        for ident, item in pairs:
+            entry = None if numbers is None else numbers.lookup(ident, item.platform)
+            count, stamp = resolve_count(item.count, item.as_of, entry, today)
+            if count is not None and stamp is not None:
+                days = _age(stamp, today)
+                if days > STALE_DAYS:
+                    found.append(
+                        NumberNote(tab.id, block.id, ident, item.platform, days)
+                    )
+    return found
+
+
+def number_warnings(config: Any, numbers: Numbers | None, today: date) -> list[str]:
+    """Build warnings for old numbers; they name the platform, never the value."""
+    return [
+        f"platforms {note.block_id!r} {note.platform}: the number is {note.days} "
+        f"days old (over {STALE_DAYS}); update it by hand or fix its source"
+        for note in old_numbers(config, numbers, today)
+    ]
 
 
 class _Bad(Exception):

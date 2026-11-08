@@ -34,6 +34,7 @@ import functools
 import json
 import re
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -42,7 +43,15 @@ from pydantic import ValidationError
 from reach_around.checkvocab import say
 from reach_around.config import ConfigError, SiteConfig, load_yaml
 from reach_around.config.models import error_path
+from reach_around.config.numbers import (
+    NumberNote,
+    Numbers,
+    future_typed_dates,
+    load_numbers,
+    old_numbers,
+)
 from reach_around.schema import build_schema
+from reach_around.site.visibility import today_in
 
 EXIT_INVALID = 2
 _MAX_CHANGES = 50
@@ -348,6 +357,8 @@ _VALUE_ERRORS: tuple[tuple[re.Pattern[str], str], ...] = tuple(
         (r"^unknown color", "color_name"),
         (r"^(name is required when|name is only used when)", "name_for_kind"),
         (r"^as_of needs a count", "as_of_count"),
+        (r"^a typed count needs an as_of", "count_needs_date"),
+        (r"^as_of must be 2000-01-01", "as_of_early"),
         (r"^a profile card needs", "profile_card_empty"),
         (r"^(dsn_env|a postgres store)", "db_setting"),
         (r"^address must be 20 to 128", "crypto_address"),
@@ -647,10 +658,48 @@ def _compare(base_path: Path, raw: object) -> Comparison:
     return Comparison(changes[:_MAX_CHANGES], max(0, len(changes) - _MAX_CHANGES), None)
 
 
+def _note_problem(config: SiteConfig, note: NumberNote, kind: str) -> Problem:
+    """A finding for one number: tab, block and platform; never the value."""
+    tab_pos = next(i for i, t in enumerate(config.tabs) if t.id == note.tab_id)
+    tab = config.tabs[tab_pos]
+    block_pos = next(i for i, b in enumerate(tab.blocks) if b.id == note.block_id)
+    return Problem(
+        kind,
+        Ref(_safe_title(tab.title), tab_pos + 1),
+        Ref(_safe_id(note.block_id), block_pos + 1),
+        ident=note.platform,
+        limit=None if kind == "as_of_future" else note.days,
+    )
+
+
+def _number_findings(
+    config: SiteConfig, numbers_path: Path, explicit: bool
+) -> tuple[list[Problem], list[Problem]]:
+    """(errors, warnings) about follower numbers: a future date or a bad numbers
+    file is an error; a number over 30 days old is a warning."""
+    today = today_in(config.timezone, datetime.now(UTC))
+    errors = [
+        _note_problem(config, note, "as_of_future")
+        for note in future_typed_dates(config, today)
+    ]
+    numbers: Numbers | None = None
+    if numbers_path.exists() or explicit:
+        try:
+            numbers = load_numbers(numbers_path)
+        except ConfigError:
+            errors.append(Problem("numbers_invalid"))
+    warnings = [
+        _note_problem(config, note, "stale_number")
+        for note in old_numbers(config, numbers, today)
+    ]
+    return errors, warnings
+
+
 def _run(args: argparse.Namespace) -> int:
     path: Path = args.config
     name = _display_name(path)
     problems: list[Problem] = []
+    warnings: list[Problem] = []
     counts: tuple[int, int] | None = None
     raw: object = None
     try:
@@ -659,7 +708,12 @@ def _run(args: argparse.Namespace) -> int:
         problems.append(_loader_problem(exc))
     else:
         try:
-            counts = _counts(SiteConfig.model_validate(raw))
+            config = SiteConfig.model_validate(raw)
+            counts = _counts(config)
+            numbers_path = args.numbers or path.parent / "numbers.json"
+            problems, warnings = _number_findings(
+                config, numbers_path, args.numbers is not None
+            )
         except ValidationError as exc:
             problems = _schema_problems(raw, exc)
         except (ValueError, TypeError, RecursionError, OverflowError):
@@ -679,6 +733,7 @@ def _run(args: argparse.Namespace) -> int:
             "file": name,
             "errors": [p.as_dict() for p in ordered],
             "error_count": len(ordered),
+            "warnings": [p.as_dict() for p in warnings],
         }
         if counts is not None:
             report["tabs"], report["blocks"] = counts
@@ -700,6 +755,7 @@ def _run(args: argparse.Namespace) -> int:
                 f"{name} is valid: {_plural(tabs, 'tab')} and "
                 f"{_plural(blocks, 'block')}."
             )
+        lines.extend(f"Warning: {p.sentence()}" for p in warnings)
         if comparison is not None:
             lines.append("")
             if comparison.note:
@@ -739,5 +795,11 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
         type=Path,
         help="another site config (the base) to list the changed tabs and blocks "
         "against; only names are printed, never values",
+    )
+    check.add_argument(
+        "--numbers",
+        type=Path,
+        help="the numbers file to read for old follower numbers (default: "
+        "numbers.json beside the config, if it exists)",
     )
     check.set_defaults(func=_run)
