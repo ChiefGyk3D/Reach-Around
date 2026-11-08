@@ -80,6 +80,17 @@ crons = ["5 * * * *"]
 #   limit = 5
 #   period = 60
 
+# Media kit limits (docs/deploy.md, "Kit limits and the free-plan budget"). Placeholders
+# only. Digits only; anything else is rejected and every limit then refuses. Free plan:
+# an outage over a bill, so every limit fails closed.
+# ROUTE_BUDGET_GATE = "150"        # gate requests per UTC hour (0 to 100000)
+# ROUTE_BUDGET_VIEW = "300"        # gated-page views per UTC hour
+# MAX_LEADS = "5000"               # stored leads (1 to 50000)
+# MAX_KIT_EVENTS = "50000"         # stored kit events (1 to 500000)
+# DAILY_ALERT_BUDGET = "20"        # owner alerts per UTC day (0 to 1000)
+# DAILY_SEND_BUDGET = "0"          # emails per UTC day; 0 = none (no send route in v1)
+# D1_DAILY_WRITE_QUOTA = "100000"  # worst-case daily writes must fit under this
+
 # The click pings use the relative path /e/c/<id>, so the browser sends them to
 # the site's own host. Route the Worker there in your deployment (placeholder
 # host; replace it with your site host and zone):

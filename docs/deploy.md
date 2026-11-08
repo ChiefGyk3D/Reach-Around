@@ -177,6 +177,40 @@ Convert `rollup_last_ok` with `date -u -d @$((VALUE/1000))`. More than about 2 d
 
 The route stores no address, user agent or referrer URL. After a deploy, one beacon from a browser should give a 204 and one `view_events` row with categories only; the same request with `Sec-GPC: 1` should leave no row.
 
+## Kit limits and the free-plan budget
+
+The media kit Worker is sized for the Cloudflare free plan, and the ruling is: **when a limit is reached the kit goes unavailable; it never costs money.** Every limit below fails closed. A request over a route budget, a lead or event over its cap, an alert or email over the daily budget, and any invalid setting all get a refusal, never a pass. No paid feature is switched on by any of these settings.
+
+All values are plain decimal integers (digits only, no sign, space, exponent or unit). An unset or empty value takes the default. Any other value is rejected as a whole: every limit then refuses until it is fixed. Nothing is clamped or guessed, and a rejected value is never printed, only its variable name.
+
+| Variable | Range | Default | Meaning |
+|---|---|---|---|
+| `ROUTE_BUDGET_GATE` | 0 to 100000 | 150 | Gate requests per UTC hour |
+| `ROUTE_BUDGET_VIEW` | 0 to 100000 | 300 | Gated-page views per UTC hour |
+| `MAX_LEADS` | 1 to 50000 | 5000 | Stored leads; at the cap a new address is refused, a known one still works |
+| `MAX_KIT_EVENTS` | 1 to 500000 | 50000 | Stored kit events; at the cap events are skipped |
+| `DAILY_ALERT_BUDGET` | 0 to 1000 | 20 | Owner alerts per UTC day |
+| `DAILY_SEND_BUDGET` | 0 to 1000 | 0 | Emails per UTC day (0: none; the send route is not in v1) |
+| `D1_DAILY_WRITE_QUOTA` | 1000 to 999999999 | 100000 | The free D1 plan's daily rows-written figure. Re-check it against Cloudflare's current limits before relying on it |
+
+**Worst-case daily writes.** The D1 write allowance is one per account, shared by the kit, page views, clicks, the rollup and every purge, so the check adds them all. Settings are checked when a limit is used, not at deploy: if the combined worst case is over `D1_DAILY_WRITE_QUOTA`, or any value is invalid, every reservation refuses (fail closed) until it is fixed. The loader also reports a warning above 80 percent. The kit part is `24 x (gate x 5 + view x 2) + alerts x 1 + sends x 7 + 10000`, where each number is the most rows one accepted operation writes (the row, its indexes and the counter) and 10000 is a reserve for the kit purge. To it are added the page-view feature with its rollup and purge (22700, from the page-view write budget above), a click reserve (8000; the click route has only a per-client limiter and no global budget, so this is an allowance, not a measured bound) and a margin (5000). A refused request writes nothing, so a flood over a budget costs reads only.
+
+| Part | Budget | Writes each | Worst case per day |
+|---|---|---|---|
+| gate | 150 per hour | 5 | 18000 |
+| view | 300 per hour | 2 | 14400 |
+| alert | 20 per day | 1 | 20 |
+| send | 0 per day | 7 | 0 |
+| kit purge reserve | | | 10000 |
+| page views, rollup and purge | | | 22700 |
+| clicks (reserve) | | | 8000 |
+| margin | | | 5000 |
+| **Total** | | | **78120** |
+
+That is 78.1 percent of the default quota of 100000. Raising a budget raises this number; raise `D1_DAILY_WRITE_QUOTA` only on a plan that allows it. Counters live in the `counters` table, one row per route and hour or per day, and are purged after two days. A viral spike over a budget makes the gate unavailable until the next hour; that is the accepted trade.
+
+**For the route code that uses these limits:** run the per-client throttle (`checkIpMinute`) before taking from a global route counter, so one client cannot spend the shared budget. A request refused by the throttle must not touch a counter.
+
 ## Secrets and Doppler
 
 Project secrets (this Cloudflare token, later the Mailgun and collector
