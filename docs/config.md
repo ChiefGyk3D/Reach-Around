@@ -518,7 +518,7 @@ blocks:
         handle: examplecreator
         url: https://example.com/twitch
         count: 3812
-        as_of: 2027-03-01
+        as_of: 2026-01-01
       - platform: youtube
         handle: "@examplecreator"
         url: https://example.com/youtube
@@ -554,7 +554,7 @@ date before 2000 or a date more than a day in the future stops the build and is
 reported by `reach-around check` (the future date is checked against the build
 day in the config's time zone). The number on the button is the abbreviated
 count; the date is the small `as of` line in the list layout and part of the
-spoken text (`3,812 followers, as of 2027-03-01`) in the chips layout.
+spoken text (`3,812 followers, as of 2026-01-01`) in the chips layout.
 
 **Old numbers.** A number shown on a platform button whose date is more than 30
 days before the build day gets a build warning, and `reach-around check` prints

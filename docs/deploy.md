@@ -340,7 +340,10 @@ To update a hand-kept number, read it from the platform, then edit
 whole number) and set `as_of` to the time you read it, written like
 `2026-11-07T12:00:00Z` (a real date, not in the future). Commit it; the next
 deployment picks it up. The 30 day rule: an entry whose `as_of` is more than 30
-days old triggers a warning in the `counts` job, in the build and in
+days old triggers a warning in the test deployment's `counts` job
+(`.github/scripts/test-counts.py`), in an instance repository's counts refresh
+(`scripts/validate-numbers.py` prints a `::warning::` annotation naming the
+platform and the age, never the count), in the build and in
 `reach-around check`; the number is still shown until you update it. A fetched
 number always wins over a hand-kept one while it is fresh (see
 [the numbers file](config.md#the-numbers-file)). The same rule applies to a

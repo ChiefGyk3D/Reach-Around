@@ -732,6 +732,9 @@ def check_report(raw: Any) -> dict[str, Any]:
         raise Invalid("more_changes without a full list")
     if "note" in rep and rep["note"] not in NOTES:
         raise Invalid("note")
+    if "warnings" in rep:
+        # findings that do not fail the check: same shape and vocabulary as errors
+        rep["warnings"] = [check_error(w) for w in as_list(rep["warnings"], MAX_ERRORS)]
     return rep
 
 
@@ -918,6 +921,11 @@ def details(report: dict[str, Any] | None) -> list[str]:
             f"The config is valid: {tabs} tab{'' if tabs == 1 else 's'} and "
             f"{blocks} block{'' if blocks == 1 else 's'}."
         )
+    if report.get("warnings"):
+        lines.append("")
+        lines.append("Warnings (these do not stop the build):")
+        lines.append("")
+        lines.extend(f"- {problem_line(w)}" for w in report["warnings"])
     if "change_records" in report or "note" in report:
         lines.append("")
         records = report.get("change_records", [])
