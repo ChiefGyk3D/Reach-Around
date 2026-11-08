@@ -37,6 +37,9 @@
 {% if page_views %}
 <script src="{{ root }}{{ asset("static/view.js") }}" defer></script>
 {% endif %}
+{% if has_live_script is defined and has_live_script %}
+<script src="{{ root }}{{ asset("static/live.js") }}" defer></script>
+{% endif %}
 {% if has_crypto %}
 <script src="{{ root }}{{ asset("static/copy.js") }}" defer></script>
 {% endif %}

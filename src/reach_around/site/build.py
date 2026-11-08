@@ -118,6 +118,8 @@ _CRYPTO_FILES = (Path("static") / "copy.js", Path("static") / "crypto.css")
 _PLATFORMS_FILES = (Path("static") / "platforms.css",)
 # Published only for a site with a live block; linked from the live page only.
 _LIVE_STYLE = Path("static") / "live.css"
+# The live script (status badge, click-to-load) goes on every page of such a site.
+_LIVE_SCRIPT = Path("static") / "live.js"
 # Published only for a site with a kit.
 _KIT_STYLE = Path("static") / "kit.css"
 
@@ -428,6 +430,7 @@ def _render_not_found(
         has_crypto=False,
         has_email=False,
         has_email_script=False,
+        has_live_script=False,
         has_platforms=False,
         noindex=True,
         profile_card=_profile_card(config),
@@ -472,6 +475,7 @@ def _kit_base(
             "has_crypto": False,
             "has_email": False,
             "has_email_script": False,
+            "has_live_script": False,
             "has_platforms": False,
             "has_kit": True,
             "skip_label": "Skip to the kit",
@@ -688,6 +692,7 @@ def build_site(
             static.pop(rel, None)
     if not any(_has_live(blocks) for blocks in shown):
         static.pop(_LIVE_STYLE, None)
+        static.pop(_LIVE_SCRIPT, None)
     if kit is None:
         static.pop(_KIT_STYLE, None)
     static[Path("static") / "theme.css"] = theme_css(config.theme).encode("utf-8")
@@ -697,6 +702,9 @@ def build_site(
     env = make_environment(overrides)
     env.globals["platform_rows"] = lambda block: platform_rows(block, numbers)
     env.globals["asset"] = named.assets
+    # Every page with a tab bar carries the nav badge, so every such page gets the
+    # live script; the 404 page and the kit pages say False for themselves.
+    env.globals["has_live_script"] = any(_has_live(blocks) for blocks in shown)
     env.globals["asset_url"] = _asset_url(named.assets)
     files: dict[Path, bytes] = {
         page: html.encode("utf-8")

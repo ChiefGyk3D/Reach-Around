@@ -6,15 +6,18 @@ launcher). The page is served from a local port only: every request to any other
 host is aborted and recorded, and the test asserts there were none. Nothing
 here clicks a link or navigates away from the local page. All data is synthetic.
 
-The live state has no script yet (slice 3), so the test flips the ``hidden``
-attributes itself, the way the script will.
+The live state comes from the page's own script (slice 3): ``/e/live`` is
+answered here with a document that says both channels are live, or with a 404
+(no Worker), which leaves the static degraded page.
 """
 
 from __future__ import annotations
 
 import functools
+import json
 import os
 import threading
+import time
 from collections.abc import Iterator
 from datetime import date
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
@@ -127,27 +130,37 @@ def _open(
     foreign: list[str] = []
     local_host = urlsplit(base).netloc
 
+    both_live = json.dumps(
+        {
+            "v": 1,
+            "as_of": int(time.time()),
+            "ttl": 30,
+            "kick": {"live": True, "since": int(time.time()) - 60},
+            "twitch": {"live": True, "since": int(time.time()) - 60},
+        }
+    )
+
     def guard(route: Route) -> None:
-        if urlsplit(route.request.url).netloc == local_host:
-            route.continue_()
-        else:
+        url = urlsplit(route.request.url)
+        if url.netloc != local_host:
             foreign.append(route.request.url)
             route.abort()
+        elif url.path == "/e/live":
+            if live:
+                route.fulfill(
+                    status=200, body=both_live, content_type="application/json"
+                )
+            else:
+                route.fulfill(status=404, body="not found")
+        else:
+            route.continue_()
 
     context.route("**/*", guard)
     page = context.new_page()
     page.goto(base + "watch/")
-    if live:
-        page.evaluate(
-            """() => {
-              const root = document.querySelector('[data-live]');
-              root.dataset.liveState = 'live';
-              for (const name of ['degraded', 'offline']) {
-                root.querySelector(`[data-live-panel=${name}]`).hidden = true;
-              }
-              root.querySelector('[data-live-panel=live]').hidden = false;
-            }"""
-        )
+    page.wait_for_function(
+        "Number(document.documentElement.dataset.liveChecks || 0) >= 1"
+    )
     return page, foreign
 
 

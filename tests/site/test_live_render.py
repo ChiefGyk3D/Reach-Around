@@ -146,7 +146,9 @@ def test_live_stylesheet_ships_only_with_a_live_block(tmp_path: Path) -> None:
     with_live = build(site(), tmp_path / "a")
     name = asset(with_live, "static/live.css")
     assert f'href="../{name}"' in page(with_live)
-    assert "static/live." not in page(with_live, "index.html")
+    index = page(with_live, "index.html")
+    assert not re.search(r"live\.[0-9a-f]{20}\.css", index)  # the script only
+    assert re.search(r"live\.[0-9a-f]{20}\.js", index)
     plain = SiteConfig.model_validate(
         {
             "version": 1,
@@ -318,12 +320,71 @@ def test_each_card_has_the_privacy_note_and_equal_structure(out: Path) -> None:
 
     def normal(card: str, platform: str, channel: str) -> str:
         card = card.replace(channel, "CHANNEL")
+        card = re.sub(r"https://(?:www\.)?\w+\.(?:com|tv)/", "https://HOST/", card)
         card = card.replace(platform.capitalize(), "PLATFORM")
         return card.replace(platform, "platform")
 
     assert normal(cards[0], "kick", "example_kick") == normal(
         cards[1], "twitch", "example_twitch"
     )
+
+
+def test_each_card_also_has_a_hidden_same_size_not_live_card_for_both(
+    out: Path,
+) -> None:
+    tree = parse(page(out))
+    cards = with_class(tree, "live-card")
+    assert len(cards) == 2
+    notlive = with_class(tree, "live-notlive")
+    assert len(notlive) == 2, "the not-live card exists for both platforms"
+    assert len({n["attrs"]["class"] for n in notlive}) == 1
+    texts = [re.sub(r"\s+", " ", n["text"]).strip() for n in notlive]
+    assert texts == [
+        "Not live right now Past streams",
+        "Not live right now Past streams",
+    ]
+    links = [
+        e for e in tree.elements if "live-notlive-link" in e["attrs"].get("class", "")
+    ]
+    assert [e["attrs"]["href"] for e in links] == [
+        "https://kick.com/example_kick/videos",
+        "https://www.twitch.tv/example_twitch/videos",
+    ]
+    assert all(e["attrs"]["rel"] == "noopener noreferrer" for e in links)
+    slots = [e for e in tree.elements if "data-live-slot" in e["attrs"]]
+    assert [e["attrs"]["data-live-slot"] for e in slots] == [
+        "player",
+        "offline",
+        "player",
+        "offline",
+    ]
+    assert ["hidden" in e["attrs"] for e in slots] == [False, True, False, True]
+
+
+def test_the_not_live_cards_follow_config_order_and_vods_are_both_or_neither(
+    tmp_path: Path,
+) -> None:
+    block = live_block(
+        players=[
+            {"platform": "twitch", "channel": "example_twitch"},
+            {"platform": "kick", "channel": "example_kick"},
+        ]
+    )
+    tree = parse(page(build(site(block), tmp_path / "a")))
+    links = [
+        e for e in tree.elements if "live-notlive-link" in e["attrs"].get("class", "")
+    ]
+    assert [e["attrs"]["href"].split("/")[2] for e in links] == [
+        "www.twitch.tv",
+        "kick.com",
+    ]
+    bare = live_block()
+    del bare["vods"]
+    tree = parse(page(build(site(bare), tmp_path / "b")))
+    assert len(with_class(tree, "live-notlive")) == 2
+    assert not [
+        e for e in tree.elements if "live-notlive-link" in e["attrs"].get("class", "")
+    ]
 
 
 def test_no_titles_and_no_viewer_counts_anywhere(out: Path) -> None:
@@ -411,9 +472,10 @@ def test_live_css_has_no_remote_reference(out: Path) -> None:
         assert not re.match(r"""["']?(?:[a-z]+:|//)""", match.group(1))
 
 
-def test_no_script_is_added_by_the_live_block(out: Path) -> None:
+def test_only_the_two_pinned_scripts_and_no_inline_script(out: Path) -> None:
     scripts = re.findall(r'<script src="([^"]*)"', page(out))
-    assert [Path(s).name.split(".")[0] for s in scripts] == ["click"]
+    # click.js and the one pinned live.js (status badge and click-to-load).
+    assert [Path(s).name.split(".")[0] for s in scripts] == ["click", "live"]
     assert "<script>" not in page(out)
 
 

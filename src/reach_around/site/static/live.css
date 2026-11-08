@@ -50,7 +50,8 @@ main.main-wide > footer { margin-top: var(--ra-space-2); }
   .live-grid { grid-template-columns: repeat(2, minmax(0, 55rem)); justify-content: center; }
 }
 .live-card { min-width: 0; }
-.live-facade {
+.live-facade,
+.live-notlive {
   position: relative;
   display: grid;
   place-items: center;
@@ -71,6 +72,19 @@ main.main-wide > footer { margin-top: var(--ra-space-2); }
   cursor: pointer;
   transition: transform var(--ra-duration) var(--ra-ease), box-shadow var(--ra-duration) var(--ra-ease);
 }
+.live-notlive { cursor: default; text-align: center; }
+.live-slot[hidden] { display: none; }
+.live-notlive-link {
+  display: inline-flex;
+  align-items: center;
+  min-height: var(--ra-tap);
+  padding-inline: var(--ra-space-4);
+  color: var(--ra-color-link);
+  font-weight: 600;
+}
+/* The loaded player: the iframe fills the same 16:9 box the facade had. */
+.live-frame { aspect-ratio: 16 / 9; width: 100%; border-radius: var(--ra-card-radius); overflow: hidden; background-color: var(--ra-color-surface); box-shadow: var(--ra-shadow-card); }
+.live-frame iframe { display: block; width: 100%; height: 100%; border: 0; }
 .live-facade:hover { box-shadow: var(--ra-shadow-lift); }
 .live-facade:active { transform: scale(0.99); }
 .live-art { display: grid; place-items: center; gap: var(--ra-space-3); }
@@ -91,11 +105,17 @@ main.main-wide > footer { margin-top: var(--ra-space-2); }
   clip-path: polygon(0 0, 100% 50%, 0 100%);
 }
 .live-action { font-size: var(--ra-text-md); font-weight: 600; text-align: center; }
-.live-privacy {
+.live-privacy,
+.live-hint {
   margin: var(--ra-space-2) 0 0;
   color: var(--ra-color-muted);
   font-size: var(--ra-text-sm);
   text-align: center;
+}
+/* On a phone the two lines can wrap to different line counts (the platform
+   names differ in length); reserve the same room so the cards stay one size. */
+@media (max-width: 39.99rem) {
+  .live-privacy, .live-hint { min-height: 3lh; }
 }
 
 /* The degraded state: two equal watch links. */

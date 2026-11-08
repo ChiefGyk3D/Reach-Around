@@ -6,8 +6,9 @@
 <title>Live - Example Creator</title>
 <link rel="stylesheet" href="../static/site.88697f26e35b38e9e162.css">
 <link rel="stylesheet" href="../static/theme.71ca8fb8f7b69ca52f1f.css">
-<link rel="stylesheet" href="../static/live.0e6693eb8ec17842e71e.css">
+<link rel="stylesheet" href="../static/live.baf582272525091a9362.css">
 <script src="../static/click.472f55b0e18d51668ca0.js" defer></script>
+<script src="../static/live.0a79111ae9607cb1c382.js" defer></script>
 </head>
 <body>
 <a class="skip-link" href="#content">Skip to links</a>
@@ -33,18 +34,36 @@
 <h2 class="live-heading">Live now</h2>
 <ul class="live-grid">
 <li class="live-card">
+<div class="live-slot" data-live-slot="player">
 <button type="button" class="live-facade" data-platform="kick" data-channel="example_kick" aria-describedby="live-kick-privacy">
 <span class="live-art" aria-hidden="true"><span class="icon icon-kick"></span><span class="live-play"></span></span>
 <span class="live-action">Load the Kick player</span>
 </button>
 <p class="live-privacy" id="live-kick-privacy">Loads the player from Kick. Kick will see your IP address.</p>
+</div>
+<div class="live-slot" data-live-slot="offline" hidden>
+<div class="live-notlive">
+<span class="live-art" aria-hidden="true"><span class="icon icon-kick"></span></span>
+<span class="live-action">Not live right now</span>
+<a class="live-notlive-link" href="https://kick.com/example_kick/videos" rel="noopener noreferrer">Past streams</a></div>
+<p class="live-hint">The player appears here when the stream starts.</p>
+</div>
 </li>
 <li class="live-card">
+<div class="live-slot" data-live-slot="player">
 <button type="button" class="live-facade" data-platform="twitch" data-channel="example_twitch" aria-describedby="live-twitch-privacy">
 <span class="live-art" aria-hidden="true"><span class="icon icon-twitch"></span><span class="live-play"></span></span>
 <span class="live-action">Load the Twitch player</span>
 </button>
 <p class="live-privacy" id="live-twitch-privacy">Loads the player from Twitch. Twitch will see your IP address.</p>
+</div>
+<div class="live-slot" data-live-slot="offline" hidden>
+<div class="live-notlive">
+<span class="live-art" aria-hidden="true"><span class="icon icon-twitch"></span></span>
+<span class="live-action">Not live right now</span>
+<a class="live-notlive-link" href="https://www.twitch.tv/example_twitch/videos" rel="noopener noreferrer">Past streams</a></div>
+<p class="live-hint">The player appears here when the stream starts.</p>
+</div>
 </li>
 </ul>
 </div>
