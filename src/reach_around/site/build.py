@@ -43,7 +43,7 @@ from reach_around.site.assets import collect_assets
 from reach_around.site.cachepolicy import cache_patterns
 from reach_around.site.fingerprint import AssetMap, fingerprint
 from reach_around.site.frames import (
-    SIZE_SCALES,
+    BARE_SLOTS,
     SLOT_SIZES,
     check_frames,
     frame_plan,
@@ -110,10 +110,7 @@ def _links_in(blocks: Iterable[Block]) -> list[Link]:
 
 def _page_has_frames(config: SiteConfig, blocks: Iterable[Block]) -> bool:
     """Whether a link page has an element that can carry a frame."""
-    if config.theme.frame == "none":
-        return False
-    shown = list(blocks)
-    return bool(_links_in(shown)) or _has_platforms(shown)
+    return config.theme.frame != "none"
 
 
 def _has_crypto(blocks: Iterable[Block]) -> bool:
@@ -149,6 +146,7 @@ _LIVE_SCRIPT = Path("static") / "live.js"
 # Published only for a site with a kit.
 _KIT_STYLE = Path("static") / "kit.css"
 _FRAME_STYLE = Path("static") / "frame.css"
+_FRAME_ART = (Path("static") / "frame.svg", Path("static") / "frame-lite.svg")
 # The display-zone script (#372): linked from the public kit page only.
 _ZONE_SCRIPT = Path("static") / "zone.js"
 
@@ -761,6 +759,8 @@ def build_site(
         static.pop(_ZONE_SCRIPT, None)
     if config.theme.frame == "none":
         static.pop(_FRAME_STYLE, None)
+        for rel in _FRAME_ART:
+            static.pop(rel, None)
     static[Path("static") / "theme.css"] = theme_css(config.theme).encode("utf-8")
     if custom_css is not None:
         static[Path("static") / "custom.css"] = custom_css.encode("utf-8")
@@ -779,7 +779,22 @@ def build_site(
     plan = frame_plan(config.theme.frame)
     env.globals["frame_plan"] = plan
     env.globals["frame_sizes"] = {slot: SLOT_SIZES[slot] for slot in plan}
-    env.globals["frame_scales"] = SIZE_SCALES
+    env.globals["frame_bare"] = BARE_SLOTS
+    env.globals["frame_motion"] = bool(plan) and config.theme.frame_motion == "live"
+    l3_used = [0]
+
+    def frame_l3_reset() -> str:
+        l3_used[0] = 0
+        return ""
+
+    def frame_l3_take() -> bool:
+        if l3_used[0] >= config.theme.frame_l3_max:
+            return False
+        l3_used[0] += 1
+        return True
+
+    env.globals["frame_l3_reset"] = frame_l3_reset
+    env.globals["frame_l3_take"] = frame_l3_take
     files: dict[Path, bytes] = {
         page: html.encode("utf-8")
         for page, html in _render_pages(
@@ -802,10 +817,11 @@ def build_site(
             path.as_posix(): data.decode("utf-8")
             for path, data in files.items()
             if path.suffix == ".html"
-        }
+        },
+        config.theme.frame_l3_max,
     )
     if kit_render.gated is not None:
-        check_frames({"kit.html (gated)": kit_render.gated})
+        check_frames({"kit.html (gated)": kit_render.gated}, config.theme.frame_l3_max)
     robots = config.robots
     if robots is not None:
         if Path("robots.txt") in files:

@@ -1,9 +1,10 @@
 {# SPDX-License-Identifier: Apache-2.0 #}
+{% import "_frames.html" as frames with context %}
 <li class="block block-email">
 {% if block.title and not skip_title|default(false) %}
-<h2 class="email-title">{{ block.title }}</h2>
+<h2 class="email-title{{ frames.cls("head") }}">{{ block.title }}</h2>
 {% endif %}
-<div class="email-card"{% if block.reveal != "never_js" %} data-email="{{ block.encoded }}" data-email-reveal="{{ block.reveal }}"{% endif %}>
+<div class="email-card{{ frames.cls("card") }}"{% if block.reveal != "never_js" %} data-email="{{ block.encoded }}" data-email-reveal="{{ block.reveal }}"{% endif %}>
 <p class="email-spelled" id="{{ block.id }}-spelled">{{ block.spelled }}</p>
 {% if block.reveal != "never_js" %}
 <div class="email-actions">

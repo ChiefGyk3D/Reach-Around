@@ -1,5 +1,6 @@
 {# SPDX-License-Identifier: Apache-2.0 #}
-<section class="profile-card" aria-labelledby="profile-card-title">
+{% import "_frames.html" as frames with context %}
+<section class="profile-card{{ frames.cls("hero") }}" aria-labelledby="profile-card-title">
 <h2 class="profile-title" id="profile-card-title">{{ profile_card.title }}</h2>
 {% if profile_card.tags %}
 <ul class="profile-tags">

@@ -1,5 +1,6 @@
 {# SPDX-License-Identifier: Apache-2.0 #}
-<footer>
+{% import "_frames.html" as frames with context %}
+<footer{% if frame_plan %} class="{{ frames.cls("foot")|trim }}"{% endif %}>
 {% if show_disclosure %}
 <p class="disclosure">{{ disclosure }}</p>
 {% endif %}
@@ -10,7 +11,10 @@
 {% if footer_credit %}
 <p class="credit"><a href="{{ footer_credit_url }}" rel="noopener noreferrer">{{ footer_credit_text }}</a></p>
 {% endif %}
-{% if show_cookie_banner %}
+{% if show_cookie_banner and not frame_plan %}
 {% include "_cookie_banner.html" %}
 {% endif %}
 </footer>
+{% if show_cookie_banner and frame_plan %}
+{% include "_cookie_banner.html" %}
+{% endif %}
