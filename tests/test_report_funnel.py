@@ -27,10 +27,10 @@ from reach_around.funnel.report import (
     render_text,
 )
 
-DAY = "2026-11-01"
-# the latest releasable month is 2026-11 (its day cells are gone by then)
-AS_OF = date(2027, 3, 10)
-TS = 1_793_491_200_000  # 2026-11-01 00:00 UTC
+DAY = "2026-11-02"  # a Monday
+# the latest complete week is 2026-11-02 to 2026-11-08
+AS_OF = date(2026, 11, 10)
+TS = 1_793_577_600_000  # 2026-11-02 00:00 UTC
 
 
 def src_rows(spec: dict[str, dict[str, int]], day: str = DAY) -> list[dict[str, Any]]:
@@ -58,7 +58,7 @@ def write(tmp_path: Path, tables: dict[str, Any]) -> Path:
 def report_of(
     tmp_path: Path,
     tables: dict[str, Any],
-    period: str | None = "month",
+    period: str | None = "week",
     offset: int = 0,
     as_of: date = AS_OF,
     **kw: Any,
@@ -423,8 +423,8 @@ def test_overlapping_windows_cannot_be_asked_for(tmp_path: Path) -> None:
         r = build_report(export, since=since, until=until, floor=6)
         assert r["click_matrix"]["state"] == "period_required"
         assert r["click_matrix"]["cells"] == []
-    month = build_report(export, period="month", as_of=AS_OF, floor=6)
-    assert [c["clicks"] for c in month["click_matrix"]["cells"]] == [9]
+    week = build_report(export, period="week", as_of=AS_OF, floor=6)
+    assert [c["clicks"] for c in week["click_matrix"]["cells"]] == [9]
 
 
 def test_a_period_counts_only_its_own_days(tmp_path: Path) -> None:
@@ -443,7 +443,19 @@ def test_a_period_counts_only_its_own_days(tmp_path: Path) -> None:
         "end": "2026-11-08",
     }
     assert [c["clicks"] for c in week["click_matrix"]["cells"]] == [12]
-    month = build_report(export, period="month", as_of=AS_OF)
+    # A month is its monthly rollup row only, whatever day cells are in the export.
+    both = load_exports(
+        [
+            write(
+                tmp_path,
+                {
+                    "click_src_daily": rows,
+                    "click_src_monthly": month_rows({"twitch": {"a": 112}}, "2026-11"),
+                },
+            )
+        ]
+    )
+    month = build_report(both, period="month", as_of=date(2026, 12, 5))
     assert [c["clicks"] for c in month["click_matrix"]["cells"]] == [112]
     assert month["release"]["start"] == "2026-11-01"
     assert month["release"]["end"] == "2026-11-30"
@@ -457,55 +469,40 @@ def test_the_current_week_is_never_released(tmp_path: Path) -> None:
     assert r["click_matrix"]["cells"] == []
 
 
-# ---- one kind of period per stretch of time --------------------------------
+# ---- boundary weeks and the run date ---------------------------------------
 
 
-def _releasable(as_of: date) -> tuple[list[tuple[date, date]], list[tuple[date, date]]]:
-    weeks: list[tuple[date, date]] = []
-    months: list[tuple[date, date]] = []
-    for kind, out in (("week", weeks), ("month", months)):
-        for offset in range(0, 60):
-            try:
-                out.append(period_bounds(kind, offset, as_of))
-            except ValueError:
-                break
-    return weeks, months
-
-
-def test_a_week_and_a_month_never_cover_the_same_day() -> None:
-    for n in range(0, 400, 3):
-        as_of = date(2026, 1, 1) + timedelta(days=n)
-        weeks, months = _releasable(as_of)
-        assert weeks and months
-        oldest = as_of - timedelta(days=89)
-        for start, end in weeks:  # weeks lie inside the day-cell range, complete
-            assert start >= oldest and end < as_of and start.weekday() == 0
-        for start, end in months:  # months lie wholly before it
-            assert end < oldest and start.day == 1
-        assert max(m[1] for m in months) < min(w[0] for w in weeks)
-
-
-def test_week_requests_past_the_day_cell_range_are_refused(tmp_path: Path) -> None:
+def test_weeks_stop_at_the_edge_of_the_day_cell_range() -> None:
     as_of = date(2027, 3, 10)  # day cells exist from 2026-12-11 (a Friday)
-    weeks, months = _releasable(as_of)
-    oldest = weeks[-1][0]
-    assert oldest == date(2026, 12, 14)  # the week of Dec 7-13 crosses the edge
-    with pytest.raises(ValueError, match="crosses its edge"):
+    weeks = []
+    for offset in range(40):
+        try:
+            weeks.append(period_bounds("week", offset, as_of))
+        except ValueError:
+            break
+    assert weeks[0] == (date(2027, 3, 1), date(2027, 3, 7))
+    assert weeks[-1] == (date(2026, 12, 14), date(2026, 12, 20))  # Dec 7-13 crosses
+    with pytest.raises(ValueError, match="crosses that edge"):
         period_bounds("week", len(weeks), as_of)
-    with pytest.raises(ValueError, match="use --period month"):
-        period_bounds("week", 40, as_of)
-    # the latest month ends before the edge; the month that crosses it is withheld
-    assert months[0] == (date(2026, 11, 1), date(2026, 11, 30))
-    assert not any(s <= date(2026, 12, 11) <= e for s, e in months)
 
 
-def test_the_month_that_crosses_the_edge_is_not_released(tmp_path: Path) -> None:
-    export = load_exports(
-        [write(tmp_path, {"click_src_daily": day_src("2026-12-05", 50)})]
-    )
-    r = build_report(export, period="month", as_of=date(2027, 3, 10))
-    assert r["release"]["end"] == "2026-11-30"
-    assert r["click_matrix"]["cells"] == []
+def test_a_month_never_depends_on_how_old_it_is(tmp_path: Path) -> None:
+    """The same month gives the same cells on any run date, with or without
+    day cells in the export, because a month is its monthly row."""
+    monthly = month_rows({"twitch": {"a": 12, "b": 7, "c": 2}}, "2026-11")
+    daily = day_src("2026-11-03", 4)
+    seen = set()
+    for tables, as_of in (
+        ({"click_src_monthly": monthly}, date(2026, 12, 2)),
+        ({"click_src_monthly": monthly, "click_src_daily": daily}, date(2026, 12, 20)),
+        ({"click_src_monthly": monthly}, date(2027, 6, 1)),
+    ):
+        offset = (as_of.year * 12 + as_of.month) - (2026 * 12 + 12)
+        export = load_exports([write(tmp_path, tables)])
+        r = build_report(export, period="month", offset=offset, as_of=as_of)
+        assert r["release"]["start"] == "2026-11-01"
+        seen.add(json.dumps(r["click_matrix"], sort_keys=True))
+    assert len(seen) == 1
 
 
 def test_consecutive_days_give_the_same_cells_for_the_same_period(
@@ -538,8 +535,8 @@ def test_offset_and_period_validation() -> None:
         date(2026, 11, 8),
     )
     assert period_bounds("month", 0, date(2027, 3, 10)) == (
-        date(2026, 11, 1),
-        date(2026, 11, 30),
+        date(2027, 2, 1),
+        date(2027, 2, 28),
     )
 
 
@@ -608,7 +605,8 @@ def test_a_whole_month_is_read_from_the_monthly_rows_and_never_twice(
     r = report_of(
         tmp_path,
         {"click_src_daily": daily, "click_src_monthly": monthly},
-        as_of=date(2027, 2, 1),
+        period="month",
+        as_of=date(2026, 11, 9),
     )
     assert r["click_matrix"]["cells"][0]["clicks"] == 40
     assert r["click_matrix"]["months_used"] == ["2026-10"]
@@ -630,8 +628,8 @@ def test_a_week_inside_a_month_uses_day_cells_not_the_monthly_row(
 
 
 def test_the_floor_is_applied_after_summing_days_of_the_period(tmp_path: Path) -> None:
-    rows = src_rows({"twitch": {"a": 3}}, "2026-11-01") + src_rows(
-        {"twitch": {"a": 3}}, "2026-11-02"
+    rows = src_rows({"twitch": {"a": 3}}, "2026-11-02") + src_rows(
+        {"twitch": {"a": 3}}, "2026-11-03"
     )
     r = report_of(tmp_path, {"click_src_daily": rows})
     assert r["click_matrix"]["cells"][0]["clicks"] == 6
@@ -651,6 +649,8 @@ def test_monthly_only_export_is_accepted(tmp_path: Path) -> None:
                 }
             ]
         },
+        period="month",
+        as_of=date(2026, 12, 5),
     )
     assert r["click_countries"]["state"] == "ok"
 
@@ -739,7 +739,7 @@ def test_cli_json_and_text(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -
     assert meta["period_end_utc"] == (monday + timedelta(days=6)).isoformat()
     # a week this far back has no day cells: refused with a pointer to months
     assert main([*base, "--period", "week", "--offset", "30"]) == 2
-    assert "use --period month" in capsys.readouterr().err
+    assert "crosses that edge" in capsys.readouterr().err
 
 
 def test_cli_refuses_a_free_window_with_a_period(

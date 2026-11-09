@@ -18,6 +18,7 @@ from pathlib import Path
 
 from reach_around.funnel.csvout import csv_files, utc_now, write_csv_dir
 from reach_around.funnel.export import ExportError, load_exports
+from reach_around.funnel.ledger import LedgerError, Release, now_stamp, record_release
 from reach_around.funnel.report import FLOOR, build_report, render_text
 
 EXIT_OK = 0
@@ -65,6 +66,15 @@ def run_report(args: argparse.Namespace) -> int:
                 "the source and country tables are released for one fixed "
                 "calendar week or month only"
             )
+        if args.period == "month" and args.ledger is None:
+            raise ValueError(
+                "month releases of the source and country tables need --ledger "
+                "FILE (a release ledger keeps a week and a month over the same "
+                "day from both being released); without one only --period week "
+                "is released"
+            )
+        if args.ledger is not None and args.period is None:
+            raise ValueError("--ledger needs --period")
         if args.csv is not None and args.json:
             raise ValueError("--csv and --json cannot be combined")
         export = load_exports(list(args.input))
@@ -82,7 +92,15 @@ def run_report(args: argparse.Namespace) -> int:
             offset=args.offset,
             as_of=utc_now().date(),
         )
-    except (ExportError, ValueError) as exc:
+        if args.ledger is not None:
+            rel = report["release"]
+            record_release(
+                args.ledger,
+                Release(
+                    args.site, rel["period"], rel["start"], rel["end"], now_stamp()
+                ),
+            )
+    except (ExportError, ValueError, LedgerError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return EXIT_USAGE
     if args.csv is not None:
@@ -139,16 +157,24 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
         choices=("week", "month"),
         help="release the source and country by destination tables (and every "
         "other section) for ONE complete UTC calendar week (Monday start; only "
-        "inside the last 90 days, where day cells exist) or month (only months "
-        "older than that), with the floor applied to that period alone; these "
+        "only while all its day cells exist) or month (only with --ledger), "
+        "with the floor applied to that period alone; these "
         "tables are not released for a free --since/--until/--days window",
     )
     parser.add_argument(
         "--offset",
         type=int,
         default=0,
-        help="with --period: releasable periods back (0 is the latest week, or the "
-        "latest month wholly older than the day-cell range)",
+        help="with --period: complete periods back (0 is the latest complete one)",
+    )
+    parser.add_argument(
+        "--ledger",
+        type=Path,
+        metavar="FILE",
+        help="with --period: an append-only release ledger (keep it in your "
+        "private instance repo). Every release is recorded, and a release that "
+        "shares a UTC day with a released period of the other kind is refused. "
+        "Required for --period month; without it only weeks are released",
     )
     parser.add_argument(
         "--geo",

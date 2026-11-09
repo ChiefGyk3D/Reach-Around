@@ -212,37 +212,31 @@ DAILY_KEEP_DAYS = 90  # the Worker keeps day cells this many whole UTC days
 
 
 def period_bounds(period: str, offset: int, as_of: date) -> tuple[date, date]:
-    """First and last UTC day of a releasable calendar week (Monday start) or month.
+    """First and last UTC day of a complete calendar week (Monday start) or month.
 
-    One kind of period per stretch of time, so a week and a month never cover
-    the same day. Let B be the oldest day that still has day cells
-    (``as_of`` minus 89 days).
-
-    * weeks: only complete weeks that lie wholly on or after B (day cells
-      exist for all seven days). Offset 0 is the latest complete week.
-    * months: only months that lie wholly before B (their day cells are gone,
-      the monthly rollup row is the record). Offset 0 is the latest such month.
-
-    A week that crosses B and a month that crosses B are never released, and a
-    request that would reach into the other kind's range is refused.
+    The kind never depends on ``as_of``: weeks are read from day cells and
+    months from monthly rollup rows whatever the run date, so the same period
+    gives the same cells on any day. ``as_of`` only says which periods are
+    complete (the period containing it never is) and which weeks still have all
+    their day cells: a week reaching back past the day-cell range is refused.
+    Offset 0 is the latest complete period of the kind. Whether a month may be
+    released at all, and never with a week over the same day, is the release
+    ledger's rule (``reach_around.funnel.ledger``).
     """
     if offset < 0:
         raise ValueError("--offset cannot be negative")
-    oldest = as_of - timedelta(days=DAILY_KEEP_DAYS - 1)
     if period == "week":
         monday = as_of - timedelta(days=as_of.weekday())
         start = monday - timedelta(days=7 * (offset + 1))
-        if start < oldest:
+        if start < as_of - timedelta(days=DAILY_KEEP_DAYS - 1):
             raise ValueError(
-                "no complete week that far back: day cells exist for the last "
-                f"{DAILY_KEEP_DAYS} days only, so weeks are released inside that "
-                "range and a week that crosses its edge is withheld; use "
-                "--period month for older time"
+                "no releasable week that far back: day cells exist for the "
+                f"last {DAILY_KEEP_DAYS} days only, and a week that crosses "
+                "that edge is withheld"
             )
         return start, start + timedelta(days=6)
     if period == "month":
-        newest_end = oldest.replace(day=1) - timedelta(days=1)
-        index = newest_end.year * 12 + newest_end.month - 1 - offset
+        index = as_of.year * 12 + as_of.month - 1 - (offset + 1)
         if index < 0:
             raise ValueError("--offset is too large")
         start = date(index // 12, index % 12 + 1, 1)
@@ -268,6 +262,7 @@ def _funnel_cells(
     site: str,
     since: str | None,
     until: str | None,
+    kind: str | None = None,
 ) -> tuple[dict[str, dict[str, int]], list[str]]:
     """Link -> label -> clicks from the funnel counters in the window.
 
@@ -278,6 +273,10 @@ def _funnel_cells(
     counted twice. The floor is applied by the caller, after this sum.
     """
     monthly_rows = [r for r in monthly if r["site"] == site]
+    if kind == "week":
+        monthly_rows = []  # a week is day cells only
+    if kind == "month":
+        daily = []  # a month is its monthly rollup row only, whatever the run date
     use: set[str] = set()
     for month in {r["month"] for r in monthly_rows}:
         first, last = _month_span(month)
@@ -732,7 +731,13 @@ def build_report(
         else None
     )
     src_cells, src_months = _funnel_cells(
-        export.click_src_daily, export.click_src_monthly, "src", site, since, until
+        export.click_src_daily,
+        export.click_src_monthly,
+        "src",
+        site,
+        since,
+        until,
+        period,
     )
     country_cells, country_months = _funnel_cells(
         export.click_country_daily,
@@ -741,6 +746,7 @@ def build_report(
         site,
         since,
         until,
+        period,
     )
     matrix = _matrix_section(
         _link_breakdown(

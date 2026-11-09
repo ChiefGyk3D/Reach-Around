@@ -210,37 +210,49 @@ and country by link, per UTC day. They are incremented when a click arrives, so
 the country counter covers every click, including those that carry a source (a
 raw click row keeps a source label at most, never a country).
 
-**Fixed periods only, one kind per stretch of time.** The source by destination
-and country by destination tables are released for ONE complete UTC calendar
-period, chosen with `--period week|month` and `--offset N`:
+**Fixed periods only; weeks by default.** The source by destination and country
+by destination tables are released for ONE complete UTC calendar period, chosen
+with `--period week|month` and `--offset N` (0 is the latest complete one; the
+period containing today is never released):
 
-- **Weeks** (Monday start) only inside the range where day cells still exist,
-  the last 90 whole UTC days, and only complete weeks lying wholly inside it.
-  `--offset 0` is the latest complete week; a week that crosses the edge of the
-  range is withheld, and a request further back is refused with a pointer to
-  months.
-- **Months** only for months lying wholly before that range, whose day cells
-  are already gone and rolled into the monthly rows. `--offset 0` is the latest
-  such month; the month that crosses the edge is withheld until it is wholly
-  older.
+- **Weeks** (Monday start) are read from day cells and are always available:
+  `reach-around report --input EXPORT --period week`. A week reaching back past
+  the 90 day day-cell range, or crossing its edge, is refused.
+- **Months** are read from the monthly rollup rows and are released ONLY with a
+  release ledger: `--period month --ledger FILE`. Without `--ledger` a month is
+  refused with a message, and without a ledger only weeks are released. Months
+  stay available without one only as the per-dimension totals the other sections
+  already print (views, clicks, click rate, the link table over any `--since` /
+  `--until` window), which print no source by destination or country by
+  destination values.
 
-So a week and a month never cover the same day, the period containing today is
-never released, and releases on consecutive days print the same cells for the
-same period (the periods are fixed and complete, so successive reports cannot
-be differenced). The floor and the remainder rule apply to that period alone,
-and the same period also bounds every other section of that report, so the
-sections agree. Why not a free window: a floor applied to a free window can be
-beaten by asking for overlapping windows (three days of 3 clicks with a floor of
-6: days 1-2 and days 2-3 each print 6, and the daily values follow). So
-`--period` cannot be combined with `--since`, `--until` or `--days` (the command
-stops and says so), and without `--period` these two tables print "not
-released" while the aggregate sections (views, clicks, click rate, the link
-table) still honor a free window. `metadata.csv` records the period kind and its
-start and end.
+Which kind a period uses never depends on today's date, so the same week or the
+same month gives the same cells and the same suppression on any run date
+(decided by that period's data alone).
+
+**The release ledger** is an append-only, hash-chained JSON-lines file (the same
+approach as the social-stats history); keep it in your private instance repo. It
+records site, period kind, first and last UTC day and the release time, nothing
+else. The command records every cell release and REFUSES one that shares any UTC
+day with a previously released period of the OTHER kind (a week over days of a
+released month, or a month over days of released weeks): a reader holding both
+could difference them. Repeating the exact same period is allowed and not
+written again. A damaged ledger (a changed, removed or reordered line, a cut
+last line, a symlink, a record that breaks the rule) stops the command and
+prints nothing. The ledger protects against your own two reports disagreeing;
+it does not stop someone who holds reports you published without it.
+
+The floor and the remainder rule apply to the period alone, and the same period
+also bounds every other section of that report, so the sections agree. Why not
+a free window: a floor applied to a free window can be beaten by asking for
+overlapping windows (three days of 3 clicks with a floor of 6: days 1-2 and days
+2-3 each print 6, and the daily values follow). So `--period` cannot be combined
+with `--since`, `--until` or `--days`, and without `--period` these two tables
+print "not released" while the aggregate sections still honor a free window.
+`metadata.csv` records the period kind and its start and end.
 
 Day cells are kept 90 days; a closed month is rolled into the monthly tables,
-kept 25 months. A month period is read from its monthly row; a week is read from
-day cells. A month is never read both ways.
+kept 25 months. A month period is read from its monthly row only; a week from day cells only.
 
 Suppression is joint across these sections and the link table: within a
 destination, cells under the floor merge into one remainder line, and every
