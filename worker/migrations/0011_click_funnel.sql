@@ -82,12 +82,16 @@ CREATE TABLE IF NOT EXISTS click_budget (
   PRIMARY KEY (site, day, hour)
 ) WITHOUT ROWID;
 
--- An integrity marker: counting capacity ran out on this (site, day) (a slice of the budget or the
--- cell caps), so its cells are incomplete and the report does not release cells for it.
+-- A capacity counter: counting capacity ran out on this (site, day) (an hourly slice of the budget
+-- or the cell pools). first_hour is the UTC hour it began and folded the clicks that went into the
+-- overflow row (an upper bound). The report warns, and refuses cells for a period only when the
+-- folded share of its clicks is material (more than 5 percent).
 CREATE TABLE IF NOT EXISTS click_capacity (
   site TEXT NOT NULL CHECK (length(site) BETWEEN 1 AND 20 AND site NOT GLOB '*[^a-z0-9-]*'),
   day TEXT NOT NULL CHECK (length(day) = 10),
   marked_at INTEGER NOT NULL,
+  first_hour INTEGER NOT NULL CHECK (first_hour BETWEEN 0 AND 23),
+  folded INTEGER NOT NULL CHECK (folded >= 1),
   PRIMARY KEY (site, day)
 ) WITHOUT ROWID;
 
@@ -97,5 +101,6 @@ CREATE TABLE IF NOT EXISTS click_month_log (
   month TEXT NOT NULL CHECK (length(month) = 7),
   rolled_at INTEGER NOT NULL,
   exhausted_days INTEGER NOT NULL CHECK (exhausted_days >= 0),
+  folded_clicks INTEGER NOT NULL CHECK (folded_clicks >= 0),
   PRIMARY KEY (site, month)
 ) WITHOUT ROWID;

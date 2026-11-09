@@ -207,6 +207,9 @@ def _joint_click_sources(
 DIRECT = "direct"
 FOLDED = "other"
 UNKNOWN_COUNTRY = "ZZ"  # the Worker's label for an unknown or folded country
+# A cell release is refused when more than this percent of the period's clicks went into
+# the Worker's overflow row (counting capacity ran out); below it the report only warns.
+MAX_FOLDED_SHARE_PERCENT = 5.0
 HIGH_DIRECT_SHARE = 50.0  # percent of shown clicks that carry no source label
 
 
@@ -806,18 +809,27 @@ def _build_report(
         until,
         period,
     )
-    capacity_days = sorted(
-        r["day"]
+    cap_rows = [
+        r
         for r in export.click_capacity
         if r["site"] == site and _in_window(r["day"], since, until)
-    )
-    capacity_months = sorted(
-        r["month"]
+    ]
+    capacity_days = sorted(r["day"] for r in cap_rows)
+    seen_months = {d[:7] for d in capacity_days}
+    month_rows = [
+        r
         for r in export.click_month_log
         if r["site"] == site
         and r["exhausted_days"] > 0
+        and r["month"] not in seen_months
         and _month_in_window(r["month"], since, until)
+    ]
+    capacity_months = sorted(r["month"] for r in month_rows)
+    folded_clicks = sum(r["folded"] for r in cap_rows) + sum(
+        r["folded_clicks"] for r in month_rows
     )
+    period_clicks = sum(sum(row.values()) for row in country_cells.values())
+    share = round(folded_clicks * 100 / period_clicks, 1) if period_clicks else None
     matrix = _matrix_section(
         _link_breakdown(
             src_cells,
@@ -872,7 +884,13 @@ def _build_report(
         "links": links_section,
         "click_sources": {},  # joint suppression with "links", filled below
         "release": release,
-        "capacity": {"days": capacity_days, "months": capacity_months},
+        "capacity": {
+            "days": capacity_days,
+            "months": capacity_months,
+            "folded_clicks": folded_clicks,
+            "clicks": period_clicks,
+            "share_percent": share,
+        },
         "click_matrix": matrix,
         "click_countries": countries,
         **{
@@ -987,7 +1005,13 @@ def _funnel_sections(report: dict[str, Any], lines: list[str]) -> None:
         lines.append(
             "Warning: counting capacity was exhausted on "
             + ", ".join(exhausted)
-            + "; cell counts for those days are incomplete."
+            + "; cell counts for those days are incomplete"
+            + (
+                f" (about {cap['share_percent']}% of the clicks in this window "
+                "were counted in overflow)."
+                if cap["share_percent"] is not None
+                else "."
+            )
         )
     lines.append("Clicks by source and destination")
     if matrix["state"] == "period_required":

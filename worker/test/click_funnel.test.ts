@@ -129,7 +129,9 @@ describe("row bounds: reserved cells, hourly slices, one overflow row, an integr
       { link_id: OVERFLOW_LINK, src: "other", clicks: 1 },
     ]);
     expect(await cellsOf("click_src_daily", "src", "kick")).toEqual(["x3"]); // kick's own reserved cell
-    expect(await q("SELECT day FROM click_capacity")).toEqual([{ day: "2027-01-05" }]);
+    expect(await q("SELECT day, first_hour, folded FROM click_capacity")).toEqual([
+      { day: "2027-01-05", first_hour: 12, folded: 1 },
+    ]);
     // The other site is not affected by this site's pool.
     await count(ts, "nosrc", "twitch", "brandnew", "US");
     expect(await q("SELECT 1 FROM click_src_daily WHERE site = 'nosrc' AND src = 'brandnew'")).toHaveLength(1);
@@ -184,7 +186,9 @@ describe("row bounds: reserved cells, hourly slices, one overflow row, an integr
     await DB.prepare("INSERT INTO click_budget VALUES ('links','2027-01-05',3,?)").bind(HOUR_BUDGET).run();
     await count(early, "links", "twitch", "instagram", "US"); // past its slice: overflow
     expect(await q("SELECT 1 FROM click_src_daily WHERE link_id = 'twitch'")).toEqual([]);
-    expect(await q("SELECT day FROM click_capacity")).toEqual([{ day: "2027-01-05" }]);
+    expect(await q("SELECT day, first_hour, folded FROM click_capacity")).toEqual([
+      { day: "2027-01-05", first_hour: 3, folded: 2 },
+    ]);
     await count(ts, "links", "twitch", "bluesky", "US"); // hour 12: a new slice
     expect(await cellsOf("click_src_daily", "src", "twitch")).toEqual(["bluesky"]);
     // An existing cell keeps counting inside an exhausted slice.
@@ -271,13 +275,13 @@ describe("seals cover quiet days and the month log counts exhausted days", () =>
   it("the_month_log_records_how_many_days_were_marked_exhausted", async () => {
     await count(Date.UTC(2027, 0, 5, 12), "links", "twitch", "instagram", "US");
     await DB.batch([
-      DB.prepare("INSERT INTO click_capacity VALUES ('links','2027-01-05',1)"),
-      DB.prepare("INSERT INTO click_capacity VALUES ('links','2027-01-09',1)"),
-      DB.prepare("INSERT INTO click_capacity VALUES ('nosrc','2027-01-09',1)"),
+      DB.prepare("INSERT INTO click_capacity VALUES ('links','2027-01-05',1,3,10)"),
+      DB.prepare("INSERT INTO click_capacity VALUES ('links','2027-01-09',1,4,5)"),
+      DB.prepare("INSERT INTO click_capacity VALUES ('nosrc','2027-01-09',1,4,5)"),
     ]);
     await rollupClickFunnel({ DB }, Date.UTC(2027, 1, 10));
-    expect(await q("SELECT site, month, exhausted_days FROM click_month_log")).toEqual([
-      { site: "links", month: "2027-01", exhausted_days: 2 },
+    expect(await q("SELECT site, month, exhausted_days, folded_clicks FROM click_month_log")).toEqual([
+      { site: "links", month: "2027-01", exhausted_days: 2, folded_clicks: 15 },
     ]);
   });
 });
@@ -307,7 +311,7 @@ describe("monthly rollup and retention", () => {
   it("a_month_logged_for_one_site_does_not_suppress_another_and_nothing_is_rolled_twice", async () => {
     await count(Date.UTC(2027, 0, 5), "links", "twitch", "instagram", "US");
     await count(Date.UTC(2027, 0, 6), "nosrc", "twitch", "instagram", "US");
-    await DB.prepare("INSERT INTO click_month_log VALUES ('links','2027-01',1,0)").run();
+    await DB.prepare("INSERT INTO click_month_log VALUES ('links','2027-01',1,0,0)").run();
     const now = Date.UTC(2027, 1, 10);
     expect((await rollupClickFunnel({ DB }, now)).monthsRolled).toBe(1);
     expect(await q<{ site: string }>("SELECT DISTINCT site FROM click_src_monthly")).toEqual([{ site: "nosrc" }]);
@@ -382,7 +386,7 @@ describe("monthly rollup and retention", () => {
   it("monthly_rows_are_kept_25_months_and_not_longer", async () => {
     const rows = (m: string) => DB.prepare("INSERT INTO click_src_monthly VALUES ('links',?,'twitch','instagram',9)").bind(m);
     await DB.batch([rows("2024-12"), rows("2025-01"), rows("2026-12"), rows("2027-01")]);
-    await DB.batch(["2024-12", "2025-01"].map((m) => DB.prepare("INSERT INTO click_month_log VALUES ('links',?,1,0)").bind(m)));
+    await DB.batch(["2024-12", "2025-01"].map((m) => DB.prepare("INSERT INTO click_month_log VALUES ('links',?,1,0,0)").bind(m)));
     await DB.prepare("INSERT INTO click_country_monthly VALUES ('links','2024-12','twitch','US',9)").run();
     // Current month 2027-02: the 25 closed months are 2025-01 .. 2027-01.
     await rollupClickFunnel({ DB }, Date.UTC(2027, 1, 10));

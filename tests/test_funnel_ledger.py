@@ -344,10 +344,20 @@ def _tables(
     *,
     seal_days: int = 7,
     clicks: int = 9,
-    capacity: list[str] | None = None,
+    capacity: dict[str, int] | None = None,
+    total: int | None = None,
 ) -> dict[str, Any]:
     tables: dict[str, Any] = {
         "click_src_daily": [_row("2026-11-03", clicks)],
+        "click_country_daily": [
+            {
+                "site": "links",
+                "day": "2026-11-03",
+                "link_id": "twitch",
+                "country": "US",
+                "clicks": clicks if total is None else total,
+            }
+        ],
         "click_seal": [
             {
                 "site": "links",
@@ -359,7 +369,8 @@ def _tables(
     }
     if capacity:
         tables["click_capacity"] = [
-            {"site": "links", "day": d, "marked_at": 1} for d in capacity
+            {"site": "links", "day": d, "marked_at": 1, "first_hour": 3, "folded": n}
+            for d, n in capacity.items()
         ]
     return tables
 
@@ -439,6 +450,7 @@ def test_a_month_without_its_rollup_marker_is_refused(tmp_path: Path) -> None:
                         "month": "2026-09",
                         "rolled_at": 1,
                         "exhausted_days": 0,
+                        "folded_clicks": 0,
                     }
                 ],
             },
@@ -458,6 +470,7 @@ def test_a_month_without_its_rollup_marker_is_refused(tmp_path: Path) -> None:
                     "month": "2026-10",
                     "rolled_at": 1,
                     "exhausted_days": 0,
+                    "folded_clicks": 0,
                 }
             ],
         },
@@ -498,48 +511,116 @@ def test_the_digest_never_reaches_the_report(tmp_path: Path) -> None:
 # ---- counting capacity -----------------------------------------------------
 
 
-def test_a_period_with_an_exhausted_day_is_refused_for_cells(tmp_path: Path) -> None:
+def test_one_flooded_hour_under_the_limit_releases_with_a_warning(
+    tmp_path: Path,
+) -> None:
+    from reach_around.funnel.report import render_text
+
     ledger = fresh(tmp_path)
-    export = _load(tmp_path, _tables(capacity=["2026-11-04"]))
-    with pytest.raises(IncompletePeriod, match="exhausted on 2026-11-04"):
+    export = _load(tmp_path, _tables(total=1000, capacity={"2026-11-04": 30}))
+    report, status = release_report(export, ledger, period="week", as_of=AS_OF)
+    assert status == "release"
+    cap = report["capacity"]
+    assert cap["days"] == ["2026-11-04"] and cap["folded_clicks"] == 30
+    assert cap["share_percent"] == 3.0
+    text = render_text(report)
+    assert "counting capacity was exhausted on 2026-11-04" in text
+    assert "about 3.0% of the clicks" in text
+
+
+def test_a_heavy_flood_over_the_limit_refuses_with_the_numbers(
+    tmp_path: Path,
+) -> None:
+    ledger = fresh(tmp_path)
+    export = _load(tmp_path, _tables(total=1000, capacity={"2026-11-04": 600}))
+    with pytest.raises(IncompletePeriod, match="600 of 1000 clicks.*60.0%.*5.0%"):
         release_report(export, ledger, period="week", as_of=AS_OF)
     assert read_ledger(ledger) == []
 
 
-def test_a_month_with_exhausted_days_in_its_log_is_refused(tmp_path: Path) -> None:
+def test_the_limit_is_five_percent_and_one_hour_cannot_cross_it_in_a_normal_week(
+    tmp_path: Path,
+) -> None:
+    # 1000 normal clicks in the week; an attacker folds clicks in one hour of one day.
+    for folded, ok in ((40, True), (50, True), (51, False)):
+        ledger = fresh(tmp_path, f"l{folded}.jsonl")
+        export = _load(
+            tmp_path,
+            _tables(total=1000, capacity={"2026-11-04": folded}),
+            f"e{folded}.json",
+        )
+        if ok:
+            release_report(export, ledger, period="week", as_of=AS_OF)
+        else:
+            with pytest.raises(IncompletePeriod, match="exhausted"):
+                release_report(export, ledger, period="week", as_of=AS_OF)
+
+
+def test_capacity_with_no_counted_clicks_is_refused(tmp_path: Path) -> None:
     ledger = fresh(tmp_path)
-    export = _load(
-        tmp_path,
-        {
-            "click_src_monthly": [
-                {
-                    "site": "links",
-                    "month": "2026-10",
-                    "link_id": "t",
-                    "src": "a",
-                    "clicks": 30,
-                }
-            ],
-            "click_month_log": [
-                {
-                    "site": "links",
-                    "month": "2026-10",
-                    "rolled_at": 1,
-                    "exhausted_days": 2,
-                }
-            ],
-        },
-    )
+    tables = _tables(capacity={"2026-11-04": 3})
+    tables["click_country_daily"] = []
+    with pytest.raises(IncompletePeriod, match="no clicks counted"):
+        release_report(_load(tmp_path, tables), ledger, period="week", as_of=AS_OF)
+
+
+def _month_tables(total: int, exhausted: int, folded: int) -> dict[str, Any]:
+    return {
+        "click_src_monthly": [
+            {
+                "site": "links",
+                "month": "2026-10",
+                "link_id": "t",
+                "src": "a",
+                "clicks": total,
+            }
+        ],
+        "click_country_monthly": [
+            {
+                "site": "links",
+                "month": "2026-10",
+                "link_id": "t",
+                "country": "US",
+                "clicks": total,
+            }
+        ],
+        "click_month_log": [
+            {
+                "site": "links",
+                "month": "2026-10",
+                "rolled_at": 1,
+                "exhausted_days": exhausted,
+                "folded_clicks": folded,
+            }
+        ],
+    }
+
+
+def test_a_month_follows_the_same_share_rule_from_its_rollup_marker(
+    tmp_path: Path,
+) -> None:
+    ledger = fresh(tmp_path)
+    ok = _load(tmp_path, _month_tables(2000, 2, 80))
+    report, _ = release_report(ok, ledger, period="month", as_of=date(2026, 11, 9))
+    assert report["capacity"]["months"] == ["2026-10"]
+    assert report["capacity"]["share_percent"] == 4.0
+    bad = _load(tmp_path, _month_tables(2000, 2, 400), "bad.json")
     with pytest.raises(IncompletePeriod, match="exhausted"):
-        release_report(export, ledger, period="month", as_of=date(2026, 11, 9))
+        release_report(
+            bad, fresh(tmp_path, "m.jsonl"), period="month", as_of=date(2026, 11, 9)
+        )
 
 
 def test_the_report_warns_about_exhausted_days_in_its_window(tmp_path: Path) -> None:
     from reach_around.funnel.report import render_text
 
-    export = _load(tmp_path, _tables(capacity=["2026-11-04", "2026-11-06"]))
+    export = _load(
+        tmp_path,
+        _tables(total=500, capacity={"2026-11-04": 10, "2026-11-06": 5}),
+    )
     report = build_report(export, since="2026-11-01", until="2026-11-30")
     assert report["capacity"]["days"] == ["2026-11-04", "2026-11-06"]
+    assert report["capacity"]["folded_clicks"] == 15
     text = render_text(report)
     assert (
         "counting capacity was exhausted on 2026-11-04, 2026-11-06; cell counts "
@@ -568,6 +649,15 @@ def _live_tables(clicks: int = 9, capacity: bool = False) -> dict[str, Any]:
     monday = _latest_week()
     tables: dict[str, Any] = {
         "click_src_daily": [_row((monday + timedelta(days=1)).isoformat(), clicks)],
+        "click_country_daily": [
+            {
+                "site": "links",
+                "day": (monday + timedelta(days=1)).isoformat(),
+                "link_id": "twitch",
+                "country": "US",
+                "clicks": clicks,
+            }
+        ],
         "click_seal": [
             {
                 "site": "links",
@@ -579,7 +669,13 @@ def _live_tables(clicks: int = 9, capacity: bool = False) -> dict[str, Any]:
     }
     if capacity:
         tables["click_capacity"] = [
-            {"site": "links", "day": monday.isoformat(), "marked_at": 1}
+            {
+                "site": "links",
+                "day": monday.isoformat(),
+                "marked_at": 1,
+                "first_hour": 3,
+                "folded": 900,
+            }
         ]
     return tables
 

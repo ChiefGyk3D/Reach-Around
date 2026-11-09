@@ -109,16 +109,21 @@ export function clickCounterStatements(
       .prepare(insert("click_country_daily", "country", "site, day, link_id, country"))
       .bind(p.site, day, p.linkId, p.country ?? UNKNOWN_COUNTRY, COUNTRY_DAY_CAP, RESERVED_PER_LINK, HOUR_BUDGET, OVERFLOW_LINK, UNKNOWN_COUNTRY, "", hour),
   );
-  // The integrity marker: an overflow row means counting capacity ran out on this (site, day), so the
-  // report must not release cells for it. Idempotent; written only when an overflow row exists.
+  // The capacity counter: once an overflow row exists for this (site, day), record the hour it began
+  // and how many clicks went into overflow (the overflow rows' counts, both tables added, so the
+  // figure is an upper bound on the clicks affected). The report refuses cells for a period only
+  // when that share is material, and warns below it. Idempotent; a counter, not a flag.
   out.push(
     db
       .prepare(
-        "INSERT OR IGNORE INTO click_capacity (site, day, marked_at) SELECT ?1, ?2, ?4 " +
+        "INSERT INTO click_capacity (site, day, marked_at, first_hour, folded) SELECT ?1, ?2, ?4, ?5, " +
+          "(SELECT COALESCE(SUM(clicks), 0) FROM click_src_daily WHERE site = ?1 AND day = ?2 AND link_id = ?3) + " +
+          "(SELECT COALESCE(SUM(clicks), 0) FROM click_country_daily WHERE site = ?1 AND day = ?2 AND link_id = ?3) " +
           `${guard}AND (EXISTS (SELECT 1 FROM click_src_daily WHERE site = ?1 AND day = ?2 AND link_id = ?3) ` +
-          "OR EXISTS (SELECT 1 FROM click_country_daily WHERE site = ?1 AND day = ?2 AND link_id = ?3))",
+          "OR EXISTS (SELECT 1 FROM click_country_daily WHERE site = ?1 AND day = ?2 AND link_id = ?3)) " +
+          "ON CONFLICT (site, day) DO UPDATE SET folded = excluded.folded",
       )
-      .bind(p.site, day, OVERFLOW_LINK, p.ts - (p.ts % HOUR_MS)),
+      .bind(p.site, day, OVERFLOW_LINK, p.ts - (p.ts % HOUR_MS), hour),
   );
   // The hourly slice of the site-wide new-cell budget: clicks counted this hour.
   out.push(
@@ -212,8 +217,9 @@ export async function rollupClickFunnel(env: FunnelRollupEnv, nowMs: number): Pr
         .bind(site, m, COUNTRY_MONTH_CAP, OVERFLOW_LINK),
       db
         .prepare(
-          "INSERT OR IGNORE INTO click_month_log (site, month, rolled_at, exhausted_days) VALUES (?1, ?2, ?3, " +
-            "(SELECT count(*) FROM click_capacity WHERE site = ?1 AND substr(day, 1, 7) = ?2))",
+          "INSERT OR IGNORE INTO click_month_log (site, month, rolled_at, exhausted_days, folded_clicks) VALUES (?1, ?2, ?3, " +
+            "(SELECT count(*) FROM click_capacity WHERE site = ?1 AND substr(day, 1, 7) = ?2), " +
+            "(SELECT COALESCE(SUM(folded), 0) FROM click_capacity WHERE site = ?1 AND substr(day, 1, 7) = ?2))",
         )
         .bind(site, m, nowMs),
     ]);

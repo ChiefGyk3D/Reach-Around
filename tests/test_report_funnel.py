@@ -922,9 +922,16 @@ def test_evidence_tables_load_and_are_told_apart(tmp_path: Path) -> None:
                 {
                     "click_seal": [{"site": "links", "day": DAY, "sealed_at": 1}],
                     "click_month_log": [
-                        {"month": "2026-10", "rolled_at": 1, "exhausted_days": 0}
+                        {
+                            "month": "2026-10",
+                            "rolled_at": 1,
+                            "exhausted_days": 0,
+                            "folded_clicks": 0,
+                        }
                     ],
-                    "click_capacity": [{"day": DAY, "marked_at": 1}],
+                    "click_capacity": [
+                        {"day": DAY, "marked_at": 1, "first_hour": 3, "folded": 4}
+                    ],
                 },
             )
         ]
@@ -937,8 +944,20 @@ def test_evidence_tables_load_and_are_told_apart(tmp_path: Path) -> None:
     [
         ("click_seal", {"day": "2026-13-01", "sealed_at": 1}),
         ("click_seal", {"day": DAY, "sealed_at": 1, "ip": "x"}),
-        ("click_month_log", {"month": "2026-10", "rolled_at": 1, "exhausted_days": -1}),
-        ("click_capacity", {"day": DAY, "marked_at": "now"}),
+        (
+            "click_month_log",
+            {
+                "month": "2026-10",
+                "rolled_at": 1,
+                "exhausted_days": -1,
+                "folded_clicks": 0,
+            },
+        ),
+        (
+            "click_capacity",
+            {"day": DAY, "marked_at": "now", "first_hour": 3, "folded": 1},
+        ),
+        ("click_capacity", {"day": DAY, "marked_at": 1, "first_hour": 3, "folded": 0}),
     ],
 )
 def test_hostile_evidence_rows_are_refused(

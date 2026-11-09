@@ -29,7 +29,11 @@ from reach_around.funnel.ledger import (
     now_stamp,
     record_release,
 )
-from reach_around.funnel.report import _build_report, period_bounds
+from reach_around.funnel.report import (
+    MAX_FOLDED_SHARE_PERCENT,
+    _build_report,
+    period_bounds,
+)
 
 
 class IncompletePeriod(ValueError):
@@ -38,12 +42,7 @@ class IncompletePeriod(ValueError):
 
 def _evidence(export: Export, site: str, period: str, start: date, end: date) -> None:
     """Refuse unless the export proves the period is closed and was fully counted."""
-    first, last = start.isoformat(), end.isoformat()
-    exhausted = sorted(
-        r["day"]
-        for r in export.click_capacity
-        if r["site"] == site and first <= r["day"] <= last
-    )
+    first = start.isoformat()
     if period == "week":
         if "click_seal" not in export.present:
             raise IncompletePeriod(
@@ -78,14 +77,27 @@ def _evidence(export: Export, site: str, period: str, start: date, end: date) ->
                 "the month has no completed rollup marker in this export; export "
                 "again after the Worker has rolled the month up"
             )
-        if logged[0]["exhausted_days"] > 0:
-            exhausted = exhausted or ["(see the month marker)"]
-    if exhausted:
+
+
+def _capacity(report: dict[str, Any]) -> None:
+    """Refuse when a material share of the period's clicks went into overflow.
+
+    One flooded hour must not deny the release, so a small folded share only
+    warns (the report prints it); above ``MAX_FOLDED_SHARE_PERCENT`` the cells
+    are too incomplete to release.
+    """
+    cap = report["capacity"]
+    if not cap["days"] and not cap["months"]:
+        return
+    share = cap["share_percent"]
+    if share is None or share > MAX_FOLDED_SHARE_PERCENT:
+        days = ", ".join([*cap["days"], *cap["months"]])
         raise IncompletePeriod(
-            "counting capacity was exhausted on "
-            + ", ".join(exhausted)
-            + "; cell counts for those days are incomplete, so no cells are "
-            "released for a period that contains them"
+            f"counting capacity was exhausted on {days}: {cap['folded_clicks']} "
+            f"of {cap['clicks']} clicks in this period went into overflow "
+            f"({'no clicks counted' if share is None else f'{share}%'}), over the "
+            f"limit of {MAX_FOLDED_SHARE_PERCENT}%; cell counts are too incomplete "
+            "to release"
         )
 
 
@@ -117,6 +129,7 @@ def release_report(
     report, digest = _build_report(
         export, site=site, period=period, offset=offset, as_of=as_of, **kw
     )
+    _capacity(report)
     status = record_release(
         ledger,
         Release(site, period, start.isoformat(), end.isoformat(), now_stamp(), digest),

@@ -163,8 +163,8 @@ FUNNEL_ROWS = (
     + _ins("click_seal", "site, day, sealed_at", "'links', '2027-01-05', 1792000000000")
     + _ins(
         "click_month_log",
-        "site, month, rolled_at, exhausted_days",
-        "'links', '2027-01', 1792000000000, 0",
+        "site, month, rolled_at, exhausted_days, folded_clicks",
+        "'links', '2027-01', 1792000000000, 0, 0",
     )
 )
 

@@ -440,11 +440,13 @@ identifier, no address, no pair of source and country.
   the day. Anything past them goes into ONE overflow row per (site, day)
   (`overflow-all`, with `other` or `ZZ`), so a day holds at most the pool plus
   3 cells per destination plus one row. Counting never stops: existing cells and
-  the overflow row keep adding. The first overflow marks the day in
-  `click_capacity`, the report warns about it and refuses cells for a period that
-  contains it. A destination flooded with fake labels cannot take another
+  the overflow row keep adding. The first overflow records the day in
+  `click_capacity` (the hour it began and a counter of the clicks folded into
+  overflow); the report warns about it and refuses cells for a period only when
+  the folded share of the period's clicks is over 5 percent, so one flooded hour
+  cannot deny a release. A destination flooded with fake labels cannot take another
   destination's reserved cells. The monthly tables fold the same way and the
-  month log keeps the count of marked days.
+  month log keeps the count of marked days and of folded clicks.
 - **Threat model for release integrity.** The cell report is run by the owner on
   his own machine over his own private data; he is a trusted operator. The release
   ledger, its head file, the input digest and the completeness evidence stop

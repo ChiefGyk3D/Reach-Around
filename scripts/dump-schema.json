@@ -14,7 +14,9 @@
     "click_capacity": [
       "site",
       "day",
-      "marked_at"
+      "marked_at",
+      "first_hour",
+      "folded"
     ],
     "click_country_daily": [
       "site",
@@ -42,7 +44,8 @@
       "site",
       "month",
       "rolled_at",
-      "exhausted_days"
+      "exhausted_days",
+      "folded_clicks"
     ],
     "click_seal": [
       "site",
@@ -230,12 +233,15 @@
   "numeric": {
     "click_budget.clicks": "small",
     "click_budget.hour": "small",
+    "click_capacity.first_hour": "small",
+    "click_capacity.folded": "small",
     "click_capacity.marked_at": "ms",
     "click_country_daily.clicks": "small",
     "click_country_monthly.clicks": "small",
     "click_events.id": "small",
     "click_events.ts": "ms",
     "click_month_log.exhausted_days": "small",
+    "click_month_log.folded_clicks": "small",
     "click_month_log.rolled_at": "ms",
     "click_seal.sealed_at": "ms",
     "click_src_daily.clicks": "small",

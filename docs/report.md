@@ -136,8 +136,8 @@ agent, so a correct export never trips this. If it does, the export is wrong.
 | `view_dim_daily` | `day, dim, value, bot_class, views` [`site, day_tz, uniques`]; also feeds Devices, Browsers, Systems and the bot reasons |
 | `view_geo_daily` | `day, country, region, city, bot_class, views` [`site, day_tz, uniques`] |
 | `click_seal` | `day, sealed_at` [`site`] (needed for a week) |
-| `click_month_log` | `month, rolled_at, exhausted_days` [`site`] (needed for a month) |
-| `click_capacity` | `day, marked_at` [`site`] (days counting capacity ran out) |
+| `click_month_log` | `month, rolled_at, exhausted_days, folded_clicks` [`site`] (needed for a month) |
+| `click_capacity` | `day, marked_at, first_hour, folded` [`site`] (days counting capacity ran out) |
 | `click_events` | `ts, link_id` [`site, src`]; the `country` column is always empty now (country lives only in the click counters), do not rely on it |
 | `click_src_daily`, `click_country_daily` | `day, link_id, src` (or `country`), `clicks` [`site`] |
 | `click_src_monthly`, `click_country_monthly` | `month` (`YYYY-MM`), `link_id, src` (or `country`), `clicks` [`site`] |
@@ -271,11 +271,16 @@ is recorded.
 
 **Counting capacity.** If the Worker ran out of counting capacity on a day (an
 hour's slice of the new-cell budget or the cell pools, usually a flood of
-requests), it marks that day in `click_capacity` and puts the overflow into one
-`overflow-all` row. Every report prints "counting capacity was exhausted on
-<days>; cell counts for those days are incomplete" for days in its window, and a
-week or month containing such a day is refused for cell release (a month carries
-the count of exhausted days in its rollup marker).
+requests), it records that day in `click_capacity` (the UTC hour it began and
+the number of clicks that went into the one `overflow-all` row, an upper bound)
+and keeps counting. One flooded hour must not deny you a release, so the rule is
+about the SHARE: every report prints "counting capacity was exhausted on <days>;
+cell counts for those days are incomplete" with the folded share of the clicks in
+its window, and a cell release still goes ahead while the folded share of the
+period's clicks is at most 5 percent (`MAX_FOLDED_SHARE_PERCENT`). Above that, or
+when capacity ran out and no clicks were counted, the release is refused with the
+numbers. A month carries the count of exhausted days and folded clicks in its
+rollup marker (`click_month_log`).
 
 Which kind a period uses never depends on today's date, so the same week or the
 same month gives the same cells and the same suppression on any run date
