@@ -8,6 +8,7 @@ every resolved address again at connect time.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
@@ -124,6 +125,30 @@ def _secret(env: Mapping[str, str], name: str) -> str:
     return value
 
 
+_FETCH_WORDS = frozenset(
+    {
+        "bad_json",
+        "bad_url",
+        "content_encoding",
+        "content_type",
+        "redirect",
+        "too_large",
+        "rate_limited",
+        "server_error",
+        "egress_scheme",
+        "egress_port",
+        "egress_host_syntax",
+        "egress_non_public_address",
+        "egress_no_address",
+        "egress_resolution_failed",
+        "egress_resolution_timeout",
+        "egress_resolution_busy",
+        "egress_connect_failed",
+        "egress_tls_failed",
+        "egress_timeout",
+    }
+)
+_HTTP_WORD = re.compile(r"http_[45][0-9]{2}", re.ASCII)
 _YOUTUBE_HOSTS = frozenset({"www.googleapis.com"})
 _TWITCH_HOSTS = frozenset({"id.twitch.tv", "api.twitch.tv"})
 
@@ -140,16 +165,21 @@ def _guarded_fetch(
     parts = urlsplit(url)
     if parts.scheme != "https" or parts.hostname not in hosts or parts.port:
         raise SourceError("bad_host")
-    failed = False
+    word = "fetch_failed"
     try:
         return ctx.fetch(url, follow_redirects=False, **kwargs)
-    except FetchError:
-        raise
+    except FetchError as exc:
+        # only a word from the closed set crosses; the exception itself, its
+        # args, code and text are dropped
+        found = exc.kind if type(exc.kind) is str else ""
+        if found in _FETCH_WORDS or _HTTP_WORD.fullmatch(found):
+            word = found
+        failure_is_fetch_error = True
     except Exception:
-        failed = True
-    if failed:
-        raise SourceError("fetch_failed")
-    raise SourceError("fetch_failed")  # unreachable
+        failure_is_fetch_error = False
+    if failure_is_fetch_error:
+        raise FetchError(word)
+    raise SourceError("fetch_failed")
 
 
 def _object(payload: Mapping[str, object], key: str) -> Mapping[str, object]:

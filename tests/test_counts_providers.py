@@ -667,3 +667,44 @@ def test_twitch_app_path_calls_go_to_fixed_hosts_without_redirects() -> None:
         PROVIDERS["twitch"](TW, context)
     assert seen and seen[0][0] == AUTH_URL
     assert all(kw.get("follow_redirects") is False for _, kw in seen)
+
+
+# ---- FetchError text never crosses the guarded boundary ------
+
+
+class _LeakyError(FetchError):
+    pass
+
+
+def _leaky(kind: str) -> Context:
+    def boom(url: str, **kwargs: Any) -> dict[str, object]:
+        err = _LeakyError(f"{kind} {kwargs['headers']} {url}")
+        err.kind = kind
+        err.code = f"code {KEY}"
+        err.args = (KEY, url, kwargs)
+        raise err
+
+    return Context(fetch=boom, env={**TW_ENV, "YOUTUBE_API_KEY": KEY})
+
+
+@pytest.mark.parametrize("source", [YT, TW])
+@pytest.mark.parametrize(
+    ("kind", "expected"),
+    [
+        ("http_404", "http_404"),
+        ("redirect", "redirect"),
+        ("egress_timeout", "egress_timeout"),
+        (f"http_500 {KEY}", "fetch_failed"),
+        ("anything else", "fetch_failed"),
+        (KEY, "fetch_failed"),
+    ],
+)
+def test_fetch_error_text_is_sanitized(source: Any, kind: str, expected: str) -> None:
+    with pytest.raises((FetchError, SourceError)) as caught:
+        PROVIDERS[source.kind](source, _leaky(kind))
+    err = caught.value
+    text = repr(err) + str(err) + repr(err.args) + repr(getattr(err, "code", None))
+    assert "SENTINEL" not in text and "googleapis" not in text and "twitch" not in text
+    assert type(err) in (FetchError, SourceError)
+    assert getattr(err, "kind", None) == expected
+    assert err.__cause__ is None and err.__context__ is None
