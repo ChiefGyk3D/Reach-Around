@@ -1197,6 +1197,26 @@ The privacy page at `/privacy/` and the cookie notice are generated from the
 enabled features, so they cannot claim less than the site does. See
 [privacy by construction](education/privacy-by-construction.md).
 
+## `alerts`
+
+Owner alerts from the Worker (issue #252). Default off. The section only
+chooses; destinations and secrets are Worker bindings. Setup, contents and
+privacy: [alerts](alerts.md). Unknown keys are refused.
+
+| Key | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| `channels` | list of `discord`, `matrix`, `email` | none | Where alerts go. Each needs its bindings; email has no provider yet. |
+| `events` | list of `kit_unlocked`, `lead_captured`, `gate_failed_repeatedly` | none | What alerts. Both lists must be non-empty for anything to be sent. |
+| `visitor_email` | `full`, `masked`, `none` | `full` | How the visitor's address appears in an alert. |
+| `max_per_minute` | integer, 1-30 | `5` | Messages one channel sends per minute before the rest are held back. |
+
+```yaml
+alerts:
+  channels: [discord]
+  events: [kit_unlocked, lead_captured]
+  visitor_email: masked
+```
+
 ## `footer`
 
 The footer of every generated page (each tab, the privacy page and any other
