@@ -1978,6 +1978,23 @@
           "title": "Frame",
           "type": "string"
         },
+        "frame_l3_max": {
+          "default": 1,
+          "description": "Most L3 border frames on one page (theme.frame: l3 only).",
+          "maximum": 64,
+          "minimum": 1,
+          "title": "Frame L3 Max",
+          "type": "integer"
+        },
+        "frame_motion": {
+          "default": "none",
+          "enum": [
+            "none",
+            "live"
+          ],
+          "title": "Frame Motion",
+          "type": "string"
+        },
         "mascot": {
           "anyOf": [
             {
@@ -2338,6 +2355,8 @@
           "license": null
         },
         "frame": "none",
+        "frame_l3_max": 1,
+        "frame_motion": "none",
         "mascot": null,
         "mascot_opacity": null,
         "mascot_position": null,

@@ -1,8 +1,9 @@
 {# SPDX-License-Identifier: Apache-2.0 #}
+{% import "_frames.html" as frames with context %}
 {% from "_macros.html" import link_anchor with context %}
 <li class="block block-section">
 <details class="section"{% if not block.collapsed %} open{% endif %}>
-<summary>{{ block.title }}</summary>
+<summary{% if frame_plan %} class="{{ frames.cls("head")|trim }}"{% endif %}>{{ block.title }}</summary>
 {% if block.subtitle %}
 <p class="section-subtitle">{{ block.subtitle }}</p>
 {% endif %}
