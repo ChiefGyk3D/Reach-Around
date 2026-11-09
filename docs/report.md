@@ -273,17 +273,27 @@ is recorded.
 counting capacity on a day (an hour's slice of the new-cell budget or the cell
 pools, usually a flood of requests), it records the day in `click_capacity` (the
 UTC hour it began and how many clicks went into the one `overflow-all` row, each
-click counted once) and keeps counting. Public traffic must never veto your
-release, so the release always goes ahead. The report carries only a COARSE
-status, in text, JSON and `metadata.csv` (`counting_capacity`): `none`, `under`
-(under 5 percent of the period's clicks went into overflow; a warning line says
-the cell tables are slightly incomplete) or `over` (more than 5 percent, or
-capacity ran out with no clicks counted; the warning says the cell tables are
-incomplete and may be biased and that you decide whether to publish). The exact
-days, folded clicks and share are never in a released report or file: run with
-`--diagnostics` to see them on your terminal (stderr) only, and do not publish
-them. A month carries the exhausted-day and folded-click counts in its rollup
-marker (`click_month_log`).
+click counted once) and keeps counting. The hourly budget counts NEW CELLS
+created, not clicks, so a flood of clicks on existing cells cannot use it up.
+Public traffic must never veto your release, so the release always goes ahead.
+The report carries only a COARSE status, in text, JSON (`capacity.status` and
+`capacity.warning`) and `metadata.csv` (`counting_capacity` and
+`counting_capacity_warning`):
+
+- `none`: nothing ran out; the warning is empty.
+- `exhausted`: ANY folding happened in the period. Individual cells may be
+  selectively missing or biased even when the share of clicks affected is small,
+  so this is never described as slightly incomplete.
+- `over_5_percent`: more than 5 percent of the period's clicks went into overflow
+  (or capacity ran out with no clicks counted). The tables are incomplete and may
+  be biased; you decide whether to publish.
+
+For both non-`none` statuses the machine-readable warning code is
+`cell_tables_may_be_incomplete_or_biased`. The exact days, folded clicks and
+share are never in a released report or file: run with `--diagnostics` to see
+them on your terminal (stderr) only, and do not publish them. A month carries
+the exhausted-day and folded-click counts in its rollup marker
+(`click_month_log`).
 
 **Quiet periods.** The Worker seals every closed day and logs every closed month
 for each configured site, from the day it first saw the site, even with no click
@@ -332,7 +342,7 @@ overlapping windows (three days of 3 clicks with a floor of 6: days 1-2 and days
 2-3 each print 6, and the daily values follow). So `--period` cannot be combined
 with `--since`, `--until` or `--days`, and without `--period` these two tables
 print "not released" while the aggregate sections still honor a free window.
-`metadata.csv` records the period kind, its start and end and the coarse capacity status.
+`metadata.csv` records the period kind, its start and end, the coarse capacity status and its warning code.
 
 Day cells are kept 90 days; a closed month is rolled into the monthly tables,
 kept 25 months. A month period is read from its monthly row only; a week from day cells only.

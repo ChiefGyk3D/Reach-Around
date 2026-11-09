@@ -435,16 +435,16 @@ identifier, no address, no pair of source and country.
 - **Row bounds and abuse limits.** Per (site, day): a general pool of 110 source
   cells and 160 country cells, 2 reserved cells per destination (and one
   `direct` source cell per destination, always), and an hourly slice of the
-  new-cell budget (50,000 clicks a day, ceil(50,000/24) per UTC hour in
-  `click_budget`) so flooding in one hour cannot stop new cells for the rest of
-  the day. Anything past them goes into ONE overflow row per (site, day)
+  new-cell budget (150 NEW CELLS per UTC hour in `click_budget`; clicks on
+  existing cells never use it) so flooding in one hour cannot stop new cells for
+  the rest of the day, and a flood of clicks cannot exhaust it. Anything past them goes into ONE overflow row per (site, day)
   (`overflow-all`, with `other` or `ZZ`), so a day holds at most the pool plus
   3 cells per destination plus one row. Counting never stops: existing cells and
   the overflow row keep adding. The first overflow records the day in
   `click_capacity` (the hour it began and a counter of the clicks folded into
   overflow, each click once, even if it overflowed on both axes). The report
-  carries only a coarse status (none, under 5 percent, over 5 percent) and a
-  warning; public traffic never vetoes a release. Exact figures are for the
+  carries only a coarse status (none, exhausted for any folding, over_5_percent)
+  and a warning code; public traffic never vetoes a release. Exact figures are for the
   operator's terminal only (`--diagnostics`). A destination flooded with fake labels cannot take another
   destination's reserved cells. The monthly tables fold the same way and the
   month log keeps the count of marked days and of folded clicks.

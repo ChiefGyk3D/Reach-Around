@@ -210,6 +210,8 @@ UNKNOWN_COUNTRY = "ZZ"  # the Worker's label for an unknown or folded country
 # A cell release is refused when more than this percent of the period's clicks went into
 # the Worker's overflow row (counting capacity ran out); below it the report only warns.
 MAX_FOLDED_SHARE_PERCENT = 5.0
+# Coarse, non-numeric code carried by JSON and CSV when any capacity ran out.
+CAPACITY_WARNING = "cell_tables_may_be_incomplete_or_biased"
 HIGH_DIRECT_SHARE = 50.0  # percent of shown clicks that carry no source label
 
 
@@ -836,9 +838,9 @@ def _build_report(
     if not cap_rows and not month_rows:
         capacity_status = "none"
     elif share is None or share > MAX_FOLDED_SHARE_PERCENT:
-        capacity_status = "over"
+        capacity_status = "over_5_percent"
     else:
-        capacity_status = "under"
+        capacity_status = "exhausted"
     if diagnostics is not None:  # operator-only: never part of the report
         diagnostics.update(
             days=capacity_days,
@@ -901,7 +903,10 @@ def _build_report(
         "links": links_section,
         "click_sources": {},  # joint suppression with "links", filled below
         "release": release,
-        "capacity": {"status": capacity_status},
+        "capacity": {
+            "status": capacity_status,
+            "warning": CAPACITY_WARNING if capacity_status != "none" else "",
+        },
         "click_matrix": matrix,
         "click_countries": countries,
         **{
@@ -1011,13 +1016,14 @@ def _funnel_sections(report: dict[str, Any], lines: list[str]) -> None:
             f"{rel['start']} to {rel['end']} UTC"
         )
     status = report["capacity"]["status"]
-    if status == "under":
+    if status == "exhausted":
         lines.append(
-            "Warning: counting capacity ran out for part of this period; a small "
-            "share of its clicks (under 5 percent) was counted in overflow, so the "
-            "cell tables are slightly incomplete."
+            "Warning: counting capacity ran out during this period. Individual "
+            "cells may be missing or biased even though the share of clicks "
+            "affected is small (under 5 percent); the cell tables may be "
+            "incomplete or biased."
         )
-    elif status == "over":
+    elif status == "over_5_percent":
         lines.append(
             "Warning: counting capacity ran out in this period and more than 5 "
             "percent of its clicks were counted in overflow; the cell tables are "

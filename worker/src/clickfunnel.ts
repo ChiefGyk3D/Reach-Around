@@ -34,12 +34,12 @@ export const RESERVED_PER_LINK = 2;
 export const SRC_MONTH_CAP = 300;
 export const COUNTRY_MONTH_CAP = 400;
 /**
- * Clicks per (site, day) the new-cell budget is sized for; each UTC hour gets an equal slice, so
- * flooding in one hour cannot stop new cells for the rest of the day. Past a slice counting goes on
- * (existing cells and the overflow row) and the day is marked as exhausted.
+ * New cells a (site, day, UTC hour) may create. The admission budget counts NEW CELLS only, never
+ * clicks, so a flood of clicks on existing cells cannot use it up; each hour has its own slice, so
+ * an early burst of new labels cannot stop new cells for the rest of the day. Past a slice, counting
+ * goes on (existing cells and the overflow row) and the day is recorded in `click_capacity`.
  */
-export const SITE_DAY_BUDGET = 50_000;
-export const HOUR_BUDGET = Math.ceil(SITE_DAY_BUDGET / 24);
+export const HOUR_BUDGET = 150;
 /** The one overflow link per (site, day) and per (site, month): every cell past the cap lands here. */
 export const OVERFLOW_LINK = "overflow-all";
 export const DAY_KEEP_DAYS = 90;
@@ -130,14 +130,21 @@ export function clickCounterStatements(
       .prepare(insert("click_country_daily", "country", "site, day, link_id, country", "''"))
       .bind(p.site, day, p.linkId, countryLabel, COUNTRY_DAY_CAP, RESERVED_PER_LINK, HOUR_BUDGET, OVERFLOW_LINK, UNKNOWN_COUNTRY, null, hour),
   );
-  // The hourly slice of the site-wide new-cell budget: clicks counted this hour.
+  // The hourly slice of the new-cell budget, AFTER the inserts: it counts the cells THIS click made.
+  // A cell the insert just made holds exactly 1 click (an older cell holds more, and a folded click
+  // makes no (link, label) cell), so click volume on existing cells never uses the budget up.
+  const made = (table: string, col: string, label: string) =>
+    `(SELECT count(*) FROM ${table} WHERE site = ?1 AND day = ?2 AND link_id = ?3 AND ${col} = ${label} AND clicks = 1)`;
+  const madeSrc = p.listsSources ? `${made("click_src_daily", "src", "?4")} + ` : "";
+  const madeAll = `${madeSrc}${made("click_country_daily", "country", "?5")}`;
   out.push(
     db
       .prepare(
-        "INSERT INTO click_budget (site, day, hour, clicks) SELECT ?1, ?2, ?3, 1 " +
-          `${guard}ON CONFLICT (site, day, hour) DO UPDATE SET clicks = clicks + 1`,
+        `INSERT INTO click_budget (site, day, hour, clicks) SELECT ?1, ?2, ?6, ${madeAll} ` +
+          `${guard}AND (${madeAll}) > 0 ` +
+          "ON CONFLICT (site, day, hour) DO UPDATE SET clicks = clicks + excluded.clicks",
       )
-      .bind(p.site, day, hour),
+      .bind(p.site, day, p.linkId, srcLabel, countryLabel, hour),
   );
   return out;
 }

@@ -196,20 +196,31 @@ describe("row bounds: reserved cells, hourly slices, one overflow row, an integr
     expect(await q("SELECT clicks FROM click_src_daily WHERE link_id = 'twitch'")).toEqual([{ clicks: 2 }]);
   });
 
-  it("a_shaped_hour_counts_each_folded_click_once_through_the_real_counting_path", async () => {
-    // One hour: HOUR_BUDGET ordinary clicks, then 60 clicks that each want a new source AND a new
+  it("clicks_on_existing_cells_never_use_the_budget_up_so_a_target_cell_is_not_erased", async () => {
+    // The reported attack: flood the hour with clicks that reuse existing cells, then the target
+    // cell folds. The budget counts NEW CELLS, so 3000 clicks on one cell use one slot.
+    const hour = Date.UTC(2027, 0, 5, 7);
+    const ordinary = Array.from({ length: 3000 }, () => clickCounterStatements(DB, { site: "links", ts: hour, linkId: "twitch", src: "instagram", listsSources: true, country: "US" }));
+    for (let i = 0; i < ordinary.length; i += 100) await DB.batch(ordinary.slice(i, i + 100).flat());
+    expect(await q("SELECT hour, clicks FROM click_budget")).toEqual([{ hour: 7, clicks: 2 }]); // one src + one country cell
+    await count(hour, "links", "twitch", "target-source", "DE"); // the target still gets its cells
+    expect(await cellsOf("click_src_daily", "src", "twitch")).toEqual(["instagram", "target-source"]);
+    expect(await q("SELECT 1 FROM click_capacity")).toEqual([]);
+  }, 120_000);
+
+  it("a_shaped_hour_of_new_cells_counts_each_folded_click_once_through_the_real_counting_path", async () => {
+    // One hour spends its slice of new cells; then 60 clicks each want a new source AND a new
     // country (so each overflows on both axes). The folded count is 60 clicks, not 120 rows.
     const hour = Date.UTC(2027, 0, 5, 7);
-    const ordinary = Array.from({ length: HOUR_BUDGET }, () => clickCounterStatements(DB, { site: "links", ts: hour, linkId: "twitch", src: "instagram", listsSources: true, country: "US" }));
-    for (let i = 0; i < ordinary.length; i += 50) await DB.batch(ordinary.slice(i, i + 50).flat());
+    await DB.prepare("INSERT INTO click_budget VALUES ('links','2027-01-05',7,?)").bind(HOUR_BUDGET).run();
     for (let i = 0; i < 60; i++) {
       const cc = `${String.fromCharCode(65 + (i % 26))}${String.fromCharCode(75 + Math.floor(i / 26))}`;
       await count(hour, "links", "twitch", `shaped${i}`, cc);
     }
     expect(await q("SELECT first_hour, folded FROM click_capacity")).toEqual([{ first_hour: 7, folded: 60 }]);
     const counted = await q<{ n: number }>("SELECT SUM(clicks) AS n FROM click_country_daily");
-    expect(counted[0]!.n).toBe(HOUR_BUDGET + 60); // every click counted once in the denominator
-    expect(await q<{ n: number }>("SELECT SUM(clicks) AS n FROM click_budget")).toEqual([{ n: HOUR_BUDGET + 60 }]);
+    expect(counted[0]!.n).toBe(60); // every click counted once in the denominator
+    expect(await q("SELECT clicks FROM click_budget")).toEqual([{ clicks: HOUR_BUDGET }]); // folds make no new cell
   }, 120_000);
 
   it("a_click_that_overflows_on_one_axis_only_counts_once_and_a_normal_click_not_at_all", async () => {
@@ -227,13 +238,14 @@ describe("row bounds: reserved cells, hourly slices, one overflow row, an integr
     expect(await q("SELECT 1 FROM click_capacity")).toEqual([]);
   });
 
-  it("every_counted_click_adds_one_to_its_hour_and_a_sealed_day_adds_nothing", async () => {
-    await count(ts, "links", "twitch", "instagram", "US");
-    await count(ts, "links", "twitch", "instagram", "DE");
-    expect(await q("SELECT hour, clicks FROM click_budget")).toEqual([{ hour: 12, clicks: 2 }]);
+  it("only_new_cells_add_to_the_hour_and_a_sealed_day_adds_nothing", async () => {
+    await count(ts, "links", "twitch", "instagram", "US"); // 2 new cells (source, country)
+    await count(ts, "links", "twitch", "instagram", "US"); // none
+    await count(ts, "links", "twitch", "instagram", "DE"); // 1 new country cell
+    expect(await q("SELECT hour, clicks FROM click_budget")).toEqual([{ hour: 12, clicks: 3 }]);
     await DB.prepare("INSERT INTO click_seal VALUES ('links','2027-01-05',1)").run();
-    await count(ts, "links", "twitch", "instagram", "US");
-    expect(await q("SELECT clicks FROM click_budget")).toEqual([{ clicks: 2 }]);
+    await count(ts, "links", "twitch", "bluesky", "FR");
+    expect(await q("SELECT clicks FROM click_budget")).toEqual([{ clicks: 3 }]);
   });
 });
 

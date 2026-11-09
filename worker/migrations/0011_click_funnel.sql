@@ -72,7 +72,8 @@ CREATE TABLE IF NOT EXISTS click_country_monthly (
   PRIMARY KEY (site, month, link_id, country)
 ) WITHOUT ROWID;
 
--- The new-cell budget of a (site, day, UTC hour): clicks counted so far in that hour. Each
+-- The new-cell budget of a (site, day, UTC hour): NEW CELLS created so far in that hour (clicks on
+-- existing cells never count). Each
 -- hour has its own slice, so flooding in one hour cannot stop new cells for the rest of the day.
 CREATE TABLE IF NOT EXISTS click_budget (
   site TEXT NOT NULL CHECK (length(site) BETWEEN 1 AND 20 AND site NOT GLOB '*[^a-z0-9-]*'),
@@ -84,7 +85,7 @@ CREATE TABLE IF NOT EXISTS click_budget (
 
 -- A capacity counter: counting capacity ran out on this (site, day) (an hourly slice of the budget
 -- or the cell pools). first_hour is the UTC hour it began and folded the clicks that went into the
--- overflow row (an upper bound). The report carries only a coarse status (none, under or over 5 percent of
+-- overflow row (an upper bound). The report carries only a coarse status (none, exhausted or over_5_percent of
 -- the period's clicks) and a warning; exact figures are for the operator only.
 CREATE TABLE IF NOT EXISTS click_capacity (
   site TEXT NOT NULL CHECK (length(site) BETWEEN 1 AND 20 AND site NOT GLOB '*[^a-z0-9-]*'),

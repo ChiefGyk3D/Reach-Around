@@ -34,6 +34,7 @@ from reach_around.funnel.release import IncompletePeriod, release_report
 from reach_around.funnel.report import build_report
 
 STAMP = "2026-11-09T10:00:00Z"
+WARN = "cell_tables_may_be_incomplete_or_biased"
 D1 = "1" * 64
 D2 = "2" * 64
 
@@ -529,9 +530,12 @@ def test_a_flood_under_the_limit_releases_with_a_coarse_warning_only(
     report, status = release_report(
         export, ledger, period="week", as_of=AS_OF, diagnostics=diag
     )
-    assert status == "release" and report["capacity"] == {"status": "under"}
+    assert status == "release" and report["capacity"] == {
+        "status": "exhausted",
+        "warning": WARN,
+    }
     text = render_text(report)
-    assert "under 5 percent" in text and "slightly incomplete" in text
+    assert "may be missing or biased" in text and "slightly" not in text
     _exact_figures_absent(text + json.dumps(report))
     # the exact figures exist only in the operator-only diagnostics
     assert diag["days"] == ["2026-11-04"] and diag["folded_clicks"] == 30
@@ -544,7 +548,10 @@ def test_a_heavy_flood_still_releases_with_the_over_warning(tmp_path: Path) -> N
     ledger = fresh(tmp_path)
     export = _load(tmp_path, _tables(total=1000, capacity={"2026-11-04": 600}))
     report, status = release_report(export, ledger, period="week", as_of=AS_OF)
-    assert status == "release" and report["capacity"] == {"status": "over"}
+    assert status == "release" and report["capacity"] == {
+        "status": "over_5_percent",
+        "warning": WARN,
+    }
     text = render_text(report)
     assert "more than 5 percent" in text and "incomplete and may be biased" in text
     assert "You decide whether to publish" in text
@@ -555,7 +562,12 @@ def test_a_heavy_flood_still_releases_with_the_over_warning(tmp_path: Path) -> N
 def test_the_status_boundary_is_five_percent_and_never_a_refusal(
     tmp_path: Path,
 ) -> None:
-    for folded, expect in ((0, "none"), (40, "under"), (50, "under"), (51, "over")):
+    for folded, expect in (
+        (0, "none"),
+        (40, "exhausted"),
+        (50, "exhausted"),
+        (51, "over_5_percent"),
+    ):
         capacity = {"2026-11-04": folded} if folded else None
         export = _load(
             tmp_path, _tables(total=1000, capacity=capacity), f"e{folded}.json"
@@ -566,13 +578,46 @@ def test_the_status_boundary_is_five_percent_and_never_a_refusal(
         assert report["capacity"]["status"] == expect
 
 
+def test_one_folded_click_among_a_thousand_is_exhausted_not_a_small_share(
+    tmp_path: Path,
+) -> None:
+    from reach_around.funnel.report import render_text
+
+    export = _load(tmp_path, _tables(total=1000, capacity={"2026-11-04": 1}))
+    report, _ = release_report(export, fresh(tmp_path), period="week", as_of=AS_OF)
+    assert report["capacity"] == {"status": "exhausted", "warning": WARN}
+    text = render_text(report)
+    assert "Individual cells may be missing or biased" in text
+    assert "slightly" not in text and "none" != report["capacity"]["status"]
+
+
+def test_the_warning_code_is_coarse_and_empty_when_nothing_ran_out(
+    tmp_path: Path,
+) -> None:
+    clean, _ = release_report(
+        _load(tmp_path, _tables()), fresh(tmp_path), period="week", as_of=AS_OF
+    )
+    assert clean["capacity"] == {"status": "none", "warning": ""}
+    flooded, _ = release_report(
+        _load(tmp_path, _tables(total=1000, capacity={"2026-11-04": 7}), "f.json"),
+        fresh(tmp_path, "f.jsonl"),
+        period="week",
+        as_of=AS_OF,
+    )
+    blob = json.dumps(flooded["capacity"])
+    assert blob == json.dumps(
+        {"status": "exhausted", "warning": WARN}, sort_keys=False
+    ) or (set(flooded["capacity"]) == {"status", "warning"})
+    assert "7" not in blob and "2026" not in blob
+
+
 def test_capacity_with_no_counted_clicks_is_over_not_a_refusal(tmp_path: Path) -> None:
     tables = _tables(capacity={"2026-11-04": 3})
     tables["click_country_daily"] = []
     report, _ = release_report(
         _load(tmp_path, tables), fresh(tmp_path), period="week", as_of=AS_OF
     )
-    assert report["capacity"]["status"] == "over"
+    assert report["capacity"]["status"] == "over_5_percent"
 
 
 def _month_tables(total: int, exhausted: int, folded: int) -> dict[str, Any]:
@@ -618,7 +663,7 @@ def test_a_month_follows_the_same_coarse_rule_from_its_rollup_marker(
         as_of=date(2026, 11, 9),
         diagnostics=diag,
     )
-    assert ok["capacity"] == {"status": "under"}
+    assert ok["capacity"] == {"status": "exhausted", "warning": WARN}
     assert diag["months"] == ["2026-10"] and diag["share_percent"] == 4.0
     bad, _ = release_report(
         _load(tmp_path, _month_tables(2000, 2, 400), "bad.json"),
@@ -626,7 +671,7 @@ def test_a_month_follows_the_same_coarse_rule_from_its_rollup_marker(
         period="month",
         as_of=date(2026, 11, 9),
     )
-    assert bad["capacity"] == {"status": "over"}
+    assert bad["capacity"] == {"status": "over_5_percent", "warning": WARN}
 
 
 def test_a_free_window_report_carries_the_coarse_status_too(tmp_path: Path) -> None:
@@ -637,10 +682,10 @@ def test_a_free_window_report_carries_the_coarse_status_too(tmp_path: Path) -> N
     inside = build_report(
         export, since="2026-11-01", until="2026-11-30", diagnostics=diag
     )
-    assert inside["capacity"] == {"status": "under"}
+    assert inside["capacity"] == {"status": "exhausted", "warning": WARN}
     assert diag["days"] == ["2026-11-04", "2026-11-06"] and diag["folded_clicks"] == 15
     outside = build_report(export, since="2026-12-01", until="2026-12-31")
-    assert outside["capacity"] == {"status": "none"}
+    assert outside["capacity"] == {"status": "none", "warning": ""}
 
 
 def test_no_capacity_warning_when_nothing_ran_out(tmp_path: Path) -> None:
@@ -781,12 +826,14 @@ def test_cli_a_flooded_week_releases_with_coarse_status_in_every_format(
     assert main([*base, "--json"]) == 0
     out = capsys.readouterr()
     data = json.loads(out.out)
-    assert data["capacity"] == {"status": "over"}
+    assert data["capacity"] == {"status": "over_5_percent", "warning": WARN}
     assert "900" not in out.out and "folded_clicks" not in out.out
     assert main([*base, "--csv", str(tmp_path / "csv")]) == 0
     capsys.readouterr()
     meta = (tmp_path / "csv" / "metadata.csv").read_text()
-    assert "counting_capacity,over" in meta
+    assert "counting_capacity,over_5_percent" in meta
+    assert f"counting_capacity_warning,{WARN}" in meta
+    assert data["capacity"]["warning"] == WARN
     for f in (tmp_path / "csv").iterdir():
         text = f.read_text()
         assert "900" not in text and "folded_clicks" not in text
