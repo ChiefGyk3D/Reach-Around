@@ -552,11 +552,13 @@ UNRELATED = "SENTINEL-UNRELATED-SECRET"
 def test_youtube_config_cannot_name_another_variable() -> None:
     for name in ("YT_KEY", "AWS_SECRET_ACCESS_KEY", "GITHUB_TOKEN"):
         with pytest.raises(ValueError):
-            YoutubeSource(
-                platform="yt",
-                kind="youtube",
-                channel_id="UCabcdefghijklmnopqrstuv",
-                api_key_env=name,
+            YoutubeSource.model_validate(
+                {
+                    "platform": "yt",
+                    "kind": "youtube",
+                    "channel_id": "UCabcdefghijklmnopqrstuv",
+                    "api_key_env": name,
+                }
             )
     explicit = YoutubeSource(
         platform="yt",

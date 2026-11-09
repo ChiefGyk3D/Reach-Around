@@ -12,11 +12,14 @@ What it does:
      decides whether there is a `numbers` block (its exit 2 with "no
      numbers.sources" is the no-block case, any other exit 2 is an error).
      The engine gets a small allow-listed environment, never the whole one:
-     PATH, HOME, TMPDIR, LANG and LC_ALL, plus only the variables the
-     config's sources name (api_key_env, client_id_env, client_secret_env).
-     Those names must look like plain variable names and must not start with
-     ACTIONS_, GITHUB_ or RUNNER_, so the runner's tokens (OIDC request
-     variables included) can never be handed on. Keyless sources (Mastodon,
+     PATH, HOME, TMPDIR, LANG and LC_ALL, plus only the FIXED canonical
+     credential names of the source kinds the config lists (for example
+     YOUTUBE_API_KEY for a youtube source, written or not). A name written in
+     the config (api_key_env and the like) is never forwarded: it is only
+     checked, and a name that is not a plain variable name or starts with
+     ACTIONS_, GITHUB_ or RUNNER_ stops the run, so the runner's tokens (OIDC
+     request variables included) can never be handed on. The engine itself
+     refuses any non-canonical name. Keyless sources (Mastodon,
      Bluesky, GitHub) need nothing; a source whose variable is missing is
      skipped by the engine. Exit 3 from the engine (a source failed; the good
      numbers and the old values are kept) is a warning here, because the
@@ -48,7 +51,32 @@ EMPTY = {"version": 1, "platforms": {}}
 BASE_ENV = ("PATH", "HOME", "TMPDIR", "LANG", "LC_ALL")
 ENV_NAME = re.compile(r"^[A-Z][A-Z0-9_]{1,63}$")
 FORBIDDEN_PREFIXES = ("ACTIONS_", "GITHUB_", "RUNNER_")
-ENV_KEYS = ("api_key_env", "client_id_env", "client_secret_env")
+ENV_KEYS = (
+    "api_key_env",
+    "client_id_env",
+    "client_secret_env",
+    "access_token_env",
+    "client_key_env",
+)
+# The only credential variables the engine reads, by source kind. Keep equal to
+# the constants in reach_around.config.numbers_sources (a test checks it).
+CANONICAL_ENV = {
+    "youtube": ("YOUTUBE_API_KEY",),
+    "twitch": (
+        "TWITCH_CLIENT_ID",
+        "TWITCH_CLIENT_SECRET",
+        "TWITCH_USER_ACCESS_TOKEN",
+        "TWITCH_USER_REFRESH_TOKEN",
+    ),
+    "instagram": ("INSTAGRAM_ACCESS_TOKEN",),
+    "threads": ("THREADS_ACCESS_TOKEN",),
+    "tiktok": (
+        "TIKTOK_ACCESS_TOKEN",
+        "TIKTOK_REFRESH_TOKEN",
+        "TIKTOK_CLIENT_KEY",
+        "TIKTOK_CLIENT_SECRET",
+    ),
+}
 NO_BLOCK = "no numbers.sources"
 MAX_CONFIG_BYTES = 1_048_576
 
@@ -94,8 +122,9 @@ def stale_warnings(path: Path, now: datetime) -> list[str]:
     return lines
 
 
-def env_names(config: Path) -> list[str] | None:
-    """Env var names the config's number sources name; None if unreadable.
+def env_names(config: Path) -> tuple[list[str], list[str]] | None:
+    """(names written in the config, canonical names to forward); None if
+    unreadable. Only the second list is ever handed to the engine.
 
     The engine validates the whole config afterwards (duplicate keys, aliases
     and all); this only reads names to decide what to hand it. A config the
@@ -111,13 +140,17 @@ def env_names(config: Path) -> list[str] | None:
     block = data.get("numbers") if isinstance(data, dict) else None
     sources = block.get("sources") if isinstance(block, dict) else None
     names: list[str] = []
+    canonical: list[str] = []
     for source in sources if isinstance(sources, list) else []:
         if not isinstance(source, dict):
             continue
+        kind = source.get("kind")
+        if isinstance(kind, str):
+            canonical.extend(CANONICAL_ENV.get(kind, ()))
         for key in ENV_KEYS:
             if key in source:
                 names.append(str(source[key]))
-    return names
+    return names, canonical
 
 
 def unsafe_name(name: str) -> bool:
@@ -147,9 +180,10 @@ def main(argv: list[str] | None = None) -> int:
     else:
         out.write_text(json.dumps(EMPTY), encoding="utf-8")
 
-    names = env_names(config)
-    if names is None:
+    found = env_names(config)
+    if found is None:
         return fail("The config could not be read as YAML.")
+    names, canonical = found
     if any(unsafe_name(name) for name in names):
         return fail(
             "A source names an environment variable that is not allowed "
@@ -166,7 +200,7 @@ def main(argv: list[str] | None = None) -> int:
             str(out),
         ],
         check=False,
-        env=allowed_env(names),
+        env=allowed_env(canonical),
         stderr=subprocess.PIPE,
         text=True,
     )
