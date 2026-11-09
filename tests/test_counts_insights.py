@@ -44,7 +44,9 @@ VIDEO = "https://open.tiktokapis.com/v2/video/list/"
 INSIGHTS = "https://graph.threads.com/v1.0/42/threads_insights"
 
 
-def video(age_days: float, views: Any = 100, likes: Any = 10, **kw: Any) -> dict:
+def video(
+    age_days: float, views: Any = 100, likes: Any = 10, **kw: Any
+) -> dict[str, Any]:
     out = {
         "id": "7000000000000000001",
         "create_time": NOW_S - int(age_days * DAY),
@@ -57,7 +59,7 @@ def video(age_days: float, views: Any = 100, likes: Any = 10, **kw: Any) -> dict
     return {k: v for k, v in out.items() if v is not ...}
 
 
-def page(videos: list, more: bool = False, cursor: int = 1_700_000_000_000) -> Any:
+def page(videos: list[Any], more: bool = False, cursor: int = 1_700_000_000_000) -> Any:
     return reply(
         {
             "data": {"videos": videos, "cursor": cursor, "has_more": more},
@@ -72,7 +74,7 @@ def tt_fetch(*pages: Any) -> tuple[Any, FakeTransport]:
     return partial(fetch_json, transport=transport, sleep=lambda s: None), transport
 
 
-def series(name: str, values: list[int]) -> dict:
+def series(name: str, values: list[int]) -> dict[str, Any]:
     values = values + [0] * (7 - len(values)) if len(values) < 6 else values
     return {
         "name": name,
@@ -84,7 +86,7 @@ def series(name: str, values: list[int]) -> dict:
     }
 
 
-def total(name: str, value: Any) -> dict:
+def total(name: str, value: Any) -> dict[str, Any]:
     return {"name": name, "total_value": {"value": value}}
 
 
@@ -122,7 +124,7 @@ def test_tiktok_sums_only_videos_inside_the_28_day_window() -> None:
     }
     call = transport.calls[0]
     assert call.method == "POST"
-    assert json.loads(call.body) == {"max_count": 20}
+    assert json.loads(call.body or b"") == {"max_count": 20}
     assert call.headers["Authorization"] == "Bearer SENTINEL-TT-ACCESS"
     assert call.headers["Content-Type"] == "application/json"
     assert "SENTINEL" not in call.path
@@ -133,7 +135,10 @@ def test_tiktok_pages_with_cursor_until_the_window_ends() -> None:
         page([video(1, 1)], more=True, cursor=2_000), page([video(40, 7)], cursor=1_000)
     )
     assert video_stats(TT, TT_ENV, fetch, NOW_S)["video_views_28d"] == 1
-    assert json.loads(transport.calls[1].body) == {"max_count": 20, "cursor": 2_000}
+    assert json.loads(transport.calls[1].body or b"") == {
+        "max_count": 20,
+        "cursor": 2_000,
+    }
 
 
 def test_tiktok_no_videos_is_a_real_zero() -> None:
@@ -189,7 +194,7 @@ def test_tiktok_wrong_typed_view_count_is_never_summed(bad: Any) -> None:
         {"data": {"videos": [video(1)]}, "error": {"code": "internal_error"}},
     ],
 )
-def test_tiktok_hostile_shapes_fail_with_a_fixed_word(payload: dict) -> None:
+def test_tiktok_hostile_shapes_fail_with_a_fixed_word(payload: dict[str, Any]) -> None:
     fetch, _ = tt_fetch(reply(payload))
     with pytest.raises(TiktokError) as err:
         video_stats(TT, TT_ENV, fetch, NOW_S)
@@ -257,7 +262,7 @@ def test_tiktok_names_and_missing_token_checked_at_use() -> None:
 
 
 def test_tiktok_unexpected_fetch_exception_becomes_a_fixed_word() -> None:
-    def boom(url: str, **kw: Any) -> dict:
+    def boom(url: str, **kw: Any) -> dict[str, Any]:
         raise RuntimeError("SENTINEL-TT-ACCESS leaked in text")
 
     with pytest.raises(TiktokError) as err:
@@ -356,7 +361,7 @@ def test_threads_credential_name_and_setting_type_checked_at_use() -> None:
 
 
 def test_threads_unexpected_exception_has_no_url_in_it() -> None:
-    def boom(url: str, **kw: Any) -> dict:
+    def boom(url: str, **kw: Any) -> dict[str, Any]:
         raise RuntimeError(url)
 
     with pytest.raises(MetaError) as err:
@@ -632,7 +637,7 @@ def test_threads_engagement_sum_over_the_maximum_is_refused() -> None:
     assert err.value.kind == "bad_aggregate"
 
 
-def _views(period: str, points: list[tuple[int, str]]) -> Any:
+def _views(period: str, points: list[tuple[int, Any]]) -> Any:
     return reply(
         {
             "data": [
@@ -704,7 +709,7 @@ def test_tiktok_cursor_at_the_int64_maximum_is_sent() -> None:
         page([video(1)], more=True, cursor=2**63 - 1), page([video(40)])
     )
     video_stats(TT, TT_ENV, fetch, NOW_S)
-    assert json.loads(transport.calls[1].body)["cursor"] == 2**63 - 1
+    assert json.loads(transport.calls[1].body or b"")["cursor"] == 2**63 - 1
 
 
 def test_threads_views_series_inside_the_window_is_accepted() -> None:
@@ -747,7 +752,7 @@ numbers:
 """
 
 
-def run(root: Path, monkeypatch: pytest.MonkeyPatch, routes: dict) -> int:
+def run(root: Path, monkeypatch: pytest.MonkeyPatch, routes: dict[str, Any]) -> int:
     (root / "history").mkdir(exist_ok=True)
     (root / "site.yaml").write_text(CONFIG, encoding="utf-8")
     monkeypatch.setattr(counts_cmd, "default_sleep", lambda s: None)
