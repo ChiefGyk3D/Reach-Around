@@ -32,8 +32,6 @@
   --ra-fr-ink: color-mix(in srgb, var(--ra-color-accent) 15%, black);
   --ra-fr-ink-muted: color-mix(in srgb, var(--ra-fr-ink) 72%, var(--ra-fr-cream));
   --ra-fr-accent-ink: color-mix(in srgb, var(--ra-color-accent) 45%, black);
-  --ra-fr-glow: color-mix(in srgb, var(--ra-color-accent) 70%, transparent);
-  --ra-fr-bloom: color-mix(in srgb, var(--ra-color-accent) 30%, transparent);
 }
 
 body .ra-bx.ra-bx {
@@ -66,7 +64,7 @@ body .ra-bx.ra-bx {
   padding-inline: calc(var(--u) * 100);
   border: 1px solid transparent;
   border-radius: 0;
-  box-shadow: 0 0 max(10px, calc(var(--u) * 60)) var(--ra-fr-bloom);
+  box-shadow: none;
   color: var(--ra-fr-ink);
   background-color: transparent;
   background-origin: border-box;
@@ -93,46 +91,26 @@ body .ra-bx.ra-bx.ra-s3 { --ra-fr-s: 0.19; }
 body .ra-bx.ra-bx.ra-s4 { --ra-fr-s: 0.24; }
 body .ra-bx.ra-bx.ra-s5 { --ra-fr-s: 0.28; }
 
-/* L1 lite: thin amber rules between the brackets. */
-body .ra-l1.ra-bx {
-  padding-inline: calc(var(--u) * 80);
-  background-image:
-    var(--ra-fr-a), var(--ra-fr-a), var(--ra-fr-f);
-  background-position:
-    50% calc(var(--u) * 17), 50% calc(100% - var(--u) * 17), center;
-  background-size:
-    calc(100% - var(--u) * 400) max(3px, calc(var(--u) * 6)),
-    calc(100% - var(--u) * 400) max(3px, calc(var(--u) * 6)),
-    calc(100% - var(--u) * 32) calc(100% - var(--u) * 46);
+/* The panel is the only thing the element itself paints besides the graphite
+   border image; every amber part (rules, dashes, stubs) is in ::before, above
+   the graphite, so it can carry the bloom. */
+body .ra-bx.ra-bx {
+  background-image: var(--ra-fr-f);
+  background-position: center;
+  background-size: calc(100% - var(--u) * 32) calc(100% - var(--u) * 46);
 }
-/* L2 and L3: the full frame. */
+body .ra-l1.ra-bx { padding-inline: calc(var(--u) * 80); }
 body :is(.ra-l2, .ra-l3).ra-bx {
   border-image-slice: 159 500 fill;
   border-image-width: calc(var(--u) * 159) calc(var(--u) * 500);
   border-image-source: url("frame.svg");
-  background-image:
-    var(--ra-fr-a), var(--ra-fr-a), var(--ra-fr-f);
-  background-position:
-    50% calc(var(--u) * 17), 50% calc(100% - var(--u) * 17), center;
-  background-size:
-    calc(100% - var(--u) * 360) max(3px, calc(var(--u) * 6)),
-    calc(100% - var(--u) * 360) max(3px, calc(var(--u) * 6)),
-    calc(100% - var(--u) * 32) calc(100% - var(--u) * 46);
-}
-body .ra-l3.ra-bx {
-  background-image:
-    var(--ra-fr-gt), var(--ra-fr-a), var(--ra-fr-gt), var(--ra-fr-a), var(--ra-fr-f);
-  background-position:
-    50% calc(var(--u) * 17), 50% calc(100% - var(--u) * 17),
-    50% 0, 50% 100%, center;
-  background-size:
-    calc(100% - var(--u) * 360) max(3px, calc(var(--u) * 6)),
-    calc(100% - var(--u) * 360) max(3px, calc(var(--u) * 6)),
-    42.6% max(3px, calc(var(--u) * 6)), 42.6% max(3px, calc(var(--u) * 6)),
-    calc(100% - var(--u) * 32) calc(100% - var(--u) * 46);
 }
 
-/* The amber dashes and the mid-edge stubs sit above the graphite. */
+/* The amber light: long rules, corner dashes, mid-edge stubs and, on the full
+   frame, the plate dashes. Rules stop short of the end-cap plates so they never
+   cross them. L2 and L3 give the light a bloom that hugs it (a drop shadow of
+   the pseudo-element's own amber, not of the box): L2 a tight one, L3 the full
+   soft one. Print and forced colors drop the whole layer. */
 .ra-bx::before {
   content: "";
   position: absolute;
@@ -140,28 +118,38 @@ body .ra-l3.ra-bx {
   z-index: -1;
   pointer-events: none;
   background-repeat: no-repeat;
-}
-.ra-bx::before {
   background-image:
-    var(--ra-fr-a), var(--ra-fr-a), var(--ra-fr-a), var(--ra-fr-a),
-    var(--ra-fr-a), var(--ra-fr-a);
+    var(--ra-fr-gt), var(--ra-fr-a),
+    var(--ra-fr-g1), var(--ra-fr-g2), var(--ra-fr-a), var(--ra-fr-a),
+    var(--ra-fr-gs), var(--ra-fr-gs);
   background-position:
+    50% calc(var(--u) * 17), 50% calc(100% - var(--u) * 17),
     left calc(var(--u) * 34) top calc(var(--u) * 30),
     right calc(var(--u) * 34) top calc(var(--u) * 30),
     left calc(var(--u) * 34) bottom calc(var(--u) * 30),
     right calc(var(--u) * 34) bottom calc(var(--u) * 30),
     left calc(var(--u) * 14) top 50%, right calc(var(--u) * 14) top 50%;
   background-size:
+    calc(100% - var(--u) * 400) max(3px, calc(var(--u) * 6)),
+    calc(100% - var(--u) * 400) max(3px, calc(var(--u) * 6)),
     calc(var(--u) * 42) max(3px, calc(var(--u) * 6)), calc(var(--u) * 42) max(3px, calc(var(--u) * 6)),
     calc(var(--u) * 42) max(3px, calc(var(--u) * 6)), calc(var(--u) * 42) max(3px, calc(var(--u) * 6)),
     calc(var(--u) * 5) calc(var(--u) * 16), calc(var(--u) * 5) calc(var(--u) * 16);
 }
 body :is(.ra-l2, .ra-l3).ra-bx::before {
   background-image:
+    var(--ra-fr-gt), var(--ra-fr-gt), var(--ra-fr-gt), var(--ra-fr-a),
+    var(--ra-fr-a), var(--ra-fr-a),
     var(--ra-fr-g1), var(--ra-fr-g2), var(--ra-fr-a), var(--ra-fr-a),
     var(--ra-fr-gs), var(--ra-fr-gs),
     var(--ra-fr-g1), var(--ra-fr-g2), var(--ra-fr-a), var(--ra-fr-a);
   background-position:
+    left calc(var(--u) * 195) top calc(var(--u) * 17),
+    right calc(var(--u) * 195) top calc(var(--u) * 17),
+    50% calc(var(--u) * 17),
+    left calc(var(--u) * 195) bottom calc(var(--u) * 17),
+    right calc(var(--u) * 195) bottom calc(var(--u) * 17),
+    50% calc(100% - var(--u) * 17),
     left calc(var(--u) * 34) top calc(var(--u) * 30),
     right calc(var(--u) * 34) top calc(var(--u) * 30),
     left calc(var(--u) * 34) bottom calc(var(--u) * 30),
@@ -172,12 +160,64 @@ body :is(.ra-l2, .ra-l3).ra-bx::before {
     left calc(var(--u) * 396) bottom calc(var(--u) * 22.5),
     right calc(var(--u) * 396) bottom calc(var(--u) * 22.5);
   background-size:
+    calc(var(--u) * 60) max(3px, calc(var(--u) * 6)), calc(var(--u) * 60) max(3px, calc(var(--u) * 6)),
+    calc(100% - var(--u) * 960) max(3px, calc(var(--u) * 6)),
+    calc(var(--u) * 60) max(3px, calc(var(--u) * 6)), calc(var(--u) * 60) max(3px, calc(var(--u) * 6)),
+    calc(100% - var(--u) * 960) max(3px, calc(var(--u) * 6)),
     calc(var(--u) * 42) max(3px, calc(var(--u) * 6)), calc(var(--u) * 42) max(3px, calc(var(--u) * 6)),
     calc(var(--u) * 42) max(3px, calc(var(--u) * 6)), calc(var(--u) * 42) max(3px, calc(var(--u) * 6)),
     calc(var(--u) * 5) calc(var(--u) * 16), calc(var(--u) * 5) calc(var(--u) * 16),
     calc(var(--u) * 72) max(3px, calc(var(--u) * 6)), calc(var(--u) * 72) max(3px, calc(var(--u) * 6)),
-    calc(var(--u) * 63) calc(var(--u) * 5.5), calc(var(--u) * 63) calc(var(--u) * 5.5);
+    calc(var(--u) * 63) max(3px, calc(var(--u) * 5.5)), calc(var(--u) * 63) max(3px, calc(var(--u) * 5.5));
+  filter:
+    drop-shadow(0 0 max(3px, calc(var(--u) * 10)) var(--ra-fr-amber))
+    drop-shadow(0 0 max(7px, calc(var(--u) * 28))
+      color-mix(in srgb, var(--ra-fr-amber) 70%, transparent));
 }
+/* L3 adds the long center bars top and bottom and the full soft bloom. */
+body .ra-l3.ra-bx::before {
+  background-image:
+    var(--ra-fr-gt), var(--ra-fr-gt), var(--ra-fr-gt), var(--ra-fr-a),
+    var(--ra-fr-a), var(--ra-fr-a),
+    var(--ra-fr-g1), var(--ra-fr-g2), var(--ra-fr-a), var(--ra-fr-a),
+    var(--ra-fr-gs), var(--ra-fr-gs),
+    var(--ra-fr-g1), var(--ra-fr-g2), var(--ra-fr-a), var(--ra-fr-a),
+    var(--ra-fr-gt), var(--ra-fr-a);
+  background-position:
+    left calc(var(--u) * 195) top calc(var(--u) * 17),
+    right calc(var(--u) * 195) top calc(var(--u) * 17),
+    50% calc(var(--u) * 17),
+    left calc(var(--u) * 195) bottom calc(var(--u) * 17),
+    right calc(var(--u) * 195) bottom calc(var(--u) * 17),
+    50% calc(100% - var(--u) * 17),
+    left calc(var(--u) * 34) top calc(var(--u) * 30),
+    right calc(var(--u) * 34) top calc(var(--u) * 30),
+    left calc(var(--u) * 34) bottom calc(var(--u) * 30),
+    right calc(var(--u) * 34) bottom calc(var(--u) * 30),
+    left calc(var(--u) * 14) top 50%, right calc(var(--u) * 14) top 50%,
+    left calc(var(--u) * 285) top calc(var(--u) * 13.5),
+    right calc(var(--u) * 285) top calc(var(--u) * 13.5),
+    left calc(var(--u) * 396) bottom calc(var(--u) * 22.5),
+    right calc(var(--u) * 396) bottom calc(var(--u) * 22.5),
+    50% 0, 50% 100%;
+  background-size:
+    calc(var(--u) * 60) max(3px, calc(var(--u) * 6)), calc(var(--u) * 60) max(3px, calc(var(--u) * 6)),
+    calc(100% - var(--u) * 960) max(3px, calc(var(--u) * 6)),
+    calc(var(--u) * 60) max(3px, calc(var(--u) * 6)), calc(var(--u) * 60) max(3px, calc(var(--u) * 6)),
+    calc(100% - var(--u) * 960) max(3px, calc(var(--u) * 6)),
+    calc(var(--u) * 42) max(3px, calc(var(--u) * 6)), calc(var(--u) * 42) max(3px, calc(var(--u) * 6)),
+    calc(var(--u) * 42) max(3px, calc(var(--u) * 6)), calc(var(--u) * 42) max(3px, calc(var(--u) * 6)),
+    calc(var(--u) * 5) calc(var(--u) * 16), calc(var(--u) * 5) calc(var(--u) * 16),
+    calc(var(--u) * 72) max(3px, calc(var(--u) * 6)), calc(var(--u) * 72) max(3px, calc(var(--u) * 6)),
+    calc(var(--u) * 63) max(3px, calc(var(--u) * 5.5)), calc(var(--u) * 63) max(3px, calc(var(--u) * 5.5)),
+    42.6% max(3px, calc(var(--u) * 6)), 42.6% max(3px, calc(var(--u) * 6));
+  filter:
+    drop-shadow(0 0 max(3px, calc(var(--u) * 10)) var(--ra-fr-amber))
+    drop-shadow(0 0 max(7px, calc(var(--u) * 28)) var(--ra-fr-amber))
+    drop-shadow(0 0 max(14px, calc(var(--u) * 60))
+      color-mix(in srgb, var(--ra-fr-amber) 75%, transparent));
+}
+
 /* The light show, only when theme.frame_motion is live (body.ra-mo), only for
    visitors who have not asked for reduced motion, only on L3 frames (their
    number is capped by theme.frame_l3_max, so only a few paint at once) and only
@@ -214,23 +254,8 @@ body :is(.ra-l2, .ra-l3).ra-bx::before {
   100% { --ra-fr-cs: color-mix(in srgb, var(--ra-fr-amber) 86%, transparent); }
 }
 
-/* L3: a faint amber glow under the bottom rule. Screen only: print keeps the
-   ::after that site.css uses to print a link's address. */
 @media screen {
   a.link.ra-bx::after { display: none; }
-  .ra-l3.ra-bx::after {
-    content: "";
-    display: block;
-    position: absolute;
-    z-index: -1;
-    pointer-events: none;
-    inset: auto;
-    left: 28.7%;
-    width: 42.6%;
-    bottom: 0;
-    height: max(3px, calc(var(--u) * 6));
-    box-shadow: 0 calc(var(--u) * 16) calc(var(--u) * 16) var(--ra-fr-glow);
-  }
 }
 
 /* Interactive frames: hover brightens the panel; the focus ring is drawn out
@@ -255,14 +280,44 @@ body .ra-bx .link-chip, body .ra-bx .platform-icon, body .ra-bx .crypto-chip {
   background-color: color-mix(in srgb, var(--ra-fr-ink) 10%, var(--ra-fr-cream));
 }
 body .ra-bx.ra-head { display: flex; align-items: center; margin: 0 0 var(--ra-space-2); padding-inline: calc(var(--u) * 130); }
-body :is(.crypto-card, .email-card, .cookie-banner, .kit-table).ra-bx { padding-block: calc(var(--u) * 60); }
+body :is(.crypto-card, .email-card).ra-bx { padding-block: calc(var(--u) * 60); }
 body .kit-table.ra-bx { padding-inline: calc(var(--u) * 40); }
-body .ra-bx.ra-s5 { padding-block: calc(var(--u) * 80); padding-inline: calc(var(--u) * 140); }
+body .ra-bx.ra-s5 { padding-block: calc(var(--u) * 80); padding-inline: calc(var(--u) * 170); }
 body .ra-bx.ra-bare { padding-inline: calc(var(--u) * 50); }
 body .ra-bare[aria-current="page"] { background-color: var(--ra-color-accent-edge); }
 body main > .ra-bx { margin-inline: var(--ra-gutter); }
-body footer.ra-bx .credit a, body footer.ra-bx .privacy-link a { padding-block: var(--ra-space-2); }
-body footer.ra-bx p { margin-bottom: var(--ra-space-2); }
+/* The footer and the cookie notice are slim bars, not slabs. */
+body footer.ra-bx {
+  display: flex;
+  flex-flow: row wrap;
+  justify-content: center;
+  align-items: center;
+  gap: 0 var(--ra-space-4);
+  margin-top: var(--ra-space-4);
+  padding-block: calc(var(--u) * 30);
+  padding-inline: calc(var(--u) * 170);
+}
+body footer.ra-bx p { margin: 0; }
+body footer.ra-bx .disclosure { flex: 1 1 100%; max-width: none; margin: 0; padding-top: var(--ra-space-1); }
+body footer.ra-bx .credit a, body footer.ra-bx .privacy-link a { padding-block: var(--ra-space-1); }
+body .cookie-banner.ra-bx {
+  display: flex;
+  flex-flow: row wrap;
+  align-items: center;
+  gap: var(--ra-space-2) var(--ra-space-4);
+  margin-top: var(--ra-space-3);
+  padding-block: calc(var(--u) * 30);
+  padding-inline: calc(var(--u) * 170);
+}
+body .cookie-banner.ra-bx p { margin: 0; flex: 1 1 18rem; font-size: var(--ra-text-sm); }
+body .cookie-banner.ra-bx form { flex: 0 0 auto; }
+/* The audience table fills its frame. */
+body .kit-table.ra-bx {
+  display: table;
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+}
 body h2.ra-bx, body h3.ra-bx { overflow-wrap: anywhere; }
 body .ra-bx .social-label { border: 0; padding: 0; }
 body .ra-bx .profile-tag { background-color: color-mix(in srgb, var(--ra-fr-ink) 9%, var(--ra-fr-cream)); }
@@ -274,11 +329,10 @@ body .ra-bx .profile-tag { background-color: color-mix(in srgb, var(--ra-fr-ink)
 .section-links:has(.ra-bx) { padding-top: var(--ra-space-3); }
 
 @media (forced-colors: active) {
-  .ra-bx::before, .ra-l3.ra-bx::after { display: none; }
+  .ra-bx::before { display: none; }
   body .ra-bx.ra-bx { border: 2px solid CanvasText; border-image: none; background: none; color: CanvasText; }
 }
 @media print {
   .ra-bx::before { display: none; }
-  .ra-l3.ra-bx::after { display: none; }
   body .ra-bx.ra-bx { border: 1px solid CanvasText; border-image: none; background: none; color: CanvasText; }
 }

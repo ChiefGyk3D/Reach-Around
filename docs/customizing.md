@@ -232,7 +232,7 @@ every button, card, tab, heading, input and stat tile of the link page and the
 media kit. The frame is drawn from the stream button: an opaque cream panel,
 heavy stepped graphite brackets that split at the middle of each edge, angled
 end-cap plates with small accent dashes, long accent rules and a faint accent
-glow under the bottom rule, with ink lettering. The brackets are two small
+bloom of amber light hugging the rules, with ink lettering. The brackets are two small
 packaged SVG files used as a nine-slice `border-image`; the panel, rules,
 dashes and glow are CSS gradients that read your accent, so a retheme follows.
 The artwork is scaled by the element's height (the bracket bar is about 6
@@ -244,7 +244,7 @@ pixels and never a hairline.
 | --- | --- | --- |
 | `l1` | The lite frame: brackets, rules, dashes and stubs. | Every framed element when `theme.frame` is `l1`; at higher levels the small controls and containers: tabs, social buttons, platform chips, inputs, crypto and email cards, the footer and cookie notice, the audience table |
 | `l2` | The full frame: adds the end-cap plates and their dashes. | Link buttons, platform cards, section headings, group titles, the combined audience tile |
-| `l3` | The full frame plus the center rules and the glow. | The featured link, the hero tiles (the media kit title tile, the profile card, the `hero` header card) and the main call to action (the media kit submit button) |
+| `l3` | The full frame plus the long center bars and the full soft bloom around every amber rule and dash (L2 has a tighter bloom, L1 none). | The featured link, the hero tiles (the media kit title tile, the profile card, the `hero` header card) and the main call to action (the media kit submit button) |
 
 `theme.frame` is the strongest level the build may use: `l1` draws the lite
 frame everywhere, `l2` adds the plates, `l3` adds the glow. L3 is the heaviest
@@ -285,8 +285,9 @@ What to know:
   button) carries its own frame.
 - Text on a frame is ink on the cream panel, derived from your accent
   (a dark tint of it), so it passes contrast on any accent color. There is no
-  amber lettering. On hover the panel brightens. Brackets are a medium graphite
-  with a sheen so they show on dark and light pages.
+  amber lettering. On hover the panel brightens. The brackets are the original
+  black-to-graphite artwork with its sheen; on a dark page the amber rules and
+  their bloom outline them.
 - The packaged `static/frame.css` and the two `frame*.svg` files are
   fingerprinted and published only when the feature is on. There is no
   `style` attribute, inline script, data URI, new font or third-party

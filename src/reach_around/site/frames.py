@@ -41,13 +41,14 @@ SLOT_SIZES: Final[dict[str, str]] = {
     "chip": "s1",
     "tab": "s2",
     "field": "s2",
-    "foot": "s3",
+    "foot": "s2",
+    "bar": "s2",
     "cta": "s4",
     "hero": "s5",
 }
 # Slots whose frame is lite at every level, because they are small or tall.
 LITE_SLOTS: Final[frozenset[str]] = frozenset(
-    {"tile", "ctl", "chip", "tab", "field", "card", "foot"}
+    {"tile", "ctl", "chip", "tab", "field", "card", "foot", "bar"}
 )
 # Slots with no cream panel of their own (the tab bar is already an amber bar).
 BARE_SLOTS: Final[frozenset[str]] = frozenset({"tab"})

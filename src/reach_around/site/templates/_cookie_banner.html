@@ -1,6 +1,6 @@
 {# SPDX-License-Identifier: Apache-2.0 #}
 {% import "_frames.html" as frames with context %}
-<section class="cookie-banner{{ frames.cls("card") }}" aria-label="Cookie notice">
+<section class="cookie-banner{{ frames.cls("bar") }}" aria-label="Cookie notice">
 <p>{{ cookie_text }}</p>
 <form method="get" action="{{ root }}privacy/#cookies">
 <button type="submit" name="cookies" value="preferences">Preferences</button>
