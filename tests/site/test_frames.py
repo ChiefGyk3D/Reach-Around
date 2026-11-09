@@ -465,3 +465,63 @@ def test_the_animation_is_opt_in_reduced_motion_safe_and_paint_only() -> None:
     for _name, body in keyframes:
         props = set(re.findall(r"(--?[\w-]+)\s*:", body))
         assert props <= {"--ra-fr-ct", "--ra-fr-c1", "--ra-fr-c2", "--ra-fr-cs"}
+
+
+def _mix(a: tuple[float, ...], b: tuple[float, ...], pct: float) -> tuple[float, ...]:
+    """color-mix(in srgb, a pct%, b), channels 0 to 255."""
+    return tuple(x * pct / 100 + y * (100 - pct) / 100 for x, y in zip(a, b))
+
+
+def _lum(c: tuple[float, ...]) -> float:
+    lin = [
+        v / 255 / 12.92 if v / 255 <= 0.04045 else ((v / 255 + 0.055) / 1.055) ** 2.4
+        for v in c
+    ]
+    return 0.2126 * lin[0] + 0.7152 * lin[1] + 0.0722 * lin[2]
+
+
+def _ratio(a: tuple[float, ...], b: tuple[float, ...]) -> float:
+    hi, lo = sorted((_lum(a), _lum(b)), reverse=True)
+    return (hi + 0.05) / (lo + 0.05)
+
+
+@pytest.mark.parametrize(
+    "accent",
+    [
+        (0xFB, 0xB0, 0x3B),  # the brand amber
+        (0x1D, 0x4E, 0xD8),  # a blue
+        (0xD9, 0x2B, 0x2B),  # a red
+        (0x10, 0x8A, 0x3C),  # a green
+        (0xFF, 0xE0, 0x00),  # a very light yellow
+        (0x7A, 0x2B, 0xD9),  # a violet
+    ],
+)
+def test_frame_text_contrast_is_aa_for_any_accent(accent: tuple[float, ...]) -> None:
+    """The frame's ink, muted ink, icon ink and on-panel button text derive from
+    the accent by the same color-mix formulas as frame.css (kept equal by the
+    stylesheet assertions below)."""
+    white, black = (255.0, 255.0, 255.0), (0.0, 0.0, 0.0)
+    cream = _mix(accent, white, 18)
+    cream_hi = _mix(accent, white, 30)
+    ink = _mix(accent, black, 15)
+    muted = _mix(ink, cream, 72)
+    accent_ink = _mix(accent, black, 45)
+    assert _ratio(ink, cream) >= 7
+    assert _ratio(ink, cream_hi) >= 7
+    assert _ratio(muted, cream) >= 4.5
+    assert _ratio(accent_ink, cream) >= 4.5  # link text and icons on the panel
+    assert _ratio(cream, accent_ink) >= 4.5  # button text on the dark accent fill
+
+
+def test_the_contrast_formulas_match_the_stylesheet() -> None:
+    css = (
+        Path(__file__).parents[2] / "src/reach_around/site/static/frame.css"
+    ).read_text(encoding="utf-8")
+    for decl in (
+        "--ra-fr-cream: color-mix(in srgb, var(--ra-color-accent) 18%, white)",
+        "--ra-fr-cream-hi: color-mix(in srgb, var(--ra-color-accent) 30%, white)",
+        "--ra-fr-ink: color-mix(in srgb, var(--ra-color-accent) 15%, black)",
+        "--ra-fr-ink-muted: color-mix(in srgb, var(--ra-fr-ink) 72%, var(--ra-fr-cream))",
+        "--ra-fr-accent-ink: color-mix(in srgb, var(--ra-color-accent) 45%, black)",
+    ):
+        assert decl in css, decl

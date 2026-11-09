@@ -31,7 +31,7 @@
   --ra-fr-cream-hi: color-mix(in srgb, var(--ra-color-accent) 30%, white);
   --ra-fr-ink: color-mix(in srgb, var(--ra-color-accent) 15%, black);
   --ra-fr-ink-muted: color-mix(in srgb, var(--ra-fr-ink) 72%, var(--ra-fr-cream));
-  --ra-fr-accent-ink: color-mix(in srgb, var(--ra-color-accent) 55%, black);
+  --ra-fr-accent-ink: color-mix(in srgb, var(--ra-color-accent) 45%, black);
   --ra-fr-glow: color-mix(in srgb, var(--ra-color-accent) 70%, transparent);
   --ra-fr-bloom: color-mix(in srgb, var(--ra-color-accent) 30%, transparent);
 }
@@ -257,6 +257,7 @@ body .ra-bx .link-chip, body .ra-bx .platform-icon, body .ra-bx .crypto-chip {
 body .ra-bx.ra-head { display: flex; align-items: center; margin: 0 0 var(--ra-space-2); padding-inline: calc(var(--u) * 130); }
 body :is(.crypto-card, .email-card, .cookie-banner, .kit-table).ra-bx { padding-block: calc(var(--u) * 60); }
 body .ra-bx.ra-s5 { padding-block: calc(var(--u) * 80); padding-inline: calc(var(--u) * 140); }
+body .ra-bx.ra-bare { padding-inline: calc(var(--u) * 50); }
 body .ra-bare[aria-current="page"] { background-color: var(--ra-color-accent-edge); }
 body main > .ra-bx { margin-inline: var(--ra-gutter); }
 body footer.ra-bx .credit a, body footer.ra-bx .privacy-link a { padding-block: var(--ra-space-2); }
