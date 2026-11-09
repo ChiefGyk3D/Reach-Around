@@ -13,7 +13,7 @@
 //   message content, addresses, URLs or secrets. Logging goes through the kit
 //   logger (closed enums only).
 // - Rate limit, daily budget and dedup are enforced in shared D1 state
-//   (quota.ts, migration 0011), each one conditional statement, so isolates
+//   (quota.ts, migration 0013), each one conditional statement, so isolates
 //   cannot overshoot. Per channel, at most maxPerMinute messages a minute: the
 //   last slot is the held-back notice, so the notice counts inside the limit.
 //   The daily budget (DAILY_ALERT_BUDGET, default 20) counts alerts. The
@@ -38,7 +38,7 @@ import type { AlertEvent, AlertMessage, Channel, ChannelId, FailureClass } from 
 
 /** Bindings the alerts read. SECRET ones are marked; set them in the secret manager, never in the repo. */
 export interface AlertsEnv extends KitLimitsEnv {
-  /** D1 binding that holds the alert quota and dedup tables (migration 0011). */
+  /** D1 binding that holds the alert quota and dedup tables (migration 0013). */
   DB: D1Database;
   /** The site host, used as the quota key. */
   SITE_HOST?: string;

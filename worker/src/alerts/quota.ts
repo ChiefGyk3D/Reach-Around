@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 //
-// Shared durable state for owner alerts (migration 0011): the per-minute
+// Shared durable state for owner alerts (migration 0013): the per-minute
 // quota, the daily budget and the dedup claim. Each is ONE conditional
 // statement, so concurrent Worker isolates cannot overshoot, and a refused
 // call writes nothing. Both tables are bounded by a hard row cap and pruned on

@@ -115,9 +115,9 @@ hard cap applies to the message and to the request body.
 ## Limits and failures
 
 - The per-minute limit, the daily budget and the dedup live in the Worker's D1
-  database (migration `0011_alerts.sql`: `alert_quota` and `alert_dedup`), one
+  database (migration `0013_alerts.sql`: `alert_quota` and `alert_dedup`), one
   conditional statement each, so several isolates share them and cannot
-  overshoot. Apply the migration before enabling alerts; if the tables are
+  overshoot. Apply the migration before enabling alerts; it must be applied after `0011_click_funnel.sql` and `0012_click_country_null.sql`, in number order, which `wrangler d1 migrations apply` does; if the tables are
   unusable the Worker sends nothing (fail closed) and counts it.
 - Per channel, at most `max_per_minute` messages a minute (a fixed UTC minute
   window). The last slot of the minute carries one "more alerts are arriving"
