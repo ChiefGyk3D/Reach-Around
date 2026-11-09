@@ -37,6 +37,7 @@ binding names:
 | --- | --- | --- | --- |
 | Discord | `ALERT_DISCORD_WEBHOOK` | secret | The channel's incoming webhook URL |
 | Matrix | `ALERT_MATRIX_ACCESS_TOKEN` | secret | Access token of the account that posts |
+| All | `ALERT_DEDUP_KEY` | secret | At least 32 random bytes. Keys the dedup hash (HMAC-SHA-256). Without it dedup is off (counted as `dedupDisabled`); there is no built-in key |
 | Matrix | `ALERT_MATRIX_SERVER` | secret | `https://` and a host name, nothing else. It must also be in `alerts.matrix.allowed_hosts` |
 | Matrix | `ALERT_MATRIX_HOMESERVER` | variable | Deprecated plain-variable fallback, used only when `ALERT_MATRIX_SERVER` is unset; the same `allowed_hosts` rule applies |
 | Matrix | `ALERT_MATRIX_ROOM_ID` | variable | The room id (`!abc:example.org`), not an alias |
@@ -124,11 +125,21 @@ hard cap applies to the message and to the request body.
   notice instead of an alert, so the notice counts inside the limit; the next
   minute's first message says how many were held back (that count is kept in
   isolate memory, best effort). With `max_per_minute: 1` there is no notice.
-- The daily ceiling is the kit's `DAILY_ALERT_BUDGET` (default 20 alerts per UTC
-  day, all channels together). A refused alert is dropped and counted.
+- The daily ceiling is the kit's `DAILY_ALERT_BUDGET` (default 20 per UTC day).
+  It counts events that obtained at least one send slot, that is attempted
+  sends, once per event whatever the number of channels. An event with no
+  usable destination (a channel enabled but its bindings missing or invalid),
+  one that every channel's minute limit refuses, one that is a repeat, and one
+  whose admission fails part way all cost nothing: whatever was taken (dedup
+  claim, minute slots) is given back. A refused event is dropped and counted.
 - The same event for the same address inside 10 minutes is sent once. D1 holds
-  only a salted hash of the event (never the address) for those 10 minutes, at
-  most 500 rows; the table is pruned on every write.
+  only a keyed hash (HMAC-SHA-256 under `ALERT_DEDUP_KEY`, cut to 128 bits after
+  the digest) for those 10 minutes, never the address and nothing a D1 snapshot
+  alone can reverse, at most 500 rows; the table is pruned on every write. A
+  failed admission releases the claim, so a retry is not mistaken for a repeat.
+- Input is bounded: the address is cut to 254 characters before it is
+  normalized or hashed, and only a normalized address of at most 254 characters
+  is rendered.
 - An alert costs a handful of D1 writes (dedup, daily count, one per channel
   that sends), about five, which the kit's worst-case write estimate
   (`WRITES_PER_OP.alert`) still counts as one. At the default budget of 20 that

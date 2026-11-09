@@ -126,4 +126,5 @@ crons = ["5 * * * *"]
 # ALERTS_CONFIG = '{"channels":["discord"],"events":["kit_unlocked"]}'  # from site.yaml `alerts`
 # ALERT_MATRIX_ROOM_ID = "!room:example.org"
 # SECRETS, set in the secret manager and bound at deploy; never here:
-#   ALERT_DISCORD_WEBHOOK, ALERT_MATRIX_SERVER (homeserver + token are one unit), ALERT_MATRIX_ACCESS_TOKEN
+#   ALERT_DISCORD_WEBHOOK, ALERT_MATRIX_SERVER (homeserver + token are one unit), ALERT_MATRIX_ACCESS_TOKEN,
+#   ALERT_DEDUP_KEY (32+ random bytes)

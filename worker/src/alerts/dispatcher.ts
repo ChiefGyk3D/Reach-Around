@@ -16,7 +16,8 @@
 //   (quota.ts, migration 0013), each one conditional statement, so isolates
 //   cannot overshoot. Per channel, at most maxPerMinute messages a minute: the
 //   last slot is the held-back notice, so the notice counts inside the limit.
-//   The daily budget (DAILY_ALERT_BUDGET, default 20) counts alerts. The
+//   The daily budget (DAILY_ALERT_BUDGET, default 20) counts events that obtained at least one send slot
+//   (attempted sends); an event with no usable destination, no free slot or a failed admission step costs nothing. The
 //   in-isolate counters are only a cheap first filter in front of D1. If D1
 //   fails, nothing is sent (fail closed, like every other kit budget).
 //   The summary of held-back alerts rides on the next minute's first message and
@@ -32,7 +33,18 @@ import { createEmailChannel, EMAIL_PROVIDERS } from "./email";
 import { formatAlert } from "./format";
 import { DEFAULT_TIMEOUT_MS } from "./http";
 import { createMatrixChannel } from "./matrix";
-import { claimDedup, eventHash, MINUTE_MS, reserveQuota, siteKey, windowStart } from "./quota";
+import {
+  claimDedup,
+  dedupKey,
+  eventHash,
+  MAX_WHO_CHARS,
+  MINUTE_MS,
+  refundQuota,
+  releaseDedup,
+  reserveQuota,
+  siteKey,
+  windowStart,
+} from "./quota";
 import { capMessage } from "./sanitize";
 import type { AlertEvent, AlertMessage, Channel, ChannelId, FailureClass } from "./types";
 
@@ -52,6 +64,11 @@ export interface AlertsEnv extends KitLimitsEnv {
    * also be listed in alerts.matrix.allowed_hosts.
    */
   ALERT_MATRIX_SERVER?: string;
+  /**
+   * SECRET, at least 32 bytes. Keys the dedup hash (HMAC-SHA-256). Missing or too short: dedup is off
+   * and counted (dedupDisabled); there is no built-in fallback key.
+   */
+  ALERT_DEDUP_KEY?: string;
   /** DEPRECATED plain variable, read only when ALERT_MATRIX_SERVER is unset. Same allowed_hosts rule. */
   ALERT_MATRIX_HOMESERVER?: string;
   /** Plain variable. Matrix room id. */
@@ -93,6 +110,8 @@ export interface AlertStatus {
   dailyRefused: number;
   /** Not sent because the shared quota state could not be used (fail closed). */
   quotaErrors: number;
+  /** Events sent without dedup because ALERT_DEDUP_KEY is missing or too short. */
+  dedupDisabled: number;
   /** Matrix homeserver read from the deprecated plain variable. */
   deprecatedHomeserver: number;
 }
@@ -153,21 +172,26 @@ export function createDispatcher() {
     unconfigured: 0,
     dailyRefused: 0,
     quotaErrors: 0,
+    dedupDisabled: 0,
     deprecatedHomeserver: 0,
   };
 
   const chStatus = (id: ChannelId): ChannelStatus => (status.channels[id] ??= { sent: 0, failed: {}, suppressed: 0 });
 
   function who(event: AlertEvent): string {
-    return event.kind !== "gate_failed_repeatedly" && typeof event.email === "string" ? event.email : "";
+    return event.kind !== "gate_failed_repeatedly" && typeof event.email === "string"
+      ? event.email.slice(0, MAX_WHO_CHARS)
+      : "";
   }
 
-  /** First filter only: a repeat seen by THIS isolate. Never evicts; when full, D1 alone decides. */
-  function localDuplicate(key: string, now: number): boolean {
+  /** First filter only: a repeat already admitted by THIS isolate. Read-only; recorded after admission. */
+  function localSeen(key: string, now: number): boolean {
     for (const [k, t] of seen) if (now - t >= DEDUP_MS || now < t) seen.delete(k);
-    if (seen.has(key)) return true;
+    return seen.has(key);
+  }
+
+  function localRecord(key: string, now: number): void {
     if (seen.size < DEDUP_MAX_ENTRIES) seen.set(key, now);
-    return false;
   }
 
   function localWindow(id: ChannelId, now: number): Window {
@@ -184,66 +208,103 @@ export function createDispatcher() {
     const log = forRequest();
     try {
       const cfg = parseAlertsConfig(env?.ALERTS_CONFIG);
-      if (cfg === null || !cfg.events.has(event?.kind)) return;
+      if (cfg === null || typeof event !== "object" || event === null || !cfg.events.has(event.kind)) return;
       const now = deps.nowMs ?? Date.now();
       const site = siteKey(env.SITE_HOST);
-      const hash = await eventHash(site, event.kind, who(event));
-      if (localDuplicate(hash, now)) {
-        status.deduped++;
-        return;
-      }
 
-      // Shared state: dedup claim, then the daily budget. Any failure sends nothing.
-      let dailyBudget: number;
-      try {
-        dailyBudget = loadKitLimits(env).dailyAlertBudget;
-        if (!(await claimDedup(env.DB, site, hash, now, DEDUP_MS))) {
+      // 1. Usable destinations first. An event with none is charged to nothing.
+      const { channels, unconfigured, deprecated } = buildChannels(env, cfg.channels, cfg.matrixAllowedHosts);
+      status.unconfigured += unconfigured;
+      if (channels.length === 0) return;
+      if (deprecated) status.deprecatedHomeserver++;
+
+      // 2. Identity of the event (keyed; without the secret dedup is off and counted).
+      const key = dedupKey(env.ALERT_DEDUP_KEY);
+      let hash: string | null = null;
+      if (key === null) status.dedupDisabled++;
+      else {
+        hash = await eventHash(key, site, event.kind, who(event));
+        if (localSeen(hash, now)) {
           status.deduped++;
           return;
         }
-        if ((await reserveQuota(env.DB, site, "all", "day", windowStart("day", now), dailyBudget)) === null) {
-          status.dailyRefused++;
-          log.log("alert", "over_budget", "route_budget");
+      }
+
+      // 3. This isolate's cheap per-channel filter (read-only here).
+      const limit = cfg.maxPerMinute;
+      const candidates = channels.filter((ch) => {
+        const w = localWindow(ch.id, now);
+        if (w.attempts < limit) return true;
+        w.held++;
+        chStatus(ch.id).suppressed++;
+        log.log("alert", "throttled", "route_budget");
+        return false;
+      });
+      if (candidates.length === 0) return;
+
+      // 4. Shared admission: dedup claim, a minute slot per channel, then ONE daily unit for the event.
+      // Every step that fails or refuses gives back what was taken, so a refused or failed event costs nothing.
+      const minute = windowStart("minute", now);
+      const day = windowStart("day", now);
+      let claimed = false;
+      let dailyTaken = false;
+      const granted: Array<{ ch: Channel; count: number }> = [];
+      const undo = async (): Promise<void> => {
+        for (const g of granted) await refundQuota(env.DB, site, g.ch.id, "minute", minute).catch(() => undefined);
+        if (dailyTaken) await refundQuota(env.DB, site, "all", "day", day).catch(() => undefined);
+        if (claimed && hash !== null) await releaseDedup(env.DB, site, hash).catch(() => undefined);
+      };
+      let errored = false;
+      try {
+        const dailyBudget = loadKitLimits(env).dailyAlertBudget;
+        if (hash !== null) {
+          if (!(await claimDedup(env.DB, site, hash, now, DEDUP_MS))) {
+            status.deduped++;
+            return;
+          }
+          claimed = true;
+        }
+        await Promise.all(
+          candidates.map(async (ch) => {
+            try {
+              const count = await reserveQuota(env.DB, site, ch.id, "minute", minute, limit);
+              if (count === null) {
+                localWindow(ch.id, now).held++;
+                chStatus(ch.id).suppressed++;
+                log.log("alert", "throttled", "route_budget");
+              } else granted.push({ ch, count });
+            } catch {
+              errored = true;
+            }
+          }),
+        );
+        if (granted.length === 0) {
+          if (errored) status.quotaErrors++;
+          await undo();
           return;
         }
+        if ((await reserveQuota(env.DB, site, "all", "day", day, dailyBudget)) === null) {
+          status.dailyRefused++;
+          log.log("alert", "over_budget", "route_budget");
+          await undo();
+          return;
+        }
+        dailyTaken = true;
       } catch {
         status.quotaErrors++;
         log.log("alert", "failed", "other");
+        await undo();
         return;
       }
+      if (hash !== null) localRecord(hash, now);
 
-      const { channels, unconfigured, deprecated } = buildChannels(env, cfg.channels, cfg.matrixAllowedHosts);
-      status.unconfigured += unconfigured;
-      if (deprecated) status.deprecatedHomeserver++;
-      const sendDeps = { fetchFn: deps.fetchFn ?? fetch, timeoutMs: deps.timeoutMs ?? DEFAULT_TIMEOUT_MS };
-
+      // 5. Send. Each granted channel is independent.
       await Promise.all(
-        channels.map(async (ch) => {
+        granted.map(async ({ ch, count }) => {
+          const sendDeps = { fetchFn: deps.fetchFn ?? fetch, timeoutMs: deps.timeoutMs ?? DEFAULT_TIMEOUT_MS };
           try {
             const w = localWindow(ch.id, now);
-            const limit = cfg.maxPerMinute;
-            // Cheap filter: this isolate already used the whole minute.
-            if (w.attempts >= limit) {
-              w.held++;
-              chStatus(ch.id).suppressed++;
-              log.log("alert", "throttled", "route_budget");
-              return;
-            }
             w.attempts++;
-            let count: number | null;
-            try {
-              count = await reserveQuota(env.DB, site, ch.id, "minute", windowStart("minute", now), limit);
-            } catch {
-              status.quotaErrors++;
-              log.log("alert", "failed", "other");
-              return;
-            }
-            if (count === null) {
-              w.held++;
-              chStatus(ch.id).suppressed++;
-              log.log("alert", "throttled", "route_budget");
-              return;
-            }
             // The last slot of the minute carries the held-back notice instead of the event (limit 1: the event).
             const notice = limit > 1 && count >= limit;
             const base = formatAlert(event, cfg.visitorEmail, ch.textMode);

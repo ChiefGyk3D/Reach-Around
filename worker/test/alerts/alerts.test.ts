@@ -16,6 +16,7 @@ const ALLOW = ["matrix.example.org"];
 const MX = { allowed_hosts: ["matrix.example.org"] };
 const BASE: AlertsEnv = {
   DB: testEnv.DB,
+  ALERT_DEDUP_KEY: "k".repeat(40),
   ALERTS_CONFIG: JSON.stringify({ channels: ["discord", "matrix"], events: ["kit_unlocked", "lead_captured", "gate_failed_repeatedly"], matrix: MX }),
   ALERT_DISCORD_WEBHOOK: DISCORD,
   ALERT_MATRIX_SERVER: "https://matrix.example.org",

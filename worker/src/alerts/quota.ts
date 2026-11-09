@@ -114,9 +114,50 @@ export async function claimDedup(
   return (res[2]?.results?.length ?? 0) === 1;
 }
 
-/** A salted SHA-256 prefix (32 hex) of the event identity. The address itself is never stored. */
-export async function eventHash(site: string, kind: string, who: string): Promise<string> {
-  const data = new TextEncoder().encode(`reach-around-alert|${site}|${kind}|${who.toLowerCase().slice(0, 254)}`);
-  const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", data));
+/** Drop a dedup claim (an admission step after the claim failed, so a retry must not look like a repeat). */
+export async function releaseDedup(db: D1Database, site: string, hash: string): Promise<void> {
+  if (!SITE_RE.test(site) || !HASH_RE.test(hash)) return;
+  await db.prepare("DELETE FROM alert_dedup WHERE site = ?1 AND event_hash = ?2").bind(site, hash).run();
+}
+
+/** Give back one granted unit (the send never happened). Never goes below zero. */
+export async function refundQuota(
+  db: D1Database,
+  site: string,
+  channel: string,
+  scope: QuotaScope,
+  windowStartMs: number,
+): Promise<void> {
+  if (!SITE_RE.test(site) || !CHANNEL_RE.test(channel) || (scope !== "minute" && scope !== "day")) return;
+  await db
+    .prepare(
+      "UPDATE alert_quota SET count = count - 1 WHERE site = ?1 AND channel = ?2 AND scope = ?3 AND window_start = ?4 AND count > 0",
+    )
+    .bind(site, channel, scope, windowStartMs)
+    .run();
+}
+
+/** The dedup key must be at least this many bytes. */
+export const MIN_DEDUP_KEY_BYTES = 32;
+/** Longest identity text that contributes to a hash. */
+export const MAX_WHO_CHARS = 254;
+
+/** The key, or null when the secret is missing or too short (dedup is then disabled; never a constant fallback). */
+export function dedupKey(secret: unknown): Uint8Array | null {
+  if (typeof secret !== "string") return null;
+  const bytes = new TextEncoder().encode(secret.slice(0, 1024));
+  return bytes.length >= MIN_DEDUP_KEY_BYTES ? bytes : null;
+}
+
+/**
+ * HMAC-SHA-256 of the event identity under a secret key, truncated to 32 hex
+ * AFTER the keyed digest. The address is capped BEFORE it is normalized, so the
+ * work is bounded whatever the caller passes. Not reversible from a D1 snapshot
+ * without the key.
+ */
+export async function eventHash(key: Uint8Array, site: string, kind: string, who: string): Promise<string> {
+  const k = await crypto.subtle.importKey("raw", key, { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  const data = new TextEncoder().encode(`reach-around-alert|${site}|${kind}|${who.slice(0, MAX_WHO_CHARS).toLowerCase()}`);
+  const digest = new Uint8Array(await crypto.subtle.sign("HMAC", k, data));
   return Array.from(digest.slice(0, 16), (b) => b.toString(16).padStart(2, "0")).join("");
 }
