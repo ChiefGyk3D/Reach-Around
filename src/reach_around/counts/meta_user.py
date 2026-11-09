@@ -395,3 +395,102 @@ def follower_total(
                 if isinstance(total, dict) and "value" in total:
                     return total["value"]
     raise MetaError("missing_field")
+
+
+# ---------------------------------------------------------------------------
+# Optional Threads insights (issue 394). Off unless ``insights`` is true.
+#
+# VERIFIED 2026-11-09 https://developers.facebook.com/docs/threads/insights :
+#   GET https://graph.threads.com/v1.0/<id>/threads_insights with ``metric`` (a
+#   comma separated list) and optional ``since`` / ``until`` (Unix time or date;
+#   default yesterday to today; earliest 1712991600). ``views`` is a time series
+#   (``values`` of ``value`` and ``end_time``, ``period: day``); ``likes``,
+#   ``replies``, ``reposts``, ``quotes`` are total-value metrics
+#   (``total_value.value``); all accept since and until. ``replies`` counts only
+#   top-level replies. Permission ``threads_manage_insights``.
+# The page contradicts itself once: one example shows ``views`` as a total value.
+# This code accepts either shape for ``views`` (UNVERIFIED which one is live).
+# UNVERIFIED: whether ``until`` is inclusive, the data delay, and that a day
+# boundary is a UTC midnight (the documented example shows 08:00 UTC end times),
+# so "7 UTC days" is the requested range, not a proven boundary.
+# ``clicks`` is not collected: it is keyed by third-party link URLs.
+# ---------------------------------------------------------------------------
+
+INSIGHT_WINDOW_DAYS = 7
+INSIGHT_ENGAGEMENT = ("likes", "replies", "reposts", "quotes")
+MAX_INSIGHT_VALUE = 10**12
+MAX_SERIES_POINTS = 31
+
+
+def _insight_int(value: object) -> int | None:
+    if type(value) is not int or not 0 <= value <= MAX_INSIGHT_VALUE:
+        return None
+    return value
+
+
+def _series_total(item: Mapping[str, object]) -> int | None:
+    values = item.get("values")
+    if isinstance(values, list):
+        if not values or len(values) > MAX_SERIES_POINTS:
+            return None
+        total = 0
+        for point in values:
+            number = (
+                _insight_int(point.get("value")) if isinstance(point, dict) else None
+            )
+            if number is None:
+                return None
+            total += number
+        return total
+    box = item.get("total_value")
+    return _insight_int(box.get("value")) if isinstance(box, dict) else None
+
+
+def threads_insights(
+    source: ThreadsSource,
+    env: Mapping[str, str],
+    fetch: Fetch,
+    today: date,
+) -> dict[str, int]:
+    """``views_7d`` and ``engagement_7d`` over the last seven whole UTC days.
+
+    Window: ``since`` is 00:00 UTC seven days before ``today``, ``until`` is
+    00:00 UTC of ``today``. ``views_7d`` is the sum of the daily ``views``.
+    ``engagement_7d`` = likes + replies + reposts + quotes (each a total over the
+    same window). A metric is left out, never zero, when its figures are absent
+    or of the wrong type. Never refreshes the token.
+    """
+    credential_name(source)
+    check_source(source)
+    if type(source.insights) is not bool:
+        raise MetaError("bad_source_setting")
+    session = _Session(source, env, fetch, NoopSink(), today)
+    if source.token_expires is not None and source.token_expires < today:
+        raise MetaError("token_expired")
+    until = datetime.combine(today, time(0), tzinfo=UTC)
+    since = until - timedelta(days=INSIGHT_WINDOW_DAYS)
+    reply = session.read(
+        f"/{THREADS_VERSION}/{source.user_id}/threads_insights",
+        {
+            "metric": ",".join(("views", *INSIGHT_ENGAGEMENT)),
+            "since": str(int(since.timestamp())),
+            "until": str(int(until.timestamp())),
+        },
+    )
+    data = reply.get("data")
+    if not isinstance(data, list) or len(data) > 20:
+        raise MetaError("missing_field")
+    found: dict[str, int | None] = {}
+    for item in data:
+        name = item.get("name") if isinstance(item, dict) else None
+        if isinstance(name, str) and name in ("views", *INSIGHT_ENGAGEMENT):
+            found[name] = _series_total(item)
+    out: dict[str, int] = {}
+    if found.get("views") is not None:
+        out["views_7d"] = found["views"]  # type: ignore[assignment]
+    parts = [found.get(name) for name in INSIGHT_ENGAGEMENT]
+    if None not in parts:
+        out["engagement_7d"] = sum(p or 0 for p in parts)
+    if not out:
+        raise MetaError("missing_field")
+    return out

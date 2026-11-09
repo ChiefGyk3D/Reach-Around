@@ -36,6 +36,7 @@ token travels only in the ``Authorization`` header. No redirect is followed.
 
 from __future__ import annotations
 
+import json
 import sys
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
@@ -237,11 +238,12 @@ class _Session:
         env: Mapping[str, str],
         fetch: Fetch,
         sink: TokenSink | None,
+        allow_refresh: bool = True,
     ) -> None:
         check_source(source)
         self.source = source
         self.fetch = fetch
-        self.can_refresh = source.auto_refresh is True
+        self.can_refresh = allow_refresh and source.auto_refresh is True
         if self.can_refresh and (sink is None or isinstance(sink, NoopSink)):
             # The no-op sink discards the rotated pair, so a refresh would
             # break the next run (the old refresh token stops working).
@@ -367,15 +369,20 @@ class _Session:
         self.refresh_value = pair.refresh_token
 
     def get_info(self) -> dict[str, object]:
-        check_url(INFO_URL)
+        return self.api(INFO_URL)
+
+    def api(self, url: str, body: bytes | None = None) -> dict[str, object]:
+        """One authorized call with the 401 classification and one refresh."""
+        check_url(url)
         for _ in range(2):
             expired = False
             try:
-                return self._call(
-                    INFO_URL,
-                    headers={"Authorization": f"Bearer {self.access}"},
-                    error_code=True,
-                )
+                headers = {"Authorization": f"Bearer {self.access}"}
+                kw: dict[str, object] = {"headers": headers, "error_code": True}
+                if body is not None:
+                    headers["Content-Type"] = "application/json"
+                    kw.update(method="POST", body=body, max_attempts=1)
+                return self._call(url, **kw)
             except FetchError as exc:
                 if exc.kind != "http_401":
                     raise
@@ -412,3 +419,118 @@ def follower_total(
     if not isinstance(user, dict) or "follower_count" not in user:
         raise TiktokError("missing_field")
     return user["follower_count"]
+
+
+# ---------------------------------------------------------------------------
+# Optional video stats (issue 395). Off unless ``insights`` is true in the config.
+#
+# VERIFIED 2026-11-09 https://developers.tiktok.com/doc/tiktok-api-v2-video-list :
+#   POST https://open.tiktokapis.com/v2/video/list/ , scope ``video.list``,
+#   JSON body ``cursor`` (int64, UTC Unix milliseconds; older videos than it) and
+#   ``max_count`` (int32, default 10, at most 20); answer ``data.videos``,
+#   ``data.cursor``, ``data.has_more`` and ``error``; public videos only, newest
+#   first. The page documents the ``fields`` query parameter only by example.
+# VERIFIED 2026-11-09 https://developers.tiktok.com/doc/tiktok-api-v2-video-object :
+#   ``create_time`` int64 UTC seconds, ``view_count`` int64, ``like_count``,
+#   ``comment_count``, ``share_count`` int32.
+# INFERRED: there is no account-level view total, so the number is a sum of
+# per-video counts; those counts are lifetime counts of each video. Whether the
+# ``fields`` list below is accepted as written, and whether ``video.list`` returns
+# data in a Sandbox, are UNVERIFIED.
+# ---------------------------------------------------------------------------
+
+VIDEO_URL = (
+    f"https://{HOST}/v2/video/list/"
+    "?fields=id,create_time,view_count,like_count,comment_count,share_count"
+)
+VIDEO_WINDOW_DAYS = 28
+VIDEO_PAGE_SIZE = 20
+VIDEO_MAX_PAGES = 5
+MAX_VIDEO_COUNT = 10**12
+
+
+def _whole(value: object, top: int) -> int | None:
+    if type(value) is not int or not 0 <= value <= top:
+        return None
+    return value
+
+
+def video_stats(
+    source: TiktokSource,
+    env: Mapping[str, str],
+    fetch: Fetch,
+    now_utc_seconds: int,
+) -> dict[str, int]:
+    """Aggregate over public videos posted in the last 28 days (UTC).
+
+    ``video_views_28d`` = sum of ``view_count`` and ``video_engagement_28d`` = sum
+    of ``like_count + comment_count + share_count``, both over the videos whose
+    ``create_time`` is within 28 days of ``now``. The counts are each video's
+    lifetime counts. A metric is left out (never zero) when any video in the
+    window lacks a field or has a wrong type. Raises ``window_incomplete`` when
+    the page limit ends before the window does. Never refreshes tokens.
+    """
+    session = _Session(source, env, fetch, None, allow_refresh=False)
+    cutoff = now_utc_seconds - VIDEO_WINDOW_DAYS * 86_400
+    views: int | None = 0
+    engagement: int | None = 0
+    videos = 0
+    cursor: int | None = None
+    for _ in range(VIDEO_MAX_PAGES):
+        request: dict[str, int] = {"max_count": VIDEO_PAGE_SIZE}
+        if cursor is not None:
+            request["cursor"] = cursor
+        body = json.dumps(request).encode("ascii")
+        reply = session.api(VIDEO_URL, body)
+        err = reply.get("error")
+        if isinstance(err, dict) and err.get("code") not in (None, "ok"):
+            raise TiktokError("api_error")
+        data = reply.get("data")
+        items = data.get("videos") if isinstance(data, dict) else None
+        if items is None and isinstance(data, dict) and "videos" not in data:
+            items = []  # an account with no public videos may omit the list
+        if not isinstance(items, list) or len(items) > 4 * VIDEO_PAGE_SIZE:
+            raise TiktokError("missing_field")
+        reached_cutoff = False
+        for item in items:
+            if not isinstance(item, dict):
+                raise TiktokError("missing_field")
+            created = _whole(item.get("create_time"), now_utc_seconds + 86_400)
+            if created is None:
+                raise TiktokError("missing_field")
+            if created < cutoff:
+                reached_cutoff = True
+                break
+            videos += 1
+            view = _whole(item.get("view_count"), MAX_VIDEO_COUNT)
+            views = None if view is None or views is None else views + view
+            parts = [
+                _whole(item.get(name), MAX_VIDEO_COUNT)
+                for name in ("like_count", "comment_count", "share_count")
+            ]
+            if engagement is not None:
+                engagement = (
+                    None if None in parts else engagement + sum(p or 0 for p in parts)
+                )
+        if not isinstance(data, dict):
+            raise TiktokError("missing_field")
+        if reached_cutoff or data.get("has_more") is not True:
+            return _video_result(views, engagement, videos)
+        nxt = data.get("cursor")
+        if type(nxt) is not int or nxt <= 0 or (cursor is not None and nxt >= cursor):
+            raise TiktokError("missing_field")
+        cursor = nxt
+    raise TiktokError("window_incomplete")
+
+
+def _video_result(
+    views: int | None, engagement: int | None, videos: int
+) -> dict[str, int]:
+    out: dict[str, int] = {"videos_28d": videos}
+    if views is not None:
+        out["video_views_28d"] = views
+    if engagement is not None:
+        out["video_engagement_28d"] = engagement
+    if views is None and engagement is None:
+        raise TiktokError("missing_field")
+    return out

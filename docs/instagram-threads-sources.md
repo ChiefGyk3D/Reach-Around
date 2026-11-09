@@ -15,7 +15,8 @@ Collected: the follower total, one number per run, written to the numbers file
 and, when `numbers.history_file` is set, appended to the
 [history store](social-history.md) as `source: api`, metric `followers`.
 
-Not collected here: views, reach, engagement, demographics, per-post data
+Not collected here by default: Threads views and engagement are an opt-in
+(`insights: true`, [engagement-sources.md](engagement-sources.md)). Not collected: views, reach, engagement, demographics, per-post data
 (separate work), watch time (neither platform has such a metric), and anything
 about individual followers. The token is only used for the one read (a refresh is done by hand,
 see below).

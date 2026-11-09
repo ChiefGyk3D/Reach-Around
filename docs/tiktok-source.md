@@ -151,7 +151,9 @@ token-health: source=tiktok kind=<refresh_needed|refresh_failed|rotated_unstored
 
 ## What is not collected
 
-Only the follower total. Not collected: views, likes, comments, shares,
+Only the follower total, unless the optional `insights: true` is set (video
+views and engagement over 28 days, off by default, partly UNVERIFIED:
+[engagement-sources.md](engagement-sources.md)). Not collected: views, likes, comments, shares,
 per-video data (`video.list` is not used), watch time, demographics (the Display
 API offers none; a Business API route is UNVERIFIED), the profile fields, any
 data about viewers or other accounts. TikTok Developer Terms (modified
