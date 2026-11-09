@@ -17,6 +17,33 @@
       "window_start",
       "count"
     ],
+    "click_budget": [
+      "site",
+      "day",
+      "hour",
+      "clicks"
+    ],
+    "click_capacity": [
+      "site",
+      "day",
+      "marked_at",
+      "first_hour",
+      "folded"
+    ],
+    "click_country_daily": [
+      "site",
+      "day",
+      "link_id",
+      "country",
+      "clicks"
+    ],
+    "click_country_monthly": [
+      "site",
+      "month",
+      "link_id",
+      "country",
+      "clicks"
+    ],
     "click_events": [
       "id",
       "ts",
@@ -24,6 +51,36 @@
       "country",
       "site",
       "src"
+    ],
+    "click_funnel_state": [
+      "site",
+      "from_day"
+    ],
+    "click_month_log": [
+      "site",
+      "month",
+      "rolled_at",
+      "exhausted_days",
+      "folded_clicks"
+    ],
+    "click_seal": [
+      "site",
+      "day",
+      "sealed_at"
+    ],
+    "click_src_daily": [
+      "site",
+      "day",
+      "link_id",
+      "src",
+      "clicks"
+    ],
+    "click_src_monthly": [
+      "site",
+      "month",
+      "link_id",
+      "src",
+      "clicks"
     ],
     "counters": [
       "key",
@@ -194,8 +251,21 @@
     "alert_dedup.expires_at": "ms",
     "alert_quota.count": "small",
     "alert_quota.window_start": "ms",
+    "click_budget.clicks": "small",
+    "click_budget.hour": "small",
+    "click_capacity.first_hour": "small",
+    "click_capacity.folded": "small",
+    "click_capacity.marked_at": "ms",
+    "click_country_daily.clicks": "small",
+    "click_country_monthly.clicks": "small",
     "click_events.id": "small",
     "click_events.ts": "ms",
+    "click_month_log.exhausted_days": "small",
+    "click_month_log.folded_clicks": "small",
+    "click_month_log.rolled_at": "ms",
+    "click_seal.sealed_at": "ms",
+    "click_src_daily.clicks": "small",
+    "click_src_monthly.clicks": "small",
     "counters.count": "small",
     "d1_migrations.id": "small",
     "kit_events.id": "small",

@@ -60,6 +60,7 @@ class Spec:
     columns: dict[str, str]  # column -> kind
     required: frozenset[str]
     key: tuple[str, ...] = ()  # primary key columns; empty = rows may repeat
+    also: tuple[str, ...] = ()  # more columns that must all be present to match
 
 
 SPECS: dict[str, Spec] = {
@@ -124,17 +125,105 @@ SPECS: dict[str, Spec] = {
             "src": "csrc",
         },
         required=frozenset({"ts", "link_id"}),
+        also=("ts",),
+    ),
+    # Funnel counters (issues #331, #409): one marginal pair each, a count and
+    # closed labels. Country by link covers every click; the pairs are never
+    # combined into a three-way cell.
+    "click_src_daily": Spec(
+        marker="clicks",
+        also=("day", "src"),
+        columns={
+            "site": "site",
+            "day": "day",
+            "link_id": "slug",
+            "src": "csrc1",
+            "clicks": "pos",
+        },
+        required=frozenset({"day", "link_id", "src", "clicks"}),
+        key=("site", "day", "link_id", "src"),
+    ),
+    "click_country_daily": Spec(
+        marker="clicks",
+        also=("day", "country"),
+        columns={
+            "site": "site",
+            "day": "day",
+            "link_id": "slug",
+            "country": "country",
+            "clicks": "pos",
+        },
+        required=frozenset({"day", "link_id", "country", "clicks"}),
+        key=("site", "day", "link_id", "country"),
+    ),
+    "click_src_monthly": Spec(
+        marker="clicks",
+        also=("month", "src"),
+        columns={
+            "site": "site",
+            "month": "month",
+            "link_id": "slug",
+            "src": "csrc1",
+            "clicks": "pos",
+        },
+        required=frozenset({"month", "link_id", "src", "clicks"}),
+        key=("site", "month", "link_id", "src"),
+    ),
+    "click_country_monthly": Spec(
+        marker="clicks",
+        also=("month", "country"),
+        columns={
+            "site": "site",
+            "month": "month",
+            "link_id": "slug",
+            "country": "country",
+            "clicks": "pos",
+        },
+        required=frozenset({"month", "link_id", "country", "clicks"}),
+        key=("site", "month", "link_id", "country"),
+    ),
+    # Evidence that a period is complete and that counting capacity held (#331).
+    "click_seal": Spec(
+        marker="sealed_at",
+        columns={"site": "site", "day": "day", "sealed_at": "ts"},
+        required=frozenset({"day", "sealed_at"}),
+        key=("site", "day"),
+    ),
+    "click_month_log": Spec(
+        marker="exhausted_days",
+        columns={
+            "site": "site",
+            "month": "month",
+            "rolled_at": "ts",
+            "exhausted_days": "uint",
+            "folded_clicks": "uint",
+        },
+        required=frozenset({"month", "rolled_at", "exhausted_days", "folded_clicks"}),
+        key=("site", "month"),
+    ),
+    "click_capacity": Spec(
+        marker="marked_at",
+        columns={
+            "site": "site",
+            "day": "day",
+            "marked_at": "ts",
+            "first_hour": "uint",
+            "folded": "pos",
+        },
+        required=frozenset({"day", "marked_at", "first_hour", "folded"}),
+        key=("site", "day"),
     ),
     "kit_events": Spec(
         marker="kind",
         columns={"site": "site", "ts": "ts", "kind": "kit_kind"},
         required=frozenset({"ts", "kind"}),
+        also=("ts",),
     ),
 }
-_MARKERS = {spec.marker: name for name, spec in SPECS.items()}
 
 _SITE = re.compile(r"[a-z0-9][a-z0-9-]{0,19}")
 _DAY = re.compile(r"\d{4}-\d{2}-\d{2}")
+_MONTH = re.compile(r"\d{4}-(?:0[1-9]|1[0-2])")
 _COUNTRY = re.compile(r"[A-Z]{2}")
 _CSV_INT = re.compile(r"\d{1,13}")
 _IPV4 = re.compile(r"(?<![\d.])\d{1,3}(?:\.\d{1,3}){3}(?![\d.])")
@@ -165,6 +254,13 @@ class Export:
     view_dim_daily: list[dict[str, Any]] = field(default_factory=list)
     view_geo_daily: list[dict[str, Any]] = field(default_factory=list)
     click_events: list[dict[str, Any]] = field(default_factory=list)
+    click_src_daily: list[dict[str, Any]] = field(default_factory=list)
+    click_country_daily: list[dict[str, Any]] = field(default_factory=list)
+    click_src_monthly: list[dict[str, Any]] = field(default_factory=list)
+    click_country_monthly: list[dict[str, Any]] = field(default_factory=list)
+    click_seal: list[dict[str, Any]] = field(default_factory=list)
+    click_month_log: list[dict[str, Any]] = field(default_factory=list)
+    click_capacity: list[dict[str, Any]] = field(default_factory=list)
     kit_events: list[dict[str, Any]] = field(default_factory=list)
     present: set[str] = field(default_factory=set)
 
@@ -280,12 +376,17 @@ def _check_value(kind: str, value: Any, where: str) -> Any:
         pattern = _SITE
     elif kind == "day":
         pattern = _DAY
+    elif kind == "month":
+        pattern = _MONTH
     elif kind == "country":
         pattern = _COUNTRY
     elif kind == "csrc":
         # Nullable closed-set source label (issue #329); null or empty is none.
         if value is None or value == "":
             return ""
+        return _check_text(value, pattern=_UTM, where=where)
+    elif kind == "csrc1":
+        # A source label of a counter row: a closed label, never empty.
         return _check_text(value, pattern=_UTM, where=where)
     elif kind == "country0":
         if value is None or value == "":
@@ -376,7 +477,12 @@ def _validate_row(table: str, row: Any, where: str) -> dict[str, Any]:
 
 
 def _infer_table(names: Any, where: str) -> str:
-    found = {_MARKERS[name] for name in names if name in _MARKERS}
+    given = set(names)
+    found = {
+        table
+        for table, spec in SPECS.items()
+        if spec.marker in given and all(extra in given for extra in spec.also)
+    }
     if len(found) != 1:
         raise ExportError(f"{where}: cannot tell which table these rows are from")
     return next(iter(found))

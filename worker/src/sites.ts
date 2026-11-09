@@ -227,8 +227,8 @@ function buildSite(id: string, body: unknown): Site | null {
     if (!Array.isArray(u) || u.length > MAX_SOURCES) return null;
     const labels: string[] = [];
     for (const x of u) {
-      // "other" is the fold target, so it cannot also be a listed label.
-      if (typeof x !== "string" || !UTM.test(x) || x === "other") return null;
+      // "other" is the fold target and "direct" the funnel counter label of a click with no source, so neither can also be a listed label.
+      if (typeof x !== "string" || !UTM.test(x) || x === "other" || x === "direct") return null;
       if (!labels.includes(x)) labels.push(x);
     }
     site.sources = labels;

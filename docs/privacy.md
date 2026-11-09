@@ -134,3 +134,17 @@ After a deletion, a lead who comes back and types the address again is a new
 lead. Remove copies that sit outside D1 yourself: see the inventory in
 docs/security/threat-model.md (T-17), and say in your reply what you could not
 reach.
+
+## Click counters (funnel rollups, aggregate only)
+
+Besides the hour-rounded click rows (kept 90 days), the Worker keeps counts of
+clicks per day: by link and source label, and by link and country. A counter
+row is a count and closed labels (a link id, a label from the site's fixed list
+or `direct` or `other`, a two-letter country code). Not collected: a cookie, a
+stored identifier, an IP address, a user agent, a referrer address, a timestamp
+finer than a day on these tables, or any link between a click and a page view or
+a person. A raw click row carries at most a source label and never a country; country exists only in the counter (rows written before this change are cleared by an owner-run script, `scripts/clear-click-country.sh`, after the new Worker is counting). Source and country are never stored together, and no
+report prints a three-way cell. Day counts are kept 90 days, with a site-wide daily cap on their number; the monthly
+totals made from them are kept 25 months. Because nothing identifies a person,
+a deletion request cannot be matched to a counter row; the retention above is
+the control. The public privacy page states this in plain words.

@@ -21,6 +21,8 @@ from reach_around.config.zones import ZONES, check_zone
 from reach_around.funnel.csvout import csv_files, utc_now, write_csv_dir
 from reach_around.funnel.display import annotate
 from reach_around.funnel.export import ExportError, load_exports
+from reach_around.funnel.ledger import LedgerError, init_ledger, reanchor_ledger
+from reach_around.funnel.release import release_report
 from reach_around.funnel.report import FLOOR, build_report, render_text
 
 EXIT_OK = 0
@@ -58,27 +60,75 @@ def run_report(args: argparse.Namespace) -> int:
             raise ValueError("--top must be between 1 and 100")
         if args.floor < FLOOR:
             raise ValueError(f"--floor cannot be below {FLOOR}")
+        if args.period is None and args.offset:
+            raise ValueError("--offset needs --period")
+        if args.period is not None and (
+            args.since or args.until or args.days is not None
+        ):
+            raise ValueError(
+                "--period cannot be combined with --since, --until or --days: "
+                "the source and country tables are released for one fixed "
+                "calendar week or month only"
+            )
+        if args.period is not None and args.ledger is None:
+            raise ValueError(
+                "the source and country tables need --ledger FILE: every cell "
+                "release is recorded in a release ledger (create it once with "
+                "'reach-around funnel-ledger-init FILE' and keep it committed "
+                "in your private instance repo)"
+            )
+        if args.ledger is not None and args.period is None:
+            raise ValueError("--ledger needs --period")
         if args.csv is not None and args.json:
             raise ValueError("--csv and --json cannot be combined")
         zone = None if args.display_zone is None else check_zone(args.display_zone)
         cutover_text = _day(args.cutover, "--cutover")
         cutover = date.fromisoformat(cutover_text) if cutover_text else None
         export = load_exports(list(args.input))
-        report = build_report(
-            export,
+        diagnostics: dict[str, object] | None = {} if args.diagnostics else None
+        options = dict(
             site=args.site,
-            since=since,
-            until=until,
-            days=args.days,
             geo=args.geo,
             include_bots=args.include_bots,
             top=args.top,
             floor=args.floor,
         )
+        if args.period is not None:
+            # Recorded in the ledger BEFORE anything is shown: no record, no cells.
+            report, status = release_report(
+                export,
+                args.ledger,
+                period=args.period,
+                offset=args.offset,
+                as_of=utc_now().date(),
+                diagnostics=diagnostics,
+                **options,
+            )
+            del status
+        else:
+            report = build_report(
+                export,
+                since=since,
+                until=until,
+                days=args.days,
+                diagnostics=diagnostics,
+                **options,
+            )
         annotate(report, zone=zone, cutover=cutover, today=utc_today())
-    except (ExportError, ValueError) as exc:
+    except (
+        ExportError,
+        ValueError,
+        LedgerError,
+    ) as exc:  # IncompletePeriod is a ValueError
         print(f"error: {exc}", file=sys.stderr)
         return EXIT_USAGE
+    if diagnostics is not None:
+        # For the operator's terminal only (stderr); never part of the report or a file.
+        print(
+            "diagnostics (operator only, do not publish): "
+            + json.dumps(diagnostics, sort_keys=True),
+            file=sys.stderr,
+        )
     if args.csv is not None:
         files = csv_files(
             report,
@@ -96,6 +146,29 @@ def run_report(args: argparse.Namespace) -> int:
         print(json.dumps(report, indent=2, sort_keys=True))
     else:
         sys.stdout.write(render_text(report))
+    return EXIT_OK
+
+
+def run_ledger_init(args: argparse.Namespace) -> int:
+    try:
+        init_ledger(args.file)
+    except LedgerError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return EXIT_USAGE
+    print(
+        "created an empty release ledger; commit it in your private instance "
+        "repo so its history is kept"
+    )
+    return EXIT_OK
+
+
+def run_ledger_reanchor(args: argparse.Namespace) -> int:
+    try:
+        count = reanchor_ledger(args.file)
+    except LedgerError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return EXIT_USAGE
+    print(f"rewrote the .head file for {count} record(s); commit both files together")
     return EXIT_OK
 
 
@@ -127,6 +200,37 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
         "--days",
         type=int,
         help="count the last N days of data, ending at the latest day or --until",
+    )
+    parser.add_argument(
+        "--period",
+        choices=("week", "month"),
+        help="release the source and country by destination tables (and every "
+        "other section) for ONE complete UTC calendar week (Monday start; only "
+        "only while all its day cells exist) or month, recorded in --ledger, "
+        "with the floor applied to that period alone; these "
+        "tables are not released for a free --since/--until/--days window",
+    )
+    parser.add_argument(
+        "--offset",
+        type=int,
+        default=0,
+        help="with --period: complete periods back (0 is the latest complete one)",
+    )
+    parser.add_argument(
+        "--ledger",
+        type=Path,
+        metavar="FILE",
+        help="release ledger, REQUIRED with --period (create it with "
+        "funnel-ledger-init; keep it committed in your private instance repo). "
+        "Every cell release is recorded before anything is printed, and a "
+        "release that shares a UTC day with a released period of the other kind "
+        "is refused",
+    )
+    parser.add_argument(
+        "--diagnostics",
+        action="store_true",
+        help="print exact counting-capacity figures (days, folded clicks, share) "
+        "to the terminal for you only; they are never in the report, JSON or CSV",
     )
     parser.add_argument(
         "--geo",
@@ -174,3 +278,23 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
         "the window); cannot be combined with --json",
     )
     parser.set_defaults(func=run_report)
+    init = subparsers.add_parser(
+        "funnel-ledger-init",
+        help="create the empty release ledger that 'report --period' needs",
+        description="Create an empty, owner-only release ledger file (refuses to "
+        "touch an existing file). Every release of the source and country by "
+        "destination tables is recorded in it; keep it in your private instance "
+        "repo and commit it so the history is not lost.",
+    )
+    init.add_argument("file", type=Path, help="where to create the ledger")
+    init.set_defaults(func=run_ledger_init)
+    anchor = subparsers.add_parser(
+        "funnel-ledger-reanchor",
+        help="rewrite the ledger's .head file (only if the ledger is known whole)",
+        description="Rewrite the .head file next to a release ledger from the "
+        "ledger itself, after the .head file was lost. It cannot detect a ledger "
+        "that was already cut short: restore both files together from git first, "
+        "and use this only when you know the ledger is whole.",
+    )
+    anchor.add_argument("file", type=Path, help="the ledger")
+    anchor.set_defaults(func=run_ledger_reanchor)

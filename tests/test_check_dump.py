@@ -137,6 +137,71 @@ def test_real_schema_with_a_normal_row_passes(tmp_path: Path) -> None:
     assert r.returncode == 0, r.stdout + r.stderr
 
 
+def _ins(table: str, cols: str, vals: str) -> str:
+    return f"INSERT INTO {table} ({cols}) VALUES ({vals});\n"  # noqa: S608
+
+
+_SRC = "site, day, link_id, src, clicks"
+_CC = "site, day, link_id, country, clicks"
+FUNNEL_ROWS = (
+    _ins("click_src_daily", _SRC, "'links', '2027-01-05', 'twitch', 'instagram', 12")
+    + _ins("click_country_daily", _CC, "'links', '2027-01-05', 'twitch', 'ZZ', 3")
+    + _ins(
+        "click_src_monthly",
+        "site, month, link_id, src, clicks",
+        "'links', '2027-01', 'twitch', 'direct', 40",
+    )
+    + _ins(
+        "click_country_monthly",
+        "site, month, link_id, country, clicks",
+        "'links', '2027-01', 'twitch', 'US', 40",
+    )
+    + _ins("click_budget", "site, day, hour, clicks", "'links', '2027-01-05', 12, 400")
+    + _ins(
+        "click_capacity", "site, day, marked_at", "'links', '2027-01-05', 1792000000000"
+    )
+    + _ins("click_funnel_state", "site, from_day", "'links', '2027-01-01'")
+    + _ins("click_seal", "site, day, sealed_at", "'links', '2027-01-05', 1792000000000")
+    + _ins(
+        "click_month_log",
+        "site, month, rolled_at, exhausted_days, folded_clicks",
+        "'links', '2027-01', 1792000000000, 0, 0",
+    )
+)
+
+
+def test_funnel_counter_tables_pass_the_checker(tmp_path: Path) -> None:
+    r = run(SCHEMA_DUMP + FUNNEL_ROWS, tmp_path=tmp_path)
+    assert r.returncode == 0, r.stdout + r.stderr
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        # an address or a user agent in a label column, a count that looks like one
+        _ins("click_src_daily", _SRC, "'links', '2027-01-05', 'a', '198.51.100.7', 1"),
+        _ins(
+            "click_src_monthly",
+            "site, month, link_id, src, clicks",
+            "'links', '2027-01', 'a', 'mozilla-5-0', 1",
+        ),
+        _ins("click_country_daily", _CC, "'links', '2027-01-05', 'a', 'other', 1"),
+        _ins(
+            "click_country_daily", _CC, "'links', '2027-01-05', 'a', 'US', 3232235777"
+        ),
+        # a column the allowlist does not know (a paired or per-visitor cell)
+        _ins(
+            "click_src_daily",
+            _SRC + ", country",
+            "'links', '2027-01-05', 'a', 'x', 1, 'US'",
+        ),
+    ],
+)
+def test_funnel_counter_tables_still_catch_bad_values(tmp_path: Path, bad: str) -> None:
+    r = run(SCHEMA_DUMP + bad, tmp_path=tmp_path)
+    assert r.returncode == 1, r.stdout + r.stderr
+
+
 def test_allowlist_equals_the_real_migrations() -> None:
     # A new migration that adds a table or column must update the allowlist on
     # purpose, with review; this test is what forces that.

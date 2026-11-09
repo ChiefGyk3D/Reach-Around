@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 import { normalizeAddress } from "./address";
 import { limiterKeyOrIsolate } from "./ratekey";
+import { clickCounterStatements } from "./clickfunnel";
 import { killedSites, loadSites, siteForRequest } from "./sites";
 
 /** Workers Rate Limiting binding (the subset we use). */
@@ -157,6 +158,20 @@ function countryOf(request: Request): string | null {
   return c !== null && COUNTRY.test(c) && c !== "XX" ? c : null;
 }
 
+/** Count one counter failure: a number only, never content. */
+async function countFailure(db: D1Database): Promise<void> {
+  try {
+    await db
+      .prepare(
+        "INSERT INTO view_meta (key, value) VALUES ('click_counter_err', '1') " +
+          "ON CONFLICT (key) DO UPDATE SET value = CAST(value AS INTEGER) + 1",
+      )
+      .run();
+  } catch {
+    // Nothing more can be done.
+  }
+}
+
 /**
  * Handle `POST /e/c/:linkId`. Check order: kill switch, method, URL/path/id length caps, site (from
  * Origin / Ping-From), per-site kill switch, that site's id allowlist, body (never read),
@@ -207,13 +222,31 @@ export async function handleClick(request: Request, env: Env): Promise<Response>
 
     // 6. Insert: hour-rounded timestamp, link id, optional country and optional
     // closed-set source label only.
-    // A row never holds both a source and a country: no source-by-country pair
-    // is stored (#408). A click with a source keeps no country.
+    // A raw row carries at most a source label, never a country: country lives only
+    // in the aggregate counter below, so the two stores cannot be differenced (#408).
     const now = Date.now();
     const src = clickSource(new URL(request.url), site.sources);
+    const country = countryOf(request);
     await env.DB.prepare("INSERT INTO click_events (ts, link_id, country, site, src) VALUES (?, ?, ?, ?, ?)")
-      .bind(now - (now % HOUR_MS), linkId, src === null ? countryOf(request) : null, site.id, src)
+      .bind(now - (now % HOUR_MS), linkId, null, site.id, src) // country lives only in the aggregate counter
       .run();
+    // The marginal funnel counters (#331): a count per (day, link, label), no row per click. They run
+    // apart from the raw row, so a missing table or a failure here never drops the raw click; a failure
+    // is only counted (a number in view_meta, no content).
+    try {
+      await env.DB.batch(
+        clickCounterStatements(env.DB, {
+          site: site.id,
+          ts: now,
+          linkId,
+          src,
+          listsSources: site.sources !== undefined,
+          country,
+        }),
+      );
+    } catch {
+      await countFailure(env.DB);
+    }
   } catch {
     // A failure must look the same as success from the outside.
   }
