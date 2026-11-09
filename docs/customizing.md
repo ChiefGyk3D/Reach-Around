@@ -227,44 +227,76 @@ A font on someone else's server is refused. See
 
 ### Border frames
 
-An optional look, off by default: `theme.frame` puts one border system on the
-buttons and cards of the link page and the media kit. It is one frame in three
-amounts (stepped, chamfered corner brackets that split at the middle of each
-edge, thin accent rules, a translucent accent fill):
+An optional look, off by default: `theme.frame` puts one border system on
+every button, card, tab, heading, input and stat tile of the link page and the
+media kit. The frame is drawn from the stream button: an opaque cream panel,
+heavy stepped graphite brackets that split at the middle of each edge, angled
+end-cap plates with small accent dashes, long accent rules and a faint accent
+glow under the bottom rule, with ink lettering. The brackets are two small
+packaged SVG files used as a nine-slice `border-image`; the panel, rules,
+dashes and glow are CSS gradients that read your accent, so a retheme follows.
+The artwork is scaled by the element's height (the bracket bar is about 6
+percent of it), so a button, a heading banner and the media kit title tile all
+get the same frame at their own size. A frame is never thinner than a few
+pixels and never a hairline.
 
 | Level | What it draws | Where it goes |
 | --- | --- | --- |
-| `l1` | Four corner ticks on a hairline box. CSS only, no extra markup. | Link buttons, platform cards, the combined audience number on the kit page |
-| `l2` | The same layout with plain brackets and two thin rules, no glow. One small inline SVG. | The featured link |
-| `l3` | The full frame: stepped brackets with a graphite sheen, end-cap plates, center rules and a faint glow under the bottom rule. | The media kit title tile |
+| `l1` | The lite frame: brackets, rules, dashes and stubs. | Every framed element when `theme.frame` is `l1`; at higher levels the small controls and containers: tabs, social buttons, platform chips, inputs, crypto and email cards, the footer and cookie notice, the audience table |
+| `l2` | The full frame: adds the end-cap plates and their dashes. | Link buttons, platform cards, section headings, group titles, the combined audience tile |
+| `l3` | The full frame plus the center rules and the glow. | The featured link, the hero tiles (the media kit title tile, the profile card, the `hero` header card) and the main call to action (the media kit submit button) |
 
-`theme.frame` is the strongest level the build may use. `l1` frames everything
-at L1. `l2` adds L2 on the featured link. `l3` adds the one L3 tile on the kit
-page (a site with no kit builds the same as `l2`). The link page has no L3,
-and the build refuses a page with a second L3 frame (an override template
-that calls the frame macros twice stops the build, naming the page).
+`theme.frame` is the strongest level the build may use: `l1` draws the lite
+frame everywhere, `l2` adds the plates, `l3` adds the glow. L3 is the heaviest
+frame, so a page carries at most `theme.frame_l3_max` of them (an integer from
+1 to 64, default 1). The packaged templates give the first L3 slots on a page
+(in page order) L3 and the rest L2. The build refuses a page with more L3 frames
+than the limit (an override template that writes them itself stops the build,
+naming the page), and refuses a frame inside another frame.
 
 ```yaml
 theme:
   frame: l3
+  frame_l3_max: 4
+  frame_motion: live   # optional, see "The light show" below
 ```
+
+The light show: the frames are still by default (every rule at full strength
+with its soft glow). `theme.frame_motion: live` (default `none`) adds a slow
+pulse from the brand's camera border, only on L3 frames and only for visitors
+who have not asked for reduced motion (`prefers-reduced-motion: no-preference`).
+The long top rules switch on and off with 0.3 second ramps over a 4 second
+cycle, the two corner dashes dim and brighten slowly in turn (about 27 percent
+swing, out of phase), the small side stubs flicker faintly (about 14 percent,
+changing about 3.5 times a second, far below the general flash threshold), and
+the bottom rule and the glow stay still. It is CSS only: each animation is a
+color change of a paint layer, so nothing moves, no layout shifts and no script
+or video loads. L3 frames are the only ones animated because
+`theme.frame_l3_max` caps how many of them one page carries, which bounds the
+paint work, and many frames moving at once would be too much motion.
 
 What to know:
 
 - The frame takes the place of the button radius on framed elements (it has
   chamfered corners). Unframed elements keep `button_style` and `radius`.
-- Colors follow your theme: the accent draws the rules, ticks and dashes; the
-  text stays the theme text color on a translucent accent fill. On hover the
-  panel fills with the accent and the text turns to `on_accent`. There is no
-  amber lettering, so nothing depends on the accent contrasting with a light
-  page. Brackets are graphite, lighter on dark pages.
-- The frames are inline SVG elements and CSS classes in the packaged
-  fingerprinted `static/frame.css`, loaded only on pages that have a framed
-  element. There is no `style` attribute and no image, font or third-party
-  request, so the CSP is unchanged. Nothing animates. Focus rings stay clear of
-  the frame, tap targets stay at least 44 px, and forced-colors and print drop
-  the artwork for a plain border.
-- The gated media kit page (the one the PDF renderer prints) carries no frame.
+- Frames never nest. A card that holds buttons (a crypto or email card, the
+  profile card) carries the frame itself and its buttons stay plain accent
+  buttons; a control on its own (a tab, a social button, the media kit submit
+  button) carries its own frame.
+- Text on a frame is ink on the cream panel, derived from your accent
+  (a dark tint of it), so it passes contrast on any accent color. There is no
+  amber lettering. On hover the panel brightens. Brackets are a medium graphite
+  with a sheen so they show on dark and light pages.
+- The packaged `static/frame.css` and the two `frame*.svg` files are
+  fingerprinted and published only when the feature is on. There is no
+  `style` attribute, inline script, data URI, new font or third-party
+  request, so the CSP is unchanged, and the markup per frame is one class
+  string. Nothing animates. Focus rings stay clear of the frame, tap targets
+  stay at least 44 px, and forced-colors and print replace the artwork with a
+  plain border.
+- The privacy page, the 404 page, the retry page and the gated media kit page
+  (the one the PDF renderer prints) carry no frame.
+- Image blocks, text blocks, dividers and the live player are not framed.
 - Your own `custom.css` is still checked by the same rules as before; the
   frame adds nothing to what it may contain.
 

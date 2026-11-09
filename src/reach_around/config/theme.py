@@ -101,6 +101,19 @@ class Theme(_Model):
     # strongest level the build may use. "none" (the default) writes no frame
     # markup and does not load the frame stylesheet.
     frame: Literal["none", "l1", "l2", "l3"] = "none"
+    # Optional light show for L3 frames (docs/customizing.md, "Border frames"):
+    # "live" lets the top rule and the dashes of each L3 frame pulse, only for
+    # visitors who have not asked for reduced motion. "none" (the default)
+    # leaves every frame still.
+    frame_motion: Literal["none", "live"] = "none"
+    # The most L3 (full frame with glow) elements one page may carry. The
+    # packaged templates give the first ones in page order L3 and the rest L2.
+    frame_l3_max: int = Field(
+        default=1,
+        ge=1,
+        le=64,
+        description="Most L3 border frames on one page (theme.frame: l3 only).",
+    )
 
     @field_validator("colors")
     @classmethod

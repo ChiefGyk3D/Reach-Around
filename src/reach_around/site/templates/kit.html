@@ -1,13 +1,12 @@
 {# SPDX-License-Identifier: Apache-2.0 #}
 {% extends "base.html" %}
 {% from "_kit_parts.html" import numbers, gate_form %}
-{% import "_frames.html" as frames %}
-{% set page_frames = "hero" in frame_plan or ("stat" in frame_plan and kit.total) %}
+{% import "_frames.html" as frames with context %}
+{% set page_frames = frame_plan|length > 0 %}
 {% block content %}
 <section class="kit" aria-labelledby="kit-title">
 {% if "hero" in frame_plan %}
 <div class="kit-head{{ frames.cls("hero") }}">
-{{ frames.art("hero") }}
 {% endif %}
 <h2 id="kit-title">{{ kit.title }}</h2>
 <p class="kit-about">{{ kit.about }}</p>
@@ -20,10 +19,10 @@
 {{ numbers(kit, "kit-numbers-title", true) }}
 {% if form %}
 <section class="kit-gate-box" aria-labelledby="kit-gate-title">
-<h3 id="kit-gate-title">More details</h3>
+<h3 id="kit-gate-title"{% if frame_plan %} class="{{ frames.cls("head")|trim }}"{% endif %}>More details</h3>
 <p>{{ form.categories | capitalize }} are shown after a short check. Enter an email address and pass the check to see them.</p>
 <p class="kit-note">The address is not checked, and nothing is sent to it. It is kept for a limited time so the owner can follow up; see the <a href="{{ root }}privacy/">privacy page</a> for what is kept and for how long.</p>
-{{ gate_form(form) }}
+{{ gate_form(form, true) }}
 </section>
 {% endif %}
 </section>

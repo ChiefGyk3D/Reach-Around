@@ -106,7 +106,9 @@ Owner decision, in order of recommendation:
 
 By design only three outputs carry `noindex`: `404.html`, `/kit/retry/` (both through the page template's `noindex` flag) and the Worker-served gated kit page. Indexable pages (tabs, privacy, the public kit page) do not. `tests/site/test_noindex_shape.py` builds a site with a kit and asserts exactly that list, and that no `robots.txt` or `X-Robots-Tag` rule appears unless the config has a `robots:` section. A staging host that blocks crawlers does so through that config section (`allow_all: false`, `noindex_paths`) or a host setting, never through a build default, so staging settings cannot reach a production build that does not ask for them. `check --production` does not inspect robots; the config is the single source.
 
-## Border frames on and off (#444)
+## Border frames on and off (#444, #448)
+
+The numbers below were measured for the first frame release (#444). The frames-everywhere change (#448) is re-measured in the table at the end of this section.
 
 Measured 2026-11-08, Lighthouse 13.6.0, Chromium headless, three runs per page and strategy, median, served with the build's own `_headers` and gzip. "On" is `theme.frame: l3` (link page, kit page) and `l1` (the `dark-hero` themed page); "off" is the same site without the key. The link and kit pages score SEO 91 in both states on the scratch site used, because its tab is titled "More" (`link-text` audit); that is the scratch site, not the feature.
 
