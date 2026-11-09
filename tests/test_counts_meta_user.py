@@ -164,7 +164,7 @@ def test_threads_reads_total_value() -> None:
 
 def test_threads_user_id_is_required() -> None:
     with pytest.raises(ValueError):
-        ThreadsSource(platform="threads", kind="threads")
+        ThreadsSource(platform="threads", kind="threads")  # type: ignore[call-arg]
     source = ThreadsSource.model_construct(platform="threads", kind="threads")
     transport = FakeTransport({TH_COUNT: reply(TH_BODY)})
     assert fails(source, transport) == "bad_source_setting"
