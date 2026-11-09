@@ -469,7 +469,9 @@ def test_the_animation_is_opt_in_reduced_motion_safe_and_paint_only() -> None:
 
 def _mix(a: tuple[float, ...], b: tuple[float, ...], pct: float) -> tuple[float, ...]:
     """color-mix(in srgb, a pct%, b), channels 0 to 255."""
-    return tuple(x * pct / 100 + y * (100 - pct) / 100 for x, y in zip(a, b))
+    return tuple(
+        x * pct / 100 + y * (100 - pct) / 100 for x, y in zip(a, b, strict=True)
+    )
 
 
 def _lum(c: tuple[float, ...]) -> float:
@@ -521,7 +523,8 @@ def test_the_contrast_formulas_match_the_stylesheet() -> None:
         "--ra-fr-cream: color-mix(in srgb, var(--ra-color-accent) 18%, white)",
         "--ra-fr-cream-hi: color-mix(in srgb, var(--ra-color-accent) 30%, white)",
         "--ra-fr-ink: color-mix(in srgb, var(--ra-color-accent) 15%, black)",
-        "--ra-fr-ink-muted: color-mix(in srgb, var(--ra-fr-ink) 72%, var(--ra-fr-cream))",
+        "--ra-fr-ink-muted: color-mix(in srgb, var(--ra-fr-ink) 72%, "
+        "var(--ra-fr-cream))",
         "--ra-fr-accent-ink: color-mix(in srgb, var(--ra-color-accent) 45%, black)",
     ):
         assert decl in css, decl
