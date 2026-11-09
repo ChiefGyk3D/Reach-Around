@@ -9,7 +9,7 @@
 #
 # Base: python:3.13-slim, pinned by the multi-architecture index digest.
 # To bump it, pull the new tag, copy the index digest here, and rebuild.
-ARG PYTHON_IMAGE=docker.io/library/python:3.13-slim@sha256:09a17cad02668ae61ece136b4fd36ac3849e14f670ebedb637ea3e15580525bc
+ARG PYTHON_IMAGE=docker.io/library/python:3.13-slim@sha256:e48f59cdba69a3cbd9ed2cf0f348d90d45a8d350d98134cf1070bc106ee9ed90
 
 # ---- builder: hashed installs into a virtualenv ----
 FROM ${PYTHON_IMAGE} AS builder
@@ -34,6 +34,14 @@ LABEL org.opencontainers.image.title="reach-around" \
       org.opencontainers.image.source="https://github.com/ChiefGyk3D/Reach-Around"
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 \
     PATH="/opt/venv/bin:${PATH}"
+# The base image (checked 2026-11-09) still ships zlib1g 1:1.3.dfsg+really1.3.1-1+b1, which
+# the image scanner flags (CVE-2026-76844, CVE-2026-85091, CVE-2026-27171). Debian
+# fixed them in trixie-security; take that build until the base image has it, then
+# remove this step.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends --only-upgrade \
+        zlib1g=1:1.3.dfsg+really1.3.1-1+deb13u1 \
+ && rm -rf /var/lib/apt/lists/*
 RUN groupadd --gid 10001 reach \
  && useradd --uid 10001 --gid 10001 --no-create-home --home-dir /nonexistent \
         --shell /usr/sbin/nologin reach \
