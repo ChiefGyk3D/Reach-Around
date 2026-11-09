@@ -15,8 +15,10 @@ Collected: the follower total, one number per run, written to the numbers file
 and, when `numbers.history_file` is set, appended to the
 [history store](social-history.md) as `source: api`, metric `followers`.
 
-Not collected here by default: Threads views and engagement are an opt-in
-(`insights: true`, [engagement-sources.md](engagement-sources.md)). Not collected: views, reach, engagement, demographics, per-post data
+By default only the follower total is collected. For Threads, `insights: true`
+(off by default, [engagement-sources.md](engagement-sources.md)) also stores two
+aggregate numbers (views and engagement over a 7 day window). Not collected,
+either way: Instagram views and reach, demographics, per-post data
 (separate work), watch time (neither platform has such a metric), and anything
 about individual followers. The token is only used for the one read (a refresh is done by hand,
 see below).

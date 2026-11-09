@@ -115,7 +115,7 @@ and 5xx honoring `Retry-After` up to a cap (GET only; the refresh POST is sent
 once). Any unexpected error becomes the fixed word `fetch_failed`. The count must
 be a whole number from 0 to the platform maximum (`bad_count` otherwise).
 
-Failure words: `bad_credential_name`, `bad_auto_refresh`, `missing_credential`,
+Failure words: `bad_credential_name`, `bad_auto_refresh`, `bad_source_setting`, `missing_credential`,
 `invalid_credential`, `token_expired`, `token_rejected`, `refresh_needs_sink`,
 `refresh_failed`, `refresh_response_invalid`, `refresh_store_failed`,
 `scope_missing`, `api_error`, `fetch_failed`,
@@ -151,10 +151,11 @@ token-health: source=tiktok kind=<refresh_needed|refresh_failed|rotated_unstored
 
 ## What is not collected
 
-Only the follower total, unless the optional `insights: true` is set (video
-views and engagement over 28 days, off by default, partly UNVERIFIED:
-[engagement-sources.md](engagement-sources.md)). Not collected: views, likes, comments, shares,
-per-video data (`video.list` is not used), watch time, demographics (the Display
+By default only the follower total. With the optional `insights: true` (off,
+partly UNVERIFIED: [engagement-sources.md](engagement-sources.md)) the collector
+also calls `video.list` and stores three aggregate numbers over a 28 day window
+(video count, summed views, summed likes, comments and shares). Individual video
+records are never stored. Never collected, either way: per-video data, watch time, demographics (the Display
 API offers none; a Business API route is UNVERIFIED), the profile fields, any
 data about viewers or other accounts. TikTok Developer Terms (modified
 2025-12-26, research note): data is for developing and supporting the app and

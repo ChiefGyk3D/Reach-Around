@@ -805,3 +805,12 @@ def test_insight_failure_keeps_followers_and_exits_nonzero(
     err = capsys.readouterr().err
     assert "tiktok: insights error (redirect)" in err
     assert "SENTINEL" not in err and "x.example" not in err
+
+
+def test_tiktok_insights_flag_type_is_checked_at_use_before_the_environment() -> None:
+    fetch, transport = tt_fetch(page([]))
+    forged = TT.model_copy(update={"insights": "yes"})
+    with pytest.raises(TiktokError) as err:
+        video_stats(forged, TT_ENV, fetch, NOW_S)
+    assert err.value.kind == "bad_source_setting"
+    assert not transport.calls

@@ -193,6 +193,8 @@ def check_source(source: TiktokSource) -> None:
         raise TiktokError("bad_credential_name")
     if type(source.auto_refresh) is not bool:
         raise TiktokError("bad_auto_refresh")
+    if type(getattr(source, "insights", False)) is not bool:
+        raise TiktokError("bad_source_setting")
 
 
 def _usable(value: str) -> bool:
