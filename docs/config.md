@@ -1099,11 +1099,13 @@ Limits worth knowing:
   federation mode) answers 401; the source fails with `http_401`.
 - **GitHub.** Unauthenticated calls are limited to 60 an hour per address.
   Shared CI runners can hit that; a failure keeps the old number.
-- **Kick** (and X and LinkedIn) have no source kind. TikTok has one that stays
-  inert until the owner has an approved app and a token
-  ([TikTok](tiktok-source.md)).
-  Their approval paths do not exist yet. Put the number in the numbers file by
-  hand (below), or type `count` and `as_of` on the platform item.
+- **Kick** (and X and LinkedIn) have no source kind. Their approval paths do not
+  exist yet. Put the number in the numbers file by hand (below), or type `count`
+  and `as_of` on the platform item.
+- **TikTok** has a source kind that stays inert (skipped as `token_not_set`)
+  until `TIKTOK_ACCESS_TOKEN` holds a user token. A Sandbox token needs no app
+  review; app review is the fallback for production
+  ([TikTok](tiktok-source.md)). Until then the number is hand-kept.
 
 ### The numbers file
 
