@@ -60,7 +60,7 @@ TABLES: dict[str, tuple[str, ...]] = {
     "grafana_clicks_daily": ("day", "link_id", "clicks"),
     # Days with no or partial collection (issue #402). A day listed here has no row of
     # zeros in the tables above: draw it as a gap. status is gap or partial; reason is
-    # outage, quota or kill_switch (joined with + when a partial day has several).
+    # outage, quota, kill_switch or site_kill_switch (joined with +).
     "grafana_gaps_daily": ("day", "status", "reason"),
 }
 
@@ -177,7 +177,7 @@ def build_subset(
         export.analytics_coverage,
         "analytics_coverage" in export.present,
         oldest or None,
-        None,
+        max([*days, *(r["day"] for r in export.analytics_coverage)], default=None),
         today or datetime.now(UTC).date(),
     )
     gaps = sorted(

@@ -214,7 +214,8 @@ SPECS: dict[str, Spec] = {
         key=("site", "day"),
     ),
     # Collection coverage (#401, #402): one row per UTC day, 24 letters, one per hour.
-    # o collecting, k kill switch, q view budget reached, - no sample (an outage).
+    # o collecting, k kill switch, p some sites off, q view budget reached,
+    # - no sample (an outage).
     "analytics_coverage": Spec(
         marker="hours",
         columns={"day": "day", "hours": "cov"},
@@ -233,7 +234,7 @@ _SITE = re.compile(r"[a-z0-9][a-z0-9-]{0,19}")
 _DAY = re.compile(r"\d{4}-\d{2}-\d{2}")
 _MONTH = re.compile(r"\d{4}-(?:0[1-9]|1[0-2])")
 _COUNTRY = re.compile(r"[A-Z]{2}")
-_COV = re.compile(r"[okq-]{24}")
+_COV = re.compile(r"[okpq-]{24}")
 _CSV_INT = re.compile(r"\d{1,13}")
 _IPV4 = re.compile(r"(?<![\d.])\d{1,3}(?:\.\d{1,3}){3}(?![\d.])")
 _IPV6 = re.compile(r"[0-9A-Fa-f]{0,4}(?::[0-9A-Fa-f]{0,4}){2,}")

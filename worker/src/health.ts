@@ -46,6 +46,7 @@ import { DEFAULT_ACCOUNT_HUMAN_PER_HOUR, MAX_VIEWS_PER_HOUR, positiveInt } from 
 import { loadKitLimits } from "./kit/budgets";
 import { HEALTH_CONDITIONS, type HealthCondition } from "./alerts/types";
 import { padHour } from "./viewretention";
+import { killedSites, loadSites } from "./sites";
 import { flagOn } from "./view";
 
 export const HOUR_MS = 3_600_000;
@@ -55,6 +56,8 @@ export const ROLLUP_OVERDUE_MS = 3 * HOUR_MS;
 export const STALE_DAYS = 2;
 export const VIEW_BUDGET_WINDOW_HOURS = 3;
 export const ALERT_BUDGET_NEAR_PERCENT = 80;
+/** An active zero_views with no counters left is kept this long, then cleared. */
+export const ZERO_VIEWS_MAX_AGE_MS = 7 * DAY_MS;
 /** Channel deliveries (one per channel per message) one cron run may attempt. */
 export const MAX_DELIVERIES_PER_TICK = 3;
 export const COVERAGE_KEEP_DAYS = 400;
@@ -64,6 +67,8 @@ export const HEALTH_MIN_BUDGET = 12;
 
 export interface HealthEnv extends AlertsEnv {
   VIEWS_KILL?: string;
+  VIEWS_KILL_SITES?: string;
+  SITES?: string;
   ACCOUNT_VIEWS_PER_HOUR?: string;
 }
 
@@ -75,7 +80,7 @@ export interface HealthDeps {
 
 export interface HealthResult {
   /** The coverage letter written for the hour that ended, or "" when the write failed. */
-  coverage: "o" | "k" | "q" | "";
+  coverage: "o" | "k" | "p" | "q" | "";
   /** Conditions found active (unknown ones are left out). */
   active: HealthCondition[];
   /** Messages a channel took (firing or cleared). */
@@ -98,15 +103,17 @@ function sentTotal(s: AlertStatus): number {
 
 interface Inputs {
   meta: Map<string, string>;
-  /** hour number -> accepted human views, from bud:<hour>:_all:pv */
+  /** hour number -> accepted human views, account-wide, from bud:<hour>:_all:pv */
   views: Map<number, number>;
+  /** site id -> hour number -> accepted human views, from bud:<hour>:<site>:pv */
+  siteViews: Map<string, Map<number, number>>;
   alertToday: number;
   /** False when analytics_coverage is not the table migration 0014 creates. */
   schemaOk: boolean;
 }
 
 /** What the table definition must contain (migration 0014): strict, keyed by day, 24 closed letters. */
-const SCHEMA_MARKS = ["STRICT", "WITHOUT ROWID", "length(hours) = 24", "[^okq-]", "GLOB '[0-9]"];
+const SCHEMA_MARKS = ["STRICT", "WITHOUT ROWID", "length(hours) = 24", "[^okpq-]", "GLOB '[0-9]"];
 
 /** One metered read batch. Throws on a database error (the caller treats that as "unknown"). */
 async function readInputs(db: D1Database, env: HealthEnv, hour: number, nowMs: number): Promise<Inputs> {
@@ -119,7 +126,7 @@ async function readInputs(db: D1Database, env: HealthEnv, hour: number, nowMs: n
           "OR key GLOB 'rolled_through:*' OR key GLOB 'health:*' LIMIT 64",
       ),
     db
-      .prepare("SELECT key, value FROM view_meta WHERE key >= ?1 AND key < ?2 AND key GLOB 'bud:*:_all:pv' LIMIT 64")
+      .prepare("SELECT key, value FROM view_meta WHERE key >= ?1 AND key < ?2 AND key GLOB 'bud:*:pv' LIMIT 600")
       .bind(lo, hi),
     db
       .prepare(
@@ -135,14 +142,21 @@ async function readInputs(db: D1Database, env: HealthEnv, hour: number, nowMs: n
     if (typeof r.key === "string" && typeof r.value === "string") meta.set(r.key, r.value);
   }
   const views = new Map<number, number>();
+  const siteViews = new Map<string, Map<number, number>>();
   for (const r of (res[1]?.results ?? []) as Array<{ key: string; value: string }>) {
-    const m = /^bud:(\d{8}):_all:pv$/.exec(String(r.key));
+    const m = /^bud:(\d{8}):(_all|[a-z0-9][a-z0-9-]{0,19}):pv$/.exec(String(r.key));
     const n = Number(r.value);
-    if (m !== null && Number.isInteger(n) && n >= 0) views.set(Number(m[1]), n);
+    if (m === null || !Number.isInteger(n) || n < 0) continue;
+    if (m[2] === "_all") views.set(Number(m[1]), n);
+    else {
+      const per = siteViews.get(m[2]!) ?? new Map<number, number>();
+      per.set(Number(m[1]), n);
+      siteViews.set(m[2]!, per);
+    }
   }
   const row = (res[2]?.results ?? [])[0] as { count?: number } | undefined;
   const alertToday = typeof row?.count === "number" && Number.isInteger(row.count) && row.count >= 0 ? row.count : 0;
-  return { meta, views, alertToday, schemaOk };
+  return { meta, views, siteViews, alertToday, schemaOk };
 }
 
 interface Verdict {
@@ -154,7 +168,7 @@ interface Verdict {
 export function evaluate(
   inp: Inputs,
   nowMs: number,
-  opts: { killed: boolean; accountLimit: number; alertBudget: number },
+  opts: { killed: boolean; killedSites?: ReadonlySet<string>; accountLimit: number; alertBudget: number },
 ): Map<HealthCondition, Verdict> {
   const out = new Map<HealthCondition, Verdict>();
   const hour = Math.floor(nowMs / HOUR_MS);
@@ -179,14 +193,30 @@ export function evaluate(
   }
   if (seen) out.set("rollup_stale", { active: worst > STALE_DAYS, count: Math.max(0, worst) });
 
-  // zero_views: only a site that had views before can go quiet, and a known kill switch is not an alert.
-  let recent = 0;
-  let before = 0;
-  for (const [h, n] of inp.views) {
-    if (h > hour - 24 && h <= hour) recent += n;
-    else if (h > hour - 48 && h <= hour - 24) before += n;
+  // zero_views, per site: a site that had views in the 24 hours before and none in the last 24 is quiet,
+  // unless its route is switched off (VIEWS_KILL, or its id in VIEWS_KILL_SITES). The alert names no site.
+  // No counters at all in the window (the 48 hour purge, or a new database) is NO DATA: it neither raises
+  // the alert nor clears an active one, until ZERO_VIEWS_MAX_AGE_MS has passed since it started.
+  const killedSites = opts.killedSites ?? new Set<string>();
+  const windows = [...inp.siteViews.entries()].map(([site, per]) => {
+    let recent = 0;
+    let before = 0;
+    for (const [h, n] of per) {
+      if (h > hour - 24 && h <= hour) recent += n;
+      else if (h > hour - 48 && h <= hour - 24) before += n;
+    }
+    return { site, recent, before };
+  });
+  const quiet = windows.some((w) => !opts.killed && !killedSites.has(w.site) && w.recent === 0 && w.before > 0);
+  const anyData = windows.some((w) => w.recent > 0 || w.before > 0);
+  const sinceRaw = inp.meta.get("health:zero_views");
+  if (quiet) out.set("zero_views", { active: true, count: 0 });
+  else if (anyData || sinceRaw === undefined) out.set("zero_views", { active: false, count: 0 });
+  else {
+    const since = /^\d{1,15}$/.test(sinceRaw) ? Number(sinceRaw) : 0;
+    if (nowMs - since > ZERO_VIEWS_MAX_AGE_MS) out.set("zero_views", { active: false, count: 0 });
+    // else: no data, keep the state (no verdict)
   }
-  out.set("zero_views", { active: !opts.killed && recent === 0 && before > 0, count: 0 });
 
   // view_budget_hit: the account ceiling was reached in a recent hour.
   if (opts.accountLimit > 0) {
@@ -209,9 +239,10 @@ export function evaluate(
 export function coverageLetter(
   inp: Inputs,
   hour: number,
-  opts: { killed: boolean; accountLimit: number },
-): "o" | "k" | "q" {
+  opts: { killed: boolean; someSitesKilled?: boolean; accountLimit: number },
+): "o" | "k" | "p" | "q" {
   if (opts.killed) return "k";
+  if (opts.someSitesKilled === true) return "p";
   const n = inp.views.get(hour - 1) ?? 0;
   return opts.accountLimit > 0 && n >= opts.accountLimit ? "q" : "o";
 }
@@ -224,7 +255,13 @@ export async function runHealth(env: HealthEnv, db: D1Database, nowMs: number, d
   try {
     if (!Number.isFinite(nowMs)) return result;
     const hour = Math.floor(nowMs / HOUR_MS);
-    const killed = flagOn(env.VIEWS_KILL);
+    // The page-view kill switches: VIEWS_KILL (all), VIEWS_KILL_SITES (the sites named). All configured
+    // sites named counts as all; some named is the letter "p" (coverage is account-wide, not per site).
+    const killSites = killedSites(env.VIEWS_KILL_SITES);
+    const configured = loadSites(env).sites.map((x) => x.id);
+    const allSitesKilled = configured.length > 0 && configured.every((id) => killSites.has(id));
+    const killed = flagOn(env.VIEWS_KILL) || allSitesKilled;
+    const someSitesKilled = !killed && killSites.size > 0;
     const accountLimit = positiveInt(env.ACCOUNT_VIEWS_PER_HOUR, DEFAULT_ACCOUNT_HUMAN_PER_HOUR, MAX_VIEWS_PER_HOUR);
     let inp: Inputs;
     try {
@@ -241,7 +278,7 @@ export async function runHealth(env: HealthEnv, db: D1Database, nowMs: number, d
     }
 
     // 1. Coverage for the hour that just ended.
-    const letter = coverageLetter(inp, hour, { killed, accountLimit });
+    const letter = coverageLetter(inp, hour, { killed, someSitesKilled, accountLimit });
     const ended = (hour - 1) * HOUR_MS;
     const idx = new Date(ended).getUTCHours();
     try {
@@ -268,7 +305,7 @@ export async function runHealth(env: HealthEnv, db: D1Database, nowMs: number, d
     } catch {
       alertBudget = 0;
     }
-    const verdicts = evaluate(inp, nowMs, { killed, accountLimit, alertBudget });
+    const verdicts = evaluate(inp, nowMs, { killed, killedSites: killSites, accountLimit, alertBudget });
     for (const [c, v] of verdicts) if (v.active) result.active.push(c);
 
     const disp = deps.dispatcher ?? { notify: notifyOwner, status: sharedStatus };

@@ -33,7 +33,8 @@ status code) and keep it pointed at the public page, not at the event routes.
 | `view_budget_hit` | Traffic above `VIEWS_PER_HOUR` or the account ceiling, or a flood | Views over the budget are dropped, not queued: that stretch is a `quota` gap in the report. If the traffic is real, raise the budgets within the D1 daily write allowance (see below). |
 | `alert_budget_near` | Many alerts today | Fix what is alerting. The budget is `DAILY_ALERT_BUDGET` per UTC day; at zero no alert is sent. |
 | A day shows as `outage` in the report | The Worker did not run that hour | See the Cloudflare status page and the Worker's deployments. Nothing to rebuild: the day stays a gap. |
-| A day shows as `kill_switch` | `VIEWS_KILL` was on when the hour was sampled | Expected after you flipped it. |
+| A day shows as `kill_switch` | `VIEWS_KILL` (or every site in `VIEWS_KILL_SITES`) was on when the hour was sampled | Expected after you flipped it. |
+| A day shows as `site_kill_switch` | `VIEWS_KILL_SITES` named some sites. Coverage is account-wide, so the report cannot say which | Expected; check the list you set. |
 
 ## Kill switches
 

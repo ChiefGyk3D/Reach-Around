@@ -49,7 +49,7 @@ Only these tables exist. Days are UTC `YYYY-MM-DD`.
 | `grafana_sources_daily` | `day`, `source`, `views` | likely-human views per source: a referrer host, `utm:<name>`, `(direct)`, `(internal)`, `(other)` |
 | `grafana_countries_daily` | `day`, `country`, `views` | likely-human views per country (two letters, or `other`) |
 | `grafana_clicks_daily` | `day`, `link_id`, `clicks` | link clicks per day and link |
-| `grafana_gaps_daily` | `day`, `status`, `reason` | days with no (`gap`) or partial (`partial`) collection and why: `outage`, `quota`, `kill_switch` (joined with `+` on a partial day). Draw these days as gaps; no other table has a row of zeros for them. Empty when `analytics_coverage` is not in the export. Schema version 2 |
+| `grafana_gaps_daily` | `day`, `status`, `reason` | days with no (`gap`) or partial (`partial`) collection and why: `outage`, `quota`, `kill_switch`, `site_kill_switch` (joined with `+` on a partial day). Coverage is account-wide, not per site. Draw these days as gaps; no other table has a row of zeros for them. Empty when `analytics_coverage` is not in the export. Schema version 2 |
 | `grafana_meta` | `key`, `value` | `site`, `floor`, `schema_version` |
 
 Left out on purpose: unique-visitor counts (they do not add up across cells),

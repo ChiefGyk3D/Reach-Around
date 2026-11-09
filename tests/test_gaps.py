@@ -282,3 +282,60 @@ def test_grafana_cli_runs_with_coverage(
     out = capsys.readouterr()
     assert code == 0, out.err
     assert "grafana_gaps_daily" in out.out
+
+
+# ---- review findings (Copilot, PR 480) ------------------------------------
+
+
+def test_an_empty_coverage_table_is_not_monitored_never_complete() -> None:
+    c = coverage_for_window([], True, None, None, TODAY)
+    assert not c.monitored
+    assert c.as_dict()["status"] == "not_monitored"
+    assert c.as_dict()["gap_days"] == 0
+
+
+def test_coverage_is_labeled_account_wide() -> None:
+    c = coverage_for_window(seeded(), True, None, "2026-11-08", TODAY).as_dict()
+    assert c["scope"] == "account"
+    assert "account-wide" in c["note"]
+
+
+def test_some_sites_off_is_partial_never_a_full_gap() -> None:
+    day = classify("p" * 24)
+    assert day is not None
+    assert (day.status, day.reasons) == ("partial", ("site_kill_switch",))
+    rows = [cov("2026-11-01"), cov("2026-11-02", "p" * 24), cov("2026-11-03")]
+    c = coverage_for_window(rows, True, None, "2026-11-03", TODAY)
+    assert c.gaps == []
+    assert [p.day for p in c.partial] == ["2026-11-02"]
+
+
+def test_the_export_accepts_the_p_letter(tmp_path: Path) -> None:
+    path = tmp_path / "p.json"
+    path.write_text(
+        json.dumps({"tables": {"analytics_coverage": [cov("2026-11-01", "p" * 24)]}}),
+        encoding="utf-8",
+    )
+    assert load_exports([path]).analytics_coverage[0]["hours"] == "p" * 24
+
+
+def test_grafana_judges_the_tail_up_to_the_newest_observed_day(tmp_path: Path) -> None:
+    # Coverage stops on 11-03 but views exist for 11-06: 11-04 to 11-06 are gaps.
+    data = {
+        "tables": {
+            "view_daily": [view("2026-11-02"), view("2026-11-06")],
+            "analytics_coverage": [
+                cov("2026-11-01"),
+                cov("2026-11-02"),
+                cov("2026-11-03"),
+            ],
+        }
+    }
+    path = tmp_path / "t.json"
+    path.write_text(json.dumps(data), encoding="utf-8")
+    subset = grafana.build_subset(load_exports([path]), today=TODAY)
+    assert [(g[0], g[2]) for g in subset.gaps] == [
+        ("2026-11-04", "outage"),
+        ("2026-11-05", "outage"),
+        ("2026-11-06", "outage"),
+    ]

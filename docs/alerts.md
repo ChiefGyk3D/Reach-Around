@@ -141,7 +141,7 @@ and daily limits.
 | --- | --- | --- |
 | `rollup_overdue` | the rollup heartbeat (`rollup_last_ok`) is older than 3 hours | the heartbeat is fresh again |
 | `rollup_stale` | a site's `rolled_through` checkpoint is more than 2 UTC days behind today | the checkpoint has caught up |
-| `zero_views` | no likely-human view was counted in the last 24 hours on a deployment that counted some in the 24 hours before, and the view kill switch is off | views are counted again |
+| `zero_views` | a site counted likely-human views in the 24 hours before and none in the last 24, and that site is not switched off (`VIEWS_KILL`, or its id in `VIEWS_KILL_SITES`). Per site, but the alert names no site | views are counted again. If the hourly counters are gone (the 48 hour purge, a new database) there is no data: an active alert is kept, and cleared only when traffic is seen or after 7 days |
 | `view_budget_hit` | the account-wide hourly view budget was reached in the last 3 hours (further views were dropped) | three hours pass without it |
 | `alert_budget_near` | today's alert budget is at least 80 percent used | the next UTC day |
 
@@ -186,7 +186,7 @@ Worker.
 The same hourly step writes one row per UTC day into `analytics_coverage`
 (migration `0014_health.sql`): 24 letters, one per hour, for the hour that just
 ended. `o` collecting, `k` the view kill switch was on when sampled, `q` the
-account view budget had been reached, `-` no sample (the Worker did not run).
+account view budget had been reached, `p` some sites (not all) were switched off by `VIEWS_KILL_SITES`, `-` no sample (the Worker did not run). `k` means `VIEWS_KILL` or every configured site named. Coverage is **account-wide, not per site**: the row cannot say which site `p` was, so a report for one site shows a `p` day as partial with the reason `site_kill_switch` and says coverage is account-wide. An exported table with no rows is "not monitored", never "complete".
 The row holds no count and no visitor data and is written whether or not alerts
 are on. The migration is a plain `CREATE TABLE`: a pre-existing table of that
 name makes it fail instead of being accepted. The health step also checks the

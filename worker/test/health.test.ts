@@ -47,7 +47,11 @@ async function meta(key: string, value: string) {
     .bind(key, value)
     .run();
 }
-const bud = (hour: number, n: number) => meta(`bud:${padHour(hour)}:_all:pv`, String(n));
+const bud = async (hour: number, n: number) => {
+  await meta(`bud:${padHour(hour)}:_all:pv`, String(n));
+  await meta(`bud:${padHour(hour)}:links:pv`, String(n));
+};
+const budSite = (site: string, hour: number, n: number) => meta(`bud:${padHour(hour)}:${site}:pv`, String(n));
 const stateOf = async (c: string) =>
   (await DB.prepare("SELECT value FROM view_meta WHERE key = ?1").bind(`health:${c}`).first<{ value: string }>())?.value ?? null;
 const coverage = async (day: string) =>
@@ -388,6 +392,58 @@ describe("review findings (Daybreak, PR 480)", () => {
   });
 });
 
+describe("review findings (Copilot, PR 480)", () => {
+  const E = (over: Partial<HealthEnv> = {}) =>
+    env({ SITES: JSON.stringify({ links: { hosts: ["links.example.test"], mode: "beacon", pages: ["home"], link_ids: {} }, blog: { hosts: ["blog.example.test"], mode: "beacon", pages: ["home"], link_ids: {} } }), ...over });
+  const fresh = () => meta("rollup_last_ok", String(NOW - 600_000));
+
+  it("zero_views is per site: one site going quiet fires even while another has views", async () => {
+    await fresh();
+    await budSite("links", HOUR - 30, 5);
+    await budSite("links", HOUR - 1, 5);
+    await budSite("blog", HOUR - 30, 5); // blog had views before, none since
+    await meta(`bud:${padHour(HOUR - 1)}:_all:pv`, "5");
+    const { res, f } = await tick(E());
+    expect(res.active).toContain("zero_views");
+    expect(f.bodies.join("")).not.toMatch(/blog|links/);
+  });
+
+  it("zero_views ignores a site named in VIEWS_KILL_SITES, and all of them when VIEWS_KILL is on", async () => {
+    await fresh();
+    await budSite("blog", HOUR - 30, 5);
+    await budSite("links", HOUR - 1, 5);
+    expect((await tick(E({ VIEWS_KILL_SITES: "blog" }))).res.active).not.toContain("zero_views");
+    expect((await tick(E({ VIEWS_KILL: "true" }))).res.active).not.toContain("zero_views");
+    expect((await tick(E())).res.active).toContain("zero_views");
+  });
+
+  it("coverage letter: k when every configured site is named, p when only some are", async () => {
+    await runHealth(E({ ALERTS_CONFIG: undefined, VIEWS_KILL_SITES: "blog" }), DB, NOW);
+    await runHealth(E({ ALERTS_CONFIG: undefined, VIEWS_KILL_SITES: "blog,links" }), DB, NOW + HOUR_MS);
+    expect(await coverage("2026-11-09")).toBe("-".repeat(13) + "pk" + "-".repeat(9));
+  });
+
+  it("no counters left (purged) does not clear an active zero_views until the maximum age", async () => {
+    await fresh();
+    await meta("health:zero_views", String(NOW - 2 * HOUR_MS));
+    const d = createDispatcher();
+    const a = await tick(E(), d);
+    expect(a.f.calls).not.toHaveBeenCalled();
+    expect(await stateOf("zero_views")).not.toBeNull();
+    // Real traffic observed: it clears.
+    await budSite("links", HOUR, 3);
+    const b = await tick(E(), d, mockFetch(), NOW + 60_000);
+    expect(b.f.bodies.join("")).toContain("page views are being counted again");
+    expect(await stateOf("zero_views")).toBeNull();
+    // Or after the fixed maximum age with still no data.
+    await meta("health:zero_views", String(NOW - 8 * 24 * HOUR_MS));
+    await DB.prepare("DELETE FROM view_meta WHERE key LIKE 'bud:%'").run();
+    await meta("rollup_last_ok", String(NOW + 2 * HOUR_MS - 60_000));
+    const c = await tick(E(), createDispatcher(), mockFetch(), NOW + 2 * HOUR_MS);
+    expect(c.f.bodies.join("")).toContain("page views are being counted again");
+  });
+});
+
 describe("no content in alerts", () => {
   it("every message is fixed words, a UTC time and one count; site ids and labels never appear", async () => {
     await meta("rollup_last_ok", String(NOW - 9 * HOUR_MS));
@@ -449,7 +505,7 @@ describe("coverage (gaps)", () => {
   });
 
   it("coverageLetter prefers the kill switch, then the budget", () => {
-    const inp = { meta: new Map(), views: new Map([[HOUR - 1, 480]]), alertToday: 0, schemaOk: true };
+    const inp = { meta: new Map(), views: new Map([[HOUR - 1, 480]]), alertToday: 0, schemaOk: true, siteViews: new Map() };
     expect(coverageLetter(inp, HOUR, { killed: true, accountLimit: 480 })).toBe("k");
     expect(coverageLetter(inp, HOUR, { killed: false, accountLimit: 480 })).toBe("q");
     expect(coverageLetter(inp, HOUR, { killed: false, accountLimit: 0 })).toBe("o");

@@ -10,7 +10,7 @@ export type AlertEventKind = "kit_unlocked" | "lead_captured" | "gate_failed_rep
 
 export const EVENT_KINDS: readonly AlertEventKind[] = ["kit_unlocked", "lead_captured", "gate_failed_repeatedly", "analytics_health"];
 
-/** Analytics health conditions (issue #401). Closed vocabulary: the only words an health alert can name. */
+/** Analytics health conditions (issue #401). Closed vocabulary: the only words a health alert can name. */
 export type HealthCondition =
   | "rollup_overdue"
   | "rollup_stale"
