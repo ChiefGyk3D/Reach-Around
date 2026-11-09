@@ -96,11 +96,20 @@ def test_no_small_cell_is_recoverable_from_the_printed_report(
     targets.append(tuple(k for k in keys if k[1] != "h"))
     targets += [tuple(k for k in keys if k[0] == p) for p in PAGES]
 
+    # The same dataset is built again and again as a neighbour of many others, and
+    # building a report is a pure function of the cells, so each one is printed
+    # once. Same searches, same assertions, a fraction of the report builds.
+    memo: dict[tuple[int, ...], str] = {}
+
     def printed(cells: dict[tuple[str, str], int]) -> str:
-        report = build_report(
-            make_export(cells), include_bots=include_bots, floor=floor, top=100
-        )
-        return json.dumps(report, sort_keys=True)
+        key = tuple(cells[k] for k in keys)
+        text = memo.get(key)
+        if text is None:
+            report = build_report(
+                make_export(cells), include_bots=include_bots, floor=floor, top=100
+            )
+            text = memo[key] = json.dumps(report, sort_keys=True)
+        return text
 
     distinct: set[str] = set()
     for values in itertools.product(VALUES, repeat=len(keys)):
