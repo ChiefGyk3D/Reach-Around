@@ -21,10 +21,12 @@ INFERRED = not stated on a page this code could read):
   always handed to the sink (and is the only usable pair afterwards).
 * VERIFIED https://developers.tiktok.com/doc/tiktok-api-v2-error-handling :
   ``access_token_invalid`` is HTTP 401; ``scope_not_authorized`` is also HTTP
-  401. The fetch layer keeps no body, so both read as ``http_401`` here: one
-  refresh is tried, then the fixed word ``token_rejected``.
-* INFERRED: that the 401 for a missing scope is indistinguishable from an
-  expired token without reading the body (this code never keeps a body).
+  401.
+* The fetch layer, when asked, returns only the ``error.code`` word of a 400 or
+  401 body (8 KiB cap, lowercase letters, digits and underscores, 40 at most),
+  never body text. Only ``access_token_invalid`` leads to a refresh;
+  ``scope_not_authorized`` is ``scope_missing``; anything else is
+  ``token_rejected``, with no rotation.
 
 Rules: no secret is written to disk by this module; the rotated pair goes to a
 ``TokenSink`` whose ``store`` must return exactly ``True``. Errors and alerts
@@ -55,6 +57,9 @@ TOKEN_URL = f"https://{HOST}/v2/oauth/token/"
 MAX_TOKEN_LEN = 512
 MAX_BODY = 65_536
 FETCH_TIMEOUT = 10.0
+MAX_ACCESS_LIFE = 2 * 86_400
+MAX_REFRESH_LIFE = 400 * 86_400
+NEEDED_SCOPE = "user.info.stats"
 
 Fetch = Callable[..., dict[str, object]]
 
@@ -90,7 +95,12 @@ class HealthAlert:
     ``kind``: ``refresh_needed`` (token rejected and no refresh is possible),
     ``refresh_failed`` (TikTok refused the refresh; authorize again),
     ``rotated_unstored`` (a new pair exists only in memory),
-    ``token_rejected`` (still refused after one refresh).
+    ``refresh_response_invalid`` (TikTok answered a refresh with a pair but the
+    rest of the answer is implausible or lacks the scope; the pair was still
+    handed to the sink, the new access token was not used),
+    ``scope_missing`` (401 ``scope_not_authorized``: the owner must authorize
+    ``user.info.stats``; no refresh), ``token_rejected`` (401 with an unknown or
+    absent code, or still refused after one refresh; owner action).
     """
 
     source: str
@@ -188,6 +198,24 @@ def _usable(value: str) -> bool:
         len(value) <= MAX_TOKEN_LEN
         and value.isascii()
         and all(ch.isprintable() and not ch.isspace() for ch in value)
+    )
+
+
+def _life(value: object, top: int) -> bool:
+    return type(value) is int and 0 < value <= top
+
+
+def _response_ok(reply: Mapping[str, object]) -> bool:
+    """The non-token parts of a refresh answer are plausible and in scope."""
+    scope = reply.get("scope")
+    token_type = reply.get("token_type")
+    return (
+        _life(reply.get("expires_in"), MAX_ACCESS_LIFE)
+        and _life(reply.get("refresh_expires_in"), MAX_REFRESH_LIFE)
+        and isinstance(token_type, str)
+        and token_type.lower() == "bearer"
+        and isinstance(scope, str)
+        and NEEDED_SCOPE in scope.split(",")
     )
 
 
@@ -292,12 +320,16 @@ class _Session:
         ).encode("ascii")
         self.refreshed = True
         pair: TokenPair | None = None
+        reply: dict[str, object] = {}
         try:
+            # One POST only: rotation may have happened before a 429 or 5xx, and
+            # a replay would send the invalidated refresh token.
             reply = self._call(
                 TOKEN_URL,
                 method="POST",
                 body=form,
                 headers={"Content-Type": "application/x-www-form-urlencoded"},
+                max_attempts=1,
             )
             pair = TokenPair(
                 _token(reply.get("access_token")), _token(reply.get("refresh_token"))
@@ -309,6 +341,7 @@ class _Session:
             raise TiktokError("refresh_failed")
         # Store first. Only a pair the sink confirmed (receipt exactly True)
         # replaces the one in use; the sink's exception is never kept.
+        valid = _response_ok(reply)
         kept = False
         try:
             kept = (
@@ -323,6 +356,12 @@ class _Session:
             kept = False
         if not kept:
             self._alert("rotated_unstored")
+        if not valid:
+            # Rotation may already have happened, so the pair went to the sink
+            # above; the new access token is not used for the count.
+            self._alert("refresh_response_invalid")
+            raise TiktokError("refresh_response_invalid")
+        if not kept:
             raise TiktokError("refresh_store_failed")
         self.access = pair.access_token
         self.refresh_value = pair.refresh_token
@@ -333,11 +372,22 @@ class _Session:
             expired = False
             try:
                 return self._call(
-                    INFO_URL, headers={"Authorization": f"Bearer {self.access}"}
+                    INFO_URL,
+                    headers={"Authorization": f"Bearer {self.access}"},
+                    error_code=True,
                 )
             except FetchError as exc:
                 if exc.kind != "http_401":
                     raise
+                code = exc.code
+                if code == "scope_not_authorized":
+                    # Owner action; rotating tokens would not help.
+                    self._alert("scope_missing")
+                    raise TiktokError("scope_missing") from None
+                if code != "access_token_invalid":
+                    # Absent or unknown code: never rotate automatically.
+                    self._alert("token_rejected")
+                    raise TiktokError("token_rejected") from None
                 expired = True
             if expired:
                 self._refresh()

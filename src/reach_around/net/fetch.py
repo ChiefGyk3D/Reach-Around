@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import math
 import random
+import re
 import time
 from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
@@ -40,8 +41,11 @@ _RNG = random.SystemRandom()
 class FetchError(Exception):
     """A request failed. ``kind`` is a fixed word such as ``http_404``."""
 
-    def __init__(self, kind: str) -> None:
+    def __init__(self, kind: str, code: str | None = None) -> None:
         self.kind = kind
+        # Only a short closed-alphabet error code, set when the caller asked for
+        # it (``error_code=True``) on a 400 or 401. Never body text.
+        self.code = code
         super().__init__(kind)
 
 
@@ -63,6 +67,28 @@ def parse_retry_after(value: str | None, now: datetime) -> float | None:
     if not math.isfinite(seconds):
         return None
     return max(seconds, 0.0)
+
+
+_ERROR_CODE = re.compile(r"^[a-z][a-z0-9_]{0,39}$")
+
+
+def _error_code(headers: Mapping[str, str], body: bytes) -> str | None:
+    """The ``error.code`` word of a small JSON error body.
+
+    Returns only a value of lowercase letters, digits and underscores (40 at
+    most); anything else, a wrong type, a large or malformed body gives None.
+    """
+    if len(body) > 8_192 or not _is_json_type(headers.get("content-type")):
+        return None
+    try:
+        parsed = json.loads(body.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError, RecursionError):
+        return None
+    err = parsed.get("error") if isinstance(parsed, dict) else None
+    code = err.get("code") if isinstance(err, dict) else None
+    if isinstance(code, str) and _ERROR_CODE.match(code):
+        return code
+    return None
 
 
 def _is_json_type(content_type: str | None) -> bool:
@@ -114,6 +140,7 @@ def fetch_json(
     follow_redirects: bool = True,
     extra_json_types: frozenset[str] = frozenset(),
     max_attempts: int = MAX_ATTEMPTS,
+    error_code: bool = False,
 ) -> dict[str, object]:
     """Request ``url`` and return the JSON object in the answer.
 
@@ -179,7 +206,12 @@ def fetch_json(
             sleep(min(wait + jitter(), MAX_RETRY_AFTER))
             continue
         if not 200 <= status < 300:
-            raise FetchError(f"http_{status}")
+            code = (
+                _error_code(response.headers, response.body)
+                if error_code and status in (400, 401)
+                else None
+            )
+            raise FetchError(f"http_{status}", code)
         return _decode(response.headers, response.body, max_bytes, extra_json_types)
 
 

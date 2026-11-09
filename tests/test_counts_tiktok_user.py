@@ -139,6 +139,10 @@ def chain_text(exc: BaseException | None) -> str:
     return " ".join(parts)
 
 
+def invalid(status: int = 401) -> Any:
+    return reply({"error": {"code": "access_token_invalid"}}, status=status)
+
+
 def expired_then_ok() -> FakeTransport:
     n = {"i": 0}
 
@@ -296,7 +300,7 @@ def test_fetch_is_called_with_bounds_and_no_redirects() -> None:
 def test_401_without_auto_refresh_makes_no_refresh_request(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    t = FakeTransport(routes(**{INFO: reply({}, status=401)}))
+    t = FakeTransport(routes(**{INFO: invalid()}))
     assert kind(t) == "token_expired"
     assert TOKEN_URL not in t.urls
     err = capsys.readouterr().err
@@ -353,7 +357,7 @@ def test_401_refreshes_once_stores_pair_and_retries() -> None:
 
 
 def test_only_one_refresh_even_if_still_401() -> None:
-    t = FakeTransport(routes(**{INFO: reply({}, status=401)}))
+    t = FakeTransport(routes(**{INFO: invalid()}))
     assert kind(t, Sink()) == "token_rejected"
     assert [c.path for c in t.calls].count("/v2/oauth/token/") == 1
 
@@ -414,7 +418,7 @@ def test_a_failing_alert_sink_never_blocks() -> None:
         def alert(self, alert: Any) -> None:
             raise ValueError("SENTINEL-ACCESS-NEW")
 
-    t = FakeTransport(routes(**{INFO: reply({}, status=401)}))
+    t = FakeTransport(routes(**{INFO: invalid()}))
     assert kind(t, Bad()) == "token_rejected"
 
 
@@ -589,3 +593,140 @@ def test_a_source_without_its_token_is_hand_kept_for_the_stale_gate(
     config = load_site_config(setup / "site.yaml")
     assert source_platforms(config, {}) == frozenset()
     assert source_platforms(config, {"TIKTOK_ACCESS_TOKEN": "x"}) == {"tiktok"}
+
+
+# ---- review round: one POST, validated refresh answer, 401 classes ----
+
+
+@pytest.mark.parametrize("status", [429, 500, 503])
+def test_the_refresh_post_is_sent_exactly_once(status: int) -> None:
+    t = expired_then_ok()
+    t.routes[TOKEN_URL] = reply({}, status=status, headers={"retry-after": "1"})
+    sleeps: list[float] = []
+    fetch = partial(fetch_json, transport=t, sleep=sleeps.append)
+    sink = Sink()
+    ctx = Context(fetch=fetch, env=ENV, tiktok_sink=sink)
+    with pytest.raises(SourceError) as caught:
+        PROVIDERS["tiktok"](SRC_AUTO, ctx)
+    assert caught.value.kind == "refresh_failed"
+    posts = [c for c in t.calls if c.method == "POST"]
+    assert len(posts) == 1
+    assert sleeps == []
+    assert sink.stored == []
+
+
+def good(**over: Any) -> Any:
+    body = {
+        "access_token": "SENTINEL-ACCESS-NEW",
+        "expires_in": 7200,
+        "refresh_token": "SENTINEL-REFRESH-NEW",
+        "refresh_expires_in": 15552000,
+        "scope": "user.info.basic,user.info.stats",
+        "token_type": "Bearer",
+    }
+    body.update(over)
+    return reply({k: v for k, v in body.items() if v is not None})
+
+
+@pytest.mark.parametrize(
+    "over",
+    [
+        {"expires_in": 0},
+        {"expires_in": -5},
+        {"expires_in": 2 * 86_400 + 1},
+        {"expires_in": "7200"},
+        {"expires_in": True},
+        {"expires_in": None},
+        {"refresh_expires_in": 0},
+        {"refresh_expires_in": 400 * 86_400 + 1},
+        {"refresh_expires_in": 1.5},
+        {"refresh_expires_in": None},
+        {"token_type": "mac"},
+        {"token_type": None},
+        {"token_type": 7},
+        {"scope": "user.info.basic"},
+        {"scope": "user.info.stats.extra"},
+        {"scope": None},
+        {"scope": ["user.info.stats"]},
+    ],
+)
+def test_implausible_refresh_answer_still_hands_over_the_pair(
+    over: dict[str, Any],
+) -> None:
+    t = expired_then_ok()
+    t.routes[TOKEN_URL] = good(**over)
+    sink = Sink()
+    assert kind(t, sink) == "refresh_response_invalid"
+    assert len(sink.stored) == 1
+    assert sink.stored[0][0].access_token == "SENTINEL-ACCESS-NEW"
+    assert [a.kind for a in sink.alerts] == ["refresh_response_invalid"]
+    # the new access token is never used for the count
+    assert len(t.calls) == 2
+    assert (
+        sink.alerts[0]
+        .line()
+        .startswith("token-health: source=tiktok kind=refresh_response_invalid")
+    )
+    no_leak(*[a.line() for a in sink.alerts])
+
+
+def test_invalid_answer_and_failed_store_report_both_states() -> None:
+    t = expired_then_ok()
+    t.routes[TOKEN_URL] = good(expires_in=0)
+    sink = DiscardSink()
+    assert kind(t, sink) == "refresh_response_invalid"
+    assert [a.kind for a in sink.alerts] == [
+        "rotated_unstored",
+        "refresh_response_invalid",
+    ]
+
+
+@pytest.mark.parametrize("token_type", ["bearer", "BEARER", "Bearer"])
+def test_token_type_is_case_insensitive(token_type: str) -> None:
+    t = expired_then_ok()
+    t.routes[TOKEN_URL] = good(token_type=token_type)
+    assert run(t, Sink()) == 321
+
+
+def test_scope_missing_401_reports_owner_action_without_rotation() -> None:
+    body = {"error": {"code": "scope_not_authorized", "message": "m"}}
+    t = FakeTransport(routes(**{INFO: reply(body, status=401)}))
+    sink = Sink()
+    assert kind(t, sink) == "scope_missing"
+    assert TOKEN_URL not in t.urls and sink.stored == []
+    assert [a.kind for a in sink.alerts] == ["scope_missing"]
+
+
+@pytest.mark.parametrize(
+    "resp",
+    [
+        reply({}, status=401),
+        reply({"error": {"code": "something_new"}}, status=401),
+        reply({"error": {"code": "Access_Token_Invalid"}}, status=401),
+        reply({"error": {"code": 7}}, status=401),
+        reply(body=b"not json", status=401),
+        reply(body=b"{" + b" " * 9000 + b"}", status=401),
+        reply({"error": {"code": "access_token_invalid" * 5}}, status=401),
+    ],
+)
+def test_unknown_or_absent_401_code_never_rotates(resp: Any) -> None:
+    t = FakeTransport(routes(**{INFO: resp}))
+    sink = Sink()
+    got = kind(t, sink)
+    assert got == "token_rejected"
+    assert TOKEN_URL not in t.urls and sink.stored == []
+
+
+def test_400_code_is_not_a_refresh_trigger() -> None:
+    t = FakeTransport(routes(**{INFO: invalid(400)}))
+    sink = Sink()
+    assert kind(t, sink) == "http_400"
+    assert TOKEN_URL not in t.urls
+
+
+def test_error_body_text_never_reaches_the_error() -> None:
+    body = {"error": {"code": "scope_not_authorized", "message": "SENTINEL-ACCESS-OLD"}}
+    t = FakeTransport(routes(**{INFO: reply(body, status=401)}))
+    with pytest.raises(SourceError) as caught:
+        run(t)
+    no_leak(chain_text(caught.value))

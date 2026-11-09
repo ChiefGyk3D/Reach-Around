@@ -28,7 +28,8 @@ confirmed on a page that could be read.
 | Whether `user.info.stats` needs approval beyond the app review, or is granted in production to a reviewed app. The scopes pages read do not list it; the Display API get-started page names only `user.info.basic` and `video.list` | NOT FOUND (INFERRED risk that it is a separate ask) | https://developers.tiktok.com/doc/scopes-overview |
 | Review duration | NOT FOUND (no time stated) | |
 | Cost | VERIFIED free (research note 2026-11-08) | |
-| A 401 for a missing scope and a 401 for an expired token look the same to this code, because it never keeps a response body | INFERRED | |
+| The 401 classes are told apart by the `error.code` word only: the fetch layer, when asked, returns just that word (lowercase letters, digits, underscore, 40 at most) from a 400 or 401 body of at most 8 KiB, never body text. Only `access_token_invalid` leads to a refresh; `scope_not_authorized` is reported as `scope_missing` (owner action, no rotation); an absent or unknown code is `token_rejected` (owner action, no rotation) | VERIFIED (the codes), tested | https://developers.tiktok.com/doc/tiktok-api-v2-error-handling |
+| Whether TikTok sends the `error` object on a 401 in the same shape as the success answer | INFERRED (the page lists codes, not the 401 body); if it does not, the result is `token_rejected` and nothing rotates | |
 
 Answer to "is the count available without app approval": the docs show a
 Sandbox needs no review, but do not say that `user.info.stats` works there, and
@@ -88,10 +89,25 @@ echoes a name).
   before any request) unless the caller supplies a sink whose `store()` returns
   exactly `True`. The shipped no-op sink does not count and the command line
   supplies no other, so today the setting only works for code that embeds the
-  collector. On a 401 it refreshes once, hands the new pair to the sink first,
+  collector. On a 401 whose code is `access_token_invalid` it refreshes once, hands the new pair to the sink first,
   and uses the new access token only after the sink kept it. A failed or
   non-`True` store fails the source (`refresh_store_failed`) because the old
   refresh token no longer works.
+
+The refresh POST is sent exactly once (`max_attempts=1`, and the shared fetch
+layer never replays a request with a body). A 429, 500 or 503 on the refresh
+therefore ends in `refresh_failed` with no second POST, because rotation may
+already have happened and a replay would send the invalidated refresh token
+(tests: `test_the_refresh_post_is_sent_exactly_once`).
+
+The refresh answer is checked before the new access token is used:
+`expires_in` a whole number from 1 second to 2 days, `refresh_expires_in` from 1
+second to 400 days, `token_type` equal to `bearer` (any case), and `scope`
+including `user.info.stats`. When the tokens are present but any of that fails,
+the new pair is STILL handed to the sink (rotation may already have happened),
+the health state `refresh_response_invalid` is raised, and the new access token
+is not used for the count. A missing or unusable token in the answer is
+`refresh_failed`. Both states keep the old pair in use.
 
 The fetch is bounded: https to exactly `open.tiktokapis.com`, no redirect
 followed, 10 second timeout, 64 KiB body cap, JSON only, a bounded retry of 429
@@ -101,13 +117,14 @@ be a whole number from 0 to the platform maximum (`bad_count` otherwise).
 
 Failure words: `bad_credential_name`, `bad_auto_refresh`, `missing_credential`,
 `invalid_credential`, `token_expired`, `token_rejected`, `refresh_needs_sink`,
-`refresh_failed`, `refresh_store_failed`, `api_error`, `fetch_failed`,
+`refresh_failed`, `refresh_response_invalid`, `refresh_store_failed`,
+`scope_missing`, `api_error`, `fetch_failed`,
 `missing_field`, `bad_count`, `bad_json`, `too_large`, `redirect`,
 `content_type`, `rate_limited`, `server_error`, `egress_timeout`, `bad_host`.
 None includes a response body, URL or token. Alert line (names only):
 
 ```
-token-health: source=tiktok kind=<refresh_needed|refresh_failed|rotated_unstored|token_rejected> names=TIKTOK_ACCESS_TOKEN,TIKTOK_REFRESH_TOKEN
+token-health: source=tiktok kind=<refresh_needed|refresh_failed|rotated_unstored|refresh_response_invalid|scope_missing|token_rejected> names=TIKTOK_ACCESS_TOKEN,TIKTOK_REFRESH_TOKEN
 ```
 
 ## Owner steps (no secret values here)

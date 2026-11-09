@@ -371,3 +371,46 @@ def test_secret_headers_are_sent_but_never_in_errors() -> None:
         call(transport, headers={"Authorization": f"Bearer {sentinel}"})
     assert sentinel not in str(caught.value) + repr(caught.value)
     assert transport.calls[0].headers["Authorization"] == f"Bearer {sentinel}"
+
+
+def test_error_code_is_returned_only_when_asked_and_only_the_word() -> None:
+    body = {"error": {"code": "scope_not_authorized", "message": "SECRET-TEXT"}}
+    transport = FakeTransport({"https://example.com/": reply(body, status=401)})
+    with pytest.raises(FetchError) as plain:
+        fetch_json("https://example.com/", transport=transport)
+    assert plain.value.code is None
+    with pytest.raises(FetchError) as asked:
+        fetch_json("https://example.com/", transport=transport, error_code=True)
+    assert asked.value.kind == "http_401"
+    assert asked.value.code == "scope_not_authorized"
+    assert "SECRET-TEXT" not in repr(asked.value) + str(asked.value)
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"error": {"code": "Has Space"}},
+        {"error": {"code": "x" * 41}},
+        {"error": {"code": 5}},
+        {"error": "string_form"},
+        {"error": {}},
+        [1],
+    ],
+)
+def test_error_code_is_none_for_anything_unusual(payload: object) -> None:
+    transport = FakeTransport({"https://example.com/": reply(payload, status=400)})
+    with pytest.raises(FetchError) as caught:
+        fetch_json("https://example.com/", transport=transport, error_code=True)
+    assert caught.value.code is None
+
+
+def test_error_code_ignores_other_statuses_and_big_bodies() -> None:
+    ok = {"error": {"code": "access_token_invalid"}}
+    for response in (
+        reply(ok, status=403),
+        reply(body=b"{" + b" " * 9000 + b"}", status=401),
+    ):
+        transport = FakeTransport({"https://example.com/": response})
+        with pytest.raises(FetchError) as caught:
+            fetch_json("https://example.com/", transport=transport, error_code=True)
+        assert caught.value.code is None
