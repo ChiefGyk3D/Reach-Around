@@ -55,6 +55,16 @@ def run_report(args: argparse.Namespace) -> int:
             raise ValueError("--top must be between 1 and 100")
         if args.floor < FLOOR:
             raise ValueError(f"--floor cannot be below {FLOOR}")
+        if args.period is None and args.offset:
+            raise ValueError("--offset needs --period")
+        if args.period is not None and (
+            args.since or args.until or args.days is not None
+        ):
+            raise ValueError(
+                "--period cannot be combined with --since, --until or --days: "
+                "the source and country tables are released for one fixed "
+                "calendar week or month only"
+            )
         if args.csv is not None and args.json:
             raise ValueError("--csv and --json cannot be combined")
         export = load_exports(list(args.input))
@@ -68,6 +78,9 @@ def run_report(args: argparse.Namespace) -> int:
             include_bots=args.include_bots,
             top=args.top,
             floor=args.floor,
+            period=args.period,
+            offset=args.offset,
+            as_of=utc_now().date(),
         )
     except (ExportError, ValueError) as exc:
         print(f"error: {exc}", file=sys.stderr)
@@ -120,6 +133,20 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
         "--days",
         type=int,
         help="count the last N days of data, ending at the latest day or --until",
+    )
+    parser.add_argument(
+        "--period",
+        choices=("week", "month"),
+        help="release the source and country by destination tables (and every "
+        "other section) for ONE complete UTC calendar week (Monday start) or "
+        "month, with the floor applied to that period alone; these tables are "
+        "not released for a free --since/--until/--days window",
+    )
+    parser.add_argument(
+        "--offset",
+        type=int,
+        default=0,
+        help="with --period: complete periods back (0 is the latest complete one)",
     )
     parser.add_argument(
         "--geo",

@@ -5,6 +5,11 @@
       "key",
       "value"
     ],
+    "click_budget": [
+      "site",
+      "day",
+      "clicks"
+    ],
     "click_country_daily": [
       "site",
       "day",
@@ -216,6 +221,7 @@
     ]
   },
   "numeric": {
+    "click_budget.clicks": "small",
     "click_country_daily.clicks": "small",
     "click_country_monthly.clicks": "small",
     "click_events.id": "small",

@@ -132,7 +132,7 @@ or `direct` or `other`, a two-letter country code). Not collected: a cookie, a
 stored identifier, an IP address, a user agent, a referrer address, a timestamp
 finer than a day on these tables, or any link between a click and a page view or
 a person. A raw click row carries at most a source label and never a country; country exists only in the counter. Source and country are never stored together, and no
-report prints a three-way cell. Day counts are kept 90 days; the monthly
+report prints a three-way cell. Day counts are kept 90 days, with a site-wide daily cap on their number; the monthly
 totals made from them are kept 25 months. Because nothing identifies a person,
 a deletion request cannot be matched to a counter row; the retention above is
 the control. The public privacy page states this in plain words.

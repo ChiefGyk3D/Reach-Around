@@ -432,17 +432,31 @@ The source counter is kept only for a site that lists `sources` (`direct` and
 `other` are therefore reserved labels). No timestamp finer than a day, no
 identifier, no address, no pair of source and country.
 
-- **Caps.** Per (site, day): 150 source cells and 200 country cells. Past the
-  cap a label with no row yet folds into `other` (source) or `ZZ` (country), so a
-  day holds at most the cap plus one fold row per link.
+- **Caps and budget.** Per (site, day): 150 source cells (40 of them kept for
+  `direct`) and 200 country cells. Past the cap, or past the site's daily click
+  budget (50,000 clicks, counted in `click_budget`), a new cell goes into ONE
+  overflow row per (site, day) (`overflow-all`, with `other` or `ZZ`), so a day
+  holds at most the cap plus one row, whatever the number of links, labels or
+  countries. Counting never stops: existing cells and the overflow row keep
+  adding; only new cells stop. The monthly tables fold the same way.
+- **Counter failures.** The raw click row and the counters are written
+  separately: a missing table or a failed counter write never drops the raw
+  click, and a failure only adds one to the number at `view_meta` key
+  `click_counter_err` (no content).
+- **Deploy order.** Apply 0011, deploy the counter-writing Worker, check that
+  `click_country_daily` gains rows, then apply 0012 (it clears the country on raw
+  rows and does nothing while the counter table is empty). Not reversible.
 - **Seal.** The hourly job seals a (site, day) two hours after it closes
   (`click_seal`); the increment statements write nothing for a sealed day.
 - **Months.** A closed month is summed into `click_src_monthly` and
   `click_country_monthly` (fold caps 300 and 400 cells), logged in
-  `click_month_log`, and kept 25 months. Day cells and seals go after 90 days
-  once their month is rolled (a 125 day ceiling drops them anyway).
-- **Report.** `reach-around report` reads these tables (see `docs/report.md`),
-  applies the floor after summing, and suppresses jointly with the link table.
+  `click_month_log`, and kept 25 months. Day cells go once they are 90 whole UTC days old
+  and their month is rolled (a 125 day ceiling drops them anyway); a seal and
+  the budget row go in the same run, only when none of the day's cells is left.
+- **Report.** `reach-around report` reads these tables (see `docs/report.md`)
+  for one fixed calendar week or month at a time (`--period`), applies the floor
+  to that period alone, merges sub-floor cells into one remainder per
+  destination, and suppresses jointly with the link table.
 
 ## 7. Retention
 
@@ -452,7 +466,7 @@ identifier, no address, no pair of source and country.
 | Daily visitor codes (`visitor_seen`) | Deleted at the end of the UTC day | n/a | Independent of the rollup |
 | Daily aggregates | **90 days** (shipped) | 90 days | No site may exceed 90 days |
 | Click rows | 90 days (shipped) | 90 days | |
-| Click funnel day cells (`click_src_daily`, `click_country_daily`) | 90 days | 125 days | Removed after the month is rolled up; a ceiling removes them anyway |
+| Click funnel day cells (`click_src_daily`, `click_country_daily`) | 90 whole days | 125 days | Removed after the month is rolled up; a ceiling removes them anyway |
 | Click funnel monthly rollups | 25 months | 25 months | Sums of a closed month; no timestamp finer than a month |
 | Hour counters in `view_meta` | 48 hours (budget), previous hour (cap) | n/a | |
 

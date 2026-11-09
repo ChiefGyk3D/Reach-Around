@@ -11,4 +11,11 @@
 -- existed is not kept; that is the cost of the rule.
 --
 -- RULE: apply with the Worker idle, after 0011.
-UPDATE click_events SET country = NULL WHERE country IS NOT NULL;
+--
+-- DEPLOY ORDER (required): apply 0011, deploy the counter-writing Worker, check that
+-- click_country_daily gains rows, THEN apply this file. As a guard it does nothing
+-- while the counter table is empty, so applying it too early (or to a database whose
+-- counters never ran) destroys nothing. It is not reversible; export first if the
+-- country of old clicks matters.
+UPDATE click_events SET country = NULL
+  WHERE country IS NOT NULL AND EXISTS (SELECT 1 FROM click_country_daily);

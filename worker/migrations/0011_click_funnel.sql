@@ -15,11 +15,13 @@
 -- as 'direct'. In the country counter 'ZZ' means unknown or folded.
 --
 -- Per-site row caps (set in the Worker, worker/src/clickfunnel.ts): once a
--- (site, day) holds the cap, a new label folds into 'other' (source) or 'ZZ'
--- (country). A day is SEALED by the hourly job after it closes: the Worker never
+-- (site, day) holds the cap, or the site-wide daily budget (click_budget) is used
+-- up, a new cell goes into ONE overflow row per (site, day) ('overflow-all', with
+-- 'other' for a source or 'ZZ' for a country), so rows per (site, day) are at
+-- most the cap plus one. A day is SEALED by the hourly job after it closes: the Worker never
 -- increments a sealed day (click_seal), so a closed day cannot change.
 --
--- Retention: per-day cells and seals are removed after 90 days, but only once
+-- Retention: per-day cells and seals are removed once they are 90 days old, but only once
 -- their month is in the monthly tables (a hard ceiling drops them anyway). The
 -- monthly tables hold the sum of a closed month, with a fold cap, and are kept
 -- for 25 months. The report applies its floor after summing.
@@ -27,7 +29,7 @@
 -- CHECK clauses are small on purpose (CI's SQLite has a parser stack limit).
 -- Nothing here touches an existing table. RULE: apply with the Worker idle, as for 0008.
 
-CREATE TABLE click_src_daily (
+CREATE TABLE IF NOT EXISTS click_src_daily (
   site TEXT NOT NULL CHECK (length(site) BETWEEN 1 AND 20 AND site NOT GLOB '*[^a-z0-9-]*'),
   day TEXT NOT NULL CHECK (length(day) = 10),
   link_id TEXT NOT NULL CHECK (length(link_id) BETWEEN 1 AND 40),
@@ -36,7 +38,7 @@ CREATE TABLE click_src_daily (
   PRIMARY KEY (site, day, link_id, src)
 ) WITHOUT ROWID;
 
-CREATE TABLE click_country_daily (
+CREATE TABLE IF NOT EXISTS click_country_daily (
   site TEXT NOT NULL CHECK (length(site) BETWEEN 1 AND 20 AND site NOT GLOB '*[^a-z0-9-]*'),
   day TEXT NOT NULL CHECK (length(day) = 10),
   link_id TEXT NOT NULL CHECK (length(link_id) BETWEEN 1 AND 40),
@@ -46,14 +48,14 @@ CREATE TABLE click_country_daily (
 ) WITHOUT ROWID;
 
 -- A sealed (site, day): the Worker adds nothing to it any more.
-CREATE TABLE click_seal (
+CREATE TABLE IF NOT EXISTS click_seal (
   site TEXT NOT NULL CHECK (length(site) BETWEEN 1 AND 20 AND site NOT GLOB '*[^a-z0-9-]*'),
   day TEXT NOT NULL CHECK (length(day) = 10),
   sealed_at INTEGER NOT NULL,
   PRIMARY KEY (site, day)
 ) WITHOUT ROWID;
 
-CREATE TABLE click_src_monthly (
+CREATE TABLE IF NOT EXISTS click_src_monthly (
   site TEXT NOT NULL CHECK (length(site) BETWEEN 1 AND 20 AND site NOT GLOB '*[^a-z0-9-]*'),
   month TEXT NOT NULL CHECK (length(month) = 7),
   link_id TEXT NOT NULL CHECK (length(link_id) BETWEEN 1 AND 40),
@@ -62,7 +64,7 @@ CREATE TABLE click_src_monthly (
   PRIMARY KEY (site, month, link_id, src)
 ) WITHOUT ROWID;
 
-CREATE TABLE click_country_monthly (
+CREATE TABLE IF NOT EXISTS click_country_monthly (
   site TEXT NOT NULL CHECK (length(site) BETWEEN 1 AND 20 AND site NOT GLOB '*[^a-z0-9-]*'),
   month TEXT NOT NULL CHECK (length(month) = 7),
   link_id TEXT NOT NULL CHECK (length(link_id) BETWEEN 1 AND 40),
@@ -71,8 +73,17 @@ CREATE TABLE click_country_monthly (
   PRIMARY KEY (site, month, link_id, country)
 ) WITHOUT ROWID;
 
+-- The site-wide write budget of a (site, day): clicks counted so far. Past the Worker's
+-- budget no new cell is made (counting goes on in existing cells and the overflow row).
+CREATE TABLE IF NOT EXISTS click_budget (
+  site TEXT NOT NULL CHECK (length(site) BETWEEN 1 AND 20 AND site NOT GLOB '*[^a-z0-9-]*'),
+  day TEXT NOT NULL CHECK (length(day) = 10),
+  clicks INTEGER NOT NULL CHECK (clicks >= 1),
+  PRIMARY KEY (site, day)
+) WITHOUT ROWID;
+
 -- A month that was rolled up (even when it had no cells to add).
-CREATE TABLE click_month_log (
+CREATE TABLE IF NOT EXISTS click_month_log (
   site TEXT NOT NULL CHECK (length(site) BETWEEN 1 AND 20 AND site NOT GLOB '*[^a-z0-9-]*'),
   month TEXT NOT NULL CHECK (length(month) = 7),
   rolled_at INTEGER NOT NULL,

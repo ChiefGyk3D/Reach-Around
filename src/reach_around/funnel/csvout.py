@@ -64,14 +64,14 @@ def _table_rows(section: dict[str, Any]) -> list[list[Any]]:
 def _pair_rows(section: dict[str, Any], key: str) -> list[list[Any]]:
     """Cells of a label by destination section, whole destinations only."""
     state = section["state"]
-    if state in ("not_in_export", "withheld"):
+    if state in ("not_in_export", "withheld", "period_required"):
         return [["", "", "", state]]
     return [[c[key], c["destination"], c["clicks"], "cell"] for c in section["cells"]]
 
 
 def _flow_rows(section: dict[str, Any]) -> list[list[Any]]:
     state = section["state"]
-    if state in ("not_in_export", "withheld"):
+    if state in ("not_in_export", "withheld", "period_required"):
         return [["", "", "", state]]
     rows: list[list[Any]] = [
         [r["label"], r["clicks"], r["share"], "row"] for r in section["ranked"]
@@ -134,6 +134,9 @@ def _meta_rows(
         ["requested_since_utc", requested.get("since") or ""],
         ["requested_until_utc", requested.get("until") or ""],
         ["requested_days", requested.get("days") or ""],
+        ["period", report["release"]["period"] or ""],
+        ["period_start_utc", report["release"]["start"] or ""],
+        ["period_end_utc", report["release"]["end"] or ""],
         ["timezone", "UTC"],
         ["site", report["site"]],
         ["privacy_floor_views", report["floor"]],

@@ -472,7 +472,7 @@ Verification:
 
 #### T-17 additions: analytics data (B1 to B5)
 
-Status: **[shipped]** except B2's local-copy parts, which wait for the local pull (**[planned]**). Provisional defaults: hour-rounded timestamps (D-A1), 7 days raw and 90 days aggregates (D-A2), raw `net` cleared once counted (D-A7), a raw click row carries at most a closed-set source label from the site list, never a country; country lives only in the aggregate counter `click_country_daily`, so the two stores cannot be differenced and no source-by-country pair is stored (#329, #331, #408; supersedes the earlier "no source on click rows", D-A5).
+Status: **[shipped]** except B2's local-copy parts, which wait for the local pull (**[planned]**). Provisional defaults: hour-rounded timestamps (D-A1), 7 days raw and 90 days aggregates (D-A2), raw `net` cleared once counted (D-A7), a raw click row carries at most a closed-set source label from the site list, never a country; country lives only in the aggregate counter `click_country_daily`, so the two stores cannot be differenced and no source-by-country pair is stored; funnel cells are released for fixed calendar periods only, so overlapping windows cannot difference a cell, and the rows per site per day are bounded by a cap plus one overflow row (#329, #331, #408; supersedes the earlier "no source on click rows", D-A5).
 
 | Id | Threat | Mitigation | Verification |
 |---|---|---|---|

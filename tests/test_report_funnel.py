@@ -11,7 +11,7 @@ import csv
 import io
 import json
 import random
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -20,9 +20,12 @@ import pytest
 from reach_around.cli import main
 from reach_around.funnel.csvout import csv_files
 from reach_around.funnel.export import ExportError, load_exports
-from reach_around.funnel.report import build_report, render_text
+from reach_around.funnel.report import REMAINDER, build_report, render_text
 
 DAY = "2026-11-01"
+AS_OF = date(
+    2026, 12, 5
+)  # the latest complete month is 2026-11; the latest complete week starts 2026-11-23
 TS = 1_793_491_200_000  # 2026-11-01 00:00 UTC
 
 
@@ -48,9 +51,21 @@ def write(tmp_path: Path, tables: dict[str, Any]) -> Path:
     return path
 
 
-def report_of(tmp_path: Path, tables: dict[str, Any], *argv: str) -> dict[str, Any]:
-    out = build_report(load_exports([write(tmp_path, tables)]))
-    return out
+def report_of(
+    tmp_path: Path,
+    tables: dict[str, Any],
+    period: str | None = "month",
+    offset: int = 0,
+    as_of: date = AS_OF,
+    **kw: Any,
+) -> dict[str, Any]:
+    return build_report(
+        load_exports([write(tmp_path, tables)]),
+        period=period,
+        offset=offset,
+        as_of=as_of,
+        **kw,
+    )
 
 
 def raw_clicks(spec: dict[str, int]) -> list[dict[str, Any]]:
@@ -101,16 +116,27 @@ def test_matrix_and_country_table_print_whole_clean_destinations(
     assert "not people" in text
 
 
-def test_a_destination_with_a_small_cell_prints_none_of_its_cells(
+def test_a_small_cell_is_merged_into_one_remainder_not_a_reason_to_hide_the_rest(
     tmp_path: Path,
 ) -> None:
-    src = {"twitch": {"instagram": 12, "direct": 3}, "kick": {"instagram": 9}}
-    r = report_of(tmp_path, {"click_src_daily": src_rows(src)})
-    m = r["click_matrix"]
-    assert {c["destination"] for c in m["cells"]} == {"kick"}
-    assert m["links_withheld"] == 1
-    assert "twitch" not in json.dumps(m)
-    assert '"source": "direct"' not in json.dumps(m)
+    # twitch: 20 and 9 are printable, 3 is not. The largest printed cell (20)
+    # joins the 3: the remainder (23) reaches the floor and, having no upper
+    # bound from the printed cells, pins nothing under the floor.
+    src = {"twitch": {"instagram": 20, "bluesky": 9, "direct": 3}, "kick": {"a": 9}}
+    m = report_of(tmp_path, {"click_src_daily": src_rows(src)})["click_matrix"]
+    cells = {(c["source"], c["destination"]): c["clicks"] for c in m["cells"]}
+    assert cells == {
+        ("bluesky", "twitch"): 9,
+        (REMAINDER, "twitch"): 23,
+        ("a", "kick"): 9,
+    }
+    assert "instagram" not in json.dumps(m) and '"source": "direct"' not in json.dumps(
+        m
+    )
+    assert {d["destination"]: d["clicks"] for d in m["destinations"]} == {
+        "twitch": 32,
+        "kick": 9,
+    }
 
 
 def test_everything_small_is_withheld(tmp_path: Path) -> None:
@@ -126,17 +152,53 @@ def test_tables_missing_from_the_export_say_so(tmp_path: Path) -> None:
     assert "not in this export" in render_text(r)
 
 
+def test_without_a_period_the_cell_sections_are_not_released(tmp_path: Path) -> None:
+    r = report_of(
+        tmp_path,
+        {"click_src_daily": src_rows({"twitch": {"a": 9}})},
+        period=None,
+    )
+    assert r["click_matrix"]["state"] == "period_required"
+    assert r["click_matrix"]["cells"] == []
+    assert "--period" in render_text(r)
+
+
+def test_a_free_window_cannot_be_combined_with_a_period(tmp_path: Path) -> None:
+    path = write(tmp_path, {"click_src_daily": src_rows({"twitch": {"a": 9}})})
+    for extra in ({"since": DAY}, {"until": DAY}, {"days": 3}):
+        with pytest.raises(ValueError, match="fixed calendar week or month"):
+            build_report(load_exports([path]), period="month", as_of=AS_OF, **extra)
+
+
+def test_a_free_window_still_gives_the_aggregate_sections(tmp_path: Path) -> None:
+    r = build_report(
+        load_exports(
+            [
+                write(
+                    tmp_path,
+                    {
+                        "click_events": raw_clicks({"twitch": 12}),
+                        "click_src_daily": src_rows({"twitch": {"a": 12}}),
+                    },
+                )
+            ]
+        ),
+        since=DAY,
+        until=DAY,
+    )
+    assert r["funnel"]["clicks"] == 12 and r["links"]["rows"]
+    assert r["click_matrix"]["state"] == "period_required"
+
+
 def test_country_by_destination_counts_clicks_the_raw_rows_do_not(
     tmp_path: Path,
 ) -> None:
-    # 20 clicks on twitch, 12 with a source (so the raw rows keep no country).
-    # The counter table holds the country of all 20.
     cc = {"twitch": {"US": 11, "DE": 9}}
     r = report_of(
         tmp_path,
         {
             "click_events": [{"ts": TS, "link_id": "twitch", "src": "instagram"}] * 12
-            + [{"ts": TS, "link_id": "twitch", "country": "US"}] * 8,
+            + [{"ts": TS, "link_id": "twitch"}] * 8,
             "click_country_daily": cc_rows(cc),
         },
     )
@@ -146,9 +208,6 @@ def test_country_by_destination_counts_clicks_the_raw_rows_do_not(
 def test_destinations_follow_the_links_section_when_raw_clicks_are_present(
     tmp_path: Path,
 ) -> None:
-    # twitch (30) and kick (6): the links table folds kick away (its smallest
-    # shown row joins the merged line), so the breakdown for kick is not printed
-    # even though every kick cell is at the floor.
     src = {"twitch": {"a": 20, "b": 10}, "kick": {"a": 6}}
     r = report_of(
         tmp_path,
@@ -164,28 +223,16 @@ def test_destinations_follow_the_links_section_when_raw_clicks_are_present(
 # ---- recoverability --------------------------------------------------------
 
 
-def _printed_numbers(report: dict[str, Any]) -> set[int]:
-    """Every integer the report prints in the three click sections and links."""
-    out: set[int] = set()
-
-    def walk(node: Any) -> None:
-        if isinstance(node, dict):
-            for key, value in node.items():
-                if key in (
-                    "clicks",
-                    "views",
-                    "other_below_floor",
-                    "ranked_other",
-                ) and isinstance(value, int):
-                    out.add(value)
-                walk(value)
-        elif isinstance(node, list):
-            for item in node:
-                walk(item)
-
-    for key in ("click_matrix", "click_countries", "links", "click_sources"):
-        walk(report[key])
-    return out
+def expected_release(cells: dict[str, int], floor: int) -> tuple[dict[str, int], int]:
+    """What may be printed for one destination: exact big cells and a remainder."""
+    big = {k: v for k, v in cells.items() if v >= floor}
+    small = [v for v in cells.values() if v < floor]
+    if not small:
+        return big, 0
+    if not big:
+        return {}, 0
+    moved = max(big.values())
+    return big, sum(small) + moved
 
 
 def _check_nothing_recoverable(
@@ -196,22 +243,28 @@ def _check_nothing_recoverable(
     printed: dict[str, dict[str, int]] = {}
     for c in section["cells"]:
         printed.setdefault(c["destination"], {})[c[label_key]] = c["clicks"]
+        # No printed cell, remainder included, is under the floor.
+        assert c["clicks"] >= floor
     dest_totals = {d["destination"]: d["clicks"] for d in section["destinations"]}
     for link, cells in spec.items():
-        small = any(n < floor for n in cells.values())
-        if small:
-            # no part of the link is printed: not a cell, not a margin
-            assert link not in printed and link not in dest_totals
+        big, remainder = expected_release(cells, floor)
+        if not big:
+            assert link not in printed  # nothing at the floor: nothing printed
             continue
-        if link in printed:
-            assert sum(printed[link].values()) == dest_totals[link]
-    # Margins are sums of printed cells only
-    shown_total = sum(c["clicks"] for c in section["cells"])
-    assert shown_total == sum(dest_totals.values())
-    # No printed integer below the floor except exact zero
-    for n in _printed_numbers(report):
-        assert n == 0 or n >= floor
-    # The label totals (matrix) are sums of printed cells too
+        if link not in printed:
+            continue  # cut by the per-link table or --top: whole destination
+        got = dict(printed[link])
+        rem = got.pop(REMAINDER, 0)
+        moved = max(big.values()) if remainder else None
+        kept = sorted(v for v in big.values())
+        if moved is not None:
+            kept.remove(moved)  # exactly one printed cell joined the remainder
+        # (the country table prints ZZ as "other"; counts compare by value)
+        assert sorted(got.values()) == kept
+        assert rem == remainder
+        assert sum(printed[link].values()) == dest_totals[link]
+    # Margins are sums of printed cells only.
+    assert sum(c["clicks"] for c in section["cells"]) == sum(dest_totals.values())
     if key == "click_matrix":
         by_label: dict[str, int] = {}
         for c in section["cells"]:
@@ -229,7 +282,8 @@ def _check_nothing_recoverable(
         },
         {"twitch": {"direct": 4}, "kick": {"direct": 8}},
         {"twitch": {"a": 5, "b": 5}, "kick": {"a": 4, "b": 4, "c": 4}},
-        {"twitch": {"a": 7, "b": 6}, "kick": {"other": 5, "direct": 5}},
+        {"twitch": {"a": 7, "b": 6, "c": 1}, "kick": {"other": 5, "direct": 5}},
+        {"twitch": {"a": 40, "b": 1}},
     ],
 )
 def test_matrix_never_lets_a_small_cell_be_recovered(
@@ -237,6 +291,18 @@ def test_matrix_never_lets_a_small_cell_be_recovered(
 ) -> None:
     r = report_of(tmp_path, {"click_src_daily": src_rows(spec)})
     _check_nothing_recoverable(r, "click_matrix", "source", spec)
+
+
+def test_the_largest_printed_cell_always_joins_the_remainder(tmp_path: Path) -> None:
+    """A lone sub-floor cell is never isolated: the remainder is that cell plus
+    the largest printed one (which no printed cell bounds from above), so
+    printed numbers pin nothing under the floor."""
+    for small in range(1, 5):
+        spec = {"twitch": {"a": 30, "b": 9, "c": small}}
+        m = report_of(tmp_path, {"click_src_daily": src_rows(spec)})["click_matrix"]
+        got = {c["source"]: c["clicks"] for c in m["cells"]}
+        assert got == {"b": 9, REMAINDER: 30 + small}
+        assert got[REMAINDER] >= 5
 
 
 def test_random_data_with_every_table_present(tmp_path: Path) -> None:
@@ -262,7 +328,6 @@ def test_random_data_with_every_table_present(tmp_path: Path) -> None:
             tables["click_events"] = raw_clicks(raw)
         r = report_of(tmp_path, tables)
         _check_nothing_recoverable(r, "click_matrix", "source", src)
-        # the country section folds the long tail per destination, from shown cells only
         section = r["click_countries"]
         for c in section["cells"]:
             assert c["clicks"] >= r["floor"]
@@ -271,9 +336,6 @@ def test_random_data_with_every_table_present(tmp_path: Path) -> None:
         for c in section["cells"]:
             by_dest[c["destination"]] = by_dest.get(c["destination"], 0) + c["clicks"]
         assert by_dest == dest
-        for link in dest:
-            assert all(n >= r["floor"] for n in cc[link].values())
-        # a link printed in either section is also a printed row of the links table
         if "click_events" in tables:
             rows = {row["label"] for row in r["links"]["rows"]}
             assert set(dest) <= rows
@@ -282,9 +344,7 @@ def test_random_data_with_every_table_present(tmp_path: Path) -> None:
 
 def test_the_folded_other_country_is_a_sum_of_shown_cells_only(tmp_path: Path) -> None:
     cc = {"twitch": {"US": 30, "DE": 8, "FR": 7, "BR": 6, "ZZ": 5}}
-    r = build_report(
-        load_exports([write(tmp_path, {"click_country_daily": cc_rows(cc)})]), top=2
-    )
+    r = report_of(tmp_path, {"click_country_daily": cc_rows(cc)}, top=2)
     got = {
         (c["country"], c["destination"]): c["clicks"]
         for c in r["click_countries"]["cells"]
@@ -293,7 +353,137 @@ def test_the_folded_other_country_is_a_sum_of_shown_cells_only(tmp_path: Path) -
     assert r["click_countries"]["more_countries"] == 2
 
 
-# ---- months and windows ----------------------------------------------------
+# ---- abuse: a visitor cannot hide a destination or pin a cell ---------------
+
+
+@pytest.mark.parametrize(
+    "poison",
+    [
+        {"unused-listed-source": 1},
+        {"other": 1},  # an unlisted s value
+        {"direct": 1},  # a repeated s value
+        {"unused-listed-source": 1, "other": 1, "direct": 1},
+    ],
+)
+def test_one_poisoned_source_cell_does_not_suppress_a_destination(
+    tmp_path: Path, poison: dict[str, int]
+) -> None:
+    spec = {
+        "twitch": {
+            "instagram": 40,
+            "bluesky": 25,
+            "tiktok": 15,
+            **{"x" + k: v for k, v in poison.items()},
+        }
+    }
+    m = report_of(tmp_path, {"click_src_daily": src_rows(spec)})["click_matrix"]
+    got = {c["source"]: c["clicks"] for c in m["cells"]}
+    assert got["bluesky"] == 25 and got["tiktok"] == 15
+    assert m["state"] == "ok"
+    # The poison is inside a remainder that reaches the floor; nothing pins it.
+    for k in poison:
+        assert "x" + k not in got
+    assert got[REMAINDER] >= 5
+
+
+def test_one_new_country_does_not_suppress_a_destination(tmp_path: Path) -> None:
+    cc = {"twitch": {"US": 30, "DE": 12, "QQ": 1}}
+    c = report_of(tmp_path, {"click_country_daily": cc_rows(cc)})["click_countries"]
+    got = {x["country"]: x["clicks"] for x in c["cells"]}
+    assert got["DE"] == 12 and got[REMAINDER] == 31
+    assert "QQ" not in json.dumps(c)
+
+
+# ---- fixed periods: no differencing across windows -------------------------
+
+
+def day_src(day: str, n: int, label: str = "a") -> list[dict[str, Any]]:
+    return src_rows({"twitch": {label: n}}, day)
+
+
+def test_overlapping_windows_cannot_be_asked_for(tmp_path: Path) -> None:
+    """daily 3, 3, 3 with floor 6: free windows over days 1-2 and 2-3 would print
+    6 and 6 and give every day away. The tool refuses a free window for these
+    tables, and a fixed period prints one sum for the whole period."""
+    rows = (
+        day_src("2026-11-02", 3) + day_src("2026-11-03", 3) + day_src("2026-11-04", 3)
+    )
+    path = write(tmp_path, {"click_src_daily": rows})
+    export = load_exports([path])
+    for since, until in (("2026-11-02", "2026-11-03"), ("2026-11-03", "2026-11-04")):
+        r = build_report(export, since=since, until=until, floor=6)
+        assert r["click_matrix"]["state"] == "period_required"
+        assert r["click_matrix"]["cells"] == []
+    month = build_report(export, period="month", as_of=AS_OF, floor=6)
+    assert [c["clicks"] for c in month["click_matrix"]["cells"]] == [9]
+
+
+def test_a_period_counts_only_its_own_days(tmp_path: Path) -> None:
+    rows = (
+        day_src("2026-11-02", 7)  # Monday of week 2026-11-02
+        + day_src("2026-11-08", 5)  # Sunday, same week
+        + day_src("2026-11-09", 100)  # next week
+        + day_src("2026-10-31", 200)  # previous month
+    )
+    export = load_exports([write(tmp_path, {"click_src_daily": rows})])
+    week = build_report(export, period="week", offset=3, as_of=date(2026, 11, 30))
+    assert week["release"] == {
+        "period": "week",
+        "offset": 3,
+        "start": "2026-11-02",
+        "end": "2026-11-08",
+    }
+    assert [c["clicks"] for c in week["click_matrix"]["cells"]] == [12]
+    month = build_report(export, period="month", as_of=date(2026, 12, 2))
+    assert [c["clicks"] for c in month["click_matrix"]["cells"]] == [112]
+    assert month["release"]["start"] == "2026-11-01"
+    assert month["release"]["end"] == "2026-11-30"
+
+
+def test_the_current_period_is_never_released(tmp_path: Path) -> None:
+    rows = day_src("2026-12-01", 50)
+    export = load_exports([write(tmp_path, {"click_src_daily": rows})])
+    r = build_report(export, period="month", as_of=date(2026, 12, 20))
+    assert r["release"]["end"] == "2026-11-30"
+    assert r["click_matrix"]["state"] == "withheld" or not r["click_matrix"]["cells"]
+
+
+def test_week_and_month_are_independent_releases_each_with_its_own_floor(
+    tmp_path: Path,
+) -> None:
+    """A cell of 3 a week for four weeks: each week prints nothing, the month
+    prints the 12. A reader holding both learns only what the month sum and the
+    weeks' emptiness already say; the docs tell the owner to publish one period
+    kind per series because a week and the month around it can be differenced."""
+    rows = []
+    for d in ("2026-11-02", "2026-11-09", "2026-11-16", "2026-11-23"):
+        rows += day_src(d, 3)
+    export = load_exports([write(tmp_path, {"click_src_daily": rows})])
+    for offset in range(4):
+        w = build_report(export, period="week", offset=offset, as_of=date(2026, 11, 30))
+        assert w["click_matrix"]["cells"] == []
+    m = build_report(export, period="month", as_of=date(2026, 12, 2))
+    assert [c["clicks"] for c in m["click_matrix"]["cells"]] == [12]
+
+
+def test_offset_and_period_validation() -> None:
+    from reach_around.funnel.report import period_bounds
+
+    with pytest.raises(ValueError):
+        period_bounds("week", -1, date(2026, 1, 1))
+    with pytest.raises(ValueError):
+        period_bounds("year", 0, date(2026, 1, 1))
+    assert period_bounds("month", 0, date(2026, 1, 15)) == (
+        date(2025, 12, 1),
+        date(2025, 12, 31),
+    )
+    assert period_bounds("week", 0, date(2026, 11, 9)) == (  # a Monday
+        date(2026, 11, 2),
+        date(2026, 11, 8),
+    )
+
+
+# ---- months ----------------------------------------------------------------
 
 
 def month_rows(spec: dict[str, dict[str, int]], month: str) -> list[dict[str, Any]]:
@@ -312,27 +502,28 @@ def test_a_whole_month_is_read_from_the_monthly_rows_and_never_twice(
     r = report_of(
         tmp_path,
         {"click_src_daily": daily, "click_src_monthly": monthly},
+        as_of=date(2026, 11, 9),
     )
     assert r["click_matrix"]["cells"][0]["clicks"] == 40
     assert r["click_matrix"]["months_used"] == ["2026-10"]
 
 
-def test_a_partial_month_in_the_window_uses_day_cells(tmp_path: Path) -> None:
+def test_a_week_inside_a_month_uses_day_cells_not_the_monthly_row(
+    tmp_path: Path,
+) -> None:
     daily = src_rows({"twitch": {"a": 6}}, day="2026-10-15")
     monthly = month_rows({"twitch": {"a": 40}}, "2026-10")
-    r = build_report(
-        load_exports(
-            [write(tmp_path, {"click_src_daily": daily, "click_src_monthly": monthly})]
-        ),
-        since="2026-10-10",
-        until="2026-11-30",
+    r = report_of(
+        tmp_path,
+        {"click_src_daily": daily, "click_src_monthly": monthly},
+        period="week",
+        as_of=date(2026, 10, 21),
     )
     assert r["click_matrix"]["cells"][0]["clicks"] == 6
     assert r["click_matrix"]["months_used"] == []
 
 
-def test_the_floor_is_applied_after_summing_days(tmp_path: Path) -> None:
-    # 3 + 3 clicks on two days: each day is under the floor, the sum is not.
+def test_the_floor_is_applied_after_summing_days_of_the_period(tmp_path: Path) -> None:
     rows = src_rows({"twitch": {"a": 3}}, "2026-11-01") + src_rows(
         {"twitch": {"a": 3}}, "2026-11-02"
     )
@@ -347,7 +538,7 @@ def test_monthly_only_export_is_accepted(tmp_path: Path) -> None:
             "click_country_monthly": [
                 {
                     "site": "links",
-                    "month": "2026-09",
+                    "month": "2026-11",
                     "link_id": "twitch",
                     "country": "US",
                     "clicks": 9,
@@ -387,7 +578,11 @@ def test_csv_files_hold_only_printed_cells(tmp_path: Path) -> None:
         "row_type",
     ]
     body = files["click_matrix.csv"][1:]
-    assert sorted(body) == [["a", "twitch", "8", "cell"], ["b", "twitch", "7", "cell"]]
+    assert sorted(body) == [
+        ["(below the floor)", "kick", "10", "cell"],
+        ["a", "twitch", "8", "cell"],
+        ["b", "twitch", "7", "cell"],
+    ]
     assert files["click_flows.csv"][1][0] == "a -> twitch"
     assert files["click_countries.csv"][1] == ["US", "twitch", "15", "cell"]
 
@@ -408,23 +603,54 @@ def test_csv_neutralizes_a_formula_label(tmp_path: Path) -> None:
 
 
 def test_cli_json_and_text(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    today = datetime.now(UTC).date()
+    last = (today.replace(day=1) - timedelta(days=1)).replace(day=3).isoformat()
     path = write(
         tmp_path,
         {
-            "click_src_daily": src_rows({"twitch": {"instagram": 9, "direct": 12}}),
-            "click_country_daily": cc_rows({"twitch": {"US": 21}}),
+            "click_src_daily": src_rows(
+                {"twitch": {"instagram": 9, "direct": 12}}, last
+            ),
+            "click_country_daily": cc_rows({"twitch": {"US": 21}}, last),
         },
     )
-    assert main(["report", "--input", str(path), "--json"]) == 0
+    base = ["report", "--input", str(path)]
+    assert main([*base, "--period", "month", "--json"]) == 0
     data = json.loads(capsys.readouterr().out)
     assert data["click_matrix"]["direct_share_high"] is True  # 12 of 21
-    assert main(["report", "--input", str(path)]) == 0
+    assert data["release"]["period"] == "month"
+    assert main([*base, "--period", "month"]) == 0
     out = capsys.readouterr().out
-    assert "no source label (direct)" in out
+    assert "no source label (direct)" in out and "Released period" in out
     out_dir = tmp_path / "csv"
-    assert main(["report", "--input", str(path), "--csv", str(out_dir)]) == 0
+    assert main([*base, "--period", "month", "--csv", str(out_dir)]) == 0
+    capsys.readouterr()
     assert (out_dir / "click_matrix.csv").exists()
     assert oct((out_dir / "click_matrix.csv").stat().st_mode & 0o777) == "0o600"
+    meta = dict(csv.reader(io.StringIO((out_dir / "metadata.csv").read_text())))
+    assert meta["period"] == "month"
+    assert meta["period_start_utc"] == last[:8] + "01"
+    assert (
+        meta["period_end_utc"] == (today.replace(day=1) - timedelta(days=1)).isoformat()
+    )
+
+
+def test_cli_refuses_a_free_window_with_a_period(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    path = write(tmp_path, {"click_src_daily": src_rows({"twitch": {"a": 9}})})
+    for extra in (["--since", DAY], ["--until", DAY], ["--days", "5"]):
+        code = main(["report", "--input", str(path), "--period", "week", *extra])
+        err = capsys.readouterr().err
+        assert code == 2 and "fixed calendar week or month" in err
+    assert main(["report", "--input", str(path), "--offset", "2"]) == 2
+    capsys.readouterr()
+    # Without a period the free window still works for the aggregate sections.
+    assert main(["report", "--input", str(path), "--since", DAY, "--json"]) == 0
+    assert (
+        json.loads(capsys.readouterr().out)["click_matrix"]["state"]
+        == "period_required"
+    )
 
 
 # ---- export loader ---------------------------------------------------------
