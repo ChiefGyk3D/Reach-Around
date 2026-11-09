@@ -1,15 +1,19 @@
 {# SPDX-License-Identifier: Apache-2.0 #}
 {% import "_frames.html" as frames %}
-{% macro numbers(kit, heading_id, framed=false) %}
+{% macro numbers(kit, heading_id, framed=false, zones=none) %}
 {% if kit.metrics %}
 <section class="kit-numbers" aria-labelledby="{{ heading_id }}">
 <h3 id="{{ heading_id }}">Audience numbers</h3>
 {% if kit.live_since %}
-<p class="kit-note kit-live-since"><time datetime="{{ kit.live_since.iso }}">{{ kit.live_since.text }}</time></p>
+<p class="kit-note kit-live-since"><time datetime="{{ kit.live_since.iso }}">{{ kit.live_since.text }}</time>{% if zones %}<span class="kit-note kit-zone-note" data-zone-start="{{ kit.live_since.start }}"></span>{% endif %}</p>
+{% endif %}
+{% if zones %}
+<p class="kit-note kit-zone-fixed">Dates here are UTC days.</p>
+<p class="kit-zone" data-zone-control hidden><label for="kit-zone">Also show when each UTC day begins in</label> <select id="kit-zone" data-zone-select>{% for zone in zones %}<option value="{{ zone }}">{{ zone }}</option>{% endfor %}</select></p>
 {% endif %}
 {% if kit.total %}
 <p class="kit-total{% if framed %}{{ frames.cls("stat") }}{% endif %}"><span class="kit-total-label">Combined audience</span> <strong class="kit-total-value">{{ kit.total.value }}</strong></p>
-<p class="kit-note">Added up from {{ kit.total.counted }} {{ "number" if kit.total.counted == 1 else "numbers" }}{% if kit.total.oldest %}; the oldest is dated {{ kit.total.oldest }}{% endif %}. People who follow on more than one platform are counted more than once.</p>
+<p class="kit-note">Added up from {{ kit.total.counted }} {{ "number" if kit.total.counted == 1 else "numbers" }}{% if kit.total.oldest %}; the oldest is dated {{ kit.total.oldest }} (UTC){% endif %}.{% if kit.total.mixed %} These include numbers from before Reach Around and numbers from after it.{% endif %} People who follow on more than one platform are counted more than once.</p>
 {% endif %}
 <table class="kit-table">
 <caption class="sr-only">Audience numbers by platform, each with the date it was read</caption>
@@ -18,7 +22,7 @@
 </thead>
 <tbody>
 {% for row in kit.metrics %}
-<tr><th scope="row">{{ row.platform or row.label }}</th><td>{{ row.label if row.platform else "" }}</td><td class="kit-figure">{{ row.value }}</td><td><time datetime="{{ row.as_of }}">{{ row.as_of }}</time>{% if row.stale %} (out of date){% endif %}</td></tr>
+<tr><th scope="row">{{ row.platform or row.label }}</th><td>{{ row.label if row.platform else "" }}</td><td class="kit-figure">{{ row.value }}</td><td><time datetime="{{ row.as_of }}">{{ row.as_of }}</time> UTC{% if row.era %} <span class="kit-era">{{ row.era }}</span>{% endif %}{% if row.stale %} (out of date){% endif %}{% if zones and row.as_of %}<span class="kit-note kit-zone-note" data-zone-start="{{ row.as_of }}T00:00:00Z"></span>{% endif %}</td></tr>
 {% endfor %}
 </tbody>
 </table>
