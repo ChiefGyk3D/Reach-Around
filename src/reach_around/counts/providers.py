@@ -31,6 +31,13 @@ from reach_around.counts.meta_user import (
     follower_total,
     token_configured,
 )
+from reach_around.counts.twitch_user import (
+    TokenSink,
+    TwitchUserError,
+    check_names,
+    followers_with_user_token,
+    user_token_configured,
+)
 from reach_around.net.egress import EgressBlocked, validate_hostname
 from reach_around.net.fetch import FetchError
 
@@ -62,6 +69,7 @@ class SourceError(Exception):
 class Context:
     fetch: Fetch
     env: Mapping[str, str]
+    token_sink: TokenSink | None = None
     meta_sink: MetaTokenSink | None = None
     today: date | None = None
 
@@ -218,6 +226,22 @@ def youtube(source: YoutubeSource, ctx: Context) -> int:
 
 
 def twitch(source: TwitchSource, ctx: Context) -> int:
+    try:
+        use_user_token = user_token_configured(source, ctx.env)
+    except TwitchUserError as err:
+        raise SourceError(err.kind) from None
+    if use_user_token:
+        try:
+            total = followers_with_user_token(
+                source, ctx.env, ctx.fetch, ctx.token_sink
+            )
+        except TwitchUserError as err:
+            raise SourceError(err.kind) from None
+        return _check_count(total)
+    try:
+        check_names(source)
+    except TwitchUserError as err:
+        raise SourceError(err.kind) from None
     client_id = _secret(ctx.env, source.client_id_env)
     client_secret = _secret(ctx.env, source.client_secret_env)
     form = urlencode(

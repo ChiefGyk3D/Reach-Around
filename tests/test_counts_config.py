@@ -121,21 +121,21 @@ BAD = [
     ),
     (
         (
-            "- {platform: x, kind: twitch, login: a, client_id_env: A_B, "
-            "client_secret_env: C_D}"
+            "- {platform: x, kind: twitch, login: a, client_id_env: TWITCH_A, "
+            "client_secret_env: TWITCH_C}"
         ),
         "login",
     ),
     (
         (
-            "- {platform: x, kind: twitch, login: some_user, client_id_env: SAME, "
-            "client_secret_env: SAME}"
+            "- {platform: x, kind: twitch, login: some_user, "
+            "client_id_env: TWITCH_SAME, client_secret_env: TWITCH_SAME}"
         ),
-        "differ",
+        "Input should be",
     ),
     (
         (
-            "- {platform: x, kind: twitch, login: some_user, client_id_env: A_B, "
+            "- {platform: x, kind: twitch, login: some_user, client_id_env: TWITCH_A, "
             "client_secret: shh}"
         ),
         "client_secret",
