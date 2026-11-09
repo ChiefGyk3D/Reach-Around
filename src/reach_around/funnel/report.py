@@ -104,6 +104,71 @@ def _in_window(day: str, since: str | None, until: str | None) -> bool:
     return (since is None or day >= since) and (until is None or day <= until)
 
 
+MAX_DAILY_DAYS = 366
+
+
+def _calendar(since: str | None, until: str | None) -> list[str]:
+    """Every UTC day from ``since`` to ``until``, capped at a year."""
+    if since is None or until is None:
+        return []
+    first, last = date.fromisoformat(since), date.fromisoformat(until)
+    count = min((last - first).days + 1, MAX_DAILY_DAYS)
+    return [(first + timedelta(days=n)).isoformat() for n in range(max(count, 0))]
+
+
+def _daily_series(
+    by_day: Mapping[str, int], present: bool, floor: int
+) -> tuple[str, dict[str, int | None]]:
+    """One floored series: (state, day -> printable count or None).
+
+    A day under the floor prints nothing. When any day is under the floor the
+    smallest printed day is hidden too (the rule of ``_suppress``), so the hidden
+    days together reach the floor and the printed total minus the printed days
+    cannot isolate one small day. When no day can join them the series is
+    withheld whole.
+    """
+    if not present:
+        return "not_in_export", {}
+    cells = {d: n for d, n in by_day.items() if n > 0}
+    result = floor_cells(cells, floor)
+    if result.dropped:
+        return "withheld", {d: None for d in cells}
+    printed = dict(result.shown)
+    return "ok", {d: printed.get(d) if d in printed else None for d in cells}
+
+
+def _daily_section(
+    days: list[str],
+    seen: set[str],
+    views_by_day: Mapping[str, int],
+    clicks_by_day: Mapping[str, int],
+    present: Mapping[str, bool],
+    floor: int,
+) -> dict[str, Any]:
+    v_state, v_cells = _daily_series(views_by_day, present["views"], floor)
+    c_state, c_cells = _daily_series(clicks_by_day, present["clicks"], floor)
+    rows = []
+    for day in days:
+        if day not in seen:
+            # no rows for this day in any exported table: a gap, never a zero
+            rows.append({"day": day, "gap": True, "views": None, "clicks": None})
+            continue
+        rows.append(
+            {
+                "day": day,
+                "gap": False,
+                "views": v_cells.get(day, 0) if v_state == "ok" else None,
+                "clicks": c_cells.get(day, 0) if c_state == "ok" else None,
+            }
+        )
+    return {
+        "timezone": "UTC",
+        "views_state": v_state,
+        "clicks_state": c_state,
+        "days": rows,
+    }
+
+
 def _withhold_views(report: dict[str, Any]) -> None:
     """Withhold every figure derived from the page-view population.
 
@@ -125,6 +190,12 @@ def _withhold_views(report: dict[str, Any]) -> None:
             )
     bots = report["bots"]
     bots.update(classes=[], other_below_floor=0, total_views=None, views_withheld=True)
+    daily = report["daily"]
+    if daily["views_state"] != "not_in_export":
+        daily["views_state"] = "withheld"
+        for row in daily["days"]:
+            row["views"] = None
+    report["previous"]["page_views"] = None
 
 
 def _section(
@@ -712,6 +783,40 @@ def _build_report(
     def window(rows: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
         return [r for r in rows if _in_window(r["day"], since, until)]
 
+    # The previous window of the same length, for the overview tiles. Totals
+    # only, each floored on its own like the current ones.
+    previous: dict[str, Any] = {
+        "since": None,
+        "until": None,
+        "page_views": None,
+        "clicks": None,
+    }
+    if since is not None and until is not None:
+        length = (date.fromisoformat(until) - date.fromisoformat(since)).days + 1
+        prev_until = date.fromisoformat(since) - timedelta(days=1)
+        prev_since = prev_until - timedelta(days=length - 1)
+        p_since, p_until = prev_since.isoformat(), prev_until.isoformat()
+        previous.update(since=p_since, until=p_until)
+        prev_views = [r for r in view_rows if _in_window(r["day"], p_since, p_until)]
+        prev_clicks = [r for r in click_rows if _in_window(r["day"], p_since, p_until)]
+        prev_seen = (
+            prev_views
+            or prev_clicks
+            or [
+                r
+                for r in (*dim_rows, *geo_rows, *kit_rows)
+                if _in_window(r["day"], p_since, p_until)
+            ]
+        )
+        if prev_seen:
+            if "view_daily" in export.present:
+                human_prev = sum(
+                    r["views"] for r in prev_views if r["bot_class"] == "h"
+                )
+                previous["page_views"] = _count(human_prev, floor)
+            if "click_events" in export.present:
+                previous["clicks"] = _count(len(prev_clicks), floor)
+
     view_rows, dim_rows, geo_rows = (
         window(view_rows),
         window(dim_rows),
@@ -762,6 +867,14 @@ def _build_report(
     kit: dict[str, int] = defaultdict(int)
     for r in kit_rows:
         kit[r["kind"]] += 1
+
+    daily_views: dict[str, int] = defaultdict(int)
+    for r in view_rows:
+        if r["bot_class"] == "h":
+            daily_views[r["day"]] += r["views"]
+    daily_clicks: dict[str, int] = defaultdict(int)
+    for r in click_rows:
+        daily_clicks[r["day"]] += 1
 
     human = by_class["h"]
     missing = [
@@ -917,6 +1030,23 @@ def _build_report(
         },
         "click_matrix": matrix,
         "click_countries": countries,
+        "daily": _daily_section(
+            _calendar(since, until)
+            if since and until
+            else _calendar(
+                seen_days[0] if seen_days else None,
+                seen_days[-1] if seen_days else None,
+            ),
+            set(seen_days),
+            daily_views,
+            daily_clicks,
+            {
+                "views": "view_daily" in export.present,
+                "clicks": "click_events" in export.present,
+            },
+            floor,
+        ),
+        "previous": previous,
         **{
             name: _section(cuts[name], floor, top, "view_dim_daily" in export.present)
             for name in DEVICE_SECTIONS
@@ -1126,6 +1256,40 @@ def _funnel_sections(report: dict[str, Any], lines: list[str]) -> None:
     )
 
 
+def _daily_text(report: dict[str, Any], lines: list[str]) -> None:
+    """Day, views, clicks, click rate for each UTC day; a gap is not a zero."""
+    daily = report["daily"]
+    prev = report["previous"]
+    lines.append("")
+    lines.append("Daily (UTC days; gap = no rows exported, never zero)")
+    if prev["since"]:
+        lines.append(
+            f"  Previous window {prev['since']} to {prev['until']}: page views "
+            f"{_fmt(prev['page_views'], 'n/a')}, clicks {_fmt(prev['clicks'], 'n/a')}"
+        )
+    if not daily["days"]:
+        lines.append("  no days in this window")
+        return
+    rows: list[list[str]] = []
+    for d in daily["days"]:
+        if d["gap"]:
+            rows.append([d["day"], "gap", "gap", "gap"])
+            continue
+        views, clicks = d["views"], d["clicks"]
+        per = _ratio(clicks, views)
+        rate = (
+            "n/a"
+            if per is None
+            else f"{min(per, 100.0)}" + (" (capped)" if per > 100 else "")
+        )
+        rows.append([d["day"], _fmt(views, "<floor"), _fmt(clicks, "<floor"), rate])
+    _grid(["day", "views", "clicks", "rate"], rows, lines)
+    lines.append(
+        "  rate = clicks per 100 page views of the day, capped at 100; <floor = "
+        "under the privacy floor"
+    )
+
+
 def render_text(report: dict[str, Any]) -> str:
     period = report["period"]
     funnel = report["funnel"]
@@ -1200,6 +1364,8 @@ def render_text(report: dict[str, Any]) -> str:
         "  Clicks are counts, not people; a click's source is the label on the "
         "link it came in on."
     )
+
+    _daily_text(report, lines)
 
     classes = ", ".join(report["counted_classes"])
     _table(f"Pages (classes: {classes})", report["pages"], lines)

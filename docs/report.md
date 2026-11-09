@@ -369,3 +369,48 @@ the visitor came in on, and no click is tied to a view or to a person. A high
 Not part of this change: grouping destinations by platform, the landing and hop
 tables (#334), device and hour-by-weekday pairs (#410), and a marker for
 windows that span the cutover (#371).
+
+## Owner report page (`--html`)
+
+```text
+reach-around report --input export.json --days 7 --html owner.html --csv out/csv
+```
+
+`--html FILE` writes the owner report as ONE self-contained HTML file: inline
+CSS and inline SVG, no script, no font, no image, no external request, and a
+content security policy that blocks any. It is dark only, static, and for you
+alone (file mode 0600): never publish it and never add it to a site build.
+Without `--since`, `--until`, `--days` or `--period`, `--html` covers the last 7
+days of data; use `--days 30`, `--days 90` or an explicit UTC range for others.
+
+The page is rendered from the same floored report dictionary as the text, JSON
+and CSV output (`reach_around.funnel.owner.owner_view`), never from the export,
+so it shows no figure the floored JSON does not hold. Sections: overview tiles
+(views, clicks, click rate, each with the change against the previous window of
+the same length when both figures are printable), a daily views and clicks chart
+and a daily click rate chart (UTC days), the daily table, clicks per link,
+sources, devices, browsers, operating systems, countries, and the released
+clicks by source and country with the source by link and country by link
+tables when `--period` was used. The matching CSV files are `owner_tiles.csv`,
+`owner_daily.csv`, `owner_links.csv`, `owner_sources.csv`, `owner_devices.csv`,
+`owner_countries.csv`, `owner_clicks_by_source.csv` and
+`owner_clicks_by_country.csv`; Grafana can read the same data.
+
+Rules the page follows:
+
+- **Click rate** is clicks divided by likely-human page views in the same window,
+  printed only when both counts are printable. A value above 100 is shown as 100
+  and labeled "capped" with the raw counts beside it. The per-link figure is
+  clicks per 100 views of the page, because a link has no views of its own.
+- **Gaps are not zeros.** A UTC day with no exported rows is drawn as a gap. A day
+  under the floor is drawn as a tick on the baseline and left out of the rate
+  chart. When any day is under the floor the largest printed day is hidden too,
+  so the printed total minus the printed days pins no small day; when no day can
+  join them the series is withheld.
+- The chart axes print only 0 and the largest printed value.
+
+Not in this version (issue #438 stays open for them): the world map shaded by
+views, the Links and Social icons tabs and pagination (the page shows `--top`
+rows), and click rate by source, device and country (these need clicks and
+views for the same cut; the released clicks by source and country are shown
+beside the views tables instead).
