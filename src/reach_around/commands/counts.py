@@ -20,6 +20,7 @@ import sys
 import time
 from collections.abc import Callable, Mapping
 from datetime import UTC, date, datetime
+from functools import partial
 from pathlib import Path
 
 from reach_around.config import ConfigError, SiteConfig, load_site_config
@@ -51,8 +52,10 @@ from reach_around.counts.importer import (
     merge,
     parse_import,
 )
+from reach_around.counts.insights import Figure, InsightFailure, collect
 from reach_around.counts.refresh import (
     SUSPECT_KINDS,
+    Outcome,
     Source,
     host_of,
     load_status,
@@ -61,6 +64,7 @@ from reach_around.counts.refresh import (
     select,
 )
 from reach_around.net.egress import Transport
+from reach_around.net.fetch import fetch_json
 
 # What each kind of source counts, as named in the history file.
 HISTORY_METRIC = {"youtube": "subscribers", "discord": "members", "matrix": "members"}
@@ -152,6 +156,26 @@ def _write_failed(exc: Exception) -> None:
     print(f"error: cannot write the result files: {reason}", file=sys.stderr)
 
 
+def _insights(
+    sources: list[Source],
+    outcomes: list[Outcome],
+    environment: Mapping[str, str],
+    transport: Transport | None,
+    moment: datetime,
+    history: Path | None,
+) -> tuple[list[Figure], list[InsightFailure]]:
+    """Opt-in views and engagement numbers; only stored in the history file."""
+    if history is None:
+        return [], []
+    fetch = partial(
+        fetch_json,
+        transport=transport if transport is not None else default_transport(),
+        sleep=default_sleep,
+    )
+    ok = frozenset(o.platform for o in outcomes if o.status == "ok")
+    return collect(list(sources), ok, environment, fetch, moment)
+
+
 def _cycle(
     paths: Paths,
     sources: list[Source],
@@ -196,6 +220,11 @@ def _cycle(
     # leave new numbers with no record of the run. If the numbers write fails, the
     # status is rewritten with ``committed: false`` (best effort) and the exit is 1.
     changed = any(outcome.status == "ok" for outcome in outcomes)
+    figures, insight_failures = _insights(
+        sources, outcomes, environment, transport, now(), history
+    )
+    for failure in insight_failures:
+        print(f"{failure.platform}: insights error ({failure.word})", file=sys.stderr)
     if history is not None and changed:
         # History goes first: if it cannot be written, the status and numbers
         # files are left exactly as they were. Only values that were fetched and
@@ -214,6 +243,17 @@ def _cycle(
             )
             for outcome in outcomes
             if outcome.status == "ok" and outcome.count is not None
+        ] + [
+            Record(
+                platform=figure.platform,
+                metric=figure.metric,
+                value=figure.value,
+                as_of_utc=utc_stamp(stamp),
+                source="api",
+                run_id=run_id,
+                note=figure.note,
+            )
+            for figure in figures
         ]
         try:
             kept = append_records(history, fetched, now=stamp, skip_days=True)
@@ -246,7 +286,9 @@ def _cycle(
                 pass  # the numbers file is untouched either way
             _write_failed(exc)
             return EXIT_WRITE
-    failed = any(outcome.status == "error" for outcome in outcomes)
+    failed = any(outcome.status == "error" for outcome in outcomes) or bool(
+        insight_failures
+    )
     return EXIT_SOURCE_FAILED if failed else EXIT_OK
 
 
