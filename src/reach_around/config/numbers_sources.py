@@ -9,7 +9,7 @@ store); the variable name is validated, the value is read only at fetch time.
 from __future__ import annotations
 
 import re
-from datetime import date
+from datetime import UTC, date, datetime, timedelta
 from typing import Annotated, Literal
 
 from pydantic import (
@@ -193,6 +193,15 @@ class _MetaSource(_Source):
         if isinstance(value, str) and _ISO_DAY.match(value):
             return value
         raise ValueError("token_expires must be a date written YYYY-MM-DD")
+
+    @field_validator("token_expires")
+    @classmethod
+    def _expires_plausible(cls, value: date | None) -> date | None:
+        # Long-lived tokens last about 60 days; a day far ahead would silence
+        # every reminder.
+        if value is not None and value > datetime.now(UTC).date() + timedelta(days=120):
+            raise ValueError("token_expires is more than 120 days from today")
+        return value
 
 
 class InstagramSource(_MetaSource):

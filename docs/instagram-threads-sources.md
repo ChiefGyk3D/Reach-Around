@@ -27,7 +27,7 @@ numbers:
   sources:
     - platform: instagram
       kind: instagram
-      token_expires: 2027-01-08      # optional, non-secret, see the routine below
+      token_expires: 2027-01-08      # optional, non-secret, at most 120 days ahead
       refresh_within_days: 10        # optional, 1 to 59, default 10
       # auto_refresh: false          # optional, see the routine below; leave off
     - platform: threads
@@ -86,7 +86,11 @@ a platform with a configured source is treated as fed by the API.
 - INFERRED: that an `Authorization` header is accepted instead of the query
   parameter. Neither vendor page says so, so the token travels in the query
   string, as in the vendor examples. The fetch layer never puts a URL, header or
-  response body into an error, status file or log line. Each request is checked
+  response body into an error, status file or log line, and any other exception
+  from the fetch layer is replaced by the fixed word `fetch_failed` before it
+  leaves the collector. Header support is unverified; the owner can test by hand
+  whether an `Authorization: Bearer` header works on a harmless call, and only
+  then would the collector be switched to it. Each request is checked
   to be plain https to exactly the one host, no redirect is followed, and a 10
   second limit and a 64 KiB response cap apply.
 - INFERRED: the response content type (`text/javascript` is accepted for these
@@ -144,6 +148,17 @@ asking for a new token it cannot keep would only lose it.
    one-time authorization.
 5. Without `token_expires`, no reminder is possible. Record it.
 
+Checks at run time, whatever way the settings were built: `auto_refresh` must be
+a real boolean (only `true` counts), `refresh_within_days` a whole number from 1
+to 59, `token_expires` a date, else the source fails with `bad_source_setting`
+and makes no request. A `token_expires` more than 120 days ahead is refused when
+the config loads; one more than 120 days away in either direction at run time
+prints `kind=expiry_implausible` with the days. A refresh answer must carry a
+plausible long-lived `expires_in` (7 to 120 days), else it counts as refused; the
+new expiry day is computed in UTC. If the sink cannot keep a new token, the
+original token stays in use for that run and the run prints
+`kind=refresh_store_failed`; the new token is dropped, never used unstored.
+
 `auto_refresh: true` exists for a future secret-storing sink. It is refused with
 `refresh_sink_required` unless the calling code supplies a sink, and the shipped
 command supplies none, so leave it off. The `token-health:` lines carry only the
@@ -151,7 +166,7 @@ source slug, a fixed kind, the variable NAME and the days left: the shape the
 token health work (#390) consumes.
 
 Failure words in `numbers.status.json`: `token_not_set` (skipped),
-`token_expired`, `token_rejected`, `refresh_sink_required`, `bad_credential_name`, `missing_credential`, `invalid_credential`,
+`token_expired`, `token_rejected`, `refresh_sink_required`, `bad_source_setting`, `fetch_failed`, `bad_credential_name`, `missing_credential`, `invalid_credential`,
 `missing_field`, `bad_count`, `bad_json`, `too_large`, `content_type`,
 `rate_limited`, `server_error`, `redirect`, `http_<status>`.
 

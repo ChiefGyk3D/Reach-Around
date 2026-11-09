@@ -473,6 +473,9 @@ def test_refresh_refused_keeps_going_with_the_old_token(status: int) -> None:
         {"access_token": NEW_TOKEN, "expires_in": -5},
         {"access_token": NEW_TOKEN, "expires_in": 1.5},
         {"access_token": NEW_TOKEN, "expires_in": 10**12},
+        {"access_token": NEW_TOKEN, "expires_in": 1},
+        {"access_token": NEW_TOKEN, "expires_in": 7 * 86_400 - 1},
+        {"access_token": NEW_TOKEN, "expires_in": 120 * 86_400 + 1},
         {"access_token": 5, "expires_in": 5184000},
     ],
 )
@@ -506,11 +509,14 @@ def test_expired_recorded_day_stops_before_any_call() -> None:
     assert [a.kind for a in sink.alerts] == ["token_expired"]
 
 
-def test_a_failing_sink_does_not_lose_the_number() -> None:
+def test_a_failing_sink_keeps_the_original_token_and_says_so() -> None:
     sink = Sink(fail=True)
     source = ig(auto_refresh=True, token_expires=TODAY.isoformat())
-    assert run(source, FakeTransport(routes_ig()), sink=sink) == 1234
-    assert [a.kind for a in sink.alerts] == ["rotated_unstored"]
+    transport = FakeTransport(routes_ig())
+    assert run(source, transport, sink=sink) == 1234
+    assert [a.kind for a in sink.alerts] == ["refresh_store_failed"]
+    assert token_of(transport.urls[-1]) == TOKEN  # the unstored token is not used
+    assert NEW_TOKEN not in repr(sink.alerts)
 
 
 def test_health_alert_line_shape() -> None:
@@ -767,3 +773,127 @@ def test_auto_refresh_is_refused_without_a_caller_supplied_sink() -> None:
 
 def test_auto_refresh_defaults_off() -> None:
     assert ig().auto_refresh is False and th().auto_refresh is False
+
+
+# ---- round 2 hardening ----
+
+
+def test_expires_in_bounds_and_utc_expiry_day() -> None:
+    for seconds, expected in ((7 * 86_400, 7), (120 * 86_400, 120)):
+        sink = Sink()
+        source = ig(auto_refresh=True, token_expires=TODAY.isoformat())
+        body = dict(REFRESH_BODY, expires_in=seconds)
+        run(source, FakeTransport(routes_ig(**{IG_REFRESH: reply(body)})), sink=sink)
+        assert sink.stored[0][3] == TODAY + timedelta(days=expected)
+
+
+class Boom:
+    """A fetch that raises with the URL in its message and records the URL."""
+
+    def __init__(self) -> None:
+        self.urls: list[str] = []
+
+    def __call__(self, url: str, **kwargs: Any) -> dict[str, object]:
+        self.urls.append(url)
+        raise RuntimeError(url)
+
+
+def no_url_in_chain(exc: BaseException | None) -> bool:
+    """No exception in the cause or context chain is the fake's RuntimeError."""
+    while exc is not None:
+        if isinstance(exc, RuntimeError):
+            return False
+        if exc.__cause__ is None and exc.__context__ is None:
+            return True
+        exc = exc.__cause__ or exc.__context__
+    return True
+
+
+def test_an_unexpected_fetch_exception_becomes_a_fixed_word() -> None:
+    sink = Sink()
+    boom = Boom()
+    source = ig(auto_refresh=True, token_expires=in_days(1))
+    context = Context(fetch=boom, env=ENV, meta_sink=sink, today=TODAY)
+    with pytest.raises(SourceError) as caught:
+        PROVIDERS["instagram"](source, context)
+    err = caught.value
+    assert err.kind == "fetch_failed" and str(err) == "fetch_failed"
+    assert no_url_in_chain(err)
+    assert TOKEN in boom.urls[0]  # the fake did get the URL; nothing came back
+    text = repr(err) + repr(sink.alerts) + str(err.args)
+    assert TOKEN not in text and "graph.instagram.com" not in text
+    assert [a.kind for a in sink.alerts] == ["refresh_refused"]
+
+
+def test_an_unexpected_exception_on_the_count_call_is_fixed_too() -> None:
+    boom = Boom()
+    context = Context(fetch=boom, env=ENV, today=TODAY)
+    with pytest.raises(SourceError) as caught:
+        PROVIDERS["threads"](th(), context)
+    assert str(caught.value) == "fetch_failed"
+    assert no_url_in_chain(caught.value)
+
+
+def test_copy_with_a_string_false_does_not_refresh() -> None:
+    source = ig(token_expires=in_days(1)).model_copy(update={"auto_refresh": "false"})
+    transport = FakeTransport(routes_ig())
+    assert fails(source, transport, sink=Sink()) == "bad_source_setting"
+    assert transport.calls == []
+
+
+def test_model_construct_does_not_refresh() -> None:
+    source = InstagramSource.model_construct(
+        platform="instagram",
+        kind="instagram",
+        token_expires=TODAY,
+        refresh_within_days="10",
+        auto_refresh=1,
+    )
+    transport = FakeTransport(routes_ig())
+    assert fails(source, transport, sink=Sink()) == "bad_source_setting"
+    assert transport.calls == []
+    wild = ig().model_copy(update={"refresh_within_days": 9999})
+    assert fails(wild, transport, sink=Sink()) == "bad_source_setting"
+    odd_day = th().model_copy(update={"user_id": "12/../x"})
+    assert fails(odd_day, transport, sink=Sink()) == "bad_source_setting"
+    assert transport.calls == []
+
+
+def test_far_future_expiry_is_refused_at_config_load() -> None:
+    from datetime import UTC, datetime
+
+    now = datetime.now(UTC).date()
+    ig(token_expires=(now + timedelta(days=120)).isoformat())
+    for bad in ("9999-12-31", (now + timedelta(days=121)).isoformat()):
+        with pytest.raises(ValueError):
+            ig(token_expires=bad)
+
+
+@pytest.mark.parametrize("days", [200, -200])
+def test_implausible_expiry_is_reported_at_use_time(days: int) -> None:
+    sink = Sink()
+    source = ig().model_copy(update={"token_expires": TODAY + timedelta(days=days)})
+    transport = FakeTransport(routes_ig())
+    try:
+        run(source, transport, sink=sink)
+    except SourceError:
+        pass
+    kinds = [a.kind for a in sink.alerts]
+    assert kinds[0] == "expiry_implausible"
+    assert sink.alerts[0].days_left == days
+
+
+def test_status_and_outcome_hold_only_the_fixed_word() -> None:
+    from reach_around.counts.refresh import refresh, render_status
+
+    boom = Boom()
+    source = ig(token_expires=in_days(1))
+    from datetime import UTC, datetime
+
+    moment = datetime(2026, 11, 9, 12, tzinfo=UTC)
+    _, outcomes = refresh(
+        [source], {}, env=ENV, fetch=boom, now=lambda: moment, meta_sink=Sink()
+    )
+    assert [(o.status, o.detail) for o in outcomes] == [("error", "fetch_failed")]
+    text = render_status({}, outcomes, moment)
+    assert TOKEN not in text and "graph.instagram.com" not in text

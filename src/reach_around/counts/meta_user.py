@@ -53,7 +53,7 @@ from __future__ import annotations
 import sys
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
-from datetime import date, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from typing import Protocol, TextIO
 from urllib.parse import urlencode, urlsplit
 
@@ -67,7 +67,9 @@ THREADS_VERSION = "v1.0"
 MAX_TOKEN_LEN = 512
 MAX_BODY = 65_536
 FETCH_TIMEOUT = 10.0
-MAX_EXPIRES_IN = 400 * 86_400
+MIN_EXPIRES_IN = 7 * 86_400
+MAX_EXPIRES_IN = 120 * 86_400
+MAX_EXPIRY_DAYS = 120
 EXTRA_JSON_TYPES = frozenset({"text/javascript"})
 
 Fetch = Callable[..., dict[str, object]]
@@ -93,12 +95,13 @@ class NewToken:
 class HealthAlert:
     """Content-free token health alert (the shape issue 390 consumes).
 
-    ``kind``: ``refresh_needed`` (inside the refresh window; refresh by hand,
-    ``days_left`` says how long is left), ``refresh_refused`` (too young,
-    expired, revoked or any refusal),
-    ``token_expired`` (the recorded expiry day has passed), ``token_rejected``
-    (the platform refused the token), ``rotated_unstored`` (a new token exists
-    only in memory).
+    ``kind``: ``refresh_store_failed`` (the sink could not keep a new token; the
+    old one is still in use), ``expiry_implausible`` (the recorded expiry day is
+    far in the past or more than 120 days ahead), ``refresh_needed`` (inside the
+    refresh window; refresh by hand, ``days_left`` says how long is left),
+    ``refresh_refused`` (too young, expired, revoked or any refusal),
+    ``token_expired`` (the recorded expiry day has passed) and
+    ``token_rejected`` (the platform refused the token).
     """
 
     source: str
@@ -245,28 +248,42 @@ class _Session:
             {**params, "access_token": self.token}
         )
         check_url(url, self.host)
-        return self.fetch(
-            url,
-            follow_redirects=False,
-            max_bytes=MAX_BODY,
-            timeout=FETCH_TIMEOUT,
-            extra_json_types=EXTRA_JSON_TYPES,
-        )
+        # The token is in the URL (the vendor pages show no header form), so
+        # nothing the fetch layer raises may travel upward: only FetchError, whose
+        # text is a fixed word, passes. Anything else becomes a fixed word,
+        # raised outside the except block so no cause or context keeps the URL.
+        failed = False
+        try:
+            return self.fetch(
+                url,
+                follow_redirects=False,
+                max_bytes=MAX_BODY,
+                timeout=FETCH_TIMEOUT,
+                extra_json_types=EXTRA_JSON_TYPES,
+            )
+        except FetchError:
+            raise
+        except Exception:
+            failed = True
+        if failed:
+            raise MetaError("fetch_failed")
+        raise MetaError("fetch_failed")  # unreachable; keeps the type checker calm
 
     def maybe_refresh(self) -> None:
         s = self.source
         if s.token_expires is None:
             return
         days_left = (s.token_expires - self.today).days
+        if days_left > MAX_EXPIRY_DAYS or days_left < -MAX_EXPIRY_DAYS:
+            self._alert("expiry_implausible", days_left)
         if days_left < 0:
             self._alert("token_expired")
             raise MetaError("token_expired")
         if days_left > s.refresh_within_days:
             return
-        if not s.auto_refresh:
-            # No sink can store a new token, so asking for one would lose it and
-            # invalidate nothing but the owner's time. Report; the owner refreshes
-            # by hand (docs/instagram-threads-sources.md).
+        if s.auto_refresh is not True:
+            # No sink can store a new token, so asking for one would lose it.
+            # Report; the owner refreshes by hand (docs/instagram-threads-sources.md).
             self._alert("refresh_needed", days_left)
             return
         grant = (
@@ -278,19 +295,30 @@ class _Session:
             )  # once per run, never retried here
             new = _token_value(reply.get("access_token"), "missing_field")
             seconds = reply.get("expires_in")
-            if type(seconds) is not int or not 0 < seconds <= MAX_EXPIRES_IN:
+            if type(seconds) is not int or not (
+                MIN_EXPIRES_IN <= seconds <= MAX_EXPIRES_IN
+            ):
                 raise MetaError("missing_field")
         except (FetchError, MetaError):
             # Too young (under 24 hours), expired, revoked, throttled: the old
             # token may still work today, so go on and read the count.
             self._alert("refresh_refused")
             return
-        self.token = new
-        expires_on = self.today + timedelta(seconds=seconds)
+        start = datetime.combine(self.today, time(0), tzinfo=UTC)
+        expires_on = (start + timedelta(seconds=seconds)).date()
+        # Store first. Only a token the sink kept replaces the one in use; a
+        # failed store keeps the original (still valid) token for this run and
+        # drops the new one, so nothing is half-rotated.
+        stored = False
         try:
             self.sink.store(NewToken(new), s.access_token_env, s.platform, expires_on)
-        except Exception:  # a sink failure must not lose this run's number
-            self._alert("rotated_unstored")
+            stored = True
+        except Exception:
+            stored = False
+        if not stored:
+            self._alert("refresh_store_failed")
+            return
+        self.token = new
 
     def read(self, path: str, params: Mapping[str, str]) -> dict[str, object]:
         try:
@@ -302,6 +330,30 @@ class _Session:
             raise
 
 
+def check_source(source: MetaSource) -> None:
+    """Use-time re-check of the settings, whatever way the model was built.
+
+    ``model_copy`` and ``model_construct`` skip validation, so the types and
+    ranges the config enforces are required again here. Fixed word, no value.
+    """
+    if (
+        type(source.auto_refresh) is not bool
+        or type(source.refresh_within_days) is not int
+        or not 1 <= source.refresh_within_days <= 59
+        or (
+            source.token_expires is not None
+            and (type(source.token_expires) is not date)
+        )
+    ):
+        raise MetaError("bad_source_setting")
+    if isinstance(source, ThreadsSource) and source.user_id is not None:
+        uid = source.user_id
+        if not isinstance(uid, str) or not (
+            uid.isascii() and uid.isdigit() and len(uid) <= 24
+        ):
+            raise MetaError("bad_source_setting")
+
+
 def follower_total(
     source: MetaSource,
     env: Mapping[str, str],
@@ -311,7 +363,8 @@ def follower_total(
 ) -> object:
     """The raw followers value; the caller validates it as a count."""
     credential_name(source)
-    if source.auto_refresh and sink is None:
+    check_source(source)
+    if source.auto_refresh is True and sink is None:
         # Automatic refresh only with a sink the caller supplies; the default
         # NoopSink cannot keep a token, so this setting is refused without one.
         raise MetaError("refresh_sink_required")
