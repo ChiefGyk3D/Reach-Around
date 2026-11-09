@@ -10,7 +10,7 @@ from reach_around import __version__
 
 ROOT = Path(__file__).resolve().parents[1]
 # Plain x.y.z, or x.y.z-rc.N for a release candidate (the tag is v plus this string).
-SEMVER = re.compile(r"^\d+\.\d+\.\d+(-rc\.\d+)?$")
+VERSION_PATTERN = re.compile(r"^\d+\.\d+\.\d+(-rc\.\d+)?$")
 
 
 def _pyproject() -> dict[str, Any]:
@@ -19,7 +19,7 @@ def _pyproject() -> dict[str, Any]:
 
 
 def test_version_is_semver_or_release_candidate() -> None:
-    assert SEMVER.match(__version__), __version__
+    assert VERSION_PATTERN.match(__version__), __version__
 
 
 def test_pyproject_reads_the_version_from_the_package() -> None:
@@ -39,7 +39,7 @@ def test_changelog_top_entry_matches_the_version() -> None:
     assert headings[0] == __version__
 
 
-def test_release_candidate_is_pep440_valid() -> None:
-    from packaging.version import Version
-
-    Version(__version__)
+def test_release_candidate_has_a_pep440_form() -> None:
+    # No third-party parser: -rc.N normalizes to rcN, which is PEP 440 (x.y.zrcN).
+    normalized = __version__.replace("-rc.", "rc")
+    assert re.fullmatch(r"\d+\.\d+\.\d+(rc\d+)?", normalized), normalized
