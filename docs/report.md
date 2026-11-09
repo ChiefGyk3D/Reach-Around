@@ -421,9 +421,13 @@ Rules the page follows:
   its week or month (never the first and last day that had rows) and no count of
   days with data, so a day with no rows and a day under the floor look the same in
   the JSON, text, metadata CSV and page window line. The ledger entry binds the
-  complete public projection of the report (every figure and field, before any
-  display zone, cutover label or timestamp), so a repeat of one period whose page
-  views or any section differ is refused, not accepted as a repeat.
+  source inputs and the data-dependent public projection of the report (every
+  count and field the data decides), so a repeat of one period whose page views
+  or any section differ is refused, not accepted as a repeat. The display zone,
+  cutover and era annotations are added after the ledger check: they are not
+  bound and carry no counts or day information. Because the source inputs are
+  bound too, a change to a hidden (below-floor) cell can refuse a repeat that
+  looks identical; this is conservative, not a leak.
 
 Not in this version (issue #438 stays open for them): the world map shaded by
 views, the Links and Social icons tabs and pagination (the page shows `--top`
