@@ -249,6 +249,12 @@
         0,
         1
       ]
+    ],
+    "rowid": [
+      [
+        0,
+        2147483647
+      ]
     ]
   },
   "numeric": {
@@ -262,7 +268,7 @@
     "click_capacity.marked_at": "ms",
     "click_country_daily.clicks": "small",
     "click_country_monthly.clicks": "small",
-    "click_events.id": "small",
+    "click_events.id": "rowid",
     "click_events.ts": "ms",
     "click_month_log.exhausted_days": "small",
     "click_month_log.folded_clicks": "small",
@@ -272,7 +278,7 @@
     "click_src_monthly.clicks": "small",
     "counters.count": "small",
     "d1_migrations.id": "small",
-    "kit_events.id": "small",
+    "kit_events.id": "rowid",
     "kit_events.ts": "ms",
     "kit_meta.value": "ms_or_small",
     "leads.created_ts": "ms",
@@ -289,12 +295,12 @@
     "view_dim_daily.views": "small",
     "view_events.bmajor": "small",
     "view_events.first": "flag",
-    "view_events.id": "small",
+    "view_events.id": "rowid",
     "view_events.ts": "ms",
     "view_geo_daily.uniques": "small",
     "view_geo_daily.views": "small",
     "view_meta.value": "ms_or_small",
-    "view_rollup_log.max_id": "small",
+    "view_rollup_log.max_id": "rowid",
     "view_rollup_log.raw_views": "small",
     "view_rollup_log.rerolls": "small",
     "view_rollup_log.rolled_at": "ms",

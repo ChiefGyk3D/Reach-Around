@@ -83,7 +83,8 @@ fails closed and is visible.
 
 - **Before any schema change**, export the database
   (`wrangler d1 export <database> --remote`) and keep the file somewhere you
-  control. Migrations only go forward; to undo one, ship a new migration.
+  control. The step-by-step backup, the restore drill and the last-resort
+  Time Travel restore are in [backup-restore.md](backup-restore.md). Migrations only go forward; to undo one, ship a new migration.
 - **A bad deploy**: roll the Worker back from its deployments list, or redeploy
   an earlier good commit ([deploy.md](deploy.md), "Rolling back").
 - **Lost or damaged data**: restore from your export into a new database, bind
