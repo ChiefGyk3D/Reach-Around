@@ -50,7 +50,7 @@ SLOT_SIZES: Final[dict[str, str]] = {
 LITE_SLOTS: Final[frozenset[str]] = frozenset(
     {"tile", "ctl", "chip", "tab", "field", "card", "foot", "bar"}
 )
-# Slots with no cream panel of their own (the tab bar is already an amber bar).
+# Slots with no frame fill of their own (the tab bar is already an amber bar).
 BARE_SLOTS: Final[frozenset[str]] = frozenset({"tab"})
 # Slots that ask for the strongest frame the level allows.
 L3_SLOTS: Final[frozenset[str]] = frozenset({"featured", "hero", "cta"})

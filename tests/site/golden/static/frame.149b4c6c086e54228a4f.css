@@ -2,14 +2,15 @@
 /* Border frames (theme.frame). Published and linked only when a frame level is
    on, after site.css and the block stylesheets, so a rule here wins a tie.
 
-   One frame, drawn from the brand's button: an opaque cream panel, heavy
-   stepped graphite brackets split at the middle of each edge, angled end-cap
-   plates, long amber rules and a faint glow under the bottom rule, with ink
-   lettering. The graphite parts are two small packaged SVG files used as a
+   One frame, drawn from the brand's button, as a border only: each element keeps
+   the fill, text color and palette it has without the frame (amber stays
+   amber, dark stays dark), and the frame adds heavy stepped graphite brackets split at the middle of each edge, angled end-cap
+   plates, long amber rules and a faint glow under the bottom rule, with the
+   element's own lettering. The graphite parts are two small packaged SVG files used as a
    nine-slice border image (frame.svg with plates, frame-lite.svg brackets only),
    scaled by the element's height through --ra-fr-s (pixels per original pixel
    of the 318 px tall artwork). The amber parts (rules, dashes, stubs, glow) and
-   the panel are CSS gradients that read the theme accent, so a retheme follows.
+   nothing else are CSS gradients that read the theme accent, so a retheme follows.
    No markup beyond one class per element, no inline style and no embedded image.
 
    Levels: ra-l1 is the lite frame (brackets, rules, stubs), ra-l2 the full frame
@@ -26,17 +27,10 @@
 
 :root {
   --ra-fr-amber: var(--ra-color-accent);
-  --ra-fr-on-amber: var(--ra-color-on-accent);
-  --ra-fr-cream: color-mix(in srgb, var(--ra-color-accent) 18%, white);
-  --ra-fr-cream-hi: color-mix(in srgb, var(--ra-color-accent) 30%, white);
-  --ra-fr-ink: color-mix(in srgb, var(--ra-color-accent) 15%, black);
-  --ra-fr-ink-muted: color-mix(in srgb, var(--ra-fr-ink) 72%, var(--ra-fr-cream));
-  --ra-fr-accent-ink: color-mix(in srgb, var(--ra-color-accent) 45%, black);
 }
 
 body .ra-bx.ra-bx {
   --u: calc(var(--ra-fr-s) * 1px);
-  --ra-fr-panel: var(--ra-fr-cream);
   --ra-fr-a: linear-gradient(var(--ra-fr-amber), var(--ra-fr-amber));
   --ra-fr-ct: var(--ra-fr-amber);
   --ra-fr-c1: var(--ra-fr-amber);
@@ -46,20 +40,6 @@ body .ra-bx.ra-bx {
   --ra-fr-g1: linear-gradient(var(--ra-fr-c1), var(--ra-fr-c1));
   --ra-fr-g2: linear-gradient(var(--ra-fr-c2), var(--ra-fr-c2));
   --ra-fr-gs: linear-gradient(var(--ra-fr-cs), var(--ra-fr-cs));
-  --ra-fr-f: linear-gradient(var(--ra-fr-panel), var(--ra-fr-panel));
-  /* The panel is cream, so everything inside it (including the plain buttons of
-     a framed card) reads the frame palette instead of the theme's: text ink on
-     cream, a dark accent tint for icons and buttons with cream text. This is
-     deliberate and documented, and it is what keeps contrast AA on any accent. */
-  --ra-color-text: var(--ra-fr-ink);
-  --ra-color-muted: var(--ra-fr-ink-muted);
-  --ra-color-surface: var(--ra-fr-cream-hi);
-  --ra-color-raised: color-mix(in srgb, var(--ra-fr-ink) 7%, var(--ra-fr-cream));
-  --ra-color-accent: var(--ra-fr-accent-ink);
-  --ra-color-link: var(--ra-fr-accent-ink);
-  --ra-color-on-accent: var(--ra-fr-cream);
-  --ra-color-accent-soft: color-mix(in srgb, var(--ra-fr-ink) 9%, var(--ra-fr-cream));
-  --ra-color-border: color-mix(in srgb, var(--ra-fr-ink) 35%, var(--ra-fr-cream));
   position: relative;
   isolation: isolate;
   box-sizing: border-box;
@@ -69,25 +49,10 @@ body .ra-bx.ra-bx {
   border: 1px solid transparent;
   border-radius: 0;
   box-shadow: none;
-  color: var(--ra-fr-ink);
-  background-color: transparent;
-  background-origin: border-box;
-  background-clip: border-box;
-  background-repeat: no-repeat;
   border-image-slice: 159 210 fill;
   border-image-width: calc(var(--u) * 159) calc(var(--u) * 210);
   border-image-repeat: stretch;
-  border-image-source: url("frame-lite.7661afacedb46ff5afda.svg");
-  /* panel, then the long rules and stubs seen through the brackets' gaps */
-  background-image: var(--ra-fr-f);
-  background-position: center;
-  background-size: max(0px, calc(100% - var(--u) * 32)) max(0px, calc(100% - var(--u) * 46));
-}
-body .ra-bx.ra-bare {
-  --ra-fr-panel: transparent;
-  --ra-color-accent: var(--ra-fr-amber);
-  --ra-color-on-accent: var(--ra-fr-on-amber);
-  color: var(--ra-fr-on-amber);
+  border-image-source: url("frame-lite.27c3e7a5c0bbdb8debc7.svg");
 }
 body .ra-bx.ra-bx.ra-s1 { --ra-fr-s: 0.11; }
 body .ra-bx.ra-bx.ra-s2 { --ra-fr-s: 0.15; }
@@ -95,19 +60,14 @@ body .ra-bx.ra-bx.ra-s3 { --ra-fr-s: 0.19; }
 body .ra-bx.ra-bx.ra-s4 { --ra-fr-s: 0.24; }
 body .ra-bx.ra-bx.ra-s5 { --ra-fr-s: 0.28; }
 
-/* The panel is the only thing the element itself paints besides the graphite
-   border image; every amber part (rules, dashes, stubs) is in ::before, above
-   the graphite, so it can carry the bloom. */
-body .ra-bx.ra-bx {
-  background-image: var(--ra-fr-f);
-  background-position: center;
-  background-size: max(0px, calc(100% - var(--u) * 32)) max(0px, calc(100% - var(--u) * 46));
-}
+/* The element paints its own fill; the graphite border image sits on top and
+   every amber part (rules, dashes, stubs) is in ::before, above the graphite,
+   so it can carry the bloom. */
 body .ra-l1.ra-bx { padding-inline: calc(var(--u) * 80); }
 body :is(.ra-l2, .ra-l3).ra-bx {
   border-image-slice: 159 500 fill;
   border-image-width: calc(var(--u) * 159) calc(var(--u) * 500);
-  border-image-source: url("frame.8d0d423ffe5691e17dd5.svg");
+  border-image-source: url("frame.7b3272cccad088f8a806.svg");
 }
 
 /* The amber light: long rules, corner dashes, mid-edge stubs and, on the full
@@ -258,11 +218,10 @@ body .ra-l3.ra-bx::before {
   a.link.ra-bx::after { display: none; }
 }
 
-/* Interactive frames: hover brightens the panel; the focus ring is drawn out
-   past the brackets so it is never clipped. */
+/* Interactive frames: hover keeps the element's own hover; the focus ring is
+   drawn out past the brackets so it is never clipped. */
 @media (hover: hover) {
   body a.ra-bx:hover, body button.ra-bx:hover, body summary.ra-bx:hover {
-    --ra-fr-panel: var(--ra-fr-cream-hi);
     filter: none;
     transform: none;
   }
@@ -275,16 +234,11 @@ body .ra-bare:focus-visible { outline-color: var(--ra-color-on-accent); outline-
 
 /* Per-component layout inside a frame. */
 body a.link.ra-bx, body .platform-link.ra-bx { height: auto; }
-body a.link.ra-bx .link-subtitle { color: var(--ra-fr-ink-muted); }
-body .ra-bx .link-chip, body .ra-bx .platform-icon, body .ra-bx .crypto-chip {
-  background-color: color-mix(in srgb, var(--ra-fr-ink) 10%, var(--ra-fr-cream));
-}
 body .ra-bx.ra-head { display: flex; align-items: center; margin: 0 0 var(--ra-space-2); padding-inline: calc(var(--u) * 130); }
 body :is(.crypto-card, .email-card).ra-bx { padding-block: calc(var(--u) * 60); }
 body .kit-table.ra-bx { padding-inline: calc(var(--u) * 40); }
 body .ra-bx.ra-s5 { padding-block: calc(var(--u) * 80); padding-inline: calc(var(--u) * 170); }
 body .ra-bx.ra-bare { padding-inline: calc(var(--u) * 50); }
-body .ra-bare[aria-current="page"] { background-color: var(--ra-color-accent-edge); }
 body main > .ra-bx { margin-inline: var(--ra-gutter); }
 /* The footer and the cookie notice are slim bars, not slabs. */
 body footer.ra-bx {
@@ -320,7 +274,6 @@ body .kit-table.ra-bx {
 }
 body h2.ra-bx, body h3.ra-bx { overflow-wrap: anywhere; }
 body .ra-bx .social-label { border: 0; padding: 0; }
-body .ra-bx .profile-tag { background-color: color-mix(in srgb, var(--ra-fr-ink) 9%, var(--ra-fr-cream)); }
 .section:has(> summary.ra-bx) > .section-subtitle { margin: var(--ra-space-3) 0 0; }
 .section:has(> summary.ra-bx), .tab-section:has(> summary.ra-bx) {
   border: 0; background: none; box-shadow: none;

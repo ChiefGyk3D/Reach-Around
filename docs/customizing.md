@@ -229,11 +229,11 @@ A font on someone else's server is refused. See
 
 An optional look, off by default: `theme.frame` puts one border system on
 every button, card, tab, heading, input and stat tile of the link page and the
-media kit. The frame is drawn from the stream button: an opaque cream panel,
+media kit. The frame is drawn from the stream button: a border only, over the element's own fill:
 heavy stepped graphite brackets that split at the middle of each edge, angled
 end-cap plates with small accent dashes, long accent rules and a faint accent
-bloom of amber light hugging the rules, with ink lettering. The brackets are two small
-packaged SVG files used as a nine-slice `border-image`; the panel, rules,
+bloom of amber light hugging the rules, with the element's own lettering. The brackets are two small
+packaged SVG files used as a nine-slice `border-image`; the rules,
 dashes and glow are CSS gradients that read your accent, so a retheme follows.
 The artwork is scaled by the element's height (the bracket bar is about 6
 percent of it), so a button, a heading banner and the media kit title tile all
@@ -281,14 +281,10 @@ What to know:
   chamfered corners). Unframed elements keep `button_style` and `radius`.
 - Frames never nest. A card that holds buttons (a crypto or email card, the
   profile card) carries the frame itself and its buttons stay unframed, plain
-  buttons that take the frame's palette (a dark tint of your accent with cream
-  text) so they stay readable on the cream panel; a control on its own (a tab, a social button, the media kit submit
+  buttons that keep their own look; a control on its own (a tab, a social button, the media kit submit
   button) carries its own frame.
-- Text on a frame is ink on the cream panel, derived from your accent
-  (a dark tint of it), so it passes contrast on any accent color. There is no
-  amber lettering. On hover the panel brightens. The brackets are the original
-  black-to-graphite artwork with its sheen; on a dark page the amber rules and
-  their bloom outline them.
+- The frame paints no fill and changes no text color: every element keeps the fill and text it has without a frame, so contrast is the same as unframed. There is no
+  amber lettering. The brackets are dark graphite with a light amber outline, so they read on an amber fill and on a dark one; the amber rules and their bloom sit on top.
 - The packaged `static/frame.css` and the two `frame*.svg` files are
   fingerprinted and published only when the feature is on. There is no
   `style` attribute, inline script, data URI, new font or third-party
