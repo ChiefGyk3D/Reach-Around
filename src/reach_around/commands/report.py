@@ -16,7 +16,10 @@ import sys
 from datetime import date
 from pathlib import Path
 
+from reach_around.config.cutover import utc_today
+from reach_around.config.zones import ZONES, check_zone
 from reach_around.funnel.csvout import csv_files, utc_now, write_csv_dir
+from reach_around.funnel.display import annotate
 from reach_around.funnel.export import ExportError, load_exports
 from reach_around.funnel.report import FLOOR, build_report, render_text
 
@@ -57,6 +60,9 @@ def run_report(args: argparse.Namespace) -> int:
             raise ValueError(f"--floor cannot be below {FLOOR}")
         if args.csv is not None and args.json:
             raise ValueError("--csv and --json cannot be combined")
+        zone = None if args.display_zone is None else check_zone(args.display_zone)
+        cutover_text = _day(args.cutover, "--cutover")
+        cutover = date.fromisoformat(cutover_text) if cutover_text else None
         export = load_exports(list(args.input))
         report = build_report(
             export,
@@ -69,6 +75,7 @@ def run_report(args: argparse.Namespace) -> int:
             top=args.top,
             floor=args.floor,
         )
+        annotate(report, zone=zone, cutover=cutover, today=utc_today())
     except (ExportError, ValueError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return EXIT_USAGE
@@ -142,6 +149,20 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
         type=int,
         default=FLOOR,
         help=f"privacy floor in views (default and minimum {FLOOR}); raise only",
+    )
+    parser.add_argument(
+        "--display-zone",
+        metavar="ZONE",
+        help="read instants in this zone as well (one of: "
+        + ", ".join(ZONES)
+        + "). Default: UTC only. Counts stay per UTC day and the CSV and JSON "
+        "keep their UTC fields; a display block is added only when this is given",
+    )
+    parser.add_argument(
+        "--cutover",
+        metavar="YYYY-MM-DD",
+        help="the cutover UTC day; labels the window as before Reach Around, "
+        "after, or spanning it. Nothing is added when unset or still ahead",
     )
     parser.add_argument("--json", action="store_true", help="print JSON, not text")
     parser.add_argument(

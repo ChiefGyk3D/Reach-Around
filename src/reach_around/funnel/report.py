@@ -474,6 +474,18 @@ def render_text(report: dict[str, Any]) -> str:
             f"{period['days_with_data']} days with data"
         )
     lines.append(f"Reach Around report: site {report['site']}, {span}")
+    era = report.get("era")
+    if era:
+        lines.append(
+            f"Cutover: {era['cutover_utc']} UTC; this window is {era['text']}."
+        )
+    display = report.get("display")
+    if display and display["window_start"]:
+        lines.append(
+            f"Display zone {display['zone']}: window runs from "
+            f"{display['window_start']} "
+            f"to {display['window_end_exclusive']} (end excluded). {display['note']}"
+        )
     lines.append(
         f"Privacy floor: no row under {floor} views is shown (see docs/report.md)."
     )

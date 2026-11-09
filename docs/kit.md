@@ -71,6 +71,30 @@ has arrived, a small line "Live since 2026-11-08 (UTC)" sits above the numbers
 (on the gated page and in the private PDF too). Without the date, or while it is
 still ahead, there is no line.
 
+**Before and after Reach Around.** Once the cutover day has arrived, every dated
+number on the public kit page, the gated page, the PDF and the link page's
+platform numbers says which side of it the date is on: "before Reach Around" for
+a date earlier than the cutover day, "after" for the cutover day itself and any
+later day. When the combined audience adds numbers from both sides, the note
+under it says so. Unset or still ahead: no extra text and the output is
+unchanged. If the history store (`numbers.history_file`) carries an `era` or
+`note` for a record, that text is the only thing shown for the record, escaped,
+and only where a history value is shown.
+
+**Display zone.** Everything is stored and shown in UTC, and every date on the
+page is labeled UTC. Dates are UTC days: a day cannot be re-bucketed into
+another zone. The public kit page offers an optional "Also show when each UTC
+day begins in" menu with a fixed list of common zones (UTC and 17 others, listed
+in `reach_around.config.zones.ZONES`). Picking one fills a short note beside each
+date ("that UTC day begins Nov 7, 2026, 4:00 PM PST") and puts `#tz=Zone` in the
+address, so a link can carry the choice. It uses no cookie and no browser
+storage, makes no request and adds no third-party script. It is one small
+same-origin file, `static/zone.js`, loaded with `defer` and covered by the
+existing CSP (`script-src 'self'`; no change). The menu is hidden until the
+script runs, so with JavaScript off the page is plain UTC. The gated page, the
+retry page and the PDF carry no script and stay UTC.
+There is no setting to turn it on: it is part of the public kit page.
+
 If the kit has gated content, the page explains the gate and shows the form.
 
 ### The gate form
