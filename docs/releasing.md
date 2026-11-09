@@ -22,7 +22,9 @@ run it.
 
 1. Set `__version__` in `src/reach_around/__init__.py`. It is the only place the version
    lives; `pyproject.toml` reads it. Add the matching `## [x.y.z]` section at the top of
-   `CHANGELOG.md`. `tests/test_version.py` fails if they disagree.
+   `CHANGELOG.md`. `tests/test_version.py` fails if they disagree. A release candidate is written
+   `x.y.z-rc.N` (for example `0.3.0-rc.2`), so the tag `v0.3.0-rc.2` equals `v` plus
+   `__version__`; a failed candidate is never retagged, the next number is used.
 2. Merge to `main` and wait for `ci / CI green`.
 3. Tag the merge commit and push the tag (the maintainer does this):
 
