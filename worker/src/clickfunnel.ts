@@ -139,10 +139,10 @@ export async function rollupClickFunnel(env: FunnelRollupEnv, nowMs: number): Pr
       .bind(nowMs, sealBefore),
     db
       .prepare(
-        "SELECT site, m FROM (SELECT site, substr(day, 1, 7) AS m FROM click_src_daily " +
-          "UNION SELECT site, substr(day, 1, 7) FROM click_country_daily) " +
-          "WHERE m < ?1 AND NOT EXISTS (SELECT 1 FROM click_month_log l WHERE l.site = site AND l.month = m) " +
-          "ORDER BY m, site LIMIT 8",
+        "SELECT u.site AS site, u.m AS m FROM (SELECT site, substr(day, 1, 7) AS m FROM click_src_daily " +
+          "UNION SELECT site, substr(day, 1, 7) FROM click_country_daily) u " +
+          "WHERE u.m < ?1 AND NOT EXISTS (SELECT 1 FROM click_month_log l WHERE l.site = u.site AND l.month = u.m) " +
+          "ORDER BY u.m, u.site LIMIT 8",
       )
       .bind(curMonth),
   ]);

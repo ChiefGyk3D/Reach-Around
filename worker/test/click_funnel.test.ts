@@ -80,6 +80,15 @@ describe("the click route increments the marginal counters", () => {
     expect(await q<{ site: string; country: string }>("SELECT site, country FROM click_country_daily")).toEqual([{ site: "nosrc", country: "FR" }]);
   });
 
+  it("the_raw_row_never_holds_a_country_but_the_counter_counts_every_click", async () => {
+    await handleClick(click("?s=instagram", { country: "US" }), env());
+    await handleClick(click("", { country: "US" }), env());
+    await handleClick(click("", { country: "DE" }), env());
+    expect(await q("SELECT 1 FROM click_events WHERE country IS NOT NULL")).toEqual([]);
+    const cc = await q<{ country: string; c: number }>("SELECT country, SUM(clicks) AS c FROM click_country_daily GROUP BY country ORDER BY country");
+    expect(cc).toEqual([{ country: "DE", c: 1 }, { country: "US", c: 2 }]);
+  });
+
   it("an_ignored_click_counts_nothing", async () => {
     await handleClick(new Request("https://worker.example.test/e/c/twitch", { method: "POST", headers: { "User-Agent": "curl/8", "Ping-From": "https://links.example.test/" } }), env());
     await handleClick(click("", { id: "nope" }), env());
@@ -185,6 +194,18 @@ describe("monthly rollup and retention", () => {
     expect(await q("SELECT SUM(clicks) AS c FROM click_src_monthly")).toEqual([{ c: 3 }]);
   });
 
+  it("a_month_logged_for_one_site_does_not_suppress_another_and_nothing_is_rolled_twice", async () => {
+    await count(Date.UTC(2027, 0, 5), "links", "twitch", "instagram", "US");
+    await count(Date.UTC(2027, 0, 6), "nosrc", "twitch", "instagram", "US");
+    await DB.prepare("INSERT INTO click_month_log VALUES ('links','2027-01',1)").run();
+    const now = Date.UTC(2027, 1, 10);
+    expect((await rollupClickFunnel({ DB }, now)).monthsRolled).toBe(1);
+    expect(await q<{ site: string }>("SELECT DISTINCT site FROM click_src_monthly")).toEqual([{ site: "nosrc" }]);
+    expect((await q<{ site: string }>("SELECT site FROM click_month_log ORDER BY site")).map((r) => r.site)).toEqual(["links", "nosrc"]);
+    expect((await rollupClickFunnel({ DB }, now + 3_600_000)).monthsRolled).toBe(0);
+    expect(await q("SELECT clicks FROM click_src_monthly")).toEqual([{ clicks: 1 }]);
+  });
+
   it("a_month_over_its_cap_folds_the_smallest_cells", async () => {
     await DB.batch(
       Array.from({ length: 305 }, (_, i) => DB.prepare("INSERT INTO click_src_daily VALUES ('links','2027-01-05','twitch',?,?)").bind(`s${i}`, 400 - i)),
@@ -232,6 +253,20 @@ describe("monthly rollup and retention", () => {
     expect((await q<{ month: string }>("SELECT month FROM click_src_monthly ORDER BY month")).map((r) => r.month)).toEqual(["2025-01", "2026-12", "2027-01"]);
     expect(await q("SELECT * FROM click_country_monthly")).toEqual([]);
     expect((await q<{ month: string }>("SELECT month FROM click_month_log")).map((r) => r.month)).toEqual(["2025-01"]);
+  });
+});
+
+describe("migration 0012", () => {
+  it("clears_the_country_of_every_existing_raw_click_row", async () => {
+    await DB.batch([
+      DB.prepare("INSERT INTO click_events (ts, link_id, country) VALUES (0, 'a', 'US')"),
+      DB.prepare("INSERT INTO click_events (ts, link_id, src) VALUES (0, 'a', 'instagram')"),
+    ]);
+    const m = testEnv.TEST_MIGRATIONS.find((x) => x.name.startsWith("0012"));
+    expect(m).toBeDefined();
+    for (const sql of m!.queries) await DB.prepare(sql).run();
+    expect(await q("SELECT 1 FROM click_events WHERE country IS NOT NULL")).toEqual([]);
+    expect(await q("SELECT 1 FROM click_events WHERE src = 'instagram'")).toHaveLength(1);
   });
 });
 

@@ -131,7 +131,7 @@ row is a count and closed labels (a link id, a label from the site's fixed list
 or `direct` or `other`, a two-letter country code). Not collected: a cookie, a
 stored identifier, an IP address, a user agent, a referrer address, a timestamp
 finer than a day on these tables, or any link between a click and a page view or
-a person. Source and country are never stored together in one row, and no
+a person. A raw click row carries at most a source label and never a country; country exists only in the counter. Source and country are never stored together, and no
 report prints a three-way cell. Day counts are kept 90 days; the monthly
 totals made from them are kept 25 months. Because nothing identifies a person,
 a deletion request cannot be matched to a counter row; the retention above is

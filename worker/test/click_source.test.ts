@@ -138,13 +138,13 @@ describe("no source-by-country pair", () => {
   const pairs = async () =>
     (await testEnv.DB.prepare("SELECT src, country FROM click_events ORDER BY id").all<{ src: string | null; country: string | null }>()).results;
 
-  it("a_click_with_a_source_keeps_no_country_and_one_without_keeps_it", async () => {
+  it("a_raw_row_never_keeps_a_country_with_or_without_a_source", async () => {
     await handleClick(withCountry("?s=instagram"), env());
     await handleClick(withCountry(""), env());
     await handleClick(withCountry("?s=tiktok"), env());
     expect(await pairs()).toEqual([
       { src: "instagram", country: null },
-      { src: null, country: "DE" },
+      { src: null, country: null },
       { src: "other", country: null },
     ]);
   });

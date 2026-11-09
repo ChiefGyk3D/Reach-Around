@@ -84,10 +84,10 @@ describe("click endpoint", () => {
     expect(typeof r[0].ts).toBe("number");
   });
 
-  it("stores a two-letter country from Cloudflare and nothing like an IP", async () => {
+  it("never writes a country on the raw row (it lives only in the aggregate counter) and stores nothing like an IP", async () => {
     await handleClick(click("/e/c/example-two", { "CF-IPCountry": "DE" }), makeEnv());
     const r = await rows();
-    expect(r[0].country).toBe("DE");
+    expect(r[0].country).toBeNull();
     const cols = await testEnv.DB.prepare("PRAGMA table_info(click_events)").all<{
       name: string;
     }>();

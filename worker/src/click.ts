@@ -208,8 +208,8 @@ export async function handleClick(request: Request, env: Env): Promise<Response>
 
     // 6. Insert: hour-rounded timestamp, link id, optional country and optional
     // closed-set source label only.
-    // A row never holds both a source and a country: no source-by-country pair
-    // is stored (#408). A click with a source keeps no country.
+    // A raw row carries at most a source label, never a country: country lives only
+    // in the aggregate counter below, so the two stores cannot be differenced (#408).
     const now = Date.now();
     const src = clickSource(new URL(request.url), site.sources);
     const country = countryOf(request);
@@ -217,7 +217,7 @@ export async function handleClick(request: Request, env: Env): Promise<Response>
       env.DB.prepare("INSERT INTO click_events (ts, link_id, country, site, src) VALUES (?, ?, ?, ?, ?)").bind(
         now - (now % HOUR_MS),
         linkId,
-        src === null ? country : null,
+        null, // country lives only in the aggregate counter, never on a raw row
         site.id,
         src,
       ),

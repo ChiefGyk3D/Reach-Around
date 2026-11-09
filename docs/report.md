@@ -116,7 +116,7 @@ agent, so a correct export never trips this. If it does, the export is wrong.
 | `view_daily` | `day, page, src_kind, src, country, bot_class, views` [`site, day_tz, uniques`] |
 | `view_dim_daily` | `day, dim, value, bot_class, views` [`site, day_tz, uniques`]; also feeds Devices, Browsers, Systems and the bot reasons |
 | `view_geo_daily` | `day, country, region, city, bot_class, views` [`site, day_tz, uniques`] |
-| `click_events` | `ts, link_id` [`site, country, src`] |
+| `click_events` | `ts, link_id` [`site, src`]; the `country` column is always empty now (country lives only in the click counters), do not rely on it |
 | `click_src_daily`, `click_country_daily` | `day, link_id, src` (or `country`), `clicks` [`site`] |
 | `click_src_monthly`, `click_country_monthly` | `month` (`YYYY-MM`), `link_id, src` (or `country`), `clicks` [`site`] |
 | `kit_events` | `ts, kind` [`site`] |

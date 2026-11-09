@@ -1,0 +1,14 @@
+-- SPDX-License-Identifier: Apache-2.0
+-- Funnel rollups, aggregate only (issues #331 and #409): a raw click row
+-- carries at most a source label, never a country. Country by link lives only in
+-- the aggregate counter click_country_daily (0011), which counts every click.
+--
+-- The Worker now writes NULL country on new rows. This clears the column on ALL
+-- existing raw click rows: the counter is created by 0011 in the same release
+-- and counts from its first day, so keeping an old raw country next to it would
+-- let the two stores for the same day be differenced into attributed versus
+-- unattributed country counts. The country of clicks from before the counter
+-- existed is not kept; that is the cost of the rule.
+--
+-- RULE: apply with the Worker idle, after 0011.
+UPDATE click_events SET country = NULL WHERE country IS NOT NULL;
