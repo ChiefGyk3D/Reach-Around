@@ -9,7 +9,8 @@ from typing import Any
 from reach_around import __version__
 
 ROOT = Path(__file__).resolve().parents[1]
-SEMVER = re.compile(r"^\d+\.\d+\.\d+$")
+# Plain x.y.z, or x.y.z-rc.N for a release candidate (the tag is v plus this string).
+VERSION_PATTERN = re.compile(r"^\d+\.\d+\.\d+(-rc\.\d+)?$")
 
 
 def _pyproject() -> dict[str, Any]:
@@ -17,8 +18,8 @@ def _pyproject() -> dict[str, Any]:
         return tomllib.load(handle)
 
 
-def test_version_is_plain_semver() -> None:
-    assert SEMVER.match(__version__), __version__
+def test_version_is_semver_or_release_candidate() -> None:
+    assert VERSION_PATTERN.match(__version__), __version__
 
 
 def test_pyproject_reads_the_version_from_the_package() -> None:
@@ -33,6 +34,12 @@ def test_pyproject_reads_the_version_from_the_package() -> None:
 
 def test_changelog_top_entry_matches_the_version() -> None:
     text = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
-    headings = re.findall(r"^## \[(\d+\.\d+\.\d+)\]", text, re.MULTILINE)
+    headings = re.findall(r"^## \[(\d+\.\d+\.\d+(?:-rc\.\d+)?)\]", text, re.MULTILINE)
     assert headings, "CHANGELOG.md has no version headings"
     assert headings[0] == __version__
+
+
+def test_release_candidate_has_a_pep440_form() -> None:
+    # No third-party parser: -rc.N normalizes to rcN, which is PEP 440 (x.y.zrcN).
+    normalized = __version__.replace("-rc.", "rc")
+    assert re.fullmatch(r"\d+\.\d+\.\d+(rc\d+)?", normalized), normalized
