@@ -19,6 +19,7 @@ theme:
   fonts:
     body: Georgia, "Times New Roman", serif
   button_style: pill
+  frame: l1
 tabs:
   - id: start
     title: Start

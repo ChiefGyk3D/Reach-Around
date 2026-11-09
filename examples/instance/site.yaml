@@ -46,6 +46,11 @@ theme:
   mascot_position: center bottom
   button_style: square
   radius: 0.25rem
+  # Optional border frames (docs/customizing.md, "Border frames"). l3 is the
+  # strongest level: corner ticks on the link buttons and platform cards, the
+  # simplified frame on the featured link and, on a site with a media kit, the
+  # full frame on the kit title tile. Remove the line for the plain look.
+  frame: l3
 # Optional profile card after the content of every page. Uncomment to try; this
 # changes the built pages, so the golden files change with it. See
 # docs/config.md, "profile_card".

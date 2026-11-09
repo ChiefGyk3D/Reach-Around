@@ -49,6 +49,7 @@ editing the stylesheet.
 | `column_width` | `--ra-column-width` | `35rem` (560 px), the phone column and the floor for wider screens |
 | `radius` | `--ra-radius` | `0.5rem` |
 | `button_style` | `--ra-button-radius` | `2.25rem` (36 px); `pill` and `square` set it |
+| `frame` | none (a build switch) | `none`; `l1` to `l3` load `static/frame.css`, which reads the same tokens and sets `--ra-fr-*` locally |
 | `mode` | `color-scheme` | `auto` is the stylesheet default (dark); `light` forces light |
 
 The default colors are `light-dark()` pairs: the first value is used in light

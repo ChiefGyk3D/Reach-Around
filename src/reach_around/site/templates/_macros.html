@@ -1,6 +1,8 @@
 {# SPDX-License-Identifier: Apache-2.0 #}
+{% import "_frames.html" as frames %}
 {% macro link_anchor(link, track) -%}
-<a class="link{% if link.featured %} link-featured{% endif %}"{% if link.url.startswith('tab:') %} href="{{ tab_href(link.url) }}"{% else %} href="{{ link.url }}"{% if track %} ping="/e/c/{{ link.id }}" data-link-id="{{ link.id }}"{% endif %} rel="{{ 'sponsored noopener noreferrer' if link.affiliate else 'noopener noreferrer' }}"{% endif %}>
+{% set slot = "featured" if link.featured and "featured" in frame_plan else "link" %}
+<a class="link{% if link.featured %} link-featured{% endif %}{{ frames.cls(slot) }}"{% if link.url.startswith('tab:') %} href="{{ tab_href(link.url) }}"{% else %} href="{{ link.url }}"{% if track %} ping="/e/c/{{ link.id }}" data-link-id="{{ link.id }}"{% endif %} rel="{{ 'sponsored noopener noreferrer' if link.affiliate else 'noopener noreferrer' }}"{% endif %}>{{ frames.art(slot) }}
 {% if link.image %}<img class="link-thumb" src="{{ asset_url(link.image, root) }}" alt="{{ link.image_alt }}" width="{{ thumb_px }}" height="{{ thumb_px }}" loading="lazy" decoding="async" referrerpolicy="no-referrer">
 {% elif link.icon and link.icon in icon_slugs %}<span class="link-chip" aria-hidden="true"><span class="icon icon-{{ link.icon }}"></span></span>{% endif %}
 <span class="link-text">

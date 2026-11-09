@@ -1913,6 +1913,17 @@
             "license": null
           }
         },
+        "frame": {
+          "default": "none",
+          "enum": [
+            "none",
+            "l1",
+            "l2",
+            "l3"
+          ],
+          "title": "Frame",
+          "type": "string"
+        },
         "mascot": {
           "anyOf": [
             {
@@ -2214,6 +2225,7 @@
           "heading": null,
           "license": null
         },
+        "frame": "none",
         "mascot": null,
         "mascot_opacity": null,
         "mascot_position": null,

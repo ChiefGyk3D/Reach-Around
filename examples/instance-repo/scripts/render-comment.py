@@ -471,6 +471,7 @@ KNOWN_FIELDS: frozenset[str] = frozenset(
         "fediverse_note",
         "fonts",
         "footer",
+        "frame",
         "handle",
         "header",
         "heading",

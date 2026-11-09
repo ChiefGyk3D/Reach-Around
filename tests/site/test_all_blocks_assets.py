@@ -44,6 +44,7 @@ LOGICAL = (
     "static/crypto.css",
     "static/email.css",
     "static/platforms.css",
+    "static/frame.css",
     "static/click.js",
     "static/copy.js",
     "static/email.js",
@@ -121,7 +122,7 @@ def test_no_page_names_an_unhashed_static_file_anywhere(site: Path) -> None:
 
 def test_every_url_in_every_stylesheet_is_hashed_and_exists(site: Path) -> None:
     sheets = sorted((site / "static").glob("*.css"))
-    assert len(sheets) == 6
+    assert len(sheets) == 7
     seen = 0
     for sheet in sheets:
         rel = sheet.relative_to(site).as_posix()

@@ -105,3 +105,15 @@ Owner decision, in order of recommendation:
 ## Noindex shape (#443)
 
 By design only three outputs carry `noindex`: `404.html`, `/kit/retry/` (both through the page template's `noindex` flag) and the Worker-served gated kit page. Indexable pages (tabs, privacy, the public kit page) do not. `tests/site/test_noindex_shape.py` builds a site with a kit and asserts exactly that list, and that no `robots.txt` or `X-Robots-Tag` rule appears unless the config has a `robots:` section. A staging host that blocks crawlers does so through that config section (`allow_all: false`, `noindex_paths`) or a host setting, never through a build default, so staging settings cannot reach a production build that does not ask for them. `check --production` does not inspect robots; the config is the single source.
+
+## Border frames on and off (#444)
+
+Measured 2026-11-08, Lighthouse 13.6.0, Chromium headless, three runs per page and strategy, median, served with the build's own `_headers` and gzip. "On" is `theme.frame: l3` (link page, kit page) and `l1` (the `dark-hero` themed page); "off" is the same site without the key. The link and kit pages score SEO 91 in both states on the scratch site used, because its tab is titled "More" (`link-text` audit); that is the scratch site, not the feature.
+
+| Page | Mobile off | Mobile on | Desktop off | Desktop on |
+| --- | --- | --- | --- | --- |
+| Link page | 100/100/100/91 | 100/100/100/91 | 100/100/100/91 | 100/100/100/91 |
+| Media kit | 100/100/100/91 | 100/100/100/91 | 100/100/100/91 | 100/100/100/91 |
+| Themed page (`dark-hero`) | 100/100/100/100 | 100/100/100/100 | 100/100/100/100 | 100/100/100/100 |
+
+One of three runs of the themed page with frames on read 97 (mobile) and 87 (desktop) performance with a Total Blocking Time of 187 ms while the machine was busy; the medians are 100. The frame stylesheet is about 6 KB (under 2 KB gzipped) and is only linked when the feature is on.

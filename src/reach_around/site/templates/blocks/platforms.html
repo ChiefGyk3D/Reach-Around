@@ -1,4 +1,5 @@
 {# SPDX-License-Identifier: Apache-2.0 #}
+{% import "_frames.html" as frames %}
 <li class="block block-platforms">
 {% if block.title and not skip_title|default(false) %}
 <h2 class="platforms-title">{{ block.title }}</h2>
@@ -6,7 +7,7 @@
 <ul class="platforms platforms-{{ block.layout }}">
 {% for row in platform_rows(block) %}
 <li class="platform">
-<a class="platform-link"{% if row.internal %} href="{{ tab_href(row.url) }}"{% else %} href="{{ row.url }}"{% if click_tracking %} ping="/e/c/{{ row.id }}" data-link-id="{{ row.id }}"{% endif %} rel="noopener noreferrer"{% endif %}>
+<a class="platform-link{{ frames.cls("platform") }}"{% if row.internal %} href="{{ tab_href(row.url) }}"{% else %} href="{{ row.url }}"{% if click_tracking %} ping="/e/c/{{ row.id }}" data-link-id="{{ row.id }}"{% endif %} rel="noopener noreferrer"{% endif %}>
 <span class="platform-icon" aria-hidden="true"><span class="icon icon-{{ row.icon }}"></span></span>
 {% if block.layout == "chips" %}
 {% if row.short and not row.stale %}<span class="platform-count" aria-hidden="true">{{ row.short }}</span>{% endif %}
