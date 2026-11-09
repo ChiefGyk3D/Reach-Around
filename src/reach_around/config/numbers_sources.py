@@ -154,8 +154,8 @@ class TwitchSource(_Source):
     kind: Literal["twitch"]
     login: str
     # Only the canonical names are accepted (the keys may be left out).
-    client_id_env: Literal["TWITCH_CLIENT_ID"] = CLIENT_ID_ENV
-    client_secret_env: Literal["TWITCH_CLIENT_SECRET"] = CLIENT_SECRET_ENV
+    client_id_env: Literal["TWITCH_CLIENT_ID"] = "TWITCH_CLIENT_ID"
+    client_secret_env: Literal["TWITCH_CLIENT_SECRET"] = "TWITCH_CLIENT_SECRET"  # noqa: S105
     # Opt-in refresh of a broadcaster user token. Refused at run time unless the
     # caller supplies a sink that stores the rotated pair.
     auto_refresh: bool = False
