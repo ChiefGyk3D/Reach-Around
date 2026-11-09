@@ -29,7 +29,7 @@
 //   (`health:<condition>`) ONLY after at least one channel took the message, so a
 //   message nobody received is tried again next hour (bounded by the shared
 //   dedup, per-minute and daily alert budgets).
-// - Bounded: at most MAX_NOTICES_PER_TICK messages, and every query goes through
+// - Bounded: at most MAX_DELIVERIES_PER_TICK channel deliveries (a message goes to every channel), and every query goes through
 //   the invocation's meter (two queries when idle, one more per state change
 //   plus what the dispatcher uses). Out of budget means the step stops.
 // - Fail closed: nothing here throws into the cron. An alert failure never
@@ -37,6 +37,9 @@
 // - A condition whose input cannot be read or parsed is unknown and changes no state.
 
 import { alertStatus as sharedStatus, notifyOwner, parseAlertsConfig } from "./alerts";
+import { buildChannels } from "./alerts/dispatcher";
+import { QueryMeter, meterOf, meteredDb } from "./d1budget";
+import { logEvent } from "./kit/log";
 import type { AlertEvent, AlertStatus, AlertsEnv, DispatchDeps } from "./alerts";
 import { siteKey, windowStart } from "./alerts/quota";
 import { DEFAULT_ACCOUNT_HUMAN_PER_HOUR, MAX_VIEWS_PER_HOUR, positiveInt } from "./pvlimits";
@@ -52,7 +55,8 @@ export const ROLLUP_OVERDUE_MS = 3 * HOUR_MS;
 export const STALE_DAYS = 2;
 export const VIEW_BUDGET_WINDOW_HOURS = 3;
 export const ALERT_BUDGET_NEAR_PERCENT = 80;
-export const MAX_NOTICES_PER_TICK = 3;
+/** Channel deliveries (one per channel per message) one cron run may attempt. */
+export const MAX_DELIVERIES_PER_TICK = 3;
 export const COVERAGE_KEEP_DAYS = 400;
 /** Metered D1 queries the cron sets aside for this step, and the smallest QUERY_BUDGET that runs it. */
 export const HEALTH_QUERIES = 8;
@@ -76,6 +80,8 @@ export interface HealthResult {
   active: HealthCondition[];
   /** Messages a channel took (firing or cleared). */
   notified: number;
+  /** Set to a fixed word when the step runs in degraded mode (no coverage, no alerts). */
+  degraded?: "coverage_schema";
 }
 
 function utcDate(ms: number): string {
@@ -95,7 +101,12 @@ interface Inputs {
   /** hour number -> accepted human views, from bud:<hour>:_all:pv */
   views: Map<number, number>;
   alertToday: number;
+  /** False when analytics_coverage is not the table migration 0014 creates. */
+  schemaOk: boolean;
 }
+
+/** What the table definition must contain (migration 0014): strict, keyed by day, 24 closed letters. */
+const SCHEMA_MARKS = ["STRICT", "WITHOUT ROWID", "length(hours) = 24", "[^okq-]", "GLOB '[0-9]"];
 
 /** One metered read batch. Throws on a database error (the caller treats that as "unknown"). */
 async function readInputs(db: D1Database, env: HealthEnv, hour: number, nowMs: number): Promise<Inputs> {
@@ -115,7 +126,10 @@ async function readInputs(db: D1Database, env: HealthEnv, hour: number, nowMs: n
         "SELECT count FROM alert_quota WHERE site = ?1 AND channel = 'all' AND scope = 'day' AND window_start = ?2",
       )
       .bind(siteKey(env.SITE_HOST), windowStart("day", nowMs)),
+    db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'analytics_coverage'"),
   ]);
+  const ddl = String(((res[3]?.results ?? [])[0] as { sql?: string } | undefined)?.sql ?? "");
+  const schemaOk = SCHEMA_MARKS.every((m) => ddl.includes(m));
   const meta = new Map<string, string>();
   for (const r of (res[0]?.results ?? []) as Array<{ key: string; value: string }>) {
     if (typeof r.key === "string" && typeof r.value === "string") meta.set(r.key, r.value);
@@ -128,7 +142,7 @@ async function readInputs(db: D1Database, env: HealthEnv, hour: number, nowMs: n
   }
   const row = (res[2]?.results ?? [])[0] as { count?: number } | undefined;
   const alertToday = typeof row?.count === "number" && Number.isInteger(row.count) && row.count >= 0 ? row.count : 0;
-  return { meta, views, alertToday };
+  return { meta, views, alertToday, schemaOk };
 }
 
 interface Verdict {
@@ -219,6 +233,13 @@ export async function runHealth(env: HealthEnv, db: D1Database, nowMs: number, d
       return result; // no read, no claim: a hole in coverage is shown as a gap, never guessed
     }
 
+    // 0. The table must be the one the migration made. Otherwise: degraded, no coverage write, no alert.
+    if (!inp.schemaOk) {
+      result.degraded = "coverage_schema";
+      logEvent("log", "failed", "other");
+      return result;
+    }
+
     // 1. Coverage for the hour that just ended.
     const letter = coverageLetter(inp, hour, { killed, accountLimit });
     const ended = (hour - 1) * HOUR_MS;
@@ -251,37 +272,46 @@ export async function runHealth(env: HealthEnv, db: D1Database, nowMs: number, d
     for (const [c, v] of verdicts) if (v.active) result.active.push(c);
 
     const disp = deps.dispatcher ?? { notify: notifyOwner, status: sharedStatus };
-    const writes: D1PreparedStatement[] = [];
-    let notices = 0;
+    const meter = meterOf(db);
+    const fanout = Math.max(1, buildChannels(env, cfg.channels, cfg.matrixAllowedHosts).channels.length);
+    let deliveries = MAX_DELIVERIES_PER_TICK;
     for (const cond of HEALTH_CONDITIONS) {
       const v = verdicts.get(cond);
-      if (v === undefined || notices >= MAX_NOTICES_PER_TICK) continue;
+      if (v === undefined) continue;
       const key = `health:${cond}`;
       const had = inp.meta.has(key);
       if (v.active === had) continue;
-      notices++;
+      // Bound the channel deliveries (each message goes to every configured channel).
+      if (fanout > deliveries) break;
+      // Keep one query for this transition's state write: the dispatcher may use the rest, never that one.
+      let notifyDb = db;
+      if (meter !== undefined) {
+        const rem = meter.remaining();
+        if (rem < 2) break;
+        // An independent cap on top of db (db itself still counts each query once against the run's meter).
+        notifyDb = meteredDb(db, new QueryMeter(rem - 1));
+      }
+      deliveries -= fanout;
       const before = sentTotal(disp.status());
       await disp.notify(
-        { ...env, DB: db },
+        { ...env, DB: notifyDb },
         { kind: "analytics_health", atMs: nowMs, condition: cond, state: v.active ? "firing" : "cleared", count: v.count },
         { fetchFn: deps.fetchFn, nowMs },
       );
       if (sentTotal(disp.status()) > before) {
         result.notified++;
-        writes.push(
-          v.active
+        // Persist right away, before anything else can use the allowance.
+        try {
+          await (v.active
             ? db
                 .prepare("INSERT INTO view_meta (key, value) VALUES (?1, ?2) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
                 .bind(key, String(Math.floor(nowMs)))
-            : db.prepare("DELETE FROM view_meta WHERE key = ?1").bind(key),
-        );
-      }
-    }
-    if (writes.length > 0) {
-      try {
-        await db.batch(writes);
-      } catch {
-        // The message went out; the state is re-derived next hour (the dedup window stops a repeat inside 10 minutes).
+                .run()
+            : db.prepare("DELETE FROM view_meta WHERE key = ?1").bind(key).run());
+        } catch {
+          // Cannot be recorded; the dispatcher's dedup covers ten minutes only. Stop sending this run.
+          break;
+        }
       }
     }
   } catch {

@@ -8,11 +8,12 @@ import { HEALTH_CONDITIONS } from "../src/alerts/types";
 import {
   coverageLetter,
   HOUR_MS,
-  MAX_NOTICES_PER_TICK,
+  MAX_DELIVERIES_PER_TICK,
   runHealth,
   type HealthEnv,
 } from "../src/health";
 import { padHour } from "../src/viewretention";
+import { QueryMeter, meteredDb } from "../src/d1budget";
 
 const DB = testEnv.DB;
 const NOW = Date.UTC(2026, 10, 9, 14, 5, 0); // 2026-11-09 14:05 UTC
@@ -230,7 +231,7 @@ describe("dedup, quota and failure", () => {
     expect(b.res.notified).toBe(1);
   });
 
-  it("at most MAX_NOTICES_PER_TICK messages in one tick", async () => {
+  it("at most MAX_DELIVERIES_PER_TICK messages in one tick", async () => {
     await meta("rollup_last_ok", String(NOW - 9 * HOUR_MS));
     await meta("rolled_through:links", "2026-10-01");
     await bud(HOUR - 30, 5);
@@ -240,7 +241,7 @@ describe("dedup, quota and failure", () => {
     // overdue, stale, zero_views and alert_budget_near are active; only three are sent in one tick.
     const { res, f } = await tick(env({ DAILY_ALERT_BUDGET: "50" }));
     expect(res.active.length).toBe(4);
-    expect(f.calls.mock.calls.length).toBe(MAX_NOTICES_PER_TICK);
+    expect(f.calls.mock.calls.length).toBe(MAX_DELIVERIES_PER_TICK);
   });
 
   it("a channel failure never throws and leaves the condition to be retried", async () => {
@@ -279,6 +280,111 @@ describe("dedup, quota and failure", () => {
     const { res, f } = await tick(env());
     expect(res.active).toEqual([]);
     expect(f.calls).not.toHaveBeenCalled();
+  });
+});
+
+async function reinstallTable() {
+  await DB.prepare("DROP TABLE IF EXISTS analytics_coverage").run();
+  const mig = testEnv.TEST_MIGRATIONS.find((m) => m.name.includes("0014"))!;
+  for (const q of mig.queries) await DB.prepare(q).run();
+}
+
+describe("review findings (Daybreak, PR 480)", () => {
+  async function threeActive() {
+    await meta("rollup_last_ok", String(NOW - 9 * HOUR_MS));
+    await meta("rolled_through:links", "2026-10-01");
+    await bud(HOUR - 30, 5);
+  }
+  const texts = (f: ReturnType<typeof mockFetch>) => f.bodies.map((b) => String((JSON.parse(b) as { content: string }).content));
+
+  it("HIGH: with the real eight-query slice a delivered alert is recorded at once, so later hours never repeat it", async () => {
+    await threeActive();
+    const d = createDispatcher();
+    const f = mockFetch();
+    const e = env({ DAILY_ALERT_BUDGET: "50" });
+    for (let i = 0; i < 4; i++) {
+      const db = meteredDb(DB, new QueryMeter(8));
+      await runHealth(e, db, NOW + i * HOUR_MS, { dispatcher: d, fetchFn: f.fn });
+    }
+    const all = texts(f);
+    // overdue, stale and zero_views each went out exactly once across the hours.
+    expect(all.filter((t) => t.includes("daily rollup has not finished")).length).toBe(1);
+    expect(all.filter((t) => t.includes("checkpoint is more than 2 days")).length).toBe(1);
+    expect(all.filter((t) => t.includes("no page views were counted")).length).toBe(1);
+    for (const c of ["rollup_overdue", "rollup_stale", "zero_views"]) expect(await stateOf(c)).not.toBeNull();
+  });
+
+  it("HIGH: a state write that fails stops further sends in that run", async () => {
+    await threeActive();
+    const failing = new Proxy(DB, {
+      get(t, p) {
+        if (p === "prepare") {
+          return (q: string) => {
+            if (q.startsWith("INSERT INTO view_meta (key, value) VALUES (?1, ?2) ON CONFLICT")) throw new Error("down");
+            return t.prepare(q);
+          };
+        }
+        const v = Reflect.get(t, p, t);
+        return typeof v === "function" ? v.bind(t) : v;
+      },
+    }) as D1Database;
+    const f = mockFetch();
+    await runHealth(env(), failing, NOW, { dispatcher: createDispatcher(), fetchFn: f.fn });
+    expect(f.bodies.length).toBe(1);
+  });
+
+  it("MEDIUM: the bound counts channel deliveries, not events (discord + matrix + email)", async () => {
+    await threeActive();
+    const e = env({
+      ALERTS_CONFIG: JSON.stringify({
+        channels: ["discord", "matrix", "email"],
+        events: ["analytics_health"],
+        max_per_minute: 30,
+        matrix: { allowed_hosts: ["matrix.example.org"] },
+      }),
+      ALERT_MATRIX_SERVER: "https://matrix.example.org",
+      ALERT_MATRIX_ROOM_ID: "!room:example.org",
+      ALERT_MATRIX_ACCESS_TOKEN: "syt_MATRIXSECRET_0123456789",
+      ALERT_EMAIL_PROVIDER: "none",
+      DAILY_ALERT_BUDGET: "50",
+    });
+    const f = mockFetch();
+    const res = await runHealth(e, DB, NOW, { dispatcher: createDispatcher(), fetchFn: f.fn });
+    // Two real channels: one event (2 deliveries) fits in 3; a second would be 4.
+    expect(f.calls.mock.calls.length).toBe(2);
+    expect(res.notified).toBe(1);
+    expect(f.calls.mock.calls.length).toBeLessThanOrEqual(MAX_DELIVERIES_PER_TICK);
+  });
+
+  it("LOW: a wrong analytics_coverage table puts the step in degraded mode: no write, no alert", async () => {
+    await meta("rollup_last_ok", String(NOW - 9 * HOUR_MS));
+    await DB.prepare("DROP TABLE analytics_coverage").run();
+    await DB.prepare("CREATE TABLE analytics_coverage (day TEXT PRIMARY KEY, hours TEXT)").run();
+    try {
+      const f = mockFetch();
+      const res = await runHealth(env(), DB, NOW, { dispatcher: createDispatcher(), fetchFn: f.fn });
+      expect(res.degraded).toBe("coverage_schema");
+      expect(res.coverage).toBe("");
+      expect(f.calls).not.toHaveBeenCalled();
+      expect(await coverage("2026-11-09")).toBeNull();
+    } finally {
+      await reinstallTable();
+    }
+    const ok = await runHealth(env({ ALERTS_CONFIG: undefined }), DB, NOW);
+    expect(ok.degraded).toBeUndefined();
+    expect(ok.coverage).toBe("o");
+  });
+
+  it("LOW: the migration refuses a pre-existing table of that name and a second application", async () => {
+    const mig = testEnv.TEST_MIGRATIONS.find((m) => m.name.includes("0014"))!;
+    await expect(DB.prepare(mig.queries[0]!).run()).rejects.toThrow();
+    await DB.prepare("DROP TABLE analytics_coverage").run();
+    await DB.prepare("CREATE TABLE analytics_coverage (day TEXT PRIMARY KEY, hours TEXT)").run();
+    try {
+      await expect(DB.prepare(mig.queries[0]!).run()).rejects.toThrow();
+    } finally {
+      await reinstallTable();
+    }
   });
 });
 
@@ -343,7 +449,7 @@ describe("coverage (gaps)", () => {
   });
 
   it("coverageLetter prefers the kill switch, then the budget", () => {
-    const inp = { meta: new Map(), views: new Map([[HOUR - 1, 480]]), alertToday: 0 };
+    const inp = { meta: new Map(), views: new Map([[HOUR - 1, 480]]), alertToday: 0, schemaOk: true };
     expect(coverageLetter(inp, HOUR, { killed: true, accountLimit: 480 })).toBe("k");
     expect(coverageLetter(inp, HOUR, { killed: false, accountLimit: 480 })).toBe("q");
     expect(coverageLetter(inp, HOUR, { killed: false, accountLimit: 0 })).toBe("o");

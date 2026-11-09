@@ -155,9 +155,15 @@ Design rules, each pinned by a test (`worker/test/health.test.ts`):
   `view_meta` and the alert day counter. It never reads `view_events`,
   `click_events`, a lead or any raw table.
 - **UTC.** Days and hours are UTC.
-- **Quiet and bounded.** At most 3 messages per cron run. The step costs two
-  metered D1 queries when idle and uses at most 8 of the run's `QUERY_BUDGET`;
-  it is skipped under `QUERY_BUDGET` 12. Out of budget, it stops.
+- **Quiet and bounded.** At most 3 channel deliveries per cron run (a message
+  goes to every configured channel, so with two channels one condition uses two
+  of the three; the rest wait for the next hour). The step costs two metered D1
+  queries when idle and uses at most 8 of the run's `QUERY_BUDGET`; it is
+  skipped under `QUERY_BUDGET` 12. Before each message one query is held back
+  for recording it, and the state is written right after a channel took the
+  message, so an exhausted allowance can delay an alert but never makes an
+  already delivered one repeat on later hours. If that write itself fails, the
+  run sends nothing more (the dispatcher's dedup covers only ten minutes).
 - **Fail closed.** The step never throws into the cron. Whatever happens to
   an alert (channel down, budget spent, D1 error), collection, the purges and
   the rollup run as before.
@@ -182,7 +188,12 @@ The same hourly step writes one row per UTC day into `analytics_coverage`
 ended. `o` collecting, `k` the view kill switch was on when sampled, `q` the
 account view budget had been reached, `-` no sample (the Worker did not run).
 The row holds no count and no visitor data and is written whether or not alerts
-are on. `reach-around report` and `grafana-export` read it (export the table like
+are on. The migration is a plain `CREATE TABLE`: a pre-existing table of that
+name makes it fail instead of being accepted. The health step also checks the
+table definition on every run (strict, keyed by day, 24 closed letters); if it
+is wrong the step runs degraded: it writes no coverage and sends no alert, and
+logs one fixed `log`/`failed` line. Fix by dropping the wrong table and applying
+migration 0014. `reach-around report` and `grafana-export` read it (export the table like
 `view_daily`) and show a day with no collection as a gap with a reason (`outage`,
 `quota`, `kill_switch`), never as a zero. A quiet hour that was collected is a
 real zero and stays one. See [report.md](report.md#gaps) and

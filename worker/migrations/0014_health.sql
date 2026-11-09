@@ -9,9 +9,10 @@
 -- It holds no visitor data and no counts. `reach-around report` and the Grafana
 -- export read it to show a missing day as a gap with a reason, never as a zero.
 -- Rows older than 400 days are deleted by the same step.
--- Apply with the Worker idle or not: the table is new and nothing reads it yet.
+-- Plain CREATE TABLE on purpose: a pre-existing table of that name makes the migration fail instead of
+-- being silently accepted. The health step also checks the table shape and degrades if it is wrong.
 -- Down: DROP TABLE analytics_coverage.
-CREATE TABLE IF NOT EXISTS analytics_coverage (
+CREATE TABLE analytics_coverage (
   day TEXT NOT NULL PRIMARY KEY CHECK (day GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'),
   hours TEXT NOT NULL CHECK (length(hours) = 24 AND hours NOT GLOB '*[^okq-]*')
 ) WITHOUT ROWID, STRICT;
