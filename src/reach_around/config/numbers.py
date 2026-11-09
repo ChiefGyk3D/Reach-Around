@@ -15,6 +15,7 @@ reports how many); everything else wrong is a ``ConfigError`` naming the file.
 from __future__ import annotations
 
 import json
+import os
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -117,12 +118,31 @@ def stale_limit(config: Any, platform: str) -> int:
     return int(numbers.stale_days.get(platform, STALE_DAYS))
 
 
-def source_platforms(config: Any) -> frozenset[str]:
-    """The keys a configured fetch source writes (platform slug or item id)."""
+# Sources that need a token the process may not have. Without the token the
+# source only skips, so its number is kept by hand and the hand-kept stale
+# gate applies to it.
+_TOKEN_SOURCES = ("instagram", "threads")
+
+
+def source_platforms(
+    config: Any, env: Mapping[str, str] | None = None
+) -> frozenset[str]:
+    """The keys a configured fetch source writes (platform slug or item id).
+
+    An Instagram or Threads source counts only while its token variable holds a
+    value in ``env`` (default: the process environment); otherwise the number is
+    hand-kept. Only the presence is read, never the value.
+    """
     numbers = getattr(config, "numbers", None)
     if numbers is None:
         return frozenset()
-    return frozenset(source.platform for source in numbers.sources)
+    environment = os.environ if env is None else env
+    return frozenset(
+        source.platform
+        for source in numbers.sources
+        if source.kind not in _TOKEN_SOURCES
+        or bool(environment.get(source.access_token_env))
+    )
 
 
 @dataclass(frozen=True)

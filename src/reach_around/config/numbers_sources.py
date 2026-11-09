@@ -9,6 +9,7 @@ store); the variable name is validated, the value is read only at fetch time.
 from __future__ import annotations
 
 import re
+from datetime import UTC, date, datetime, timedelta
 from typing import Annotated, Literal
 
 from pydantic import (
@@ -37,6 +38,9 @@ _INVITE = re.compile(r"^[A-Za-z0-9-]{2,32}$")
 _ALIAS = re.compile(r"^#[A-Za-z0-9._=/+-]{1,100}:([A-Za-z0-9.-]{3,253})$")
 _CHANNEL_ID = re.compile(r"^UC[A-Za-z0-9_-]{22}$")
 _TWITCH_LOGIN = re.compile(r"^[A-Za-z0-9_]{3,25}$")
+
+_THREADS_USER_ID = re.compile(r"^[0-9]{1,24}$")
+_ISO_DAY = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 Platform = Annotated[str, StringConstraints(pattern=_SLUG)]
 EnvName = Annotated[str, StringConstraints(pattern=_ENV_NAME)]
@@ -168,6 +172,72 @@ class TwitchSource(_Source):
         return value
 
 
+class _MetaSource(_Source):
+    """Shared shape of the Instagram and Threads follower sources.
+
+    The long-lived user token is read from one fixed environment variable
+    (``INSTAGRAM_ACCESS_TOKEN`` or ``THREADS_ACCESS_TOKEN``); the config cannot
+    name another, so no unrelated variable can be sent to the platform. The
+    value is never in the config. ``token_expires`` is
+    the non-secret day the token expires (the owner records it; about 60 days
+    after issue or last refresh). ``refresh_within_days`` is how close to that
+    day a run refreshes the token once.
+    """
+
+    token_expires: date | None = None
+    refresh_within_days: Annotated[int, Field(strict=True, ge=1, le=59)] = 10
+    # Off by default. The shipped code has no sink that can store a new token,
+    # so a run only reports that a refresh is due. True is refused at run time
+    # unless the caller supplies a real token sink.
+    auto_refresh: Annotated[bool, Field(strict=True)] = False
+
+    @field_validator("token_expires", mode="before")
+    @classmethod
+    def _expires_day(cls, value: object) -> object:
+        if value is None or type(value) is date:
+            return value
+        if isinstance(value, str) and _ISO_DAY.match(value):
+            return value
+        raise ValueError("token_expires must be a date written YYYY-MM-DD")
+
+    @field_validator("token_expires")
+    @classmethod
+    def _expires_plausible(cls, value: date | None) -> date | None:
+        # Long-lived tokens last about 60 days; a day far ahead would silence
+        # every reminder.
+        if value is not None and value > datetime.now(UTC).date() + timedelta(days=120):
+            raise ValueError("token_expires is more than 120 days from today")
+        return value
+
+
+class InstagramSource(_MetaSource):
+    kind: Literal["instagram"]
+
+    @property
+    def access_token_env(self) -> str:
+        """The one environment variable NAME read. Fixed; not configurable."""
+        return "INSTAGRAM_ACCESS_TOKEN"
+
+
+class ThreadsSource(_MetaSource):
+    kind: Literal["threads"]
+
+    @property
+    def access_token_env(self) -> str:
+        """The one environment variable NAME read. Fixed; not configurable."""
+        return "THREADS_ACCESS_TOKEN"
+
+    # Threads user id (digits), the path segment of the documented insights route.
+    user_id: str
+
+    @field_validator("user_id")
+    @classmethod
+    def _user_id(cls, value: str) -> str:
+        if not _THREADS_USER_ID.match(value):
+            raise ValueError("user_id must be the numeric Threads user id")
+        return value
+
+
 Source = Annotated[
     BlueskySource
     | MastodonSource
@@ -175,7 +245,9 @@ Source = Annotated[
     | DiscordSource
     | MatrixSource
     | YoutubeSource
-    | TwitchSource,
+    | TwitchSource
+    | InstagramSource
+    | ThreadsSource,
     Field(discriminator="kind"),
 ]
 

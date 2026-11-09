@@ -701,10 +701,10 @@ doppler run -- reach-around counts refresh --config site.yaml --out numbers.json
   are rounded by YouTube and can be hidden by the channel. The owner-only
   Analytics API is a different thing and its data must not be shown publicly
   (see the YouTube research note); this command never touches it.
-- **Twitch:** app credentials can register an app, but the follower total has
-  been documented as needing a user token that app credentials cannot get. The
-  command reports `needs_user_token` as a skip. Enter the number by hand until a
-  user-token path exists.
+- **Twitch:** the follower total needs a broadcaster user token (scope
+  `moderator:read:followers`) in `TWITCH_USER_ACCESS_TOKEN`. Without it the
+  command reports `needs_user_token` as a skip and you enter the number by hand.
+  Setup and the manual token refresh: [Twitch source](twitch-source.md).
 - **TikTok, Instagram, Threads, Kick:** no source kind yet (their approval or
   token paths are not in place). The manual fallback is to add the entry to the
   numbers file yourself; a refresh never touches platforms it has no source for:

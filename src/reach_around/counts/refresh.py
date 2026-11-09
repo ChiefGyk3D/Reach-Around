@@ -22,13 +22,16 @@ from reach_around.config.numbers_sources import (
     BlueskySource,
     DiscordSource,
     GithubSource,
+    InstagramSource,
     MastodonSource,
     MatrixSource,
     NumbersConfig,
+    ThreadsSource,
     TwitchSource,
     YoutubeSource,
 )
 from reach_around.counts.files import utc_stamp
+from reach_around.counts.meta_user import MetaTokenSink
 from reach_around.counts.providers import (
     PROVIDERS,
     Context,
@@ -49,6 +52,8 @@ Source = (
     | MatrixSource
     | YoutubeSource
     | TwitchSource
+    | InstagramSource
+    | ThreadsSource
 )
 
 _FIXED_HOSTS = {
@@ -57,6 +62,8 @@ _FIXED_HOSTS = {
     "discord": "discord.com",
     "youtube": "www.googleapis.com",
     "twitch": "id.twitch.tv, api.twitch.tv",
+    "instagram": "graph.instagram.com",
+    "threads": "graph.threads.com",
 }
 
 
@@ -124,6 +131,7 @@ def refresh(
     sleep: Callable[[float], None] | None = None,
     accept_drop: frozenset[str] = frozenset(),
     token_sink: TokenSink | None = None,
+    meta_sink: MetaTokenSink | None = None,
 ) -> tuple[Numbers, list[Outcome]]:
     """Fetch every source; return the new numbers and one outcome per source."""
     numbers: Numbers = dict(previous)
@@ -136,7 +144,13 @@ def refresh(
             kwargs["sleep"] = sleep
         return fetch(url, **kwargs)
 
-    context = Context(fetch=call, env=env, token_sink=token_sink)
+    context = Context(
+        fetch=call,
+        env=env,
+        meta_sink=meta_sink,
+        token_sink=token_sink,
+        today=now().astimezone(UTC).date(),
+    )
     for source in sources:
         provider = PROVIDERS[source.kind]
         try:

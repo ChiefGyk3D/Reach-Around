@@ -1026,6 +1026,8 @@ the number would never be shown. (`kind` is separate: `kind: mastodon` with
 | `matrix` | `room`: a public alias such as `#room:example.org` | resolves the alias on the alias server's client API (following its `.well-known`), then reads the room summary's `num_joined_members` (label: members) | no |
 | `youtube` | `channel_id`: the `UC...` id; `api_key_env`: the NAME of an environment variable | YouTube Data API v3 `channels.list`, `statistics.subscriberCount` | yes |
 | `twitch` | `login`; optional `auto_refresh` (default false). The variable names are fixed, not configurable: `TWITCH_CLIENT_ID`, `TWITCH_CLIENT_SECRET` (app token path) and `TWITCH_USER_ACCESS_TOKEN`, `TWITCH_USER_REFRESH_TOKEN` (broadcaster token). `client_id_env` and `client_secret_env` may be written but only with those exact values; any other value, and any `user_token_env` or `refresh_token_env` key, is refused at load and again at run time | `helix/channels/followers` `total`, with the broadcaster user token when `TWITCH_USER_ACCESS_TOKEN` holds a value, else with an app token (skipped as `needs_user_token`). See [Twitch source](twitch-source.md) | yes, and see the limit below |
+| `instagram` | optional `token_expires` (YYYY-MM-DD), `refresh_within_days` (1 to 59, default 10); reads only `INSTAGRAM_ACCESS_TOKEN` | `graph.instagram.com` `/me` field `followers_count`; skipped as `token_not_set` while the variable is empty. See [Instagram and Threads](instagram-threads-sources.md) | yes |
+| `threads` | same, reading only `THREADS_ACCESS_TOKEN`, plus required `user_id` (digits) | `graph.threads.com` `threads_insights` metric `followers_count` | yes |
 
 `numbers.history_file` (optional) is a path to an append-only history file in
 your private instance repo; relative paths are relative to the config file. Unset
@@ -1077,11 +1079,15 @@ Rules the command enforces whatever the config says:
 
 Limits worth knowing:
 
-- **Twitch.** The follower total is documented under the moderator scope, and
-  Twitch has asked for a user access token on that route. App credentials cannot
-  obtain one, so the command reports the source as skipped with
-  `needs_user_token` (a skip is not a failure) when Twitch answers 401 or 403.
-  It does not try another route. Keep the last value by hand (below).
+- **Twitch.** The follower total needs a user access token with the scope
+  `moderator:read:followers`. With `TWITCH_USER_ACCESS_TOKEN` set the command
+  reads the total with that broadcaster token. Without it the command uses an
+  app token and reports the source as skipped with `needs_user_token` when
+  Twitch answers 401 or 403 (a skip is not a failure); keep the last value by
+  hand then (below). A rejected user token fails the source as `token_expired`
+  and prints a content-free `token-health:` line; the shipped command does not
+  refresh by itself, so the owner refreshes by hand. See
+  [Twitch source](twitch-source.md).
 - **YouTube.** Public counts are rounded by YouTube to three significant
   figures, and a channel can hide its count; then the source is skipped as
   `hidden_subscriber_count`, never written as zero.
@@ -1092,7 +1098,7 @@ Limits worth knowing:
   federation mode) answers 401; the source fails with `http_401`.
 - **GitHub.** Unauthenticated calls are limited to 60 an hour per address.
   Shared CI runners can hit that; a failure keeps the old number.
-- **TikTok, Instagram, Threads, Kick** (and X and LinkedIn) have no source kind.
+- **TikTok, Kick** (and X and LinkedIn) have no source kind.
   Their approval paths do not exist yet. Put the number in the numbers file by
   hand (below), or type `count` and `as_of` on the platform item.
 

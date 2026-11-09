@@ -185,8 +185,9 @@ Sources that need no key (Bluesky, Mastodon-compatible servers, GitHub, Discord
 invites, Matrix) need no secret. The names are fixed by the workflow, so in
 `site.yaml` set `api_key_env: YOUTUBE_API_KEY`, `client_id_env: TWITCH_CLIENT_ID`
 and `client_secret_env: TWITCH_CLIENT_SECRET`. The Twitch follower total needs a
-user token that app credentials cannot get, so that source is normally reported
-as skipped (`needs_user_token`); keep that number by hand in `numbers.json`.
+broadcaster user token in `TWITCH_USER_ACCESS_TOKEN` (see `docs/twitch-source.md`
+in the engine repo); without it that source is reported as skipped
+(`needs_user_token`) and the number stays hand-kept in `numbers.json`.
 
 **Safety.**
 
