@@ -17,7 +17,7 @@ DATA = "2026-11-01"
 
 def meta(csv_dir: Path) -> dict[str, str]:
     text = (csv_dir / "metadata.csv").read_text(encoding="utf-8")
-    return dict(list(csv.reader(io.StringIO(text)))[1:])  # type: ignore[arg-type]
+    return dict(list(csv.reader(io.StringIO(text)))[1:])
 
 
 def test_default_json_is_utc_only(
