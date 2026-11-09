@@ -70,7 +70,12 @@ def retention_days(value: object) -> int | None:
 
 
 ALERT_CHANNELS = {"discord", "matrix", "email"}
-ALERT_EVENTS = {"kit_unlocked", "lead_captured", "gate_failed_repeatedly"}
+ALERT_EVENTS = {
+    "kit_unlocked",
+    "lead_captured",
+    "gate_failed_repeatedly",
+    "analytics_health",
+}
 ALERT_VISITOR = {"full", "masked", "none"}
 ALERT_HOST = re.compile(r"[a-z0-9][a-z0-9.-]{0,251}[a-z0-9]")
 MAX_ALERTS_CONFIG = 1000

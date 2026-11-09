@@ -34,6 +34,30 @@ the file.
 Human-likely is an estimate. Crawlers that never run the page-view script are
 invisible to page views. Days are UTC days.
 
+## Gaps
+
+When `analytics_coverage` is in the export, the report compares the Worker's
+hourly coverage log with the calendar (UTC days, [alerts.md](alerts.md#collection-coverage-and-gaps)).
+A day with no collected hour is a gap, a day with some is partial, and each
+carries a reason: `outage` (the Worker did not run), `quota` (the account view
+budget was reached), `kill_switch` or `site_kill_switch` (some sites, not all,
+were switched off; that day is always partial). Coverage is account-wide, not
+per site, and the report says so (`coverage.scope` is `account`); a table with no
+rows is `not_monitored`, not complete. The text report prints "Collection gaps"
+before the funnel, lists the days and says that a gap is not a zero and that the
+totals cover only the time data was collected. JSON has a `coverage` object
+(`status` of `complete`, `gaps`, `not_monitored` or `not_exported`, counts, and the day lists, at
+most 60 each); `metadata.csv` gets `coverage_status`, `coverage_gap_days` and
+`coverage_partial_days`, and a `gaps.csv` (`day,status,reason`) appears only
+when there is a gap. A gap day never becomes a row of zeros in any table.
+
+What it does not claim: coverage is sampled once an hour, so a kill switch
+flipped on and off inside one hour can be missed; days before the first coverage
+row are unmonitored (nothing is known, not a gap and not a zero); today and the
+first covered day are not judged; a window ending after the newest day in the
+export does not flag the days after it, so pass `--until` when checking recent
+days. Without the table the report says nothing about gaps (`not_exported`).
+
 ## The privacy floor
 
 No row under 5 views is printed: not a page, a source, a country, a city, a
@@ -68,7 +92,7 @@ aggregate label and a count; there is no per-visitor row and no unique count.
 
 | File | Columns | Rows |
 |---|---|---|
-| `metadata.csv` | `key,value` | `generated_at_utc`, `window_since_utc`, `window_until_utc`, `days_with_data` (not in a released `--period` report), `requested_since_utc`, `requested_until_utc`, `requested_days`, `timezone` (always `UTC`), `site`, `privacy_floor_views`, `counted_classes`, `geography_level`, `report_version` |
+| `metadata.csv` | `key,value` | `generated_at_utc`, `window_since_utc`, `window_until_utc`, `days_with_data` (not in a released `--period` report), `requested_since_utc`, `requested_until_utc`, `requested_days`, `timezone` (always `UTC`), `site`, `privacy_floor_views`, `counted_classes`, `geography_level`, `report_version`, `coverage_status`, `coverage_gap_days`, `coverage_partial_days` |
 | `funnel.csv` | `step,value,status` | page views, clicks, kit views, kit unlocks, the two ratios; status `ok`, `below_floor`, `not_in_export`, `not_available`, `n/a` |
 | `pages.csv`, `sources.csv`, `geography.csv`, `links.csv`, `devices.csv`, `browsers.csv`, `systems.csv`, `bot_reasons.csv` | `label,views,row_type` | `row`, one `below_floor` row for the merged remainder, or a single row typed `withheld` or `not_in_export` |
 | `bot_classes.csv` | `class,name,views,share_percent,row_type` | as above |
@@ -142,6 +166,7 @@ agent, so a correct export never trips this. If it does, the export is wrong.
 | `click_src_daily`, `click_country_daily` | `day, link_id, src` (or `country`), `clicks` [`site`] |
 | `click_src_monthly`, `click_country_monthly` | `month` (`YYYY-MM`), `link_id, src` (or `country`), `clicks` [`site`] |
 | `kit_events` | `ts, kind` [`site`] |
+| `analytics_coverage` | `day, hours` (24 letters from `o k p q -`; see Gaps) |
 
 `kit_events` also has a `lead_id` column in the database. Do not select it; a
 file that has it is refused. Select `ts, kind` only.

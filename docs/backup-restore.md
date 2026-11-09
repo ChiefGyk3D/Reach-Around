@@ -32,7 +32,8 @@ config ([deploy.md](deploy.md) has the rollbacks).
 `scripts/backup-d1.sh` exports one file per table, with its schema and rows:
 the click and view aggregate tables, the seal and rollup logs, `click_events`
 (a source label; see the country note below), the counters, the alert quota
-tables and `d1_migrations` (the list of migrations already applied, which a
+tables, `analytics_coverage` (24 letters per day saying whether the Worker was
+collecting; no counts and no visitor data) and `d1_migrations` (the list of migrations already applied, which a
 rebuilt database needs so that "apply migrations" only runs newer ones).
 
 **Country in `click_events`.** The Worker now writes no country there, but the
@@ -136,7 +137,10 @@ export credential in a repository or in a workflow secret.
    npx wrangler deploy --var CLICKS_KILL:0 --var VIEWS_KILL:0
    ```
 
-   Visits during the pause are not counted. Inferred: the Time Travel bookmark
+   Visits during the pause are not counted, and the page-view switch marks
+   those hours as `kill_switch` gaps in the coverage log, so the report shows
+   them as a gap with a reason, never as zero ([failure-modes.md](failure-modes.md)).
+   The click switch is not sampled, so clicks during the pause are simply missing. Inferred: the Time Travel bookmark
    from step 1 is the other point-in-time anchor, because Time Travel restores
    the whole database at one moment (verified, Time Travel page).
 

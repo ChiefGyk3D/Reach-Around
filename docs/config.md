@@ -1219,7 +1219,7 @@ privacy: [alerts](alerts.md). Unknown keys are refused.
 | Key | Type | Default | Meaning |
 | --- | --- | --- | --- |
 | `channels` | list of `discord`, `matrix`, `email` | none | Where alerts go. Each needs its bindings; email has no provider yet. |
-| `events` | list of `kit_unlocked`, `lead_captured`, `gate_failed_repeatedly` | none | What alerts. Both lists must be non-empty for anything to be sent. |
+| `events` | list of `kit_unlocked`, `lead_captured`, `gate_failed_repeatedly`, `analytics_health` | none | What alerts. Both lists must be non-empty for anything to be sent. |
 | `visitor_email` | `full`, `masked`, `none` | `full` | How the visitor's address appears in an alert. |
 | `max_per_minute` | integer, 1-30 | `5` | Messages one channel sends per minute, the held-back notice included. |
 | `matrix.allowed_hosts` | list of up to 4 host names | none | The Matrix homeserver host names the access token may be sent to, matched exactly. Required when `matrix` is a channel. Lowercase DNS names only: no IP address, embedded IP, private or wildcard-DNS name. |

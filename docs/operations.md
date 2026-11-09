@@ -16,7 +16,8 @@ week.
 ## Every day (a minute, no commands)
 
 - Glance at your alert channel ([alerts.md](alerts.md)). Alerts are the daily
-  check; there is nothing else to open.
+  check; there is nothing else to open. What each alert means and what to do
+  is in [failure-modes.md](failure-modes.md); this page does not repeat it.
 - If something looks wrong, turn collection off first (see "Roll back
   analytics" below), then look.
 
@@ -35,6 +36,10 @@ week.
    ```bash
    reach-around report --input <EXPORT> --period week --ledger <PRIVATE-REPO>/funnel-ledger.jsonl
    ```
+
+   Include the `analytics_coverage` table in the export and set `--until` to
+   yesterday (UTC): if the report prints "Collection gaps", read the reasons
+   ([failure-modes.md](failure-modes.md)). A gap is never a zero.
 
    Look for: a day with zero views, a sudden drop, a capacity warning, and a
    figure that is far from last week. A cell under the privacy floor prints as
@@ -135,7 +140,10 @@ Order of preference, least damage first:
    npx wrangler deploy --var VIEWS_KILL:1
    ```
 
-   Turn them back on with `:0`. `LIVE_KILL` does the same for the Live poller.
+   Turn them back on with `:0`. `LIVE_KILL` does the same for the Live poller,
+   and `VIEWS_KILL_SITES` / `CLICKS_KILL_SITES` pause named sites only (full
+   table in [failure-modes.md](failure-modes.md#kill-switches)). Hours with the
+   page-view switch on show as `kill_switch` gaps in the report.
    Leave all of them unset in the committed `wrangler.toml`.
 2. **Roll back the Worker or the site** to the previous deployment (see
    "Rolling back" in [deploy.md](deploy.md)).

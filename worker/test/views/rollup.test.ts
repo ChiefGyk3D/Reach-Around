@@ -514,8 +514,8 @@ describe("retention order", () => {
   it("when_the_rollup_fails_the_raw_rows_survive_the_purge_and_nothing_throws", async () => {
     const now = Date.now();
     await insert([{ ts: now - 9 * DAY }]);
-    // Batches before the rollup's first: lead purge (1) and the view purge (2).
-    const noRollup = failingBatch(4);
+    // Batches before the rollup's first: lead purge (1), health read and coverage (2), view purge (2).
+    const noRollup = failingBatch(6);
     const pending: Promise<unknown>[] = [];
     const ctx = { waitUntil: (p: Promise<unknown>) => void pending.push(p) } as unknown as ExecutionContext;
     await worker.scheduled({} as ScheduledController, { DB: noRollup, SITE_HOST: "x.example.test", LINK_IDS: "[]", CLICK_LIMITER: fakeLimiter() }, ctx);

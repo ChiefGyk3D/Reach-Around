@@ -33,7 +33,7 @@ set -euo pipefail
 
 # Tables worth keeping. Everything else in the database is left out on purpose.
 tables=(
-  alert_dedup alert_quota
+  alert_dedup alert_quota analytics_coverage
   click_budget click_capacity click_country_daily click_country_monthly
   click_events click_funnel_state click_month_log click_seal
   click_src_daily click_src_monthly

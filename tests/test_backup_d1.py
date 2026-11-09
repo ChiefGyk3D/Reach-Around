@@ -302,3 +302,18 @@ def test_it_says_the_export_is_not_one_snapshot(tmp_path: Path) -> None:
     env = make(tmp_path)
     r = run(env, "reach-db", str(dest(tmp_path)))
     assert "not a single point-in-time snapshot" in r.stdout
+
+
+def test_the_coverage_table_is_part_of_the_backup(tmp_path: Path) -> None:
+    env = make(tmp_path)
+    db = sqlite3.connect(env["STUB_DB"])
+    db.execute(
+        "INSERT INTO analytics_coverage (day, hours) VALUES ('2026-11-01', ?)",
+        ("o" * 23 + "-",),
+    )
+    db.commit()
+    d = dest(tmp_path)
+    r = run(env, "reach-db", str(d), "--apply")
+    assert r.returncode == 0, r.stderr
+    (out,) = list(d.iterdir())
+    assert "2026-11-01" in (out / "analytics_coverage.sql").read_text()

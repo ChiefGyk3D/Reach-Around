@@ -17,6 +17,10 @@
       "window_start",
       "count"
     ],
+    "analytics_coverage": [
+      "day",
+      "hours"
+    ],
     "click_budget": [
       "site",
       "day",
