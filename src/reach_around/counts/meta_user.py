@@ -58,6 +58,7 @@ from typing import Protocol, TextIO
 from urllib.parse import urlencode, urlsplit
 
 from reach_around.config.numbers_sources import InstagramSource, ThreadsSource
+from reach_around.counts.history import MAX_VALUE
 from reach_around.net.fetch import FetchError
 
 INSTAGRAM_HOST = "graph.instagram.com"
@@ -409,7 +410,9 @@ def follower_total(
 #   (``total_value.value``); all accept since and until. ``replies`` counts only
 #   top-level replies. Permission ``threads_manage_insights``.
 # The page contradicts itself once: one example shows ``views`` as a total value.
-# This code accepts either shape for ``views`` (UNVERIFIED which one is live).
+# This code accepts either shape for ``views`` (UNVERIFIED which one is live); the
+# series shape is checked against the requested window, the total_value shape is
+# stored under its own metric because its window is vendor-defined.
 # UNVERIFIED: whether ``until`` is inclusive, the data delay, and that a day
 # boundary is a UTC midnight (the documented example shows 08:00 UTC end times),
 # so "7 UTC days" is the requested range, not a proven boundary.
@@ -419,7 +422,6 @@ def follower_total(
 INSIGHT_WINDOW_DAYS = 7
 INSIGHT_ENGAGEMENT = ("likes", "replies", "reposts", "quotes")
 MAX_INSIGHT_VALUE = 10**12
-MAX_SERIES_POINTS = 31
 
 
 def _insight_int(value: object) -> int | None:
@@ -428,22 +430,52 @@ def _insight_int(value: object) -> int | None:
     return value
 
 
-def _series_total(item: Mapping[str, object]) -> int | None:
+def _end_time(value: object) -> datetime | None:
+    if not isinstance(value, str) or len(value) > 40:
+        return None
+    try:
+        parsed = datetime.strptime(value, "%Y-%m-%dT%H:%M:%S%z")
+    except ValueError:
+        return None
+    return parsed.astimezone(UTC)
+
+
+def _series_total(
+    item: Mapping[str, object], since: datetime, until: datetime
+) -> tuple[int, bool] | None:
+    """(sum, window_verified). The series shape is bound to the request.
+
+    ``period`` must be ``day``, every ``end_time`` must parse and lie from
+    ``since`` to one day after ``until`` (a day's end_time can fall just after the
+    requested end; UNVERIFIED boundary), no end_time repeats, and there are at
+    most INSIGHT_WINDOW_DAYS + 1 points. The ``total_value`` shape carries no time
+    information, so its window is vendor-defined and ``window_verified`` is False.
+    """
     values = item.get("values")
     if isinstance(values, list):
-        if not values or len(values) > MAX_SERIES_POINTS:
-            return None
+        if item.get("period") != "day":
+            raise MetaError("window_mismatch")
+        if not values or len(values) > INSIGHT_WINDOW_DAYS + 1:
+            raise MetaError("window_mismatch")
         total = 0
+        seen: set[datetime] = set()
         for point in values:
-            number = (
-                _insight_int(point.get("value")) if isinstance(point, dict) else None
-            )
+            if not isinstance(point, dict):
+                return None
+            number = _insight_int(point.get("value"))
+            when = _end_time(point.get("end_time"))
             if number is None:
                 return None
+            if when is None or when in seen:
+                raise MetaError("window_mismatch")
+            if not since <= when <= until + timedelta(days=1):
+                raise MetaError("window_mismatch")
+            seen.add(when)
             total += number
-        return total
+        return total, True
     box = item.get("total_value")
-    return _insight_int(box.get("value")) if isinstance(box, dict) else None
+    number = _insight_int(box.get("value")) if isinstance(box, dict) else None
+    return None if number is None else (number, False)
 
 
 def threads_insights(
@@ -480,17 +512,20 @@ def threads_insights(
     data = reply.get("data")
     if not isinstance(data, list) or len(data) > 20:
         raise MetaError("missing_field")
-    found: dict[str, int | None] = {}
+    found: dict[str, tuple[int, bool] | None] = {}
     for item in data:
         name = item.get("name") if isinstance(item, dict) else None
         if isinstance(name, str) and name in ("views", *INSIGHT_ENGAGEMENT):
-            found[name] = _series_total(item)
+            found[name] = _series_total(item, since, until)
     out: dict[str, int] = {}
-    if found.get("views") is not None:
-        out["views_7d"] = found["views"]  # type: ignore[assignment]
+    views = found.get("views")
+    if views is not None:
+        out["views_7d" if views[1] else "views_vendor_window"] = views[0]
     parts = [found.get(name) for name in INSIGHT_ENGAGEMENT]
-    if None not in parts:
-        out["engagement_7d"] = sum(p or 0 for p in parts)
+    if all(p is not None for p in parts):
+        out["engagement_7d"] = sum(p[0] for p in parts if p is not None)
     if not out:
         raise MetaError("missing_field")
+    if any(value > MAX_VALUE for value in out.values()):
+        raise MetaError("bad_aggregate")
     return out

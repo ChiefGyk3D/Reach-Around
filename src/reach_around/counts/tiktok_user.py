@@ -50,6 +50,7 @@ from reach_around.config.numbers_sources import (
     TIKTOK_REFRESH_ENV,
     TiktokSource,
 )
+from reach_around.counts.history import MAX_VALUE
 from reach_around.net.fetch import FetchError
 
 HOST = "open.tiktokapis.com"
@@ -489,7 +490,10 @@ def video_stats(
         items = data.get("videos") if isinstance(data, dict) else None
         if items is None and isinstance(data, dict) and "videos" not in data:
             items = []  # an account with no public videos may omit the list
-        if not isinstance(items, list) or len(items) > 4 * VIDEO_PAGE_SIZE:
+        if not isinstance(items, list) or len(items) > VIDEO_PAGE_SIZE:
+            raise TiktokError("missing_field")
+        more = data.get("has_more") if isinstance(data, dict) else None
+        if type(more) is not bool:
             raise TiktokError("missing_field")
         reached_cutoff = False
         for item in items:
@@ -514,7 +518,7 @@ def video_stats(
                 )
         if not isinstance(data, dict):
             raise TiktokError("missing_field")
-        if reached_cutoff or data.get("has_more") is not True:
+        if reached_cutoff or more is False:
             return _video_result(views, engagement, videos)
         nxt = data.get("cursor")
         if type(nxt) is not int or nxt <= 0 or (cursor is not None and nxt >= cursor):
@@ -527,6 +531,9 @@ def _video_result(
     views: int | None, engagement: int | None, videos: int
 ) -> dict[str, int]:
     out: dict[str, int] = {"videos_28d": videos}
+    for total in (views, engagement):
+        if total is not None and total > MAX_VALUE:
+            raise TiktokError("bad_aggregate")
     if views is not None:
         out["video_views_28d"] = views
     if engagement is not None:

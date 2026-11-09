@@ -21,6 +21,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from reach_around.config.numbers_sources import ThreadsSource, TiktokSource
+from reach_around.counts.history import MAX_VALUE
 from reach_around.counts.meta_user import MetaError, threads_insights
 from reach_around.counts.tiktok_user import TiktokError, video_stats
 from reach_around.net.fetch import FetchError
@@ -38,11 +39,18 @@ METRICS: dict[tuple[str, str], str] = {
         "tiktok",
         "video_engagement_28d",
     ): "sum of lifetime likes+comments+shares, videos posted in last 28 UTC days",
-    ("threads", "views_7d"): "sum of daily views, 7 UTC days before the run day",
+    (
+        "threads",
+        "views_7d",
+    ): "sum of daily views, end_time checked within 7 UTC days before the run day",
+    (
+        "threads",
+        "views_vendor_window",
+    ): "views total_value; window vendor-defined (since/until sent, unverified)",
     (
         "threads",
         "engagement_7d",
-    ): "likes+replies+reposts+quotes, 7 UTC days before the run day",
+    ): "likes+replies+reposts+quotes totals; since/until sent, window vendor-defined",
 }
 OWNER_REPORT_ONLY = frozenset(name for _, name in METRICS)
 
@@ -59,6 +67,8 @@ _WORDS = frozenset(
         "api_error",
         "missing_field",
         "window_incomplete",
+        "window_mismatch",
+        "bad_aggregate",
         "refresh_failed",
         "redirect",
         "too_large",
@@ -124,6 +134,9 @@ def collect(
             failures.append(InsightFailure(source.platform, "fetch_failed"))
             continue
         for metric, value in sorted(numbers.items()):
+            if type(value) is not int or not 0 <= value <= MAX_VALUE:
+                failures.append(InsightFailure(source.platform, "bad_aggregate"))
+                continue
             note = METRICS.get((source.kind, metric))
             if note is not None:
                 figures.append(Figure(source.platform, metric, value, note))

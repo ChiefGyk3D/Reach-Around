@@ -18,14 +18,15 @@ UNVERIFIED = not stated on a page that could be read, or not tested live.
 
 These metrics are OWNER REPORT ONLY. No kit, link page or public file may show
 them yet: the display work (#397) with its floors, and the field marker work
-(#424), are not built. The site build never reads them, and a test fails if the
-metric names appear in the site, kit, editor or preview code. When #397 lands,
+(#424), are not built. The site build never reads them, and a test fails if site, kit, editor, config or preview code imports the
+history or insights modules (the figures live only in the history file). When #397 lands,
 these metrics enter the policy table as owner-report-only first. Both vendors
 treat the figures as the account owner's own data; Meta Platform Terms and the
 TikTok Developer Terms ask for deletion when the app stops or on request (see
 the follower guides). If an app or token is revoked, delete these records too.
 
-Each figure is an aggregate over a stated window, stored as a whole number
+Every final figure must be a whole number from 0 to the history maximum
+(10^12), else `bad_aggregate` and nothing is stored. Each figure is an aggregate over a stated window, stored as a whole number
 (never a zero for a failure; a missing or wrong-typed field leaves that metric
 out). Do not add figures across platforms: the definitions differ.
 
@@ -55,7 +56,9 @@ Metrics (history, platform `tiktok`):
 - `video_engagement_28d`: sum of `like_count + comment_count + share_count` over
   the same videos.
 
-Paging: 20 videos a page, at most 5 pages (100 videos). If the 5th page still
+Paging: 20 videos a page (a page with more is refused), at most 5 pages (100
+videos). `has_more` must be a real boolean: `true` continues, `false` ends, any
+other type or an absent value is `missing_field`. If the 5th page still
 holds videos inside the window, nothing is stored and the failure word is
 `window_incomplete`. A cursor that does not go back is `missing_field`.
 
@@ -76,17 +79,24 @@ fixed variable `THREADS_ACCESS_TOKEN`. The call never refreshes a token.
 
 Metrics (history, platform `threads`):
 
-- `views_7d`: sum of the daily `views` for `since` = 00:00 UTC seven days before
-  the run day to `until` = 00:00 UTC of the run day. The day boundaries are the
-  API's own; see the UNVERIFIED row.
-- `engagement_7d`: `likes + replies + reposts + quotes` for the same range. Left
-  out when any of the four is missing.
+- `views_7d`: sum of the daily `views` (series shape) for `since` = 00:00 UTC
+  seven days before the run day to `until` = 00:00 UTC of the run day. The answer
+  is checked against that request: `period` must be `day`, every `end_time` must
+  parse and fall from `since` to one day after `until`, none may repeat, and at
+  most 8 points are accepted; otherwise `window_mismatch` and nothing is stored.
+  The day boundaries are the API's own; see the UNVERIFIED row.
+- `views_vendor_window`: `views` when the answer is the `total_value` shape. It
+  carries no time information, so its window is vendor-defined and it is stored
+  under its own name, never as `views_7d`.
+- `engagement_7d`: `likes + replies + reposts + quotes` for the same
+  request (each is a `total_value`, so the window is vendor-defined). Left out when
+  any of the four is missing.
 
 ## Failure words
 
 `bad_credential_name`, `bad_source_setting`, `missing_credential`,
 `invalid_credential`, `token_expired`, `token_rejected`, `scope_missing`,
-`api_error`, `missing_field`, `window_incomplete`, `redirect`, `too_large`,
+`api_error`, `missing_field`, `window_incomplete`, `window_mismatch`, `bad_aggregate`, `redirect`, `too_large`,
 `bad_json`, `content_type`, `rate_limited`, `server_error`, `bad_host`,
 `http_<status>`, `fetch_failed`. A failure prints `<platform>: insights error
 (<word>)` to stderr, keeps the follower number and its history record, and makes

@@ -77,7 +77,7 @@ def series(name: str, values: list[int]) -> dict:
         "name": name,
         "period": "day",
         "values": [
-            {"value": v, "end_time": f"2026-11-0{i + 1}T08:00:00+0000"}
+            {"value": v, "end_time": f"2026-11-0{i + 3}T08:00:00+0000"}
             for i, v in enumerate(values)
         ],
     }
@@ -282,7 +282,9 @@ def test_threads_window_formula_and_request() -> None:
 
 def test_threads_views_as_total_value_shape_is_accepted() -> None:
     fetch, _ = th_fetch(reply({"data": [total("views", 77)]}))
-    assert threads_insights(TH, TH_ENV, fetch, date(2026, 11, 9)) == {"views_7d": 77}
+    assert threads_insights(TH, TH_ENV, fetch, date(2026, 11, 9)) == {
+        "views_vendor_window": 77
+    }
 
 
 def test_threads_missing_one_engagement_part_drops_engagement() -> None:
@@ -313,7 +315,7 @@ def test_threads_hostile_shapes_store_nothing(data: Any) -> None:
     fetch, _ = th_fetch(reply({"data": data}))
     with pytest.raises(MetaError) as err:
         threads_insights(TH, TH_ENV, fetch, date(2026, 11, 9))
-    assert err.value.kind == "missing_field"
+    assert err.value.kind in ("missing_field", "window_mismatch")
 
 
 def test_threads_failures_are_fixed_words() -> None:
@@ -389,19 +391,162 @@ def test_collect_figures_carry_a_note_naming_window_and_formula() -> None:
     figures, failures = collect([TH], frozenset({"threads"}), TH_ENV, fetch, NOW)
     assert not failures
     assert {f.metric for f in figures} == {"views_7d", "engagement_7d"}
-    assert all("UTC" in f.note or "run day" in f.note for f in figures)
+    assert all("UTC" in f.note or "vendor-defined" in f.note for f in figures)
     assert {f.metric for f in figures} <= OWNER_REPORT_ONLY
 
 
 def test_owner_report_only_metrics_never_reach_the_build_or_kit() -> None:
+    """Boundary check: public-side code cannot read the history store at all.
+
+    The history file is the only place the figures live, so site, kit, editor and
+    preview code must not import the history or insights modules (an import
+    check, not a search for metric names, so aliases and prefixes cannot slip by).
+    """
+    import ast
+
     root = Path(__file__).resolve().parents[1] / "src" / "reach_around"
-    for sub in ("site", "kit", "editor", "preview.py"):
+    banned = ("reach_around.counts.history", "reach_around.counts.insights")
+    for sub in ("site", "kit", "editor", "preview.py", "config", "editing.py"):
         target = root / sub
         files = [target] if target.is_file() else sorted(target.rglob("*.py"))
         for path in files:
-            text = path.read_text(encoding="utf-8")
-            for name in OWNER_REPORT_ONLY:
-                assert name not in text, (path.name, name)
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+            for node in ast.walk(tree):
+                names: list[str] = []
+                if isinstance(node, ast.ImportFrom) and node.module:
+                    names = [
+                        node.module,
+                        *(f"{node.module}.{a.name}" for a in node.names),
+                    ]
+                elif isinstance(node, ast.Import):
+                    names = [a.name for a in node.names]
+                for name in names:
+                    assert not name.startswith(banned), (path.name, name)
+
+
+# ---- review findings (Daybreak, PR 478) ----
+
+
+@pytest.mark.parametrize("flag", ["true", 1, None, "false", 0, [True]], ids=repr)
+def test_tiktok_has_more_must_be_a_real_boolean(flag: Any) -> None:
+    payload = {
+        "data": {"videos": [video(1)], "has_more": flag, "cursor": 5},
+        "error": {"code": "ok"},
+    }
+    fetch, _ = tt_fetch(reply(payload))
+    with pytest.raises(TiktokError) as err:
+        video_stats(TT, TT_ENV, fetch, NOW_S)
+    assert err.value.kind == "missing_field"
+
+
+def test_tiktok_has_more_absent_is_refused() -> None:
+    fetch, _ = tt_fetch(
+        reply({"data": {"videos": [video(1)]}, "error": {"code": "ok"}})
+    )
+    with pytest.raises(TiktokError) as err:
+        video_stats(TT, TT_ENV, fetch, NOW_S)
+    assert err.value.kind == "missing_field"
+
+
+def test_tiktok_page_over_the_documented_size_is_refused() -> None:
+    fetch, _ = tt_fetch(page([video(1, 1)] * 21))
+    with pytest.raises(TiktokError) as err:
+        video_stats(TT, TT_ENV, fetch, NOW_S)
+    assert err.value.kind == "missing_field"
+    fetch, _ = tt_fetch(page([video(1, 1)] * 20))
+    assert video_stats(TT, TT_ENV, fetch, NOW_S)["videos_28d"] == 20
+
+
+def test_tiktok_final_aggregate_over_the_history_maximum_is_refused() -> None:
+    big = 10**12  # each value is individually allowed
+    fetch, _ = tt_fetch(page([video(1, big), video(2, big)]))
+    with pytest.raises(TiktokError) as err:
+        video_stats(TT, TT_ENV, fetch, NOW_S)
+    assert err.value.kind == "bad_aggregate"
+
+
+def test_tiktok_engagement_aggregate_over_the_maximum_is_refused() -> None:
+    big = 10**12
+    fetch, _ = tt_fetch(page([video(1, 1, likes=big), video(2, 1, likes=big)]))
+    with pytest.raises(TiktokError) as err:
+        video_stats(TT, TT_ENV, fetch, NOW_S)
+    assert err.value.kind == "bad_aggregate"
+
+
+def test_threads_views_sum_over_the_maximum_is_refused() -> None:
+    values = [10**12, 10**12]
+    fetch, _ = th_fetch(reply({"data": [series("views", values)]}))
+    with pytest.raises(MetaError) as err:
+        threads_insights(TH, TH_ENV, fetch, date(2026, 11, 9))
+    assert err.value.kind == "bad_aggregate"
+
+
+def test_threads_engagement_sum_over_the_maximum_is_refused() -> None:
+    data = [total(n, 10**12) for n in ("likes", "replies", "reposts", "quotes")]
+    fetch, _ = th_fetch(reply({"data": data}))
+    with pytest.raises(MetaError) as err:
+        threads_insights(TH, TH_ENV, fetch, date(2026, 11, 9))
+    assert err.value.kind == "bad_aggregate"
+
+
+def _views(period: str, points: list[tuple[int, str]]) -> Any:
+    return reply(
+        {
+            "data": [
+                {
+                    "name": "views",
+                    "period": period,
+                    "values": [{"value": v, "end_time": t} for v, t in points],
+                }
+            ]
+        }
+    )
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        _views("lifetime", [(100, "2026-11-03T08:00:00+0000")]),
+        _views(
+            "day",
+            [(100, "2020-01-01T00:00:00+0000"), (200, "2035-01-01T00:00:00+0000")],
+        ),
+        _views("day", [(1, "2026-11-03T08:00:00+0000")] * 2),
+        _views("day", [(1, "not a time")]),
+        _views("day", [(1, "2026-11-01T08:00:00+0000")]),
+        _views("day", [(1, "2026-11-12T08:00:00+0000")]),
+        _views("day", [(1, f"2026-11-{d:02d}T08:00:00+0000") for d in range(2, 12)]),
+        _views("day", [(1, 5)]),
+    ],
+    ids=range(8),
+)
+def test_threads_views_series_must_match_the_requested_window(answer: Any) -> None:
+    fetch, _ = th_fetch(answer)
+    with pytest.raises(MetaError) as err:
+        threads_insights(TH, TH_ENV, fetch, date(2026, 11, 9))
+    assert err.value.kind in ("missing_field", "window_mismatch")
+    assert err.value.kind == "window_mismatch"
+
+
+def test_threads_views_series_inside_the_window_is_accepted() -> None:
+    points = [(1, f"2026-11-{d:02d}T08:00:00+0000") for d in range(3, 10)]
+    fetch, _ = th_fetch(_views("day", points))
+    assert threads_insights(TH, TH_ENV, fetch, date(2026, 11, 9)) == {"views_7d": 7}
+
+
+def test_threads_total_value_views_is_stored_as_vendor_defined_window() -> None:
+    fetch, _ = th_fetch(reply({"data": [total("views", 77)]}))
+    out = threads_insights(TH, TH_ENV, fetch, date(2026, 11, 9))
+    assert out == {"views_vendor_window": 77}
+    figures, _ = collect(
+        [TH],
+        frozenset({"threads"}),
+        TH_ENV,
+        lambda u, **k: {"data": [total("views", 77)]},
+        NOW,
+    )
+    note = figures[0].note
+    assert "vendor-defined" in note and figures[0].metric in OWNER_REPORT_ONLY
 
 
 # ---- end to end through counts refresh ----
