@@ -382,7 +382,10 @@ def test_no_script_and_no_third_party_request_anywhere(tmp_path: Path) -> None:
         gated / GATED_FILE,
     ):
         text = path.read_text(encoding="utf-8")
-        assert Page(text).scripts == 0, path
+        # The public page links the one same-origin display-zone script (#372);
+        # the retry and gated pages carry none.
+        expected = 1 if path == out / "kit" / "index.html" else 0
+        assert Page(text).scripts == expected, path
         assert "challenges.cloudflare.com" not in text
         assert "style=" not in text and "onclick" not in text.lower()
     # The CSP allows the Turnstile origin on the two gate paths only (#257;

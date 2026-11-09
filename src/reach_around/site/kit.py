@@ -45,6 +45,7 @@ from jinja2 import Environment
 
 from reach_around.config.blocks import platform_name
 from reach_around.config.cutover import cutover_label, live_since, utc_today
+from reach_around.config.era import classify_era, era_text
 from reach_around.config.kit import (
     KitConfig,
     ResolvedMetric,
@@ -55,6 +56,7 @@ from reach_around.config.kit import (
 )
 from reach_around.config.models import SiteConfig
 from reach_around.config.numbers import Numbers, stale_limit
+from reach_around.config.zones import ZONES, utc_day_start_iso
 
 KIT_PAGE = Path("kit") / "index.html"
 RETRY_PAGE = Path("kit") / "retry" / "index.html"
@@ -584,6 +586,7 @@ def _metric_rows(
     metrics: list[ResolvedMetric],
     config: Any = None,
     today: date | None = None,
+    live_day: date | None = None,
 ) -> list[dict[str, Any]]:
     return [
         {
@@ -591,6 +594,7 @@ def _metric_rows(
             "label": m.label,
             "value": f"{m.value:,}",
             "as_of": m.as_of.isoformat() if m.as_of is not None else "",
+            "era": era_text(classify_era(m.as_of, live_day)),
             "stale": (
                 config is not None
                 and today is not None
@@ -603,7 +607,9 @@ def _metric_rows(
     ]
 
 
-def _total(total: UnifiedTotal, metrics: list[ResolvedMetric]) -> dict[str, Any] | None:
+def _total(
+    total: UnifiedTotal, metrics: list[ResolvedMetric], live_day: date | None = None
+) -> dict[str, Any] | None:
     if total.total is None:
         return None
     dates = [m.as_of for m in metrics if m.in_total and m.value is not None and m.as_of]
@@ -611,6 +617,7 @@ def _total(total: UnifiedTotal, metrics: list[ResolvedMetric]) -> dict[str, Any]
         "value": f"{total.total:,}",
         "counted": total.counted,
         "oldest": min(dates).isoformat() if dates else "",
+        "mixed": len({classify_era(d, live_day) for d in dates} - {"unknown"}) > 1,
     }
 
 
@@ -623,15 +630,19 @@ def _content(
     metrics: list[ResolvedMetric] = projection["metrics"]
     return {
         "live_since": (
-            {"iso": live_day.isoformat(), "text": cutover_label(live_day)}
+            {
+                "iso": live_day.isoformat(),
+                "text": cutover_label(live_day),
+                "start": utc_day_start_iso(live_day),
+            }
             if live_day is not None
             else None
         ),
         "title": projection["title"],
         "about": projection["about"],
         "contact": projection["contact"],
-        "metrics": _metric_rows(metrics, config, today),
-        "total": _total(projection["unified_total"], metrics),
+        "metrics": _metric_rows(metrics, config, today, live_day),
+        "total": _total(projection["unified_total"], metrics, live_day),
     }
 
 
@@ -700,7 +711,13 @@ def render_kit(
     pages: dict[Path, str] = {}
     ctx = base("../", "Media kit", False)
     pages[KIT_PAGE] = env.get_template("kit.html").render(
-        **{**ctx, "root": "../", "kit": public, "form": form}
+        **{
+            **ctx,
+            "root": "../",
+            "kit": public,
+            "form": form,
+            "zone_choices": ZONES if public["metrics"] else None,
+        }
     )
     if form is not None:
         ctx = base("../../", "Try again", False)
