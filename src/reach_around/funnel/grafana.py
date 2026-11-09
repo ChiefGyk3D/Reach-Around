@@ -32,11 +32,12 @@ import sqlite3
 import stat
 from collections import defaultdict
 from dataclasses import dataclass, field
-from datetime import date, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 from reach_around.funnel.export import Export
+from reach_around.funnel.gaps import coverage_for_window
 from reach_around.funnel.report import (
     FLOOR,
     _geo_label,
@@ -45,7 +46,7 @@ from reach_around.funnel.report import (
     _utc_day,
 )
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 RETENTION_DAYS = 90  # the ceiling for local copies (analytics-design, threat B2)
 OTHER = "(below the floor)"
 APPLICATION_ID = 0x52410335  # marks a file this job made, so it never overwrites others
@@ -57,6 +58,10 @@ TABLES: dict[str, tuple[str, ...]] = {
     "grafana_sources_daily": ("day", "source", "views"),
     "grafana_countries_daily": ("day", "country", "views"),
     "grafana_clicks_daily": ("day", "link_id", "clicks"),
+    # Days with no or partial collection (issue #402). A day listed here has no row of
+    # zeros in the tables above: draw it as a gap. status is gap or partial; reason is
+    # outage, quota, kill_switch or site_kill_switch (joined with +).
+    "grafana_gaps_daily": ("day", "status", "reason"),
 }
 
 _DDL = """
@@ -81,6 +86,10 @@ CREATE TABLE grafana_clicks_daily (
     day TEXT NOT NULL, link_id TEXT NOT NULL, clicks INTEGER NOT NULL,
     PRIMARY KEY (day, link_id)
 ) WITHOUT ROWID;
+CREATE TABLE grafana_gaps_daily (
+    day TEXT NOT NULL, status TEXT NOT NULL, reason TEXT NOT NULL,
+    PRIMARY KEY (day)
+) WITHOUT ROWID;
 """
 
 
@@ -97,6 +106,7 @@ class Subset:
     sources: list[tuple[str, str, int]] = field(default_factory=list)
     countries: list[tuple[str, str, int]] = field(default_factory=list)
     clicks: list[tuple[str, str, int]] = field(default_factory=list)
+    gaps: list[tuple[str, str, str]] = field(default_factory=list)
 
     def counts(self) -> dict[str, int]:
         return {
@@ -105,6 +115,7 @@ class Subset:
             "grafana_sources_daily": len(self.sources),
             "grafana_countries_daily": len(self.countries),
             "grafana_clicks_daily": len(self.clicks),
+            "grafana_gaps_daily": len(self.gaps),
         }
 
 
@@ -122,7 +133,13 @@ def _floor_days(
     return sorted(out)
 
 
-def build_subset(export: Export, *, site: str = "links", floor: int = FLOOR) -> Subset:
+def build_subset(
+    export: Export,
+    *,
+    site: str = "links",
+    floor: int = FLOOR,
+    today: date | None = None,
+) -> Subset:
     """Reduce a validated export to the documented, floored daily subset."""
     if floor < FLOOR:
         raise ValueError(f"the floor cannot be below {FLOOR}")
@@ -156,9 +173,21 @@ def build_subset(export: Export, *, site: str = "links", floor: int = FLOOR) -> 
     for c in click_rows:
         if c["day"] >= oldest:
             clicks[c["day"]][c["link_id"]] += 1
+    cov = coverage_for_window(
+        export.analytics_coverage,
+        "analytics_coverage" in export.present,
+        oldest or None,
+        max([*days, *(r["day"] for r in export.analytics_coverage)], default=None),
+        today or datetime.now(UTC).date(),
+    )
+    gaps = sorted(
+        [(g.day, "gap", g.reasons[0]) for g in cov.gaps]
+        + [(p.day, "partial", "+".join(p.reasons)) for p in cov.partial]
+    )
     return Subset(
         site=site,
         floor=floor,
+        gaps=gaps,
         views=_floor_days(classes, floor, frozenset({"h"})),
         pages=_floor_days(pages, floor),
         sources=_floor_days(sources, floor),
@@ -227,6 +256,7 @@ def _build_bytes(subset: Subset) -> bytes:
             "grafana_sources_daily": subset.sources,
             "grafana_countries_daily": subset.countries,
             "grafana_clicks_daily": subset.clicks,
+            "grafana_gaps_daily": subset.gaps,
         }
         for table, rows in data.items():
             marks = ", ".join("?" for _ in TABLES[table])

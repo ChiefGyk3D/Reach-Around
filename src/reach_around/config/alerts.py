@@ -17,7 +17,12 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 AlertChannel = Literal["discord", "matrix", "email"]
-AlertEventName = Literal["kit_unlocked", "lead_captured", "gate_failed_repeatedly"]
+AlertEventName = Literal[
+    "kit_unlocked",
+    "lead_captured",
+    "gate_failed_repeatedly",
+    "analytics_health",
+]
 VisitorEmail = Literal["full", "masked", "none"]
 
 # The Worker's own limits (worker/src/alerts/config.ts).

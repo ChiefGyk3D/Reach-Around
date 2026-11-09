@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 import { QueryMeter, meteredDb, queryBudget } from "./d1budget";
 import { handleClick, MAX_URL_LENGTH, type Env as ClickEnv } from "./click";
+import { HEALTH_MIN_BUDGET, HEALTH_QUERIES, runHealth, type HealthEnv } from "./health";
 import { handleLive, LIVE_CRON, LIVE_ROUTE, runLivePoller, type LiveEnv } from "./live";
 import { LEAD_PURGE_QUERIES, purgeExpiredLeads } from "./kit/leadretention";
 import { logEvent } from "./kit/log";
@@ -73,7 +74,8 @@ export default {
   async scheduled(
     controller: ScheduledController,
     env: ClickEnv &
-      LiveEnv & {
+      LiveEnv &
+      HealthEnv & {
       RAW_KEEP_DAYS?: string;
       GEO_LEVEL?: string;
       TOP_SOURCES?: string;
@@ -119,6 +121,16 @@ export default {
           }
         };
         if (leadsFirst) await purgeLeads();
+        // Collection coverage and analytics health alerts (issues #401, #402): two metered queries when
+        // idle, a slice of HEALTH_QUERIES at most, skipped under HEALTH_MIN_BUDGET. Runs before the
+        // purges and the rollup so a long backlog cannot starve it, and never throws.
+        if (budget >= HEALTH_MIN_BUDGET) {
+          try {
+            await runHealth(env, meteredDb(env.DB, meter.slice(HEALTH_QUERIES)), now);
+          } catch {
+            logEvent("log", "failed", "other");
+          }
+        }
         try {
           await purgeOldEvents({ ...env, DB: whole }, now);
         } catch {

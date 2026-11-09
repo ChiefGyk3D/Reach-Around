@@ -166,6 +166,9 @@ def _meta_rows(
         ["period_end_utc", report["release"]["end"] or ""],
         ["counting_capacity", report["capacity"]["status"]],
         ["counting_capacity_warning", report["capacity"]["warning"]],
+        ["coverage_status", report["coverage"]["status"]],
+        ["coverage_gap_days", report["coverage"]["gap_days"]],
+        ["coverage_partial_days", report["coverage"]["partial_days"]],
         ["timezone", "UTC"],
         *_display_rows(report, generated_at),
         ["site", report["site"]],
@@ -316,6 +319,14 @@ def csv_files(
     files["bot_reasons.csv"] = render_csv(
         _TABLE_HEADER, _table_rows(report["bots"]["reasons"])
     )
+    cov = report["coverage"]
+    if cov["gaps"] or cov["partial"]:
+        # Days with no collection are rows here, never zero rows in another file.
+        files["gaps.csv"] = render_csv(
+            ["day", "status", "reason"],
+            [[g["day"], "gap", g["reason"]] for g in cov["gaps"]]
+            + [[p["day"], "partial", "+".join(p["reasons"])] for p in cov["partial"]],
+        )
     files.update(owner_csv_files(owner_view(report)))
     return files
 

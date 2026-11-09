@@ -359,7 +359,7 @@ describe("oversized input is cheap and capped", () => {
     const m = mockFetch();
     const d = createDispatcher();
     for (const bad of [null, undefined, 5, "x", { kind: "nope" }, { kind: "kit_unlocked", email: { toString() { throw new Error("x"); } } }]) {
-      await expect(d.notify({ DB, ALERT_DISCORD_WEBHOOK: DISCORD, ALERTS_CONFIG: cfg() }, bad as never, { fetchFn: m.fn, nowMs: T0 })).resolves.toBeUndefined();
+      await expect(d.notify({ DB, ALERT_DISCORD_WEBHOOK: DISCORD, ALERTS_CONFIG: cfg() }, bad as never, { fetchFn: m.fn, nowMs: T0 })).resolves.toBeInstanceOf(Array);
     }
   });
 });
