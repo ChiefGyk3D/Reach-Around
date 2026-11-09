@@ -709,6 +709,7 @@ jobs:
           SITE_HOST: ${{ vars.SITE_HOST }}
           LINK_IDS: ${{ steps.manifest.outputs.link_ids }}
           LEAD_RETENTION_DAYS: ${{ steps.manifest.outputs.lead_retention_days }}
+          ALERTS_CONFIG: ${{ steps.manifest.outputs.alerts_config }}
           ZONE_NAME: ${{ vars.ZONE_NAME }}
           LIVE_TWITCH_HANDLE: ${{ vars.LIVE_TWITCH_HANDLE }}
           LIVE_KICK_HANDLE: ${{ vars.LIVE_KICK_HANDLE }}
@@ -751,6 +752,17 @@ jobs:
           fi
           sed -i "/^\[vars\]$/a LEAD_RETENTION_DAYS = \"${LEAD_RETENTION_DAYS}\"" wrangler.deploy.toml
           grep -qxF "LEAD_RETENTION_DAYS = \"${LEAD_RETENTION_DAYS}\"" wrangler.deploy.toml
+          # Owner alerts: the site config's alerts section, as recorded in the
+          # build manifest and checked by verify-manifest.py (second lock here).
+          # Unset means alerts stay off and nothing is written. No secret is
+          # in it; webhook URL, token and dedup key are Worker secrets.
+          if [ -n "${ALERTS_CONFIG:-}" ]; then
+            alerts_re='^[{][]A-Za-z0-9_",:.[{}-]{1,990}[}]$'
+            [[ "${ALERTS_CONFIG}" =~ $alerts_re ]] \
+              || { echo "::error::the alerts config from the build manifest is invalid"; exit 1; }
+            sed -i "/^\[vars\]$/a ALERTS_CONFIG = '${ALERTS_CONFIG}'" wrangler.deploy.toml
+            grep -qxF "ALERTS_CONFIG = '${ALERTS_CONFIG}'" wrangler.deploy.toml
+          fi
           # Optional route so click pings to /e/c/<id> on the site host reach
           # the Worker. Values were validated in "Check configuration".
           if [ -n "${ZONE_NAME:-}" ]; then

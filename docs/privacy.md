@@ -63,8 +63,20 @@ npx wrangler d1 execute reach-around-clicks --remote --command "SELECT value FRO
 ```
 
 Not covered by this retention: Cloudflare's own recovery windows and logs for
-the D1 database, and any export you made by hand. Those follow the provider's
+the D1 database, owner alert copies in a chat service or mailbox (below), and any export you made by hand. Those follow the provider's
 rules and your own housekeeping (docs/security/threat-model.md, T-17).
+
+## Owner alerts and the address
+
+If you turn on owner alerts (`alerts` in `site.yaml`, see [alerts](alerts.md)),
+the Worker forwards a short notice to the Discord room, Matrix room or mailbox
+you chose when someone unlocks the kit or a new lead is stored. That notice can
+carry the visitor's address (`alerts.visitor_email`: `full`, `masked` or
+`none`) and the UTC time. It never carries an IP address, user agent, cookie,
+token or country. The copy in your chat service or mailbox is outside the
+Worker's retention: the `LEAD_RETENTION_DAYS` purge does not reach it, so delete
+it there when you honor a deletion request, and mention the channel in your own
+privacy wording. With alerts off (the default) nothing leaves the Worker.
 
 ## Honoring a deletion request
 
@@ -131,7 +143,7 @@ row is a count and closed labels (a link id, a label from the site's fixed list
 or `direct` or `other`, a two-letter country code). Not collected: a cookie, a
 stored identifier, an IP address, a user agent, a referrer address, a timestamp
 finer than a day on these tables, or any link between a click and a page view or
-a person. A raw click row carries at most a source label and never a country; country exists only in the counter. Source and country are never stored together, and no
+a person. A raw click row carries at most a source label and never a country; country exists only in the counter (rows written before this change are cleared by an owner-run script, `scripts/clear-click-country.sh`, after the new Worker is counting). Source and country are never stored together, and no
 report prints a three-way cell. Day counts are kept 90 days, with a site-wide daily cap on their number; the monthly
 totals made from them are kept 25 months. Because nothing identifies a person,
 a deletion request cannot be matched to a counter row; the retention above is

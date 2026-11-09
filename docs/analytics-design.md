@@ -427,7 +427,7 @@ the click route in the same batch as the raw row:
 | `click_country_daily` | site, UTC day, link, country (`ZZ` unknown or folded) | clicks |
 
 Country by link is its own counter because a raw click row holds a source or a
-country, so country is kept only in the counter: it covers every click, and the raw row (migration 0012 clears the old column, the Worker writes NULL) cannot be differenced against it.
+country, so country is kept only in the counter: it covers every click, and the raw row (the owner-run cleanup script clears the old column, the Worker writes NULL) cannot be differenced against it.
 The source counter is kept only for a site that lists `sources` (`direct` and
 `other` are therefore reserved labels). No timestamp finer than a day, no
 identifier, no address, no pair of source and country.
@@ -442,9 +442,10 @@ identifier, no address, no pair of source and country.
   3 cells per destination plus one row. Counting never stops: existing cells and
   the overflow row keep adding. The first overflow records the day in
   `click_capacity` (the hour it began and a counter of the clicks folded into
-  overflow); the report warns about it and refuses cells for a period only when
-  the folded share of the period's clicks is over 5 percent, so one flooded hour
-  cannot deny a release. A destination flooded with fake labels cannot take another
+  overflow, each click once, even if it overflowed on both axes). The report
+  carries only a coarse status (none, under 5 percent, over 5 percent) and a
+  warning; public traffic never vetoes a release. Exact figures are for the
+  operator's terminal only (`--diagnostics`). A destination flooded with fake labels cannot take another
   destination's reserved cells. The monthly tables fold the same way and the
   month log keeps the count of marked days and of folded clicks.
 - **Threat model for release integrity.** The cell report is run by the owner on
@@ -460,10 +461,14 @@ identifier, no address, no pair of source and country.
   click, and a failure only adds one to the number at `view_meta` key
   `click_counter_err` (no content).
 - **Deploy order.** Apply 0011, deploy the counter-writing Worker, check that
-  `click_country_daily` gains rows, then apply 0012 (it clears the country on raw
-  rows and does nothing while the counter table is empty). Not reversible.
+  `click_country_daily` gains rows, THEN run `scripts/clear-click-country.sh
+  DATABASE` (a dry run by default; `--apply` clears the country on old raw rows;
+  it refuses while the counters are empty or stale; not reversible). It is a
+  script, not a migration, because a migration would run before the Worker is
+  counting and silently do nothing.
 - **Seal.** The hourly job seals every closed (site, day), quiet days included, two
-  hours after it closes (`click_seal`; at most 31 days per site per run); the increment statements write nothing for a sealed day.
+  hours after it closes (`click_seal`; at most 31 days per site per run), for every
+  configured site even with no click (`click_funnel_state` holds the first day); the increment statements write nothing for a sealed day.
 - **Months.** A closed month is summed into `click_src_monthly` and
   `click_country_monthly` (fold caps 300 and 400 cells), logged in
   `click_month_log`, and kept 25 months. Day cells go once they are 90 whole UTC days old

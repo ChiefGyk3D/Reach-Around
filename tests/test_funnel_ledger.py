@@ -123,22 +123,18 @@ def test_a_repeat_with_the_same_digest_is_allowed_and_written_once(
     assert len(read_ledger(ledger)) == 1
 
 
-def test_a_repeat_with_changed_data_is_refused_until_superseded(
+def test_a_repeat_with_changed_data_is_refused_and_there_is_no_correction_path(
     tmp_path: Path,
 ) -> None:
     ledger = fresh(tmp_path)
     record_release(ledger, week("2026-11-02", digest=D1))
     with pytest.raises(LedgerError, match="different data"):
         record_release(ledger, week("2026-11-02", digest=D2))
-    assert record_release(ledger, week("2026-11-02", digest=D2), supersede=True) == (
-        "supersede"
-    )
-    rows = read_ledger(ledger)
-    assert [r.type for r in rows] == ["release", "supersede"]
-    # the latest digest is now the reference
-    assert record_release(ledger, week("2026-11-02", digest=D2)) == "repeat"
-    with pytest.raises(LedgerError):
-        record_release(ledger, week("2026-11-02", digest=D1))
+    assert len(read_ledger(ledger)) == 1
+    assert record_release(ledger, week("2026-11-02", digest=D1)) == "repeat"
+    import inspect
+
+    assert "supersede" not in inspect.signature(record_release).parameters
 
 
 # ---- the head file catches accidents --------------------------------------
@@ -233,6 +229,16 @@ def test_the_crash_window_one_record_ahead_is_accepted_and_repaired(
     head_of(ledger).write_bytes(head)
     with pytest.raises(LedgerError, match="does not know"):
         read_ledger(ledger)
+
+
+def test_a_repeat_repairs_the_head_in_the_crash_window(tmp_path: Path) -> None:
+    ledger = seeded(tmp_path)
+    head = head_of(ledger).read_bytes()
+    record_release(ledger, week("2026-11-23"))
+    head_of(ledger).write_bytes(head)  # the head write never happened
+    assert record_release(ledger, week("2026-11-23")) == "repeat"
+    assert json.loads(head_of(ledger).read_text())["seq"] == 4
+    assert len(read_ledger(ledger)) == 4
 
 
 def test_a_bad_head_file_fails_closed(tmp_path: Path) -> None:
@@ -479,25 +485,21 @@ def test_a_month_without_its_rollup_marker_is_refused(tmp_path: Path) -> None:
     assert [r.kind for r in read_ledger(ledger)] == ["month"]
 
 
-def test_a_repeat_with_changed_data_is_refused_and_supersede_is_recorded(
-    tmp_path: Path,
-) -> None:
+def test_a_repeat_with_changed_data_is_refused(tmp_path: Path) -> None:
     ledger = fresh(tmp_path)
     first = _load(tmp_path, _tables(clicks=9))
     release_report(first, ledger, period="week", as_of=AS_OF)
-    again, status = release_report(first, ledger, period="week", as_of=AS_OF)
+    _, status = release_report(first, ledger, period="week", as_of=AS_OF)
     assert status == "repeat"
     late = _load(tmp_path, _tables(clicks=12), "late.json")
     with pytest.raises(LedgerError, match="different data"):
         release_report(late, ledger, period="week", as_of=AS_OF)
     # run-date independence: the same data on another day is still a repeat
-    assert (
-        release_report(first, ledger, period="week", as_of=AS_OF + timedelta(days=3))[1]
-        == "repeat"
+    again = release_report(
+        first, ledger, period="week", as_of=AS_OF + timedelta(days=3)
     )
-    _, status = release_report(late, ledger, period="week", as_of=AS_OF, supersede=True)
-    assert status == "supersede"
-    assert [r.type for r in read_ledger(ledger)] == ["release", "supersede"]
+    assert again[1] == "repeat"
+    assert len(read_ledger(ledger)) == 1
 
 
 def test_the_digest_never_reaches_the_report(tmp_path: Path) -> None:
@@ -508,60 +510,69 @@ def test_the_digest_never_reaches_the_report(tmp_path: Path) -> None:
     assert digest not in json.dumps(report)
 
 
-# ---- counting capacity -----------------------------------------------------
+# ---- counting capacity: public traffic never vetoes a release ---------------
 
 
-def test_one_flooded_hour_under_the_limit_releases_with_a_warning(
+def _exact_figures_absent(text: str) -> None:
+    for needle in ("2026-11-04", "folded_clicks", '"share_percent"', "3.0%", "600"):
+        assert needle not in text, needle
+
+
+def test_a_flood_under_the_limit_releases_with_a_coarse_warning_only(
     tmp_path: Path,
 ) -> None:
     from reach_around.funnel.report import render_text
 
     ledger = fresh(tmp_path)
     export = _load(tmp_path, _tables(total=1000, capacity={"2026-11-04": 30}))
-    report, status = release_report(export, ledger, period="week", as_of=AS_OF)
-    assert status == "release"
-    cap = report["capacity"]
-    assert cap["days"] == ["2026-11-04"] and cap["folded_clicks"] == 30
-    assert cap["share_percent"] == 3.0
+    diag: dict[str, Any] = {}
+    report, status = release_report(
+        export, ledger, period="week", as_of=AS_OF, diagnostics=diag
+    )
+    assert status == "release" and report["capacity"] == {"status": "under"}
     text = render_text(report)
-    assert "counting capacity was exhausted on 2026-11-04" in text
-    assert "about 3.0% of the clicks" in text
+    assert "under 5 percent" in text and "slightly incomplete" in text
+    _exact_figures_absent(text + json.dumps(report))
+    # the exact figures exist only in the operator-only diagnostics
+    assert diag["days"] == ["2026-11-04"] and diag["folded_clicks"] == 30
+    assert diag["clicks"] == 1000 and diag["share_percent"] == 3.0
 
 
-def test_a_heavy_flood_over_the_limit_refuses_with_the_numbers(
-    tmp_path: Path,
-) -> None:
+def test_a_heavy_flood_still_releases_with_the_over_warning(tmp_path: Path) -> None:
+    from reach_around.funnel.report import render_text
+
     ledger = fresh(tmp_path)
     export = _load(tmp_path, _tables(total=1000, capacity={"2026-11-04": 600}))
-    with pytest.raises(IncompletePeriod, match="600 of 1000 clicks.*60.0%.*5.0%"):
-        release_report(export, ledger, period="week", as_of=AS_OF)
-    assert read_ledger(ledger) == []
+    report, status = release_report(export, ledger, period="week", as_of=AS_OF)
+    assert status == "release" and report["capacity"] == {"status": "over"}
+    text = render_text(report)
+    assert "more than 5 percent" in text and "incomplete and may be biased" in text
+    assert "You decide whether to publish" in text
+    _exact_figures_absent(text + json.dumps(report))
+    assert len(read_ledger(ledger)) == 1  # recorded: it was released
 
 
-def test_the_limit_is_five_percent_and_one_hour_cannot_cross_it_in_a_normal_week(
+def test_the_status_boundary_is_five_percent_and_never_a_refusal(
     tmp_path: Path,
 ) -> None:
-    # 1000 normal clicks in the week; an attacker folds clicks in one hour of one day.
-    for folded, ok in ((40, True), (50, True), (51, False)):
-        ledger = fresh(tmp_path, f"l{folded}.jsonl")
+    for folded, expect in ((0, "none"), (40, "under"), (50, "under"), (51, "over")):
+        capacity = {"2026-11-04": folded} if folded else None
         export = _load(
-            tmp_path,
-            _tables(total=1000, capacity={"2026-11-04": folded}),
-            f"e{folded}.json",
+            tmp_path, _tables(total=1000, capacity=capacity), f"e{folded}.json"
         )
-        if ok:
-            release_report(export, ledger, period="week", as_of=AS_OF)
-        else:
-            with pytest.raises(IncompletePeriod, match="exhausted"):
-                release_report(export, ledger, period="week", as_of=AS_OF)
+        report, _ = release_report(
+            export, fresh(tmp_path, f"l{folded}.jsonl"), period="week", as_of=AS_OF
+        )
+        assert report["capacity"]["status"] == expect
 
 
-def test_capacity_with_no_counted_clicks_is_refused(tmp_path: Path) -> None:
-    ledger = fresh(tmp_path)
+def test_capacity_with_no_counted_clicks_is_over_not_a_refusal(tmp_path: Path) -> None:
     tables = _tables(capacity={"2026-11-04": 3})
     tables["click_country_daily"] = []
-    with pytest.raises(IncompletePeriod, match="no clicks counted"):
-        release_report(_load(tmp_path, tables), ledger, period="week", as_of=AS_OF)
+    report, _ = release_report(
+        _load(tmp_path, tables), fresh(tmp_path), period="week", as_of=AS_OF
+    )
+    assert report["capacity"]["status"] == "over"
 
 
 def _month_tables(total: int, exhausted: int, folded: int) -> dict[str, Any]:
@@ -596,39 +607,49 @@ def _month_tables(total: int, exhausted: int, folded: int) -> dict[str, Any]:
     }
 
 
-def test_a_month_follows_the_same_share_rule_from_its_rollup_marker(
+def test_a_month_follows_the_same_coarse_rule_from_its_rollup_marker(
     tmp_path: Path,
 ) -> None:
-    ledger = fresh(tmp_path)
-    ok = _load(tmp_path, _month_tables(2000, 2, 80))
-    report, _ = release_report(ok, ledger, period="month", as_of=date(2026, 11, 9))
-    assert report["capacity"]["months"] == ["2026-10"]
-    assert report["capacity"]["share_percent"] == 4.0
-    bad = _load(tmp_path, _month_tables(2000, 2, 400), "bad.json")
-    with pytest.raises(IncompletePeriod, match="exhausted"):
-        release_report(
-            bad, fresh(tmp_path, "m.jsonl"), period="month", as_of=date(2026, 11, 9)
-        )
+    diag: dict[str, Any] = {}
+    ok, _ = release_report(
+        _load(tmp_path, _month_tables(2000, 2, 80)),
+        fresh(tmp_path),
+        period="month",
+        as_of=date(2026, 11, 9),
+        diagnostics=diag,
+    )
+    assert ok["capacity"] == {"status": "under"}
+    assert diag["months"] == ["2026-10"] and diag["share_percent"] == 4.0
+    bad, _ = release_report(
+        _load(tmp_path, _month_tables(2000, 2, 400), "bad.json"),
+        fresh(tmp_path, "m.jsonl"),
+        period="month",
+        as_of=date(2026, 11, 9),
+    )
+    assert bad["capacity"] == {"status": "over"}
 
 
-def test_the_report_warns_about_exhausted_days_in_its_window(tmp_path: Path) -> None:
+def test_a_free_window_report_carries_the_coarse_status_too(tmp_path: Path) -> None:
+    export = _load(
+        tmp_path, _tables(total=500, capacity={"2026-11-04": 10, "2026-11-06": 5})
+    )
+    diag: dict[str, Any] = {}
+    inside = build_report(
+        export, since="2026-11-01", until="2026-11-30", diagnostics=diag
+    )
+    assert inside["capacity"] == {"status": "under"}
+    assert diag["days"] == ["2026-11-04", "2026-11-06"] and diag["folded_clicks"] == 15
+    outside = build_report(export, since="2026-12-01", until="2026-12-31")
+    assert outside["capacity"] == {"status": "none"}
+
+
+def test_no_capacity_warning_when_nothing_ran_out(tmp_path: Path) -> None:
     from reach_around.funnel.report import render_text
 
-    export = _load(
-        tmp_path,
-        _tables(total=500, capacity={"2026-11-04": 10, "2026-11-06": 5}),
+    report, _ = release_report(
+        _load(tmp_path, _tables()), fresh(tmp_path), period="week", as_of=AS_OF
     )
-    report = build_report(export, since="2026-11-01", until="2026-11-30")
-    assert report["capacity"]["days"] == ["2026-11-04", "2026-11-06"]
-    assert report["capacity"]["folded_clicks"] == 15
-    text = render_text(report)
-    assert (
-        "counting capacity was exhausted on 2026-11-04, 2026-11-06; cell counts "
-        "for those days are incomplete" in text
-    )
-    outside = build_report(export, since="2026-12-01", until="2026-12-31")
-    assert outside["capacity"]["days"] == []
-    assert "exhausted" not in render_text(outside)
+    assert "counting capacity" not in render_text(report)
 
 
 # ---- the command -----------------------------------------------------------
@@ -726,7 +747,7 @@ def test_cli_init_and_reanchor(
     assert "1 record" in capsys.readouterr().out
 
 
-def test_cli_repeat_is_identical_and_recorded_once_and_supersede_warns(
+def test_cli_repeat_is_identical_and_recorded_once_and_changed_data_is_refused(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     ledger = fresh(tmp_path)
@@ -741,11 +762,39 @@ def test_cli_repeat_is_identical_and_recorded_once_and_supersede_warns(
     changed = _export_file(tmp_path, _live_tables(clicks=20))
     other = ["report", "--input", str(changed), "--ledger", str(ledger), "--json"]
     assert main([*other, "--period", "week"]) == 2
-    assert "different data" in capsys.readouterr().err
-    assert main([*other, "--period", "week", "--supersede"]) == 0
     cap = capsys.readouterr()
-    assert "correction release" in cap.err
-    assert [r.type for r in read_ledger(ledger)] == ["release", "supersede"]
+    assert "different data" in cap.err and cap.out == ""
+    # there is no correction flag
+    with pytest.raises(SystemExit):
+        main([*other, "--period", "week", "--supersede"])
+    capsys.readouterr()
+    assert len(read_ledger(ledger)) == 1
+
+
+def test_cli_a_flooded_week_releases_with_coarse_status_in_every_format(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    ledger = fresh(tmp_path)
+    tables = _live_tables(clicks=1000, capacity=True)  # 900 folded of 1000: over
+    path = _export_file(tmp_path, tables)
+    base = ["report", "--input", str(path), "--ledger", str(ledger), "--period", "week"]
+    assert main([*base, "--json"]) == 0
+    out = capsys.readouterr()
+    data = json.loads(out.out)
+    assert data["capacity"] == {"status": "over"}
+    assert "900" not in out.out and "folded_clicks" not in out.out
+    assert main([*base, "--csv", str(tmp_path / "csv")]) == 0
+    capsys.readouterr()
+    meta = (tmp_path / "csv" / "metadata.csv").read_text()
+    assert "counting_capacity,over" in meta
+    for f in (tmp_path / "csv").iterdir():
+        text = f.read_text()
+        assert "900" not in text and "folded_clicks" not in text
+    # exact figures: operator terminal only (stderr), never stdout or files
+    assert main([*base, "--diagnostics"]) == 0
+    cap = capsys.readouterr()
+    assert "diagnostics (operator only" in cap.err and '"folded_clicks": 900' in cap.err
+    assert "900" not in cap.out
 
 
 def test_cli_an_incomplete_week_prints_nothing_and_records_nothing(
@@ -761,18 +810,6 @@ def test_cli_an_incomplete_week_prints_nothing_and_records_nothing(
     cap = capsys.readouterr()
     assert code == 2 and cap.out == "" and "not sealed" in cap.err
     assert read_ledger(ledger) == []
-
-
-def test_cli_an_exhausted_day_refuses_the_cells(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    ledger = fresh(tmp_path)
-    path = _export_file(tmp_path, _live_tables(capacity=True))
-    code = main(
-        ["report", "--input", str(path), "--period", "week", "--ledger", str(ledger)]
-    )
-    cap = capsys.readouterr()
-    assert code == 2 and cap.out == "" and "exhausted" in cap.err
 
 
 def test_cli_a_ledger_write_failure_means_no_cell_output(
@@ -845,10 +882,9 @@ def test_cli_a_month_over_a_released_week_is_refused_in_both_directions(
     assert len(read_ledger(ledger)) == 1
 
 
-def test_cli_ledger_and_supersede_need_a_period(
+def test_cli_ledger_needs_a_period(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     path = _export_file(tmp_path, {"kit_events": [{"ts": 1, "kind": "view"}]})
     assert main(["report", "--input", str(path), "--ledger", str(tmp_path / "l")]) == 2
-    assert main(["report", "--input", str(path), "--supersede"]) == 2
     capsys.readouterr()

@@ -5,6 +5,7 @@ import { handleLive, LIVE_CRON, LIVE_ROUTE, runLivePoller, type LiveEnv } from "
 import { LEAD_PURGE_QUERIES, purgeExpiredLeads } from "./kit/leadretention";
 import { logEvent } from "./kit/log";
 import { rollupClickFunnel } from "./clickfunnel";
+import { loadSites } from "./sites";
 import { purgeOldEvents } from "./retention";
 import { handleView, type ViewEnv } from "./view";
 import { purgeViews } from "./viewretention";
@@ -134,7 +135,7 @@ export default {
           // The heartbeat in view_meta records the failure class.
         }
         try {
-          await rollupClickFunnel({ DB: whole }, now);
+          await rollupClickFunnel({ DB: whole, sites: loadSites(env).sites.map((x) => x.id) }, now);
         } catch {
           // Next run retries; every step is a predicate on age.
         }

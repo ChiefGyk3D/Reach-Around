@@ -269,18 +269,28 @@ seals every closed day, quiet ones too); for a month, its `click_month_log` row
 table below). A partial or early export is refused with the reason, and nothing
 is recorded.
 
-**Counting capacity.** If the Worker ran out of counting capacity on a day (an
-hour's slice of the new-cell budget or the cell pools, usually a flood of
-requests), it records that day in `click_capacity` (the UTC hour it began and
-the number of clicks that went into the one `overflow-all` row, an upper bound)
-and keeps counting. One flooded hour must not deny you a release, so the rule is
-about the SHARE: every report prints "counting capacity was exhausted on <days>;
-cell counts for those days are incomplete" with the folded share of the clicks in
-its window, and a cell release still goes ahead while the folded share of the
-period's clicks is at most 5 percent (`MAX_FOLDED_SHARE_PERCENT`). Above that, or
-when capacity ran out and no clicks were counted, the release is refused with the
-numbers. A month carries the count of exhausted days and folded clicks in its
-rollup marker (`click_month_log`).
+**Counting capacity (a warning, never a veto).** If the Worker ran out of
+counting capacity on a day (an hour's slice of the new-cell budget or the cell
+pools, usually a flood of requests), it records the day in `click_capacity` (the
+UTC hour it began and how many clicks went into the one `overflow-all` row, each
+click counted once) and keeps counting. Public traffic must never veto your
+release, so the release always goes ahead. The report carries only a COARSE
+status, in text, JSON and `metadata.csv` (`counting_capacity`): `none`, `under`
+(under 5 percent of the period's clicks went into overflow; a warning line says
+the cell tables are slightly incomplete) or `over` (more than 5 percent, or
+capacity ran out with no clicks counted; the warning says the cell tables are
+incomplete and may be biased and that you decide whether to publish). The exact
+days, folded clicks and share are never in a released report or file: run with
+`--diagnostics` to see them on your terminal (stderr) only, and do not publish
+them. A month carries the exhausted-day and folded-click counts in its rollup
+marker (`click_month_log`).
+
+**Quiet periods.** The Worker seals every closed day and logs every closed month
+for each configured site, from the day it first saw the site, even with no click
+at all (a small `click_funnel_state` row records that day). Catch-up is bounded
+at 31 days per site and 8 months per run and never reaches back past the
+retention window. So a quiet week or month can be released as an honest empty or
+low-count report instead of failing the completeness evidence.
 
 Which kind a period uses never depends on today's date, so the same week or the
 same month gives the same cells and the same suppression on any run date
@@ -310,10 +320,10 @@ recorded as released, which is the safe direction. The command REFUSES a release
 that shares any UTC day with a previously released period of the OTHER kind, in
 both directions: a reader holding a week and the month over it could difference
 them. Repeating the exact same period is allowed only with the same data (same
-digest) and is not written again; if the data behind a period changed (a late
-or partial export) the command refuses and says so. `--supersede` records a
-correction release (also recorded, and it prints a warning): two releases of one
-period can let a reader difference them, so use it knowingly.
+digest) and is not written again. If the data behind a period changed (a late or
+partial export) the command refuses and says so: there is no correction flag,
+because two releases of one period can be differenced. Let late counts appear
+in the next period instead.
 
 The floor and the remainder rule apply to the period alone, and the same period
 also bounds every other section of that report, so the sections agree. Why not
@@ -322,7 +332,7 @@ overlapping windows (three days of 3 clicks with a floor of 6: days 1-2 and days
 2-3 each print 6, and the daily values follow). So `--period` cannot be combined
 with `--since`, `--until` or `--days`, and without `--period` these two tables
 print "not released" while the aggregate sections still honor a free window.
-`metadata.csv` records the period kind and its start and end.
+`metadata.csv` records the period kind, its start and end and the coarse capacity status.
 
 Day cells are kept 90 days; a closed month is rolled into the monthly tables,
 kept 25 months. A month period is read from its monthly row only; a week from day cells only.

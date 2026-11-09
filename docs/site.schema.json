@@ -1,5 +1,79 @@
 {
   "$defs": {
+    "Alerts": {
+      "additionalProperties": false,
+      "description": "Which channels receive which owner alerts. Everything off by default.",
+      "properties": {
+        "channels": {
+          "default": [],
+          "items": {
+            "enum": [
+              "discord",
+              "matrix",
+              "email"
+            ],
+            "type": "string"
+          },
+          "title": "Channels",
+          "type": "array"
+        },
+        "events": {
+          "default": [],
+          "items": {
+            "enum": [
+              "kit_unlocked",
+              "lead_captured",
+              "gate_failed_repeatedly"
+            ],
+            "type": "string"
+          },
+          "title": "Events",
+          "type": "array"
+        },
+        "matrix": {
+          "$ref": "#/$defs/AlertsMatrix",
+          "default": {
+            "allowed_hosts": []
+          }
+        },
+        "max_per_minute": {
+          "default": 5,
+          "maximum": 30,
+          "minimum": 1,
+          "title": "Max Per Minute",
+          "type": "integer"
+        },
+        "visitor_email": {
+          "default": "full",
+          "enum": [
+            "full",
+            "masked",
+            "none"
+          ],
+          "title": "Visitor Email",
+          "type": "string"
+        }
+      },
+      "title": "Alerts",
+      "type": "object"
+    },
+    "AlertsMatrix": {
+      "additionalProperties": false,
+      "description": "The Matrix homeservers the access token may be sent to (exact match).",
+      "properties": {
+        "allowed_hosts": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 4,
+          "title": "Allowed Hosts",
+          "type": "array"
+        }
+      },
+      "title": "AlertsMatrix",
+      "type": "object"
+    },
     "Analytics": {
       "additionalProperties": false,
       "description": "Count page views through the Worker route. Off by default.",
@@ -2084,6 +2158,18 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
   "properties": {
+    "alerts": {
+      "$ref": "#/$defs/Alerts",
+      "default": {
+        "channels": [],
+        "events": [],
+        "matrix": {
+          "allowed_hosts": []
+        },
+        "max_per_minute": 5,
+        "visitor_email": "full"
+      }
+    },
     "analytics": {
       "$ref": "#/$defs/Analytics",
       "default": {

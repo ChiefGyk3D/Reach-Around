@@ -79,14 +79,13 @@ def run_report(args: argparse.Namespace) -> int:
             )
         if args.ledger is not None and args.period is None:
             raise ValueError("--ledger needs --period")
-        if args.supersede and args.period is None:
-            raise ValueError("--supersede needs --period")
         if args.csv is not None and args.json:
             raise ValueError("--csv and --json cannot be combined")
         zone = None if args.display_zone is None else check_zone(args.display_zone)
         cutover_text = _day(args.cutover, "--cutover")
         cutover = date.fromisoformat(cutover_text) if cutover_text else None
         export = load_exports(list(args.input))
+        diagnostics: dict[str, object] | None = {} if args.diagnostics else None
         options = dict(
             site=args.site,
             geo=args.geo,
@@ -102,18 +101,18 @@ def run_report(args: argparse.Namespace) -> int:
                 period=args.period,
                 offset=args.offset,
                 as_of=utc_now().date(),
-                supersede=args.supersede,
+                diagnostics=diagnostics,
                 **options,
             )
-            if status == "supersede":
-                print(
-                    "warning: a correction release was recorded; two releases of "
-                    "one period can let a reader difference them",
-                    file=sys.stderr,
-                )
+            del status
         else:
             report = build_report(
-                export, since=since, until=until, days=args.days, **options
+                export,
+                since=since,
+                until=until,
+                days=args.days,
+                diagnostics=diagnostics,
+                **options,
             )
         annotate(report, zone=zone, cutover=cutover, today=utc_today())
     except (
@@ -123,6 +122,13 @@ def run_report(args: argparse.Namespace) -> int:
     ) as exc:  # IncompletePeriod is a ValueError
         print(f"error: {exc}", file=sys.stderr)
         return EXIT_USAGE
+    if diagnostics is not None:
+        # For the operator's terminal only (stderr); never part of the report or a file.
+        print(
+            "diagnostics (operator only, do not publish): "
+            + json.dumps(diagnostics, sort_keys=True),
+            file=sys.stderr,
+        )
     if args.csv is not None:
         files = csv_files(
             report,
@@ -221,11 +227,10 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
         "is refused",
     )
     parser.add_argument(
-        "--supersede",
+        "--diagnostics",
         action="store_true",
-        help="with --period: record a correction when the data behind an "
-        "already released period changed (it is recorded too, and two releases "
-        "of one period can let a reader difference them)",
+        help="print exact counting-capacity figures (days, folded clicks, share) "
+        "to the terminal for you only; they are never in the report, JSON or CSV",
     )
     parser.add_argument(
         "--geo",

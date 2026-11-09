@@ -61,7 +61,6 @@ MAX_LINE_BYTES = 640
 MAX_RECORDS = 20_000
 LOCK_WAIT_SECONDS = 30.0
 KINDS = ("week", "month")
-TYPES = ("release", "supersede")
 HEAD_SUFFIX = ".head"
 RECOVERY = (
     "restore the ledger and its .head file together from git (they are "
@@ -72,7 +71,7 @@ _SITE = re.compile(r"^[a-z0-9][a-z0-9-]{0,19}$")
 _DAY = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 _STAMP = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
 _HASH = re.compile(r"^[0-9a-f]{64}$")
-_FIELDS = {"site", "kind", "start", "end", "released_at", "digest", "type", "prev"}
+_FIELDS = {"site", "kind", "start", "end", "released_at", "digest", "prev"}
 
 
 class LedgerError(HistoryError):
@@ -87,7 +86,6 @@ class Release:
     end: str
     released_at: str
     digest: str = "0" * 64
-    type: str = "release"
 
     def same_period(self, other: Release) -> bool:
         return (self.site, self.kind, self.start, self.end) == (
@@ -117,8 +115,6 @@ def validate(release: Release) -> None:
         raise LedgerError("the site is not a short lowercase slug")
     if release.kind not in KINDS:
         raise LedgerError("the period kind is not week or month")
-    if release.type not in TYPES:
-        raise LedgerError("the record type is not release or supersede")
     if not _HASH.match(release.digest):
         raise LedgerError("the digest is not a SHA-256 hex digest")
     start, end = _day(release.start, "start"), _day(release.end, "end")
@@ -145,7 +141,6 @@ def _line(release: Release, prev: str) -> bytes:
         "end": release.end,
         "released_at": release.released_at,
         "digest": release.digest,
-        "type": release.type,
         "prev": prev,
     }
     return json.dumps(obj, sort_keys=True, separators=(",", ":")).encode("ascii")
@@ -181,7 +176,6 @@ def _parse_line(raw: bytes, number: int) -> tuple[Release, str]:
         obj["end"],
         obj["released_at"],
         obj["digest"],
-        obj["type"],
     )
     try:
         validate(release)
@@ -198,14 +192,13 @@ def latest_for(existing: Sequence[Release], new: Release) -> Release | None:
     return found
 
 
-def check_new(
-    existing: Sequence[Release], new: Release, *, supersede: bool = False
-) -> str:
-    """Decide what recording ``new`` means: 'repeat', 'release' or 'supersede'.
+def check_new(existing: Sequence[Release], new: Release) -> str:
+    """Decide what recording ``new`` means: 'repeat' or 'release'.
 
-    Raises when it overlaps a period of the other kind, when a repeat of a period
-    carries different data (unless ``supersede``), or when periods of one kind
-    overlap without being the same period.
+    Raises when it overlaps a period of the other kind, when it repeats a period
+    with different data, or when periods of one kind overlap without being the
+    same period. There is no correction path: a changed dataset for a released
+    period is refused, because two releases of one period can be differenced.
     """
     for old in existing:
         if old.site != new.site or old.same_period(new):
@@ -224,27 +217,20 @@ def check_new(
         return "release"
     if prior.digest == new.digest:
         return "repeat"
-    if supersede:
-        return "supersede"
     raise LedgerError(
         "this period was released before with different data: the export "
-        "behind it changed (a partial or stale export, or late counts). "
-        "Re-run with the same export as before, or record a correction "
-        "with --supersede (it is recorded too, and two releases of one "
-        "period can let a reader difference them)"
+        "behind it changed (a partial or stale export, or late counts). A "
+        "second, different release of one period could be differenced against "
+        "the first, so it is refused; use the same export as before, and let "
+        "later counts appear in the next period"
     )
 
 
 def _check_sequence(out: Sequence[Release], release: Release) -> None:
     """The rules a file must keep, whatever wrote it."""
-    if release.type == "release":
-        if latest_for(out, release) is not None:
-            raise LedgerError("a second plain release of one period")
-        check_new(out, release)
-    else:
-        if latest_for(out, release) is None:
-            raise LedgerError("a correction with no earlier release")
-        check_new(out, release, supersede=True)
+    if latest_for(out, release) is not None:
+        raise LedgerError("a second record for one period")
+    check_new(out, release)
 
 
 def _parse(data: bytes) -> tuple[list[Release], list[str]]:
@@ -340,8 +326,10 @@ def _write_head(dir_fd: int, name: str, seq: int, head: str) -> None:
 
 def _verify_head(
     dir_fd: int, name: str, records: Sequence[Release], hashes: Sequence[str]
-) -> None:
-    """The ledger must match its head file; anything else fails closed."""
+) -> int:
+    """The ledger must match its head file; anything else fails closed.
+
+    Returns the sequence number the head file holds."""
     head = _read_head(dir_fd, name)
     n = len(records)
     if head is None:
@@ -351,7 +339,7 @@ def _verify_head(
                 f"or replaced ledger cannot be ruled out; {RECOVERY} (or, only if "
                 "you know the ledger is whole, run funnel-ledger-reanchor)"
             )
-        return
+        return 0
     seq, last = head
     if seq > n:
         raise LedgerError(
@@ -366,7 +354,8 @@ def _verify_head(
             f"the ledger has records the .head file does not know; {RECOVERY}"
         )
     # seq == n - 1 is the one crash window (appended, head not yet written):
-    # accepted here and repaired by the next record.
+    # accepted here and repaired by the next record (a repeat repairs it too).
+    return seq
 
 
 def _open_ledger(path: Path, flags: int) -> tuple[int, int]:
@@ -406,9 +395,9 @@ def read_ledger(path: Path) -> list[Release]:
         os.close(dir_fd)
 
 
-def record_release(path: Path, release: Release, *, supersede: bool = False) -> str:
-    """Check ``release`` against the ledger and append it: 'release', 'supersede'
-    or 'repeat' (nothing written). Raises ``LedgerError``, having written
+def record_release(path: Path, release: Release) -> str:
+    """Check ``release`` against the ledger and append it: 'release' or 'repeat'
+    (nothing appended). Raises ``LedgerError``, having written
     nothing, when the ledger is missing or damaged, cannot be written, the period
     overlaps one of the other kind, or it repeats a period with different data.
     """
@@ -419,21 +408,14 @@ def record_release(path: Path, release: Release, *, supersede: bool = False) -> 
         os.fchmod(fd, 0o600)
         existing = _read_fd(fd, MAX_FILE_BYTES)
         before, hashes = _parse(existing)
-        _verify_head(dir_fd, path.name, before, hashes)
-        what = check_new(before, release, supersede=supersede)
+        seq = _verify_head(dir_fd, path.name, before, hashes)
+        what = check_new(before, release)
         if what == "repeat":
+            if seq < len(before):  # the one-record-ahead crash window: repair it
+                _write_head(dir_fd, path.name, len(before), hashes[-1])
             return what
-        stamped = Release(
-            release.site,
-            release.kind,
-            release.start,
-            release.end,
-            release.released_at,
-            release.digest,
-            what,
-        )
         prev = hashes[-1] if hashes else GENESIS
-        line = _line(stamped, prev)
+        line = _line(release, prev)
         if len(existing) + len(line) + 1 > MAX_FILE_BYTES:
             raise LedgerError("the ledger would be too large")
         _write_all(fd, line + b"\n")

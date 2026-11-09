@@ -160,6 +160,7 @@ FUNNEL_ROWS = (
     + _ins(
         "click_capacity", "site, day, marked_at", "'links', '2027-01-05', 1792000000000"
     )
+    + _ins("click_funnel_state", "site, from_day", "'links', '2027-01-01'")
     + _ins("click_seal", "site, day, sealed_at", "'links', '2027-01-05', 1792000000000")
     + _ins(
         "click_month_log",

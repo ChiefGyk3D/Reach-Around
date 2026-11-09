@@ -159,6 +159,7 @@ def _meta_rows(
         ["period", report["release"]["period"] or ""],
         ["period_start_utc", report["release"]["start"] or ""],
         ["period_end_utc", report["release"]["end"] or ""],
+        ["counting_capacity", report["capacity"]["status"]],
         ["timezone", "UTC"],
         *_display_rows(report, generated_at),
         ["site", report["site"]],

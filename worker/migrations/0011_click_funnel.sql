@@ -84,8 +84,8 @@ CREATE TABLE IF NOT EXISTS click_budget (
 
 -- A capacity counter: counting capacity ran out on this (site, day) (an hourly slice of the budget
 -- or the cell pools). first_hour is the UTC hour it began and folded the clicks that went into the
--- overflow row (an upper bound). The report warns, and refuses cells for a period only when the
--- folded share of its clicks is material (more than 5 percent).
+-- overflow row (an upper bound). The report carries only a coarse status (none, under or over 5 percent of
+-- the period's clicks) and a warning; exact figures are for the operator only.
 CREATE TABLE IF NOT EXISTS click_capacity (
   site TEXT NOT NULL CHECK (length(site) BETWEEN 1 AND 20 AND site NOT GLOB '*[^a-z0-9-]*'),
   day TEXT NOT NULL CHECK (length(day) = 10),
@@ -93,6 +93,14 @@ CREATE TABLE IF NOT EXISTS click_capacity (
   first_hour INTEGER NOT NULL CHECK (first_hour BETWEEN 0 AND 23),
   folded INTEGER NOT NULL CHECK (folded >= 1),
   PRIMARY KEY (site, day)
+) WITHOUT ROWID;
+
+-- The first day the funnel knew a site (its first cell, or the first run after it was configured),
+-- so the hourly job can seal quiet days and log empty months from then on, with no click needed.
+CREATE TABLE IF NOT EXISTS click_funnel_state (
+  site TEXT NOT NULL CHECK (length(site) BETWEEN 1 AND 20 AND site NOT GLOB '*[^a-z0-9-]*'),
+  from_day TEXT NOT NULL CHECK (length(from_day) = 10),
+  PRIMARY KEY (site)
 ) WITHOUT ROWID;
 
 -- A month that was rolled up (even when it had no cells to add).

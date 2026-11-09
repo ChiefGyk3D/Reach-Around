@@ -44,7 +44,7 @@ const click = (qs: string, o: { host?: string; id?: string; country?: string } =
     },
   });
 const q = async <T>(sql: string) => (await DB.prepare(sql).all<T>()).results;
-const TABLES = ["click_src_daily", "click_country_daily", "click_seal", "click_budget", "click_capacity", "click_src_monthly", "click_country_monthly", "click_month_log", "click_events"];
+const TABLES = ["click_src_daily", "click_country_daily", "click_seal", "click_budget", "click_capacity", "click_funnel_state", "click_src_monthly", "click_country_monthly", "click_month_log", "click_events"];
 
 beforeEach(async () => {
   for (const t of TABLES) await DB.prepare(`DELETE FROM ${t}`).run();
@@ -187,13 +187,38 @@ describe("row bounds: reserved cells, hourly slices, one overflow row, an integr
     await count(early, "links", "twitch", "instagram", "US"); // past its slice: overflow
     expect(await q("SELECT 1 FROM click_src_daily WHERE link_id = 'twitch'")).toEqual([]);
     expect(await q("SELECT day, first_hour, folded FROM click_capacity")).toEqual([
-      { day: "2027-01-05", first_hour: 3, folded: 2 },
+      { day: "2027-01-05", first_hour: 3, folded: 1 },
     ]);
     await count(ts, "links", "twitch", "bluesky", "US"); // hour 12: a new slice
     expect(await cellsOf("click_src_daily", "src", "twitch")).toEqual(["bluesky"]);
     // An existing cell keeps counting inside an exhausted slice.
     await count(early, "links", "twitch", "bluesky", "US");
     expect(await q("SELECT clicks FROM click_src_daily WHERE link_id = 'twitch'")).toEqual([{ clicks: 2 }]);
+  });
+
+  it("a_shaped_hour_counts_each_folded_click_once_through_the_real_counting_path", async () => {
+    // One hour: HOUR_BUDGET ordinary clicks, then 60 clicks that each want a new source AND a new
+    // country (so each overflows on both axes). The folded count is 60 clicks, not 120 rows.
+    const hour = Date.UTC(2027, 0, 5, 7);
+    const ordinary = Array.from({ length: HOUR_BUDGET }, () => clickCounterStatements(DB, { site: "links", ts: hour, linkId: "twitch", src: "instagram", listsSources: true, country: "US" }));
+    for (let i = 0; i < ordinary.length; i += 50) await DB.batch(ordinary.slice(i, i + 50).flat());
+    for (let i = 0; i < 60; i++) {
+      const cc = `${String.fromCharCode(65 + (i % 26))}${String.fromCharCode(75 + Math.floor(i / 26))}`;
+      await count(hour, "links", "twitch", `shaped${i}`, cc);
+    }
+    expect(await q("SELECT first_hour, folded FROM click_capacity")).toEqual([{ first_hour: 7, folded: 60 }]);
+    const counted = await q<{ n: number }>("SELECT SUM(clicks) AS n FROM click_country_daily");
+    expect(counted[0]!.n).toBe(HOUR_BUDGET + 60); // every click counted once in the denominator
+    expect(await q<{ n: number }>("SELECT SUM(clicks) AS n FROM click_budget")).toEqual([{ n: HOUR_BUDGET + 60 }]);
+  }, 120_000);
+
+  it("a_click_that_overflows_on_one_axis_only_counts_once_and_a_normal_click_not_at_all", async () => {
+    await count(ts, "links", "twitch", "instagram", "US"); // normal
+    await seedSrc(SRC_DAY_CAP + RESERVED_PER_LINK);
+    await count(ts, "links", "kick", "x1", "US");
+    await count(ts, "links", "kick", "x2", "US");
+    await count(ts, "links", "kick", "x3", "US"); // source overflow only (country US exists for kick)
+    expect(await q("SELECT folded FROM click_capacity")).toEqual([{ folded: 1 }]);
   });
 
   it("a_quiet_day_has_no_marker_and_a_busy_normal_one_neither", async () => {
@@ -256,6 +281,49 @@ describe("the seal", () => {
       { day: "2027-01-05", clicks: 1 },
       { day: "2027-01-06", clicks: 2 },
     ]);
+  });
+});
+
+describe("a configured site with no click at all is still sealed and logged", () => {
+  it("quiet_days_are_sealed_from_the_day_the_site_was_first_seen_and_months_are_logged_empty", async () => {
+    const t0 = Date.UTC(2027, 0, 20, 12);
+    await rollupClickFunnel({ DB, sites: ["links", "blog"] }, t0); // first sight: state rows, nothing to seal yet
+    expect(await q("SELECT site, from_day FROM click_funnel_state ORDER BY site")).toEqual([
+      { site: "blog", from_day: "2027-01-20" },
+      { site: "links", from_day: "2027-01-20" },
+    ]);
+    expect(await q("SELECT 1 FROM click_seal")).toEqual([]);
+    const r = await rollupClickFunnel({ DB, sites: ["links", "blog"] }, Date.UTC(2027, 0, 27, 12));
+    expect(r.sealedDays).toBe(14); // 7 quiet days (Jan 20 - Jan 26) for each site
+    expect(await q("SELECT count(*) AS n FROM click_seal WHERE site = 'blog'")).toEqual([{ n: 7 }]);
+    // The month closes: an empty month is logged with no cells.
+    const m = await rollupClickFunnel({ DB, sites: ["links", "blog"] }, Date.UTC(2027, 1, 3, 12));
+    expect(m.monthsRolled).toBe(2);
+    expect(await q("SELECT site, month, exhausted_days, folded_clicks FROM click_month_log ORDER BY site")).toEqual([
+      { site: "blog", month: "2027-01", exhausted_days: 0, folded_clicks: 0 },
+      { site: "links", month: "2027-01", exhausted_days: 0, folded_clicks: 0 },
+    ]);
+    expect(await q("SELECT 1 FROM click_src_monthly")).toEqual([]);
+  });
+
+  it("catch_up_is_bounded_per_run_and_continues_and_pruned_sites_keep_sealing", async () => {
+    await DB.prepare("INSERT INTO click_funnel_state VALUES ('links','2027-01-01')").run();
+    const first = await rollupClickFunnel({ DB, sites: ["links"] }, Date.UTC(2027, 2, 20, 12));
+    expect(first.sealedDays).toBe(31); // bounded per run
+    const second = await rollupClickFunnel({ DB, sites: ["links"] }, Date.UTC(2027, 2, 20, 13));
+    expect(second.sealedDays).toBeGreaterThan(0);
+    // Long after, all old seals are pruned; the site (state row only) keeps being sealed.
+    const much = Date.UTC(2028, 0, 1, 12);
+    for (let i = 0; i < 4; i++) await rollupClickFunnel({ DB, sites: ["links"] }, much + i * 3_600_000);
+    const days = await q<{ day: string }>("SELECT day FROM click_seal ORDER BY day DESC LIMIT 1");
+    expect(days[0]!.day).toBe("2027-12-31");
+  });
+
+  it("a_site_known_only_from_its_cells_is_picked_up_too", async () => {
+    await count(Date.UTC(2027, 0, 5, 12), "links", "twitch", "instagram", "US");
+    await rollupClickFunnel({ DB }, Date.UTC(2027, 0, 8, 12));
+    expect(await q("SELECT from_day FROM click_funnel_state")).toEqual([{ from_day: "2027-01-05" }]);
+    expect(await q("SELECT count(*) AS n FROM click_seal")).toEqual([{ n: 3 }]);
   });
 });
 
@@ -364,6 +432,7 @@ describe("monthly rollup and retention", () => {
   it("a_seal_stays_while_its_cells_stay_and_goes_with_them", async () => {
     const d0 = Date.UTC(2027, 0, 5);
     await count(d0, "links", "twitch", "instagram", "US");
+    await rollupClickFunnel({ DB }, d0 + 2 * DAY); // an ordinary run seals the day (and the month is not due yet)
     // A run too short to roll the month up: seal and prune only. The day is past 90 days.
     await rollupClickFunnel({ DB: meteredDb(DB, new QueryMeter(3)) }, d0 + 100 * DAY);
     expect(await q("SELECT 1 FROM click_src_daily")).toHaveLength(1);
@@ -393,24 +462,6 @@ describe("monthly rollup and retention", () => {
     expect((await q<{ month: string }>("SELECT month FROM click_src_monthly ORDER BY month")).map((r) => r.month)).toEqual(["2025-01", "2026-12", "2027-01"]);
     expect(await q("SELECT * FROM click_country_monthly")).toEqual([]);
     expect((await q<{ month: string }>("SELECT month FROM click_month_log")).map((r) => r.month)).toEqual(["2025-01"]);
-  });
-});
-
-describe("migration 0012", () => {
-  it("clears_the_country_of_every_existing_raw_click_row", async () => {
-    await DB.batch([
-      DB.prepare("INSERT INTO click_events (ts, link_id, country) VALUES (0, 'a', 'US')"),
-      DB.prepare("INSERT INTO click_events (ts, link_id, src) VALUES (0, 'a', 'instagram')"),
-    ]);
-    const m = testEnv.TEST_MIGRATIONS.find((x) => x.name.startsWith("0012"));
-    expect(m).toBeDefined();
-    // With no counter rows the migration does nothing (applied too early, it destroys nothing).
-    for (const sql of m!.queries) await DB.prepare(sql).run();
-    expect(await q("SELECT 1 FROM click_events WHERE country IS NOT NULL")).toHaveLength(1);
-    await DB.prepare("INSERT INTO click_country_daily VALUES ('links','2027-01-05','a','US',1)").run();
-    for (const sql of m!.queries) await DB.prepare(sql).run();
-    expect(await q("SELECT 1 FROM click_events WHERE country IS NOT NULL")).toEqual([]);
-    expect(await q("SELECT 1 FROM click_events WHERE src = 'instagram'")).toHaveLength(1);
   });
 });
 

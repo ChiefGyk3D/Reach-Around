@@ -1,13 +1,13 @@
 # SPDX-License-Identifier: Apache-2.0
 """The one way to release the source and country by destination tables.
 
-``release_report`` checks that the period is complete and its counting capacity
-held, builds the report in memory, records the period in the release ledger,
-and only then returns it. Nothing is shown before the record is written, and if
-the record cannot be written nothing is returned. A build that fails writes no
-record. Rendering after the return (a CSV write, say) can still fail: the
-period then stays recorded as released although nobody saw it, which is the safe
-direction (a repeat with the same export is allowed).
+``release_report`` checks that the period is complete, builds the report in
+memory, records the period in the release ledger, and only then returns it.
+Nothing is shown before the record is written, and if the record cannot be
+written nothing is returned. A build that fails writes no record. Rendering
+after the return (a CSV write, say) can still fail: the period then stays
+recorded as released although nobody saw it, which is the safe direction (a
+repeat with the same export is allowed).
 
 THREAT MODEL: the owner runs this on his own machine over his own private data
 and is a trusted operator. These checks stop accidents (a partial export, an
@@ -29,11 +29,7 @@ from reach_around.funnel.ledger import (
     now_stamp,
     record_release,
 )
-from reach_around.funnel.report import (
-    MAX_FOLDED_SHARE_PERCENT,
-    _build_report,
-    period_bounds,
-)
+from reach_around.funnel.report import _build_report, period_bounds
 
 
 class IncompletePeriod(ValueError):
@@ -79,28 +75,6 @@ def _evidence(export: Export, site: str, period: str, start: date, end: date) ->
             )
 
 
-def _capacity(report: dict[str, Any]) -> None:
-    """Refuse when a material share of the period's clicks went into overflow.
-
-    One flooded hour must not deny the release, so a small folded share only
-    warns (the report prints it); above ``MAX_FOLDED_SHARE_PERCENT`` the cells
-    are too incomplete to release.
-    """
-    cap = report["capacity"]
-    if not cap["days"] and not cap["months"]:
-        return
-    share = cap["share_percent"]
-    if share is None or share > MAX_FOLDED_SHARE_PERCENT:
-        days = ", ".join([*cap["days"], *cap["months"]])
-        raise IncompletePeriod(
-            f"counting capacity was exhausted on {days}: {cap['folded_clicks']} "
-            f"of {cap['clicks']} clicks in this period went into overflow "
-            f"({'no clicks counted' if share is None else f'{share}%'}), over the "
-            f"limit of {MAX_FOLDED_SHARE_PERCENT}%; cell counts are too incomplete "
-            "to release"
-        )
-
-
 def release_report(
     export: Export,
     ledger: Path,
@@ -109,14 +83,16 @@ def release_report(
     period: str,
     offset: int = 0,
     as_of: date,
-    supersede: bool = False,
+    diagnostics: dict[str, Any] | None = None,
     **kw: Any,
 ) -> tuple[dict[str, Any], str]:
     """Build the report for one fixed period, record it, return (report, status).
 
-    ``status`` is 'release', 'supersede' or 'repeat'. Raises ``ValueError`` (not
-    complete, bad arguments) or ``LedgerError`` (no verified ledger, overlap,
-    changed data without ``supersede``, cannot write) and returns nothing.
+    ``status`` is 'release' or 'repeat'. Public traffic never vetoes a release: a
+    counting-capacity problem only sets the coarse status carried by the report.
+    Raises ``ValueError`` (not complete, bad arguments) or ``LedgerError`` (no
+    verified ledger, overlap, changed data for a released period, cannot write)
+    and returns nothing.
     """
     if any(kw.get(k) is not None for k in ("since", "until", "days")):
         raise ValueError(
@@ -127,13 +103,17 @@ def release_report(
     start, end = period_bounds(period, offset, as_of)
     _evidence(export, site, period, start, end)
     report, digest = _build_report(
-        export, site=site, period=period, offset=offset, as_of=as_of, **kw
+        export,
+        site=site,
+        period=period,
+        offset=offset,
+        as_of=as_of,
+        diagnostics=diagnostics,
+        **kw,
     )
-    _capacity(report)
     status = record_release(
         ledger,
         Release(site, period, start.isoformat(), end.isoformat(), now_stamp(), digest),
-        supersede=supersede,
     )
     return report, status
 

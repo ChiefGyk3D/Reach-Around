@@ -610,7 +610,9 @@ def _ratio(num: int | None, den: int | None) -> float | None:
     return round(num * 100 / den, 1)
 
 
-def build_report(export: Export, **kw: Any) -> dict[str, Any]:
+def build_report(
+    export: Export, diagnostics: dict[str, Any] | None = None, **kw: Any
+) -> dict[str, Any]:
     """The report with every section but the released cell tables.
 
     The source and country by destination tables are released for a fixed
@@ -623,7 +625,7 @@ def build_report(export: Export, **kw: Any) -> dict[str, Any]:
             "the source and country tables are released through "
             "reach_around.funnel.release.release_report (release ledger first)"
         )
-    return _build_report(export, **kw)[0]
+    return _build_report(export, diagnostics=diagnostics, **kw)[0]
 
 
 def _build_report(
@@ -640,6 +642,7 @@ def _build_report(
     period: str | None = None,
     offset: int = 0,
     as_of: date | None = None,
+    diagnostics: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any], str]:
     """The report and the digest of the exact inputs behind its cell tables."""
     if floor < FLOOR:
@@ -830,6 +833,20 @@ def _build_report(
     )
     period_clicks = sum(sum(row.values()) for row in country_cells.values())
     share = round(folded_clicks * 100 / period_clicks, 1) if period_clicks else None
+    if not cap_rows and not month_rows:
+        capacity_status = "none"
+    elif share is None or share > MAX_FOLDED_SHARE_PERCENT:
+        capacity_status = "over"
+    else:
+        capacity_status = "under"
+    if diagnostics is not None:  # operator-only: never part of the report
+        diagnostics.update(
+            days=capacity_days,
+            months=capacity_months,
+            folded_clicks=folded_clicks,
+            clicks=period_clicks,
+            share_percent=share,
+        )
     matrix = _matrix_section(
         _link_breakdown(
             src_cells,
@@ -884,13 +901,7 @@ def _build_report(
         "links": links_section,
         "click_sources": {},  # joint suppression with "links", filled below
         "release": release,
-        "capacity": {
-            "days": capacity_days,
-            "months": capacity_months,
-            "folded_clicks": folded_clicks,
-            "clicks": period_clicks,
-            "share_percent": share,
-        },
+        "capacity": {"status": capacity_status},
         "click_matrix": matrix,
         "click_countries": countries,
         **{
@@ -999,19 +1010,18 @@ def _funnel_sections(report: dict[str, Any], lines: list[str]) -> None:
             f"Released period for the source and country tables: {rel['period']} "
             f"{rel['start']} to {rel['end']} UTC"
         )
-    cap = report["capacity"]
-    exhausted = [*cap["days"], *(f"{m} (month)" for m in cap["months"])]
-    if exhausted:
+    status = report["capacity"]["status"]
+    if status == "under":
         lines.append(
-            "Warning: counting capacity was exhausted on "
-            + ", ".join(exhausted)
-            + "; cell counts for those days are incomplete"
-            + (
-                f" (about {cap['share_percent']}% of the clicks in this window "
-                "were counted in overflow)."
-                if cap["share_percent"] is not None
-                else "."
-            )
+            "Warning: counting capacity ran out for part of this period; a small "
+            "share of its clicks (under 5 percent) was counted in overflow, so the "
+            "cell tables are slightly incomplete."
+        )
+    elif status == "over":
+        lines.append(
+            "Warning: counting capacity ran out in this period and more than 5 "
+            "percent of its clicks were counted in overflow; the cell tables are "
+            "incomplete and may be biased. You decide whether to publish them."
         )
     lines.append("Clicks by source and destination")
     if matrix["state"] == "period_required":
