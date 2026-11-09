@@ -513,3 +513,15 @@ describe("the hourly cron", () => {
     expect((await q<{ clicks: number }>("SELECT clicks FROM click_src_monthly"))[0]?.clicks).toBe(1);
   });
 });
+
+describe("a tight query budget still rolls a month", () => {
+  it("rolls_a_due_month_with_two_units_left_and_leaves_one_for_the_prune", async () => {
+    await count(Date.UTC(2027, 0, 5), "links", "twitch", "instagram", "US");
+    await rollupClickFunnel({ DB }, Date.UTC(2027, 0, 8)); // seal first
+    // Units: read (1) + seals (0 or 1) + one month roll (1) + prune (1).
+    const meter = new QueryMeter(4);
+    const r = await rollupClickFunnel({ DB: meteredDb(DB, meter) }, Date.UTC(2027, 1, 10));
+    expect(r.monthsRolled).toBe(1);
+    expect(meter.used).toBeLessThanOrEqual(4);
+  });
+});

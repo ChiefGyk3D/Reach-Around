@@ -240,7 +240,8 @@ export async function rollupClickFunnel(env: FunnelRollupEnv, nowMs: number): Pr
 
   // 2. Roll each due month: the sums and the log row in one transaction.
   for (const { site, m } of due) {
-    if (meter !== undefined && meter.remaining() < 3) break;
+    // A month roll is one batch (one query unit); one more stays for the prune batch below.
+    if (meter !== undefined && meter.remaining() < 2) break;
     await db.batch([
       // Days of the month that are not sealed yet cannot be: the month is closed and sealing came first.
       db.prepare(monthSql("click_src_daily", "click_src_monthly", "src", OTHER)).bind(site, m, SRC_MONTH_CAP, OVERFLOW_LINK),

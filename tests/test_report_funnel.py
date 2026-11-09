@@ -965,3 +965,30 @@ def test_hostile_evidence_rows_are_refused(
 ) -> None:
     with pytest.raises(ExportError):
         load_exports([write(tmp_path, {table: [row]})])
+
+
+def test_a_monthly_only_export_has_a_period_and_works_with_days(tmp_path: Path) -> None:
+    export = load_exports(
+        [
+            write(
+                tmp_path,
+                {
+                    "click_country_monthly": [
+                        {
+                            "site": "links",
+                            "month": "2026-09",
+                            "link_id": "twitch",
+                            "country": "US",
+                            "clicks": 9,
+                        }
+                    ]
+                },
+            )
+        ]
+    )
+    report = build_report(export)
+    assert report["period"]["until"] == "2026-09-30"
+    assert report["period"]["days_with_data"] == 1
+    assert "no data in this period" not in render_text(report)
+    windowed = build_report(export, days=10)
+    assert windowed["period"]["until"] == "2026-09-30"

@@ -692,6 +692,14 @@ def _build_report(
         for r in (*export.click_src_daily, *export.click_country_daily)
         if r["site"] == site
     ]
+    # A monthly-only export (day cells are gone after 90 days) still has data: the
+    # last day of each month with a monthly row stands for it, for the period line
+    # and for --days.
+    counter_days += [
+        _month_span(r["month"])[1]
+        for r in (*export.click_src_monthly, *export.click_country_monthly)
+        if r["site"] == site
+    ]
     if days is not None:
         every = [
             r["day"] for r in view_rows + dim_rows + geo_rows + click_rows + kit_rows
