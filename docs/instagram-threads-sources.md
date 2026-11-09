@@ -36,7 +36,7 @@ numbers:
       user_id: "1234567890"          # optional, see the INFERRED note below
 ```
 
-`access_token_env` is the NAME of an environment variable. The value is supplied
+`access_token_env` is optional. It names the environment variable that holds the token and defaults to `INSTAGRAM_ACCESS_TOKEN` or `THREADS_ACCESS_TOKEN`. The name must start with the platform prefix (`INSTAGRAM_` or `THREADS_`, then capital letters, digits or underscores); anything else is refused when the config loads and again before the environment is read, so no unrelated variable can be sent to the platform. The value is supplied
 to the process by your secret manager at run time. The token is never in the
 config, the repo or a GitHub secret.
 

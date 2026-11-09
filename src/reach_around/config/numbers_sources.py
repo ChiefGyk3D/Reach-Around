@@ -176,7 +176,7 @@ class _MetaSource(_Source):
     day a run refreshes the token once.
     """
 
-    access_token_env: EnvName
+    access_token_env: str
     token_expires: date | None = None
     refresh_within_days: Annotated[int, Field(strict=True, ge=1, le=59)] = 10
 
@@ -192,10 +192,16 @@ class _MetaSource(_Source):
 
 class InstagramSource(_MetaSource):
     kind: Literal["instagram"]
+    access_token_env: Annotated[
+        str, StringConstraints(pattern=r"^INSTAGRAM_[A-Z0-9_]{1,60}$")
+    ] = "INSTAGRAM_ACCESS_TOKEN"  # noqa: S105
 
 
 class ThreadsSource(_MetaSource):
     kind: Literal["threads"]
+    access_token_env: Annotated[
+        str, StringConstraints(pattern=r"^THREADS_[A-Z0-9_]{1,60}$")
+    ] = "THREADS_ACCESS_TOKEN"  # noqa: S105
     # Threads user id (digits). Optional: the path segment ``me`` is used when
     # it is left out (INFERRED to be accepted; see docs/instagram-threads-sources.md).
     user_id: str | None = None

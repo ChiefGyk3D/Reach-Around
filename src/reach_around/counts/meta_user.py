@@ -50,6 +50,7 @@ carry fixed words and names, never a token, URL or response body.
 
 from __future__ import annotations
 
+import re
 import sys
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
@@ -166,8 +167,27 @@ def check_url(url: str, host: str) -> None:
         raise MetaError("bad_host")
 
 
+_ENV_ALLOWED = {
+    "instagram": re.compile(r"INSTAGRAM_[A-Z0-9_]{1,60}"),
+    "threads": re.compile(r"THREADS_[A-Z0-9_]{1,60}"),
+}
+
+
+def credential_name(source: MetaSource) -> str:
+    """The variable NAME to read, re-checked against the platform prefix.
+
+    Config validation already enforces this; it is enforced again here, before
+    any read of the environment, so no other variable can ever be sent to the
+    platform host. The error never echoes the name.
+    """
+    name = source.access_token_env
+    if not isinstance(name, str) or not _ENV_ALLOWED[source.kind].fullmatch(name):
+        raise MetaError("bad_credential_name")
+    return name
+
+
 def token_configured(source: MetaSource, env: Mapping[str, str]) -> bool:
-    return bool(env.get(source.access_token_env))
+    return bool(env.get(credential_name(source)))
 
 
 def _token_value(value: object, kind: str) -> str:
@@ -200,11 +220,10 @@ class _Session:
         self.sink = sink
         self.today = today
         self.host = _host(source)
+        name = credential_name(source)
         self.token = _token_value(
-            env.get(source.access_token_env, ""),
-            "missing_credential"
-            if not env.get(source.access_token_env)
-            else "invalid_credential",
+            env.get(name, ""),
+            "missing_credential" if not env.get(name) else "invalid_credential",
         )
 
     def _alert(self, kind: str) -> None:

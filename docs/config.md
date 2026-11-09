@@ -1024,8 +1024,8 @@ the number would never be shown. (`kind` is separate: `kind: mastodon` with
 | `matrix` | `room`: a public alias such as `#room:example.org` | resolves the alias on the alias server's client API (following its `.well-known`), then reads the room summary's `num_joined_members` (label: members) | no |
 | `youtube` | `channel_id`: the `UC...` id; `api_key_env`: the NAME of an environment variable | YouTube Data API v3 `channels.list`, `statistics.subscriberCount` | yes |
 | `twitch` | `login`; `client_id_env` and `client_secret_env`: environment variable NAMES that must differ | app token, then `helix/channels/followers` `total` | yes, and see the limit below |
-| `instagram` | `access_token_env` (a NAME); optional `token_expires` (YYYY-MM-DD), `refresh_within_days` (1 to 59, default 10) | `graph.instagram.com` `/me` field `followers_count`; skipped as `token_not_set` while the variable is empty. See [Instagram and Threads](instagram-threads-sources.md) | yes |
-| `threads` | same as `instagram`, plus optional `user_id` (digits) | `graph.threads.com` `threads_insights` metric `followers_count` | yes |
+| `instagram` | optional `access_token_env` (a NAME starting `INSTAGRAM_`); optional `token_expires` (YYYY-MM-DD), `refresh_within_days` (1 to 59, default 10) | `graph.instagram.com` `/me` field `followers_count`; skipped as `token_not_set` while the variable is empty. See [Instagram and Threads](instagram-threads-sources.md) | yes |
+| `threads` | same with the `THREADS_` prefix, plus optional `user_id` (digits) | `graph.threads.com` `threads_insights` metric `followers_count` | yes |
 
 `numbers.history_file` (optional) is a path to an append-only history file in
 your private instance repo; relative paths are relative to the config file. Unset

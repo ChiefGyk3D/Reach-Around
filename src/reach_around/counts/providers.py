@@ -262,7 +262,11 @@ def twitch(source: TwitchSource, ctx: Context) -> int:
 def _meta(source: InstagramSource | ThreadsSource, ctx: Context) -> int:
     """Instagram and Threads: the API when the token variable holds a value,
     otherwise a skip (the number stays hand-kept; see the docs)."""
-    if not token_configured(source, ctx.env):
+    try:
+        configured = token_configured(source, ctx.env)
+    except MetaError as err:
+        raise SourceError(err.kind) from None
+    if not configured:
         raise SourceSkip(SKIP_TOKEN_NOT_SET)
     today = ctx.today if ctx.today is not None else datetime.now(UTC).date()
     try:

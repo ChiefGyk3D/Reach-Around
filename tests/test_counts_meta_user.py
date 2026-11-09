@@ -644,3 +644,61 @@ def test_api_fed_platform_is_not_hand_kept(setup: Path) -> None:
     config = load_site_config(setup / "site.yaml")
     assert source_platforms(config) == {"instagram", "threads"}
     assert shown_numbers(config, None, TODAY) == []
+
+
+# ---- credential variable names are confined to the platform prefix ----
+
+UNRELATED = "unrelated-value-9f8e7d6c"  # noqa: S105
+BAD_NAMES = [
+    "DATABASE_URL",
+    "AWS_SECRET_ACCESS_KEY",
+    "THREADS_ACCESS_TOKEN",  # the other platform's name
+    "INSTAGRAM_",
+    "instagram_access_token",
+    "INSTAGRAM_ACCESS\nTOKEN",
+    "INSTAGRAM_ACCESS_TOKEN\n",
+    "INSTAGRAM_ACCESS" + chr(0) + "TOKEN",
+    "INSTAGRAM_" + "A" * 61,
+    "",
+]
+
+
+@pytest.mark.parametrize("name", BAD_NAMES)
+def test_config_refuses_unrelated_variable_names(name: str) -> None:
+    with pytest.raises(ValueError):
+        ig(access_token_env=name)
+    with pytest.raises(ValueError):
+        th(access_token_env=name.replace("THREADS", "INSTAGRAM"))
+
+
+def test_default_names_and_prefixed_names() -> None:  # noqa: S105, S106
+    assert (
+        InstagramSource(platform="instagram", kind="instagram").access_token_env
+        == "INSTAGRAM_ACCESS_TOKEN"  # noqa: S105
+    )
+    assert (
+        ThreadsSource(platform="threads", kind="threads").access_token_env
+        == "THREADS_ACCESS_TOKEN"  # noqa: S105
+    )
+    assert ig(access_token_env="INSTAGRAM_MAIN_TOKEN").access_token_env.startswith(  # noqa: S106
+        "INSTAGRAM_"
+    )
+
+
+@pytest.mark.parametrize("name", BAD_NAMES[:-1])
+def test_use_time_check_refuses_before_reading_the_environment(name: str) -> None:
+    source = ig().model_copy(update={"access_token_env": name})  # skips validation
+    env = {name: UNRELATED, "DATABASE_URL": UNRELATED}
+    transport = FakeTransport({IG_COUNT: reply(IG_BODY)})
+    assert fails(source, transport, env=env) == "bad_credential_name"
+    assert transport.calls == []
+
+
+def test_an_unrelated_variable_value_never_reaches_a_request() -> None:
+    env = dict(ENV, DATABASE_URL=UNRELATED, AWS_SECRET_ACCESS_KEY=UNRELATED)
+    source = ig(token_expires=in_days(1))
+    transport = FakeTransport(routes_ig())
+    assert run(source, transport, env=env, sink=Sink()) == 1234
+    for call in transport.calls:
+        blob = repr((call.host, call.path, dict(call.headers), call.body))
+        assert UNRELATED not in blob
