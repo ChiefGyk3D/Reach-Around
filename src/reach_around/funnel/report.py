@@ -137,6 +137,15 @@ def _daily_series(
     return "ok", {d: printed.get(d) if d in printed else None for d in cells}
 
 
+def _released_daily() -> dict[str, Any]:
+    return {
+        "timezone": "UTC",
+        "views_state": "not_released",
+        "clicks_state": "not_released",
+        "days": [],
+    }
+
+
 def _daily_section(
     days: list[str],
     seen: set[str],
@@ -191,7 +200,7 @@ def _withhold_views(report: dict[str, Any]) -> None:
     bots = report["bots"]
     bots.update(classes=[], other_below_floor=0, total_views=None, views_withheld=True)
     daily = report["daily"]
-    if daily["views_state"] != "not_in_export":
+    if daily["views_state"] not in ("not_in_export", "not_released"):
         daily["views_state"] = "withheld"
         for row in daily["days"]:
             row["views"] = None
@@ -791,7 +800,11 @@ def _build_report(
         "page_views": None,
         "clicks": None,
     }
-    if since is not None and until is not None:
+    # A released period carries NO previous window and NO daily series: two
+    # releases (or a release and a window around it) could otherwise be
+    # differenced to recover a small day, and a day with no rows would differ
+    # from a day under the floor. Only the ad-hoc owner report has them.
+    if period is None and since is not None and until is not None:
         length = (date.fromisoformat(until) - date.fromisoformat(since)).days + 1
         prev_until = date.fromisoformat(since) - timedelta(days=1)
         prev_since = prev_until - timedelta(days=length - 1)
@@ -1030,7 +1043,9 @@ def _build_report(
         },
         "click_matrix": matrix,
         "click_countries": countries,
-        "daily": _daily_section(
+        "daily": _released_daily()
+        if period is not None
+        else _daily_section(
             _calendar(since, until)
             if since and until
             else _calendar(
@@ -1261,7 +1276,18 @@ def _daily_text(report: dict[str, Any], lines: list[str]) -> None:
     daily = report["daily"]
     prev = report["previous"]
     lines.append("")
+    if daily["views_state"] == "not_released":
+        lines.append("Daily series and previous window")
+        lines.append(
+            "  not part of a released period: a day-level table could be "
+            "differenced against another release"
+        )
+        return
     lines.append("Daily (UTC days; gap = no rows exported, never zero)")
+    lines.append(
+        "  owner-private: ad-hoc figures for one requested window; they can be "
+        "differenced against another window, so do not publish them"
+    )
     if prev["since"]:
         lines.append(
             f"  Previous window {prev['since']} to {prev['until']}: page views "

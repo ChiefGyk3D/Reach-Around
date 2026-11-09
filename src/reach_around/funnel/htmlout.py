@@ -59,6 +59,7 @@ tbody tr:nth-child(odd){background:var(--row)}
 .bar{display:block;height:8px;background:var(--bar);border-radius:2px}
 .barcell{width:30%}
 svg{width:100%;height:auto;display:block}
+@media(max-width:800px){svg{min-width:640px}}
 .legend{display:flex;flex-wrap:wrap;gap:4px 16px;margin:6px 0;font-size:.9rem}
 .sw{display:inline-block;width:12px;height:12px;vertical-align:-1px;margin-right:5px}
 details{margin-top:8px}
@@ -91,6 +92,7 @@ def _tile(name: str, tile: dict[str, Any], view: dict[str, Any]) -> str:
         if prev["since"]
         else "no previous window"
     )
+    released = view["released"]
     if name == "click_rate":
         value = tile["value"]
         big = "n/a" if value is None else str(value)
@@ -115,18 +117,23 @@ def _tile(name: str, tile: dict[str, Any], view: dict[str, Any]) -> str:
         small = "likely-human page views" if name == "views" else "link clicks"
         chg = _change(tile["change_percent"], "Change")
         title = "Views" if name == "views" else "Clicks"
+    if released:
+        chg_html = ""
+    else:
+        chg_html = (
+            f'<p class="note">{escape(chg)}</p>'
+            f'<p class="note">Previous window: {window}</p>'
+        )
     return (
         f'<div class="tile"><h2>{title}</h2><div class="big">{escape(big)}</div>'
-        f'<p class="label">{escape(small)}</p>'
-        f'<p class="note">{escape(chg)}</p>'
-        f'<p class="note">Previous window: {window}</p></div>'
+        f'<p class="label">{escape(small)}</p>{chg_html}</div>'
     )
 
 
 # ---- charts ----------------------------------------------------------------
 
-W, H = 800, 250
-X0, X1, Y0, Y1 = 56, 784, 20, 200
+W, H = 800, 260
+X0, X1, Y0, Y1 = 64, 784, 24, 196
 
 
 def _x(i: int, count: int) -> float:
@@ -152,43 +159,54 @@ def _chart(
         f'<svg viewBox="0 0 {W} {H}" role="img" aria-label="{escape(title)}">',
         f"<title>{escape(title)}</title>",
     ]
-    step = (X1 - X0) / max(count - 1, 1)
     for i, d in enumerate(days):
         if d["status"] == "gap":
             out.append(
-                f'<rect x="{_x(i, count) - step / 2:.1f}" y="{Y0}" '
-                f'width="{max(step, 2):.1f}" height="{Y1 - Y0}" fill="#2a2f39"/>'
+                f'<rect x="{_x(i, count) - 3:.1f}" y="{Y0}" '
+                f'width="6" height="{Y1 - Y0}" fill="#2a2f39"/>'
             )
     out.append(f'<line x1="{X0}" y1="{Y1}" x2="{X1}" y2="{Y1}" stroke="#8b929d"/>')
     out.append(
-        f'<text x="{X0 - 6}" y="{Y1 + 4}" fill="#b4bac4" text-anchor="end" font-size="13">0</text>'
+        f'<text x="{X0 - 6}" y="{Y1 + 4}" fill="#b4bac4" text-anchor="end" font-size="20">0</text>'
     )
     if top:
         out.append(
-            f'<text x="{X0 - 6}" y="{Y0 + 4}" fill="#b4bac4" text-anchor="end" font-size="13">{top}</text>'
+            f'<text x="{X0 - 6}" y="{Y0 + 4}" fill="#b4bac4" text-anchor="end" font-size="20">{top}</text>'
         )
     if days:
         out.append(
-            f'<text x="{X0}" y="{H - 14}" fill="#b4bac4" font-size="13">{escape(days[0]["day"])}</text>'
+            f'<text x="{X0}" y="{H - 8}" fill="#b4bac4" font-size="20">{escape(days[0]["day"])}</text>'
         )
         out.append(
-            f'<text x="{X1}" y="{H - 14}" fill="#b4bac4" font-size="13" text-anchor="end">{escape(days[-1]["day"])} UTC</text>'
+            f'<text x="{X1}" y="{H - 8}" fill="#b4bac4" font-size="20" text-anchor="end">{escape(days[-1]["day"])} UTC</text>'
         )
     for key, colour, marker in series:
         run: list[str] = []
         runs: list[list[str]] = []
+        last: str | None = None  # last printed point, for a dotted bridge
+        bridged = False  # only under-floor days since it (never a gap)
         for i, d in enumerate(days):
             v = d.get(key)
             if v is None:
                 if run:
                     runs.append(run)
                 run = []
-                if d["status"] == "below_floor":
+                if d["status"] == "gap":
+                    last = None  # a gap breaks the line for good
+                else:
+                    bridged = True
                     out.append(
                         f'<path d="M{_x(i, count) - 4:.1f} {Y1 + 10} l4 -7 l4 7z" fill="{colour}"/>'
                     )
                 continue
-            run.append(f"{_x(i, count):.1f} {y(v):.1f}")
+            here = f"{_x(i, count):.1f} {y(v):.1f}"
+            if last is not None and bridged:
+                out.append(
+                    f'<polyline points="{last} {here}" fill="none" stroke="{colour}" '
+                    'stroke-width="1" stroke-dasharray="2 4" opacity="0.8"/>'
+                )
+            run.append(here)
+            last, bridged = here, False
             if marker == "circle":
                 out.append(
                     f'<circle cx="{_x(i, count):.1f}" cy="{y(v):.1f}" r="3.5" fill="{colour}"/>'
@@ -207,7 +225,7 @@ def _chart(
                     f'stroke-width="2"{dash}/>'
                 )
     out.append("</svg>")
-    return "".join(out)
+    return '<div class="wrap">' + "".join(out) + "</div>"
 
 
 def _daily_table(rows: list[dict[str, Any]]) -> str:
@@ -233,6 +251,14 @@ def _daily_table(rows: list[dict[str, Any]]) -> str:
 def _daily(view: dict[str, Any]) -> str:
     d = view["daily"]
     days = d["days"]
+    if d["views_state"] == "not_released":
+        return (
+            "<section><h2>Views and clicks, daily (UTC days)</h2>"
+            "<p>A released period carries no daily series and no comparison "
+            "window: day-level figures from two releases could be differenced. "
+            "Run an ad-hoc window (--days, --since, --until) for the owner "
+            "charts.</p></section>"
+        )
     if not days:
         return (
             "<section><h2>Views and clicks, daily (UTC days)</h2>"
@@ -424,6 +450,14 @@ def render_html(view: dict[str, Any], *, generated_at: datetime) -> str:
         "views is shown; a figure marked below the privacy floor is withheld. "
         "Private to the owner: do not publish this file. Ranges: run the report with "
         "--days 7, 30 or 90, or --since and --until.</p>",
+        (
+            ""
+            if view["released"]
+            else '<p class="note">Owner-private ad-hoc figures for one requested window: '
+            "the daily series, the previous window and the gap marks can be "
+            "differenced against another window or release. Do not publish, share "
+            "or post this page.</p>"
+        ),
         era_html + warn + "</header>",
         '<div class="grid tiles">',
         _tile("views", view["tiles"]["views"], view),

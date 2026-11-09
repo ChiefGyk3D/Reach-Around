@@ -1,4 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
+# ruff: noqa: E501
 """Owner report layout (#438): HTML and CSV from the floored report only.
 
 Synthetic data only. No network, no Cloudflare, no secret."""
@@ -555,3 +556,107 @@ def test_text_report_has_the_daily_table_with_gaps(report: dict[str, Any]) -> No
     assert row.split() == ["2026-11-04", "gap", "gap", "gap"]
     row = next(x for x in text.splitlines() if x.strip().startswith("2026-11-06"))
     assert "<floor" in row and "n/a" in row
+
+
+# ---- released path (review findings, #438) ------------------------------------
+
+from test_report_funnel import AS_OF, released  # noqa: E402
+
+
+def _week_tables(days: dict[str, int], clicks: int = 12) -> dict[str, Any]:
+    views = [_v(day, "news.example", "US", "h", n) for day, n in days.items()]
+    events = [
+        {"site": "links", "ts": _ts(date.fromisoformat(day)), "link_id": "twitch"}
+        for day in days
+        for _ in range(clicks)
+    ]
+    return {"view_daily": views, "click_events": events}
+
+
+def _release(tmp_path: Path, tables: dict[str, Any]) -> dict[str, Any]:
+    sub = tmp_path / "rel"
+    sub.mkdir(exist_ok=True)
+    export = load_exports([export_file(sub, tables)])
+    return released(sub, export, period="week", as_of=AS_OF)
+
+
+def test_released_period_has_no_daily_series_so_windows_cannot_be_differenced(
+    tmp_path: Path,
+) -> None:
+    # 2, 10 and 20 views on three days of the released week (the review's numbers)
+    rep = _release(
+        tmp_path, _week_tables({"2026-11-02": 2, "2026-11-03": 10, "2026-11-04": 20})
+    )
+    assert rep["funnel"]["page_views"] == 32
+    assert rep["daily"]["days"] == []
+    assert rep["daily"]["views_state"] == rep["daily"]["clicks_state"] == "not_released"
+    assert json.dumps(rep).count("2026-11-03") == 0  # no per-day line at all
+    view = owner_view(rep)
+    assert view["daily"]["days"] == []
+    page = page_of(rep)
+    assert "2026-11-02</td>" not in page
+    files = csv_files(rep, generated_at=NOW)
+    assert [r[0] for r in csv_rows(files, "owner_daily.csv")] == ["day_utc"]
+
+
+def test_released_period_has_no_previous_window_block(tmp_path: Path) -> None:
+    rep = _release(tmp_path, _week_tables({"2026-11-02": 30, "2026-10-27": 40}))
+    assert rep["previous"] == {
+        "since": None, "until": None, "page_views": None, "clicks": None,
+    }  # fmt: skip
+    tiles = owner_view(rep)["tiles"]
+    assert (
+        tiles["views"]["previous"] is None and tiles["views"]["change_percent"] is None
+    )
+    assert tiles["previous_window"] == {"since": None, "until": None}
+    page = page_of(rep)
+    assert "2026-10-26" not in page
+    assert "Previous window:" not in page and "against the previous window" not in page
+    assert b"2026-10-2" not in b"".join(csv_files(rep, generated_at=NOW).values())
+
+
+def test_released_gap_and_small_day_are_indistinguishable(tmp_path: Path) -> None:
+    a = _release(
+        tmp_path, _week_tables({"2026-11-02": 30, "2026-11-03": 2, "2026-11-05": 40})
+    )
+    b = _release(
+        tmp_path, _week_tables({"2026-11-02": 30, "2026-11-05": 40})
+    )  # 11-03 a gap
+    assert a["daily"] == b["daily"]
+    assert csv_files(a, generated_at=NOW)["owner_daily.csv"] == csv_files(b, generated_at=NOW)["owner_daily.csv"]  # fmt: skip
+    assert owner_view(a)["daily"] == owner_view(b)["daily"]
+
+
+def test_adhoc_report_is_marked_owner_private_and_differenceable(
+    report: dict[str, Any],
+) -> None:
+    page = page_of(report)
+    assert "owner-private" in page.lower() and "can be differenced" in page
+    assert "do not publish" in page.lower()
+    from reach_around.funnel.report import render_text
+
+    assert "owner-private" in render_text(report)
+
+
+def test_adhoc_build_cannot_write_a_ledger(tmp_path: Path) -> None:
+    import inspect
+
+    from reach_around.funnel import report as mod
+
+    assert "ledger" not in inspect.signature(mod.build_report).parameters
+    before = {p.name for p in tmp_path.iterdir()}
+    report_of(tmp_path, fixture_tables())
+    assert {p.name for p in tmp_path.iterdir()} - before == {"export.json"}
+
+
+def test_chart_text_is_readable_and_gap_shading_is_narrow(
+    report: dict[str, Any],
+) -> None:
+    page = page_of(report)
+    sizes = {int(x) for x in re.findall(r'font-size="(\d+)"', page)}
+    assert min(sizes) >= 20
+    widths = [
+        float(w) for w in re.findall(r'<rect x="[\d.]+" y="24" width="([\d.]+)"', page)
+    ]
+    assert widths and max(widths) <= 8
+    assert "min-width:640px" in page

@@ -408,6 +408,15 @@ Rules the page follows:
   so the printed total minus the printed days pins no small day; when no day can
   join them the series is withheld.
 - The chart axes print only 0 and the largest printed value.
+- **Ad-hoc versus released.** The daily series, the previous window and the gap
+  marks exist only in the ad-hoc owner report (`--days`, `--since`, `--until`),
+  computed from the one requested window and the one previous window through the
+  same floors. They are owner-private and can be differenced against another
+  window, so the page says so and they must not be published. A released
+  `--period` report (through the ledger) carries no daily series and no previous
+  window at all, in the JSON, the page and the CSV, so a gap and a day under the
+  floor cannot be told apart and two releases cannot be subtracted to recover a
+  small day. The ad-hoc path never writes to or feeds the ledger.
 
 Not in this version (issue #438 stays open for them): the world map shaded by
 views, the Links and Social icons tabs and pagination (the page shows `--top`

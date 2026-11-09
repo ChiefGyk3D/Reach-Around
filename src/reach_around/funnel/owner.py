@@ -201,6 +201,7 @@ def owner_view(report: dict[str, Any]) -> dict[str, Any]:
         "floor": report["floor"],
         "window": {"since": period["since"], "until": period["until"]},
         "period": release["period"],
+        "released": release["period"] is not None,
         "counted_classes": report["counted_classes"],
         "tiles": _tiles(report),
         "daily": _daily(report),
