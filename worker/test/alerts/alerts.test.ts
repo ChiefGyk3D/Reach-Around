@@ -166,7 +166,7 @@ describe("failure handling and isolation", () => {
     it(`${name} is counted as ${cls}, never thrown`, async () => {
       const m = mockFetch(h);
       const d = createDispatcher();
-      await expect(d.notify({ ...BASE, ALERTS_CONFIG: '{"channels":["discord"],"events":["kit_unlocked"]}' }, unlock(), { fetchFn: m.fn, nowMs: T0 })).resolves.toBeUndefined();
+      await expect(d.notify({ ...BASE, ALERTS_CONFIG: '{"channels":["discord"],"events":["kit_unlocked"]}' }, unlock(), { fetchFn: m.fn, nowMs: T0 })).resolves.toBeInstanceOf(Array);
       expect(d.status().channels.discord?.failed[cls as "rejected"]).toBe(1);
       expect(d.status().channels.discord?.sent).toBe(0);
     });

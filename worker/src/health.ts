@@ -40,11 +40,11 @@ import { alertStatus as sharedStatus, notifyOwner, parseAlertsConfig } from "./a
 import { buildChannels } from "./alerts/dispatcher";
 import { QueryMeter, meterOf, meteredDb } from "./d1budget";
 import { logEvent } from "./kit/log";
-import type { AlertEvent, AlertStatus, AlertsEnv, DispatchDeps } from "./alerts";
+import type { AlertEvent, AlertStatus, AlertsEnv, DispatchDeps, NotifyReceipt } from "./alerts";
 import { siteKey, windowStart } from "./alerts/quota";
 import { DEFAULT_ACCOUNT_HUMAN_PER_HOUR, MAX_VIEWS_PER_HOUR, positiveInt } from "./pvlimits";
 import { loadKitLimits } from "./kit/budgets";
-import { HEALTH_CONDITIONS, type HealthCondition } from "./alerts/types";
+import { CHANNEL_IDS, HEALTH_CONDITIONS, type ChannelId, type HealthCondition } from "./alerts/types";
 import { padHour } from "./viewretention";
 import { killedSites, loadSites } from "./sites";
 import { flagOn } from "./view";
@@ -57,6 +57,8 @@ export const STALE_DAYS = 2;
 export const VIEW_BUDGET_WINDOW_HOURS = 3;
 export const ALERT_BUDGET_NEAR_PERCENT = 80;
 /** An active zero_views with no counters left is kept this long, then cleared. */
+/** A message that some channel never took is retried for this long, then given up on. */
+export const RETRY_MAX_AGE_MS = DAY_MS;
 export const ZERO_VIEWS_MAX_AGE_MS = 7 * DAY_MS;
 /** Channel deliveries (one per channel per message) one cron run may attempt. */
 export const MAX_DELIVERIES_PER_TICK = 3;
@@ -74,7 +76,7 @@ export interface HealthEnv extends AlertsEnv {
 
 export interface HealthDeps {
   /** Test seam: a dispatcher instance. Defaults to the shared one. */
-  dispatcher?: { notify(env: AlertsEnv, event: AlertEvent, deps?: DispatchDeps): Promise<void>; status(): AlertStatus };
+  dispatcher?: { notify(env: AlertsEnv, event: AlertEvent, deps?: DispatchDeps): Promise<NotifyReceipt>; status(): AlertStatus };
   fetchFn?: typeof fetch;
 }
 
@@ -95,10 +97,31 @@ function utcDate(ms: number): string {
 
 const EMPTY_DAY = "-".repeat(24);
 
-function sentTotal(s: AlertStatus): number {
-  let n = 0;
-  for (const c of Object.values(s.channels)) n += c?.sent ?? 0;
-  return n;
+/**
+ * The remembered state of one condition (view_meta `health:<condition>`):
+ * `<since ms>:<phase>:<channels>`, phase `firing` or `clearing`, channels the comma list of channels that
+ * have taken the CURRENT message. A bare number is the first format (all channels took it).
+ */
+export interface HealthState {
+  since: number;
+  phase: "firing" | "clearing";
+  taken: Set<ChannelId>;
+  /** True for the bare-number first format: every channel is read as having taken it. */
+  legacy: boolean;
+}
+
+export function parseHealthState(raw: string | undefined): HealthState | null {
+  if (raw === undefined) return null;
+  if (/^\d{1,15}$/.test(raw)) return { since: Number(raw), phase: "firing", taken: new Set(), legacy: true };
+  const m = /^(\d{1,15}):(firing|clearing):([a-z,]{0,40})$/.exec(raw);
+  if (m === null) return null;
+  const taken = new Set<ChannelId>();
+  for (const c of m[3]!.split(",")) if ((CHANNEL_IDS as readonly string[]).includes(c)) taken.add(c as ChannelId);
+  return { since: Number(m[1]), phase: m[2] as "firing" | "clearing", taken, legacy: false };
+}
+
+function stateValue(since: number, phase: "firing" | "clearing", taken: ReadonlySet<ChannelId>): string {
+  return `${Math.floor(since)}:${phase}:${[...taken].sort().join(",")}`;
 }
 
 interface Inputs {
@@ -209,12 +232,11 @@ export function evaluate(
   });
   const quiet = windows.some((w) => !opts.killed && !killedSites.has(w.site) && w.recent === 0 && w.before > 0);
   const anyData = windows.some((w) => w.recent > 0 || w.before > 0);
-  const sinceRaw = inp.meta.get("health:zero_views");
+  const sinceRaw = parseHealthState(inp.meta.get("health:zero_views"))?.since;
   if (quiet) out.set("zero_views", { active: true, count: 0 });
   else if (anyData || sinceRaw === undefined) out.set("zero_views", { active: false, count: 0 });
   else {
-    const since = /^\d{1,15}$/.test(sinceRaw) ? Number(sinceRaw) : 0;
-    if (nowMs - since > ZERO_VIEWS_MAX_AGE_MS) out.set("zero_views", { active: false, count: 0 });
+    if (nowMs - sinceRaw > ZERO_VIEWS_MAX_AGE_MS) out.set("zero_views", { active: false, count: 0 });
     // else: no data, keep the state (no verdict)
   }
 
@@ -308,18 +330,53 @@ export async function runHealth(env: HealthEnv, db: D1Database, nowMs: number, d
     const verdicts = evaluate(inp, nowMs, { killed, killedSites: killSites, accountLimit, alertBudget });
     for (const [c, v] of verdicts) if (v.active) result.active.push(c);
 
-    const disp = deps.dispatcher ?? { notify: notifyOwner, status: sharedStatus };
+    const disp = deps.dispatcher ?? { notify: notifyOwner };
     const meter = meterOf(db);
-    const fanout = Math.max(1, buildChannels(env, cfg.channels, cfg.matrixAllowedHosts).channels.length);
+    const usable = buildChannels(env, cfg.channels, cfg.matrixAllowedHosts).channels.map((c) => c.id);
     let deliveries = MAX_DELIVERIES_PER_TICK;
     for (const cond of HEALTH_CONDITIONS) {
       const v = verdicts.get(cond);
       if (v === undefined) continue;
       const key = `health:${cond}`;
-      const had = inp.meta.has(key);
-      if (v.active === had) continue;
-      // Bound the channel deliveries (each message goes to every configured channel).
-      if (fanout > deliveries) break;
+      const st = parseHealthState(inp.meta.get(key));
+      const raw = inp.meta.get(key);
+      if (raw !== undefined && st === null) continue; // unreadable state: leave it alone
+      // What to send now, and to whom. A channel that took the current message is never sent it again.
+      let phase: "firing" | "cleared";
+      let targets: ChannelId[];
+      let base: Set<ChannelId>; // channels that already took this phase's message
+      if (v.active) {
+        if (st === null || st.phase === "clearing") {
+          phase = "firing";
+          targets = usable;
+          base = new Set();
+        } else {
+          if (st.legacy || nowMs - st.since > RETRY_MAX_AGE_MS) continue; // complete, or given up on
+          phase = "firing";
+          base = st.taken;
+          targets = usable.filter((c) => !base.has(c));
+        }
+      } else {
+        if (st === null) continue;
+        phase = "cleared";
+        // The cleared notice goes to every usable channel once; a channel that took it is not sent it again.
+        base = st.phase === "clearing" ? st.taken : new Set();
+        targets = usable.filter((c) => !base.has(c));
+        if (nowMs - st.since > RETRY_MAX_AGE_MS && st.phase === "clearing") targets = [];
+      }
+      if (targets.length === 0) {
+        // Nothing left to send: finish the record.
+        if (!v.active) {
+          try {
+            await db.prepare("DELETE FROM view_meta WHERE key = ?1").bind(key).run();
+          } catch {
+            break;
+          }
+        }
+        continue;
+      }
+      // Bound the channel deliveries (each message goes to every target channel).
+      if (targets.length > deliveries) break;
       // Keep one query for this transition's state write: the dispatcher may use the rest, never that one.
       let notifyDb = db;
       if (meter !== undefined) {
@@ -328,27 +385,30 @@ export async function runHealth(env: HealthEnv, db: D1Database, nowMs: number, d
         // An independent cap on top of db (db itself still counts each query once against the run's meter).
         notifyDb = meteredDb(db, new QueryMeter(rem - 1));
       }
-      deliveries -= fanout;
-      const before = sentTotal(disp.status());
-      await disp.notify(
+      deliveries -= targets.length;
+      // Only this call's own per-channel receipt decides what is recorded.
+      const receipt = await disp.notify(
         { ...env, DB: notifyDb },
         { kind: "analytics_health", atMs: nowMs, condition: cond, state: v.active ? "firing" : "cleared", count: v.count },
-        { fetchFn: deps.fetchFn, nowMs },
+        { fetchFn: deps.fetchFn, nowMs, only: targets },
       );
-      if (sentTotal(disp.status()) > before) {
-        result.notified++;
-        // Persist right away, before anything else can use the allowance.
-        try {
-          await (v.active
-            ? db
-                .prepare("INSERT INTO view_meta (key, value) VALUES (?1, ?2) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
-                .bind(key, String(Math.floor(nowMs)))
-                .run()
-            : db.prepare("DELETE FROM view_meta WHERE key = ?1").bind(key).run());
-        } catch {
-          // Cannot be recorded; the dispatcher's dedup covers ten minutes only. Stop sending this run.
-          break;
-        }
+      const took = new Set<ChannelId>(base);
+      for (const r of Array.isArray(receipt) ? receipt : []) if (r.ok && targets.includes(r.channel)) took.add(r.channel);
+      if (took.size === base.size) continue; // nobody took it: nothing recorded, retried next hour
+      result.notified += took.size - base.size;
+      // Persist right away, before anything else can use the allowance.
+      const since = v.active ? (st !== null && st.phase === "firing" ? st.since : nowMs) : (st?.phase === "clearing" ? st.since : nowMs);
+      const done = phase === "cleared" && usable.every((c) => took.has(c));
+      try {
+        await (done
+          ? db.prepare("DELETE FROM view_meta WHERE key = ?1").bind(key).run()
+          : db
+              .prepare("INSERT INTO view_meta (key, value) VALUES (?1, ?2) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
+              .bind(key, stateValue(since, phase === "firing" ? "firing" : "clearing", took))
+              .run());
+      } catch {
+        // Cannot be recorded; the dispatcher's dedup covers ten minutes only. Stop sending this run.
+        break;
       }
     }
   } catch {

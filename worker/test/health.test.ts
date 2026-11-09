@@ -114,7 +114,7 @@ describe("each condition fires once and clears", () => {
     expect(a.res.active).toContain("rollup_overdue");
     expect(a.res.notified).toBe(1);
     expect(a.f.bodies[0]).toContain("the daily rollup has not finished in over 3 hours (about 5 hours)");
-    expect(await stateOf("rollup_overdue")).toBe(String(NOW));
+    expect(await stateOf("rollup_overdue")).toBe(`${NOW}:firing:discord`);
     // Still failing next hour: quiet.
     const b = await tick(env(), d, mockFetch(), NOW + HOUR_MS);
     expect(b.f.calls).not.toHaveBeenCalled();
@@ -356,7 +356,7 @@ describe("review findings (Daybreak, PR 480)", () => {
     const res = await runHealth(e, DB, NOW, { dispatcher: createDispatcher(), fetchFn: f.fn });
     // Two real channels: one event (2 deliveries) fits in 3; a second would be 4.
     expect(f.calls.mock.calls.length).toBe(2);
-    expect(res.notified).toBe(1);
+    expect(res.notified).toBe(2); // one condition, two channels
     expect(f.calls.mock.calls.length).toBeLessThanOrEqual(MAX_DELIVERIES_PER_TICK);
   });
 
@@ -441,6 +441,101 @@ describe("review findings (Copilot, PR 480)", () => {
     await meta("rollup_last_ok", String(NOW + 2 * HOUR_MS - 60_000));
     const c = await tick(E(), createDispatcher(), mockFetch(), NOW + 2 * HOUR_MS);
     expect(c.f.bodies.join("")).toContain("page views are being counted again");
+  });
+});
+
+describe("review findings round 3 (Daybreak, PR 480)", () => {
+  const MX = {
+    ALERTS_CONFIG: JSON.stringify({
+      channels: ["discord", "matrix"],
+      events: ["analytics_health", "kit_unlocked"],
+      max_per_minute: 30,
+      matrix: { allowed_hosts: ["matrix.example.org"] },
+    }),
+    ALERT_MATRIX_SERVER: "https://matrix.example.org",
+    ALERT_MATRIX_ROOM_ID: "!room:example.org",
+    ALERT_MATRIX_ACCESS_TOKEN: "syt_MATRIXSECRET_0123456789",
+    DAILY_ALERT_BUDGET: "50",
+  };
+  function routed(matrixStatus: () => number) {
+    const hits: string[] = [];
+    const fn = vi.fn(async (url: string | URL | Request) => {
+      const u = String(url);
+      hits.push(u.includes("matrix") ? "matrix" : "discord");
+      return new Response(null, { status: u.includes("matrix") ? matrixStatus() : 204 });
+    });
+    return { fn: fn as unknown as typeof fetch, hits };
+  }
+
+  it("MEDIUM: Discord ok and Matrix failing: the next hour retries Matrix only, once", async () => {
+    await meta("rollup_last_ok", String(NOW - 9 * HOUR_MS));
+    const d = createDispatcher();
+    const e = env(MX);
+    let mx = 500;
+    const f = routed(() => mx);
+    const a = await runHealth(e, DB, NOW, { dispatcher: d, fetchFn: f.fn });
+    expect(a.notified).toBe(1);
+    expect(f.hits.sort()).toEqual(["discord", "matrix"]);
+    expect(await stateOf("rollup_overdue")).toBe(`${NOW}:firing:discord`);
+    f.hits.length = 0;
+    mx = 204;
+    await meta("rollup_last_ok", String(NOW - 9 * HOUR_MS));
+    await runHealth(e, DB, NOW + HOUR_MS, { dispatcher: d, fetchFn: f.fn });
+    expect(f.hits).toEqual(["matrix"]);
+    expect(await stateOf("rollup_overdue")).toBe(`${NOW}:firing:discord,matrix`);
+    // Complete now: nothing more is sent.
+    f.hits.length = 0;
+    await runHealth(e, DB, NOW + 2 * HOUR_MS, { dispatcher: d, fetchFn: f.fn });
+    expect(f.hits).toEqual([]);
+  });
+
+  it("MEDIUM: a channel that never takes it is given up on after the retry maximum age", async () => {
+    await meta("rollup_last_ok", String(NOW - 9 * HOUR_MS));
+    const d = createDispatcher();
+    const e = env(MX);
+    const f = routed(() => 500);
+    await runHealth(e, DB, NOW, { dispatcher: d, fetchFn: f.fn });
+    f.hits.length = 0;
+    await runHealth(e, DB, NOW + 25 * HOUR_MS, { dispatcher: d, fetchFn: f.fn });
+    expect(f.hits).not.toContain("matrix");
+  });
+
+  it("MEDIUM: the cleared notice also reaches each channel once", async () => {
+    await meta("rollup_last_ok", String(NOW - 9 * HOUR_MS));
+    const d = createDispatcher();
+    const e = env(MX);
+    let mx = 204;
+    const f = routed(() => mx);
+    await runHealth(e, DB, NOW, { dispatcher: d, fetchFn: f.fn });
+    expect(await stateOf("rollup_overdue")).toBe(`${NOW}:firing:discord,matrix`);
+    await meta("rollup_last_ok", String(NOW + HOUR_MS - 60_000));
+    mx = 500;
+    f.hits.length = 0;
+    await runHealth(e, DB, NOW + HOUR_MS, { dispatcher: d, fetchFn: f.fn });
+    expect(await stateOf("rollup_overdue")).toBe(`${NOW + HOUR_MS}:clearing:discord`);
+    mx = 204;
+    f.hits.length = 0;
+    await runHealth(e, DB, NOW + 2 * HOUR_MS, { dispatcher: d, fetchFn: f.fn });
+    expect(f.hits).toEqual(["matrix"]);
+    expect(await stateOf("rollup_overdue")).toBeNull();
+  });
+
+  it("MEDIUM: a concurrent visitor alert that succeeds does not make a failed health alert count as delivered", async () => {
+    await meta("rollup_last_ok", String(NOW - 9 * HOUR_MS));
+    const d = createDispatcher();
+    const e = env({ ...MX, ALERTS_CONFIG: JSON.stringify({ channels: ["discord"], events: ["analytics_health", "kit_unlocked"], max_per_minute: 30 }) });
+    const failing = mockFetch(500);
+    const ok = mockFetch(204);
+    const slow = (async (...a: Parameters<typeof fetch>) => {
+      await new Promise((r) => setTimeout(r, 20));
+      return failing.fn(...a);
+    }) as typeof fetch;
+    const [res] = await Promise.all([
+      runHealth(e, DB, NOW, { dispatcher: d, fetchFn: slow }),
+      d.notify(e, { kind: "kit_unlocked", atMs: NOW, email: "visitor@example.com" }, { fetchFn: ok.fn, nowMs: NOW }),
+    ]);
+    expect(res.notified).toBe(0);
+    expect(await stateOf("rollup_overdue")).toBeNull();
   });
 });
 

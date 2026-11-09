@@ -36,6 +36,11 @@ status code) and keep it pointed at the public page, not at the event routes.
 | A day shows as `kill_switch` | `VIEWS_KILL` (or every site in `VIEWS_KILL_SITES`) was on when the hour was sampled | Expected after you flipped it. |
 | A day shows as `site_kill_switch` | `VIEWS_KILL_SITES` named some sites. Coverage is account-wide, so the report cannot say which | Expected; check the list you set. |
 
+A health alert is recorded per channel as soon as a channel takes it. A crash or
+a failed write between delivery and the record can repeat the same alert once per
+hour until the condition clears or the daily alert budget runs out (at most one
+repeat per condition per hour). That is a known, bounded limit.
+
 ## Kill switches
 
 Each is a plain Worker variable, read on every request, and turns a route into

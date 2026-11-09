@@ -164,6 +164,17 @@ Design rules, each pinned by a test (`worker/test/health.test.ts`):
   message, so an exhausted allowance can delay an alert but never makes an
   already delivered one repeat on later hours. If that write itself fails, the
   run sends nothing more (the dispatcher's dedup covers only ten minutes).
+  Known bounded limit: a crash or a failed state write between delivery and the
+  write can repeat that alert once per hourly run until the condition clears or
+  the daily alert budget (`DAILY_ALERT_BUDGET`, default 20) is spent: at most one
+  repeat per condition per hour.
+- **Per channel.** The state of a condition records which channels took the
+  current message (`health:<condition>` = `<since ms>:<firing|clearing>:<channels>`).
+  If Discord took it and Matrix failed, the next hour sends to Matrix only, and a
+  channel that took it is never sent it again. A channel that never takes it is
+  given up on after 24 hours. What counts as taken comes only from the receipt of
+  that one send, never from shared counters, so an unrelated alert in the same
+  Worker cannot mark a health alert as delivered.
 - **Fail closed.** The step never throws into the cron. Whatever happens to
   an alert (channel down, budget spent, D1 error), collection, the purges and
   the rollup run as before.
