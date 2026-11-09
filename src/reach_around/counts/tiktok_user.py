@@ -448,6 +448,7 @@ VIDEO_WINDOW_DAYS = 28
 VIDEO_PAGE_SIZE = 20
 VIDEO_MAX_PAGES = 5
 MAX_VIDEO_COUNT = 10**12
+MAX_CURSOR = 2**63 - 1  # documented int64
 
 
 def _whole(value: object, top: int) -> int | None:
@@ -521,7 +522,11 @@ def video_stats(
         if reached_cutoff or more is False:
             return _video_result(views, engagement, videos)
         nxt = data.get("cursor")
-        if type(nxt) is not int or nxt <= 0 or (cursor is not None and nxt >= cursor):
+        if (
+            type(nxt) is not int
+            or not 0 < nxt <= MAX_CURSOR
+            or (cursor is not None and nxt >= cursor)
+        ):
             raise TiktokError("missing_field")
         cursor = nxt
     raise TiktokError("window_incomplete")

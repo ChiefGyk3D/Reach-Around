@@ -18,8 +18,11 @@ UNVERIFIED = not stated on a page that could be read, or not tested live.
 
 These metrics are OWNER REPORT ONLY. No kit, link page or public file may show
 them yet: the display work (#397) with its floors, and the field marker work
-(#424), are not built. The site build never reads them, and a test fails if site, kit, editor, config or preview code imports the
-history or insights modules (the figures live only in the history file). When #397 lands,
+(#424), are not built. The site build never reads them, and a test builds the import graph of the whole package from the AST and fails if
+site, kit, editor, config, preview or editing can reach the history or insights
+modules, directly, through other modules, or by a dynamic `import_module` or
+`__import__` (typing-only imports count too: the strictest reading). The test is
+checked against a direct import, a dynamic import and a bridge module (the figures live only in the history file). When #397 lands,
 these metrics enter the policy table as owner-report-only first. Both vendors
 treat the figures as the account owner's own data; Meta Platform Terms and the
 TikTok Developer Terms ask for deletion when the app stops or on request (see
@@ -60,7 +63,8 @@ Paging: 20 videos a page (a page with more is refused), at most 5 pages (100
 videos). `has_more` must be a real boolean: `true` continues, `false` ends, any
 other type or an absent value is `missing_field`. If the 5th page still
 holds videos inside the window, nothing is stored and the failure word is
-`window_incomplete`. A cursor that does not go back is `missing_field`.
+`window_incomplete`. A cursor must be an integer from 1 to 2^63 - 1 (the documented int64) and must
+go back, else `missing_field`, and it is never sent on.
 
 ## Threads (issue 394)
 
@@ -81,9 +85,9 @@ Metrics (history, platform `threads`):
 
 - `views_7d`: sum of the daily `views` (series shape) for `since` = 00:00 UTC
   seven days before the run day to `until` = 00:00 UTC of the run day. The answer
-  is checked against that request: `period` must be `day`, every `end_time` must
-  parse and fall from `since` to one day after `until`, none may repeat, and at
-  most 8 points are accepted; otherwise `window_mismatch` and nothing is stored.
+  is checked against that request: `period` must be `day`, there must be 6 or 7 points (one per requested
+  day, at most one missing at an edge), and every `end_time` must parse, fall in
+  `[since, until + 1 day)` (upper bound exclusive) and be on its own UTC date; otherwise `window_mismatch` and nothing is stored.
   The day boundaries are the API's own; see the UNVERIFIED row.
 - `views_vendor_window`: `views` when the answer is the `total_value` shape. It
   carries no time information, so its window is vendor-defined and it is stored

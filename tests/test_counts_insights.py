@@ -73,11 +73,12 @@ def tt_fetch(*pages: Any) -> tuple[Any, FakeTransport]:
 
 
 def series(name: str, values: list[int]) -> dict:
+    values = values + [0] * (7 - len(values)) if len(values) < 6 else values
     return {
         "name": name,
         "period": "day",
         "values": [
-            {"value": v, "end_time": f"2026-11-0{i + 3}T08:00:00+0000"}
+            {"value": v, "end_time": f"2026-11-{i + 3:02d}T08:00:00+0000"}
             for i, v in enumerate(values)
         ],
     }
@@ -395,33 +396,175 @@ def test_collect_figures_carry_a_note_naming_window_and_formula() -> None:
     assert {f.metric for f in figures} <= OWNER_REPORT_ONLY
 
 
-def test_owner_report_only_metrics_never_reach_the_build_or_kit() -> None:
-    """Boundary check: public-side code cannot read the history store at all.
+SRC_ROOT = Path(__file__).resolve().parents[1] / "src"
+BANNED = frozenset({"reach_around.counts.history", "reach_around.counts.insights"})
+PUBLIC_SIDE = ("site", "kit", "editor", "preview", "config", "editing")
 
-    The history file is the only place the figures live, so site, kit, editor and
-    preview code must not import the history or insights modules (an import
-    check, not a search for metric names, so aliases and prefixes cannot slip by).
+
+def _module_names(root: Path) -> dict[str, Path]:
+    found: dict[str, Path] = {}
+    for path in sorted((root / "reach_around").rglob("*.py")):
+        parts = list(path.relative_to(root).with_suffix("").parts)
+        if parts[-1] == "__init__":
+            parts.pop()
+        found[".".join(parts)] = path
+    return found
+
+
+def import_graph(root: Path) -> tuple[dict[str, set[str]], dict[str, str]]:
+    """Edges module -> modules it can import, from the AST of every module.
+
+    Counts: ``import``, ``from ... import`` (relative ones resolved), any call to
+    ``importlib.import_module`` or ``__import__`` with a string constant (edge to
+    that module), and importing a module executes its parent packages. Imports
+    under ``if TYPE_CHECKING`` are NOT ignored: the strictest reading, so a
+    typing-only bridge is also refused. A dynamic import whose argument is not a
+    string constant is returned in the second mapping (module -> reason) and fails
+    the check, since it cannot be followed.
     """
     import ast
 
-    root = Path(__file__).resolve().parents[1] / "src" / "reach_around"
-    banned = ("reach_around.counts.history", "reach_around.counts.insights")
-    for sub in ("site", "kit", "editor", "preview.py", "config", "editing.py"):
-        target = root / sub
-        files = [target] if target.is_file() else sorted(target.rglob("*.py"))
-        for path in files:
-            tree = ast.parse(path.read_text(encoding="utf-8"))
-            for node in ast.walk(tree):
-                names: list[str] = []
-                if isinstance(node, ast.ImportFrom) and node.module:
-                    names = [
-                        node.module,
-                        *(f"{node.module}.{a.name}" for a in node.names),
-                    ]
-                elif isinstance(node, ast.Import):
-                    names = [a.name for a in node.names]
-                for name in names:
-                    assert not name.startswith(banned), (path.name, name)
+    modules = _module_names(root)
+    graph: dict[str, set[str]] = {m: set() for m in modules}
+    opaque: dict[str, str] = {}
+
+    def add(owner: str, target: str) -> None:
+        # the longest known module that is a prefix of ``target``
+        parts = target.split(".")
+        for end in range(len(parts), 0, -1):
+            name = ".".join(parts[:end])
+            if name in modules:
+                graph[owner].add(name)
+                return
+
+    for name, path in modules.items():
+        is_pkg = path.name == "__init__.py"
+        base = name.split(".") if is_pkg else name.split(".")[:-1]
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    add(name, alias.name)
+            elif isinstance(node, ast.ImportFrom):
+                if node.level:
+                    keep = base[: len(base) - (node.level - 1)]
+                    head = ".".join([*keep, *([node.module] if node.module else [])])
+                else:
+                    head = node.module or ""
+                add(name, head)
+                for alias in node.names:
+                    add(name, f"{head}.{alias.name}")
+            elif isinstance(node, ast.Call):
+                func = node.func
+                called = (
+                    func.attr
+                    if isinstance(func, ast.Attribute)
+                    else func.id
+                    if isinstance(func, ast.Name)
+                    else ""
+                )
+                if called in ("import_module", "__import__"):
+                    arg = node.args[0] if node.args else None
+                    if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
+                        add(name, arg.value)
+                    else:
+                        opaque[name] = called
+    # importing a module also imports its parent packages
+    for name in list(graph):
+        parts = name.split(".")
+        for end in range(1, len(parts)):
+            parent = ".".join(parts[:end])
+            if parent in modules:
+                graph[name].add(parent)
+    return graph, opaque
+
+
+def reaches(graph: dict[str, set[str]], start: str, targets: frozenset[str]) -> bool:
+    seen: set[str] = set()
+    stack = [start]
+    while stack:
+        node = stack.pop()
+        if node in seen:
+            continue
+        seen.add(node)
+        if node in targets and node != start:
+            return True
+        stack.extend(graph.get(node, ()))
+    return False
+
+
+def violations(root: Path) -> list[str]:
+    graph, opaque = import_graph(root)
+    bad: list[str] = []
+    for name in graph:
+        top = name.split(".")[1] if "." in name else ""
+        if top not in PUBLIC_SIDE and name not in PUBLIC_SIDE:
+            continue
+        if name in opaque:
+            bad.append(f"{name}: dynamic import that cannot be followed")
+        if name in BANNED or reaches(graph, name, BANNED):
+            bad.append(f"{name}: can reach the history or insights modules")
+    return bad
+
+
+def test_owner_report_only_metrics_never_reach_the_build_or_kit() -> None:
+    """Boundary: public-side code cannot reach the history store, even through a
+    chain of other modules or a dynamic import. The figures live only there."""
+    assert violations(SRC_ROOT) == []
+
+
+def _tree(tmp_path: Path, files: dict[str, str]) -> Path:
+    for rel, text in files.items():
+        target = tmp_path / "reach_around" / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(text, encoding="utf-8")
+    return tmp_path
+
+
+BASE = {
+    "__init__.py": "",
+    "counts/__init__.py": "",
+    "counts/history.py": "X = 1\n",
+    "site/__init__.py": "",
+}
+
+
+def test_boundary_check_rejects_a_direct_import(tmp_path: Path) -> None:
+    root = _tree(
+        tmp_path, {**BASE, "site/a.py": "from reach_around.counts import history\n"}
+    )
+    assert violations(root)
+
+
+def test_boundary_check_rejects_a_dynamic_importlib_import(tmp_path: Path) -> None:
+    text = 'import importlib\nimportlib.import_module("reach_around.counts.history")\n'
+    assert violations(_tree(tmp_path, {**BASE, "site/a.py": text}))
+    text = '__import__("reach_around.counts.history")\n'
+    assert violations(_tree(tmp_path / "b", {**BASE, "site/a.py": text}))
+
+
+def test_boundary_check_rejects_an_unfollowable_dynamic_import(tmp_path: Path) -> None:
+    text = "import importlib\nimportlib.import_module(NAME)\n"
+    assert violations(_tree(tmp_path, {**BASE, "site/a.py": text}))
+
+
+def test_boundary_check_rejects_a_bridge_module(tmp_path: Path) -> None:
+    files = {
+        **BASE,
+        "bridge.py": "from reach_around.counts.history import X\n",
+        "middle.py": "from . import bridge\n",
+        "site/a.py": "from reach_around.middle import something\n",
+    }
+    assert any("site.a" in v for v in violations(_tree(tmp_path, files)))
+
+
+def test_boundary_check_accepts_an_unrelated_site_module(tmp_path: Path) -> None:
+    files = {
+        **BASE,
+        "other.py": "Y = 2\n",
+        "site/a.py": "from reach_around import other\n",
+    }
+    assert violations(_tree(tmp_path, files)) == []
 
 
 # ---- review findings (Daybreak, PR 478) ----
@@ -517,15 +660,51 @@ def _views(period: str, points: list[tuple[int, str]]) -> Any:
         _views("day", [(1, "2026-11-12T08:00:00+0000")]),
         _views("day", [(1, f"2026-11-{d:02d}T08:00:00+0000") for d in range(2, 12)]),
         _views("day", [(1, 5)]),
+        _views("day", [(1, "2026-11-03T08:00:00+0000")]),  # one sparse point
+        _views("day", [(1, f"2026-11-{d:02d}T08:00:00+0000") for d in range(3, 8)]),
+        _views("day", [(1, "2026-11-10T00:00:00+0000")] * 1),  # == until + 1 day
+        _views(
+            "day",
+            [(1, f"2026-11-{d:02d}T08:00:00+0000") for d in range(3, 9)]
+            + [(1, "2026-11-10T00:00:00+0000")],
+        ),
+        _views(
+            "day",
+            [(1, f"2026-11-{d:02d}T08:00:00+0000") for d in range(3, 9)]
+            + [(1, "2026-11-08T20:00:00+0000")],
+        ),  # two points on one UTC date
     ],
-    ids=range(8),
+    ids=range(13),
 )
 def test_threads_views_series_must_match_the_requested_window(answer: Any) -> None:
     fetch, _ = th_fetch(answer)
     with pytest.raises(MetaError) as err:
         threads_insights(TH, TH_ENV, fetch, date(2026, 11, 9))
-    assert err.value.kind in ("missing_field", "window_mismatch")
     assert err.value.kind == "window_mismatch"
+
+
+def test_threads_views_series_one_missing_edge_point_is_tolerated() -> None:
+    points = [(1, f"2026-11-{d:02d}T08:00:00+0000") for d in range(4, 10)]
+    fetch, _ = th_fetch(_views("day", points))
+    assert threads_insights(TH, TH_ENV, fetch, date(2026, 11, 9)) == {"views_7d": 6}
+
+
+@pytest.mark.parametrize("cursor", [2**100, 2**63, 0, -5, True, 1.5, "7"], ids=repr)
+def test_tiktok_cursor_must_be_a_positive_int64(cursor: Any) -> None:
+    first = page([video(1)], more=True, cursor=cursor)
+    fetch, transport = tt_fetch(first, page([]))
+    with pytest.raises(TiktokError) as err:
+        video_stats(TT, TT_ENV, fetch, NOW_S)
+    assert err.value.kind == "missing_field"
+    assert len(transport.calls) == 1  # the hostile cursor is never sent on
+
+
+def test_tiktok_cursor_at_the_int64_maximum_is_sent() -> None:
+    fetch, transport = tt_fetch(
+        page([video(1)], more=True, cursor=2**63 - 1), page([video(40)])
+    )
+    video_stats(TT, TT_ENV, fetch, NOW_S)
+    assert json.loads(transport.calls[1].body)["cursor"] == 2**63 - 1
 
 
 def test_threads_views_series_inside_the_window_is_accepted() -> None:
