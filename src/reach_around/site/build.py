@@ -145,6 +145,8 @@ _LIVE_SCRIPT = Path("static") / "live.js"
 # Published only for a site with a kit.
 _KIT_STYLE = Path("static") / "kit.css"
 _FRAME_STYLE = Path("static") / "frame.css"
+# The display-zone script (#372): linked from the public kit page only.
+_ZONE_SCRIPT = Path("static") / "zone.js"
 
 
 # Published only for a site with an email block; the script only if one uses it.
@@ -748,6 +750,7 @@ def build_site(
         static.pop(_LIVE_SCRIPT, None)
     if kit is None:
         static.pop(_KIT_STYLE, None)
+        static.pop(_ZONE_SCRIPT, None)
     if config.theme.frame == "none":
         static.pop(_FRAME_STYLE, None)
     static[Path("static") / "theme.css"] = theme_css(config.theme).encode("utf-8")

@@ -83,7 +83,26 @@ without special cases. File names, columns and their order are fixed.
 Format: UTF-8 without a byte order mark, CRLF line ends, a field with a comma,
 a quote or a line break is quoted and a quote is doubled. All dates and times
 are UTC and labeled so (`generated_at_utc` is an ISO 8601 stamp ending in `Z`).
-A viewer-selectable display zone is not part of this command.
+Day buckets are UTC days and stay so.
+
+### Display zone and cutover
+
+`--display-zone ZONE` reads the window's first and last instants in one of a
+fixed list of zones (UTC, `America/New_York`, `Europe/Berlin`, `Asia/Tokyo` and
+others; `reach-around report --help` lists them; any other name is refused and
+not echoed). Default: UTC only. Stored and exported data stay UTC. Only when the
+flag is given, the text report adds a line naming the zone, the JSON adds a
+`display` block (`zone`, `window_start`, `window_end_exclusive`, `note`) and
+`metadata.csv` adds `display_timezone`, `generated_at_display`,
+`window_start_display` and `window_end_exclusive_display`. `timezone` stays
+`UTC`.
+
+`--cutover YYYY-MM-DD` (the config's `cutover_date`) labels the window: the text
+report prints "Cutover: <day> UTC; this window is before Reach Around" (or
+"after", or "spans the cutover"), the JSON adds `era` (`cutover_utc`, `window`,
+`text`) and `metadata.csv` adds `cutover_utc` and `window_era`. A window with
+data on both sides is labeled as spanning it; its counts are added together.
+Unset, in the future, or no data in the window: nothing is added.
 
 Formula safety: a text cell that starts with `=`, `+`, `-`, `@`, a tab, a
 carriage return or a line feed is written with a leading apostrophe, so a

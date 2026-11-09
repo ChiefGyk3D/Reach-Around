@@ -29,6 +29,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from reach_around.config.zones import format_instant
+
 _DANGEROUS = ("=", "+", "-", "@", "\t", "\r", "\n")
 BELOW = "(rows below the floor)"
 
@@ -121,6 +123,26 @@ def _bot_rows(report: dict[str, Any]) -> list[list[Any]]:
     return rows
 
 
+def _display_rows(report: dict[str, Any], generated_at: datetime) -> list[list[Any]]:
+    """Zone and era rows; present only when a zone or a cutover was given."""
+    rows: list[list[Any]] = []
+    display = report.get("display")
+    if display:
+        rows.append(["display_timezone", display["zone"]])
+        rows.append(
+            ["generated_at_display", format_instant(generated_at, display["zone"])]
+        )
+        rows.append(["window_start_display", display["window_start"] or ""])
+        rows.append(
+            ["window_end_exclusive_display", display["window_end_exclusive"] or ""]
+        )
+    era = report.get("era")
+    if era:
+        rows.append(["cutover_utc", era["cutover_utc"]])
+        rows.append(["window_era", era["window"]])
+    return rows
+
+
 def _meta_rows(
     report: dict[str, Any], generated_at: datetime, requested: dict[str, Any]
 ) -> list[list[Any]]:
@@ -138,6 +160,7 @@ def _meta_rows(
         ["period_start_utc", report["release"]["start"] or ""],
         ["period_end_utc", report["release"]["end"] or ""],
         ["timezone", "UTC"],
+        *_display_rows(report, generated_at),
         ["site", report["site"]],
         ["privacy_floor_views", report["floor"]],
         ["counted_classes", " ".join(report["counted_classes"])],
