@@ -16,7 +16,7 @@
 {% if "hero" in frame_plan %}
 </div>
 {% endif %}
-{{ numbers(kit, "kit-numbers-title", true) }}
+{{ numbers(kit, "kit-numbers-title", true, zone_choices) }}
 {% if form %}
 <section class="kit-gate-box" aria-labelledby="kit-gate-title">
 <h3 id="kit-gate-title"{% if frame_plan %} class="{{ frames.cls("head")|trim }}"{% endif %}>More details</h3>
