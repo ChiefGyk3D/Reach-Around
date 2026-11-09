@@ -122,6 +122,42 @@ def stale_warnings(path: Path, now: datetime) -> list[str]:
     return lines
 
 
+MERGE_TAG = "tag:yaml.org,2002:merge"
+
+
+def strict_data(text: str) -> object:
+    """Load ``text`` as the engine's hardened loader would accept it.
+
+    Raises ValueError on an anchor, alias, merge key, duplicate key or more than
+    one document (checked on events and nodes before anything is expanded), so
+    no decision about what to forward rests on a config the engine refuses."""
+    documents = 0
+    for event in yaml.parse(text, Loader=yaml.SafeLoader):
+        if isinstance(event, yaml.AliasEvent) or getattr(event, "anchor", None):
+            raise ValueError("anchor")
+        if isinstance(event, yaml.DocumentStartEvent):
+            documents += 1
+    if documents != 1:
+        raise ValueError("documents")
+    root = yaml.compose(text, Loader=yaml.SafeLoader)
+    stack = [root]
+    while stack:
+        node = stack.pop()
+        if isinstance(node, yaml.MappingNode):
+            seen: set[tuple[str, str]] = set()
+            for key, value in node.value:
+                if key.tag == MERGE_TAG:
+                    raise ValueError("merge")
+                ident = (key.tag, str(getattr(key, "value", "")))
+                if not isinstance(key, yaml.ScalarNode) or ident in seen:
+                    raise ValueError("key")
+                seen.add(ident)
+                stack.append(value)
+        elif isinstance(node, yaml.SequenceNode):
+            stack.extend(node.value)
+    return yaml.safe_load(text)
+
+
 def env_names(config: Path) -> tuple[list[str], list[str]] | None:
     """(names written in the config, canonical names to forward); None if
     unreadable. Only the second list is ever handed to the engine.
@@ -134,7 +170,7 @@ def env_names(config: Path) -> tuple[list[str], list[str]] | None:
     try:
         if config.stat().st_size > MAX_CONFIG_BYTES:
             return None
-        data = yaml.safe_load(config.read_text(encoding="utf-8"))
+        data = strict_data(config.read_text(encoding="utf-8"))
     except (OSError, ValueError, yaml.YAMLError):
         return None
     block = data.get("numbers") if isinstance(data, dict) else None
@@ -182,7 +218,10 @@ def main(argv: list[str] | None = None) -> int:
 
     found = env_names(config)
     if found is None:
-        return fail("The config could not be read as YAML.")
+        return fail(
+            "The config could not be read as plain YAML (no anchors, aliases, "
+            "merge keys, duplicate keys or extra documents)."
+        )
     names, canonical = found
     if any(unsafe_name(name) for name in names):
         return fail(

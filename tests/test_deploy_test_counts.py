@@ -977,3 +977,48 @@ def test_the_docs_name_the_counts_identity_variable_and_claim_no_more() -> None:
     assert "does not name a workflow" in docs
     assert "no other job or workflow, on `main` or" not in docs
     assert "As shipped, this refreshes nothing" in docs
+
+
+# ---- the wrapper reads the config as strictly as the engine ----------------------
+
+_YT = "{platform: yt, kind: youtube, channel_id: UCxxxxxxxxxxxxxxxxxxxxxx}"
+HOSTILE_CONFIGS = {
+    "anchor_and_alias": (
+        f"version: 1\nnumbers:\n  sources:\n    - &a {_YT}\n    - *a\n"
+    ),
+    "alias_only_source": (
+        "version: 1\nx: &k youtube\nnumbers:\n  sources:\n"
+        "    - {platform: yt, kind: *k, channel_id: UCxxxxxxxxxxxxxxxxxxxxxx}\n"
+    ),
+    "merge_key_supplies_kind": (
+        "version: 1\nnumbers:\n  sources:\n"
+        "    - <<: {kind: tiktok}\n      platform: tt\n"
+    ),
+    "duplicate_kind_keys": (
+        "version: 1\nnumbers:\n  sources:\n"
+        "    - {platform: tt, kind: bluesky, kind: tiktok}\n"
+    ),
+    "duplicate_numbers_blocks": (
+        f"version: 1\nnumbers:\n  sources: [{_YT}]\nnumbers:\n  sources: []\n"
+    ),
+    "two_documents": (f"version: 1\nnumbers:\n  sources: [{_YT}]\n---\nversion: 1\n"),
+}
+
+
+@pytest.mark.parametrize("case", sorted(HOSTILE_CONFIGS))
+def test_a_config_the_engine_would_refuse_forwards_nothing(
+    tmp_path: Path, case: str
+) -> None:
+    proc = run(
+        tmp_path,
+        HOSTILE_CONFIGS[case],
+        fake_engine(tmp_path, 0, {}),
+        extra_env={
+            "YOUTUBE_API_KEY": "secret-value-123",
+            "TIKTOK_ACCESS_TOKEN": "secret-value-456",
+        },
+    )
+    assert proc.returncode != 0
+    assert "::error" in proc.stdout
+    assert "secret-value" not in proc.stdout + proc.stderr
+    assert not (tmp_path / "engine-env.json").exists()  # the engine never ran
