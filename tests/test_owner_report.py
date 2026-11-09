@@ -660,3 +660,80 @@ def test_chart_text_is_readable_and_gap_shading_is_narrow(
     ]
     assert widths and max(widths) <= 8
     assert "min-width:640px" in page
+
+
+# ---- round 2: repeat releases and released metadata ------------------------
+
+
+def _round2_tables(monday: int | None) -> dict[str, Any]:
+    """Floor 10: Tuesday 30 and Sunday 40 views, an optional 2-view Monday.
+
+    The click rows are the same either way, so the click cells are identical.
+    """
+    days = {"2026-11-03": 30, "2026-11-08": 40}
+    if monday is not None:
+        days = {"2026-11-02": monday, **days}
+    views = [_v(day, "news.example", "US", "h", n) for day, n in days.items()]
+    events = [
+        {"site": "links", "ts": _ts(date.fromisoformat(d)), "link_id": "twitch"}
+        for d in ("2026-11-03", "2026-11-08")
+        for _ in range(15)
+    ]
+    return {"view_daily": views, "click_events": events}
+
+
+def _release_on(ledger: Path, tmp_path: Path, tables: dict[str, Any]) -> dict[str, Any]:
+    from reach_around.funnel.release import release_report
+    from test_report_funnel import add_evidence
+
+    export = load_exports([export_file(tmp_path, tables)])
+    add_evidence(export, "week", 0, AS_OF)
+    report, _status = release_report(
+        export, ledger, period="week", as_of=AS_OF, floor=10
+    )
+    return report
+
+
+def test_a_repeat_of_one_period_with_different_page_views_is_refused(
+    tmp_path: Path,
+) -> None:
+    from reach_around.funnel.ledger import LedgerError, init_ledger
+
+    ledger = tmp_path / "ledger.jsonl"
+    init_ledger(ledger)
+    first = _release_on(ledger, tmp_path, _round2_tables(monday=2))
+    assert first["funnel"]["page_views"] == 72
+    with pytest.raises(LedgerError):  # 70 would reveal the 2-view Monday
+        _release_on(ledger, tmp_path, _round2_tables(monday=None))
+    # the same projection again is still a plain repeat
+    again = _release_on(ledger, tmp_path, _round2_tables(monday=2))
+    assert again == first
+
+
+def test_released_period_metadata_is_the_fixed_period_not_the_seen_days(
+    tmp_path: Path,
+) -> None:
+    from reach_around.funnel.ledger import init_ledger
+    from reach_around.funnel.report import render_text
+
+    outs = []
+    for monday in (2, None):
+        sub = tmp_path / f"m{monday}"
+        sub.mkdir()
+        ledger = sub / "ledger.jsonl"
+        init_ledger(ledger)
+        outs.append(_release_on(ledger, sub, _round2_tables(monday)))
+    with_monday, without = outs
+    for rep in outs:
+        assert rep["period"] == {"since": "2026-11-02", "until": "2026-11-08"}
+        assert "days_with_data" not in json.dumps(rep)
+    # everything but the page-view total (72 against 70) is identical, so no
+    # field tells a boundary gap from a day under the floor
+    meta = [csv_files(r, generated_at=NOW)["metadata.csv"] for r in outs]
+    assert meta[0] == meta[1] and b"days_with_data" not in meta[0]
+    texts = [render_text(r).splitlines()[0] for r in outs]
+    assert texts[0] == texts[1] and "days with data" not in texts[0]
+    assert "2026-11-02 to 2026-11-08" in texts[0]
+    win = [re.search(r"Window: [^.]*\.", page_of(r)).group(0) for r in outs]  # type: ignore[union-attr]
+    assert win[0] == win[1] and "2026-11-02 to 2026-11-08" in win[0]
+    assert with_monday["funnel"]["page_views"] - without["funnel"]["page_views"] == 2

@@ -1011,11 +1011,18 @@ def _build_report(
         "version": REPORT_VERSION,
         "site": site,
         "floor": floor,
-        "period": {
-            "since": seen_days[0] if seen_days else None,
-            "until": seen_days[-1] if seen_days else None,
-            "days_with_data": len(seen_days),
-        },
+        # A released period prints its FIXED bounds and no count of days with
+        # rows: the first and last seen day and that count would tell a day
+        # with no rows from a day under the floor.
+        "period": (
+            {"since": since, "until": until}
+            if period is not None
+            else {
+                "since": seen_days[0] if seen_days else None,
+                "until": seen_days[-1] if seen_days else None,
+                "days_with_data": len(seen_days),
+            }
+        ),
         "counted_classes": sorted(wanted),
         "funnel": {
             "page_views": page_views,
@@ -1095,8 +1102,15 @@ def _build_report(
     ) or (include_bots and classes.dropped)
     if unsafe:
         _withhold_views(report)
-    digest = _inputs_digest(src_cells, country_cells, printed_links, floor, top)
-    return report, digest
+    inputs = _inputs_digest(src_cells, country_cells, printed_links, floor, top)
+    # The ledger entry binds the COMPLETE public projection too (every number
+    # and field of the finished report, before the display and era blocks and
+    # any generated timestamp are added), so a repeat of one period whose page
+    # views, totals or any section differ is refused like changed cells.
+    blob = json.dumps(
+        {"inputs": inputs, "public": report}, sort_keys=True, separators=(",", ":")
+    )
+    return report, hashlib.sha256(blob.encode("utf-8")).hexdigest()
 
 
 # ---- text -----------------------------------------------------------------
@@ -1324,10 +1338,9 @@ def render_text(report: dict[str, Any]) -> str:
     if period["since"] is None:
         span = "no data in this period"
     else:
-        span = (
-            f"{period['since']} to {period['until']} UTC, "
-            f"{period['days_with_data']} days with data"
-        )
+        span = f"{period['since']} to {period['until']} UTC"
+        if "days_with_data" in period:
+            span += f", {period['days_with_data']} days with data"
     lines.append(f"Reach Around report: site {report['site']}, {span}")
     era = report.get("era")
     if era:

@@ -68,7 +68,7 @@ aggregate label and a count; there is no per-visitor row and no unique count.
 
 | File | Columns | Rows |
 |---|---|---|
-| `metadata.csv` | `key,value` | `generated_at_utc`, `window_since_utc`, `window_until_utc`, `days_with_data`, `requested_since_utc`, `requested_until_utc`, `requested_days`, `timezone` (always `UTC`), `site`, `privacy_floor_views`, `counted_classes`, `geography_level`, `report_version` |
+| `metadata.csv` | `key,value` | `generated_at_utc`, `window_since_utc`, `window_until_utc`, `days_with_data` (not in a released `--period` report), `requested_since_utc`, `requested_until_utc`, `requested_days`, `timezone` (always `UTC`), `site`, `privacy_floor_views`, `counted_classes`, `geography_level`, `report_version` |
 | `funnel.csv` | `step,value,status` | page views, clicks, kit views, kit unlocks, the two ratios; status `ok`, `below_floor`, `not_in_export`, `not_available`, `n/a` |
 | `pages.csv`, `sources.csv`, `geography.csv`, `links.csv`, `devices.csv`, `browsers.csv`, `systems.csv`, `bot_reasons.csv` | `label,views,row_type` | `row`, one `below_floor` row for the merged remainder, or a single row typed `withheld` or `not_in_export` |
 | `bot_classes.csv` | `class,name,views,share_percent,row_type` | as above |
@@ -417,6 +417,13 @@ Rules the page follows:
   window at all, in the JSON, the page and the CSV, so a gap and a day under the
   floor cannot be told apart and two releases cannot be subtracted to recover a
   small day. The ad-hoc path never writes to or feeds the ledger.
+- **Released metadata and repeats.** A released report prints the fixed bounds of
+  its week or month (never the first and last day that had rows) and no count of
+  days with data, so a day with no rows and a day under the floor look the same in
+  the JSON, text, metadata CSV and page window line. The ledger entry binds the
+  complete public projection of the report (every figure and field, before any
+  display zone, cutover label or timestamp), so a repeat of one period whose page
+  views or any section differ is refused, not accepted as a repeat.
 
 Not in this version (issue #438 stays open for them): the world map shaded by
 views, the Links and Social icons tabs and pagination (the page shows `--top`

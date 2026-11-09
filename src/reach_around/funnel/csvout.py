@@ -153,7 +153,11 @@ def _meta_rows(
         ["generated_at_utc", stamp],
         ["window_since_utc", period["since"] or ""],
         ["window_until_utc", period["until"] or ""],
-        ["days_with_data", period["days_with_data"]],
+        *(
+            [["days_with_data", period["days_with_data"]]]
+            if "days_with_data" in period
+            else []
+        ),
         ["requested_since_utc", requested.get("since") or ""],
         ["requested_until_utc", requested.get("until") or ""],
         ["requested_days", requested.get("days") or ""],
