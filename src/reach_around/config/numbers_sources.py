@@ -46,6 +46,14 @@ Platform = Annotated[str, StringConstraints(pattern=_SLUG)]
 EnvName = Annotated[str, StringConstraints(pattern=_ENV_NAME)]
 
 
+# Fixed credential variable names for Twitch. Names are not configurable: a
+# config can never point the collector at another variable.
+CLIENT_ID_ENV = "TWITCH_CLIENT_ID"
+CLIENT_SECRET_ENV = "TWITCH_CLIENT_SECRET"  # noqa: S105 (a variable NAME)
+USER_TOKEN_ENV = "TWITCH_USER_ACCESS_TOKEN"  # noqa: S105 (a variable NAME)
+REFRESH_TOKEN_ENV = "TWITCH_USER_REFRESH_TOKEN"  # noqa: S105 (a variable NAME)
+
+
 class _Source(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -149,8 +157,12 @@ class YoutubeSource(_Source):
 class TwitchSource(_Source):
     kind: Literal["twitch"]
     login: str
-    client_id_env: EnvName
-    client_secret_env: EnvName
+    # Only the canonical names are accepted (the keys may be left out).
+    client_id_env: Literal["TWITCH_CLIENT_ID"] = "TWITCH_CLIENT_ID"
+    client_secret_env: Literal["TWITCH_CLIENT_SECRET"] = "TWITCH_CLIENT_SECRET"  # noqa: S105
+    # Opt-in refresh of a broadcaster user token. Refused at run time unless the
+    # caller supplies a sink that stores the rotated pair.
+    auto_refresh: bool = False
 
     @field_validator("login")
     @classmethod
@@ -158,12 +170,6 @@ class TwitchSource(_Source):
         if not _TWITCH_LOGIN.match(value):
             raise ValueError("login must be a Twitch login name")
         return value
-
-    @model_validator(mode="after")
-    def _distinct(self) -> TwitchSource:
-        if self.client_id_env == self.client_secret_env:
-            raise ValueError("client_id_env and client_secret_env must differ")
-        return self
 
 
 class _MetaSource(_Source):
