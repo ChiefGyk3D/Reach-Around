@@ -67,6 +67,37 @@ class FontStack(_Model):
         return self
 
 
+FrameLevel = Literal["none", "minimal", "faithful"]
+
+
+class FrameClasses(_Model):
+    """Per-class frame level (theme.frame_classes). Unset keeps the default.
+
+    featured: the featured link. cta: big primary buttons. link: ordinary
+    links. platform: platform links. head: section headers. tab: tabs. hero:
+    profile card and kit header. tile: platform chips. stat: the audience
+    total. card: crypto and email cards and the audience table. ctl: header
+    social icons. chip: small chips. field: inputs. foot: the footer. bar: the
+    cookie notice.
+    """
+
+    featured: FrameLevel | None = None
+    cta: FrameLevel | None = None
+    link: FrameLevel | None = None
+    platform: FrameLevel | None = None
+    head: FrameLevel | None = None
+    tab: FrameLevel | None = None
+    hero: FrameLevel | None = None
+    tile: FrameLevel | None = None
+    stat: FrameLevel | None = None
+    card: FrameLevel | None = None
+    ctl: FrameLevel | None = None
+    chip: FrameLevel | None = None
+    field: FrameLevel | None = None
+    foot: FrameLevel | None = None
+    bar: FrameLevel | None = None
+
+
 class Theme(_Model):
     colors: dict[str, str] = Field(default_factory=dict)
     fonts: FontStack = FontStack()
@@ -99,20 +130,19 @@ class Theme(_Model):
     mode: Literal["auto", "light", "dark"] = "auto"
     # Optional border frames (docs/customizing.md, "Border frames"): the
     # strongest level the build may use. "none" (the default) writes no frame
-    # markup and does not load the frame stylesheet.
-    frame: Literal["none", "l1", "l2", "l3"] = "none"
-    # Optional light show for L3 frames (docs/customizing.md, "Border frames"):
-    # "live" lets the top rule and the dashes of each L3 frame pulse, only for
-    # visitors who have not asked for reduced motion. "none" (the default)
-    # leaves every frame still.
+    # markup and does not load the frame stylesheet. l1 is an alias of minimal;
+    # l2 and l3 are aliases of faithful.
+    frame: Literal["none", "minimal", "faithful", "l1", "l2", "l3"] = "none"
+    # Per-class override of the default placement (theme.frame must be on).
+    frame_classes: FrameClasses | None = None
+    # Deprecated and ignored: the frame art is static now (no light show, no
+    # glow). Still accepted so an older config validates.
     frame_motion: Literal["none", "live"] = "none"
-    # The most L3 (full frame with glow) elements one page may carry. The
-    # packaged templates give the first ones in page order L3 and the rest L2.
     frame_l3_max: int = Field(
         default=1,
         ge=1,
         le=64,
-        description="Most L3 border frames on one page (theme.frame: l3 only).",
+        description="Deprecated and ignored: there is no L3 glow frame any more.",
     )
 
     @field_validator("colors")

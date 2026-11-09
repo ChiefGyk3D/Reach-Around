@@ -670,6 +670,269 @@
       "title": "Footer",
       "type": "object"
     },
+    "FrameClasses": {
+      "additionalProperties": false,
+      "description": "Per-class frame level (theme.frame_classes). Unset keeps the default.\n\nfeatured: the featured link. cta: big primary buttons. link: ordinary\nlinks. platform: platform links. head: section headers. tab: tabs. hero:\nprofile card and kit header. tile: platform chips. stat: the audience\ntotal. card: crypto and email cards and the audience table. ctl: header\nsocial icons. chip: small chips. field: inputs. foot: the footer. bar: the\ncookie notice.",
+      "properties": {
+        "bar": {
+          "anyOf": [
+            {
+              "enum": [
+                "none",
+                "minimal",
+                "faithful"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Bar"
+        },
+        "card": {
+          "anyOf": [
+            {
+              "enum": [
+                "none",
+                "minimal",
+                "faithful"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Card"
+        },
+        "chip": {
+          "anyOf": [
+            {
+              "enum": [
+                "none",
+                "minimal",
+                "faithful"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Chip"
+        },
+        "cta": {
+          "anyOf": [
+            {
+              "enum": [
+                "none",
+                "minimal",
+                "faithful"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Cta"
+        },
+        "ctl": {
+          "anyOf": [
+            {
+              "enum": [
+                "none",
+                "minimal",
+                "faithful"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Ctl"
+        },
+        "featured": {
+          "anyOf": [
+            {
+              "enum": [
+                "none",
+                "minimal",
+                "faithful"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Featured"
+        },
+        "field": {
+          "anyOf": [
+            {
+              "enum": [
+                "none",
+                "minimal",
+                "faithful"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Field"
+        },
+        "foot": {
+          "anyOf": [
+            {
+              "enum": [
+                "none",
+                "minimal",
+                "faithful"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Foot"
+        },
+        "head": {
+          "anyOf": [
+            {
+              "enum": [
+                "none",
+                "minimal",
+                "faithful"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Head"
+        },
+        "hero": {
+          "anyOf": [
+            {
+              "enum": [
+                "none",
+                "minimal",
+                "faithful"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Hero"
+        },
+        "link": {
+          "anyOf": [
+            {
+              "enum": [
+                "none",
+                "minimal",
+                "faithful"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Link"
+        },
+        "platform": {
+          "anyOf": [
+            {
+              "enum": [
+                "none",
+                "minimal",
+                "faithful"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Platform"
+        },
+        "stat": {
+          "anyOf": [
+            {
+              "enum": [
+                "none",
+                "minimal",
+                "faithful"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Stat"
+        },
+        "tab": {
+          "anyOf": [
+            {
+              "enum": [
+                "none",
+                "minimal",
+                "faithful"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Tab"
+        },
+        "tile": {
+          "anyOf": [
+            {
+              "enum": [
+                "none",
+                "minimal",
+                "faithful"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Tile"
+        }
+      },
+      "title": "FrameClasses",
+      "type": "object"
+    },
     "GithubSource": {
       "additionalProperties": false,
       "properties": {
@@ -2049,6 +2312,8 @@
           "default": "none",
           "enum": [
             "none",
+            "minimal",
+            "faithful",
             "l1",
             "l2",
             "l3"
@@ -2056,9 +2321,20 @@
           "title": "Frame",
           "type": "string"
         },
+        "frame_classes": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/FrameClasses"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
         "frame_l3_max": {
           "default": 1,
-          "description": "Most L3 border frames on one page (theme.frame: l3 only).",
+          "description": "Deprecated and ignored: there is no L3 glow frame any more.",
           "maximum": 64,
           "minimum": 1,
           "title": "Frame L3 Max",
@@ -2488,6 +2764,7 @@
           "license": null
         },
         "frame": "none",
+        "frame_classes": null,
         "frame_l3_max": 1,
         "frame_motion": "none",
         "mascot": null,

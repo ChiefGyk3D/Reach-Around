@@ -49,9 +49,10 @@ editing the stylesheet.
 | `column_width` | `--ra-column-width` | `35rem` (560 px), the phone column and the floor for wider screens |
 | `radius` | `--ra-radius` | `0.5rem` |
 | `button_style` | `--ra-button-radius` | `2.25rem` (36 px); `pill` and `square` set it |
-| `frame` | none (a build switch) | `none`; `l1` to `l3` load `static/frame.css` and the two `frame*.svg` border-image files; the CSS reads the same tokens and sets `--ra-fr-*` locally (frames are border only: each element keeps its own fill and text tokens, and the rules and glow follow the accent) |
-| `frame_motion` | none (a build switch) | `none`; `live` adds `body.ra-mo` and the opt-in light-show animation of the L3 frames |
-| `frame_l3_max` | none (a build limit) | `1`; the most L3 frames on one page, 1 to 64 |
+| `frame` | none (a build switch) | `none`; `minimal` and `faithful` (and the aliases `l1` to `l3`) load `static/frame.css` and the `frame*.svg` art; frames are border only and dark only: each element keeps its own fill and text tokens |
+| `frame_classes` | none (a build switch) | per-class level override, see customizing.md |
+| `frame_motion` | none | deprecated, ignored |
+| `frame_l3_max` | none | deprecated, ignored |
 | `mode` | `color-scheme` | `auto` is the stylesheet default (dark); `light` forces light |
 
 The default colors are `light-dark()` pairs: the first value is used in light
