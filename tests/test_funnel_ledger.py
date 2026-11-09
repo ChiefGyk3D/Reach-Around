@@ -12,6 +12,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import shutil
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
@@ -515,6 +516,10 @@ def test_the_digest_never_reaches_the_report(tmp_path: Path) -> None:
 
 
 def _exact_figures_absent(text: str) -> None:
+    # The daily table lists every UTC day of the window (#438), so a date there
+    # says nothing about a capacity day; only a date elsewhere would.
+    text = re.sub(r'"day": "\d{4}-\d{2}-\d{2}"', '"day": "-"', text)
+    text = re.sub(r"(?m)^  \d{4}-\d{2}-\d{2}\b.*$", "  (day row)", text)
     for needle in ("2026-11-04", "folded_clicks", '"share_percent"', "3.0%", "600"):
         assert needle not in text, needle
 
