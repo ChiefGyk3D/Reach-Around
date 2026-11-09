@@ -78,6 +78,11 @@ fields:
       - {name: Design and API research, color: BLUE, description: "Epic #1"}
       - {name: Plan 1 foundation and link page, color: GREEN, description: "Epic #30 and later work"}
       - {name: Phase plans and threat model, color: PURPLE, description: "Epic #46"}
+      - {name: Media kit and gate, color: ORANGE, description: "Epic #244"}
+      - {name: Analytics funnel and report, color: PINK, description: "Epic #245"}
+      - {name: Cutover and Beacons parity, color: RED, description: "Epic #246"}
+      - {name: Social platform analytics, color: YELLOW, description: "Epic #364"}
+      - {name: Analytics production readiness, color: GRAY, description: "Epic #365"}
   - {name: Decision, type: text}
   - name: Priority
     type: single_select
