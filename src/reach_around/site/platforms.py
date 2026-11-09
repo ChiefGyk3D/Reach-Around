@@ -7,6 +7,8 @@ from dataclasses import dataclass
 from datetime import date
 
 from reach_around.config.blocks import Platforms
+from reach_around.config.cutover import utc_today
+from reach_around.config.era import classify_era, era_text
 from reach_around.config.numbers import Numbers, resolve_count, stale_limit
 from reach_around.config.tablinks import is_tab_ref
 
@@ -39,12 +41,16 @@ class PlatformRow:
     exact: str | None
     as_of: str | None
     stale: bool = False
+    era: str = ""
 
 
 def platform_rows(
     block: Platforms, numbers: Numbers | None, today: date, config: object = None
 ) -> list[PlatformRow]:
     rows = []
+    # A UTC day, and only once the cutover has arrived (unset or ahead: no text).
+    cutover = getattr(config, "cutover_date", None)
+    utc_day = utc_today()
     for ident, entry in zip(block.item_ids, block.items, strict=True):
         found = None if numbers is None else numbers.lookup(ident, entry.platform)
         count, stamp = resolve_count(
@@ -66,6 +72,7 @@ def platform_rows(
                 stale=count is not None
                 and stamp is not None
                 and (today - stamp).days > stale_limit(config, entry.platform),
+                era=era_text(classify_era(stamp, cutover, utc_day)),
             )
         )
     return rows
