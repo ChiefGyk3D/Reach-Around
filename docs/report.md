@@ -26,7 +26,7 @@ the file.
 | Geography | `view_geo_daily` | `--geo country` (default), `region` or `city`. The Worker folds small cities and regions upward before the export, so a finer level may show `other`. Country codes only, no coordinates. |
 | Link clicks | `click_events` | Per link id. |
 | Link clicks by source | `click_events` | `source -> link` pairs, from the closed source label the page sent with the click (the `s` parameter; `none` when the link carried no label, `other` for a label not on the site's list). A count of clicks, never of people, and not tied to any view. Joint suppression with the per-link table: a link's breakdown prints only when every part is at or above the floor and its total is a printed row; otherwise only the link total (or the merged line) prints. The matrix presentation is a later change (#409). |
-| Clicks by source and destination, Top flows | `click_src_daily`, `click_src_monthly` | The matrix of "came from Instagram, went to Twitch": rows are source labels (`direct` for a click that carried none, `other` for a label not on the site's list), columns are destinations (link ids), cells are clicks. Top flows is the same printed cells as a ranked `source -> destination` list with a share of the clicks shown (never a conversion), top N then `other`. Released for one fixed period only (`--period`, below). Within a destination, cells under the floor are merged into one `(below the floor)` line, printed only when it reaches the floor (the largest printed cell joins it, as in the other tables); a destination with nothing at the floor prints nothing, and when `click_events` is in the export a destination must also be a printed row of the link table. Totals are sums of printed cells only. A note appears when half or more of the shown clicks are `direct`. |
+| Clicks by source and destination, Top flows | `click_src_daily`, `click_src_monthly` | The matrix of "came from Instagram, went to Twitch": rows are source labels (`direct` for a click that carried none, `other` for a label not on the site's list), columns are destinations (link ids), cells are clicks. Top flows is the same printed cells as a ranked `source -> destination` list with a share of the clicks shown (never a conversion), top N then `other`. Released for one fixed period only (`--period`, below). Within a destination, cells under the floor are merged into one `(below the floor)` line built so it bounds nothing (see the section below); a destination that cannot be made safe prints nothing, and when `click_events` is in the export a destination must also be a printed row of the link table. Totals are sums of printed cells only. A note appears when half or more of the shown clicks are `direct`. |
 | Clicks by country and destination | `click_country_daily`, `click_country_monthly` | Country codes only (no region or city on clicks), counted for EVERY click when it arrives, whether or not it carried a source, so it does not depend on the raw click rows. Same period, remainder line and floor. The top N countries print; the rest, with the Worker's own `ZZ` (unknown or folded), are summed per destination into `other`. |
 | Devices, Browsers, Systems | `view_dim_daily` | Device class, browser family and operating system, from the Worker's closed-vocabulary dimension rows (`dim` = `device`, `browser`, `os`). Likely-human only unless `--include-bots`. A value the Worker folded into `other` is shown as `other`. Floored and suppressed like the pages table, and part of the same view population (see below). Version numbers, screen size, language and network type are not shown. |
 | Bots | `view_daily`, `view_dim_daily` | Share of all recorded views per class (likely human, verified crawler as claimed, automated, suspicious) and the reason codes. |
@@ -210,34 +210,49 @@ and country by link, per UTC day. They are incremented when a click arrives, so
 the country counter covers every click, including those that carry a source (a
 raw click row keeps a source label at most, never a country).
 
-**Fixed periods only.** The source by destination and country by destination
-tables are released for ONE complete UTC calendar week (Monday start) or month,
-chosen with `--period week|month` and `--offset N` (complete periods back; 0 is
-the latest complete one; the period containing today is never released). The
-floor and the remainder rule apply to that period alone, and the same period
-also bounds every other section of that report, so the sections agree. Why: a
-floor applied to a free window can be beaten by asking for overlapping windows
-(three days of 3 clicks with a floor of 6: days 1-2 and days 2-3 each print 6,
-and the three daily values follow). So `--period` cannot be combined with
-`--since`, `--until` or `--days` (the command stops and says so), and without
-`--period` these two tables print "not released" while the aggregate sections
-(views, clicks, click rate, the link table) still honor a free window.
+**Fixed periods only, one kind per stretch of time.** The source by destination
+and country by destination tables are released for ONE complete UTC calendar
+period, chosen with `--period week|month` and `--offset N`:
 
-One kind of period per series: a week and the month around it overlap, and a
-reader who holds both can difference them. Publish weekly reports or monthly
-reports, not both for the same days. A month is the sum of its own days only
-(or its monthly rollup row, which is the same sum), never of days outside it.
+- **Weeks** (Monday start) only inside the range where day cells still exist,
+  the last 90 whole UTC days, and only complete weeks lying wholly inside it.
+  `--offset 0` is the latest complete week; a week that crosses the edge of the
+  range is withheld, and a request further back is refused with a pointer to
+  months.
+- **Months** only for months lying wholly before that range, whose day cells
+  are already gone and rolled into the monthly rows. `--offset 0` is the latest
+  such month; the month that crosses the edge is withheld until it is wholly
+  older.
+
+So a week and a month never cover the same day, the period containing today is
+never released, and releases on consecutive days print the same cells for the
+same period (the periods are fixed and complete, so successive reports cannot
+be differenced). The floor and the remainder rule apply to that period alone,
+and the same period also bounds every other section of that report, so the
+sections agree. Why not a free window: a floor applied to a free window can be
+beaten by asking for overlapping windows (three days of 3 clicks with a floor of
+6: days 1-2 and days 2-3 each print 6, and the daily values follow). So
+`--period` cannot be combined with `--since`, `--until` or `--days` (the command
+stops and says so), and without `--period` these two tables print "not
+released" while the aggregate sections (views, clicks, click rate, the link
+table) still honor a free window. `metadata.csv` records the period kind and its
+start and end.
 
 Day cells are kept 90 days; a closed month is rolled into the monthly tables,
-kept 25 months. A month period is read from its monthly row when there is one
-(the day cells of a month go after 90 days); a week is always read from day
-cells, so a week older than 90 days is empty. A month is never read both ways.
+kept 25 months. A month period is read from its monthly row; a week is read from
+day cells. A month is never read both ways.
 
 Suppression is joint across these sections and the link table: within a
-destination, cells under the floor merge into one remainder line, printed only
-if it reaches the floor, and every total in these sections is a sum of printed
-cells. One visitor-made tiny cell therefore cannot hide a destination, and no
-printed number pins a cell under the floor. The Worker holds at most the cap
+destination, cells under the floor merge into one remainder line, and every
+total in these sections is a sum of printed cells. The remainder is built so
+that it and the order of the printed cells bound nothing: the largest printed
+cell always joins it, and more of the largest join until the remainder minus the
+larger of the floor and the largest printed cell left is at least the floor
+minus one (a reader knows every merged cell is at least that large, so the
+hidden sum can be no more tightly bounded than "each cell is under the
+floor"). If that cannot be reached, nothing of the destination prints. One
+visitor-made tiny cell therefore cannot hide a destination, and no printed
+number pins a cell under the floor. The Worker holds at most the cap
 plus one rows per site per day (the extra row is an `overflow-all` destination
 that gathers everything past the cap or past the site's daily click budget); it
 prints as the destination `overflow-all` and its small cells follow the same

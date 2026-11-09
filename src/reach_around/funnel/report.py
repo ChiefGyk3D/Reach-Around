@@ -208,21 +208,41 @@ UNKNOWN_COUNTRY = "ZZ"  # the Worker's label for an unknown or folded country
 HIGH_DIRECT_SHARE = 50.0  # percent of shown clicks that carry no source label
 
 
-def period_bounds(period: str, offset: int, as_of: date) -> tuple[date, date]:
-    """First and last UTC day of a complete calendar week (Monday start) or month.
+DAILY_KEEP_DAYS = 90  # the Worker keeps day cells this many whole UTC days
 
-    ``offset`` counts complete periods back from the one just before ``as_of``
-    (0 is the latest complete period). The period containing ``as_of`` is never
-    released.
+
+def period_bounds(period: str, offset: int, as_of: date) -> tuple[date, date]:
+    """First and last UTC day of a releasable calendar week (Monday start) or month.
+
+    One kind of period per stretch of time, so a week and a month never cover
+    the same day. Let B be the oldest day that still has day cells
+    (``as_of`` minus 89 days).
+
+    * weeks: only complete weeks that lie wholly on or after B (day cells
+      exist for all seven days). Offset 0 is the latest complete week.
+    * months: only months that lie wholly before B (their day cells are gone,
+      the monthly rollup row is the record). Offset 0 is the latest such month.
+
+    A week that crosses B and a month that crosses B are never released, and a
+    request that would reach into the other kind's range is refused.
     """
     if offset < 0:
         raise ValueError("--offset cannot be negative")
+    oldest = as_of - timedelta(days=DAILY_KEEP_DAYS - 1)
     if period == "week":
         monday = as_of - timedelta(days=as_of.weekday())
         start = monday - timedelta(days=7 * (offset + 1))
+        if start < oldest:
+            raise ValueError(
+                "no complete week that far back: day cells exist for the last "
+                f"{DAILY_KEEP_DAYS} days only, so weeks are released inside that "
+                "range and a week that crosses its edge is withheld; use "
+                "--period month for older time"
+            )
         return start, start + timedelta(days=6)
     if period == "month":
-        index = as_of.year * 12 + as_of.month - 1 - (offset + 1)
+        newest_end = oldest.replace(day=1) - timedelta(days=1)
+        index = newest_end.year * 12 + newest_end.month - 1 - offset
         if index < 0:
             raise ValueError("--offset is too large")
         start = date(index // 12, index % 12 + 1, 1)
@@ -279,6 +299,47 @@ REMAINDER = "(below the floor)"
 OVERFLOW_LINK = "overflow-all"  # the Worker's one overflow destination per day
 
 
+def _fold(cells: Mapping[str, int], floor: int) -> Floored:
+    """Cells at the floor print; the rest merge into one remainder that bounds nothing.
+
+    Cells under the floor go into the remainder. Printed cells are listed in
+    order, and the remainder is R = (hidden cells) + (moved cells). A reader
+    knows every moved cell is at least the largest printed cell (and at least
+    the floor), so the hidden sum is at most R minus that number. At least one
+    printed cell always moves (the reader cannot rule a move out); then the
+    rule is to move more of the largest printed cells until
+
+        R - max(largest printed cell left, floor) >= floor - 1
+
+    i.e. until that bound is no tighter than "each hidden cell is under the
+    floor", which a reader knows anyway. With nothing left to move and the
+    condition still false, nothing of the destination prints (``dropped``).
+    """
+    items = sorted(
+        ((label, n) for label, n in cells.items() if n > 0),
+        key=lambda item: (-item[1], item[0]),
+    )
+    shown = [item for item in items if item[1] >= floor]
+    hidden = sum(n for _, n in items if n < floor)
+    if not hidden:
+        return Floored(shown, 0, 0)
+    remainder = hidden
+    hidden_rows = sum(1 for _, n in items if n < floor)
+    if shown:  # a printed cell always joins, so a reader cannot rule a move out
+        remainder += shown.pop(0)[1]
+        hidden_rows += 1
+    while True:
+        biggest = max([n for _, n in shown] + [floor])
+        if remainder - biggest >= floor - 1:
+            break
+        if not shown:
+            return Floored([], 0, hidden_rows, dropped=True)
+        _, n = shown.pop(0)
+        remainder += n
+        hidden_rows += 1
+    return Floored(shown, remainder, hidden_rows)
+
+
 def _link_breakdown(
     by_link: Mapping[str, Mapping[str, int]],
     printed: list[str] | None,
@@ -320,7 +381,7 @@ def _link_breakdown(
             printed is not None and link not in printed and link != OVERFLOW_LINK
         ):
             continue
-        result = _suppress(cells, floor)
+        result = _fold(cells, floor)
         if result.dropped or (not result.shown and not result.other):
             continue
         results[link] = result

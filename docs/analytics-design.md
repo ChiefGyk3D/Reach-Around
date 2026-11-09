@@ -454,8 +454,9 @@ identifier, no address, no pair of source and country.
   and their month is rolled (a 125 day ceiling drops them anyway); a seal and
   the budget row go in the same run, only when none of the day's cells is left.
 - **Report.** `reach-around report` reads these tables (see `docs/report.md`)
-  for one fixed calendar week or month at a time (`--period`), applies the floor
-  to that period alone, merges sub-floor cells into one remainder per
+  for one fixed calendar period at a time (`--period`: weeks only inside the
+  90 day day-cell range, months only wholly before it, never both for a day),
+  applies the floor to that period alone, merges sub-floor cells into one remainder per
   destination, and suppresses jointly with the link table.
 
 ## 7. Retention

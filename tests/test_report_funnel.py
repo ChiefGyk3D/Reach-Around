@@ -20,12 +20,16 @@ import pytest
 from reach_around.cli import main
 from reach_around.funnel.csvout import csv_files
 from reach_around.funnel.export import ExportError, load_exports
-from reach_around.funnel.report import REMAINDER, build_report, render_text
+from reach_around.funnel.report import (
+    REMAINDER,
+    build_report,
+    period_bounds,
+    render_text,
+)
 
 DAY = "2026-11-01"
-AS_OF = date(
-    2026, 12, 5
-)  # the latest complete month is 2026-11; the latest complete week starts 2026-11-23
+# the latest releasable month is 2026-11 (its day cells are gone by then)
+AS_OF = date(2027, 3, 10)
 TS = 1_793_491_200_000  # 2026-11-01 00:00 UTC
 
 
@@ -224,15 +228,24 @@ def test_destinations_follow_the_links_section_when_raw_clicks_are_present(
 
 
 def expected_release(cells: dict[str, int], floor: int) -> tuple[dict[str, int], int]:
-    """What may be printed for one destination: exact big cells and a remainder."""
-    big = {k: v for k, v in cells.items() if v >= floor}
-    small = [v for v in cells.values() if v < floor]
-    if not small:
-        return big, 0
-    if not big:
-        return {}, 0
-    moved = max(big.values())
-    return big, sum(small) + moved
+    """What may be printed for one destination: exact cells and one remainder.
+
+    Written from the rule, not from the code: the largest printed cells join
+    the remainder until the bound a reader can derive from it (R minus the
+    larger of the floor and the largest cell still printed) is no tighter than
+    "each hidden cell is under the floor"."""
+    shown = sorted((v, k) for k, v in cells.items() if v >= floor)[::-1]
+    rem = sum(v for v in cells.values() if v < floor)
+    if not rem:
+        return {k: v for v, k in shown}, 0
+    if shown:
+        rem += shown.pop(0)[0]  # a printed cell always joins
+    while True:
+        if rem - max([v for v, _ in shown] + [floor]) >= floor - 1:
+            return {k: v for v, k in shown}, rem
+        if not shown:
+            return {}, 0
+        rem += shown.pop(0)[0]
 
 
 def _check_nothing_recoverable(
@@ -248,19 +261,15 @@ def _check_nothing_recoverable(
     dest_totals = {d["destination"]: d["clicks"] for d in section["destinations"]}
     for link, cells in spec.items():
         big, remainder = expected_release(cells, floor)
-        if not big:
-            assert link not in printed  # nothing at the floor: nothing printed
+        if not big and not remainder:
+            assert link not in printed  # nothing safe to print: nothing printed
             continue
         if link not in printed:
             continue  # cut by the per-link table or --top: whole destination
         got = dict(printed[link])
         rem = got.pop(REMAINDER, 0)
-        moved = max(big.values()) if remainder else None
-        kept = sorted(v for v in big.values())
-        if moved is not None:
-            kept.remove(moved)  # exactly one printed cell joined the remainder
-        # (the country table prints ZZ as "other"; counts compare by value)
-        assert sorted(got.values()) == kept
+        # (the country table prints ZZ as "other"; compare by value)
+        assert sorted(got.values()) == sorted(big.values())
         assert rem == remainder
         assert sum(printed[link].values()) == dest_totals[link]
     # Margins are sums of printed cells only.
@@ -426,61 +435,158 @@ def test_a_period_counts_only_its_own_days(tmp_path: Path) -> None:
         + day_src("2026-10-31", 200)  # previous month
     )
     export = load_exports([write(tmp_path, {"click_src_daily": rows})])
-    week = build_report(export, period="week", offset=3, as_of=date(2026, 11, 30))
+    week = build_report(export, period="week", offset=1, as_of=date(2026, 11, 16))
     assert week["release"] == {
         "period": "week",
-        "offset": 3,
+        "offset": 1,
         "start": "2026-11-02",
         "end": "2026-11-08",
     }
     assert [c["clicks"] for c in week["click_matrix"]["cells"]] == [12]
-    month = build_report(export, period="month", as_of=date(2026, 12, 2))
+    month = build_report(export, period="month", as_of=AS_OF)
     assert [c["clicks"] for c in month["click_matrix"]["cells"]] == [112]
     assert month["release"]["start"] == "2026-11-01"
     assert month["release"]["end"] == "2026-11-30"
 
 
-def test_the_current_period_is_never_released(tmp_path: Path) -> None:
+def test_the_current_week_is_never_released(tmp_path: Path) -> None:
     rows = day_src("2026-12-01", 50)
     export = load_exports([write(tmp_path, {"click_src_daily": rows})])
-    r = build_report(export, period="month", as_of=date(2026, 12, 20))
+    r = build_report(export, period="week", as_of=date(2026, 12, 2))
+    assert r["release"]["end"] == "2026-11-29"
+    assert r["click_matrix"]["cells"] == []
+
+
+# ---- one kind of period per stretch of time --------------------------------
+
+
+def _releasable(as_of: date) -> tuple[list[tuple[date, date]], list[tuple[date, date]]]:
+    weeks: list[tuple[date, date]] = []
+    months: list[tuple[date, date]] = []
+    for kind, out in (("week", weeks), ("month", months)):
+        for offset in range(0, 60):
+            try:
+                out.append(period_bounds(kind, offset, as_of))
+            except ValueError:
+                break
+    return weeks, months
+
+
+def test_a_week_and_a_month_never_cover_the_same_day() -> None:
+    for n in range(0, 400, 3):
+        as_of = date(2026, 1, 1) + timedelta(days=n)
+        weeks, months = _releasable(as_of)
+        assert weeks and months
+        oldest = as_of - timedelta(days=89)
+        for start, end in weeks:  # weeks lie inside the day-cell range, complete
+            assert start >= oldest and end < as_of and start.weekday() == 0
+        for start, end in months:  # months lie wholly before it
+            assert end < oldest and start.day == 1
+        assert max(m[1] for m in months) < min(w[0] for w in weeks)
+
+
+def test_week_requests_past_the_day_cell_range_are_refused(tmp_path: Path) -> None:
+    as_of = date(2027, 3, 10)  # day cells exist from 2026-12-11 (a Friday)
+    weeks, months = _releasable(as_of)
+    oldest = weeks[-1][0]
+    assert oldest == date(2026, 12, 14)  # the week of Dec 7-13 crosses the edge
+    with pytest.raises(ValueError, match="crosses its edge"):
+        period_bounds("week", len(weeks), as_of)
+    with pytest.raises(ValueError, match="use --period month"):
+        period_bounds("week", 40, as_of)
+    # the latest month ends before the edge; the month that crosses it is withheld
+    assert months[0] == (date(2026, 11, 1), date(2026, 11, 30))
+    assert not any(s <= date(2026, 12, 11) <= e for s, e in months)
+
+
+def test_the_month_that_crosses_the_edge_is_not_released(tmp_path: Path) -> None:
+    export = load_exports(
+        [write(tmp_path, {"click_src_daily": day_src("2026-12-05", 50)})]
+    )
+    r = build_report(export, period="month", as_of=date(2027, 3, 10))
     assert r["release"]["end"] == "2026-11-30"
-    assert r["click_matrix"]["state"] == "withheld" or not r["click_matrix"]["cells"]
+    assert r["click_matrix"]["cells"] == []
 
 
-def test_week_and_month_are_independent_releases_each_with_its_own_floor(
+def test_consecutive_days_give_the_same_cells_for_the_same_period(
     tmp_path: Path,
 ) -> None:
-    """A cell of 3 a week for four weeks: each week prints nothing, the month
-    prints the 12. A reader holding both learns only what the month sum and the
-    weeks' emptiness already say; the docs tell the owner to publish one period
-    kind per series because a week and the month around it can be differenced."""
-    rows = []
-    for d in ("2026-11-02", "2026-11-09", "2026-11-16", "2026-11-23"):
-        rows += day_src(d, 3)
+    rows = (
+        day_src("2026-11-03", 4) + day_src("2026-11-04", 3) + day_src("2026-11-05", 9)
+    )
     export = load_exports([write(tmp_path, {"click_src_daily": rows})])
-    for offset in range(4):
-        w = build_report(export, period="week", offset=offset, as_of=date(2026, 11, 30))
-        assert w["click_matrix"]["cells"] == []
-    m = build_report(export, period="month", as_of=date(2026, 12, 2))
-    assert [c["clicks"] for c in m["click_matrix"]["cells"]] == [12]
+    seen = set()
+    for n in range(
+        7
+    ):  # Monday 2026-11-16 .. Sunday 2026-11-22: same latest-but-one week
+        as_of = date(2026, 11, 16) + timedelta(days=n)
+        r = build_report(export, period="week", offset=1, as_of=as_of)
+        assert r["release"]["start"] == "2026-11-02"
+        seen.add(json.dumps(r["click_matrix"], sort_keys=True))
+    assert len(seen) == 1
 
 
 def test_offset_and_period_validation() -> None:
-    from reach_around.funnel.report import period_bounds
-
     with pytest.raises(ValueError):
-        period_bounds("week", -1, date(2026, 1, 1))
+        period_bounds("week", -1, date(2026, 11, 20))
     with pytest.raises(ValueError):
-        period_bounds("year", 0, date(2026, 1, 1))
-    assert period_bounds("month", 0, date(2026, 1, 15)) == (
-        date(2025, 12, 1),
-        date(2025, 12, 31),
-    )
+        period_bounds("year", 0, date(2026, 11, 20))
+    with pytest.raises(ValueError):
+        period_bounds("month", 30000, date(2026, 11, 20))
     assert period_bounds("week", 0, date(2026, 11, 9)) == (  # a Monday
         date(2026, 11, 2),
         date(2026, 11, 8),
     )
+    assert period_bounds("month", 0, date(2027, 3, 10)) == (
+        date(2026, 11, 1),
+        date(2026, 11, 30),
+    )
+
+
+# ---- the remainder bounds nothing ------------------------------------------
+
+
+def test_the_remainder_and_the_sort_order_never_bound_the_hidden_cells(
+    tmp_path: Path,
+) -> None:
+    """Adversarial generator. A reader sees the printed cells (largest first)
+    and the remainder R. Every cell moved into R is at least the largest cell
+    still printed (and at least the floor), so the hidden sum is at most
+    R - max(floor, largest printed). That bound must be no tighter than the
+    floor - 1 a reader already knows for a single hidden cell; otherwise a hidden
+    cell is pinned to a small range."""
+    rng = random.Random(7)  # noqa: S311 - test data
+    floor = 5
+    for _ in range(3000):
+        n = rng.randint(1, 7)
+        cells = {
+            f"s{i}": rng.choice([1, 1, 2, 3, 4, 5, 5, 6, 7, 9, 12, 30, 80])
+            for i in range(n)
+        }
+        r = report_of(tmp_path, {"click_src_daily": src_rows({"d": cells})})
+        got = {c["source"]: c["clicks"] for c in r["click_matrix"]["cells"]}
+        rem = got.pop(REMAINDER, None)
+        hidden = sum(v for v in cells.values() if v < floor)
+        if rem is None:
+            assert hidden == 0 or not got  # nothing is hidden, or nothing prints
+            continue
+        if got:
+            assert hidden < rem  # a printed cell always joins the remainder
+        bound = rem - max([floor, *got.values()])
+        assert bound >= floor - 1
+        if got:
+            assert hidden <= bound  # the bound is true
+        assert rem >= 2 * floor - 1
+        assert all(v >= floor for v in got.values())
+        # printed cells are exact true values
+        assert all(cells[k] == v for k, v in got.items())
+
+
+def test_a_remainder_that_cannot_be_made_safe_prints_nothing(tmp_path: Path) -> None:
+    # one hidden cell of 3 and one printed 5: moving the 5 gives 8 < 2 * 5 - 1.
+    r = report_of(tmp_path, {"click_src_daily": src_rows({"d": {"a": 5, "b": 3}})})
+    assert r["click_matrix"]["cells"] == []
+    assert r["click_matrix"]["state"] == "withheld"
 
 
 # ---- months ----------------------------------------------------------------
@@ -502,7 +608,7 @@ def test_a_whole_month_is_read_from_the_monthly_rows_and_never_twice(
     r = report_of(
         tmp_path,
         {"click_src_daily": daily, "click_src_monthly": monthly},
-        as_of=date(2026, 11, 9),
+        as_of=date(2027, 2, 1),
     )
     assert r["click_matrix"]["cells"][0]["clicks"] == 40
     assert r["click_matrix"]["months_used"] == ["2026-10"]
@@ -604,35 +710,36 @@ def test_csv_neutralizes_a_formula_label(tmp_path: Path) -> None:
 
 def test_cli_json_and_text(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     today = datetime.now(UTC).date()
-    last = (today.replace(day=1) - timedelta(days=1)).replace(day=3).isoformat()
+    monday = today - timedelta(days=today.weekday() + 7)  # the latest complete week
+    day = (monday + timedelta(days=2)).isoformat()
     path = write(
         tmp_path,
         {
             "click_src_daily": src_rows(
-                {"twitch": {"instagram": 9, "direct": 12}}, last
+                {"twitch": {"instagram": 9, "direct": 40}}, day
             ),
-            "click_country_daily": cc_rows({"twitch": {"US": 21}}, last),
+            "click_country_daily": cc_rows({"twitch": {"US": 49}}, day),
         },
     )
     base = ["report", "--input", str(path)]
-    assert main([*base, "--period", "month", "--json"]) == 0
+    assert main([*base, "--period", "week", "--json"]) == 0
     data = json.loads(capsys.readouterr().out)
-    assert data["click_matrix"]["direct_share_high"] is True  # 12 of 21
-    assert data["release"]["period"] == "month"
-    assert main([*base, "--period", "month"]) == 0
+    assert data["click_matrix"]["direct_share_high"] is True
+    assert data["release"]["period"] == "week"
+    assert main([*base, "--period", "week"]) == 0
     out = capsys.readouterr().out
     assert "no source label (direct)" in out and "Released period" in out
     out_dir = tmp_path / "csv"
-    assert main([*base, "--period", "month", "--csv", str(out_dir)]) == 0
+    assert main([*base, "--period", "week", "--csv", str(out_dir)]) == 0
     capsys.readouterr()
-    assert (out_dir / "click_matrix.csv").exists()
     assert oct((out_dir / "click_matrix.csv").stat().st_mode & 0o777) == "0o600"
     meta = dict(csv.reader(io.StringIO((out_dir / "metadata.csv").read_text())))
-    assert meta["period"] == "month"
-    assert meta["period_start_utc"] == last[:8] + "01"
-    assert (
-        meta["period_end_utc"] == (today.replace(day=1) - timedelta(days=1)).isoformat()
-    )
+    assert meta["period"] == "week"
+    assert meta["period_start_utc"] == monday.isoformat()
+    assert meta["period_end_utc"] == (monday + timedelta(days=6)).isoformat()
+    # a week this far back has no day cells: refused with a pointer to months
+    assert main([*base, "--period", "week", "--offset", "30"]) == 2
+    assert "use --period month" in capsys.readouterr().err
 
 
 def test_cli_refuses_a_free_window_with_a_period(

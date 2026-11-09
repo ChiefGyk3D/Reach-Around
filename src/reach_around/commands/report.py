@@ -138,15 +138,17 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
         "--period",
         choices=("week", "month"),
         help="release the source and country by destination tables (and every "
-        "other section) for ONE complete UTC calendar week (Monday start) or "
-        "month, with the floor applied to that period alone; these tables are "
-        "not released for a free --since/--until/--days window",
+        "other section) for ONE complete UTC calendar week (Monday start; only "
+        "inside the last 90 days, where day cells exist) or month (only months "
+        "older than that), with the floor applied to that period alone; these "
+        "tables are not released for a free --since/--until/--days window",
     )
     parser.add_argument(
         "--offset",
         type=int,
         default=0,
-        help="with --period: complete periods back (0 is the latest complete one)",
+        help="with --period: releasable periods back (0 is the latest week, or the "
+        "latest month wholly older than the day-cell range)",
     )
     parser.add_argument(
         "--geo",
