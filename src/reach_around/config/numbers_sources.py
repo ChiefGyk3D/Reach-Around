@@ -53,6 +53,12 @@ CLIENT_SECRET_ENV = "TWITCH_CLIENT_SECRET"  # noqa: S105 (a variable NAME)
 USER_TOKEN_ENV = "TWITCH_USER_ACCESS_TOKEN"  # noqa: S105 (a variable NAME)
 REFRESH_TOKEN_ENV = "TWITCH_USER_REFRESH_TOKEN"  # noqa: S105 (a variable NAME)
 
+# Fixed credential variable names for TikTok. Names are not configurable.
+TIKTOK_ACCESS_ENV = "TIKTOK_ACCESS_TOKEN"  # noqa: S105 (a variable NAME)
+TIKTOK_REFRESH_ENV = "TIKTOK_REFRESH_TOKEN"  # noqa: S105 (a variable NAME)
+TIKTOK_CLIENT_KEY_ENV = "TIKTOK_CLIENT_KEY"
+TIKTOK_CLIENT_SECRET_ENV = "TIKTOK_CLIENT_SECRET"  # noqa: S105 (a variable NAME)
+
 
 class _Source(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -238,6 +244,21 @@ class ThreadsSource(_MetaSource):
         return value
 
 
+class TiktokSource(_Source):
+    """TikTok follower count from a user token (scope ``user.info.stats``).
+
+    The credential variable names are fixed; a config may only repeat them.
+    ``auto_refresh`` is off and refused at run time unless the caller supplies a
+    sink that stores the rotated token pair.
+    """
+
+    kind: Literal["tiktok"]
+    access_token_env: Literal["TIKTOK_ACCESS_TOKEN"] = "TIKTOK_ACCESS_TOKEN"  # noqa: S105
+    client_key_env: Literal["TIKTOK_CLIENT_KEY"] = "TIKTOK_CLIENT_KEY"
+    client_secret_env: Literal["TIKTOK_CLIENT_SECRET"] = "TIKTOK_CLIENT_SECRET"  # noqa: S105
+    auto_refresh: Annotated[bool, Field(strict=True)] = False
+
+
 Source = Annotated[
     BlueskySource
     | MastodonSource
@@ -247,7 +268,8 @@ Source = Annotated[
     | YoutubeSource
     | TwitchSource
     | InstagramSource
-    | ThreadsSource,
+    | ThreadsSource
+    | TiktokSource,
     Field(discriminator="kind"),
 ]
 

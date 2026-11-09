@@ -27,6 +27,7 @@ from reach_around.config.numbers_sources import (
     MatrixSource,
     NumbersConfig,
     ThreadsSource,
+    TiktokSource,
     TwitchSource,
     YoutubeSource,
 )
@@ -38,6 +39,7 @@ from reach_around.counts.providers import (
     SourceError,
     SourceSkip,
 )
+from reach_around.counts.tiktok_user import TokenSink as TiktokTokenSink
 from reach_around.counts.twitch_user import TokenSink
 from reach_around.net.egress import Transport
 from reach_around.net.fetch import FetchError, fetch_json
@@ -54,6 +56,7 @@ Source = (
     | TwitchSource
     | InstagramSource
     | ThreadsSource
+    | TiktokSource
 )
 
 _FIXED_HOSTS = {
@@ -64,6 +67,7 @@ _FIXED_HOSTS = {
     "twitch": "id.twitch.tv, api.twitch.tv",
     "instagram": "graph.instagram.com",
     "threads": "graph.threads.com",
+    "tiktok": "open.tiktokapis.com",
 }
 
 
@@ -132,6 +136,7 @@ def refresh(
     accept_drop: frozenset[str] = frozenset(),
     token_sink: TokenSink | None = None,
     meta_sink: MetaTokenSink | None = None,
+    tiktok_sink: TiktokTokenSink | None = None,
 ) -> tuple[Numbers, list[Outcome]]:
     """Fetch every source; return the new numbers and one outcome per source."""
     numbers: Numbers = dict(previous)
@@ -149,6 +154,7 @@ def refresh(
         env=env,
         meta_sink=meta_sink,
         token_sink=token_sink,
+        tiktok_sink=tiktok_sink,
         today=now().astimezone(UTC).date(),
     )
     for source in sources:

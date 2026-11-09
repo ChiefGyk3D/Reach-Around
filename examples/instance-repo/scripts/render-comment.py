@@ -421,6 +421,7 @@ VOCAB: dict[str, tuple[str, str]] = {
 KNOWN_FIELDS: frozenset[str] = frozenset(
     [
         "about",
+        "access_token_env",
         "acct",
         "actor",
         "address",
@@ -451,6 +452,7 @@ KNOWN_FIELDS: frozenset[str] = frozenset(
         "channels",
         "click_tracking",
         "client_id_env",
+        "client_key_env",
         "client_secret_env",
         "coin",
         "coins",

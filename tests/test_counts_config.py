@@ -74,7 +74,7 @@ def test_valid_sources(tmp_path: Path, line: str) -> None:
 
 
 BAD = [
-    ("- {platform: x, kind: tiktok, user: a}", "kind"),
+    ("- {platform: x, kind: kick, user: a}", "kind"),
     ("- {platform: x, kind: bluesky, actor: a, extra: 1}", "extra"),
     ("- {platform: x, kind: bluesky}", "actor"),
     ("- {platform: X, kind: github, user: a}", "platform"),

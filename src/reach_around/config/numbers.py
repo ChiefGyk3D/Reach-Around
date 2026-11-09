@@ -121,7 +121,7 @@ def stale_limit(config: Any, platform: str) -> int:
 # Sources that need a token the process may not have. Without the token the
 # source only skips, so its number is kept by hand and the hand-kept stale
 # gate applies to it.
-_TOKEN_SOURCES = ("instagram", "threads")
+_TOKEN_SOURCES = ("instagram", "threads", "tiktok")
 
 
 def source_platforms(
@@ -129,7 +129,7 @@ def source_platforms(
 ) -> frozenset[str]:
     """The keys a configured fetch source writes (platform slug or item id).
 
-    An Instagram or Threads source counts only while its token variable holds a
+    An Instagram, Threads or TikTok source counts only while its token variable holds a
     value in ``env`` (default: the process environment); otherwise the number is
     hand-kept. Only the presence is read, never the value.
     """

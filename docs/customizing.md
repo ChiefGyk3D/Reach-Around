@@ -705,8 +705,11 @@ doppler run -- reach-around counts refresh --config site.yaml --out numbers.json
   `moderator:read:followers`) in `TWITCH_USER_ACCESS_TOKEN`. Without it the
   command reports `needs_user_token` as a skip and you enter the number by hand.
   Setup and the manual token refresh: [Twitch source](twitch-source.md).
-- **TikTok, Instagram, Threads, Kick:** no source kind yet (their approval or
-  token paths are not in place). The manual fallback is to add the entry to the
+- **TikTok:** a `tiktok` source reads the follower total with a user token in
+  `TIKTOK_ACCESS_TOKEN`; without it the number stays hand-kept. See
+  [TikTok source](tiktok-source.md).
+- **Instagram, Threads, Kick:** Instagram and Threads have sources (see their
+  guide); Kick has no source kind yet. The manual fallback is to add the entry to the
   numbers file yourself; a refresh never touches platforms it has no source for:
 
   ```json
