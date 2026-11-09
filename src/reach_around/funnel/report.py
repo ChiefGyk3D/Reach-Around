@@ -17,6 +17,7 @@ from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
 from reach_around.funnel.export import CLASSES, Export
+from reach_around.funnel.ledger import ReleaseGuard
 
 FLOOR = 5
 # Report section -> the ``dim`` value in view_dim_daily it is built from.
@@ -580,6 +581,7 @@ def build_report(
     period: str | None = None,
     offset: int = 0,
     as_of: date | None = None,
+    guard: ReleaseGuard | None = None,
 ) -> dict[str, Any]:
     if floor < FLOOR:
         raise ValueError(f"the floor cannot be below {FLOOR}")
@@ -598,6 +600,16 @@ def build_report(
             )
         start, end = period_bounds(period, offset, as_of or datetime.now(UTC).date())
         since, until = start.isoformat(), end.isoformat()
+        if (
+            not isinstance(guard, ReleaseGuard)
+            or (guard.release.site, guard.release.kind, guard.release.start)
+            != (site, period, since)
+            or guard.release.end != until
+        ):
+            raise ValueError(
+                "the source and country tables are released only for a period "
+                "recorded in the release ledger first (see --ledger)"
+            )
         release = {
             "period": period,
             "offset": offset,

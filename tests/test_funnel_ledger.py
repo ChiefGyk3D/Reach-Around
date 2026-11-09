@@ -18,11 +18,20 @@ from reach_around.funnel import ledger as mod
 from reach_around.funnel.ledger import (
     LedgerError,
     Release,
+    ReleaseGuard,
+    authorize_release,
+    init_ledger,
     read_ledger,
     record_release,
 )
 
 STAMP = "2026-11-09T10:00:00Z"
+
+
+def fresh(tmp_path: Path) -> Path:
+    ledger = tmp_path / "ledger.jsonl"
+    init_ledger(ledger)
+    return ledger
 
 
 def week(start: str, site: str = "links") -> Release:
@@ -35,7 +44,7 @@ def month(start: str, end: str, site: str = "links") -> Release:
 
 
 def test_a_month_after_its_weeks_is_refused(tmp_path: Path) -> None:
-    ledger = tmp_path / "ledger.jsonl"
+    ledger = fresh(tmp_path)
     assert record_release(ledger, week("2026-11-09"))
     with pytest.raises(LedgerError, match="shares a day"):
         record_release(ledger, month("2026-11-01", "2026-11-30"))
@@ -45,7 +54,7 @@ def test_a_month_after_its_weeks_is_refused(tmp_path: Path) -> None:
 def test_a_week_after_its_month_is_refused_including_a_straddling_week(
     tmp_path: Path,
 ) -> None:
-    ledger = tmp_path / "ledger.jsonl"
+    ledger = fresh(tmp_path)
     assert record_release(ledger, month("2026-10-01", "2026-10-31"))
     with pytest.raises(LedgerError, match="shares a day"):
         record_release(ledger, week("2026-10-26"))  # Oct 26 - Nov 1 straddles
@@ -53,7 +62,7 @@ def test_a_week_after_its_month_is_refused_including_a_straddling_week(
 
 
 def test_a_week_next_to_a_month_is_allowed_both_ways(tmp_path: Path) -> None:
-    ledger = tmp_path / "ledger.jsonl"
+    ledger = fresh(tmp_path)
     assert record_release(ledger, month("2026-10-01", "2026-10-31"))
     assert record_release(ledger, week("2026-11-02"))
     assert record_release(ledger, week("2026-11-09"))
@@ -61,7 +70,7 @@ def test_a_week_next_to_a_month_is_allowed_both_ways(tmp_path: Path) -> None:
 
 
 def test_the_same_period_twice_is_allowed_and_written_once(tmp_path: Path) -> None:
-    ledger = tmp_path / "ledger.jsonl"
+    ledger = fresh(tmp_path)
     assert record_release(ledger, week("2026-11-02"))
     later = Release("links", "week", "2026-11-02", "2026-11-08", "2026-12-24T00:00:00Z")
     assert record_release(ledger, later) is False
@@ -69,7 +78,7 @@ def test_the_same_period_twice_is_allowed_and_written_once(tmp_path: Path) -> No
 
 
 def test_another_site_is_not_affected(tmp_path: Path) -> None:
-    ledger = tmp_path / "ledger.jsonl"
+    ledger = fresh(tmp_path)
     assert record_release(ledger, week("2026-11-02", site="links"))
     assert record_release(ledger, month("2026-11-01", "2026-11-30", site="blog"))
 
@@ -89,14 +98,14 @@ def test_another_site_is_not_affected(tmp_path: Path) -> None:
 )
 def test_bad_records_are_refused(tmp_path: Path, bad: Release) -> None:
     with pytest.raises(LedgerError):
-        record_release(tmp_path / "ledger.jsonl", bad)
+        record_release(fresh(tmp_path), bad)
 
 
 # ---- corruption fails closed ------------------------------------------------
 
 
 def seeded(tmp_path: Path) -> Path:
-    ledger = tmp_path / "ledger.jsonl"
+    ledger = fresh(tmp_path)
     record_release(ledger, week("2026-11-02"))
     record_release(ledger, week("2026-11-09"))
     return ledger
@@ -221,7 +230,7 @@ def _day_row(day: date, clicks: int = 9) -> dict[str, Any]:
     }
 
 
-def test_cli_refuses_a_month_without_a_ledger(
+def test_cli_refuses_any_cell_release_without_a_ledger(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     first, _ = _last_month()
@@ -239,8 +248,10 @@ def test_cli_refuses_a_month_without_a_ledger(
             ]
         },
     )
-    assert main(["report", "--input", str(path), "--period", "month"]) == 2
-    assert "--ledger" in capsys.readouterr().err
+    for kind in ("week", "month"):
+        assert main(["report", "--input", str(path), "--period", kind]) == 2
+        cap = capsys.readouterr()
+        assert "--ledger" in cap.err and cap.out == ""
     # months stay available as per-dimension totals that print no cell values
     assert (
         main(["report", "--input", str(path), "--since", "2026-01-01", "--json"]) == 0
@@ -253,7 +264,7 @@ def test_cli_refuses_a_month_without_a_ledger(
 def test_cli_a_repeat_week_release_is_identical_and_recorded_once(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    ledger = tmp_path / "ledger.jsonl"
+    ledger = fresh(tmp_path)
     monday = _latest_monday()
     path = _export(
         tmp_path, {"click_src_daily": [_day_row(monday + timedelta(days=1))]}
@@ -270,7 +281,7 @@ def test_cli_a_repeat_week_release_is_identical_and_recorded_once(
 def test_cli_a_month_that_shares_a_day_with_a_released_week_is_refused(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    ledger = tmp_path / "ledger.jsonl"
+    ledger = fresh(tmp_path)
     first, last = _last_month()
     # A week release over the first day of last month.
     monday = first - timedelta(days=first.weekday())
@@ -309,7 +320,7 @@ def test_cli_a_month_that_shares_a_day_with_a_released_week_is_refused(
 def test_cli_a_month_with_a_ledger_then_a_week_over_it_is_refused(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    ledger = tmp_path / "ledger.jsonl"
+    ledger = fresh(tmp_path)
     first, _ = _last_month()
     path = _export(
         tmp_path,
@@ -364,3 +375,147 @@ def test_cli_ledger_needs_a_period(
     path = _export(tmp_path, {"kit_events": [{"ts": 1, "kind": "view"}]})
     assert main(["report", "--input", str(path), "--ledger", str(tmp_path / "l")]) == 2
     capsys.readouterr()
+
+
+def test_cli_a_missing_ledger_is_refused_and_never_created(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    ledger = tmp_path / "nope.jsonl"
+    path = _export(tmp_path, {"click_src_daily": [_day_row(_latest_monday())]})
+    code = main(
+        ["report", "--input", str(path), "--period", "week", "--ledger", str(ledger)]
+    )
+    cap = capsys.readouterr()
+    assert code == 2 and cap.out == "" and "funnel-ledger-init" in cap.err
+    assert not ledger.exists()
+
+
+def test_the_init_command_creates_an_owner_only_empty_file_once(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    ledger = tmp_path / "ledger.jsonl"
+    assert main(["funnel-ledger-init", str(ledger)]) == 0
+    assert "commit" in capsys.readouterr().out
+    assert ledger.read_bytes() == b""
+    assert oct(ledger.stat().st_mode & 0o777) == "0o600"
+    assert read_ledger(ledger) == []
+    assert main(["funnel-ledger-init", str(ledger)]) == 2  # never overwritten
+    capsys.readouterr()
+
+
+def test_the_library_cannot_bypass_the_ledger(tmp_path: Path) -> None:
+    from reach_around.funnel.export import load_exports
+    from reach_around.funnel.report import build_report
+
+    path = _export(tmp_path, {"click_src_daily": [_day_row(_latest_monday())]})
+    export = load_exports([path])
+    today = datetime.now(UTC).date()
+    with pytest.raises(ValueError, match="recorded in the release ledger"):
+        build_report(export, period="week", as_of=today)
+    with pytest.raises(LedgerError):
+        ReleaseGuard(week("2026-11-02"), object())  # a guard cannot be forged cheaply
+    # a guard for another period does not do either
+    other = authorize_release(fresh(tmp_path), week("2026-01-05"))
+    with pytest.raises(ValueError, match="recorded in the release ledger"):
+        build_report(export, period="week", as_of=today, guard=other)
+    # without a period there is no cell release and no guard is needed
+    r = build_report(export, as_of=today)
+    assert r["click_matrix"]["state"] == "period_required"
+
+
+def test_the_period_is_recorded_before_any_output(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ledger = fresh(tmp_path)
+    path = _export(tmp_path, {"click_src_daily": [_day_row(_latest_monday())]})
+    seen: list[int] = []
+    from reach_around.funnel.report import render_text as real
+
+    def spy(report: Any) -> str:
+        seen.append(len(read_ledger(ledger)))  # what the ledger held at render time
+        return real(report)
+
+    monkeypatch.setattr("reach_around.commands.report.render_text", spy)
+    assert (
+        main(
+            [
+                "report",
+                "--input",
+                str(path),
+                "--period",
+                "week",
+                "--ledger",
+                str(ledger),
+            ]
+        )
+        == 0
+    )
+    assert seen == [1]
+
+
+def test_a_ledger_write_failure_means_no_cell_output(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    ledger = fresh(tmp_path)
+    ledger.chmod(0o400)  # read-only: the append fails
+    path = _export(tmp_path, {"click_src_daily": [_day_row(_latest_monday())]})
+    if os.geteuid() == 0:
+        pytest.skip("root can write a read-only file")
+    for extra in ([], ["--json"], ["--csv", str(tmp_path / "csv")]):
+        code = main(
+            [
+                "report",
+                "--input",
+                str(path),
+                "--period",
+                "week",
+                "--ledger",
+                str(ledger),
+                *extra,
+            ]
+        )
+        cap = capsys.readouterr()
+        assert code == 2 and cap.out == ""
+    assert not (tmp_path / "csv").exists()
+    assert read_ledger(ledger) == []
+
+
+def test_cli_weeks_then_a_month_is_refused_in_both_directions(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Weeks released first (no special case for the first kind): the month over
+    them is refused; then the other way round on a second ledger."""
+    ledger = fresh(tmp_path)
+    first, last = _last_month()
+    path = _export(
+        tmp_path,
+        {
+            "click_src_monthly": [
+                {
+                    "site": "links",
+                    "month": first.strftime("%Y-%m"),
+                    "link_id": "t",
+                    "src": "a",
+                    "clicks": 30,
+                }
+            ],
+            "click_src_daily": [_day_row(_latest_monday())],
+        },
+    )
+    # Release a week inside last month through the library path first.
+    monday = first - timedelta(days=first.weekday())
+    authorize_release(
+        ledger,
+        Release(
+            "links",
+            "week",
+            monday.isoformat(),
+            (monday + timedelta(days=6)).isoformat(),
+            STAMP,
+        ),
+    )
+    code = main(
+        ["report", "--input", str(path), "--period", "month", "--ledger", str(ledger)]
+    )
+    cap = capsys.readouterr()
+    assert code == 2 and "shares a day" in cap.err and cap.out == ""

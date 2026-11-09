@@ -1,6 +1,13 @@
 # SPDX-License-Identifier: Apache-2.0
 """The release ledger for the source and country by destination tables.
 
+Mandatory for every cell release, weeks and months alike: without a readable,
+verified ledger the cell tables are not released. The file is created only by
+``init_ledger`` (an explicit command), never silently, and lives in the private
+instance repo, where it must be committed so the history is not lost. A release
+is recorded BEFORE anything is rendered (``authorize_release``), and the report
+builder accepts a period only with the guard that function returns.
+
 An append-only JSON-lines file, hash-chained like the social-stats history
 (``reach_around.counts.history``): every line carries ``prev``, the SHA-256 of
 the previous line's bytes, appends are fsynced under an exclusive lock, and a
@@ -193,7 +200,10 @@ def read_ledger(path: Path) -> list[Release]:
         try:
             fd = os.open(path.name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=dir_fd)
         except FileNotFoundError:
-            return []
+            raise LedgerError(
+                "no release ledger at that path; create it once with "
+                "'reach-around funnel-ledger-init FILE' and commit it"
+            ) from None
         except OSError:
             raise LedgerError("cannot open the ledger (a symlink?)") from None
         try:
@@ -224,10 +234,14 @@ def record_release(path: Path, release: Release) -> bool:
         try:
             fd = os.open(
                 path.name,
-                os.O_RDWR | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW,
-                0o600,
+                os.O_RDWR | os.O_APPEND | os.O_NOFOLLOW,
                 dir_fd=dir_fd,
             )
+        except FileNotFoundError:
+            raise LedgerError(
+                "no release ledger at that path; create it once with "
+                "'reach-around funnel-ledger-init FILE' and commit it"
+            ) from None
         except OSError:
             raise LedgerError("cannot open the ledger (a symlink?)") from None
         try:
@@ -242,8 +256,6 @@ def record_release(path: Path, release: Release) -> bool:
                 raise LedgerError("the ledger would be too large")
             _write_all(fd, line)
             os.fsync(fd)
-            if not existing:
-                os.fsync(dir_fd)
             return True
         except OSError:
             raise LedgerError("cannot write the ledger") from None
@@ -253,6 +265,62 @@ def record_release(path: Path, release: Release) -> bool:
         raise LedgerError(str(exc)) from None
     finally:
         os.close(dir_fd)
+
+
+def init_ledger(path: Path) -> None:
+    """Create an empty ledger (owner-only). Refuses to touch an existing file."""
+    try:
+        dir_fd = _open_parent(path)
+    except OSError:
+        raise LedgerError("cannot open the ledger folder") from None
+    try:
+        try:
+            fd = os.open(
+                path.name,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                0o600,
+                dir_fd=dir_fd,
+            )
+        except FileExistsError:
+            raise LedgerError("a file is already there; not overwritten") from None
+        except OSError:
+            raise LedgerError("cannot create the ledger") from None
+        try:
+            os.fsync(fd)
+            os.fsync(dir_fd)
+        finally:
+            os.close(fd)
+    finally:
+        os.close(dir_fd)
+
+
+_ISSUED = object()
+
+
+class ReleaseGuard:
+    """Proof that a period was checked against the ledger and recorded.
+
+    Only ``authorize_release`` makes one. The report builder takes a period
+    only with a guard whose release matches, so a library caller cannot skip
+    the check.
+    """
+
+    def __init__(self, release: Release, token: object) -> None:
+        if token is not _ISSUED:
+            raise LedgerError("a release guard comes from authorize_release only")
+        self.release = release
+
+
+def authorize_release(path: Path, release: Release) -> ReleaseGuard:
+    """Check ``release`` against the ledger, record it (once), return the guard.
+
+    Raises ``LedgerError``, having written nothing, when there is no verified
+    ledger, it cannot be written, or the period shares a UTC day with a period
+    of the other kind already released.
+    """
+    read_ledger(path)  # missing or damaged: refused before anything else
+    record_release(path, release)
+    return ReleaseGuard(release, _ISSUED)
 
 
 def now_stamp(now: datetime | None = None) -> str:

@@ -20,6 +20,12 @@ import pytest
 from reach_around.cli import main
 from reach_around.funnel.csvout import csv_files
 from reach_around.funnel.export import ExportError, load_exports
+from reach_around.funnel.ledger import (
+    Release,
+    ReleaseGuard,
+    authorize_release,
+    init_ledger,
+)
 from reach_around.funnel.report import (
     REMAINDER,
     build_report,
@@ -55,6 +61,31 @@ def write(tmp_path: Path, tables: dict[str, Any]) -> Path:
     return path
 
 
+STAMP = "2026-11-09T10:00:00Z"
+
+
+def authorize(
+    tmp_path: Path, period: str, offset: int, as_of: date, site: str = "links"
+) -> ReleaseGuard:
+    """Record the period in a fresh ledger (one per period) and return the guard."""
+    start, end = period_bounds(period, offset, as_of)
+    ledger = tmp_path / f"ledger-{period}-{start}.jsonl"
+    if not ledger.exists():
+        init_ledger(ledger)
+    release = Release(site, period, start.isoformat(), end.isoformat(), STAMP)
+    return authorize_release(ledger, release)
+
+
+def released(
+    tmp_path: Path, export: Any, *, period: str, offset: int = 0, **kw: Any
+) -> dict[str, Any]:
+    as_of = kw.pop("as_of")
+    guard = authorize(tmp_path, period, offset, as_of, kw.get("site", "links"))
+    return build_report(
+        export, period=period, offset=offset, as_of=as_of, guard=guard, **kw
+    )
+
+
 def report_of(
     tmp_path: Path,
     tables: dict[str, Any],
@@ -63,13 +94,10 @@ def report_of(
     as_of: date = AS_OF,
     **kw: Any,
 ) -> dict[str, Any]:
-    return build_report(
-        load_exports([write(tmp_path, tables)]),
-        period=period,
-        offset=offset,
-        as_of=as_of,
-        **kw,
-    )
+    export = load_exports([write(tmp_path, tables)])
+    if period is None:
+        return build_report(export, as_of=as_of, **kw)
+    return released(tmp_path, export, period=period, offset=offset, as_of=as_of, **kw)
 
 
 def raw_clicks(spec: dict[str, int]) -> list[dict[str, Any]]:
@@ -423,7 +451,7 @@ def test_overlapping_windows_cannot_be_asked_for(tmp_path: Path) -> None:
         r = build_report(export, since=since, until=until, floor=6)
         assert r["click_matrix"]["state"] == "period_required"
         assert r["click_matrix"]["cells"] == []
-    week = build_report(export, period="week", as_of=AS_OF, floor=6)
+    week = released(tmp_path, export, period="week", as_of=AS_OF, floor=6)
     assert [c["clicks"] for c in week["click_matrix"]["cells"]] == [9]
 
 
@@ -435,7 +463,7 @@ def test_a_period_counts_only_its_own_days(tmp_path: Path) -> None:
         + day_src("2026-10-31", 200)  # previous month
     )
     export = load_exports([write(tmp_path, {"click_src_daily": rows})])
-    week = build_report(export, period="week", offset=1, as_of=date(2026, 11, 16))
+    week = released(tmp_path, export, period="week", offset=1, as_of=date(2026, 11, 16))
     assert week["release"] == {
         "period": "week",
         "offset": 1,
@@ -455,7 +483,7 @@ def test_a_period_counts_only_its_own_days(tmp_path: Path) -> None:
             )
         ]
     )
-    month = build_report(both, period="month", as_of=date(2026, 12, 5))
+    month = released(tmp_path, both, period="month", as_of=date(2026, 12, 5))
     assert [c["clicks"] for c in month["click_matrix"]["cells"]] == [112]
     assert month["release"]["start"] == "2026-11-01"
     assert month["release"]["end"] == "2026-11-30"
@@ -464,7 +492,7 @@ def test_a_period_counts_only_its_own_days(tmp_path: Path) -> None:
 def test_the_current_week_is_never_released(tmp_path: Path) -> None:
     rows = day_src("2026-12-01", 50)
     export = load_exports([write(tmp_path, {"click_src_daily": rows})])
-    r = build_report(export, period="week", as_of=date(2026, 12, 2))
+    r = released(tmp_path, export, period="week", as_of=date(2026, 12, 2))
     assert r["release"]["end"] == "2026-11-29"
     assert r["click_matrix"]["cells"] == []
 
@@ -499,7 +527,7 @@ def test_a_month_never_depends_on_how_old_it_is(tmp_path: Path) -> None:
     ):
         offset = (as_of.year * 12 + as_of.month) - (2026 * 12 + 12)
         export = load_exports([write(tmp_path, tables)])
-        r = build_report(export, period="month", offset=offset, as_of=as_of)
+        r = released(tmp_path, export, period="month", offset=offset, as_of=as_of)
         assert r["release"]["start"] == "2026-11-01"
         seen.add(json.dumps(r["click_matrix"], sort_keys=True))
     assert len(seen) == 1
@@ -517,7 +545,7 @@ def test_consecutive_days_give_the_same_cells_for_the_same_period(
         7
     ):  # Monday 2026-11-16 .. Sunday 2026-11-22: same latest-but-one week
         as_of = date(2026, 11, 16) + timedelta(days=n)
-        r = build_report(export, period="week", offset=1, as_of=as_of)
+        r = released(tmp_path, export, period="week", offset=1, as_of=as_of)
         assert r["release"]["start"] == "2026-11-02"
         seen.add(json.dumps(r["click_matrix"], sort_keys=True))
     assert len(seen) == 1
@@ -721,7 +749,10 @@ def test_cli_json_and_text(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -
             "click_country_daily": cc_rows({"twitch": {"US": 49}}, day),
         },
     )
-    base = ["report", "--input", str(path)]
+    ledger = tmp_path / "ledger.jsonl"
+    assert main(["funnel-ledger-init", str(ledger)]) == 0
+    capsys.readouterr()
+    base = ["report", "--input", str(path), "--ledger", str(ledger)]
     assert main([*base, "--period", "week", "--json"]) == 0
     data = json.loads(capsys.readouterr().out)
     assert data["click_matrix"]["direct_share_high"] is True

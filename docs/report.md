@@ -210,37 +210,48 @@ and country by link, per UTC day. They are incremented when a click arrives, so
 the country counter covers every click, including those that carry a source (a
 raw click row keeps a source label at most, never a country).
 
-**Fixed periods only; weeks by default.** The source by destination and country
-by destination tables are released for ONE complete UTC calendar period, chosen
-with `--period week|month` and `--offset N` (0 is the latest complete one; the
-period containing today is never released):
+**Fixed periods, always through a release ledger.** The source by destination
+and country by destination tables are released for ONE complete UTC calendar
+period, chosen with `--period week|month` and `--offset N` (0 is the latest
+complete one; the period containing today is never released), and ONLY with a
+release ledger, for weeks as much as months:
 
-- **Weeks** (Monday start) are read from day cells and are always available:
-  `reach-around report --input EXPORT --period week`. A week reaching back past
+```text
+reach-around funnel-ledger-init PRIVATE-REPO/funnel-ledger.jsonl   # once
+reach-around report --input EXPORT --period week --ledger PRIVATE-REPO/funnel-ledger.jsonl
+```
+
+Without `--ledger`, or with a ledger that is missing, unreadable or fails its
+checks, the command stops with a message and prints no cell values. Totals-only
+output (views, clicks, click rate, the link table over any `--since` / `--until`
+window) needs no ledger and prints no source by destination or country by
+destination values.
+
+- **Weeks** (Monday start) are read from day cells. A week reaching back past
   the 90 day day-cell range, or crossing its edge, is refused.
-- **Months** are read from the monthly rollup rows and are released ONLY with a
-  release ledger: `--period month --ledger FILE`. Without `--ledger` a month is
-  refused with a message, and without a ledger only weeks are released. Months
-  stay available without one only as the per-dimension totals the other sections
-  already print (views, clicks, click rate, the link table over any `--since` /
-  `--until` window), which print no source by destination or country by
-  destination values.
+- **Months** are read from the monthly rollup rows only.
 
 Which kind a period uses never depends on today's date, so the same week or the
 same month gives the same cells and the same suppression on any run date
 (decided by that period's data alone).
 
 **The release ledger** is an append-only, hash-chained JSON-lines file (the same
-approach as the social-stats history); keep it in your private instance repo. It
-records site, period kind, first and last UTC day and the release time, nothing
-else. The command records every cell release and REFUSES one that shares any UTC
-day with a previously released period of the OTHER kind (a week over days of a
-released month, or a month over days of released weeks): a reader holding both
-could difference them. Repeating the exact same period is allowed and not
-written again. A damaged ledger (a changed, removed or reordered line, a cut
-last line, a symlink, a record that breaks the rule) stops the command and
-prints nothing. The ledger protects against your own two reports disagreeing;
-it does not stop someone who holds reports you published without it.
+approach as the social-stats history). It is created only by the explicit
+`funnel-ledger-init` command (which refuses to touch an existing file), never
+silently. Keep it in your private instance repo and commit it after each
+release, so its history is not lost: a lost ledger is a lost memory of what you
+released. It records site, period kind, first and last UTC day and the release
+time, nothing else. Every cell release (week or month; text, JSON or CSV) is
+recorded BEFORE anything is built or printed, and if the record cannot be
+written nothing is printed. The command REFUSES a release that shares any UTC
+day with a previously released period of the OTHER kind, in both directions (a
+month over released weeks, a week over a released month): a reader holding both
+could difference them. Repeating the exact same period and kind is allowed and
+not written again. A damaged ledger (a changed, removed or reordered line, a cut
+last line, a symlink, a record that breaks the rule) stops the command. The
+ledger protects against your own reports disagreeing; it does not stop someone
+who holds reports you published before you used it. The library function
+`build_report` takes a period only with the guard that recording returns.
 
 The floor and the remainder rule apply to the period alone, and the same period
 also bounds every other section of that report, so the sections agree. Why not
