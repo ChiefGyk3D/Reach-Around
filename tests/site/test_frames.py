@@ -487,47 +487,36 @@ def _ratio(a: tuple[float, ...], b: tuple[float, ...]) -> float:
     return (hi + 0.05) / (lo + 0.05)
 
 
-@pytest.mark.parametrize(
-    "accent",
-    [
-        (0xFB, 0xB0, 0x3B),  # the brand amber
-        (0x1D, 0x4E, 0xD8),  # a blue
-        (0xD9, 0x2B, 0x2B),  # a red
-        (0x10, 0x8A, 0x3C),  # a green
-        (0xFF, 0xE0, 0x00),  # a very light yellow
-        (0x7A, 0x2B, 0xD9),  # a violet
-    ],
-)
-def test_frame_text_contrast_is_aa_for_any_accent(accent: tuple[float, ...]) -> None:
-    """The frame's ink, muted ink, icon ink and on-panel button text derive from
-    the accent by the same color-mix formulas as frame.css (kept equal by the
-    stylesheet assertions below)."""
-    white, black = (255.0, 255.0, 255.0), (0.0, 0.0, 0.0)
-    cream = _mix(accent, white, 18)
-    cream_hi = _mix(accent, white, 30)
-    ink = _mix(accent, black, 15)
-    muted = _mix(ink, cream, 72)
-    accent_ink = _mix(accent, black, 45)
-    assert _ratio(ink, cream) >= 7
-    assert _ratio(ink, cream_hi) >= 7
-    assert _ratio(muted, cream) >= 4.5
-    assert _ratio(accent_ink, cream) >= 4.5  # link text and icons on the panel
-    assert _ratio(cream, accent_ink) >= 4.5  # button text on the dark accent fill
-
-
-def test_the_contrast_formulas_match_the_stylesheet() -> None:
+def _frame_css() -> str:
     css = (
         Path(__file__).parents[2] / "src/reach_around/site/static/frame.css"
     ).read_text(encoding="utf-8")
-    for decl in (
-        "--ra-fr-cream: color-mix(in srgb, var(--ra-color-accent) 18%, white)",
-        "--ra-fr-cream-hi: color-mix(in srgb, var(--ra-color-accent) 30%, white)",
-        "--ra-fr-ink: color-mix(in srgb, var(--ra-color-accent) 15%, black)",
-        "--ra-fr-ink-muted: color-mix(in srgb, var(--ra-fr-ink) 72%, "
-        "var(--ra-fr-cream))",
-        "--ra-fr-accent-ink: color-mix(in srgb, var(--ra-color-accent) 45%, black)",
-    ):
-        assert decl in css, decl
+    return re.sub(r"/\*.*?\*/", "", css, flags=re.S)
+
+
+def test_the_frame_is_a_border_only_and_paints_no_fill_of_its_own() -> None:
+    """The frame keeps each element's own fill and palette (amber stays amber,
+    dark stays dark): no cream or white fill, no panel layer, no color override
+    of the element's text or fill tokens."""
+    css = _frame_css()
+    assert "cream" not in css
+    assert "--ra-fr-panel" not in css
+    assert not re.search(r"\bwhite\b|#fff", css, flags=re.I)
+    for token in ("--ra-color-text:", "--ra-color-surface:", "--ra-color-accent:"):
+        assert token not in css, token
+    body = css[css.index("body .ra-bx.ra-bx {") :]
+    first_rule = body[: body.index("}")]
+    assert "background" not in first_rule.replace("border-image", "")
+
+
+def test_bracket_art_reads_on_dark_and_on_amber() -> None:
+    """Dark graphite fill (visible on amber) with a light amber outline (visible
+    on a dark fill); never white."""
+    root = Path(__file__).parents[2] / "src/reach_around/site/static"
+    for name in ("frame.svg", "frame-lite.svg"):
+        svg = (root / name).read_text(encoding="utf-8")
+        assert 'stroke="#e0a43c"' in svg
+        assert "#fff" not in svg.lower()
 
 
 def test_frame_sizes_never_go_negative_on_small_elements() -> None:
