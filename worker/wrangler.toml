@@ -123,7 +123,7 @@ crons = ["5 * * * *"]
 # zone_name = "example.test"
 
 # Owner alerts (issue #252, docs/alerts.md). Default off. Placeholders only.
-# ALERTS_CONFIG = '{"channels":["discord"],"events":["kit_unlocked"]}'  # from site.yaml `alerts`
+# ALERTS_CONFIG = '{"channels":["discord"],"events":["kit_unlocked"]}'  # the deploy writes this from site.yaml `alerts`
 # ALERT_MATRIX_ROOM_ID = "!room:example.org"
 # SECRETS, set in the secret manager and bound at deploy; never here:
 #   ALERT_DISCORD_WEBHOOK, ALERT_MATRIX_SERVER (homeserver + token are one unit), ALERT_MATRIX_ACCESS_TOKEN,

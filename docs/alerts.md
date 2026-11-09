@@ -22,9 +22,12 @@ alerts:
     allowed_hosts: [matrix.example.org]  # required for the matrix channel
 ```
 
-The section only chooses. It holds no URL and no secret. The deploy gives the
-Worker the same choice as one plain variable, `ALERTS_CONFIG`
-(`reach_around.config.alerts.worker_value` renders the exact value). Unset, empty,
+The section only chooses. It holds no URL and no secret. The build records the
+choice in the build manifest (`alerts_config`, present only when alerts are on),
+`verify-manifest.py` re-checks it, and the deploy (`deploy-test.yml` and the
+private deploy example) writes it to the Worker as one plain variable,
+`ALERTS_CONFIG` (`reach_around.config.alerts.worker_value` renders the exact
+value). The secrets below are not part of it: set them in the secret manager. Unset, empty,
 malformed or with an unknown key, the Worker sends nothing.
 
 ## Per-channel setup

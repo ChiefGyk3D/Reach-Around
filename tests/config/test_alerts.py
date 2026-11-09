@@ -134,3 +134,21 @@ def test_the_lists_match_the_worker() -> None:
     assert ts_list("EVENT_KINDS") == set(get_args(AlertEventName))
     assert f"DEFAULT_MAX_PER_MINUTE = {DEFAULT_MAX_PER_MINUTE}" in cfg
     assert f"MAX_PER_MINUTE_CEILING = {MAX_PER_MINUTE_CEILING}" in cfg
+
+
+def test_build_manifest_carries_alerts_only_when_on() -> None:
+    from reach_around.config.alerts import Alerts
+    from reach_around.site.build import BuildManifest, manifest_json
+
+    off = BuildManifest(links={}, lead_retention_days=30)
+    assert "alerts_config" not in manifest_json(off)
+    on = BuildManifest(
+        links={},
+        lead_retention_days=30,
+        alerts_config=worker_value(
+            Alerts(channels=["discord"], events=["kit_unlocked"])
+        ),
+    )
+    assert json.loads(json.loads(manifest_json(on))["alerts_config"])["channels"] == [
+        "discord"
+    ]

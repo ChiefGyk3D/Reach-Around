@@ -69,6 +69,61 @@ def retention_days(value: object) -> int | None:
     return value
 
 
+ALERT_CHANNELS = {"discord", "matrix", "email"}
+ALERT_EVENTS = {"kit_unlocked", "lead_captured", "gate_failed_repeatedly"}
+ALERT_VISITOR = {"full", "masked", "none"}
+ALERT_HOST = re.compile(r"[a-z0-9][a-z0-9.-]{0,251}[a-z0-9]")
+MAX_ALERTS_CONFIG = 1000
+
+
+def alerts_config(value: object) -> str | None:
+    """The alerts value the Worker's ALERTS_CONFIG reads, re-checked here as a
+    second lock (worker/src/alerts/config.ts is the reader). Returns the
+    canonical one-line JSON, or None when it is not acceptable. Absent is fine
+    and handled by the caller."""
+    if type(value) is not str or not 2 <= len(value) <= MAX_ALERTS_CONFIG:
+        return None
+    try:
+        doc = json.loads(value)
+    except ValueError:
+        return None
+    if type(doc) is not dict or not set(doc) <= {
+        "channels",
+        "events",
+        "visitor_email",
+        "max_per_minute",
+        "matrix",
+    }:
+        return None
+    for key, allowed in (("channels", ALERT_CHANNELS), ("events", ALERT_EVENTS)):
+        items = doc.get(key)
+        if (
+            type(items) is not list
+            or not items
+            or len(set(items)) != len(items)
+            or not all(type(i) is str and i in allowed for i in items)
+        ):
+            return None
+    if doc.get("visitor_email") not in ALERT_VISITOR:
+        return None
+    rate = doc.get("max_per_minute")
+    if type(rate) is not int or not 1 <= rate <= 30:
+        return None
+    matrix = doc.get("matrix")
+    if matrix is not None:
+        hosts = matrix.get("allowed_hosts") if type(matrix) is dict else None
+        if (
+            type(hosts) is not list
+            or not 1 <= len(hosts) <= 4
+            or set(matrix) != {"allowed_hosts"}
+            or not all(type(h) is str and ALERT_HOST.fullmatch(h) for h in hosts)
+        ):
+            return None
+    elif "matrix" in doc["channels"]:
+        return None
+    return json.dumps(doc, sort_keys=True, separators=(",", ":"))
+
+
 def main(argv: list[str]) -> int:
     if len(argv) != 2:
         return refuse("usage: verify-manifest.py <manifest>")
@@ -86,6 +141,11 @@ def main(argv: list[str]) -> int:
             "the manifest has no valid lead_retention_days "
             f"(a whole number from 1 to {MAX_LEAD_RETENTION_DAYS})"
         )
+    alerts = None
+    if "alerts_config" in document:
+        alerts = alerts_config(document["alerts_config"])
+        if alerts is None:
+            return refuse("the manifest has an invalid alerts_config")
     variable = os.environ.get("LEAD_RETENTION_DAYS", "")
     if variable:
         if (
@@ -127,6 +187,8 @@ def main(argv: list[str]) -> int:
         with open(out, "a", encoding="utf-8") as handle:
             handle.write(f"link_ids={derived}\n")
             handle.write(f"lead_retention_days={days}\n")
+            if alerts is not None:
+                handle.write(f"alerts_config={alerts}\n")
     return 0
 
 
