@@ -221,14 +221,13 @@ class ThreadsSource(_MetaSource):
         """The one environment variable NAME read. Fixed; not configurable."""
         return "THREADS_ACCESS_TOKEN"
 
-    # Threads user id (digits). Optional: the path segment ``me`` is used when
-    # it is left out (INFERRED to be accepted; see docs/instagram-threads-sources.md).
-    user_id: str | None = None
+    # Threads user id (digits), the path segment of the documented insights route.
+    user_id: str
 
     @field_validator("user_id")
     @classmethod
-    def _user_id(cls, value: str | None) -> str | None:
-        if value is not None and not _THREADS_USER_ID.match(value):
+    def _user_id(cls, value: str) -> str:
+        if not _THREADS_USER_ID.match(value):
             raise ValueError("user_id must be the numeric Threads user id")
         return value
 

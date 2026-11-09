@@ -113,6 +113,7 @@ def fetch_json(
     timeout: float = TIMEOUT,
     follow_redirects: bool = True,
     extra_json_types: frozenset[str] = frozenset(),
+    max_attempts: int = MAX_ATTEMPTS,
 ) -> dict[str, object]:
     """Request ``url`` and return the JSON object in the answer.
 
@@ -127,7 +128,7 @@ def fetch_json(
         "Accept-Encoding": "identity",
     }
     base.update(headers or {})
-    attempts = MAX_ATTEMPTS if method == "GET" else 1
+    attempts = max(1, min(max_attempts, MAX_ATTEMPTS)) if method == "GET" else 1
     redirects = 0
     attempt = 0
     while True:

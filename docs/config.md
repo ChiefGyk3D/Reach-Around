@@ -1027,7 +1027,7 @@ the number would never be shown. (`kind` is separate: `kind: mastodon` with
 | `youtube` | `channel_id`: the `UC...` id; `api_key_env`: the NAME of an environment variable | YouTube Data API v3 `channels.list`, `statistics.subscriberCount` | yes |
 | `twitch` | `login`; `client_id_env` and `client_secret_env`: environment variable NAMES that must differ | app token, then `helix/channels/followers` `total` | yes, and see the limit below |
 | `instagram` | optional `token_expires` (YYYY-MM-DD), `refresh_within_days` (1 to 59, default 10); reads only `INSTAGRAM_ACCESS_TOKEN` | `graph.instagram.com` `/me` field `followers_count`; skipped as `token_not_set` while the variable is empty. See [Instagram and Threads](instagram-threads-sources.md) | yes |
-| `threads` | same, reading only `THREADS_ACCESS_TOKEN`, plus optional `user_id` (digits) | `graph.threads.com` `threads_insights` metric `followers_count` | yes |
+| `threads` | same, reading only `THREADS_ACCESS_TOKEN`, plus required `user_id` (digits) | `graph.threads.com` `threads_insights` metric `followers_count` | yes |
 
 `numbers.history_file` (optional) is a path to an append-only history file in
 your private instance repo; relative paths are relative to the config file. Unset
@@ -1200,6 +1200,27 @@ privacy:
 The privacy page at `/privacy/` and the cookie notice are generated from the
 enabled features, so they cannot claim less than the site does. See
 [privacy by construction](education/privacy-by-construction.md).
+
+## `alerts`
+
+Owner alerts from the Worker (issue #252). Default off. The section only
+chooses; destinations and secrets are Worker bindings. Setup, contents and
+privacy: [alerts](alerts.md). Unknown keys are refused.
+
+| Key | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| `channels` | list of `discord`, `matrix`, `email` | none | Where alerts go. Each needs its bindings; email has no provider yet. |
+| `events` | list of `kit_unlocked`, `lead_captured`, `gate_failed_repeatedly` | none | What alerts. Both lists must be non-empty for anything to be sent. |
+| `visitor_email` | `full`, `masked`, `none` | `full` | How the visitor's address appears in an alert. |
+| `max_per_minute` | integer, 1-30 | `5` | Messages one channel sends per minute, the held-back notice included. |
+| `matrix.allowed_hosts` | list of up to 4 host names | none | The Matrix homeserver host names the access token may be sent to, matched exactly. Required when `matrix` is a channel. Lowercase DNS names only: no IP address, embedded IP, private or wildcard-DNS name. |
+
+```yaml
+alerts:
+  channels: [discord]
+  events: [kit_unlocked, lead_captured]
+  visitor_email: masked
+```
 
 ## `footer`
 

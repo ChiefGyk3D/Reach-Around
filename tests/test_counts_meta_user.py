@@ -47,7 +47,7 @@ ENV = {"INSTAGRAM_ACCESS_TOKEN": TOKEN, "THREADS_ACCESS_TOKEN": TOKEN}
 
 IG_COUNT = "https://graph.instagram.com/v27.0/me?"
 IG_REFRESH = "https://graph.instagram.com/refresh_access_token?"
-TH_COUNT = "https://graph.threads.com/v1.0/me/threads_insights?"
+TH_COUNT = "https://graph.threads.com/v1.0/1234567890/threads_insights?"
 TH_REFRESH = "https://graph.threads.com/refresh_access_token?"
 
 IG_BODY = {"followers_count": 1234, "id": "17841400000000000"}
@@ -84,6 +84,7 @@ def th(**over: Any) -> ThreadsSource:
         **{
             "platform": "threads",
             "kind": "threads",
+            "user_id": "1234567890",
             **over,
         }
     )
@@ -157,14 +158,17 @@ def test_threads_reads_total_value() -> None:
     assert run(th(), transport) == 987
     assert transport.calls[0].host == "graph.threads.com"
     assert transport.calls[0].path.startswith(
-        "/v1.0/me/threads_insights?metric=followers_count&access_token="
+        "/v1.0/1234567890/threads_insights?metric=followers_count&access_token="
     )
 
 
-def test_threads_user_id_goes_in_the_path() -> None:
-    url = "https://graph.threads.com/v1.0/12345/threads_insights?"
-    transport = FakeTransport({url: reply(TH_BODY)})
-    assert run(th(user_id="12345"), transport) == 987
+def test_threads_user_id_is_required() -> None:
+    with pytest.raises(ValueError):
+        ThreadsSource(platform="threads", kind="threads")
+    source = ThreadsSource.model_construct(platform="threads", kind="threads")
+    transport = FakeTransport({TH_COUNT: reply(TH_BODY)})
+    assert fails(source, transport) == "bad_source_setting"
+    assert transport.calls == []
 
 
 def test_graph_text_javascript_content_type_is_accepted() -> None:
@@ -594,7 +598,7 @@ numbers:
   history_file: history/social.jsonl
   sources:
     - {platform: instagram, kind: instagram}
-    - {platform: threads, kind: threads}
+    - {platform: threads, kind: threads, user_id: '1234567890'}
 """
 
 
@@ -648,7 +652,8 @@ def test_refresh_without_tokens_skips_and_keeps_numbers(
 
 def test_api_fed_platform_is_not_hand_kept(setup: Path) -> None:
     config = load_site_config(setup / "site.yaml")
-    assert source_platforms(config) == {"instagram", "threads"}
+    both = {"INSTAGRAM_ACCESS_TOKEN": "x", "THREADS_ACCESS_TOKEN": "y"}
+    assert source_platforms(config, both) == {"instagram", "threads"}
     assert shown_numbers(config, None, TODAY) == []
 
 
@@ -897,3 +902,40 @@ def test_status_and_outcome_hold_only_the_fixed_word() -> None:
     assert [(o.status, o.detail) for o in outcomes] == [("error", "fetch_failed")]
     text = render_status({}, outcomes, moment)
     assert TOKEN not in text and "graph.instagram.com" not in text
+
+
+# ---- review threads ----
+
+
+class AlertBoom(Sink):
+    def alert(self, alert: HealthAlert) -> None:
+        raise RuntimeError("sink down")
+
+
+def test_a_failing_alert_sink_never_blocks_the_count() -> None:
+    source = ig(token_expires=in_days(1))  # refresh_needed alert, sink raises
+    assert run(source, FakeTransport(routes_ig()), sink=AlertBoom()) == 1234
+    rejected = FakeTransport({IG_COUNT: reply({}, status=401)})
+    assert fails(ig(), rejected, sink=AlertBoom()) == "token_rejected"
+
+
+@pytest.mark.parametrize("status", [429, 500, 503])
+def test_the_refresh_request_is_sent_once(status: int) -> None:
+    sink = Sink()
+    source = ig(auto_refresh=True, token_expires=TODAY.isoformat())
+    transport = FakeTransport(routes_ig(**{IG_REFRESH: reply({}, status=status)}))
+    assert run(source, transport, sink=sink) == 1234
+    refreshes = [c for c in transport.calls if "refresh_access_token" in c.path]
+    assert len(refreshes) == 1
+
+
+def test_a_source_without_its_token_is_hand_kept_for_the_stale_gate(
+    setup: Path,
+) -> None:
+    config = load_site_config(setup / "site.yaml")
+    assert source_platforms(config, {}) == frozenset()
+    only_ig = {"INSTAGRAM_ACCESS_TOKEN": "x"}
+    assert source_platforms(config, only_ig) == {"instagram"}
+    assert source_platforms(config, {"INSTAGRAM_ACCESS_TOKEN": ""}) == frozenset()
+    both = dict(only_ig, THREADS_ACCESS_TOKEN="y")  # noqa: S106
+    assert source_platforms(config, both) == {"instagram", "threads"}

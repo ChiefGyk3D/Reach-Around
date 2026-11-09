@@ -21,6 +21,7 @@ from typing import Any
 
 from jinja2 import Environment
 
+from reach_around.config.alerts import worker_value as alerts_worker_value
 from reach_around.config.blocks import (
     LIVE_PLAYER_ORIGINS,
     Crypto,
@@ -84,6 +85,9 @@ class BuildManifest:
     # Days the Worker keeps a lead: the same config value the privacy page
     # prints. The deploy writes it to the Worker as LEAD_RETENTION_DAYS.
     lead_retention_days: int
+    # The owner alerts choice rendered for the Worker's ALERTS_CONFIG, or None
+    # when alerts are off (then the manifest has no such key).
+    alerts_config: str | None = None
     # Every published file with its hash, size and cache class (see
     # ``reach_around.site.inventory``); filled in by ``build_site``.
     inventory: dict[str, InventoryEntry] = field(default_factory=dict)
@@ -581,16 +585,20 @@ def _manifest(config: SiteConfig, shown: list[list[Block]]) -> BuildManifest:
     if card is not None and card.button is not None:
         links[MEDIA_KIT_ID] = card.button.url
     return BuildManifest(
-        links=links, lead_retention_days=config.privacy.lead_retention_days
+        links=links,
+        lead_retention_days=config.privacy.lead_retention_days,
+        alerts_config=alerts_worker_value(config.alerts),
     )
 
 
 def manifest_json(manifest: BuildManifest) -> str:
     """The manifest file text. It is never written into the published site."""
-    body = {
+    body: dict[str, object] = {
         "links": manifest.links,
         "lead_retention_days": manifest.lead_retention_days,
     }
+    if manifest.alerts_config is not None:
+        body["alerts_config"] = manifest.alerts_config
     return json.dumps(body, sort_keys=True, indent=2) + "\n"
 
 

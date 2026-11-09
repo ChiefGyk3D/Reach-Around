@@ -15,9 +15,9 @@ INFERRED = not stated on a page this code could read):
   https://graph.threads.com/v1.0/<THREADS_USER_ID>/threads_insights`` with a
   required ``metric``; ``followers_count`` is a total-value metric, so the answer
   holds ``total_value.value``; it takes no ``since`` or ``until``. The example
-  sends the token as the ``access_token`` field. INFERRED: the path segment
-  ``me`` in place of the user id (not shown on the page); set ``user_id`` to
-  avoid relying on it.
+  sends the token as the ``access_token`` field. The numeric user id is
+  therefore required in the config (no ``me`` shortcut: the page does not show
+  one).
 * VERIFIED https://developers.facebook.com/docs/instagram-platform/instagram-api-with-instagram-login/business-login
   : refresh is ``GET https://graph.instagram.com/refresh_access_token`` with
   ``grant_type=ig_refresh_token`` and ``access_token``; the long-lived token must
@@ -234,16 +234,22 @@ class _Session:
         )
 
     def _alert(self, kind: str, days_left: int | None = None) -> None:
-        self.sink.alert(
-            HealthAlert(
-                self.source.platform,
-                kind,
-                (self.source.access_token_env,),
-                days_left,
+        # Best effort: a failing alert sink must never block the count.
+        try:
+            self.sink.alert(
+                HealthAlert(
+                    self.source.platform,
+                    kind,
+                    (self.source.access_token_env,),
+                    days_left,
+                )
             )
-        )
+        except Exception:  # noqa: S110
+            pass
 
-    def _get(self, path: str, params: Mapping[str, str]) -> dict[str, object]:
+    def _get(
+        self, path: str, params: Mapping[str, str], attempts: int = 3
+    ) -> dict[str, object]:
         url = f"https://{self.host}{path}?" + urlencode(
             {**params, "access_token": self.token}
         )
@@ -260,6 +266,7 @@ class _Session:
                 max_bytes=MAX_BODY,
                 timeout=FETCH_TIMEOUT,
                 extra_json_types=EXTRA_JSON_TYPES,
+                max_attempts=attempts,
             )
         except FetchError:
             raise
@@ -290,9 +297,8 @@ class _Session:
             "ig_refresh_token" if isinstance(s, InstagramSource) else "th_refresh_token"
         )
         try:
-            reply = self._get(
-                "/refresh_access_token", {"grant_type": grant}
-            )  # once per run, never retried here
+            # once per run: one request, no retry of a 429 or 5xx
+            reply = self._get("/refresh_access_token", {"grant_type": grant}, 1)
             new = _token_value(reply.get("access_token"), "missing_field")
             seconds = reply.get("expires_in")
             if type(seconds) is not int or not (
@@ -346,8 +352,8 @@ def check_source(source: MetaSource) -> None:
         )
     ):
         raise MetaError("bad_source_setting")
-    if isinstance(source, ThreadsSource) and source.user_id is not None:
-        uid = source.user_id
+    if isinstance(source, ThreadsSource):
+        uid = getattr(source, "user_id", None)
         if not isinstance(uid, str) or not (
             uid.isascii() and uid.isdigit() and len(uid) <= 24
         ):
@@ -377,9 +383,9 @@ def follower_total(
         if "followers_count" not in reply:
             raise MetaError("missing_field")
         return reply["followers_count"]
-    user = source.user_id or "me"
     reply = session.read(
-        f"/{THREADS_VERSION}/{user}/threads_insights", {"metric": "followers_count"}
+        f"/{THREADS_VERSION}/{source.user_id}/threads_insights",
+        {"metric": "followers_count"},
     )
     data = reply.get("data")
     if isinstance(data, list):

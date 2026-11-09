@@ -32,7 +32,7 @@ numbers:
       # auto_refresh: false          # optional, see the routine below; leave off
     - platform: threads
       kind: threads
-      user_id: "1234567890"          # optional, see the INFERRED note below
+      user_id: "1234567890"          # required: your numeric Threads user id
 ```
 
 The token is read from one fixed environment variable per platform:
@@ -43,9 +43,10 @@ the process by your secret manager at run time. The token is never in the config
 the repo or a GitHub secret.
 
 If the variable is empty or unset, the source is skipped with `token_not_set`
-(exit 0, the old number and its date stay). To keep a platform fully hand-kept
-with the stale gate, leave its source out of the config until the token exists:
-a platform with a configured source is treated as fed by the API.
+(exit 0, the old number and its date stay). While the variable is empty in the
+process that runs `check` or `build`, the platform counts as hand-kept, so the
+hand-kept stale gate and reminders apply to its number; once the variable holds a
+value it counts as fed by the API.
 
 ## Hosts and requests
 
@@ -81,8 +82,9 @@ a platform with a configured source is treated as fed by the API.
   from those statements.
 - INFERRED: that `instagram_business_basic` alone covers the `followers_count`
   field (the get-started page lists the field but not its permission).
-- INFERRED: the Threads path segment `me` in place of the numeric user id. Set
-  `user_id` to avoid relying on it.
+- Threads needs your numeric Threads user id in `user_id`: the documented route
+  has the id in the path and the page shows no `me` shortcut. INFERRED: the
+  authorization flow returns that id with the token.
 - INFERRED: that an `Authorization` header is accepted instead of the query
   parameter. Neither vendor page says so, so the token travels in the query
   string, as in the vendor examples. The fetch layer never puts a URL, header or
