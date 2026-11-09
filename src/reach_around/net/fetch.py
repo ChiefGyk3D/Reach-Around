@@ -111,6 +111,7 @@ def fetch_json(
     now: Callable[[], datetime] = lambda: datetime.now(UTC),
     max_bytes: int = MAX_BYTES,
     timeout: float = TIMEOUT,
+    follow_redirects: bool = True,
 ) -> dict[str, object]:
     """Request ``url`` and return the JSON object in the answer.
 
@@ -146,7 +147,12 @@ def fetch_json(
         status = response.status
         if 300 <= status < 400:
             location = response.headers.get("location")
-            if method != "GET" or location is None or redirects >= MAX_REDIRECTS:
+            if (
+                not follow_redirects
+                or method != "GET"
+                or location is None
+                or redirects >= MAX_REDIRECTS
+            ):
                 raise FetchError("redirect")
             try:
                 next_host, next_path = _target(

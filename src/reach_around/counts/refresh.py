@@ -35,6 +35,7 @@ from reach_around.counts.providers import (
     SourceError,
     SourceSkip,
 )
+from reach_around.counts.twitch_user import TokenSink
 from reach_around.net.egress import Transport
 from reach_around.net.fetch import FetchError, fetch_json
 
@@ -122,6 +123,7 @@ def refresh(
     fetch: Callable[..., dict[str, object]] = fetch_json,
     sleep: Callable[[float], None] | None = None,
     accept_drop: frozenset[str] = frozenset(),
+    token_sink: TokenSink | None = None,
 ) -> tuple[Numbers, list[Outcome]]:
     """Fetch every source; return the new numbers and one outcome per source."""
     numbers: Numbers = dict(previous)
@@ -134,7 +136,7 @@ def refresh(
             kwargs["sleep"] = sleep
         return fetch(url, **kwargs)
 
-    context = Context(fetch=call, env=env)
+    context = Context(fetch=call, env=env, token_sink=token_sink)
     for source in sources:
         provider = PROVIDERS[source.kind]
         try:

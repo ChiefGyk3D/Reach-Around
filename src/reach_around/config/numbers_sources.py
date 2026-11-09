@@ -147,6 +147,12 @@ class TwitchSource(_Source):
     login: str
     client_id_env: EnvName
     client_secret_env: EnvName
+    # Optional broadcaster user token (scope moderator:read:followers). When
+    # user_token_env is set and holds a value, the followers total is read with
+    # it; otherwise the app-token path (and its needs_user_token skip) stays.
+    # refresh_token_env additionally lets one 401 trigger one refresh.
+    user_token_env: EnvName | None = None
+    refresh_token_env: EnvName | None = None
 
     @field_validator("login")
     @classmethod
@@ -159,6 +165,17 @@ class TwitchSource(_Source):
     def _distinct(self) -> TwitchSource:
         if self.client_id_env == self.client_secret_env:
             raise ValueError("client_id_env and client_secret_env must differ")
+        if self.refresh_token_env is not None and self.user_token_env is None:
+            raise ValueError("refresh_token_env needs user_token_env")
+        names = [
+            self.client_id_env,
+            self.client_secret_env,
+            self.user_token_env,
+            self.refresh_token_env,
+        ]
+        given = [name for name in names if name is not None]
+        if len(set(given)) != len(given):
+            raise ValueError("the Twitch environment variable names must all differ")
         return self
 
 

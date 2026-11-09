@@ -1023,7 +1023,7 @@ the number would never be shown. (`kind` is separate: `kind: mastodon` with
 | `discord` | `invite`: the invite code (not the URL) | `discord.com/api/v10/invites/<code>?with_counts=true`, field `approximate_member_count` (label: members) | no |
 | `matrix` | `room`: a public alias such as `#room:example.org` | resolves the alias on the alias server's client API (following its `.well-known`), then reads the room summary's `num_joined_members` (label: members) | no |
 | `youtube` | `channel_id`: the `UC...` id; `api_key_env`: the NAME of an environment variable | YouTube Data API v3 `channels.list`, `statistics.subscriberCount` | yes |
-| `twitch` | `login`; `client_id_env` and `client_secret_env`: environment variable NAMES that must differ | app token, then `helix/channels/followers` `total` | yes, and see the limit below |
+| `twitch` | `login`; `client_id_env` and `client_secret_env`: environment variable NAMES; optional `user_token_env` and `refresh_token_env` (NAMES; `refresh_token_env` needs `user_token_env`). All names must differ | `helix/channels/followers` `total`, with the broadcaster user token when `user_token_env` is set and holds a value, else with an app token (skipped as `needs_user_token`). See [Twitch source](twitch-source.md) | yes, and see the limit below |
 
 `numbers.history_file` (optional) is a path to an append-only history file in
 your private instance repo; relative paths are relative to the config file. Unset

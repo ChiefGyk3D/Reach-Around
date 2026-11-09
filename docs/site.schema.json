@@ -2019,6 +2019,32 @@
           "pattern": "^[a-z0-9][a-z0-9-]{0,39}$",
           "title": "Platform",
           "type": "string"
+        },
+        "refresh_token_env": {
+          "anyOf": [
+            {
+              "pattern": "^[A-Z][A-Z0-9_]{1,63}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Refresh Token Env"
+        },
+        "user_token_env": {
+          "anyOf": [
+            {
+              "pattern": "^[A-Z][A-Z0-9_]{1,63}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "User Token Env"
         }
       },
       "required": [
