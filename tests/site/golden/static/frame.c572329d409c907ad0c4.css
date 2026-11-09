@@ -109,8 +109,8 @@ body :is(.ra-l2, .ra-l3).ra-bx {
 /* The amber light: long rules, corner dashes, mid-edge stubs and, on the full
    frame, the plate dashes. Rules stop short of the end-cap plates so they never
    cross them. L2 and L3 give the light a bloom that hugs it (a drop shadow of
-   the pseudo-element's own amber, not of the box): L2 a tight one, L3 the full
-   soft one. Print and forced colors drop the whole layer. */
+   the pseudo-element's own amber, not of the box): L2 one tight shadow, L3 a
+   tight one plus the full soft one. Print and forced colors drop the whole layer. */
 .ra-bx::before {
   content: "";
   position: absolute;
@@ -169,10 +169,7 @@ body :is(.ra-l2, .ra-l3).ra-bx::before {
     calc(var(--u) * 5) calc(var(--u) * 16), calc(var(--u) * 5) calc(var(--u) * 16),
     calc(var(--u) * 72) max(3px, calc(var(--u) * 6)), calc(var(--u) * 72) max(3px, calc(var(--u) * 6)),
     calc(var(--u) * 63) max(3px, calc(var(--u) * 5.5)), calc(var(--u) * 63) max(3px, calc(var(--u) * 5.5));
-  filter:
-    drop-shadow(0 0 max(3px, calc(var(--u) * 10)) var(--ra-fr-amber))
-    drop-shadow(0 0 max(7px, calc(var(--u) * 28))
-      color-mix(in srgb, var(--ra-fr-amber) 70%, transparent));
+  filter: drop-shadow(0 0 max(5px, calc(var(--u) * 18)) var(--ra-fr-amber));
 }
 /* L3 adds the long center bars top and bottom and the full soft bloom. */
 body .ra-l3.ra-bx::before {
@@ -212,10 +209,9 @@ body .ra-l3.ra-bx::before {
     calc(var(--u) * 63) max(3px, calc(var(--u) * 5.5)), calc(var(--u) * 63) max(3px, calc(var(--u) * 5.5)),
     42.6% max(3px, calc(var(--u) * 6)), 42.6% max(3px, calc(var(--u) * 6));
   filter:
-    drop-shadow(0 0 max(3px, calc(var(--u) * 10)) var(--ra-fr-amber))
-    drop-shadow(0 0 max(7px, calc(var(--u) * 28)) var(--ra-fr-amber))
-    drop-shadow(0 0 max(14px, calc(var(--u) * 60))
-      color-mix(in srgb, var(--ra-fr-amber) 75%, transparent));
+    drop-shadow(0 0 max(4px, calc(var(--u) * 14)) var(--ra-fr-amber))
+    drop-shadow(0 0 max(12px, calc(var(--u) * 50))
+      color-mix(in srgb, var(--ra-fr-amber) 80%, transparent));
 }
 
 /* The light show, only when theme.frame_motion is live (body.ra-mo), only for
