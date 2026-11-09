@@ -50,7 +50,6 @@ carry fixed words and names, never a token, URL or response body.
 
 from __future__ import annotations
 
-import re
 import sys
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
@@ -94,7 +93,9 @@ class NewToken:
 class HealthAlert:
     """Content-free token health alert (the shape issue 390 consumes).
 
-    ``kind``: ``refresh_refused`` (too young, expired, revoked or any refusal),
+    ``kind``: ``refresh_needed`` (inside the refresh window; refresh by hand,
+    ``days_left`` says how long is left), ``refresh_refused`` (too young,
+    expired, revoked or any refusal),
     ``token_expired`` (the recorded expiry day has passed), ``token_rejected``
     (the platform refused the token), ``rotated_unstored`` (a new token exists
     only in memory).
@@ -103,12 +104,16 @@ class HealthAlert:
     source: str
     kind: str
     names: tuple[str, ...]
+    days_left: int | None = None
 
     def line(self) -> str:
-        return (
+        text = (
             f"token-health: source={self.source} kind={self.kind} "
             f"names={','.join(self.names)}"
         )
+        if self.days_left is not None:
+            text += f" days_left={self.days_left}"
+        return text
 
 
 class MetaTokenSink(Protocol):
@@ -167,21 +172,20 @@ def check_url(url: str, host: str) -> None:
         raise MetaError("bad_host")
 
 
-_ENV_ALLOWED = {
-    "instagram": re.compile(r"INSTAGRAM_[A-Z0-9_]{1,60}"),
-    "threads": re.compile(r"THREADS_[A-Z0-9_]{1,60}"),
+_CREDENTIAL_NAMES = {
+    "instagram": "INSTAGRAM_ACCESS_TOKEN",  # noqa: S105
+    "threads": "THREADS_ACCESS_TOKEN",  # noqa: S105
 }
 
 
 def credential_name(source: MetaSource) -> str:
-    """The variable NAME to read, re-checked against the platform prefix.
+    """The one variable NAME this source may read, fixed by its kind.
 
-    Config validation already enforces this; it is enforced again here, before
-    any read of the environment, so no other variable can ever be sent to the
-    platform host. The error never echoes the name.
+    Nothing in the config can change it. Anything else is refused with the fixed
+    word ``bad_credential_name`` before the environment is read.
     """
-    name = source.access_token_env
-    if not isinstance(name, str) or not _ENV_ALLOWED[source.kind].fullmatch(name):
+    name = _CREDENTIAL_NAMES.get(source.kind)
+    if name is None or source.access_token_env != name:
         raise MetaError("bad_credential_name")
     return name
 
@@ -226,9 +230,14 @@ class _Session:
             "missing_credential" if not env.get(name) else "invalid_credential",
         )
 
-    def _alert(self, kind: str) -> None:
+    def _alert(self, kind: str, days_left: int | None = None) -> None:
         self.sink.alert(
-            HealthAlert(self.source.platform, kind, (self.source.access_token_env,))
+            HealthAlert(
+                self.source.platform,
+                kind,
+                (self.source.access_token_env,),
+                days_left,
+            )
         )
 
     def _get(self, path: str, params: Mapping[str, str]) -> dict[str, object]:
@@ -253,6 +262,12 @@ class _Session:
             self._alert("token_expired")
             raise MetaError("token_expired")
         if days_left > s.refresh_within_days:
+            return
+        if not s.auto_refresh:
+            # No sink can store a new token, so asking for one would lose it and
+            # invalidate nothing but the owner's time. Report; the owner refreshes
+            # by hand (docs/instagram-threads-sources.md).
+            self._alert("refresh_needed", days_left)
             return
         grant = (
             "ig_refresh_token" if isinstance(s, InstagramSource) else "th_refresh_token"
@@ -295,6 +310,11 @@ def follower_total(
     today: date,
 ) -> object:
     """The raw followers value; the caller validates it as a count."""
+    credential_name(source)
+    if source.auto_refresh and sink is None:
+        # Automatic refresh only with a sink the caller supplies; the default
+        # NoopSink cannot keep a token, so this setting is refused without one.
+        raise MetaError("refresh_sink_required")
     session = _Session(
         source, env, fetch, sink if sink is not None else NoopSink(), today
     )

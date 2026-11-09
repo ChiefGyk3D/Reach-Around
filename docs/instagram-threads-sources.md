@@ -17,8 +17,8 @@ and, when `numbers.history_file` is set, appended to the
 
 Not collected here: views, reach, engagement, demographics, per-post data
 (separate work), watch time (neither platform has such a metric), and anything
-about individual followers. The token is only used for the one read and the
-optional refresh.
+about individual followers. The token is only used for the one read (a refresh is done by hand,
+see below).
 
 ## Config
 
@@ -27,18 +27,20 @@ numbers:
   sources:
     - platform: instagram
       kind: instagram
-      access_token_env: INSTAGRAM_ACCESS_TOKEN
       token_expires: 2027-01-08      # optional, non-secret, see the routine below
       refresh_within_days: 10        # optional, 1 to 59, default 10
+      # auto_refresh: false          # optional, see the routine below; leave off
     - platform: threads
       kind: threads
-      access_token_env: THREADS_ACCESS_TOKEN
       user_id: "1234567890"          # optional, see the INFERRED note below
 ```
 
-`access_token_env` is optional. It names the environment variable that holds the token and defaults to `INSTAGRAM_ACCESS_TOKEN` or `THREADS_ACCESS_TOKEN`. The name must start with the platform prefix (`INSTAGRAM_` or `THREADS_`, then capital letters, digits or underscores); anything else is refused when the config loads and again before the environment is read, so no unrelated variable can be sent to the platform. The value is supplied
-to the process by your secret manager at run time. The token is never in the
-config, the repo or a GitHub secret.
+The token is read from one fixed environment variable per platform:
+`INSTAGRAM_ACCESS_TOKEN` or `THREADS_ACCESS_TOKEN`. The config cannot name a
+different variable (a config that tries is refused when it loads), so no other
+secret in the environment can be sent to the platform. The value is supplied to
+the process by your secret manager at run time. The token is never in the config,
+the repo or a GitHub secret.
 
 If the variable is empty or unset, the source is skipped with `token_not_set`
 (exit 0, the old number and its date stay). To keep a platform fully hand-kept
@@ -71,7 +73,7 @@ a platform with a configured source is treated as fed by the API.
 - VERIFIED https://developers.facebook.com/docs/graph-api/overview/rate-limiting :
   calls in 24 hours = 4800 x impressions (Threads floors impressions at 10);
   throttling is signaled by error codes (4, 17, 613, 80002 and others); the page
-  names no Retry-After header. One run makes one call, or two when it refreshes.
+  names no Retry-After header. One run makes one call.
 - Research note (2026-11-08, from the vendor docs): Instagram needs
   `instagram_business_basic`; Standard Access works for accounts with a role on
   the app; Advanced Access (App Review plus Business Verification) is only for
@@ -104,8 +106,8 @@ INFERRED):
 3. Give yourself a role on the app (Standard Access then applies).
 4. Generate a long-lived token for your account with `instagram_business_basic`
    (VERIFIED that dashboard-generated tokens are long-lived, 60 days).
-5. Store it in your secret manager as `INSTAGRAM_ACCESS_TOKEN`, and write the day
-   it expires (about 60 days out) as `token_expires` in the config.
+5. Store it in your secret manager as `INSTAGRAM_ACCESS_TOKEN` (this exact name),
+   and write the day it expires (about 60 days out) as `token_expires`.
 
 Threads (permissions and tester role VERIFIED; step order INFERRED):
 
@@ -114,32 +116,42 @@ Threads (permissions and tester role VERIFIED; step order INFERRED):
    accept the invitation in Threads.
 3. Authorize the app with `threads_basic` and `threads_manage_insights`, and
    exchange the short-lived token for a long-lived one (server side).
-4. Store it as `THREADS_ACCESS_TOKEN` and record `token_expires`.
+4. Store it as `THREADS_ACCESS_TOKEN` (this exact name) and record `token_expires`.
 
 ## The 60-day routine
 
-- A long-lived token lasts about 60 days. Record the expiry day in
-  `token_expires` (non-secret).
-- A run within `refresh_within_days` of that day calls the refresh endpoint once,
-  reads the count with the refreshed token, and hands the new token to a sink.
-  The shipped sink writes nothing: it prints the secret NAME, the new expiry day
-  and one instruction, to store the new value in the secret manager and update
-  `token_expires`. The new token exists only in that run's memory, so do this the
-  same day. The old token keeps working until its own expiry, so a missed step is
-  recoverable until then.
-- A refresh the platform refuses (token under 24 hours old, expired, revoked,
-  throttled) does not fail the run: it prints `token-health: source=...
-  kind=refresh_refused names=...` and the count is read with the existing token.
-- If the recorded day has passed, the source fails with `token_expired` before
-  any call and prints `kind=token_expired`. A token the platform rejects (HTTP
-  400 or 401) fails as `token_rejected` and prints `kind=token_rejected`. For
-  either, repeat the one-time authorization.
-- The `token-health:` lines carry only the source slug, a fixed kind and the
-  variable NAME: the shape the token health work (#390) consumes.
-- Without `token_expires`, no refresh ever happens. Record it.
+A long-lived token lasts about 60 days. The shipped code cannot store a new
+token (it never writes a secret anywhere), so it does not refresh on its own:
+asking for a new token it cannot keep would only lose it.
+
+1. Record the expiry day in `token_expires` (non-secret).
+2. A run within `refresh_within_days` of that day still reads the count with the
+   current token and prints one line per run: `token-health: source=... 
+   kind=refresh_needed names=... days_left=N`. No refresh request is made.
+3. Refresh by hand, in a shell where the token is available, with the request
+   VERIFIED on the two pages above:
+   - Instagram: `GET https://graph.instagram.com/refresh_access_token` with
+     `grant_type=ig_refresh_token` and `access_token=<current token>`.
+   - Threads: `GET https://graph.threads.com/refresh_access_token` with
+     `grant_type=th_refresh_token` and `access_token=<current token>`.
+   The token must be at least 24 hours old and not expired. The answer holds the
+   new `access_token` and `expires_in` (seconds). Store the new value in the
+   secret manager under the same variable NAME, and set `token_expires` to the new
+   expiry day. Do not paste the token anywhere else.
+4. If the recorded day has passed, the source fails with `token_expired` before
+   any call (`kind=token_expired`). A token the platform rejects (HTTP 400 or
+   401) fails as `token_rejected` (`kind=token_rejected`). For either, repeat the
+   one-time authorization.
+5. Without `token_expires`, no reminder is possible. Record it.
+
+`auto_refresh: true` exists for a future secret-storing sink. It is refused with
+`refresh_sink_required` unless the calling code supplies a sink, and the shipped
+command supplies none, so leave it off. The `token-health:` lines carry only the
+source slug, a fixed kind, the variable NAME and the days left: the shape the
+token health work (#390) consumes.
 
 Failure words in `numbers.status.json`: `token_not_set` (skipped),
-`token_expired`, `token_rejected`, `missing_credential`, `invalid_credential`,
+`token_expired`, `token_rejected`, `refresh_sink_required`, `bad_credential_name`, `missing_credential`, `invalid_credential`,
 `missing_field`, `bad_count`, `bad_json`, `too_large`, `content_type`,
 `rate_limited`, `server_error`, `redirect`, `http_<status>`.
 

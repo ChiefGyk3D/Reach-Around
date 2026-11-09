@@ -74,7 +74,6 @@ def ig(**over: Any) -> InstagramSource:
         **{
             "platform": "instagram",
             "kind": "instagram",
-            "access_token_env": "INSTAGRAM_ACCESS_TOKEN",
             **over,
         }
     )
@@ -85,7 +84,6 @@ def th(**over: Any) -> ThreadsSource:
         **{
             "platform": "threads",
             "kind": "threads",
-            "access_token_env": "THREADS_ACCESS_TOKEN",
             **over,
         }
     )
@@ -369,7 +367,8 @@ def test_the_right_host_passes() -> None:
 def test_config_defaults_and_bounds() -> None:
     s = ig()
     assert s.token_expires is None and s.refresh_within_days == 10
-    assert ig(token_expires="2027-01-31").token_expires  # noqa: S106 == date(2027, 1, 31)
+    expires = ig(token_expires="2027-01-31").token_expires  # noqa: S106
+    assert expires == date(2027, 1, 31)
     assert th(user_id="123").user_id == "123"
     for bad in (
         {"token_expires": "31/01/2027"},
@@ -377,7 +376,8 @@ def test_config_defaults_and_bounds() -> None:
         {"refresh_within_days": 0},
         {"refresh_within_days": 60},
         {"refresh_within_days": "10"},
-        {"access_token_env": "lower"},
+        {"access_token_env": "INSTAGRAM_ACCESS_TOKEN"},
+        {"auto_refresh": "yes"},
         {"extra": 1},
     ):
         with pytest.raises(ValueError):
@@ -401,7 +401,7 @@ def routes_ig(**over: Any) -> dict[str, Any]:
 
 def test_refresh_inside_the_window_runs_once_then_uses_the_new_token() -> None:
     sink = Sink()
-    source = ig(token_expires=in_days(5))
+    source = ig(auto_refresh=True, token_expires=in_days(5))
     transport = FakeTransport(routes_ig())
     assert run(source, transport, sink=sink) == 1234
     assert [c.path.split("?")[0] for c in transport.calls] == [
@@ -419,7 +419,7 @@ def test_refresh_inside_the_window_runs_once_then_uses_the_new_token() -> None:
 
 
 def test_threads_refresh_uses_its_own_grant_and_host() -> None:
-    source = th(token_expires=TODAY.isoformat())
+    source = th(auto_refresh=True, token_expires=TODAY.isoformat())
     transport = FakeTransport(
         {TH_REFRESH: reply(REFRESH_BODY), TH_COUNT: reply(TH_BODY)}
     )
@@ -431,7 +431,7 @@ def test_threads_refresh_uses_its_own_grant_and_host() -> None:
 
 def test_window_edges() -> None:
     for days, expected_calls in ((10, 2), (11, 1), (0, 2)):
-        source = ig(token_expires=in_days(days))
+        source = ig(auto_refresh=True, token_expires=in_days(days))
         transport = FakeTransport(routes_ig())
         run(source, transport, sink=Sink())
         assert len(transport.calls) == expected_calls, days
@@ -444,7 +444,7 @@ def test_no_expiry_recorded_means_no_refresh() -> None:
 
 
 def test_configurable_window() -> None:
-    source = ig(token_expires=in_days(30), refresh_within_days=45)
+    source = ig(auto_refresh=True, token_expires=in_days(30), refresh_within_days=45)
     transport = FakeTransport(routes_ig())
     run(source, transport, sink=Sink())
     assert len(transport.calls) == 2
@@ -453,7 +453,7 @@ def test_configurable_window() -> None:
 @pytest.mark.parametrize("status", [400, 401, 403, 429, 500])
 def test_refresh_refused_keeps_going_with_the_old_token(status: int) -> None:
     sink = Sink()
-    source = ig(token_expires=in_days(2))
+    source = ig(auto_refresh=True, token_expires=in_days(2))
     transport = FakeTransport(
         routes_ig(**{IG_REFRESH: reply({"error": {"message": TOKEN}}, status=status)})
     )
@@ -480,7 +480,7 @@ def test_malformed_refresh_answer_is_a_refusal_not_a_store(
     body: dict[str, Any],
 ) -> None:
     sink = Sink()
-    source = ig(token_expires=TODAY.isoformat())
+    source = ig(auto_refresh=True, token_expires=TODAY.isoformat())
     transport = FakeTransport(routes_ig(**{IG_REFRESH: reply(body)}))
     assert run(source, transport, sink=sink) == 1234
     assert sink.stored == [] and [a.kind for a in sink.alerts] == ["refresh_refused"]
@@ -490,7 +490,7 @@ def test_malformed_refresh_answer_is_a_refusal_not_a_store(
 def test_refresh_redirect_is_refused() -> None:
     sink = Sink()
     redirect = reply({}, status=302, headers={"location": "https://evil.example/"})
-    source = ig(token_expires=TODAY.isoformat())
+    source = ig(auto_refresh=True, token_expires=TODAY.isoformat())
     transport = FakeTransport(routes_ig(**{IG_REFRESH: redirect}))
     run(source, transport, sink=sink)
     assert "evil.example" not in {c.host for c in transport.calls}
@@ -508,7 +508,7 @@ def test_expired_recorded_day_stops_before_any_call() -> None:
 
 def test_a_failing_sink_does_not_lose_the_number() -> None:
     sink = Sink(fail=True)
-    source = ig(token_expires=TODAY.isoformat())
+    source = ig(auto_refresh=True, token_expires=TODAY.isoformat())
     assert run(source, FakeTransport(routes_ig()), sink=sink) == 1234
     assert [a.kind for a in sink.alerts] == ["rotated_unstored"]
 
@@ -549,7 +549,7 @@ def test_no_token_value_in_any_error_log_or_alert(
     caplog.set_level(logging.DEBUG)
     stream = io.StringIO()
     sink = NoopSink(stream)
-    source = ig(token_expires=in_days(1))
+    source = ig(auto_refresh=True, token_expires=in_days(1))
     transport = FakeTransport({IG_REFRESH: make(), IG_COUNT: make()})
     with pytest.raises((SourceError, FetchError)) as caught:
         run(source, transport, sink=sink)
@@ -587,8 +587,8 @@ tabs:
 numbers:
   history_file: history/social.jsonl
   sources:
-    - {platform: instagram, kind: instagram, access_token_env: INSTAGRAM_ACCESS_TOKEN}
-    - {platform: threads, kind: threads, access_token_env: THREADS_ACCESS_TOKEN}
+    - {platform: instagram, kind: instagram}
+    - {platform: threads, kind: threads}
 """
 
 
@@ -646,59 +646,124 @@ def test_api_fed_platform_is_not_hand_kept(setup: Path) -> None:
     assert shown_numbers(config, None, TODAY) == []
 
 
-# ---- credential variable names are confined to the platform prefix ----
+# ---- the credential variable is fixed, never configurable ----
 
 UNRELATED = "unrelated-value-9f8e7d6c"  # noqa: S105
 BAD_NAMES = [
     "DATABASE_URL",
     "AWS_SECRET_ACCESS_KEY",
-    "THREADS_ACCESS_TOKEN",  # the other platform's name
+    "INSTAGRAM_APP_SECRET",
+    "THREADS_WEBHOOK_SECRET",
+    "INSTAGRAM_ACCESS_TOKEN_2",
+    "THREADS_ACCESS_TOKEN",
     "INSTAGRAM_",
     "instagram_access_token",
-    "INSTAGRAM_ACCESS\nTOKEN",
     "INSTAGRAM_ACCESS_TOKEN\n",
     "INSTAGRAM_ACCESS" + chr(0) + "TOKEN",
-    "INSTAGRAM_" + "A" * 61,
     "",
 ]
 
 
-@pytest.mark.parametrize("name", BAD_NAMES)
-def test_config_refuses_unrelated_variable_names(name: str) -> None:
+@pytest.mark.parametrize("name", BAD_NAMES + ["INSTAGRAM_ACCESS_TOKEN"])
+def test_config_cannot_name_a_credential_variable(name: str) -> None:
     with pytest.raises(ValueError):
         ig(access_token_env=name)
     with pytest.raises(ValueError):
-        th(access_token_env=name.replace("THREADS", "INSTAGRAM"))
+        th(access_token_env=name)
 
 
-def test_default_names_and_prefixed_names() -> None:  # noqa: S105, S106
-    assert (
-        InstagramSource(platform="instagram", kind="instagram").access_token_env
-        == "INSTAGRAM_ACCESS_TOKEN"  # noqa: S105
-    )
-    assert (
-        ThreadsSource(platform="threads", kind="threads").access_token_env
-        == "THREADS_ACCESS_TOKEN"  # noqa: S105
-    )
-    assert ig(access_token_env="INSTAGRAM_MAIN_TOKEN").access_token_env.startswith(  # noqa: S106
-        "INSTAGRAM_"
-    )
+def test_the_names_are_fixed() -> None:
+    assert ig().access_token_env == "INSTAGRAM_ACCESS_TOKEN"  # noqa: S105
+    assert th().access_token_env == "THREADS_ACCESS_TOKEN"  # noqa: S105
 
 
-@pytest.mark.parametrize("name", BAD_NAMES[:-1])
-def test_use_time_check_refuses_before_reading_the_environment(name: str) -> None:
-    source = ig().model_copy(update={"access_token_env": name})  # skips validation
-    env = {name: UNRELATED, "DATABASE_URL": UNRELATED}
+def test_the_use_time_check_refuses_a_tampered_source() -> None:
+    class Tampered(InstagramSource):
+        @property
+        def access_token_env(self) -> str:
+            return "INSTAGRAM_APP_SECRET"
+
+    source = Tampered(platform="instagram", kind="instagram")
+    env = {"INSTAGRAM_APP_SECRET": UNRELATED, "INSTAGRAM_ACCESS_TOKEN": TOKEN}
     transport = FakeTransport({IG_COUNT: reply(IG_BODY)})
     assert fails(source, transport, env=env) == "bad_credential_name"
     assert transport.calls == []
 
 
 def test_an_unrelated_variable_value_never_reaches_a_request() -> None:
-    env = dict(ENV, DATABASE_URL=UNRELATED, AWS_SECRET_ACCESS_KEY=UNRELATED)
-    source = ig(token_expires=in_days(1))
+    env = dict(
+        ENV,
+        DATABASE_URL=UNRELATED,
+        AWS_SECRET_ACCESS_KEY=UNRELATED,
+        INSTAGRAM_APP_SECRET=UNRELATED,
+        THREADS_WEBHOOK_SECRET=UNRELATED,
+        INSTAGRAM_ACCESS_TOKEN_2=UNRELATED,
+    )
+    source = ig(auto_refresh=True, token_expires=in_days(1))
     transport = FakeTransport(routes_ig())
     assert run(source, transport, env=env, sink=Sink()) == 1234
+    assert len(transport.calls) == 2
     for call in transport.calls:
         blob = repr((call.host, call.path, dict(call.headers), call.body))
         assert UNRELATED not in blob
+
+
+# ---- refresh is report-only unless the caller supplies a sink ----
+
+
+def test_inside_the_window_the_default_path_reads_and_reports_only() -> None:
+    stream = io.StringIO()
+    source = ig(token_expires=in_days(4))
+    transport = FakeTransport(routes_ig())
+    assert run(source, transport, sink=NoopSink(stream)) == 1234
+    assert [c.path.split("?")[0] for c in transport.calls] == ["/v27.0/me"]
+    assert token_of(transport.urls[0]) == TOKEN
+    lines = stream.getvalue().splitlines()
+    assert lines == [
+        "token-health: source=instagram kind=refresh_needed "
+        "names=INSTAGRAM_ACCESS_TOKEN days_left=4"
+    ]
+
+
+def test_the_cli_default_path_makes_no_refresh_request(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    soon = in_days(2)
+    text = CONFIG.replace(
+        "kind: instagram}", f"kind: instagram, token_expires: {soon}}}"
+    )
+    (tmp_path / "history").mkdir()
+    (tmp_path / "site.yaml").write_text(text, encoding="utf-8")
+    transport = FakeTransport({IG_COUNT: reply(IG_BODY), TH_COUNT: reply(TH_BODY)})
+    monkeypatch.setattr(counts_cmd, "default_transport", lambda: transport)
+    monkeypatch.setattr(counts_cmd, "default_sleep", lambda seconds: None)
+    monkeypatch.setenv("INSTAGRAM_ACCESS_TOKEN", TOKEN)
+    monkeypatch.setenv("THREADS_ACCESS_TOKEN", TOKEN)
+    monkeypatch.setattr(
+        "reach_around.commands.counts.datetime",
+        type("D", (), {"now": staticmethod(lambda tz=None: _noon(TODAY))}),
+        raising=False,
+    )
+    do_refresh(tmp_path)
+    paths = [c.path.split("?")[0] for c in transport.calls]
+    assert "/refresh_access_token" not in paths
+    err = capsys.readouterr().err
+    assert err.count("kind=refresh_needed") == 1
+    assert TOKEN not in err
+
+
+def _noon(day: date) -> Any:
+    from datetime import UTC, datetime
+
+    return datetime(day.year, day.month, day.day, 12, tzinfo=UTC)
+
+
+def test_auto_refresh_is_refused_without_a_caller_supplied_sink() -> None:
+    source = ig(auto_refresh=True, token_expires=in_days(2))
+    transport = FakeTransport(routes_ig())
+    assert fails(source, transport, sink=None) == "refresh_sink_required"
+    assert transport.calls == []
+
+
+def test_auto_refresh_defaults_off() -> None:
+    assert ig().auto_refresh is False and th().auto_refresh is False

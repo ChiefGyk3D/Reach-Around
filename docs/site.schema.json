@@ -667,11 +667,10 @@
     "InstagramSource": {
       "additionalProperties": false,
       "properties": {
-        "access_token_env": {
-          "default": "INSTAGRAM_ACCESS_TOKEN",
-          "pattern": "^INSTAGRAM_[A-Z0-9_]{1,60}$",
-          "title": "Access Token Env",
-          "type": "string"
+        "auto_refresh": {
+          "default": false,
+          "title": "Auto Refresh",
+          "type": "boolean"
         },
         "kind": {
           "const": "instagram",
@@ -2051,11 +2050,10 @@
     "ThreadsSource": {
       "additionalProperties": false,
       "properties": {
-        "access_token_env": {
-          "default": "THREADS_ACCESS_TOKEN",
-          "pattern": "^THREADS_[A-Z0-9_]{1,60}$",
-          "title": "Access Token Env",
-          "type": "string"
+        "auto_refresh": {
+          "default": false,
+          "title": "Auto Refresh",
+          "type": "boolean"
         },
         "kind": {
           "const": "threads",

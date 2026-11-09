@@ -169,16 +169,21 @@ class TwitchSource(_Source):
 class _MetaSource(_Source):
     """Shared shape of the Instagram and Threads follower sources.
 
-    ``access_token_env`` is the NAME of the environment variable that holds the
-    long-lived user token; the value is never in the config. ``token_expires`` is
+    The long-lived user token is read from one fixed environment variable
+    (``INSTAGRAM_ACCESS_TOKEN`` or ``THREADS_ACCESS_TOKEN``); the config cannot
+    name another, so no unrelated variable can be sent to the platform. The
+    value is never in the config. ``token_expires`` is
     the non-secret day the token expires (the owner records it; about 60 days
     after issue or last refresh). ``refresh_within_days`` is how close to that
     day a run refreshes the token once.
     """
 
-    access_token_env: str
     token_expires: date | None = None
     refresh_within_days: Annotated[int, Field(strict=True, ge=1, le=59)] = 10
+    # Off by default. The shipped code has no sink that can store a new token,
+    # so a run only reports that a refresh is due. True is refused at run time
+    # unless the caller supplies a real token sink.
+    auto_refresh: Annotated[bool, Field(strict=True)] = False
 
     @field_validator("token_expires", mode="before")
     @classmethod
@@ -192,16 +197,21 @@ class _MetaSource(_Source):
 
 class InstagramSource(_MetaSource):
     kind: Literal["instagram"]
-    access_token_env: Annotated[
-        str, StringConstraints(pattern=r"^INSTAGRAM_[A-Z0-9_]{1,60}$")
-    ] = "INSTAGRAM_ACCESS_TOKEN"  # noqa: S105
+
+    @property
+    def access_token_env(self) -> str:
+        """The one environment variable NAME read. Fixed; not configurable."""
+        return "INSTAGRAM_ACCESS_TOKEN"
 
 
 class ThreadsSource(_MetaSource):
     kind: Literal["threads"]
-    access_token_env: Annotated[
-        str, StringConstraints(pattern=r"^THREADS_[A-Z0-9_]{1,60}$")
-    ] = "THREADS_ACCESS_TOKEN"  # noqa: S105
+
+    @property
+    def access_token_env(self) -> str:
+        """The one environment variable NAME read. Fixed; not configurable."""
+        return "THREADS_ACCESS_TOKEN"
+
     # Threads user id (digits). Optional: the path segment ``me`` is used when
     # it is left out (INFERRED to be accepted; see docs/instagram-threads-sources.md).
     user_id: str | None = None
