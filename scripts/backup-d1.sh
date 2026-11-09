@@ -18,6 +18,10 @@
 # scripts/check-dump.py (no address, no user agent, only allowlisted columns);
 # if the check fails the whole run is deleted and the script exits 1.
 #
+# The tables are exported one wrangler call at a time: the result is NOT a single
+# point-in-time snapshot. Pause both write routes for the run when one consistent
+# copy matters (docs/backup-restore.md).
+#
 # Prints table names and file counts only: never an id, a row or wrangler's own
 # output. Every wrangler call is bounded by BACKUP_TIMEOUT seconds (default 120,
 # 1 to 900). Uses `wrangler d1 export --remote` (set WRANGLER to another command,
@@ -33,7 +37,7 @@ tables=(
   click_budget click_capacity click_country_daily click_country_monthly
   click_events click_funnel_state click_month_log click_seal
   click_src_daily click_src_monthly
-  counters kit_meta
+  counters d1_migrations kit_meta
   view_daily view_dim_daily view_geo_daily view_meta view_rollup_log
 )
 
@@ -79,6 +83,11 @@ refuse() {
 [ ! -L "$dest" ] || refuse "DEST_DIR is a symbolic link."
 dest="$(cd "$dest" && pwd -P)"
 [ -O "$dest" ] || refuse "DEST_DIR is not owned by you."
+# A "+" after the mode bits means an ACL: it can grant access the mode hides.
+# Files made inside a folder with a default ACL would inherit it.
+# shellcheck disable=SC2012 # one resolved directory, only the mode column is read
+acl_flag="$(ls -ld -- "$dest" | cut -c11)"
+[ "$acl_flag" != "+" ] || refuse "DEST_DIR has an ACL (access control list). Remove it: setfacl -b -k <folder>"
 mode="$(stat -c '%a' "$dest")"
 case "$mode" in
 ?00) ;;
@@ -104,6 +113,8 @@ if [ "$apply" -eq 0 ]; then
   echo "would export ${#tables[@]} tables (those that exist), one file each, mode 600:"
   printf '  %s\n' "${tables[@]}"
   echo "never exported: leads, kit_events, visitor_seen, view_events"
+  echo "note: the tables are exported one call at a time, so this is not a single point-in-time snapshot."
+  echo "      For one consistent copy, pause both write routes first (see docs/backup-restore.md)."
   echo "run again with --apply to write it."
   exit 0
 fi
@@ -143,6 +154,7 @@ for r in rows:
 }
 
 count=0
+exported=()
 for t in "${tables[@]}"; do
   if ! printf '%s\n' "$existing" | grep -qx -- "$t"; then
     echo "skipped (not in this database): $t"
@@ -159,6 +171,7 @@ for t in "${tables[@]}"; do
     echo "error: export of $t is empty" >&2
     exit 1
   }
+  exported+=("$t")
   count=$((count + 1))
 done
 
@@ -167,14 +180,14 @@ done
   exit 1
 }
 
-# Check everything written, in one pass, against the repo's allowlist minus the
-# tables we leave out on purpose. Reports line numbers and kinds, never values.
-python3 -I - "$here/dump-schema.json" "$out/.allowlist.json" <<'PY'
+# Check everything written, in one pass, against the repo's allowlist cut down to
+# the tables actually exported (so an older database that lacks one still works). Reports line numbers and kinds, never values.
+python3 -I - "$here/dump-schema.json" "$out/.allowlist.json" "${exported[@]}" <<'PY'
 import json, sys
 
 cfg = json.load(open(sys.argv[1]))
-for name in ("leads", "kit_events", "visitor_seen", "view_events"):
-    cfg["tables"].pop(name, None)
+keep = set(sys.argv[3:])
+cfg["tables"] = {k: v for k, v in cfg["tables"].items() if k in keep}
 json.dump(cfg, open(sys.argv[2], "w"))
 PY
 if ! cat -- "$out"/*.sql | python3 -I "$checker" --allow-empty \
@@ -188,4 +201,6 @@ rm -f -- "$out/.allowlist.json"
 chmod 600 "$out/SHA256SUMS"
 ok=1
 echo "done: $count tables written to $out"
+echo "note: the tables are exported one call at a time, so this is not a single point-in-time snapshot."
+echo "      For one consistent copy, pause both write routes first (see docs/backup-restore.md)."
 echo "next: copy it to your offline copy, then run: (cd that folder && sha256sum -c SHA256SUMS)"

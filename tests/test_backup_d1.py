@@ -13,6 +13,10 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
+from test_check_dump import schema_sql
+
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "backup-d1.sh"
 
@@ -49,7 +53,7 @@ def make(tmp_path: Path) -> dict[str, str]:
     db_path = tmp_path / "d1.sqlite"
     db = sqlite3.connect(db_path)
     for f in sorted((ROOT / "worker" / "migrations").glob("*.sql")):
-        db.executescript(f.read_text())
+        db.executescript(schema_sql(f.read_text()))
     db.execute(
         "INSERT INTO view_daily (site, day, day_tz, page, src_kind, src, country,"
         " bot_class, views, uniques) VALUES ('links', '2026-11-01', '2026-11-01',"
@@ -69,6 +73,11 @@ def make(tmp_path: Path) -> dict[str, str]:
         + "a" * 32
         + "', 'view')"
     )
+    db.execute(
+        "CREATE TABLE d1_migrations (id INTEGER PRIMARY KEY AUTOINCREMENT,"
+        " name TEXT UNIQUE, applied_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP)"
+    )
+    db.execute("INSERT INTO d1_migrations (name) VALUES ('0001_init.sql')")
     db.commit()
     stub = tmp_path / "wrangler-stub"
     stub.write_text(STUB.format(python=sys.executable))
@@ -235,3 +244,61 @@ def test_the_export_restores_into_an_empty_database(tmp_path: Path) -> None:
     names = {r[0] for r in fresh.execute("SELECT name FROM sqlite_master")}
     assert "leads" not in names
     assert "kit_events" not in names
+
+
+def test_migration_history_is_part_of_the_backup(tmp_path: Path) -> None:
+    env = make(tmp_path)
+    d = dest(tmp_path)
+    assert run(env, "reach-db", str(d), "--apply").returncode == 0
+    (out,) = list(d.iterdir())
+    assert "0001_init.sql" in (out / "d1_migrations.sql").read_text()
+
+
+def test_row_ids_above_two_to_the_24th_do_not_fail_the_check(tmp_path: Path) -> None:
+    env = make(tmp_path)
+    db = sqlite3.connect(env["STUB_DB"])
+    db.execute(
+        "INSERT INTO click_events (id, ts, link_id, site)"
+        " VALUES (20000000, 1792998000000, 'a', 'links')"
+    )
+    db.commit()
+    d = dest(tmp_path)
+    r = run(env, "reach-db", str(d), "--apply")
+    assert r.returncode == 0, r.stderr
+    assert len(list(d.iterdir())) == 1
+
+
+def test_an_older_schema_missing_a_table_still_backs_up(tmp_path: Path) -> None:
+    env = make(tmp_path)
+    db = sqlite3.connect(env["STUB_DB"])
+    db.execute("DROP TABLE alert_quota")
+    db.commit()
+    d = dest(tmp_path)
+    r = run(env, "reach-db", str(d), "--apply")
+    assert r.returncode == 0, r.stderr
+    assert "skipped (not in this database): alert_quota" in r.stdout
+    (out,) = list(d.iterdir())
+    assert not (out / "alert_quota.sql").exists()
+
+
+@pytest.mark.skipif(not Path("/usr/bin/setfacl").exists(), reason="no setfacl")
+@pytest.mark.parametrize("entry", ["u:nobody:rx", "d:u:nobody:rx"])
+def test_refuses_a_folder_with_an_extra_acl(tmp_path: Path, entry: str) -> None:
+    env = make(tmp_path)
+    d = dest(tmp_path)
+    set_acl = subprocess.run(  # noqa: S603
+        ["/usr/bin/setfacl", "-m", entry, str(d)],
+        capture_output=True,
+        check=False,
+    )
+    if set_acl.returncode != 0:
+        pytest.skip("filesystem has no ACL support")
+    r = run(env, "reach-db", str(d))
+    assert r.returncode == 3
+    assert "ACL" in r.stderr
+
+
+def test_it_says_the_export_is_not_one_snapshot(tmp_path: Path) -> None:
+    env = make(tmp_path)
+    r = run(env, "reach-db", str(dest(tmp_path)))
+    assert "not a single point-in-time snapshot" in r.stdout

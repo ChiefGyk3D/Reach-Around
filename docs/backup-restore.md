@@ -31,7 +31,16 @@ config ([deploy.md](deploy.md) has the rollbacks).
 
 `scripts/backup-d1.sh` exports one file per table, with its schema and rows:
 the click and view aggregate tables, the seal and rollup logs, `click_events`
-(source label only, no country), the counters and the alert quota tables.
+(a source label; see the country note below), the counters, the alert quota
+tables and `d1_migrations` (the list of migrations already applied, which a
+rebuilt database needs so that "apply migrations" only runs newer ones).
+
+**Country in `click_events`.** The Worker now writes no country there, but the
+column still exists and rows written before migration 0010 and the new Worker
+can still hold one. The export copies the table as it is, so an old backup can
+contain a country for old clicks. If you do not want that in any copy, run
+`scripts/clear-click-country.sh` first (its order of steps is in the script
+header), then back up.
 
 It never exports four tables, on purpose:
 
@@ -56,8 +65,11 @@ An export is private data. It never goes in a git repository, a workflow
 artifact, a chat, an issue or a pull request, not even a private one.
 
 - `scripts/backup-d1.sh` refuses (exit 3) a folder inside a git work tree, a
-  symbolic link, a folder you do not own and a folder that group or others can
-  open.
+  symbolic link, a folder you do not own, a folder that group or others can
+  open, and a folder with an ACL (`ls -ld` shows a `+` after the mode bits),
+  because an ACL can grant access that the mode hides and new files could
+  inherit it. Other limits that it cannot see (a backup agent, a synced folder,
+  a network share) are yours to check.
 - Files are written with mode 600 in a mode 700 directory.
 - The script prints table names and counts only. It sends wrangler's own output
   to nowhere, because that output names the database id.
@@ -110,6 +122,23 @@ export credential in a repository or in a workflow secret.
    ```bash
    scripts/backup-d1.sh <DATABASE> "$HOME/<BACKUPS>" --apply
    ```
+
+   **This is not a single snapshot.** The script makes one export call per
+   table, and the Worker keeps counting between calls, so the tables can differ
+   by a few minutes of traffic. For a weekly copy that is fine: the counters
+   only grow, and a restored copy is at worst slightly behind in some tables.
+   When you need one consistent copy (before a risky write, or before a
+   restore), pause both write routes for the whole run, then turn them back on:
+
+   ```bash
+   npx wrangler deploy --var CLICKS_KILL:1 --var VIEWS_KILL:1
+   scripts/backup-d1.sh <DATABASE> "$HOME/<BACKUPS>" --apply
+   npx wrangler deploy --var CLICKS_KILL:0 --var VIEWS_KILL:0
+   ```
+
+   Visits during the pause are not counted. Inferred: the Time Travel bookmark
+   from step 1 is the other point-in-time anchor, because Time Travel restores
+   the whole database at one moment (verified, Time Travel page).
 
    Expected: `done: N tables written to <BACKUPS>/d1-<UTC timestamp>`. Tables
    an older database does not have are listed as `skipped (not in this
@@ -205,12 +234,13 @@ synthetic export files made by a stand-in for wrangler. Inferred: that a real
 ```bash
 cd "$HOME/<BACKUPS>/d1-<UTC timestamp>"
 rm -f /dev/shm/restore-drill.sqlite
-for f in *.sql; do sqlite3 /dev/shm/restore-drill.sqlite < "$f" || echo "FAILED: $f"; done
+bash -euo pipefail -c 'for f in *.sql; do sqlite3 /dev/shm/restore-drill.sqlite < "$f" || { echo "FAILED: $f"; exit 1; }; done'
 sqlite3 /dev/shm/restore-drill.sqlite "SELECT count(*) FROM view_daily"
 rm -f /dev/shm/restore-drill.sqlite
 ```
 
-Expected: no `FAILED` line, and the count matches the table's `INSERT` lines.
+Expected: no `FAILED` line (the loop stops at the first failure, and if it
+prints one, stop here and do not record the drill as passed), and the count matches the table's `INSERT` lines.
 (`/dev/shm` keeps the scratch copy in memory so it never lands on disk; the
 last line removes it.)
 
@@ -231,10 +261,11 @@ last line removes it.)
 
    ```bash
    cd "$HOME/<BACKUPS>/d1-<UTC timestamp>"
-   for f in *.sql; do npx wrangler d1 execute <SCRATCH_DATABASE> --remote --file="$f" || echo "FAILED: $f"; done
+   bash -euo pipefail -c 'for f in *.sql; do npx wrangler d1 execute <SCRATCH_DATABASE> --remote --file="$f" || { echo "FAILED: $f"; exit 1; }; done'
    ```
 
-   Expected: no `FAILED` line. Inferred: the files import in any order because
+   Expected: no `FAILED` line (the loop stops at the first failure; if it
+   fails, do not record the drill as passed). Inferred: the files import in any order because
    no table has a foreign key to another; if one fails on a constraint, import
    it again after the others.
 
@@ -309,7 +340,13 @@ use the export instead. Inferred (run Part B first to learn the exact steps
 for your setup): create a new empty database, import the files as in Part B,
 put the new database's id into your deploy settings (`D1_DATABASE_ID`,
 [deploy.md](deploy.md)), apply any migrations newer than the export, deploy the
-Worker, and check the counts. Do not import into a database that already holds
+Worker, and check the counts. The export includes `d1_migrations`, so the
+import restores the record of what has been applied. Verified (Cloudflare
+D1 Migrations page, read 2026-11-09): wrangler keeps that record in the
+`d1_migrations` table and `migrations list` shows the unapplied ones. That
+`migrations apply` skips the restored ones after an import is inferred: run
+`npx wrangler d1 migrations list <DATABASE> --remote` first and confirm it
+lists only the newer migrations before you apply anything. Do not import into a database that already holds
 rows: the keys would collide.
 
 ## Rollback of a backup routine
@@ -330,6 +367,8 @@ bookmark. To remove old copies, see retention in [operations.md](operations.md).
   blocks other requests while it runs.
 - Cloudflare changelog, "D1 database undelete requests limited to the last 7
   days", 2026-10-23, read 2026-11-09 (through the documentation search).
+- Cloudflare, "Migrations", D1 reference, read 2026-11-09 (through the
+  documentation search): the `d1_migrations` table and `migrations list`.
 - This repository: `scripts/backup-d1.sh` and `tests/test_backup_d1.py`
   (the script, the exclusions, the file modes, the refusal inside a git work
   tree and the offline restore were run in the tests).
