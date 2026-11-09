@@ -1,4 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
+# ruff: noqa: S105
 """Twitch followers via a broadcaster user token. Mocked transport only.
 
 Fixtures follow the documented response shapes (docs read 2026-11-09). No
@@ -31,17 +32,17 @@ SRC = TwitchSource.model_validate(
         "platform": "tw",
         "kind": "twitch",
         "login": "some_user",
-        "client_id_env": "TW_ID",
-        "client_secret_env": "TW_SECRET",
-        "user_token_env": "TW_USER",
-        "refresh_token_env": "TW_REFRESH",
+        "client_id_env": "TWITCH_TW_ID",
+        "client_secret_env": "TWITCH_TW_SECRET",
+        "user_token_env": "TWITCH_TW_USER",
+        "refresh_token_env": "TWITCH_TW_REFRESH",
     }
 )
 ENV = {
-    "TW_ID": "SENTINEL-CID",
-    "TW_SECRET": "SENTINEL-CSECRET",
-    "TW_USER": "SENTINEL-ACCESS-OLD",
-    "TW_REFRESH": "SENTINEL-REFRESH-OLD",
+    "TWITCH_TW_ID": "SENTINEL-CID",
+    "TWITCH_TW_SECRET": "SENTINEL-CSECRET",
+    "TWITCH_TW_USER": "SENTINEL-ACCESS-OLD",
+    "TWITCH_TW_REFRESH": "SENTINEL-REFRESH-OLD",
 }
 SECRETS = [
     "SENTINEL-CID",
@@ -118,7 +119,7 @@ def test_success_reads_total_with_user_token_and_never_uses_app_token() -> None:
 
 
 def test_missing_user_token_keeps_the_app_path_and_skip() -> None:
-    env = {k: v for k, v in ENV.items() if k != "TW_USER"}
+    env = {k: v for k, v in ENV.items() if k != "TWITCH_TW_USER"}
     app_routes = {
         OAUTH_URL: reply({"access_token": "SENTINEL-APP"}),
         USERS: USER_REPLY,
@@ -153,7 +154,7 @@ def test_401_refreshes_once_hands_pair_to_sink_and_retries() -> None:
         "SENTINEL-ACCESS-NEW",
         "SENTINEL-REFRESH-NEW",
     )
-    assert names == TokenNames("TW_USER", "TW_REFRESH") and source == "tw"
+    assert names == TokenNames("TWITCH_TW_USER", "TWITCH_TW_REFRESH") and source == "tw"
     no_leak(repr(pair))
 
 
@@ -188,7 +189,7 @@ def test_refresh_failure_alerts_without_values(bad: Any) -> None:
 
 
 def test_no_refresh_token_configured_is_safe_read_only_with_alert() -> None:
-    env = {k: v for k, v in ENV.items() if k != "TW_REFRESH"}
+    env = {k: v for k, v in ENV.items() if k != "TWITCH_TW_REFRESH"}
     src = SRC.model_copy(update={"refresh_token_env": None})
     t = FakeTransport(routes(**{FOLLOWERS: reply({}, status=401)}))
     sink = Sink()
@@ -224,14 +225,14 @@ def test_noop_sink_prints_names_and_instruction_only() -> None:
     t = FakeTransport(routes(**{FOLLOWERS: followers, OAUTH_URL: REFRESH_REPLY}))
     assert run(t, NoopSink(out)) == 321
     text = out.getvalue()
-    assert "TW_USER" in text and "TW_REFRESH" in text
+    assert "TWITCH_TW_USER" in text and "TWITCH_TW_REFRESH" in text
     assert "secret manager" in text and "token-health:" in text
     no_leak(text)
 
 
 def test_default_sink_is_noop_writing_to_stderr(capsys: Any) -> None:
     t = FakeTransport(routes(**{FOLLOWERS: reply({}, status=401)}))
-    kind(t, None, {k: v for k, v in ENV.items() if k != "TW_REFRESH"})
+    kind(t, None, {k: v for k, v in ENV.items() if k != "TWITCH_TW_REFRESH"})
     # refresh_token_env is configured but empty: nothing to refresh with
     err = capsys.readouterr().err
     assert "kind=refresh_needed" in err
@@ -368,7 +369,7 @@ def test_huge_body_is_capped() -> None:
 
 def test_user_token_with_whitespace_is_refused_before_any_request() -> None:
     t = FakeTransport(routes())
-    assert kind(t, env={**ENV, "TW_USER": "bad token"}) == "invalid_credential"
+    assert kind(t, env={**ENV, "TWITCH_TW_USER": "bad token"}) == "invalid_credential"
     assert t.calls == []
 
 
@@ -377,15 +378,97 @@ def test_config_rules() -> None:
         "platform": "tw",
         "kind": "twitch",
         "login": "some_user",
-        "client_id_env": "TW_ID",
-        "client_secret_env": "TW_SECRET",
+        "client_id_env": "TWITCH_TW_ID",
+        "client_secret_env": "TWITCH_TW_SECRET",
     }
     with pytest.raises(ValueError):
-        TwitchSource.model_validate({**base, "refresh_token_env": "TW_R"})
+        TwitchSource.model_validate(
+            {**base, "user_token_env": None, "refresh_token_env": "TWITCH_R"}
+        )
     with pytest.raises(ValueError):
-        TwitchSource.model_validate({**base, "user_token_env": "TW_ID"})
+        TwitchSource.model_validate({**base, "user_token_env": "TWITCH_TW_ID"})
     with pytest.raises(ValueError):
         TwitchSource.model_validate(
-            {**base, "user_token_env": "TW_U", "refresh_token_env": "TW_U"}
+            {**base, "user_token_env": "TWITCH_U", "refresh_token_env": "TWITCH_U"}
         )
-    assert TwitchSource.model_validate(base).user_token_env is None
+    defaults = TwitchSource.model_validate(
+        {k: v for k, v in base.items() if not k.endswith("_env")}
+    )
+    assert defaults.client_id_env == "TWITCH_CLIENT_ID"
+    assert defaults.client_secret_env == "TWITCH_CLIENT_SECRET"
+    assert defaults.user_token_env == "TWITCH_USER_ACCESS_TOKEN"
+    assert defaults.refresh_token_env == "TWITCH_REFRESH_TOKEN"
+
+
+BAD_NAMES = [
+    "DATABASE_URL",
+    "AWS_SECRET_ACCESS_KEY",
+    "twitch_user_token",
+    "TWITCH",
+    "TWITCHX_TOKEN",
+    "TWITCH_",
+    "TWITCH_\x00X",
+    "TWITCH_A\n",
+    "TWITCH_A B",
+    "TWITCH_" + "A" * 61,
+    "",
+]
+FIELDS = ["client_id_env", "client_secret_env", "user_token_env", "refresh_token_env"]
+UNRELATED = "SENTINEL-UNRELATED-VALUE"
+
+
+@pytest.mark.parametrize("field", FIELDS)
+@pytest.mark.parametrize("name", BAD_NAMES)
+def test_bad_credential_names_rejected_at_validation(field: str, name: str) -> None:
+    base = {"platform": "tw", "kind": "twitch", "login": "some_user"}
+    with pytest.raises(ValueError):
+        TwitchSource.model_validate({**base, field: name})
+
+
+@pytest.mark.parametrize("field", FIELDS)
+@pytest.mark.parametrize("name", [n for n in BAD_NAMES if n])
+def test_bad_credential_names_rejected_at_runtime_and_never_sent(
+    field: str, name: str
+) -> None:
+    # model_construct skips validation: the use-time check must still hold
+    src = SRC.model_construct(**{**SRC.model_dump(), field: name})
+    env = {**ENV, name: UNRELATED, "DATABASE_URL": UNRELATED}
+    t = FakeTransport(routes(**{OAUTH_URL: REFRESH_REPLY}))
+    fetch = partial(fetch_json, transport=t, sleep=lambda s: None)
+    with pytest.raises(SourceError) as caught:
+        PROVIDERS["twitch"](src, Context(fetch=fetch, env=env))
+    assert caught.value.kind == "bad_env_name"
+    assert UNRELATED not in str(caught.value)
+    assert UNRELATED not in repr(t.calls)
+
+
+def test_unrelated_env_values_never_leave_the_process() -> None:
+    env = {
+        **ENV,
+        "DATABASE_URL": "SENTINEL-UNRELATED-DB",
+        "AWS_SECRET_ACCESS_KEY": "SENTINEL-UNRELATED-AWS",
+    }
+    n = {"i": 0}
+
+    def followers(req: Any) -> Any:
+        n["i"] += 1
+        return reply({}, status=401) if n["i"] == 1 else FOLLOW_REPLY
+
+    t = FakeTransport(routes(**{FOLLOWERS: followers, OAUTH_URL: REFRESH_REPLY}))
+    assert run(t, Sink(), env) == 321
+    assert len(t.calls) >= 4
+    assert "SENTINEL-UNRELATED" not in repr(t.calls)
+
+
+def test_default_names_work_without_naming_them() -> None:
+    src = TwitchSource.model_validate(
+        {"platform": "tw", "kind": "twitch", "login": "some_user"}
+    )
+    env = {
+        "TWITCH_CLIENT_ID": "SENTINEL-CID",
+        "TWITCH_CLIENT_SECRET": "SENTINEL-CSECRET",
+        "TWITCH_USER_ACCESS_TOKEN": "SENTINEL-ACCESS-OLD",
+    }
+    t = FakeTransport(routes())
+    fetch = partial(fetch_json, transport=t, sleep=lambda s: None)
+    assert PROVIDERS["twitch"](src, Context(fetch=fetch, env=env)) == 321

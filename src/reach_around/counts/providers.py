@@ -21,6 +21,7 @@ from reach_around.config.numbers_sources import (
     MatrixSource,
     TwitchSource,
     YoutubeSource,
+    valid_twitch_env_name,
 )
 from reach_around.counts.twitch_user import (
     TokenSink,
@@ -213,7 +214,11 @@ def youtube(source: YoutubeSource, ctx: Context) -> int:
 
 
 def twitch(source: TwitchSource, ctx: Context) -> int:
-    if user_token_configured(source, ctx.env):
+    try:
+        use_user_token = user_token_configured(source, ctx.env)
+    except TwitchUserError as err:
+        raise SourceError(err.kind) from None
+    if use_user_token:
         try:
             total = followers_with_user_token(
                 source, ctx.env, ctx.fetch, ctx.token_sink
@@ -221,6 +226,11 @@ def twitch(source: TwitchSource, ctx: Context) -> int:
         except TwitchUserError as err:
             raise SourceError(err.kind) from None
         return _check_count(total)
+    if not (
+        valid_twitch_env_name(source.client_id_env)
+        and valid_twitch_env_name(source.client_secret_env)
+    ):
+        raise SourceError("bad_env_name")
     client_id = _secret(ctx.env, source.client_id_env)
     client_secret = _secret(ctx.env, source.client_secret_env)
     form = urlencode(

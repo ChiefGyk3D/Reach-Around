@@ -12,6 +12,7 @@ import re
 from typing import Annotated, Literal
 
 from pydantic import (
+    AfterValidator,
     BaseModel,
     ConfigDict,
     Field,
@@ -40,6 +41,28 @@ _TWITCH_LOGIN = re.compile(r"^[A-Za-z0-9_]{3,25}$")
 
 Platform = Annotated[str, StringConstraints(pattern=_SLUG)]
 EnvName = Annotated[str, StringConstraints(pattern=_ENV_NAME)]
+
+
+_TWITCH_ENV = re.compile(r"TWITCH_[A-Z0-9_]{1,60}")
+
+
+def valid_twitch_env_name(name: object) -> bool:
+    """Credential variables for Twitch must carry the platform prefix.
+
+    ``fullmatch`` (not ``$``) so a trailing newline cannot slip through.
+    """
+    return isinstance(name, str) and _TWITCH_ENV.fullmatch(name) is not None
+
+
+def _twitch_env(value: str) -> str:
+    if not valid_twitch_env_name(value):
+        raise ValueError(
+            "a Twitch credential variable name must match TWITCH_[A-Z0-9_]+"
+        )
+    return value
+
+
+TwitchEnvName = Annotated[str, AfterValidator(_twitch_env)]
 
 
 class _Source(BaseModel):
@@ -145,14 +168,16 @@ class YoutubeSource(_Source):
 class TwitchSource(_Source):
     kind: Literal["twitch"]
     login: str
-    client_id_env: EnvName
-    client_secret_env: EnvName
-    # Optional broadcaster user token (scope moderator:read:followers). When
-    # user_token_env is set and holds a value, the followers total is read with
-    # it; otherwise the app-token path (and its needs_user_token skip) stays.
-    # refresh_token_env additionally lets one 401 trigger one refresh.
-    user_token_env: EnvName | None = None
-    refresh_token_env: EnvName | None = None
+    client_id_env: TwitchEnvName = "TWITCH_CLIENT_ID"
+    client_secret_env: TwitchEnvName = "TWITCH_CLIENT_SECRET"  # noqa: S105 (a variable NAME)
+    # Broadcaster user token (scope moderator:read:followers). All four names
+    # must start with TWITCH_ so no unrelated variable can be named; they have
+    # fixed defaults. When the user token variable holds a value, the followers
+    # total is read with it; otherwise the app-token path (and its
+    # needs_user_token skip) stays. A refresh token variable that holds a value
+    # additionally lets one 401 trigger one refresh; null turns refresh off.
+    user_token_env: TwitchEnvName | None = "TWITCH_USER_ACCESS_TOKEN"  # noqa: S105 (a variable NAME)
+    refresh_token_env: TwitchEnvName | None = "TWITCH_REFRESH_TOKEN"  # noqa: S105 (a variable NAME)
 
     @field_validator("login")
     @classmethod

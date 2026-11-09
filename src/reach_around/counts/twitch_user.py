@@ -35,7 +35,7 @@ from dataclasses import dataclass, field
 from typing import Protocol, TextIO
 from urllib.parse import urlencode, urlsplit
 
-from reach_around.config.numbers_sources import TwitchSource
+from reach_around.config.numbers_sources import TwitchSource, valid_twitch_env_name
 from reach_around.net.fetch import FetchError
 
 API_HOST = "api.twitch.tv"
@@ -149,6 +149,9 @@ def _token(value: object) -> str:
 
 
 def _env_secret(env: Mapping[str, str], name: str) -> str:
+    # defense in depth: the config validator already checked the name
+    if not valid_twitch_env_name(name):
+        raise TwitchUserError("bad_env_name")
     value = env.get(name, "")
     if not value:
         raise TwitchUserError("missing_credential")
@@ -160,7 +163,12 @@ def _env_secret(env: Mapping[str, str], name: str) -> str:
 
 
 def user_token_configured(source: TwitchSource, env: Mapping[str, str]) -> bool:
-    return bool(source.user_token_env and env.get(source.user_token_env))
+    name = source.user_token_env
+    if name is None:
+        return False
+    if not valid_twitch_env_name(name):
+        raise TwitchUserError("bad_env_name")
+    return bool(env.get(name))
 
 
 class _Session:
@@ -179,9 +187,10 @@ class _Session:
         self.client_id = _env_secret(env, source.client_id_env)
         self.client_secret = _env_secret(env, source.client_secret_env)
         self.access = _env_secret(env, source.user_token_env)
-        self.refresh_value = (
-            env.get(source.refresh_token_env, "") if source.refresh_token_env else ""
-        )
+        refresh_name = source.refresh_token_env
+        if refresh_name is not None and not valid_twitch_env_name(refresh_name):
+            raise TwitchUserError("bad_env_name")
+        self.refresh_value = env.get(refresh_name, "") if refresh_name else ""
         self.refreshed = False
 
     def _names(self) -> tuple[str, ...]:

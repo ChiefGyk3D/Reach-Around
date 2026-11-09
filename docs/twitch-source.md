@@ -26,29 +26,38 @@ confirmed on a readable page.
 
 ## Configuration
 
+Credential variable names are fixed in shape: every one must be `TWITCH_`
+followed by 1 to 60 of `A-Z`, `0-9` and `_`. This keeps a config from naming an
+unrelated variable. The check runs when the config loads and again before any
+variable is read. The defaults below apply when a key is left out, so the config
+does not need to name them:
+
+| Key | Default |
+| --- | --- |
+| `client_id_env` | `TWITCH_CLIENT_ID` |
+| `client_secret_env` | `TWITCH_CLIENT_SECRET` |
+| `user_token_env` | `TWITCH_USER_ACCESS_TOKEN` |
+| `refresh_token_env` | `TWITCH_REFRESH_TOKEN` (set to `null` to turn refresh off) |
+
 ```yaml
 numbers:
   sources:
-    - platform: twitch
-      kind: twitch
-      login: example_login
-      client_id_env: TWITCH_CLIENT_ID
-      client_secret_env: TWITCH_CLIENT_SECRET
-      user_token_env: TWITCH_USER_ACCESS_TOKEN
-      refresh_token_env: TWITCH_REFRESH_TOKEN
+    - {platform: twitch, kind: twitch, login: example_login}
 ```
 
-- No `user_token_env`, or the variable is empty: the old behavior. The source
-  uses an app token and is reported as skipped (`needs_user_token`) on a 401 or
-  403. Never an error.
-- `user_token_env` set and filled: the total is read with that token. History
+- The user token variable empty or unset: the old behavior. The source uses an
+  app token and is reported as skipped (`needs_user_token`) on a 401 or 403.
+  Never an error.
+- The user token variable filled: the total is read with that token. History
   (when enabled) records `source: api`, metric followers. `as_of` and the stale
   gate work as for every other source.
-- `refresh_token_env` is optional. Leave it out for the read-only mode below.
+- The refresh token variable is optional at run time: leave it unset for the
+  read-only mode below.
+- A name outside the pattern fails the load, or the run with `bad_env_name`.
 
 ## Failure words
 
-`missing_credential`, `invalid_credential`, `token_expired` (401, no refresh
+`bad_env_name`, `missing_credential`, `invalid_credential`, `token_expired` (401, no refresh
 token configured), `token_rejected` (401 again after a refresh),
 `refresh_failed`, `bad_json`, `too_large`, `redirect`, `rate_limited`,
 `server_error`, `egress_timeout`, `missing_field`, `bad_count`, `bad_host`.
@@ -66,8 +75,8 @@ agents never touch the secret store.
 If the rotated refresh token is not stored, the next run holds an old one and
 may fail with `refresh_failed`. Two safe modes:
 
-1. Read-only (recommended until a storing sink exists): omit
-   `refresh_token_env`. The run uses the access token until it expires, then
+1. Read-only (recommended until a storing sink exists): leave
+   the refresh token variable unset (or set `refresh_token_env: null`). The run uses the access token until it expires, then
    fails with `token_expired` and prints a health alert.
 2. Refresh with a human in the loop: when the run prints `kind=rotated_unstored`,
    the owner stores the new pair before the next run.
@@ -84,8 +93,8 @@ token-health: source=<platform> kind=<refresh_needed|refresh_failed|rotated_unst
    console. Set a redirect URI of `http://localhost:3000` (VERIFIED as the
    documented test value; the application must list it exactly). Note the
    client id and create a client secret.
-2. Store the client id and secret in the secret manager under the names used in
-   the config. Never in the repository or a GitHub secret.
+2. Store the client id and secret in the secret manager under `TWITCH_CLIENT_ID` and `TWITCH_CLIENT_SECRET` (or the names set in the
+   config). Never in the repository or a GitHub secret.
 3. While logged in to Twitch as the broadcaster, open in a browser (replace the
    placeholders):
    `https://id.twitch.tv/oauth2/authorize?client_id=<CLIENT_ID>&redirect_uri=http%3A%2F%2Flocalhost%3A3000&response_type=code&scope=moderator%3Aread%3Afollowers&state=<RANDOM>`
@@ -98,7 +107,7 @@ token-health: source=<platform> kind=<refresh_needed|refresh_failed|rotated_unst
    `POST https://id.twitch.tv/oauth2/token` with form fields `client_id`,
    `client_secret`, `code`, `grant_type=authorization_code`, `redirect_uri`.
    The answer holds `access_token` and `refresh_token`.
-5. Store them in the secret manager as the two names set in `user_token_env`
-   and `refresh_token_env`, and discard the shell output.
+5. Store them in the secret manager as `TWITCH_USER_ACCESS_TOKEN` and
+   `TWITCH_REFRESH_TOKEN` (or the names set in the config), and discard the shell output.
 6. Run `reach-around counts refresh` with the secrets injected. If Twitch
    answers a refresh with 400 or 401, repeat from step 3.
