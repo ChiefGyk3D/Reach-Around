@@ -472,6 +472,8 @@ KNOWN_FIELDS: frozenset[str] = frozenset(
         "fonts",
         "footer",
         "frame",
+        "frame_l3_max",
+        "frame_motion",
         "handle",
         "header",
         "heading",

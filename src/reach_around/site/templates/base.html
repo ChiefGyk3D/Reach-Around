@@ -1,4 +1,4 @@
-{# SPDX-License-Identifier: Apache-2.0 #}
+{# SPDX-License-Identifier: Apache-2.0 #}{% if frame_plan %}{% set _ = frame_l3_reset() %}{% endif %}
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -59,7 +59,7 @@
 <script src="{{ root }}{{ asset("static/zone.js") }}" defer></script>
 {% endif %}
 </head>
-<body{% if page_views and page_id %} data-page-id="{{ page_id }}" data-view-route="{{ view_route }}"{% endif %}>
+<body{% if frame_motion is defined and frame_motion %} class="ra-mo"{% endif %}{% if page_views and page_id %} data-page-id="{{ page_id }}" data-view-route="{{ view_route }}"{% endif %}>
 <a class="skip-link" href="#content">{{ skip_label if skip_label is defined else "Skip to links" }}</a>
 <main id="content"{% if wide is defined and wide %} class="main-wide"{% endif %}>
 {% include "_nav.html" %}

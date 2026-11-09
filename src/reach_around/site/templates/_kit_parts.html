@@ -1,9 +1,9 @@
 {# SPDX-License-Identifier: Apache-2.0 #}
-{% import "_frames.html" as frames %}
+{% import "_frames.html" as frames with context %}
 {% macro numbers(kit, heading_id, framed=false, zones=none) %}
 {% if kit.metrics %}
 <section class="kit-numbers" aria-labelledby="{{ heading_id }}">
-<h3 id="{{ heading_id }}">Audience numbers</h3>
+<h3 id="{{ heading_id }}"{% if framed and frame_plan %} class="{{ frames.cls("head")|trim }}"{% endif %}>Audience numbers</h3>
 {% if kit.live_since %}
 <p class="kit-note kit-live-since"><time datetime="{{ kit.live_since.iso }}">{{ kit.live_since.text }}</time>{% if zones %}<span class="kit-note kit-zone-note" data-zone-start="{{ kit.live_since.start }}"></span>{% endif %}</p>
 {% endif %}
@@ -15,7 +15,7 @@
 <p class="kit-total{% if framed %}{{ frames.cls("stat") }}{% endif %}"><span class="kit-total-label">Combined audience</span> <strong class="kit-total-value">{{ kit.total.value }}</strong></p>
 <p class="kit-note">Added up from {{ kit.total.counted }} {{ "number" if kit.total.counted == 1 else "numbers" }}{% if kit.total.oldest %}; the oldest is dated {{ kit.total.oldest }} (UTC){% endif %}.{% if kit.total.mixed %} These include numbers from before Reach Around and numbers from after it.{% endif %} People who follow on more than one platform are counted more than once.</p>
 {% endif %}
-<table class="kit-table">
+<table class="kit-table{% if framed and frame_plan %}{{ frames.cls("card") }}{% endif %}">
 <caption class="sr-only">Audience numbers by platform, each with the date it was read</caption>
 <thead>
 <tr><th scope="col">Platform</th><th scope="col">Measure</th><th scope="col">Number</th><th scope="col">As of</th></tr>
@@ -30,11 +30,11 @@
 {% endif %}
 {% endmacro %}
 
-{% macro gate_form(form) %}
+{% macro gate_form(form, framed=false) %}
 <form class="kit-gate" method="post" action="{{ form.action }}">
 <p class="kit-field">
 <label for="kit-email">Email address</label>
-<input id="kit-email" name="email" type="email" inputmode="email" autocomplete="email" maxlength="254" required>
+<input{% if framed and frame_plan %} class="{{ frames.cls("field")|trim }}"{% endif %} id="kit-email" name="email" type="email" inputmode="email" autocomplete="email" maxlength="254" required>
 </p>
 <div class="kit-hp" aria-hidden="true">
 <label for="kit-website">Leave this field empty</label>
@@ -42,6 +42,6 @@
 </div>
 <div class="cf-turnstile" data-action="gate"{% if form.site_key %} data-sitekey="{{ form.site_key }}"{% endif %}></div>
 <noscript><p class="kit-note">The check before the details needs JavaScript. Turn it on for this page, or ask the owner of this site for the details.</p></noscript>
-<button class="kit-submit" type="submit">Show the details</button>
+<button class="kit-submit{% if framed and frame_plan %}{{ frames.cls("cta") }}{% endif %}" type="submit">Show the details</button>
 </form>
 {% endmacro %}

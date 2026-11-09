@@ -106,7 +106,9 @@ Owner decision, in order of recommendation:
 
 By design only three outputs carry `noindex`: `404.html`, `/kit/retry/` (both through the page template's `noindex` flag) and the Worker-served gated kit page. Indexable pages (tabs, privacy, the public kit page) do not. `tests/site/test_noindex_shape.py` builds a site with a kit and asserts exactly that list, and that no `robots.txt` or `X-Robots-Tag` rule appears unless the config has a `robots:` section. A staging host that blocks crawlers does so through that config section (`allow_all: false`, `noindex_paths`) or a host setting, never through a build default, so staging settings cannot reach a production build that does not ask for them. `check --production` does not inspect robots; the config is the single source.
 
-## Border frames on and off (#444)
+## Border frames on and off (#444, #448)
+
+The numbers below were measured for the first frame release (#444). The frames-everywhere change (#448) is re-measured in the table at the end of this section.
 
 Measured 2026-11-08, Lighthouse 13.6.0, Chromium headless, three runs per page and strategy, median, served with the build's own `_headers` and gzip. "On" is `theme.frame: l3` (link page, kit page) and `l1` (the `dark-hero` themed page); "off" is the same site without the key. The link and kit pages score SEO 91 in both states on the scratch site used, because its tab is titled "More" (`link-text` audit); that is the scratch site, not the feature.
 
@@ -117,3 +119,16 @@ Measured 2026-11-08, Lighthouse 13.6.0, Chromium headless, three runs per page a
 | Themed page (`dark-hero`) | 100/100/100/100 | 100/100/100/100 | 100/100/100/100 | 100/100/100/100 |
 
 One of three runs of the themed page with frames on read 97 (mobile) and 87 (desktop) performance with a Total Blocking Time of 187 ms while the machine was busy; the medians are 100. The frame stylesheet is about 6 KB (under 2 KB gzipped) and is only linked when the feature is on.
+
+### Frames everywhere (#448)
+
+Measured 2026-11-09, Lighthouse 12.8.2, headless Chromium, three runs per page and strategy, median, `nice 19`, one browser at a time, served over HTTP with gzip and the build's own `_headers` (the CSP). The scratch site is the example instance plus the crypto, email and platforms example tabs, a profile card and a gated media kit, with the scratch "More" tab renamed (that tab title was the 91 SEO of the first measurement) and page-view analytics off (its beacon has no endpoint on a static server, which cost Best Practices 4 points in both states). "On" is `theme.frame: l3` with `frame_l3_max: 4`; "motion" adds `frame_motion: live`; the themed page uses the `light-clean` theme.
+
+| Page | Mobile off | Mobile on | Desktop off | Desktop on |
+| --- | --- | --- | --- | --- |
+| Link page | 100/100/100/100 | 100/100/100/100 | 100/100/100/100 | 100/100/100/100 |
+| Link page, light show on | n/a | 100/100/100/100 | n/a | 100/100/100/100 |
+| Media kit | 100/100/100/100 | 100/100/100/100 | 100/100/100/100 | 100/100/100/100 |
+| Themed page (`light-clean`) | 100/100/100/100 | 100/100/100/100 | 100/100/100/100 | 100/100/100/100 |
+
+Total Blocking Time and Cumulative Layout Shift read 0 in every run and median, except the light show on mobile (median TBT 11 ms, still 100 performance). With the frames on, the link page is about 80 bytes of gzip larger and the frame stylesheet is about 13 KB (about 3.4 KB gzipped) plus two small SVG files (about 1.1 KB and 0.7 KB), all linked and published only when the feature is on. The artwork loads as a border image and the light show animates color of paint layers only, so neither moves anything or changes the Largest Contentful Paint element.

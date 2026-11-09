@@ -57,7 +57,9 @@ def base_url(tmp_path_factory: pytest.TempPathFactory) -> Iterator[str]:
     for name, theme in VARIANTS.items():
         raw = yaml.safe_load(EXAMPLE.read_text())
         raw["profile_card"] = CARD
-        raw["theme"] = {**raw.get("theme", {}), **theme}
+        # These tests pin the plain card; the border frame (the example sets
+        # one) has its own contrast test in test_frames.py.
+        raw["theme"] = {**raw.get("theme", {}), **theme, "frame": "none"}
         config_path = work / f"{name}.yaml"
         config_path.write_text(yaml.safe_dump(raw))
         build_site(
