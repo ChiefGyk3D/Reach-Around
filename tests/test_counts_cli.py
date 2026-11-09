@@ -33,7 +33,7 @@ numbers:
     - {platform: bluesky, kind: bluesky, actor: example.bsky.social}
     - {platform: github, kind: github, user: some-user}
     - {platform: youtube, kind: youtube, channel_id: UCabcdefghijklmnopqrstuv,
-       api_key_env: YT_KEY}
+       api_key_env: YOUTUBE_API_KEY}
     - {platform: twitch, kind: twitch, login: some_user}
 """
 BSKY = "https://public.api.bsky.app/"
@@ -63,7 +63,7 @@ def good_routes() -> dict[str, RawResponse]:
 @pytest.fixture
 def setup(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     (tmp_path / "site.yaml").write_text(CONFIG, encoding="utf-8")
-    monkeypatch.setenv("YT_KEY", KEY)
+    monkeypatch.setenv("YOUTUBE_API_KEY", KEY)
     monkeypatch.setenv("TWITCH_CLIENT_ID", "SENTINEL-CLIENT-ID")
     monkeypatch.setenv("TWITCH_CLIENT_SECRET", "SENTINEL-CLIENT-SECRET")
     monkeypatch.setattr(counts_cmd, "default_sleep", lambda seconds: None)
@@ -113,7 +113,7 @@ def test_as_of_is_the_injected_run_time(setup: Path) -> None:
         None,
         None,
         False,
-        env={"YT_KEY": KEY},
+        env={"YOUTUBE_API_KEY": KEY},
         transport=transport,
         now=lambda: NOW,
     )

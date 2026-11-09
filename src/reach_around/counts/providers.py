@@ -11,10 +11,14 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
+from typing import Any
 from urllib.parse import quote, urlencode, urlsplit
 
 from reach_around.config.blocks import MAX_COUNT
 from reach_around.config.numbers_sources import (
+    CLIENT_ID_ENV,
+    CLIENT_SECRET_ENV,
+    YOUTUBE_KEY_ENV,
     BlueskySource,
     DiscordSource,
     GithubSource,
@@ -122,6 +126,34 @@ def _secret(env: Mapping[str, str], name: str) -> str:
     return value
 
 
+_YOUTUBE_HOSTS = frozenset({"www.googleapis.com"})
+_TWITCH_HOSTS = frozenset({"id.twitch.tv", "api.twitch.tv"})
+
+
+def _guarded_fetch(
+    ctx: Context, url: str, hosts: frozenset[str], **kwargs: Any
+) -> dict[str, object]:
+    """Fetch for a call that carries a credential.
+
+    The URL must be https on one of the fixed ``hosts`` with no port; redirects
+    are refused; ``FetchError`` (fixed words only) passes through; any other
+    exception becomes the fixed word ``fetch_failed`` with no cause kept, so no
+    header, URL or body text can reach a log or an error."""
+    parts = urlsplit(url)
+    if parts.scheme != "https" or parts.hostname not in hosts or parts.port:
+        raise SourceError("bad_host")
+    failed = False
+    try:
+        return ctx.fetch(url, follow_redirects=False, **kwargs)
+    except FetchError:
+        raise
+    except Exception:
+        failed = True
+    if failed:
+        raise SourceError("fetch_failed")
+    raise SourceError("fetch_failed")  # unreachable
+
+
 def _object(payload: Mapping[str, object], key: str) -> Mapping[str, object]:
     value = payload.get(key)
     if not isinstance(value, dict):
@@ -225,12 +257,16 @@ def matrix(source: MatrixSource, ctx: Context) -> int:
 
 
 def youtube(source: YoutubeSource, ctx: Context) -> int:
-    key = _secret(ctx.env, source.api_key_env)
+    # use-time name and type check, before the environment is read
+    name = source.api_key_env
+    if type(name) is not str or name != YOUTUBE_KEY_ENV:
+        raise SourceError("bad_credential_name")
+    key = _secret(ctx.env, YOUTUBE_KEY_ENV)
     url = "https://www.googleapis.com/youtube/v3/channels?" + urlencode(
         {"part": "statistics", "id": source.channel_id}
     )
     # the key travels in a header, never in the URL
-    payload = ctx.fetch(url, headers={"x-goog-api-key": key})
+    payload = _guarded_fetch(ctx, url, _YOUTUBE_HOSTS, headers={"x-goog-api-key": key})
     stats = _object(_first(payload, "items"), "statistics")
     if stats.get("hiddenSubscriberCount") is True:
         raise SourceSkip(SKIP_HIDDEN)
