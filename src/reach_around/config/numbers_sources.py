@@ -9,6 +9,7 @@ store); the variable name is validated, the value is read only at fetch time.
 from __future__ import annotations
 
 import re
+from datetime import date
 from typing import Annotated, Literal
 
 from pydantic import (
@@ -37,6 +38,9 @@ _INVITE = re.compile(r"^[A-Za-z0-9-]{2,32}$")
 _ALIAS = re.compile(r"^#[A-Za-z0-9._=/+-]{1,100}:([A-Za-z0-9.-]{3,253})$")
 _CHANNEL_ID = re.compile(r"^UC[A-Za-z0-9_-]{22}$")
 _TWITCH_LOGIN = re.compile(r"^[A-Za-z0-9_]{3,25}$")
+
+_THREADS_USER_ID = re.compile(r"^[0-9]{1,24}$")
+_ISO_DAY = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 Platform = Annotated[str, StringConstraints(pattern=_SLUG)]
 EnvName = Annotated[str, StringConstraints(pattern=_ENV_NAME)]
@@ -162,6 +166,48 @@ class TwitchSource(_Source):
         return self
 
 
+class _MetaSource(_Source):
+    """Shared shape of the Instagram and Threads follower sources.
+
+    ``access_token_env`` is the NAME of the environment variable that holds the
+    long-lived user token; the value is never in the config. ``token_expires`` is
+    the non-secret day the token expires (the owner records it; about 60 days
+    after issue or last refresh). ``refresh_within_days`` is how close to that
+    day a run refreshes the token once.
+    """
+
+    access_token_env: EnvName
+    token_expires: date | None = None
+    refresh_within_days: Annotated[int, Field(strict=True, ge=1, le=59)] = 10
+
+    @field_validator("token_expires", mode="before")
+    @classmethod
+    def _expires_day(cls, value: object) -> object:
+        if value is None or type(value) is date:
+            return value
+        if isinstance(value, str) and _ISO_DAY.match(value):
+            return value
+        raise ValueError("token_expires must be a date written YYYY-MM-DD")
+
+
+class InstagramSource(_MetaSource):
+    kind: Literal["instagram"]
+
+
+class ThreadsSource(_MetaSource):
+    kind: Literal["threads"]
+    # Threads user id (digits). Optional: the path segment ``me`` is used when
+    # it is left out (INFERRED to be accepted; see docs/instagram-threads-sources.md).
+    user_id: str | None = None
+
+    @field_validator("user_id")
+    @classmethod
+    def _user_id(cls, value: str | None) -> str | None:
+        if value is not None and not _THREADS_USER_ID.match(value):
+            raise ValueError("user_id must be the numeric Threads user id")
+        return value
+
+
 Source = Annotated[
     BlueskySource
     | MastodonSource
@@ -169,7 +215,9 @@ Source = Annotated[
     | DiscordSource
     | MatrixSource
     | YoutubeSource
-    | TwitchSource,
+    | TwitchSource
+    | InstagramSource
+    | ThreadsSource,
     Field(discriminator="kind"),
 ]
 

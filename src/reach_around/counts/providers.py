@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from datetime import UTC, date, datetime
 from urllib.parse import quote, urlencode, urlsplit
 
 from reach_around.config.blocks import MAX_COUNT
@@ -17,10 +18,18 @@ from reach_around.config.numbers_sources import (
     BlueskySource,
     DiscordSource,
     GithubSource,
+    InstagramSource,
     MastodonSource,
     MatrixSource,
+    ThreadsSource,
     TwitchSource,
     YoutubeSource,
+)
+from reach_around.counts.meta_user import (
+    MetaError,
+    MetaTokenSink,
+    follower_total,
+    token_configured,
 )
 from reach_around.net.egress import EgressBlocked, validate_hostname
 from reach_around.net.fetch import FetchError
@@ -28,6 +37,7 @@ from reach_around.net.fetch import FetchError
 # kind -> status word when a fetch is intentionally skipped (exit code 0)
 SKIP_USER_AUTH = "needs_user_token"
 SKIP_HIDDEN = "hidden_subscriber_count"
+SKIP_TOKEN_NOT_SET = "token_not_set"  # noqa: S105
 
 Fetch = Callable[..., dict[str, object]]
 
@@ -52,6 +62,8 @@ class SourceError(Exception):
 class Context:
     fetch: Fetch
     env: Mapping[str, str]
+    meta_sink: MetaTokenSink | None = None
+    today: date | None = None
 
 
 def _check_count(value: object) -> int:
@@ -247,6 +259,27 @@ def twitch(source: TwitchSource, ctx: Context) -> int:
     return _count(followers, "total")
 
 
+def _meta(source: InstagramSource | ThreadsSource, ctx: Context) -> int:
+    """Instagram and Threads: the API when the token variable holds a value,
+    otherwise a skip (the number stays hand-kept; see the docs)."""
+    if not token_configured(source, ctx.env):
+        raise SourceSkip(SKIP_TOKEN_NOT_SET)
+    today = ctx.today if ctx.today is not None else datetime.now(UTC).date()
+    try:
+        total = follower_total(source, ctx.env, ctx.fetch, ctx.meta_sink, today)
+    except MetaError as err:
+        raise SourceError(err.kind) from None
+    return _check_count(total)
+
+
+def instagram(source: InstagramSource, ctx: Context) -> int:
+    return _meta(source, ctx)
+
+
+def threads(source: ThreadsSource, ctx: Context) -> int:
+    return _meta(source, ctx)
+
+
 PROVIDERS: dict[str, Callable[..., int]] = {
     "bluesky": bluesky,
     "mastodon": mastodon,
@@ -255,4 +288,6 @@ PROVIDERS: dict[str, Callable[..., int]] = {
     "matrix": matrix,
     "youtube": youtube,
     "twitch": twitch,
+    "instagram": instagram,
+    "threads": threads,
 }
