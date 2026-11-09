@@ -6,6 +6,7 @@
 // secret is ever part of it.
 
 import type { VisitorEmailMode } from "./format";
+import { validateHostShape } from "./validate";
 import { CHANNEL_IDS, EVENT_KINDS, type AlertEventKind, type ChannelId } from "./types";
 
 export interface AlertsConfig {
@@ -14,11 +15,14 @@ export interface AlertsConfig {
   visitorEmail: VisitorEmailMode;
   /** Alerts one channel may send per minute before the rest are held back. */
   maxPerMinute: number;
+  /** Exact homeserver host names the owner allows the Matrix token to be sent to. */
+  matrixAllowedHosts: readonly string[];
 }
 
 export const DEFAULT_MAX_PER_MINUTE = 5;
 export const MAX_PER_MINUTE_CEILING = 30;
-const KEYS = new Set(["channels", "events", "visitor_email", "max_per_minute"]);
+const KEYS = new Set(["channels", "events", "visitor_email", "max_per_minute", "matrix"]);
+export const MAX_ALLOWED_HOSTS = 4;
 
 function closedList<T extends string>(v: unknown, allowed: readonly T[]): Set<T> | null {
   if (!Array.isArray(v) || v.length > allowed.length) return null;
@@ -49,5 +53,20 @@ export function parseAlertsConfig(raw: unknown): AlertsConfig | null {
   if (ve !== "full" && ve !== "masked" && ve !== "none") return null;
   const mpm = o.max_per_minute ?? DEFAULT_MAX_PER_MINUTE;
   if (typeof mpm !== "number" || !Number.isInteger(mpm) || mpm < 1 || mpm > MAX_PER_MINUTE_CEILING) return null;
-  return { channels, events, visitorEmail: ve, maxPerMinute: mpm };
+  const hosts: string[] = [];
+  const mx = o.matrix;
+  if (mx !== undefined) {
+    if (typeof mx !== "object" || mx === null || Array.isArray(mx)) return null;
+    const mo = mx as Record<string, unknown>;
+    if (Object.keys(mo).some((k) => k !== "allowed_hosts")) return null;
+    const list = mo.allowed_hosts ?? [];
+    if (!Array.isArray(list) || list.length > MAX_ALLOWED_HOSTS) return null;
+    for (const h of list) {
+      // Stored as written; a host that fails the shape rules or is not already lowercase voids the config.
+      const ok = typeof h === "string" && h === h.toLowerCase() ? validateHostShape(h) : null;
+      if (ok === null) return null;
+      if (!hosts.includes(ok)) hosts.push(ok);
+    }
+  }
+  return { channels, events, visitorEmail: ve, maxPerMinute: mpm, matrixAllowedHosts: hosts };
 }

@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { env as testEnv } from "cloudflare:workers";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { parseAlertsConfig } from "../../src/alerts/config";
 import { createDispatcher, MAX_PAYLOAD_BYTES, scheduleAlert, type AlertsEnv } from "../../src/alerts/dispatcher";
 import { createEmailChannel, disabledEmailProvider } from "../../src/alerts/email";
@@ -11,10 +12,13 @@ import { validateDiscordWebhook, validateHomeserver, validateRoomId } from "../.
 const HOOK_TOKEN = "SECRETtokenSECRETtokenSECRET0123456789";
 const DISCORD = `https://discord.com/api/webhooks/123456789012345678/${HOOK_TOKEN}`;
 const MX_TOKEN = "syt_MATRIXSECRET_0123456789";
+const ALLOW = ["matrix.example.org"];
+const MX = { allowed_hosts: ["matrix.example.org"] };
 const BASE: AlertsEnv = {
-  ALERTS_CONFIG: JSON.stringify({ channels: ["discord", "matrix"], events: ["kit_unlocked", "lead_captured", "gate_failed_repeatedly"] }),
+  DB: testEnv.DB,
+  ALERTS_CONFIG: JSON.stringify({ channels: ["discord", "matrix"], events: ["kit_unlocked", "lead_captured", "gate_failed_repeatedly"], matrix: MX }),
   ALERT_DISCORD_WEBHOOK: DISCORD,
-  ALERT_MATRIX_HOMESERVER: "https://matrix.example.org",
+  ALERT_MATRIX_SERVER: "https://matrix.example.org",
   ALERT_MATRIX_ROOM_ID: "!room123:example.org",
   ALERT_MATRIX_ACCESS_TOKEN: MX_TOKEN,
 };
@@ -31,6 +35,11 @@ function mockFetch(handler: (url: string) => Response | Promise<Response> | neve
   return { fn: fn as unknown as typeof fetch, calls };
 }
 
+const cfgMatrix = JSON.stringify({ channels: ["matrix"], events: ["kit_unlocked"], matrix: MX });
+
+beforeEach(async () => {
+  await testEnv.DB.batch([testEnv.DB.prepare("DELETE FROM alert_quota"), testEnv.DB.prepare("DELETE FROM alert_dedup")]);
+});
 afterEach(() => vi.restoreAllMocks());
 
 /** True when the text holds a control, bidi, zero-width or separator character. */
@@ -68,7 +77,7 @@ describe("config (default off, fail closed)", () => {
   it("counts an enabled channel that has no valid binding as unconfigured and sends nothing there", async () => {
     const m = mockFetch();
     const d = createDispatcher();
-    await d.notify({ ALERTS_CONFIG: BASE.ALERTS_CONFIG }, unlock(), { fetchFn: m.fn, nowMs: T0 });
+    await d.notify({ DB: testEnv.DB, ALERTS_CONFIG: BASE.ALERTS_CONFIG }, unlock(), { fetchFn: m.fn, nowMs: T0 });
     expect(m.calls).toHaveLength(0);
     expect(d.status().unconfigured).toBe(2);
   });
@@ -87,7 +96,7 @@ describe("Discord adapter", () => {
     const body = JSON.parse(String(init.body));
     expect(body.allowed_mentions).toEqual({ parse: [] });
     expect(body.content).toContain("2026-11-09 14:03 UTC");
-    expect(body.content).toContain("partner(at)example.com");
+    expect(body.content).toContain("partner(at)example(dot)com");
     expect(d.status().channels.discord?.sent).toBe(1);
   });
 });
@@ -96,7 +105,7 @@ describe("Matrix adapter", () => {
   it("PUTs an m.room.message with a transaction id, bearer token, plain body", async () => {
     const m = mockFetch(() => new Response("{}", { status: 200 }));
     const d = createDispatcher();
-    await d.notify({ ...BASE, ALERTS_CONFIG: '{"channels":["matrix"],"events":["kit_unlocked"]}' }, unlock(), { fetchFn: m.fn, nowMs: T0 });
+    await d.notify({ ...BASE, ALERTS_CONFIG: cfgMatrix }, unlock(), { fetchFn: m.fn, nowMs: T0 });
     const { url, init } = m.calls[0]!;
     expect(url).toMatch(/^https:\/\/matrix\.example\.org\/_matrix\/client\/v3\/rooms\/!room123%3Aexample\.org\/send\/m\.room\.message\/[0-9a-f]{32}$/);
     expect(init.method).toBe("PUT");
@@ -105,12 +114,12 @@ describe("Matrix adapter", () => {
     const body = JSON.parse(String(init.body));
     expect(body.msgtype).toBe("m.text");
     expect(body).not.toHaveProperty("formatted_body");
-    expect(body.body).toContain("partner(at)example.com");
+    expect(body.body).toContain("partner(at)example(dot)com");
   });
   it("uses a new transaction id for each send", async () => {
     const m = mockFetch();
     const d = createDispatcher();
-    const env = { ...BASE, ALERTS_CONFIG: '{"channels":["matrix"],"events":["kit_unlocked"]}' };
+    const env = { ...BASE, ALERTS_CONFIG: cfgMatrix };
     await d.notify(env, unlock("a@example.com"), { fetchFn: m.fn, nowMs: T0 });
     await d.notify(env, unlock("b@example.com"), { fetchFn: m.fn, nowMs: T0 });
     expect(new Set(m.calls.map((c) => c.url)).size).toBe(2);
@@ -122,7 +131,7 @@ describe("email", () => {
     const m = mockFetch();
     const d = createDispatcher();
     await d.notify(
-      { ALERTS_CONFIG: '{"channels":["email"],"events":["kit_unlocked"]}', ALERT_EMAIL_TO: "owner@example.com", ALERT_EMAIL_PROVIDER: "none" },
+      { DB: testEnv.DB, ALERTS_CONFIG: '{"channels":["email"],"events":["kit_unlocked"]}', ALERT_EMAIL_TO: "owner@example.com", ALERT_EMAIL_PROVIDER: "none" },
       unlock(), { fetchFn: m.fn, nowMs: T0 });
     expect(m.calls).toHaveLength(0);
     expect(d.status().unconfigured).toBe(1);
@@ -138,7 +147,7 @@ describe("email", () => {
   it("an own-property lookup: __proto__ and constructor are not providers", async () => {
     const d = createDispatcher();
     for (const p of ["__proto__", "constructor", "toString"]) {
-      await d.notify({ ALERTS_CONFIG: '{"channels":["email"],"events":["kit_unlocked"]}', ALERT_EMAIL_TO: "o@example.com", ALERT_EMAIL_PROVIDER: p },
+      await d.notify({ DB: testEnv.DB, ALERTS_CONFIG: '{"channels":["email"],"events":["kit_unlocked"]}', ALERT_EMAIL_TO: "o@example.com", ALERT_EMAIL_PROVIDER: p },
         unlock(p + "@example.com"), { fetchFn: mockFetch().fn, nowMs: T0 });
     }
     expect(d.status().unconfigured).toBe(3);
@@ -251,9 +260,9 @@ describe("redaction and neutralization", () => {
     }
   });
   it("shows the address per visitor_email: full, masked, none", () => {
-    expect(formatAlert(unlock(), "full", "plain").text).toContain("partner(at)example.com");
+    expect(formatAlert(unlock(), "full", "plain").text).toContain("partner(at)example(dot)com");
     const masked = formatAlert(unlock(), "masked", "plain").text;
-    expect(masked).toContain("p***(at)example.com");
+    expect(masked).toContain("p***(at)example(dot)com");
     expect(masked).not.toContain("partner");
     const none = formatAlert(unlock(), "none", "plain").text;
     expect(none).toContain("a visitor");
@@ -284,14 +293,14 @@ describe("redaction and neutralization", () => {
 });
 
 describe("rate limit and dedup", () => {
-  const env = { ...BASE, ALERTS_CONFIG: '{"channels":["discord"],"events":["kit_unlocked"],"max_per_minute":3}' };
+  const env = { ...BASE, DAILY_ALERT_BUDGET: "1000", ALERTS_CONFIG: '{"channels":["discord"],"events":["kit_unlocked"],"max_per_minute":3}' };
   it("sends at most N per minute per channel, then one notice, then holds the rest", async () => {
     const m = mockFetch();
     const d = createDispatcher();
     for (let i = 0; i < 50; i++) await d.notify(env, unlock(`u${i}@example.com`), { fetchFn: m.fn, nowMs: T0 + i });
-    expect(m.calls).toHaveLength(4); // 3 alerts + 1 notice
-    expect(String(m.calls[3]!.init.body)).toContain("held back");
-    expect(d.status().channels.discord?.suppressed).toBe(47);
+    expect(m.calls).toHaveLength(3); // 2 alerts + the notice, which counts inside the limit
+    expect(String(m.calls[2]!.init.body)).toContain("held back");
+    expect(d.status().channels.discord?.suppressed).toBe(48);
   });
   it("the next window carries a summary of what was held back", async () => {
     const m = mockFetch();
@@ -299,12 +308,12 @@ describe("rate limit and dedup", () => {
     for (let i = 0; i < 10; i++) await d.notify(env, unlock(`u${i}@example.com`), { fetchFn: m.fn, nowMs: T0 + i });
     await d.notify(env, unlock("later@example.com"), { fetchFn: m.fn, nowMs: T0 + 61_000 });
     const last = String(m.calls[m.calls.length - 1]!.init.body);
-    expect(last).toContain("7 earlier alerts were held back");
+    expect(last).toContain("8 earlier alerts were held back");
   });
   it("limits each channel on its own", async () => {
     const m = mockFetch();
     const d = createDispatcher();
-    const both = { ...BASE, ALERTS_CONFIG: '{"channels":["discord","matrix"],"events":["kit_unlocked"],"max_per_minute":1}' };
+    const both = { ...BASE, ALERTS_CONFIG: JSON.stringify({ channels: ["discord", "matrix"], events: ["kit_unlocked"], max_per_minute: 1, matrix: MX }) };
     await d.notify(both, unlock("a@example.com"), { fetchFn: m.fn, nowMs: T0 });
     expect(m.calls).toHaveLength(2);
   });
@@ -339,8 +348,8 @@ describe("destination (SSRF) rules", () => {
     ]) expect(validateDiscordWebhook(bad)).toBeNull();
   });
   it("accepts a public https Matrix homeserver name only", () => {
-    expect(validateHomeserver("https://matrix.example.org")).toBe("matrix.example.org");
-    expect(validateHomeserver("https://Matrix.Example.org/")).toBe("matrix.example.org");
+    expect(validateHomeserver("https://matrix.example.org", ALLOW)).toBe("matrix.example.org");
+    expect(validateHomeserver("https://Matrix.Example.org/", ALLOW)).toBe("matrix.example.org");
     for (const bad of [
       "http://matrix.example.org", "https://127.0.0.1", "https://10.0.0.5", "https://192.168.1.1", "https://169.254.169.254",
       "https://[::1]", "https://[fe80::1]", "https://2130706433", "https://0x7f.1", "https://0177.0.0.1", "https://localhost",
@@ -348,7 +357,7 @@ describe("destination (SSRF) rules", () => {
       "https://matrix.example.org:8448", "https://matrix.example.org/path", "https://matrix.example.org?x=1",
       "https://user@matrix.example.org", "https://matrix.example.org.", "https://-bad.example.org", "https://exa mple.org",
       "https://matrix.example.org\\@evil.example.net", "", undefined, 7,
-    ]) expect(validateHomeserver(bad)).toBeNull();
+    ]) expect(validateHomeserver(bad, ["matrix.example.org", "nas", "localhost"])).toBeNull();
   });
   it("accepts a room id of the right shape", () => {
     expect(validateRoomId("!abc:example.org")).not.toBeNull();
@@ -357,7 +366,7 @@ describe("destination (SSRF) rules", () => {
   it("a channel with a bad destination is not configured and no request is made", async () => {
     const m = mockFetch();
     const d = createDispatcher();
-    await d.notify({ ...BASE, ALERT_DISCORD_WEBHOOK: "https://evil.example.net/x", ALERT_MATRIX_HOMESERVER: "https://127.0.0.1" }, unlock(), { fetchFn: m.fn, nowMs: T0 });
+    await d.notify({ ...BASE, ALERT_DISCORD_WEBHOOK: "https://evil.example.net/x", ALERT_MATRIX_SERVER: "https://127.0.0.1" }, unlock(), { fetchFn: m.fn, nowMs: T0 });
     expect(m.calls).toHaveLength(0);
     expect(d.status().unconfigured).toBe(2);
   });

@@ -61,8 +61,11 @@ export function neutralize(input: unknown, max: number = MAX_FIELD_CHARS, mode: 
   s = s.replace(/@/g, "(at)");
   // Angle brackets carry <@id>, <#id>, <:emoji:> and autolinks. Replace, do not escape.
   s = s.replace(/[<>]/g, " ");
-  // Defang links: a scheme separator no longer forms a URL.
-  s = s.replace(/:\/\//g, " ");
+  // Defang links. A URI scheme ("http:", "mailto:", "javascript:", "tel:") loses its colon, a dot between
+  // alphanumerics (a host name, "www.example", an IP address) becomes "(dot)", so no client linkifies it.
+  s = s.replace(/([A-Za-z][A-Za-z0-9+.-]*):/g, "$1 ");
+  s = s.replace(/([A-Za-z0-9])\.(?=[A-Za-z0-9])/g, "$1(dot)");
+  s = s.replace(/:\/\//g, " ").replace(/\/\//g, "/ /");
   if (mode === "markdown") s = s.replace(MARKDOWN, (c) => `\\${c}`);
   if (s.length > max) {
     s = s.slice(0, max);

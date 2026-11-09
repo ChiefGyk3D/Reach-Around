@@ -23,8 +23,12 @@ function maskEmail(email: string): string {
   return `${email[0]}***${email.slice(at)}`;
 }
 
+// Only a normalized address is shown (lowercase ASCII, the gate's grammar in short form). Anything else,
+// including free text that merely contains an "@", is shown as "a visitor".
+const EMAIL_RE = /^[a-z0-9_+-]+(?:\.[a-z0-9_+-]+)*@(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/;
+
 function who(email: unknown, mode: VisitorEmailMode, text: TextMode): string {
-  if (mode === "none" || typeof email !== "string") return "a visitor";
+  if (mode === "none" || typeof email !== "string" || email.length > 254 || !EMAIL_RE.test(email)) return "a visitor";
   const shown = mode === "masked" ? maskEmail(email) : email;
   const clean = neutralize(shown, MAX_FIELD_CHARS, text);
   return clean === "" ? "a visitor" : clean;

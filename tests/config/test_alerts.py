@@ -32,11 +32,11 @@ def test_channels_without_events_is_off() -> None:
 
 
 def test_worker_value_is_the_json_the_worker_parses() -> None:
-    a = Alerts(channels=["discord", "matrix"], events=["kit_unlocked"])
+    a = Alerts(channels=["discord", "email"], events=["kit_unlocked"])
     v = worker_value(a)
     assert v is not None
     assert json.loads(v) == {
-        "channels": ["discord", "matrix"],
+        "channels": ["discord", "email"],
         "events": ["kit_unlocked"],
         "visitor_email": "full",
         "max_per_minute": DEFAULT_MAX_PER_MINUTE,
@@ -59,6 +59,62 @@ def test_worker_value_is_the_json_the_worker_parses() -> None:
 def test_bad_values_are_refused(bad: dict[str, object]) -> None:
     with pytest.raises(ValidationError):
         Alerts(**bad)  # type: ignore[arg-type]
+
+
+def test_matrix_needs_an_exact_allowed_host() -> None:
+    with pytest.raises(ValidationError):
+        Alerts(channels=["matrix"], events=["kit_unlocked"])
+    a = Alerts(
+        channels=["matrix"],
+        events=["kit_unlocked"],
+        matrix={"allowed_hosts": ["matrix.example.org"]},  # type: ignore[arg-type]
+    )
+    v = worker_value(a)
+    assert v is not None
+    assert json.loads(v)["matrix"] == {"allowed_hosts": ["matrix.example.org"]}
+
+
+@pytest.mark.parametrize(
+    "host",
+    [
+        "Matrix.Example.org",
+        "127.0.0.1",
+        "127.0.0.1.nip.io",
+        "10-0-0-1.example.org",
+        "7f000001.example.org",
+        "x.sslip.io",
+        "host.local",
+        "localhost",
+        "https://matrix.example.org",
+        "matrix.example.org:8448",
+        "nas",
+    ],
+)
+def test_bad_allowed_hosts_are_refused(host: str) -> None:
+    with pytest.raises(ValidationError):
+        Alerts(matrix={"allowed_hosts": [host]})  # type: ignore[arg-type]
+
+
+def test_too_many_or_repeated_hosts_are_refused() -> None:
+    many = [f"h{i}.example.org" for i in range(5)]
+    with pytest.raises(ValidationError):
+        Alerts(matrix={"allowed_hosts": many})  # type: ignore[arg-type]
+    with pytest.raises(ValidationError):
+        Alerts(matrix={"allowed_hosts": ["a.example.org", "a.example.org"]})  # type: ignore[arg-type]
+
+
+def test_host_denylists_match_the_worker() -> None:
+    from reach_around.config.alerts import PRIVATE_SUFFIXES, WILDCARD_DNS_SUFFIXES
+
+    src = (ROOT / "worker/src/alerts/validate.ts").read_text(encoding="utf-8")
+
+    def ts_list(name: str) -> set[str]:
+        m = re.search(name + r"[^=]*= \[(.*?)\];", src, re.S)
+        assert m
+        return set(re.findall(r'"([a-z0-9.-]+)"', m.group(1)))
+
+    assert ts_list("PRIVATE_SUFFIXES") == set(PRIVATE_SUFFIXES)
+    assert ts_list("WILDCARD_DNS_SUFFIXES") == set(WILDCARD_DNS_SUFFIXES)
 
 
 def test_the_lists_match_the_worker() -> None:

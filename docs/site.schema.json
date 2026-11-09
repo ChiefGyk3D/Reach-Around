@@ -30,6 +30,12 @@
           "title": "Events",
           "type": "array"
         },
+        "matrix": {
+          "$ref": "#/$defs/AlertsMatrix",
+          "default": {
+            "allowed_hosts": []
+          }
+        },
         "max_per_minute": {
           "default": 5,
           "maximum": 30,
@@ -49,6 +55,23 @@
         }
       },
       "title": "Alerts",
+      "type": "object"
+    },
+    "AlertsMatrix": {
+      "additionalProperties": false,
+      "description": "The Matrix homeservers the access token may be sent to (exact match).",
+      "properties": {
+        "allowed_hosts": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 4,
+          "title": "Allowed Hosts",
+          "type": "array"
+        }
+      },
+      "title": "AlertsMatrix",
       "type": "object"
     },
     "Analytics": {
@@ -2123,6 +2146,9 @@
       "default": {
         "channels": [],
         "events": [],
+        "matrix": {
+          "allowed_hosts": []
+        },
         "max_per_minute": 5,
         "visitor_email": "full"
       }

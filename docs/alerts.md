@@ -18,6 +18,8 @@ alerts:
   events: [kit_unlocked, lead_captured]  # also: gate_failed_repeatedly
   visitor_email: full                  # full, masked or none
   max_per_minute: 5                    # per channel, 1 to 30
+  matrix:
+    allowed_hosts: [matrix.example.org]  # required for the matrix channel
 ```
 
 The section only chooses. It holds no URL and no secret. The deploy gives the
@@ -35,7 +37,8 @@ binding names:
 | --- | --- | --- | --- |
 | Discord | `ALERT_DISCORD_WEBHOOK` | secret | The channel's incoming webhook URL |
 | Matrix | `ALERT_MATRIX_ACCESS_TOKEN` | secret | Access token of the account that posts |
-| Matrix | `ALERT_MATRIX_HOMESERVER` | variable | `https://` and a host name, nothing else |
+| Matrix | `ALERT_MATRIX_SERVER` | secret | `https://` and a host name, nothing else. It must also be in `alerts.matrix.allowed_hosts` |
+| Matrix | `ALERT_MATRIX_HOMESERVER` | variable | Deprecated plain-variable fallback, used only when `ALERT_MATRIX_SERVER` is unset; the same `allowed_hosts` rule applies |
 | Matrix | `ALERT_MATRIX_ROOM_ID` | variable | The room id (`!abc:example.org`), not an alias |
 | Email | `ALERT_EMAIL_TO`, `ALERT_EMAIL_PROVIDER` | variables | Not usable yet, see below |
 
@@ -47,9 +50,27 @@ sent with mentions turned off, so no text can ping anyone.
 
 **Matrix.** Use a dedicated account that is a member of a private room. The
 Worker sends one `m.room.message` (plain `m.text`, no HTML) with a fresh
-transaction id. The homeserver must be `https://` and a public DNS name: an IP
-address in any notation, `localhost`, a single label, or a private or reserved
-suffix (`.local`, `.internal`, `.lan`, `.home.arpa`, ...) is refused.
+transaction id. The homeserver and the access token are ONE unit: the server
+name decides where the token goes, so keep both in the secret manager
+(`ALERT_MATRIX_SERVER` next to `ALERT_MATRIX_ACCESS_TOKEN`) and list the host in
+`alerts.matrix.allowed_hosts`. The Worker sends the token only to a host that
+matches an entry there exactly (no subdomain or suffix match). Changing the host
+name therefore authorizes sending the token to the new host: treat a change to
+that list, or to the secret, as a change of who receives the token.
+
+The host must be `https://` and a public DNS name. These are refused even when
+listed: an IP address in any notation, a name that embeds one in any label
+(`127.0.0.1.example.org`, `10-0-0-1.example.org`, `7f000001.example.org`),
+`localhost`, a single label, a private or reserved suffix (`.local`, `.internal`,
+`.lan`, `.home.arpa`, ...), and the well-known wildcard-DNS services (`nip.io`,
+`sslip.io`, `xip.io`, `traefik.me`, `localtest.me`, `lvh.me` and similar).
+
+**Residual risk.** A Worker cannot pin DNS or inspect the address a name
+resolves to, so DNS rebinding cannot be fully excluded. A Worker also cannot
+reach a private network by itself, which limits what a hostile resolution can
+touch, but the token would still be sent to wherever the name points. Use a
+homeserver you control, on a domain you control, with DNSSEC if you can, and
+a token for a dedicated account that can only post to one room.
 
 **Email.** The provider interface and a disabled no-op ship, but no provider
 adapter does. Email is the next piece (a provider such as Mailgun is one
@@ -81,20 +102,37 @@ status counters in any mode.
 
 ### Hostile text
 
-Visitor text is length-capped, control and invisible characters (bidi
-overrides, zero-width, tags) are replaced by a space, `@` becomes `(at)`,
-`<` and `>` are removed, `://` is broken so no link forms, and for Discord the
-markdown characters are backslash-escaped. One message is always one line, and a
+Only a normalized address (lowercase ASCII) is rendered; anything else in
+that slot is shown as "a visitor". Visitor text is length-capped, control and
+invisible characters (bidi overrides, zero-width, tags) are replaced by a space,
+`@` becomes `(at)`, `<` and `>` are removed, every URI scheme loses its colon
+(`mailto:`, `tel:`, `javascript:`), a dot between letters or digits becomes
+`(dot)` so no host name, `www.` form or IP address becomes a link (an address
+reads `name(at)example(dot)com`), and for Discord the markdown characters are
+backslash-escaped. One message is always one line, and a
 hard cap applies to the message and to the request body.
 
 ## Limits and failures
 
-- Per channel, at most `max_per_minute` messages a minute. The first message
-  held back in a minute sends one notice, and the next minute's first message
-  says how many were held back. The window lives in the Worker isolate's memory,
-  so it is a flood brake per isolate, not an exact quota. The kit's daily
-  `DAILY_ALERT_BUDGET` stays the daily ceiling.
-- The same event for the same address inside 10 minutes is sent once.
+- The per-minute limit, the daily budget and the dedup live in the Worker's D1
+  database (migration `0011_alerts.sql`: `alert_quota` and `alert_dedup`), one
+  conditional statement each, so several isolates share them and cannot
+  overshoot. Apply the migration before enabling alerts; if the tables are
+  unusable the Worker sends nothing (fail closed) and counts it.
+- Per channel, at most `max_per_minute` messages a minute (a fixed UTC minute
+  window). The last slot of the minute carries one "more alerts are arriving"
+  notice instead of an alert, so the notice counts inside the limit; the next
+  minute's first message says how many were held back (that count is kept in
+  isolate memory, best effort). With `max_per_minute: 1` there is no notice.
+- The daily ceiling is the kit's `DAILY_ALERT_BUDGET` (default 20 alerts per UTC
+  day, all channels together). A refused alert is dropped and counted.
+- The same event for the same address inside 10 minutes is sent once. D1 holds
+  only a salted hash of the event (never the address) for those 10 minutes, at
+  most 500 rows; the table is pruned on every write.
+- An alert costs a handful of D1 writes (dedup, daily count, one per channel
+  that sends), about five, which the kit's worst-case write estimate
+  (`WRITES_PER_OP.alert`) still counts as one. At the default budget of 20 that
+  is about 100 writes a day.
 - A channel that fails or times out never blocks the others and never reaches
   the visitor. Alerts run after the response (`ctx.waitUntil`).
 - Failures are counted per channel by a closed class (`rejected` for 4xx,

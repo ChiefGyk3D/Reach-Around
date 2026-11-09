@@ -18,8 +18,13 @@ function newTxnId(): string {
   return Array.from(b, (x) => x.toString(16).padStart(2, "0")).join("");
 }
 
-export function createMatrixChannel(homeserver: unknown, roomId: unknown, accessToken: unknown): Channel | null {
-  const host = validateHomeserver(homeserver);
+export function createMatrixChannel(
+  homeserver: unknown,
+  roomId: unknown,
+  accessToken: unknown,
+  allowedHosts: readonly string[],
+): Channel | null {
+  const host = validateHomeserver(homeserver, allowedHosts);
   const room = validateRoomId(roomId);
   const token = validateToken(accessToken);
   if (host === null || room === null || token === null) return null;
