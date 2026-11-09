@@ -242,7 +242,7 @@ that one site rather than the whole collector):
 - `mode`: `beacon` or `edge`. `pages`: an id list (beacon) or the literal
   `html-200` (edge: any path the origin served as a successful HTML page).
 - Per-site `sources`: a closed list (at most 40 labels, `^[a-z0-9-]{1,30}$`,
-  `other` reserved) of labels carried in the `s` parameter, so a bio link can
+  `other` and `direct` reserved) of labels carried in the `s` parameter, so a bio link can
   be attributed without storing anything. Precedence: `s`, then `utm_source`,
   then the referrer host, then direct. A label not on the list is stored as
   `other` and its text is dropped at once; a site with no `sources` never
@@ -407,13 +407,79 @@ site the same way the view route does:
   fixed `other`, and stores nothing for a missing, repeated or malformed value.
   What is collected: one label from a closed list per click. What is not: no
   cookie, no stored id, no referrer text, no join between a click and a view or a
-  person; a click row holds a source or a country, never both (no
+  person; a raw click row carries at most a source label and never a country (country lives only in the aggregate counter, section 6.2; no
   source-by-country pair); a click on a page opened without the label reads as no source. Raw
   click times are rounded down to the hour (as views are). The aggregate is a
-  report-side count of `source -> link`; the rollup tables, caps and seal for
-  it are #331.
+  count of `source -> link`, kept as a marginal counter (section 6.2).
 - `click_events` gets `site` in the migration (3.5). The funnel joins clicks to
   views on `(site, day, page)` through each site's link-to-page map.
+
+### 6.2 Funnel counters (migration 0011, #331 and #409)
+
+Owner decision (2026-11-08): the report is views, clicks and click rate; no
+unique or returning visitors, no cookie, no stored identifier; marginal pairs
+only, each with the floor, never a three-way cell. Two counters, incremented by
+the click route in the same batch as the raw row:
+
+| Table | Key | Value |
+|---|---|---|
+| `click_src_daily` | site, UTC day, link, source label (`direct` when none, `other` for an unlisted label) | clicks |
+| `click_country_daily` | site, UTC day, link, country (`ZZ` unknown or folded) | clicks |
+
+Country by link is its own counter because a raw click row holds a source or a
+country, so country is kept only in the counter: it covers every click, and the raw row (the owner-run cleanup script clears the old column, the Worker writes NULL) cannot be differenced against it.
+The source counter is kept only for a site that lists `sources` (`direct` and
+`other` are therefore reserved labels). No timestamp finer than a day, no
+identifier, no address, no pair of source and country.
+
+- **Row bounds and abuse limits.** Per (site, day): a general pool of 110 source
+  cells and 160 country cells, 2 reserved cells per destination (and one
+  `direct` source cell per destination, always), and an hourly slice of the
+  new-cell budget (150 NEW CELLS per UTC hour in `click_budget`; clicks on
+  existing cells never use it) so flooding in one hour cannot stop new cells for
+  the rest of the day, and a flood of clicks cannot exhaust it. Anything past them goes into ONE overflow row per (site, day)
+  (`overflow-all`, with `other` or `ZZ`), so a day holds at most the pool plus
+  3 cells per destination plus one row. Counting never stops: existing cells and
+  the overflow row keep adding. The first overflow records the day in
+  `click_capacity` (the hour it began and a counter of the clicks folded into
+  overflow, each click once, even if it overflowed on both axes). The report
+  carries only a coarse status (none, exhausted for any folding, over_5_percent)
+  and a warning code; public traffic never vetoes a release. Exact figures are for the
+  operator's terminal only (`--diagnostics`). A destination flooded with fake labels cannot take another
+  destination's reserved cells. The monthly tables fold the same way and the
+  month log keeps the count of marked days and of folded clicks.
+- **Threat model for release integrity.** The cell report is run by the owner on
+  his own machine over his own private data; he is a trusted operator. The release
+  ledger, its head file, the input digest and the completeness evidence stop
+  accidents (overlapping or repeated releases, partial exports, a lost or restored
+  ledger), not an operator who edits his own files or a hostile in-process caller.
+  The adversary that is in scope is a public visitor (poisoned cells, flooded
+  counters, shaped labels), which the remainder rule, the pools, the hourly slices
+  and the capacity marker address.
+- **Counter failures.** The raw click row and the counters are written
+  separately: a missing table or a failed counter write never drops the raw
+  click, and a failure only adds one to the number at `view_meta` key
+  `click_counter_err` (no content).
+- **Deploy order.** Apply 0011, deploy the counter-writing Worker, check that
+  `click_country_daily` gains rows, THEN run `scripts/clear-click-country.sh
+  DATABASE` (a dry run by default; `--apply` clears the country on old raw rows;
+  it refuses while the counters are empty or stale; not reversible). It is a
+  script, not a migration, because a migration would run before the Worker is
+  counting and silently do nothing.
+- **Seal.** The hourly job seals every closed (site, day), quiet days included, two
+  hours after it closes (`click_seal`; at most 31 days per site per run), for every
+  configured site even with no click (`click_funnel_state` holds the first day); the increment statements write nothing for a sealed day.
+- **Months.** A closed month is summed into `click_src_monthly` and
+  `click_country_monthly` (fold caps 300 and 400 cells), logged in
+  `click_month_log`, and kept 25 months. Day cells go once they are 90 whole UTC days old
+  and their month is rolled (a 125 day ceiling drops them anyway); a seal and
+  the budget row go in the same run, only when none of the day's cells is left.
+- **Report.** `reach-around report` reads these tables (see `docs/report.md`)
+  for one fixed calendar period at a time (`--period`: weeks from day cells, months from monthly rows, each recorded in
+  a mandatory release ledger with a head file that refuses a week and a month over
+  the same day and a repeat with different data, and only with seal or rollup
+  evidence that the period is complete), applies the floor to that period alone, merges sub-floor cells into one remainder per
+  destination, and suppresses jointly with the link table.
 
 ## 7. Retention
 
@@ -423,6 +489,8 @@ site the same way the view route does:
 | Daily visitor codes (`visitor_seen`) | Deleted at the end of the UTC day | n/a | Independent of the rollup |
 | Daily aggregates | **90 days** (shipped) | 90 days | No site may exceed 90 days |
 | Click rows | 90 days (shipped) | 90 days | |
+| Click funnel day cells (`click_src_daily`, `click_country_daily`) | 90 whole days | 125 days | Removed after the month is rolled up; a ceiling removes them anyway |
+| Click funnel monthly rollups | 25 months | 25 months | Sums of a closed month; no timestamp finer than a month |
 | Hour counters in `view_meta` | 48 hours (budget), previous hour (cap) | n/a | |
 
 **Deviation to confirm (D-A2).** The request for this design said "90 days

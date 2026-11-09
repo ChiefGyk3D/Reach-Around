@@ -63,6 +63,26 @@ def _table_rows(section: dict[str, Any]) -> list[list[Any]]:
     return rows
 
 
+def _pair_rows(section: dict[str, Any], key: str) -> list[list[Any]]:
+    """Cells of a label by destination section, whole destinations only."""
+    state = section["state"]
+    if state in ("not_in_export", "withheld", "period_required"):
+        return [["", "", "", state]]
+    return [[c[key], c["destination"], c["clicks"], "cell"] for c in section["cells"]]
+
+
+def _flow_rows(section: dict[str, Any]) -> list[list[Any]]:
+    state = section["state"]
+    if state in ("not_in_export", "withheld", "period_required"):
+        return [["", "", "", state]]
+    rows: list[list[Any]] = [
+        [r["label"], r["clicks"], r["share"], "row"] for r in section["ranked"]
+    ]
+    if section["ranked_other"]:
+        rows.append(["other", section["ranked_other"], "", "other"])
+    return rows
+
+
 def _funnel_rows(report: dict[str, Any]) -> list[list[Any]]:
     funnel = report["funnel"]
     steps = [
@@ -136,6 +156,11 @@ def _meta_rows(
         ["requested_since_utc", requested.get("since") or ""],
         ["requested_until_utc", requested.get("until") or ""],
         ["requested_days", requested.get("days") or ""],
+        ["period", report["release"]["period"] or ""],
+        ["period_start_utc", report["release"]["start"] or ""],
+        ["period_end_utc", report["release"]["end"] or ""],
+        ["counting_capacity", report["capacity"]["status"]],
+        ["counting_capacity_warning", report["capacity"]["warning"]],
         ["timezone", "UTC"],
         *_display_rows(report, generated_at),
         ["site", report["site"]],
@@ -173,6 +198,18 @@ def csv_files(
     }
     for key, name in _SECTIONS:
         files[name] = render_csv(_TABLE_HEADER, _table_rows(report[key]))
+    files["click_matrix.csv"] = render_csv(
+        ["source", "destination", "clicks", "row_type"],
+        _pair_rows(report["click_matrix"], "source"),
+    )
+    files["click_flows.csv"] = render_csv(
+        ["flow", "clicks", "share_of_shown_clicks_percent", "row_type"],
+        _flow_rows(report["click_matrix"]),
+    )
+    files["click_countries.csv"] = render_csv(
+        ["country", "destination", "clicks", "row_type"],
+        _pair_rows(report["click_countries"], "country"),
+    )
     files["bot_classes.csv"] = render_csv(
         ["class", "name", "views", "share_percent", "row_type"], _bot_rows(report)
     )

@@ -15,11 +15,11 @@
 -- refuses a new row at a hard cap (2000 quota rows, 500 dedup rows).
 -- The CHECKs are small on purpose (CI's SQLite is older than a developer's).
 --
--- Apply AFTER 0011_click_funnel.sql and 0012_click_country_null.sql (#451).
+-- Apply AFTER 0011_click_funnel.sql (#451). Rerunnable (IF NOT EXISTS).
 -- Down: DROP TABLE alert_quota; DROP TABLE alert_dedup;
 -- RULE: apply with the Worker idle, as for 0007 and 0008.
 
-CREATE TABLE alert_quota (
+CREATE TABLE IF NOT EXISTS alert_quota (
   site TEXT NOT NULL CHECK (length(site) BETWEEN 1 AND 64),
   channel TEXT NOT NULL CHECK (length(channel) BETWEEN 1 AND 16),
   scope TEXT NOT NULL CHECK (scope IN ('minute', 'day')),
@@ -28,7 +28,7 @@ CREATE TABLE alert_quota (
   PRIMARY KEY (site, channel, scope, window_start)
 ) WITHOUT ROWID, STRICT;
 
-CREATE TABLE alert_dedup (
+CREATE TABLE IF NOT EXISTS alert_dedup (
   site TEXT NOT NULL CHECK (length(site) BETWEEN 1 AND 64),
   event_hash TEXT NOT NULL CHECK (length(event_hash) = 32),
   expires_at INTEGER NOT NULL CHECK (expires_at >= 0),
