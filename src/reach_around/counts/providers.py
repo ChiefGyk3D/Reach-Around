@@ -16,8 +16,6 @@ from urllib.parse import quote, urlencode, urlsplit
 
 from reach_around.config.blocks import MAX_COUNT
 from reach_around.config.numbers_sources import (
-    CLIENT_ID_ENV,
-    CLIENT_SECRET_ENV,
     YOUTUBE_KEY_ENV,
     BlueskySource,
     DiscordSource,

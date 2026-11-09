@@ -598,11 +598,7 @@ def test_youtube_unrelated_variable_never_reaches_a_request() -> None:
 
 def test_youtube_redirect_is_refused_and_not_followed() -> None:
     transport = FakeTransport(
-        {
-            YT_URL: reply(
-                {}, status=302, headers={"location": "https://evil.example/x"}
-            )
-        }
+        {YT_URL: reply({}, status=302, headers={"location": "https://evil.example/x"})}
     )
     assert error_of(YT, transport, {"YOUTUBE_API_KEY": KEY}) == "redirect"
     assert len(transport.calls) == 1
@@ -621,7 +617,7 @@ def test_youtube_unexpected_fetch_failure_is_a_fixed_word() -> None:
     assert caught.value.__suppress_context__ or caught.value.__context__ is None
 
 
-# ---- credential handling: Twitch app-token path ---------------------------------------
+# ---- credential handling: Twitch app-token path ----------------------------------
 
 
 @pytest.mark.parametrize("url", [AUTH_URL, USERS_URL, FOLLOWERS_URL])
