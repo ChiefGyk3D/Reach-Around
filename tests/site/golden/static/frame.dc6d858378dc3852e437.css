@@ -256,6 +256,7 @@ body .ra-bx .link-chip, body .ra-bx .platform-icon, body .ra-bx .crypto-chip {
 }
 body .ra-bx.ra-head { display: flex; align-items: center; margin: 0 0 var(--ra-space-2); padding-inline: calc(var(--u) * 130); }
 body :is(.crypto-card, .email-card, .cookie-banner, .kit-table).ra-bx { padding-block: calc(var(--u) * 60); }
+body .kit-table.ra-bx { padding-inline: calc(var(--u) * 40); }
 body .ra-bx.ra-s5 { padding-block: calc(var(--u) * 80); padding-inline: calc(var(--u) * 140); }
 body .ra-bx.ra-bare { padding-inline: calc(var(--u) * 50); }
 body .ra-bare[aria-current="page"] { background-color: var(--ra-color-accent-edge); }
