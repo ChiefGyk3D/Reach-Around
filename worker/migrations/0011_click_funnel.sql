@@ -14,11 +14,10 @@
 -- is kept only for a site that lists `sources`; a click without a label counts
 -- as 'direct'. In the country counter 'ZZ' means unknown or folded.
 --
--- Per-site row caps (set in the Worker, worker/src/clickfunnel.ts): once a
--- (site, day) holds the cap, or the site-wide daily budget (click_budget) is used
--- up, a new cell goes into ONE overflow row per (site, day) ('overflow-all', with
--- 'other' for a source or 'ZZ' for a country), so rows per (site, day) are at
--- most the cap plus one. A day is SEALED by the hourly job after it closes: the Worker never
+-- Row bounds (set in the Worker, worker/src/clickfunnel.ts): a general pool of cells per
+-- (site, day), a few reserved cells per destination, and an hourly slice of a new-cell budget
+-- (click_budget). Anything past them goes into ONE overflow row per (site, day) ('overflow-all',
+-- with 'other' for a source or 'ZZ' for a country) and the day is marked in click_capacity. A day is SEALED by the hourly job after it closes (quiet days too, the proof a day is closed): the Worker never
 -- increments a sealed day (click_seal), so a closed day cannot change.
 --
 -- Retention: per-day cells and seals are removed once they are 90 days old, but only once
@@ -73,12 +72,22 @@ CREATE TABLE IF NOT EXISTS click_country_monthly (
   PRIMARY KEY (site, month, link_id, country)
 ) WITHOUT ROWID;
 
--- The site-wide write budget of a (site, day): clicks counted so far. Past the Worker's
--- budget no new cell is made (counting goes on in existing cells and the overflow row).
+-- The new-cell budget of a (site, day, UTC hour): clicks counted so far in that hour. Each
+-- hour has its own slice, so flooding in one hour cannot stop new cells for the rest of the day.
 CREATE TABLE IF NOT EXISTS click_budget (
   site TEXT NOT NULL CHECK (length(site) BETWEEN 1 AND 20 AND site NOT GLOB '*[^a-z0-9-]*'),
   day TEXT NOT NULL CHECK (length(day) = 10),
+  hour INTEGER NOT NULL CHECK (hour BETWEEN 0 AND 23),
   clicks INTEGER NOT NULL CHECK (clicks >= 1),
+  PRIMARY KEY (site, day, hour)
+) WITHOUT ROWID;
+
+-- An integrity marker: counting capacity ran out on this (site, day) (a slice of the budget or the
+-- cell caps), so its cells are incomplete and the report does not release cells for it.
+CREATE TABLE IF NOT EXISTS click_capacity (
+  site TEXT NOT NULL CHECK (length(site) BETWEEN 1 AND 20 AND site NOT GLOB '*[^a-z0-9-]*'),
+  day TEXT NOT NULL CHECK (length(day) = 10),
+  marked_at INTEGER NOT NULL,
   PRIMARY KEY (site, day)
 ) WITHOUT ROWID;
 
@@ -87,5 +96,6 @@ CREATE TABLE IF NOT EXISTS click_month_log (
   site TEXT NOT NULL CHECK (length(site) BETWEEN 1 AND 20 AND site NOT GLOB '*[^a-z0-9-]*'),
   month TEXT NOT NULL CHECK (length(month) = 7),
   rolled_at INTEGER NOT NULL,
+  exhausted_days INTEGER NOT NULL CHECK (exhausted_days >= 0),
   PRIMARY KEY (site, month)
 ) WITHOUT ROWID;

@@ -10,6 +10,8 @@ still subtract one total from another, so share the report, not the export.
 
 from __future__ import annotations
 
+import hashlib
+import json
 from collections import defaultdict
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
@@ -17,7 +19,6 @@ from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
 from reach_around.funnel.export import CLASSES, Export
-from reach_around.funnel.ledger import ReleaseGuard
 
 FLOOR = 5
 # Report section -> the ``dim`` value in view_dim_daily it is built from.
@@ -247,6 +248,45 @@ def period_bounds(period: str, offset: int, as_of: date) -> tuple[date, date]:
 
 def _next_month(first: date) -> date:
     return date(first.year + (first.month == 12), first.month % 12 + 1, 1)
+
+
+def _month_in_window(month: str, since: str | None, until: str | None) -> bool:
+    first, last = _month_span(month)
+    return (since is None or last >= since) and (until is None or first <= until)
+
+
+def _inputs_digest(
+    src: Mapping[str, Mapping[str, int]],
+    country: Mapping[str, Mapping[str, int]],
+    printed: list[str] | None,
+    floor: int,
+    top: int,
+) -> str:
+    """SHA-256 of the exact input cells and the suppression parameters.
+
+    Two releases of one period are the same release only if this matches. It is
+    a hash of private counts: it goes into the (private) ledger, never into a
+    report.
+    """
+
+    def flat(cells: Mapping[str, Mapping[str, int]]) -> list[list[Any]]:
+        return sorted(
+            [link, label, n] for link, row in cells.items() for label, n in row.items()
+        )
+
+    blob = json.dumps(
+        {
+            "src": flat(src),
+            "country": flat(country),
+            "printed": None if printed is None else sorted(printed),
+            "floor": floor,
+            "top": top,
+            "rule": ["fold-largest-until-bound", REMAINDER, OVERFLOW_LINK, FOLDED],
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()
 
 
 def _month_span(month: str) -> tuple[str, str]:
@@ -567,7 +607,23 @@ def _ratio(num: int | None, den: int | None) -> float | None:
     return round(num * 100 / den, 1)
 
 
-def build_report(
+def build_report(export: Export, **kw: Any) -> dict[str, Any]:
+    """The report with every section but the released cell tables.
+
+    The source and country by destination tables are released for a fixed
+    period only through ``reach_around.funnel.release.release_report``, which
+    records the period in the release ledger first; this function refuses a
+    period.
+    """
+    if kw.get("period") is not None:
+        raise ValueError(
+            "the source and country tables are released through "
+            "reach_around.funnel.release.release_report (release ledger first)"
+        )
+    return _build_report(export, **kw)[0]
+
+
+def _build_report(
     export: Export,
     *,
     site: str = "links",
@@ -581,8 +637,8 @@ def build_report(
     period: str | None = None,
     offset: int = 0,
     as_of: date | None = None,
-    guard: ReleaseGuard | None = None,
-) -> dict[str, Any]:
+) -> tuple[dict[str, Any], str]:
+    """The report and the digest of the exact inputs behind its cell tables."""
     if floor < FLOOR:
         raise ValueError(f"the floor cannot be below {FLOOR}")
     release: dict[str, Any] = {
@@ -600,16 +656,6 @@ def build_report(
             )
         start, end = period_bounds(period, offset, as_of or datetime.now(UTC).date())
         since, until = start.isoformat(), end.isoformat()
-        if (
-            not isinstance(guard, ReleaseGuard)
-            or (guard.release.site, guard.release.kind, guard.release.start)
-            != (site, period, since)
-            or guard.release.end != until
-        ):
-            raise ValueError(
-                "the source and country tables are released only for a period "
-                "recorded in the release ledger first (see --ledger)"
-            )
         release = {
             "period": period,
             "offset": offset,
@@ -760,6 +806,18 @@ def build_report(
         until,
         period,
     )
+    capacity_days = sorted(
+        r["day"]
+        for r in export.click_capacity
+        if r["site"] == site and _in_window(r["day"], since, until)
+    )
+    capacity_months = sorted(
+        r["month"]
+        for r in export.click_month_log
+        if r["site"] == site
+        and r["exhausted_days"] > 0
+        and _month_in_window(r["month"], since, until)
+    )
     matrix = _matrix_section(
         _link_breakdown(
             src_cells,
@@ -814,6 +872,7 @@ def build_report(
         "links": links_section,
         "click_sources": {},  # joint suppression with "links", filled below
         "release": release,
+        "capacity": {"days": capacity_days, "months": capacity_months},
         "click_matrix": matrix,
         "click_countries": countries,
         **{
@@ -849,7 +908,8 @@ def build_report(
     ) or (include_bots and classes.dropped)
     if unsafe:
         _withhold_views(report)
-    return report
+    digest = _inputs_digest(src_cells, country_cells, printed_links, floor, top)
+    return report, digest
 
 
 # ---- text -----------------------------------------------------------------
@@ -920,6 +980,14 @@ def _funnel_sections(report: dict[str, Any], lines: list[str]) -> None:
         lines.append(
             f"Released period for the source and country tables: {rel['period']} "
             f"{rel['start']} to {rel['end']} UTC"
+        )
+    cap = report["capacity"]
+    exhausted = [*cap["days"], *(f"{m} (month)" for m in cap["months"])]
+    if exhausted:
+        lines.append(
+            "Warning: counting capacity was exhausted on "
+            + ", ".join(exhausted)
+            + "; cell counts for those days are incomplete."
         )
     lines.append("Clicks by source and destination")
     if matrix["state"] == "period_required":

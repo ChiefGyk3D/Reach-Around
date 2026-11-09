@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import csv
 import io
+import itertools
 import json
 import random
 from datetime import UTC, date, datetime, timedelta
@@ -20,12 +21,8 @@ import pytest
 from reach_around.cli import main
 from reach_around.funnel.csvout import csv_files
 from reach_around.funnel.export import ExportError, load_exports
-from reach_around.funnel.ledger import (
-    Release,
-    ReleaseGuard,
-    authorize_release,
-    init_ledger,
-)
+from reach_around.funnel.ledger import init_ledger
+from reach_around.funnel.release import release_report
 from reach_around.funnel.report import (
     REMAINDER,
     build_report,
@@ -61,29 +58,48 @@ def write(tmp_path: Path, tables: dict[str, Any]) -> Path:
     return path
 
 
-STAMP = "2026-11-09T10:00:00Z"
+_LEDGERS = itertools.count()
 
 
-def authorize(
-    tmp_path: Path, period: str, offset: int, as_of: date, site: str = "links"
-) -> ReleaseGuard:
-    """Record the period in a fresh ledger (one per period) and return the guard."""
+def add_evidence(
+    export: Any, period: str, offset: int, as_of: date, site: str = "links"
+) -> None:
+    """Add what the Worker's seal and month log would show for a complete period."""
     start, end = period_bounds(period, offset, as_of)
-    ledger = tmp_path / f"ledger-{period}-{start}.jsonl"
-    if not ledger.exists():
-        init_ledger(ledger)
-    release = Release(site, period, start.isoformat(), end.isoformat(), STAMP)
-    return authorize_release(ledger, release)
+    if period == "week":
+        export.click_seal.extend(
+            {
+                "site": site,
+                "day": (start + timedelta(days=n)).isoformat(),
+                "sealed_at": 1,
+            }
+            for n in range(7)
+        )
+        export.present.add("click_seal")
+    else:
+        export.click_month_log.append(
+            {
+                "site": site,
+                "month": start.isoformat()[:7],
+                "rolled_at": 1,
+                "exhausted_days": 0,
+            }
+        )
+        export.present.add("click_month_log")
 
 
 def released(
     tmp_path: Path, export: Any, *, period: str, offset: int = 0, **kw: Any
 ) -> dict[str, Any]:
     as_of = kw.pop("as_of")
-    guard = authorize(tmp_path, period, offset, as_of, kw.get("site", "links"))
-    return build_report(
-        export, period=period, offset=offset, as_of=as_of, guard=guard, **kw
+    start, _ = period_bounds(period, offset, as_of)
+    add_evidence(export, period, offset, as_of, kw.get("site", "links"))
+    ledger = tmp_path / f"ledger-{period}-{start}-{next(_LEDGERS)}.jsonl"
+    init_ledger(ledger)
+    report, _status = release_report(
+        export, ledger, period=period, offset=offset, as_of=as_of, **kw
     )
+    return report
 
 
 def report_of(
@@ -199,7 +215,13 @@ def test_a_free_window_cannot_be_combined_with_a_period(tmp_path: Path) -> None:
     path = write(tmp_path, {"click_src_daily": src_rows({"twitch": {"a": 9}})})
     for extra in ({"since": DAY}, {"until": DAY}, {"days": 3}):
         with pytest.raises(ValueError, match="fixed calendar week or month"):
-            build_report(load_exports([path]), period="month", as_of=AS_OF, **extra)
+            release_report(
+                load_exports([path]),
+                tmp_path / "unused.jsonl",
+                period="month",
+                as_of=AS_OF,
+                **extra,
+            )
 
 
 def test_a_free_window_still_gives_the_aggregate_sections(tmp_path: Path) -> None:
@@ -747,6 +769,14 @@ def test_cli_json_and_text(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -
                 {"twitch": {"instagram": 9, "direct": 40}}, day
             ),
             "click_country_daily": cc_rows({"twitch": {"US": 49}}, day),
+            "click_seal": [
+                {
+                    "site": "links",
+                    "day": (monday + timedelta(days=n)).isoformat(),
+                    "sealed_at": 1,
+                }
+                for n in range(7)
+            ],
         },
     )
     ledger = tmp_path / "ledger.jsonl"
@@ -882,3 +912,37 @@ def test_click_events_and_the_counters_are_told_apart(tmp_path: Path) -> None:
         ]
     )
     assert len(ex.click_events) == 1 and len(ex.click_src_daily) == 1
+
+
+def test_evidence_tables_load_and_are_told_apart(tmp_path: Path) -> None:
+    ex = load_exports(
+        [
+            write(
+                tmp_path,
+                {
+                    "click_seal": [{"site": "links", "day": DAY, "sealed_at": 1}],
+                    "click_month_log": [
+                        {"month": "2026-10", "rolled_at": 1, "exhausted_days": 0}
+                    ],
+                    "click_capacity": [{"day": DAY, "marked_at": 1}],
+                },
+            )
+        ]
+    )
+    assert len(ex.click_seal) == len(ex.click_month_log) == len(ex.click_capacity) == 1
+
+
+@pytest.mark.parametrize(
+    "table,row",
+    [
+        ("click_seal", {"day": "2026-13-01", "sealed_at": 1}),
+        ("click_seal", {"day": DAY, "sealed_at": 1, "ip": "x"}),
+        ("click_month_log", {"month": "2026-10", "rolled_at": 1, "exhausted_days": -1}),
+        ("click_capacity", {"day": DAY, "marked_at": "now"}),
+    ],
+)
+def test_hostile_evidence_rows_are_refused(
+    tmp_path: Path, table: str, row: dict[str, Any]
+) -> None:
+    with pytest.raises(ExportError):
+        load_exports([write(tmp_path, {table: [row]})])

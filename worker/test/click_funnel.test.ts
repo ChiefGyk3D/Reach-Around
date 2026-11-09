@@ -8,9 +8,9 @@ import {
   COUNTRY_DAY_CAP,
   DAY_HARD_KEEP_DAYS,
   OVERFLOW_LINK,
-  SITE_DAY_BUDGET,
+  HOUR_BUDGET,
+  RESERVED_PER_LINK,
   SRC_DAY_CAP,
-  SRC_RESERVE,
   clickCounterStatements,
   rollupClickFunnel,
 } from "../src/clickfunnel";
@@ -44,7 +44,7 @@ const click = (qs: string, o: { host?: string; id?: string; country?: string } =
     },
   });
 const q = async <T>(sql: string) => (await DB.prepare(sql).all<T>()).results;
-const TABLES = ["click_src_daily", "click_country_daily", "click_seal", "click_budget", "click_src_monthly", "click_country_monthly", "click_month_log", "click_events"];
+const TABLES = ["click_src_daily", "click_country_daily", "click_seal", "click_budget", "click_capacity", "click_src_monthly", "click_country_monthly", "click_month_log", "click_events"];
 
 beforeEach(async () => {
   for (const t of TABLES) await DB.prepare(`DELETE FROM ${t}`).run();
@@ -111,72 +111,97 @@ describe("the click route increments the marginal counters", () => {
   });
 });
 
-describe("per-site caps: one overflow row, a fixed budget", () => {
+describe("row bounds: reserved cells, hourly slices, one overflow row, an integrity marker", () => {
   const ts = Date.UTC(2027, 0, 5, 12);
-  const seedSrc = (n: number, link = "twitch") =>
+  const seedSrc = (n: number, link = "seed") =>
     DB.batch(Array.from({ length: n }, (_, i) => DB.prepare("INSERT INTO click_src_daily VALUES ('links','2027-01-05',?,?,1)").bind(link, `s${i}`)));
+  const cellsOf = async (t: string, col: string, link: string) =>
+    (await q<Record<string, string>>(`SELECT ${col} AS v FROM ${t} WHERE link_id = '${link}' ORDER BY ${col}`)).map((r) => r.v);
 
-  it("source_cells_past_the_cap_go_to_one_overflow_row_for_all_links", async () => {
-    await seedSrc(SRC_DAY_CAP - SRC_RESERVE);
-    await count(ts, "links", "twitch", "brandnew", "US");
-    await count(ts, "links", "kick", "brandnew", "US");
-    await count(ts, "links", "twitch", "s3", "US");
-    const rows = await q<{ link_id: string; src: string; clicks: number }>("SELECT link_id, src, clicks FROM click_src_daily WHERE src IN ('brandnew','other')");
-    expect(rows).toEqual([{ link_id: OVERFLOW_LINK, src: "other", clicks: 2 }]);
-    expect(await q<{ clicks: number }>("SELECT clicks FROM click_src_daily WHERE src = 's3'")).toEqual([{ clicks: 2 }]);
-    // The other site is not affected by this site's cap.
+  it("source_cells_past_the_pool_go_to_one_overflow_row_and_mark_the_day", async () => {
+    await seedSrc(SRC_DAY_CAP + RESERVED_PER_LINK); // the pool (and seed's reserved cells) are full
+    await count(ts, "links", "twitch", "x1", "US"); // twitch has 0 cells: its reserved cells still work
+    await count(ts, "links", "twitch", "x2", "US");
+    await count(ts, "links", "twitch", "x3", "US"); // past reserved and past the pool: overflow
+    await count(ts, "links", "kick", "x3", "US");
+    expect(await cellsOf("click_src_daily", "src", "twitch")).toEqual(["x1", "x2"]);
+    expect(await q("SELECT link_id, src, clicks FROM click_src_daily WHERE link_id = 'overflow-all'")).toEqual([
+      { link_id: OVERFLOW_LINK, src: "other", clicks: 1 },
+    ]);
+    expect(await cellsOf("click_src_daily", "src", "kick")).toEqual(["x3"]); // kick's own reserved cell
+    expect(await q("SELECT day FROM click_capacity")).toEqual([{ day: "2027-01-05" }]);
+    // The other site is not affected by this site's pool.
     await count(ts, "nosrc", "twitch", "brandnew", "US");
     expect(await q("SELECT 1 FROM click_src_daily WHERE site = 'nosrc' AND src = 'brandnew'")).toHaveLength(1);
   });
 
-  it("rows_per_site_and_day_never_pass_the_cap_plus_one_however_many_links_and_labels", async () => {
-    for (let i = 0; i < SRC_DAY_CAP + 30; i++) await count(ts, "links", `l${i}`, i % 2 ? "direct" : `s${i}`, `${String.fromCharCode(65 + (i % 26))}${String.fromCharCode(65 + Math.floor(i / 26))}`);
+  it("one_flooded_destination_cannot_starve_the_others_of_their_reserved_cells", async () => {
+    for (let i = 0; i < 400; i++) await count(ts, "links", "flood", `f${i}`, "US");
+    await count(ts, "links", "twitch", "instagram", "US");
+    await count(ts, "links", "kick", "bluesky", "US");
+    await count(ts, "links", "kick", "direct", "US");
+    expect(await cellsOf("click_src_daily", "src", "twitch")).toEqual(["instagram"]);
+    expect(await cellsOf("click_src_daily", "src", "kick")).toEqual(["bluesky", "direct"]);
+    // The flooded destination is held to its reserved cells plus the general pool.
+    const flood = await q<{ n: number }>("SELECT count(*) AS n FROM click_src_daily WHERE link_id = 'flood'");
+    expect(flood[0]!.n).toBeLessThanOrEqual(SRC_DAY_CAP + RESERVED_PER_LINK);
+  });
+
+  it("rows_per_site_and_day_stay_inside_the_documented_bound", async () => {
+    const links = 40;
+    for (let i = 0; i < 600; i++) await count(ts, "links", `l${i % links}`, i % 3 ? `s${i}` : "direct", `${String.fromCharCode(65 + (i % 26))}${String.fromCharCode(65 + Math.floor(i / 26) % 26)}`);
     const src = (await q<{ n: number }>("SELECT count(*) AS n FROM click_src_daily"))[0]!.n;
     const cc = (await q<{ n: number }>("SELECT count(*) AS n FROM click_country_daily"))[0]!.n;
-    expect(src).toBeLessThanOrEqual(SRC_DAY_CAP + 1);
-    expect(cc).toBeLessThanOrEqual(COUNTRY_DAY_CAP + 1);
-    expect((await q<{ n: number }>("SELECT count(*) AS n FROM click_src_daily WHERE link_id = ?".replace("?", `'${OVERFLOW_LINK}'`)))[0]!.n).toBeLessThanOrEqual(1);
-    // Every click is still counted somewhere.
-    expect((await q<{ n: number }>("SELECT SUM(clicks) AS n FROM click_src_daily"))[0]!.n).toBe(SRC_DAY_CAP + 30);
+    expect(src).toBeLessThanOrEqual(SRC_DAY_CAP + links * (RESERVED_PER_LINK + 1) + 1);
+    expect(cc).toBeLessThanOrEqual(COUNTRY_DAY_CAP + links * RESERVED_PER_LINK + 1);
+    expect((await q<{ n: number }>("SELECT SUM(clicks) AS n FROM click_src_daily"))[0]!.n).toBe(600); // every click counted
   });
 
-  it("the_reserve_keeps_room_for_direct_when_other_labels_have_filled_the_rest", async () => {
-    await seedSrc(SRC_DAY_CAP - SRC_RESERVE);
-    await count(ts, "links", "twitch", "newlabel", "US"); // overflow: past the cap less the reserve
-    await count(ts, "links", "twitch", "direct", "US"); // may use the reserve
-    expect(await q("SELECT 1 FROM click_src_daily WHERE link_id = 'twitch' AND src = 'direct'")).toHaveLength(1);
-    expect(await q("SELECT 1 FROM click_src_daily WHERE src = 'newlabel'")).toEqual([]);
+  it("the_reserve_keeps_room_for_direct", async () => {
+    await seedSrc(SRC_DAY_CAP + RESERVED_PER_LINK);
+    await count(ts, "links", "twitch", "newlabel1", "US");
+    await count(ts, "links", "twitch", "newlabel2", "US");
+    await count(ts, "links", "twitch", "newlabel3", "US"); // overflow
+    await count(ts, "links", "twitch", "direct", "US"); // direct is always reserved
+    expect(await cellsOf("click_src_daily", "src", "twitch")).toEqual(["direct", "newlabel1", "newlabel2"]);
   });
 
-  it("country_cells_past_the_cap_go_to_one_overflow_row", async () => {
+  it("country_cells_past_the_pool_go_to_one_overflow_row", async () => {
     const letters = "ABCDEFGHIJKLMNOPQRSTUVWXY";
     const codes: string[] = [];
-    for (const a of letters) for (const b of letters) if (codes.length < COUNTRY_DAY_CAP) codes.push(a + b);
-    await DB.batch(codes.map((c) => DB.prepare("INSERT INTO click_country_daily VALUES ('links','2027-01-05','twitch',?,1)").bind(c)));
-    await count(ts, "links", "twitch", null, "QQ");
-    await count(ts, "links", "kick", null, "QQ");
-    await count(ts, "links", "twitch", null, "AA");
-    expect(await q("SELECT link_id, country, clicks FROM click_country_daily WHERE country IN ('QQ','ZZ')")).toEqual([{ link_id: OVERFLOW_LINK, country: "ZZ", clicks: 2 }]);
-    expect(await q("SELECT clicks FROM click_country_daily WHERE country = 'AA'")).toEqual([{ clicks: 2 }]);
+    for (const a of letters) for (const b of letters) if (codes.length < COUNTRY_DAY_CAP + RESERVED_PER_LINK) codes.push(a + b);
+    await DB.batch(codes.map((c) => DB.prepare("INSERT INTO click_country_daily VALUES ('links','2027-01-05','seed',?,1)").bind(c)));
+    await count(ts, "links", "twitch", null, "QQ"); // reserved
+    await count(ts, "links", "twitch", null, "RR"); // reserved
+    await count(ts, "links", "twitch", null, "SS"); // overflow
+    await count(ts, "links", "twitch", null, "AA"); // a seed cell? no: other link's cell, new for twitch -> overflow
+    expect(await q("SELECT country, clicks FROM click_country_daily WHERE link_id = 'overflow-all'")).toEqual([{ country: "ZZ", clicks: 2 }]);
   });
 
-  it("past_the_site_wide_daily_budget_no_new_cell_is_made_but_every_click_still_counts", async () => {
-    await DB.prepare("INSERT INTO click_budget VALUES ('links','2027-01-05',?)").bind(SITE_DAY_BUDGET).run();
-    await count(ts, "links", "twitch", "instagram", "US");
-    await count(ts, "links", "twitch", "instagram", "US");
-    expect(await q("SELECT link_id, src, clicks FROM click_src_daily")).toEqual([{ link_id: OVERFLOW_LINK, src: "other", clicks: 2 }]);
-    expect(await q("SELECT link_id, country, clicks FROM click_country_daily")).toEqual([{ link_id: OVERFLOW_LINK, country: "ZZ", clicks: 2 }]);
-    expect(await q("SELECT clicks FROM click_budget")).toEqual([{ clicks: SITE_DAY_BUDGET + 2 }]);
-    // An existing cell keeps counting past the budget.
-    await DB.prepare("INSERT INTO click_src_daily VALUES ('links','2027-01-05','kick','bluesky',1)").run();
-    await count(ts, "links", "kick", "bluesky", "US");
-    expect(await q("SELECT clicks FROM click_src_daily WHERE src = 'bluesky'")).toEqual([{ clicks: 2 }]);
+  it("early_flooding_cannot_blind_the_rest_of_the_day", async () => {
+    // Hour 03 floods past its slice; hour 12 still makes new cells.
+    const early = Date.UTC(2027, 0, 5, 3);
+    await DB.prepare("INSERT INTO click_budget VALUES ('links','2027-01-05',3,?)").bind(HOUR_BUDGET).run();
+    await count(early, "links", "twitch", "instagram", "US"); // past its slice: overflow
+    expect(await q("SELECT 1 FROM click_src_daily WHERE link_id = 'twitch'")).toEqual([]);
+    expect(await q("SELECT day FROM click_capacity")).toEqual([{ day: "2027-01-05" }]);
+    await count(ts, "links", "twitch", "bluesky", "US"); // hour 12: a new slice
+    expect(await cellsOf("click_src_daily", "src", "twitch")).toEqual(["bluesky"]);
+    // An existing cell keeps counting inside an exhausted slice.
+    await count(early, "links", "twitch", "bluesky", "US");
+    expect(await q("SELECT clicks FROM click_src_daily WHERE link_id = 'twitch'")).toEqual([{ clicks: 2 }]);
   });
 
-  it("every_counted_click_adds_one_to_the_budget_and_a_sealed_day_adds_nothing", async () => {
+  it("a_quiet_day_has_no_marker_and_a_busy_normal_one_neither", async () => {
+    await count(ts, "links", "twitch", "instagram", "US");
+    await count(ts, "links", "twitch", "bluesky", "DE");
+    expect(await q("SELECT 1 FROM click_capacity")).toEqual([]);
+  });
+
+  it("every_counted_click_adds_one_to_its_hour_and_a_sealed_day_adds_nothing", async () => {
     await count(ts, "links", "twitch", "instagram", "US");
     await count(ts, "links", "twitch", "instagram", "DE");
-    expect(await q("SELECT clicks FROM click_budget")).toEqual([{ clicks: 2 }]);
+    expect(await q("SELECT hour, clicks FROM click_budget")).toEqual([{ hour: 12, clicks: 2 }]);
     await DB.prepare("INSERT INTO click_seal VALUES ('links','2027-01-05',1)").run();
     await count(ts, "links", "twitch", "instagram", "US");
     expect(await q("SELECT clicks FROM click_budget")).toEqual([{ clicks: 2 }]);
@@ -230,6 +255,33 @@ describe("the seal", () => {
   });
 });
 
+describe("seals cover quiet days and the month log counts exhausted days", () => {
+  it("every closed day between the first counted day and today is sealed, quiet days too", async () => {
+    await count(Date.UTC(2027, 0, 1, 12), "links", "twitch", "instagram", "US");
+    await count(Date.UTC(2027, 0, 5, 12), "links", "twitch", "instagram", "US");
+    const r = await rollupClickFunnel({ DB }, Date.UTC(2027, 0, 6, 13));
+    expect(r.sealedDays).toBe(5);
+    expect((await q<{ day: string }>("SELECT day FROM click_seal ORDER BY day")).map((x) => x.day)).toEqual([
+      "2027-01-01", "2027-01-02", "2027-01-03", "2027-01-04", "2027-01-05",
+    ]);
+    // A later run continues from the last seal and seals nothing twice.
+    expect((await rollupClickFunnel({ DB }, Date.UTC(2027, 0, 7, 13))).sealedDays).toBe(1);
+  });
+
+  it("the_month_log_records_how_many_days_were_marked_exhausted", async () => {
+    await count(Date.UTC(2027, 0, 5, 12), "links", "twitch", "instagram", "US");
+    await DB.batch([
+      DB.prepare("INSERT INTO click_capacity VALUES ('links','2027-01-05',1)"),
+      DB.prepare("INSERT INTO click_capacity VALUES ('links','2027-01-09',1)"),
+      DB.prepare("INSERT INTO click_capacity VALUES ('nosrc','2027-01-09',1)"),
+    ]);
+    await rollupClickFunnel({ DB }, Date.UTC(2027, 1, 10));
+    expect(await q("SELECT site, month, exhausted_days FROM click_month_log")).toEqual([
+      { site: "links", month: "2027-01", exhausted_days: 2 },
+    ]);
+  });
+});
+
 describe("monthly rollup and retention", () => {
   it("a_closed_month_is_summed_once_and_the_current_month_is_not", async () => {
     await count(Date.UTC(2027, 0, 5), "links", "twitch", "instagram", "US");
@@ -255,7 +307,7 @@ describe("monthly rollup and retention", () => {
   it("a_month_logged_for_one_site_does_not_suppress_another_and_nothing_is_rolled_twice", async () => {
     await count(Date.UTC(2027, 0, 5), "links", "twitch", "instagram", "US");
     await count(Date.UTC(2027, 0, 6), "nosrc", "twitch", "instagram", "US");
-    await DB.prepare("INSERT INTO click_month_log VALUES ('links','2027-01',1)").run();
+    await DB.prepare("INSERT INTO click_month_log VALUES ('links','2027-01',1,0)").run();
     const now = Date.UTC(2027, 1, 10);
     expect((await rollupClickFunnel({ DB }, now)).monthsRolled).toBe(1);
     expect(await q<{ site: string }>("SELECT DISTINCT site FROM click_src_monthly")).toEqual([{ site: "nosrc" }]);
@@ -285,7 +337,8 @@ describe("monthly rollup and retention", () => {
     await rollupClickFunnel({ DB }, now);
     expect(await q<{ day: string }>("SELECT day FROM click_src_daily")).toEqual([{ day: "2027-04-20" }]);
     expect(await q("SELECT clicks FROM click_src_monthly WHERE month = '2027-01'")).toEqual([{ clicks: 1 }]);
-    expect(await q("SELECT day FROM click_seal")).toEqual([]);
+    // Seals of days past the retention are gone with their cells (later quiet days keep theirs).
+    expect(await q("SELECT day FROM click_seal WHERE day <= '2027-01-10'")).toEqual([]);
   });
 
   it("a_day_inside_90_days_stays", async () => {
@@ -308,13 +361,13 @@ describe("monthly rollup and retention", () => {
     const d0 = Date.UTC(2027, 0, 5);
     await count(d0, "links", "twitch", "instagram", "US");
     // A run too short to roll the month up: seal and prune only. The day is past 90 days.
-    await rollupClickFunnel({ DB: meteredDb(DB, new QueryMeter(2)) }, d0 + 100 * DAY);
+    await rollupClickFunnel({ DB: meteredDb(DB, new QueryMeter(3)) }, d0 + 100 * DAY);
     expect(await q("SELECT 1 FROM click_src_daily")).toHaveLength(1);
-    expect(await q("SELECT day FROM click_seal")).toEqual([{ day: "2027-01-05" }]);
+    expect(await q("SELECT day FROM click_seal WHERE day = '2027-01-05'")).toHaveLength(1);
     // The full run rolls the month, then removes cells and seal together.
     await rollupClickFunnel({ DB }, d0 + 100 * DAY + 3_600_000);
     expect(await q("SELECT 1 FROM click_src_daily")).toEqual([]);
-    expect(await q("SELECT 1 FROM click_seal")).toEqual([]);
+    expect(await q("SELECT 1 FROM click_seal WHERE day = '2027-01-05'")).toEqual([]);
     expect(await q("SELECT 1 FROM click_budget")).toEqual([]);
   });
 
@@ -329,7 +382,7 @@ describe("monthly rollup and retention", () => {
   it("monthly_rows_are_kept_25_months_and_not_longer", async () => {
     const rows = (m: string) => DB.prepare("INSERT INTO click_src_monthly VALUES ('links',?,'twitch','instagram',9)").bind(m);
     await DB.batch([rows("2024-12"), rows("2025-01"), rows("2026-12"), rows("2027-01")]);
-    await DB.batch(["2024-12", "2025-01"].map((m) => DB.prepare("INSERT INTO click_month_log VALUES ('links',?,1)").bind(m)));
+    await DB.batch(["2024-12", "2025-01"].map((m) => DB.prepare("INSERT INTO click_month_log VALUES ('links',?,1,0)").bind(m)));
     await DB.prepare("INSERT INTO click_country_monthly VALUES ('links','2024-12','twitch','US',9)").run();
     // Current month 2027-02: the 25 closed months are 2025-01 .. 2027-01.
     await rollupClickFunnel({ DB }, Date.UTC(2027, 1, 10));

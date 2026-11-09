@@ -432,13 +432,27 @@ The source counter is kept only for a site that lists `sources` (`direct` and
 `other` are therefore reserved labels). No timestamp finer than a day, no
 identifier, no address, no pair of source and country.
 
-- **Caps and budget.** Per (site, day): 150 source cells (40 of them kept for
-  `direct`) and 200 country cells. Past the cap, or past the site's daily click
-  budget (50,000 clicks, counted in `click_budget`), a new cell goes into ONE
-  overflow row per (site, day) (`overflow-all`, with `other` or `ZZ`), so a day
-  holds at most the cap plus one row, whatever the number of links, labels or
-  countries. Counting never stops: existing cells and the overflow row keep
-  adding; only new cells stop. The monthly tables fold the same way.
+- **Row bounds and abuse limits.** Per (site, day): a general pool of 110 source
+  cells and 160 country cells, 2 reserved cells per destination (and one
+  `direct` source cell per destination, always), and an hourly slice of the
+  new-cell budget (50,000 clicks a day, ceil(50,000/24) per UTC hour in
+  `click_budget`) so flooding in one hour cannot stop new cells for the rest of
+  the day. Anything past them goes into ONE overflow row per (site, day)
+  (`overflow-all`, with `other` or `ZZ`), so a day holds at most the pool plus
+  3 cells per destination plus one row. Counting never stops: existing cells and
+  the overflow row keep adding. The first overflow marks the day in
+  `click_capacity`, the report warns about it and refuses cells for a period that
+  contains it. A destination flooded with fake labels cannot take another
+  destination's reserved cells. The monthly tables fold the same way and the
+  month log keeps the count of marked days.
+- **Threat model for release integrity.** The cell report is run by the owner on
+  his own machine over his own private data; he is a trusted operator. The release
+  ledger, its head file, the input digest and the completeness evidence stop
+  accidents (overlapping or repeated releases, partial exports, a lost or restored
+  ledger), not an operator who edits his own files or a hostile in-process caller.
+  The adversary that is in scope is a public visitor (poisoned cells, flooded
+  counters, shaped labels), which the remainder rule, the pools, the hourly slices
+  and the capacity marker address.
 - **Counter failures.** The raw click row and the counters are written
   separately: a missing table or a failed counter write never drops the raw
   click, and a failure only adds one to the number at `view_meta` key
@@ -446,8 +460,8 @@ identifier, no address, no pair of source and country.
 - **Deploy order.** Apply 0011, deploy the counter-writing Worker, check that
   `click_country_daily` gains rows, then apply 0012 (it clears the country on raw
   rows and does nothing while the counter table is empty). Not reversible.
-- **Seal.** The hourly job seals a (site, day) two hours after it closes
-  (`click_seal`); the increment statements write nothing for a sealed day.
+- **Seal.** The hourly job seals every closed (site, day), quiet days included, two
+  hours after it closes (`click_seal`; at most 31 days per site per run); the increment statements write nothing for a sealed day.
 - **Months.** A closed month is summed into `click_src_monthly` and
   `click_country_monthly` (fold caps 300 and 400 cells), logged in
   `click_month_log`, and kept 25 months. Day cells go once they are 90 whole UTC days old
@@ -455,7 +469,9 @@ identifier, no address, no pair of source and country.
   the budget row go in the same run, only when none of the day's cells is left.
 - **Report.** `reach-around report` reads these tables (see `docs/report.md`)
   for one fixed calendar period at a time (`--period`: weeks from day cells, months from monthly rows, each recorded in
-  a mandatory release ledger that refuses a week and a month over the same day), applies the floor to that period alone, merges sub-floor cells into one remainder per
+  a mandatory release ledger with a head file that refuses a week and a month over
+  the same day and a repeat with different data, and only with seal or rollup
+  evidence that the period is complete), applies the floor to that period alone, merges sub-floor cells into one remainder per
   destination, and suppresses jointly with the link table.
 
 ## 7. Retention

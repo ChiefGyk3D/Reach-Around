@@ -26,14 +26,20 @@
 import type { QueryMeter } from "./d1budget";
 import { meterOf } from "./d1budget";
 
-export const SRC_DAY_CAP = 150;
-export const COUNTRY_DAY_CAP = 200;
+/** General cells per (site, day), on top of the reserved ones below. */
+export const SRC_DAY_CAP = 110;
+export const COUNTRY_DAY_CAP = 160;
+/** Cells every destination may always create per day (and one `direct` more), whatever the general pool holds. */
+export const RESERVED_PER_LINK = 2;
 export const SRC_MONTH_CAP = 300;
 export const COUNTRY_MONTH_CAP = 400;
-/** Source cells kept back for `direct` (a destination's most common label) when the cap is nearly reached. */
-export const SRC_RESERVE = 40;
-/** Clicks per (site, day) after which no NEW cell is made: counting goes on in existing cells and the overflow row. */
+/**
+ * Clicks per (site, day) the new-cell budget is sized for; each UTC hour gets an equal slice, so
+ * flooding in one hour cannot stop new cells for the rest of the day. Past a slice counting goes on
+ * (existing cells and the overflow row) and the day is marked as exhausted.
+ */
 export const SITE_DAY_BUDGET = 50_000;
+export const HOUR_BUDGET = Math.ceil(SITE_DAY_BUDGET / 24);
 /** The one overflow link per (site, day) and per (site, month): every cell past the cap lands here. */
 export const OVERFLOW_LINK = "overflow-all";
 export const DAY_KEEP_DAYS = 90;
@@ -71,18 +77,22 @@ export function clickCounterStatements(
   p: { site: string; ts: number; linkId: string; src: string | null; listsSources: boolean; country: string | null },
 ): D1PreparedStatement[] {
   const day = utcDay(p.ts);
+  const hour = new Date(p.ts).getUTCHours();
   const out: D1PreparedStatement[] = [];
   const guard = "WHERE NOT EXISTS (SELECT 1 FROM click_seal WHERE site = ?1 AND day = ?2) ";
-  // A new cell is made only while the site-wide daily budget lasts and the (site, day) holds fewer
-  // than the cap; everything else goes to ONE overflow row per (site, day), so rows per (site, day)
-  // are at most cap + 1. Existing cells and the overflow row always keep counting.
-  // ?1 site, ?2 day, ?3 link, ?4 label, ?5 cap less the reserve, ?6 cap, ?7 budget, ?8 overflow link,
-  // ?9 fold label, ?10 the label the reserve is kept for.
+  // A new cell is made only while this hour's slice of the budget lasts AND one of: the destination
+  // is under its reserved cells (a `direct` cell is always reserved), or the general pool is not full.
+  // Anything else goes to ONE overflow row per (site, day). Existing cells and the overflow row always
+  // keep counting. Rows per (site, day) are at most the general cap plus (RESERVED_PER_LINK + 1) per
+  // destination plus the overflow row.
+  // ?1 site, ?2 day, ?3 link, ?4 label, ?5 general cap, ?6 reserved per link, ?7 hour budget,
+  // ?8 overflow link, ?9 fold label, ?10 the always-reserved label ('' when none), ?11 hour.
   const insert = (table: string, col: string, conflict: string) =>
     `WITH f(fold) AS (SELECT NOT (EXISTS (SELECT 1 FROM ${table} WHERE site = ?1 AND day = ?2 AND link_id = ?3 AND ${col} = ?4) ` +
-    "OR (COALESCE((SELECT clicks FROM click_budget WHERE site = ?1 AND day = ?2), 0) < ?7 AND " +
-    `((SELECT count(*) FROM ${table} WHERE site = ?1 AND day = ?2) < ?5 OR ` +
-    `(?4 = ?10 AND (SELECT count(*) FROM ${table} WHERE site = ?1 AND day = ?2) < ?6))))) ` +
+    "OR (COALESCE((SELECT clicks FROM click_budget WHERE site = ?1 AND day = ?2 AND hour = ?11), 0) < ?7 AND (" +
+    `?4 = ?10 OR (SELECT count(*) FROM ${table} WHERE site = ?1 AND day = ?2 AND link_id = ?3 AND ${col} <> ?10) < ?6 OR ` +
+    `(SELECT COALESCE(SUM(MAX(c - ?6, 0)), 0) FROM (SELECT count(*) AS c FROM ${table} WHERE site = ?1 AND day = ?2 ` +
+    `AND link_id <> ?8 AND ${col} <> ?10 GROUP BY link_id)) < ?5)))) ` +
     `INSERT INTO ${table} (site, day, link_id, ${col}, clicks) ` +
     "SELECT ?1, ?2, CASE WHEN f.fold THEN ?8 ELSE ?3 END, CASE WHEN f.fold THEN ?9 ELSE ?4 END, 1 FROM f " +
     `${guard}` +
@@ -91,22 +101,33 @@ export function clickCounterStatements(
     out.push(
       db
         .prepare(insert("click_src_daily", "src", "site, day, link_id, src"))
-        .bind(p.site, day, p.linkId, p.src ?? DIRECT, SRC_DAY_CAP - SRC_RESERVE, SRC_DAY_CAP, SITE_DAY_BUDGET, OVERFLOW_LINK, OTHER, DIRECT),
+        .bind(p.site, day, p.linkId, p.src ?? DIRECT, SRC_DAY_CAP, RESERVED_PER_LINK, HOUR_BUDGET, OVERFLOW_LINK, OTHER, DIRECT, hour),
     );
   }
   out.push(
     db
       .prepare(insert("click_country_daily", "country", "site, day, link_id, country"))
-      .bind(p.site, day, p.linkId, p.country ?? UNKNOWN_COUNTRY, COUNTRY_DAY_CAP, COUNTRY_DAY_CAP, SITE_DAY_BUDGET, OVERFLOW_LINK, UNKNOWN_COUNTRY, ""),
+      .bind(p.site, day, p.linkId, p.country ?? UNKNOWN_COUNTRY, COUNTRY_DAY_CAP, RESERVED_PER_LINK, HOUR_BUDGET, OVERFLOW_LINK, UNKNOWN_COUNTRY, "", hour),
   );
-  // The site-wide write budget: one counter row per (site, day).
+  // The integrity marker: an overflow row means counting capacity ran out on this (site, day), so the
+  // report must not release cells for it. Idempotent; written only when an overflow row exists.
   out.push(
     db
       .prepare(
-        "INSERT INTO click_budget (site, day, clicks) SELECT ?1, ?2, 1 " +
-          `${guard}ON CONFLICT (site, day) DO UPDATE SET clicks = clicks + 1`,
+        "INSERT OR IGNORE INTO click_capacity (site, day, marked_at) SELECT ?1, ?2, ?4 " +
+          `${guard}AND (EXISTS (SELECT 1 FROM click_src_daily WHERE site = ?1 AND day = ?2 AND link_id = ?3) ` +
+          "OR EXISTS (SELECT 1 FROM click_country_daily WHERE site = ?1 AND day = ?2 AND link_id = ?3))",
       )
-      .bind(p.site, day),
+      .bind(p.site, day, OVERFLOW_LINK, p.ts - (p.ts % HOUR_MS)),
+  );
+  // The hourly slice of the site-wide new-cell budget: clicks counted this hour.
+  out.push(
+    db
+      .prepare(
+        "INSERT INTO click_budget (site, day, hour, clicks) SELECT ?1, ?2, ?3, 1 " +
+          `${guard}ON CONFLICT (site, day, hour) DO UPDATE SET clicks = clicks + 1`,
+      )
+      .bind(p.site, day, hour),
   );
   return out;
 }
@@ -147,15 +168,15 @@ export async function rollupClickFunnel(env: FunnelRollupEnv, nowMs: number): Pr
   const curMonth = utcMonth(settled); // months strictly before this one are closed
   const result: FunnelRollupResult = { sealedDays: 0, monthsRolled: 0 };
 
-  // 1. Seal every closed day that has cells, and find the closed months not yet rolled up.
-  const sealed = await db.batch([
-    db
-      .prepare(
-        "INSERT OR IGNORE INTO click_seal (site, day, sealed_at) " +
-          "SELECT site, day, ?1 FROM (SELECT site, day FROM click_src_daily UNION SELECT site, day FROM click_country_daily) " +
-          "WHERE day < ?2",
-      )
-      .bind(nowMs, sealBefore),
+  // 1. Seal every closed day of every site that has counted anything, the quiet days too (a seal
+  // is the proof a day is closed, so the report can tell "no clicks" from "not rolled yet"), and
+  // find the closed months not yet rolled up. At most 31 days per site per run; the next run goes on.
+  const read = await db.batch([
+    db.prepare(
+      "SELECT u.site AS site, MIN(u.day) AS first_cell, " +
+        "(SELECT MAX(day) FROM click_seal s WHERE s.site = u.site) AS last_seal " +
+        "FROM (SELECT site, day FROM click_src_daily UNION SELECT site, day FROM click_country_daily) u GROUP BY u.site",
+    ),
     db
       .prepare(
         "SELECT u.site AS site, u.m AS m FROM (SELECT site, substr(day, 1, 7) AS m FROM click_src_daily " +
@@ -165,8 +186,20 @@ export async function rollupClickFunnel(env: FunnelRollupEnv, nowMs: number): Pr
       )
       .bind(curMonth),
   ]);
-  result.sealedDays = sealed[0]?.meta?.changes ?? 0;
-  const due = (sealed[1]?.results ?? []) as Array<{ site: string; m: string }>;
+  const sites = (read[0]?.results ?? []) as Array<{ site: string; first_cell: string; last_seal: string | null }>;
+  const due = (read[1]?.results ?? []) as Array<{ site: string; m: string }>;
+  const seals: D1PreparedStatement[] = [];
+  for (const { site, first_cell, last_seal } of sites) {
+    let from = last_seal === null || last_seal === undefined ? first_cell : utcDay(Date.parse(`${last_seal}T00:00:00Z`) + DAY_MS);
+    for (let n = 0; from < sealBefore && n < 31; n++) {
+      seals.push(db.prepare("INSERT OR IGNORE INTO click_seal (site, day, sealed_at) VALUES (?1, ?2, ?3)").bind(site, from, nowMs));
+      from = utcDay(Date.parse(`${from}T00:00:00Z`) + DAY_MS);
+    }
+  }
+  if (seals.length > 0) {
+    const done = await db.batch(seals);
+    result.sealedDays = done.reduce((a, r) => a + (r.meta?.changes ?? 0), 0);
+  }
 
   // 2. Roll each due month: the sums and the log row in one transaction.
   for (const { site, m } of due) {
@@ -177,7 +210,12 @@ export async function rollupClickFunnel(env: FunnelRollupEnv, nowMs: number): Pr
       db
         .prepare(monthSql("click_country_daily", "click_country_monthly", "country", UNKNOWN_COUNTRY))
         .bind(site, m, COUNTRY_MONTH_CAP, OVERFLOW_LINK),
-      db.prepare("INSERT OR IGNORE INTO click_month_log (site, month, rolled_at) VALUES (?1, ?2, ?3)").bind(site, m, nowMs),
+      db
+        .prepare(
+          "INSERT OR IGNORE INTO click_month_log (site, month, rolled_at, exhausted_days) VALUES (?1, ?2, ?3, " +
+            "(SELECT count(*) FROM click_capacity WHERE site = ?1 AND substr(day, 1, 7) = ?2))",
+        )
+        .bind(site, m, nowMs),
     ]);
     result.monthsRolled += 1;
   }
@@ -201,6 +239,7 @@ export async function rollupClickFunnel(env: FunnelRollupEnv, nowMs: number): Pr
     db.prepare(rolled("click_country_daily")).bind(dayCut, hardCut),
     db.prepare(`DELETE FROM click_seal WHERE day <= ?1 AND ${noCells("click_seal")}`).bind(dayCut),
     db.prepare(`DELETE FROM click_budget WHERE day <= ?1 AND ${noCells("click_budget")}`).bind(dayCut),
+    db.prepare(`DELETE FROM click_capacity WHERE day <= ?1 AND ${noCells("click_capacity")}`).bind(dayCut),
     db.prepare("DELETE FROM click_src_monthly WHERE month < ?1").bind(monthCut),
     db.prepare("DELETE FROM click_country_monthly WHERE month < ?1").bind(monthCut),
     db.prepare("DELETE FROM click_month_log WHERE month < ?1").bind(monthCut),

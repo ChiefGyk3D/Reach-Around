@@ -116,6 +116,9 @@ agent, so a correct export never trips this. If it does, the export is wrong.
 | `view_daily` | `day, page, src_kind, src, country, bot_class, views` [`site, day_tz, uniques`] |
 | `view_dim_daily` | `day, dim, value, bot_class, views` [`site, day_tz, uniques`]; also feeds Devices, Browsers, Systems and the bot reasons |
 | `view_geo_daily` | `day, country, region, city, bot_class, views` [`site, day_tz, uniques`] |
+| `click_seal` | `day, sealed_at` [`site`] (needed for a week) |
+| `click_month_log` | `month, rolled_at, exhausted_days` [`site`] (needed for a month) |
+| `click_capacity` | `day, marked_at` [`site`] (days counting capacity ran out) |
 | `click_events` | `ts, link_id` [`site, src`]; the `country` column is always empty now (country lives only in the click counters), do not rely on it |
 | `click_src_daily`, `click_country_daily` | `day, link_id, src` (or `country`), `clicks` [`site`] |
 | `click_src_monthly`, `click_country_monthly` | `month` (`YYYY-MM`), `link_id, src` (or `country`), `clicks` [`site`] |
@@ -210,6 +213,15 @@ and country by link, per UTC day. They are incremented when a click arrives, so
 the country counter covers every click, including those that carry a source (a
 raw click row keeps a source label at most, never a country).
 
+**Threat model.** The cell report is run by you, on your own machine, over your
+own private data, and you are a trusted operator. The ledger and the checks
+below defend against accidents: releasing a week and then a month over the same
+days, repeating a period with a partial or stale export, losing the ledger or
+restoring an old copy. They do not stop an operator who edits his own files on
+purpose, or a hostile caller inside the process. The adversary the design does
+defend against is a public visitor to the link page (poisoned cells, flooded
+counters, shaped labels).
+
 **Fixed periods, always through a release ledger.** The source by destination
 and country by destination tables are released for ONE complete UTC calendar
 period, chosen with `--period week|month` and `--offset N` (0 is the latest
@@ -231,27 +243,53 @@ destination values.
   the 90 day day-cell range, or crossing its edge, is refused.
 - **Months** are read from the monthly rollup rows only.
 
+**Evidence the period is complete.** The export must prove it, or nothing is
+released: for a week, a `click_seal` row for each of its seven days (the Worker
+seals every closed day, quiet ones too); for a month, its `click_month_log` row
+(the rollup marker). Export both tables with the others (the columns are in the
+table below). A partial or early export is refused with the reason, and nothing
+is recorded.
+
+**Counting capacity.** If the Worker ran out of counting capacity on a day (an
+hour's slice of the new-cell budget or the cell pools, usually a flood of
+requests), it marks that day in `click_capacity` and puts the overflow into one
+`overflow-all` row. Every report prints "counting capacity was exhausted on
+<days>; cell counts for those days are incomplete" for days in its window, and a
+week or month containing such a day is refused for cell release (a month carries
+the count of exhausted days in its rollup marker).
+
 Which kind a period uses never depends on today's date, so the same week or the
 same month gives the same cells and the same suppression on any run date
 (decided by that period's data alone).
 
 **The release ledger** is an append-only, hash-chained JSON-lines file (the same
-approach as the social-stats history). It is created only by the explicit
+approach as the social-stats history), created only by the explicit
 `funnel-ledger-init` command (which refuses to touch an existing file), never
-silently. Keep it in your private instance repo and commit it after each
-release, so its history is not lost: a lost ledger is a lost memory of what you
-released. It records site, period kind, first and last UTC day and the release
-time, nothing else. Every cell release (week or month; text, JSON or CSV) is
-recorded BEFORE anything is built or printed, and if the record cannot be
-written nothing is printed. The command REFUSES a release that shares any UTC
-day with a previously released period of the OTHER kind, in both directions (a
-month over released weeks, a week over a released month): a reader holding both
-could difference them. Repeating the exact same period and kind is allowed and
-not written again. A damaged ledger (a changed, removed or reordered line, a cut
-last line, a symlink, a record that breaks the rule) stops the command. The
-ledger protects against your own reports disagreeing; it does not stop someone
-who holds reports you published before you used it. The library function
-`build_report` takes a period only with the guard that recording returns.
+silently. Next to it sits a small `.head` file (sequence number and the last
+chain hash, written atomically). **Keep both in your private instance repo and
+commit them together after each release**, so the history is not lost and a
+ledger cut short or replaced by an older copy is noticed: if the ledger is
+shorter than its head, or a different chain, or the head is missing on a
+non-empty ledger, the command stops and tells you to restore both files together
+from git (never edit them by hand; `funnel-ledger-reanchor FILE` rewrites a lost
+head only when you know the ledger is whole). The ledger records site, period
+kind, first and last UTC day, release time and a digest of the exact input cells
+and parameters behind the release. That digest is a hash of private counts: keep
+the ledger private, never publish it.
+
+Every cell release (week or month; text, JSON or CSV) is recorded BEFORE
+anything is shown, by the one function that builds and records
+(`reach_around.funnel.release.release_report`; `build_report` refuses a period).
+If the record cannot be written nothing is printed, and a build that fails
+writes no record. If a later step (writing the CSV) fails, the period stays
+recorded as released, which is the safe direction. The command REFUSES a release
+that shares any UTC day with a previously released period of the OTHER kind, in
+both directions: a reader holding a week and the month over it could difference
+them. Repeating the exact same period is allowed only with the same data (same
+digest) and is not written again; if the data behind a period changed (a late
+or partial export) the command refuses and says so. `--supersede` records a
+correction release (also recorded, and it prints a warning): two releases of one
+period can let a reader difference them, so use it knowingly.
 
 The floor and the remainder rule apply to the period alone, and the same period
 also bounds every other section of that report, so the sections agree. Why not
@@ -275,9 +313,9 @@ minus one (a reader knows every merged cell is at least that large, so the
 hidden sum can be no more tightly bounded than "each cell is under the
 floor"). If that cannot be reached, nothing of the destination prints. One
 visitor-made tiny cell therefore cannot hide a destination, and no printed
-number pins a cell under the floor. The Worker holds at most the cap
-plus one rows per site per day (the extra row is an `overflow-all` destination
-that gathers everything past the cap or past the site's daily click budget); it
+number pins a cell under the floor. The Worker holds a bounded number of rows per site per day (a general pool, a
+few reserved cells per destination, and one `overflow-all` destination that
+gathers everything past them or past an hour's slice of the new-cell budget); it
 prints as the destination `overflow-all` and its small cells follow the same
 rule. The sections count clicks, not people: a source is the label on the link
 the visitor came in on, and no click is tied to a view or to a person. A high

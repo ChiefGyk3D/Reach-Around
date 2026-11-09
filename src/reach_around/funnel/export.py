@@ -182,6 +182,30 @@ SPECS: dict[str, Spec] = {
         required=frozenset({"month", "link_id", "country", "clicks"}),
         key=("site", "month", "link_id", "country"),
     ),
+    # Evidence that a period is complete and that counting capacity held (#331).
+    "click_seal": Spec(
+        marker="sealed_at",
+        columns={"site": "site", "day": "day", "sealed_at": "ts"},
+        required=frozenset({"day", "sealed_at"}),
+        key=("site", "day"),
+    ),
+    "click_month_log": Spec(
+        marker="exhausted_days",
+        columns={
+            "site": "site",
+            "month": "month",
+            "rolled_at": "ts",
+            "exhausted_days": "uint",
+        },
+        required=frozenset({"month", "rolled_at", "exhausted_days"}),
+        key=("site", "month"),
+    ),
+    "click_capacity": Spec(
+        marker="marked_at",
+        columns={"site": "site", "day": "day", "marked_at": "ts"},
+        required=frozenset({"day", "marked_at"}),
+        key=("site", "day"),
+    ),
     "kit_events": Spec(
         marker="kind",
         columns={"site": "site", "ts": "ts", "kind": "kit_kind"},
@@ -227,6 +251,9 @@ class Export:
     click_country_daily: list[dict[str, Any]] = field(default_factory=list)
     click_src_monthly: list[dict[str, Any]] = field(default_factory=list)
     click_country_monthly: list[dict[str, Any]] = field(default_factory=list)
+    click_seal: list[dict[str, Any]] = field(default_factory=list)
+    click_month_log: list[dict[str, Any]] = field(default_factory=list)
+    click_capacity: list[dict[str, Any]] = field(default_factory=list)
     kit_events: list[dict[str, Any]] = field(default_factory=list)
     present: set[str] = field(default_factory=set)
 

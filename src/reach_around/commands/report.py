@@ -18,19 +18,9 @@ from pathlib import Path
 
 from reach_around.funnel.csvout import csv_files, utc_now, write_csv_dir
 from reach_around.funnel.export import ExportError, load_exports
-from reach_around.funnel.ledger import (
-    LedgerError,
-    Release,
-    authorize_release,
-    init_ledger,
-    now_stamp,
-)
-from reach_around.funnel.report import (
-    FLOOR,
-    build_report,
-    period_bounds,
-    render_text,
-)
+from reach_around.funnel.ledger import LedgerError, init_ledger, reanchor_ledger
+from reach_around.funnel.release import release_report
+from reach_around.funnel.report import FLOOR, build_report, render_text
 
 EXIT_OK = 0
 EXIT_USAGE = 2
@@ -86,39 +76,44 @@ def run_report(args: argparse.Namespace) -> int:
             )
         if args.ledger is not None and args.period is None:
             raise ValueError("--ledger needs --period")
+        if args.supersede and args.period is None:
+            raise ValueError("--supersede needs --period")
         if args.csv is not None and args.json:
             raise ValueError("--csv and --json cannot be combined")
         export = load_exports(list(args.input))
-        guard = None
-        if args.period is not None:
-            start, end = period_bounds(args.period, args.offset, utc_now().date())
-            # Recorded BEFORE anything is built or printed: no record, no cells.
-            guard = authorize_release(
-                args.ledger,
-                Release(
-                    args.site,
-                    args.period,
-                    start.isoformat(),
-                    end.isoformat(),
-                    now_stamp(),
-                ),
-            )
-        report = build_report(
-            export,
+        options = dict(
             site=args.site,
-            since=since,
-            until=until,
-            days=args.days,
             geo=args.geo,
             include_bots=args.include_bots,
             top=args.top,
             floor=args.floor,
-            period=args.period,
-            offset=args.offset,
-            as_of=utc_now().date(),
-            guard=guard,
         )
-    except (ExportError, ValueError, LedgerError) as exc:
+        if args.period is not None:
+            # Recorded in the ledger BEFORE anything is shown: no record, no cells.
+            report, status = release_report(
+                export,
+                args.ledger,
+                period=args.period,
+                offset=args.offset,
+                as_of=utc_now().date(),
+                supersede=args.supersede,
+                **options,
+            )
+            if status == "supersede":
+                print(
+                    "warning: a correction release was recorded; two releases of "
+                    "one period can let a reader difference them",
+                    file=sys.stderr,
+                )
+        else:
+            report = build_report(
+                export, since=since, until=until, days=args.days, **options
+            )
+    except (
+        ExportError,
+        ValueError,
+        LedgerError,
+    ) as exc:  # IncompletePeriod is a ValueError
         print(f"error: {exc}", file=sys.stderr)
         return EXIT_USAGE
     if args.csv is not None:
@@ -151,6 +146,16 @@ def run_ledger_init(args: argparse.Namespace) -> int:
         "created an empty release ledger; commit it in your private instance "
         "repo so its history is kept"
     )
+    return EXIT_OK
+
+
+def run_ledger_reanchor(args: argparse.Namespace) -> int:
+    try:
+        count = reanchor_ledger(args.file)
+    except LedgerError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return EXIT_USAGE
+    print(f"rewrote the .head file for {count} record(s); commit both files together")
     return EXIT_OK
 
 
@@ -209,6 +214,13 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
         "is refused",
     )
     parser.add_argument(
+        "--supersede",
+        action="store_true",
+        help="with --period: record a correction when the data behind an "
+        "already released period changed (it is recorded too, and two releases "
+        "of one period can let a reader difference them)",
+    )
+    parser.add_argument(
         "--geo",
         choices=("country", "region", "city"),
         default="country",
@@ -250,3 +262,13 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
     )
     init.add_argument("file", type=Path, help="where to create the ledger")
     init.set_defaults(func=run_ledger_init)
+    anchor = subparsers.add_parser(
+        "funnel-ledger-reanchor",
+        help="rewrite the ledger's .head file (only if the ledger is known whole)",
+        description="Rewrite the .head file next to a release ledger from the "
+        "ledger itself, after the .head file was lost. It cannot detect a ledger "
+        "that was already cut short: restore both files together from git first, "
+        "and use this only when you know the ledger is whole.",
+    )
+    anchor.add_argument("file", type=Path, help="the ledger")
+    anchor.set_defaults(func=run_ledger_reanchor)
