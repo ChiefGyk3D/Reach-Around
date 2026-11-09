@@ -27,6 +27,7 @@ from pydantic import (
     model_validator,
 )
 
+from reach_around.config.alerts import Alerts
 from reach_around.config.analytics import Analytics
 from reach_around.config.blocks import (
     Crypto,
@@ -340,6 +341,8 @@ class SiteConfig(_Model):
     numbers: NumbersConfig | None = None
     analytics: Analytics = Analytics()
     kit: KitConfig | None = None
+    # Owner alerts (issue #252), default off; see reach_around.config.alerts.
+    alerts: Alerts = Alerts()
     # The UTC calendar day the site went live; see reach_around.config.cutover.
     cutover_date: date | None = None
 

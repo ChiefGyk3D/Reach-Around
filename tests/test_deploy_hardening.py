@@ -430,3 +430,83 @@ def test_the_deploy_config_gets_the_derived_list_not_the_variable() -> None:
     # and the variable is no longer required (it is a comparison only)
     check = next(s for s in steps("deploy") if s.get("name") == "Check configuration")
     assert "SITE_HOST; do" in check["run"] and "SITE_HOST LINK_IDS" not in check["run"]
+
+
+# ---- owner alerts (#252): the manifest value is checked and emitted ---------
+
+
+def _verify(tmp_path: Path, extra: dict[str, Any]) -> tuple[int, str, str]:
+    manifest = tmp_path / "m.json"
+    body = {"links": {"alpha": "https://example.com/a"}, "lead_retention_days": 30}
+    body.update(extra)
+    manifest.write_text(json.dumps(body), encoding="utf-8")
+    out = tmp_path / "out.txt"
+    done = subprocess.run(  # noqa: S603 - fixed argv
+        [sys.executable, "-I", str(SCRIPT), str(manifest)],
+        env={"PATH": "/usr/bin:/bin", "GITHUB_OUTPUT": str(out)},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return (
+        done.returncode,
+        done.stderr + done.stdout,
+        (out.read_text(encoding="utf-8") if out.exists() else ""),
+    )
+
+
+GOOD_ALERTS = json.dumps(
+    {
+        "channels": ["discord", "matrix"],
+        "events": ["kit_unlocked"],
+        "visitor_email": "full",
+        "max_per_minute": 5,
+        "matrix": {"allowed_hosts": ["matrix.example.org"]},
+    }
+)
+
+
+def test_manifest_without_alerts_emits_none(tmp_path: Path) -> None:
+    code, _, out = _verify(tmp_path, {})
+    assert code == 0 and "alerts_config" not in out
+
+
+def test_manifest_alerts_config_is_emitted_canonically(tmp_path: Path) -> None:
+    code, _, out = _verify(tmp_path, {"alerts_config": GOOD_ALERTS})
+    assert code == 0
+    line = next(x for x in out.splitlines() if x.startswith("alerts_config="))
+    assert json.loads(line.split("=", 1)[1]) == json.loads(GOOD_ALERTS)
+    assert "\n" not in line.split("=", 1)[1] and " " not in line
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        "not json",
+        "[]",
+        json.dumps({"channels": ["slack"], "events": ["kit_unlocked"]}),
+        json.dumps({"channels": ["discord"], "events": []}),
+        json.dumps({"channels": ["discord"], "events": ["kit_unlocked"], "x": 1}),
+        json.dumps(
+            {
+                "channels": ["matrix"],
+                "events": ["kit_unlocked"],
+                "visitor_email": "full",
+                "max_per_minute": 5,
+            }
+        ),
+        json.dumps(
+            {
+                "channels": ["discord"],
+                "events": ["kit_unlocked"],
+                "visitor_email": "full",
+                "max_per_minute": 99,
+            }
+        ),
+        "x" * 2000,
+        5,
+    ],
+)
+def test_manifest_bad_alerts_config_is_refused(tmp_path: Path, bad: Any) -> None:
+    code, text, out = _verify(tmp_path, {"alerts_config": bad})
+    assert code != 0 and "alerts_config" in text and "alerts_config=" not in out

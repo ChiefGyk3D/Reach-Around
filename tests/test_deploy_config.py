@@ -413,3 +413,46 @@ def test_the_writer_refuses_a_missing_or_invalid_derived_list(
     with pytest.raises(subprocess.CalledProcessError):
         _run(tmp_path, None, {"LINK_IDS": bad})
     assert not (tmp_path / "wrangler.deploy.toml").exists()
+
+
+# ---- owner alerts (#252): the config value reaches the Worker's vars --------
+
+ALERTS = (
+    '{"channels":["discord","matrix"],"events":["kit_unlocked"],'
+    '"matrix":{"allowed_hosts":["matrix.example.org"]},'
+    '"max_per_minute":5,"visitor_email":"full"}'
+)
+
+
+def test_alerts_config_from_the_manifest_output_lands_in_the_worker_vars(
+    tmp_path: Path,
+) -> None:
+    data = tomllib.loads(_run(tmp_path, None, {"ALERTS_CONFIG": ALERTS}))
+    assert data["vars"]["ALERTS_CONFIG"] == ALERTS
+
+
+def test_alerts_off_writes_nothing(tmp_path: Path) -> None:
+    for extra in ({}, {"ALERTS_CONFIG": ""}):
+        assert "ALERTS_CONFIG" not in tomllib.loads(_run(tmp_path, None, extra))["vars"]
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        "{'a':1}",
+        '{"a":"x y"}',
+        "[1]",
+        '{"a":"$(id)"}',
+        '{"a":"\'"}',
+        "{" + "a" * 995 + "}",
+    ],
+)
+def test_the_write_step_refuses_a_bad_alerts_config(tmp_path: Path, bad: str) -> None:
+    with pytest.raises(subprocess.CalledProcessError):
+        _run(tmp_path, None, {"ALERTS_CONFIG": bad})
+
+
+def test_the_write_step_reads_alerts_from_the_manifest_step_output() -> None:
+    step = _step("Write deploy config")
+    assert step["env"]["ALERTS_CONFIG"] == "${{ steps.manifest.outputs.alerts_config }}"
+    assert "vars.ALERTS_CONFIG" not in str(step)

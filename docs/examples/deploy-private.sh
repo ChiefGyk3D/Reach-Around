@@ -145,6 +145,16 @@ sed \
 sed -i "/^\[vars\]\$/a LEAD_RETENTION_DAYS = \"${lead_retention}\"" "$wrangler_toml"
 grep -qxF "LEAD_RETENTION_DAYS = \"${lead_retention}\"" "$wrangler_toml" \
   || fail "lead retention not written"
+# Owner alerts: the manifest carries the alerts choice only when it is on. It
+# holds no secret (webhook, token and dedup key are Worker secrets).
+alerts_config="$(jq -r '.alerts_config // empty' "$manifest")"
+if [ -n "$alerts_config" ]; then
+  printf '%s' "$alerts_config" | grep -Eq '^[{][]A-Za-z0-9_",:.[{}-]{1,990}[}]$' \
+    || fail "the manifest has an invalid alerts_config"
+  sed -i "/^\[vars\]\$/a ALERTS_CONFIG = '${alerts_config}'" "$wrangler_toml"
+  grep -qxF "ALERTS_CONFIG = '${alerts_config}'" "$wrangler_toml" \
+    || fail "alerts config not written"
+fi
 route_note="none (clicks are not counted)"
 if [ -n "$ZONE_NAME" ]; then
   printf '\n[[routes]]\npattern = "%s/e/*"\nzone_name = "%s"\n' \
