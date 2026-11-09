@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import sys
 from datetime import date
@@ -21,7 +22,9 @@ from reach_around.config.zones import ZONES, check_zone
 from reach_around.funnel.csvout import csv_files, utc_now, write_csv_dir
 from reach_around.funnel.display import annotate
 from reach_around.funnel.export import ExportError, load_exports
+from reach_around.funnel.htmlout import render_html
 from reach_around.funnel.ledger import LedgerError, init_ledger, reanchor_ledger
+from reach_around.funnel.owner import owner_view
 from reach_around.funnel.release import release_report
 from reach_around.funnel.report import FLOOR, build_report, render_text
 
@@ -41,6 +44,23 @@ def _day(text: str | None, name: str) -> str | None:
     except ValueError:
         raise ValueError(f"{name} is not a real date") from None
     return text
+
+
+DEFAULT_HTML_DAYS = 7
+
+
+def write_html(path: Path, text: str) -> None:
+    """Write the page owner-only through a temp file; a final symlink is replaced,
+    never followed."""
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write(text)
+        os.replace(tmp, path)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
 
 
 def run_report(args: argparse.Namespace) -> int:
@@ -81,6 +101,13 @@ def run_report(args: argparse.Namespace) -> int:
             raise ValueError("--ledger needs --period")
         if args.csv is not None and args.json:
             raise ValueError("--csv and --json cannot be combined")
+        if (
+            args.html is not None
+            and args.period is None
+            and args.days is None
+            and not (args.since or args.until)
+        ):
+            args.days = DEFAULT_HTML_DAYS  # the owner page defaults to 7 days
         zone = None if args.display_zone is None else check_zone(args.display_zone)
         cutover_text = _day(args.cutover, "--cutover")
         cutover = date.fromisoformat(cutover_text) if cutover_text else None
@@ -122,6 +149,19 @@ def run_report(args: argparse.Namespace) -> int:
     ) as exc:  # IncompletePeriod is a ValueError
         print(f"error: {exc}", file=sys.stderr)
         return EXIT_USAGE
+    if args.html is not None:
+        try:
+            write_html(
+                args.html, render_html(owner_view(report), generated_at=utc_now())
+            )
+        except OSError as exc:
+            print(
+                f"error: cannot write HTML: {exc.__class__.__name__}", file=sys.stderr
+            )
+            return EXIT_USAGE
+        print(
+            f"wrote the owner report to {args.html} (UTC days; private, do not publish)"
+        )
     if diagnostics is not None:
         # For the operator's terminal only (stderr); never part of the report or a file.
         print(
@@ -276,6 +316,15 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
         help="write one CSV file per section into DIR (same floor and "
         "suppression; dates are UTC; metadata.csv holds generated_at_utc and "
         "the window); cannot be combined with --json",
+    )
+    parser.add_argument(
+        "--html",
+        type=Path,
+        metavar="FILE",
+        help="also write the owner report as one self-contained HTML file "
+        "(same floored numbers as the text, JSON and CSV; no network, no script; "
+        "private to you, never publish it). Without --since, --until, --days or "
+        "--period it covers the last 7 days of data",
     )
     parser.set_defaults(func=run_report)
     init = subparsers.add_parser(
