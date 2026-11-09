@@ -22,6 +22,7 @@ from reach_around.config.numbers_sources import (
     MastodonSource,
     MatrixSource,
     ThreadsSource,
+    TiktokSource,
     TwitchSource,
     YoutubeSource,
 )
@@ -30,6 +31,18 @@ from reach_around.counts.meta_user import (
     MetaTokenSink,
     follower_total,
     token_configured,
+)
+from reach_around.counts.tiktok_user import (
+    TiktokError,
+)
+from reach_around.counts.tiktok_user import (
+    TokenSink as TiktokTokenSink,
+)
+from reach_around.counts.tiktok_user import (
+    follower_total as tiktok_follower_total,
+)
+from reach_around.counts.tiktok_user import (
+    token_configured as tiktok_token_configured,
 )
 from reach_around.counts.twitch_user import (
     TokenSink,
@@ -71,6 +84,7 @@ class Context:
     env: Mapping[str, str]
     token_sink: TokenSink | None = None
     meta_sink: MetaTokenSink | None = None
+    tiktok_sink: TiktokTokenSink | None = None
     today: date | None = None
 
 
@@ -308,6 +322,22 @@ def threads(source: ThreadsSource, ctx: Context) -> int:
     return _meta(source, ctx)
 
 
+def tiktok(source: TiktokSource, ctx: Context) -> int:
+    """TikTok: the API when the access token variable holds a value, otherwise a
+    skip (the number stays hand-kept; see docs/tiktok-source.md)."""
+    try:
+        configured = tiktok_token_configured(source, ctx.env)
+    except TiktokError as err:
+        raise SourceError(err.kind) from None
+    if not configured:
+        raise SourceSkip(SKIP_TOKEN_NOT_SET)
+    try:
+        total = tiktok_follower_total(source, ctx.env, ctx.fetch, ctx.tiktok_sink)
+    except TiktokError as err:
+        raise SourceError(err.kind) from None
+    return _check_count(total)
+
+
 PROVIDERS: dict[str, Callable[..., int]] = {
     "bluesky": bluesky,
     "mastodon": mastodon,
@@ -318,4 +348,5 @@ PROVIDERS: dict[str, Callable[..., int]] = {
     "twitch": twitch,
     "instagram": instagram,
     "threads": threads,
+    "tiktok": tiktok,
 }
