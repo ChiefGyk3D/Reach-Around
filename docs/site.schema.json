@@ -738,6 +738,52 @@
       "title": "Image",
       "type": "object"
     },
+    "InstagramSource": {
+      "additionalProperties": false,
+      "properties": {
+        "auto_refresh": {
+          "default": false,
+          "title": "Auto Refresh",
+          "type": "boolean"
+        },
+        "kind": {
+          "const": "instagram",
+          "title": "Kind",
+          "type": "string"
+        },
+        "platform": {
+          "pattern": "^[a-z0-9][a-z0-9-]{0,39}$",
+          "title": "Platform",
+          "type": "string"
+        },
+        "refresh_within_days": {
+          "default": 10,
+          "maximum": 59,
+          "minimum": 1,
+          "title": "Refresh Within Days",
+          "type": "integer"
+        },
+        "token_expires": {
+          "anyOf": [
+            {
+              "format": "date",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Token Expires"
+        }
+      },
+      "required": [
+        "kind",
+        "platform"
+      ],
+      "title": "InstagramSource",
+      "type": "object"
+    },
     "KitConfig": {
       "additionalProperties": false,
       "properties": {
@@ -1159,8 +1205,10 @@
                 "bluesky": "#/$defs/BlueskySource",
                 "discord": "#/$defs/DiscordSource",
                 "github": "#/$defs/GithubSource",
+                "instagram": "#/$defs/InstagramSource",
                 "mastodon": "#/$defs/MastodonSource",
                 "matrix": "#/$defs/MatrixSource",
+                "threads": "#/$defs/ThreadsSource",
                 "twitch": "#/$defs/TwitchSource",
                 "youtube": "#/$defs/YoutubeSource"
               },
@@ -1187,6 +1235,12 @@
               },
               {
                 "$ref": "#/$defs/TwitchSource"
+              },
+              {
+                "$ref": "#/$defs/InstagramSource"
+              },
+              {
+                "$ref": "#/$defs/ThreadsSource"
               }
             ]
           },
@@ -2082,6 +2136,57 @@
         }
       },
       "title": "Theme",
+      "type": "object"
+    },
+    "ThreadsSource": {
+      "additionalProperties": false,
+      "properties": {
+        "auto_refresh": {
+          "default": false,
+          "title": "Auto Refresh",
+          "type": "boolean"
+        },
+        "kind": {
+          "const": "threads",
+          "title": "Kind",
+          "type": "string"
+        },
+        "platform": {
+          "pattern": "^[a-z0-9][a-z0-9-]{0,39}$",
+          "title": "Platform",
+          "type": "string"
+        },
+        "refresh_within_days": {
+          "default": 10,
+          "maximum": 59,
+          "minimum": 1,
+          "title": "Refresh Within Days",
+          "type": "integer"
+        },
+        "token_expires": {
+          "anyOf": [
+            {
+              "format": "date",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Token Expires"
+        },
+        "user_id": {
+          "title": "User Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "platform",
+        "user_id"
+      ],
+      "title": "ThreadsSource",
       "type": "object"
     },
     "TwitchSource": {
