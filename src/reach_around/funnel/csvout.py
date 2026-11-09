@@ -209,17 +209,15 @@ def owner_csv_files(view: dict[str, Any]) -> dict[str, bytes]:
         ]
     )
 
-    def status(row: dict[str, Any]) -> str:
-        return {"gap": "gap", "below_floor": "below_floor"}.get(row["status"], "ok")
-
     daily_rows = [
         [
             d["day"],
             d["views"],
+            d["views_status"],
             d["clicks"],
+            d["clicks_status"],
             d["rate"],
             "capped" if d["rate_capped"] else "",
-            status(d),
         ]
         for d in view["daily"]["days"]
     ]
@@ -258,7 +256,16 @@ def owner_csv_files(view: dict[str, Any]) -> dict[str, bytes]:
             ["tile", "status", "value", "previous_window", "change", "note"], tile_rows
         ),
         "owner_daily.csv": render_csv(
-            ["day_utc", "views", "clicks", "click_rate", "note", "status"], daily_rows
+            [
+                "day_utc",
+                "views",
+                "views_status",
+                "clicks",
+                "clicks_status",
+                "click_rate",
+                "note",
+            ],
+            daily_rows,
         ),
         "owner_links.csv": render_csv(
             ["link", "clicks", "clicks_per_100_page_views", "note", "row_type"],

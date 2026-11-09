@@ -789,6 +789,14 @@ def _build_report(
             since = (end - timedelta(days=days - 1)).isoformat()
             until = end.isoformat()
 
+    if (
+        since is not None
+        and until is not None
+        and (date.fromisoformat(until) - date.fromisoformat(since)).days + 1
+        > MAX_DAILY_DAYS
+    ):
+        raise ValueError(f"the window cannot be longer than {MAX_DAILY_DAYS} days")
+
     def window(rows: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
         return [r for r in rows if _in_window(r["day"], since, until)]
 
@@ -1023,6 +1031,9 @@ def _build_report(
                 "days_with_data": len(seen_days),
             }
         ),
+        # The requested window (ad-hoc only), which can be wider than the span
+        # of days that have rows. A released period uses the fixed bounds above.
+        **({} if period is not None else {"window": {"since": since, "until": until}}),
         "counted_classes": sorted(wanted),
         "funnel": {
             "page_views": page_views,

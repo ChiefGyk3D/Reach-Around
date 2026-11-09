@@ -18,6 +18,7 @@ link has no views of its own.
 
 from __future__ import annotations
 
+from datetime import date
 from typing import Any
 
 RATE_CAP = 100.0
@@ -55,10 +56,14 @@ def _change(now: int | float | None, before: int | float | None) -> float | None
 
 
 def _state(report: dict[str, Any], table: str, key: str) -> str:
+    """ok, below_floor, withheld (a small remainder made the cut unsafe) or
+    not_in_export."""
     funnel = report["funnel"]
     if table in funnel["missing"]:
         return "not_in_export"
     if funnel[key] is None:
+        if key == "page_views" and report["bots"].get("views_withheld"):
+            return "withheld"
         return "below_floor"
     return "ok"
 
@@ -72,21 +77,33 @@ def _tiles(report: dict[str, Any]) -> dict[str, Any]:
     points = None
     if now_rate["value"] is not None and prev_rate["value"] is not None:
         points = round(now_rate["value"] - prev_rate["value"], 1)
+    views_state = _state(report, "view_daily", "page_views")
+    clicks_state = _state(report, "click_events", "clicks")
+    if now_rate["value"] is not None:
+        rate_state = "ok"
+    elif "withheld" in (views_state, clicks_state):
+        rate_state = "withheld"
+    elif "not_in_export" in (views_state, clicks_state):
+        rate_state = "not_in_export"
+    elif "below_floor" in (views_state, clicks_state):
+        rate_state = "below_floor"
+    else:
+        rate_state = "unavailable"
     return {
         "views": {
-            "state": _state(report, "view_daily", "page_views"),
+            "state": views_state,
             "value": views,
             "previous": prev["page_views"],
             "change_percent": _change(views, prev["page_views"]),
         },
         "clicks": {
-            "state": _state(report, "click_events", "clicks"),
+            "state": clicks_state,
             "value": clicks,
             "previous": prev["clicks"],
             "change_percent": _change(clicks, prev["clicks"]),
         },
         "click_rate": {
-            "state": "ok" if now_rate["value"] is not None else "unavailable",
+            "state": rate_state,
             "value": now_rate["value"],
             "capped": now_rate["capped"],
             "previous": prev_rate["value"],
@@ -97,24 +114,39 @@ def _tiles(report: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _series_status(day_gap: bool, series_state: str, value: int | None) -> str:
+    """gap, not_in_export, withheld, below_floor or ok for one series on one day."""
+    if day_gap:
+        return "gap"
+    if series_state in ("not_in_export", "withheld"):
+        return series_state
+    return "ok" if value is not None else "below_floor"
+
+
 def _daily(report: dict[str, Any]) -> dict[str, Any]:
     daily = report["daily"]
     rows = []
     for d in daily["days"]:
         r = rate(d["clicks"], d["views"])
+        v_status = _series_status(d["gap"], daily["views_state"], d["views"])
+        c_status = _series_status(d["gap"], daily["clicks_state"], d["clicks"])
         if d["gap"]:
-            status = "gap"
-        elif d["views"] is None and d["clicks"] is None:
-            status = "below_floor"
+            rate_status = "gap"
+        elif "below_floor" in (v_status, c_status):
+            rate_status = "below_floor"
+        elif r["value"] is None:
+            rate_status = "withheld"
         else:
-            status = "ok"
+            rate_status = "ok"
         rows.append(
             {
                 "day": d["day"],
-                "status": status,
                 "views": d["views"],
+                "views_status": v_status,
                 "clicks": d["clicks"],
+                "clicks_status": c_status,
                 "rate": r["value"],
+                "rate_status": rate_status,
                 "rate_capped": r["capped"],
             }
         )
@@ -195,11 +227,24 @@ def owner_view(report: dict[str, Any]) -> dict[str, Any]:
             if r["label"] == FOLDED_COUNTRY:
                 r["note"] = UNKNOWN_NOTE
     release = report["release"]
+    # ad-hoc: the REQUESTED window, which can be wider than the span of days
+    # that have rows; released: the fixed period bounds (already in "period")
+    asked = report.get("window") or {}
+    if release["period"] is None and asked.get("since") and asked.get("until"):
+        window = {"since": asked["since"], "until": asked["until"]}
+    else:
+        window = {"since": period["since"], "until": period["until"]}
+    window_days = None
+    if window["since"] and window["until"]:
+        first = date.fromisoformat(window["since"])
+        window_days = (date.fromisoformat(window["until"]) - first).days + 1
     return {
         "site": report["site"],
         "timezone": "UTC",
         "floor": report["floor"],
-        "window": {"since": period["since"], "until": period["until"]},
+        "window": window,
+        "days_with_data": (None if release["period"] else period.get("days_with_data")),
+        "window_days": window_days,
         "period": release["period"],
         "released": release["period"] is not None,
         "counted_classes": report["counted_classes"],

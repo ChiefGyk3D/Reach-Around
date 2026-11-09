@@ -265,7 +265,7 @@ def test_gap_day_is_a_gap_not_zero(report: dict[str, Any]) -> None:
     csv_row = next(
         r for r in csv_rows(files, "owner_daily.csv") if r[0] == "2026-11-04"
     )
-    assert csv_row == ["2026-11-04", "", "", "", "", "gap"]
+    assert csv_row == ["2026-11-04", "", "gap", "", "gap", "", ""]
 
 
 def test_one_small_day_also_hides_the_smallest_printed_day() -> None:
@@ -291,7 +291,15 @@ def test_empty_export_still_renders(tmp_path: Path) -> None:
     assert "not in this export" in page
     files = csv_files(rep, generated_at=NOW)
     assert csv_rows(files, "owner_daily.csv") == [
-        ["day_utc", "views", "clicks", "click_rate", "note", "status"]
+        [
+            "day_utc",
+            "views",
+            "views_status",
+            "clicks",
+            "clicks_status",
+            "click_rate",
+            "note",
+        ]
     ]
 
 
@@ -365,12 +373,12 @@ def test_csv_matches_the_html_numbers(report: dict[str, Any]) -> None:
     assert len(html_daily) == len(csv_daily) == 7
     for h, c in zip(html_daily, csv_daily, strict=True):
         assert h[0] == c[0]
-        if c[5] == "gap":
+        if c[2] == "gap":
             assert "gap" in h[1]
             continue
-        for shown, raw in zip(h[1:3], c[1:3], strict=True):
-            assert shown == (raw or "below the privacy floor")
-        assert h[3] == (c[3] + (" (capped)" if c[4] else "") if c[3] else "n/a")
+        for shown, raw, status in ((h[1], c[1], c[2]), (h[2], c[3], c[4])):
+            assert shown == (raw if status == "ok" else "below the privacy floor")
+        assert h[3] == (c[5] + (" (capped)" if c[6] else "") if c[5] else "n/a")
     html_links = table_rows(page, "Content clicks per link")[1:]
     csv_links = csv_rows(files, "owner_links.csv")[1:]
     for h, c in zip(html_links, csv_links, strict=False):
@@ -737,3 +745,109 @@ def test_released_period_metadata_is_the_fixed_period_not_the_seen_days(
     win = [re.search(r"Window: [^.]*\.", page_of(r)).group(0) for r in outs]  # type: ignore[union-attr]
     assert win[0] == win[1] and "2026-11-02 to 2026-11-08" in win[0]
     assert with_monday["funnel"]["page_views"] - without["funnel"]["page_views"] == 2
+
+
+# ---- review threads: states, per-series ticks, requested window, range cap ----
+
+
+def _unsafe_views_tables() -> dict[str, Any]:
+    """24 views, each source 4: no row reaches the floor, so no merge is safe."""
+    tables = fixture_tables()
+    tables["view_daily"] = [
+        _v(day, f"s{day[-1]}{n}.example", "US", "h", 4)
+        for day in ("2026-11-07", "2026-11-08")
+        for n in range(3)
+    ] + [_v("2026-11-02", "s9.example", "US", "h", 1)]
+    return tables
+
+
+def test_withheld_views_are_withheld_not_below_the_floor(tmp_path: Path) -> None:
+    rep = report_of(tmp_path, _unsafe_views_tables())
+    assert rep["bots"]["views_withheld"] and rep["funnel"]["page_views"] is None
+    view = owner_view(rep)
+    assert view["tiles"]["views"]["state"] == "withheld"
+    assert view["tiles"]["click_rate"]["state"] == "withheld"
+    rows = {d["day"]: d for d in view["daily"]["days"]}
+    assert rows["2026-11-07"]["views_status"] == "withheld"
+    assert rows["2026-11-04"]["views_status"] == "gap"
+    page = page_of(rep)
+    tile = page[page.index("<h2>Views</h2>") : page.index("<h2>Clicks</h2>")]
+    assert "withheld" in tile and "below the privacy floor" not in tile
+    row = next(r for r in table_rows(page, "Day (UTC)") if r[0] == "2026-11-07")
+    assert row[1].startswith("withheld") and "below the privacy floor" not in row[1]
+    files = csv_files(rep, generated_at=NOW)
+    tiles = {r[0]: r for r in csv_rows(files, "owner_tiles.csv")[1:]}
+    assert tiles["views"][1] == "withheld" and tiles["click_rate"][1] == "withheld"
+    daily = {r[0]: r for r in csv_rows(files, "owner_daily.csv")[1:]}
+    assert daily["2026-11-07"][2] == "withheld"
+    assert daily["2026-11-04"][2] == "gap" and daily["2026-11-04"][4] == "gap"
+
+
+def test_below_floor_and_missing_have_their_own_words(tmp_path: Path) -> None:
+    tables = fixture_tables()
+    tables["click_events"] = tables["click_events"][-4:]  # 4 clicks: under the floor
+    page = page_of(report_of(tmp_path, tables))
+    tile = page[page.index("<h2>Clicks</h2>") : page.index("<h2>Click rate</h2>")]
+    assert "below the privacy floor" in tile
+    only_kit = build_report(
+        load_exports([export_file(tmp_path, {"kit_events": []})]), days=7
+    )
+    assert owner_view(only_kit)["tiles"]["views"]["state"] == "not_in_export"
+    assert "not in this export" in page_of(only_kit)
+
+
+def test_a_tick_is_drawn_per_series_for_its_own_under_floor_day(
+    tmp_path: Path,
+) -> None:
+    tables = fixture_tables()  # 11-06: 4 views, 2 clicks
+    tables["click_events"] += [
+        {"site": "links", "ts": _ts(date(2026, 11, 6)), "link_id": "twitch"}
+        for _ in range(8)
+    ]  # now 10 clicks that day: only the views are under the floor
+    rep = report_of(tmp_path, tables)
+    rows = {d["day"]: d for d in owner_view(rep)["daily"]["days"]}
+    assert rows["2026-11-06"]["views_status"] == "below_floor"
+    assert rows["2026-11-06"]["clicks_status"] == "ok"
+    page = page_of(rep)
+    first = page[page.index("<svg") : page.index("</svg>")]
+    assert 'l4 -7 l4 7z" fill="#8ab4ff"' in first  # a views tick
+    assert 'l4 -7 l4 7z" fill="#ffb74d"' not in first  # no clicks tick
+
+
+def test_header_shows_the_requested_window_even_with_a_gap_at_the_edge(
+    tmp_path: Path,
+) -> None:
+    rep = report_of(tmp_path, fixture_tables(gap="2026-11-02"))
+    assert rep["period"]["since"] == "2026-11-03"  # span of days with rows
+    page = page_of(rep)
+    assert "Window: 2026-11-02 to 2026-11-08 (UTC days)" in page
+    assert "6 of 7 days have data" in page
+
+
+def test_released_header_still_uses_the_fixed_bounds(tmp_path: Path) -> None:
+    rep = _release(tmp_path, _week_tables({"2026-11-03": 30}))
+    page = page_of(rep)
+    assert "Window: 2026-11-02 to 2026-11-08 (UTC days)" in page
+    assert "days have data" not in page
+
+
+def test_a_range_over_366_days_is_refused(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    export = load_exports([export_file(tmp_path, fixture_tables())])
+    with pytest.raises(ValueError, match="366 days"):
+        build_report(export, since="2025-01-01", until="2026-11-08")
+    build_report(export, since="2025-11-08", until="2026-11-08")  # exactly 366: fine
+    path = tmp_path / "export.json"
+    code = main(
+        [
+            "report",
+            "--input",
+            str(path),
+            "--since",
+            "2025-01-01",
+            "--until",
+            "2026-11-08",
+        ]
+    )
+    assert code == 2 and "366 days" in capsys.readouterr().err

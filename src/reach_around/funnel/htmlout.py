@@ -68,8 +68,20 @@ summary{cursor:pointer;color:var(--muted)}
 """
 
 
-def _n(value: int | float | None) -> str:
-    return BELOW if value is None else str(value)
+WORDS = {
+    "below_floor": BELOW,
+    "withheld": "withheld (a small remainder could be recovered)",
+    "not_in_export": "not in this export",
+    "gap": "no data for this day",
+    "unavailable": "n/a",
+}
+
+
+def _cell(value: int | float | None, status: str) -> str:
+    """A figure, or the word for why it is not printed."""
+    if status == "ok" and value is not None:
+        return str(value)
+    return WORDS.get(status, "n/a")
 
 
 def _rate_text(value: float | None, capped: bool) -> str:
@@ -94,8 +106,7 @@ def _tile(name: str, tile: dict[str, Any], view: dict[str, Any]) -> str:
     )
     released = view["released"]
     if name == "click_rate":
-        value = tile["value"]
-        big = "n/a" if value is None else str(value)
+        big = _cell(tile["value"], tile["state"])
         small = RATE_LABEL
         if tile["capped"]:
             small += f". {CAPPED_NOTE}"
@@ -106,14 +117,7 @@ def _tile(name: str, tile: dict[str, Any], view: dict[str, Any]) -> str:
             chg = f"Change: {'+' if pts > 0 else ''}{pts} points against the previous window"
         title = "Click rate"
     else:
-        state = tile["state"]
-        big = (
-            "not in this export"
-            if state == "not_in_export"
-            else BELOW
-            if tile["value"] is None
-            else str(tile["value"])
-        )
+        big = _cell(tile["value"], tile["state"])
         small = "likely-human page views" if name == "views" else "link clicks"
         chg = _change(tile["change_percent"], "Change")
         title = "Views" if name == "views" else "Clicks"
@@ -143,12 +147,12 @@ def _x(i: int, count: int) -> float:
 
 
 def _chart(
-    days: list[dict[str, Any]], series: list[tuple[str, str, str]], title: str
+    days: list[dict[str, Any]], series: list[tuple[str, str, str, str]], title: str
 ) -> str:
     """Inline SVG line chart. ``series`` is (key, css colour var, marker)."""
     count = len(days)
     top = max(
-        (d[k] for d in days for k, _, _ in series if d.get(k) is not None),
+        (d[k] for d in days for k, _, _, _ in series if d.get(k) is not None),
         default=0,
     )
 
@@ -160,7 +164,7 @@ def _chart(
         f"<title>{escape(title)}</title>",
     ]
     for i, d in enumerate(days):
-        if d["status"] == "gap":
+        if d["views_status"] == "gap":
             out.append(
                 f'<rect x="{_x(i, count) - 3:.1f}" y="{Y0}" '
                 f'width="6" height="{Y1 - Y0}" fill="#2a2f39"/>'
@@ -180,7 +184,7 @@ def _chart(
         out.append(
             f'<text x="{X1}" y="{H - 8}" fill="#b4bac4" font-size="20" text-anchor="end">{escape(days[-1]["day"])} UTC</text>'
         )
-    for key, colour, marker in series:
+    for key, colour, marker, status_key in series:
         run: list[str] = []
         runs: list[list[str]] = []
         last: str | None = None  # last printed point, for a dotted bridge
@@ -191,13 +195,15 @@ def _chart(
                 if run:
                     runs.append(run)
                 run = []
-                if d["status"] == "gap":
+                if d[status_key] == "gap":
                     last = None  # a gap breaks the line for good
-                else:
+                elif d[status_key] == "below_floor":
                     bridged = True
                     out.append(
                         f'<path d="M{_x(i, count) - 4:.1f} {Y1 + 10} l4 -7 l4 7z" fill="{colour}"/>'
                     )
+                else:
+                    last = None  # withheld or not exported: nothing to join
                 continue
             here = f"{_x(i, count):.1f} {y(v):.1f}"
             if last is not None and bridged:
@@ -231,12 +237,12 @@ def _chart(
 def _daily_table(rows: list[dict[str, Any]]) -> str:
     body = []
     for r in rows:
-        if r["status"] == "gap":
+        if r["views_status"] == "gap":
             cells = '<td colspan="3">no data in the export for this day (a gap, not zero)</td>'
         else:
             cells = (
-                f'<td class="n">{escape(_n(r["views"]))}</td>'
-                f'<td class="n">{escape(_n(r["clicks"]))}</td>'
+                f'<td class="n">{escape(_cell(r["views"], r["views_status"]))}</td>'
+                f'<td class="n">{escape(_cell(r["clicks"], r["clicks_status"]))}</td>'
                 f'<td class="n">{escape(_rate_text(r["rate"], r["rate_capped"]))}</td>'
             )
         body.append(f"<tr><td>{escape(r['day'])}</td>{cells}</tr>")
@@ -280,12 +286,15 @@ def _daily(view: dict[str, Any]) -> str:
         notes += f"<p class='note'>Daily clicks: {escape(d['clicks_state'].replace('_', ' '))}.</p>"
     chart1 = _chart(
         days,
-        [("views", "#8ab4ff", "circle"), ("clicks", "#ffb74d", "square")],
+        [
+            ("views", "#8ab4ff", "circle", "views_status"),
+            ("clicks", "#ffb74d", "square", "clicks_status"),
+        ],
         "Daily page views and clicks, UTC days",
     )
     chart2 = _chart(
         days,
-        [("rate", "#ffb74d", "square")],
+        [("rate", "#ffb74d", "square", "rate_status")],
         "Daily click rate, clicks per 100 page views, UTC days",
     )
     return (
@@ -416,6 +425,9 @@ def render_html(view: dict[str, Any], *, generated_at: datetime) -> str:
         if win["since"]
         else "no data in this window"
     )
+    if view["days_with_data"] is not None and view["window_days"]:
+        # ad-hoc and owner-private only: a released period never says this
+        span += f", {view['days_with_data']} of {view['window_days']} days have data"
     kind = f", released period: {view['period']}" if view["period"] else ""
     zone = ""
     if view.get("display"):

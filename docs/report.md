@@ -408,6 +408,15 @@ Rules the page follows:
   so the printed total minus the printed days pins no small day; when no day can
   join them the series is withheld.
 - The chart axes print only 0 and the largest printed value.
+- **Why a figure is missing is said.** Values are marked separately: under the
+  floor (`below_floor`), withheld because a small remainder in a page-view table
+  could be recovered (`withheld`), not in the export (`not_in_export`), or a day
+  with no rows (`gap`); the CSV carries these words in `status` columns. A tick
+  is drawn per series on the day that series is under the floor.
+- **Window.** The ad-hoc page header shows the requested window and how many of
+  its days have data (owner-private); a released period shows its fixed bounds.
+  A requested range over 366 days is refused (`the window cannot be longer than
+  366 days`) in the report and the command, so the daily table never truncates.
 - **Ad-hoc versus released.** The daily series, the previous window and the gap
   marks exist only in the ad-hoc owner report (`--days`, `--since`, `--until`),
   computed from the one requested window and the one previous window through the
