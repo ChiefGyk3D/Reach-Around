@@ -2151,6 +2151,11 @@
           "title": "Auto Refresh",
           "type": "boolean"
         },
+        "insights": {
+          "default": false,
+          "title": "Insights",
+          "type": "boolean"
+        },
         "kind": {
           "const": "threads",
           "title": "Kind",
@@ -2220,6 +2225,11 @@
           "default": "TIKTOK_CLIENT_SECRET",
           "title": "Client Secret Env",
           "type": "string"
+        },
+        "insights": {
+          "default": false,
+          "title": "Insights",
+          "type": "boolean"
         },
         "kind": {
           "const": "tiktok",

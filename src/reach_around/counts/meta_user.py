@@ -58,6 +58,7 @@ from typing import Protocol, TextIO
 from urllib.parse import urlencode, urlsplit
 
 from reach_around.config.numbers_sources import InstagramSource, ThreadsSource
+from reach_around.counts.history import MAX_VALUE
 from reach_around.net.fetch import FetchError
 
 INSTAGRAM_HOST = "graph.instagram.com"
@@ -395,3 +396,141 @@ def follower_total(
                 if isinstance(total, dict) and "value" in total:
                     return total["value"]
     raise MetaError("missing_field")
+
+
+# ---------------------------------------------------------------------------
+# Optional Threads insights (issue 394). Off unless ``insights`` is true.
+#
+# VERIFIED 2026-11-09 https://developers.facebook.com/docs/threads/insights :
+#   GET https://graph.threads.com/v1.0/<id>/threads_insights with ``metric`` (a
+#   comma separated list) and optional ``since`` / ``until`` (Unix time or date;
+#   default yesterday to today; earliest 1712991600). ``views`` is a time series
+#   (``values`` of ``value`` and ``end_time``, ``period: day``); ``likes``,
+#   ``replies``, ``reposts``, ``quotes`` are total-value metrics
+#   (``total_value.value``); all accept since and until. ``replies`` counts only
+#   top-level replies. Permission ``threads_manage_insights``.
+# The page contradicts itself once: one example shows ``views`` as a total value.
+# This code accepts either shape for ``views`` (UNVERIFIED which one is live); the
+# series shape is checked against the requested window, the total_value shape is
+# stored under its own metric because its window is vendor-defined.
+# UNVERIFIED: whether ``until`` is inclusive, the data delay, and that a day
+# boundary is a UTC midnight (the documented example shows 08:00 UTC end times),
+# so "7 UTC days" is the requested range, not a proven boundary.
+# ``clicks`` is not collected: it is keyed by third-party link URLs.
+# ---------------------------------------------------------------------------
+
+INSIGHT_WINDOW_DAYS = 7
+INSIGHT_ENGAGEMENT = ("likes", "replies", "reposts", "quotes")
+MAX_INSIGHT_VALUE = 10**12
+
+
+def _insight_int(value: object) -> int | None:
+    if type(value) is not int or not 0 <= value <= MAX_INSIGHT_VALUE:
+        return None
+    return value
+
+
+def _end_time(value: object) -> datetime | None:
+    if not isinstance(value, str) or len(value) > 40:
+        return None
+    try:
+        parsed = datetime.strptime(value, "%Y-%m-%dT%H:%M:%S%z")
+    except ValueError:
+        return None
+    return parsed.astimezone(UTC)
+
+
+def _series_total(
+    item: Mapping[str, object], since: datetime, until: datetime
+) -> tuple[int, bool] | None:
+    """(sum, window_verified). The series shape is bound to the request.
+
+    ``period`` must be ``day``; there must be 6 or 7 points (one per requested
+    day, at most one missing at either edge); every ``end_time`` must parse, lie
+    in ``[since, until + 1 day)`` (exclusive upper bound; a day ending at 08:00
+    UTC, as the docs example shows, can end after ``until``) and fall on its own
+    UTC date. This is the strictest reading consistent with the documented
+    example; the vendor's exact day boundary is UNVERIFIED.
+    The ``total_value`` shape carries no time
+    information, so its window is vendor-defined and ``window_verified`` is False.
+    """
+    values = item.get("values")
+    if isinstance(values, list):
+        if item.get("period") != "day":
+            raise MetaError("window_mismatch")
+        # one point per requested day; one missing leading or trailing point is
+        # tolerated, nothing else
+        if not INSIGHT_WINDOW_DAYS - 1 <= len(values) <= INSIGHT_WINDOW_DAYS:
+            raise MetaError("window_mismatch")
+        total = 0
+        seen: set[date] = set()
+        for point in values:
+            if not isinstance(point, dict):
+                return None
+            number = _insight_int(point.get("value"))
+            when = _end_time(point.get("end_time"))
+            if number is None:
+                return None
+            if when is None or when.date() in seen:
+                raise MetaError("window_mismatch")
+            if not since <= when < until + timedelta(days=1):
+                raise MetaError("window_mismatch")
+            seen.add(when.date())
+            total += number
+        return total, True
+    box = item.get("total_value")
+    number = _insight_int(box.get("value")) if isinstance(box, dict) else None
+    return None if number is None else (number, False)
+
+
+def threads_insights(
+    source: ThreadsSource,
+    env: Mapping[str, str],
+    fetch: Fetch,
+    today: date,
+) -> dict[str, int]:
+    """``views_7d`` and ``engagement_7d`` over the last seven whole UTC days.
+
+    Window: ``since`` is 00:00 UTC seven days before ``today``, ``until`` is
+    00:00 UTC of ``today``. ``views_7d`` is the sum of the daily ``views``.
+    ``engagement_7d`` = likes + replies + reposts + quotes (each a total over the
+    same window). A metric is left out, never zero, when its figures are absent
+    or of the wrong type. Never refreshes the token.
+    """
+    credential_name(source)
+    check_source(source)
+    if type(source.insights) is not bool:
+        raise MetaError("bad_source_setting")
+    session = _Session(source, env, fetch, NoopSink(), today)
+    if source.token_expires is not None and source.token_expires < today:
+        raise MetaError("token_expired")
+    until = datetime.combine(today, time(0), tzinfo=UTC)
+    since = until - timedelta(days=INSIGHT_WINDOW_DAYS)
+    reply = session.read(
+        f"/{THREADS_VERSION}/{source.user_id}/threads_insights",
+        {
+            "metric": ",".join(("views", *INSIGHT_ENGAGEMENT)),
+            "since": str(int(since.timestamp())),
+            "until": str(int(until.timestamp())),
+        },
+    )
+    data = reply.get("data")
+    if not isinstance(data, list) or len(data) > 20:
+        raise MetaError("missing_field")
+    found: dict[str, tuple[int, bool] | None] = {}
+    for item in data:
+        name = item.get("name") if isinstance(item, dict) else None
+        if isinstance(name, str) and name in ("views", *INSIGHT_ENGAGEMENT):
+            found[name] = _series_total(item, since, until)
+    out: dict[str, int] = {}
+    views = found.get("views")
+    if views is not None:
+        out["views_7d" if views[1] else "views_vendor_window"] = views[0]
+    parts = [found.get(name) for name in INSIGHT_ENGAGEMENT]
+    if all(p is not None for p in parts):
+        out["engagement_7d"] = sum(p[0] for p in parts if p is not None)
+    if not out:
+        raise MetaError("missing_field")
+    if any(value > MAX_VALUE for value in out.values()):
+        raise MetaError("bad_aggregate")
+    return out

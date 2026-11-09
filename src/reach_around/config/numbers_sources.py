@@ -238,6 +238,9 @@ class ThreadsSource(_MetaSource):
 
     # Threads user id (digits), the path segment of the documented insights route.
     user_id: str
+    # Off by default. UNVERIFIED vendor behavior (see docs/engagement-sources.md):
+    # when true, also collect aggregate views and engagement numbers.
+    insights: Annotated[bool, Field(strict=True)] = False
 
     @field_validator("user_id")
     @classmethod
@@ -260,6 +263,9 @@ class TiktokSource(_Source):
     client_key_env: Literal["TIKTOK_CLIENT_KEY"] = "TIKTOK_CLIENT_KEY"
     client_secret_env: Literal["TIKTOK_CLIENT_SECRET"] = "TIKTOK_CLIENT_SECRET"  # noqa: S105
     auto_refresh: Annotated[bool, Field(strict=True)] = False
+    # Off by default. UNVERIFIED vendor behavior (see docs/engagement-sources.md):
+    # when true, also collect aggregate views and engagement numbers.
+    insights: Annotated[bool, Field(strict=True)] = False
 
 
 Source = Annotated[
