@@ -218,14 +218,10 @@ body .ra-l3.ra-bx::before {
   a.link.ra-bx::after { display: none; }
 }
 
-/* Interactive frames: hover keeps the element's own hover; the focus ring is
+/* Interactive frames keep the component's own hover (lift and brightness);
+   the brackets and rules move with the element, and the frame keeps no box
+   shadow of its own so the chamfered art is never boxed. The focus ring is
    drawn out past the brackets so it is never clipped. */
-@media (hover: hover) {
-  body a.ra-bx:hover, body button.ra-bx:hover, body summary.ra-bx:hover {
-    filter: none;
-    transform: none;
-  }
-}
 body .ra-bx:focus-visible {
   outline: 3px solid var(--ra-color-link);
   outline-offset: 4px;
