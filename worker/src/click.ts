@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 import { normalizeAddress } from "./address";
 import { limiterKeyOrIsolate } from "./ratekey";
+import { clickCounterStatements } from "./clickfunnel";
 import { killedSites, loadSites, siteForRequest } from "./sites";
 
 /** Workers Rate Limiting binding (the subset we use). */
@@ -211,9 +212,26 @@ export async function handleClick(request: Request, env: Env): Promise<Response>
     // is stored (#408). A click with a source keeps no country.
     const now = Date.now();
     const src = clickSource(new URL(request.url), site.sources);
-    await env.DB.prepare("INSERT INTO click_events (ts, link_id, country, site, src) VALUES (?, ?, ?, ?, ?)")
-      .bind(now - (now % HOUR_MS), linkId, src === null ? countryOf(request) : null, site.id, src)
-      .run();
+    const country = countryOf(request);
+    await env.DB.batch([
+      env.DB.prepare("INSERT INTO click_events (ts, link_id, country, site, src) VALUES (?, ?, ?, ?, ?)").bind(
+        now - (now % HOUR_MS),
+        linkId,
+        src === null ? country : null,
+        site.id,
+        src,
+      ),
+      // The marginal funnel counters (#331): a count per (day, link, label), no row per click.
+      // Country counts every click, with or without a source; the two are never paired.
+      ...clickCounterStatements(env.DB, {
+        site: site.id,
+        ts: now,
+        linkId,
+        src,
+        listsSources: site.sources !== undefined,
+        country,
+      }),
+    ]);
   } catch {
     // A failure must look the same as success from the outside.
   }

@@ -202,6 +202,210 @@ def _joint_click_sources(
     }
 
 
+DIRECT = "direct"
+FOLDED = "other"
+UNKNOWN_COUNTRY = "ZZ"  # the Worker's label for an unknown or folded country
+HIGH_DIRECT_SHARE = 50.0  # percent of shown clicks that carry no source label
+
+
+def _month_span(month: str) -> tuple[str, str]:
+    year, mon = int(month[:4]), int(month[5:])
+    first = date(year, mon, 1)
+    nxt = date(year + (mon == 12), mon % 12 + 1, 1)
+    return first.isoformat(), (nxt - timedelta(days=1)).isoformat()
+
+
+def _funnel_cells(
+    daily: Iterable[dict[str, Any]],
+    monthly: Iterable[dict[str, Any]],
+    label_key: str,
+    site: str,
+    since: str | None,
+    until: str | None,
+) -> tuple[dict[str, dict[str, int]], list[str]]:
+    """Link -> label -> clicks from the funnel counters in the window.
+
+    A month that lies wholly inside the window and has a monthly row is read
+    from the monthly table (the day cells of a month go 90 days after it
+    closes, so the monthly rows are the complete record). Every other day is
+    read from the day cells. A month is never read both ways, so nothing is
+    counted twice. The floor is applied by the caller, after this sum.
+    """
+    monthly_rows = [r for r in monthly if r["site"] == site]
+    use: set[str] = set()
+    for month in {r["month"] for r in monthly_rows}:
+        first, last = _month_span(month)
+        if (since is None or first >= since) and (until is None or last <= until):
+            use.add(month)
+    cells: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
+    for r in monthly_rows:
+        if r["month"] in use:
+            cells[r["link_id"]][r[label_key]] += r["clicks"]
+    for r in daily:
+        if r["site"] != site or r["day"][:7] in use:
+            continue
+        if _in_window(r["day"], since, until):
+            cells[r["link_id"]][r[label_key]] += r["clicks"]
+    return cells, sorted(use)
+
+
+def _link_breakdown(
+    by_link: Mapping[str, Mapping[str, int]],
+    printed: list[str] | None,
+    floor: int,
+    top: int,
+    present: bool,
+    months: list[str],
+) -> dict[str, Any]:
+    """Whole-link breakdowns for a marginal pair (label x destination).
+
+    A link's cells are printed together or not at all: only when every one of
+    them is at least the floor and, if a per-link table is printed beside it
+    (``printed``), the link is one of its printed rows. No merged line and no
+    grand total of hidden cells is printed, and the per-destination totals are
+    sums of printed cells, so a withheld cell cannot be recovered from any
+    printed number. Truncation by ``top`` drops whole links, never one cell.
+    """
+    empty: dict[str, Any] = {
+        "months_used": months,
+        "destinations": [],
+        "cells": [],
+        "destination_totals": [],
+        "label_totals": [],
+        "links_withheld": 0,
+        "more_links": 0,
+    }
+    if not present:
+        return {"state": "not_in_export", **empty}
+    candidates = {
+        link: cells
+        for link, cells in by_link.items()
+        if cells and (printed is None or link in printed)
+    }
+    clean = {
+        link: cells
+        for link, cells in candidates.items()
+        if all(n >= floor for n in cells.values())
+    }
+    order = sorted(clean, key=lambda link: (-sum(clean[link].values()), link))
+    shown = order[:top]
+    label_totals: dict[str, int] = defaultdict(int)
+    cell_rows: list[dict[str, Any]] = []
+    for link in shown:
+        for label, n in sorted(clean[link].items(), key=lambda kv: (-kv[1], kv[0])):
+            cell_rows.append({"label": label, "destination": link, "clicks": n})
+            label_totals[label] += n
+    withheld = sum(1 for cells in by_link.values() if cells) - len(clean)
+    state = "ok"
+    if by_link and not cell_rows and not len(order) > top:
+        state = "withheld"
+    return {
+        "state": state,
+        "months_used": months,
+        "destinations": [
+            {"destination": link, "clicks": sum(clean[link].values())} for link in shown
+        ],
+        "cells": cell_rows,
+        "label_totals": [
+            {"label": label, "clicks": n}
+            for label, n in sorted(label_totals.items(), key=lambda kv: (-kv[1], kv[0]))
+        ],
+        "links_withheld": withheld,
+        "more_links": max(0, len(order) - top),
+    }
+
+
+def _shown_total(section: Mapping[str, Any]) -> int:
+    return sum(cell["clicks"] for cell in section["cells"])
+
+
+def _matrix_section(section: dict[str, Any], top: int) -> dict[str, Any]:
+    """The source by destination matrix plus the ranked flow list."""
+    shown = _shown_total(section)
+    cells = [
+        {"source": c["label"], "destination": c["destination"], "clicks": c["clicks"]}
+        for c in section["cells"]
+    ]
+    ranked = sorted(cells, key=lambda c: (-c["clicks"], c["source"], c["destination"]))
+    ranked_rows = [
+        {
+            "label": f"{c['source']} -> {c['destination']}",
+            "clicks": c["clicks"],
+            "share": round(c["clicks"] * 100 / shown, 1),
+        }
+        for c in ranked[:top]
+    ]
+    rest = sum(c["clicks"] for c in ranked[top:])
+    direct = sum(c["clicks"] for c in cells if c["source"] == DIRECT)
+    direct_share = round(direct * 100 / shown, 1) if shown else None
+    out = {k: v for k, v in section.items() if k not in ("cells", "label_totals")}
+    out.update(
+        sources=[
+            {"source": t["label"], "clicks": t["clicks"]}
+            for t in section["label_totals"]
+        ],
+        cells=cells,
+        ranked=ranked_rows,
+        ranked_other=rest,
+        ranked_more_rows=max(0, len(ranked) - top),
+        shown_clicks=shown,
+        direct_share_percent=direct_share,
+        direct_share_high=bool(
+            direct_share is not None and direct_share >= HIGH_DIRECT_SHARE
+        ),
+    )
+    return out
+
+
+def _country_section(section: dict[str, Any], top: int) -> dict[str, Any]:
+    """Country by destination: the top countries, the rest folded per destination."""
+    totals = section["label_totals"]
+    keep = [t["label"] for t in totals if t["label"] != UNKNOWN_COUNTRY][:top]
+    folded: dict[str, int] = defaultdict(int)
+    cells: list[dict[str, Any]] = []
+    for c in section["cells"]:
+        if c["label"] in keep:
+            cells.append(
+                {
+                    "country": c["label"],
+                    "destination": c["destination"],
+                    "clicks": c["clicks"],
+                }
+            )
+        else:
+            folded[c["destination"]] += c["clicks"]
+    for link in section["destinations"]:
+        if folded.get(link["destination"]):
+            cells.append(
+                {
+                    "country": FOLDED,
+                    "destination": link["destination"],
+                    "clicks": folded[link["destination"]],
+                }
+            )
+    out = {k: v for k, v in section.items() if k not in ("cells", "label_totals")}
+    out.update(
+        countries=[
+            {
+                "country": t["label"] if t["label"] != UNKNOWN_COUNTRY else FOLDED,
+                "clicks": t["clicks"],
+            }
+            for t in totals
+            if t["label"] in keep
+        ]
+        + ([{"country": FOLDED, "clicks": sum(folded.values())}] if folded else []),
+        cells=cells,
+        more_countries=max(
+            0,
+            len(totals)
+            - len(keep)
+            - sum(1 for t in totals if t["label"] == UNKNOWN_COUNTRY),
+        ),
+        shown_clicks=_shown_total(section),
+    )
+    return out
+
+
 def _source_label(src_kind: str, src: str) -> str:
     if src_kind == "d":
         return "(direct)"
@@ -267,10 +471,15 @@ def build_report(
     ]
     kit_unscoped = site != "links" and any("site" not in r for r in export.kit_events)
 
+    counter_days = [
+        r["day"]
+        for r in (*export.click_src_daily, *export.click_country_daily)
+        if r["site"] == site
+    ]
     if days is not None:
         every = [
             r["day"] for r in view_rows + dim_rows + geo_rows + click_rows + kit_rows
-        ]
+        ] + counter_days
         if every:
             end = date.fromisoformat(until) if until else date.fromisoformat(max(every))
             since = (end - timedelta(days=days - 1)).isoformat()
@@ -287,6 +496,7 @@ def build_report(
     click_rows, kit_rows = window(click_rows), window(kit_rows)
     seen_days = sorted(
         {r["day"] for r in view_rows + dim_rows + geo_rows + click_rows + kit_rows}
+        | {d for d in counter_days if _in_window(d, since, until)}
     )
     wanted = set(CLASSES) if include_bots else {"h"}
 
@@ -365,6 +575,44 @@ def build_report(
             withheld.append("kit_unlocks")
 
     links_section = _section(links, floor, top, "click_events" in export.present)
+    printed_links = (
+        [row["label"] for row in links_section["rows"]]
+        if "click_events" in export.present
+        else None
+    )
+    src_cells, src_months = _funnel_cells(
+        export.click_src_daily, export.click_src_monthly, "src", site, since, until
+    )
+    country_cells, country_months = _funnel_cells(
+        export.click_country_daily,
+        export.click_country_monthly,
+        "country",
+        site,
+        since,
+        until,
+    )
+    matrix = _matrix_section(
+        _link_breakdown(
+            src_cells,
+            printed_links,
+            floor,
+            top,
+            bool({"click_src_daily", "click_src_monthly"} & export.present),
+            src_months,
+        ),
+        top,
+    )
+    countries = _country_section(
+        _link_breakdown(
+            country_cells,
+            printed_links,
+            floor,
+            top,
+            bool({"click_country_daily", "click_country_monthly"} & export.present),
+            country_months,
+        ),
+        top,
+    )
     report: dict[str, Any] = {
         "version": REPORT_VERSION,
         "site": site,
@@ -394,6 +642,8 @@ def build_report(
         },
         "links": links_section,
         "click_sources": {},  # joint suppression with "links", filled below
+        "click_matrix": matrix,
+        "click_countries": countries,
         **{
             name: _section(cuts[name], floor, top, "view_dim_daily" in export.present)
             for name in DEVICE_SECTIONS
@@ -459,6 +709,117 @@ def _table(title: str, section: dict[str, Any], lines: list[str]) -> None:
         lines.append(
             f"  {'(rows below the floor)':<{width}}  {section['other_below_floor']:>8}"
         )
+
+
+def _grid(header: list[str], rows: list[list[str]], lines: list[str]) -> None:
+    widths = [max(len(r[i]) for r in [header, *rows]) for i in range(len(header))]
+    for n, row in enumerate([header, *rows]):
+        cells = [row[0].ljust(widths[0])] + [
+            row[i].rjust(widths[i]) for i in range(1, len(row))
+        ]
+        lines.append("  " + "  ".join(cells))
+        if n == 0:
+            lines.append("  " + "  ".join("-" * w for w in widths))
+
+
+def _funnel_notes(section: dict[str, Any], lines: list[str]) -> None:
+    if section["months_used"]:
+        lines.append(
+            "  Whole months read from the monthly rollup: "
+            + ", ".join(section["months_used"])
+            + "."
+        )
+    if section["links_withheld"]:
+        lines.append(
+            "  A destination is shown only when every part of it is at or above "
+            "the floor; "
+            f"{section['links_withheld']} not shown."
+        )
+    if section["more_links"]:
+        lines.append(f"  ... {section['more_links']} more destinations (raise --top)")
+
+
+def _funnel_sections(report: dict[str, Any], lines: list[str]) -> None:
+    """The marginal-pair sections: source -> destination and country -> destination."""
+    matrix = report["click_matrix"]
+    lines.append("")
+    lines.append("Clicks by source and destination")
+    if matrix["state"] == "not_in_export":
+        lines.append("  not in this export")
+    elif matrix["state"] == "withheld" or not matrix["cells"]:
+        lines.append(
+            "  every destination has a part below the privacy floor; nothing shown"
+            if matrix["state"] == "withheld"
+            else "  no data in this period"
+        )
+    else:
+        dests = [d["destination"] for d in matrix["destinations"]]
+        by = {(c["source"], c["destination"]): c["clicks"] for c in matrix["cells"]}
+        rows = [
+            [t["source"]]
+            + [str(by.get((t["source"], d), 0)) for d in dests]
+            + [str(t["clicks"])]
+            for t in matrix["sources"]
+        ]
+        rows.append(
+            ["total (shown)"]
+            + [str(d["clicks"]) for d in matrix["destinations"]]
+            + [str(matrix["shown_clicks"])]
+        )
+        _grid(["source", *dests, "total"], rows, lines)
+        _funnel_notes(matrix, lines)
+        if matrix["direct_share_high"]:
+            lines.append(
+                f"  Note: {matrix['direct_share_percent']}% of the clicks shown carry "
+                "no source label (direct); label the links you share to see more."
+            )
+        lines.append("")
+        lines.append("Top flows (share of the clicks shown above, never a conversion)")
+        for row in matrix["ranked"]:
+            lines.append(f"  {row['label']:<40} {row['clicks']:>8}  ({row['share']}%)")
+        if matrix["ranked_other"]:
+            lines.append(f"  {'other':<40} {matrix['ranked_other']:>8}")
+    lines.append(
+        "  Counts clicks, not people. A source is the label on the link the "
+        "visitor came in on; no click is tied to a view or a person."
+    )
+    countries = report["click_countries"]
+    lines.append("")
+    lines.append("Clicks by country and destination")
+    if countries["state"] == "not_in_export":
+        lines.append("  not in this export")
+    elif countries["state"] == "withheld" or not countries["cells"]:
+        lines.append(
+            "  every destination has a part below the privacy floor; nothing shown"
+            if countries["state"] == "withheld"
+            else "  no data in this period"
+        )
+    else:
+        dests = [d["destination"] for d in countries["destinations"]]
+        by = {(c["country"], c["destination"]): c["clicks"] for c in countries["cells"]}
+        rows = [
+            [t["country"]]
+            + [str(by.get((t["country"], d), 0)) for d in dests]
+            + [str(t["clicks"])]
+            for t in countries["countries"]
+        ]
+        rows.append(
+            ["total (shown)"]
+            + [str(d["clicks"]) for d in countries["destinations"]]
+            + [str(countries["shown_clicks"])]
+        )
+        _grid(["country", *dests, "total"], rows, lines)
+        _funnel_notes(countries, lines)
+        if countries["more_countries"]:
+            lines.append(
+                f"  ... {countries['more_countries']} more countries folded into other "
+                "(raise --top)"
+            )
+    lines.append(
+        "  Counts clicks, not people. Country codes only, from the click request, "
+        "for every click whether or not it carried a source; other is unknown "
+        "or folded."
+    )
 
 
 def render_text(report: dict[str, Any]) -> str:
@@ -533,6 +894,7 @@ def render_text(report: dict[str, Any]) -> str:
             "  A link's breakdown is shown only when every part is at or above the "
             "floor; other links show their total above."
         )
+    _funnel_sections(report, lines)
     _table(f"Device classes (classes: {classes})", report["devices"], lines)
     _table(f"Browsers (classes: {classes})", report["browsers"], lines)
     _table(f"Operating systems (classes: {classes})", report["systems"], lines)

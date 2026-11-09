@@ -26,6 +26,8 @@ the file.
 | Geography | `view_geo_daily` | `--geo country` (default), `region` or `city`. The Worker folds small cities and regions upward before the export, so a finer level may show `other`. Country codes only, no coordinates. |
 | Link clicks | `click_events` | Per link id. |
 | Link clicks by source | `click_events` | `source -> link` pairs, from the closed source label the page sent with the click (the `s` parameter; `none` when the link carried no label, `other` for a label not on the site's list). A count of clicks, never of people, and not tied to any view. Joint suppression with the per-link table: a link's breakdown prints only when every part is at or above the floor and its total is a printed row; otherwise only the link total (or the merged line) prints. The matrix presentation is a later change (#409). |
+| Clicks by source and destination, Top flows | `click_src_daily`, `click_src_monthly` | The matrix of "came from Instagram, went to Twitch": rows are source labels (`direct` for a click that carried none, `other` for a label not on the site's list), columns are destinations (link ids), cells are clicks. Top flows is the same printed cells as a ranked `source -> destination` list with a share of the clicks shown (never a conversion), top N then `other`. A destination appears only when every one of its cells is at or above the floor (and, when `click_events` is in the export, it is a printed row of the link table); otherwise none of it prints. Totals are sums of printed cells only. A note appears when half or more of the shown clicks are `direct`. |
+| Clicks by country and destination | `click_country_daily`, `click_country_monthly` | Country codes only (no region or city on clicks), counted for EVERY click when it arrives, whether or not it carried a source, so it does not depend on the raw click rows. Same whole-destination rule and floor. The top N countries print; the rest, with the Worker's own `ZZ` (unknown or folded), are summed per destination into `other`. |
 | Devices, Browsers, Systems | `view_dim_daily` | Device class, browser family and operating system, from the Worker's closed-vocabulary dimension rows (`dim` = `device`, `browser`, `os`). Likely-human only unless `--include-bots`. A value the Worker folded into `other` is shown as `other`. Floored and suppressed like the pages table, and part of the same view population (see below). Version numbers, screen size, language and network type are not shown. |
 | Bots | `view_daily`, `view_dim_daily` | Share of all recorded views per class (likely human, verified crawler as claimed, automated, suspicious) and the reason codes. |
 
@@ -70,6 +72,8 @@ aggregate label and a count; there is no per-visitor row and no unique count.
 | `funnel.csv` | `step,value,status` | page views, clicks, kit views, kit unlocks, the two ratios; status `ok`, `below_floor`, `not_in_export`, `not_available`, `n/a` |
 | `pages.csv`, `sources.csv`, `geography.csv`, `links.csv`, `devices.csv`, `browsers.csv`, `systems.csv`, `bot_reasons.csv` | `label,views,row_type` | `row`, one `below_floor` row for the merged remainder, or a single row typed `withheld` or `not_in_export` |
 | `bot_classes.csv` | `class,name,views,share_percent,row_type` | as above |
+| `click_matrix.csv`, `click_countries.csv` | `source,destination,clicks,row_type` and `country,destination,clicks,row_type` | `cell` (a printed cell of a whole destination), or a single row typed `withheld` or `not_in_export` |
+| `click_flows.csv` | `flow,clicks,share_of_shown_clicks_percent,row_type` | `row`, one `other` row, or a single state row |
 
 Decision: the generation time and the window go in a separate `metadata.csv`,
 not in comment lines at the top of each file, so every section file is a plain
@@ -113,6 +117,8 @@ agent, so a correct export never trips this. If it does, the export is wrong.
 | `view_dim_daily` | `day, dim, value, bot_class, views` [`site, day_tz, uniques`]; also feeds Devices, Browsers, Systems and the bot reasons |
 | `view_geo_daily` | `day, country, region, city, bot_class, views` [`site, day_tz, uniques`] |
 | `click_events` | `ts, link_id` [`site, country, src`] |
+| `click_src_daily`, `click_country_daily` | `day, link_id, src` (or `country`), `clicks` [`site`] |
+| `click_src_monthly`, `click_country_monthly` | `month` (`YYYY-MM`), `link_id, src` (or `country`), `clicks` [`site`] |
 | `kit_events` | `ts, kind` [`site`] |
 
 `kit_events` also has a `lead_id` column in the database. Do not select it; a
@@ -196,3 +202,29 @@ languages, viewport size or network type (they are in `view_dim_daily` but are
 not reported). Devices, browsers and systems are counts per value, never joined
 with each other: there is no "Safari on iOS" row, because the Worker stores each
 dimension on its own.
+
+## Funnel counters: months, windows and the floor
+
+The Worker keeps two marginal counters (never a three-way cell): source by link
+and country by link, per UTC day. They are incremented when a click arrives, so
+the country counter covers every click, including those that carry a source
+(whose raw row keeps no country). The report sums them over the window and
+applies the floor after summing, so two days of 3 clicks print as 6.
+
+Day cells are kept 90 days. A closed month is rolled into the monthly tables,
+kept 25 months. A month that lies wholly inside the window and has a monthly
+row is read from that row; every other day is read from its day cell. A month
+is never read both ways. For a window older than 90 days, use whole calendar
+months (`--since` the first, `--until` the last): a partial month older than 90
+days has no day cells left and prints nothing.
+
+Suppression is joint across these sections and the link table: a withheld cell
+cannot be recovered from a printed number, because a destination prints all of
+its cells or none, no merged line or grand total of hidden cells is printed, and
+every total in these sections is a sum of printed cells. The sections count
+clicks, not people: a source is the label on the link the visitor came in on,
+and no click is tied to a view or to a person. A high `direct` share means few
+shared links carry a label (see the source labels in `docs/analytics-design.md`).
+Not part of this change: grouping destinations by platform, the landing and hop
+tables (#334), device and hour-by-weekday pairs (#410), and a marker for windows
+that span the cutover (#371).

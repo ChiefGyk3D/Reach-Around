@@ -33,7 +33,9 @@ def collected_items(config: SiteConfig) -> list[Disclosure]:
                     "A count of link clicks: which link was clicked, the "
                     "visitor's country, and the short source label the link "
                     "you came in on carried (from a fixed list), with the "
-                    "time rounded to the hour, with no IP address stored."
+                    "time rounded to the hour, with no IP address stored. "
+                    "Totals of these counts per day and per month, which hold "
+                    "no time finer than a day, are kept for up to 25 months."
                 ),
                 why="To see which links are useful. The counts are anonymous.",
                 kept=f"{config.privacy.retention_days} days",

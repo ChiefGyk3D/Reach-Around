@@ -5,6 +5,20 @@
       "key",
       "value"
     ],
+    "click_country_daily": [
+      "site",
+      "day",
+      "link_id",
+      "country",
+      "clicks"
+    ],
+    "click_country_monthly": [
+      "site",
+      "month",
+      "link_id",
+      "country",
+      "clicks"
+    ],
     "click_events": [
       "id",
       "ts",
@@ -12,6 +26,30 @@
       "country",
       "site",
       "src"
+    ],
+    "click_month_log": [
+      "site",
+      "month",
+      "rolled_at"
+    ],
+    "click_seal": [
+      "site",
+      "day",
+      "sealed_at"
+    ],
+    "click_src_daily": [
+      "site",
+      "day",
+      "link_id",
+      "src",
+      "clicks"
+    ],
+    "click_src_monthly": [
+      "site",
+      "month",
+      "link_id",
+      "src",
+      "clicks"
     ],
     "counters": [
       "key",
@@ -178,8 +216,14 @@
     ]
   },
   "numeric": {
+    "click_country_daily.clicks": "small",
+    "click_country_monthly.clicks": "small",
     "click_events.id": "small",
     "click_events.ts": "ms",
+    "click_month_log.rolled_at": "ms",
+    "click_seal.sealed_at": "ms",
+    "click_src_daily.clicks": "small",
+    "click_src_monthly.clicks": "small",
     "counters.count": "small",
     "d1_migrations.id": "small",
     "kit_events.id": "small",
