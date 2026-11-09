@@ -751,9 +751,9 @@ def test_an_engine_config_error_is_not_mistaken_for_no_block(tmp_path: Path) -> 
 YT_CONFIG = (
     "version: 1\nnumbers:\n  sources:\n"
     "    - {platform: youtube, kind: youtube, channel_id: UCxxxxxxxxxxxxxxxxxxxxxx,"
-    " api_key_env: MY_YT_KEY}\n"
+    " api_key_env: YOUTUBE_API_KEY}\n"
     "    - {platform: twitch, kind: twitch, login: abc,"
-    " client_id_env: MY_TW_ID, client_secret_env: MY_TW_SECRET}\n"
+    " client_id_env: TWITCH_CLIENT_ID, client_secret_env: TWITCH_CLIENT_SECRET}\n"
 )
 
 
@@ -772,9 +772,9 @@ def test_the_engine_gets_only_an_allow_list_of_the_environment(
         extra_env={
             "HOME": str(tmp_path),
             "LANG": "C.UTF-8",
-            "MY_YT_KEY": "k",
-            "MY_TW_ID": "i",
-            "MY_TW_SECRET": "s",
+            "YOUTUBE_API_KEY": "k",
+            "TWITCH_CLIENT_ID": "i",
+            "TWITCH_CLIENT_SECRET": "s",
             "UNRELATED_SECRET": "x",
             "ACTIONS_ID_TOKEN_REQUEST_URL": "u",
             "ACTIONS_ID_TOKEN_REQUEST_TOKEN": "t",
@@ -784,7 +784,14 @@ def test_the_engine_gets_only_an_allow_list_of_the_environment(
     )
     assert proc.returncode == 0, proc.stderr
     got = set(engine_env(tmp_path))
-    assert {"MY_YT_KEY", "MY_TW_ID", "MY_TW_SECRET", "PATH", "HOME", "LANG"} <= got
+    assert {
+        "YOUTUBE_API_KEY",
+        "TWITCH_CLIENT_ID",
+        "TWITCH_CLIENT_SECRET",
+        "PATH",
+        "HOME",
+        "LANG",
+    } <= got
     for bad in (
         "UNRELATED_SECRET",
         "ACTIONS_ID_TOKEN_REQUEST_URL",
@@ -810,7 +817,7 @@ def test_the_engine_gets_only_an_allow_list_of_the_environment(
 def test_env_names_that_could_expose_runner_credentials_are_refused(
     tmp_path: Path, name: str
 ) -> None:
-    config = YT_CONFIG.replace("MY_YT_KEY", name)
+    config = YT_CONFIG.replace("api_key_env: YOUTUBE_API_KEY", f"api_key_env: {name}")
     proc = run(
         tmp_path,
         config,
@@ -821,6 +828,71 @@ def test_env_names_that_could_expose_runner_credentials_are_refused(
     assert "::error" in proc.stdout
     assert "secret-value-123" not in proc.stdout + proc.stderr
     assert not (tmp_path / "engine-env.json").exists()  # the engine never ran
+
+
+def test_a_config_named_variable_is_never_forwarded(tmp_path: Path) -> None:
+    # a well-formed but unrelated name: the engine runs (and refuses it itself),
+    # but the named variable never reaches it
+    config = YT_CONFIG.replace(
+        "api_key_env: YOUTUBE_API_KEY", "api_key_env: UNRELATED_RUNNER_SECRET"
+    )
+    proc = run(
+        tmp_path,
+        config,
+        fake_engine(tmp_path, 0, {}),
+        extra_env={"UNRELATED_RUNNER_SECRET": "x", "YOUTUBE_API_KEY": "k"},
+    )
+    assert proc.returncode == 0, proc.stderr
+    got = set(engine_env(tmp_path))
+    assert "UNRELATED_RUNNER_SECRET" not in got
+    assert "YOUTUBE_API_KEY" in got
+
+
+def test_the_canonical_name_is_forwarded_when_the_field_is_omitted(
+    tmp_path: Path,
+) -> None:
+    config = YT_CONFIG.replace(" api_key_env: YOUTUBE_API_KEY", "").replace(
+        "UCxxxxxxxxxxxxxxxxxxxxxx,}", "UCxxxxxxxxxxxxxxxxxxxxxx}"
+    )
+    assert "api_key_env" not in config
+    proc = run(
+        tmp_path,
+        config,
+        fake_engine(tmp_path, 0, {}),
+        extra_env={"YOUTUBE_API_KEY": "k", "AWS_SECRET_ACCESS_KEY": "x"},
+    )
+    assert proc.returncode == 0, proc.stderr
+    got = set(engine_env(tmp_path))
+    assert "YOUTUBE_API_KEY" in got and "AWS_SECRET_ACCESS_KEY" not in got
+
+
+def test_the_wrapper_canonical_names_match_the_engine() -> None:
+    import importlib.util
+
+    from reach_around.config import numbers_sources as ns
+
+    spec = importlib.util.spec_from_file_location("tc", SCRIPT)
+    assert spec and spec.loader
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    expected = {
+        "youtube": {ns.YOUTUBE_KEY_ENV},
+        "twitch": {
+            ns.CLIENT_ID_ENV,
+            ns.CLIENT_SECRET_ENV,
+            ns.USER_TOKEN_ENV,
+            ns.REFRESH_TOKEN_ENV,
+        },
+        "instagram": {"INSTAGRAM_ACCESS_TOKEN"},
+        "threads": {"THREADS_ACCESS_TOKEN"},
+        "tiktok": {
+            ns.TIKTOK_ACCESS_ENV,
+            ns.TIKTOK_REFRESH_ENV,
+            ns.TIKTOK_CLIENT_KEY_ENV,
+            ns.TIKTOK_CLIENT_SECRET_ENV,
+        },
+    }
+    assert {k: set(v) for k, v in mod.CANONICAL_ENV.items()} == expected
 
 
 # ---- environment binding and the engine wheel hash ------------------------

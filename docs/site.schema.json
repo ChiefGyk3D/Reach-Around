@@ -2285,7 +2285,8 @@
       "additionalProperties": false,
       "properties": {
         "api_key_env": {
-          "pattern": "^[A-Z][A-Z0-9_]{1,63}$",
+          "const": "YOUTUBE_API_KEY",
+          "default": "YOUTUBE_API_KEY",
           "title": "Api Key Env",
           "type": "string"
         },
@@ -2305,7 +2306,6 @@
         }
       },
       "required": [
-        "api_key_env",
         "channel_id",
         "kind",
         "platform"
