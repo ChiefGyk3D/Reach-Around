@@ -1028,6 +1028,7 @@ the number would never be shown. (`kind` is separate: `kind: mastodon` with
 | `twitch` | `login`; optional `auto_refresh` (default false). The variable names are fixed, not configurable: `TWITCH_CLIENT_ID`, `TWITCH_CLIENT_SECRET` (app token path) and `TWITCH_USER_ACCESS_TOKEN`, `TWITCH_USER_REFRESH_TOKEN` (broadcaster token). `client_id_env` and `client_secret_env` may be written but only with those exact values; any other value, and any `user_token_env` or `refresh_token_env` key, is refused at load and again at run time | `helix/channels/followers` `total`, with the broadcaster user token when `TWITCH_USER_ACCESS_TOKEN` holds a value, else with an app token (skipped as `needs_user_token`). See [Twitch source](twitch-source.md) | yes, and see the limit below |
 | `instagram` | optional `token_expires` (YYYY-MM-DD), `refresh_within_days` (1 to 59, default 10); reads only `INSTAGRAM_ACCESS_TOKEN` | `graph.instagram.com` `/me` field `followers_count`; skipped as `token_not_set` while the variable is empty. See [Instagram and Threads](instagram-threads-sources.md) | yes |
 | `threads` | same, reading only `THREADS_ACCESS_TOKEN`, plus required `user_id` (digits) | `graph.threads.com` `threads_insights` metric `followers_count` | yes |
+| `tiktok` | reads only `TIKTOK_ACCESS_TOKEN` (refresh uses `TIKTOK_REFRESH_TOKEN`, `TIKTOK_CLIENT_KEY`, `TIKTOK_CLIENT_SECRET`); `auto_refresh` (default false) | `open.tiktokapis.com` `/v2/user/info/` field `follower_count` (scope `user.info.stats`); skipped as `token_not_set` while the variable is empty. See [TikTok](tiktok-source.md) | yes |
 
 `numbers.history_file` (optional) is a path to an append-only history file in
 your private instance repo; relative paths are relative to the config file. Unset
@@ -1098,9 +1099,13 @@ Limits worth knowing:
   federation mode) answers 401; the source fails with `http_401`.
 - **GitHub.** Unauthenticated calls are limited to 60 an hour per address.
   Shared CI runners can hit that; a failure keeps the old number.
-- **TikTok, Kick** (and X and LinkedIn) have no source kind.
-  Their approval paths do not exist yet. Put the number in the numbers file by
-  hand (below), or type `count` and `as_of` on the platform item.
+- **Kick** (and X and LinkedIn) have no source kind. Their approval paths do not
+  exist yet. Put the number in the numbers file by hand (below), or type `count`
+  and `as_of` on the platform item.
+- **TikTok** has a source kind that stays inert (skipped as `token_not_set`)
+  until `TIKTOK_ACCESS_TOKEN` holds a user token. A Sandbox token needs no app
+  review; app review is the fallback for production
+  ([TikTok](tiktok-source.md)). Until then the number is hand-kept.
 
 ### The numbers file
 

@@ -1209,6 +1209,7 @@
                 "mastodon": "#/$defs/MastodonSource",
                 "matrix": "#/$defs/MatrixSource",
                 "threads": "#/$defs/ThreadsSource",
+                "tiktok": "#/$defs/TiktokSource",
                 "twitch": "#/$defs/TwitchSource",
                 "youtube": "#/$defs/YoutubeSource"
               },
@@ -1241,6 +1242,9 @@
               },
               {
                 "$ref": "#/$defs/ThreadsSource"
+              },
+              {
+                "$ref": "#/$defs/TiktokSource"
               }
             ]
           },
@@ -2187,6 +2191,51 @@
         "user_id"
       ],
       "title": "ThreadsSource",
+      "type": "object"
+    },
+    "TiktokSource": {
+      "additionalProperties": false,
+      "description": "TikTok follower count from a user token (scope ``user.info.stats``).\n\nThe credential variable names are fixed; a config may only repeat them.\n``auto_refresh`` is off and refused at run time unless the caller supplies a\nsink that stores the rotated token pair.",
+      "properties": {
+        "access_token_env": {
+          "const": "TIKTOK_ACCESS_TOKEN",
+          "default": "TIKTOK_ACCESS_TOKEN",
+          "title": "Access Token Env",
+          "type": "string"
+        },
+        "auto_refresh": {
+          "default": false,
+          "title": "Auto Refresh",
+          "type": "boolean"
+        },
+        "client_key_env": {
+          "const": "TIKTOK_CLIENT_KEY",
+          "default": "TIKTOK_CLIENT_KEY",
+          "title": "Client Key Env",
+          "type": "string"
+        },
+        "client_secret_env": {
+          "const": "TIKTOK_CLIENT_SECRET",
+          "default": "TIKTOK_CLIENT_SECRET",
+          "title": "Client Secret Env",
+          "type": "string"
+        },
+        "kind": {
+          "const": "tiktok",
+          "title": "Kind",
+          "type": "string"
+        },
+        "platform": {
+          "pattern": "^[a-z0-9][a-z0-9-]{0,39}$",
+          "title": "Platform",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "platform"
+      ],
+      "title": "TiktokSource",
       "type": "object"
     },
     "TwitchSource": {
