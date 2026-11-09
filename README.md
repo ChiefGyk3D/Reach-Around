@@ -54,6 +54,8 @@ Replace the example mount with your own instance directory. Once `v0.1.0` is pub
 - [docs/instance-repos.md](docs/instance-repos.md): keep your own page in a private repository that pins this project's release ([template](examples/instance-repo/))
 - [docs/examples/deploy-private.sh](docs/examples/deploy-private.sh): a sanitized private deploy script for a real instance
 - [docs/releasing.md](docs/releasing.md): cutting and verifying a release
+- [docs/operations.md](docs/operations.md): the owner's weekly and monthly routine for analytics, and how to roll it back
+- [docs/backup-restore.md](docs/backup-restore.md): backing up the analytics database, history and config, and the restore drill
 - [docs/containers.md](docs/containers.md): running the container image
 - [docs/config.md](docs/config.md) and [docs/customizing.md](docs/customizing.md): the site config and how to change the page
 - [docs/preview.md](docs/preview.md): the local preview server

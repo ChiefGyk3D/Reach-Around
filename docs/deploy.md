@@ -960,7 +960,9 @@ set. The media kit page and PDF then print "Live since <date> (UTC)". See
   because the page uses `ping` plus a beacon, not a redirect.
 - **D1 migrations.** Migrations are forward only. Ship a new migration to
   undo a change; as a backstop, `wrangler d1 export reach-around-clicks
-  --remote` before schema changes.
+  --remote` before schema changes. The full backup and restore steps, and the routine that
+  uses them, are in [backup-restore.md](backup-restore.md) and
+  [operations.md](operations.md).
 - **DNS.** Remove the custom domain from the Pages project (or delete the
   `CNAME`). The test hostname stops resolving; nothing else is affected.
 - **Token.** If the token leaks or you are unsure, roll or delete it in
