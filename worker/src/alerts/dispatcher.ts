@@ -179,6 +179,8 @@ export function createDispatcher() {
   const chStatus = (id: ChannelId): ChannelStatus => (status.channels[id] ??= { sent: 0, failed: {}, suppressed: 0 });
 
   function who(event: AlertEvent): string {
+    // A health event is identified by its closed condition and state words only.
+    if (event.kind === "analytics_health") return `${String(event.condition)}:${String(event.state)}`.slice(0, MAX_WHO_CHARS);
     return event.kind !== "gate_failed_repeatedly" && typeof event.email === "string"
       ? event.email.slice(0, MAX_WHO_CHARS)
       : "";

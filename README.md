@@ -49,6 +49,7 @@ Replace the example mount with your own instance directory. Once `v0.1.0` is pub
 
 ## Documentation
 
+- [docs/failure-modes.md](docs/failure-modes.md): analytics failure modes, kill switches, quota, restore and how gaps are shown
 - [docs/deploy.md](docs/deploy.md): deploying the site and click Worker to Cloudflare (Pages or Worker, production branch, token type, Doppler, route by hand, troubleshooting)
 - [docs/kit.md](docs/kit.md): the media kit pages, the gate form and the separate gated output
 - [docs/instance-repos.md](docs/instance-repos.md): keep your own page in a private repository that pins this project's release ([template](examples/instance-repo/))

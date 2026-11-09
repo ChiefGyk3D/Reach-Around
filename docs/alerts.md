@@ -91,6 +91,7 @@ the answer body is never read.
 | `kit_unlocked` | Someone passed the gate | "the media kit was unlocked by `<address>` at `YYYY-MM-DD HH:MM UTC`." |
 | `lead_captured` | A new address was stored | "new media kit lead `<address>` at `<time> UTC`." |
 | `gate_failed_repeatedly` | The gate failed several times in a short span | The count and the time. No visitor data. |
+| `analytics_health` | An analytics health condition started or cleared (below) | A fixed sentence for one condition, a UTC time and at most one count. No visitor data, no site, link or page name. |
 
 Never in an alert: IP address, user agent, cookie, token, country, lead id or
 hash. The event type has no field for them, so they cannot be passed by mistake.
@@ -115,6 +116,77 @@ invisible characters (bidi overrides, zero-width, tags) are replaced by a space,
 reads `name(at)example(dot)com`), and for Discord the markdown characters are
 backslash-escaped. One message is always one line, and a
 hard cap applies to the message and to the request body.
+
+## Analytics health alerts
+
+Silent failure is the main risk of a counting system, so the hourly cron checks
+a few counters and tells you when one goes wrong and once more when it recovers.
+Turn it on with the event name `analytics_health` (it uses the same channels,
+secrets, dedup, per-minute limit and daily budget as every other alert; there
+are no new secret names):
+
+```yaml
+alerts:
+  channels: [discord]
+  events: [analytics_health]
+```
+
+Nothing is sent while all is well. A condition is reported once when it starts
+and once when it clears, not every hour. The state is kept in `view_meta`
+(`health:<condition>`) only after a channel took the message, so a message
+nobody received is tried again on the next hourly run, within the dedup, minute
+and daily limits.
+
+| Condition | Fires when | Clears when |
+| --- | --- | --- |
+| `rollup_overdue` | the rollup heartbeat (`rollup_last_ok`) is older than 3 hours | the heartbeat is fresh again |
+| `rollup_stale` | a site's `rolled_through` checkpoint is more than 2 UTC days behind today | the checkpoint has caught up |
+| `zero_views` | no likely-human view was counted in the last 24 hours on a deployment that counted some in the 24 hours before, and the view kill switch is off | views are counted again |
+| `view_budget_hit` | the account-wide hourly view budget was reached in the last 3 hours (further views were dropped) | three hours pass without it |
+| `alert_budget_near` | today's alert budget is at least 80 percent used | the next UTC day |
+
+Design rules, each pinned by a test (`worker/test/health.test.ts`):
+
+- **Content-free.** The text is a fixed sentence per condition, a UTC time and,
+  for the two rollup conditions, one count of hours or days. No site id, page,
+  link, URL, label or visitor field exists in the event type. A hostile or
+  unknown condition word is never echoed.
+- **Counters only.** It reads the heartbeat and the hourly counters in
+  `view_meta` and the alert day counter. It never reads `view_events`,
+  `click_events`, a lead or any raw table.
+- **UTC.** Days and hours are UTC.
+- **Quiet and bounded.** At most 3 messages per cron run. The step costs two
+  metered D1 queries when idle and uses at most 8 of the run's `QUERY_BUDGET`;
+  it is skipped under `QUERY_BUDGET` 12. Out of budget, it stops.
+- **Fail closed.** The step never throws into the cron. Whatever happens to
+  an alert (channel down, budget spent, D1 error), collection, the purges and
+  the rollup run as before.
+- **Unknown is not an alert.** A missing or malformed input (a fresh install with
+  no heartbeat yet, a counter that does not parse) leaves that condition alone.
+
+Limits you should know. The checks run inside the same cron they watch: if the
+cron or the Worker does not run at all, nothing can alert. An external probe of
+the link page and the event routes is the answer to that and is not part of the
+Worker (see the runbook, [failure-modes.md](failure-modes.md)). `zero_views`
+needs earlier traffic, and a site with a view only every few days will trip it;
+use it on a site with steady traffic or leave the event off. `view_budget_hit`
+reads the account-wide ceiling (`ACCOUNT_VIEWS_PER_HOUR`), not one site's own
+budget. Stale social numbers (hand-kept or failed refresh) are reported by
+`reach-around counts stale` (exit 4) and the `token-health:` lines, not by the
+Worker.
+
+## Collection coverage and gaps
+
+The same hourly step writes one row per UTC day into `analytics_coverage`
+(migration `0014_health.sql`): 24 letters, one per hour, for the hour that just
+ended. `o` collecting, `k` the view kill switch was on when sampled, `q` the
+account view budget had been reached, `-` no sample (the Worker did not run).
+The row holds no count and no visitor data and is written whether or not alerts
+are on. `reach-around report` and `grafana-export` read it (export the table like
+`view_daily`) and show a day with no collection as a gap with a reason (`outage`,
+`quota`, `kill_switch`), never as a zero. A quiet hour that was collected is a
+real zero and stays one. See [report.md](report.md#gaps) and
+[grafana.md](grafana.md).
 
 ## Limits and failures
 
@@ -164,6 +236,6 @@ trigger it once yourself.
 
 ## For other features
 
-The brand inquiry form (#429), token health alerts (#390) and analytics health
-alerts (#401) reuse this interface: they add an event kind to `types.ts`, a
+The brand inquiry form (#429) and token health alerts (#390) reuse this interface
+(analytics health, #401, is built the same way): they add an event kind to `types.ts`, a
 line to `format.ts` and a name to the config lists, and call `scheduleAlert`.

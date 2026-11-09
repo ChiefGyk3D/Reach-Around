@@ -19,6 +19,7 @@ from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
 from reach_around.funnel.export import CLASSES, Export
+from reach_around.funnel.gaps import coverage_for_window
 
 FLOOR = 5
 # Report section -> the ``dim`` value in view_dim_daily it is built from.
@@ -723,6 +724,17 @@ def _build_report(
         | {d for d in counter_days if _in_window(d, since, until)}
     )
     wanted = set(CLASSES) if include_bots else {"h"}
+    # Gaps (issue #402): compare the coverage log with the calendar over this window.
+    window_end = until or max(
+        [*seen_days, *(r["day"] for r in export.analytics_coverage)], default=None
+    )
+    coverage = coverage_for_window(
+        export.analytics_coverage,
+        "analytics_coverage" in export.present,
+        since,
+        window_end,
+        as_of or datetime.now(UTC).date(),
+    )
 
     # bot share: every class, regardless of the page tables' class filter
     by_class: dict[str, int] = defaultdict(int)
@@ -891,6 +903,7 @@ def _build_report(
             "days_with_data": len(seen_days),
         },
         "counted_classes": sorted(wanted),
+        "coverage": coverage.as_dict(),
         "funnel": {
             "page_views": page_views,
             "clicks": click_total,
@@ -1126,6 +1139,26 @@ def _funnel_sections(report: dict[str, Any], lines: list[str]) -> None:
     )
 
 
+def _coverage_lines(cov: dict[str, Any], lines: list[str]) -> None:
+    """Say it before any figure: a gap is labeled, and a gap is not a zero."""
+    if cov["status"] != "gaps":
+        return
+    lines.append(
+        f"Collection gaps: {cov['gap_days']} full-day gaps, {cov['partial_days']} "
+        "partial days in this window (UTC)."
+    )
+    lines.append(f"  {cov['note']}")
+    for g in cov["gaps"]:
+        lines.append(f"  {g['day']}  gap ({g['reason'].replace('_', ' ')})")
+    for p in cov["partial"]:
+        reasons = ", ".join(r.replace("_", " ") for r in p["reasons"])
+        lines.append(f"  {p['day']}  partial ({reasons})")
+    listed = len(cov["gaps"]) + len(cov["partial"])
+    total = cov["gap_days"] + cov["partial_days"]
+    if total > listed:
+        lines.append(f"  and {total - listed} more")
+
+
 def render_text(report: dict[str, Any]) -> str:
     period = report["period"]
     funnel = report["funnel"]
@@ -1157,6 +1190,7 @@ def render_text(report: dict[str, Any]) -> str:
     lines.append(
         f"Privacy floor: no row under {floor} views is shown (see docs/report.md)."
     )
+    _coverage_lines(report["coverage"], lines)
     lines.append("")
     lines.append("Funnel")
     steps = [

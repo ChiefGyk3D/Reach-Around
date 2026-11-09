@@ -23,7 +23,8 @@
             "enum": [
               "kit_unlocked",
               "lead_captured",
-              "gate_failed_repeatedly"
+              "gate_failed_repeatedly",
+              "analytics_health"
             ],
             "type": "string"
           },

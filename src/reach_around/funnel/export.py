@@ -213,6 +213,14 @@ SPECS: dict[str, Spec] = {
         required=frozenset({"day", "marked_at", "first_hour", "folded"}),
         key=("site", "day"),
     ),
+    # Collection coverage (#401, #402): one row per UTC day, 24 letters, one per hour.
+    # o collecting, k kill switch, q view budget reached, - no sample (an outage).
+    "analytics_coverage": Spec(
+        marker="hours",
+        columns={"day": "day", "hours": "cov"},
+        required=frozenset({"day", "hours"}),
+        key=("day",),
+    ),
     "kit_events": Spec(
         marker="kind",
         columns={"site": "site", "ts": "ts", "kind": "kit_kind"},
@@ -225,6 +233,7 @@ _SITE = re.compile(r"[a-z0-9][a-z0-9-]{0,19}")
 _DAY = re.compile(r"\d{4}-\d{2}-\d{2}")
 _MONTH = re.compile(r"\d{4}-(?:0[1-9]|1[0-2])")
 _COUNTRY = re.compile(r"[A-Z]{2}")
+_COV = re.compile(r"[okq-]{24}")
 _CSV_INT = re.compile(r"\d{1,13}")
 _IPV4 = re.compile(r"(?<![\d.])\d{1,3}(?:\.\d{1,3}){3}(?![\d.])")
 _IPV6 = re.compile(r"[0-9A-Fa-f]{0,4}(?::[0-9A-Fa-f]{0,4}){2,}")
@@ -262,6 +271,7 @@ class Export:
     click_month_log: list[dict[str, Any]] = field(default_factory=list)
     click_capacity: list[dict[str, Any]] = field(default_factory=list)
     kit_events: list[dict[str, Any]] = field(default_factory=list)
+    analytics_coverage: list[dict[str, Any]] = field(default_factory=list)
     present: set[str] = field(default_factory=set)
 
 
@@ -380,6 +390,8 @@ def _check_value(kind: str, value: Any, where: str) -> Any:
         pattern = _MONTH
     elif kind == "country":
         pattern = _COUNTRY
+    elif kind == "cov":
+        pattern = _COV
     elif kind == "csrc":
         # Nullable closed-set source label (issue #329); null or empty is none.
         if value is None or value == "":

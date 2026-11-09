@@ -6,9 +6,27 @@
 // it to the dispatcher; they never see a channel, a URL or a secret.
 
 /** Events the site config can switch on. Closed set. */
-export type AlertEventKind = "kit_unlocked" | "lead_captured" | "gate_failed_repeatedly";
+export type AlertEventKind = "kit_unlocked" | "lead_captured" | "gate_failed_repeatedly" | "analytics_health";
 
-export const EVENT_KINDS: readonly AlertEventKind[] = ["kit_unlocked", "lead_captured", "gate_failed_repeatedly"];
+export const EVENT_KINDS: readonly AlertEventKind[] = ["kit_unlocked", "lead_captured", "gate_failed_repeatedly", "analytics_health"];
+
+/** Analytics health conditions (issue #401). Closed vocabulary: the only words an health alert can name. */
+export type HealthCondition =
+  | "rollup_overdue"
+  | "rollup_stale"
+  | "zero_views"
+  | "view_budget_hit"
+  | "alert_budget_near";
+
+export const HEALTH_CONDITIONS: readonly HealthCondition[] = [
+  "rollup_overdue",
+  "rollup_stale",
+  "zero_views",
+  "view_budget_hit",
+  "alert_budget_near",
+];
+
+export type HealthState = "firing" | "cleared";
 
 /** Channels the site config can switch on. A new channel (Slack, Teams) is one id here plus one adapter. */
 export type ChannelId = "discord" | "matrix" | "email";
@@ -24,7 +42,9 @@ export const CHANNEL_IDS: readonly ChannelId[] = ["discord", "matrix", "email"];
 export type AlertEvent =
   | { kind: "kit_unlocked"; atMs: number; email: string }
   | { kind: "lead_captured"; atMs: number; email: string }
-  | { kind: "gate_failed_repeatedly"; atMs: number; count: number };
+  | { kind: "gate_failed_repeatedly"; atMs: number; count: number }
+  /** Content-free: a closed condition word, a state word and one clamped count. No site, id, label or URL. */
+  | { kind: "analytics_health"; atMs: number; condition: HealthCondition; state: HealthState; count: number };
 
 /** What a channel is asked to deliver: one short plain-text message. */
 export interface AlertMessage {
