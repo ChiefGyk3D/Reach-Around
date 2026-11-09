@@ -71,10 +71,11 @@ class Sink:
         self.alerts: list[Any] = []
         self.fail = fail
 
-    def store(self, pair: TokenPair, names: TokenNames, source: str) -> None:
+    def store(self, pair: TokenPair, names: TokenNames, source: str) -> bool:
         if self.fail:
-            raise RuntimeError("SENTINEL-ACCESS-NEW")
+            raise RuntimeError(pair.access_token)
         self.stored.append((pair, names, source))
+        return True
 
     def alert(self, alert: Any) -> None:
         self.alerts.append(alert)
@@ -198,17 +199,106 @@ def test_auto_refresh_without_a_refresh_token_value_alerts_only() -> None:
     assert all(c.host != "id.twitch.tv" for c in t.calls)
 
 
-def test_sink_failure_does_not_lose_the_number() -> None:
+def _chain_text(exc: BaseException | None) -> str:
+    parts: list[str] = []
+    seen = 0
+    while exc is not None and seen < 10:
+        parts += [repr(exc), str(exc), repr(exc.args)]
+        exc = exc.__cause__ or exc.__context__
+        seen += 1
+    return " ".join(parts)
+
+
+class HostileSink:
+    """store() and alert() both raise errors that carry the new token."""
+
+    def store(self, pair: TokenPair, names: TokenNames, source: str) -> bool:
+        raise RuntimeError(pair.access_token + pair.refresh_token)
+
+    def alert(self, alert: Any) -> None:
+        raise ValueError("SENTINEL-ACCESS-NEW SENTINEL-REFRESH-NEW")
+
+
+class DiscardSink:
+    def store(self, pair: TokenPair, names: TokenNames, source: str) -> Any:
+        pass
+
+    def alert(self, alert: Any) -> None:
+        pass
+
+
+class TruthySink(DiscardSink):
+    def store(self, pair: TokenPair, names: TokenNames, source: str) -> Any:
+        return "stored"
+
+
+def _expired_then_ok() -> FakeTransport:
     n = {"i": 0}
 
     def followers(req: Any) -> Any:
         n["i"] += 1
         return reply({}, status=401) if n["i"] == 1 else FOLLOW_REPLY
 
-    t = FakeTransport(routes(**{FOLLOWERS: followers, OAUTH_URL: REFRESH_REPLY}))
-    sink = Sink(fail=True)
-    assert run(t, sink) == 321
-    assert [a.kind for a in sink.alerts] == ["rotated_unstored"]
+    return FakeTransport(routes(**{FOLLOWERS: followers, OAUTH_URL: REFRESH_REPLY}))
+
+
+def test_hostile_sink_leaves_no_token_anywhere_in_the_chain() -> None:
+    t = _expired_then_ok()
+    with pytest.raises(SourceError) as caught:
+        run(t, HostileSink())
+    assert caught.value.kind == "refresh_store_failed"
+    text = _chain_text(caught.value)
+    no_leak(text)
+    assert caught.value.__cause__ is None
+    # the raise happens outside the except block: no context holds the sink error
+    assert caught.value.__context__ is None or "Sink" not in _chain_text(
+        caught.value.__context__
+    )
+    no_leak(_chain_text(caught.value.__context__))
+
+
+def test_failed_persist_fails_the_collection_in_the_refresh_path() -> None:
+    from reach_around.counts.refresh import refresh
+
+    t = _expired_then_ok()
+    _, outcomes = refresh(
+        [SRC_AUTO],
+        {},
+        env=ENV,
+        transport=t,
+        sleep=lambda s: None,
+        token_sink=HostileSink(),
+    )
+    (outcome,) = outcomes
+    assert outcome.status == "error" and outcome.detail == "refresh_store_failed"
+    no_leak(repr(outcome))
+    # the fetch after the refresh was never made with the unstored token
+    assert all(
+        c.headers.get("Authorization") != "Bearer SENTINEL-ACCESS-NEW" for c in t.calls
+    )
+
+
+@pytest.mark.parametrize("sink", [DiscardSink(), TruthySink(), Sink(fail=True)])
+def test_only_a_true_receipt_counts_as_stored(sink: Any) -> None:
+    t = _expired_then_ok()
+    assert kind(t, sink) == "refresh_store_failed"
+    assert all(
+        c.headers.get("Authorization") != "Bearer SENTINEL-ACCESS-NEW" for c in t.calls
+    )
+
+
+@pytest.mark.parametrize("bad", ["false", "true", 1, 0, [], None])
+def test_auto_refresh_type_is_checked_at_use_time(bad: Any) -> None:
+    t = FakeTransport(routes(**{FOLLOWERS: reply({}, status=401)}))
+    fetch = partial(fetch_json, transport=t, sleep=lambda s: None)
+    for src in (
+        SRC.model_copy(update={"auto_refresh": bad}),
+        SRC.model_construct(**{**SRC.model_dump(), "auto_refresh": bad}),
+    ):
+        with pytest.raises(SourceError) as caught:
+            PROVIDERS["twitch"](src, Context(fetch=fetch, env=ENV, token_sink=Sink()))
+        assert caught.value.kind == "bad_auto_refresh"
+    assert t.calls == []
 
 
 def test_noop_sink_prints_names_and_instruction_only() -> None:

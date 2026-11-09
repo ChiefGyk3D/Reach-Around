@@ -107,7 +107,13 @@ class TokenSink(Protocol):
     no-op sink ships. A sink must never log or print the values.
     """
 
-    def store(self, pair: TokenPair, names: TokenNames, source: str) -> None: ...
+    def store(self, pair: TokenPair, names: TokenNames, source: str) -> bool:
+        """Persist the pair; return exactly ``True`` once it is kept.
+
+        Any other result (None, False, a truthy object) or any exception counts
+        as not persisted and fails the collection.
+        """
+        ...
 
     def alert(self, alert: HealthAlert) -> None: ...
 
@@ -121,7 +127,7 @@ class NoopSink:
     def _out(self) -> TextIO:
         return self._stream if self._stream is not None else sys.stderr
 
-    def store(self, pair: TokenPair, names: TokenNames, source: str) -> None:
+    def store(self, pair: TokenPair, names: TokenNames, source: str) -> bool:
         self.alert(
             HealthAlert(source, "rotated_unstored", (names.access, names.refresh))
         )
@@ -132,6 +138,7 @@ class NoopSink:
             "the one-time authorization (docs/twitch-source.md).",
             file=self._out(),
         )
+        return False  # nothing was kept
 
     def alert(self, alert: HealthAlert) -> None:
         print(alert.line(), file=self._out())
@@ -163,6 +170,9 @@ def check_names(source: TwitchSource) -> None:
         or source.client_secret_env != CLIENT_SECRET_ENV
     ):
         raise TwitchUserError("bad_env_name")
+    # use-time type check: a string like "false" must never read as true
+    if type(source.auto_refresh) is not bool:
+        raise TwitchUserError("bad_auto_refresh")
 
 
 def _env_secret(env: Mapping[str, str], name: str) -> str:
@@ -194,7 +204,7 @@ class _Session:
         self.fetch = fetch
         # Refresh rotates the token pair. With no sink that stores it (the
         # shipped no-op sink discards it), a refresh would break the next run.
-        self.can_refresh = source.auto_refresh
+        self.can_refresh = source.auto_refresh is True
         if self.can_refresh and (sink is None or isinstance(sink, NoopSink)):
             raise TwitchUserError("refresh_needs_sink")
         self.sink: TokenSink = sink if sink is not None else NoopSink()
@@ -207,9 +217,15 @@ class _Session:
         self.refreshed = False
 
     def _alert(self, kind: str) -> None:
-        self.sink.alert(
-            HealthAlert(self.source.platform, kind, (USER_TOKEN_ENV, REFRESH_TOKEN_ENV))
-        )
+        # A sink is an untrusted boundary: its failure is dropped unformatted.
+        try:
+            self.sink.alert(
+                HealthAlert(
+                    self.source.platform, kind, (USER_TOKEN_ENV, REFRESH_TOKEN_ENV)
+                )
+            )
+        except Exception:  # noqa: S110
+            pass
 
     def _refresh(self) -> None:
         if self.refreshed:
@@ -228,6 +244,7 @@ class _Session:
             }
         ).encode("ascii")
         self.refreshed = True
+        pair: TokenPair | None = None
         try:
             reply = self.fetch(
                 TOKEN_URL,
@@ -240,22 +257,35 @@ class _Session:
                 _token(reply.get("access_token")), _token(reply.get("refresh_token"))
             )
         except (FetchError, TwitchUserError):
+            pair = None
+        if pair is None:
             self._alert("refresh_failed")
-            raise TwitchUserError("refresh_failed") from None
+            raise TwitchUserError("refresh_failed")
+        # Store first. Only a pair the sink confirmed (receipt exactly True)
+        # replaces the one in use. The exception, if any, is never formatted,
+        # kept or chained: the failure word is raised after the except block.
+        kept = False
+        try:
+            kept = (
+                self.sink.store(
+                    pair,
+                    TokenNames(USER_TOKEN_ENV, REFRESH_TOKEN_ENV),
+                    self.source.platform,
+                )
+                is True
+            )
+        except Exception:
+            kept = False
+        if not kept:
+            self._alert("rotated_unstored")
+            raise TwitchUserError("refresh_store_failed")
         self.access = pair.access_token
         self.refresh_value = pair.refresh_token
-        try:
-            self.sink.store(
-                pair,
-                TokenNames(USER_TOKEN_ENV, REFRESH_TOKEN_ENV),
-                self.source.platform,
-            )
-        except Exception:  # a sink failure must not lose this run's number
-            self._alert("rotated_unstored")
 
     def get(self, url: str) -> dict[str, object]:
         _check_url(url)
         for _ in range(2):
+            expired = False
             try:
                 return self.fetch(
                     url,
@@ -268,6 +298,8 @@ class _Session:
             except FetchError as exc:
                 if exc.kind != "http_401":
                     raise
+                expired = True
+            if expired:
                 self._refresh()
         raise TwitchUserError("token_rejected")
 

@@ -66,11 +66,20 @@ numbers:
 
 `bad_env_name`, `missing_credential`, `invalid_credential`, `token_expired`
 (401, no refresh done), `token_rejected` (401 again after a refresh),
-`refresh_needs_sink`, `refresh_failed`, `bad_json`, `too_large`, `redirect`,
+`refresh_needs_sink`, `refresh_store_failed`, `bad_auto_refresh`, `refresh_failed`, `bad_json`, `too_large`, `redirect`,
 `rate_limited`, `server_error`, `egress_timeout`, `missing_field`, `bad_count`,
 `bad_host`. None includes a response body or a token.
 
 ## Rotation and the manual refresh
+
+Sink contract: `store()` must return exactly `True` once the pair is kept. Any
+other result (`None`, `False`, any other object) or any exception counts as not
+stored. Then the run fails the source with `refresh_store_failed`, prints the
+`rotated_unstored` line, and the new pair is not used for a count. A sink's
+errors (from `store()` or `alert()`) are dropped without being formatted or
+chained, so a sink that puts a token in its error text cannot leak it. The
+`auto_refresh` setting is type-checked again at run time (it must be the boolean
+`true`; `bad_auto_refresh` otherwise), before any credential is read.
 
 The code never writes a secret to disk or the repository. Refresh rotates the
 pair (the refresh token "may change"), so a refresh whose result is not stored
