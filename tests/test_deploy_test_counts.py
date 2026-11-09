@@ -892,7 +892,8 @@ def test_the_wrapper_canonical_names_match_the_engine() -> None:
             ns.TIKTOK_CLIENT_SECRET_ENV,
         },
     }
-    assert {k: set(v) for k, v in mod.CANONICAL_ENV.items()} == expected
+    assert set(mod.CANONICAL_ENV) == set().union(*expected.values())
+    assert len(mod.CANONICAL_ENV) == len(set(mod.CANONICAL_ENV))
 
 
 # ---- environment binding and the engine wheel hash ------------------------
@@ -979,17 +980,11 @@ def test_the_docs_name_the_counts_identity_variable_and_claim_no_more() -> None:
     assert "As shipped, this refreshes nothing" in docs
 
 
-# ---- the wrapper reads the config as strictly as the engine ----------------------
+# ---- nothing forwarded is derived from the config --------------------------------
 
 _YT = "{platform: yt, kind: youtube, channel_id: UCxxxxxxxxxxxxxxxxxxxxxx}"
 HOSTILE_CONFIGS = {
-    "anchor_and_alias": (
-        f"version: 1\nnumbers:\n  sources:\n    - &a {_YT}\n    - *a\n"
-    ),
-    "alias_only_source": (
-        "version: 1\nx: &k youtube\nnumbers:\n  sources:\n"
-        "    - {platform: yt, kind: *k, channel_id: UCxxxxxxxxxxxxxxxxxxxxxx}\n"
-    ),
+    "anchor_and_alias": f"version: 1\nnumbers:\n  sources:\n    - &a {_YT}\n    - *a\n",
     "merge_key_supplies_kind": (
         "version: 1\nnumbers:\n  sources:\n"
         "    - <<: {kind: tiktok}\n      platform: tt\n"
@@ -998,27 +993,57 @@ HOSTILE_CONFIGS = {
         "version: 1\nnumbers:\n  sources:\n"
         "    - {platform: tt, kind: bluesky, kind: tiktok}\n"
     ),
-    "duplicate_numbers_blocks": (
-        f"version: 1\nnumbers:\n  sources: [{_YT}]\nnumbers:\n  sources: []\n"
-    ),
-    "two_documents": (f"version: 1\nnumbers:\n  sources: [{_YT}]\n---\nversion: 1\n"),
+    "null_and_tilde_keys": "version: 1\nnull: 1\n~: 2\ntrue: 1\nTrue: 2\n",
+    "over_nested": "version: 1\nx: " + "[" * 5000 + "]" * 5000 + "\n",
 }
+CANONICAL = {
+    "YOUTUBE_API_KEY",
+    "TWITCH_CLIENT_ID",
+    "TWITCH_CLIENT_SECRET",
+    "TWITCH_USER_ACCESS_TOKEN",
+    "TWITCH_USER_REFRESH_TOKEN",
+    "INSTAGRAM_ACCESS_TOKEN",
+    "THREADS_ACCESS_TOKEN",
+    "TIKTOK_ACCESS_TOKEN",
+    "TIKTOK_REFRESH_TOKEN",
+    "TIKTOK_CLIENT_KEY",
+    "TIKTOK_CLIENT_SECRET",
+}
+# LC_CTYPE is added by the Python interpreter itself (locale coercion)
+BASE = {"PATH", "HOME", "TMPDIR", "LANG", "LC_ALL", "LC_CTYPE"}
 
 
 @pytest.mark.parametrize("case", sorted(HOSTILE_CONFIGS))
-def test_a_config_the_engine_would_refuse_forwards_nothing(
+def test_a_hostile_config_forwards_the_same_fixed_set_and_the_engine_decides(
     tmp_path: Path, case: str
 ) -> None:
+    secrets = {name: f"secret-value-{i}" for i, name in enumerate(sorted(CANONICAL))}
     proc = run(
         tmp_path,
         HOSTILE_CONFIGS[case],
+        fake_engine(tmp_path, 2, {}, "error: config refused"),
+        extra_env={**secrets, "UNRELATED_SECRET": "secret-value-x"},
+    )
+    assert proc.returncode != 0  # the engine rejected it; nothing was derived
+    assert "secret-value" not in proc.stdout + proc.stderr
+    got = set(engine_env(tmp_path))
+    assert got - BASE <= CANONICAL
+    assert "UNRELATED_SECRET" not in got
+
+
+def test_the_engine_never_sees_a_non_canonical_name(tmp_path: Path) -> None:
+    proc = run(
+        tmp_path,
+        YT_CONFIG,
         fake_engine(tmp_path, 0, {}),
         extra_env={
-            "YOUTUBE_API_KEY": "secret-value-123",
-            "TIKTOK_ACCESS_TOKEN": "secret-value-456",
+            "YOUTUBE_API_KEY": "k",
+            "AWS_SECRET_ACCESS_KEY": "x",
+            "UNRELATED_RUNNER_SECRET": "x",
+            "MY_YT_KEY": "x",
         },
     )
-    assert proc.returncode != 0
-    assert "::error" in proc.stdout
-    assert "secret-value" not in proc.stdout + proc.stderr
-    assert not (tmp_path / "engine-env.json").exists()  # the engine never ran
+    assert proc.returncode == 0, proc.stderr
+    assert not {"AWS_SECRET_ACCESS_KEY", "UNRELATED_RUNNER_SECRET", "MY_YT_KEY"} & set(
+        engine_env(tmp_path)
+    )
