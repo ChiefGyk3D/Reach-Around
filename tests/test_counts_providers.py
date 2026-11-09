@@ -619,3 +619,55 @@ def test_youtube_unexpected_fetch_failure_is_a_fixed_word() -> None:
     assert KEY not in str(caught.value)
     assert caught.value.__cause__ is None
     assert caught.value.__suppress_context__ or caught.value.__context__ is None
+
+
+# ---- credential handling: Twitch app-token path ---------------------------------------
+
+
+@pytest.mark.parametrize("url", [AUTH_URL, USERS_URL, FOLLOWERS_URL])
+def test_twitch_app_path_refuses_redirects(url: str) -> None:
+    transport = FakeTransport(
+        twitch_routes(
+            **{
+                url: reply(
+                    {}, status=307, headers={"location": "https://evil.example/x"}
+                )
+            }
+        )
+    )
+    assert error_of(TW, transport, TW_ENV) == "redirect"
+    assert all(call.host.endswith("twitch.tv") for call in transport.calls)
+
+
+def test_twitch_app_path_unrelated_variable_never_sent() -> None:
+    transport = FakeTransport(twitch_routes())
+    env = {**TW_ENV, "AWS_SECRET_ACCESS_KEY": UNRELATED}
+    assert run(TW, transport, env) == 321
+    for call in transport.calls:
+        assert UNRELATED not in repr(call)
+
+
+def test_twitch_app_path_unexpected_failure_is_a_fixed_word() -> None:
+    def boom(url: str, **kwargs: Any) -> dict[str, object]:
+        raise RuntimeError(f"leak SENTINEL-CLIENT-SECRET {url} {kwargs}")
+
+    context = Context(fetch=boom, env=TW_ENV)
+    with pytest.raises(SourceError) as caught:
+        PROVIDERS["twitch"](TW, context)
+    assert caught.value.kind == "fetch_failed"
+    assert "SENTINEL" not in str(caught.value)
+    assert caught.value.__cause__ is None
+
+
+def test_twitch_app_path_calls_go_to_fixed_hosts_without_redirects() -> None:
+    seen: list[tuple[str, dict[str, Any]]] = []
+
+    def spy(url: str, **kwargs: Any) -> dict[str, object]:
+        seen.append((url, kwargs))
+        return {}
+
+    context = Context(fetch=spy, env=TW_ENV)
+    with pytest.raises(SourceError):
+        PROVIDERS["twitch"](TW, context)
+    assert seen and seen[0][0] == AUTH_URL
+    assert all(kw.get("follow_redirects") is False for _, kw in seen)

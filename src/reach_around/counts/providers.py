@@ -301,8 +301,10 @@ def twitch(source: TwitchSource, ctx: Context) -> int:
             "grant_type": "client_credentials",
         }
     ).encode("ascii")
-    token_reply = ctx.fetch(
+    token_reply = _guarded_fetch(
+        ctx,
         "https://id.twitch.tv/oauth2/token",
+        _TWITCH_HOSTS,
         method="POST",
         body=form,
         headers={"Content-Type": "application/x-www-form-urlencoded"},
@@ -311,17 +313,21 @@ def twitch(source: TwitchSource, ctx: Context) -> int:
     if not isinstance(token, str) or not token or len(token) > 512:
         raise SourceError("missing_field")
     headers = {"Authorization": f"Bearer {token}", "Client-Id": client_id}
-    user = ctx.fetch(
+    user = _guarded_fetch(
+        ctx,
         "https://api.twitch.tv/helix/users?" + urlencode({"login": source.login}),
+        _TWITCH_HOSTS,
         headers=headers,
     )
     user_id = _first(user, "data").get("id")
     if not isinstance(user_id, str) or not (user_id.isascii() and user_id.isdigit()):
         raise SourceError("missing_field")
     try:
-        followers = ctx.fetch(
+        followers = _guarded_fetch(
+            ctx,
             "https://api.twitch.tv/helix/channels/followers?"
             + urlencode({"broadcaster_id": user_id, "first": "1"}),
+            _TWITCH_HOSTS,
             headers=headers,
         )
     except FetchError as exc:
