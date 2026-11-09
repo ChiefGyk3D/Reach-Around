@@ -5,6 +5,18 @@
       "key",
       "value"
     ],
+    "alert_dedup": [
+      "site",
+      "event_hash",
+      "expires_at"
+    ],
+    "alert_quota": [
+      "site",
+      "channel",
+      "scope",
+      "window_start",
+      "count"
+    ],
     "click_events": [
       "id",
       "ts",
@@ -130,7 +142,8 @@
   "hex_ids": [
     "leads.id",
     "kit_events.lead_id",
-    "visitor_seen.h"
+    "visitor_seen.h",
+    "alert_dedup.event_hash"
   ],
   "patterns": {
     "browser": "chrome|edge|firefox|safari|opera|samsung|brave|other",
@@ -178,6 +191,9 @@
     ]
   },
   "numeric": {
+    "alert_dedup.expires_at": "ms",
+    "alert_quota.count": "small",
+    "alert_quota.window_start": "ms",
     "click_events.id": "small",
     "click_events.ts": "ms",
     "counters.count": "small",
