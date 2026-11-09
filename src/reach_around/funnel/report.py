@@ -480,12 +480,15 @@ def render_text(report: dict[str, Any]) -> str:
             f"Cutover: {era['cutover_utc']} UTC; this window is {era['text']}."
         )
     display = report.get("display")
-    if display and display["window_start"]:
-        lines.append(
-            f"Display zone {display['zone']}: window runs from "
-            f"{display['window_start']} "
-            f"to {display['window_end_exclusive']} (end excluded). {display['note']}"
-        )
+    if display:
+        if display["window_start"]:
+            window = (
+                f"window runs from {display['window_start']} "
+                f"to {display['window_end_exclusive']} (end excluded)"
+            )
+        else:
+            window = "no data in this period, so there is no window to show"
+        lines.append(f"Display zone {display['zone']}: {window}. {display['note']}")
     lines.append(
         f"Privacy floor: no row under {floor} views is shown (see docs/report.md)."
     )

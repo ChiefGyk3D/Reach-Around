@@ -145,3 +145,13 @@ def test_bad_cutover_is_refused(
         capsys, "--input", str(export(tmp_path, GOOD)), "--cutover", "11/05/2026"
     )
     assert code == 2 and "--cutover" in err
+
+
+def test_no_data_still_names_the_zone(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    path = tmp_path / "empty.json"
+    path.write_text(json.dumps({"tables": {"view_daily": []}}), encoding="utf-8")
+    code, out, _ = run(capsys, "--input", str(path), "--display-zone", "Asia/Tokyo")
+    assert code == 0
+    assert "Display zone Asia/Tokyo: no data in this period" in out
