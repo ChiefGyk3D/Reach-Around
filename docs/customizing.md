@@ -280,8 +280,9 @@ What to know:
 - The frame takes the place of the button radius on framed elements (it has
   chamfered corners). Unframed elements keep `button_style` and `radius`.
 - Frames never nest. A card that holds buttons (a crypto or email card, the
-  profile card) carries the frame itself and its buttons stay plain accent
-  buttons; a control on its own (a tab, a social button, the media kit submit
+  profile card) carries the frame itself and its buttons stay unframed, plain
+  buttons that take the frame's palette (a dark tint of your accent with cream
+  text) so they stay readable on the cream panel; a control on its own (a tab, a social button, the media kit submit
   button) carries its own frame.
 - Text on a frame is ink on the cream panel, derived from your accent
   (a dark tint of it), so it passes contrast on any accent color. There is no
@@ -292,7 +293,9 @@ What to know:
   fingerprinted and published only when the feature is on. There is no
   `style` attribute, inline script, data URI, new font or third-party
   request, so the CSP is unchanged, and the markup per frame is one class
-  string. Nothing animates. Focus rings stay clear of the frame, tap targets
+  string. Frames are still by default; only `frame_motion: live` animates, and
+  only the paint colors of L3 frames, and only for visitors without a
+  reduced-motion setting. Focus rings stay clear of the frame, tap targets
   stay at least 44 px, and forced-colors and print replace the artwork with a
   plain border.
 - The privacy page, the 404 page, the retry page and the gated media kit page

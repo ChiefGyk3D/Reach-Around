@@ -47,6 +47,10 @@ body .ra-bx.ra-bx {
   --ra-fr-g2: linear-gradient(var(--ra-fr-c2), var(--ra-fr-c2));
   --ra-fr-gs: linear-gradient(var(--ra-fr-cs), var(--ra-fr-cs));
   --ra-fr-f: linear-gradient(var(--ra-fr-panel), var(--ra-fr-panel));
+  /* The panel is cream, so everything inside it (including the plain buttons of
+     a framed card) reads the frame palette instead of the theme's: text ink on
+     cream, a dark accent tint for icons and buttons with cream text. This is
+     deliberate and documented, and it is what keeps contrast AA on any accent. */
   --ra-color-text: var(--ra-fr-ink);
   --ra-color-muted: var(--ra-fr-ink-muted);
   --ra-color-surface: var(--ra-fr-cream-hi);
@@ -77,7 +81,7 @@ body .ra-bx.ra-bx {
   /* panel, then the long rules and stubs seen through the brackets' gaps */
   background-image: var(--ra-fr-f);
   background-position: center;
-  background-size: calc(100% - var(--u) * 32) calc(100% - var(--u) * 46);
+  background-size: max(0px, calc(100% - var(--u) * 32)) max(0px, calc(100% - var(--u) * 46));
 }
 body .ra-bx.ra-bare {
   --ra-fr-panel: transparent;
@@ -97,7 +101,7 @@ body .ra-bx.ra-bx.ra-s5 { --ra-fr-s: 0.28; }
 body .ra-bx.ra-bx {
   background-image: var(--ra-fr-f);
   background-position: center;
-  background-size: calc(100% - var(--u) * 32) calc(100% - var(--u) * 46);
+  background-size: max(0px, calc(100% - var(--u) * 32)) max(0px, calc(100% - var(--u) * 46));
 }
 body .ra-l1.ra-bx { padding-inline: calc(var(--u) * 80); }
 body :is(.ra-l2, .ra-l3).ra-bx {
@@ -130,8 +134,8 @@ body :is(.ra-l2, .ra-l3).ra-bx {
     right calc(var(--u) * 34) bottom calc(var(--u) * 30),
     left calc(var(--u) * 14) top 50%, right calc(var(--u) * 14) top 50%;
   background-size:
-    calc(100% - var(--u) * 400) max(3px, calc(var(--u) * 6)),
-    calc(100% - var(--u) * 400) max(3px, calc(var(--u) * 6)),
+    max(0px, calc(100% - var(--u) * 400)) max(3px, calc(var(--u) * 6)),
+    max(0px, calc(100% - var(--u) * 400)) max(3px, calc(var(--u) * 6)),
     calc(var(--u) * 42) max(3px, calc(var(--u) * 6)), calc(var(--u) * 42) max(3px, calc(var(--u) * 6)),
     calc(var(--u) * 42) max(3px, calc(var(--u) * 6)), calc(var(--u) * 42) max(3px, calc(var(--u) * 6)),
     calc(var(--u) * 5) calc(var(--u) * 16), calc(var(--u) * 5) calc(var(--u) * 16);
@@ -161,9 +165,9 @@ body :is(.ra-l2, .ra-l3).ra-bx::before {
     right calc(var(--u) * 396) bottom calc(var(--u) * 22.5);
   background-size:
     calc(var(--u) * 60) max(3px, calc(var(--u) * 6)), calc(var(--u) * 60) max(3px, calc(var(--u) * 6)),
-    calc(100% - var(--u) * 960) max(3px, calc(var(--u) * 6)),
+    max(0px, calc(100% - var(--u) * 960)) max(3px, calc(var(--u) * 6)),
     calc(var(--u) * 60) max(3px, calc(var(--u) * 6)), calc(var(--u) * 60) max(3px, calc(var(--u) * 6)),
-    calc(100% - var(--u) * 960) max(3px, calc(var(--u) * 6)),
+    max(0px, calc(100% - var(--u) * 960)) max(3px, calc(var(--u) * 6)),
     calc(var(--u) * 42) max(3px, calc(var(--u) * 6)), calc(var(--u) * 42) max(3px, calc(var(--u) * 6)),
     calc(var(--u) * 42) max(3px, calc(var(--u) * 6)), calc(var(--u) * 42) max(3px, calc(var(--u) * 6)),
     calc(var(--u) * 5) calc(var(--u) * 16), calc(var(--u) * 5) calc(var(--u) * 16),
@@ -199,9 +203,9 @@ body .ra-l3.ra-bx::before {
     50% 0, 50% 100%;
   background-size:
     calc(var(--u) * 60) max(3px, calc(var(--u) * 6)), calc(var(--u) * 60) max(3px, calc(var(--u) * 6)),
-    calc(100% - var(--u) * 960) max(3px, calc(var(--u) * 6)),
+    max(0px, calc(100% - var(--u) * 960)) max(3px, calc(var(--u) * 6)),
     calc(var(--u) * 60) max(3px, calc(var(--u) * 6)), calc(var(--u) * 60) max(3px, calc(var(--u) * 6)),
-    calc(100% - var(--u) * 960) max(3px, calc(var(--u) * 6)),
+    max(0px, calc(100% - var(--u) * 960)) max(3px, calc(var(--u) * 6)),
     calc(var(--u) * 42) max(3px, calc(var(--u) * 6)), calc(var(--u) * 42) max(3px, calc(var(--u) * 6)),
     calc(var(--u) * 42) max(3px, calc(var(--u) * 6)), calc(var(--u) * 42) max(3px, calc(var(--u) * 6)),
     calc(var(--u) * 5) calc(var(--u) * 16), calc(var(--u) * 5) calc(var(--u) * 16),

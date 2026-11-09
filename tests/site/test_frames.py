@@ -528,3 +528,17 @@ def test_the_contrast_formulas_match_the_stylesheet() -> None:
         "--ra-fr-accent-ink: color-mix(in srgb, var(--ra-color-accent) 45%, black)",
     ):
         assert decl in css, decl
+
+
+def test_frame_sizes_never_go_negative_on_small_elements() -> None:
+    """A 44 px control is narrower than the artwork's corner span; every
+    `100% - N` size must be clamped so small frames keep a predictable layout."""
+    css = (
+        Path(__file__).parents[2] / "src/reach_around/site/static/frame.css"
+    ).read_text(encoding="utf-8")
+    css = re.sub(r"/\*.*?\*/", "", css, flags=re.S)
+    sizes = re.findall(r"background-size:([^;]*);", css)
+    assert sizes
+    for block in sizes:
+        bare = re.findall(r"(?<!max\(0px, )calc\(100% - ", block)
+        assert bare == [], block
