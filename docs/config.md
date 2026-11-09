@@ -773,6 +773,8 @@ tabs:
 | `radius` | length | `0.5rem` | Base corner radius for cards and sections. |
 | `button_style` | `pill`, `rounded`, `square` | `rounded` | `rounded` is the 36 px pill radius, `pill` is fully round, `square` has no radius. |
 | `frame` | `none`, `l1`, `l2`, `l3` | `none` | Optional border frames: the strongest level the build may use. `none` writes no frame markup and does not load the frame stylesheet. See [Border frames](customizing.md#border-frames). |
+| `frame_motion` | `none`, `live` | `none` | `live` lets the top rules and dashes of each L3 frame pulse (CSS only, only for visitors without a reduced-motion setting). `none` keeps every frame still. See [Border frames](customizing.md#border-frames). |
+| `frame_l3_max` | integer 1 to 64 | `1` | The most L3 border frames (the full frame with the glow) one page may carry when `frame` is `l3`. The packaged templates give the first L3 slots on a page L3 and the rest L2; the build refuses a page over the limit. See [Border frames](customizing.md#border-frames). |
 | `mode` | `auto`, `light`, `dark` | `auto` | `auto` is the stylesheet's own choice, which is dark. `light` forces the light palette. |
 
 ### What is accepted
