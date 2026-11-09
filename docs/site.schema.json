@@ -1996,12 +1996,19 @@
     "TwitchSource": {
       "additionalProperties": false,
       "properties": {
+        "auto_refresh": {
+          "default": false,
+          "title": "Auto Refresh",
+          "type": "boolean"
+        },
         "client_id_env": {
+          "const": "TWITCH_CLIENT_ID",
           "default": "TWITCH_CLIENT_ID",
           "title": "Client Id Env",
           "type": "string"
         },
         "client_secret_env": {
+          "const": "TWITCH_CLIENT_SECRET",
           "default": "TWITCH_CLIENT_SECRET",
           "title": "Client Secret Env",
           "type": "string"
@@ -2019,30 +2026,6 @@
           "pattern": "^[a-z0-9][a-z0-9-]{0,39}$",
           "title": "Platform",
           "type": "string"
-        },
-        "refresh_token_env": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": "TWITCH_REFRESH_TOKEN",
-          "title": "Refresh Token Env"
-        },
-        "user_token_env": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": "TWITCH_USER_ACCESS_TOKEN",
-          "title": "User Token Env"
         }
       },
       "required": [

@@ -131,7 +131,7 @@ BAD = [
             "- {platform: x, kind: twitch, login: some_user, "
             "client_id_env: TWITCH_SAME, client_secret_env: TWITCH_SAME}"
         ),
-        "differ",
+        "Input should be",
     ),
     (
         (

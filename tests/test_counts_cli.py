@@ -34,8 +34,7 @@ numbers:
     - {platform: github, kind: github, user: some-user}
     - {platform: youtube, kind: youtube, channel_id: UCabcdefghijklmnopqrstuv,
        api_key_env: YT_KEY}
-    - {platform: twitch, kind: twitch, login: some_user, client_id_env: TWITCH_TW_ID,
-       client_secret_env: TWITCH_TW_SECRET}
+    - {platform: twitch, kind: twitch, login: some_user}
 """
 BSKY = "https://public.api.bsky.app/"
 GH = "https://api.github.com/users/some-user"
@@ -65,8 +64,8 @@ def good_routes() -> dict[str, RawResponse]:
 def setup(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     (tmp_path / "site.yaml").write_text(CONFIG, encoding="utf-8")
     monkeypatch.setenv("YT_KEY", KEY)
-    monkeypatch.setenv("TWITCH_TW_ID", "SENTINEL-CLIENT-ID")
-    monkeypatch.setenv("TWITCH_TW_SECRET", "SENTINEL-CLIENT-SECRET")
+    monkeypatch.setenv("TWITCH_CLIENT_ID", "SENTINEL-CLIENT-ID")
+    monkeypatch.setenv("TWITCH_CLIENT_SECRET", "SENTINEL-CLIENT-SECRET")
     monkeypatch.setattr(counts_cmd, "default_sleep", lambda seconds: None)
     return tmp_path
 

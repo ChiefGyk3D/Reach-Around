@@ -35,7 +35,13 @@ from dataclasses import dataclass, field
 from typing import Protocol, TextIO
 from urllib.parse import urlencode, urlsplit
 
-from reach_around.config.numbers_sources import TwitchSource, valid_twitch_env_name
+from reach_around.config.numbers_sources import (
+    CLIENT_ID_ENV,
+    CLIENT_SECRET_ENV,
+    REFRESH_TOKEN_ENV,
+    USER_TOKEN_ENV,
+    TwitchSource,
+)
 from reach_around.net.fetch import FetchError
 
 API_HOST = "api.twitch.tv"
@@ -148,10 +154,18 @@ def _token(value: object) -> str:
     return value
 
 
-def _env_secret(env: Mapping[str, str], name: str) -> str:
-    # defense in depth: the config validator already checked the name
-    if not valid_twitch_env_name(name):
+def check_names(source: TwitchSource) -> None:
+    """The credential names must be the canonical ones (defense in depth: the
+    config model already enforces it; this holds if a source was built another
+    way). Raises a fixed word and never echoes a name."""
+    if (
+        source.client_id_env != CLIENT_ID_ENV
+        or source.client_secret_env != CLIENT_SECRET_ENV
+    ):
         raise TwitchUserError("bad_env_name")
+
+
+def _env_secret(env: Mapping[str, str], name: str) -> str:
     value = env.get(name, "")
     if not value:
         raise TwitchUserError("missing_credential")
@@ -163,12 +177,8 @@ def _env_secret(env: Mapping[str, str], name: str) -> str:
 
 
 def user_token_configured(source: TwitchSource, env: Mapping[str, str]) -> bool:
-    name = source.user_token_env
-    if name is None:
-        return False
-    if not valid_twitch_env_name(name):
-        raise TwitchUserError("bad_env_name")
-    return bool(env.get(name))
+    check_names(source)
+    return bool(env.get(USER_TOKEN_ENV))
 
 
 class _Session:
@@ -177,34 +187,35 @@ class _Session:
         source: TwitchSource,
         env: Mapping[str, str],
         fetch: Fetch,
-        sink: TokenSink,
+        sink: TokenSink | None,
     ) -> None:
-        if source.user_token_env is None:
-            raise TwitchUserError("missing_credential")
+        check_names(source)
         self.source = source
         self.fetch = fetch
-        self.sink = sink
-        self.client_id = _env_secret(env, source.client_id_env)
-        self.client_secret = _env_secret(env, source.client_secret_env)
-        self.access = _env_secret(env, source.user_token_env)
-        refresh_name = source.refresh_token_env
-        if refresh_name is not None and not valid_twitch_env_name(refresh_name):
-            raise TwitchUserError("bad_env_name")
-        self.refresh_value = env.get(refresh_name, "") if refresh_name else ""
+        # Refresh rotates the token pair. With no sink that stores it (the
+        # shipped no-op sink discards it), a refresh would break the next run.
+        self.can_refresh = source.auto_refresh
+        if self.can_refresh and (sink is None or isinstance(sink, NoopSink)):
+            raise TwitchUserError("refresh_needs_sink")
+        self.sink: TokenSink = sink if sink is not None else NoopSink()
+        self.client_id = _env_secret(env, CLIENT_ID_ENV)
+        self.client_secret = (
+            _env_secret(env, CLIENT_SECRET_ENV) if self.can_refresh else ""
+        )
+        self.access = _env_secret(env, USER_TOKEN_ENV)
+        self.refresh_value = env.get(REFRESH_TOKEN_ENV, "") if self.can_refresh else ""
         self.refreshed = False
 
-    def _names(self) -> tuple[str, ...]:
-        s = self.source
-        return tuple(n for n in (s.user_token_env, s.refresh_token_env) if n)
-
     def _alert(self, kind: str) -> None:
-        self.sink.alert(HealthAlert(self.source.platform, kind, self._names()))
+        self.sink.alert(
+            HealthAlert(self.source.platform, kind, (USER_TOKEN_ENV, REFRESH_TOKEN_ENV))
+        )
 
     def _refresh(self) -> None:
-        s = self.source
         if self.refreshed:
             raise TwitchUserError("token_rejected")
-        if not self.refresh_value or not s.refresh_token_env or not s.user_token_env:
+        if not self.can_refresh or not self.refresh_value:
+            # No refresh request is made: the owner refreshes by hand.
             self._alert("refresh_needed")
             raise TwitchUserError("token_expired")
         _check_url(TOKEN_URL)
@@ -235,7 +246,9 @@ class _Session:
         self.refresh_value = pair.refresh_token
         try:
             self.sink.store(
-                pair, TokenNames(s.user_token_env, s.refresh_token_env), s.platform
+                pair,
+                TokenNames(USER_TOKEN_ENV, REFRESH_TOKEN_ENV),
+                self.source.platform,
             )
         except Exception:  # a sink failure must not lose this run's number
             self._alert("rotated_unstored")
@@ -266,7 +279,7 @@ def followers_with_user_token(
     sink: TokenSink | None,
 ) -> object:
     """The raw ``total`` value; the caller validates it as a count."""
-    session = _Session(source, env, fetch, sink if sink is not None else NoopSink())
+    session = _Session(source, env, fetch, sink)
     user = session.get(USERS_URL + "?" + urlencode({"login": source.login}))
     data = user.get("data")
     first = data[0] if isinstance(data, list) and data else None

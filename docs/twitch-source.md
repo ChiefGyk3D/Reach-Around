@@ -26,18 +26,20 @@ confirmed on a readable page.
 
 ## Configuration
 
-Credential variable names are fixed in shape: every one must be `TWITCH_`
-followed by 1 to 60 of `A-Z`, `0-9` and `_`. This keeps a config from naming an
-unrelated variable. The check runs when the config loads and again before any
-variable is read. The defaults below apply when a key is left out, so the config
-does not need to name them:
+The credential variable names are fixed in the code, never taken from the
+config, so a config cannot point the collector at another variable:
 
-| Key | Default |
+| Purpose | Variable |
 | --- | --- |
-| `client_id_env` | `TWITCH_CLIENT_ID` |
-| `client_secret_env` | `TWITCH_CLIENT_SECRET` |
-| `user_token_env` | `TWITCH_USER_ACCESS_TOKEN` |
-| `refresh_token_env` | `TWITCH_REFRESH_TOKEN` (set to `null` to turn refresh off) |
+| App client id | `TWITCH_CLIENT_ID` |
+| App client secret | `TWITCH_CLIENT_SECRET` |
+| Broadcaster access token | `TWITCH_USER_ACCESS_TOKEN` |
+| Broadcaster refresh token | `TWITCH_USER_REFRESH_TOKEN` |
+
+`client_id_env` and `client_secret_env` may still be written, but only with the
+exact values above. `user_token_env` and `refresh_token_env` do not exist. Any
+other value is refused when the config loads and again before the environment
+is read (`bad_env_name`; the check never echoes a value).
 
 ```yaml
 numbers:
@@ -45,41 +47,47 @@ numbers:
     - {platform: twitch, kind: twitch, login: example_login}
 ```
 
-- The user token variable empty or unset: the old behavior. The source uses an
-  app token and is reported as skipped (`needs_user_token`) on a 401 or 403.
+- `TWITCH_USER_ACCESS_TOKEN` empty or unset: the old behavior. The source uses
+  an app token and is reported as skipped (`needs_user_token`) on a 401 or 403.
   Never an error.
-- The user token variable filled: the total is read with that token. History
+- `TWITCH_USER_ACCESS_TOKEN` filled: the total is read with that token. History
   (when enabled) records `source: api`, metric followers. `as_of` and the stale
   gate work as for every other source.
-- The refresh token variable is optional at run time: leave it unset for the
-  read-only mode below.
-- A name outside the pattern fails the load, or the run with `bad_env_name`.
+- On a 401 the shipped code makes NO refresh request. It fails the source with
+  `token_expired` and prints the content-free line
+  `token-health: ... kind=refresh_needed ...`. The token's remaining lifetime is
+  not stored, so there is no early warning before the first 401.
+- `auto_refresh: true` is opt-in and is refused (`refresh_needs_sink`, before
+  any request) unless the caller supplies a sink that stores the rotated pair.
+  The shipped `NoopSink` does not count, and the command line supplies no other
+  sink, so today the setting only works for code that embeds the collector.
 
 ## Failure words
 
-`bad_env_name`, `missing_credential`, `invalid_credential`, `token_expired` (401, no refresh
-token configured), `token_rejected` (401 again after a refresh),
-`refresh_failed`, `bad_json`, `too_large`, `redirect`, `rate_limited`,
-`server_error`, `egress_timeout`, `missing_field`, `bad_count`, `bad_host`.
-None includes a response body or a token.
+`bad_env_name`, `missing_credential`, `invalid_credential`, `token_expired`
+(401, no refresh done), `token_rejected` (401 again after a refresh),
+`refresh_needs_sink`, `refresh_failed`, `bad_json`, `too_large`, `redirect`,
+`rate_limited`, `server_error`, `egress_timeout`, `missing_field`, `bad_count`,
+`bad_host`. None includes a response body or a token.
 
-## Rotation and the operational consequence
+## Rotation and the manual refresh
 
-The code never writes a secret to disk or the repository. After a refresh it
-gives the new pair to a token sink. The shipped sink (`NoopSink`) prints the
-secret NAMES and one instruction: store the new values under those names in the
-secret manager. A future sink that writes to the secret manager is a documented
-hook (`TokenSink` in `reach_around.counts.twitch_user`) and is not implemented:
-agents never touch the secret store.
+The code never writes a secret to disk or the repository. Refresh rotates the
+pair (the refresh token "may change"), so a refresh whose result is not stored
+breaks the next run. That is why refresh is off by default and why the shipped
+no-op sink is refused for `auto_refresh`. The `TokenSink` interface
+(`reach_around.counts.twitch_user`) and the refresh function stay for a future
+sink that writes to the secret manager; it is not implemented, because agents
+never touch the secret store.
 
-If the rotated refresh token is not stored, the next run holds an old one and
-may fail with `refresh_failed`. Two safe modes:
-
-1. Read-only (recommended until a storing sink exists): leave
-   the refresh token variable unset (or set `refresh_token_env: null`). The run uses the access token until it expires, then
-   fails with `token_expired` and prints a health alert.
-2. Refresh with a human in the loop: when the run prints `kind=rotated_unstored`,
-   the owner stores the new pair before the next run.
+Manual refresh, run by the owner when the alert line appears (VERIFIED request
+shape, refresh-tokens page, 2026-11-09): a form POST to
+`https://id.twitch.tv/oauth2/token` with `client_id`, `client_secret`,
+`grant_type=refresh_token` and the URL-encoded `refresh_token`. Read the values
+from the secret manager without typing them into shell history, then store the
+`access_token` and `refresh_token` from the answer as
+`TWITCH_USER_ACCESS_TOKEN` and `TWITCH_USER_REFRESH_TOKEN` and discard the
+output. If Twitch answers 400 or 401, repeat the authorization below.
 
 Alert shape (for the health record of issue 390; names only, no values):
 
@@ -93,8 +101,7 @@ token-health: source=<platform> kind=<refresh_needed|refresh_failed|rotated_unst
    console. Set a redirect URI of `http://localhost:3000` (VERIFIED as the
    documented test value; the application must list it exactly). Note the
    client id and create a client secret.
-2. Store the client id and secret in the secret manager under `TWITCH_CLIENT_ID` and `TWITCH_CLIENT_SECRET` (or the names set in the
-   config). Never in the repository or a GitHub secret.
+2. Store the client id and secret in the secret manager under `TWITCH_CLIENT_ID` and `TWITCH_CLIENT_SECRET`. Never in the repository or a GitHub secret.
 3. While logged in to Twitch as the broadcaster, open in a browser (replace the
    placeholders):
    `https://id.twitch.tv/oauth2/authorize?client_id=<CLIENT_ID>&redirect_uri=http%3A%2F%2Flocalhost%3A3000&response_type=code&scope=moderator%3Aread%3Afollowers&state=<RANDOM>`
@@ -108,6 +115,6 @@ token-health: source=<platform> kind=<refresh_needed|refresh_failed|rotated_unst
    `client_secret`, `code`, `grant_type=authorization_code`, `redirect_uri`.
    The answer holds `access_token` and `refresh_token`.
 5. Store them in the secret manager as `TWITCH_USER_ACCESS_TOKEN` and
-   `TWITCH_REFRESH_TOKEN` (or the names set in the config), and discard the shell output.
+   `TWITCH_USER_REFRESH_TOKEN`, and discard the shell output.
 6. Run `reach-around counts refresh` with the secrets injected. If Twitch
    answers a refresh with 400 or 401, repeat from step 3.

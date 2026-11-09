@@ -423,13 +423,13 @@ TW = TwitchSource.model_validate(
         "platform": "tw",
         "kind": "twitch",
         "login": "some_user",
-        "client_id_env": "TWITCH_TW_ID",
-        "client_secret_env": "TWITCH_TW_SECRET",
+        "client_id_env": "TWITCH_CLIENT_ID",
+        "client_secret_env": "TWITCH_CLIENT_SECRET",
     }
 )
 TW_ENV = {
-    "TWITCH_TW_ID": "SENTINEL-CLIENT-ID",
-    "TWITCH_TW_SECRET": "SENTINEL-CLIENT-SECRET",
+    "TWITCH_CLIENT_ID": "SENTINEL-CLIENT-ID",
+    "TWITCH_CLIENT_SECRET": "SENTINEL-CLIENT-SECRET",
 }
 AUTH_URL = "https://id.twitch.tv/oauth2/token"
 USERS_URL = "https://api.twitch.tv/helix/users?login=some_user"
@@ -500,9 +500,9 @@ def test_twitch_token_rejection_is_a_failure_not_a_skip() -> None:
     "env",
     [
         {},
-        {"TWITCH_TW_ID": "x"},
-        {"TWITCH_TW_SECRET": "x"},
-        {"TWITCH_TW_ID": "", "TWITCH_TW_SECRET": "x"},
+        {"TWITCH_CLIENT_ID": "x"},
+        {"TWITCH_CLIENT_SECRET": "x"},
+        {"TWITCH_CLIENT_ID": "", "TWITCH_CLIENT_SECRET": "x"},
     ],
 )
 def test_twitch_missing_credentials_fail_before_any_request(

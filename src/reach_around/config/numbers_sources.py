@@ -12,7 +12,6 @@ import re
 from typing import Annotated, Literal
 
 from pydantic import (
-    AfterValidator,
     BaseModel,
     ConfigDict,
     Field,
@@ -43,26 +42,12 @@ Platform = Annotated[str, StringConstraints(pattern=_SLUG)]
 EnvName = Annotated[str, StringConstraints(pattern=_ENV_NAME)]
 
 
-_TWITCH_ENV = re.compile(r"TWITCH_[A-Z0-9_]{1,60}")
-
-
-def valid_twitch_env_name(name: object) -> bool:
-    """Credential variables for Twitch must carry the platform prefix.
-
-    ``fullmatch`` (not ``$``) so a trailing newline cannot slip through.
-    """
-    return isinstance(name, str) and _TWITCH_ENV.fullmatch(name) is not None
-
-
-def _twitch_env(value: str) -> str:
-    if not valid_twitch_env_name(value):
-        raise ValueError(
-            "a Twitch credential variable name must match TWITCH_[A-Z0-9_]+"
-        )
-    return value
-
-
-TwitchEnvName = Annotated[str, AfterValidator(_twitch_env)]
+# Fixed credential variable names for Twitch. Names are not configurable: a
+# config can never point the collector at another variable.
+CLIENT_ID_ENV = "TWITCH_CLIENT_ID"
+CLIENT_SECRET_ENV = "TWITCH_CLIENT_SECRET"  # noqa: S105 (a variable NAME)
+USER_TOKEN_ENV = "TWITCH_USER_ACCESS_TOKEN"  # noqa: S105 (a variable NAME)
+REFRESH_TOKEN_ENV = "TWITCH_USER_REFRESH_TOKEN"  # noqa: S105 (a variable NAME)
 
 
 class _Source(BaseModel):
@@ -168,16 +153,12 @@ class YoutubeSource(_Source):
 class TwitchSource(_Source):
     kind: Literal["twitch"]
     login: str
-    client_id_env: TwitchEnvName = "TWITCH_CLIENT_ID"
-    client_secret_env: TwitchEnvName = "TWITCH_CLIENT_SECRET"  # noqa: S105 (a variable NAME)
-    # Broadcaster user token (scope moderator:read:followers). All four names
-    # must start with TWITCH_ so no unrelated variable can be named; they have
-    # fixed defaults. When the user token variable holds a value, the followers
-    # total is read with it; otherwise the app-token path (and its
-    # needs_user_token skip) stays. A refresh token variable that holds a value
-    # additionally lets one 401 trigger one refresh; null turns refresh off.
-    user_token_env: TwitchEnvName | None = "TWITCH_USER_ACCESS_TOKEN"  # noqa: S105 (a variable NAME)
-    refresh_token_env: TwitchEnvName | None = "TWITCH_REFRESH_TOKEN"  # noqa: S105 (a variable NAME)
+    # Only the canonical names are accepted (the keys may be left out).
+    client_id_env: Literal["TWITCH_CLIENT_ID"] = CLIENT_ID_ENV
+    client_secret_env: Literal["TWITCH_CLIENT_SECRET"] = CLIENT_SECRET_ENV
+    # Opt-in refresh of a broadcaster user token. Refused at run time unless the
+    # caller supplies a sink that stores the rotated pair.
+    auto_refresh: bool = False
 
     @field_validator("login")
     @classmethod
@@ -185,23 +166,6 @@ class TwitchSource(_Source):
         if not _TWITCH_LOGIN.match(value):
             raise ValueError("login must be a Twitch login name")
         return value
-
-    @model_validator(mode="after")
-    def _distinct(self) -> TwitchSource:
-        if self.client_id_env == self.client_secret_env:
-            raise ValueError("client_id_env and client_secret_env must differ")
-        if self.refresh_token_env is not None and self.user_token_env is None:
-            raise ValueError("refresh_token_env needs user_token_env")
-        names = [
-            self.client_id_env,
-            self.client_secret_env,
-            self.user_token_env,
-            self.refresh_token_env,
-        ]
-        given = [name for name in names if name is not None]
-        if len(set(given)) != len(given):
-            raise ValueError("the Twitch environment variable names must all differ")
-        return self
 
 
 Source = Annotated[
