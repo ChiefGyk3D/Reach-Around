@@ -8,13 +8,16 @@ every resolved address again at connect time.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
+from typing import Any
 from urllib.parse import quote, urlencode, urlsplit
 
 from reach_around.config.blocks import MAX_COUNT
 from reach_around.config.numbers_sources import (
+    YOUTUBE_KEY_ENV,
     BlueskySource,
     DiscordSource,
     GithubSource,
@@ -122,6 +125,63 @@ def _secret(env: Mapping[str, str], name: str) -> str:
     return value
 
 
+_FETCH_WORDS = frozenset(
+    {
+        "bad_json",
+        "bad_url",
+        "content_encoding",
+        "content_type",
+        "redirect",
+        "too_large",
+        "rate_limited",
+        "server_error",
+        "egress_scheme",
+        "egress_port",
+        "egress_host_syntax",
+        "egress_non_public_address",
+        "egress_no_address",
+        "egress_resolution_failed",
+        "egress_resolution_timeout",
+        "egress_resolution_busy",
+        "egress_connect_failed",
+        "egress_tls_failed",
+        "egress_timeout",
+    }
+)
+_HTTP_WORD = re.compile(r"http_[45][0-9]{2}", re.ASCII)
+_YOUTUBE_HOSTS = frozenset({"www.googleapis.com"})
+_TWITCH_HOSTS = frozenset({"id.twitch.tv", "api.twitch.tv"})
+
+
+def _guarded_fetch(
+    ctx: Context, url: str, hosts: frozenset[str], **kwargs: Any
+) -> dict[str, object]:
+    """Fetch for a call that carries a credential.
+
+    The URL must be https on one of the fixed ``hosts`` with no port; redirects
+    are refused; ``FetchError`` (fixed words only) passes through; any other
+    exception becomes the fixed word ``fetch_failed`` with no cause kept, so no
+    header, URL or body text can reach a log or an error."""
+    parts = urlsplit(url)
+    if parts.scheme != "https" or parts.hostname not in hosts or parts.port:
+        raise SourceError("bad_host")
+    word = "fetch_failed"
+    try:
+        return ctx.fetch(url, follow_redirects=False, **kwargs)
+    except FetchError as exc:
+        # only a word from the closed set crosses; the exception itself, its
+        # args, code and text are dropped
+        found = exc.kind if type(exc.kind) is str else ""
+        if found in _FETCH_WORDS or _HTTP_WORD.fullmatch(found):
+            word = found
+        failure_is_fetch_error = True
+    except Exception:
+        failure_is_fetch_error = False
+    if failure_is_fetch_error:
+        raise FetchError(word)
+    raise SourceError("fetch_failed")
+
+
 def _object(payload: Mapping[str, object], key: str) -> Mapping[str, object]:
     value = payload.get(key)
     if not isinstance(value, dict):
@@ -225,12 +285,16 @@ def matrix(source: MatrixSource, ctx: Context) -> int:
 
 
 def youtube(source: YoutubeSource, ctx: Context) -> int:
-    key = _secret(ctx.env, source.api_key_env)
+    # use-time name and type check, before the environment is read
+    name = source.api_key_env
+    if type(name) is not str or name != YOUTUBE_KEY_ENV:
+        raise SourceError("bad_credential_name")
+    key = _secret(ctx.env, YOUTUBE_KEY_ENV)
     url = "https://www.googleapis.com/youtube/v3/channels?" + urlencode(
         {"part": "statistics", "id": source.channel_id}
     )
     # the key travels in a header, never in the URL
-    payload = ctx.fetch(url, headers={"x-goog-api-key": key})
+    payload = _guarded_fetch(ctx, url, _YOUTUBE_HOSTS, headers={"x-goog-api-key": key})
     stats = _object(_first(payload, "items"), "statistics")
     if stats.get("hiddenSubscriberCount") is True:
         raise SourceSkip(SKIP_HIDDEN)
@@ -265,8 +329,10 @@ def twitch(source: TwitchSource, ctx: Context) -> int:
             "grant_type": "client_credentials",
         }
     ).encode("ascii")
-    token_reply = ctx.fetch(
+    token_reply = _guarded_fetch(
+        ctx,
         "https://id.twitch.tv/oauth2/token",
+        _TWITCH_HOSTS,
         method="POST",
         body=form,
         headers={"Content-Type": "application/x-www-form-urlencoded"},
@@ -275,17 +341,21 @@ def twitch(source: TwitchSource, ctx: Context) -> int:
     if not isinstance(token, str) or not token or len(token) > 512:
         raise SourceError("missing_field")
     headers = {"Authorization": f"Bearer {token}", "Client-Id": client_id}
-    user = ctx.fetch(
+    user = _guarded_fetch(
+        ctx,
         "https://api.twitch.tv/helix/users?" + urlencode({"login": source.login}),
+        _TWITCH_HOSTS,
         headers=headers,
     )
     user_id = _first(user, "data").get("id")
     if not isinstance(user_id, str) or not (user_id.isascii() and user_id.isdigit()):
         raise SourceError("missing_field")
     try:
-        followers = ctx.fetch(
+        followers = _guarded_fetch(
+            ctx,
             "https://api.twitch.tv/helix/channels/followers?"
             + urlencode({"broadcaster_id": user_id, "first": "1"}),
+            _TWITCH_HOSTS,
             headers=headers,
         )
     except FetchError as exc:
