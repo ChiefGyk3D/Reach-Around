@@ -111,6 +111,9 @@ def fetch_json(
     now: Callable[[], datetime] = lambda: datetime.now(UTC),
     max_bytes: int = MAX_BYTES,
     timeout: float = TIMEOUT,
+    follow_redirects: bool = True,
+    extra_json_types: frozenset[str] = frozenset(),
+    max_attempts: int = MAX_ATTEMPTS,
 ) -> dict[str, object]:
     """Request ``url`` and return the JSON object in the answer.
 
@@ -125,7 +128,7 @@ def fetch_json(
         "Accept-Encoding": "identity",
     }
     base.update(headers or {})
-    attempts = MAX_ATTEMPTS if method == "GET" else 1
+    attempts = max(1, min(max_attempts, MAX_ATTEMPTS)) if method == "GET" else 1
     redirects = 0
     attempt = 0
     while True:
@@ -146,7 +149,12 @@ def fetch_json(
         status = response.status
         if 300 <= status < 400:
             location = response.headers.get("location")
-            if method != "GET" or location is None or redirects >= MAX_REDIRECTS:
+            if (
+                not follow_redirects
+                or method != "GET"
+                or location is None
+                or redirects >= MAX_REDIRECTS
+            ):
                 raise FetchError("redirect")
             try:
                 next_host, next_path = _target(
@@ -172,18 +180,22 @@ def fetch_json(
             continue
         if not 200 <= status < 300:
             raise FetchError(f"http_{status}")
-        return _decode(response.headers, response.body, max_bytes)
+        return _decode(response.headers, response.body, max_bytes, extra_json_types)
 
 
 def _decode(
-    headers: Mapping[str, str], body: bytes, max_bytes: int
+    headers: Mapping[str, str],
+    body: bytes,
+    max_bytes: int,
+    extra_json_types: frozenset[str] = frozenset(),
 ) -> dict[str, object]:
     if len(body) > max_bytes:
         raise FetchError("too_large")
     encoding = headers.get("content-encoding", "identity").strip().lower()
     if encoding not in ("", "identity"):
         raise FetchError("content_encoding")
-    if not _is_json_type(headers.get("content-type")):
+    media = (headers.get("content-type") or "").split(";", 1)[0].strip().lower()
+    if not _is_json_type(headers.get("content-type")) and media not in extra_json_types:
         raise FetchError("content_type")
     try:
         parsed = json.loads(body.decode("utf-8"))
