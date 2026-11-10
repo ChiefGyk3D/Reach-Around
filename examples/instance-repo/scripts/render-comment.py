@@ -313,8 +313,8 @@ VOCAB: dict[str, tuple[str, str]] = {
         "Delete value and as_of, or change source to manual.",
     ),
     "kit_gate_off": (
-        "the kit has partners, case studies, rates or demographics, "
-        "which need the gate",
+        "the kit has partners, case studies, rates, testimonials or "
+        "demographics, which need the gate",
         "Set features.kit_gate to true, or remove those entries.",
     ),
     "kit_unlock_link": (
@@ -444,6 +444,7 @@ KNOWN_FIELDS: frozenset[str] = frozenset(
         "block",
         "blocks",
         "body",
+        "brand",
         "button",
         "button_style",
         "case_studies",
@@ -534,6 +535,7 @@ KNOWN_FIELDS: frozenset[str] = frozenset(
         "privacy",
         "profile_card",
         "qr",
+        "quote",
         "radius",
         "rates",
         "raw_keep_days",
@@ -562,6 +564,7 @@ KNOWN_FIELDS: frozenset[str] = frozenset(
         "tabs",
         "tags",
         "target",
+        "testimonials",
         "text",
         "theme",
         "timezone",
