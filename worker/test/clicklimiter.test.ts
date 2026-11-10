@@ -45,7 +45,73 @@ beforeEach(async () => {
   await testEnv.DB.prepare("DELETE FROM click_events").run();
 });
 
-const PIECES = [IP4, "198.51.100", "51.100.7", "2001:db8", "abcd", "unknown"];
+// Fragments that a lowercase hex digest can never contain (they hold "." ":" or a
+// non-hex letter), so a chance match inside a random key is impossible. Fragments
+// made only of hex characters (such as "abcd" in IP6) are checked as whole-key
+// equality instead, never as a substring of a random value.
+const NON_HEX_PIECES = [IP4, "198.51.100", "51.100.7", "2001:db8", "unknown"];
+const HEX_PIECES = ["abcd", "c0000201", "c6336407", "20010db8"];
+
+// Complete 128-bit hex spellings of the test addresses: IPv6 expanded and joined,
+// its /64 prefix (the code cuts IPv6 to /64) padded with zeros, IPv4-mapped IPv4,
+// and IPv4 padded left or right. Compared whole, lowercased, so a random digest
+// is flagged only when it equals one of them exactly.
+const FULL_HEX_FORMS = [
+  "20010db8abcd00120000000000000007",
+  "20010db8abcd00120000000000000000",
+  "0000000000000000" + "20010db8abcd0012",
+  "00000000000000000000ffffc6336407",
+  "000000000000000000000000c6336407",
+  "c6336407".padEnd(32, "0"),
+];
+// Colon-grouped full spellings contain ":" so a hex digest can never hold them.
+NON_HEX_PIECES.push("2001:0db8:abcd:0012:0000:0000:0000:0007", "2001:db8:abcd:12:0:0:0:7", "::ffff:198.51.100.7");
+
+/** The reasons a limiter key would count as carrying the raw address, if any. */
+export function rawLeaks(key: string): string[] {
+  const out: string[] = [];
+  if (!/^[0-9a-f]{32}$/.test(key)) out.push("not a 32 character lowercase hex digest");
+  for (const p of NON_HEX_PIECES) if (key.includes(p)) out.push(`contains ${p}`);
+  const lower = key.toLowerCase();
+  for (const f of FULL_HEX_FORMS) if (lower === f) out.push(`is the 128-bit form ${f}`);
+  for (const p of HEX_PIECES) if (key === p || key === p.padEnd(32, "0") || key === p.padStart(32, "0")) out.push(`is ${p}`);
+  return out;
+}
+
+describe("raw address guard (deterministic)", () => {
+  it("ignores a hex fragment that happens to sit inside a random digest", () => {
+    expect(rawLeaks("0123456789abcd0123456789abcdef01")).toEqual([]);
+  });
+  it("flags every complete 128-bit hex form of the test addresses, in any case", () => {
+    const forms = [
+      "20010db8abcd00120000000000000007", // IPv6, expanded groups joined
+      "20010db8abcd00120000000000000000", // its /64 prefix, zero padded
+      "00000000000000000000ffffc6336407", // IPv4-mapped IPv4
+      "000000000000000000000000c6336407", // IPv4, left padded
+      "c6336407".padEnd(32, "0"), // IPv4, right padded
+    ];
+    for (const f of forms) {
+      expect(rawLeaks(f), f).not.toEqual([]);
+      expect(rawLeaks(f.toUpperCase()), f.toUpperCase()).not.toEqual([]);
+    }
+    // Colon-grouped spellings are not hex digests and are flagged as such.
+    expect(rawLeaks("2001:0db8:abcd:0012:0000:0000:0000:0007")).not.toEqual([]);
+  });
+  it("does not flag a genuine keyed digest that merely resembles those forms", () => {
+    for (const k of [
+      "20010db8abcd00120000000000000008", // differs in the last digit
+      "a20010db8abcd001200000000000000f", // contains a long run, not equal
+      "9f86d081884c7d659a2feaa0c55ad015",
+    ]) expect(rawLeaks(k), k).toEqual([]);
+  });
+  it("still flags a raw address, a part of it, or a non-digest", () => {
+    expect(rawLeaks(IP4)).not.toEqual([]);
+    expect(rawLeaks("x198.51.100x".padEnd(32, "0"))).not.toEqual([]);
+    expect(rawLeaks("2001:db8:abcd:12::7".padEnd(32, "0"))).not.toEqual([]);
+    expect(rawLeaks("abcd".padEnd(32, "0"))).not.toEqual([]);
+    expect(rawLeaks("")).not.toEqual([]);
+  });
+});
 
 describe("click limiter keys", () => {
   for (const [name, secret] of [
@@ -57,8 +123,7 @@ describe("click limiter keys", () => {
       for (const ip of [IP4, IP6, null]) await handleClick(click(ip), envWith(l, secret));
       expect(l.keys.length).toBe(3);
       for (const k of l.keys) {
-        expect(k).toMatch(/^[0-9a-f]{32}$/);
-        for (const piece of PIECES) expect(k).not.toContain(piece);
+        expect(rawLeaks(k)).toEqual([]);
       }
     });
 
