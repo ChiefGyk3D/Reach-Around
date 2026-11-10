@@ -306,6 +306,7 @@ def _public_values(kit: KitConfig) -> set[str]:
     values = {kit.title, kit.about}
     if kit.contact is not None:
         values.add(kit.contact)
+    values.update(kit.tags)
     for metric in kit.metrics:
         values.add(metric.label)
         if metric.as_of is not None:
@@ -641,6 +642,7 @@ def _content(
         "title": projection["title"],
         "about": projection["about"],
         "contact": projection["contact"],
+        "tags": projection["tags"],
         "metrics": _metric_rows(metrics, config, today, live_day),
         "total": _total(projection["unified_total"], metrics, live_day),
     }

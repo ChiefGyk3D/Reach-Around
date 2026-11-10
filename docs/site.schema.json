@@ -848,6 +848,16 @@
           "title": "Rates",
           "type": "array"
         },
+        "tags": {
+          "items": {
+            "maxLength": 30,
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 8,
+          "title": "Tags",
+          "type": "array"
+        },
         "title": {
           "maxLength": 120,
           "minLength": 1,

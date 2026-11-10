@@ -5,6 +5,13 @@
 {% block content %}
 <section class="kit" aria-labelledby="kit-title">
 <h2 id="kit-title">{{ kit.title }}</h2>
+{% if kit.tags %}
+<ul class="profile-tags kit-tags">
+{% for tag in kit.tags %}
+<li class="profile-tag">{{ tag }}</li>
+{% endfor %}
+</ul>
+{% endif %}
 <p class="kit-about">{{ kit.about }}</p>
 {% if kit.contact %}
 <p class="kit-about kit-contact">{{ kit.contact }}</p>

@@ -63,6 +63,7 @@ DISPLAY_POLICY: Mapping[str, Visibility] = {
     "title": "public",
     "about": "public",
     "contact": "public",
+    "tags": "public",
     "metrics": "public",
     "unified_total": "public",
     "turnstile_site_key": "public",
@@ -96,6 +97,9 @@ def _plain(value: str) -> str:
     return value
 
 
+Text30 = Annotated[
+    StrictStr, Field(min_length=1, max_length=30), AfterValidator(_plain)
+]
 Text60 = Annotated[
     StrictStr, Field(min_length=1, max_length=60), AfterValidator(_plain)
 ]
@@ -228,6 +232,8 @@ class KitConfig(_Model):
     # the page prints it escaped. The owner decides what goes here (an email
     # written as text is fine); no address or phone is required or checked.
     contact: Text200 | None = None
+    # A few content category chips for the header, public on every page.
+    tags: list[Text30] = Field(default_factory=list, max_length=8)
     metrics: list[PlatformMetric] = Field(default_factory=list, max_length=30)
     partners: list[Partner] = Field(default_factory=list, max_length=50)
     case_studies: list[CaseStudy] = Field(default_factory=list, max_length=20)
@@ -257,6 +263,16 @@ class KitConfig(_Model):
                 "arrives in a later release. Leave it false or remove it."
             )
         return value
+
+    @model_validator(mode="after")
+    def _tags_are_unique(self) -> KitConfig:
+        seen: set[str] = set()
+        for tag in self.tags:
+            key = unicodedata.normalize("NFKC", tag).casefold()
+            if key in seen:
+                raise ValueError(f"the tag {tag!r} is listed more than once")
+            seen.add(key)
+        return self
 
     @model_validator(mode="after")
     def _metrics_are_unique(self) -> KitConfig:

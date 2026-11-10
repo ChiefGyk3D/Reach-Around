@@ -21,6 +21,7 @@ kit:
   title: Example Creator media kit
   about: A fake creator who streams games and talks about gear.
   contact: Brand deals - partners at example.com
+  tags: [Gaming, Hardware]
   turnstile_site_key: 0x4AAAAAAAexampleKey
   metrics:
     - {platform: twitch, label: Followers, value: 1200, as_of: 2027-03-01}
@@ -59,7 +60,7 @@ publishes only `--out`.
 
 ### Public page
 
-Header (the kit title and description), the headline numbers each with the date
+Header (the kit title, the optional content tags and the description), the headline numbers each with the date
 it was read, and the unified total. The total adds up the numbers that are not
 marked `in_total: false`; it says how many numbers it adds up and the date of
 the oldest one, and notes that people who follow on several platforms are

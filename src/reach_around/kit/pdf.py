@@ -345,6 +345,8 @@ def _expected_text(kit: KitConfig, numbers: Numbers | None) -> list[tuple[str, s
     found: list[tuple[str, str]] = [("kit.title", kit.title), ("kit.about", kit.about)]
     if kit.contact is not None:
         found.append(("kit.contact", kit.contact))
+    for index, tag in enumerate(kit.tags):
+        found.append((f"kit.tags[{index}]", tag))
     resolved = resolve_metrics(kit, numbers)
     for row in _metric_rows(resolved):
         found.append(
