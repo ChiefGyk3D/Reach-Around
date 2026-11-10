@@ -38,8 +38,9 @@ run it.
 5. Image tags come from the tag: `0.1.0`, `0.1`, `latest` and `sha-<short>`. There is no
    major-only tag while the project is `0.x`.
 6. Confirm the package is visible the way you want it. A new GHCR package inherits
-   the repository's visibility, so while the repository is private the image is private
-   and pulling it needs `docker login ghcr.io` or `podman login ghcr.io` with a token that
+   the repository's visibility. This repository is public, so the image is public and
+   pulling it needs no sign-in. A fork that is private gets a private image, and pulling
+   that one needs `docker login ghcr.io` or `podman login ghcr.io` with a token that
    can read packages.
 
 ## Verify an image

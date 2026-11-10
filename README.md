@@ -8,7 +8,7 @@
 
 > ## ⚠️ Alpha: early code, expect breaking changes
 >
-> Reach Around is **alpha**. The first release (`v0.1.0`) is a container image that builds a static link page from a config file. There is no stable configuration format and no upgrade path between `0.x` releases. Interfaces and file layouts will change without notice, and some platform behavior described in the research notes is unverified. Do not depend on it yet. This repository is private while that is true.
+> Reach Around is **alpha**. The first release (`v0.1.0`) is a container image that builds a static link page from a config file. There is no stable configuration format and no upgrade path between `0.x` releases. Interfaces and file layouts will change without notice, and some platform behavior described in the research notes is unverified. Do not depend on it yet. The source is public under the Apache-2.0 license so you can read it, use it and self-host it.
 
 An open-source (Apache-2.0) single pane for creator analytics: one place for your link page, your media kit and your numbers across every platform you publish on, built to be self-hosted with your own API keys. It is meant to replace Beacons.ai for creators, close to 1:1, and then go further.
 
@@ -45,7 +45,7 @@ podman run --rm --read-only --cap-drop ALL \
     --manifest /tmp/manifest.json --assets-inventory /tmp/assets.json
 ```
 
-Replace the example mount with your own instance directory. Once `v0.1.0` is published the image is `ghcr.io/chiefgyk3d/reach-around:0.1.0` (pull it by digest, and sign-in is needed while the repository is private). See [docs/containers.md](docs/containers.md), [docs/releasing.md](docs/releasing.md) and the [changelog](CHANGELOG.md).
+Replace the example mount with your own instance directory. Once `v0.1.0` is published the image is `ghcr.io/chiefgyk3d/reach-around:0.1.0` (pull it by digest; the repository and its image are public, so no sign-in is needed). See [docs/containers.md](docs/containers.md), [docs/releasing.md](docs/releasing.md) and the [changelog](CHANGELOG.md).
 
 ## Documentation
 
