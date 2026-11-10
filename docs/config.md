@@ -914,7 +914,7 @@ end. Text must be quoted if YAML would read it as a number.
 | `title` | text | required | at most 120 characters |
 | `about` | text | required | at most 1000 characters |
 | `contact` | text | none | one plain-text line for brands, at most 200 characters; see the note below |
-| `tags` | list of text | none | at most 8 content category tags, each 1 to 30 characters, none repeated (ignoring case); public |
+| `tags` | list of text | none | at most 8 content category tags, each 1 to 30 characters, none repeated (compared ignoring case and width, so `Tech` and `Ｔech` count as the same tag); public |
 | `metrics` | list of metric | none | at most 30; each `platform` and `label` pair once |
 | `partners` | list of partner | none | at most 50 |
 | `case_studies` | list of case study | none | at most 20 |
