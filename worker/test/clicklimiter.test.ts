@@ -45,7 +45,34 @@ beforeEach(async () => {
   await testEnv.DB.prepare("DELETE FROM click_events").run();
 });
 
-const PIECES = [IP4, "198.51.100", "51.100.7", "2001:db8", "abcd", "unknown"];
+// Fragments that a lowercase hex digest can never contain (they hold "." ":" or a
+// non-hex letter), so a chance match inside a random key is impossible. Fragments
+// made only of hex characters (such as "abcd" in IP6) are checked as whole-key
+// equality instead, never as a substring of a random value.
+const NON_HEX_PIECES = [IP4, "198.51.100", "51.100.7", "2001:db8", "unknown"];
+const HEX_PIECES = ["abcd", "c0000201", "c6336407", "20010db8"];
+
+/** The reasons a limiter key would count as carrying the raw address, if any. */
+export function rawLeaks(key: string): string[] {
+  const out: string[] = [];
+  if (!/^[0-9a-f]{32}$/.test(key)) out.push("not a 32 character lowercase hex digest");
+  for (const p of NON_HEX_PIECES) if (key.includes(p)) out.push(`contains ${p}`);
+  for (const p of HEX_PIECES) if (key === p || key === p.padEnd(32, "0") || key === p.padStart(32, "0")) out.push(`is ${p}`);
+  return out;
+}
+
+describe("raw address guard (deterministic)", () => {
+  it("ignores a hex fragment that happens to sit inside a random digest", () => {
+    expect(rawLeaks("0123456789abcd0123456789abcdef01")).toEqual([]);
+  });
+  it("still flags a raw address, a part of it, or a non-digest", () => {
+    expect(rawLeaks(IP4)).not.toEqual([]);
+    expect(rawLeaks("x198.51.100x".padEnd(32, "0"))).not.toEqual([]);
+    expect(rawLeaks("2001:db8:abcd:12::7".padEnd(32, "0"))).not.toEqual([]);
+    expect(rawLeaks("abcd".padEnd(32, "0"))).not.toEqual([]);
+    expect(rawLeaks("")).not.toEqual([]);
+  });
+});
 
 describe("click limiter keys", () => {
   for (const [name, secret] of [
@@ -57,8 +84,7 @@ describe("click limiter keys", () => {
       for (const ip of [IP4, IP6, null]) await handleClick(click(ip), envWith(l, secret));
       expect(l.keys.length).toBe(3);
       for (const k of l.keys) {
-        expect(k).toMatch(/^[0-9a-f]{32}$/);
-        for (const piece of PIECES) expect(k).not.toContain(piece);
+        expect(rawLeaks(k)).toEqual([]);
       }
     });
 
