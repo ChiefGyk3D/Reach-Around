@@ -20,7 +20,7 @@
 
 import { notifyOwner, type AlertsEnv, type DispatchDeps } from "../alerts/dispatcher";
 import { normalizeAddress } from "../address";
-import { limiterKeyOrIsolate } from "../ratekey";
+import { limiterKey, secretBytes } from "../ratekey";
 import { readBoundedText } from "./body";
 import { loadKitLimits } from "./budgets";
 import { isKitKilled, type KitEnv } from "./env";
@@ -191,10 +191,14 @@ async function submit(request: Request, env: InquiryEnv, deps: InquiryDeps): Pro
   if (type !== CONTENT_TYPE) return plain(415);
 
   const keys = signingKeys(env);
-  if (keys === null || !hasLimiter(env.INQUIRY_LIMITER)) {
+  // The per-client limit needs a key that is the same in every isolate and after every restart, so a
+  // missing or malformed VIEW_HASH_SECRET closes the route (generic 503, nothing sent, nothing spent).
+  const limiterSecret = secretBytes(env.VIEW_HASH_SECRET);
+  if (keys === null || !hasLimiter(env.INQUIRY_LIMITER) || limiterSecret === null || typeof env.VIEW_HASH_SECRET !== "string") {
     log.log("send", "closed", "binding");
     return plain(503);
   }
+  const secretText = env.VIEW_HASH_SECRET;
 
   // Gate: a valid unlock cookie from the kit gate, and nothing else, opens the form.
   const token = readUnlockCookie(request.headers.get("cookie"));
@@ -206,7 +210,7 @@ async function submit(request: Request, env: InquiryEnv, deps: InquiryDeps): Pro
 
   // Per-client limiter, keyed by a keyed hash of the address (the raw address never reaches the binding).
   const address = normalizeAddress(request.headers.get("cf-connecting-ip"));
-  const key = address === null ? null : await limiterKeyOrIsolate(env.VIEW_HASH_SECRET, "inq", address);
+  const key = address === null ? null : await limiterKey(limiterSecret, secretText, "inq", address);
   if (!(await checkIpMinute(env.INQUIRY_LIMITER, key))) {
     // CONTROL:inquiry-ip-minute
     log.log("send", "throttled", "ip_minute");

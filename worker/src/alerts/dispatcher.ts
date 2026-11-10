@@ -168,6 +168,9 @@ function withinCap(message: AlertMessage): AlertMessage {
     : m;
 }
 
+/** Per-field bound for the inquiry identity; the form's longest field is 800 characters. */
+const INQUIRY_FIELD_CHARS = 1000;
+
 export function createDispatcher() {
   const windows = new Map<ChannelId, Window>();
   const seen = new Map<string, number>();
@@ -189,7 +192,14 @@ export function createDispatcher() {
     // An inquiry repeats when the same answers are sent again inside the window (a double submit);
     // a second, different inquiry from the same person is a new event.
     if (event.kind === "inquiry_received") {
-      return [event.email ?? "", event.name, event.brand, event.budget, event.details].map(String).join("|").slice(0, MAX_WHO_CHARS);
+      // Every field takes part, each length-prefixed and bounded on its own, so a long field cannot push a
+      // later one out of the identity and a delimiter inside one field cannot blur two inquiries together.
+      return [event.email ?? "", event.name, event.brand, event.budget, event.details]
+        .map((f) => {
+          const s = String(f).slice(0, INQUIRY_FIELD_CHARS);
+          return `${s.length}:${s}`;
+        })
+        .join("");
     }
     return event.kind !== "gate_failed_repeatedly" && typeof event.email === "string"
       ? event.email.slice(0, MAX_WHO_CHARS)

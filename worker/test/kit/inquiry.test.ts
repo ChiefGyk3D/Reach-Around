@@ -50,6 +50,7 @@ function baseEnv(over: Partial<InquiryEnv> = {}): InquiryEnv {
     DB: testEnv.DB,
     SITE_HOST: HOST,
     TOKEN_HMAC_KEY: KEY,
+    VIEW_HASH_SECRET: btoa("s".repeat(40)),
     INQUIRY_LIMITER: limiter(),
     ALERT_DEDUP_KEY: "d".repeat(40),
     ALERTS_CONFIG: JSON.stringify({ channels: ["discord"], events: ["inquiry_received"] }),
@@ -441,7 +442,49 @@ describe("missing limiter binding (INQUIRY_LIMITER)", () => {
   });
 });
 
+describe("stable limiter secret (VIEW_HASH_SECRET)", () => {
+  it("refuses with 503, sends nothing and spends nothing when the secret is missing or malformed", async () => {
+    for (const bad of [undefined, "", "not base64 !!", btoa("short"), "x".repeat(5000)]) {
+      const lim = limiter();
+      const { res, f } = await post({}, baseEnv({ VIEW_HASH_SECRET: bad as unknown as string, INQUIRY_LIMITER: lim }));
+      expect(res.status).toBe(503);
+      expect(f.calls).toHaveLength(0);
+      expect(lim.keys).toHaveLength(0);
+    }
+    const row = await testEnv.DB.prepare("SELECT COUNT(*) AS n FROM counters WHERE key = 'inquiry'").first<{ n: number }>();
+    expect(row!.n).toBe(0);
+  });
+  it("gives the same limiter key for the same client on every request", async () => {
+    const lim = limiter();
+    await post({}, baseEnv({ INQUIRY_LIMITER: lim }));
+    await post({ fields: { ...GOOD, name: "Second" } }, baseEnv({ INQUIRY_LIMITER: lim }));
+    expect(lim.keys).toHaveLength(2);
+    expect(lim.keys[0]).toBe(lim.keys[1]);
+  });
+});
+
 describe("dispatcher dedup identity", () => {
+  it("keeps every field: the same first 254 characters with a different later field is a new event", async () => {
+    const d = createDispatcher();
+    const e = baseEnv();
+    const f = mockFetch();
+    const long = "a".repeat(300);
+    const base = { kind: "inquiry_received" as const, atMs: T0, name: "Pat", email: "pat@example.com", brand: "", budget: "", details: long };
+    await d.notify(e, base, { fetchFn: f.fn, nowMs: T0 });
+    await d.notify(e, { ...base, details: long + "b" }, { fetchFn: f.fn, nowMs: T0 + 1000 });
+    await d.notify(e, { ...base, budget: "later" }, { fetchFn: f.fn, nowMs: T0 + 2000 });
+    expect(f.calls).toHaveLength(3);
+  });
+  it("does not let a delimiter in one field blur two different inquiries", async () => {
+    const d = createDispatcher();
+    const e = baseEnv();
+    const f = mockFetch();
+    const one = { kind: "inquiry_received" as const, atMs: T0, name: "a|b", email: "", brand: "c", budget: "", details: "" };
+    const two = { ...one, name: "a", brand: "b|c" };
+    await d.notify(e, one, { fetchFn: f.fn, nowMs: T0 });
+    await d.notify(e, two, { fetchFn: f.fn, nowMs: T0 + 1000 });
+    expect(f.calls).toHaveLength(2);
+  });
   it("treats an identical repeat inside the window as one", async () => {
     const d = createDispatcher();
     const e = baseEnv();
