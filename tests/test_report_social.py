@@ -53,13 +53,15 @@ def social(records: list[Record], **kw: Any) -> dict[str, Any]:
 def only(block: dict[str, Any], platform: str) -> dict[str, Any]:
     rows = [s for s in block["platforms"] if s["platform"] == platform]
     assert len(rows) == 1
-    return rows[0]
+    row: dict[str, Any] = rows[0]
+    return row
 
 
 def change(series: dict[str, Any], days: int) -> dict[str, Any]:
     rows = [c for c in series["changes"] if c["days"] == days]
     assert len(rows) == 1
-    return rows[0]
+    row: dict[str, Any] = rows[0]
+    return row
 
 
 def test_latest_and_30_90_365_day_changes() -> None:
