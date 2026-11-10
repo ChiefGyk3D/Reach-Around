@@ -7,7 +7,9 @@ tampered file or a bug can put anything in it. The output is built from an
 allowlist, never edited in place:
 
 * only known layout tags and attributes are rebuilt (``class``, table ``scope``,
-  ``datetime``, an ``https`` link target); the live-site chrome (skip link,
+  ``datetime``); link targets and image descriptions are omitted because PDF
+  annotations and tagged structures are outside page-content text extraction;
+  the live-site chrome (skip link,
   navigation, footer with its cookie form, the inquiry form's aside, links back to the
   site) is dropped;
 * a tag that can run code, fetch, nest a document or submit anything (script,
@@ -43,7 +45,6 @@ MAX_CSS_BYTES = 1024 * 1024
 MAX_CSS_TOTAL = 3 * 1024 * 1024
 MAX_IMAGE_BYTES = 2 * 1024 * 1024
 MAX_IMAGES = 8
-MAX_HREF = 2048
 GATED_FILE = "kit.html"
 # The public half: the page the site publishes, in the site output directory.
 PUBLIC_FILE = "kit/index.html"
@@ -463,21 +464,13 @@ class _Rebuild(HTMLParser):
                     out.append(f'{key}="{found[key]}"')
         if tag == "time" and _DATETIME.fullmatch(found.get("datetime", "")):
             out.append(f'datetime="{found["datetime"]}"')
-        if tag == "a":
-            href = found.get("href", "")
-            if (
-                href.startswith("https://")
-                and len(href) <= MAX_HREF
-                and not any(c.isspace() or c in '"<>' or ord(c) < 32 for c in href)
-            ):
-                out.append(f'href="{html.escape(href, quote=True)}" rel="noreferrer"')
         if tag == "img":
             self.images += 1
             if self.images > MAX_IMAGES:
                 raise StageError(f"the page has more than {MAX_IMAGES} images")
             src = self._root_based(found.get("src", ""))
             out.append(f'src="{embed_image(self.site_dir, src)}"')
-            out.append(f'alt="{html.escape(found.get("alt", ""), quote=True)}"')
+            out.append('alt=""')
         return (" " + " ".join(out)) if out else ""
 
     # -- parser events

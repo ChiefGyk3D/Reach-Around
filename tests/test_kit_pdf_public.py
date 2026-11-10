@@ -7,7 +7,7 @@ The browser is a stand-in (``fake_renderer``); the real one is covered by
 
 from __future__ import annotations
 
-import socket
+import base64
 from datetime import date
 from pathlib import Path
 from typing import Any
@@ -15,6 +15,7 @@ from typing import Any
 import pytest
 
 import reach_around.commands.kit as command
+import reach_around.kit.pdf as pdf_module
 from kitpdfharness import (
     CANARY,
     SITE_KEY,
@@ -33,6 +34,8 @@ from reach_around.kit.pdf import (
     PdfLeakError,
     build_kit_pdf,
     build_public_kit_pdf,
+    check_text,
+    scrub_pdf,
 )
 from reach_around.kit.pdftext import extract_pages
 from reach_around.kit.stage import StageError, stage_page
@@ -126,6 +129,38 @@ def test_the_staged_public_page_is_sealed_and_has_no_form_or_script(
     with pytest.raises(StageError):
         stage_page(as_gated, site)
     stage_page(gated, site)  # the real gated page is unchanged by this work
+
+
+def test_print_staging_omits_link_targets_and_nonempty_image_alt_text(
+    tmp_path: Path,
+) -> None:
+    _, site, _ = build_instance(tmp_path)
+    image = site / "static" / "portrait.png"
+    image.write_bytes(
+        base64.b64decode(
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR4nGNgYAAAAAMA"
+            "ASsJTYQAAAAASUVORK5CYII="
+        )
+    )
+    page = site / "kit" / "index.html"
+    page.write_text(
+        page.read_text(encoding="utf-8").replace(
+            '<p class="kit-about">',
+            '<p><a href="https://example.invalid/?key=hidden-key">Details</a>'
+            '<img src="../static/portrait.png" alt="hidden description"></p>'
+            '<p class="kit-about">',
+            1,
+        ),
+        encoding="utf-8",
+    )
+
+    staged = stage_page(site, site, public=True).html
+
+    assert "https://example.invalid" not in staged
+    assert "hidden-key" not in staged
+    assert "hidden description" not in staged
+    assert "<a>Details</a>" in staged
+    assert 'alt=""' in staged
 
 
 def test_a_public_page_with_a_script_in_the_body_is_still_refused(
@@ -238,6 +273,46 @@ def test_owner_report_only_engagement_text_in_the_public_pdf_fails(
         renderer=fake_renderer,
     )
     assert "Chatmessages" not in flat_text(ok.path)
+
+
+@pytest.mark.parametrize(
+    ("leak", "field"),
+    [
+        ("Owner analytics: 12000 views", "views"),
+        ("Owner analytics: 8 posts", "posts"),
+        ("Owner analytics: 600 interactions", "interactions"),
+        ("Period start 2027-02-01", "period_start"),
+        ("Period end 2027-02-28", "period_end"),
+        ("As of 2027-03-01", "as_of"),
+        ("Average views per post 1,500", "average_views"),
+        ("Engagement rate 5.0%", "engagement_rate"),
+    ],
+)
+def test_every_owner_engagement_value_is_a_public_leak_canary(
+    tmp_path: Path, leak: str, field: str
+) -> None:
+    doc = kit_doc()
+    doc["engagement"] = [
+        {
+            "platform": "twitch",
+            "period_start": "2027-02-01",
+            "period_end": "2027-02-28",
+            "as_of": "2027-03-01",
+            "views": 12000,
+            "posts": 8,
+            "interactions": 600,
+            "counts": "Chat messages and follows",
+        }
+    ]
+    config = make_config(doc)
+    public_text = (
+        "Example Creator media kit A fake creator used in tests. "
+        "Streams games & talks. "
+        "Twitch Followers 1,200 2027-03-01 YouTube Subscribers 3,400 2027-03-05 "
+        f"4,600 {leak}"
+    )
+    with pytest.raises(PdfLeakError, match=field):
+        check_text(config.kit, public_text, public=True)  # type: ignore[arg-type]
 
 
 def test_a_stale_staging_directory_is_caught(tmp_path: Path) -> None:
@@ -372,27 +447,61 @@ def test_metadata_is_scrubbed_and_the_output_is_reproducible(tmp_path: Path) -> 
     assert b"D:20270310000000Z" in first
 
 
-def _blocked(*a: object, **k: object) -> None:
-    raise AssertionError("a network call was attempted")
-
-
-def test_the_public_pipeline_makes_no_socket_call(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+def test_public_command_requires_network_namespace_isolation(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    config, site, _ = build_instance(tmp_path)
-    monkeypatch.setattr(socket.socket, "connect", _blocked)
-    monkeypatch.setattr(socket.socket, "connect_ex", _blocked)
-    monkeypatch.setattr(socket, "create_connection", _blocked)
-    monkeypatch.setattr(socket, "getaddrinfo", _blocked)
-    result = build_public_kit_pdf(
-        config,
-        site_dir=site,
-        out_dir=tmp_path / "private",
-        name="kit-public.pdf",
-        created=CREATED,
-        renderer=fake_renderer,
+    seen: list[str] = []
+
+    def renderer(binary: Path | None, *, isolation: str) -> Any:
+        seen.append(isolation)
+        return fake_renderer
+
+    def confined(out: Path, forbidden: object) -> Path:
+        out.mkdir(mode=0o700)
+        return out
+
+    monkeypatch.setattr(command, "chromium_renderer", renderer)
+    monkeypatch.setattr(pdf_module, "confine_out_dir", confined)
+    cfg, site, _, out = _setup(tmp_path)
+    code = main(
+        [
+            "kit", "pdf", "--public", "--config", str(cfg),
+            "--site-out", str(site), "--out-dir", str(out),
+            "--date", "2027-03-10",
+        ]
+    )  # fmt: skip
+    assert code == 0, capsys.readouterr().err
+    assert seen == ["netns"]
+
+
+def test_public_command_rejects_explicitly_disabled_isolation(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    cfg, site, _, out = _setup(tmp_path)
+    code = main(
+        [
+            "kit", "pdf", "--public", "--config", str(cfg),
+            "--site-out", str(site), "--out-dir", str(out),
+            "--isolation", "off",
+        ]
+    )  # fmt: skip
+
+    assert code == 1
+    assert "netns" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("kind", ["annotation", "tagged"])
+def test_scrub_refuses_non_page_semantic_pdf_structures(kind: str) -> None:
+    data = make_pdf(
+        [["safe visible text"]],
+        annotation=kind == "annotation",
+        tagged=kind == "tagged",
     )
-    assert result.pages >= 1
+
+    with pytest.raises(PdfError, match="annotations|tagged"):
+        scrub_pdf(data, title="Kit", created=CREATED)
 
 
 def test_the_workdir_is_gone_after_a_render_failure(tmp_path: Path) -> None:

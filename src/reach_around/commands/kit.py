@@ -68,9 +68,13 @@ def _run_public(args: argparse.Namespace) -> int:
             raise ValueError(
                 "--public prints the public page only; it does not take --gated-out"
             )
+        if args.isolation not in (None, "netns"):
+            raise ValueError(
+                "--public requires --isolation netns for offline rendering"
+            )
         config = load_site_config(args.config)
         created = _creation_date(args.date, args.site_out, PUBLIC_FILE)
-        isolation: Isolation = args.isolation
+        isolation: Isolation = args.isolation or "netns"
         result = build_public_kit_pdf(
             config,
             site_dir=args.site_out,
@@ -97,7 +101,7 @@ def _run(args: argparse.Namespace) -> int:
             raise ValueError("--gated-out is required unless --public is given")
         config = load_site_config(args.config)
         created = _creation_date(args.date, args.gated_out)
-        isolation: Isolation = args.isolation
+        isolation: Isolation = args.isolation or "off"
         result = build_kit_pdf(
             config,
             gated_dir=args.gated_out,
@@ -185,9 +189,10 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
     pdf.add_argument(
         "--isolation",
         choices=("off", "netns"),
-        default="off",
-        help="netns also runs the browser in its own network namespace "
-        "(unprivileged user namespaces; the browser sandbox is off in that mode)",
+        default=None,
+        help="netns runs the browser in its own network namespace and is required "
+        "for --public; off keeps browser-level defenses only for private PDFs "
+        "(the browser sandbox is off in netns mode)",
     )
     pdf.add_argument("--overwrite", action="store_true", help="replace an existing PDF")
     kit.set_defaults(func=_run)

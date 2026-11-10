@@ -8,9 +8,10 @@ Pipeline (``build_kit_pdf``):
    local images, a Content-Security-Policy that forbids every load.
 2. A renderer prints it in an owner-only work directory that is removed on every
    exit path. The shipped renderer runs headless Chromium (no Python dependency:
-   the browser the visual tests already use, ``RA_CHROMIUM``) with the network
-   cut off: no DNS, a dead proxy that also covers loopback, no JavaScript, and
-   optionally a network namespace of its own.
+   the browser the visual tests already use, ``RA_CHROMIUM``). Browser flags
+   disable DNS, proxy traffic, background networking and JavaScript as layered
+   defenses. The public command additionally requires a network namespace,
+   which is the actual network cutoff.
 3. ``scrub_pdf`` rewrites the Info dictionary in place to a fixed form (title,
    the producer string ``Reach Around`` and the creation date you give), so the
    same inputs give the same bytes. No author, creator, browser version or
@@ -309,6 +310,13 @@ def _xref_offsets(data: bytes) -> tuple[dict[int, int], int]:
 def scrub_pdf(data: bytes, *, title: str, created: date) -> bytes:
     """Rewrite the Info dictionary to title, producer and creation date only,
     keeping every byte offset, and fail if browser or user traces remain."""
+    if re.search(rb"/Annots\b|/Type\s*/Annot\b", data):
+        raise PdfError("the PDF contains annotations, which are not allowed")
+    if re.search(
+        rb"/StructTreeRoot\b|/StructElem\b|/MarkInfo\b|/ActualText\b|/Alt\b",
+        data,
+    ):
+        raise PdfError("the PDF contains tagged structures, which are not allowed")
     infos = re.findall(rb"/Info\s+(\d+)\s+\d+\s+R", data)
     if not infos:
         raise PdfError("the PDF has no Info dictionary to scrub")
