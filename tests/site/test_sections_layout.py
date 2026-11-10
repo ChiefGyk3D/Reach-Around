@@ -193,6 +193,20 @@ def test_primary_actions_are_visible_buttons_and_crypto_collapses(
     assert 'id="crypto"' in first.group(1)
 
 
+def test_store_is_the_first_support_action(tmp_path: Path) -> None:
+    build_site(
+        load_site_config(VARIANT),
+        tmp_path,
+        today=TODAY,
+        assets_dir=VARIANT.parent,
+    )
+    html = (tmp_path / "index.html").read_text()
+    support = html[html.index('id="support"') : html.index('id="crypto"')]
+    first_link = re.search(r'<a [^>]*class="[^"]*\blink\b[^"]*"[^>]*>', support)
+    assert first_link is not None
+    assert 'href="https://shop.example.com/"' in first_link.group(0)
+
+
 def test_click_tracking_sponsored_and_csp_rules_hold(tmp_path: Path) -> None:
     data = site()
     data["features"] = {"click_tracking": True}
