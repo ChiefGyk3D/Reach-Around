@@ -66,12 +66,14 @@ DISPLAY_POLICY: Mapping[str, Visibility] = {
     "about": "public",
     "contact": "public",
     "metrics": "public",
-    "engagement": "public",
     "unified_total": "public",
     "turnstile_site_key": "public",
     "partners": "gated",
     "case_studies": "gated",
     "rates": "gated",
+    # Owner decision: gated. To make it public later, change this one line to
+    # "public" (the pages render from the projection, so nothing else moves).
+    "engagement": "gated",
     "demographics": "gated",
     "unlock_link": "private",
 }

@@ -248,14 +248,14 @@ def test_list_cap_and_repeats() -> None:
         )
 
 
-def test_engagement_is_public_by_policy() -> None:
-    assert visibility("engagement") == "public"
-    assert "engagement" in DISPLAY_POLICY
+def test_engagement_is_gated_by_policy() -> None:
+    assert visibility("engagement") == "gated"
+    assert DISPLAY_POLICY["engagement"] == "gated"
     assert policy_gaps(KitConfig.model_fields) == []
     kit = KitConfig.model_validate(kit_doc(engagement=[row()]))
-    assert "engagement" in public_projection(kit, None)
-    assert "engagement" in gated_projection(kit, None)
-    assert not kit.has_gated_content
+    assert "engagement" not in public_projection(kit, None)
+    assert gated_projection(kit, None)["engagement"] == kit.engagement
+    assert kit.has_gated_content
 
 
 # --- the rows the pages print -------------------------------------------------

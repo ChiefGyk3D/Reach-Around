@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Rendering the engagement and average-views rows (#423).
 
-Public by policy: shown on the public kit page, the gated page and the owner PDF.
+Gated by policy (owner decision): shown on the gated page and the owner PDF only.
 Synthetic data only.
 """
 
@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from test_kit_build import GATED_FILE, build, gated_doc, kit_doc, make_config
+from test_kit_build import GATED_FILE, build, kit_doc, make_config, tree_bytes
 
 from kitpdfharness import build_instance, fake_renderer
 from kitpdfharness import kit_doc as pdf_kit_doc
@@ -42,14 +42,15 @@ def rows() -> list[dict[str, Any]]:
     ]
 
 
-def public_html(tmp_path: Path, kit: dict[str, Any]) -> str:
-    out, _ = build(
-        tmp_path, make_config(kit, features={"kit_gate": False}), gated=False
-    )
-    return (out / "kit" / "index.html").read_text(encoding="utf-8")
+def gated_html(tmp_path: Path, kit: dict[str, Any]) -> str:
+    _, gated = build(tmp_path, make_config(kit))
+    return (gated / GATED_FILE).read_text(encoding="utf-8")
 
 
-def test_rows_render_on_the_public_page_with_formula_period_and_date(
+public_html = gated_html  # the tests below read the gated page
+
+
+def test_rows_render_on_the_gated_page_with_formula_period_and_date(
     tmp_path: Path,
 ) -> None:
     html = public_html(tmp_path, kit_doc(engagement=rows()))
@@ -99,27 +100,55 @@ def test_values_are_escaped(tmp_path: Path) -> None:
 
 
 def test_absent_or_empty_renders_nothing(tmp_path: Path) -> None:
-    html = public_html(tmp_path, kit_doc())
+    rates = [{"item": "Sponsored video fake", "price_text": "Ask me!"}]
+    html = gated_html(tmp_path, kit_doc(rates=rates))
     assert "kit-engagement" not in html and "Engagement rate" not in html
-    html = public_html(tmp_path / "e", kit_doc(engagement=[]))
+    html = gated_html(tmp_path / "e", kit_doc(rates=rates, engagement=[]))
     assert "kit-engagement" not in html
 
 
-def test_the_rows_are_public_so_they_need_no_gate(tmp_path: Path) -> None:
-    out, gated = build(
-        tmp_path,
-        make_config(kit_doc(engagement=rows()), features={"kit_gate": False}),
-        gated=False,
+def test_the_public_output_holds_no_engagement_value_or_heading(
+    tmp_path: Path,
+) -> None:
+    out, gated = build(tmp_path, make_config(kit_doc(engagement=rows())))
+    public = tree_bytes(out).decode("utf-8", "replace")
+    for text in (
+        "Engagement",
+        "engagement",
+        "Average views per post",
+        "5.0%",
+        "1,500",
+        "2027-02-28",
+        "Chat messages and follows",
+        "kit-engagement",
+        "never added or averaged",
+    ):
+        assert text not in public, text
+    assert "5.0%" in (gated / GATED_FILE).read_text(encoding="utf-8")
+
+
+def test_engagement_alone_makes_the_kit_gated_and_needs_the_gate(
+    tmp_path: Path,
+) -> None:
+    out, gated = build(tmp_path, make_config(kit_doc(engagement=rows())))
+    assert (gated / GATED_FILE).is_file()
+    assert "kit-gate" in (out / "kit" / "index.html").read_text(encoding="utf-8")
+    with pytest.raises(ValueError, match="kit_gate"):
+        make_config(kit_doc(engagement=rows()), features={"kit_gate": False})
+
+
+def test_the_leak_search_covers_the_engagement_note(tmp_path: Path) -> None:
+    from test_kit_build import KitLeakError
+
+    overrides = tmp_path / "overrides"
+    (overrides / "templates").mkdir(parents=True)
+    (overrides / "templates" / "kit.html").write_text(
+        '{% extends "base.html" %}{% block content %}'
+        "<p>Chat messages and follows</p>{% endblock %}",
+        encoding="utf-8",
     )
-    assert "5.0%" in (out / "kit" / "index.html").read_text(encoding="utf-8")
-    assert not (gated / GATED_FILE).exists()
-
-
-def test_rows_also_render_on_the_gated_page(tmp_path: Path) -> None:
-    _, gated = build(tmp_path, make_config(gated_doc(engagement=rows())))
-    page = (gated / GATED_FILE).read_text(encoding="utf-8")
-    assert "5.0%" in page
-    assert "2027-02-01 to 2027-02-28" in re.sub(r"<[^>]+>", "", page)
+    with pytest.raises(KitLeakError, match=r"engagement"):
+        build(tmp_path, make_config(kit_doc(engagement=rows())), overrides=overrides)
 
 
 def test_no_script_form_or_remote_request_is_added(tmp_path: Path) -> None:

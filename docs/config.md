@@ -915,7 +915,7 @@ end. Text must be quoted if YAML would read it as a number.
 | `about` | text | required | at most 1000 characters |
 | `contact` | text | none | one plain-text line for brands, at most 200 characters; see the note below |
 | `metrics` | list of metric | none | at most 30; each `platform` and `label` pair once |
-| `engagement` | list of engagement row | none | at most 30; each platform and period once; public; see below |
+| `engagement` | list of engagement row | none | at most 30; each platform and period once; gated; see below |
 | `partners` | list of partner | none | at most 50 |
 | `case_studies` | list of case study | none | at most 20 |
 | `rates` | list of rate | none | at most 30 |
@@ -968,20 +968,23 @@ is optional, but if any is given the period and `as_of` are required.
 - An old or future `as_of` warns like any other date. The numbers file is not
   read: it holds follower counts only, so these inputs live in the config.
 
-The rows are public: they print on the public page, the gated page and the owner
-PDF, and need no gate.
+The rows are gated (owner decision): they print on the gated page and in the
+owner PDF only, and the public page and public projection carry none of them. To
+make them public later, change `"engagement": "gated"` to `"public"` in
+`DISPLAY_POLICY` (`reach_around/config/kit.py`) and render the table on the
+public page.
 
 **Display policy.** The table is fixed, not a setting:
 
 | Field | Shown |
 | --- | --- |
-| `title`, `about`, `contact`, `metrics`, `engagement`, the unified total | public |
-| `partners`, `case_studies`, `rates`, `demographics` | gated (only after the gate) |
+| `title`, `about`, `contact`, `metrics`, the unified total | public |
+| `partners`, `case_studies`, `rates`, `engagement`, `demographics` | gated (only after the gate) |
 | `turnstile_site_key` | public (it ships in the gate form; the key is public by design) |
 | `unlock_link` | private (configuration, never shown) |
 
 The public half therefore shows the header and the headline numbers and nothing
-else. If `partners`, `case_studies`, `rates` or `demographics` is not empty,
+else. If `partners`, `case_studies`, `rates`, `engagement` or `demographics` is not empty,
 `features.kit_gate` must be `true`; the config is refused otherwise, so gated
 content can never be published with no gate.
 

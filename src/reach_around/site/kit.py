@@ -182,9 +182,19 @@ def _gated_strings(kit: KitConfig) -> list[tuple[str, str]]:
     """(where, text) for every gated value long enough to search for. Values
     that are not text (dates) are searched in the form the templates print."""
     found: list[tuple[str, str]] = []
-    for name in ("partners", "case_studies", "rates", "demographics"):
+    for name in (
+        "partners",
+        "case_studies",
+        "rates",
+        "engagement",
+        "demographics",
+    ):
         for index, item in enumerate(getattr(kit, name)):
             for field, value in item.model_dump().items():
+                # The platform and the period dates are labels shared with public
+                # pages; only the owner's free text is searched for.
+                if name == "engagement" and field != "counts":
+                    continue
                 text = value.isoformat() if isinstance(value, date) else value
                 if isinstance(text, str) and len(text) >= GUARD_MIN_LENGTH:
                     found.append((f"kit.{name}[{index}].{field}", text))
@@ -643,7 +653,7 @@ def _content(
         "about": projection["about"],
         "contact": projection["contact"],
         "metrics": _metric_rows(metrics, config, today, live_day),
-        "engagement": rows_for(projection["engagement"]),
+        "engagement": rows_for(projection.get("engagement", [])),
         "engagement_note": ACROSS_PLATFORMS_NOTE,
         "engagement_formulas": FORMULAS,
         "total": _total(projection["unified_total"], metrics, live_day),
@@ -657,6 +667,7 @@ def _categories(kit: KitConfig) -> str:
             ("past partners", kit.partners),
             ("case studies", kit.case_studies),
             ("rates", kit.rates),
+            ("audience figures", kit.engagement),
             ("audience details", kit.demographics),
         )
         if items
@@ -677,7 +688,7 @@ def plan_warnings(
     if config.features.kit_gate and not kit.has_gated_content:
         found.append(
             "features.kit_gate is on but the kit has no partners, case studies, "
-            "rates or demographics; no gate form or gated page is built"
+            "rates, engagement or demographics; no gate form or gated page is built"
         )
     if has_gate_form(kit) and kit.turnstile_site_key is None:
         found.append(

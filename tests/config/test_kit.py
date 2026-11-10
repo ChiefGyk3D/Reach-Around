@@ -339,7 +339,6 @@ def test_policy_classifies_every_field() -> None:
         "about",
         "contact",
         "metrics",
-        "engagement",
         "unified_total",
         "turnstile_site_key",
     }
@@ -379,7 +378,6 @@ def test_public_projection_has_only_header_and_headline_numbers() -> None:
         "about",
         "contact",
         "metrics",
-        "engagement",
         "unified_total",
         "turnstile_site_key",
     }
