@@ -5,6 +5,11 @@
 # numbers.json in the repository folder. Used by the scheduled
 # refresh-counts workflow; you can run it by hand too.
 #
+# The history file history/social.jsonl (when the config sets
+# numbers.history_file) is carried the same way: copied in, written by the
+# engine, checked by scripts/verify-history.sh, then put in the repository
+# folder.
+#
 # The new numbers.json is checked by scripts/validate-numbers.py before it is
 # copied into the repository folder (and the workflow's publish job checks it
 # again after it crosses to the job that may write).
@@ -102,6 +107,20 @@ if [ -L "$numbers" ]; then
 fi
 if [ -f "$numbers" ]; then cp "$numbers" "$workdir/numbers.json"; fi
 
+# The history file (numbers.history_file in site.yaml must be
+# history/social.jsonl). The engine writes it in place, so the folder is a
+# scratch copy mounted writable; the repository's own copy is replaced only
+# after the engine's copy passes `counts history-verify`.
+history_dir="$here/history"
+history="$history_dir/social.jsonl"
+if [ -L "$history_dir" ] || [ -L "$history" ]; then
+  echo "error: history must not be a symbolic link" >&2
+  exit 2
+fi
+mkdir -p "$workdir/history"
+if [ -f "$history" ]; then cp "$history" "$workdir/history/social.jsonl"; fi
+mounts+=(-v "$workdir/history":/config/history)
+
 # "-e NAME" with no value copies the variable from this process; nothing is
 # written to the command line or the log.
 keys=()
@@ -132,12 +151,27 @@ esac
 # The engine's file is data from a container that talked to the network. It
 # reaches the repository only through the strict validator, which writes a
 # fresh copy to a temporary file and renames it into place.
+new_history=""
+if [ -e "$workdir/history/social.jsonl" ]; then
+  "$here/scripts/verify-history.sh" "$workdir/history/social.jsonl" || {
+    echo "refresh-counts: the engine's history file failed the check; nothing was changed." >&2
+    exit 1
+  }
+  new_history="$workdir/history/social.jsonl"
+fi
 if [ -f "$workdir/numbers.json" ] && [ ! -L "$workdir/numbers.json" ]; then
   python3 -I "$here/scripts/validate-numbers.py" \
     --in "$workdir/numbers.json" --out "$numbers" || {
     echo "refresh-counts: the engine's numbers.json failed the check; nothing was changed." >&2
     exit 1
   }
+fi
+
+if [ -n "$new_history" ]; then
+  mkdir -p "$history_dir"
+  tmp="$(mktemp "$history_dir/.social.XXXXXX")"
+  cp "$new_history" "$tmp"
+  mv -f "$tmp" "$history"
 fi
 
 if [ -n "${GITHUB_OUTPUT:-}" ]; then

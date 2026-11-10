@@ -71,11 +71,13 @@ jobs:
 
       # The engine's file was already checked on its way into the workspace.
       # This copy is the only thing the next job gets.
-      - name: Hand the numbers to the publish job
+      - name: Hand the numbers and the history to the publish job
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: counts-numbers
-          path: numbers.json
+          path: |
+            numbers.json
+            history/social.jsonl
           if-no-files-found: error
           retention-days: 1
 
@@ -100,15 +102,36 @@ jobs:
 
       # The artifact is data. Check it again, here, with the same script, and
       # write a fresh copy over numbers.json.
-      - name: Check the numbers again
+      - name: Check the numbers and the history again
         run: |
           set -eu
           in="$RUNNER_TEMP/counts-in"
-          if [ "$(ls -A "$in")" != "numbers.json" ]; then
-            echo "::error::The artifact must hold numbers.json and nothing else."
+          found="$(cd "$in" && find . -mindepth 1 | sort | tr '\n' ' ')"
+          case "$found" in
+            "./numbers.json " | "./history ./history/social.jsonl ./numbers.json ") ;;
+            *)
+              echo "::error::The artifact must hold numbers.json and, optionally, history/social.jsonl, and nothing else."
+              exit 1
+              ;;
+          esac
+          if [ -n "$(find "$in" -type l)" ]; then
+            echo "::error::The artifact must not hold links."
             exit 1
           fi
           python3 -I scripts/validate-numbers.py --in "$in/numbers.json" --out numbers.json
+          if [ -f "$in/history/social.jsonl" ]; then
+            scripts/verify-history.sh "$in/history/social.jsonl"
+            # Append-only: the new file must begin with every byte of the old one.
+            if [ -f history/social.jsonl ]; then
+              old="$(wc -c < history/social.jsonl)"
+              head -c "$old" "$in/history/social.jsonl" | cmp -s - history/social.jsonl || {
+                echo "::error::The history file does not extend the committed one."
+                exit 1
+              }
+            fi
+            mkdir -p history
+            cp "$in/history/social.jsonl" history/social.jsonl
+          fi
 
       # No API keys in this job. The token is used for one push and the pull
       # request, and is not written to disk.
@@ -117,7 +140,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -eu
-          if [ -z "$(git status --porcelain -- numbers.json)" ]; then
+          if [ -z "$(git status --porcelain -- numbers.json history/social.jsonl)" ]; then
             echo "The numbers did not change."
             exit 0
           fi
@@ -126,7 +149,7 @@ jobs:
             git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $auth" "$@"
           }
           # An open pull request on this branch must be ours: from this
-          # repository, opened by the Actions bot, changing numbers.json only.
+          # repository, opened by the Actions bot, changing numbers.json and history/social.jsonl only.
           # Anything else is somebody's work; stop rather than overwrite it.
           prs="$(gh pr list --head counts/refresh --base main --state open \
             --json number,author,files,isCrossRepository)"
@@ -138,7 +161,7 @@ jobs:
           foreign="$(printf '%s' "$prs" | jq -r '.[]
             | select(.isCrossRepository
               or ((.author.login | IN("app/github-actions", "github-actions")) | not)
-              or ((.files | map(.path)) != ["numbers.json"]))
+              or ((.files | map(.path) | all(IN("numbers.json", "history/social.jsonl"))) | not))
             | .number')"
           if [ -n "$foreign" ]; then
             echo "::error::Pull request #$foreign on counts/refresh was not opened by the Actions bot, or changes more than numbers.json. Close it or rename its branch, then run again."
@@ -148,6 +171,7 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git switch -C counts/refresh
           git add numbers.json
+          if [ -f history/social.jsonl ]; then git add history/social.jsonl; fi
           git commit -m "Refresh follower counts"
           # Overwrite the branch only if it is still the commit seen now. An
           # empty value means the branch must not exist yet.

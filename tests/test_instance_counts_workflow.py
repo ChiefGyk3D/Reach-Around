@@ -160,7 +160,7 @@ def test_the_push_is_a_leased_force_and_the_existing_pr_is_vetted() -> None:
     # bot as author, and numbers.json as the only changed file.
     assert "isCrossRepository" in code
     assert "github-actions" in code
-    assert '["numbers.json"]' in code
+    assert '"numbers.json", "history/social.jsonl"' in code
     assert "Refresh follower counts" in code
 
 
@@ -203,3 +203,57 @@ def test_the_guard_bites() -> None:
     for label, mutated in mutations.items():
         assert mutated != good, label
         assert problems(mutated), label
+
+
+HISTORY = "history/social.jsonl"
+VERIFY = TEMPLATE / "scripts" / "verify-history.sh"
+
+
+def test_the_history_file_is_mounted_verified_and_installed_by_the_script() -> None:
+    script = SCRIPT.read_text(encoding="utf-8")
+    assert "history" in script and "social.jsonl" in script
+    assert ":/config/history" in script
+    assert "verify-history.sh" in script
+    # The history is checked before numbers.json is written, and a link is refused.
+    assert script.index("verify-history.sh") < script.index("validate-numbers.py")
+    assert "history must not be a symbolic link" in script
+
+
+def test_the_history_verifier_uses_the_engine_offline_and_read_only() -> None:
+    text = VERIFY.read_text(encoding="utf-8")
+    assert "counts history-verify" in text
+    assert "--network none" in text
+    assert "--read-only" in text and "--cap-drop ALL" in text
+    assert ":ro" in text
+    assert "read-lock.sh" in text
+
+
+def test_the_history_crosses_the_jobs_and_is_checked_again_before_the_commit() -> None:
+    jobs = _jobs()
+    up = next(
+        s for s in jobs["refresh"]["steps"] if "upload-artifact@" in str(s.get("uses"))
+    )
+    assert HISTORY in str(up["with"]["path"]) and "numbers.json" in str(
+        up["with"]["path"]
+    )
+    runs = [s.get("run", "") for s in jobs["publish"]["steps"]]
+    verify_at = next(i for i, r in enumerate(runs) if "verify-history.sh" in r)
+    commit_at = next(i for i, r in enumerate(runs) if "commit -m" in r)
+    assert verify_at < commit_at
+    check = next(r for r in runs if "verify-history.sh" in r)
+    # Append-only: the new file must start with the old one.
+    assert "cmp" in check
+    # Nothing but the two known files may cross.
+    assert HISTORY in check and "numbers.json" in check
+
+
+def test_the_history_is_staged_with_the_numbers_and_nothing_else() -> None:
+    jobs = _jobs()
+    propose = next(
+        s["run"] for s in jobs["publish"]["steps"] if "commit -m" in s.get("run", "")
+    )
+    assert f"git add numbers.json {HISTORY}" in propose or (
+        "git add numbers.json" in propose and HISTORY in propose
+    )
+    assert "git add -A" not in propose and "git add ." not in propose
+    assert HISTORY in propose.split("git status --porcelain", 1)[1].splitlines()[0]

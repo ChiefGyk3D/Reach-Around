@@ -120,6 +120,7 @@ def test_the_template_files_exist() -> None:
         ".github/workflows/refresh-counts.yml",
         "scripts/refresh-counts.sh",
         "scripts/validate-numbers.py",
+        "scripts/verify-history.sh",
     ):
         assert (TEMPLATE / rel).is_file(), rel
 
