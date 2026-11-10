@@ -30,6 +30,31 @@
 {% endif %}
 {% endmacro %}
 
+{% macro engagement(kit, heading_id, framed=false) %}
+{% if kit.engagement %}
+<section class="kit-engagement" aria-labelledby="{{ heading_id }}">
+<h3 id="{{ heading_id }}"{% if framed and frame_plan %} class="{{ frames.cls("head")|trim }}"{% endif %}>Engagement</h3>
+<p class="kit-note">{{ kit.engagement_note }}</p>
+<ul class="kit-list kit-note">
+{% for item in kit.engagement_formulas %}
+<li><strong>{{ item.measure }}:</strong> {{ item.formula }}</li>
+{% endfor %}
+</ul>
+<table class="kit-table{% if framed and frame_plan %}{{ frames.cls("card") }}{% endif %}">
+<caption class="sr-only">Engagement by platform, each with its period and the date it was read</caption>
+<thead>
+<tr><th scope="col">Platform and measure</th><th scope="col">Value</th><th scope="col">Period (UTC) and as-of date</th></tr>
+</thead>
+<tbody>
+{% for row in kit.engagement %}
+<tr><th scope="row">{{ row.platform }}<span class="kit-formula kit-measure">{{ row.measure }}</span>{% if row.note %}<span class="kit-note kit-formula">{{ row.note }}.</span>{% endif %}</th><td class="kit-figure">{{ row.value }}</td><td>{% if row.as_of %}<span class="kit-nowrap">{{ row.start }}</span> to <span class="kit-nowrap">{{ row.end }}</span><span class="kit-note kit-formula">As of <time datetime="{{ row.as_of }}">{{ row.as_of }}</time> UTC</span>{% endif %}</td></tr>
+{% endfor %}
+</tbody>
+</table>
+</section>
+{% endif %}
+{% endmacro %}
+
 {% macro gate_form(form, framed=false) %}
 <form class="kit-gate" method="post" action="{{ form.action }}">
 <p class="kit-field">

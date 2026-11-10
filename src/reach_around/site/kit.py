@@ -45,6 +45,7 @@ from jinja2 import Environment
 
 from reach_around.config.blocks import platform_name
 from reach_around.config.cutover import cutover_label, live_since, utc_today
+from reach_around.config.engagement import ACROSS_PLATFORMS_NOTE, FORMULAS, rows_for
 from reach_around.config.era import classify_era, era_text
 from reach_around.config.kit import (
     KitConfig,
@@ -642,6 +643,9 @@ def _content(
         "about": projection["about"],
         "contact": projection["contact"],
         "metrics": _metric_rows(metrics, config, today, live_day),
+        "engagement": rows_for(projection["engagement"]),
+        "engagement_note": ACROSS_PLATFORMS_NOTE,
+        "engagement_formulas": FORMULAS,
         "total": _total(projection["unified_total"], metrics, live_day),
     }
 

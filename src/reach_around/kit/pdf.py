@@ -44,6 +44,7 @@ from types import FrameType
 from typing import Literal, NoReturn
 
 from reach_around.config.cutover import cutover_label, live_since, utc_today
+from reach_around.config.engagement import engagement_rows
 from reach_around.config.kit import (
     KitConfig,
     pdf_excluded_values,
@@ -353,6 +354,12 @@ def _expected_text(kit: KitConfig, numbers: Numbers | None) -> list[tuple[str, s
                 row["platform"] + row["label"] + row["value"] + row["as_of"],
             )
         )
+    for row in engagement_rows(kit):
+        where = f"the engagement row {row['platform']!r} {row['measure']!r}"
+        found.append((where, row["platform"] + row["measure"]))
+        found.append((where, row["formula"]))
+        found.append((where, row["value"] + row["period"]))
+        found.append((where, row["as_of"]))
     total = _total(unified_total(resolved), resolved)
     if total is not None:
         found.append(("the metric total", total["value"]))

@@ -339,6 +339,7 @@ def test_policy_classifies_every_field() -> None:
         "about",
         "contact",
         "metrics",
+        "engagement",
         "unified_total",
         "turnstile_site_key",
     }
@@ -378,6 +379,7 @@ def test_public_projection_has_only_header_and_headline_numbers() -> None:
         "about",
         "contact",
         "metrics",
+        "engagement",
         "unified_total",
         "turnstile_site_key",
     }
@@ -387,6 +389,9 @@ def test_public_projection_has_only_header_and_headline_numbers() -> None:
 def test_gated_projection_adds_gated_fields_but_never_private() -> None:
     out = gated_projection(kit_with_canaries(), None)
     assert set(out) == {
+        name for name, level in DISPLAY_POLICY.items() if level in ("public", "gated")
+    }
+    assert {
         "title",
         "about",
         "contact",
@@ -397,7 +402,7 @@ def test_gated_projection_adds_gated_fields_but_never_private() -> None:
         "case_studies",
         "rates",
         "demographics",
-    }
+    } <= set(out)
     assert "unlock_link" not in out
     assert CANARY in json.dumps(out, default=str)
 

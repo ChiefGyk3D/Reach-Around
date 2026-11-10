@@ -60,7 +60,11 @@ publishes only `--out`.
 ### Public page
 
 Header (the kit title and description), the headline numbers each with the date
-it was read, and the unified total. The total adds up the numbers that are not
+it was read, and the unified total. When the config has `engagement` rows, an
+Engagement table follows: average views per post and engagement rate for each
+platform, each with its formula, its UTC period and its as-of date, or
+`not available` where there is no source (see the
+[config reference](config.md#kit)). The total adds up the numbers that are not
 marked `in_total: false`; it says how many numbers it adds up and the date of
 the oldest one, and notes that people who follow on several platforms are
 counted more than once. A number with no value is left out. With nothing to add
