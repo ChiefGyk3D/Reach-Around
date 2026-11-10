@@ -617,6 +617,11 @@ def _project(
     }
     out: dict[str, Any] = {}
     for name, level in DISPLAY_POLICY.items():
+        rule = KIT_FIELD_POLICY.get(name)
+        # An owner-report-only field is a hard audience restriction: it never
+        # reaches the public projection, whatever level the table gives it.
+        if rule is not None and rule.owner_report_only and "gated" not in allowed:
+            continue
         if level in allowed:
             out[name] = values[name] if name in values else getattr(kit, name)
     return out

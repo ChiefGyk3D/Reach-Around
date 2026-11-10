@@ -22,7 +22,13 @@ from reach_around.config.engagement import (
     AVERAGE_VIEWS_FORMULA,
     ENGAGEMENT_FORMULA,
 )
-from reach_around.config.kit import DISPLAY_POLICY, KIT_FIELD_POLICY, FieldPolicy
+from reach_around.config.kit import (
+    DISPLAY_POLICY,
+    KIT_FIELD_POLICY,
+    FieldPolicy,
+    gated_projection,
+    public_projection,
+)
 from reach_around.kit.pdf import PdfError, build_kit_pdf
 from reach_around.kit.pdftext import extract_pages
 from reach_around.site.kit import GATED_FILE, KitLeakError, check_no_gated_text
@@ -273,3 +279,35 @@ def test_an_engagement_only_public_kit_still_builds_the_owner_pdf(
 def test_the_pdf_check_fails_when_a_figure_differs(tmp_path: Path) -> None:
     with pytest.raises(PdfError, match=r"engagement"):
         _pdf(tmp_path, tamper=True)
+
+
+def test_owner_report_only_is_never_in_the_public_projection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Even if the visibility table says "public", the owner-report-only mark
+    # keeps the field out of the public audience; the gated audience keeps it.
+    config = make_config(kit_doc(engagement=rows()))
+    assert config.kit is not None
+    monkeypatch.setitem(DISPLAY_POLICY, "engagement", "public")
+    assert "engagement" not in public_projection(config.kit, None)
+    assert "engagement" in gated_projection(config.kit, None)
+
+
+def test_the_pdf_refuses_collected_youtube_figures(tmp_path: Path) -> None:
+    # The site build refuses a YouTube row first, so build the instance from a
+    # clean config and hand the PDF step a config that has the YouTube row.
+    clean = pdf_kit_doc()
+    clean["engagement"] = rows()
+    _, site, gated = build_instance(tmp_path, pdf_config(clean))
+    bad = pdf_kit_doc()
+    bad["engagement"] = [{**rows()[0], "platform": "youtube"}]
+    with pytest.raises(ValueError, match=r"YouTube Analytics.*owner_supplied: true"):
+        build_kit_pdf(
+            pdf_config(bad),
+            gated_dir=gated,
+            site_dir=site,
+            out_dir=tmp_path / "private",
+            name="kit.pdf",
+            created=date(2027, 3, 10),
+            renderer=fake_renderer,
+        )
