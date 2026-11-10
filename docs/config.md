@@ -920,6 +920,7 @@ end. Text must be quoted if YAML would read it as a number.
 | `services` | list of package | none | at most 20; named packages, shown above the rates table |
 | `rates` | list of rate | none | at most 30 |
 | `demographics` | list of demographic | none | at most 30 |
+| `inquiry` | inquiry block | none | the business inquiry form on the gated page and the owner details beside it; see the note below. Needs `features.kit_gate` |
 | `disclosure` | text | none | a short statement, at most 500 characters; gated; see the note below |
 | `turnstile_site_key` | text | none | public key of the Turnstile widget on the gate form; 1 to 64 letters, digits, `-` or `_`. Without it the form has an empty widget slot and the build warns |
 | `unlock_link` | true or false | `false` | v1 has no emailed unlock link, so `true` is refused with a clear error until it exists |
@@ -963,14 +964,28 @@ nothing is printed.
 | Field | Shown |
 | --- | --- |
 | `title`, `about`, `contact`, `metrics`, the unified total | public |
-| `partners`, `case_studies`, `services`, `rates`, `demographics`, `disclosure` | gated (only after the gate) |
+| `partners`, `case_studies`, `services`, `rates`, `demographics`, `disclosure`, `inquiry` | gated (only after the gate) |
 | `turnstile_site_key` | public (it ships in the gate form; the key is public by design) |
 | `unlock_link` | private (configuration, never shown) |
 
 The public half therefore shows the header and the headline numbers and nothing
-else. If `partners`, `case_studies`, `services`, `rates`, `demographics` or `disclosure` is set,
+else. If `partners`, `case_studies`, `services`, `rates`, `demographics`, `disclosure` or `inquiry` is set,
 `features.kit_gate` must be `true`; the config is refused otherwise, so gated
 content can never be published with no gate.
+
+**Inquiry block.** `inquiry` has `email` (required: one plain ASCII address, at
+most 254 characters) and `pgp_fingerprint` (optional: 40 or 64 hexadecimal
+digits, spaces between groups allowed; it is printed in upper-case groups of
+four). Both are the owner's own values, printed on the gated page beside the
+form and in the private PDF, and nowhere on the public half. The form itself is
+described in the [media kit guide](kit.md#the-business-inquiry-form).
+
+```text
+kit:
+  inquiry:
+    email: owner@example.com
+    pgp_fingerprint: 0123 4567 89AB CDEF 0123 4567 89AB CDEF 0123 4567
+```
 
 **Contact line.** `contact` is optional and is yours to decide: write whatever
 you are willing to publish, such as `Brand deals: partners at example.com`.
@@ -1240,7 +1255,7 @@ privacy: [alerts](alerts.md). Unknown keys are refused.
 | Key | Type | Default | Meaning |
 | --- | --- | --- | --- |
 | `channels` | list of `discord`, `matrix`, `email` | none | Where alerts go. Each needs its bindings; email has no provider yet. |
-| `events` | list of `kit_unlocked`, `lead_captured`, `gate_failed_repeatedly`, `analytics_health` | none | What alerts. Both lists must be non-empty for anything to be sent. |
+| `events` | list of `kit_unlocked`, `lead_captured`, `gate_failed_repeatedly`, `analytics_health`, `inquiry_received` | none | What alerts. Both lists must be non-empty for anything to be sent. |
 | `visitor_email` | `full`, `masked`, `none` | `full` | How the visitor's address appears in an alert. |
 | `max_per_minute` | integer, 1-30 | `5` | Messages one channel sends per minute, the held-back notice included. |
 | `matrix.allowed_hosts` | list of up to 4 host names | none | The Matrix homeserver host names the access token may be sent to, matched exactly. Required when `matrix` is a channel. Lowercase DNS names only: no IP address, embedded IP, private or wildcard-DNS name. |

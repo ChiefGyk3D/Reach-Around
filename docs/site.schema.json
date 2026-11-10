@@ -24,7 +24,8 @@
               "kit_unlocked",
               "lead_captured",
               "gate_failed_repeatedly",
-              "analytics_health"
+              "analytics_health",
+              "inquiry_received"
             ],
             "type": "string"
           },
@@ -739,6 +740,33 @@
       "title": "Image",
       "type": "object"
     },
+    "Inquiry": {
+      "additionalProperties": false,
+      "description": "The business inquiry form on the gated page and the owner details beside it.\n\nThe address and the key fingerprint are the owner's own, taken from here and never\nhard-coded. The form posts to the Worker (``/k/inquiry``); where the message goes is\nthe Worker's alert channels, not this block.",
+      "properties": {
+        "email": {
+          "title": "Email",
+          "type": "string"
+        },
+        "pgp_fingerprint": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Pgp Fingerprint"
+        }
+      },
+      "required": [
+        "email"
+      ],
+      "title": "Inquiry",
+      "type": "object"
+    },
     "InstagramSource": {
       "additionalProperties": false,
       "properties": {
@@ -837,6 +865,17 @@
           ],
           "default": null,
           "title": "Disclosure"
+        },
+        "inquiry": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Inquiry"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         },
         "metrics": {
           "items": {

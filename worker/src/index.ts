@@ -3,6 +3,7 @@ import { QueryMeter, meteredDb, queryBudget } from "./d1budget";
 import { handleClick, MAX_URL_LENGTH, type Env as ClickEnv } from "./click";
 import { HEALTH_MIN_BUDGET, HEALTH_QUERIES, runHealth, type HealthEnv } from "./health";
 import { handleLive, LIVE_CRON, LIVE_ROUTE, runLivePoller, type LiveEnv } from "./live";
+import { handleInquiry, isInquiryRoute, type InquiryEnv } from "./kit/inquiry";
 import { LEAD_PURGE_QUERIES, purgeExpiredLeads } from "./kit/leadretention";
 import { logEvent } from "./kit/log";
 import { rollupClickFunnel } from "./clickfunnel";
@@ -18,7 +19,8 @@ export type { ViewEnv } from "./view";
 /** Everything the deployed Worker is bound to: the click route's plus the view route's. */
 type WorkerEnv = ClickEnv &
   Omit<ViewEnv, "DB" | "SITES" | "SITE_HOST" | "PAGE_IDS" | "LINK_IDS"> &
-  LiveEnv;
+  LiveEnv &
+  Partial<Pick<InquiryEnv, "INQUIRY_LIMITER" | "TOKEN_HMAC_KEY" | "TOKEN_HMAC_KEY_PREVIOUS" | "KIT_KILL" | "ALERTS_CONFIG">>;
 
 /** The smallest QUERY_BUDGET that guarantees the lead purge its query (see scheduled()). */
 export const LEAD_FIRST_MIN_BUDGET = 9;
@@ -30,6 +32,15 @@ function isViewRoute(request: Request): boolean {
   if (request.url.length > MAX_URL_LENGTH) return false;
   try {
     return new URL(request.url).pathname.startsWith(VIEW_PREFIX);
+  } catch {
+    return false;
+  }
+}
+
+function isKitInquiryRoute(request: Request): boolean {
+  if (request.url.length > MAX_URL_LENGTH) return false;
+  try {
+    return isInquiryRoute(new URL(request.url).pathname);
   } catch {
     return false;
   }
@@ -53,11 +64,13 @@ export default {
    * no redirect route, and no route returns stored data with ONE deliberate
    * exception: `GET /e/live` (src/live.ts), which returns only booleans and
    * timestamps about whether two channels are live. Any other method on
-   * /e/live is the same empty 204.
+   * /e/live is the same empty 204. The business inquiry form (src/kit/inquiry.ts) owns
+   * `POST /k/inquiry` and two fixed GET result pages; it stores nothing.
    */
   async fetch(request: Request, env: WorkerEnv): Promise<Response> {
     if (isLiveRoute(request)) return handleLive(request, env);
     if (isViewRoute(request)) return handleView(request, env);
+    if (isKitInquiryRoute(request)) return handleInquiry(request, env as unknown as InquiryEnv);
     return handleClick(request, env);
   },
 

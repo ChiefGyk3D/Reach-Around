@@ -151,9 +151,48 @@ so it reveals nothing about the check. It is marked `noindex`. There is no
 ### Gated page
 
 A complete page (header, navigation, the same numbers, then partners, case
-studies, packages, a rates table, audience details and the disclosure statement), marked `noindex`, with root-based
-asset links (`/static/...`) because the Worker serves it from any path. Partner
-links open with `rel="noopener noreferrer"`. It contains no script and no form.
+studies, packages, a rates table, audience details, the disclosure statement and, when `kit.inquiry` is set, the
+[business inquiry form](#the-business-inquiry-form)), marked `noindex`, with
+root-based asset links (`/static/...`) because the Worker serves it from any
+path. Partner links open with `rel="noopener noreferrer"`. It contains no
+script, and no form unless `kit.inquiry` is set.
+
+### The business inquiry form
+
+Set `kit.inquiry` (see the [config reference](config.md#kit)) and the gated page
+gains a "Business Inquiries" block: the owner's email and PGP fingerprint, taken
+from the config, and a plain HTML form beside them. It is on the gated page only,
+so it is as private as the partners and the rates; the public page, the retry
+page and every other published file hold none of it (a test searches the whole
+public output for the address, the fingerprint and the route).
+
+The form has `name` (required, 80 characters), `email` (optional, strict address
+grammar, 254), `brand` (80), `budget` (40) and `details` (800, line breaks
+allowed), plus the `website` honeypot. It has no script and no Turnstile widget:
+the visitor already passed the gate, and the Worker re-checks the unlock cookie
+on every post. It posts to `POST /k/inquiry` on the Worker
+(`worker/src/kit/inquiry.ts`). What the Worker does with it, in order: kill switch,
+method, origin (the site's own), content type, configuration, the unlock cookie
+(no valid cookie goes back to the gate page), a per-client limiter, a 16 KiB body
+cap, strict field rules (no control, hidden or bidirectional characters in the
+one-line fields; unknown or repeated fields refused), the honeypot (a bot is told
+it worked and nothing is sent), the daily budget, then delivery. Nothing is
+stored. The answer is a redirect to one of two fixed pages, `/k/inquiry/sent` and
+`/k/inquiry/error`, that say the same thing every time and echo nothing.
+
+**Delivery.** The inquiry is sent once as the owner alert event
+`inquiry_received` over the channels the owner enabled (Discord or Matrix; the
+email channel has no provider yet), so the owner must add `inquiry_received` to
+`alerts.events` and enable a channel ([alerts](alerts.md)). With no alert
+configured the visitor sees the "not sent" page and nothing is lost silently.
+The text is neutralized like every alert (no markup, mention or link survives,
+line breaks become spaces), so a visitor cannot make the alert do anything. The
+daily alert budget (`DAILY_ALERT_BUDGET`, default 20) is also the daily cap on
+inquiries.
+
+The private PDF prints the owner details and drops the form (the form's
+`<aside>` is chrome, like the footer). The privacy page gains one entry for the
+form when `kit.inquiry` is set.
 
 ## The wall between the two
 

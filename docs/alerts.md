@@ -91,10 +91,13 @@ the answer body is never read.
 | `kit_unlocked` | Someone passed the gate | "the media kit was unlocked by `<address>` at `YYYY-MM-DD HH:MM UTC`." |
 | `lead_captured` | A new address was stored | "new media kit lead `<address>` at `<time> UTC`." |
 | `gate_failed_repeatedly` | The gate failed several times in a short span | The count and the time. No visitor data. |
+| `inquiry_received` | Someone sent the business inquiry form ([media kit](kit.md#the-business-inquiry-form)) | "new business inquiry at `<time> UTC`", then the name, the address (shown per `visitor_email`, or "not given"), the brand, the budget and the details, each neutralized and capped (80, 80, 40 and 800 characters; an empty one reads "not given"). |
 | `analytics_health` | An analytics health condition started or cleared (below) | A fixed sentence for one condition, a UTC time and at most one count. No visitor data, no site, link or page name. |
 
 Never in an alert: IP address, user agent, cookie, token, country, lead id or
 hash. The event type has no field for them, so they cannot be passed by mistake.
+The inquiry event carries the five answers the visitor typed into the form and
+nothing else; the formatter neutralizes each of them.
 
 ### Is the visitor's address in the alert?
 
@@ -258,6 +261,6 @@ trigger it once yourself.
 
 ## For other features
 
-The brand inquiry form (#429) and token health alerts (#390) reuse this interface
+The brand inquiry form (#429, built as `inquiry_received`) and token health alerts (#390) reuse this interface
 (analytics health, #401, is built the same way): they add an event kind to `types.ts`, a
 line to `format.ts` and a name to the config lists, and call `scheduleAlert`.
