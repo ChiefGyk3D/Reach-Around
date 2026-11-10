@@ -201,7 +201,9 @@ What the build enforces:
 
 What is **not** guaranteed: the search cannot catch every transformation a
 custom template could apply (base64 and other arbitrary transforms are out of
-scope), and values under 6 characters are not searched. Those rest on the
+scope), and values under 6 characters are not searched (one exception: a
+`kit.disclosure` that short fails the build if it is the whole content of an
+element in a public file, such as the same text in the site footer). Those rest on the
 structure in points 1 and 2. If you use an override template for the kit pages,
 review it as code that handles gated-adjacent text. If the same wording must
 appear on a public page, reword one of them.

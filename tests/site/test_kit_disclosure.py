@@ -111,3 +111,24 @@ def test_the_same_text_in_the_site_footer_stops_the_build(tmp_path: Path) -> Non
     )
     with pytest.raises(KitLeakError, match=r"disclosure"):
         build(tmp_path, config)
+
+
+@pytest.mark.parametrize("short", ["a", "Hi", "Fine.", "x&y"])
+def test_a_short_statement_equal_to_the_site_footer_text_stops_the_build(
+    tmp_path: Path, short: str
+) -> None:
+    config = make_config(
+        gated_doc(disclosure=short), disclosure={"text": short, "always": True}
+    )
+    with pytest.raises(KitLeakError, match=r"disclosure"):
+        build(tmp_path, config)
+
+
+def test_a_short_statement_that_is_only_part_of_other_text_still_builds(
+    tmp_path: Path,
+) -> None:
+    config = make_config(
+        gated_doc(disclosure="a"), disclosure={"text": "A longer footer line."}
+    )
+    _, gated = build(tmp_path, config)
+    assert 'class="kit-disclosure"' in (gated / GATED_FILE).read_text(encoding="utf-8")
