@@ -22,6 +22,10 @@ Pipeline (``build_kit_pdf``):
 5. ``reach_around.kit.output`` writes the file, owner-only, into a confined
    directory.
 
+The public half (``build_public_kit_pdf``, ``kit pdf --public``) runs the same
+steps on the page the site publishes, with the gate box dropped, a "Valid as of"
+line added and a wider leak search (every gated value). Both go through ``_print``.
+
 The size and page caps are ``MAX_PDF_BYTES`` and ``MAX_PAGES``.
 """
 
@@ -56,8 +60,16 @@ from reach_around.config.models import SiteConfig
 from reach_around.config.numbers import Numbers
 from reach_around.kit.output import check_name, confine_out_dir, write_private
 from reach_around.kit.pdftext import PdfTextError, extract_pages
-from reach_around.kit.stage import stage_page
-from reach_around.site.kit import GUARD_MIN_LENGTH, _metric_rows, _total, text_fields
+from reach_around.kit.stage import stage_page, valid_as_of_text
+from reach_around.site.kit import (
+    GUARD_MIN_LENGTH,
+    _gated_strings,
+    _metric_rows,
+    _public_values,
+    _total,
+    canonical,
+    text_fields,
+)
 
 MAX_PDF_BYTES = 20 * 1024 * 1024
 MAX_PAGES = 60
@@ -339,11 +351,14 @@ def scrub_pdf(data: bytes, *, title: str, created: date) -> bytes:
 # --- the checks on the text -------------------------------------------------------
 
 
-def _expected_text(kit: KitConfig, numbers: Numbers | None) -> list[tuple[str, str]]:
-    """(where, text) for everything the gated page must print. A headline
+def _expected_text(
+    kit: KitConfig, numbers: Numbers | None, *, public: bool = False
+) -> list[tuple[str, str]]:
+    """(where, text) for everything the page must print. A headline
     number is one entry per row (platform, measure, value and date together, in
     the order the page prints them) and one for the combined total, computed
-    from the same resolved values the page was built from."""
+    from the same resolved values the page was built from. With ``public`` only
+    the fields the display policy gives every visitor are expected."""
     found: list[tuple[str, str]] = [("kit.title", kit.title), ("kit.about", kit.about)]
     if kit.contact is not None:
         found.append(("kit.contact", kit.contact))
@@ -357,7 +372,7 @@ def _expected_text(kit: KitConfig, numbers: Numbers | None) -> list[tuple[str, s
                 row["platform"] + row["label"] + row["value"] + row["as_of"],
             )
         )
-    for row in engagement_rows(kit):
+    for row in () if public else engagement_rows(kit):
         where = f"the engagement row {row['platform']!r} {row['measure']!r}"
         found.append((where, row["platform"] + row["measure"]))
         if row["provenance"]:
@@ -368,6 +383,8 @@ def _expected_text(kit: KitConfig, numbers: Numbers | None) -> list[tuple[str, s
     total = _total(unified_total(resolved), resolved)
     if total is not None:
         found.append(("the metric total", total["value"]))
+    if public:
+        return found
     if kit.disclosure is not None:
         found.append(("kit.disclosure", kit.disclosure))
     for name in (
@@ -411,8 +428,15 @@ def check_text(
     text: str,
     numbers: Numbers | None = None,
     live_since_text: str | None = None,
+    *,
+    public: bool = False,
+    valid_as_of_text: str | None = None,
 ) -> None:
-    """Fail if a private value is in ``text`` or configured gated text is not."""
+    """Fail if a private value is in ``text`` or configured gated text is not.
+
+    With ``public`` the text is the public half: every gated value (and every
+    owner-report-only one) is also a leak, except one that the display policy
+    already gives every visitor, and only the public fields are expected."""
     flat = _flat(text)
     for field, value in pdf_excluded_values(kit).items():
         needle = _flat(value)
@@ -421,20 +445,35 @@ def check_text(
                 f"the private field {field} appears in the PDF text; nothing was "
                 "written"
             )
+    if public:
+        allowed = _public_values(kit)
+        contact = canonical(kit.contact) if kit.contact is not None else ""
+        for field, value in _gated_strings(kit):
+            if canonical(value) in allowed:
+                continue
+            if field == "kit.inquiry.email" and canonical(value) in contact:
+                continue
+            if _flat(value) in flat:
+                raise PdfLeakError(
+                    f"the gated field {field} appears in the public PDF text; "
+                    "nothing was written"
+                )
     for phrase in GATE_PHRASES:
         if phrase in flat:
             raise PdfLeakError(
                 "text from the gate form appears in the PDF; nothing was written"
             )
-    expected = _expected_text(kit, numbers)
+    expected = _expected_text(kit, numbers, public=public)
     if live_since_text is not None:
         expected.append(("the live-since line", live_since_text))
+    if valid_as_of_text is not None:
+        expected.append(("the valid-as-of line", valid_as_of_text))
     for where, value in expected:
         if _flat(value) not in flat:
             raise PdfError(
                 f"{where} is missing from the PDF text; the staged page may be out "
-                "of date (rebuild with reach-around build --gated-out) or the "
-                "renderer lost it"
+                "of date (rebuild with reach-around build"
+                f"{'' if public else ' --gated-out'}) or the renderer lost it"
             )
 
 
@@ -467,8 +506,74 @@ def build_kit_pdf(
     check_name(name)
     target_dir = confine_out_dir(out_dir, [gated_dir, site_dir, *protect])
     staged = stage_page(gated_dir, site_dir)
+    return _print(
+        config,
+        kit,
+        staged.html,
+        target_dir=target_dir,
+        name=name,
+        created=created,
+        renderer=renderer,
+        overwrite=overwrite,
+        numbers=numbers,
+        public=False,
+    )
+
+
+def build_public_kit_pdf(
+    config: SiteConfig,
+    *,
+    site_dir: Path,
+    out_dir: Path,
+    name: str,
+    created: date,
+    renderer: Renderer,
+    overwrite: bool = False,
+    protect: Sequence[Path] = (),
+    numbers: Numbers | None = None,
+) -> PdfResult:
+    """Make the public-half PDF (``kit pdf --public``): the page the site
+    publishes at ``/kit/``, with the gate form dropped and a "Valid as of" line
+    for ``created``, through the same display policy, staging, renderer, scrub,
+    text check and confined private write as the private PDF. The text check also
+    fails if any gated or owner-report-only value is in the result."""
+    kit = config.kit
+    if kit is None:
+        raise PdfError("the config has no media kit; there is nothing to print")
+    enforce_display_policy(kit)
+    check_name(name)
+    target_dir = confine_out_dir(out_dir, [site_dir, *protect])
+    staged = stage_page(site_dir, site_dir, public=True, valid_as_of=created)
+    return _print(
+        config,
+        kit,
+        staged.html,
+        target_dir=target_dir,
+        name=name,
+        created=created,
+        renderer=renderer,
+        overwrite=overwrite,
+        numbers=numbers,
+        public=True,
+    )
+
+
+def _print(
+    config: SiteConfig,
+    kit: KitConfig,
+    html: str,
+    *,
+    target_dir: Path,
+    name: str,
+    created: date,
+    renderer: Renderer,
+    overwrite: bool,
+    numbers: Numbers | None,
+    public: bool,
+) -> PdfResult:
+    """Render, scrub, check and write one staged page. Shared by both kinds."""
     with private_workdir() as work:
-        raw = renderer(staged.html, work)
+        raw = renderer(html, work)
         if len(raw) > MAX_PDF_BYTES:
             raise PdfError(f"the PDF is larger than {MAX_PDF_BYTES} bytes")
         final = scrub_pdf(raw, title=kit.title, created=created)
@@ -487,6 +592,8 @@ def build_kit_pdf(
         "\n".join(pages),
         numbers,
         None if day is None else cutover_label(day),
+        public=public,
+        valid_as_of_text=valid_as_of_text(created) if public else None,
     )
     path = write_private(target_dir, name, final, overwrite=overwrite)
     return PdfResult(path=path, pages=len(pages), size=len(final))
