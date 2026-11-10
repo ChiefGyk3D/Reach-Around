@@ -51,6 +51,7 @@ from reach_around.config.kit import (
     KitConfig,
     ResolvedMetric,
     UnifiedTotal,
+    enforce_display_policy,
     gated_projection,
     kit_warnings,
     public_projection,
@@ -765,6 +766,7 @@ def render_kit(
     kit = config.kit
     if kit is None:
         return KitRender({}, None, [])
+    enforce_display_policy(kit)
     warnings = plan_warnings(config, numbers, today)
     # A UTC day, not ``today`` (the scheduling day in the config's time zone).
     live_day = live_since(config, utc_today())

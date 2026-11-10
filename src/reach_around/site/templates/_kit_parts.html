@@ -47,7 +47,7 @@
 </thead>
 <tbody>
 {% for row in kit.engagement %}
-<tr><th scope="row">{{ row.platform }}<span class="kit-formula kit-measure">{{ row.measure }}</span>{% if row.note %}<span class="kit-note kit-formula">{{ row.note }}.</span>{% endif %}</th><td class="kit-figure">{{ row.value }}</td><td>{% if row.as_of %}<span class="kit-nowrap">{{ row.start }}</span> to <span class="kit-nowrap">{{ row.end }}</span><span class="kit-note kit-formula">As of <time datetime="{{ row.as_of }}">{{ row.as_of }}</time> UTC</span>{% endif %}</td></tr>
+<tr><th scope="row">{{ row.platform }}<span class="kit-formula kit-measure">{{ row.measure }}</span>{% if row.provenance %}<span class="kit-note kit-formula">{{ row.provenance }}.</span>{% endif %}{% if row.note %}<span class="kit-note kit-formula">{{ row.note }}.</span>{% endif %}</th><td class="kit-figure">{{ row.value }}</td><td>{% if row.as_of %}<span class="kit-nowrap">{{ row.start }}</span> to <span class="kit-nowrap">{{ row.end }}</span><span class="kit-note kit-formula">As of <time datetime="{{ row.as_of }}">{{ row.as_of }}</time> UTC</span>{% endif %}</td></tr>
 {% endfor %}
 </tbody>
 </table>

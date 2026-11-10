@@ -614,6 +614,11 @@
           "default": null,
           "title": "Interactions"
         },
+        "owner_supplied": {
+          "default": false,
+          "title": "Owner Supplied",
+          "type": "boolean"
+        },
         "period_end": {
           "anyOf": [
             {

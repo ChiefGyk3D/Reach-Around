@@ -1081,11 +1081,18 @@ kit:
       posts: 8
       interactions: 600
       counts: Chat messages and follows
+      owner_supplied: false
     - platform: kick
   testimonials:
     - {quote: An example quote., name: Example Person, brand: Example Brand}
   disclosure: An example statement about how paid work is marked.
 ```
+
+`owner_supplied` defaults to `false`. YouTube Analytics figures use private
+OAuth scopes, so collected values are refused in every kit build. To include a
+YouTube engagement row, type the figures by hand and set `owner_supplied: true`.
+That row appears only in the deeper, gated kit and the private owner PDF, with
+an `Owner-supplied` label. It never appears in the public kit.
 
 ## `numbers`
 

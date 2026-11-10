@@ -163,6 +163,11 @@ root-based asset links (`/static/...`) because the Worker serves it from any
 path. Partner links open with `rel="noopener noreferrer"`. It contains no
 script, and no form unless `kit.inquiry` is set.
 
+YouTube Analytics values collected with private OAuth scopes are never accepted
+as kit input. A YouTube engagement figure may appear here only when the owner
+types it into the config and sets `owner_supplied: true`; the page labels every
+such figure `Owner-supplied`. The public pages never receive those rows.
+
 ### The business inquiry form
 
 Set `kit.inquiry` (see the [config reference](config.md#kit)) and the gated page
@@ -206,6 +211,13 @@ The boundary is structural. The rule for what is public is the display policy
 table in `reach_around/config/kit.py`; the public page is rendered from
 `public_projection` and the gated page from `gated_projection`, so a template
 cannot reach a gated field, and the two pages go to two separate directories.
+
+| Field | Visibility | Owner-report marker |
+| --- | --- | --- |
+| title, about, contact, tags, metrics, unified_total, turnstile_site_key | public | no |
+| partners, case_studies, services, rates, testimonials, demographics, inquiry, disclosure | gated | no |
+| engagement | gated | `owner_report_only`; YouTube figures require `owner_supplied: true` |
+| unlock_link | private | no |
 
 What the build enforces:
 

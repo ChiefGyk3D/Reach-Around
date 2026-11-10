@@ -25,7 +25,7 @@ from reach_around.config.engagement import (
 from reach_around.config.kit import DISPLAY_POLICY
 from reach_around.kit.pdf import PdfError, build_kit_pdf
 from reach_around.kit.pdftext import extract_pages
-from reach_around.site.kit import GATED_FILE, KitLeakError
+from reach_around.site.kit import GATED_FILE, KitLeakError, check_no_gated_text
 
 
 def rows() -> list[dict[str, Any]]:
@@ -127,6 +127,50 @@ def test_the_public_output_holds_no_engagement_value_or_heading(
     ):
         assert text not in public, text
     assert "5.0%" in (gated / GATED_FILE).read_text(encoding="utf-8")
+
+
+def test_collected_youtube_analytics_figures_fail_the_site_build(
+    tmp_path: Path,
+) -> None:
+    youtube = {**rows()[0], "platform": "youtube"}
+    with pytest.raises(
+        ValueError,
+        match=r"YouTube Analytics.*owner_supplied: true",
+    ):
+        build(tmp_path, make_config(kit_doc(engagement=[youtube])))
+
+
+def test_collected_youtube_analytics_figures_fail_when_field_is_public(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    youtube = {**rows()[0], "platform": "youtube"}
+    monkeypatch.setitem(DISPLAY_POLICY, "engagement", "public")
+    with pytest.raises(ValueError, match=r"YouTube Analytics.*owner_supplied: true"):
+        build(tmp_path, make_config(kit_doc(engagement=[youtube])))
+
+
+def test_owner_supplied_youtube_analytics_are_labeled_and_gated(
+    tmp_path: Path,
+) -> None:
+    marker = "YOUTUBE-OWNER-ONLY-424"
+    youtube = {
+        **rows()[0],
+        "platform": "youtube",
+        "counts": marker,
+        "owner_supplied": True,
+    }
+    out, gated = build(tmp_path, make_config(kit_doc(engagement=[youtube])))
+    public = tree_bytes(out).decode("utf-8", "replace")
+    deeper = (gated / GATED_FILE).read_text(encoding="utf-8")
+    assert marker not in public
+    assert "Owner-supplied" not in public
+    assert marker in deeper
+    assert "Owner-supplied" in deeper
+
+    config = make_config(kit_doc(engagement=[youtube]))
+    assert config.kit is not None
+    with pytest.raises(KitLeakError, match=r"engagement"):
+        check_no_gated_text({Path("kit-light.pdf"): marker.encode()}, config.kit)
 
 
 def test_engagement_alone_makes_the_kit_gated_and_needs_the_gate(
