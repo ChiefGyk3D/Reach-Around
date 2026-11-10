@@ -123,12 +123,17 @@ def _token_sets() -> dict[str, dict[str, RGB]]:
         match = re.fullmatch(r"var\((--ra-[a-z0-9-]+)\)", value)
         return resolve(match.group(1)) if match else value
 
+    light: dict[str, RGB] = {}
     dark: dict[str, RGB] = {}
     for name in ("bg", "surface", "text", "accent", "on-accent", "border"):
         value = resolve(f"--ra-color-{name}")
-        assert re.fullmatch(r"#[0-9a-fA-F]{6}", value), (name, value)
-        dark[name] = _hex_to_rgb(value)
-    return {"dark": dark}
+        pair = re.fullmatch(r"light-dark\((#[0-9a-fA-F]{6}),\s*(#[0-9a-fA-F]{6})\)", value)
+        if pair:
+            light[name], dark[name] = _hex_to_rgb(pair[1]), _hex_to_rgb(pair[2])
+        else:
+            assert re.fullmatch(r"#[0-9a-fA-F]{6}", value), (name, value)
+            light[name] = dark[name] = _hex_to_rgb(value)
+    return {"light": light, "dark": dark}
 
 
 def test_contrast_helper_matches_known_values() -> None:
@@ -137,7 +142,7 @@ def test_contrast_helper_matches_known_values() -> None:
     assert contrast(white, white) == pytest.approx(1.0)
 
 
-@pytest.mark.parametrize("mode", ["dark"])
+@pytest.mark.parametrize("mode", ["light", "dark"])
 def test_contrast_of_default_token_pairs_meets_aa(mode: str) -> None:
     tokens = _token_sets()[mode]
     needed = {"bg", "surface", "text", "accent", "on-accent", "border"}
