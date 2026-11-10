@@ -100,13 +100,13 @@ def test_gated_services_need_the_gate_switch() -> None:
 
 @pytest.mark.parametrize("text", HOSTILE)
 def test_hostile_text_is_refused_everywhere(text: str) -> None:
-    for build in (
-        lambda t: ServicePackage.model_validate(package(title=t)),
-        lambda t: ServicePackage.model_validate(package(included=[t])),
-        lambda t: ServicePackage.model_validate(package(price_text=t)),
+    for doc in (
+        package(title=text),
+        package(included=[text]),
+        package(price_text=text),
     ):
         with pytest.raises(ValidationError):
-            build(text)
+            ServicePackage.model_validate(doc)
 
 
 @pytest.mark.parametrize(

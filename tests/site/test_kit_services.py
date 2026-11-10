@@ -11,21 +11,14 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from test_kit_build import (
-    GATED_FILE,
-    KitLeakError,
-    build,
-    gated_doc,
-    kit_doc,
-    make_config,
-    tree_bytes,
-)
+from test_kit_build import build, gated_doc, kit_doc, make_config, tree_bytes
 
 from kitpdfharness import build_instance, fake_renderer
 from kitpdfharness import kit_doc as pdf_kit_doc
 from kitpdfharness import make_config as pdf_config
 from reach_around.kit.pdf import PdfError, build_kit_pdf
 from reach_around.kit.pdftext import extract_pages
+from reach_around.site.kit import GATED_FILE, KitLeakError
 
 SVC = "CANARY-SERVICE-5d1e"
 
