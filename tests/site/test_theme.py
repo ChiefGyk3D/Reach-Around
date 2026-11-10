@@ -309,7 +309,9 @@ def test_default_is_dark_and_light_is_an_explicit_opt_in(tmp_path: Path) -> None
 
 def test_light_mode_resolves_the_light_half_of_every_pair(tmp_path: Path) -> None:
     tokens, _, _ = _page_css(tmp_path, None)
-    for match in re.finditer(r"--ra-compat-(\w+): light-dark\(([^,]+(?:\([^)]*\))?[^,]*), ", tokens):
+    for match in re.finditer(
+        r"--ra-compat-(\w+): light-dark\(([^,]+(?:\([^)]*\))?[^,]*), ", tokens
+    ):
         assert match.group(2).strip() != "", match.group(1)
     light_bg = re.search(r"--ra-compat-bg: light-dark\((#\w+), (#\w+)\)", tokens)
     assert light_bg is not None

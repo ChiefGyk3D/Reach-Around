@@ -127,7 +127,9 @@ def _token_sets() -> dict[str, dict[str, RGB]]:
     dark: dict[str, RGB] = {}
     for name in ("bg", "surface", "text", "accent", "on-accent", "border"):
         value = resolve(f"--ra-color-{name}")
-        pair = re.fullmatch(r"light-dark\((#[0-9a-fA-F]{6}),\s*(#[0-9a-fA-F]{6})\)", value)
+        pair = re.fullmatch(
+            r"light-dark\((#[0-9a-fA-F]{6}),\s*(#[0-9a-fA-F]{6})\)", value
+        )
         if pair:
             light[name], dark[name] = _hex_to_rgb(pair[1]), _hex_to_rgb(pair[2])
         else:
