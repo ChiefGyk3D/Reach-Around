@@ -97,6 +97,20 @@ def _change(percent: float | None, label: str) -> str:
     return f"{label}: {sign}{percent}% against the previous window"
 
 
+SPANS_GAP_LABEL = "Spans a collection gap: counts cover only the time collected."
+
+
+def _coverage_note(view: dict[str, Any]) -> str:
+    c = view["coverage"]
+    if not c["spans_gap"]:
+        return ""
+    return (
+        f'<p class="note">Collection gaps in this window: {c["gap_days"]} full-day '
+        f"gaps, {c['partial_days']} partial days. A gap is unknown time, not a zero; "
+        "the figures below count only the time collected.</p>"
+    )
+
+
 def _tile(name: str, tile: dict[str, Any], view: dict[str, Any]) -> str:
     prev = view["tiles"]["previous_window"]
     window = (
@@ -128,9 +142,14 @@ def _tile(name: str, tile: dict[str, Any], view: dict[str, Any]) -> str:
             f'<p class="note">{escape(chg)}</p>'
             f'<p class="note">Previous window: {window}</p>'
         )
+    gap_html = (
+        f'<p class="note">{escape(SPANS_GAP_LABEL)}</p>'
+        if view["coverage"]["spans_gap"]
+        else ""
+    )
     return (
         f'<div class="tile"><h2>{title}</h2><div class="big">{escape(big)}</div>'
-        f'<p class="label">{escape(small)}</p>{chg_html}</div>'
+        f'<p class="label">{escape(small)}</p>{gap_html}{chg_html}</div>'
     )
 
 
@@ -245,7 +264,10 @@ def _daily_table(rows: list[dict[str, Any]]) -> str:
                 f'<td class="n">{escape(_cell(r["clicks"], r["clicks_status"]))}</td>'
                 f'<td class="n">{escape(_rate_text(r["rate"], r["rate_capped"]))}</td>'
             )
-        body.append(f"<tr><td>{escape(r['day'])}</td>{cells}</tr>")
+        mark = {"gap": " (collection gap)", "partial": " (partial collection)"}.get(
+            r["collection"], ""
+        )
+        body.append(f"<tr><td>{escape(r['day'] + mark)}</td>{cells}</tr>")
     return (
         '<div class="wrap"><table><thead><tr><th>Day (UTC)</th><th class="n">Views</th>'
         '<th class="n">Clicks</th><th class="n">Click rate</th></tr></thead><tbody>'
@@ -470,7 +492,7 @@ def render_html(view: dict[str, Any], *, generated_at: datetime) -> str:
             "differenced against another window or release. Do not publish, share "
             "or post this page.</p>"
         ),
-        era_html + warn + "</header>",
+        era_html + warn + _coverage_note(view) + "</header>",
         '<div class="grid tiles">',
         _tile("views", view["tiles"]["views"], view),
         _tile("clicks", view["tiles"]["clicks"], view),

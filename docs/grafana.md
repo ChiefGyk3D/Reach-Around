@@ -52,6 +52,10 @@ Only these tables exist. Days are UTC `YYYY-MM-DD`.
 | `grafana_gaps_daily` | `day`, `status`, `reason` | days with no (`gap`) or partial (`partial`) collection and why: `outage`, `quota`, `kill_switch`, `site_kill_switch` (joined with `+` on a partial day). Coverage is account-wide, not per site. Draw these days as gaps; no other table has a row of zeros for them. Empty when `analytics_coverage` is not in the export. Schema version 2 |
 | `grafana_meta` | `key`, `value` | `site`, `floor`, `schema_version` |
 
+Join `grafana_gaps_daily` to every panel whose date range can cross a gap, and
+show the reason in the panel annotation or title. See the generic
+[collection gaps runbook](collection-gaps-runbook.md) for response and recovery.
+
 Left out on purpose: unique-visitor counts (they do not add up across cells),
 region and city, browser, system, language, window size, network type, bot
 reasons, the media kit, leads, and every raw row. Click rows are counted; none

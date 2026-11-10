@@ -534,6 +534,12 @@ selector (one page per site, or a site column) and these panels:
    reduced mode, late rows, config errors, network-data age. A stale heartbeat
    is shown in red (Plan 4 A8; the alert for a stale heartbeat is still planned).
 
+The coverage log is compared with the UTC calendar. Missing or partly collected
+days stay gaps with a closed reason (`outage`, `quota`, `kill_switch` or
+`site_kill_switch`), never zero rows. Every total or ratio whose window crosses
+a gap carries that fact with the figure. Response and recovery are described in
+the generic [collection gaps runbook](collection-gaps-runbook.md).
+
 Small-cell rule for the blog: cells under the site's `min_cell` (default 5 for
 the blog, 3 for `links`) fold into `other` on every panel, and the dashboard
 says this is label suppression, not k-anonymity.

@@ -265,7 +265,7 @@ def test_gap_day_is_a_gap_not_zero(report: dict[str, Any]) -> None:
     csv_row = next(
         r for r in csv_rows(files, "owner_daily.csv") if r[0] == "2026-11-04"
     )
-    assert csv_row == ["2026-11-04", "", "gap", "", "gap", "", ""]
+    assert csv_row == ["2026-11-04", "", "gap", "", "gap", "", "", ""]
 
 
 def test_one_small_day_also_hides_the_smallest_printed_day() -> None:
@@ -299,6 +299,7 @@ def test_empty_export_still_renders(tmp_path: Path) -> None:
             "clicks_status",
             "click_rate",
             "note",
+            "collection",
         ]
     ]
 
