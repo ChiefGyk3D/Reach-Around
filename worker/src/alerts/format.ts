@@ -92,10 +92,33 @@ function formatHealth(event: Extract<AlertEvent, { kind: "analytics_health" }>):
   };
 }
 
+/** Longest inquiry message before the dispatcher's own byte cap applies. */
+const MAX_INQUIRY_MESSAGE_CHARS = 1500;
+
+function field(v: unknown, max: number, text: TextMode): string {
+  const clean = neutralize(v, max, text);
+  return clean === "" ? "not given" : clean;
+}
+
+function formatInquiry(event: Extract<AlertEvent, { kind: "inquiry_received" }>, visitorEmail: VisitorEmailMode, text: TextMode): AlertMessage {
+  const email = event.email === null ? "not given" : who(event.email, visitorEmail, text);
+  return {
+    subject: "Reach Around: new business inquiry",
+    text: capMessage(
+      `Reach Around: new business inquiry at ${utcStamp(event.atMs)}. ` +
+        `Name: ${field(event.name, 80, text)}. Email: ${email}. Brand: ${field(event.brand, 80, text)}. ` +
+        `Budget: ${field(event.budget, 40, text)}. Details: ${field(event.details, 800, text)}`,
+      MAX_INQUIRY_MESSAGE_CHARS,
+    ),
+  };
+}
+
 export function formatAlert(event: AlertEvent, visitorEmail: VisitorEmailMode, text: TextMode): AlertMessage {
   switch (event.kind) {
     case "analytics_health":
       return formatHealth(event);
+    case "inquiry_received":
+      return formatInquiry(event, visitorEmail, text);
     case "kit_unlocked":
       return {
         subject: "Reach Around: media kit unlocked",

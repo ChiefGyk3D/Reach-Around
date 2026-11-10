@@ -313,8 +313,9 @@ VOCAB: dict[str, tuple[str, str]] = {
         "Delete value and as_of, or change source to manual.",
     ),
     "kit_gate_off": (
-        "the kit has partners, case studies, rates, engagement or "
-        "demographics, which need the gate",
+        "the kit has partners, case studies, packages, rates, "
+        "engagement, testimonials, demographics or a disclosure, which "
+        "need the gate",
         "Set features.kit_gate to true, or remove those entries.",
     ),
     "kit_unlock_link": (
@@ -444,6 +445,7 @@ KNOWN_FIELDS: frozenset[str] = frozenset(
         "block",
         "blocks",
         "body",
+        "brand",
         "button",
         "button_style",
         "case_studies",
@@ -472,6 +474,7 @@ KNOWN_FIELDS: frozenset[str] = frozenset(
         "disclosure",
         "dot",
         "dsn_env",
+        "email",
         "engagement",
         "events",
         "favicon",
@@ -493,6 +496,8 @@ KNOWN_FIELDS: frozenset[str] = frozenset(
         "image",
         "image_alt",
         "in_total",
+        "included",
+        "inquiry",
         "insights",
         "interactions",
         "intro",
@@ -533,6 +538,7 @@ KNOWN_FIELDS: frozenset[str] = frozenset(
         "path",
         "period_end",
         "period_start",
+        "pgp_fingerprint",
         "platform",
         "players",
         "posts",
@@ -540,6 +546,7 @@ KNOWN_FIELDS: frozenset[str] = frozenset(
         "privacy",
         "profile_card",
         "qr",
+        "quote",
         "radius",
         "rates",
         "raw_keep_days",
@@ -551,6 +558,7 @@ KNOWN_FIELDS: frozenset[str] = frozenset(
         "robots",
         "room",
         "route",
+        "services",
         "show",
         "show_from",
         "show_until",
@@ -568,6 +576,7 @@ KNOWN_FIELDS: frozenset[str] = frozenset(
         "tabs",
         "tags",
         "target",
+        "testimonials",
         "text",
         "theme",
         "timezone",

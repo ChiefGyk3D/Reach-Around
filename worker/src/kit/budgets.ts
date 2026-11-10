@@ -74,7 +74,7 @@ const MIN_QUOTA = 1000;
 const MAX_QUOTA = 999_999_999; // nine digits, the most parseStrict accepts
 
 /** Worst-case rows written by one accepted operation (the row, its indexes, the counter). */
-export const WRITES_PER_OP = { gate: 5, view: 2, send: 7, alert: 1 } as const;
+export const WRITES_PER_OP = { gate: 5, view: 2, send: 7, alert: 1, inquiry: 1 } as const;
 /**
  * Page-view feature, rollup and purge worst case per day at the DEFAULT hourly
  * budgets (docs/deploy.md, page views). The loader uses the configured
@@ -139,6 +139,8 @@ export function worstCaseDailyWrites(
   return (
     24 * (c.routeGatePerHour * WRITES_PER_OP.gate + c.routeViewPerHour * WRITES_PER_OP.view) +
     c.dailyAlertBudget * WRITES_PER_OP.alert +
+    // An accepted inquiry is capped by the daily alert budget (kit/inquiry.ts) and writes one counter row.
+    c.dailyAlertBudget * WRITES_PER_OP.inquiry +
     c.dailySendBudget * WRITES_PER_OP.send +
     PURGE_RESERVE
   );

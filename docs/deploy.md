@@ -273,12 +273,13 @@ All values are plain decimal integers (digits only, no sign, space, exponent or 
 | gate | 150 per hour | 5 | 18000 |
 | view | 300 per hour | 2 | 14400 |
 | alert | 20 per day | 1 | 20 |
+| inquiry | 20 per day | 1 | 20 |
 | send | 0 per day | 7 | 0 |
 | kit purge reserve | | | 10000 |
 | page views, rollup and purge | | | 22700 |
 | clicks (reserve) | | | 8000 |
 | margin | | | 5000 |
-| **Total** | | | **78120** |
+| **Total** | | | **78140** |
 
 That is 78.1 percent of the default quota of 100000. Raising a budget raises this number; raise `D1_DAILY_WRITE_QUOTA` only on a plan that allows it. Counters live in the `counters` table, one row per route and hour or per day, and are purged after two days. A viral spike over a budget makes the gate unavailable until the next hour; that is the accepted trade.
 
@@ -287,6 +288,10 @@ That is 78.1 percent of the default quota of 100000. Raising a budget raises thi
 **Lead retention.** One source of truth: `privacy.lead_retention_days` in `site.yaml` (1 to 365, default 30). The build records it in the build manifest, `verify-manifest.py` checks it, "Write deploy config" writes it to the Worker as `LEAD_RETENTION_DAYS` (always, so the deployed value is never the Worker's silent default by accident), and the generated privacy page prints the same number. The repository variable `LEAD_RETENTION_DAYS` is optional and only compared: when it is set and differs from the config the deploy stops with an error naming both numbers (an invalid variable stops it too); unset, it changes nothing. The Worker variable `LEAD_RETENTION_DAYS` (1 to 365, default 30; digits only, an invalid value falls back to 30 and is logged as a fixed line, it is not part of the table above because it never closes the gate) sets how long a lead is kept. Each hourly run is ONE metered D1 query (a batch) that deletes at most 80 `kit_events` of expired leads, then at most 20 expired leads that have no events left (a lead goes only after its events, so the cascade never deletes events in bulk and a lead with many events is purged over several runs), and writes the heartbeat. Estimated writes per run: 20 x 4 + 80 x 3 + 1 = 321 (a lead row and its three indexes, an event row and its two indexes; an estimate, not measured on D1), so 24 runs are 7704 a day, within 80 percent of the 10000 kit purge reserve above; the rest is left for the counter purge. **Budget guarantee:** at `QUERY_BUDGET` 9 or more the lead purge runs first and always gets its one query, and the rest of the jobs share the remainder (the rollup gets the budget minus one). Below 9 the rollup wins (8 is the smallest budget in which one rollup day completes, `rollup_budget.test.ts`), the lead purge runs last on whatever is left with no guarantee, and logs `purge` / `over_budget` when it gets none; keep `QUERY_BUDGET` at 9 or more (default 40). It never runs on the 2-minute live cron. Details and the owner deletion command: [privacy.md](privacy.md).
 
 **For the route code that uses these limits:** run the per-client throttle (`checkIpMinute`) before taking from a global route counter, so one client cannot spend the shared budget. A request refused by the throttle must not touch a counter.
+
+### Business inquiry form (`POST /k/inquiry`), not deployed
+
+The form needs, besides the gate's `TOKEN_HMAC_KEY` (so only an unlocked visitor can post): the alert channels with the event `inquiry_received` enabled (the inquiry is delivered as an owner alert and stored nowhere), and a Workers Rate Limiting binding named `INQUIRY_LIMITER` (3 per client per 60 seconds in `worker/wrangler.toml`, placeholders only). What the owner must add, exactly: (1) a `[[ratelimits]]` binding named `INQUIRY_LIMITER` with a namespace id of their own (copy the commented block in `worker/wrangler.toml`: `limit = 3`, `period = 60`); (2) the secret `TOKEN_HMAC_KEY`, the same one the gate signs with, and the secret `VIEW_HASH_SECRET` (at least 32 random bytes, base64, the one the click and page-view limiters already use): the per-client limit is keyed from it so the key is the same in every isolate and after every restart, and without a usable one the route refuses (503) rather than limit per isolate; (3) `inquiry_received` in `alerts.events` and at least one enabled channel. The route fails closed: if the binding is missing or malformed, or the key or `VIEW_HASH_SECRET` is missing or too short, it refuses (503) and sends nothing, and the test `refuses with 503, sends nothing and spends nothing` pins it. It never runs without a limit. It adds no variable of its own: the daily cap on inquiries is `DAILY_ALERT_BUDGET`. An accepted inquiry writes one `counters` row update (key `inquiry`) beside the alert's own quota rows, so the table above has an `inquiry` row (up to `DAILY_ALERT_BUDGET` writes a day, one each) and the checked total includes it. Result pages are `GET /k/inquiry/sent` and `GET /k/inquiry/error`. The route is not live until the gate route (#263) serves the gated page and sets the unlock cookie.
 
 ## Secrets and Doppler
 

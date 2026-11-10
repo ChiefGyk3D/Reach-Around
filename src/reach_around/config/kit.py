@@ -65,16 +65,21 @@ DISPLAY_POLICY: Mapping[str, Visibility] = {
     "title": "public",
     "about": "public",
     "contact": "public",
+    "tags": "public",
     "metrics": "public",
     "unified_total": "public",
     "turnstile_site_key": "public",
     "partners": "gated",
     "case_studies": "gated",
+    "services": "gated",
     "rates": "gated",
     # Owner decision: gated. To make it public later, change this one line to
     # "public" (the pages render from the projection, so nothing else moves).
     "engagement": "gated",
+    "testimonials": "gated",
     "demographics": "gated",
+    "inquiry": "gated",
+    "disclosure": "gated",
     "unlock_link": "private",
 }
 
@@ -101,6 +106,9 @@ def _plain(value: str) -> str:
     return value
 
 
+Text30 = Annotated[
+    StrictStr, Field(min_length=1, max_length=30), AfterValidator(_plain)
+]
 Text60 = Annotated[
     StrictStr, Field(min_length=1, max_length=60), AfterValidator(_plain)
 ]
@@ -166,11 +174,32 @@ class CaseStudy(_Model):
     result: Text300
 
 
+class Testimonial(_Model):
+    """One partner quote. The owner supplies the text and is responsible for
+    having permission to quote it; nothing here checks that."""
+
+    quote: Text300
+    name: Text80
+    brand: Text80 | None = None
+
+
 class Rate(_Model):
     """One rates-card line. ``price_text`` is text, so ``Ask me!`` is fine."""
 
     item: Text80
     price_text: Text80
+
+
+class ServicePackage(_Model):
+    """One named package: a title, what is included, and a price as text.
+
+    ``price_text`` is free text (``Ask me!`` is fine); nothing is computed from
+    it. Both the list and the price are optional.
+    """
+
+    title: Text80
+    included: list[Text120] = Field(default_factory=list, max_length=12)
+    price_text: Text80 | None = None
 
 
 class Demographic(_Model):
@@ -182,6 +211,58 @@ class Demographic(_Model):
     @classmethod
     def _as_of_is_a_date(cls, value: object) -> object:
         return _iso_date(value)
+
+
+# A plain address in the shape the Worker's form grammar accepts for visitors:
+# ASCII, one @, dot-separated atoms, a dotted domain. Plain characters only, so
+# it prints and sits in an attribute with no escaping surprises and can never
+# carry a header break.
+_OWNER_EMAIL = re.compile(
+    r"[A-Za-z0-9_+-]+(?:\.[A-Za-z0-9_+-]+)*"
+    r"@(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,63}"
+)
+_FINGERPRINT_LENGTHS = (
+    40,
+    64,
+)  # OpenPGP v4 (SHA-1) and v6 (SHA-256) fingerprints, in hex digits
+
+
+class Inquiry(_Model):
+    """The business inquiry form on the gated page and the owner details beside it.
+
+    The address and the key fingerprint are the owner's own, taken from here and never
+    hard-coded. The form posts to the Worker (``/k/inquiry``); where the message goes is
+    the Worker's alert channels, not this block.
+    """
+
+    email: StrictStr
+    pgp_fingerprint: StrictStr | None = None
+
+    @field_validator("email")
+    @classmethod
+    def _email_is_plain(cls, value: str) -> str:
+        if len(value) > 254 or not _OWNER_EMAIL.fullmatch(value):
+            raise ValueError(
+                "inquiry.email must be one plain address such as name@example.com "
+                "(ASCII, no spaces, at most 254 characters)"
+            )
+        return value
+
+    @field_validator("pgp_fingerprint")
+    @classmethod
+    def _fingerprint_is_hex(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        digits = value.replace(" ", "")
+        if len(digits) not in _FINGERPRINT_LENGTHS or not re.fullmatch(
+            r"[0-9A-Fa-f]+", digits
+        ):
+            raise ValueError(
+                "inquiry.pgp_fingerprint must be 40 or 64 hexadecimal digits "
+                "(spaces between groups are fine)"
+            )
+        digits = digits.upper()
+        return " ".join(digits[i : i + 4] for i in range(0, len(digits), 4))
 
 
 class PlatformMetric(_Model):
@@ -284,14 +365,26 @@ class KitConfig(_Model):
     # the page prints it escaped. The owner decides what goes here (an email
     # written as text is fine); no address or phone is required or checked.
     contact: Text200 | None = None
+    # A few content category chips for the header, public on every page.
+    tags: list[Text30] = Field(default_factory=list, max_length=8)
     metrics: list[PlatformMetric] = Field(default_factory=list, max_length=30)
     # Owner-kept inputs for engagement and average views, per platform and UTC
     # period. Public: the figures are worked out in code, never typed.
     engagement: list[EngagementRow] = Field(default_factory=list, max_length=30)
     partners: list[Partner] = Field(default_factory=list, max_length=50)
     case_studies: list[CaseStudy] = Field(default_factory=list, max_length=20)
+    services: list[ServicePackage] = Field(default_factory=list, max_length=20)
     rates: list[Rate] = Field(default_factory=list, max_length=30)
+    testimonials: list[Testimonial] = Field(default_factory=list, max_length=10)
     demographics: list[Demographic] = Field(default_factory=list, max_length=30)
+    # The inquiry form (gated page only) and the owner's address and key fingerprint
+    # shown beside it. Left out: no form.
+    inquiry: Inquiry | None = None
+    # A short statement (a couple of sentences) on how paid relationships and
+    # affiliate links are disclosed and what content a brand can expect to sit
+    # next to. The owner words it; nothing is generated. Distinct from the
+    # site-wide affiliate ``disclosure`` in the page footer.
+    disclosure: Text500 | None = None
     # Public key of the Turnstile widget on the gate form. Optional: without it
     # the form renders an empty widget slot and the build warns.
     turnstile_site_key: StrictStr | None = None
@@ -327,6 +420,16 @@ class KitConfig(_Model):
                     f"the engagement row for {entry.platform!r} and that period "
                     "is listed more than once"
                 )
+            seen.add(key)
+        return self
+
+    @model_validator(mode="after")
+    def _tags_are_unique(self) -> KitConfig:
+        seen: set[str] = set()
+        for tag in self.tags:
+            key = unicodedata.normalize("NFKC", tag).casefold()
+            if key in seen:
+                raise ValueError(f"the tag {tag!r} is listed more than once")
             seen.add(key)
         return self
 

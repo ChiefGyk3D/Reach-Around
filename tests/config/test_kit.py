@@ -338,6 +338,7 @@ def test_policy_classifies_every_field() -> None:
         "title",
         "about",
         "contact",
+        "tags",
         "metrics",
         "unified_total",
         "turnstile_site_key",
@@ -377,6 +378,7 @@ def test_public_projection_has_only_header_and_headline_numbers() -> None:
         "title",
         "about",
         "contact",
+        "tags",
         "metrics",
         "unified_total",
         "turnstile_site_key",
@@ -400,6 +402,7 @@ def test_gated_projection_adds_gated_fields_but_never_private() -> None:
         "case_studies",
         "rates",
         "demographics",
+        "inquiry",
     } <= set(out)
     assert "unlock_link" not in out
     assert CANARY in json.dumps(out, default=str)

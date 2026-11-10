@@ -8,7 +8,8 @@ allowlist, never edited in place:
 
 * only known layout tags and attributes are rebuilt (``class``, table ``scope``,
   ``datetime``, an ``https`` link target); the live-site chrome (skip link,
-  navigation, footer with its cookie form, links back to the site) is dropped;
+  navigation, footer with its cookie form, the inquiry form's aside, links back to the
+  site) is dropped;
 * a tag that can run code, fetch, nest a document or submit anything (script,
   iframe, form, object, embed, base, svg, video, a refresh meta, ...) stops the
   build instead of being quietly removed, because its presence means the page is
@@ -61,7 +62,7 @@ PRINT_CSS = (
     "animation:none!important;transition:none!important}"
     "main{max-width:none!important;margin:0!important;padding:0!important}"
     ".skip-link,.cookie-banner{display:none!important}"
-    "article,tr,li,.kit-numbers,.kit-engagement,.kit-partners,.kit-rates,.kit-demographics"
+    "article,tr,li,.kit-numbers,.kit-engagement,.kit-partners,.kit-services,.kit-rates,.kit-testimonials,.kit-demographics,.kit-disclosure"
     "{break-inside:avoid}"
     "h1,h2,h3,h4{break-after:avoid}"
     "table{width:100%;border-collapse:collapse}"
@@ -99,8 +100,9 @@ _FORBIDDEN = frozenset(
         "picture",
     }
 )
-# Dropped with everything inside them: the live-site chrome.
-_CHROME = frozenset({"footer", "nav"})
+# Dropped with everything inside them: the live-site chrome, and the inquiry form's
+# <aside> (a form means nothing on paper; the owner details are not inside it).
+_CHROME = frozenset({"footer", "nav", "aside"})
 _KEEP = frozenset(
     {
         "header",
