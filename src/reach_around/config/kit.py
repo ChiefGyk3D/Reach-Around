@@ -69,6 +69,7 @@ DISPLAY_POLICY: Mapping[str, Visibility] = {
     "partners": "gated",
     "case_studies": "gated",
     "rates": "gated",
+    "testimonials": "gated",
     "demographics": "gated",
     "unlock_link": "private",
 }
@@ -161,6 +162,15 @@ class CaseStudy(_Model):
     result: Text300
 
 
+class Testimonial(_Model):
+    """One partner quote. The owner supplies the text and is responsible for
+    having permission to quote it; nothing here checks that."""
+
+    quote: Text300
+    name: Text80
+    brand: Text80 | None = None
+
+
 class Rate(_Model):
     """One rates-card line. ``price_text`` is text, so ``Ask me!`` is fine."""
 
@@ -232,6 +242,7 @@ class KitConfig(_Model):
     partners: list[Partner] = Field(default_factory=list, max_length=50)
     case_studies: list[CaseStudy] = Field(default_factory=list, max_length=20)
     rates: list[Rate] = Field(default_factory=list, max_length=30)
+    testimonials: list[Testimonial] = Field(default_factory=list, max_length=10)
     demographics: list[Demographic] = Field(default_factory=list, max_length=30)
     # Public key of the Turnstile widget on the gate form. Optional: without it
     # the form renders an empty widget slot and the build warns.

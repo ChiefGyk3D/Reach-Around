@@ -181,7 +181,7 @@ def _gated_strings(kit: KitConfig) -> list[tuple[str, str]]:
     """(where, text) for every gated value long enough to search for. Values
     that are not text (dates) are searched in the form the templates print."""
     found: list[tuple[str, str]] = []
-    for name in ("partners", "case_studies", "rates", "demographics"):
+    for name in ("partners", "case_studies", "rates", "testimonials", "demographics"):
         for index, item in enumerate(getattr(kit, name)):
             for field, value in item.model_dump().items():
                 text = value.isoformat() if isinstance(value, date) else value
@@ -653,6 +653,7 @@ def _categories(kit: KitConfig) -> str:
             ("past partners", kit.partners),
             ("case studies", kit.case_studies),
             ("rates", kit.rates),
+            ("testimonials", kit.testimonials),
             ("audience details", kit.demographics),
         )
         if items
@@ -673,7 +674,7 @@ def plan_warnings(
     if config.features.kit_gate and not kit.has_gated_content:
         found.append(
             "features.kit_gate is on but the kit has no partners, case studies, "
-            "rates or demographics; no gate form or gated page is built"
+            "rates, testimonials or demographics; no gate form or gated page is built"
         )
     if has_gate_form(kit) and kit.turnstile_site_key is None:
         found.append(
@@ -732,6 +733,7 @@ def render_kit(
             partners=data["partners"],
             case_studies=data["case_studies"],
             rates=data["rates"],
+            testimonials=data["testimonials"],
             demographics=[
                 {"label": d.label, "value": d.value, "as_of": d.as_of.isoformat()}
                 for d in data["demographics"]

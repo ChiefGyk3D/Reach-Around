@@ -918,6 +918,7 @@ end. Text must be quoted if YAML would read it as a number.
 | `partners` | list of partner | none | at most 50 |
 | `case_studies` | list of case study | none | at most 20 |
 | `rates` | list of rate | none | at most 30 |
+| `testimonials` | list of testimonial | none | at most 10; partner quotes, gated |
 | `demographics` | list of demographic | none | at most 30 |
 | `turnstile_site_key` | text | none | public key of the Turnstile widget on the gate form; 1 to 64 letters, digits, `-` or `_`. Without it the form has an empty widget slot and the build warns |
 | `unlock_link` | true or false | `false` | v1 has no emailed unlock link, so `true` is refused with a clear error until it exists |
@@ -939,7 +940,10 @@ A **metric** is one headline number: `platform` (a platform name such as
 A **partner** has `name` (80), optional `note` (200) and optional `url` (https
 only). A **case study** has `title` (100), `summary` (500) and `result` (300).
 A **rate** has `item` (80) and `price_text` (80); the price is text, so
-`Ask me!` or `From $200` are fine. A **demographic** has `label` (60), `value`
+`Ask me!` or `From $200` are fine. A **testimonial** has `quote` (300), `name` (80) and optional `brand` (80). The
+text is yours: you are responsible for having permission to quote it, and
+nothing checks that. It is shown only on the gated page and in the owner PDF,
+never on the public page. Left out or empty, nothing is printed. A **demographic** has `label` (60), `value`
 (80) and a required `as_of`.
 
 **Display policy.** The table is fixed, not a setting:
@@ -947,12 +951,12 @@ A **rate** has `item` (80) and `price_text` (80); the price is text, so
 | Field | Shown |
 | --- | --- |
 | `title`, `about`, `contact`, `metrics`, the unified total | public |
-| `partners`, `case_studies`, `rates`, `demographics` | gated (only after the gate) |
+| `partners`, `case_studies`, `rates`, `testimonials`, `demographics` | gated (only after the gate) |
 | `turnstile_site_key` | public (it ships in the gate form; the key is public by design) |
 | `unlock_link` | private (configuration, never shown) |
 
 The public half therefore shows the header and the headline numbers and nothing
-else. If `partners`, `case_studies`, `rates` or `demographics` is not empty,
+else. If `partners`, `case_studies`, `rates`, `testimonials` or `demographics` is not empty,
 `features.kit_gate` must be `true`; the config is refused otherwise, so gated
 content can never be published with no gate.
 
@@ -992,6 +996,8 @@ kit:
     - {name: Acme Fake Co, url: "https://example.com/acme"}
   rates:
     - {item: Sponsored video, price_text: Ask me!}
+  testimonials:
+    - {quote: An example quote., name: Example Person, brand: Example Brand}
 ```
 
 ## `numbers`
