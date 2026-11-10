@@ -239,6 +239,19 @@ def test_a_class_override_adds_removes_and_changes_a_frame(tmp_path: Path) -> No
     assert re.search(r'<summary class="[^"]*ra-fa', home)
 
 
+def test_featured_none_unframes_the_featured_link_only(tmp_path: Path) -> None:
+    out = tmp_path / "out"
+    build_site(
+        _all_blocks_config("faithful", frame_classes={"featured": "none"}),
+        out,
+        today=TODAY,
+        gated_out=out.parent / (out.name + "-g"),
+    )
+    home = pages(out)["index.html"]
+    assert re.search(r'class="link link-featured"', home)
+    assert not re.search(r'class="link link-featured[^"]*ra-bx', home)
+
+
 def test_an_override_does_nothing_while_the_frame_is_none(tmp_path: Path) -> None:
     out = tmp_path / "out"
     build_site(
