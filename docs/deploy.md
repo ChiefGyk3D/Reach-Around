@@ -288,6 +288,10 @@ That is 78.1 percent of the default quota of 100000. Raising a budget raises thi
 
 **For the route code that uses these limits:** run the per-client throttle (`checkIpMinute`) before taking from a global route counter, so one client cannot spend the shared budget. A request refused by the throttle must not touch a counter.
 
+### Business inquiry form (`POST /k/inquiry`), not deployed
+
+The form needs, besides the gate's `TOKEN_HMAC_KEY` (so only an unlocked visitor can post): the alert channels with the event `inquiry_received` enabled (the inquiry is delivered as an owner alert and stored nowhere), and a Workers Rate Limiting binding named `INQUIRY_LIMITER` (3 per client per 60 seconds in `worker/wrangler.toml`, placeholders only). Without the binding, the key or the limiter the form answers 503 and sends nothing. It adds no variable of its own: the daily cap on inquiries is `DAILY_ALERT_BUDGET`. An accepted inquiry writes one `counters` row update (key `inquiry`) beside the alert's own quota rows, so the worst case in the table above grows by up to `DAILY_ALERT_BUDGET` writes a day; that is inside the margin at the defaults but is not yet part of the checked total (open item in the pull request that added it). Result pages are `GET /k/inquiry/sent` and `GET /k/inquiry/error`. The route is not live until the gate route (#263) serves the gated page and sets the unlock cookie.
+
 ## Secrets and Doppler
 
 Project secrets (this Cloudflare token, later the Mailgun and collector

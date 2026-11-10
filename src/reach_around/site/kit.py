@@ -67,6 +67,12 @@ GATED_FILE = Path("kit.html")
 # "/k/gate" in the change that adds the route. Until then a post lands on the
 # static retry page, which fails closed.
 GATE_ACTION = "/kit/retry/"
+# The business inquiry form posts to the Worker route (worker/src/kit/inquiry.ts).
+# It is on the gated page only, which the Worker serves to an unlocked visitor.
+INQUIRY_ACTION = "/k/inquiry"
+# The Worker's own caps for the form fields (INQUIRY_LIMITS in the same file; a test
+# keeps the two equal). Printed as maxlength so the browser enforces them first.
+INQUIRY_LIMITS = {"name": 80, "email": 254, "brand": 80, "budget": 40, "details": 800}
 
 GUARD_MIN_LENGTH = 6
 
@@ -187,6 +193,10 @@ def _gated_strings(kit: KitConfig) -> list[tuple[str, str]]:
                 text = value.isoformat() if isinstance(value, date) else value
                 if isinstance(text, str) and len(text) >= GUARD_MIN_LENGTH:
                     found.append((f"kit.{name}[{index}].{field}", text))
+    if kit.inquiry is not None:
+        for field, text in kit.inquiry.model_dump().items():
+            if isinstance(text, str) and len(text) >= GUARD_MIN_LENGTH:
+                found.append((f"kit.inquiry.{field}", text))
     return found
 
 
@@ -325,10 +335,14 @@ def check_no_gated_text(files: Mapping[Path, bytes], kit: KitConfig | None) -> N
     if kit is None:
         return
     allowed = _public_values(kit)
+    # The owner may print the inquiry address in the public contact line.
+    contact = canonical(kit.contact) if kit.contact is not None else ""
     raw: list[tuple[str, bytes]] = []
     folded: list[tuple[str, str]] = []
     for where, text in _gated_strings(kit):
         if canonical(text) in allowed:
+            continue
+        if where == "kit.inquiry.email" and canonical(text) in contact:
             continue
         for variant in {text, html.escape(text), html.escape(text, quote=False)}:
             for codec in ("utf-8", "utf-16-le", "utf-16-be"):
@@ -737,8 +751,16 @@ def render_kit(
                 for d in data["demographics"]
             ],
         )
+        inquiry: dict[str, Any] | None = None
+        if data["inquiry"] is not None:
+            inquiry = {
+                "action": INQUIRY_ACTION,
+                "email": data["inquiry"].email,
+                "pgp_fingerprint": data["inquiry"].pgp_fingerprint,
+                "limits": INQUIRY_LIMITS,
+            }
         ctx = base("/", "Media kit details", True)
         gated = env.get_template("kit_gated.html").render(
-            **{**ctx, "root": "/", "kit": content, "noindex": True}
+            **{**ctx, "root": "/", "kit": content, "inquiry": inquiry, "noindex": True}
         )
     return KitRender(pages, gated, warnings)

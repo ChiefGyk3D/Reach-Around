@@ -6,9 +6,9 @@
 // it to the dispatcher; they never see a channel, a URL or a secret.
 
 /** Events the site config can switch on. Closed set. */
-export type AlertEventKind = "kit_unlocked" | "lead_captured" | "gate_failed_repeatedly" | "analytics_health";
+export type AlertEventKind = "kit_unlocked" | "lead_captured" | "gate_failed_repeatedly" | "analytics_health" | "inquiry_received";
 
-export const EVENT_KINDS: readonly AlertEventKind[] = ["kit_unlocked", "lead_captured", "gate_failed_repeatedly", "analytics_health"];
+export const EVENT_KINDS: readonly AlertEventKind[] = ["kit_unlocked", "lead_captured", "gate_failed_repeatedly", "analytics_health", "inquiry_received"];
 
 /** Analytics health conditions (issue #401). Closed vocabulary: the only words a health alert can name. */
 export type HealthCondition =
@@ -35,14 +35,18 @@ export const CHANNEL_IDS: readonly ChannelId[] = ["discord", "matrix", "email"];
 
 /**
  * The event contract. `email` is the visitor's normalized address and is the
- * ONLY visitor-derived field an event may carry. Nothing else about a visitor
- * (IP, user agent, cookie, token, country) has a field here, so it cannot be
- * passed by accident.
+ * only visitor-derived field the kit events may carry. The one exception is the
+ * business inquiry (`inquiry_received`), whose five fields are the form's own
+ * answers, already validated by the form route and neutralized again by the
+ * formatter. Nothing else about a visitor (IP, user agent, cookie, token,
+ * country) has a field here, so it cannot be passed by accident.
  */
 export type AlertEvent =
   | { kind: "kit_unlocked"; atMs: number; email: string }
   | { kind: "lead_captured"; atMs: number; email: string }
   | { kind: "gate_failed_repeatedly"; atMs: number; count: number }
+  /** The business inquiry form (issue #429). `email` is null when the visitor left it out. */
+  | { kind: "inquiry_received"; atMs: number; name: string; email: string | null; brand: string; budget: string; details: string }
   /** Content-free: a closed condition word, a state word and one clamped count. No site, id, label or URL. */
   | { kind: "analytics_health"; atMs: number; condition: HealthCondition; state: HealthState; count: number };
 

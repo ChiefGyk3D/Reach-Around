@@ -70,6 +70,7 @@ DISPLAY_POLICY: Mapping[str, Visibility] = {
     "case_studies": "gated",
     "rates": "gated",
     "demographics": "gated",
+    "inquiry": "gated",
     "unlock_link": "private",
 }
 
@@ -179,6 +180,58 @@ class Demographic(_Model):
         return _iso_date(value)
 
 
+# A plain address in the shape the Worker's form grammar accepts for visitors:
+# ASCII, one @, dot-separated atoms, a dotted domain. Plain characters only, so
+# it prints and sits in an attribute with no escaping surprises and can never
+# carry a header break.
+_OWNER_EMAIL = re.compile(
+    r"[A-Za-z0-9_+-]+(?:\.[A-Za-z0-9_+-]+)*"
+    r"@(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,63}"
+)
+_FINGERPRINT_LENGTHS = (
+    40,
+    64,
+)  # OpenPGP v4 (SHA-1) and v6 (SHA-256) fingerprints, in hex digits
+
+
+class Inquiry(_Model):
+    """The business inquiry form on the gated page and the owner details beside it.
+
+    The address and the key fingerprint are the owner's own, taken from here and never
+    hard-coded. The form posts to the Worker (``/k/inquiry``); where the message goes is
+    the Worker's alert channels, not this block.
+    """
+
+    email: StrictStr
+    pgp_fingerprint: StrictStr | None = None
+
+    @field_validator("email")
+    @classmethod
+    def _email_is_plain(cls, value: str) -> str:
+        if len(value) > 254 or not _OWNER_EMAIL.fullmatch(value):
+            raise ValueError(
+                "inquiry.email must be one plain address such as name@example.com "
+                "(ASCII, no spaces, at most 254 characters)"
+            )
+        return value
+
+    @field_validator("pgp_fingerprint")
+    @classmethod
+    def _fingerprint_is_hex(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        digits = value.replace(" ", "")
+        if len(digits) not in _FINGERPRINT_LENGTHS or not re.fullmatch(
+            r"[0-9A-Fa-f]+", digits
+        ):
+            raise ValueError(
+                "inquiry.pgp_fingerprint must be 40 or 64 hexadecimal digits "
+                "(spaces between groups are fine)"
+            )
+        digits = digits.upper()
+        return " ".join(digits[i : i + 4] for i in range(0, len(digits), 4))
+
+
 class PlatformMetric(_Model):
     """One headline number for one platform.
 
@@ -233,6 +286,9 @@ class KitConfig(_Model):
     case_studies: list[CaseStudy] = Field(default_factory=list, max_length=20)
     rates: list[Rate] = Field(default_factory=list, max_length=30)
     demographics: list[Demographic] = Field(default_factory=list, max_length=30)
+    # The inquiry form (gated page only) and the owner's address and key fingerprint
+    # shown beside it. Left out: no form.
+    inquiry: Inquiry | None = None
     # Public key of the Turnstile widget on the gate form. Optional: without it
     # the form renders an empty widget slot and the build warns.
     turnstile_site_key: StrictStr | None = None

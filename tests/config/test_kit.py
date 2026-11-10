@@ -397,6 +397,7 @@ def test_gated_projection_adds_gated_fields_but_never_private() -> None:
         "case_studies",
         "rates",
         "demographics",
+        "inquiry",
     }
     assert "unlock_link" not in out
     assert CANARY in json.dumps(out, default=str)

@@ -64,6 +64,51 @@
 </table>
 </section>
 {% endif %}
+{% if inquiry %}
+<section class="kit-inquiry-block" aria-labelledby="kit-inquiry-title">
+<h3 id="kit-inquiry-title">Business inquiries</h3>
+<div class="kit-inquiry-grid">
+<dl class="kit-owner">
+<dt>Email</dt>
+<dd class="kit-owner-email">{{ inquiry.email }}</dd>
+{% if inquiry.pgp_fingerprint %}
+<dt>PGP fingerprint</dt>
+<dd class="kit-fingerprint">{{ inquiry.pgp_fingerprint }}</dd>
+{% endif %}
+</dl>
+<aside class="kit-inquiry" aria-label="Inquiry form">
+<form class="kit-inquiry-form" method="post" action="{{ inquiry.action }}">
+<p class="kit-field">
+<label for="inq-name">Name</label>
+<input id="inq-name" name="name" type="text" autocomplete="name" maxlength="{{ inquiry.limits.name }}" required>
+</p>
+<p class="kit-field">
+<label for="inq-email">Email address</label>
+<input id="inq-email" name="email" type="email" inputmode="email" autocomplete="email" maxlength="{{ inquiry.limits.email }}">
+</p>
+<p class="kit-field">
+<label for="inq-brand">Brand</label>
+<input id="inq-brand" name="brand" type="text" autocomplete="organization" maxlength="{{ inquiry.limits.brand }}">
+</p>
+<p class="kit-field">
+<label for="inq-budget">Budget</label>
+<input id="inq-budget" name="budget" type="text" maxlength="{{ inquiry.limits.budget }}">
+</p>
+<p class="kit-field kit-field-wide">
+<label for="inq-details">Details</label>
+<textarea id="inq-details" name="details" rows="4" maxlength="{{ inquiry.limits.details }}"></textarea>
+</p>
+<div class="kit-hp" aria-hidden="true">
+<label for="inq-website">Leave this field empty</label>
+<input id="inq-website" name="website" type="text" tabindex="-1" autocomplete="off">
+</div>
+<p class="kit-note kit-field-wide">Sent to the site owner. This site does not keep a copy.</p>
+<button class="kit-submit" type="submit">Send inquiry</button>
+</form>
+</aside>
+</div>
+</section>
+{% endif %}
 <p><a href="{{ root }}kit/">Back to the public kit page</a></p>
 </section>
 {% endblock %}

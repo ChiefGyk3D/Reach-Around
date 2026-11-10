@@ -364,6 +364,12 @@ def _expected_text(kit: KitConfig, numbers: Numbers | None) -> list[tuple[str, s
                 text = value.isoformat() if isinstance(value, date) else value
                 if isinstance(text, str) and text:
                     found.append((f"kit.{name}[{index}].{field}", text))
+    if (
+        kit.inquiry is not None
+    ):  # the owner details print; the form beside them does not
+        found.append(("kit.inquiry.email", kit.inquiry.email))
+        if kit.inquiry.pgp_fingerprint is not None:
+            found.append(("kit.inquiry.pgp_fingerprint", kit.inquiry.pgp_fingerprint))
     return found
 
 

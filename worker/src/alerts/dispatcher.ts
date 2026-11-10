@@ -186,6 +186,11 @@ export function createDispatcher() {
   function who(event: AlertEvent): string {
     // A health event is identified by its closed condition and state words only.
     if (event.kind === "analytics_health") return `${String(event.condition)}:${String(event.state)}`.slice(0, MAX_WHO_CHARS);
+    // An inquiry repeats when the same answers are sent again inside the window (a double submit);
+    // a second, different inquiry from the same person is a new event.
+    if (event.kind === "inquiry_received") {
+      return [event.email ?? "", event.name, event.brand, event.budget, event.details].map(String).join("|").slice(0, MAX_WHO_CHARS);
+    }
     return event.kind !== "gate_failed_repeatedly" && typeof event.email === "string"
       ? event.email.slice(0, MAX_WHO_CHARS)
       : "";
