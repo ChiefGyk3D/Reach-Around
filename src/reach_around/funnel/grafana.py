@@ -199,12 +199,13 @@ def build_subset(
     since = date.fromisoformat(retained_days[0]) if retained_days else None
     until = date.fromisoformat(retained_days[-1]) if retained_days else None
     window_era = classify_window(since, until, cutover, current_day)
-    active_cutover = cutover if window_era != UNKNOWN else None
+    # an arrived cutover is always marked; only the window era needs data
+    active_cutover = cutover if cutover and cutover <= current_day else None
     return Subset(
         site=site,
         floor=floor,
         cutover_utc=active_cutover.isoformat() if active_cutover else None,
-        window_era=window_era if active_cutover else None,
+        window_era=window_era if active_cutover and window_era != UNKNOWN else None,
         annotations=(
             [(active_cutover.isoformat(), "Reach Around cutover")]
             if active_cutover

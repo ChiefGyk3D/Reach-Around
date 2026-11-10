@@ -443,6 +443,17 @@ def test_future_cutover_adds_no_metadata_or_annotation(tmp_path: Path) -> None:
     assert subset.annotations == []
 
 
+def test_arrived_cutover_without_retained_days_keeps_marker_and_annotation() -> None:
+    from datetime import date
+
+    subset = grafana.build_subset(
+        Export(), cutover=date(2026, 11, 2), today=date(2026, 11, 3)
+    )
+    assert subset.cutover_utc == "2026-11-02"
+    assert subset.annotations == [("2026-11-02", "Reach Around cutover")]
+    assert subset.window_era is None
+
+
 def test_output_must_not_clobber_a_foreign_file_or_dir(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
