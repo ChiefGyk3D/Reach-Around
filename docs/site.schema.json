@@ -848,6 +848,14 @@
           "title": "Rates",
           "type": "array"
         },
+        "services": {
+          "items": {
+            "$ref": "#/$defs/ServicePackage"
+          },
+          "maxItems": 20,
+          "title": "Services",
+          "type": "array"
+        },
         "title": {
           "maxLength": 120,
           "minLength": 1,
@@ -1791,6 +1799,47 @@
         "title"
       ],
       "title": "Section",
+      "type": "object"
+    },
+    "ServicePackage": {
+      "additionalProperties": false,
+      "description": "One named package: a title, what is included, and a price as text.\n\n``price_text`` is free text (``Ask me!`` is fine); nothing is computed from\nit. Both the list and the price are optional.",
+      "properties": {
+        "included": {
+          "items": {
+            "maxLength": 120,
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 12,
+          "title": "Included",
+          "type": "array"
+        },
+        "price_text": {
+          "anyOf": [
+            {
+              "maxLength": 80,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Price Text"
+        },
+        "title": {
+          "maxLength": 80,
+          "minLength": 1,
+          "title": "Title",
+          "type": "string"
+        }
+      },
+      "required": [
+        "title"
+      ],
+      "title": "ServicePackage",
       "type": "object"
     },
     "Social": {
