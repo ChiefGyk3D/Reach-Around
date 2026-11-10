@@ -23,9 +23,7 @@ CRYPTO_CSS = (
 
 def font_size(css: str, selector: str) -> str | None:
     """Return the font-size value of the first top-level rule for selector."""
-    rule = re.search(
-        r"(?m)^" + re.escape(selector) + r"\s*\{([^}]*)\}", css
-    )
+    rule = re.search(r"(?m)^" + re.escape(selector) + r"\s*\{([^}]*)\}", css)
     if rule is None:
         return None
     size = re.search(r"font-size:\s*([^;]+);", rule.group(1))
