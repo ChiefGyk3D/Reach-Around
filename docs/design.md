@@ -128,7 +128,7 @@ be overridden by a creator who adds a stylesheet of their own.
 ## Icons
 
 Social icons come from a small local set in `static/icons/`, from
-[Simple Icons](https://simpleicons.org) (CC0 1.0) plus two generic glyphs. See
+[Simple Icons](https://simpleicons.org) (CC0 1.0) plus three generic glyphs. See
 `static/icons/NOTICE`. They are drawn with CSS `mask-image`, so they take the text
 color and no request leaves the site.
 

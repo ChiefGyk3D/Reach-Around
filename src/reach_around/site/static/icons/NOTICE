@@ -2,9 +2,10 @@ Icon set for the link page
 ==========================
 
 Source: Simple Icons (https://simpleicons.org), npm package "simple-icons".
-Version: 16.35.0 for every icon except pixelfed.svg, which comes from version
-16.36.0, and linkedin.svg, which comes from version 13.21.0 because newer
-releases no longer include it.
+Version: 16.35.0 for the Simple Icons files, except pixelfed.svg, which comes
+from version 16.36.0, and linkedin.svg, which comes from version 13.21.0
+because newer releases no longer include it. The original project glyphs
+below are not from Simple Icons and have no version.
 License: CC0 1.0 Universal (public domain dedication).
 
 Changes made: each file keeps only its <path> element. The <title> element and
