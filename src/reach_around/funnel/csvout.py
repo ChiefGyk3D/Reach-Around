@@ -30,6 +30,7 @@ from pathlib import Path
 from typing import Any
 
 from reach_around.config.zones import format_instant
+from reach_around.funnel.owner import owner_view
 
 _DANGEROUS = ("=", "+", "-", "@", "\t", "\r", "\n")
 BELOW = "(rows below the floor)"
@@ -152,7 +153,11 @@ def _meta_rows(
         ["generated_at_utc", stamp],
         ["window_since_utc", period["since"] or ""],
         ["window_until_utc", period["until"] or ""],
-        ["days_with_data", period["days_with_data"]],
+        *(
+            [["days_with_data", period["days_with_data"]]]
+            if "days_with_data" in period
+            else []
+        ),
         ["requested_since_utc", requested.get("since") or ""],
         ["requested_until_utc", requested.get("until") or ""],
         ["requested_days", requested.get("days") or ""],
@@ -161,6 +166,9 @@ def _meta_rows(
         ["period_end_utc", report["release"]["end"] or ""],
         ["counting_capacity", report["capacity"]["status"]],
         ["counting_capacity_warning", report["capacity"]["warning"]],
+        ["coverage_status", report["coverage"]["status"]],
+        ["coverage_gap_days", report["coverage"]["gap_days"]],
+        ["coverage_partial_days", report["coverage"]["partial_days"]],
         ["timezone", "UTC"],
         *_display_rows(report, generated_at),
         ["site", report["site"]],
@@ -181,6 +189,101 @@ _SECTIONS: list[tuple[str, str]] = [
     ("browsers", "browsers.csv"),
     ("systems", "systems.csv"),
 ]
+
+
+def owner_csv_files(view: dict[str, Any]) -> dict[str, bytes]:
+    """The owner report tables (#438), from the same view the HTML page uses."""
+    tiles = view["tiles"]
+    tile_rows: list[list[Any]] = []
+    for name in ("views", "clicks"):
+        t = tiles[name]
+        tile_rows.append(
+            [name, t["state"], t["value"], t["previous"], t["change_percent"], ""]
+        )
+    r = tiles["click_rate"]
+    tile_rows.append(
+        [
+            "click_rate",
+            r["state"],
+            r["value"],
+            r["previous"],
+            r["change_points"],
+            "capped" if r["capped"] else "",
+        ]
+    )
+
+    daily_rows = [
+        [
+            d["day"],
+            d["views"],
+            d["views_status"],
+            d["clicks"],
+            d["clicks_status"],
+            d["rate"],
+            "capped" if d["rate_capped"] else "",
+        ]
+        for d in view["daily"]["days"]
+    ]
+    link_rows: list[list[Any]] = [
+        [
+            x["label"],
+            x["clicks"],
+            x["rate"],
+            "capped" if x["rate_capped"] else "",
+            "row",
+        ]
+        for x in view["links"]["rows"]
+    ]
+    if view["links"]["below_floor"]:
+        link_rows.append([BELOW, view["links"]["below_floor"], "", "", "below_floor"])
+    if view["links"]["state"] != "ok":
+        link_rows = [["", "", "", "", view["links"]["state"]]]
+
+    def views(name: str) -> list[list[Any]]:
+        t = view[name]
+        if t["state"] != "ok":
+            return [["", "", t["state"]]]
+        rows = [[x["label"], x["views"], "row"] for x in t["rows"]]
+        if t["below_floor"]:
+            rows.append([BELOW, t["below_floor"], "below_floor"])
+        return rows
+
+    def clicks(name: str) -> list[list[Any]]:
+        t = view[name]
+        if t["state"] != "ok":
+            return [["", "", t["state"]]]
+        return [[x["label"], x["clicks"], "row"] for x in t["rows"]]
+
+    return {
+        "owner_tiles.csv": render_csv(
+            ["tile", "status", "value", "previous_window", "change", "note"], tile_rows
+        ),
+        "owner_daily.csv": render_csv(
+            [
+                "day_utc",
+                "views",
+                "views_status",
+                "clicks",
+                "clicks_status",
+                "click_rate",
+                "note",
+            ],
+            daily_rows,
+        ),
+        "owner_links.csv": render_csv(
+            ["link", "clicks", "clicks_per_100_page_views", "note", "row_type"],
+            link_rows,
+        ),
+        "owner_sources.csv": render_csv(_TABLE_HEADER, views("sources")),
+        "owner_devices.csv": render_csv(_TABLE_HEADER, views("devices")),
+        "owner_countries.csv": render_csv(_TABLE_HEADER, views("countries")),
+        "owner_clicks_by_source.csv": render_csv(
+            ["label", "clicks", "row_type"], clicks("clicks_by_source")
+        ),
+        "owner_clicks_by_country.csv": render_csv(
+            ["label", "clicks", "row_type"], clicks("clicks_by_country")
+        ),
+    }
 
 
 def csv_files(
@@ -216,6 +319,15 @@ def csv_files(
     files["bot_reasons.csv"] = render_csv(
         _TABLE_HEADER, _table_rows(report["bots"]["reasons"])
     )
+    cov = report["coverage"]
+    if cov["gaps"] or cov["partial"]:
+        # Days with no collection are rows here, never zero rows in another file.
+        files["gaps.csv"] = render_csv(
+            ["day", "status", "reason"],
+            [[g["day"], "gap", g["reason"]] for g in cov["gaps"]]
+            + [[p["day"], "partial", "+".join(p["reasons"])] for p in cov["partial"]],
+        )
+    files.update(owner_csv_files(owner_view(report)))
     return files
 
 

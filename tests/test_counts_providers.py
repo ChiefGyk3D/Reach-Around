@@ -312,7 +312,6 @@ YT = YoutubeSource(
     platform="yt",
     kind="youtube",
     channel_id="UCabcdefghijklmnopqrstuv",
-    api_key_env="YT_KEY",
 )
 YT_URL = "https://www.googleapis.com/youtube/v3/channels?part=statistics&id=UCabcdefghijklmnopqrstuv"
 KEY = "SENTINEL-YOUTUBE-KEY"
@@ -333,21 +332,21 @@ def test_youtube_parses_the_digit_string_and_sends_the_key_in_a_header_only() ->
         "videoCount": "4",
     }
     transport = FakeTransport({YT_URL: reply(yt_body(stats))})
-    assert run(YT, transport, {"YT_KEY": KEY}) == 12300
+    assert run(YT, transport, {"YOUTUBE_API_KEY": KEY}) == 12300
     assert transport.calls[0].headers["x-goog-api-key"] == KEY
     assert KEY not in transport.urls[0]
 
 
 def test_youtube_accepts_an_integer_too() -> None:
     transport = FakeTransport({YT_URL: reply(yt_body({"subscriberCount": 5}))})
-    assert run(YT, transport, {"YT_KEY": KEY}) == 5
+    assert run(YT, transport, {"YOUTUBE_API_KEY": KEY}) == 5
 
 
 def test_youtube_hidden_subscriber_count_is_a_skip_not_a_zero() -> None:
     stats = {"hiddenSubscriberCount": True, "subscriberCount": "0"}
     transport = FakeTransport({YT_URL: reply(yt_body(stats))})
     with pytest.raises(SourceSkip) as caught:
-        run(YT, transport, {"YT_KEY": KEY})
+        run(YT, transport, {"YOUTUBE_API_KEY": KEY})
     assert caught.value.reason == "hidden_subscriber_count"
 
 
@@ -372,7 +371,7 @@ def test_youtube_hidden_subscriber_count_is_a_skip_not_a_zero() -> None:
 )
 def test_youtube_hostile_subscriber_counts_refused(value: object) -> None:
     transport = FakeTransport({YT_URL: reply(yt_body({"subscriberCount": value}))})
-    assert error_of(YT, transport, {"YT_KEY": KEY}) == "bad_count"
+    assert error_of(YT, transport, {"YOUTUBE_API_KEY": KEY}) == "bad_count"
 
 
 @pytest.mark.parametrize(
@@ -389,12 +388,12 @@ def test_youtube_hostile_subscriber_counts_refused(value: object) -> None:
 )
 def test_youtube_missing_pieces_refused(body: dict[str, object]) -> None:
     assert (
-        error_of(YT, FakeTransport({YT_URL: reply(body)}), {"YT_KEY": KEY})
+        error_of(YT, FakeTransport({YT_URL: reply(body)}), {"YOUTUBE_API_KEY": KEY})
         == "missing_field"
     )
 
 
-@pytest.mark.parametrize("env", [{}, {"YT_KEY": ""}])
+@pytest.mark.parametrize("env", [{}, {"YOUTUBE_API_KEY": ""}])
 def test_youtube_missing_key_fails_before_any_request(env: dict[str, str]) -> None:
     transport = FakeTransport()
     assert error_of(YT, transport, env) == "missing_credential"
@@ -404,7 +403,7 @@ def test_youtube_missing_key_fails_before_any_request(env: dict[str, str]) -> No
 @pytest.mark.parametrize("bad", ["a b", "line\nbreak", "tab\tx", "x" * 600, "ctl\x00"])
 def test_youtube_key_with_control_characters_refused(bad: str) -> None:
     transport = FakeTransport()
-    assert error_of(YT, transport, {"YT_KEY": bad}) == "invalid_credential"
+    assert error_of(YT, transport, {"YOUTUBE_API_KEY": bad}) == "invalid_credential"
     assert transport.calls == []
 
 
@@ -412,7 +411,7 @@ def test_youtube_error_text_never_holds_the_key() -> None:
     transport = FakeTransport(
         {YT_URL: reply({"error": {"message": f"bad key {KEY}"}}, status=400)}
     )
-    text = error_of(YT, transport, {"YT_KEY": KEY})
+    text = error_of(YT, transport, {"YOUTUBE_API_KEY": KEY})
     assert text == "http_400" and KEY not in text
 
 
@@ -543,3 +542,171 @@ def test_twitch_secrets_never_in_errors() -> None:
     )
     text = error_of(TW, transport, TW_ENV)
     assert "SENTINEL" not in text
+
+
+# ---- credential handling: YouTube ----------------------------------------------------
+
+UNRELATED = "SENTINEL-UNRELATED-SECRET"
+
+
+def test_youtube_config_cannot_name_another_variable() -> None:
+    for name in ("YT_KEY", "AWS_SECRET_ACCESS_KEY", "GITHUB_TOKEN"):
+        with pytest.raises(ValueError):
+            YoutubeSource.model_validate(
+                {
+                    "platform": "yt",
+                    "kind": "youtube",
+                    "channel_id": "UCabcdefghijklmnopqrstuv",
+                    "api_key_env": name,
+                }
+            )
+    explicit = YoutubeSource(
+        platform="yt",
+        kind="youtube",
+        channel_id="UCabcdefghijklmnopqrstuv",
+        api_key_env="YOUTUBE_API_KEY",
+    )
+    assert explicit.api_key_env == "YOUTUBE_API_KEY"
+
+
+def test_youtube_use_time_name_check_sends_nothing() -> None:
+    forged = YoutubeSource.model_construct(
+        platform="yt",
+        kind="youtube",
+        channel_id="UCabcdefghijklmnopqrstuv",
+        api_key_env="OTHER_SECRET",
+    )
+    transport = FakeTransport({YT_URL: reply(yt_body({"subscriberCount": 5}))})
+    env = {"OTHER_SECRET": UNRELATED, "YOUTUBE_API_KEY": KEY}
+    assert error_of(forged, transport, env) == "bad_credential_name"
+    assert transport.calls == []
+    forged = YoutubeSource.model_construct(
+        platform="yt",
+        kind="youtube",
+        channel_id="UCabcdefghijklmnopqrstuv",
+        api_key_env=["YOUTUBE_API_KEY"],
+    )
+    assert error_of(forged, transport, env) == "bad_credential_name"
+    assert transport.calls == []
+
+
+def test_youtube_unrelated_variable_never_reaches_a_request() -> None:
+    transport = FakeTransport({YT_URL: reply(yt_body({"subscriberCount": 5}))})
+    env = {"YOUTUBE_API_KEY": KEY, "AWS_SECRET_ACCESS_KEY": UNRELATED}
+    assert run(YT, transport, env) == 5
+    for call in transport.calls:
+        assert UNRELATED not in repr(call)
+
+
+def test_youtube_redirect_is_refused_and_not_followed() -> None:
+    transport = FakeTransport(
+        {YT_URL: reply({}, status=302, headers={"location": "https://evil.example/x"})}
+    )
+    assert error_of(YT, transport, {"YOUTUBE_API_KEY": KEY}) == "redirect"
+    assert len(transport.calls) == 1
+
+
+def test_youtube_unexpected_fetch_failure_is_a_fixed_word() -> None:
+    def boom(url: str, **kwargs: Any) -> dict[str, object]:
+        raise RuntimeError(f"leak {kwargs['headers']['x-goog-api-key']} {url}")
+
+    context = Context(fetch=boom, env={"YOUTUBE_API_KEY": KEY})
+    with pytest.raises(SourceError) as caught:
+        PROVIDERS["youtube"](YT, context)
+    assert caught.value.kind == "fetch_failed"
+    assert KEY not in str(caught.value)
+    assert caught.value.__cause__ is None
+    assert caught.value.__suppress_context__ or caught.value.__context__ is None
+
+
+# ---- credential handling: Twitch app-token path ----------------------------------
+
+
+@pytest.mark.parametrize("url", [AUTH_URL, USERS_URL, FOLLOWERS_URL])
+def test_twitch_app_path_refuses_redirects(url: str) -> None:
+    transport = FakeTransport(
+        twitch_routes(
+            **{
+                url: reply(
+                    {}, status=307, headers={"location": "https://evil.example/x"}
+                )
+            }
+        )
+    )
+    assert error_of(TW, transport, TW_ENV) == "redirect"
+    assert all(call.host.endswith("twitch.tv") for call in transport.calls)
+
+
+def test_twitch_app_path_unrelated_variable_never_sent() -> None:
+    transport = FakeTransport(twitch_routes())
+    env = {**TW_ENV, "AWS_SECRET_ACCESS_KEY": UNRELATED}
+    assert run(TW, transport, env) == 321
+    for call in transport.calls:
+        assert UNRELATED not in repr(call)
+
+
+def test_twitch_app_path_unexpected_failure_is_a_fixed_word() -> None:
+    def boom(url: str, **kwargs: Any) -> dict[str, object]:
+        raise RuntimeError(f"leak SENTINEL-CLIENT-SECRET {url} {kwargs}")
+
+    context = Context(fetch=boom, env=TW_ENV)
+    with pytest.raises(SourceError) as caught:
+        PROVIDERS["twitch"](TW, context)
+    assert caught.value.kind == "fetch_failed"
+    assert "SENTINEL" not in str(caught.value)
+    assert caught.value.__cause__ is None
+
+
+def test_twitch_app_path_calls_go_to_fixed_hosts_without_redirects() -> None:
+    seen: list[tuple[str, dict[str, Any]]] = []
+
+    def spy(url: str, **kwargs: Any) -> dict[str, object]:
+        seen.append((url, kwargs))
+        return {}
+
+    context = Context(fetch=spy, env=TW_ENV)
+    with pytest.raises(SourceError):
+        PROVIDERS["twitch"](TW, context)
+    assert seen and seen[0][0] == AUTH_URL
+    assert all(kw.get("follow_redirects") is False for _, kw in seen)
+
+
+# ---- FetchError text never crosses the guarded boundary ------
+
+
+class _LeakyError(FetchError):
+    pass
+
+
+def _leaky(kind: str) -> Context:
+    def boom(url: str, **kwargs: Any) -> dict[str, object]:
+        err = _LeakyError(f"{kind} {kwargs['headers']} {url}")
+        err.kind = kind
+        err.code = f"code {KEY}"
+        err.args = (KEY, url, kwargs)
+        raise err
+
+    return Context(fetch=boom, env={**TW_ENV, "YOUTUBE_API_KEY": KEY})
+
+
+@pytest.mark.parametrize("source", [YT, TW])
+@pytest.mark.parametrize(
+    ("kind", "expected"),
+    [
+        ("http_404", "http_404"),
+        ("redirect", "redirect"),
+        ("egress_timeout", "egress_timeout"),
+        (f"http_500 {KEY}", "fetch_failed"),
+        ("anything else", "fetch_failed"),
+        (KEY, "fetch_failed"),
+    ],
+)
+def test_fetch_error_text_is_sanitized(source: Any, kind: str, expected: str) -> None:
+    with pytest.raises((FetchError, SourceError)) as caught:
+        PROVIDERS[source.kind](source, _leaky(kind))
+    err = caught.value
+    text = repr(err) + str(err) + repr(err.args) + repr(getattr(err, "code", None))
+    assert "SENTINEL" not in text and "googleapis" not in text and "twitch" not in text
+    assert type(err) in (FetchError, SourceError)
+    assert getattr(err, "kind", None) == expected
+    assert err.__cause__ is None and err.__context__ is None

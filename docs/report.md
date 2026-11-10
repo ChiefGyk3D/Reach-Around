@@ -34,6 +34,30 @@ the file.
 Human-likely is an estimate. Crawlers that never run the page-view script are
 invisible to page views. Days are UTC days.
 
+## Gaps
+
+When `analytics_coverage` is in the export, the report compares the Worker's
+hourly coverage log with the calendar (UTC days, [alerts.md](alerts.md#collection-coverage-and-gaps)).
+A day with no collected hour is a gap, a day with some is partial, and each
+carries a reason: `outage` (the Worker did not run), `quota` (the account view
+budget was reached), `kill_switch` or `site_kill_switch` (some sites, not all,
+were switched off; that day is always partial). Coverage is account-wide, not
+per site, and the report says so (`coverage.scope` is `account`); a table with no
+rows is `not_monitored`, not complete. The text report prints "Collection gaps"
+before the funnel, lists the days and says that a gap is not a zero and that the
+totals cover only the time data was collected. JSON has a `coverage` object
+(`status` of `complete`, `gaps`, `not_monitored` or `not_exported`, counts, and the day lists, at
+most 60 each); `metadata.csv` gets `coverage_status`, `coverage_gap_days` and
+`coverage_partial_days`, and a `gaps.csv` (`day,status,reason`) appears only
+when there is a gap. A gap day never becomes a row of zeros in any table.
+
+What it does not claim: coverage is sampled once an hour, so a kill switch
+flipped on and off inside one hour can be missed; days before the first coverage
+row are unmonitored (nothing is known, not a gap and not a zero); today and the
+first covered day are not judged; a window ending after the newest day in the
+export does not flag the days after it, so pass `--until` when checking recent
+days. Without the table the report says nothing about gaps (`not_exported`).
+
 ## The privacy floor
 
 No row under 5 views is printed: not a page, a source, a country, a city, a
@@ -68,7 +92,7 @@ aggregate label and a count; there is no per-visitor row and no unique count.
 
 | File | Columns | Rows |
 |---|---|---|
-| `metadata.csv` | `key,value` | `generated_at_utc`, `window_since_utc`, `window_until_utc`, `days_with_data`, `requested_since_utc`, `requested_until_utc`, `requested_days`, `timezone` (always `UTC`), `site`, `privacy_floor_views`, `counted_classes`, `geography_level`, `report_version` |
+| `metadata.csv` | `key,value` | `generated_at_utc`, `window_since_utc`, `window_until_utc`, `days_with_data` (not in a released `--period` report), `requested_since_utc`, `requested_until_utc`, `requested_days`, `timezone` (always `UTC`), `site`, `privacy_floor_views`, `counted_classes`, `geography_level`, `report_version`, `coverage_status`, `coverage_gap_days`, `coverage_partial_days` |
 | `funnel.csv` | `step,value,status` | page views, clicks, kit views, kit unlocks, the two ratios; status `ok`, `below_floor`, `not_in_export`, `not_available`, `n/a` |
 | `pages.csv`, `sources.csv`, `geography.csv`, `links.csv`, `devices.csv`, `browsers.csv`, `systems.csv`, `bot_reasons.csv` | `label,views,row_type` | `row`, one `below_floor` row for the merged remainder, or a single row typed `withheld` or `not_in_export` |
 | `bot_classes.csv` | `class,name,views,share_percent,row_type` | as above |
@@ -142,6 +166,7 @@ agent, so a correct export never trips this. If it does, the export is wrong.
 | `click_src_daily`, `click_country_daily` | `day, link_id, src` (or `country`), `clicks` [`site`] |
 | `click_src_monthly`, `click_country_monthly` | `month` (`YYYY-MM`), `link_id, src` (or `country`), `clicks` [`site`] |
 | `kit_events` | `ts, kind` [`site`] |
+| `analytics_coverage` | `day, hours` (24 letters from `o k p q -`; see Gaps) |
 
 `kit_events` also has a `lead_id` column in the database. Do not select it; a
 file that has it is refused. Select `ts, kind` only.
@@ -369,3 +394,77 @@ the visitor came in on, and no click is tied to a view or to a person. A high
 Not part of this change: grouping destinations by platform, the landing and hop
 tables (#334), device and hour-by-weekday pairs (#410), and a marker for
 windows that span the cutover (#371).
+
+## Owner report page (`--html`)
+
+```text
+reach-around report --input export.json --days 7 --html owner.html --csv out/csv
+```
+
+`--html FILE` writes the owner report as ONE self-contained HTML file: inline
+CSS and inline SVG, no script, no font, no image, no external request, and a
+content security policy that blocks any. It is dark only, static, and for you
+alone (file mode 0600): never publish it and never add it to a site build.
+Without `--since`, `--until`, `--days` or `--period`, `--html` covers the last 7
+days of data; use `--days 30`, `--days 90` or an explicit UTC range for others.
+
+The page is rendered from the same floored report dictionary as the text, JSON
+and CSV output (`reach_around.funnel.owner.owner_view`), never from the export,
+so it shows no figure the floored JSON does not hold. Sections: overview tiles
+(views, clicks, click rate, each with the change against the previous window of
+the same length when both figures are printable), a daily views and clicks chart
+and a daily click rate chart (UTC days), the daily table, clicks per link,
+sources, devices, browsers, operating systems, countries, and the released
+clicks by source and country with the source by link and country by link
+tables when `--period` was used. The matching CSV files are `owner_tiles.csv`,
+`owner_daily.csv`, `owner_links.csv`, `owner_sources.csv`, `owner_devices.csv`,
+`owner_countries.csv`, `owner_clicks_by_source.csv` and
+`owner_clicks_by_country.csv`; Grafana can read the same data.
+
+Rules the page follows:
+
+- **Click rate** is clicks divided by likely-human page views in the same window,
+  printed only when both counts are printable. A value above 100 is shown as 100
+  and labeled "capped" with the raw counts beside it. The per-link figure is
+  clicks per 100 views of the page, because a link has no views of its own.
+- **Gaps are not zeros.** A UTC day with no exported rows is drawn as a gap. A day
+  under the floor is drawn as a tick on the baseline and left out of the rate
+  chart. When any day is under the floor the largest printed day is hidden too,
+  so the printed total minus the printed days pins no small day; when no day can
+  join them the series is withheld.
+- The chart axes print only 0 and the largest printed value.
+- **Why a figure is missing is said.** Values are marked separately: under the
+  floor (`below_floor`), withheld because a small remainder in a page-view table
+  could be recovered (`withheld`), not in the export (`not_in_export`), or a day
+  with no rows (`gap`); the CSV carries these words in `status` columns. A tick
+  is drawn per series on the day that series is under the floor.
+- **Window.** The ad-hoc page header shows the requested window and how many of
+  its days have data (owner-private); a released period shows its fixed bounds.
+  A requested range over 366 days is refused (`the window cannot be longer than
+  366 days`) in the report and the command, so the daily table never truncates.
+- **Ad-hoc versus released.** The daily series, the previous window and the gap
+  marks exist only in the ad-hoc owner report (`--days`, `--since`, `--until`),
+  computed from the one requested window and the one previous window through the
+  same floors. They are owner-private and can be differenced against another
+  window, so the page says so and they must not be published. A released
+  `--period` report (through the ledger) carries no daily series and no previous
+  window at all, in the JSON, the page and the CSV, so a gap and a day under the
+  floor cannot be told apart and two releases cannot be subtracted to recover a
+  small day. The ad-hoc path never writes to or feeds the ledger.
+- **Released metadata and repeats.** A released report prints the fixed bounds of
+  its week or month (never the first and last day that had rows) and no count of
+  days with data, so a day with no rows and a day under the floor look the same in
+  the JSON, text, metadata CSV and page window line. The ledger entry binds the
+  source inputs and the data-dependent public projection of the report (every
+  count and field the data decides), so a repeat of one period whose page views
+  or any section differ is refused, not accepted as a repeat. The display zone,
+  cutover and era annotations are added after the ledger check: they are not
+  bound and carry no counts or day information. Because the source inputs are
+  bound too, a change to a hidden (below-floor) cell can refuse a repeat that
+  looks identical; this is conservative, not a leak.
+
+Not in this version (issue #438 stays open for them): the world map shaded by
+views, the Links and Social icons tabs and pagination (the page shows `--top`
+rows), and click rate by source, device and country (these need clicks and
+views for the same cut; the released clicks by source and country are shown
+beside the views tables instead).

@@ -109,7 +109,10 @@ BAD = [
         "api_key_env",
     ),
     (
-        "- {platform: x, kind: youtube, channel_id: UCabcdefghijklmnopqrstuv}",
+        (
+            "- {platform: x, kind: youtube, channel_id: UCabcdefghijklmnopqrstuv, "
+            "api_key_env: AWS_SECRET_ACCESS_KEY}"
+        ),
         "api_key_env",
     ),
     (

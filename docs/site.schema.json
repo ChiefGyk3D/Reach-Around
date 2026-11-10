@@ -23,7 +23,8 @@
             "enum": [
               "kit_unlocked",
               "lead_captured",
-              "gate_failed_repeatedly"
+              "gate_failed_repeatedly",
+              "analytics_health"
             ],
             "type": "string"
           },
@@ -2426,6 +2427,11 @@
           "title": "Auto Refresh",
           "type": "boolean"
         },
+        "insights": {
+          "default": false,
+          "title": "Insights",
+          "type": "boolean"
+        },
         "kind": {
           "const": "threads",
           "title": "Kind",
@@ -2496,6 +2502,11 @@
           "title": "Client Secret Env",
           "type": "string"
         },
+        "insights": {
+          "default": false,
+          "title": "Insights",
+          "type": "boolean"
+        },
         "kind": {
           "const": "tiktok",
           "title": "Kind",
@@ -2561,7 +2572,8 @@
       "additionalProperties": false,
       "properties": {
         "api_key_env": {
-          "pattern": "^[A-Z][A-Z0-9_]{1,63}$",
+          "const": "YOUTUBE_API_KEY",
+          "default": "YOUTUBE_API_KEY",
           "title": "Api Key Env",
           "type": "string"
         },
@@ -2581,7 +2593,6 @@
         }
       },
       "required": [
-        "api_key_env",
         "channel_id",
         "kind",
         "platform"

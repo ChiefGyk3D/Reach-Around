@@ -1,9 +1,10 @@
 # SPDX-License-Identifier: Apache-2.0
 """The ``numbers`` config: where each platform's follower count comes from.
 
-Credentials are never in the config. A keyed source names the ENVIRONMENT
-VARIABLE that holds the secret (supplied by ``doppler run`` or the CI secret
-store); the variable name is validated, the value is read only at fetch time.
+Credentials are never in the config. A keyed source reads its value from one
+FIXED environment variable (supplied by ``doppler run`` or the CI store); a
+config may only repeat that canonical name, never name another variable. The
+value is read only at fetch time.
 """
 
 from __future__ import annotations
@@ -48,6 +49,7 @@ EnvName = Annotated[str, StringConstraints(pattern=_ENV_NAME)]
 
 # Fixed credential variable names for Twitch. Names are not configurable: a
 # config can never point the collector at another variable.
+YOUTUBE_KEY_ENV = "YOUTUBE_API_KEY"  # noqa: S105 (a variable NAME)
 CLIENT_ID_ENV = "TWITCH_CLIENT_ID"
 CLIENT_SECRET_ENV = "TWITCH_CLIENT_SECRET"  # noqa: S105 (a variable NAME)
 USER_TOKEN_ENV = "TWITCH_USER_ACCESS_TOKEN"  # noqa: S105 (a variable NAME)
@@ -150,7 +152,8 @@ class MatrixSource(_Source):
 class YoutubeSource(_Source):
     kind: Literal["youtube"]
     channel_id: str
-    api_key_env: EnvName
+    # Only the canonical name is accepted (the key may be left out).
+    api_key_env: Literal["YOUTUBE_API_KEY"] = "YOUTUBE_API_KEY"  # noqa: S105
 
     @field_validator("channel_id")
     @classmethod
@@ -235,6 +238,9 @@ class ThreadsSource(_MetaSource):
 
     # Threads user id (digits), the path segment of the documented insights route.
     user_id: str
+    # Off by default. UNVERIFIED vendor behavior (see docs/engagement-sources.md):
+    # when true, also collect aggregate views and engagement numbers.
+    insights: Annotated[bool, Field(strict=True)] = False
 
     @field_validator("user_id")
     @classmethod
@@ -257,6 +263,9 @@ class TiktokSource(_Source):
     client_key_env: Literal["TIKTOK_CLIENT_KEY"] = "TIKTOK_CLIENT_KEY"
     client_secret_env: Literal["TIKTOK_CLIENT_SECRET"] = "TIKTOK_CLIENT_SECRET"  # noqa: S105
     auto_refresh: Annotated[bool, Field(strict=True)] = False
+    # Off by default. UNVERIFIED vendor behavior (see docs/engagement-sources.md):
+    # when true, also collect aggregate views and engagement numbers.
+    insights: Annotated[bool, Field(strict=True)] = False
 
 
 Source = Annotated[

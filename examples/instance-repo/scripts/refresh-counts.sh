@@ -23,8 +23,8 @@
 # Keys come from the environment only. Of the three names below, only those
 # that are set and not empty are passed to the engine (by name; the value is
 # never on a command line or printed). A source whose key is missing is
-# skipped by the engine, not failed. The names must match what site.yaml
-# names under numbers.sources (api_key_env, client_id_env, client_secret_env).
+# skipped by the engine, not failed. These are the canonical names the engine reads (YOUTUBE_API_KEY, TWITCH_CLIENT_ID,
+# TWITCH_CLIENT_SECRET). The config cannot name another variable.
 #
 # The engine keeps a suspect value out (a zero, or a fall of more than 90
 # percent from 1000 or more) and records it as a failed source. This script

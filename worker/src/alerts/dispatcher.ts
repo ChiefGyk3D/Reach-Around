@@ -81,7 +81,12 @@ export interface AlertsEnv extends KitLimitsEnv {
   ALERT_EMAIL_PROVIDER?: string;
 }
 
+/** What THIS call delivered, per channel. Never derived from the shared counters. */
+export type NotifyReceipt = Array<{ channel: ChannelId; ok: boolean }>;
+
 export interface DispatchDeps {
+  /** Send only to these channels (a retry to the ones that have not taken a message yet). */
+  only?: readonly ChannelId[];
   fetchFn?: typeof fetch;
   nowMs?: number;
   timeoutMs?: number;
@@ -179,6 +184,8 @@ export function createDispatcher() {
   const chStatus = (id: ChannelId): ChannelStatus => (status.channels[id] ??= { sent: 0, failed: {}, suppressed: 0 });
 
   function who(event: AlertEvent): string {
+    // A health event is identified by its closed condition and state words only.
+    if (event.kind === "analytics_health") return `${String(event.condition)}:${String(event.state)}`.slice(0, MAX_WHO_CHARS);
     return event.kind !== "gate_failed_repeatedly" && typeof event.email === "string"
       ? event.email.slice(0, MAX_WHO_CHARS)
       : "";
@@ -204,18 +211,21 @@ export function createDispatcher() {
     return w;
   }
 
-  async function notify(env: AlertsEnv, event: AlertEvent, deps: DispatchDeps = {}): Promise<void> {
+  async function notify(env: AlertsEnv, event: AlertEvent, deps: DispatchDeps = {}): Promise<NotifyReceipt> {
+    const receipt: NotifyReceipt = [];
     const log = forRequest();
     try {
       const cfg = parseAlertsConfig(env?.ALERTS_CONFIG);
-      if (cfg === null || typeof event !== "object" || event === null || !cfg.events.has(event.kind)) return;
+      if (cfg === null || typeof event !== "object" || event === null || !cfg.events.has(event.kind)) return receipt;
       const now = deps.nowMs ?? Date.now();
       const site = siteKey(env.SITE_HOST);
 
       // 1. Usable destinations first. An event with none is charged to nothing.
-      const { channels, unconfigured, deprecated } = buildChannels(env, cfg.channels, cfg.matrixAllowedHosts);
+      const built = buildChannels(env, cfg.channels, cfg.matrixAllowedHosts);
+      const { unconfigured, deprecated } = built;
+      const channels = deps.only === undefined ? built.channels : built.channels.filter((c) => deps.only!.includes(c.id));
       status.unconfigured += unconfigured;
-      if (channels.length === 0) return;
+      if (channels.length === 0) return receipt;
       if (deprecated) status.deprecatedHomeserver++;
 
       // 2. Identity of the event (keyed; without the secret dedup is off and counted).
@@ -226,7 +236,7 @@ export function createDispatcher() {
         hash = await eventHash(key, site, event.kind, who(event));
         if (localSeen(hash, now)) {
           status.deduped++;
-          return;
+          return receipt;
         }
       }
 
@@ -240,7 +250,7 @@ export function createDispatcher() {
         log.log("alert", "throttled", "route_budget");
         return false;
       });
-      if (candidates.length === 0) return;
+      if (candidates.length === 0) return receipt;
 
       // 4. Shared admission: dedup claim, a minute slot per channel, then ONE daily unit for the event.
       // Every step that fails or refuses gives back what was taken, so a refused or failed event costs nothing.
@@ -260,7 +270,7 @@ export function createDispatcher() {
         if (hash !== null) {
           if (!(await claimDedup(env.DB, site, hash, now, DEDUP_MS))) {
             status.deduped++;
-            return;
+            return receipt;
           }
           claimed = true;
         }
@@ -281,20 +291,20 @@ export function createDispatcher() {
         if (granted.length === 0) {
           if (errored) status.quotaErrors++;
           await undo();
-          return;
+          return receipt;
         }
         if ((await reserveQuota(env.DB, site, "all", "day", day, dailyBudget)) === null) {
           status.dailyRefused++;
           log.log("alert", "over_budget", "route_budget");
           await undo();
-          return;
+          return receipt;
         }
         dailyTaken = true;
       } catch {
         status.quotaErrors++;
         log.log("alert", "failed", "other");
         await undo();
-        return;
+        return receipt;
       }
       if (hash !== null) localRecord(hash, now);
 
@@ -327,6 +337,7 @@ export function createDispatcher() {
             );
             const res = await ch.send(message, sendDeps);
             const s = chStatus(ch.id);
+            receipt.push({ channel: ch.id, ok: res.ok });
             if (res.ok) {
               s.sent++;
               log.log("alert", "ok");
@@ -344,6 +355,7 @@ export function createDispatcher() {
     } catch {
       log.log("alert", "failed", "other");
     }
+    return receipt;
   }
 
   return {

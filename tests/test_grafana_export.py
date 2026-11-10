@@ -25,6 +25,7 @@ EXPECTED_TABLES = {
     "grafana_sources_daily",
     "grafana_countries_daily",
     "grafana_clicks_daily",
+    "grafana_gaps_daily",
 }
 
 
@@ -166,6 +167,7 @@ def test_documented_columns(tmp_path: Path) -> None:
     assert cols["grafana_sources_daily"] == ["day", "source", "views"]
     assert cols["grafana_countries_daily"] == ["day", "country", "views"]
     assert cols["grafana_clicks_daily"] == ["day", "link_id", "clicks"]
+    assert cols["grafana_gaps_daily"] == ["day", "status", "reason"]
     assert cols["grafana_meta"] == ["key", "value"]
 
 
@@ -231,7 +233,7 @@ def test_meta_records_site_floor_and_version_only(tmp_path: Path) -> None:
     db = export_ok(tmp_path)
     assert rows(db, "grafana_meta") == [
         ("floor", "5"),
-        ("schema_version", "1"),
+        ("schema_version", "2"),
         ("site", "links"),
     ]
 
