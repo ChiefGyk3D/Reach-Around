@@ -4,7 +4,7 @@
 The media kit is two pages for two audiences. The public page shows your name,
 a short description and your headline numbers to anyone. The gated page holds
 the detail you only want to show people who pass a short check: past partners,
-case studies, rates and audience details.
+case studies, rates, audience details and a disclosure statement.
 
 Everything here is synthetic: a fake creator, `example.com` and made-up brands.
 Replace them with your own.
@@ -35,6 +35,7 @@ kit:
     - {item: Sponsored video, price_text: Ask me!}
   demographics:
     - {label: Top country, value: Exampleland 40%, as_of: 2027-03-01}
+  disclosure: An example statement about how paid work is marked.
 ```
 
 ## What the build writes
@@ -50,8 +51,8 @@ kit:
 reach-around build --config site.yaml --out site-out --gated-out gated-out
 ```
 
-`--gated-out` is required when the kit has partners, case studies, rates or
-demographics. It may not be the output directory, inside it, or a parent of it.
+`--gated-out` is required when the kit has partners, case studies, rates,
+demographics or a disclosure statement. It may not be the output directory, inside it, or a parent of it.
 The build writes only `kit.html` there (and removes it if the kit no longer has
 gated content); anything else in that directory is left alone. Upload the
 gated file with the Worker deploy, never with the Pages deploy: the deploy
@@ -146,7 +147,7 @@ so it reveals nothing about the check. It is marked `noindex`. There is no
 ### Gated page
 
 A complete page (header, navigation, the same numbers, then partners, case
-studies, a rates table and audience details), marked `noindex`, with root-based
+studies, a rates table, audience details and the disclosure statement), marked `noindex`, with root-based
 asset links (`/static/...`) because the Worker serves it from any path. Partner
 links open with `rel="noopener noreferrer"`. It contains no script and no form.
 
@@ -248,7 +249,7 @@ page. Use a local avatar file if you want it on the gated page too.
 ## The private PDF
 
 `reach-around kit pdf` prints the whole gated kit (the numbers, partners, case
-studies, rates and audience details) to a PDF for you, the owner. It is never
+studies, rates, audience details and the disclosure statement) to a PDF for you, the owner. It is never
 published and never linked from a page.
 
 ```sh

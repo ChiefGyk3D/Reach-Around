@@ -64,6 +64,12 @@
 </table>
 </section>
 {% endif %}
+{% if kit.disclosure %}
+<section class="kit-disclosure" aria-labelledby="kit-disclosure-title">
+<h3 id="kit-disclosure-title">Disclosure</h3>
+<p>{{ kit.disclosure }}</p>
+</section>
+{% endif %}
 <p><a href="{{ root }}kit/">Back to the public kit page</a></p>
 </section>
 {% endblock %}

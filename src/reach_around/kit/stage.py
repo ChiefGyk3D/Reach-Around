@@ -61,7 +61,7 @@ PRINT_CSS = (
     "animation:none!important;transition:none!important}"
     "main{max-width:none!important;margin:0!important;padding:0!important}"
     ".skip-link,.cookie-banner{display:none!important}"
-    "article,tr,li,.kit-numbers,.kit-partners,.kit-rates,.kit-demographics"
+    "article,tr,li,.kit-numbers,.kit-partners,.kit-rates,.kit-demographics,.kit-disclosure"
     "{break-inside:avoid}"
     "h1,h2,h3,h4{break-after:avoid}"
     "table{width:100%;border-collapse:collapse}"
