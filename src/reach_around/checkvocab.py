@@ -270,7 +270,9 @@ VOCAB: dict[str, tuple[str, str]] = {
         "Delete value and as_of, or change source to manual.",
     ),
     "kit_gate_off": (
-        "the kit has partners, case studies, rates or demographics, which need "
+        "the kit has partners, case studies, packages, rates, testimonials, "
+        "demographics or a disclosure, "
+        "which need "
         "the gate",
         "Set features.kit_gate to true, or remove those entries.",
     ),

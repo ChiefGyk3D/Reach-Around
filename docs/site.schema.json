@@ -24,7 +24,8 @@
               "kit_unlocked",
               "lead_captured",
               "gate_failed_repeatedly",
-              "analytics_health"
+              "analytics_health",
+              "inquiry_received"
             ],
             "type": "string"
           },
@@ -739,6 +740,33 @@
       "title": "Image",
       "type": "object"
     },
+    "Inquiry": {
+      "additionalProperties": false,
+      "description": "The business inquiry form on the gated page and the owner details beside it.\n\nThe address and the key fingerprint are the owner's own, taken from here and never\nhard-coded. The form posts to the Worker (``/k/inquiry``); where the message goes is\nthe Worker's alert channels, not this block.",
+      "properties": {
+        "email": {
+          "title": "Email",
+          "type": "string"
+        },
+        "pgp_fingerprint": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Pgp Fingerprint"
+        }
+      },
+      "required": [
+        "email"
+      ],
+      "title": "Inquiry",
+      "type": "object"
+    },
     "InstagramSource": {
       "additionalProperties": false,
       "properties": {
@@ -824,6 +852,31 @@
           "title": "Demographics",
           "type": "array"
         },
+        "disclosure": {
+          "anyOf": [
+            {
+              "maxLength": 500,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Disclosure"
+        },
+        "inquiry": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Inquiry"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
         "metrics": {
           "items": {
             "$ref": "#/$defs/PlatformMetric"
@@ -848,6 +901,14 @@
           "title": "Rates",
           "type": "array"
         },
+        "services": {
+          "items": {
+            "$ref": "#/$defs/ServicePackage"
+          },
+          "maxItems": 20,
+          "title": "Services",
+          "type": "array"
+        },
         "tags": {
           "items": {
             "maxLength": 30,
@@ -856,6 +917,14 @@
           },
           "maxItems": 8,
           "title": "Tags",
+          "type": "array"
+        },
+        "testimonials": {
+          "items": {
+            "$ref": "#/$defs/Testimonial"
+          },
+          "maxItems": 10,
+          "title": "Testimonials",
           "type": "array"
         },
         "title": {
@@ -1803,6 +1872,47 @@
       "title": "Section",
       "type": "object"
     },
+    "ServicePackage": {
+      "additionalProperties": false,
+      "description": "One named package: a title, what is included, and a price as text.\n\n``price_text`` is free text (``Ask me!`` is fine); nothing is computed from\nit. Both the list and the price are optional.",
+      "properties": {
+        "included": {
+          "items": {
+            "maxLength": 120,
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 12,
+          "title": "Included",
+          "type": "array"
+        },
+        "price_text": {
+          "anyOf": [
+            {
+              "maxLength": 80,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Price Text"
+        },
+        "title": {
+          "maxLength": 80,
+          "minLength": 1,
+          "title": "Title",
+          "type": "string"
+        }
+      },
+      "required": [
+        "title"
+      ],
+      "title": "ServicePackage",
+      "type": "object"
+    },
     "Social": {
       "additionalProperties": false,
       "properties": {
@@ -1980,6 +2090,44 @@
         "title"
       ],
       "title": "Tab",
+      "type": "object"
+    },
+    "Testimonial": {
+      "additionalProperties": false,
+      "description": "One partner quote. The owner supplies the text and is responsible for\nhaving permission to quote it; nothing here checks that.",
+      "properties": {
+        "brand": {
+          "anyOf": [
+            {
+              "maxLength": 80,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Brand"
+        },
+        "name": {
+          "maxLength": 80,
+          "minLength": 1,
+          "title": "Name",
+          "type": "string"
+        },
+        "quote": {
+          "maxLength": 300,
+          "minLength": 1,
+          "title": "Quote",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "quote"
+      ],
+      "title": "Testimonial",
       "type": "object"
     },
     "Text": {

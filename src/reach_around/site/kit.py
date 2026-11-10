@@ -67,6 +67,12 @@ GATED_FILE = Path("kit.html")
 # "/k/gate" in the change that adds the route. Until then a post lands on the
 # static retry page, which fails closed.
 GATE_ACTION = "/kit/retry/"
+# The business inquiry form posts to the Worker route (worker/src/kit/inquiry.ts).
+# It is on the gated page only, which the Worker serves to an unlocked visitor.
+INQUIRY_ACTION = "/k/inquiry"
+# The Worker's own caps for the form fields (INQUIRY_LIMITS in the same file; a test
+# keeps the two equal). Printed as maxlength so the browser enforces them first.
+INQUIRY_LIMITS = {"name": 80, "email": 254, "brand": 80, "budget": 40, "details": 800}
 
 GUARD_MIN_LENGTH = 6
 
@@ -177,16 +183,40 @@ def check_roots(out_dir: Path, gated_out: Path) -> None:
         )
 
 
+def text_fields(item: Any) -> list[tuple[str, str]]:
+    """(field, text) for every printed string of one list entry: a string, a
+    date in the form the templates print, or each string of a list of strings."""
+    found: list[tuple[str, str]] = []
+    for field, value in item.model_dump().items():
+        for one in value if isinstance(value, list) else [value]:
+            text = one.isoformat() if isinstance(one, date) else one
+            if isinstance(text, str):
+                found.append((field, text))
+    return found
+
+
 def _gated_strings(kit: KitConfig) -> list[tuple[str, str]]:
     """(where, text) for every gated value long enough to search for. Values
     that are not text (dates) are searched in the form the templates print."""
     found: list[tuple[str, str]] = []
-    for name in ("partners", "case_studies", "rates", "demographics"):
+    if kit.disclosure is not None and len(kit.disclosure) >= GUARD_MIN_LENGTH:
+        found.append(("kit.disclosure", kit.disclosure))
+    for name in (
+        "partners",
+        "case_studies",
+        "services",
+        "rates",
+        "testimonials",
+        "demographics",
+    ):
         for index, item in enumerate(getattr(kit, name)):
-            for field, value in item.model_dump().items():
-                text = value.isoformat() if isinstance(value, date) else value
-                if isinstance(text, str) and len(text) >= GUARD_MIN_LENGTH:
+            for field, text in text_fields(item):
+                if len(text) >= GUARD_MIN_LENGTH:
                     found.append((f"kit.{name}[{index}].{field}", text))
+    if kit.inquiry is not None:
+        for field, text in kit.inquiry.model_dump().items():
+            if isinstance(text, str) and len(text) >= GUARD_MIN_LENGTH:
+                found.append((f"kit.inquiry.{field}", text))
     return found
 
 
@@ -314,6 +344,19 @@ def _public_values(kit: KitConfig) -> set[str]:
     return {canonical(v) for v in values}
 
 
+def _is_whole_element(text: str, page: str) -> bool:
+    """Whether ``text`` is the entire content of some element in ``page``.
+
+    A short gated value (under ``GUARD_MIN_LENGTH``) has no useful substring
+    search: it would match inside any word. A full element match is the
+    collision that matters (the same short text printed as its own line), so
+    that is what is searched for, as written and HTML-escaped."""
+    for variant in {text, html.escape(text), html.escape(text, quote=False)}:
+        if re.search(r">\s*" + re.escape(variant) + r"\s*<", page):
+            return True
+    return False
+
+
 def check_no_gated_text(files: Mapping[Path, bytes], kit: KitConfig | None) -> None:
     """Raise ``KitLeakError`` if a gated file name or string is in ``files``.
 
@@ -326,10 +369,14 @@ def check_no_gated_text(files: Mapping[Path, bytes], kit: KitConfig | None) -> N
     if kit is None:
         return
     allowed = _public_values(kit)
+    # The owner may print the inquiry address in the public contact line.
+    contact = canonical(kit.contact) if kit.contact is not None else ""
     raw: list[tuple[str, bytes]] = []
     folded: list[tuple[str, str]] = []
     for where, text in _gated_strings(kit):
         if canonical(text) in allowed:
+            continue
+        if where == "kit.inquiry.email" and canonical(text) in contact:
             continue
         for variant in {text, html.escape(text), html.escape(text, quote=False)}:
             for codec in ("utf-8", "utf-16-le", "utf-16-be"):
@@ -340,6 +387,9 @@ def check_no_gated_text(files: Mapping[Path, bytes], kit: KitConfig | None) -> N
             f"the kit has {len(folded)} gated values to search for, over the "
             f"limit of {GUARD_MAX_NEEDLES} (GUARD_MAX_NEEDLES)"
         )
+    short = kit.disclosure
+    if short is not None and len(short) >= GUARD_MIN_LENGTH:
+        short = None
     scanned = 0
     binary = 0
     for rel, data in sorted(files.items()):
@@ -360,6 +410,8 @@ def check_no_gated_text(files: Mapping[Path, bytes], kit: KitConfig | None) -> N
                     "(GUARD_MAX_BINARY_BYTES)"
                 )
             continue
+        if short is not None and _is_whole_element(short, decoded):
+            raise _leak("kit.disclosure", rel)
         if len(data) > GUARD_MAX_FILE_BYTES:
             raise KitGuardLimitError(
                 f"the public text file {rel.as_posix()} is over the leak search "
@@ -654,8 +706,11 @@ def _categories(kit: KitConfig) -> str:
         for label, items in (
             ("past partners", kit.partners),
             ("case studies", kit.case_studies),
+            ("packages", kit.services),
             ("rates", kit.rates),
+            ("testimonials", kit.testimonials),
             ("audience details", kit.demographics),
+            ("a disclosure statement", [kit.disclosure] if kit.disclosure else []),
         )
         if items
     ]
@@ -675,7 +730,8 @@ def plan_warnings(
     if config.features.kit_gate and not kit.has_gated_content:
         found.append(
             "features.kit_gate is on but the kit has no partners, case studies, "
-            "rates or demographics; no gate form or gated page is built"
+            "packages, rates, testimonials, demographics or disclosure; no gate form "
+            "or gated page is built"
         )
     if has_gate_form(kit) and kit.turnstile_site_key is None:
         found.append(
@@ -733,14 +789,25 @@ def render_kit(
         content.update(
             partners=data["partners"],
             case_studies=data["case_studies"],
+            services=data["services"],
             rates=data["rates"],
+            testimonials=data["testimonials"],
+            disclosure=data["disclosure"],
             demographics=[
                 {"label": d.label, "value": d.value, "as_of": d.as_of.isoformat()}
                 for d in data["demographics"]
             ],
         )
+        inquiry: dict[str, Any] | None = None
+        if data["inquiry"] is not None:
+            inquiry = {
+                "action": INQUIRY_ACTION,
+                "email": data["inquiry"].email,
+                "pgp_fingerprint": data["inquiry"].pgp_fingerprint,
+                "limits": INQUIRY_LIMITS,
+            }
         ctx = base("/", "Media kit details", True)
         gated = env.get_template("kit_gated.html").render(
-            **{**ctx, "root": "/", "kit": content, "noindex": True}
+            **{**ctx, "root": "/", "kit": content, "inquiry": inquiry, "noindex": True}
         )
     return KitRender(pages, gated, warnings)

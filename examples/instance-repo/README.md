@@ -21,7 +21,7 @@ engine repository for the reasoning.
 | `.github/workflows/deploy.yml` | On a push to `main`: check, validate, then deploy to Cloudflare after a reviewer approves. |
 | `.github/workflows/refresh-counts.yml` | Once a day (and by hand): refresh follower counts with the pinned engine and open a pull request with the new `numbers.json`. Optional; see "Daily follower counts". |
 | `renovate.json` | Keeps `engine.lock` and the Actions pins current. |
-| `scripts/` | `validate-numbers.py` (the strict check on `numbers.json` the counts refresh runs twice), `refresh-counts.sh`, `check-config.sh` (the plain-language config check), `validate.sh` (the build CI runs), `write-result.py` (bundles the preview job's results into the one data file the comment job reads), `render-comment.py` (run by the comment job from the base commit: validates that file and writes the pull request comment from fixed text), `check-repo.sh`, `read-lock.sh`, `deploy-local.sh`. |
+| `scripts/` | `validate-numbers.py` (the strict check on `numbers.json` the counts refresh runs twice), `refresh-counts.sh`, `verify-history.sh` (the engine's `counts history-verify` on the history file, offline), `check-config.sh` (the plain-language config check), `validate.sh` (the build CI runs), `write-result.py` (bundles the preview job's results into the one data file the comment job reads), `render-comment.py` (run by the comment job from the base commit: validates that file and writes the pull request comment from fixed text), `check-repo.sh`, `read-lock.sh`, `deploy-local.sh`. |
 | `docs/EDITING.md` | How to change the page without touching code. |
 
 ## Adopt it
@@ -149,7 +149,7 @@ want counts.
 
 **What happens to the result.** The workflow does not push to `main`. It
 pushes the branch `counts/refresh` and opens one pull request, "Refresh
-follower counts", that changes `numbers.json`. You merge it; that push runs
+follower counts", that changes `numbers.json` (and `history/social.jsonl`, when `numbers.history_file` is set to that path). You merge it; that push runs
 `Deploy` as usual, with its reviewer approval. Reasons: a push made with the
 run's own token does not start other workflows (so a direct commit would never
 deploy), and `main` should stay protected. Because of the same rule, the
@@ -219,7 +219,7 @@ in the engine repo); without it that source is reported as skipped
 - The branch is replaced only if it is still the commit the run saw
   (`--force-with-lease`). If a pull request is already open on `counts/refresh`
   and it was not opened by the Actions bot, comes from a fork, or changes
-  anything besides `numbers.json`, the run stops with a message and touches
+  anything besides `numbers.json` and `history/social.jsonl`, the run stops with a message and touches
   nothing. Close that pull request or rename its branch, then run again.
 
 ## The token

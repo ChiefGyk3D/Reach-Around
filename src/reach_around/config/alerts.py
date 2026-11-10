@@ -22,6 +22,7 @@ AlertEventName = Literal[
     "lead_captured",
     "gate_failed_repeatedly",
     "analytics_health",
+    "inquiry_received",
 ]
 VisitorEmail = Literal["full", "masked", "none"]
 
