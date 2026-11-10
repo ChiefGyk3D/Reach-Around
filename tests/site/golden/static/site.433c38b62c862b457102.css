@@ -248,6 +248,8 @@ a:focus-visible, summary:focus-visible, button:focus-visible {
 .icon-merch { -webkit-mask-image: url("icons/merch.177fa7fb693db196998b.svg"); mask-image: url("icons/merch.177fa7fb693db196998b.svg"); }
 .icon-monero { -webkit-mask-image: url("icons/monero.e885750b719edb9377bb.svg"); mask-image: url("icons/monero.e885750b719edb9377bb.svg"); }
 .icon-solana { -webkit-mask-image: url("icons/solana.bfd79a60961c64a89314.svg"); mask-image: url("icons/solana.bfd79a60961c64a89314.svg"); }
+.icon-streamelements { -webkit-mask-image: url("icons/streamelements.9e5fbb76912defaf5750.svg"); mask-image: url("icons/streamelements.9e5fbb76912defaf5750.svg"); }
+.icon-pixelfed { -webkit-mask-image: url("icons/pixelfed.aff721dca7a07a3384b7.svg"); mask-image: url("icons/pixelfed.aff721dca7a07a3384b7.svg"); }
 
 
 /* Header: avatar at the left, the name beside it, the social icons below the name. */
