@@ -55,7 +55,7 @@ from reach_around.config.numbers import Numbers
 from reach_around.kit.output import check_name, confine_out_dir, write_private
 from reach_around.kit.pdftext import PdfTextError, extract_pages
 from reach_around.kit.stage import stage_page
-from reach_around.site.kit import GUARD_MIN_LENGTH, _metric_rows, _total
+from reach_around.site.kit import GUARD_MIN_LENGTH, _metric_rows, _total, text_fields
 
 MAX_PDF_BYTES = 20 * 1024 * 1024
 MAX_PAGES = 60
@@ -356,14 +356,28 @@ def _expected_text(kit: KitConfig, numbers: Numbers | None) -> list[tuple[str, s
     total = _total(unified_total(resolved), resolved)
     if total is not None:
         found.append(("the metric total", total["value"]))
-    for name in ("partners", "case_studies", "rates", "testimonials", "demographics"):
+    if kit.disclosure is not None:
+        found.append(("kit.disclosure", kit.disclosure))
+    for name in (
+        "partners",
+        "case_studies",
+        "services",
+        "rates",
+        "testimonials",
+        "demographics",
+    ):
         for index, item in enumerate(getattr(kit, name)):
-            for field, value in item.model_dump().items():
+            for field, text in text_fields(item):
                 if field == "url":  # a link target, not printed text
                     continue
-                text = value.isoformat() if isinstance(value, date) else value
-                if isinstance(text, str) and text:
+                if text:
                     found.append((f"kit.{name}[{index}].{field}", text))
+    if (
+        kit.inquiry is not None
+    ):  # the owner details print; the form beside them does not
+        found.append(("kit.inquiry.email", kit.inquiry.email))
+        if kit.inquiry.pgp_fingerprint is not None:
+            found.append(("kit.inquiry.pgp_fingerprint", kit.inquiry.pgp_fingerprint))
     return found
 
 
@@ -433,7 +447,8 @@ def build_kit_pdf(
     if kit is None or not kit.has_gated_content:
         raise PdfError(
             "the config has no gated media kit content (partners, case studies, "
-            "rates, testimonials or demographics); there is nothing private to print"
+            "packages, rates, testimonials, demographics or a disclosure "
+            "statement); there is nothing private to print"
         )
     check_name(name)
     target_dir = confine_out_dir(out_dir, [gated_dir, site_dir, *protect])

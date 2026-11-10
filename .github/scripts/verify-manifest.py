@@ -75,6 +75,7 @@ ALERT_EVENTS = {
     "lead_captured",
     "gate_failed_repeatedly",
     "analytics_health",
+    "inquiry_received",
 }
 ALERT_VISITOR = {"full", "masked", "none"}
 ALERT_HOST = re.compile(r"[a-z0-9][a-z0-9.-]{0,251}[a-z0-9]")

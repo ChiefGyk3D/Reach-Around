@@ -115,6 +115,20 @@ crons = ["5 * * * *"]
 # LEAD_RETENTION_DAYS = "30"       # days a lead is kept (1 to 365); invalid falls back to 30.
 #                                  # The deploy writes this from privacy.lead_retention_days in site.yaml
 
+# Business inquiry form behind the media kit (POST /k/inquiry, src/kit/inquiry.ts). It needs
+# TOKEN_HMAC_KEY (the gate's signing secret, so only an unlocked visitor can post), the alert
+# channels with the event `inquiry_received` enabled (the inquiry is delivered as an owner alert and
+# stored nowhere), and this limiter. Placeholders only; not deployed. The owner must add
+# exactly: the [[ratelimits]] block below (name INQUIRY_LIMITER, a real namespace_id of their
+# own), TOKEN_HMAC_KEY, and `inquiry_received` in the alerts events. If the binding is missing
+# or malformed the route refuses (503) and sends nothing; it never falls back to no limit.
+# [[ratelimits]]
+# name = "INQUIRY_LIMITER"
+# namespace_id = "1003" # placeholder, not a real id
+#   [ratelimits.simple]
+#   limit = 3
+#   period = 60
+
 # The click pings use the relative path /e/c/<id>, so the browser sends them to
 # the site's own host. Route the Worker there in your deployment (placeholder
 # host; replace it with your site host and zone):

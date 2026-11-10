@@ -60,6 +60,24 @@ def collected_items(config: SiteConfig) -> list[Disclosure]:
                 sensitive=False,
             )
         )
+        if config.kit is not None and config.kit.inquiry is not None:
+            items.append(
+                Disclosure(
+                    what=(
+                        "The inquiry form collects a name, optional email, "
+                        "brand, budget, and details, then delivers them to the "
+                        "owner through a private channel without storing them on "
+                        "the site. Submissions are limited per visitor to prevent "
+                        "abuse."
+                    ),
+                    why="So the creator can read and answer your inquiry.",
+                    kept=(
+                        "Not stored by this site. It is delivered once to the "
+                        "creator, who keeps it in their own message channel."
+                    ),
+                    sensitive=False,
+                )
+            )
         items.append(
             Disclosure(
                 what="A cookie that remembers the kit is unlocked in this browser.",

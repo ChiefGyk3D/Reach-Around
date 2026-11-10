@@ -9,7 +9,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 _START = "## Kit limits and the free-plan budget"
 _END = "## Secrets and Doppler"
-_WRITES = {"gate": 5, "view": 2, "alert": 1, "send": 7}
+_WRITES = {"gate": 5, "view": 2, "alert": 1, "send": 7, "inquiry": 1}
 _RESERVE = 10_000
 _PAGE_VIEWS = 22_700
 _CLICKS = 8_000
@@ -48,11 +48,13 @@ def test_worst_case_table_adds_up_and_is_under_the_warning_line() -> None:
         "view": 24 * d["ROUTE_BUDGET_VIEW"] * _WRITES["view"],
         "alert": d["DAILY_ALERT_BUDGET"] * _WRITES["alert"],
         "send": d["DAILY_SEND_BUDGET"] * _WRITES["send"],
+        # an inquiry is capped by the daily alert budget (worker/src/kit/inquiry.ts)
+        "inquiry": d["DAILY_ALERT_BUDGET"] * _WRITES["inquiry"],
     }
     rows = {
         m.group(1): int(m.group(2))
         for m in re.finditer(
-            r"^\| (gate|view|alert|send) \|.*\| (\d+) \|$", section, re.M
+            r"^\| (gate|view|alert|send|inquiry) \|.*\| (\d+) \|$", section, re.M
         )
     }
     assert rows == expected

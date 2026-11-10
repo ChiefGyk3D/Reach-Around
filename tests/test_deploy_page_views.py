@@ -336,7 +336,7 @@ def test_budget_script_reuses_the_worker_function_and_holds_no_limits() -> None:
     pure = (ROOT / "worker" / "src" / "kit" / "budgetcheck.ts").read_text("utf-8")
     assert "runBudgetCheck" in script
     assert "assessDailyBudget" in pure
-    for literal in ("22_700", "22700", "100_000", "100000 *", "78120"):
+    for literal in ("22_700", "22700", "100_000", "100000 *", "78140"):
         assert literal not in script
     # no limit number is redefined outside budgets.ts and pvlimits.ts
     for text in (script, pure):
