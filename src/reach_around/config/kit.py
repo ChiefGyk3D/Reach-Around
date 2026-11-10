@@ -68,6 +68,7 @@ DISPLAY_POLICY: Mapping[str, Visibility] = {
     "turnstile_site_key": "public",
     "partners": "gated",
     "case_studies": "gated",
+    "services": "gated",
     "rates": "gated",
     "demographics": "gated",
     "unlock_link": "private",
@@ -168,6 +169,18 @@ class Rate(_Model):
     price_text: Text80
 
 
+class ServicePackage(_Model):
+    """One named package: a title, what is included, and a price as text.
+
+    ``price_text`` is free text (``Ask me!`` is fine); nothing is computed from
+    it. Both the list and the price are optional.
+    """
+
+    title: Text80
+    included: list[Text120] = Field(default_factory=list, max_length=12)
+    price_text: Text80 | None = None
+
+
 class Demographic(_Model):
     label: Text60
     value: Text80
@@ -231,6 +244,7 @@ class KitConfig(_Model):
     metrics: list[PlatformMetric] = Field(default_factory=list, max_length=30)
     partners: list[Partner] = Field(default_factory=list, max_length=50)
     case_studies: list[CaseStudy] = Field(default_factory=list, max_length=20)
+    services: list[ServicePackage] = Field(default_factory=list, max_length=20)
     rates: list[Rate] = Field(default_factory=list, max_length=30)
     demographics: list[Demographic] = Field(default_factory=list, max_length=30)
     # Public key of the Turnstile widget on the gate form. Optional: without it

@@ -32,6 +32,26 @@
 {% endfor %}
 </section>
 {% endif %}
+{% if kit.services %}
+<section class="kit-services" aria-labelledby="kit-services-title">
+<h3 id="kit-services-title">Packages</h3>
+{% for service in kit.services %}
+<article class="kit-case kit-service">
+<h4>{{ service.title }}</h4>
+{% if service.included %}
+<ul class="kit-list kit-included">
+{% for line in service.included %}
+<li>{{ line }}</li>
+{% endfor %}
+</ul>
+{% endif %}
+{% if service.price_text %}
+<p class="kit-price"><strong>Price:</strong> {{ service.price_text }}</p>
+{% endif %}
+</article>
+{% endfor %}
+</section>
+{% endif %}
 {% if kit.rates %}
 <section class="kit-rates" aria-labelledby="kit-rates-title">
 <h3 id="kit-rates-title">Rates</h3>

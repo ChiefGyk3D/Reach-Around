@@ -917,6 +917,7 @@ end. Text must be quoted if YAML would read it as a number.
 | `metrics` | list of metric | none | at most 30; each `platform` and `label` pair once |
 | `partners` | list of partner | none | at most 50 |
 | `case_studies` | list of case study | none | at most 20 |
+| `services` | list of package | none | at most 20; named packages, shown above the rates table |
 | `rates` | list of rate | none | at most 30 |
 | `demographics` | list of demographic | none | at most 30 |
 | `turnstile_site_key` | text | none | public key of the Turnstile widget on the gate form; 1 to 64 letters, digits, `-` or `_`. Without it the form has an empty widget slot and the build warns |
@@ -938,7 +939,11 @@ A **metric** is one headline number: `platform` (a platform name such as
 
 A **partner** has `name` (80), optional `note` (200) and optional `url` (https
 only). A **case study** has `title` (100), `summary` (500) and `result` (300).
-A **rate** has `item` (80) and `price_text` (80); the price is text, so
+A **package** (`services`) has `title` (80), optional `included` (a list of at
+most 12 lines, 120 characters each) and optional `price_text` (80; free text such
+as `Ask me!`, never computed). Packages sit above the rates table on the gated
+page and in the owner PDF; the rates table keeps working beside them, and a
+price is allowed per package but not required. A **rate** has `item` (80) and `price_text` (80); the price is text, so
 `Ask me!` or `From $200` are fine. A **demographic** has `label` (60), `value`
 (80) and a required `as_of`.
 
@@ -947,12 +952,12 @@ A **rate** has `item` (80) and `price_text` (80); the price is text, so
 | Field | Shown |
 | --- | --- |
 | `title`, `about`, `contact`, `metrics`, the unified total | public |
-| `partners`, `case_studies`, `rates`, `demographics` | gated (only after the gate) |
+| `partners`, `case_studies`, `services`, `rates`, `demographics` | gated (only after the gate) |
 | `turnstile_site_key` | public (it ships in the gate form; the key is public by design) |
 | `unlock_link` | private (configuration, never shown) |
 
 The public half therefore shows the header and the headline numbers and nothing
-else. If `partners`, `case_studies`, `rates` or `demographics` is not empty,
+else. If `partners`, `case_studies`, `services`, `rates` or `demographics` is not empty,
 `features.kit_gate` must be `true`; the config is refused otherwise, so gated
 content can never be published with no gate.
 
@@ -990,6 +995,10 @@ kit:
     - {platform: bluesky, label: Followers, source: counts}
   partners:
     - {name: Acme Fake Co, url: "https://example.com/acme"}
+  services:
+    - title: Example package
+      included: [One example item, Another example item]
+      price_text: Ask me!
   rates:
     - {item: Sponsored video, price_text: Ask me!}
 ```
