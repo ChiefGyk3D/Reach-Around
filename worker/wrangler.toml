@@ -118,7 +118,10 @@ crons = ["5 * * * *"]
 # Business inquiry form behind the media kit (POST /k/inquiry, src/kit/inquiry.ts). It needs
 # TOKEN_HMAC_KEY (the gate's signing secret, so only an unlocked visitor can post), the alert
 # channels with the event `inquiry_received` enabled (the inquiry is delivered as an owner alert and
-# stored nowhere), and this limiter. Placeholders only; not deployed.
+# stored nowhere), and this limiter. Placeholders only; not deployed. The owner must add
+# exactly: the [[ratelimits]] block below (name INQUIRY_LIMITER, a real namespace_id of their
+# own), TOKEN_HMAC_KEY, and `inquiry_received` in the alerts events. If the binding is missing
+# or malformed the route refuses (503) and sends nothing; it never falls back to no limit.
 # [[ratelimits]]
 # name = "INQUIRY_LIMITER"
 # namespace_id = "1003" # placeholder, not a real id

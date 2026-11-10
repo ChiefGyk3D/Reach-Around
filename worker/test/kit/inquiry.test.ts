@@ -406,8 +406,38 @@ describe("result pages", () => {
   it("names no cause on the not-sent page", async () => {
     const res = await handleInquiry(await req({ method: "GET", path: INQUIRY_ERROR_ROUTE }), baseEnv(), {});
     const html = await res.text();
-    expect(html).toContain("not sent");
+    expect(html).toContain("Message Not Sent");
+    expect(html).toContain("Nothing was sent. Check the fields and try again, or use the email above.");
     expect(html).not.toMatch(/rate|budget|honeypot|limit|cookie|token/i);
+  });
+});
+
+describe("result page copy", () => {
+  it("serves the exact approved text on both pages", async () => {
+    const sent = await (await handleInquiry(await req({ method: "GET", path: INQUIRY_SENT_ROUTE }), baseEnv(), {})).text();
+    expect(sent).toContain("<title>Message Sent</title>");
+    expect(sent).toContain("<h1>Message Sent</h1>");
+    expect(sent).toContain("<p>Thanks. The owner will reply by email if it is a fit.</p>");
+    const err = await (await handleInquiry(await req({ method: "GET", path: INQUIRY_ERROR_ROUTE }), baseEnv(), {})).text();
+    expect(err).toContain("<title>Message Not Sent</title>");
+    expect(err).toContain("<p>Nothing was sent. Check the fields and try again, or use the email above.</p>");
+  });
+  it("a missing name lands on that error page and delivers nothing", async () => {
+    const { res, f } = await post({ fields: { ...GOOD, name: "" } });
+    expect(res.headers.get("location")).toBe(INQUIRY_ERROR_ROUTE);
+    expect(f.calls).toHaveLength(0);
+  });
+});
+
+describe("missing limiter binding (INQUIRY_LIMITER)", () => {
+  it("refuses with 503, sends nothing and spends nothing", async () => {
+    for (const lim of [undefined, null, {}, { limit: "x" }]) {
+      const { res, f } = await post({}, baseEnv({ INQUIRY_LIMITER: lim as unknown as undefined }));
+      expect(res.status).toBe(503);
+      expect(f.calls).toHaveLength(0);
+    }
+    const row = await testEnv.DB.prepare("SELECT COUNT(*) AS n FROM counters WHERE key = 'inquiry'").first<{ n: number }>();
+    expect(row!.n).toBe(0);
   });
 });
 

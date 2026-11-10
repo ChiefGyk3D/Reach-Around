@@ -28,6 +28,11 @@ from reach_around.site.kit import KitLeakError
 
 OWNER = "owner@example.com"
 FPR_RAW = "0123456789abcdef0123456789abcdef01234567"
+PRIVACY_COPY = (
+    "The inquiry form collects a name, optional email, brand, budget, and details, "
+    "then delivers them to the owner through a private channel without storing them "
+    "on the site. Submissions are limited per visitor to prevent abuse."
+)
 FPR_SHOWN = "0123 4567 89AB CDEF 0123 4567 89AB CDEF 0123 4567"
 
 
@@ -122,6 +127,7 @@ def test_the_fingerprint_is_shown_in_groups_of_four_upper_case() -> None:
     v6 = "ab" * 32
     long = KitConfig.model_validate(with_inquiry(pgp_fingerprint=v6))
     assert long.inquiry is not None
+    assert long.inquiry.pgp_fingerprint is not None
     assert long.inquiry.pgp_fingerprint.replace(" ", "") == v6.upper()
 
 
@@ -323,6 +329,37 @@ def test_the_privacy_page_discloses_the_inquiry_only_when_the_form_exists() -> N
         )
 
     with_form = text(with_inquiry())
-    assert "business inquiry form" in with_form
-    assert "Not stored by this site" in with_form
-    assert "business inquiry form" not in text(gated_doc())
+    assert PRIVACY_COPY in with_form
+    assert PRIVACY_COPY not in text(gated_doc())
+
+
+def test_the_approved_copy_is_on_the_page(tmp_path: Path) -> None:
+    _, _, _, gated = pages(tmp_path, with_inquiry())
+    assert ">Business Inquiries</h3>" in gated
+    assert "Sent directly to the site owner. This site keeps no copy." in gated
+    assert "Business inquiries" not in gated and "does not keep a copy" not in gated
+
+
+def test_the_name_is_visibly_and_programmatically_required(tmp_path: Path) -> None:
+    _, _, _, gated = pages(tmp_path, with_inquiry())
+    parsed = form_of(gated)
+    name = parsed.controls["name"]
+    assert "required" in name
+    assert name["aria-required"] == "true"
+    assert parsed.labels[name["id"] or ""].strip() == "Name (required)"
+    for other in ("email", "brand", "budget", "details"):
+        assert "aria-required" not in parsed.controls[other]
+        assert "(required)" not in parsed.labels[parsed.controls[other]["id"] or ""]
+
+
+def test_the_limiter_binding_is_documented_and_fails_closed() -> None:
+    root = Path(__file__).resolve().parents[2]
+    deploy = (root / "docs" / "deploy.md").read_text(encoding="utf-8")
+    toml = (root / "worker" / "wrangler.toml").read_text(encoding="utf-8")
+    src = (root / "worker" / "src" / "kit" / "inquiry.ts").read_text(encoding="utf-8")
+    assert 'name = "INQUIRY_LIMITER"' in toml
+    assert "[[ratelimits]]" in toml
+    assert "INQUIRY_LIMITER" in deploy and "TOKEN_HMAC_KEY" in deploy
+    assert "inquiry_received" in deploy and "503" in deploy
+    assert "refuses" in deploy and "binding is missing" in deploy
+    assert "hasLimiter(env.INQUIRY_LIMITER)" in src

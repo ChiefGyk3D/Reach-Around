@@ -155,7 +155,7 @@ script, and no form unless `kit.inquiry` is set.
 ### The business inquiry form
 
 Set `kit.inquiry` (see the [config reference](config.md#kit)) and the gated page
-gains a "Business inquiries" block: the owner's email and PGP fingerprint, taken
+gains a "Business Inquiries" block: the owner's email and PGP fingerprint, taken
 from the config, and a plain HTML form beside them. It is on the gated page only,
 so it is as private as the partners and the rates; the public page, the retry
 page and every other published file hold none of it (a test searches the whole

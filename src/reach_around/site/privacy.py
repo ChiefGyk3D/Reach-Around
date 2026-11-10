@@ -64,10 +64,11 @@ def collected_items(config: SiteConfig) -> list[Disclosure]:
             items.append(
                 Disclosure(
                     what=(
-                        "What you type into the business inquiry form: your name "
-                        "and, if you give them, your email address, brand, budget "
-                        "and details. Your IP address is used only to limit how "
-                        "often one visitor can send, and is not stored."
+                        "The inquiry form collects a name, optional email, "
+                        "brand, budget, and details, then delivers them to the "
+                        "owner through a private channel without storing them on "
+                        "the site. Submissions are limited per visitor to prevent "
+                        "abuse."
                     ),
                     why="So the creator can read and answer your inquiry.",
                     kept=(

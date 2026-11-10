@@ -274,9 +274,9 @@ export async function handleInquiry(request: Request, env: InquiryEnv, deps: Inq
   const method = request.method.toUpperCase();
   if (path === INQUIRY_ROUTE) return method === "POST" ? submit(request, env, deps) : plain(405, { Allow: "POST" });
   if (method === "POST") return plain(405, { Allow: "GET, HEAD" });
-  if (path === INQUIRY_SENT_ROUTE) return page("Inquiry sent", "Your inquiry was sent. The owner will reply by email if you gave an address.");
+  if (path === INQUIRY_SENT_ROUTE) return page("Message Sent", "Thanks. The owner will reply by email if it is a fit.");
   if (path === INQUIRY_ERROR_ROUTE) {
-    return page("Inquiry not sent", "Your inquiry was not sent. Check the form and try again, or use the email address on the media kit page.");
+    return page("Message Not Sent", "Nothing was sent. Check the fields and try again, or use the email above.");
   }
   return plain(404);
 }

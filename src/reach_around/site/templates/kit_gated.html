@@ -66,7 +66,7 @@
 {% endif %}
 {% if inquiry %}
 <section class="kit-inquiry-block" aria-labelledby="kit-inquiry-title">
-<h3 id="kit-inquiry-title">Business inquiries</h3>
+<h3 id="kit-inquiry-title">Business Inquiries</h3>
 <div class="kit-inquiry-grid">
 <dl class="kit-owner">
 <dt>Email</dt>
@@ -79,8 +79,8 @@
 <aside class="kit-inquiry" aria-label="Inquiry form">
 <form class="kit-inquiry-form" method="post" action="{{ inquiry.action }}">
 <p class="kit-field">
-<label for="inq-name">Name</label>
-<input id="inq-name" name="name" type="text" autocomplete="name" maxlength="{{ inquiry.limits.name }}" required>
+<label for="inq-name">Name (required)</label>
+<input id="inq-name" name="name" type="text" autocomplete="name" maxlength="{{ inquiry.limits.name }}" required aria-required="true">
 </p>
 <p class="kit-field">
 <label for="inq-email">Email address</label>
@@ -102,7 +102,7 @@
 <label for="inq-website">Leave this field empty</label>
 <input id="inq-website" name="website" type="text" tabindex="-1" autocomplete="off">
 </div>
-<p class="kit-note kit-field-wide">Sent to the site owner. This site does not keep a copy.</p>
+<p class="kit-note kit-field-wide">Sent directly to the site owner. This site keeps no copy.</p>
 <button class="kit-submit" type="submit">Send inquiry</button>
 </form>
 </aside>
