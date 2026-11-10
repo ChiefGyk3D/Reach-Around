@@ -19,6 +19,7 @@ DAY1 = "2026-11-01"
 DAY2 = "2026-11-02"
 TS = 1_793_491_200_000  # 2026-11-01 00:00 UTC
 EXPECTED_TABLES = {
+    "grafana_annotations",
     "grafana_meta",
     "grafana_views_daily",
     "grafana_pages_daily",
@@ -168,6 +169,7 @@ def test_documented_columns(tmp_path: Path) -> None:
     assert cols["grafana_countries_daily"] == ["day", "country", "views"]
     assert cols["grafana_clicks_daily"] == ["day", "link_id", "clicks"]
     assert cols["grafana_gaps_daily"] == ["day", "status", "reason"]
+    assert cols["grafana_annotations"] == ["day", "text"]
     assert cols["grafana_meta"] == ["key", "value"]
 
 
@@ -233,9 +235,34 @@ def test_meta_records_site_floor_and_version_only(tmp_path: Path) -> None:
     db = export_ok(tmp_path)
     assert rows(db, "grafana_meta") == [
         ("floor", "5"),
-        ("schema_version", "2"),
+        ("schema_version", "3"),
         ("site", "links"),
     ]
+
+
+def test_cutover_marks_spanning_window_for_grafana(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    src = write(tmp_path, sample())
+    out = tmp_path / "g.sqlite3"
+    code, _, err = run(
+        capsys,
+        "--input",
+        str(src),
+        "--output",
+        str(out),
+        "--cutover",
+        DAY2,
+    )
+    assert code == 0, err
+    assert rows(out, "grafana_meta") == [
+        ("cutover_utc", DAY2),
+        ("floor", "5"),
+        ("schema_version", "3"),
+        ("site", "links"),
+        ("window_era", "spans"),
+    ]
+    assert rows(out, "grafana_annotations") == [(DAY2, "Reach Around cutover")]
 
 
 def test_higher_floor_hides_more(
@@ -247,7 +274,7 @@ def test_higher_floor_hides_more(
         capsys, "--input", str(src), "--output", str(out), "--floor", "50"
     )
     assert code == 0, err
-    for table in EXPECTED_TABLES - {"grafana_meta"}:
+    for table in EXPECTED_TABLES - {"grafana_meta", "grafana_annotations"}:
         for row in rows(out, table):
             assert row[-1] >= 50, (table, row)
 
@@ -372,7 +399,13 @@ def test_missing_input_file(tmp_path: Path, capsys: pytest.CaptureFixture[str]) 
 
 
 @pytest.mark.parametrize(
-    "args", [["--floor", "4"], ["--site", "Bad Site"], ["--floor", "x"]]
+    "args",
+    [
+        ["--floor", "4"],
+        ["--site", "Bad Site"],
+        ["--floor", "x"],
+        ["--cutover", "11/02/2026"],
+    ],
 )
 def test_bad_options(
     args: list[str], tmp_path: Path, capsys: pytest.CaptureFixture[str]
@@ -393,6 +426,32 @@ def test_bad_options(
 def test_build_subset_refuses_floor_below_minimum() -> None:
     with pytest.raises(ValueError, match="floor"):
         grafana.build_subset(Export(), floor=4)
+
+
+def test_future_cutover_adds_no_metadata_or_annotation(tmp_path: Path) -> None:
+    from datetime import date
+
+    from reach_around.funnel.export import load_exports
+
+    subset = grafana.build_subset(
+        load_exports([write(tmp_path, sample())]),
+        cutover=date(2026, 11, 3),
+        today=date(2026, 11, 2),
+    )
+    assert subset.cutover_utc is None
+    assert subset.window_era is None
+    assert subset.annotations == []
+
+
+def test_arrived_cutover_without_retained_days_keeps_marker_and_annotation() -> None:
+    from datetime import date
+
+    subset = grafana.build_subset(
+        Export(), cutover=date(2026, 11, 2), today=date(2026, 11, 3)
+    )
+    assert subset.cutover_utc == "2026-11-02"
+    assert subset.annotations == [("2026-11-02", "Reach Around cutover")]
+    assert subset.window_era is None
 
 
 def test_output_must_not_clobber_a_foreign_file_or_dir(

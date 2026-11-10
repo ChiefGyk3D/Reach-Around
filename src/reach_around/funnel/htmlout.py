@@ -455,8 +455,9 @@ def render_html(view: dict[str, Any], *, generated_at: datetime) -> str:
     if view.get("display"):
         zone = f" Display zone {view['display']['zone']}; counts stay per UTC day."
     era = view.get("era")
+    era_verb = "" if era and era["window"] == "spans" else "is "
     era_html = (
-        f'<p class="note">Cutover {escape(era["cutover_utc"])} UTC: this window is {escape(era["text"])}.</p>'
+        f'<p class="note">Cutover {escape(era["cutover_utc"])} UTC: this window {era_verb}{escape(era["text"])}.</p>'
         if era
         else ""
     )

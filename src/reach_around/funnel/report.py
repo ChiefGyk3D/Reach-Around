@@ -1389,8 +1389,9 @@ def render_text(report: dict[str, Any]) -> str:
     lines.append(f"Reach Around report: site {report['site']}, {span}")
     era = report.get("era")
     if era:
+        verb = "" if era["window"] == "spans" else "is "
         lines.append(
-            f"Cutover: {era['cutover_utc']} UTC; this window is {era['text']}."
+            f"Cutover: {era['cutover_utc']} UTC; this window {verb}{era['text']}."
         )
     display = report.get("display")
     if display:
