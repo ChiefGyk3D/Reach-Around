@@ -30,11 +30,14 @@ CSP = (
 BELOW = "below the privacy floor"
 
 CSS = """
-:root{color-scheme:dark;--bg:#101216;--panel:#181b21;--row:#1e222a;--text:#e8eaed;
---muted:#b4bac4;--views:#8ab4ff;--clicks:#ffb74d;--bar:#5f95f2;--axis:#8b929d}
+:root{color-scheme:dark;--ra-brand-amber:#FBB03B;--ra-brand-ground:#0F0F0F;
+--ra-font-body:Jost,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+--bg:#101216;--panel:#181b21;--row:#1e222a;--text:#e8eaed;
+--muted:#b4bac4;--views:#8ab4ff;--clicks:#ffb74d;--bar:#5f95f2;--axis:#8b929d;
+--gap:#2a2f39}
 *{box-sizing:border-box}
 body{margin:0;background:var(--bg);color:var(--text);
-font:16px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+font:16px/1.5 var(--ra-font-body)}
 main{max-width:1840px;margin:0 auto;padding:20px 16px 40px}
 h1{font-size:1.5rem;margin:0 0 4px}
 h2{font-size:1.1rem;margin:0 0 10px}
@@ -186,22 +189,22 @@ def _chart(
         if d["views_status"] == "gap":
             out.append(
                 f'<rect x="{_x(i, count) - 3:.1f}" y="{Y0}" '
-                f'width="6" height="{Y1 - Y0}" fill="#2a2f39"/>'
+                f'width="6" height="{Y1 - Y0}" fill="var(--gap)"/>'
             )
-    out.append(f'<line x1="{X0}" y1="{Y1}" x2="{X1}" y2="{Y1}" stroke="#8b929d"/>')
+    out.append(f'<line x1="{X0}" y1="{Y1}" x2="{X1}" y2="{Y1}" stroke="var(--axis)"/>')
     out.append(
-        f'<text x="{X0 - 6}" y="{Y1 + 4}" fill="#b4bac4" text-anchor="end" font-size="20">0</text>'
+        f'<text x="{X0 - 6}" y="{Y1 + 4}" fill="var(--muted)" text-anchor="end" font-size="20">0</text>'
     )
     if top:
         out.append(
-            f'<text x="{X0 - 6}" y="{Y0 + 4}" fill="#b4bac4" text-anchor="end" font-size="20">{top}</text>'
+            f'<text x="{X0 - 6}" y="{Y0 + 4}" fill="var(--muted)" text-anchor="end" font-size="20">{top}</text>'
         )
     if days:
         out.append(
-            f'<text x="{X0}" y="{H - 8}" fill="#b4bac4" font-size="20">{escape(days[0]["day"])}</text>'
+            f'<text x="{X0}" y="{H - 8}" fill="var(--muted)" font-size="20">{escape(days[0]["day"])}</text>'
         )
         out.append(
-            f'<text x="{X1}" y="{H - 8}" fill="#b4bac4" font-size="20" text-anchor="end">{escape(days[-1]["day"])} UTC</text>'
+            f'<text x="{X1}" y="{H - 8}" fill="var(--muted)" font-size="20" text-anchor="end">{escape(days[-1]["day"])} UTC</text>'
         )
     for key, colour, marker, status_key in series:
         run: list[str] = []
@@ -296,7 +299,7 @@ def _daily(view: dict[str, Any]) -> str:
         '<div class="legend"><span><span class="sw" style="background:var(--views)">'
         '</span>Views (solid line, circles)</span><span><span class="sw" '
         'style="background:var(--clicks)"></span>Clicks (dashed line, squares)</span>'
-        '<span><span class="sw" style="background:#2a2f39"></span>Gap: no data for the day</span>'
+        '<span><span class="sw" style="background:var(--gap)"></span>Gap: no data for the day</span>'
         "<span>Triangle on the baseline: day under the privacy floor</span></div>"
     )
     views_ok = d["views_state"] == "ok"
@@ -309,14 +312,14 @@ def _daily(view: dict[str, Any]) -> str:
     chart1 = _chart(
         days,
         [
-            ("views", "#8ab4ff", "circle", "views_status"),
-            ("clicks", "#ffb74d", "square", "clicks_status"),
+            ("views", "var(--views)", "circle", "views_status"),
+            ("clicks", "var(--clicks)", "square", "clicks_status"),
         ],
         "Daily page views and clicks, UTC days",
     )
     chart2 = _chart(
         days,
-        [("rate", "#ffb74d", "square", "rate_status")],
+        [("rate", "var(--clicks)", "square", "rate_status")],
         "Daily click rate, clicks per 100 page views, UTC days",
     )
     return (

@@ -291,8 +291,8 @@ def test_theme_css_overrides_defaults_in_the_built_page(tmp_path: Path) -> None:
     assert ":root" in css
     assert "--ra-color-bg: #101010;" in css
     assert "--ra-column-width: 40rem;" in css
-    site_css = read(out, "static/site.css")
-    # site.css declares every default and reads each through var(--ra-*).
+    site_css = read(out, "static/tokens.css") + read(out, "static/site.css")
+    # The bridge and site styles declare every default and consume it through vars.
     for token in ("color-bg", "column-width", "radius", "button-radius", "font-body"):
         assert f"--ra-{token}:" in site_css
         assert f"var(--ra-{token})" in site_css
@@ -336,7 +336,7 @@ def test_default_theme_builds_the_same_page_as_before(tmp_path: Path) -> None:
     html = (out / "index.html").read_text()
     theme_tag = f'<link rel="stylesheet" href="{asset(out, "static/theme.css")}">\n'
     assert html.count(theme_tag) == 1
-    assert html.replace(theme_tag, "").count('<link rel="stylesheet"') == 1
+    assert html.replace(theme_tag, "").count('<link rel="stylesheet"') == 2
     assert html.count("theme.") == 1
     # The example instance still matches its golden output byte for byte.
     example = tmp_path / "example"

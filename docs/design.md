@@ -1,5 +1,25 @@
 # Design and theme tokens
 
+`static/tokens.css` is the shared, dark-only token layer. Its
+`--ra-brand-*` properties mirror the NPNC amber, ground, surface, carbon and
+plate palette. It also owns the Orbitron heading stack, Jost body stack, type
+scale, four-point spacing scale, border widths and radii. `site.css` maps its
+existing semantic component properties onto that layer so the S1 bridge does
+not alter layout or current rendering. The component alignment slices can move
+those compatibility mappings to the brand values without introducing another
+token source.
+
+The bridge declares `--ra-brand-amber`, `--ra-brand-on-amber`,
+`--ra-brand-ground`, `--ra-brand-surface`, `--ra-brand-text`,
+`--ra-brand-muted`, `--ra-brand-rule`, `--ra-brand-gray`,
+`--ra-brand-carbon`, `--ra-brand-carbon-line`, `--ra-brand-plate`,
+`--ra-brand-amber-deep`, `--ra-brand-glow`, `--ra-brand-glow-strong`,
+`--ra-brand-shadow`, `--ra-compat-bg`, `--ra-compat-surface`,
+`--ra-compat-text`, `--ra-compat-border`, `--ra-compat-shadow-warm`,
+`--ra-compat-shadow`, `--ra-color-black`, `--ra-font-mono`,
+`--ra-radius-square`, `--ra-rule-width` and `--ra-rule-accent-width` in
+addition to the semantic properties documented below.
+
 The link page is plain HTML and one stylesheet. No script runs to draw it, no
 font or image comes from another host, and nothing is styled inline, so a strict
 Content Security Policy can stay on. Every color, size, radius, space and

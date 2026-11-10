@@ -24,6 +24,7 @@ EXAMPLE = INSTANCE / "site.yaml"
 TODAY = date(2027, 3, 10)
 STATIC = resources.files("reach_around.site") / "static"
 CSS = (STATIC / "site.css").read_text()
+TOKENS = (STATIC / "tokens.css").read_text()
 
 
 def build_example(out: Path) -> Path:
@@ -52,15 +53,17 @@ def config_with(**creator_and_theme: Any) -> SiteConfig:
 
 
 def root_block() -> str:
-    match = re.search(r":root\s*\{.*?\n\}", CSS, flags=re.S)
-    assert match, "no :root block"
-    return match.group(0)
+    blocks = re.findall(r":root\s*\{.*?\n\}", TOKENS + CSS, flags=re.S)
+    assert blocks, "no :root block"
+    return "\n".join(blocks)
 
 
 def token(name: str) -> str:
     match = re.search(rf"{re.escape(name)}:\s*([^;]+);", root_block())
     assert match, f"{name} is not declared in :root"
-    return match.group(1).strip()
+    value = match.group(1).strip()
+    alias = re.fullmatch(r"var\((--ra-[a-z0-9-]+)\)", value)
+    return token(alias.group(1)) if alias else value
 
 
 def luminance(hex_color: str) -> float:
@@ -255,8 +258,8 @@ def test_jost_is_vendored_with_its_license_and_served_same_origin(
     assert woff.read_bytes()[:4] == b"wOF2"
     ofl = (fonts / "OFL.txt").read_text()
     assert "SIL OPEN FONT LICENSE Version 1.1" in ofl and "Jost" in ofl
-    assert 'font-family: "Jost"' in CSS
-    face = re.search(r"@font-face\s*\{[^}]*\}", CSS)
+    assert 'font-family: "Jost"' in TOKENS
+    face = re.search(r"@font-face\s*\{[^}]*\}", TOKENS)
     assert face and 'url("fonts/jost-latin-wght-normal.woff2")' in face.group(0)
     assert token("--ra-font-body").startswith('"Jost"')
     out = build_example(tmp_path / "out")
