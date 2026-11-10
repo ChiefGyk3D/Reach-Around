@@ -183,15 +183,26 @@ def check_roots(out_dir: Path, gated_out: Path) -> None:
         )
 
 
+def text_fields(item: Any) -> list[tuple[str, str]]:
+    """(field, text) for every printed string of one list entry: a string, a
+    date in the form the templates print, or each string of a list of strings."""
+    found: list[tuple[str, str]] = []
+    for field, value in item.model_dump().items():
+        for one in value if isinstance(value, list) else [value]:
+            text = one.isoformat() if isinstance(one, date) else one
+            if isinstance(text, str):
+                found.append((field, text))
+    return found
+
+
 def _gated_strings(kit: KitConfig) -> list[tuple[str, str]]:
     """(where, text) for every gated value long enough to search for. Values
     that are not text (dates) are searched in the form the templates print."""
     found: list[tuple[str, str]] = []
-    for name in ("partners", "case_studies", "rates", "demographics"):
+    for name in ("partners", "case_studies", "services", "rates", "demographics"):
         for index, item in enumerate(getattr(kit, name)):
-            for field, value in item.model_dump().items():
-                text = value.isoformat() if isinstance(value, date) else value
-                if isinstance(text, str) and len(text) >= GUARD_MIN_LENGTH:
+            for field, text in text_fields(item):
+                if len(text) >= GUARD_MIN_LENGTH:
                     found.append((f"kit.{name}[{index}].{field}", text))
     if kit.inquiry is not None:
         for field, text in kit.inquiry.model_dump().items():
@@ -666,6 +677,7 @@ def _categories(kit: KitConfig) -> str:
         for label, items in (
             ("past partners", kit.partners),
             ("case studies", kit.case_studies),
+            ("packages", kit.services),
             ("rates", kit.rates),
             ("audience details", kit.demographics),
         )
@@ -687,7 +699,7 @@ def plan_warnings(
     if config.features.kit_gate and not kit.has_gated_content:
         found.append(
             "features.kit_gate is on but the kit has no partners, case studies, "
-            "rates or demographics; no gate form or gated page is built"
+            "packages, rates or demographics; no gate form or gated page is built"
         )
     if has_gate_form(kit) and kit.turnstile_site_key is None:
         found.append(
@@ -745,6 +757,7 @@ def render_kit(
         content.update(
             partners=data["partners"],
             case_studies=data["case_studies"],
+            services=data["services"],
             rates=data["rates"],
             demographics=[
                 {"label": d.label, "value": d.value, "as_of": d.as_of.isoformat()}
