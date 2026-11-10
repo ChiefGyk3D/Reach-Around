@@ -25,6 +25,7 @@ THEMES = ROOT / "examples" / "themes"
 TODAY = date(2027, 1, 15)
 STATIC = resources.files("reach_around.site") / "static"
 CSS = (STATIC / "site.css").read_text()
+TOKENS = (STATIC / "tokens.css").read_text()
 ICON_DIR = Path(str(STATIC / "icons"))
 
 REQUIRED_SLUGS = (
@@ -73,13 +74,13 @@ def test_css_has_focus_visible_and_reduced_motion_rules() -> None:
 
 
 def test_css_tokens_are_declared_used_and_documented() -> None:
-    root = "".join(_root_blocks(CSS))
+    root = "".join(_root_blocks(TOKENS + CSS))
     declared = set(re.findall(r"(--ra-[a-z0-9-]+):", root))
     doc = (ROOT / "docs" / "design.md").read_text()
     documented = set(re.findall(r"`(--ra-[a-z0-9-]+)`", doc))
     assert declared, "no tokens declared"
     assert declared <= documented, sorted(declared - documented)
-    used = set(re.findall(r"var\((--ra-[a-z0-9-]+)", CSS))
+    used = set(re.findall(r"var\((--ra-[a-z0-9-]+)", TOKENS + CSS))
     assert used <= declared, sorted(used - declared)
 
 
@@ -114,20 +115,27 @@ def _mix(fg: RGB, bg: RGB, share: float) -> RGB:
 
 
 def _token_sets() -> dict[str, dict[str, RGB]]:
-    root = "".join(_root_blocks(CSS))
-    sets: dict[str, dict[str, RGB]] = {"light": {}, "dark": {}}
-    pairs = re.findall(
-        r"--ra-color-([a-z]+):\s*light-dark\((#[0-9a-fA-F]{6}),\s*(#[0-9a-fA-F]{6})\)",
-        root,
-    )
-    for name, light, dark in pairs:
-        sets["light"][name] = _hex_to_rgb(light)
-        sets["dark"][name] = _hex_to_rgb(dark)
-    # Brand colors are one value for both modes: --ra-color-name: #rrggbb;
-    for name, value in re.findall(r"--ra-color-([a-z-]+):\s*(#[0-9a-fA-F]{6});", root):
-        for mode in sets:
-            sets[mode][name] = _hex_to_rgb(value)
-    return sets
+    root = "".join(_root_blocks(TOKENS + CSS))
+    declarations = dict(re.findall(r"(--ra-[a-z0-9-]+):\s*([^;]+);", root))
+
+    def resolve(name: str) -> str:
+        value = declarations[name].strip()
+        match = re.fullmatch(r"var\((--ra-[a-z0-9-]+)\)", value)
+        return resolve(match.group(1)) if match else value
+
+    light: dict[str, RGB] = {}
+    dark: dict[str, RGB] = {}
+    for name in ("bg", "surface", "text", "accent", "on-accent", "border"):
+        value = resolve(f"--ra-color-{name}")
+        pair = re.fullmatch(
+            r"light-dark\((#[0-9a-fA-F]{6}),\s*(#[0-9a-fA-F]{6})\)", value
+        )
+        if pair:
+            light[name], dark[name] = _hex_to_rgb(pair[1]), _hex_to_rgb(pair[2])
+        else:
+            assert re.fullmatch(r"#[0-9a-fA-F]{6}", value), (name, value)
+            light[name] = dark[name] = _hex_to_rgb(value)
+    return {"light": light, "dark": dark}
 
 
 def test_contrast_helper_matches_known_values() -> None:
