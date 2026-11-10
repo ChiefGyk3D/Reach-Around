@@ -177,6 +177,24 @@ def test_report_lists_gaps_with_reasons_and_says_totals_cover_collected_time(
     assert text.index("Collection gaps") < text.index("Funnel")
 
 
+def test_report_labels_kit_figures_when_the_window_spans_a_gap(
+    tmp_path: Path,
+) -> None:
+    path = _export(tmp_path, "kit-gap.json")
+    data = json.loads(path.read_text(encoding="utf-8"))
+    data["tables"]["kit_events"] = [
+        {"ts": 1_794_096_000_000, "kind": "view"} for _ in range(5)
+    ]
+    path.write_text(json.dumps(data), encoding="utf-8")
+
+    report = build_report(load_exports([path]), as_of=TODAY, until="2026-11-08")
+    text = render_text(report)
+
+    assert report["funnel"]["spans_collection_gap"] is True
+    assert "Kit views (spans collection gap)" in text
+    assert "Kit unlocks (spans collection gap)" in text
+
+
 def test_report_without_gaps_or_coverage_is_unchanged_text(tmp_path: Path) -> None:
     only_views = tmp_path / "v.json"
     only_views.write_text(

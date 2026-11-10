@@ -45,7 +45,10 @@ were switched off; that day is always partial). Coverage is account-wide, not
 per site, and the report says so (`coverage.scope` is `account`); a table with no
 rows is `not_monitored`, not complete. The text report prints "Collection gaps"
 before the funnel, lists the days and says that a gap is not a zero and that the
-totals cover only the time data was collected. JSON has a `coverage` object
+totals cover only the time data was collected. Each funnel figure is also
+labeled `spans collection gap`, and JSON sets
+`funnel.spans_collection_gap`, so a number stays labeled when it is copied out
+of context. JSON has a `coverage` object
 (`status` of `complete`, `gaps`, `not_monitored` or `not_exported`, counts, and the day lists, at
 most 60 each); `metadata.csv` gets `coverage_status`, `coverage_gap_days` and
 `coverage_partial_days`, and a `gaps.csv` (`day,status,reason`) appears only
@@ -57,6 +60,9 @@ row are unmonitored (nothing is known, not a gap and not a zero); today and the
 first covered day are not judged; a window ending after the newest day in the
 export does not flag the days after it, so pass `--until` when checking recent
 days. Without the table the report says nothing about gaps (`not_exported`).
+
+For response and recovery steps, see the generic
+[collection gaps runbook](collection-gaps-runbook.md).
 
 ## The privacy floor
 
