@@ -27,6 +27,9 @@ EXPECTED_TABLES = {
     "grafana_countries_daily",
     "grafana_clicks_daily",
     "grafana_gaps_daily",
+    "grafana_clicks_monthly",
+    "grafana_sources_monthly",
+    "grafana_countries_monthly",
 }
 
 
@@ -235,7 +238,7 @@ def test_meta_records_site_floor_and_version_only(tmp_path: Path) -> None:
     db = export_ok(tmp_path)
     assert rows(db, "grafana_meta") == [
         ("floor", "5"),
-        ("schema_version", "3"),
+        ("schema_version", "4"),
         ("site", "links"),
     ]
 
@@ -258,7 +261,7 @@ def test_cutover_marks_spanning_window_for_grafana(
     assert rows(out, "grafana_meta") == [
         ("cutover_utc", DAY2),
         ("floor", "5"),
-        ("schema_version", "3"),
+        ("schema_version", "4"),
         ("site", "links"),
         ("window_era", "spans"),
     ]

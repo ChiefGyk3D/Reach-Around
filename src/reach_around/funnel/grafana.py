@@ -20,8 +20,10 @@ label suppression, not k-anonymity; a reader who holds two days or two tables
 can still subtract. The output is deterministic: rows are sorted, nothing
 carries a clock, and the file is built in one pass and moved into place whole.
 
-Only the newest 90 days are kept, counted back from the newest day in the export
-(for this site), so a long export cannot carry older data into the file.
+Only the newest 90 days of daily data are kept, counted back from the newest day
+in the export (for this site), so a long export cannot carry older data into the
+file. The monthly series (``*_monthly``) comes only from the 25 month archive
+(``reach_around.funnel.archive``), which is floored before it is written.
 """
 
 from __future__ import annotations
@@ -47,7 +49,7 @@ from reach_around.funnel.report import (
     _utc_day,
 )
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 RETENTION_DAYS = 90  # the ceiling for local copies (analytics-design, threat B2)
 OTHER = "(below the floor)"
 APPLICATION_ID = 0x52410335  # marks a file this job made, so it never overwrites others
@@ -60,6 +62,12 @@ TABLES: dict[str, tuple[str, ...]] = {
     "grafana_sources_daily": ("day", "source", "views"),
     "grafana_countries_daily": ("day", "country", "views"),
     "grafana_clicks_daily": ("day", "link_id", "clicks"),
+    # The monthly series (issue #399): from the 25 month archive, floored before
+    # it was archived. Empty unless an archive directory is given. month is UTC
+    # YYYY-MM; a label total is a sum of archived (already floored) cells.
+    "grafana_clicks_monthly": ("month", "link_id", "clicks"),
+    "grafana_sources_monthly": ("month", "source", "clicks"),
+    "grafana_countries_monthly": ("month", "country", "clicks"),
     # Days with no or partial collection (issue #402). A day listed here has no row of
     # zeros in the tables above: draw it as a gap. status is gap or partial; reason is
     # outage, quota, kill_switch or site_kill_switch (joined with +).
@@ -91,6 +99,18 @@ CREATE TABLE grafana_clicks_daily (
     day TEXT NOT NULL, link_id TEXT NOT NULL, clicks INTEGER NOT NULL,
     PRIMARY KEY (day, link_id)
 ) WITHOUT ROWID;
+CREATE TABLE grafana_clicks_monthly (
+    month TEXT NOT NULL, link_id TEXT NOT NULL, clicks INTEGER NOT NULL,
+    PRIMARY KEY (month, link_id)
+) WITHOUT ROWID;
+CREATE TABLE grafana_sources_monthly (
+    month TEXT NOT NULL, source TEXT NOT NULL, clicks INTEGER NOT NULL,
+    PRIMARY KEY (month, source)
+) WITHOUT ROWID;
+CREATE TABLE grafana_countries_monthly (
+    month TEXT NOT NULL, country TEXT NOT NULL, clicks INTEGER NOT NULL,
+    PRIMARY KEY (month, country)
+) WITHOUT ROWID;
 CREATE TABLE grafana_gaps_daily (
     day TEXT NOT NULL, status TEXT NOT NULL, reason TEXT NOT NULL,
     PRIMARY KEY (day)
@@ -115,6 +135,29 @@ class Subset:
     countries: list[tuple[str, str, int]] = field(default_factory=list)
     clicks: list[tuple[str, str, int]] = field(default_factory=list)
     gaps: list[tuple[str, str, str]] = field(default_factory=list)
+    clicks_monthly: list[tuple[str, str, int]] = field(default_factory=list)
+    sources_monthly: list[tuple[str, str, int]] = field(default_factory=list)
+    countries_monthly: list[tuple[str, str, int]] = field(default_factory=list)
+
+    def with_archive(self, records: list[dict[str, Any]]) -> None:
+        """Add the monthly series from validated archive records (already floored)."""
+        for rec in records:
+            month = rec["month"]
+            per_link: dict[str, int] = defaultdict(int)
+            per_source: dict[str, int] = defaultdict(int)
+            per_country: dict[str, int] = defaultdict(int)
+            for r in rec["sources"]:
+                per_link[r["link_id"]] += r["clicks"]
+                per_source[r["label"]] += r["clicks"]
+            for r in rec["countries"]:
+                per_country[r["label"]] += r["clicks"]
+            self.clicks_monthly += [(month, k, v) for k, v in sorted(per_link.items())]
+            self.sources_monthly += [
+                (month, k, v) for k, v in sorted(per_source.items())
+            ]
+            self.countries_monthly += [
+                (month, k, v) for k, v in sorted(per_country.items())
+            ]
 
     def counts(self) -> dict[str, int]:
         return {
@@ -125,6 +168,9 @@ class Subset:
             "grafana_countries_daily": len(self.countries),
             "grafana_clicks_daily": len(self.clicks),
             "grafana_gaps_daily": len(self.gaps),
+            "grafana_clicks_monthly": len(self.clicks_monthly),
+            "grafana_sources_monthly": len(self.sources_monthly),
+            "grafana_countries_monthly": len(self.countries_monthly),
         }
 
 
@@ -292,6 +338,9 @@ def _build_bytes(subset: Subset) -> bytes:
             "grafana_countries_daily": subset.countries,
             "grafana_clicks_daily": subset.clicks,
             "grafana_gaps_daily": subset.gaps,
+            "grafana_clicks_monthly": subset.clicks_monthly,
+            "grafana_sources_monthly": subset.sources_monthly,
+            "grafana_countries_monthly": subset.countries_monthly,
         }
         for table, rows in data.items():
             marks = ", ".join("?" for _ in TABLES[table])

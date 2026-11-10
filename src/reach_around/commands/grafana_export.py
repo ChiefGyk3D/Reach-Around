@@ -19,6 +19,7 @@ from datetime import date
 from pathlib import Path
 
 from reach_around.config.cutover import utc_today
+from reach_around.funnel.archive import ArchiveError, load_archive
 from reach_around.funnel.export import ExportError, load_exports
 from reach_around.funnel.grafana import (
     GrafanaExportError,
@@ -58,8 +59,12 @@ def run_grafana_export(args: argparse.Namespace) -> int:
             cutover=_cutover(args.cutover),
             today=utc_today(),
         )
+        if args.archive is not None:
+            subset.with_archive(
+                load_archive(args.archive, site=args.site, today=utc_today())
+            )
         write_store(args.output, subset)
-    except (ExportError, GrafanaExportError, ValueError) as exc:
+    except (ExportError, GrafanaExportError, ArchiveError, ValueError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return EXIT_USAGE
     except (OSError, sqlite3.Error):
@@ -113,5 +118,12 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
         metavar="YYYY-MM-DD",
         help="the cutover UTC day; adds metadata, a Grafana annotation marker, "
         "and the window era. Nothing is added when unset or still ahead",
+    )
+    parser.add_argument(
+        "--archive",
+        type=Path,
+        metavar="DIR",
+        help="the analytics-archive directory; adds the monthly series "
+        "(25 closed months, floored). Daily data stays at 90 days",
     )
     parser.set_defaults(func=run_grafana_export)
