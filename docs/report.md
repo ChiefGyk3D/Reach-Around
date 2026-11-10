@@ -54,6 +54,14 @@ most 60 each); `metadata.csv` gets `coverage_status`, `coverage_gap_days` and
 `coverage_partial_days`, and a `gaps.csv` (`day,status,reason`) appears only
 when there is a gap. A gap day never becomes a row of zeros in any table.
 
+The owner page (`--html`) and the owner CSV carry the same label. When the
+window spans a gap the page opens with a "Collection gaps in this window" note,
+each of the views, clicks and click rate tiles says "Spans a collection gap",
+and the daily table marks gap and partial days. `funnel.csv` has a `coverage`
+column (`spans_collection_gap` or empty) on every figure, `owner_tiles.csv` has
+the same `coverage` column, and `owner_daily.csv` has a `collection` column
+(`gap`, `partial` or empty). The `status` columns keep their existing words.
+
 What it does not claim: coverage is sampled once an hour, so a kill switch
 flipped on and off inside one hour can be missed; days before the first coverage
 row are unmonitored (nothing is known, not a gap and not a zero); today and the
@@ -99,7 +107,7 @@ aggregate label and a count; there is no per-visitor row and no unique count.
 | File | Columns | Rows |
 |---|---|---|
 | `metadata.csv` | `key,value` | `generated_at_utc`, `window_since_utc`, `window_until_utc`, `days_with_data` (not in a released `--period` report), `requested_since_utc`, `requested_until_utc`, `requested_days`, `timezone` (always `UTC`), `site`, `privacy_floor_views`, `counted_classes`, `geography_level`, `report_version`, `coverage_status`, `coverage_gap_days`, `coverage_partial_days` |
-| `funnel.csv` | `step,value,status` | page views, clicks, kit views, kit unlocks, the two ratios; status `ok`, `below_floor`, `not_in_export`, `not_available`, `n/a` |
+| `funnel.csv` | `step,value,status,coverage` | page views, clicks, kit views, kit unlocks, the two ratios; status `ok`, `below_floor`, `not_in_export`, `not_available`, `n/a`; coverage `spans_collection_gap` when the window spans a collection gap, else empty |
 | `pages.csv`, `sources.csv`, `geography.csv`, `links.csv`, `devices.csv`, `browsers.csv`, `systems.csv`, `bot_reasons.csv` | `label,views,row_type` | `row`, one `below_floor` row for the merged remainder, or a single row typed `withheld` or `not_in_export` |
 | `bot_classes.csv` | `class,name,views,share_percent,row_type` | as above |
 | `click_matrix.csv`, `click_countries.csv` | `source,destination,clicks,row_type` and `country,destination,clicks,row_type` | `cell` (a printed cell of a whole destination), or a single row typed `withheld` or `not_in_export` |

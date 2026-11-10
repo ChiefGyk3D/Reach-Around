@@ -195,7 +195,7 @@ def test_csv_files_header_and_order(
         "systems.csv",
     ]
     assert read(out_dir / "devices.csv")[0] == ["label", "views", "row_type"]
-    assert read(out_dir / "funnel.csv")[0] == ["step", "value", "status"]
+    assert read(out_dir / "funnel.csv")[0] == ["step", "value", "status", "coverage"]
     assert (out_dir / "devices.csv").read_bytes().endswith(b"\r\n")
     assert (out_dir / "devices.csv").stat().st_mode & 0o777 == 0o600
 

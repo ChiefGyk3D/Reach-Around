@@ -15,7 +15,9 @@ name its reason and label every total or ratio whose window crosses it.
    restoring data or turning collection back on.
 4. Correct the cause, then confirm that a new complete hour is recorded.
 5. Rebuild the report and dashboard export. Confirm that the affected interval
-   remains a labeled gap and that figures spanning it carry the gap label.
+   remains a labeled gap and that figures spanning it carry the gap label in the
+   text report, the `--html` tiles, `funnel.csv` (`coverage`), `owner_tiles.csv`
+   (`coverage`) and `owner_daily.csv` (`collection`).
 
 ## Kill switches
 
