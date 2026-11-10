@@ -19,6 +19,7 @@ from pathlib import Path
 
 from reach_around.config.cutover import utc_today
 from reach_around.config.zones import ZONES, check_zone
+from reach_around.counts.history import HistoryError, read_history
 from reach_around.funnel.csvout import csv_files, utc_now, write_csv_dir
 from reach_around.funnel.display import annotate
 from reach_around.funnel.export import ExportError, load_exports
@@ -27,6 +28,7 @@ from reach_around.funnel.ledger import LedgerError, init_ledger, reanchor_ledger
 from reach_around.funnel.owner import owner_view
 from reach_around.funnel.release import release_report
 from reach_around.funnel.report import FLOOR, build_report, render_text
+from reach_around.funnel.social import build_social
 
 EXIT_OK = 0
 EXIT_USAGE = 2
@@ -142,10 +144,18 @@ def run_report(args: argparse.Namespace) -> int:
                 **options,
             )
         annotate(report, zone=zone, cutover=cutover, today=utc_today())
+        if args.history is not None:
+            report["social"] = build_social(
+                read_history(args.history),
+                cutover=cutover,
+                today=utc_today(),
+                zone=zone,
+            )
     except (
         ExportError,
         ValueError,
         LedgerError,
+        HistoryError,
     ) as exc:  # IncompletePeriod is a ValueError
         print(f"error: {exc}", file=sys.stderr)
         return EXIT_USAGE
@@ -307,6 +317,15 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
         metavar="YYYY-MM-DD",
         help="the cutover UTC day; labels the window as before Reach Around, "
         "after, or spanning it. Nothing is added when unset or still ahead",
+    )
+    parser.add_argument(
+        "--history",
+        type=Path,
+        metavar="FILE",
+        help="the social-stats history file (numbers.history_file in your private "
+        "instance repo; read only). Adds the per-platform numbers with 30, 90 and "
+        "365 day change, the days with no record, and the imported (Beacons) "
+        "history in its own block. A missing day is a gap, never a zero",
     )
     parser.add_argument("--json", action="store_true", help="print JSON, not text")
     parser.add_argument(
