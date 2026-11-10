@@ -852,6 +852,20 @@
           "title": "Demographics",
           "type": "array"
         },
+        "disclosure": {
+          "anyOf": [
+            {
+              "maxLength": 500,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Disclosure"
+        },
         "inquiry": {
           "anyOf": [
             {

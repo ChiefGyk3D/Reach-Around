@@ -921,6 +921,7 @@ end. Text must be quoted if YAML would read it as a number.
 | `rates` | list of rate | none | at most 30 |
 | `demographics` | list of demographic | none | at most 30 |
 | `inquiry` | inquiry block | none | the business inquiry form on the gated page and the owner details beside it; see the note below. Needs `features.kit_gate` |
+| `disclosure` | text | none | a short statement, at most 500 characters; gated; see the note below |
 | `turnstile_site_key` | text | none | public key of the Turnstile widget on the gate form; 1 to 64 letters, digits, `-` or `_`. Without it the form has an empty widget slot and the build warns |
 | `unlock_link` | true or false | `false` | v1 has no emailed unlock link, so `true` is refused with a clear error until it exists |
 
@@ -948,17 +949,27 @@ price is allowed per package but not required. A **rate** has `item` (80) and `p
 `Ask me!` or `From $200` are fine. A **demographic** has `label` (60), `value`
 (80) and a required `as_of`.
 
+**Disclosure statement.** `kit.disclosure` is optional: a couple of sentences, in
+your own words, on how you disclose paid relationships and affiliate links and
+what content a brand can expect to sit next to. Reach Around supplies no
+wording; the FTC's Disclosures 101 for social media influencers is the
+reference for what to cover. It is shown on the gated page and in the owner PDF
+only. It is not the site-wide footer [`disclosure`](#disclosure) that goes under
+every page: if the two texts are the same, the build stops (the leak search
+finds the gated text on a public page), so word them differently. Left out,
+nothing is printed.
+
 **Display policy.** The table is fixed, not a setting:
 
 | Field | Shown |
 | --- | --- |
 | `title`, `about`, `contact`, `metrics`, the unified total | public |
-| `partners`, `case_studies`, `services`, `rates`, `demographics`, `inquiry` | gated (only after the gate) |
+| `partners`, `case_studies`, `services`, `rates`, `demographics`, `disclosure`, `inquiry` | gated (only after the gate) |
 | `turnstile_site_key` | public (it ships in the gate form; the key is public by design) |
 | `unlock_link` | private (configuration, never shown) |
 
 The public half therefore shows the header and the headline numbers and nothing
-else. If `partners`, `case_studies`, `services`, `rates`, `demographics` or `inquiry` is set,
+else. If `partners`, `case_studies`, `services`, `rates`, `demographics`, `disclosure` or `inquiry` is set,
 `features.kit_gate` must be `true`; the config is refused otherwise, so gated
 content can never be published with no gate.
 
@@ -1016,6 +1027,7 @@ kit:
       price_text: Ask me!
   rates:
     - {item: Sponsored video, price_text: Ask me!}
+  disclosure: An example statement about how paid work is marked.
 ```
 
 ## `numbers`

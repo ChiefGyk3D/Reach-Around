@@ -72,6 +72,7 @@ DISPLAY_POLICY: Mapping[str, Visibility] = {
     "rates": "gated",
     "demographics": "gated",
     "inquiry": "gated",
+    "disclosure": "gated",
     "unlock_link": "private",
 }
 
@@ -303,6 +304,11 @@ class KitConfig(_Model):
     # The inquiry form (gated page only) and the owner's address and key fingerprint
     # shown beside it. Left out: no form.
     inquiry: Inquiry | None = None
+    # A short statement (a couple of sentences) on how paid relationships and
+    # affiliate links are disclosed and what content a brand can expect to sit
+    # next to. The owner words it; nothing is generated. Distinct from the
+    # site-wide affiliate ``disclosure`` in the page footer.
+    disclosure: Text500 | None = None
     # Public key of the Turnstile widget on the gate form. Optional: without it
     # the form renders an empty widget slot and the build warns.
     turnstile_site_key: StrictStr | None = None
