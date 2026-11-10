@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<!-- SPDX-License-Identifier: Apache-2.0 -->
+<!-- Component sheet for the NPNC shared components (#517). Dev artifact: not built into any site.
+     Open it through a static server rooted at the repository so the relative links resolve. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Component sheet</title>
+<link rel="stylesheet" href="../../src/reach_around/site/static/tokens.css">
+<link rel="stylesheet" href="../../src/reach_around/site/static/components.css">
+<link rel="stylesheet" href="sheet.css">
+</head>
+<body>
+<main>
+<h1>Shared components</h1>
+
+<section id="plate" aria-labelledby="h-plate">
+<h2 id="h-plate">Plate</h2>
+<div class="row">
+<div class="ra-c-plate"><h3 class="ra-c-plate-title">Surface plate</h3><p class="ra-c-plate-text">Default panel.</p></div>
+<div class="ra-c-plate ra-c-plate--carbon"><h3 class="ra-c-plate-title">Carbon plate</h3><p class="ra-c-plate-text">Recessed panel.</p></div>
+<div class="ra-c-plate ra-c-plate--amber"><h3 class="ra-c-plate-title">Amber plate</h3><p class="ra-c-plate-text">Highlighted panel.</p></div>
+<a class="ra-c-plate ra-c-plate--carbon is-focus" href="#plate"><h3 class="ra-c-plate-title">Focused plate</h3><p class="ra-c-plate-text">Keyboard focus ring.</p></a>
+</div>
+</section>
+
+<section id="ticks" aria-labelledby="h-ticks">
+<h2 id="h-ticks">Corner-tick frame</h2>
+<div class="row">
+<div class="ra-c-plate ra-c-ticks"><h3 class="ra-c-plate-title">Ticks</h3><p class="ra-c-plate-text">Amber corners.</p></div>
+<div class="ra-c-plate ra-c-ticks ra-c-ticks--quiet"><h3 class="ra-c-plate-title">Quiet ticks</h3><p class="ra-c-plate-text">Half strength.</p></div>
+<div class="ra-c-plate ra-c-plate--amber ra-c-ticks ra-c-ticks--glow"><h3 class="ra-c-plate-title">Ticks and glow</h3><p class="ra-c-plate-text">Featured block.</p></div>
+</div>
+</section>
+
+<section id="chips" aria-labelledby="h-chips">
+<h2 id="h-chips">Chips</h2>
+<div class="row">
+<span class="ra-c-chip">Default</span>
+<span class="ra-c-chip ra-c-chip--amber">Amber</span>
+<span class="ra-c-chip ra-c-chip--solid">Solid</span>
+</div>
+<div class="row">
+<a class="ra-c-chip" href="#chips">Link</a>
+<a class="ra-c-chip is-hover" href="#chips">Hover</a>
+<a class="ra-c-chip is-focus" href="#chips">Focus</a>
+<button class="ra-c-chip" type="button" aria-pressed="true">Pressed</button>
+<a class="ra-c-chip" href="#chips" aria-current="page">Current</a>
+<button class="ra-c-chip" type="button" disabled>Disabled</button>
+<a class="ra-c-chip" aria-disabled="true">Disabled link</a>
+</div>
+</section>
+
+<section id="buttons" aria-labelledby="h-buttons">
+<h2 id="h-buttons">Buttons</h2>
+<div class="row">
+<button class="ra-c-btn" type="button">Primary</button>
+<button class="ra-c-btn is-hover" type="button">Hover</button>
+<button class="ra-c-btn is-focus" type="button">Focus</button>
+<button class="ra-c-btn is-active" type="button">Active</button>
+<button class="ra-c-btn" type="button" disabled>Disabled</button>
+</div>
+<div class="row">
+<button class="ra-c-btn ra-c-btn--secondary" type="button">Secondary</button>
+<button class="ra-c-btn ra-c-btn--secondary is-hover" type="button">Hover</button>
+<button class="ra-c-btn ra-c-btn--secondary is-focus" type="button">Focus</button>
+<button class="ra-c-btn ra-c-btn--secondary is-active" type="button">Active</button>
+<button class="ra-c-btn ra-c-btn--secondary" type="button" disabled>Disabled</button>
+</div>
+<div class="row">
+<a class="ra-c-btn ra-c-btn--ghost" href="#buttons">Ghost</a>
+<a class="ra-c-btn ra-c-btn--ghost is-hover" href="#buttons">Hover</a>
+<a class="ra-c-btn ra-c-btn--ghost is-focus" href="#buttons">Focus</a>
+<a class="ra-c-btn ra-c-btn--ghost is-active" href="#buttons">Active</a>
+<a class="ra-c-btn ra-c-btn--ghost" aria-disabled="true">Disabled</a>
+</div>
+</section>
+</main>
+</body>
+</html>

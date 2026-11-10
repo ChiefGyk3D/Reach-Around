@@ -1,0 +1,154 @@
+/* SPDX-License-Identifier: Apache-2.0 */
+/* NPNC shared components (S2): plate, corner-tick frame, chips and buttons.
+   Dark only. Every color, font, size and space reads a token from tokens.css,
+   so this file holds no raw color or font value. Class names start with
+   ra-c- so they cannot collide with the existing link-page rules; page slices
+   (S3 to S7) adopt them, nothing links this sheet yet. */
+
+/* Plate: a flat dark panel with a hairline rule. */
+.ra-c-plate {
+  box-sizing: border-box;
+  padding: var(--ra-space-4);
+  background-color: var(--ra-brand-surface);
+  color: var(--ra-brand-text);
+  border: var(--ra-rule-width) solid var(--ra-brand-rule);
+  border-radius: var(--ra-radius-square);
+}
+.ra-c-plate--carbon { background-color: var(--ra-brand-carbon); border-color: var(--ra-brand-carbon-line); }
+.ra-c-plate--amber {
+  background-color: var(--ra-brand-plate);
+  border-color: var(--ra-brand-amber-deep);
+  border-top: var(--ra-rule-accent-width) solid var(--ra-brand-amber);
+}
+.ra-c-plate-title {
+  margin: 0 0 var(--ra-space-2);
+  font-family: var(--ra-font-heading);
+  font-size: var(--ra-text-md);
+  letter-spacing: 0.04em;
+  color: var(--ra-brand-text);
+}
+.ra-c-plate-text { margin: 0; color: var(--ra-brand-muted); }
+
+/* Corner-tick frame: four amber L ticks drawn on the corners of any box, from
+   gradients only (no image, no inline style). Add it to a plate or any block. */
+.ra-c-ticks {
+  --ra-c-tick: 0.875rem;
+  --ra-c-tick-line: var(--ra-rule-accent-width);
+  position: relative;
+  isolation: isolate;
+}
+.ra-c-ticks::before {
+  content: "";
+  position: absolute;
+  inset: calc(var(--ra-space-1) * -1);
+  z-index: -1;
+  pointer-events: none;
+  background:
+    linear-gradient(var(--ra-brand-amber), var(--ra-brand-amber)) top left / var(--ra-c-tick) var(--ra-c-tick-line),
+    linear-gradient(var(--ra-brand-amber), var(--ra-brand-amber)) top left / var(--ra-c-tick-line) var(--ra-c-tick),
+    linear-gradient(var(--ra-brand-amber), var(--ra-brand-amber)) top right / var(--ra-c-tick) var(--ra-c-tick-line),
+    linear-gradient(var(--ra-brand-amber), var(--ra-brand-amber)) top right / var(--ra-c-tick-line) var(--ra-c-tick),
+    linear-gradient(var(--ra-brand-amber), var(--ra-brand-amber)) bottom left / var(--ra-c-tick) var(--ra-c-tick-line),
+    linear-gradient(var(--ra-brand-amber), var(--ra-brand-amber)) bottom left / var(--ra-c-tick-line) var(--ra-c-tick),
+    linear-gradient(var(--ra-brand-amber), var(--ra-brand-amber)) bottom right / var(--ra-c-tick) var(--ra-c-tick-line),
+    linear-gradient(var(--ra-brand-amber), var(--ra-brand-amber)) bottom right / var(--ra-c-tick-line) var(--ra-c-tick);
+  background-repeat: no-repeat;
+}
+.ra-c-ticks--quiet::before { opacity: 0.5; }
+.ra-c-ticks--glow { box-shadow: 0 0 1.5rem var(--ra-brand-glow); }
+
+/* Chip: a small square label. Static, or a link or button when interactive. */
+.ra-c-chip {
+  box-sizing: border-box;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--ra-space-1);
+  min-height: 1.75rem;
+  padding: var(--ra-space-1) var(--ra-space-3);
+  font-family: var(--ra-font-heading);
+  font-size: var(--ra-text-xs);
+  font-weight: 600;
+  line-height: 1.2;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  text-decoration: none;
+  color: var(--ra-brand-text);
+  background-color: var(--ra-brand-carbon);
+  border: var(--ra-rule-width) solid var(--ra-brand-rule);
+  border-radius: var(--ra-radius-square);
+}
+.ra-c-chip--amber { color: var(--ra-brand-amber); border-color: var(--ra-brand-amber-deep); background-color: var(--ra-brand-plate); }
+.ra-c-chip--solid { color: var(--ra-brand-on-amber); background-color: var(--ra-brand-amber); border-color: var(--ra-brand-amber); }
+a.ra-c-chip, button.ra-c-chip {
+  cursor: pointer;
+  font-family: var(--ra-font-heading);
+  transition: background-color var(--ra-duration), border-color var(--ra-duration), color var(--ra-duration);
+}
+/* Touch devices get the full tap target. */
+@media (pointer: coarse) {
+  a.ra-c-chip, button.ra-c-chip { min-height: var(--ra-tap); padding-inline: var(--ra-space-4); }
+}
+a.ra-c-chip:is(:hover, .is-hover), button.ra-c-chip:is(:hover, .is-hover), span.ra-c-chip.is-hover { border-color: var(--ra-brand-amber); color: var(--ra-brand-amber); }
+.ra-c-chip.ra-c-chip[aria-pressed="true"], .ra-c-chip.ra-c-chip[aria-current] {
+  color: var(--ra-brand-on-amber);
+  background-color: var(--ra-brand-amber);
+  border-color: var(--ra-brand-amber);
+}
+.ra-c-chip.ra-c-chip[disabled], .ra-c-chip.ra-c-chip[aria-disabled="true"] {
+  cursor: not-allowed;
+  color: var(--ra-brand-gray);
+  background-color: var(--ra-brand-carbon);
+  border-color: var(--ra-brand-carbon-line);
+}
+
+/* Button: square, Orbitron label, 44 px tap target. */
+.ra-c-btn {
+  box-sizing: border-box;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--ra-space-2);
+  min-height: var(--ra-tap);
+  padding: var(--ra-space-2) var(--ra-space-5);
+  font-family: var(--ra-font-heading);
+  font-size: var(--ra-text-sm);
+  font-weight: 700;
+  line-height: 1.2;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  text-align: center;
+  text-decoration: none;
+  cursor: pointer;
+  color: var(--ra-brand-on-amber);
+  background-color: var(--ra-brand-amber);
+  border: var(--ra-rule-width) solid var(--ra-brand-amber);
+  border-radius: var(--ra-radius-square);
+  transition: background-color var(--ra-duration), border-color var(--ra-duration), color var(--ra-duration), box-shadow var(--ra-duration);
+}
+.ra-c-btn:is(:hover, .is-hover) { background-color: var(--ra-brand-amber); border-color: var(--ra-brand-text); box-shadow: 0 0 1rem var(--ra-brand-glow-strong); }
+.ra-c-btn:is(:active, .is-active) { background-color: var(--ra-brand-plate); border-color: var(--ra-brand-amber); color: var(--ra-brand-amber); box-shadow: none; }
+.ra-c-btn--secondary { color: var(--ra-brand-amber); background-color: transparent; border-color: var(--ra-brand-amber); }
+.ra-c-btn--secondary:is(:hover, .is-hover) { color: var(--ra-brand-amber); background-color: var(--ra-brand-glow); border-color: var(--ra-brand-amber); box-shadow: none; }
+.ra-c-btn--secondary:is(:active, .is-active) { color: var(--ra-brand-text); background-color: var(--ra-brand-plate); border-color: var(--ra-brand-amber-deep); }
+.ra-c-btn--ghost { color: var(--ra-brand-text); background-color: transparent; border-color: var(--ra-brand-rule); }
+.ra-c-btn--ghost:is(:hover, .is-hover) { color: var(--ra-brand-amber); background-color: var(--ra-brand-carbon); border-color: var(--ra-brand-amber-deep); box-shadow: none; }
+.ra-c-btn--ghost:is(:active, .is-active) { color: var(--ra-brand-text); background-color: var(--ra-brand-plate); border-color: var(--ra-brand-amber-deep); }
+.ra-c-btn[disabled], .ra-c-btn[aria-disabled="true"] {
+  cursor: not-allowed;
+  color: var(--ra-brand-gray);
+  background-color: var(--ra-brand-carbon);
+  border-color: var(--ra-brand-carbon-line);
+  box-shadow: none;
+}
+
+/* State mirrors: .is-hover, .is-active and .is-focus draw a state on demand for
+   the component sheet and tests; real :hover, :active and :focus-visible match.
+   Keyboard focus: one ring for every component, 3:1 or better on all grounds. */
+.ra-c-btn:is(:focus-visible, .is-focus), .ra-c-chip:is(:focus-visible, .is-focus), .ra-c-plate:is(:focus-visible, .is-focus) {
+  outline: var(--ra-rule-accent-width) solid var(--ra-brand-text);
+  outline-offset: var(--ra-space-1);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ra-c-btn, a.ra-c-chip, button.ra-c-chip { transition: none; }
+}

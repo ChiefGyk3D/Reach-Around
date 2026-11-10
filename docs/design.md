@@ -20,6 +20,19 @@ The bridge declares `--ra-brand-amber`, `--ra-brand-on-amber`,
 `--ra-radius-square`, `--ra-rule-width` and `--ra-rule-accent-width` in
 addition to the semantic properties documented below.
 
+## Shared components (S2)
+
+`static/components.css` holds the brand component layer, built only from
+`tokens.css`: a plate (`ra-c-plate`, with `--carbon` and `--amber`), a
+corner-tick frame (`ra-c-ticks`, `--quiet`, `--glow`), chips (`ra-c-chip`,
+`--amber`, `--solid`, `aria-pressed`, `aria-current`, disabled) and buttons
+(`ra-c-btn`, `--secondary`, `--ghost`). Corners are square, buttons keep the
+44 px tap target, and one white 3 px focus ring serves every component. The
+`.is-hover`, `.is-active` and `.is-focus` classes draw a state on demand for the
+sheet. No page links the file yet. Open `docs/design-sheet/components.html`
+through a static server rooted at the repository to see every component in every
+state. Contrast pairs are tested in `tests/site/test_components.py`.
+
 The link page is plain HTML and one stylesheet. No script runs to draw it, no
 font or image comes from another host, and nothing is styled inline, so a strict
 Content Security Policy can stay on. Every color, size, radius, space and
