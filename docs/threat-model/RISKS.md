@@ -2,11 +2,11 @@
 
 This is the ranked plain-language view of Open threats in `reach-around.threat-model.json`. The ranking weighs impact and the prerequisites needed to cause harm. The full descriptions, STRIDE categories, and data-flow context are in the model. The source content is `docs/security/threat-model.md`.
 
-40 threats in four diagrams: 15 Mitigated, 25 Open.
+49 threats in four diagrams: 23 Mitigated, 26 Open.
 
 | Scope | Total | Mitigated | Open | Accepted | Not Applicable |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| All diagrams | 40 | 15 | 25 | 0 | 0 |
+| All diagrams | 49 | 23 | 26 | 0 | 0 |
 
 ## Ranking
 
@@ -34,9 +34,10 @@ This is the ranked plain-language view of Open threats in `reach-around.threat-m
 | 20 | T-27 | The planned upload route lacks end-to-end controls and tests. | High | Implement generated names, exclusive writes, caps, metadata policy, and upload tests. |
 | 21 | T-29 | Editor state or media listing can disclose secrets. | High | Schema-allowlist state and add sentinel and listing tests. |
 | 22 | T-34 | Preview isolation is partial. | High | Build the real preview and test frame and navigation isolation in a browser. |
-| 23 | T-30 | The editor can be framed for clickjacking. | Medium | Add framing response controls and an integration test. |
-| 24 | T-25 | Future uploads and media counts lack resource caps. | Medium | Add upload-rate and media-count controls with tests. |
-| 25 | T-36 | An editor session can remain running after the owner leaves. | Medium | Add the idle timeout, page exit control, and visible session state. |
+| 23 | T-25 | Future uploads and media counts lack resource caps. | Medium | Add upload-rate and media-count controls with tests. |
+| 24 | T-36 | An editor session can remain running after the owner leaves. | Medium | Add the idle timeout, page exit control, and visible session state. |
+| 25 | T-39, T-40 | The Live page slice is not built, so player embeds and third-party code are unverified. | Medium | Build click-to-load players from named hosts only, with page tests. |
+| 26 | T-46 | The hourly lead purge schedule is unobserved because nothing is deployed. | Medium | Deploy the Worker and observe the heartbeat. |
 
 ## Status rule and limits
 
