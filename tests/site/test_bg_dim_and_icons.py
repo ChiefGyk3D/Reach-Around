@@ -28,7 +28,7 @@ CSS = (STATIC / "site.css").read_text()
 TODAY = date(2027, 3, 10)
 
 
-def config(**theme: Any) -> SiteConfig:
+def config(*, icon: str = "bitcoin", **theme: Any) -> SiteConfig:
     data: dict[str, Any] = {
         "version": 1,
         "creator": {
@@ -46,7 +46,7 @@ def config(**theme: Any) -> SiteConfig:
                         "id": "one",
                         "title": "One",
                         "url": "https://x.example/",
-                        "icon": "bitcoin",
+                        "icon": icon,
                     }
                 ],
             }
@@ -216,10 +216,10 @@ def test_the_screen_rejects_the_unstripped_source_icons_only_for_role() -> None:
         check_content("k", "merch.svg", (MEDIA_ICONS / "merch.svg").read_bytes())
 
 
-def test_a_link_with_a_new_icon_slug_renders_the_icon(tmp_path: Path) -> None:
+@pytest.mark.parametrize("slug", ["streamelements", "pixelfed"])
+def test_a_link_with_a_service_icon_renders_the_icon(tmp_path: Path, slug: str) -> None:
     out = tmp_path / "out"
-    build_site(config(), out, today=TODAY)
+    build_site(config(icon=slug), out, today=TODAY)
     html = (out / "index.html").read_text()
-    assert "icon-merch" in html and "icon-bitcoin" in html
-    assert asset_file(out, "static/icons/merch.svg").is_file()
-    assert asset_file(out, "static/icons/bitcoin.svg").is_file()
+    assert f"icon-{slug}" in html
+    assert asset_file(out, f"static/icons/{slug}.svg").is_file()

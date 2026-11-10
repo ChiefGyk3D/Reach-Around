@@ -135,7 +135,7 @@ color and no request leaves the site.
 The `icon` field of a social or a link is a slug from this list: `twitch`,
 `kick`, `mastodon`, `bluesky`, `tiktok`, `discord`, `youtube`, `github`,
 `instagram`, `threads`, `matrix`, `x`, `linkedin`, `patreon`, `email`, `rss`,
-`link`, `bitcoin`, `ethereum`, `merch`, `monero`, `solana`. An unknown slug shows the text label instead. Brand marks remain
+`link`, `bitcoin`, `ethereum`, `merch`, `monero`, `solana`, `streamelements`, `pixelfed`. An unknown slug shows the text label instead. Brand marks remain
 trademarks of their owners.
 
 ## Responsive layout
