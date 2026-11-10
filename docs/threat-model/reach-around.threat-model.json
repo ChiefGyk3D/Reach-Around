@@ -1,0 +1,2828 @@
+{
+  "version": "2.6.2",
+  "summary": {
+    "title": "Reach Around threat model",
+    "owner": "ChiefGyk3D",
+    "description": "STRIDE model for Reach Around issue 481. docs/security/threat-model.md is the source of truth. Mitigated requires a visible tested repository control; provider and planned controls remain Open.",
+    "id": 0
+  },
+  "detail": {
+    "contributors": [
+      {
+        "name": "ChiefGyk3D"
+      }
+    ],
+    "diagrams": [
+      {
+        "version": "2.6.2",
+        "title": "1 Build and publish path",
+        "diagramType": "STRIDE",
+        "id": 0,
+        "thumbnail": "../assets/logo-512.png",
+        "cells": [
+          {
+            "position": {
+              "x": 20,
+              "y": 20
+            },
+            "size": {
+              "width": 600,
+              "height": 250
+            },
+            "attrs": {
+              "body": {
+                "stroke": "#b45309",
+                "strokeWidth": 3,
+                "strokeDasharray": "10 5",
+                "fill": "transparent",
+                "fillOpacity": 0,
+                "rx": 10,
+                "ry": 10
+              },
+              "label": {
+                "text": "TB1 Owner files"
+              }
+            },
+            "visible": true,
+            "shape": "trust-boundary-box",
+            "zIndex": -50,
+            "id": "boundary-001",
+            "data": {
+              "type": "tm.BoundaryBox",
+              "name": "TB1 Owner files",
+              "description": "Owner-trusted input is validated.",
+              "isTrustBoundary": true,
+              "hasOpenThreats": false,
+              "threats": []
+            }
+          },
+          {
+            "position": {
+              "x": 20,
+              "y": 300
+            },
+            "size": {
+              "width": 850,
+              "height": 250
+            },
+            "attrs": {
+              "body": {
+                "stroke": "#b45309",
+                "strokeWidth": 3,
+                "strokeDasharray": "10 5",
+                "fill": "transparent",
+                "fillOpacity": 0,
+                "rx": 10,
+                "ry": 10
+              },
+              "label": {
+                "text": "TB2 Repository and CI"
+              }
+            },
+            "visible": true,
+            "shape": "trust-boundary-box",
+            "zIndex": -50,
+            "id": "boundary-002",
+            "data": {
+              "type": "tm.BoundaryBox",
+              "name": "TB2 Repository and CI",
+              "description": "Untrusted contributions cross into builds.",
+              "isTrustBoundary": true,
+              "hasOpenThreats": false,
+              "threats": []
+            }
+          },
+          {
+            "position": {
+              "x": 900,
+              "y": 200
+            },
+            "size": {
+              "width": 350,
+              "height": 350
+            },
+            "attrs": {
+              "body": {
+                "stroke": "#b45309",
+                "strokeWidth": 3,
+                "strokeDasharray": "10 5",
+                "fill": "transparent",
+                "fillOpacity": 0,
+                "rx": 10,
+                "ry": 10
+              },
+              "label": {
+                "text": "TB3 Cloudflare deploy"
+              }
+            },
+            "visible": true,
+            "shape": "trust-boundary-box",
+            "zIndex": -50,
+            "id": "boundary-003",
+            "data": {
+              "type": "tm.BoundaryBox",
+              "name": "TB3 Cloudflare deploy",
+              "description": "Third-party live settings.",
+              "isTrustBoundary": true,
+              "hasOpenThreats": false,
+              "threats": []
+            }
+          },
+          {
+            "position": {
+              "x": 50,
+              "y": 80
+            },
+            "size": {
+              "width": 180,
+              "height": 80
+            },
+            "attrs": {
+              "text": {
+                "text": "Owner"
+              },
+              "body": {
+                "stroke": "#333333",
+                "strokeWidth": 1,
+                "strokeDasharray": null
+              }
+            },
+            "visible": true,
+            "shape": "actor",
+            "zIndex": 13,
+            "id": "actor-004",
+            "data": {
+              "name": "Owner",
+              "description": "Maintains configuration and approves releases.",
+              "type": "tm.Actor",
+              "isTrustBoundary": false,
+              "outOfScope": false,
+              "reasonOutOfScope": "",
+              "threats": [],
+              "hasOpenThreats": false,
+              "providesAuthentication": false
+            }
+          },
+          {
+            "position": {
+              "x": 300,
+              "y": 80
+            },
+            "size": {
+              "width": 180,
+              "height": 80
+            },
+            "attrs": {
+              "text": {
+                "text": "Config and assets"
+              },
+              "topLine": {
+                "stroke": "#333333",
+                "strokeWidth": 1,
+                "strokeDasharray": null
+              },
+              "bottomLine": {
+                "stroke": "#333333",
+                "strokeWidth": 1,
+                "strokeDasharray": null
+              }
+            },
+            "visible": true,
+            "shape": "store",
+            "zIndex": 15,
+            "id": "store-006",
+            "data": {
+              "name": "Config and assets",
+              "description": "Instance copy, images, styles, and overrides.",
+              "type": "tm.Store",
+              "isTrustBoundary": false,
+              "outOfScope": false,
+              "reasonOutOfScope": "",
+              "threats": [
+                {
+                  "id": "threat-005",
+                  "title": "T-10 and T-20 Shipped input confinement controls",
+                  "status": "Mitigated",
+                  "severity": "High",
+                  "type": "Tampering",
+                  "modelType": "STRIDE",
+                  "description": "Hostile configuration, assets, CSS, SVG, or templates could escape the shipped input confinement controls or steer an interpreter.",
+                  "mitigation": "T-10 and T-20 shipped subset: src/reach_around/site applies the hardened loader, closed schema, confined reads, caps, allowlists, refusals, and sandboxing; tests/config/test_loader.py, tests/config/test_models.py, and tests/site/test_assets_security.py verify those controls.",
+                  "number": 1
+                },
+                {
+                  "id": "threat-071",
+                  "title": "T-10 and T-20 Remaining build and image controls",
+                  "status": "Open",
+                  "severity": "High",
+                  "type": "Information disclosure",
+                  "modelType": "STRIDE",
+                  "description": "Reserved names, whole-build output confinement, or image metadata could escape the intended publication boundary.",
+                  "mitigation": "T-10 and T-20 remainder: add the missing reserved-name and whole-build confinement controls and tests, then decide and implement metadata handling for published images.",
+                  "number": 71
+                }
+              ],
+              "hasOpenThreats": true
+            }
+          },
+          {
+            "position": {
+              "x": 80,
+              "y": 370
+            },
+            "size": {
+              "width": 180,
+              "height": 80
+            },
+            "attrs": {
+              "text": {
+                "text": "Engine and config loader"
+              },
+              "body": {
+                "stroke": "#333333",
+                "strokeWidth": 1,
+                "strokeDasharray": null
+              }
+            },
+            "visible": true,
+            "shape": "process",
+            "zIndex": 17,
+            "id": "process-008",
+            "data": {
+              "name": "Engine and config loader",
+              "description": "Loads schema and confines files.",
+              "type": "tm.Process",
+              "isTrustBoundary": false,
+              "outOfScope": false,
+              "reasonOutOfScope": "",
+              "threats": [
+                {
+                  "id": "threat-007",
+                  "title": "T-08 Static page injection and framing controls",
+                  "status": "Mitigated",
+                  "severity": "High",
+                  "type": "Tampering",
+                  "modelType": "STRIDE",
+                  "description": "Configured text or URLs could inject active content or permit framing in static pages.",
+                  "mitigation": "T-08 shipped subset: src/reach_around/site builds escaped static pages with strict headers; tests/site/test_build.py, tests/site/test_headers_cache_rules.py, and tests/config/test_models.py verify escaping, security headers, framing, and URL rules.",
+                  "number": 2
+                },
+                {
+                  "id": "threat-072",
+                  "title": "T-08 Worker private-response headers",
+                  "status": "Open",
+                  "severity": "High",
+                  "type": "Information disclosure",
+                  "modelType": "STRIDE",
+                  "description": "A private Worker response could be cached, sniffed, or leak its emailed-link URL through a referrer.",
+                  "mitigation": "T-08 remainder: add Worker-set private-response headers, a no-referrer policy for the emailed-link page, and tests that prove both controls.",
+                  "number": 72
+                }
+              ],
+              "hasOpenThreats": true,
+              "privilegeLevel": ""
+            }
+          },
+          {
+            "position": {
+              "x": 320,
+              "y": 370
+            },
+            "size": {
+              "width": 180,
+              "height": 80
+            },
+            "attrs": {
+              "text": {
+                "text": "Site builder"
+              },
+              "body": {
+                "stroke": "#333333",
+                "strokeWidth": 1,
+                "strokeDasharray": null
+              }
+            },
+            "visible": true,
+            "shape": "process",
+            "zIndex": 20,
+            "id": "process-011",
+            "data": {
+              "name": "Site builder",
+              "description": "Creates public and gated outputs.",
+              "type": "tm.Process",
+              "isTrustBoundary": false,
+              "outOfScope": false,
+              "reasonOutOfScope": "",
+              "threats": [
+                {
+                  "id": "threat-009",
+                  "title": "T-03 Gated content crosses into public deploy",
+                  "status": "Open",
+                  "severity": "Critical",
+                  "type": "Information disclosure",
+                  "modelType": "STRIDE",
+                  "description": "A build, route, cache, store, or deploy mistake could disclose gated content or private exports.",
+                  "mitigation": "T-03: Builder separation is tested in tests/site, but the deploy refusal, private Worker store, and complete authorization path are not all shipped.",
+                  "number": 22
+                },
+                {
+                  "id": "threat-010",
+                  "title": "T-18 and T-11 Audience or terms policy bypass",
+                  "status": "Open",
+                  "severity": "High",
+                  "type": "Information disclosure",
+                  "modelType": "STRIDE",
+                  "description": "An override or new writer could publish data outside its allowed audience or platform terms.",
+                  "mitigation": "T-18 and T-11: Build one audience projection, require expiring approvals, and test every surface before adding another output.",
+                  "number": 4
+                }
+              ],
+              "hasOpenThreats": true,
+              "privilegeLevel": ""
+            }
+          },
+          {
+            "position": {
+              "x": 570,
+              "y": 370
+            },
+            "size": {
+              "width": 180,
+              "height": 80
+            },
+            "attrs": {
+              "text": {
+                "text": "CI and deploy"
+              },
+              "body": {
+                "stroke": "#333333",
+                "strokeWidth": 1,
+                "strokeDasharray": null
+              }
+            },
+            "visible": true,
+            "shape": "process",
+            "zIndex": 23,
+            "id": "process-014",
+            "data": {
+              "name": "CI and deploy",
+              "description": "Tests artifacts and deploys.",
+              "type": "tm.Process",
+              "isTrustBoundary": false,
+              "outOfScope": false,
+              "reasonOutOfScope": "",
+              "threats": [
+                {
+                  "id": "threat-012",
+                  "title": "T-09 Supply-chain compromise",
+                  "status": "Open",
+                  "severity": "High",
+                  "type": "Elevation of privilege",
+                  "modelType": "STRIDE",
+                  "description": "A compromised dependency or automation action could alter a release artifact.",
+                  "mitigation": "T-09: pinned automation and lock files are partial controls. Add the missing local supply-chain invariant tests, install-script refusal, SBOM, provenance, and published-artifact verification. Provider-backed controls remain Open.",
+                  "number": 5
+                },
+                {
+                  "id": "threat-013",
+                  "title": "T-02 and T-19 Credential exposure or weak recovery",
+                  "status": "Open",
+                  "severity": "Critical",
+                  "type": "Information disclosure",
+                  "modelType": "STRIDE",
+                  "description": "A workflow, log, or stolen credential could expose an unclear blast radius with no tested recovery.",
+                  "mitigation": "T-02 and T-19: Add protected deploy separation, a name-only inventory, scope manifests, and a tested revocation runbook. Provider settings remain Open.",
+                  "number": 23
+                }
+              ],
+              "hasOpenThreats": true,
+              "privilegeLevel": ""
+            }
+          },
+          {
+            "position": {
+              "x": 960,
+              "y": 280
+            },
+            "size": {
+              "width": 180,
+              "height": 80
+            },
+            "attrs": {
+              "text": {
+                "text": "Cloudflare Pages"
+              },
+              "topLine": {
+                "stroke": "#333333",
+                "strokeWidth": 1,
+                "strokeDasharray": null
+              },
+              "bottomLine": {
+                "stroke": "#333333",
+                "strokeWidth": 1,
+                "strokeDasharray": null
+              }
+            },
+            "visible": true,
+            "shape": "store",
+            "zIndex": 24,
+            "id": "store-015",
+            "data": {
+              "name": "Cloudflare Pages",
+              "description": "Public static deployment.",
+              "type": "tm.Store",
+              "isTrustBoundary": false,
+              "outOfScope": false,
+              "reasonOutOfScope": "",
+              "threats": [],
+              "hasOpenThreats": false
+            }
+          },
+          {
+            "position": {
+              "x": 960,
+              "y": 430
+            },
+            "size": {
+              "width": 180,
+              "height": 80
+            },
+            "attrs": {
+              "text": {
+                "text": "Worker deploy"
+              },
+              "body": {
+                "stroke": "#333333",
+                "strokeWidth": 1,
+                "strokeDasharray": null
+              }
+            },
+            "visible": true,
+            "shape": "process",
+            "zIndex": 25,
+            "id": "process-016",
+            "data": {
+              "name": "Worker deploy",
+              "description": "Credentialed service deployment.",
+              "type": "tm.Process",
+              "isTrustBoundary": false,
+              "outOfScope": false,
+              "reasonOutOfScope": "",
+              "threats": [],
+              "hasOpenThreats": false,
+              "privilegeLevel": ""
+            }
+          },
+          {
+            "shape": "flow",
+            "attrs": {
+              "line": {
+                "stroke": "#333333",
+                "strokeWidth": 1,
+                "targetMarker": {
+                  "name": "block"
+                },
+                "sourceMarker": "",
+                "strokeDasharray": null
+              }
+            },
+            "width": 200,
+            "height": 100,
+            "zIndex": 116,
+            "connector": "smooth",
+            "id": "flow-017",
+            "visible": true,
+            "labels": [
+              {
+                "position": 0.5,
+                "attrs": {
+                  "label": {
+                    "text": "Author configuration"
+                  }
+                }
+              }
+            ],
+            "source": {
+              "cell": "actor-004"
+            },
+            "target": {
+              "cell": "store-006"
+            },
+            "data": {
+              "type": "tm.Flow",
+              "name": "Author configuration",
+              "description": "",
+              "outOfScope": false,
+              "reasonOutOfScope": "",
+              "protocol": "local",
+              "isEncrypted": false,
+              "isPublicNetwork": false,
+              "isBidirectional": false,
+              "threats": [],
+              "isTrustBoundary": false,
+              "hasOpenThreats": false
+            }
+          },
+          {
+            "shape": "flow",
+            "attrs": {
+              "line": {
+                "stroke": "#333333",
+                "strokeWidth": 1,
+                "targetMarker": {
+                  "name": "block"
+                },
+                "sourceMarker": "",
+                "strokeDasharray": null
+              }
+            },
+            "width": 200,
+            "height": 100,
+            "zIndex": 117,
+            "connector": "smooth",
+            "id": "flow-018",
+            "visible": true,
+            "labels": [
+              {
+                "position": 0.5,
+                "attrs": {
+                  "label": {
+                    "text": "Validated config"
+                  }
+                }
+              }
+            ],
+            "source": {
+              "cell": "store-006"
+            },
+            "target": {
+              "cell": "process-008"
+            },
+            "data": {
+              "type": "tm.Flow",
+              "name": "Validated config",
+              "description": "",
+              "outOfScope": false,
+              "reasonOutOfScope": "",
+              "protocol": "local",
+              "isEncrypted": false,
+              "isPublicNetwork": false,
+              "isBidirectional": false,
+              "threats": [],
+              "isTrustBoundary": true,
+              "hasOpenThreats": false
+            }
+          },
+          {
+            "shape": "flow",
+            "attrs": {
+              "line": {
+                "stroke": "#333333",
+                "strokeWidth": 1,
+                "targetMarker": {
+                  "name": "block"
+                },
+                "sourceMarker": "",
+                "strokeDasharray": null
+              }
+            },
+            "width": 200,
+            "height": 100,
+            "zIndex": 118,
+            "connector": "smooth",
+            "id": "flow-019",
+            "visible": true,
+            "labels": [
+              {
+                "position": 0.5,
+                "attrs": {
+                  "label": {
+                    "text": "Build model"
+                  }
+                }
+              }
+            ],
+            "source": {
+              "cell": "process-008"
+            },
+            "target": {
+              "cell": "process-011"
+            },
+            "data": {
+              "type": "tm.Flow",
+              "name": "Build model",
+              "description": "",
+              "outOfScope": false,
+              "reasonOutOfScope": "",
+              "protocol": "local",
+              "isEncrypted": false,
+              "isPublicNetwork": false,
+              "isBidirectional": false,
+              "threats": [],
+              "isTrustBoundary": false,
+              "hasOpenThreats": false
+            }
+          },
+          {
+            "shape": "flow",
+            "attrs": {
+              "line": {
+                "stroke": "#333333",
+                "strokeWidth": 1,
+                "targetMarker": {
+                  "name": "block"
+                },
+                "sourceMarker": "",
+                "strokeDasharray": null
+              }
+            },
+            "width": 200,
+            "height": 100,
+            "zIndex": 119,
+            "connector": "smooth",
+            "id": "flow-020",
+            "visible": true,
+            "labels": [
+              {
+                "position": 0.5,
+                "attrs": {
+                  "label": {
+                    "text": "Artifacts"
+                  }
+                }
+              }
+            ],
+            "source": {
+              "cell": "process-011"
+            },
+            "target": {
+              "cell": "process-014"
+            },
+            "data": {
+              "type": "tm.Flow",
+              "name": "Artifacts",
+              "description": "",
+              "outOfScope": false,
+              "reasonOutOfScope": "",
+              "protocol": "artifact",
+              "isEncrypted": false,
+              "isPublicNetwork": false,
+              "isBidirectional": false,
+              "threats": [],
+              "isTrustBoundary": false,
+              "hasOpenThreats": false
+            }
+          },
+          {
+            "shape": "flow",
+            "attrs": {
+              "line": {
+                "stroke": "#333333",
+                "strokeWidth": 1,
+                "targetMarker": {
+                  "name": "block"
+                },
+                "sourceMarker": "",
+                "strokeDasharray": null
+              }
+            },
+            "width": 200,
+            "height": 100,
+            "zIndex": 120,
+            "connector": "smooth",
+            "id": "flow-021",
+            "visible": true,
+            "labels": [
+              {
+                "position": 0.5,
+                "attrs": {
+                  "label": {
+                    "text": "Publish site"
+                  }
+                }
+              }
+            ],
+            "source": {
+              "cell": "process-014"
+            },
+            "target": {
+              "cell": "store-015"
+            },
+            "data": {
+              "type": "tm.Flow",
+              "name": "Publish site",
+              "description": "",
+              "outOfScope": false,
+              "reasonOutOfScope": "",
+              "protocol": "HTTPS",
+              "isEncrypted": true,
+              "isPublicNetwork": true,
+              "isBidirectional": false,
+              "threats": [],
+              "isTrustBoundary": true,
+              "hasOpenThreats": false
+            }
+          },
+          {
+            "shape": "flow",
+            "attrs": {
+              "line": {
+                "stroke": "#333333",
+                "strokeWidth": 1,
+                "targetMarker": {
+                  "name": "block"
+                },
+                "sourceMarker": "",
+                "strokeDasharray": null
+              }
+            },
+            "width": 200,
+            "height": 100,
+            "zIndex": 121,
+            "connector": "smooth",
+            "id": "flow-022",
+            "visible": true,
+            "labels": [
+              {
+                "position": 0.5,
+                "attrs": {
+                  "label": {
+                    "text": "Deploy Worker"
+                  }
+                }
+              }
+            ],
+            "source": {
+              "cell": "process-014"
+            },
+            "target": {
+              "cell": "process-016"
+            },
+            "data": {
+              "type": "tm.Flow",
+              "name": "Deploy Worker",
+              "description": "",
+              "outOfScope": false,
+              "reasonOutOfScope": "",
+              "protocol": "HTTPS",
+              "isEncrypted": true,
+              "isPublicNetwork": true,
+              "isBidirectional": false,
+              "threats": [],
+              "isTrustBoundary": true,
+              "hasOpenThreats": false
+            }
+          }
+        ]
+      },
+      {
+        "version": "2.6.2",
+        "title": "2 Visitor and owner request path",
+        "diagramType": "STRIDE",
+        "id": 1,
+        "thumbnail": "../assets/logo-512.png",
+        "cells": [
+          {
+            "position": {
+              "x": 20,
+              "y": 20
+            },
+            "size": {
+              "width": 300,
+              "height": 650
+            },
+            "attrs": {
+              "body": {
+                "stroke": "#b45309",
+                "strokeWidth": 3,
+                "strokeDasharray": "10 5",
+                "fill": "transparent",
+                "fillOpacity": 0,
+                "rx": 10,
+                "ry": 10
+              },
+              "label": {
+                "text": "TB4 Visitor browser"
+              }
+            },
+            "visible": true,
+            "shape": "trust-boundary-box",
+            "zIndex": -50,
+            "id": "boundary-023",
+            "data": {
+              "type": "tm.BoundaryBox",
+              "name": "TB4 Visitor browser",
+              "description": "Anonymous and gated requests are untrusted.",
+              "isTrustBoundary": true,
+              "hasOpenThreats": false,
+              "threats": []
+            }
+          },
+          {
+            "position": {
+              "x": 350,
+              "y": 20
+            },
+            "size": {
+              "width": 600,
+              "height": 650
+            },
+            "attrs": {
+              "body": {
+                "stroke": "#b45309",
+                "strokeWidth": 3,
+                "strokeDasharray": "10 5",
+                "fill": "transparent",
+                "fillOpacity": 0,
+                "rx": 10,
+                "ry": 10
+              },
+              "label": {
+                "text": "TB5 Edge and Worker"
+              }
+            },
+            "visible": true,
+            "shape": "trust-boundary-box",
+            "zIndex": -50,
+            "id": "boundary-024",
+            "data": {
+              "type": "tm.BoundaryBox",
+              "name": "TB5 Edge and Worker",
+              "description": "Routes share account and budget limits.",
+              "isTrustBoundary": true,
+              "hasOpenThreats": false,
+              "threats": []
+            }
+          },
+          {
+            "position": {
+              "x": 980,
+              "y": 20
+            },
+            "size": {
+              "width": 300,
+              "height": 650
+            },
+            "attrs": {
+              "body": {
+                "stroke": "#b45309",
+                "strokeWidth": 3,
+                "strokeDasharray": "10 5",
+                "fill": "transparent",
+                "fillOpacity": 0,
+                "rx": 10,
+                "ry": 10
+              },
+              "label": {
+                "text": "TB6 Data and providers"
+              }
+            },
+            "visible": true,
+            "shape": "trust-boundary-box",
+            "zIndex": -50,
+            "id": "boundary-025",
+            "data": {
+              "type": "tm.BoundaryBox",
+              "name": "TB6 Data and providers",
+              "description": "Stores and delivery hold data or spend.",
+              "isTrustBoundary": true,
+              "hasOpenThreats": false,
+              "threats": []
+            }
+          },
+          {
+            "position": {
+              "x": 60,
+              "y": 90
+            },
+            "size": {
+              "width": 180,
+              "height": 80
+            },
+            "attrs": {
+              "text": {
+                "text": "Visitor or bot"
+              },
+              "body": {
+                "stroke": "#333333",
+                "strokeWidth": 1,
+                "strokeDasharray": null
+              }
+            },
+            "visible": true,
+            "shape": "actor",
+            "zIndex": 35,
+            "id": "actor-026",
+            "data": {
+              "name": "Visitor or bot",
+              "description": "Anonymous visitor, partner, or distributed sender.",
+              "type": "tm.Actor",
+              "isTrustBoundary": false,
+              "outOfScope": false,
+              "reasonOutOfScope": "",
+              "threats": [],
+              "hasOpenThreats": false,
+              "providesAuthentication": false
+            }
+          },
+          {
+            "position": {
+              "x": 60,
+              "y": 250
+            },
+            "size": {
+              "width": 180,
+              "height": 80
+            },
+            "attrs": {
+              "text": {
+                "text": "Link page"
+              },
+              "body": {
+                "stroke": "#333333",
+                "strokeWidth": 1,
+                "strokeDasharray": null
+              }
+            },
+            "visible": true,
+            "shape": "process",
+            "zIndex": 36,
+            "id": "process-027",
+            "data": {
+              "name": "Link page",
+              "description": "Emits clicks and opens gate routes.",
+              "type": "tm.Process",
+              "isTrustBoundary": false,
+              "outOfScope": false,
+              "reasonOutOfScope": "",
+              "threats": [],
+              "hasOpenThreats": false,
+              "privilegeLevel": ""
+            }
+          },
+          {
+            "position": {
+              "x": 60,
+              "y": 500
+            },
+            "size": {
+              "width": 180,
+              "height": 80
+            },
+            "attrs": {
+              "text": {
+                "text": "Owner"
+              },
+              "body": {
+                "stroke": "#333333",
+                "strokeWidth": 1,
+                "strokeDasharray": null
+              }
+            },
+            "visible": true,
+            "shape": "actor",
+            "zIndex": 37,
+            "id": "actor-028",
+            "data": {
+              "name": "Owner",
+              "description": "Receives alerts and inquiries.",
+              "type": "tm.Actor",
+              "isTrustBoundary": false,
+              "outOfScope": false,
+              "reasonOutOfScope": "",
+              "threats": [],
+              "hasOpenThreats": false,
+              "providesAuthentication": false
+            }
+          },
+          {
+            "position": {
+              "x": 390,
+              "y": 80
+            },
+            "size": {
+              "width": 180,
+              "height": 80
+            },
+            "attrs": {
+              "text": {
+                "text": "Click and event routes"
+              },
+              "body": {
+                "stroke": "#333333",
+                "strokeWidth": 1,
+                "strokeDasharray": null
+              }
+            },
+            "visible": true,
+            "shape": "process",
+            "zIndex": 39,
+            "id": "process-030",
+            "data": {
+              "name": "Click and event routes",
+              "description": "Uniform telemetry endpoints.",
+              "type": "tm.Process",
+              "isTrustBoundary": false,
+              "outOfScope": false,
+              "reasonOutOfScope": "",
+              "threats": [
+                {
+                  "id": "threat-029",
+                  "title": "T-05 and T-07 Polluted data and capacity exhaustion",
+                  "status": "Open",
+                  "severity": "High",
+                  "type": "Denial of service",
+                  "modelType": "STRIDE",
+                  "description": "Bots or distributed traffic can pollute counts and spend Worker, D1, logging, storage, or paid capacity.",
+                  "mitigation": "T-05 and T-07: worker/src has tested guards, budgets, retention, and kill switches, but verification, provider-fronted limits, and final ceilings remain incomplete.",
+                  "number": 8
+                }
+              ],
+              "hasOpenThreats": true,
+              "privilegeLevel": ""
+            }
+          },
+          {
+            "position": {
+              "x": 390,
+              "y": 240
+            },
+            "size": {
+              "width": 180,
+              "height": 80
+            },
+            "attrs": {
+              "text": {
+                "text": "Gate and token routes"
+              },
+              "body": {
+                "stroke": "#333333",
+                "strokeWidth": 1,
+                "strokeDasharray": null
+              }
+            },
+            "visible": true,
+            "shape": "process",
+            "zIndex": 42,
+            "id": "process-033",
+            "data": {
+              "name": "Gate and token routes",
+              "description": "Creates leads and checks unlocks.",
+              "type": "tm.Process",
+              "isTrustBoundary": false,
+              "outOfScope": false,
+              "reasonOutOfScope": "",
+              "threats": [
+                {
+                  "id": "threat-031",
+                  "title": "T-04 and T-21 Token forgery or first-redeemer replay",
+                  "status": "Open",
+                  "severity": "Critical",
+                  "type": "Spoofing",
+                  "modelType": "STRIDE",
+                  "description": "A forged, forwarded, intercepted, or stolen bearer token could unlock the kit.",
+                  "mitigation": "T-04 and T-21: Token helpers have worker/test coverage, but atomic redemption, live revocation, the binding policy, and deployment are incomplete.",
+                  "number": 9
+                },
+                {
+                  "id": "threat-032",
+                  "title": "T-13 Alternate hostname exposure",
+                  "status": "Open",
+                  "severity": "High",
+                  "type": "Spoofing",
+                  "modelType": "STRIDE",
+                  "description": "A default hostname, preview, DNS record, or missing Host check could expose an unintended endpoint.",
+                  "mitigation": "T-13: Add and test the Host allowlist and explicit default-host setting, then record provider hostname and DNS checks.",
+                  "number": 10
+                }
+              ],
+              "hasOpenThreats": true,
+              "privilegeLevel": ""
+            }
+          },
+          {
+            "position": {
+              "x": 660,
+              "y": 240
+            },
+            "size": {
+              "width": 180,
+              "height": 80
+            },
+            "attrs": {
+              "text": {
+                "text": "Gated kit fetch"
+              },
+              "body": {
+                "stroke": "#333333",
+                "strokeWidth": 1,
+                "strokeDasharray": null
+              }
+            },
+            "visible": true,
+            "shape": "process",
+            "zIndex": 44,
+            "id": "process-035",
+            "data": {
+              "name": "Gated kit fetch",
+              "description": "Reads content after authorization.",
+              "type": "tm.Process",
+              "isTrustBoundary": false,
+              "outOfScope": false,
+              "reasonOutOfScope": "",
+              "threats": [
+                {
+                  "id": "threat-034",
+                  "title": "T-03 Gated content crosses into public deploy",
+                  "status": "Open",
+                  "severity": "Critical",
+                  "type": "Information disclosure",
+                  "modelType": "STRIDE",
+                  "description": "A build, route, cache, store, or deploy mistake could disclose gated content or private exports.",
+                  "mitigation": "T-03: Builder separation is tested in tests/site, but the deploy refusal, private Worker store, and complete authorization path are not all shipped.",
+                  "number": 3
+                }
+              ],
+              "hasOpenThreats": true,
+              "privilegeLevel": ""
+            }
+          },
+          {
+            "position": {
+              "x": 390,
+              "y": 430
+            },
+            "size": {
+              "width": 180,
+              "height": 80
+            },
+            "attrs": {
+              "text": {
+                "text": "Email alert and inquiry"
+              },
+              "body": {
+                "stroke": "#333333",
+                "strokeWidth": 1,
+                "strokeDasharray": null
+              }
+            },
+            "visible": true,
+            "shape": "process",
+            "zIndex": 47,
+            "id": "process-038",
+            "data": {
+              "name": "Email alert and inquiry",
+              "description": "Sends fixed provider messages.",
+              "type": "tm.Process",
+              "isTrustBoundary": false,
+              "outOfScope": false,
+              "reasonOutOfScope": "",
+              "threats": [
+                {
+                  "id": "threat-036",
+                  "title": "T-01 Mail relay and quota exhaustion",
+                  "status": "Open",
+                  "severity": "High",
+                  "type": "Denial of service",
+                  "modelType": "STRIDE",
+                  "description": "Anonymous requests could send unwanted mail or consume the provider quota.",
+                  "mitigation": "T-01: Require fixed delivery, Turnstile, body limits, budgets, and a fail-closed outage choice before provider-backed mail ships.",
+                  "number": 7
+                },
+                {
+                  "id": "threat-037",
+                  "title": "T-14 and T-63 to T-70 Alert or inquiry abuse",
+                  "status": "Open",
+                  "severity": "High",
+                  "type": "Tampering",
+                  "modelType": "STRIDE",
+                  "description": "An inquiry could bypass authorization, inject deceptive text, consume alert quota, leak publicly, or persist at a provider.",
+                  "mitigation": "T-14 and T-63 to T-70: worker/src/kit, worker/src/alerts, worker/test/kit, and tests/site cover local validation, quotas, projection, and fixed responses. Provider retention and the undeployed gate keep the combined threat Open.",
+                  "number": 11
+                }
+              ],
+              "hasOpenThreats": true,
+              "privilegeLevel": ""
+            }
+          },
+          {
+            "position": {
+              "x": 1030,
+              "y": 160
+            },
+            "size": {
+              "width": 180,
+              "height": 80
+            },
+            "attrs": {
+              "text": {
+                "text": "D1"
+              },
+              "topLine": {
+                "stroke": "#333333",
+                "strokeWidth": 1,
+                "strokeDasharray": null
+              },
+              "bottomLine": {
+                "stroke": "#333333",
+                "strokeWidth": 1,
+                "strokeDasharray": null
+              }
+            },
+            "visible": true,
+            "shape": "store",
+            "zIndex": 49,
+            "id": "store-040",
+            "data": {
+              "name": "D1",
+              "description": "Leads, events, budgets, and retention.",
+              "type": "tm.Store",
+              "isTrustBoundary": false,
+              "outOfScope": false,
+              "reasonOutOfScope": "",
+              "threats": [
+                {
+                  "id": "threat-039",
+                  "title": "T-12 and T-17 Lead retention misses copies",
+                  "status": "Open",
+                  "severity": "High",
+                  "type": "Information disclosure",
+                  "modelType": "STRIDE",
+                  "description": "Lead data can outlive a promise or survive in exports, backups, provider recovery, alerts, or restores.",
+                  "mitigation": "T-12 and T-17: worker/src/kit and src/reach_around/commands have tested D1 controls. Add the copy inventory, deletion registry, restore test, and provider roll-off record.",
+                  "number": 12
+                }
+              ],
+              "hasOpenThreats": true
+            }
+          },
+          {
+            "position": {
+              "x": 1030,
+              "y": 430
+            },
+            "size": {
+              "width": 180,
+              "height": 80
+            },
+            "attrs": {
+              "text": {
+                "text": "Mail and alert providers"
+              },
+              "body": {
+                "stroke": "#333333",
+                "strokeWidth": 1,
+                "strokeDasharray": null
+              }
+            },
+            "visible": true,
+            "shape": "process",
+            "zIndex": 50,
+            "id": "process-041",
+            "data": {
+              "name": "Mail and alert providers",
+              "description": "Third-party delivery.",
+              "type": "tm.Process",
+              "isTrustBoundary": false,
+              "outOfScope": false,
+              "reasonOutOfScope": "",
+              "threats": [],
+              "hasOpenThreats": false,
+              "privilegeLevel": ""
+            }
+          },
+          {
+            "shape": "flow",
+            "attrs": {
+              "line": {
+                "stroke": "#333333",
+                "strokeWidth": 1,
+                "targetMarker": {
+                  "name": "block"
+                },
+                "sourceMarker": "",
+                "strokeDasharray": null
+              }
+            },
+            "width": 200,
+            "height": 100,
+            "zIndex": 141,
+            "connector": "smooth",
+            "id": "flow-042",
+            "visible": true,
+            "labels": [
+              {
+                "position": 0.5,
+                "attrs": {
+                  "label": {
+                    "text": "Open page"
+                  }
+                }
+              }
+            ],
+            "source": {
+              "cell": "actor-026"
+            },
+            "target": {
+              "cell": "process-027"
+            },
+            "data": {
+              "type": "tm.Flow",
+              "name": "Open page",
+              "description": "",
+              "outOfScope": false,
+              "reasonOutOfScope": "",
+              "protocol": "HTTPS",
+              "isEncrypted": true,
+              "isPublicNetwork": true,
+              "isBidirectional": false,
+              "threats": [],
+              "isTrustBoundary": false,
+              "hasOpenThreats": false
+            }
+          },
+          {
+            "shape": "flow",
+            "attrs": {
+              "line": {
+                "stroke": "#333333",
+                "strokeWidth": 1,
+                "targetMarker": {
+                  "name": "block"
+                },
+                "sourceMarker": "",
+                "strokeDasharray": null
+              }
+            },
+            "width": 200,
+            "height": 100,
+            "zIndex": 142,
+            "connector": "smooth",
+            "id": "flow-043",
+            "visible": true,
+            "labels": [
+              {
+                "position": 0.5,
+                "attrs": {
+                  "label": {
+                    "text": "Click or event"
+                  }
+                }
+              }
+            ],
+            "source": {
+              "cell": "process-027"
+            },
+            "target": {
+              "cell": "process-030"
+            },
+            "data": {
+              "type": "tm.Flow",
+              "name": "Click or event",
+              "description": "",
+              "outOfScope": false,
+              "reasonOutOfScope": "",
+              "protocol": "HTTPS",
+              "isEncrypted": true,
+              "isPublicNetwork": true,
+              "isBidirectional": false,
+              "threats": [],
+              "isTrustBoundary": true,
+              "hasOpenThreats": false
+            }
+          },
+          {
+            "shape": "flow",
+            "attrs": {
+              "line": {
+                "stroke": "#333333",
+                "strokeWidth": 1,
+                "targetMarker": {
+                  "name": "block"
+                },
+                "sourceMarker": "",
+                "strokeDasharray": null
+              }
+            },
+            "width": 200,
+            "height": 100,
+            "zIndex": 143,
+            "connector": "smooth",
+            "id": "flow-044",
+            "visible": true,
+            "labels": [
+              {
+                "position": 0.5,
+                "attrs": {
+                  "label": {
+                    "text": "Gate request"
+                  }
+                }
+              }
+            ],
+            "source": {
+              "cell": "actor-026"
+            },
+            "target": {
+              "cell": "process-033"
+            },
+            "data": {
+              "type": "tm.Flow",
+              "name": "Gate request",
+              "description": "",
+              "outOfScope": false,
+              "reasonOutOfScope": "",
+              "protocol": "HTTPS",
+              "isEncrypted": true,
+              "isPublicNetwork": true,
+              "isBidirectional": false,
+              "threats": [],
+              "isTrustBoundary": true,
+              "hasOpenThreats": false
+            }
+          },
+          {
+            "shape": "flow",
+            "attrs": {
+              "line": {
+                "stroke": "#333333",
+                "strokeWidth": 1,
+                "targetMarker": {
+                  "name": "block"
+                },
+                "sourceMarker": "",
+                "strokeDasharray": null
+              }
+            },
+            "width": 200,
+            "height": 100,
+            "zIndex": 144,
+            "connector": "smooth",
+            "id": "flow-045",
+            "visible": true,
+            "labels": [
+              {
+                "position": 0.5,
+                "attrs": {
+                  "label": {
+                    "text": "Authorized kit"
+                  }
+                }
+              }
+            ],
+            "source": {
+              "cell": "process-033"
+            },
+            "target": {
+              "cell": "process-035"
+            },
+            "data": {
+              "type": "tm.Flow",
+              "name": "Authorized kit",
+              "description": "",
+              "outOfScope": false,
+              "reasonOutOfScope": "",
+              "protocol": "internal",
+              "isEncrypted": false,
+              "isPublicNetwork": false,
+              "isBidirectional": false,
+              "threats": [],
+              "isTrustBoundary": false,
+              "hasOpenThreats": false
+            }
+          },
+          {
+            "shape": "flow",
+            "attrs": {
+              "line": {
+                "stroke": "#333333",
+                "strokeWidth": 1,
+                "targetMarker": {
+                  "name": "block"
+                },
+                "sourceMarker": "",
+                "strokeDasharray": null
+              }
+            },
+            "width": 200,
+            "height": 100,
+            "zIndex": 145,
+            "connector": "smooth",
+            "id": "flow-046",
+            "visible": true,
+            "labels": [
+              {
+                "position": 0.5,
+                "attrs": {
+                  "label": {
+                    "text": "Lead writes"
+                  }
+                }
+              }
+            ],
+            "source": {
+              "cell": "process-033"
+            },
+            "target": {
+              "cell": "store-040"
+            },
+            "data": {
+              "type": "tm.Flow",
+              "name": "Lead writes",
+              "description": "",
+              "outOfScope": false,
+              "reasonOutOfScope": "",
+              "protocol": "D1",
+              "isEncrypted": false,
+              "isPublicNetwork": false,
+              "isBidirectional": false,
+              "threats": [],
+              "isTrustBoundary": true,
+              "hasOpenThreats": false
+            }
+          },
+          {
+            "shape": "flow",
+            "attrs": {
+              "line": {
+                "stroke": "#333333",
+                "strokeWidth": 1,
+                "targetMarker": {
+                  "name": "block"
+                },
+                "sourceMarker": "",
+                "strokeDasharray": null
+              }
+            },
+            "width": 200,
+            "height": 100,
+            "zIndex": 146,
+            "connector": "smooth",
+            "id": "flow-047",
+            "visible": true,
+            "labels": [
+              {
+                "position": 0.5,
+                "attrs": {
+                  "label": {
+                    "text": "Telemetry writes"
+                  }
+                }
+              }
+            ],
+            "source": {
+              "cell": "process-030"
+            },
+            "target": {
+              "cell": "store-040"
+            },
+            "data": {
+              "type": "tm.Flow",
+              "name": "Telemetry writes",
+              "description": "",
+              "outOfScope": false,
+              "reasonOutOfScope": "",
+              "protocol": "D1",
+              "isEncrypted": false,
+              "isPublicNetwork": false,
+              "isBidirectional": false,
+              "threats": [],
+              "isTrustBoundary": true,
+              "hasOpenThreats": false
+            }
+          },
+          {
+            "shape": "flow",
+            "attrs": {
+              "line": {
+                "stroke": "#333333",
+                "strokeWidth": 1,
+                "targetMarker": {
+                  "name": "block"
+                },
+                "sourceMarker": "",
+                "strokeDasharray": null
+              }
+            },
+            "width": 200,
+            "height": 100,
+            "zIndex": 147,
+            "connector": "smooth",
+            "id": "flow-048",
+            "visible": true,
+            "labels": [
+              {
+                "position": 0.5,
+                "attrs": {
+                  "label": {
+                    "text": "Send request"
+                  }
+                }
+              }
+            ],
+            "source": {
+              "cell": "process-033"
+            },
+            "target": {
+              "cell": "process-038"
+            },
+            "data": {
+              "type": "tm.Flow",
+              "name": "Send request",
+              "description": "",
+              "outOfScope": false,
+              "reasonOutOfScope": "",
+              "protocol": "internal",
+              "isEncrypted": false,
+              "isPublicNetwork": false,
+              "isBidirectional": false,
+              "threats": [],
+              "isTrustBoundary": false,
+              "hasOpenThreats": false
+            }
+          },
+          {
+            "shape": "flow",
+            "attrs": {
+              "line": {
+                "stroke": "#333333",
+                "strokeWidth": 1,
+                "targetMarker": {
+                  "name": "block"
+                },
+                "sourceMarker": "",
+                "strokeDasharray": null
+              }
+            },
+            "width": 200,
+            "height": 100,
+            "zIndex": 148,
+            "connector": "smooth",
+            "id": "flow-049",
+            "visible": true,
+            "labels": [
+              {
+                "position": 0.5,
+                "attrs": {
+                  "label": {
+                    "text": "Provider delivery"
+                  }
+                }
+              }
+            ],
+            "source": {
+              "cell": "process-038"
+            },
+            "target": {
+              "cell": "process-041"
+            },
+            "data": {
+              "type": "tm.Flow",
+              "name": "Provider delivery",
+              "description": "",
+              "outOfScope": false,
+              "reasonOutOfScope": "",
+              "protocol": "HTTPS",
+              "isEncrypted": true,
+              "isPublicNetwork": true,
+              "isBidirectional": false,
+              "threats": [],
+              "isTrustBoundary": true,
+              "hasOpenThreats": false
+            }
+          },
+          {
+            "shape": "flow",
+            "attrs": {
+              "line": {
+                "stroke": "#333333",
+                "strokeWidth": 1,
+                "targetMarker": {
+                  "name": "block"
+                },
+                "sourceMarker": "",
+                "strokeDasharray": null
+              }
+            },
+            "width": 200,
+            "height": 100,
+            "zIndex": 149,
+            "connector": "smooth",
+            "id": "flow-050",
+            "visible": true,
+            "labels": [
+              {
+                "position": 0.5,
+                "attrs": {
+                  "label": {
+                    "text": "Owner notice"
+                  }
+                }
+              }
+            ],
+            "source": {
+              "cell": "process-041"
+            },
+            "target": {
+              "cell": "actor-028"
+            },
+            "data": {
+              "type": "tm.Flow",
+              "name": "Owner notice",
+              "description": "",
+              "outOfScope": false,
+              "reasonOutOfScope": "",
+              "protocol": "HTTPS",
+              "isEncrypted": true,
+              "isPublicNetwork": true,
+              "isBidirectional": false,
+              "threats": [],
+              "isTrustBoundary": true,
+              "hasOpenThreats": false
+            }
+          },
+          {
+            "shape": "flow",
+            "attrs": {
+              "line": {
+                "stroke": "#333333",
+                "strokeWidth": 1,
+                "targetMarker": {
+                  "name": "block"
+                },
+                "sourceMarker": "",
+                "strokeDasharray": null
+              }
+            },
+            "width": 200,
+            "height": 100,
+            "zIndex": 150,
+            "connector": "smooth",
+            "id": "flow-051",
+            "visible": true,
+            "labels": [
+              {
+                "position": 0.5,
+                "attrs": {
+                  "label": {
+                    "text": "Gated inquiry"
+                  }
+                }
+              }
+            ],
+            "source": {
+              "cell": "process-035"
+            },
+            "target": {
+              "cell": "process-038"
+            },
+            "data": {
+              "type": "tm.Flow",
+              "name": "Gated inquiry",
+              "description": "",
+              "outOfScope": false,
+              "reasonOutOfScope": "",
+              "protocol": "HTTPS",
+              "isEncrypted": true,
+              "isPublicNetwork": true,
+              "isBidirectional": false,
+              "threats": [],
+              "isTrustBoundary": false,
+              "hasOpenThreats": false
+            }
+          }
+        ]
+      },
+      {
+        "version": "2.6.2",
+        "title": "3 Data stores, collectors and secrets",
+        "diagramType": "STRIDE",
+        "id": 2,
+        "thumbnail": "../assets/logo-512.png",
+        "cells": [
+          {
+            "position": {
+              "x": 20,
+              "y": 20
+            },
+            "size": {
+              "width": 550,
+              "height": 650
+            },
+            "attrs": {
+              "body": {
+                "stroke": "#b45309",
+                "strokeWidth": 3,
+                "strokeDasharray": "10 5",
+                "fill": "transparent",
+                "fillOpacity": 0,
+                "rx": 10,
+                "ry": 10
+              },
+              "label": {
+                "text": "TB7 Collector host"
+              }
+            },
+            "visible": true,
+            "shape": "trust-boundary-box",
+            "zIndex": -50,
+            "id": "boundary-052",
+            "data": {
+              "type": "tm.BoundaryBox",
+              "name": "TB7 Collector host",
+              "description": "Local data crosses external APIs.",
+              "isTrustBoundary": true,
+              "hasOpenThreats": false,
+              "threats": []
+            }
+          },
+          {
+            "position": {
+              "x": 600,
+              "y": 20
+            },
+            "size": {
+              "width": 320,
+              "height": 650
+            },
+            "attrs": {
+              "body": {
+                "stroke": "#b45309",
+                "strokeWidth": 3,
+                "strokeDasharray": "10 5",
+                "fill": "transparent",
+                "fillOpacity": 0,
+                "rx": 10,
+                "ry": 10
+              },
+              "label": {
+                "text": "TB8 External APIs"
+              }
+            },
+            "visible": true,
+            "shape": "trust-boundary-box",
+            "zIndex": -50,
+            "id": "boundary-053",
+            "data": {
+              "type": "tm.BoundaryBox",
+              "name": "TB8 External APIs",
+              "description": "Third-party responses and settings.",
+              "isTrustBoundary": true,
+              "hasOpenThreats": false,
+              "threats": []
+            }
+          },
+          {
+            "position": {
+              "x": 950,
+              "y": 20
+            },
+            "size": {
+              "width": 400,
+              "height": 650
+            },
+            "attrs": {
+              "body": {
+                "stroke": "#b45309",
+                "strokeWidth": 3,
+                "strokeDasharray": "10 5",
+                "fill": "transparent",
+                "fillOpacity": 0,
+                "rx": 10,
+                "ry": 10
+              },
+              "label": {
+                "text": "TB9 Owner export machine"
+              }
+            },
+            "visible": true,
+            "shape": "trust-boundary-box",
+            "zIndex": -50,
+            "id": "boundary-054",
+            "data": {
+              "type": "tm.BoundaryBox",
+              "name": "TB9 Owner export machine",
+              "description": "Private rendering and release.",
+              "isTrustBoundary": true,
+              "hasOpenThreats": false,
+              "threats": []
+            }
+          },
+          {
+            "position": {
+              "x": 70,
+              "y": 90
+            },
+            "size": {
+              "width": 180,
+              "height": 80
+            },
+            "attrs": {
+              "text": {
+                "text": "Collectors"
+              },
+              "body": {
+                "stroke": "#333333",
+                "strokeWidth": 1,
+                "strokeDasharray": null
+              }
+            },
+            "visible": true,
+            "shape": "process",
+            "zIndex": 65,
+            "id": "process-056",
+            "data": {
+              "name": "Collectors",
+              "description": "Typed clients and scheduled pulls.",
+              "type": "tm.Process",
+              "isTrustBoundary": false,
+              "outOfScope": false,
+              "reasonOutOfScope": "",
+              "threats": [
+                {
+                  "id": "threat-055",
+                  "title": "T-06 Platform response leaks a secret",
+                  "status": "Open",
+                  "severity": "Critical",
+                  "type": "Information disclosure",
+                  "modelType": "STRIDE",
+                  "description": "A collector could log, cache, store, or export a secret embedded in a platform response.",
+                  "mitigation": "T-06: Implement typed collector allowlists and synthetic sentinel tests before collectors ship.",
+                  "number": 13
+                }
+              ],
+              "hasOpenThreats": true,
+              "privilegeLevel": ""
+            }
+          },
+          {
+            "position": {
+              "x": 310,
+              "y": 90
+            },
+            "size": {
+              "width": 180,
+              "height": 80
+            },
+            "attrs": {
+              "text": {
+                "text": "Platform tokens"
+              },
+              "topLine": {
+                "stroke": "#333333",
+                "strokeWidth": 1,
+                "strokeDasharray": null
+              },
+              "bottomLine": {
+                "stroke": "#333333",
+                "strokeWidth": 1,
+                "strokeDasharray": null
+              }
+            },
+            "visible": true,
+            "shape": "store",
+            "zIndex": 67,
+            "id": "store-058",
+            "data": {
+              "name": "Platform tokens",
+              "description": "Read, OAuth, app, deploy, and Worker credentials.",
+              "type": "tm.Store",
+              "isTrustBoundary": false,
+              "outOfScope": false,
+              "reasonOutOfScope": "",
+              "threats": [
+                {
+                  "id": "threat-057",
+                  "title": "T-02 and T-19 Credential exposure or weak recovery",
+                  "status": "Open",
+                  "severity": "Critical",
+                  "type": "Information disclosure",
+                  "modelType": "STRIDE",
+                  "description": "A workflow, log, or stolen credential could expose an unclear blast radius with no tested recovery.",
+                  "mitigation": "T-02 and T-19: Add protected deploy separation, a name-only inventory, scope manifests, and a tested revocation runbook. Provider settings remain Open.",
+                  "number": 6
+                }
+              ],
+              "hasOpenThreats": true
+            }
+          },
+          {
+            "position": {
+              "x": 70,
+              "y": 300
+            },
+            "size": {
+              "width": 180,
+              "height": 80
+            },
+            "attrs": {
+              "text": {
+                "text": "Snapshot store"
+              },
+              "topLine": {
+                "stroke": "#333333",
+                "strokeWidth": 1,
+                "strokeDasharray": null
+              },
+              "bottomLine": {
+                "stroke": "#333333",
+                "strokeWidth": 1,
+                "strokeDasharray": null
+              }
+            },
+            "visible": true,
+            "shape": "store",
+            "zIndex": 69,
+            "id": "store-060",
+            "data": {
+              "name": "Snapshot store",
+              "description": "Metrics, sources, and registry metadata.",
+              "type": "tm.Store",
+              "isTrustBoundary": false,
+              "outOfScope": false,
+              "reasonOutOfScope": "",
+              "threats": [
+                {
+                  "id": "threat-059",
+                  "title": "T-15 Snapshot integrity failure",
+                  "status": "Open",
+                  "severity": "High",
+                  "type": "Tampering",
+                  "modelType": "STRIDE",
+                  "description": "A failed collector, hostile import, or token update failure could corrupt reports or exports.",
+                  "mitigation": "T-15: Add source labels, stale markers, bounded validation, atomic updates, and spreadsheet neutralization with tests.",
+                  "number": 14
+                }
+              ],
+              "hasOpenThreats": true
+            }
+          },
+          {
+            "position": {
+              "x": 660,
+              "y": 100
+            },
+            "size": {
+              "width": 180,
+              "height": 80
+            },
+            "attrs": {
+              "text": {
+                "text": "Platform APIs"
+              },
+              "body": {
+                "stroke": "#333333",
+                "strokeWidth": 1,
+                "strokeDasharray": null
+              }
+            },
+            "visible": true,
+            "shape": "process",
+            "zIndex": 70,
+            "id": "process-061",
+            "data": {
+              "name": "Platform APIs",
+              "description": "External sources and policy authorities.",
+              "type": "tm.Process",
+              "isTrustBoundary": false,
+              "outOfScope": false,
+              "reasonOutOfScope": "",
+              "threats": [],
+              "hasOpenThreats": false,
+              "privilegeLevel": ""
+            }
+          },
+          {
+            "position": {
+              "x": 660,
+              "y": 330
+            },
+            "size": {
+              "width": 180,
+              "height": 80
+            },
+            "attrs": {
+              "text": {
+                "text": "Cloudflare API and D1 export"
+              },
+              "body": {
+                "stroke": "#333333",
+                "strokeWidth": 1,
+                "strokeDasharray": null
+              }
+            },
+            "visible": true,
+            "shape": "process",
+            "zIndex": 71,
+            "id": "process-062",
+            "data": {
+              "name": "Cloudflare API and D1 export",
+              "description": "External control plane.",
+              "type": "tm.Process",
+              "isTrustBoundary": false,
+              "outOfScope": false,
+              "reasonOutOfScope": "",
+              "threats": [],
+              "hasOpenThreats": false,
+              "privilegeLevel": ""
+            }
+          },
+          {
+            "position": {
+              "x": 990,
+              "y": 100
+            },
+            "size": {
+              "width": 180,
+              "height": 80
+            },
+            "attrs": {
+              "text": {
+                "text": "PDF and export pipeline"
+              },
+              "body": {
+                "stroke": "#333333",
+                "strokeWidth": 1,
+                "strokeDasharray": null
+              }
+            },
+            "visible": true,
+            "shape": "process",
+            "zIndex": 77,
+            "id": "process-068",
+            "data": {
+              "name": "PDF and export pipeline",
+              "description": "Builds private files from projected data.",
+              "type": "tm.Process",
+              "isTrustBoundary": false,
+              "outOfScope": false,
+              "reasonOutOfScope": "",
+              "threats": [
+                {
+                  "id": "threat-063",
+                  "title": "T-16 Export crosses the wrong boundary",
+                  "status": "Open",
+                  "severity": "High",
+                  "type": "Information disclosure",
+                  "modelType": "STRIDE",
+                  "description": "A share export could include leads, owner-only fields, hostile assets, or identifying metadata.",
+                  "mitigation": "T-16: Reuse a named audience projection and manifest, provide no store handle, and test sentinel leads across every output.",
+                  "number": 15
+                },
+                {
+                  "id": "threat-064",
+                  "title": "T-55 and T-56 PDF renderer fetches or interprets hostile content",
+                  "status": "Mitigated",
+                  "severity": "High",
+                  "type": "Elevation of privilege",
+                  "modelType": "STRIDE",
+                  "description": "Remote loads or hostile markup could disclose network details or steer the renderer.",
+                  "mitigation": "T-55 and T-56: src/reach_around seals and rebuilds PDF input and blocks requests; tests/test_kit_pdf_pipeline.py and tests/test_kit_pdf_hardening.py verify the controls.",
+                  "number": 16
+                },
+                {
+                  "id": "threat-065",
+                  "title": "T-58 and T-59 PDF leak check misses private text",
+                  "status": "Mitigated",
+                  "severity": "Critical",
+                  "type": "Information disclosure",
+                  "modelType": "STRIDE",
+                  "description": "A stale page or unsupported PDF structure could hide private text from the leak check.",
+                  "mitigation": "T-58 and T-59: src/reach_around fails closed and verifies extracted and required text; tests/test_kit_pdf_text.py, tests/test_kit_pdf_hardening.py, and tests/test_kit_pdf_pipeline.py cover failures.",
+                  "number": 18
+                },
+                {
+                  "id": "threat-066",
+                  "title": "T-60 PDF metadata identifies owner or machine",
+                  "status": "Mitigated",
+                  "severity": "High",
+                  "type": "Information disclosure",
+                  "modelType": "STRIDE",
+                  "description": "PDF or image metadata, producer strings, user names, or paths could identify the machine.",
+                  "mitigation": "T-60: src/reach_around rewrites and strips metadata; tests/test_kit_pdf_pipeline.py and tests/test_kit_pdf_jpeg.py verify it.",
+                  "number": 19
+                },
+                {
+                  "id": "threat-067",
+                  "title": "T-62 PDF leftovers or unbounded resource use",
+                  "status": "Mitigated",
+                  "severity": "High",
+                  "type": "Denial of service",
+                  "modelType": "STRIDE",
+                  "description": "An intermediate, profile, hung render, or oversized output could remain or exhaust resources.",
+                  "mitigation": "T-62: src/reach_around uses private work areas, cleanup, timeout, and caps; tests/test_kit_pdf_pipeline.py and tests/test_kit_pdf_hardening.py verify them.",
+                  "number": 21
+                }
+              ],
+              "hasOpenThreats": true,
+              "privilegeLevel": ""
+            }
+          },
+          {
+            "position": {
+              "x": 1120,
+              "y": 350
+            },
+            "size": {
+              "width": 180,
+              "height": 80
+            },
+            "attrs": {
+              "text": {
+                "text": "Private PDFs and exports"
+              },
+              "topLine": {
+                "stroke": "#333333",
+                "strokeWidth": 1,
+                "strokeDasharray": null
+              },
+              "bottomLine": {
+                "stroke": "#333333",
+                "strokeWidth": 1,
+                "strokeDasharray": null
+              }
+            },
+            "visible": true,
+            "shape": "store",
+            "zIndex": 80,
+            "id": "store-071",
+            "data": {
+              "name": "Private PDFs and exports",
+              "description": "Owner-only outputs and work areas.",
+              "type": "tm.Store",
+              "isTrustBoundary": false,
+              "outOfScope": false,
+              "reasonOutOfScope": "",
+              "threats": [
+                {
+                  "id": "threat-069",
+                  "title": "T-57 PDF asset path escapes confinement",
+                  "status": "Mitigated",
+                  "severity": "High",
+                  "type": "Information disclosure",
+                  "modelType": "STRIDE",
+                  "description": "A path, link, special file, or oversized file could read beyond staged static files.",
+                  "mitigation": "T-57: src/reach_around uses confined no-follow capped reads; tests/test_kit_pdf_hardening.py and tests/test_kit_pdf_output.py cover them.",
+                  "number": 17
+                },
+                {
+                  "id": "threat-070",
+                  "title": "T-61 PDF is written into a publishable location",
+                  "status": "Mitigated",
+                  "severity": "High",
+                  "type": "Information disclosure",
+                  "modelType": "STRIDE",
+                  "description": "A private PDF could enter a site, configuration, gated, or version-controlled tree, or follow a link.",
+                  "mitigation": "T-61: src/reach_around confines and atomically writes output; tests/test_kit_pdf_output.py covers paths, links, modes, and overwrite.",
+                  "number": 20
+                }
+              ],
+              "hasOpenThreats": false
+            }
+          },
+          {
+            "position": {
+              "x": 1010,
+              "y": 540
+            },
+            "size": {
+              "width": 180,
+              "height": 80
+            },
+            "attrs": {
+              "text": {
+                "text": "Intended recipient"
+              },
+              "body": {
+                "stroke": "#333333",
+                "strokeWidth": 1,
+                "strokeDasharray": null
+              }
+            },
+            "visible": true,
+            "shape": "actor",
+            "zIndex": 81,
+            "id": "actor-072",
+            "data": {
+              "name": "Intended recipient",
+              "description": "Owner or approved partner.",
+              "type": "tm.Actor",
+              "isTrustBoundary": false,
+              "outOfScope": false,
+              "reasonOutOfScope": "",
+              "threats": [],
+              "hasOpenThreats": false,
+              "providesAuthentication": false
+            }
+          },
+          {
+            "shape": "flow",
+            "attrs": {
+              "line": {
+                "stroke": "#333333",
+                "strokeWidth": 1,
+                "targetMarker": {
+                  "name": "block"
+                },
+                "sourceMarker": "",
+                "strokeDasharray": null
+              }
+            },
+            "width": 200,
+            "height": 100,
+            "zIndex": 172,
+            "connector": "smooth",
+            "id": "flow-073",
+            "visible": true,
+            "labels": [
+              {
+                "position": 0.5,
+                "attrs": {
+                  "label": {
+                    "text": "API response"
+                  }
+                }
+              }
+            ],
+            "source": {
+              "cell": "process-056"
+            },
+            "target": {
+              "cell": "process-061"
+            },
+            "data": {
+              "type": "tm.Flow",
+              "name": "API response",
+              "description": "",
+              "outOfScope": false,
+              "reasonOutOfScope": "",
+              "protocol": "HTTPS",
+              "isEncrypted": true,
+              "isPublicNetwork": true,
+              "isBidirectional": false,
+              "threats": [],
+              "isTrustBoundary": true,
+              "hasOpenThreats": false
+            }
+          },
+          {
+            "shape": "flow",
+            "attrs": {
+              "line": {
+                "stroke": "#333333",
+                "strokeWidth": 1,
+                "targetMarker": {
+                  "name": "block"
+                },
+                "sourceMarker": "",
+                "strokeDasharray": null
+              }
+            },
+            "width": 200,
+            "height": 100,
+            "zIndex": 173,
+            "connector": "smooth",
+            "id": "flow-074",
+            "visible": true,
+            "labels": [
+              {
+                "position": 0.5,
+                "attrs": {
+                  "label": {
+                    "text": "Credential use"
+                  }
+                }
+              }
+            ],
+            "source": {
+              "cell": "store-058"
+            },
+            "target": {
+              "cell": "process-056"
+            },
+            "data": {
+              "type": "tm.Flow",
+              "name": "Credential use",
+              "description": "",
+              "outOfScope": false,
+              "reasonOutOfScope": "",
+              "protocol": "local",
+              "isEncrypted": false,
+              "isPublicNetwork": false,
+              "isBidirectional": false,
+              "threats": [],
+              "isTrustBoundary": false,
+              "hasOpenThreats": false
+            }
+          },
+          {
+            "shape": "flow",
+            "attrs": {
+              "line": {
+                "stroke": "#333333",
+                "strokeWidth": 1,
+                "targetMarker": {
+                  "name": "block"
+                },
+                "sourceMarker": "",
+                "strokeDasharray": null
+              }
+            },
+            "width": 200,
+            "height": 100,
+            "zIndex": 174,
+            "connector": "smooth",
+            "id": "flow-075",
+            "visible": true,
+            "labels": [
+              {
+                "position": 0.5,
+                "attrs": {
+                  "label": {
+                    "text": "Filtered metrics"
+                  }
+                }
+              }
+            ],
+            "source": {
+              "cell": "process-056"
+            },
+            "target": {
+              "cell": "store-060"
+            },
+            "data": {
+              "type": "tm.Flow",
+              "name": "Filtered metrics",
+              "description": "",
+              "outOfScope": false,
+              "reasonOutOfScope": "",
+              "protocol": "local",
+              "isEncrypted": false,
+              "isPublicNetwork": false,
+              "isBidirectional": false,
+              "threats": [],
+              "isTrustBoundary": false,
+              "hasOpenThreats": false
+            }
+          },
+          {
+            "shape": "flow",
+            "attrs": {
+              "line": {
+                "stroke": "#333333",
+                "strokeWidth": 1,
+                "targetMarker": {
+                  "name": "block"
+                },
+                "sourceMarker": "",
+                "strokeDasharray": null
+              }
+            },
+            "width": 200,
+            "height": 100,
+            "zIndex": 175,
+            "connector": "smooth",
+            "id": "flow-076",
+            "visible": true,
+            "labels": [
+              {
+                "position": 0.5,
+                "attrs": {
+                  "label": {
+                    "text": "D1 pull"
+                  }
+                }
+              }
+            ],
+            "source": {
+              "cell": "process-056"
+            },
+            "target": {
+              "cell": "process-062"
+            },
+            "data": {
+              "type": "tm.Flow",
+              "name": "D1 pull",
+              "description": "",
+              "outOfScope": false,
+              "reasonOutOfScope": "",
+              "protocol": "HTTPS",
+              "isEncrypted": true,
+              "isPublicNetwork": true,
+              "isBidirectional": false,
+              "threats": [],
+              "isTrustBoundary": true,
+              "hasOpenThreats": false
+            }
+          },
+          {
+            "shape": "flow",
+            "attrs": {
+              "line": {
+                "stroke": "#333333",
+                "strokeWidth": 1,
+                "targetMarker": {
+                  "name": "block"
+                },
+                "sourceMarker": "",
+                "strokeDasharray": null
+              }
+            },
+            "width": 200,
+            "height": 100,
+            "zIndex": 176,
+            "connector": "smooth",
+            "id": "flow-077",
+            "visible": true,
+            "labels": [
+              {
+                "position": 0.5,
+                "attrs": {
+                  "label": {
+                    "text": "Document model"
+                  }
+                }
+              }
+            ],
+            "source": {
+              "cell": "store-060"
+            },
+            "target": {
+              "cell": "process-068"
+            },
+            "data": {
+              "type": "tm.Flow",
+              "name": "Document model",
+              "description": "",
+              "outOfScope": false,
+              "reasonOutOfScope": "",
+              "protocol": "local",
+              "isEncrypted": false,
+              "isPublicNetwork": false,
+              "isBidirectional": false,
+              "threats": [],
+              "isTrustBoundary": true,
+              "hasOpenThreats": false
+            }
+          },
+          {
+            "shape": "flow",
+            "attrs": {
+              "line": {
+                "stroke": "#333333",
+                "strokeWidth": 1,
+                "targetMarker": {
+                  "name": "block"
+                },
+                "sourceMarker": "",
+                "strokeDasharray": null
+              }
+            },
+            "width": 200,
+            "height": 100,
+            "zIndex": 177,
+            "connector": "smooth",
+            "id": "flow-078",
+            "visible": true,
+            "labels": [
+              {
+                "position": 0.5,
+                "attrs": {
+                  "label": {
+                    "text": "Owner file"
+                  }
+                }
+              }
+            ],
+            "source": {
+              "cell": "process-068"
+            },
+            "target": {
+              "cell": "store-071"
+            },
+            "data": {
+              "type": "tm.Flow",
+              "name": "Owner file",
+              "description": "",
+              "outOfScope": false,
+              "reasonOutOfScope": "",
+              "protocol": "local",
+              "isEncrypted": false,
+              "isPublicNetwork": false,
+              "isBidirectional": false,
+              "threats": [],
+              "isTrustBoundary": false,
+              "hasOpenThreats": false
+            }
+          },
+          {
+            "shape": "flow",
+            "attrs": {
+              "line": {
+                "stroke": "#333333",
+                "strokeWidth": 1,
+                "targetMarker": {
+                  "name": "block"
+                },
+                "sourceMarker": "",
+                "strokeDasharray": null
+              }
+            },
+            "width": 200,
+            "height": 100,
+            "zIndex": 178,
+            "connector": "smooth",
+            "id": "flow-079",
+            "visible": true,
+            "labels": [
+              {
+                "position": 0.5,
+                "attrs": {
+                  "label": {
+                    "text": "Approved release"
+                  }
+                }
+              }
+            ],
+            "source": {
+              "cell": "store-071"
+            },
+            "target": {
+              "cell": "actor-072"
+            },
+            "data": {
+              "type": "tm.Flow",
+              "name": "Approved release",
+              "description": "",
+              "outOfScope": false,
+              "reasonOutOfScope": "",
+              "protocol": "local",
+              "isEncrypted": false,
+              "isPublicNetwork": false,
+              "isBidirectional": false,
+              "threats": [],
+              "isTrustBoundary": false,
+              "hasOpenThreats": false
+            }
+          }
+        ]
+      },
+      {
+        "version": "2.6.2",
+        "title": "4 Local editor",
+        "diagramType": "STRIDE",
+        "id": 3,
+        "thumbnail": "../assets/logo-512.png",
+        "cells": [
+          {
+            "position": {"x": 20, "y": 20},
+            "size": {"width": 330, "height": 620},
+            "attrs": {"body": {"stroke": "#b45309", "strokeWidth": 3, "strokeDasharray": "10 5", "fill": "transparent", "fillOpacity": 0, "rx": 10, "ry": 10}, "label": {"text": "TB10 Browser origins"}},
+            "visible": true,
+            "shape": "trust-boundary-box",
+            "zIndex": -50,
+            "id": "boundary-080",
+            "data": {"type": "tm.BoundaryBox", "name": "TB10 Browser origins", "description": "Untrusted pages and the editor and preview origins are separate.", "isTrustBoundary": true, "hasOpenThreats": false, "threats": []}
+          },
+          {
+            "position": {"x": 390, "y": 20},
+            "size": {"width": 820, "height": 620},
+            "attrs": {"body": {"stroke": "#b45309", "strokeWidth": 3, "strokeDasharray": "10 5", "fill": "transparent", "fillOpacity": 0, "rx": 10, "ry": 10}, "label": {"text": "TB11 Local editor process and files"}},
+            "visible": true,
+            "shape": "trust-boundary-box",
+            "zIndex": -50,
+            "id": "boundary-081",
+            "data": {"type": "tm.BoundaryBox", "name": "TB11 Local editor process and files", "description": "The local process mediates access to owner files.", "isTrustBoundary": true, "hasOpenThreats": false, "threats": []}
+          },
+          {
+            "position": {"x": 70, "y": 100},
+            "size": {"width": 180, "height": 80},
+            "attrs": {"text": {"text": "Visited web page"}, "body": {"stroke": "#333333", "strokeWidth": 1, "strokeDasharray": null}},
+            "visible": true,
+            "shape": "actor",
+            "zIndex": 180,
+            "id": "actor-082",
+            "data": {"name": "Visited web page", "description": "A page or extension that can reach loopback.", "type": "tm.Actor", "isTrustBoundary": false, "outOfScope": false, "reasonOutOfScope": "", "threats": [], "hasOpenThreats": false}
+          },
+          {
+            "position": {"x": 70, "y": 400},
+            "size": {"width": 180, "height": 80},
+            "attrs": {"text": {"text": "Editor browser tab"}, "body": {"stroke": "#333333", "strokeWidth": 1, "strokeDasharray": null}},
+            "visible": true,
+            "shape": "process",
+            "zIndex": 181,
+            "id": "process-083",
+            "data": {
+              "name": "Editor browser tab",
+              "description": "Holds the session token and renders owner-controlled text.",
+              "type": "tm.Process",
+              "isTrustBoundary": false,
+              "outOfScope": false,
+              "reasonOutOfScope": "",
+              "threats": [
+                {"id": "threat-073", "title": "T-24 Session token leakage", "status": "Open", "severity": "High", "type": "Information disclosure", "modelType": "STRIDE", "description": "The per-session token could remain visible in browser or operating-system surfaces.", "mitigation": "T-24: Fragment delivery, memory-only storage, and response checks are shipped, but browser verification that the token leaves the address bar and storage is still proposed.", "number": 73},
+                {"id": "threat-074", "title": "T-30 Editor clickjacking", "status": "Open", "severity": "Medium", "type": "Spoofing", "modelType": "STRIDE", "description": "Another page could frame the editor and trick the owner into changing content.", "mitigation": "T-30: Add the planned frame-ancestors policy and frame-options response on every editor response, with an integration test.", "number": 74},
+                {"id": "threat-075", "title": "T-32 Config text executes in the editor", "status": "Mitigated", "severity": "High", "type": "Elevation of privilege", "modelType": "STRIDE", "description": "Owner-controlled or shared config text could execute in the privileged editor page.", "mitigation": "T-32: src/reach_around/editor_assets uses text-only rendering and a closed CSP; tests/editor/test_sources.py and tests/editor/test_csp.py verify dangerous sinks and unsafe directives are absent.", "number": 75},
+                {"id": "threat-076", "title": "T-33 Editor front-end supply chain", "status": "Mitigated", "severity": "High", "type": "Elevation of privilege", "modelType": "STRIDE", "description": "A remote or missing front-end dependency could execute with editor authority.", "mitigation": "T-33: editor assets are local same-folder modules with no remote URLs; tests/editor/test_sources.py verifies imports, references, and the no-remote rule.", "number": 76}
+              ],
+              "hasOpenThreats": true,
+              "privilegeLevel": ""
+            }
+          },
+          {
+            "position": {"x": 470, "y": 150},
+            "size": {"width": 230, "height": 100},
+            "attrs": {"text": {"text": "Loopback editor server"}, "body": {"stroke": "#333333", "strokeWidth": 1, "strokeDasharray": null}},
+            "visible": true,
+            "shape": "process",
+            "zIndex": 182,
+            "id": "process-084",
+            "data": {
+              "name": "Loopback editor server",
+              "description": "Authenticates requests and applies bounded edits.",
+              "type": "tm.Process",
+              "isTrustBoundary": false,
+              "outOfScope": false,
+              "reasonOutOfScope": "",
+              "threats": [
+                {"id": "threat-077", "title": "T-22 DNS rebinding and non-loopback reach", "status": "Mitigated", "severity": "High", "type": "Spoofing", "modelType": "STRIDE", "description": "A hostile page could reach the editor through DNS rebinding or a non-loopback bind.", "mitigation": "T-22: src/reach_around/editor restricts binding, Host, Origin, and tokens; tests/editor/test_guard.py and tests/editor/test_server_lifecycle.py verify those controls.", "number": 77},
+                {"id": "threat-078", "title": "T-23 Cross-origin state change", "status": "Mitigated", "severity": "High", "type": "Tampering", "modelType": "STRIDE", "description": "A cross-origin request could change the owner's configuration.", "mitigation": "T-23: src/reach_around/editor requires a token, JSON content type, matching Origin, and POST for changes; tests/editor/test_guard.py and tests/editor/test_routes.py verify refusals leave files unchanged.", "number": 78},
+                {"id": "threat-079", "title": "T-25 Editor resource exhaustion", "status": "Open", "severity": "Medium", "type": "Denial of service", "modelType": "STRIDE", "description": "Oversized, slow, malformed, or frequent requests could exhaust memory, workers, history, or disk.", "mitigation": "T-25: JSON, header, connection, timeout, mutation, and history caps are tested, but upload and media-count controls remain planned.", "number": 79},
+                {"id": "threat-080", "title": "T-31 Local process or extension access", "status": "Mitigated", "severity": "Medium", "type": "Spoofing", "modelType": "STRIDE", "description": "A same-user process or privileged browser extension could reach the editor or steal its token.", "mitigation": "T-31: the token is process-local and is not placed in argv or environment; tests/editor/test_server_lifecycle.py verifies the shipped exposure limits. Same-user compromise remains residual risk.", "number": 80},
+                {"id": "threat-081", "title": "T-35 Editor logging disclosure", "status": "Mitigated", "severity": "Medium", "type": "Information disclosure", "modelType": "STRIDE", "description": "Logs could disclose tokens or owner content.", "mitigation": "T-35: the editor does not emit request or config content; tests/editor/test_server_lifecycle.py verifies a real session does not print the token.", "number": 81},
+                {"id": "threat-082", "title": "T-36 Forgotten live editor session", "status": "Open", "severity": "Medium", "type": "Elevation of privilege", "modelType": "STRIDE", "description": "The authenticated local server could remain available after the owner leaves.", "mitigation": "T-36: clean shutdown is tested, but the planned idle timeout, page exit control, and visible session state are not all shipped.", "number": 82}
+              ],
+              "hasOpenThreats": true,
+              "privilegeLevel": ""
+            }
+          },
+          {
+            "position": {"x": 850, "y": 100},
+            "size": {"width": 230, "height": 100},
+            "attrs": {"text": {"text": "Config, history, and media"}, "topLine": {"stroke": "#333333", "strokeWidth": 1, "strokeDasharray": null}, "bottomLine": {"stroke": "#333333", "strokeWidth": 1, "strokeDasharray": null}},
+            "visible": true,
+            "shape": "store",
+            "zIndex": 183,
+            "id": "store-085",
+            "data": {
+              "name": "Config, history, and media",
+              "description": "Owner files read and written by the editor.",
+              "type": "tm.Store",
+              "isTrustBoundary": false,
+              "outOfScope": false,
+              "reasonOutOfScope": "",
+              "threats": [
+                {"id": "threat-083", "title": "T-26 Editor path and symlink escape", "status": "Open", "severity": "High", "type": "Information disclosure", "modelType": "STRIDE", "description": "A path, link, or special file could escape the config, history, or future media folders.", "mitigation": "T-26: descriptor-relative config and history controls are tested, but editor media confinement and save-time asset hooks remain unbuilt.", "number": 83},
+                {"id": "threat-084", "title": "T-27 Hostile editor uploads", "status": "Open", "severity": "High", "type": "Tampering", "modelType": "STRIDE", "description": "A future upload could disguise active content, exhaust resources, overwrite a file, or disclose metadata.", "mitigation": "T-27: the asset content checks exist, but the upload route, generated-name write controls, dimension cap, and editor upload tests are planned.", "number": 84},
+                {"id": "threat-085", "title": "T-28 Unsafe or raced YAML write", "status": "Mitigated", "severity": "High", "type": "Tampering", "modelType": "STRIDE", "description": "An edit could corrupt YAML, lose unrelated text, race another writer, or leave a partial file.", "mitigation": "T-28: src/reach_around/editing.py uses checked text splices, locks, identity checks, staging, and atomic replacement; tests/test_edit.py and tests/test_edit_durability.py verify the controls.", "number": 85},
+                {"id": "threat-086", "title": "T-29 Editor secret disclosure", "status": "Open", "severity": "High", "type": "Information disclosure", "modelType": "STRIDE", "description": "The state response or a future media listing could disclose extra config fields or neighboring secret files.", "mitigation": "T-29: no debug or environment route exists, but state is not schema-allowlisted and the proposed sentinel and media-listing tests do not exist.", "number": 86}
+              ],
+              "hasOpenThreats": true
+            }
+          },
+          {
+            "position": {"x": 470, "y": 420},
+            "size": {"width": 230, "height": 100},
+            "attrs": {"text": {"text": "Preview origin"}, "body": {"stroke": "#333333", "strokeWidth": 1, "strokeDasharray": null}},
+            "visible": true,
+            "shape": "process",
+            "zIndex": 184,
+            "id": "process-087",
+            "data": {
+              "name": "Preview origin",
+              "description": "Serves the separately isolated preview.",
+              "type": "tm.Process",
+              "isTrustBoundary": false,
+              "outOfScope": false,
+              "reasonOutOfScope": "",
+              "threats": [
+                {"id": "threat-087", "title": "T-34 Preview iframe escape", "status": "Open", "severity": "High", "type": "Elevation of privilege", "modelType": "STRIDE", "description": "Preview content could reach the editor, its token, or unintended network destinations.", "mitigation": "T-34: separate origins and frame sandboxing are partly shipped, but the real preview, navigation policy, and browser isolation tests remain proposed.", "number": 87}
+              ],
+              "hasOpenThreats": true,
+              "privilegeLevel": ""
+            }
+          },
+          {
+            "shape": "flow", "attrs": {"line": {"stroke": "#333333", "strokeWidth": 1, "targetMarker": {"name": "block"}, "sourceMarker": "", "strokeDasharray": null}}, "width": 200, "height": 100, "zIndex": 185, "connector": "smooth", "id": "flow-088", "visible": true, "labels": [{"position": 0.5, "attrs": {"label": {"text": "Loopback request"}}}], "source": {"cell": "process-083"}, "target": {"cell": "process-084"},
+            "data": {"type": "tm.Flow", "name": "Loopback request", "description": "Authenticated editor API traffic crosses from the browser to the local process.", "outOfScope": false, "reasonOutOfScope": "", "protocol": "HTTP", "isEncrypted": false, "isPublicNetwork": false, "isBidirectional": true, "threats": [], "isTrustBoundary": true, "hasOpenThreats": false}
+          },
+          {
+            "shape": "flow", "attrs": {"line": {"stroke": "#333333", "strokeWidth": 1, "targetMarker": {"name": "block"}, "sourceMarker": "", "strokeDasharray": null}}, "width": 200, "height": 100, "zIndex": 186, "connector": "smooth", "id": "flow-089", "visible": true, "labels": [{"position": 0.5, "attrs": {"label": {"text": "Untrusted loopback traffic"}}}], "source": {"cell": "actor-082"}, "target": {"cell": "process-084"},
+            "data": {"type": "tm.Flow", "name": "Untrusted loopback traffic", "description": "A visited page attempts to cross into the editor process.", "outOfScope": false, "reasonOutOfScope": "", "protocol": "HTTP", "isEncrypted": false, "isPublicNetwork": false, "isBidirectional": false, "threats": [], "isTrustBoundary": true, "hasOpenThreats": false}
+          },
+          {
+            "shape": "flow", "attrs": {"line": {"stroke": "#333333", "strokeWidth": 1, "targetMarker": {"name": "block"}, "sourceMarker": "", "strokeDasharray": null}}, "width": 200, "height": 100, "zIndex": 187, "connector": "smooth", "id": "flow-090", "visible": true, "labels": [{"position": 0.5, "attrs": {"label": {"text": "Checked file operations"}}}], "source": {"cell": "process-084"}, "target": {"cell": "store-085"},
+            "data": {"type": "tm.Flow", "name": "Checked file operations", "description": "Validated operations cross from the server into owner files.", "outOfScope": false, "reasonOutOfScope": "", "protocol": "local", "isEncrypted": false, "isPublicNetwork": false, "isBidirectional": true, "threats": [], "isTrustBoundary": true, "hasOpenThreats": false}
+          },
+          {
+            "shape": "flow", "attrs": {"line": {"stroke": "#333333", "strokeWidth": 1, "targetMarker": {"name": "block"}, "sourceMarker": "", "strokeDasharray": null}}, "width": 200, "height": 100, "zIndex": 188, "connector": "smooth", "id": "flow-091", "visible": true, "labels": [{"position": 0.5, "attrs": {"label": {"text": "Isolated preview"}}}], "source": {"cell": "process-084"}, "target": {"cell": "process-087"},
+            "data": {"type": "tm.Flow", "name": "Isolated preview", "description": "Preview content crosses to a separate origin.", "outOfScope": false, "reasonOutOfScope": "", "protocol": "HTTP", "isEncrypted": false, "isPublicNetwork": false, "isBidirectional": true, "threats": [], "isTrustBoundary": true, "hasOpenThreats": false}
+          }
+        ]
+      }
+    ],
+    "diagramTop": 4,
+    "reviewer": "ChiefGyk3D",
+    "threatTop": 87
+  }
+}
