@@ -132,6 +132,15 @@ def test_a_row_validates_and_the_default_is_none() -> None:
     assert KitConfig.model_validate(kit_doc()).engagement == []
 
 
+@pytest.mark.parametrize("field", ["views", "interactions"])
+def test_engagement_figures_accept_the_documented_upper_bound(field: str) -> None:
+    assert (
+        getattr(EngagementRow.model_validate(row(**{field: 10**12})), field) == 10**12
+    )
+    with pytest.raises(ValidationError):
+        EngagementRow.model_validate(row(**{field: 10**12 + 1}))
+
+
 def test_a_row_with_no_figures_is_a_platform_with_no_source() -> None:
     kick = EngagementRow.model_validate({"platform": "kick"})
     assert kick.views is None and kick.as_of is None

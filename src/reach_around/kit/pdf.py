@@ -454,7 +454,7 @@ def build_kit_pdf(
     """Make the private PDF; see the module doc. ``protect`` lists more
     directories the output may not be in (the config's directory)."""
     kit = config.kit
-    if kit is None or not kit.has_gated_content:
+    if kit is None or (not kit.has_gated_content and not kit.engagement):
         raise PdfError(
             "the config has no gated media kit content (partners, case studies, "
             "packages, rates, engagement, testimonials, demographics or a "

@@ -55,6 +55,7 @@ from reach_around.config.numbers import Numbers
 _SITE_KEY = re.compile(r"[0-9A-Za-z_-]{1,64}")
 
 MAX_PERIOD_DAYS = 366
+MAX_ENGAGEMENT_COUNT = 10**12
 
 Visibility = Literal["public", "gated", "private"]
 
@@ -320,9 +321,11 @@ class EngagementRow(_Model):
     period_start: date | None = None
     period_end: date | None = None
     as_of: date | None = None
-    views: Annotated[StrictInt, Field(ge=0, le=MAX_COUNT)] | None = None
+    views: Annotated[StrictInt, Field(ge=0, le=MAX_ENGAGEMENT_COUNT)] | None = None
     posts: Annotated[StrictInt, Field(ge=1, le=1_000_000)] | None = None
-    interactions: Annotated[StrictInt, Field(ge=0, le=MAX_COUNT)] | None = None
+    interactions: Annotated[StrictInt, Field(ge=0, le=MAX_ENGAGEMENT_COUNT)] | None = (
+        None
+    )
     counts: Text120 | None = None
 
     @field_validator("platform")

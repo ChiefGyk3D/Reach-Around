@@ -793,8 +793,10 @@ def render_kit(
             **{**ctx, "root": "../../", "kit": public, "form": form, "noindex": True}
         )
     gated: str | None = None
-    if has_gate_form(kit):
+    if has_gate_form(kit) or kit.engagement:
         data = gated_projection(kit, numbers)
+        if kit.engagement and not data["engagement"]:
+            data["engagement"] = kit.engagement
         content = _content(data, live_day, config, today)
         content.update(
             partners=data["partners"],

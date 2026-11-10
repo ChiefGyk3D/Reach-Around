@@ -22,6 +22,7 @@ from reach_around.config.engagement import (
     AVERAGE_VIEWS_FORMULA,
     ENGAGEMENT_FORMULA,
 )
+from reach_around.config.kit import DISPLAY_POLICY
 from reach_around.kit.pdf import PdfError, build_kit_pdf
 from reach_around.kit.pdftext import extract_pages
 from reach_around.site.kit import GATED_FILE, KitLeakError
@@ -180,6 +181,31 @@ def test_the_rows_are_in_the_owner_pdf(tmp_path: Path) -> None:
     flat = "".join(" ".join(extract_pages(_pdf(tmp_path).read_bytes())).split())
     for text in ("5.0%", "1,500", "2027-02-01 to 2027-02-28", "not available"):
         assert "".join(text.split()) in flat
+
+
+def test_an_engagement_only_public_kit_still_builds_the_owner_pdf(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    kit = pdf_kit_doc()
+    kit = {key: kit[key] for key in ("title", "about")}
+    kit["engagement"] = rows()
+    config = pdf_config(kit)
+    monkeypatch.setitem(DISPLAY_POLICY, "engagement", "public")
+    assert not config.kit.has_gated_content
+
+    config, site, staged = build_instance(tmp_path, config)
+    result = build_kit_pdf(
+        config,
+        gated_dir=staged,
+        site_dir=site,
+        out_dir=tmp_path / "private",
+        name="kit.pdf",
+        created=date(2027, 3, 10),
+        renderer=fake_renderer,
+    )
+
+    flat = "".join(" ".join(extract_pages(result.path.read_bytes())).split())
+    assert "5.0%" in flat and "1,500" in flat
 
 
 def test_the_pdf_check_fails_when_a_figure_differs(tmp_path: Path) -> None:

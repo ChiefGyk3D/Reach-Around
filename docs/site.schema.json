@@ -603,7 +603,7 @@
         "interactions": {
           "anyOf": [
             {
-              "maximum": 10000000000,
+              "maximum": 1000000000000,
               "minimum": 0,
               "type": "integer"
             },
@@ -661,7 +661,7 @@
         "views": {
           "anyOf": [
             {
-              "maximum": 10000000000,
+              "maximum": 1000000000000,
               "minimum": 0,
               "type": "integer"
             },
