@@ -54,6 +54,9 @@ from reach_around.config.numbers import Numbers
 # characters only, so it can sit in an attribute with no escaping surprises.
 _SITE_KEY = re.compile(r"[0-9A-Za-z_-]{1,64}")
 
+MAX_PERIOD_DAYS = 366
+MAX_ENGAGEMENT_COUNT = 10**12
+
 Visibility = Literal["public", "gated", "private"]
 
 # Every KitConfig field, plus the computed ``unified_total``, has exactly one
@@ -71,6 +74,9 @@ DISPLAY_POLICY: Mapping[str, Visibility] = {
     "case_studies": "gated",
     "services": "gated",
     "rates": "gated",
+    # Owner decision: gated. To make it public later, change this one line to
+    # "public" (the pages render from the projection, so nothing else moves).
+    "engagement": "gated",
     "testimonials": "gated",
     "demographics": "gated",
     "inquiry": "gated",
@@ -302,6 +308,59 @@ class PlatformMetric(_Model):
         return self
 
 
+class EngagementRow(_Model):
+    """Owner-kept inputs for one platform and one UTC period.
+
+    The kit works out average views per post and the engagement rate from these
+    (see ``reach_around.config.engagement``). A row with no figures is a platform
+    with no source: it prints ``not available``. ``counts`` says what the
+    platform counts as an interaction, because definitions differ.
+    """
+
+    platform: str
+    period_start: date | None = None
+    period_end: date | None = None
+    as_of: date | None = None
+    views: Annotated[StrictInt, Field(ge=0, le=MAX_ENGAGEMENT_COUNT)] | None = None
+    posts: Annotated[StrictInt, Field(ge=1, le=1_000_000)] | None = None
+    interactions: Annotated[StrictInt, Field(ge=0, le=MAX_ENGAGEMENT_COUNT)] | None = (
+        None
+    )
+    counts: Text120 | None = None
+
+    @field_validator("platform")
+    @classmethod
+    def _known_platform(cls, value: str) -> str:
+        if value not in PLATFORM_SLUGS:
+            raise ValueError(
+                "platform must be a platform name from the platforms block"
+            )
+        return value
+
+    @field_validator("period_start", "period_end", "as_of", mode="before")
+    @classmethod
+    def _is_a_date(cls, value: object) -> object:
+        return _iso_date(value)
+
+    @model_validator(mode="after")
+    def _period_rules(self) -> EngagementRow:
+        figures = (self.views, self.posts, self.interactions)
+        if all(v is None for v in figures):
+            return self
+        if self.period_start is None or self.period_end is None or self.as_of is None:
+            raise ValueError(
+                "figures need a period (period_start and period_end, UTC days) "
+                "and an as_of date"
+            )
+        if self.period_end < self.period_start:
+            raise ValueError("period_end must not be before period_start")
+        if (self.period_end - self.period_start).days + 1 > MAX_PERIOD_DAYS:
+            raise ValueError(f"the period may be at most {MAX_PERIOD_DAYS} days")
+        if self.as_of < self.period_end:
+            raise ValueError("as_of must not be before the period ends")
+        return self
+
+
 class KitConfig(_Model):
     title: Text120
     about: Text1000
@@ -312,6 +371,9 @@ class KitConfig(_Model):
     # A few content category chips for the header, public on every page.
     tags: list[Text30] = Field(default_factory=list, max_length=8)
     metrics: list[PlatformMetric] = Field(default_factory=list, max_length=30)
+    # Owner-kept inputs for engagement and average views, per platform and UTC
+    # period. Public: the figures are worked out in code, never typed.
+    engagement: list[EngagementRow] = Field(default_factory=list, max_length=30)
     partners: list[Partner] = Field(default_factory=list, max_length=50)
     case_studies: list[CaseStudy] = Field(default_factory=list, max_length=20)
     services: list[ServicePackage] = Field(default_factory=list, max_length=20)
@@ -350,6 +412,19 @@ class KitConfig(_Model):
                 "arrives in a later release. Leave it false or remove it."
             )
         return value
+
+    @model_validator(mode="after")
+    def _engagement_rows_are_unique(self) -> KitConfig:
+        seen: set[tuple[str, date | None, date | None]] = set()
+        for entry in self.engagement:
+            key = (entry.platform, entry.period_start, entry.period_end)
+            if key in seen:
+                raise ValueError(
+                    f"the engagement row for {entry.platform!r} and that period "
+                    "is listed more than once"
+                )
+            seen.add(key)
+        return self
 
     @model_validator(mode="after")
     def _tags_are_unique(self) -> KitConfig:
@@ -486,6 +561,14 @@ def kit_warnings(
         elif metric.value is not None and metric.as_of is not None:
             limit = (limits or {}).get(metric.platform, STALE_DAYS)
             found.append(_age_warning(what, metric.as_of, today, limit))
+    for entry in kit.engagement:
+        if entry.as_of is not None:
+            limit = (limits or {}).get(entry.platform, STALE_DAYS)
+            found.append(
+                _age_warning(
+                    f"kit engagement {entry.platform}", entry.as_of, today, limit
+                )
+            )
     for demo in kit.demographics:
         found.append(_age_warning(f"kit demographic {demo.label!r}", demo.as_of, today))
     return [w for w in found if w is not None]

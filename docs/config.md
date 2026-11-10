@@ -916,6 +916,7 @@ end. Text must be quoted if YAML would read it as a number.
 | `contact` | text | none | one plain-text line for brands, at most 200 characters; see the note below |
 | `tags` | list of text | none | at most 8 content category tags, each 1 to 30 characters, none repeated (compared ignoring case and width, so `Tech` and `Ｔech` count as the same tag); public |
 | `metrics` | list of metric | none | at most 30; each `platform` and `label` pair once |
+| `engagement` | list of engagement row | none | at most 30; each platform and period once; gated; see below |
 | `partners` | list of partner | none | at most 50 |
 | `case_studies` | list of case study | none | at most 20 |
 | `services` | list of package | none | at most 20; named packages, shown above the rates table |
@@ -954,6 +955,37 @@ nothing checks that. It is shown only on the gated page and in the owner PDF,
 never on the public page. Left out or empty, nothing is printed. A **demographic** has `label` (60), `value`
 (80) and a required `as_of`.
 
+**Engagement and average views.** `engagement` holds owner-kept inputs for one
+platform and one UTC period; the kit works the two figures out in code and never
+takes them typed. An **engagement row** has `platform`, `period_start` and
+`period_end` (UTC days, the period at most 366 days), `as_of` (the day you read
+the numbers, not before the period ends), `views` (0 up to 1,000,000,000,000),
+`posts` (1 up to 1,000,000: the posts, videos or streams in the period),
+`interactions` (0 up to 1,000,000,000,000) and an optional `counts` (120
+characters) that says what the platform counts as an interaction. Every figure
+is optional, but if any is given the period and `as_of` are required.
+
+- **Average views per post** = `views` / `posts`, rounded half up to a whole
+  number (2.5 becomes 3).
+- **Engagement rate** = `interactions` / `views` x 100, rounded half up to one
+  decimal place, printed with a percent sign (0.05 becomes 0.1%). The rate can
+  pass 100% when a platform counts more interactions than views.
+- The arithmetic is exact integer math (no floating point), so the same inputs
+  always print the same text. The formula text is printed under each measure.
+- A figure whose inputs are missing (or whose divisor is zero) prints
+  `not available`; the row is kept, never hidden and never filled in. A row with
+  only a `platform` is a platform with no source (owner decision Q6, 2026-11-08).
+  Twitch, Kick and every other platform use the same layout.
+- Nothing is added or averaged across platforms, and the page says so.
+- An old or future `as_of` warns like any other date. The numbers file is not
+  read: it holds follower counts only, so these inputs live in the config.
+
+The rows are gated (owner decision): they print on the gated page and in the
+owner PDF only, and the public page and public projection carry none of them. To
+make them public later, change `"engagement": "gated"` to `"public"` in
+`DISPLAY_POLICY` (`reach_around/config/kit.py`) and render the table on the
+public page.
+
 **Disclosure statement.** `kit.disclosure` is optional: a couple of sentences, in
 your own words, on how you disclose paid relationships and affiliate links and
 what content a brand can expect to sit next to. Reach Around supplies no
@@ -969,12 +1001,12 @@ nothing is printed.
 | Field | Shown |
 | --- | --- |
 | `title`, `about`, `contact`, `tags`, `metrics`, the unified total | public |
-| `partners`, `case_studies`, `services`, `rates`, `demographics`, `disclosure`, `inquiry`, `testimonials` | gated (only after the gate) |
+| `partners`, `case_studies`, `services`, `rates`, `engagement`, `demographics`, `disclosure`, `inquiry`, `testimonials` | gated (only after the gate) |
 | `turnstile_site_key` | public (it ships in the gate form; the key is public by design) |
 | `unlock_link` | private (configuration, never shown) |
 
 The public half therefore shows the header and the headline numbers and nothing
-else. If `partners`, `case_studies`, `services`, `rates`, `demographics`, `disclosure`, `inquiry` or `testimonials` is set,
+else. If `partners`, `case_studies`, `services`, `rates`, `engagement`, `demographics`, `disclosure`, `inquiry` or `testimonials` is set,
 `features.kit_gate` must be `true`; the config is refused otherwise, so gated
 content can never be published with no gate.
 
@@ -1040,6 +1072,16 @@ kit:
       price_text: Ask me!
   rates:
     - {item: Sponsored video, price_text: Ask me!}
+  engagement:
+    - platform: twitch
+      period_start: 2027-02-01
+      period_end: 2027-02-28
+      as_of: 2027-03-01
+      views: 12000
+      posts: 8
+      interactions: 600
+      counts: Chat messages and follows
+    - platform: kick
   testimonials:
     - {quote: An example quote., name: Example Person, brand: Example Brand}
   disclosure: An example statement about how paid work is marked.

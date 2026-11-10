@@ -1,7 +1,7 @@
 {# SPDX-License-Identifier: Apache-2.0 #}
 {% extends "base.html" %}
 {% set page_frames = false %}{% set frame_plan = {} %}
-{% from "_kit_parts.html" import numbers %}
+{% from "_kit_parts.html" import numbers, engagement %}
 {% block content %}
 <section class="kit" aria-labelledby="kit-title">
 <h2 id="kit-title">{{ kit.title }}</h2>
@@ -17,6 +17,7 @@
 <p class="kit-about kit-contact">{{ kit.contact }}</p>
 {% endif %}
 {{ numbers(kit, "kit-numbers-title") }}
+{{ engagement(kit, "kit-engagement-title") }}
 {% if kit.partners %}
 <section class="kit-partners" aria-labelledby="kit-partners-title">
 <h3 id="kit-partners-title">Past partners</h3>

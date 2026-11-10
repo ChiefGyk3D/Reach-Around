@@ -153,7 +153,10 @@ so it reveals nothing about the check. It is marked `noindex`. There is no
 
 ### Gated page
 
-A complete page (header, navigation, the same numbers, then partners, case
+A complete page (header, navigation, the same numbers, the Engagement table when
+the config has `engagement` rows (average views per post and engagement rate per
+platform, each with its formula, UTC period and as-of date, or `not available`;
+see the [config reference](config.md#kit)), then partners, case
 studies, packages, a rates table, testimonials, audience details, the disclosure statement and, when `kit.inquiry` is set, the
 [business inquiry form](#the-business-inquiry-form)), marked `noindex`, with
 root-based asset links (`/static/...`) because the Worker serves it from any

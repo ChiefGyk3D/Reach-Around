@@ -45,6 +45,7 @@ from jinja2 import Environment
 
 from reach_around.config.blocks import platform_name
 from reach_around.config.cutover import cutover_label, live_since, utc_today
+from reach_around.config.engagement import ACROSS_PLATFORMS_NOTE, FORMULAS, rows_for
 from reach_around.config.era import classify_era, era_text
 from reach_around.config.kit import (
     KitConfig,
@@ -206,11 +207,16 @@ def _gated_strings(kit: KitConfig) -> list[tuple[str, str]]:
         "case_studies",
         "services",
         "rates",
+        "engagement",
         "testimonials",
         "demographics",
     ):
         for index, item in enumerate(getattr(kit, name)):
             for field, text in text_fields(item):
+                # The platform and the period dates are labels shared with public
+                # pages; only the owner's free text is searched for.
+                if name == "engagement" and field != "counts":
+                    continue
                 if len(text) >= GUARD_MIN_LENGTH:
                     found.append((f"kit.{name}[{index}].{field}", text))
     if kit.inquiry is not None:
@@ -696,6 +702,9 @@ def _content(
         "contact": projection["contact"],
         "tags": projection["tags"],
         "metrics": _metric_rows(metrics, config, today, live_day),
+        "engagement": rows_for(projection.get("engagement", [])),
+        "engagement_note": ACROSS_PLATFORMS_NOTE,
+        "engagement_formulas": FORMULAS,
         "total": _total(projection["unified_total"], metrics, live_day),
     }
 
@@ -708,6 +717,7 @@ def _categories(kit: KitConfig) -> str:
             ("case studies", kit.case_studies),
             ("packages", kit.services),
             ("rates", kit.rates),
+            ("audience figures", kit.engagement),
             ("testimonials", kit.testimonials),
             ("audience details", kit.demographics),
             ("a disclosure statement", [kit.disclosure] if kit.disclosure else []),
@@ -730,8 +740,8 @@ def plan_warnings(
     if config.features.kit_gate and not kit.has_gated_content:
         found.append(
             "features.kit_gate is on but the kit has no partners, case studies, "
-            "packages, rates, testimonials, demographics or disclosure; no gate form "
-            "or gated page is built"
+            "packages, rates, engagement, testimonials, demographics or disclosure; "
+            "no gate form or gated page is built"
         )
     if has_gate_form(kit) and kit.turnstile_site_key is None:
         found.append(
@@ -783,8 +793,10 @@ def render_kit(
             **{**ctx, "root": "../../", "kit": public, "form": form, "noindex": True}
         )
     gated: str | None = None
-    if has_gate_form(kit):
+    if has_gate_form(kit) or kit.engagement:
         data = gated_projection(kit, numbers)
+        if kit.engagement and not data["engagement"]:
+            data["engagement"] = kit.engagement
         content = _content(data, live_day, config, today)
         content.update(
             partners=data["partners"],

@@ -122,4 +122,6 @@
   .kit-table th, .kit-table td { border-color: CanvasText; }
   .kit-note, .kit-table thead th { color: CanvasText; }
 }
+.kit-formula { display: block; }
+.kit-nowrap { white-space: nowrap; }
 .kit-tags { justify-content: flex-start; }

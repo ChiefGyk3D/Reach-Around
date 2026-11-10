@@ -44,6 +44,7 @@ from types import FrameType
 from typing import Literal, NoReturn
 
 from reach_around.config.cutover import cutover_label, live_since, utc_today
+from reach_around.config.engagement import engagement_rows
 from reach_around.config.kit import (
     KitConfig,
     pdf_excluded_values,
@@ -355,6 +356,12 @@ def _expected_text(kit: KitConfig, numbers: Numbers | None) -> list[tuple[str, s
                 row["platform"] + row["label"] + row["value"] + row["as_of"],
             )
         )
+    for row in engagement_rows(kit):
+        where = f"the engagement row {row['platform']!r} {row['measure']!r}"
+        found.append((where, row["platform"] + row["measure"]))
+        found.append((where, row["formula"]))
+        found.append((where, row["value"] + row["period"]))
+        found.append((where, row["as_of"]))
     total = _total(unified_total(resolved), resolved)
     if total is not None:
         found.append(("the metric total", total["value"]))
@@ -365,6 +372,7 @@ def _expected_text(kit: KitConfig, numbers: Numbers | None) -> list[tuple[str, s
         "case_studies",
         "services",
         "rates",
+        "engagement",
         "testimonials",
         "demographics",
     ):
@@ -446,11 +454,11 @@ def build_kit_pdf(
     """Make the private PDF; see the module doc. ``protect`` lists more
     directories the output may not be in (the config's directory)."""
     kit = config.kit
-    if kit is None or not kit.has_gated_content:
+    if kit is None or (not kit.has_gated_content and not kit.engagement):
         raise PdfError(
             "the config has no gated media kit content (partners, case studies, "
-            "packages, rates, testimonials, demographics or a disclosure "
-            "statement); there is nothing private to print"
+            "packages, rates, engagement, testimonials, demographics or a "
+            "disclosure statement); there is nothing private to print"
         )
     check_name(name)
     target_dir = confine_out_dir(out_dir, [gated_dir, site_dir, *protect])
