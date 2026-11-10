@@ -167,6 +167,20 @@ jobs:
             echo "::error::Pull request #$foreign on counts/refresh was not opened by the Actions bot, or changes more than numbers.json. Close it or rename its branch, then run again."
             exit 1
           fi
+          # The new rows are built on main. If the open bot branch holds history
+          # rows that main does not have yet, replacing it would discard them:
+          # leave it alone until its pull request is merged or closed.
+          if [ "$open" = 1 ]; then
+            authed fetch --quiet origin refs/heads/counts/refresh:refs/remotes/origin/counts/refresh
+            rc=0
+            scripts/unmerged-history.sh refs/remotes/origin/counts/refresh || rc=$?
+            if [ "$rc" = 3 ]; then
+              echo "::warning::Skipped: the open counts/refresh pull request holds history rows that are not in main yet. Merge or close it, then the next run will propose again."
+              exit 0
+            elif [ "$rc" != 0 ]; then
+              exit "$rc"
+            fi
+          fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git switch -C counts/refresh

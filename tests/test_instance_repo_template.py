@@ -121,6 +121,7 @@ def test_the_template_files_exist() -> None:
         "scripts/refresh-counts.sh",
         "scripts/validate-numbers.py",
         "scripts/verify-history.sh",
+        "scripts/unmerged-history.sh",
     ):
         assert (TEMPLATE / rel).is_file(), rel
 

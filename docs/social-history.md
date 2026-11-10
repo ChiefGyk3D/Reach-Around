@@ -116,7 +116,7 @@ history folder writable for the engine only, checks the result with
 `counts history-verify` (offline, read-only), and hands it across the job
 boundary beside `numbers.json`. The publish job checks it again, refuses a file
 that does not begin with every byte of the committed one (append-only), and
-stages it in the same pull request, which keeps the same bot-only and
+stages it in the same pull request (and skips the run, with a warning, while the open bot branch holds history rows main does not have yet, so they are never discarded; only `history/social.jsonl` is carried, and any other file the engine writes in that folder stops the run), which keeps the same bot-only and
 files-changed checks (`numbers.json` and `history/social.jsonl` only). If you
 run the refresh by hand, run `reach-around counts history-verify` before the
 commit so a damaged file is never committed over a good one, and use a plain
