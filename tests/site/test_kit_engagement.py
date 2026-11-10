@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from test_kit_build import GATED_FILE, build, kit_doc, make_config, tree_bytes
+from test_kit_build import build, kit_doc, make_config, tree_bytes
 
 from kitpdfharness import build_instance, fake_renderer
 from kitpdfharness import kit_doc as pdf_kit_doc
@@ -24,6 +24,7 @@ from reach_around.config.engagement import (
 )
 from reach_around.kit.pdf import PdfError, build_kit_pdf
 from reach_around.kit.pdftext import extract_pages
+from reach_around.site.kit import GATED_FILE, KitLeakError
 
 
 def rows() -> list[dict[str, Any]]:
@@ -138,8 +139,6 @@ def test_engagement_alone_makes_the_kit_gated_and_needs_the_gate(
 
 
 def test_the_leak_search_covers_the_engagement_note(tmp_path: Path) -> None:
-    from test_kit_build import KitLeakError
-
     overrides = tmp_path / "overrides"
     (overrides / "templates").mkdir(parents=True)
     (overrides / "templates" / "kit.html").write_text(

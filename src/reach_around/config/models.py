@@ -421,7 +421,8 @@ class SiteConfig(_Model):
             if not self.features.kit_gate:
                 raise ValueError(
                     "the kit has gated content (partners, case studies, rates, "
-                    "engagement or demographics): set features.kit_gate to true, or remove it"
+                    "engagement or demographics): set features.kit_gate to true, "
+                    "or remove it"
                 )
         return self
 
