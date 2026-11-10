@@ -22,7 +22,7 @@ from reach_around.config.engagement import (
     AVERAGE_VIEWS_FORMULA,
     ENGAGEMENT_FORMULA,
 )
-from reach_around.config.kit import DISPLAY_POLICY
+from reach_around.config.kit import DISPLAY_POLICY, KIT_FIELD_POLICY, FieldPolicy
 from reach_around.kit.pdf import PdfError, build_kit_pdf
 from reach_around.kit.pdftext import extract_pages
 from reach_around.site.kit import GATED_FILE, KitLeakError, check_no_gated_text
@@ -143,10 +143,27 @@ def test_collected_youtube_analytics_figures_fail_the_site_build(
 def test_collected_youtube_analytics_figures_fail_when_field_is_public(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    # The refusal reads KIT_FIELD_POLICY (owner_report_only), not the level, so
+    # patch that table: a public field that is marked owner-report-only must
+    # still refuse collected YouTube figures.
     youtube = {**rows()[0], "platform": "youtube"}
+    monkeypatch.setitem(
+        KIT_FIELD_POLICY, "engagement", FieldPolicy("public", owner_report_only=True)
+    )
     monkeypatch.setitem(DISPLAY_POLICY, "engagement", "public")
     with pytest.raises(ValueError, match=r"YouTube Analytics.*owner_supplied: true"):
         build(tmp_path, make_config(kit_doc(engagement=[youtube])))
+
+
+def test_refusal_follows_the_owner_report_only_mark(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Without the mark the guard is off: this proves the mark is its real input.
+    youtube = {**rows()[0], "platform": "youtube"}
+    monkeypatch.setitem(
+        KIT_FIELD_POLICY, "engagement", FieldPolicy("gated", owner_report_only=False)
+    )
+    build(tmp_path, make_config(kit_doc(engagement=[youtube])))
 
 
 def test_owner_supplied_youtube_analytics_are_labeled_and_gated(
