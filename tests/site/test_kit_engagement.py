@@ -191,6 +191,7 @@ def test_an_engagement_only_public_kit_still_builds_the_owner_pdf(
     kit["engagement"] = rows()
     config = pdf_config(kit)
     monkeypatch.setitem(DISPLAY_POLICY, "engagement", "public")
+    assert config.kit is not None
     assert not config.kit.has_gated_content
 
     config, site, staged = build_instance(tmp_path, config)
