@@ -193,6 +193,8 @@ def _gated_strings(kit: KitConfig) -> list[tuple[str, str]]:
     """(where, text) for every gated value long enough to search for. Values
     that are not text (dates) are searched in the form the templates print."""
     found: list[tuple[str, str]] = []
+    if kit.disclosure is not None and len(kit.disclosure) >= GUARD_MIN_LENGTH:
+        found.append(("kit.disclosure", kit.disclosure))
     for name in ("partners", "case_studies", "services", "rates", "demographics"):
         for index, item in enumerate(getattr(kit, name)):
             for field, text in text_fields(item):
@@ -324,6 +326,19 @@ def _public_values(kit: KitConfig) -> set[str]:
     return {canonical(v) for v in values}
 
 
+def _is_whole_element(text: str, page: str) -> bool:
+    """Whether ``text`` is the entire content of some element in ``page``.
+
+    A short gated value (under ``GUARD_MIN_LENGTH``) has no useful substring
+    search: it would match inside any word. A full element match is the
+    collision that matters (the same short text printed as its own line), so
+    that is what is searched for, as written and HTML-escaped."""
+    for variant in {text, html.escape(text), html.escape(text, quote=False)}:
+        if re.search(r">\s*" + re.escape(variant) + r"\s*<", page):
+            return True
+    return False
+
+
 def check_no_gated_text(files: Mapping[Path, bytes], kit: KitConfig | None) -> None:
     """Raise ``KitLeakError`` if a gated file name or string is in ``files``.
 
@@ -350,6 +365,9 @@ def check_no_gated_text(files: Mapping[Path, bytes], kit: KitConfig | None) -> N
             f"the kit has {len(folded)} gated values to search for, over the "
             f"limit of {GUARD_MAX_NEEDLES} (GUARD_MAX_NEEDLES)"
         )
+    short = kit.disclosure
+    if short is not None and len(short) >= GUARD_MIN_LENGTH:
+        short = None
     scanned = 0
     binary = 0
     for rel, data in sorted(files.items()):
@@ -370,6 +388,8 @@ def check_no_gated_text(files: Mapping[Path, bytes], kit: KitConfig | None) -> N
                     "(GUARD_MAX_BINARY_BYTES)"
                 )
             continue
+        if short is not None and _is_whole_element(short, decoded):
+            raise _leak("kit.disclosure", rel)
         if len(data) > GUARD_MAX_FILE_BYTES:
             raise KitGuardLimitError(
                 f"the public text file {rel.as_posix()} is over the leak search "
@@ -666,6 +686,7 @@ def _categories(kit: KitConfig) -> str:
             ("packages", kit.services),
             ("rates", kit.rates),
             ("audience details", kit.demographics),
+            ("a disclosure statement", [kit.disclosure] if kit.disclosure else []),
         )
         if items
     ]
@@ -685,7 +706,8 @@ def plan_warnings(
     if config.features.kit_gate and not kit.has_gated_content:
         found.append(
             "features.kit_gate is on but the kit has no partners, case studies, "
-            "packages, rates or demographics; no gate form or gated page is built"
+            "packages, rates, demographics or disclosure; no gate form or gated page "
+            "is built"
         )
     if has_gate_form(kit) and kit.turnstile_site_key is None:
         found.append(
@@ -745,6 +767,7 @@ def render_kit(
             case_studies=data["case_studies"],
             services=data["services"],
             rates=data["rates"],
+            disclosure=data["disclosure"],
             demographics=[
                 {"label": d.label, "value": d.value, "as_of": d.as_of.isoformat()}
                 for d in data["demographics"]

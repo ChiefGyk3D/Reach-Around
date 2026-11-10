@@ -71,6 +71,7 @@ DISPLAY_POLICY: Mapping[str, Visibility] = {
     "services": "gated",
     "rates": "gated",
     "demographics": "gated",
+    "disclosure": "gated",
     "unlock_link": "private",
 }
 
@@ -247,6 +248,11 @@ class KitConfig(_Model):
     services: list[ServicePackage] = Field(default_factory=list, max_length=20)
     rates: list[Rate] = Field(default_factory=list, max_length=30)
     demographics: list[Demographic] = Field(default_factory=list, max_length=30)
+    # A short statement (a couple of sentences) on how paid relationships and
+    # affiliate links are disclosed and what content a brand can expect to sit
+    # next to. The owner words it; nothing is generated. Distinct from the
+    # site-wide affiliate ``disclosure`` in the page footer.
+    disclosure: Text500 | None = None
     # Public key of the Turnstile widget on the gate form. Optional: without it
     # the form renders an empty widget slot and the build warns.
     turnstile_site_key: StrictStr | None = None
