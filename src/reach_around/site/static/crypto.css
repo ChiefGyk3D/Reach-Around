@@ -59,7 +59,7 @@
   background-color: var(--ra-color-raised);
   color: var(--ra-color-text);
   font-family: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
-  font-size: var(--ra-text-sm);
+  font-size: var(--ra-text-xs);
   line-height: 1.5;
   overflow-wrap: anywhere;
   word-break: break-all;
@@ -94,6 +94,7 @@
   min-height: var(--ra-tap);
   color: var(--ra-color-link);
   cursor: pointer;
+  font-size: var(--ra-text-sm);
   font-weight: 500;
 }
 .crypto-qr[open] summary { margin-bottom: var(--ra-space-2); }
@@ -108,7 +109,7 @@
   margin: var(--ra-space-3) 0 0;
   padding: 0 var(--ra-space-1);
   color: var(--ra-color-muted);
-  font-size: var(--ra-text-sm);
+  font-size: var(--ra-text-xs);
 }
 .copy-status { margin: 0; }
 
