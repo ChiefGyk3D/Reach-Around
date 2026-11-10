@@ -15,8 +15,10 @@ import argparse
 import re
 import sqlite3
 import sys
+from datetime import date
 from pathlib import Path
 
+from reach_around.config.cutover import utc_today
 from reach_around.funnel.export import ExportError, load_exports
 from reach_around.funnel.grafana import (
     GrafanaExportError,
@@ -28,6 +30,18 @@ from reach_around.funnel.report import FLOOR
 EXIT_OK = 0
 EXIT_USAGE = 2
 _SITE = re.compile(r"[a-z0-9][a-z0-9-]{0,19}")
+_DAY = re.compile(r"\d{4}-\d{2}-\d{2}")
+
+
+def _cutover(text: str | None) -> date | None:
+    if text is None:
+        return None
+    if not _DAY.fullmatch(text):
+        raise ValueError("--cutover must be a date like 2026-11-01")
+    try:
+        return date.fromisoformat(text)
+    except ValueError:
+        raise ValueError("--cutover is not a real date") from None
 
 
 def run_grafana_export(args: argparse.Namespace) -> int:
@@ -37,7 +51,13 @@ def run_grafana_export(args: argparse.Namespace) -> int:
         if args.floor < FLOOR:
             raise ValueError(f"--floor cannot be below {FLOOR}")
         export = load_exports(list(args.input))
-        subset = build_subset(export, site=args.site, floor=args.floor)
+        subset = build_subset(
+            export,
+            site=args.site,
+            floor=args.floor,
+            cutover=_cutover(args.cutover),
+            today=utc_today(),
+        )
         write_store(args.output, subset)
     except (ExportError, GrafanaExportError, ValueError) as exc:
         print(f"error: {exc}", file=sys.stderr)
@@ -87,5 +107,11 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
         type=int,
         default=FLOOR,
         help=f"privacy floor in views (default and minimum {FLOOR}); raise only",
+    )
+    parser.add_argument(
+        "--cutover",
+        metavar="YYYY-MM-DD",
+        help="the cutover UTC day; adds metadata, a Grafana annotation marker, "
+        "and the window era. Nothing is added when unset or still ahead",
     )
     parser.set_defaults(func=run_grafana_export)

@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from test_report_devices_csv import GOOD, export, run
+from test_report_devices_csv import GOOD, export, run, view
 
 DATA = "2026-11-01"
 
@@ -112,6 +112,23 @@ def test_window_era(
     )
     assert code == 0
     assert json.loads(out)["era"]["window"] == word
+
+
+def test_window_spanning_cutover_is_labeled(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    before = view(100)
+    after = {**view(100), "day": "2026-11-02"}
+    path = tmp_path / "spanning.json"
+    path.write_text(
+        json.dumps({"tables": {"view_daily": [before, after]}}), encoding="utf-8"
+    )
+    code, out, err = run(capsys, "--input", str(path), "--cutover", "2026-11-02")
+    assert code == 0, err
+    assert (
+        "this window spans the cutover "
+        "(numbers from before and after are added together)" in out
+    )
 
 
 def test_future_or_unset_cutover_adds_nothing(

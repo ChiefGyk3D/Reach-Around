@@ -36,6 +36,7 @@ from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from reach_around.config.era import UNKNOWN, classify_window
 from reach_around.funnel.export import Export
 from reach_around.funnel.gaps import coverage_for_window
 from reach_around.funnel.report import (
@@ -46,13 +47,14 @@ from reach_around.funnel.report import (
     _utc_day,
 )
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 RETENTION_DAYS = 90  # the ceiling for local copies (analytics-design, threat B2)
 OTHER = "(below the floor)"
 APPLICATION_ID = 0x52410335  # marks a file this job made, so it never overwrites others
 
 TABLES: dict[str, tuple[str, ...]] = {
     "grafana_meta": ("key", "value"),
+    "grafana_annotations": ("day", "text"),
     "grafana_views_daily": ("day", "bot_class", "views"),
     "grafana_pages_daily": ("day", "page", "views"),
     "grafana_sources_daily": ("day", "source", "views"),
@@ -66,6 +68,9 @@ TABLES: dict[str, tuple[str, ...]] = {
 
 _DDL = """
 CREATE TABLE grafana_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL) WITHOUT ROWID;
+CREATE TABLE grafana_annotations (
+    day TEXT NOT NULL PRIMARY KEY, text TEXT NOT NULL
+) WITHOUT ROWID;
 CREATE TABLE grafana_views_daily (
     day TEXT NOT NULL, bot_class TEXT NOT NULL, views INTEGER NOT NULL,
     PRIMARY KEY (day, bot_class)
@@ -101,6 +106,9 @@ class GrafanaExportError(ValueError):
 class Subset:
     site: str = "links"
     floor: int = FLOOR
+    cutover_utc: str | None = None
+    window_era: str | None = None
+    annotations: list[tuple[str, str]] = field(default_factory=list)
     views: list[tuple[str, str, int]] = field(default_factory=list)
     pages: list[tuple[str, str, int]] = field(default_factory=list)
     sources: list[tuple[str, str, int]] = field(default_factory=list)
@@ -110,6 +118,7 @@ class Subset:
 
     def counts(self) -> dict[str, int]:
         return {
+            "grafana_annotations": len(self.annotations),
             "grafana_views_daily": len(self.views),
             "grafana_pages_daily": len(self.pages),
             "grafana_sources_daily": len(self.sources),
@@ -138,6 +147,7 @@ def build_subset(
     *,
     site: str = "links",
     floor: int = FLOOR,
+    cutover: date | None = None,
     today: date | None = None,
 ) -> Subset:
     """Reduce a validated export to the documented, floored daily subset."""
@@ -184,9 +194,23 @@ def build_subset(
         [(g.day, "gap", g.reasons[0]) for g in cov.gaps]
         + [(p.day, "partial", "+".join(p.reasons)) for p in cov.partial]
     )
+    current_day = today or datetime.now(UTC).date()
+    retained_days = sorted(day for day in days if day >= oldest)
+    since = date.fromisoformat(retained_days[0]) if retained_days else None
+    until = date.fromisoformat(retained_days[-1]) if retained_days else None
+    window_era = classify_window(since, until, cutover, current_day)
+    # an arrived cutover is always marked; only the window era needs data
+    active_cutover = cutover if cutover and cutover <= current_day else None
     return Subset(
         site=site,
         floor=floor,
+        cutover_utc=active_cutover.isoformat() if active_cutover else None,
+        window_era=window_era if active_cutover and window_era != UNKNOWN else None,
+        annotations=(
+            [(active_cutover.isoformat(), "Reach Around cutover")]
+            if active_cutover
+            else []
+        ),
         gaps=gaps,
         views=_floor_days(classes, floor, frozenset({"h"})),
         pages=_floor_days(pages, floor),
@@ -247,10 +271,21 @@ def _build_bytes(subset: Subset) -> bytes:
         con.executescript(_DDL)
         data: dict[str, list[Any]] = {
             "grafana_meta": [
+                *(
+                    [("cutover_utc", subset.cutover_utc)]
+                    if subset.cutover_utc is not None
+                    else []
+                ),
                 ("floor", str(subset.floor)),
                 ("schema_version", str(SCHEMA_VERSION)),
                 ("site", subset.site),
+                *(
+                    [("window_era", subset.window_era)]
+                    if subset.window_era is not None
+                    else []
+                ),
             ],
+            "grafana_annotations": subset.annotations,
             "grafana_views_daily": subset.views,
             "grafana_pages_daily": subset.pages,
             "grafana_sources_daily": subset.sources,

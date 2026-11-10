@@ -489,6 +489,23 @@ def test_hostile_labels_are_escaped_in_html(report: dict[str, Any]) -> None:
     assert "<img" not in page and "&lt;img" in page
 
 
+def test_html_labels_a_window_that_spans_the_cutover(tmp_path: Path) -> None:
+    report = report_of(tmp_path, fixture_tables(), as_of=LAST)
+    report["era"] = {
+        "cutover_utc": "2026-11-05",
+        "window": "spans",
+        "text": "spans the cutover (numbers from before and after are added together)",
+    }
+    page = page_of(report)
+    assert (
+        "Cutover 2026-11-05 UTC: this window spans the cutover "
+        "(numbers from before and after are added together)." in page
+    )
+    assert "window is spans" not in page
+    report["era"] = {"cutover_utc": "2026-11-05", "window": "after", "text": "after"}
+    assert "this window is after." in page_of(report)
+
+
 # ---- CLI --------------------------------------------------------------------
 
 

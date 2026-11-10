@@ -148,14 +148,14 @@ be overridden by a creator who adds a stylesheet of their own.
 ## Icons
 
 Social icons come from a small local set in `static/icons/`, from
-[Simple Icons](https://simpleicons.org) (CC0 1.0) plus two generic glyphs. See
+[Simple Icons](https://simpleicons.org) (CC0 1.0) plus three generic glyphs. See
 `static/icons/NOTICE`. They are drawn with CSS `mask-image`, so they take the text
 color and no request leaves the site.
 
 The `icon` field of a social or a link is a slug from this list: `twitch`,
 `kick`, `mastodon`, `bluesky`, `tiktok`, `discord`, `youtube`, `github`,
 `instagram`, `threads`, `matrix`, `x`, `linkedin`, `patreon`, `email`, `rss`,
-`link`, `bitcoin`, `ethereum`, `merch`, `monero`, `solana`. An unknown slug shows the text label instead. Brand marks remain
+`link`, `bitcoin`, `ethereum`, `merch`, `monero`, `solana`, `streamelements`, `pixelfed`. An unknown slug shows the text label instead. Brand marks remain
 trademarks of their owners.
 
 ## Responsive layout

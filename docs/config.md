@@ -260,8 +260,8 @@ With `sections` the build writes one `index.html` (plus `privacy/` and
   work as on a tab page, and the crypto, email and platforms assets load once
   for the page when any section uses them.
 
-Zero-click rule for support pages: put the primary support actions (tip, Ko-fi,
-Patreon, shop) as plain link blocks in the open section, so they are visible
+Zero-click rule for support pages: put the primary support actions (store first, then tip, Ko-fi,
+Patreon) as plain link blocks in the open section, so they are visible
 buttons, and put only crypto and secondary groups in closed sections (a crypto
 tab, or a `section` block with `collapsed: true`). Each summary is a full-width
 row at least 44 px tall with the same focus ring as every other control.

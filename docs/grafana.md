@@ -19,7 +19,7 @@ Cloudflare token is an owner step outside this repository.
 
 ```
 reach-around grafana-export --input export.json --output grafana.sqlite3 \
-    [--site links] [--floor 5]
+    [--site links] [--floor 5] [--cutover YYYY-MM-DD]
 ```
 
 - `--input` is repeatable (CSV needs one file per table). The loader is the
@@ -27,6 +27,9 @@ reach-around grafana-export --input export.json --output grafana.sqlite3 \
   address, user agent, header, lead column or any column outside the list.
 - `--site` picks one site id (default `links`); one file holds one site.
 - `--floor` can only be raised (default and minimum 5).
+- `--cutover` is the config's `cutover_date`. Once that UTC day has arrived,
+  the store carries it in metadata, labels the retained window as `before`,
+  `after`, or `spans`, and adds a marker that Grafana can use as an annotation.
 - `--output` must be in an existing directory that is not itself a symbolic
   link. The file is built in memory, written beside the target through that
   directory (no link is followed) and moved into place whole, so Grafana never
@@ -49,8 +52,9 @@ Only these tables exist. Days are UTC `YYYY-MM-DD`.
 | `grafana_sources_daily` | `day`, `source`, `views` | likely-human views per source: a referrer host, `utm:<name>`, `(direct)`, `(internal)`, `(other)` |
 | `grafana_countries_daily` | `day`, `country`, `views` | likely-human views per country (two letters, or `other`) |
 | `grafana_clicks_daily` | `day`, `link_id`, `clicks` | link clicks per day and link |
-| `grafana_gaps_daily` | `day`, `status`, `reason` | days with no (`gap`) or partial (`partial`) collection and why: `outage`, `quota`, `kill_switch`, `site_kill_switch` (joined with `+` on a partial day). Coverage is account-wide, not per site. Draw these days as gaps; no other table has a row of zeros for them. Empty when `analytics_coverage` is not in the export. Schema version 2 |
-| `grafana_meta` | `key`, `value` | `site`, `floor`, `schema_version` |
+| `grafana_gaps_daily` | `day`, `status`, `reason` | days with no (`gap`) or partial (`partial`) collection and why: `outage`, `quota`, `kill_switch`, `site_kill_switch` (joined with `+` on a partial day). Coverage is account-wide, not per site. Draw these days as gaps; no other table has a row of zeros for them. Empty when `analytics_coverage` is not in the export. |
+| `grafana_annotations` | `day`, `text` | one `Reach Around cutover` marker when an active cutover is supplied |
+| `grafana_meta` | `key`, `value` | `site`, `floor`, `schema_version`, plus `cutover_utc` and `window_era` when an active cutover is supplied. Schema version 3 |
 
 Join `grafana_gaps_daily` to every panel whose date range can cross a gap, and
 show the reason in the panel annotation or title. See the generic
@@ -121,6 +125,12 @@ Clicks per 100 likely-human views (a ratio, not a conversion rate):
 
 ```sql
 SELECT c.day, c.clicks * 100.0 / v.views AS clicks_per_100_views FROM (SELECT day, SUM(clicks) AS clicks FROM grafana_clicks_daily GROUP BY day) AS c JOIN grafana_views_daily AS v ON v.day = c.day AND v.bot_class = 'h' ORDER BY c.day;
+```
+
+Cutover annotation:
+
+```sql
+SELECT day AS time, text FROM grafana_annotations ORDER BY day;
 ```
 
 The `(below the floor)` row is a real total of several small cells, not a

@@ -51,6 +51,18 @@ def base_url(tmp_path_factory: pytest.TempPathFactory) -> Iterator[str]:
             "icon": "link",
         }
     )
+    raw["tabs"][0]["blocks"].extend(
+        {
+            "id": slug,
+            "title": name,
+            "url": f"https://example.com/{slug}",
+            "icon": slug,
+        }
+        for slug, name in (
+            ("streamelements", "StreamElements"),
+            ("pixelfed", "Pixelfed"),
+        )
+    )
     for n in range(2, 7):
         raw["tabs"].append(
             {"id": f"tab-{n}", "title": f"Another Tab {n}", "blocks": []}
@@ -176,6 +188,19 @@ def test_icons_load_and_follow_the_text_color(browser: Browser, base_url: str) -
     )
     assert color != "rgba(0, 0, 0, 0)"
     context.close()
+
+
+def test_service_link_icons_render_at_phone_and_desktop_widths(
+    browser: Browser, base_url: str
+) -> None:
+    for width in (390, 1440):
+        page = _open(browser, base_url, width)
+        for slug in ("streamelements", "pixelfed"):
+            icon = page.locator(f".link .icon-{slug}")
+            assert icon.count() == 1
+            assert icon.bounding_box() is not None
+            assert icon.evaluate("el => getComputedStyle(el).maskImage !== 'none'")
+        page.context.close()
 
 
 def test_section_opens_and_chevron_rotates(browser: Browser, base_url: str) -> None:

@@ -219,6 +219,8 @@ a:focus-visible, summary:focus-visible, button:focus-visible {
 .icon-merch { -webkit-mask-image: url("icons/merch.svg"); mask-image: url("icons/merch.svg"); }
 .icon-monero { -webkit-mask-image: url("icons/monero.svg"); mask-image: url("icons/monero.svg"); }
 .icon-solana { -webkit-mask-image: url("icons/solana.svg"); mask-image: url("icons/solana.svg"); }
+.icon-streamelements { -webkit-mask-image: url("icons/streamelements.svg"); mask-image: url("icons/streamelements.svg"); }
+.icon-pixelfed { -webkit-mask-image: url("icons/pixelfed.svg"); mask-image: url("icons/pixelfed.svg"); }
 
 
 /* Header: avatar at the left, the name beside it, the social icons below the name. */
