@@ -914,6 +914,7 @@ end. Text must be quoted if YAML would read it as a number.
 | `title` | text | required | at most 120 characters |
 | `about` | text | required | at most 1000 characters |
 | `contact` | text | none | one plain-text line for brands, at most 200 characters; see the note below |
+| `tags` | list of text | none | at most 8 content category tags, each 1 to 30 characters, none repeated (compared ignoring case and width, so `Tech` and `Ｔech` count as the same tag); public |
 | `metrics` | list of metric | none | at most 30; each `platform` and `label` pair once |
 | `partners` | list of partner | none | at most 50 |
 | `case_studies` | list of case study | none | at most 20 |
@@ -967,7 +968,7 @@ nothing is printed.
 
 | Field | Shown |
 | --- | --- |
-| `title`, `about`, `contact`, `metrics`, the unified total | public |
+| `title`, `about`, `contact`, `tags`, `metrics`, the unified total | public |
 | `partners`, `case_studies`, `services`, `rates`, `demographics`, `disclosure`, `inquiry`, `testimonials` | gated (only after the gate) |
 | `turnstile_site_key` | public (it ships in the gate form; the key is public by design) |
 | `unlock_link` | private (configuration, never shown) |
@@ -976,6 +977,13 @@ The public half therefore shows the header and the headline numbers and nothing
 else. If `partners`, `case_studies`, `services`, `rates`, `demographics`, `disclosure`, `inquiry` or `testimonials` is set,
 `features.kit_gate` must be `true`; the config is refused otherwise, so gated
 content can never be published with no gate.
+
+**Tags.** `tags` is an optional short list of content categories (for example
+`Gaming` or `Hardware`) shown as chips under the kit title, so a brand sees the
+niche at a glance. They use the same chip style as the
+[`profile_card`](#profile_card) tags and print on the public page, the gated
+page and the owner PDF, escaped. Up to 8, each 1 to 30 characters of plain text;
+a repeat (ignoring case) is refused. Left out or empty, nothing is printed.
 
 **Inquiry block.** `inquiry` has `email` (required: one plain ASCII address, at
 most 254 characters) and `pgp_fingerprint` (optional: 40 or 64 hexadecimal
@@ -1020,6 +1028,7 @@ features:
 kit:
   title: Example Creator media kit
   about: A fake creator used to show the settings.
+  tags: [Gaming, Hardware]
   metrics:
     - {platform: twitch, label: Followers, value: 1200, as_of: 2027-03-01}
     - {platform: bluesky, label: Followers, source: counts}
