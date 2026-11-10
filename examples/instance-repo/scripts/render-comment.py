@@ -531,6 +531,7 @@ KNOWN_FIELDS: frozenset[str] = frozenset(
         "numbers",
         "open",
         "other_sites",
+        "owner_supplied",
         "page_layout",
         "page_title",
         "page_views",

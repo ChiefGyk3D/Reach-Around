@@ -47,6 +47,7 @@ from reach_around.config.cutover import cutover_label, live_since, utc_today
 from reach_around.config.engagement import engagement_rows
 from reach_around.config.kit import (
     KitConfig,
+    enforce_display_policy,
     pdf_excluded_values,
     resolve_metrics,
     unified_total,
@@ -359,6 +360,8 @@ def _expected_text(kit: KitConfig, numbers: Numbers | None) -> list[tuple[str, s
     for row in engagement_rows(kit):
         where = f"the engagement row {row['platform']!r} {row['measure']!r}"
         found.append((where, row["platform"] + row["measure"]))
+        if row["provenance"]:
+            found.append((where, row["provenance"]))
         found.append((where, row["formula"]))
         found.append((where, row["value"] + row["period"]))
         found.append((where, row["as_of"]))
@@ -460,6 +463,7 @@ def build_kit_pdf(
             "packages, rates, engagement, testimonials, demographics or a "
             "disclosure statement); there is nothing private to print"
         )
+    enforce_display_policy(kit)
     check_name(name)
     target_dir = confine_out_dir(out_dir, [gated_dir, site_dir, *protect])
     staged = stage_page(gated_dir, site_dir)
