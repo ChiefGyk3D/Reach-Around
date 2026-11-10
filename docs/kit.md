@@ -4,7 +4,7 @@
 The media kit is two pages for two audiences. The public page shows your name,
 a short description and your headline numbers to anyone. The gated page holds
 the detail you only want to show people who pass a short check: past partners,
-case studies, packages, rates, audience details and a disclosure statement.
+case studies, packages, rates, testimonials, audience details and a disclosure statement.
 
 Everything here is synthetic: a fake creator, `example.com` and made-up brands.
 Replace them with your own.
@@ -37,6 +37,8 @@ kit:
       price_text: Ask me!
   rates:
     - {item: Sponsored video, price_text: Ask me!}
+  testimonials:
+    - {quote: An example quote., name: Example Person, brand: Example Brand}
   demographics:
     - {label: Top country, value: Exampleland 40%, as_of: 2027-03-01}
   disclosure: An example statement about how paid work is marked.
@@ -56,7 +58,7 @@ reach-around build --config site.yaml --out site-out --gated-out gated-out
 ```
 
 `--gated-out` is required when the kit has partners, case studies, packages,
-rates, demographics or a disclosure statement. It may not be the output directory, inside it, or a parent of it.
+rates, testimonials, demographics or a disclosure statement. It may not be the output directory, inside it, or a parent of it.
 The build writes only `kit.html` there (and removes it if the kit no longer has
 gated content); anything else in that directory is left alone. Upload the
 gated file with the Worker deploy, never with the Pages deploy: the deploy
@@ -151,7 +153,7 @@ so it reveals nothing about the check. It is marked `noindex`. There is no
 ### Gated page
 
 A complete page (header, navigation, the same numbers, then partners, case
-studies, packages, a rates table, audience details, the disclosure statement and, when `kit.inquiry` is set, the
+studies, packages, a rates table, testimonials, audience details, the disclosure statement and, when `kit.inquiry` is set, the
 [business inquiry form](#the-business-inquiry-form)), marked `noindex`, with
 root-based asset links (`/static/...`) because the Worker serves it from any
 path. Partner links open with `rel="noopener noreferrer"`. It contains no
@@ -294,7 +296,7 @@ page. Use a local avatar file if you want it on the gated page too.
 ## The private PDF
 
 `reach-around kit pdf` prints the whole gated kit (the numbers, partners, case
-studies, packages, rates, audience details and the disclosure statement) to a PDF for you, the owner. It is never
+studies, packages, rates, testimonials, audience details and the disclosure statement) to a PDF for you, the owner. It is never
 published and never linked from a page.
 
 ```sh

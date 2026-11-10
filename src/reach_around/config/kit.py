@@ -70,6 +70,7 @@ DISPLAY_POLICY: Mapping[str, Visibility] = {
     "case_studies": "gated",
     "services": "gated",
     "rates": "gated",
+    "testimonials": "gated",
     "demographics": "gated",
     "inquiry": "gated",
     "disclosure": "gated",
@@ -162,6 +163,15 @@ class CaseStudy(_Model):
     title: Text100
     summary: Text500
     result: Text300
+
+
+class Testimonial(_Model):
+    """One partner quote. The owner supplies the text and is responsible for
+    having permission to quote it; nothing here checks that."""
+
+    quote: Text300
+    name: Text80
+    brand: Text80 | None = None
 
 
 class Rate(_Model):
@@ -300,6 +310,7 @@ class KitConfig(_Model):
     case_studies: list[CaseStudy] = Field(default_factory=list, max_length=20)
     services: list[ServicePackage] = Field(default_factory=list, max_length=20)
     rates: list[Rate] = Field(default_factory=list, max_length=30)
+    testimonials: list[Testimonial] = Field(default_factory=list, max_length=10)
     demographics: list[Demographic] = Field(default_factory=list, max_length=30)
     # The inquiry form (gated page only) and the owner's address and key fingerprint
     # shown beside it. Left out: no form.

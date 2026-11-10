@@ -919,6 +919,7 @@ end. Text must be quoted if YAML would read it as a number.
 | `case_studies` | list of case study | none | at most 20 |
 | `services` | list of package | none | at most 20; named packages, shown above the rates table |
 | `rates` | list of rate | none | at most 30 |
+| `testimonials` | list of testimonial | none | at most 10; partner quotes, gated |
 | `demographics` | list of demographic | none | at most 30 |
 | `inquiry` | inquiry block | none | the business inquiry form on the gated page and the owner details beside it; see the note below. Needs `features.kit_gate` |
 | `disclosure` | text | none | a short statement, at most 500 characters; gated; see the note below |
@@ -946,7 +947,10 @@ most 12 lines, 120 characters each) and optional `price_text` (80; free text suc
 as `Ask me!`, never computed). Packages sit above the rates table on the gated
 page and in the owner PDF; the rates table keeps working beside them, and a
 price is allowed per package but not required. A **rate** has `item` (80) and `price_text` (80); the price is text, so
-`Ask me!` or `From $200` are fine. A **demographic** has `label` (60), `value`
+`Ask me!` or `From $200` are fine. A **testimonial** has `quote` (300), `name` (80) and optional `brand` (80). The
+text is yours: you are responsible for having permission to quote it, and
+nothing checks that. It is shown only on the gated page and in the owner PDF,
+never on the public page. Left out or empty, nothing is printed. A **demographic** has `label` (60), `value`
 (80) and a required `as_of`.
 
 **Disclosure statement.** `kit.disclosure` is optional: a couple of sentences, in
@@ -964,12 +968,12 @@ nothing is printed.
 | Field | Shown |
 | --- | --- |
 | `title`, `about`, `contact`, `metrics`, the unified total | public |
-| `partners`, `case_studies`, `services`, `rates`, `demographics`, `disclosure`, `inquiry` | gated (only after the gate) |
+| `partners`, `case_studies`, `services`, `rates`, `demographics`, `disclosure`, `inquiry`, `testimonials` | gated (only after the gate) |
 | `turnstile_site_key` | public (it ships in the gate form; the key is public by design) |
 | `unlock_link` | private (configuration, never shown) |
 
 The public half therefore shows the header and the headline numbers and nothing
-else. If `partners`, `case_studies`, `services`, `rates`, `demographics`, `disclosure` or `inquiry` is set,
+else. If `partners`, `case_studies`, `services`, `rates`, `demographics`, `disclosure`, `inquiry` or `testimonials` is set,
 `features.kit_gate` must be `true`; the config is refused otherwise, so gated
 content can never be published with no gate.
 
@@ -1027,6 +1031,8 @@ kit:
       price_text: Ask me!
   rates:
     - {item: Sponsored video, price_text: Ask me!}
+  testimonials:
+    - {quote: An example quote., name: Example Person, brand: Example Brand}
   disclosure: An example statement about how paid work is marked.
 ```
 

@@ -68,6 +68,17 @@
 </table>
 </section>
 {% endif %}
+{% if kit.testimonials %}
+<section class="kit-testimonials" aria-labelledby="kit-testimonials-title">
+<h3 id="kit-testimonials-title">Testimonials</h3>
+{% for item in kit.testimonials %}
+<article class="kit-case kit-quote">
+<p>{{ item.quote }}</p>
+<p class="kit-note kit-attribution">{{ item.name }}{% if item.brand %}, <span class="kit-brand">{{ item.brand }}</span>{% endif %}</p>
+</article>
+{% endfor %}
+</section>
+{% endif %}
 {% if kit.demographics %}
 <section class="kit-demographics" aria-labelledby="kit-demographics-title">
 <h3 id="kit-demographics-title">Audience details</h3>

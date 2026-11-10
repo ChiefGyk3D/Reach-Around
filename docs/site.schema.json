@@ -909,6 +909,14 @@
           "title": "Services",
           "type": "array"
         },
+        "testimonials": {
+          "items": {
+            "$ref": "#/$defs/Testimonial"
+          },
+          "maxItems": 10,
+          "title": "Testimonials",
+          "type": "array"
+        },
         "title": {
           "maxLength": 120,
           "minLength": 1,
@@ -2072,6 +2080,44 @@
         "title"
       ],
       "title": "Tab",
+      "type": "object"
+    },
+    "Testimonial": {
+      "additionalProperties": false,
+      "description": "One partner quote. The owner supplies the text and is responsible for\nhaving permission to quote it; nothing here checks that.",
+      "properties": {
+        "brand": {
+          "anyOf": [
+            {
+              "maxLength": 80,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Brand"
+        },
+        "name": {
+          "maxLength": 80,
+          "minLength": 1,
+          "title": "Name",
+          "type": "string"
+        },
+        "quote": {
+          "maxLength": 300,
+          "minLength": 1,
+          "title": "Quote",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "quote"
+      ],
+      "title": "Testimonial",
       "type": "object"
     },
     "Text": {

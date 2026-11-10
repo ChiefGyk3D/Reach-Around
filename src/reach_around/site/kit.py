@@ -201,7 +201,14 @@ def _gated_strings(kit: KitConfig) -> list[tuple[str, str]]:
     found: list[tuple[str, str]] = []
     if kit.disclosure is not None and len(kit.disclosure) >= GUARD_MIN_LENGTH:
         found.append(("kit.disclosure", kit.disclosure))
-    for name in ("partners", "case_studies", "services", "rates", "demographics"):
+    for name in (
+        "partners",
+        "case_studies",
+        "services",
+        "rates",
+        "testimonials",
+        "demographics",
+    ):
         for index, item in enumerate(getattr(kit, name)):
             for field, text in text_fields(item):
                 if len(text) >= GUARD_MIN_LENGTH:
@@ -699,6 +706,7 @@ def _categories(kit: KitConfig) -> str:
             ("case studies", kit.case_studies),
             ("packages", kit.services),
             ("rates", kit.rates),
+            ("testimonials", kit.testimonials),
             ("audience details", kit.demographics),
             ("a disclosure statement", [kit.disclosure] if kit.disclosure else []),
         )
@@ -720,8 +728,8 @@ def plan_warnings(
     if config.features.kit_gate and not kit.has_gated_content:
         found.append(
             "features.kit_gate is on but the kit has no partners, case studies, "
-            "packages, rates, demographics or disclosure; no gate form or gated page "
-            "is built"
+            "packages, rates, testimonials, demographics or disclosure; no gate form "
+            "or gated page is built"
         )
     if has_gate_form(kit) and kit.turnstile_site_key is None:
         found.append(
@@ -781,6 +789,7 @@ def render_kit(
             case_studies=data["case_studies"],
             services=data["services"],
             rates=data["rates"],
+            testimonials=data["testimonials"],
             disclosure=data["disclosure"],
             demographics=[
                 {"label": d.label, "value": d.value, "as_of": d.as_of.isoformat()}

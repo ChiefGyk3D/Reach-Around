@@ -358,7 +358,14 @@ def _expected_text(kit: KitConfig, numbers: Numbers | None) -> list[tuple[str, s
         found.append(("the metric total", total["value"]))
     if kit.disclosure is not None:
         found.append(("kit.disclosure", kit.disclosure))
-    for name in ("partners", "case_studies", "services", "rates", "demographics"):
+    for name in (
+        "partners",
+        "case_studies",
+        "services",
+        "rates",
+        "testimonials",
+        "demographics",
+    ):
         for index, item in enumerate(getattr(kit, name)):
             for field, text in text_fields(item):
                 if field == "url":  # a link target, not printed text
@@ -440,8 +447,8 @@ def build_kit_pdf(
     if kit is None or not kit.has_gated_content:
         raise PdfError(
             "the config has no gated media kit content (partners, case studies, "
-            "packages, rates, demographics or a disclosure statement); there is "
-            "nothing private to print"
+            "packages, rates, testimonials, demographics or a disclosure "
+            "statement); there is nothing private to print"
         )
     check_name(name)
     target_dir = confine_out_dir(out_dir, [gated_dir, site_dir, *protect])
