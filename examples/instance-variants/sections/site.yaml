@@ -49,6 +49,10 @@ tabs:
   - id: support
     title: Support
     blocks:
+      - id: shop
+        title: Shop
+        url: https://shop.example.com/
+        icon: merch
       - id: tip
         title: Leave a tip
         subtitle: One time, any amount
@@ -63,10 +67,6 @@ tabs:
         title: Patreon
         url: https://patreon.example.com/example
         icon: patreon
-      - id: shop
-        title: Shop
-        url: https://shop.example.com/
-        icon: merch
       - id: more-ways
         title: More ways to help
         collapsed: true
