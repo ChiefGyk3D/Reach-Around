@@ -14,7 +14,7 @@ from typing import Any
 import pytest
 
 from reach_around.counts.history import Record, append_records, read_history
-from reach_around.funnel.social import build_social
+from reach_around.funnel.social import build_social, social_csv_rows, social_lines
 from test_report_devices_csv import GOOD, export, run
 
 TODAY = date(2026, 11, 10)
@@ -28,6 +28,7 @@ def rec(
     metric: str = "followers",
     source: str = "api",
     era: str | None = None,
+    api_provider: str | None = None,
 ) -> Record:
     return Record(
         platform=platform,
@@ -37,6 +38,7 @@ def rec(
         source=source,
         run_id="refresh-test",
         era=era,
+        api_provider=api_provider,
     )
 
 
@@ -143,7 +145,13 @@ def test_future_cutover_adds_no_label() -> None:
 
 def test_collected_youtube_analytics_is_refused_but_subscribers_pass() -> None:
     recs = [
-        rec("youtube", TODAY, 5000, metric="subscribers"),
+        rec(
+            "youtube",
+            TODAY,
+            5000,
+            metric="subscribers",
+            api_provider="youtube_data_api",
+        ),
         rec("youtube", TODAY, 77, metric="views_28d"),
         rec("youtube", TODAY, 88, metric="views_28d", source="hand_kept"),
     ]
@@ -162,12 +170,124 @@ def test_collected_youtube_analytics_is_refused_but_subscribers_pass() -> None:
     ]
 
 
+def test_unprovenanced_youtube_api_values_are_excluded_from_every_output() -> None:
+    records = [
+        rec("youtube-analytics", TODAY - timedelta(days=30), 10, metric="views_28d"),
+        rec("youtube-analytics", TODAY, 87654321, metric="views_28d"),
+        rec("youtube", TODAY, 5000, metric="subscribers"),
+        rec(
+            "youtube",
+            TODAY - timedelta(days=1),
+            88,
+            metric="views_28d",
+            source="hand_kept",
+        ),
+        rec("youtube", TODAY, 999, metric="views_28d"),
+    ]
+
+    block = social(records)
+
+    assert [(s["platform"], s["metric"]) for s in block["platforms"]] == [
+        ("youtube", "views_28d")
+    ]
+    kept = block["platforms"][0]
+    assert kept["latest"]["value"] == 88
+    assert kept["latest"]["source"] == "hand_kept"
+    assert all(item["baseline_value"] is None for item in kept["changes"])
+    assert kept["gaps"]["to"] == TODAY.isoformat()
+    assert TODAY.isoformat() in kept["gaps"]["days"]
+    assert {item["metric"] for item in block["refused"]} == {
+        "subscribers",
+        "views_28d",
+    }
+    rendered = "\n".join(social_lines(block))
+    csv_text = "\n".join(",".join(map(str, row)) for row in social_csv_rows(block))
+    serialized = json.dumps(block)
+    for output in (rendered, csv_text, serialized):
+        assert "5000" not in output
+        assert "999" not in output
+        assert "87654321" not in output
+
+
+def test_only_provenanced_youtube_data_api_subscribers_are_accepted() -> None:
+    records = [
+        rec(
+            "youtube",
+            TODAY - timedelta(days=1),
+            123,
+            metric="subscribers",
+            api_provider="youtube_data_api",
+        ),
+        rec(
+            "youtube",
+            TODAY,
+            999,
+            metric="subscribers",
+            api_provider="youtube_analytics",
+        ),
+    ]
+
+    block = social(records)
+
+    row = only(block, "youtube")
+    assert row["latest"]["value"] == 123
+    assert block["refused"][0]["metric"] == "subscribers"
+
+
 def test_display_zone_labels_instants() -> None:
     row = only(social([rec("kick", TODAY, 5)], zone="America/New_York"), "kick")
     assert row["latest"]["as_of_display"] == "2026-11-10 04:00 EST"
     assert row["latest"]["as_of_utc"] == "2026-11-10T09:00:00Z"
     plain = only(social([rec("kick", TODAY, 5)]), "kick")
     assert "as_of_display" not in plain["latest"]
+
+
+def test_display_zone_text_keeps_utc_instant_beside_local_time() -> None:
+    block = social([rec("kick", TODAY, 5)], zone="America/New_York")
+
+    rendered = "\n".join(social_lines(block))
+
+    assert "2026-11-10 04:00 EST (2026-11-10T09:00:00Z)" in rendered
+
+
+def test_intervening_definition_break_withholds_change() -> None:
+    records = [
+        rec("kick", TODAY - timedelta(days=30), 100, era="A"),
+        rec("kick", TODAY - timedelta(days=21), 150, era="B"),
+        rec("kick", TODAY, 200, era="A"),
+    ]
+
+    result = change(only(social(records), "kick"), 30)
+
+    assert result["status"] == "definition_changed"
+    assert result["change"] is None
+
+
+def test_all_gap_days_are_listed_in_text_and_csv() -> None:
+    block = social(
+        [
+            rec("kick", TODAY - timedelta(days=20), 5),
+            rec("kick", TODAY, 10),
+        ]
+    )
+    expected = [(TODAY - timedelta(days=days)).isoformat() for days in range(19, 0, -1)]
+
+    rendered = "\n".join(social_lines(block))
+    rows = social_csv_rows(block)
+
+    assert all(day in rendered for day in expected)
+    assert "..." not in rendered
+    assert rows[0][-1] == ";".join(expected)
+
+
+def test_refused_youtube_metric_is_named_in_csv() -> None:
+    block = social([rec("youtube", TODAY, 77, metric="views_28d")])
+
+    rows = social_csv_rows(block)
+
+    assert len(rows) == 1
+    assert rows[0][0:3] == ["refused", "youtube", "views_28d"]
+    assert rows[0][11] == "refused"
 
 
 def test_empty_history_still_yields_a_labeled_block() -> None:
@@ -239,7 +359,7 @@ def test_cli_csv_writes_social_csv(
     assert code == 0, err
     rows = list(csv.DictReader(io.StringIO((out_dir / "social.csv").read_text())))
     blocks = {r["block"] for r in rows}
-    assert blocks == {"collected", "imported"}
+    assert blocks == {"collected", "imported", "refused"}
     mine = [r for r in rows if r["platform"] == "bluesky" and r["window_days"] == "30"]
     assert mine[0]["change"] == "100" and mine[0]["status"] == "ok"
     gap = [r for r in rows if r["platform"] == "bluesky" and r["window_days"] == "90"]
@@ -263,6 +383,35 @@ def test_cli_damaged_history_is_refused(
         capsys, "--input", str(export(tmp_path, GOOD)), "--history", str(hist)
     )
     assert code == 2 and err.startswith("error:")
+
+
+def test_cli_missing_history_is_refused(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    missing = tmp_path / "does-not-exist.jsonl"
+
+    code, _, err = run(
+        capsys, "--input", str(export(tmp_path, GOOD)), "--history", str(missing)
+    )
+
+    assert code == 2
+    assert err.startswith("error:")
+
+
+def test_cli_future_dated_history_is_refused(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    path = tmp_path / "future.jsonl"
+    future = datetime.now(UTC) + timedelta(days=1)
+    record = rec("kick", future.date(), 10)
+    append_records(path, [record], now=future + timedelta(days=1))
+
+    code, _, err = run(
+        capsys, "--input", str(export(tmp_path, GOOD)), "--history", str(path)
+    )
+
+    assert code == 2
+    assert "future" in err
 
 
 def test_cli_history_file_is_unchanged(

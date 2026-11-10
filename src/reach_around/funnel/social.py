@@ -16,8 +16,9 @@ Rules, each tested:
 * A change that crosses a recorded definition break (``era`` tag) is withheld.
 * A change window that crosses the cutover day is labeled.
 * Collected YouTube Analytics figures are refused, as in the kit (#424): only
-  the Data API ``subscribers`` count may come from the API for YouTube. A value
-  the owner typed (``hand_kept``) is accepted.
+  an explicitly identified Data API ``subscribers`` count may come from the API
+  for YouTube. Missing or unknown provenance is refused. A value the owner typed
+  (``hand_kept``) is accepted.
 
 The block is OWNER ONLY. The report is private; the history stays out of every
 public file. It reads no network and writes nothing.
@@ -57,10 +58,12 @@ NOTES = (
 
 
 def _refused(record: Record) -> bool:
-    return (
+    if record.source != "api" or not record.platform.startswith("youtube"):
+        return False
+    return not (
         record.platform == "youtube"
-        and record.source == "api"
-        and record.metric != "subscribers"
+        and record.metric == "subscribers"
+        and record.api_provider == "youtube_data_api"
     )
 
 
@@ -109,7 +112,12 @@ def _change(
     base = by_day.get(base_day)
     if base is not None:
         row["baseline_value"] = base.value
-        if base.era != latest.era:
+        window = (
+            point
+            for point_day, point in by_day.items()
+            if base_day <= point_day <= last
+        )
+        if any(point.era != base.era for point in window):
             row["status"] = "definition_changed"
         else:
             row["status"] = "ok"
@@ -229,7 +237,9 @@ def _change_text(row: dict[str, Any]) -> str:
 def _series_lines(series: dict[str, Any], lines: list[str]) -> None:
     latest = series["latest"]
     name = f"{series['platform']} {series['metric']}"
-    stamp = latest.get("as_of_display") or latest["as_of_utc"]
+    stamp = latest["as_of_utc"]
+    if "as_of_display" in latest:
+        stamp = f"{latest['as_of_display']} ({stamp})"
     extra = f", {latest['era']}" if "era" in latest else ""
     mark = f"; definition: {latest['definition']}" if "definition" in latest else ""
     lines.append(
@@ -239,11 +249,10 @@ def _series_lines(series: dict[str, Any], lines: list[str]) -> None:
     lines.append("    " + "; ".join(_change_text(c) for c in series["changes"]))
     gaps = series["gaps"]
     if gaps["count"]:
-        shown = ", ".join(gaps["days"][:10])
-        more = "" if gaps["count"] <= 10 else ", ..."
+        shown = ", ".join(gaps["days"])
         lines.append(
             f"    {gaps['count']} gap day(s) {gaps['from']} to {gaps['to']} UTC "
-            f"(not zeros): {shown}{more}"
+            f"(not zeros): {shown}"
         )
 
 
@@ -299,7 +308,26 @@ def social_csv_rows(block: dict[str, Any]) -> list[list[Any]]:
                         "" if c["percent"] is None else c["percent"],
                         c["status"],
                         c.get("era", ""),
-                        s["gaps"]["count"],
+                        ";".join(s["gaps"]["days"]),
                     ]
                 )
+    for item in block["refused"]:
+        rows.append(
+            [
+                "refused",
+                item["platform"],
+                item["metric"],
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "refused",
+                "",
+                "",
+            ]
+        )
     return rows
