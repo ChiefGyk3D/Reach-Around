@@ -155,6 +155,22 @@ def test_chips_has_plain_in_page_links_in_group_order(tmp_path: Path) -> None:
     assert "env(safe-area-inset-top, 0px)" in static_text(_out, "variants", "css")
 
 
+@pytest.mark.parametrize("selector", [".variant-chip-nav", ".variant-tab-list"])
+def test_horizontal_variant_navigation_hides_native_scrollbars(
+    tmp_path: Path, selector: str
+) -> None:
+    out, _html = build(tmp_path, "tabs")
+    css = static_text(out, "variants", "css")
+    rule = re.search(rf"{re.escape(selector)}\s*\{{([^}}]+)\}}", css)
+    assert rule is not None
+    assert "scrollbar-width: none" in rule.group(1)
+    webkit_rule = re.search(
+        rf"{re.escape(selector)}::\-webkit\-scrollbar\s*\{{([^}}]+)\}}", css
+    )
+    assert webkit_rule is not None
+    assert "display: none" in webkit_rule.group(1)
+
+
 def test_bento_uses_real_labeled_links_and_one_large_status_tile(
     tmp_path: Path,
 ) -> None:
@@ -172,13 +188,29 @@ def test_bento_uses_one_centered_responsive_grid(tmp_path: Path) -> None:
     assert 'class="variant-bento-grid"' in html
     assert html.count('class="variant-bento-grid"') == 1
     css = static_text(out, "variants", "css")
-    assert ".variant-bento-grid { display: grid" in css
+    assert ".variant-bento-grid { display: grid; width: 100%" in css
     assert "width: min(100%, 68.75rem)" in css
-    assert "grid-template-columns: repeat(2, minmax(0, 1fr))" in css
+    assert "grid-template-columns: repeat(2, minmax(140px, 1fr))" in css
     assert "@media (min-width: 43.75rem)" in css
-    assert "grid-template-columns: repeat(4, minmax(0, 1fr))" in css
+    assert "grid-template-columns: repeat(4, minmax(140px, 1fr))" in css
     assert "@media (min-width: 68.75rem)" in css
-    assert "grid-template-columns: repeat(6, minmax(0, 1fr))" in css
+    assert "grid-template-columns: repeat(6, minmax(140px, 1fr))" in css
+
+
+def test_bento_tiles_stack_content_and_remove_dots_from_label_row(
+    tmp_path: Path,
+) -> None:
+    out, _html = build(tmp_path, "bento")
+    css = static_text(out, "variants", "css")
+    assert (
+        ".variant-tile { position: relative; display: flex; flex-direction: column"
+        in css
+    )
+    assert ".variant-tile::after { position: absolute" in css
+    assert ".variant-tile .link-text { width: 100%" in css
+    assert (
+        ".variant-tile .link-title { overflow-wrap: normal; word-break: normal;" in css
+    )
 
 
 @pytest.mark.parametrize("layout", ["stack", "chips", "tabs"])
@@ -235,11 +267,11 @@ def test_variant_css_pins_mobile_tablet_desktop_and_accessibility_rules(
     css = static_text(out, "variants", "css")
     assert "min-height: var(--ra-tap)" in css
     assert "gap: var(--ra-space-2)" in css
-    assert "grid-template-columns: repeat(2, minmax(0, 1fr))" in css
+    assert "grid-template-columns: repeat(2, minmax(140px, 1fr))" in css
     assert "@media (min-width: 43.75rem)" in css
-    assert "grid-template-columns: repeat(4, minmax(0, 1fr))" in css
+    assert "grid-template-columns: repeat(4, minmax(140px, 1fr))" in css
     assert "@media (min-width: 68.75rem)" in css
-    assert "grid-template-columns: repeat(6, minmax(0, 1fr))" in css
+    assert "grid-template-columns: repeat(6, minmax(140px, 1fr))" in css
     assert "subgrid" not in css
     assert "prefers-reduced-motion: reduce" in css
     assert "light" not in re.sub(r"highlight", "", css).lower()
