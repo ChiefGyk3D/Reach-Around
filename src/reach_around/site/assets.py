@@ -85,6 +85,12 @@ def _slots(config: SiteConfig) -> Iterator[tuple[str, str, str]]:
             elif isinstance(block, Section):
                 for n, item in enumerate(block.links):
                     yield from _thumb(f"{shown}.links[{n}]", item)
+    if config.kit is not None:
+        if config.kit.photo is not None:
+            yield "kit.photo", config.kit.photo, "image"
+        for index, partner in enumerate(config.kit.partners):
+            if partner.logo is not None:
+                yield f"kit.partners[{index}].logo", partner.logo, "image"
 
 
 def referenced_assets(config: SiteConfig) -> list[str]:

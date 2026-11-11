@@ -337,6 +337,7 @@ def test_policy_classifies_every_field() -> None:
     assert {k for k, v in DISPLAY_POLICY.items() if v == "public"} == {
         "title",
         "about",
+        "photo",
         "contact",
         "tags",
         "metrics",
@@ -377,6 +378,7 @@ def test_public_projection_has_only_header_and_headline_numbers() -> None:
     assert set(out) == {
         "title",
         "about",
+        "photo",
         "contact",
         "tags",
         "metrics",

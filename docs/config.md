@@ -1005,7 +1005,7 @@ nothing is printed.
 
 | Field | Shown |
 | --- | --- |
-| `title`, `about`, `contact`, `tags`, `metrics`, the unified total | public |
+| `title`, `about`, `photo`, `contact`, `tags`, `metrics`, the unified total | public |
 | `partners`, `case_studies`, `services`, `rates`, `engagement`, `demographics`, `disclosure`, `inquiry`, `testimonials` | gated (only after the gate) |
 | `turnstile_site_key` | public (it ships in the gate form; the key is public by design) |
 | `unlock_link` | private (configuration, never shown) |
@@ -1014,6 +1014,14 @@ The public half therefore shows the header and the headline numbers and nothing
 else. If `partners`, `case_studies`, `services`, `rates`, `engagement`, `demographics`, `disclosure`, `inquiry` or `testimonials` is set,
 `features.kit_gate` must be `true`; the config is refused otherwise, so gated
 content can never be published with no gate.
+
+**Photo and partner logos.** `photo` is an optional local image path for the
+wide kit header. A partner may also have an optional local `logo` image path.
+The build applies the same path, content and size checks as it does to other
+instance images, then fingerprints the copied file. The gated page shows the
+first six partners in a responsive logo grid and puts any remaining partners
+under a script-free **Show more** disclosure. Neither setting accepts a remote
+URL.
 
 **Tags.** `tags` is an optional short list of content categories (for example
 `Gaming` or `Hardware`) shown as chips under the kit title, so a brand sees the

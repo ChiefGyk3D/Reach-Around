@@ -6,6 +6,7 @@ while the project is alpha, every release is `0.x` and anything can change betwe
 
 ## [Unreleased]
 
+- Kit photo header and partner logo grid (#549): optional local `kit.photo` and `kit.partners[].logo` images now pass through the existing validated, fingerprinted asset pipeline. Both kit pages show the wide header photo, and the gated partner section shows a responsive logo grid with six partners visible and any remainder under a script-free "Show more" disclosure. No postal address field was added, collected YouTube Analytics figures remain refused, and the pages remain dark-only.
 - Editor form follow-ups (#200): forms can add and remove links and platform
   items, edit a link group's title and subtitle, clear creator titles and
   colors, and reload the preview after saves. Link moves and announcements

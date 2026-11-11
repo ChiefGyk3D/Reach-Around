@@ -5,8 +5,9 @@
 {% set page_frames = frame_plan|length > 0 %}
 {% block content %}
 <section class="kit" aria-labelledby="kit-title">
-{% if "hero" in frame_plan %}
-<div class="kit-head{{ frames.cls("hero") }}">
+<div class="kit-head{% if "hero" in frame_plan %}{{ frames.cls("hero") }}{% endif %}">
+{% if kit.photo %}
+<img class="kit-photo" src="{{ asset_url(kit.photo, root) }}" alt="" width="1200" height="675">
 {% endif %}
 <h2 id="kit-title">{{ kit.title }}</h2>
 {% if kit.tags %}
@@ -20,9 +21,7 @@
 {% if kit.contact %}
 <p class="kit-about kit-contact">{{ kit.contact }}</p>
 {% endif %}
-{% if "hero" in frame_plan %}
 </div>
-{% endif %}
 {{ numbers(kit, "kit-numbers-title", true, zone_choices) }}
 {% if form %}
 <section class="kit-gate-box" aria-labelledby="kit-gate-title">

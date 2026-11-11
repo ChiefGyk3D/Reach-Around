@@ -4,6 +4,10 @@
 {% from "_kit_parts.html" import numbers, engagement %}
 {% block content %}
 <section class="kit" aria-labelledby="kit-title">
+<div class="kit-head">
+{% if kit.photo %}
+<img class="kit-photo" src="{{ asset_url(kit.photo, root) }}" alt="" width="1200" height="675">
+{% endif %}
 <h2 id="kit-title">{{ kit.title }}</h2>
 {% if kit.tags %}
 <ul class="profile-tags kit-tags">
@@ -16,16 +20,26 @@
 {% if kit.contact %}
 <p class="kit-about kit-contact">{{ kit.contact }}</p>
 {% endif %}
+</div>
 {{ numbers(kit, "kit-numbers-title") }}
 {{ engagement(kit, "kit-engagement-title") }}
 {% if kit.partners %}
 <section class="kit-partners" aria-labelledby="kit-partners-title">
 <h3 id="kit-partners-title">Past partners</h3>
-<ul class="kit-list">
-{% for partner in kit.partners %}
-<li>{% if partner.url %}<a href="{{ partner.url }}" rel="noopener noreferrer">{{ partner.name }}</a>{% else %}<strong>{{ partner.name }}</strong>{% endif %}{% if partner.note %}<span class="kit-note"> {{ partner.note }}</span>{% endif %}</li>
+{% macro partner_grid(items) %}
+<ul class="kit-list kit-partner-grid">
+{% for partner in items %}
+<li class="kit-partner">{% if partner.url %}<a href="{{ partner.url }}" rel="noopener noreferrer">{% endif %}{% if partner.logo %}<img class="kit-partner-logo" src="{{ asset_url(partner.logo, root) }}" alt="{{ partner.name }}" width="240" height="120">{% else %}<strong>{{ partner.name }}</strong>{% endif %}{% if partner.url %}</a>{% endif %}{% if partner.note %}<span class="kit-note">{{ partner.note }}</span>{% endif %}</li>
 {% endfor %}
 </ul>
+{% endmacro %}
+{{ partner_grid(kit.partners[:6]) }}
+{% if kit.partners|length > 6 %}
+<details class="kit-partners-more">
+<summary>Show more</summary>
+{{ partner_grid(kit.partners[6:]) }}
+</details>
+{% endif %}
 </section>
 {% endif %}
 {% if kit.case_studies %}
