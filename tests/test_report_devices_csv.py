@@ -190,6 +190,7 @@ def test_csv_files_header_and_order(
         "owner_links.csv",
         "owner_sources.csv",
         "owner_tiles.csv",
+        "owner_time_patterns.csv",
         "pages.csv",
         "sources.csv",
         "systems.csv",

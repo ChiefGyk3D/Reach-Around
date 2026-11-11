@@ -29,6 +29,7 @@ the file.
 | Clicks by source and destination, Top flows | `click_src_daily`, `click_src_monthly` | The matrix of "came from Instagram, went to Twitch": rows are source labels (`direct` for a click that carried none, `other` for a label not on the site's list), columns are destinations (link ids), cells are clicks. Top flows is the same printed cells as a ranked `source -> destination` list with a share of the clicks shown (never a conversion), top N then `other`. Released for one fixed period only (`--period`, below). Within a destination, cells under the floor are merged into one `(below the floor)` line built so it bounds nothing (see the section below); a destination that cannot be made safe prints nothing, and when `click_events` is in the export a destination must also be a printed row of the link table. Totals are sums of printed cells only. A note appears when half or more of the shown clicks are `direct`. |
 | Clicks by country and destination | `click_country_daily`, `click_country_monthly` | Country codes only (no region or city on clicks), counted for EVERY click when it arrives, whether or not it carried a source, so it does not depend on the raw click rows. Same period, remainder line and floor. The top N countries print; the rest, with the Worker's own `ZZ` (unknown or folded), are summed per destination into `other`. |
 | Devices, Browsers, Systems | `view_dim_daily` | Device class, browser family and operating system, from the Worker's closed-vocabulary dimension rows (`dim` = `device`, `browser`, `os`). Likely-human only unless `--include-bots`. A value the Worker folded into `other` is shown as `other`. Floored and suppressed like the pages table, and part of the same view population (see below). Version numbers, screen size, language and network type are not shown. |
+| Time patterns | `view_hour_daily` | Two ranked lists, views and clicks by UTC weekday and hour. Likely-human views by default; `--include-bots` adds the other closed view classes. Every list uses the same floor and remainder rule as the other sections. Weekdays always name UTC days. `--display-zone` relabels hours only. |
 | Bots | `view_daily`, `view_dim_daily` | Share of all recorded views per class (likely human, verified crawler as claimed, automated, suspicious) and the reason codes. |
 
 Human-likely is an estimate. Crawlers that never run the page-view script are
@@ -87,6 +88,10 @@ reach-around report --input export.json --history history/social.jsonl
 * **Imported history (Beacons):** records with source `imported` appear only in their own block, with their own label, and are never added to or compared with the collected numbers above.
 * **YouTube:** collected YouTube Analytics figures are refused (display policy, #424). Only the Data API `subscribers` count may come from the API; a value you typed is accepted. A refused metric is named in the output.
 * **Time:** everything is UTC. With `--display-zone` each latest instant is also printed in that zone; day buckets stay UTC days.
+
+The time-pattern section cannot report new versus returning visitors. The
+privacy model keeps no identifier across UTC days. The raw view row's
+within-day `first` flag does not answer whether someone returned on another day.
 
 Without `--history` the report is unchanged. The HTML page and the Grafana export do not carry this block yet.
 
@@ -199,6 +204,7 @@ agent, so a correct export never trips this. If it does, the export is wrong.
 | `click_src_monthly`, `click_country_monthly` | `month` (`YYYY-MM`), `link_id, src` (or `country`), `clicks` [`site`] |
 | `kit_events` | `ts, kind` [`site`] |
 | `analytics_coverage` | `day, hours` (24 letters from `o k p q -`; see Gaps) |
+| `view_hour_daily` | `day, hour, bot_class, views, clicks` [`site`] (UTC day and hour; no source, country, device or visitor field) |
 
 `kit_events` also has a `lead_id` column in the database. Do not select it; a
 file that has it is refused. Select `ts, kind` only.
@@ -458,7 +464,7 @@ the visitor came in on, and no click is tied to a view or to a person. A high
 `period`, `period_start_utc` and `period_end_utc`.
 
 Not part of this change: grouping destinations by platform, the landing and hop
-tables (#334), device and hour-by-weekday pairs (#410), and a marker for
+tables (#334), device pairs, and a marker for
 windows that span the cutover (#371).
 
 ## Owner report page (`--html`)

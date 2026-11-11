@@ -135,6 +135,26 @@ const day = (ts: number) => new Date(ts).toISOString().slice(0, 10);
 beforeEach(clearAll);
 
 describe("rollup totals", () => {
+  it("seals_at_most_one_hour_row_per_class_without_other_dimensions", async () => {
+    await insert([
+      { ts: D13 + 9 * 3_600_000, bot_class: "h", country: "US", device: "mobile" },
+      { ts: D13 + 9 * 3_600_000, bot_class: "h", country: "DE", device: "desktop" },
+      { ts: D13 + 10 * 3_600_000, bot_class: "a", country: "FR", device: "tablet" },
+    ]);
+
+    await rollupClosedDays(envOf(), NOW);
+
+    expect(
+      await q("SELECT site, day, hour, bot_class, views, clicks FROM view_hour_daily ORDER BY hour, bot_class"),
+    ).toEqual([
+      { site: "links", day: "2027-03-13", hour: 9, bot_class: "h", views: 2, clicks: 0 },
+      { site: "links", day: "2027-03-13", hour: 10, bot_class: "a", views: 1, clicks: 0 },
+    ]);
+    expect(await q<{ name: string }>("SELECT name FROM pragma_table_info('view_hour_daily')")).toEqual(
+      ["site", "day", "hour", "bot_class", "views", "clicks"].map((name) => ({ name })),
+    );
+  });
+
   it("totals_per_dimension_equal_a_brute_force_count_over_random_rows", async () => {
     for (const seed of [1, 2, 3, 4, 5, 6, 7, 8]) {
       await clearAll();

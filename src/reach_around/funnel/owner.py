@@ -253,6 +253,10 @@ def owner_view(report: dict[str, Any]) -> dict[str, Any]:
     if window["since"] and window["until"]:
         first = date.fromisoformat(window["since"])
         window_days = (date.fromisoformat(window["until"]) - first).days + 1
+    patterns = report["patterns"]
+    pattern_clicks = _table(patterns["clicks"])
+    for row in pattern_clicks["rows"]:
+        row["clicks"] = row.pop("views")
     return {
         "site": report["site"],
         "timezone": "UTC",
@@ -266,6 +270,12 @@ def owner_view(report: dict[str, Any]) -> dict[str, Any]:
         "coverage": _coverage(report),
         "tiles": _tiles(report),
         "daily": _daily(report),
+        "patterns": {
+            "day_timezone": patterns["day_timezone"],
+            "hour_timezone": patterns["hour_timezone"],
+            "views": _table(patterns["views"]),
+            "clicks": pattern_clicks,
+        },
         "links": _links(report),
         "sources": _table(report["sources"]),
         "devices": _table(report["devices"]),

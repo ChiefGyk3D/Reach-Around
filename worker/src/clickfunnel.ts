@@ -222,6 +222,17 @@ export async function rollupClickFunnel(env: FunnelRollupEnv, nowMs: number): Pr
     let from = last_seal === null || last_seal === undefined ? from_day : utcDay(Date.parse(`${last_seal}T00:00:00Z`) + DAY_MS);
     if (from < firstKept) from = firstKept;
     for (let n = 0; from < sealBefore && n < 31; n++) {
+      seals.push(
+        db
+          .prepare(
+            "INSERT INTO view_hour_daily (site, day, hour, bot_class, views, clicks) " +
+              "SELECT ?1, ?2, CAST(strftime('%H', ts / 1000, 'unixepoch') AS INTEGER), 'h', 0, COUNT(*) " +
+              "FROM click_events WHERE site = ?1 AND ts >= strftime('%s', ?2) * 1000 " +
+              "AND ts < (strftime('%s', ?2) + 86400) * 1000 GROUP BY 3 " +
+              "ON CONFLICT(site, day, hour, bot_class) DO UPDATE SET clicks = excluded.clicks",
+          )
+          .bind(site, from),
+      );
       seals.push(db.prepare("INSERT OR IGNORE INTO click_seal (site, day, sealed_at) VALUES (?1, ?2, ?3)").bind(site, from, nowMs));
       from = utcDay(Date.parse(`${from}T00:00:00Z`) + DAY_MS);
     }
@@ -235,7 +246,9 @@ export async function rollupClickFunnel(env: FunnelRollupEnv, nowMs: number): Pr
   const due = dueAll.slice(0, 8);
   if (seals.length > 0) {
     const done = await db.batch(seals);
-    result.sealedDays = done.reduce((a, r) => a + (r.meta?.changes ?? 0), 0);
+    result.sealedDays = done
+      .filter((_, i) => i % 2 === 1)
+      .reduce((a, r) => a + (r.meta?.changes ?? 0), 0);
   }
 
   // 2. Roll each due month: the sums and the log row in one transaction.
@@ -276,6 +289,7 @@ export async function rollupClickFunnel(env: FunnelRollupEnv, nowMs: number): Pr
   await db.batch([
     db.prepare(rolled("click_src_daily")).bind(dayCut, hardCut),
     db.prepare(rolled("click_country_daily")).bind(dayCut, hardCut),
+    db.prepare("DELETE FROM view_hour_daily WHERE day <= ?1").bind(dayCut),
     db.prepare(`DELETE FROM click_seal WHERE day <= ?1 AND ${noCells("click_seal")}`).bind(dayCut),
     db.prepare(`DELETE FROM click_budget WHERE day <= ?1 AND ${noCells("click_budget")}`).bind(dayCut),
     db.prepare(`DELETE FROM click_capacity WHERE day <= ?1 AND ${noCells("click_capacity")}`).bind(dayCut),

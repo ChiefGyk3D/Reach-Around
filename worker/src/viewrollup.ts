@@ -495,6 +495,22 @@ async function writeDay(db: D1Database, w: Work, p: DayPlan, nowMs: number, leas
       stmts.push(db.prepare(`DELETE FROM ${t} WHERE site = ? AND day = ? AND ${guard.sql}`).bind(w.site, w.day, ...guard.args));
     }
     stmts.push(
+      db
+        .prepare(`UPDATE view_hour_daily SET views = 0 WHERE site = ?1 AND day = ?2 AND ${guard.sql}`)
+        .bind(w.site, w.day, ...guard.args),
+      db
+        .prepare(
+          "INSERT INTO view_hour_daily (site, day, hour, bot_class, views, clicks) " +
+            "SELECT ?1, ?2, CAST(strftime('%H', ts / 1000, 'unixepoch') AS INTEGER), bot_class, COUNT(*), 0 " +
+            `FROM view_events WHERE site = ?1 AND ts >= ?3 AND ts < ?4 AND ${guard.sql} GROUP BY 3, bot_class ` +
+            "ON CONFLICT(site, day, hour, bot_class) DO UPDATE SET views = excluded.views",
+        )
+        .bind(w.site, w.day, dayStartMs(w.day), dayStartMs(w.day) + DAY_MS, ...guard.args),
+      db
+        .prepare(`DELETE FROM view_hour_daily WHERE site = ?1 AND day = ?2 AND views = 0 AND clicks = 0 AND ${guard.sql}`)
+        .bind(w.site, w.day, ...guard.args),
+    );
+    stmts.push(
       ...insertStatements(
         db,
         "view_daily",

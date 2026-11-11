@@ -481,6 +481,23 @@ identifier, no address, no pair of source and country.
   evidence that the period is complete), applies the floor to that period alone, merges sub-floor cells into one remainder per
   destination, and suppresses jointly with the link table.
 
+### 6.3 Weekday and hour aggregate (migration 0015, #410)
+
+The daily rollups keep at most 24 rows per bot class, site and UTC day in
+`view_hour_daily`. Its key is only `(site, day, hour, bot_class)` and its values
+are view and click counts. It has no source, country, device, page, link or
+visitor field. The view seal groups the already hour-rounded view rows. The
+click seal groups the existing hour-rounded `click_events` rows into the human
+class, with no new click collection. Re-runs replace the count for an hour, so
+they do not add it twice. The table is purged with the other daily rollups.
+
+The report sums daily rows into no more than 168 UTC-weekday and hour cells per
+class and applies its normal floor and remainder rule. A display zone changes
+the hour label using each row's real date, including daylight-saving changes;
+the weekday remains the weekday of the UTC day. New versus returning visitors
+is not offered because the privacy model keeps no identifier across days. The
+within-day `first` flag is insufficient.
+
 ## 7. Retention
 
 | Data | Default | Ceiling | Notes |
