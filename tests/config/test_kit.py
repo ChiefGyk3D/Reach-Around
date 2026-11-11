@@ -181,6 +181,17 @@ def test_partner_url_is_https_only(url: str) -> None:
     assert Partner.model_validate({"name": "A", "url": "https://example.com/x"})
 
 
+@pytest.mark.parametrize("name", ["logo.svg", "logo.webp", "logo.gif", "logo.avif"])
+def test_kit_pdf_images_are_limited_to_png_and_jpeg(name: str) -> None:
+    with pytest.raises(ValidationError, match="PNG or JPEG"):
+        Partner.model_validate({"name": "A", "logo": f"media/{name}"})
+    with pytest.raises(ValidationError, match="PNG or JPEG"):
+        KitConfig.model_validate(kit_doc(photo=f"media/{name}"))
+
+    assert Partner.model_validate({"name": "A", "logo": "media/logo.png"})
+    assert KitConfig.model_validate(kit_doc(photo="media/photo.jpeg"))
+
+
 BAD_TEXT = [
     "<b>hi</b>",
     "a < b",
@@ -337,6 +348,7 @@ def test_policy_classifies_every_field() -> None:
     assert {k for k, v in DISPLAY_POLICY.items() if v == "public"} == {
         "title",
         "about",
+        "photo",
         "contact",
         "tags",
         "metrics",
@@ -377,6 +389,7 @@ def test_public_projection_has_only_header_and_headline_numbers() -> None:
     assert set(out) == {
         "title",
         "about",
+        "photo",
         "contact",
         "tags",
         "metrics",

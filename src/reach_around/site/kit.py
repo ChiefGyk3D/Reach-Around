@@ -729,6 +729,7 @@ def _content(
         ),
         "title": projection["title"],
         "about": projection["about"],
+        "photo": projection["photo"],
         "contact": projection["contact"],
         "tags": projection["tags"],
         "metrics": _metric_rows(metrics, config, today, live_day),

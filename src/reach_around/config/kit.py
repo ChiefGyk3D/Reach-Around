@@ -49,6 +49,7 @@ from pydantic import (
 from reach_around.config.blocks import MAX_COUNT, PLATFORM_SLUGS
 from reach_around.config.numbers import STALE_DAYS as STALE_DAYS
 from reach_around.config.numbers import Numbers
+from reach_around.site.theme import check_image_path
 
 # A Turnstile site key is public by design (it ships in the page). Plain
 # characters only, so it can sit in an attribute with no escaping surprises.
@@ -73,6 +74,7 @@ KIT_FIELD_POLICY: Mapping[str, FieldPolicy] = {
     "about": FieldPolicy("public"),
     "contact": FieldPolicy("public"),
     "tags": FieldPolicy("public"),
+    "photo": FieldPolicy("public"),
     "metrics": FieldPolicy("public"),
     "unified_total": FieldPolicy("public"),
     "turnstile_site_key": FieldPolicy("public"),
@@ -153,6 +155,13 @@ def _https(value: str) -> str:
     return check_https_url(value)
 
 
+def _pdf_image(value: str) -> str:
+    value = check_image_path(value)
+    if not value.lower().endswith((".png", ".jpg", ".jpeg")):
+        raise ValueError("must be a PNG or JPEG image so it can be included in PDFs")
+    return value
+
+
 def _iso_date(value: object) -> object:
     """A date or a quoted ``YYYY-MM-DD`` string. No datetimes, no timestamps."""
     if value is None or type(value) is date:
@@ -173,11 +182,17 @@ class Partner(_Model):
     name: Text80
     note: Text200 | None = None
     url: Annotated[str, Field(max_length=2048)] | None = None
+    logo: str | None = None
 
     @field_validator("url")
     @classmethod
     def _url_is_https(cls, value: str | None) -> str | None:
         return None if value is None else _https(value)
+
+    @field_validator("logo")
+    @classmethod
+    def _logo_is_local(cls, value: str | None) -> str | None:
+        return None if value is None else _pdf_image(value)
 
 
 class CaseStudy(_Model):
@@ -376,6 +391,8 @@ class EngagementRow(_Model):
 class KitConfig(_Model):
     title: Text120
     about: Text1000
+    # Optional local, wide photo at the top of both kit pages.
+    photo: str | None = None
     # One plain-text line a brand can read to reach the owner. Never a link:
     # the page prints it escaped. The owner decides what goes here (an email
     # written as text is fine); no address or phone is required or checked.
@@ -405,6 +422,11 @@ class KitConfig(_Model):
     turnstile_site_key: StrictStr | None = None
     # v1 has no emailed unlock link, so true is refused (see the validator).
     unlock_link: StrictBool = False
+
+    @field_validator("photo")
+    @classmethod
+    def _photo_is_local(cls, value: str | None) -> str | None:
+        return None if value is None else _pdf_image(value)
 
     @field_validator("turnstile_site_key")
     @classmethod
