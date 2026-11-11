@@ -13,11 +13,12 @@
 //     any 6-character fragment, which also covers truncated and split storage).
 //     The final database is searched for the same forms.
 import { env as testEnv } from "cloudflare:workers";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import allow from "../../scripts/dump-schema.json";
 import { handleClick, type Env as ClickEnv } from "../src/click";
 import { rollupClosedDays } from "../src/viewrollup";
 import { handleView } from "../src/view";
+import worker from "../src/index";
 import { NOW, beacon, clearAll, fakeLimiter, makeEnv } from "./views/helpers";
 
 const DB = testEnv.DB;
@@ -27,7 +28,8 @@ const PROBE_V4 = "203.0.113.211";
 const PROBE_V6 = "2001:db8:abcd::42";
 const PROBE_UA = "ZzProbeAgent/9.9 (Quux; Fnord 42)";
 const PROBE_HDR = "hdr-probe-QX7731";
-const PROBES = [PROBE_V4, PROBE_V6, PROBE_UA, PROBE_HDR];
+const PROBE_COOKIE = "visitor-probe-cookie-QX8842";
+const PROBES = [PROBE_V4, PROBE_V6, PROBE_UA, PROBE_HDR, PROBE_COOKIE];
 // Realistic strings that must also be absent whole (their short fragments are
 // ordinary words such as "chrome", so only the full text is searched).
 const REALISTIC = [
@@ -274,6 +276,7 @@ async function drive(binds: unknown[], corrupt?: (a: unknown[]) => unknown[]): P
       "X-Real-IP": ip,
       "True-Client-IP": ip,
       "X-Probe": PROBE_HDR,
+      Cookie: `visitor=${PROBE_COOKIE}`,
     };
     const c = await handleClick(
       new Request("https://worker.example.test/e/c/example-one", {
@@ -285,6 +288,15 @@ async function drive(binds: unknown[], corrupt?: (a: unknown[]) => unknown[]): P
     expect(c.status).toBe(204);
     const v = await handleView(beacon({ headers }), makeEnv({ DB: db }), NOW + i * 1000);
     expect(v.status).toBe(204);
+    const routeEnv = { ...clickEnv, ...makeEnv({ DB: db }) };
+    for (const request of [
+      new Request("https://worker.example.test/e/live", { method: "POST", headers }),
+      new Request("https://worker.example.test/k/inquiry/sent", { headers }),
+      new Request("https://worker.example.test/not-a-route", { headers }),
+    ]) {
+      const response = await worker.fetch(request, routeEnv as never);
+      expect([200, 204]).toContain(response.status);
+    }
   }
   await rollupClosedDays({ DB: db, TOP_SOURCES: "1000", MIN_CELL: "1" }, NOW + 3 * 86_400_000);
 }
@@ -306,7 +318,15 @@ describe("no raw address, header or user agent is persisted", () => {
 
   it("no_bound_value_and_nothing_in_the_database_holds_request_data_in_any_form", async () => {
     const binds: unknown[] = [];
-    await drive(binds);
+    const logs: unknown[] = [];
+    const spies = (["log", "warn", "error", "info", "debug"] as const).map((name) =>
+      vi.spyOn(console, name).mockImplementation((...args: unknown[]) => logs.push(...args)),
+    );
+    try {
+      await drive(binds);
+    } finally {
+      for (const spy of spies) spy.mockRestore();
+    }
     // Loose collection: all three jobs really wrote through the recording DB,
     // and the raw and aggregate tables hold rows.
     expect(binds.length).toBeGreaterThanOrEqual(20);
@@ -317,6 +337,7 @@ describe("no raw address, header or user agent is persisted", () => {
     // Strict assertions.
     expect(leaks(binds, PROBES, REALISTIC)).toEqual([]);
     expect(leaks(await wholeDatabase(), PROBES, REALISTIC)).toEqual([]);
+    expect(leaks(logs, PROBES, REALISTIC)).toEqual([]);
   });
 });
 
