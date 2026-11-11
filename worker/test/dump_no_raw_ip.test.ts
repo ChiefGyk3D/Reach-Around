@@ -13,11 +13,12 @@
 //     any 6-character fragment, which also covers truncated and split storage).
 //     The final database is searched for the same forms.
 import { env as testEnv } from "cloudflare:workers";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import allow from "../../scripts/dump-schema.json";
 import { handleClick, type Env as ClickEnv } from "../src/click";
 import { rollupClosedDays } from "../src/viewrollup";
 import { handleView } from "../src/view";
+import worker from "../src/index";
 import { NOW, beacon, clearAll, fakeLimiter, makeEnv } from "./views/helpers";
 
 const DB = testEnv.DB;
@@ -27,7 +28,8 @@ const PROBE_V4 = "203.0.113.211";
 const PROBE_V6 = "2001:db8:abcd::42";
 const PROBE_UA = "ZzProbeAgent/9.9 (Quux; Fnord 42)";
 const PROBE_HDR = "hdr-probe-QX7731";
-const PROBES = [PROBE_V4, PROBE_V6, PROBE_UA, PROBE_HDR];
+const PROBE_COOKIE = "visitor-probe-cookie-QX8842";
+const PROBES = [PROBE_V4, PROBE_V6, PROBE_UA, PROBE_HDR, PROBE_COOKIE];
 // Realistic strings that must also be absent whole (their short fragments are
 // ordinary words such as "chrome", so only the full text is searched).
 const REALISTIC = [
@@ -158,8 +160,35 @@ function textsOf(v: unknown): string[] {
       [...b].join(","),
     ].map((t) => t.toLowerCase());
   }
-  return [typeof v === "string" ? v.toLowerCase() : String(v)];
+  if (typeof v === "string") return [v.toLowerCase()];
+  if (v !== null && typeof v === "object") {
+    const seen = new WeakSet<object>();
+    const normalize = (value: unknown): unknown => {
+      if (typeof value === "bigint") return value.toString();
+      if (value === null || typeof value !== "object") return value;
+      if (seen.has(value)) return "[Circular]";
+      seen.add(value);
+      if (Array.isArray(value)) return value.map(normalize);
+      const out: Record<string, unknown> = {};
+      for (const key of Object.keys(value)) {
+        try {
+          out[key] = normalize((value as Record<string, unknown>)[key]);
+        } catch {
+          out[key] = "[Unserializable]";
+        }
+      }
+      return out;
+    };
+    const json = JSON.stringify(normalize(v));
+    return [json, String(v)].map((text) => text.toLowerCase());
+  }
+  return [String(v).toLowerCase()];
 }
+
+const IPV4_LITERAL =
+  /(?:^|[^\d.])(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(?:\.(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}(?=$|[^\d.])/;
+const IPV6_LITERAL =
+  /(?:^|[^0-9a-f:])(?:(?:[0-9a-f]{1,4}:){7}[0-9a-f]{1,4}|(?:[0-9a-f]{1,4}:){1,7}:|(?:[0-9a-f]{1,4}:){1,6}:[0-9a-f]{1,4}|::(?:[0-9a-f]{1,4}:){0,6}[0-9a-f]{1,4})(?=$|[^0-9a-f:])/i;
 
 /** The oracle: probes found in a list of persisted values (names only, never values). */
 function leaks(values: unknown[], probes: string[], whole: string[]): string[] {
@@ -174,6 +203,8 @@ function leaks(values: unknown[], probes: string[], whole: string[]): string[] {
     const fs = forms(w);
     if (texts.some((t) => fs.some((f) => t.includes(f)))) found.push(w.slice(0, 4));
   }
+  if (texts.some((t) => IPV4_LITERAL.test(t))) found.push("ipv4");
+  if (texts.some((t) => IPV6_LITERAL.test(t))) found.push("ipv6");
   return found;
 }
 
@@ -250,7 +281,11 @@ async function wholeDatabase(): Promise<unknown[]> {
   return values;
 }
 
-async function drive(binds: unknown[], corrupt?: (a: unknown[]) => unknown[]): Promise<void> {
+async function drive(
+  binds: unknown[],
+  corrupt?: (a: unknown[]) => unknown[],
+  routed: string[] = [],
+): Promise<void> {
   const db = recordingDb(binds, corrupt);
   const clickEnv: ClickEnv = {
     DB: db,
@@ -274,6 +309,7 @@ async function drive(binds: unknown[], corrupt?: (a: unknown[]) => unknown[]): P
       "X-Real-IP": ip,
       "True-Client-IP": ip,
       "X-Probe": PROBE_HDR,
+      Cookie: `visitor=${PROBE_COOKIE}`,
     };
     const c = await handleClick(
       new Request("https://worker.example.test/e/c/example-one", {
@@ -285,6 +321,37 @@ async function drive(binds: unknown[], corrupt?: (a: unknown[]) => unknown[]): P
     expect(c.status).toBe(204);
     const v = await handleView(beacon({ headers }), makeEnv({ DB: db }), NOW + i * 1000);
     expect(v.status).toBe(204);
+    const routeEnv = {
+      ...clickEnv,
+      ...makeEnv({ DB: db }),
+      TOKEN_HMAC_KEY: "t".repeat(40),
+      INQUIRY_LIMITER: fakeLimiter(),
+    };
+    for (const request of [
+      new Request("https://worker.example.test/e/c/example-one", {
+        method: "POST",
+        headers: { ...headers, "Ping-From": "https://links.example.test/" },
+      }),
+      beacon({ headers }),
+      new Request("https://worker.example.test/e/live", { headers }),
+      new Request("https://worker.example.test/e/live", { method: "POST", headers }),
+      new Request("https://worker.example.test/k/inquiry", {
+        method: "POST",
+        headers: {
+          ...headers,
+          Origin: "https://links.example.test",
+          "Content-Type": "application/x-www-form-urlencoded",
+        },
+        body: "name=Synthetic&brand=Example&budget=unspecified&details=Synthetic+request&website=",
+      }),
+      new Request("https://worker.example.test/k/inquiry/sent", { headers }),
+      new Request("https://worker.example.test/k/inquiry/error", { headers }),
+      new Request("https://worker.example.test/not-a-route", { headers }),
+    ]) {
+      routed.push(`${request.method} ${new URL(request.url).pathname}`);
+      const response = await worker.fetch(request, routeEnv as never);
+      expect([200, 204, 303]).toContain(response.status);
+    }
   }
   await rollupClosedDays({ DB: db, TOP_SOURCES: "1000", MIN_CELL: "1" }, NOW + 3 * 86_400_000);
 }
@@ -306,7 +373,16 @@ describe("no raw address, header or user agent is persisted", () => {
 
   it("no_bound_value_and_nothing_in_the_database_holds_request_data_in_any_form", async () => {
     const binds: unknown[] = [];
-    await drive(binds);
+    const logs: unknown[] = [];
+    const routed: string[] = [];
+    const spies = (["log", "warn", "error", "info", "debug"] as const).map((name) =>
+      vi.spyOn(console, name).mockImplementation((...args: unknown[]) => logs.push(...args)),
+    );
+    try {
+      await drive(binds, undefined, routed);
+    } finally {
+      for (const spy of spies) spy.mockRestore();
+    }
     // Loose collection: all three jobs really wrote through the recording DB,
     // and the raw and aggregate tables hold rows.
     expect(binds.length).toBeGreaterThanOrEqual(20);
@@ -317,6 +393,19 @@ describe("no raw address, header or user agent is persisted", () => {
     // Strict assertions.
     expect(leaks(binds, PROBES, REALISTIC)).toEqual([]);
     expect(leaks(await wholeDatabase(), PROBES, REALISTIC)).toEqual([]);
+    expect(leaks(logs, PROBES, REALISTIC)).toEqual([]);
+    expect(new Set(routed)).toEqual(
+      new Set([
+        "POST /e/c/example-one",
+        "POST /e/v/home",
+        "GET /e/live",
+        "POST /e/live",
+        "POST /k/inquiry",
+        "GET /k/inquiry/sent",
+        "GET /k/inquiry/error",
+        "GET /not-a-route",
+      ]),
+    );
   });
 });
 
@@ -407,6 +496,23 @@ describe("the guards bite", () => {
     for (const [i, v] of forms2.entries()) expect(leaks([v], PROBES, []), `form ${i}`).not.toEqual([]);
     // Binary that is not request data is not flagged.
     expect(leaks([new Uint8Array([1, 2, 3, 4]), new ArrayBuffer(8)], PROBES, REALISTIC)).toEqual([]);
+  });
+
+  it("structured_log_arguments_are_scanned_as_json", () => {
+    expect(leaks([{ ip: PROBE_V4 }], PROBES, [])).not.toEqual([]);
+    const circular: { ip: string; self?: unknown; count: bigint } = {
+      ip: PROBE_V6,
+      count: 1n,
+    };
+    circular.self = circular;
+    expect(leaks([circular], PROBES, [])).not.toEqual([]);
+  });
+
+  it("unplanted_ip_literals_are_rejected_without_flagging_times", () => {
+    for (const value of ["fallback=127.0.0.1", "peer=fd00::1"]) {
+      expect(leaks([value], PROBES, REALISTIC), value).not.toEqual([]);
+    }
+    expect(leaks(["ran at 12:30:45", "ratio 1:2"], PROBES, REALISTIC)).toEqual([]);
   });
 
   it("binary_data_injected_through_the_real_bind_path_is_caught", async () => {
