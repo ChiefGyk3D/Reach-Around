@@ -29,7 +29,7 @@
 {% macro partner_grid(items) %}
 <ul class="kit-list kit-partner-grid">
 {% for partner in items %}
-<li class="kit-partner">{% if partner.url %}<a href="{{ partner.url }}" rel="noopener noreferrer">{% endif %}{% if partner.logo %}<img class="kit-partner-logo" src="{{ asset_url(partner.logo, root) }}" alt="{{ partner.name }}" width="240" height="120">{% else %}<strong>{{ partner.name }}</strong>{% endif %}{% if partner.url %}</a>{% endif %}{% if partner.note %}<span class="kit-note">{{ partner.note }}</span>{% endif %}</li>
+<li class="kit-partner">{% if partner.url %}<a href="{{ partner.url }}" rel="noopener noreferrer">{% endif %}{% if partner.logo %}<img class="kit-partner-logo" src="{{ private_asset_url(partner.logo) }}" alt="{{ partner.name }}" width="240" height="120">{% else %}<strong>{{ partner.name }}</strong>{% endif %}{% if partner.url %}</a>{% endif %}{% if partner.note %}<span class="kit-note">{{ partner.note }}</span>{% endif %}</li>
 {% endfor %}
 </ul>
 {% endmacro %}

@@ -19,9 +19,9 @@ allowlist, never edited in place:
 * the page's own stylesheets are read from the site output directory, only from
   ``/static/*.css``, never through a symbolic link, and inlined; ``@import``,
   ``@font-face`` and every ``url(...)`` are removed, so there is nothing to fetch;
-* a local image (``/static/*.png|jpg|jpeg``) is embedded as a data URI after its
-  metadata is dropped (PNG text chunks, JPEG EXIF and comments); any other type
-  or a remote image is refused;
+* a local root-based PNG/JPEG, or a gated PNG/JPEG data URI, is embedded after
+  its metadata is dropped (PNG text chunks, JPEG EXIF and comments); any other
+  type or a remote image is refused;
 * a Content-Security-Policy meta forbids every load except the embedded data.
 
 Limits are named constants below; going over one stops the build.
@@ -44,7 +44,7 @@ MAX_PAGE_BYTES = 2 * 1024 * 1024
 MAX_CSS_BYTES = 1024 * 1024
 MAX_CSS_TOTAL = 3 * 1024 * 1024
 MAX_IMAGE_BYTES = 2 * 1024 * 1024
-MAX_IMAGES = 8
+MAX_IMAGES = 51
 GATED_FILE = "kit.html"
 # The public half: the page the site publishes, in the site output directory.
 PUBLIC_FILE = "kit/index.html"
@@ -411,11 +411,31 @@ def _scrub_jpeg(data: bytes) -> bytes:
 
 
 def embed_image(site_dir: Path, src: str) -> str:
-    path = _static_file(site_dir, src, (".png", ".jpg", ".jpeg"))
-    data = _read_regular(path, MAX_IMAGE_BYTES, "an image")
-    if data.startswith(_PNG_MAGIC) and path.suffix.lower() == ".png":
+    data_url = re.fullmatch(r"data:image/(png|jpeg);base64,([A-Za-z0-9+/]*={0,2})", src)
+    if data_url is not None:
+        try:
+            data = base64.b64decode(data_url.group(2), validate=True)
+        except ValueError as exc:
+            raise StageError("an embedded image is not valid base64") from exc
+        if len(data) > MAX_IMAGE_BYTES:
+            raise StageError(f"an image is larger than {MAX_IMAGE_BYTES} bytes")
+        suffix = ".png" if data_url.group(1) == "png" else ".jpg"
+    else:
+        match = re.fullmatch(r"/([A-Za-z0-9._/-]+)", src)
+        if match is None or ".." in match.group(1).split("/"):
+            raise StageError("a page image link is not a plain root-based path")
+        suffix = Path(match.group(1)).suffix.lower()
+        if suffix not in (".png", ".jpg", ".jpeg"):
+            raise StageError("a page image must be a PNG or JPEG")
+        path = site_dir
+        for part in match.group(1).split("/"):
+            path = path / part
+            if path.is_symlink():
+                raise StageError("a page image path goes through a symbolic link")
+        data = _read_regular(path, MAX_IMAGE_BYTES, "an image")
+    if data.startswith(_PNG_MAGIC) and suffix == ".png":
         return "data:image/png;base64," + base64.b64encode(_scrub_png(data)).decode()
-    if data.startswith(b"\xff\xd8") and path.suffix.lower() in (".jpg", ".jpeg"):
+    if data.startswith(b"\xff\xd8") and suffix in (".jpg", ".jpeg"):
         return "data:image/jpeg;base64," + base64.b64encode(_scrub_jpeg(data)).decode()
     raise StageError(
         "an image must be a PNG (.png) or JPEG (.jpg, .jpeg) whose contents "
@@ -445,8 +465,8 @@ class _Rebuild(HTMLParser):
     # -- helpers
     def _root_based(self, url: str) -> str:
         """The public kit page lives at /kit/ and links its files as
-        ``../static/...``; that is the same file as ``/static/...``."""
-        if self.public and url.startswith("../static/"):
+        ``../static/...`` or ``../media/...``; those are root-based files."""
+        if self.public and url.startswith("../"):
             return url[2:]
         return url
 

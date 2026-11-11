@@ -155,6 +155,13 @@ def _https(value: str) -> str:
     return check_https_url(value)
 
 
+def _pdf_image(value: str) -> str:
+    value = check_image_path(value)
+    if not value.lower().endswith((".png", ".jpg", ".jpeg")):
+        raise ValueError("must be a PNG or JPEG image so it can be included in PDFs")
+    return value
+
+
 def _iso_date(value: object) -> object:
     """A date or a quoted ``YYYY-MM-DD`` string. No datetimes, no timestamps."""
     if value is None or type(value) is date:
@@ -185,7 +192,7 @@ class Partner(_Model):
     @field_validator("logo")
     @classmethod
     def _logo_is_local(cls, value: str | None) -> str | None:
-        return None if value is None else check_image_path(value)
+        return None if value is None else _pdf_image(value)
 
 
 class CaseStudy(_Model):
@@ -419,7 +426,7 @@ class KitConfig(_Model):
     @field_validator("photo")
     @classmethod
     def _photo_is_local(cls, value: str | None) -> str | None:
-        return None if value is None else check_image_path(value)
+        return None if value is None else _pdf_image(value)
 
     @field_validator("turnstile_site_key")
     @classmethod

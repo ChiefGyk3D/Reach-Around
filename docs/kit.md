@@ -28,7 +28,7 @@ kit:
     - {platform: twitch, label: Followers, value: 1200, as_of: 2027-03-01}
     - {platform: youtube, label: Subscribers, source: counts}
   partners:
-    - {name: Acme Fake Co, logo: media/acme-fake.svg, note: 2026 sponsor, url: "https://example.com/acme"}
+    - {name: Acme Fake Co, logo: media/acme-fake.png, note: 2026 sponsor, url: "https://example.com/acme"}
   case_studies:
     - title: Launch week
       summary: A fake product launch on stream.
@@ -169,8 +169,9 @@ Partners with a `logo` appear in a responsive logo grid. The first six partners
 are visible immediately; any remaining partners are under a native **Show more**
 disclosure that needs no script. A partner without a logo keeps the existing
 text presentation. The optional header `photo` and partner `logo` values are
-local image paths under the instance directory. The build validates, copies and
-fingerprints them like the site's other local images.
+local PNG or JPEG paths under the instance directory. The public photo is
+fingerprinted with the site's public assets. Partner logos are embedded only in
+the gated page, so their files and bytes are not published before the gate.
 
 YouTube Analytics values collected with private OAuth scopes are never accepted
 as kit input. A YouTube engagement figure may appear here only when the owner

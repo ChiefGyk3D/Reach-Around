@@ -1017,8 +1017,10 @@ content can never be published with no gate.
 
 **Photo and partner logos.** `photo` is an optional local image path for the
 wide kit header. A partner may also have an optional local `logo` image path.
-The build applies the same path, content and size checks as it does to other
-instance images, then fingerprints the copied file. The gated page shows the
+Both fields accept PNG and JPEG files only, because those are the formats the
+sealed PDF renderer can safely embed. The public photo is fingerprinted in the
+public site; partner logos are embedded only in the gated page and are not
+copied into the public tree. The gated page shows the
 first six partners in a responsive logo grid and puts any remaining partners
 under a script-free **Show more** disclosure. Neither setting accepts a remote
 URL.

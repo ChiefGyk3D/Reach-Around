@@ -3,26 +3,28 @@
 
 from __future__ import annotations
 
+import base64
 import re
 from pathlib import Path
 
 from test_kit_build import TODAY, gated_doc, make_config
 
+from reach_around.kit.stage import stage_page
 from reach_around.site.build import build_site
 from reach_around.site.kit import GATED_FILE
 
-SVG = (
-    b'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1 1">'
-    b"<title>Synthetic image</title></svg>"
+PNG = base64.b64decode(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR4nGNgYAAAAAMA"
+    "ASsJTYQAAAAASUVORK5CYII="
 )
 
 
 def build_pages(tmp_path: Path, kit: dict[str, object]) -> tuple[str, str]:
     instance = tmp_path / "instance"
     (instance / "media").mkdir(parents=True)
-    (instance / "media" / "kit-photo.svg").write_bytes(SVG)
-    for index in range(8):
-        (instance / "media" / f"brand-{index}.svg").write_bytes(SVG)
+    (instance / "media" / "kit-photo.png").write_bytes(PNG)
+    for index in range(50):
+        (instance / "media" / f"brand-{index}.png").write_bytes(PNG)
     out, gated = tmp_path / "public", tmp_path / "gated"
     build_site(
         make_config(kit),
@@ -41,7 +43,7 @@ def partners(count: int = 8) -> list[dict[str, str]]:
     return [
         {
             "name": f"Synthetic Brand {index + 1}",
-            "logo": f"media/brand-{index}.svg",
+            "logo": f"media/brand-{index}.png",
             "url": f"https://example.com/brand-{index}",
         }
         for index in range(count)
@@ -59,7 +61,7 @@ def kit_with_partners(count: int, *, photo: str | None = None) -> dict[str, obje
 def test_photo_is_in_the_public_and_gated_header_blocks(tmp_path: Path) -> None:
     public, gated = build_pages(
         tmp_path,
-        kit_with_partners(1, photo="media/kit-photo.svg"),
+        kit_with_partners(1, photo="media/kit-photo.png"),
     )
     for page in (public, gated):
         header = page[page.index('class="kit-head') : page.index("Audience numbers")]
@@ -69,7 +71,7 @@ def test_photo_is_in_the_public_and_gated_header_blocks(tmp_path: Path) -> None:
             header,
         )
         assert match is not None
-        assert re.fullmatch(r"(?:\.\./|/)?media/kit-photo\.[0-9a-f]{20}\.svg", match[1])
+        assert re.fullmatch(r"(?:\.\./|/)?media/kit-photo\.[0-9a-f]{20}\.png", match[1])
         assert header.index("kit-photo") < header.index('id="kit-title"')
 
 
@@ -97,3 +99,25 @@ def test_six_partner_logos_need_no_show_more(tmp_path: Path) -> None:
     assert 'class="kit-list kit-partner-grid"' in section
     assert "Show more" not in section
     assert "kit-partners-more" not in section
+
+
+def test_partner_logo_bytes_stay_out_of_public_tree(tmp_path: Path) -> None:
+    public, gated = build_pages(tmp_path, kit_with_partners(1))
+    out = tmp_path / "public"
+    public_bytes = b"".join(p.read_bytes() for p in out.rglob("*") if p.is_file())
+
+    assert PNG not in public_bytes
+    assert "data:image/png;base64," not in public
+    assert f"data:image/png;base64,{base64.b64encode(PNG).decode()}" in gated
+    assert not list(out.rglob("brand-0*"))
+
+
+def test_public_and_gated_kit_images_are_embedded_for_pdf(tmp_path: Path) -> None:
+    build_pages(tmp_path, kit_with_partners(8, photo="media/kit-photo.png"))
+    site, gated = tmp_path / "public", tmp_path / "gated"
+
+    public_pdf_html = stage_page(site, site, public=True).html
+    gated_pdf_html = stage_page(gated, site).html
+
+    assert public_pdf_html.count("data:image/png;base64,") == 1
+    assert gated_pdf_html.count("data:image/png;base64,") == 9
