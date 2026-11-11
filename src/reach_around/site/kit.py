@@ -198,8 +198,12 @@ def text_fields(item: Any) -> list[tuple[str, str]]:
 
 
 def _gated_strings(kit: KitConfig) -> list[tuple[str, str]]:
-    """(where, text) for every gated value long enough to search for. Values
-    that are not text (dates) are searched in the form the templates print."""
+    """Leak canaries for gated values.
+
+    Ordinary prose must be long enough to search safely. Every engagement value
+    is covered, including short numbers, through a labeled rendering that avoids
+    collisions with unrelated public numbers and dates.
+    """
     found: list[tuple[str, str]] = []
     if kit.disclosure is not None and len(kit.disclosure) >= GUARD_MIN_LENGTH:
         found.append(("kit.disclosure", kit.disclosure))
@@ -213,13 +217,38 @@ def _gated_strings(kit: KitConfig) -> list[tuple[str, str]]:
         "demographics",
     ):
         for index, item in enumerate(getattr(kit, name)):
+            if name == "engagement":
+                continue
             for field, text in text_fields(item):
-                # The platform and the period dates are labels shared with public
-                # pages; only the owner's free text is searched for.
-                if name == "engagement" and field != "counts":
-                    continue
                 if len(text) >= GUARD_MIN_LENGTH:
                     found.append((f"kit.{name}[{index}].{field}", text))
+    for index, item in enumerate(kit.engagement):
+        prefix = f"kit.engagement[{index}]"
+        dumped = item.model_dump()
+        for field in ("views", "posts", "interactions"):
+            value = dumped[field]
+            if value is None:
+                continue
+            for rendered in (str(value), f"{value:,}"):
+                found.append((f"{prefix}.{field}", f"{rendered} {field}"))
+                found.append((f"{prefix}.{field}", f"{field} {rendered}"))
+        for field, label in (
+            ("period_start", "period start"),
+            ("period_end", "period end"),
+            ("as_of", "as of"),
+        ):
+            value = dumped[field]
+            if value is not None:
+                found.append((f"{prefix}.{field}", f"{label} {value.isoformat()}"))
+        if item.counts:
+            found.append((f"{prefix}.counts", item.counts))
+        rows = rows_for([item])
+        for row_index, row in enumerate(rows):
+            derived = "average_views" if row_index == 0 else "engagement_rate"
+            found.append((f"{prefix}.{derived}", f"{row['measure']} {row['value']}"))
+            found.append((f"{prefix}.{derived}_formula", row["formula"]))
+            if row["provenance"]:
+                found.append((f"{prefix}.owner_supplied", row["provenance"]))
     if kit.inquiry is not None:
         for field, text in kit.inquiry.model_dump().items():
             if isinstance(text, str) and len(text) >= GUARD_MIN_LENGTH:

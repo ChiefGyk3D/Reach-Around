@@ -85,11 +85,14 @@ mkdir -p "$HOME/<BACKUPS>" && chmod 700 "$HOME/<BACKUPS>"
 
 You need `npx wrangler` signed in with your own login, run from the directory
 whose wrangler config names `<DATABASE>` (inferred: wrangler resolves a
-database name through the config in the current directory). The login needs
-D1 read for exports and Time Travel info. A restore, and creating or deleting
-the scratch database, need D1 edit. Use a short-lived token for the edit parts,
-held in your secrets manager, and drop it when the job is done. Never put an
-export credential in a repository or in a workflow secret.
+database name through the config in the current directory). Unverified: D1
+Read is sufficient for exports; the export API page does not list accepted
+permissions, so prove the required permission before choosing the #400 backup
+credential. D1 Read is documented for Time Travel info. A restore, and
+creating or deleting the scratch database, need D1 edit. Use a short-lived
+token for the edit parts, held in your secrets manager, and drop it when the
+job is done. Never put an export credential in a repository or in a workflow
+secret.
 
 ## Take a backup (about five minutes)
 

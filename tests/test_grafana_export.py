@@ -27,6 +27,9 @@ EXPECTED_TABLES = {
     "grafana_countries_daily",
     "grafana_clicks_daily",
     "grafana_gaps_daily",
+    "grafana_clicks_monthly",
+    "grafana_sources_monthly",
+    "grafana_countries_monthly",
 }
 
 
@@ -235,7 +238,7 @@ def test_meta_records_site_floor_and_version_only(tmp_path: Path) -> None:
     db = export_ok(tmp_path)
     assert rows(db, "grafana_meta") == [
         ("floor", "5"),
-        ("schema_version", "3"),
+        ("schema_version", "4"),
         ("site", "links"),
     ]
 
@@ -258,7 +261,7 @@ def test_cutover_marks_spanning_window_for_grafana(
     assert rows(out, "grafana_meta") == [
         ("cutover_utc", DAY2),
         ("floor", "5"),
-        ("schema_version", "3"),
+        ("schema_version", "4"),
         ("site", "links"),
         ("window_era", "spans"),
     ]
@@ -277,6 +280,45 @@ def test_higher_floor_hides_more(
     for table in EXPECTED_TABLES - {"grafana_meta", "grafana_annotations"}:
         for row in rows(out, table):
             assert row[-1] >= 50, (table, row)
+
+
+def test_higher_floor_refuses_an_archive_written_at_a_lower_floor(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    src = write(tmp_path, sample())
+    archive_dir = tmp_path / "archive"
+    archive_dir.mkdir()
+    (archive_dir / "links-2026-10.json").write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "site": "links",
+                "month": "2026-10",
+                "floor": 5,
+                "capacity_ok": True,
+                "sources": [{"link_id": "kit", "label": "direct", "clicks": 40}],
+                "countries": [{"link_id": "kit", "label": "US", "clicks": 40}],
+            }
+        )
+    )
+    out = tmp_path / "g.sqlite3"
+
+    code, stdout, err = run(
+        capsys,
+        "--input",
+        str(src),
+        "--output",
+        str(out),
+        "--floor",
+        "50",
+        "--archive",
+        str(archive_dir),
+    )
+
+    assert code == 2
+    assert stdout == ""
+    assert "floor" in err
+    assert not out.exists()
 
 
 def test_site_selection(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
