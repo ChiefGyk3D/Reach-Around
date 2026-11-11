@@ -785,6 +785,78 @@ class EditorService:
         with self._write_lock:
             return self._move(base, kind, anyway, preview_host, preview_port)
 
+    def run_restore(
+        self, body: bytes, preview_host: str, preview_port: int
+    ) -> dict[str, Any]:
+        """Restore one older history entry as an undoable change."""
+        request = parse_json_object(body)
+        base = request.get("base")
+        if not isinstance(base, str) or _HASH.fullmatch(base) is None:
+            raise _bad(
+                "base", "base must be the hash from the last state.", "bad_request"
+            )
+        entry_id = request.get("id")
+        if type(entry_id) is not int or entry_id < 1:
+            raise _bad("id", "id must name an earlier history entry.", "bad_request")
+        if set(request) != {"base", "id"}:
+            raise _bad("request", "That is not a field of this request.", "bad_request")
+        with self._write_lock:
+            return self._restore(base, entry_id, preview_host, preview_port)
+
+    def _restore(
+        self, base: str, entry_id: int, host: str, port: int
+    ) -> dict[str, Any]:
+        data = self._read(self.config)
+        if data is None:
+            raise RouteError(404, "not_found", "The config file cannot be read.")
+        try:
+            current = data.decode("utf-8")
+        except UnicodeDecodeError:
+            raise RouteError(
+                422, "refused", "The config file is not valid text."
+            ) from None
+        if sha256_text(current) != base:
+            raise self._stale_base(host, port)
+
+        def write(target: str) -> None:
+            def compute(text: str, _raw: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+                if text != current:
+                    raise editing.EditError(
+                        "The file changed while this was running. Nothing was changed."
+                    )
+                return target, {}
+
+            editing.apply(
+                self.config,
+                compute,
+                dry_run=False,
+                backup=True,
+                force_path=True,
+                no_symlinks=True,
+                restore=True,
+            )
+
+        try:
+            with self._history() as history:
+                outcome = history.restore(current, entry_id, write)
+        except editing.EditError as exc:
+            raise RouteError(422, "refused", self._clean(str(exc))) from None
+        except HistoryError as exc:
+            raise RouteError(
+                409, "history_unavailable", self._clean(str(exc))
+            ) from None
+        except OSError:
+            raise RouteError(
+                500,
+                "io_error",
+                "The file or its history could not be written. "
+                "Reload the state before trying again.",
+                state=self.state(host, port),
+            ) from None
+        if isinstance(outcome, Refusal):
+            raise self._refusal(outcome, host, port)
+        return self._moved(outcome, host, port)
+
     def _stale_base(self, preview_host: str, preview_port: int) -> RouteError:
         return RouteError(
             409,

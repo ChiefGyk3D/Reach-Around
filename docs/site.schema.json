@@ -2097,6 +2097,7 @@
         "dsn_env": {
           "anyOf": [
             {
+              "const": "REACH_AROUND_DSN",
               "type": "string"
             },
             {

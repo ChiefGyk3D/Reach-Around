@@ -28,7 +28,7 @@
 #   SITE_HOST=links.example.invalid
 #   ZONE_NAME=example.invalid                   # optional: creates the /e/* route
 #   DOPPLER_PROJECT=my-project                  # your Doppler project
-#   DOPPLER_CONFIG=prd                          # optional, default prd
+#   DOPPLER_CONFIG=dev                          # optional, default dev
 
 set -euo pipefail
 
@@ -61,7 +61,7 @@ unset CLOUDFLARE_API_TOKEN
 # shellcheck source=/dev/null  # the path is supplied at run time
 . "$settings"
 
-DOPPLER_CONFIG="${DOPPLER_CONFIG:-prd}"
+DOPPLER_CONFIG="${DOPPLER_CONFIG:-dev}"
 ZONE_NAME="${ZONE_NAME:-}"
 
 fail() {
