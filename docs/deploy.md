@@ -663,7 +663,11 @@ repository, because the real ids, hostname and site config stay private.
 sanitized, generic version (placeholders only). It does this:
 
 1. **Builds outside the repository**, into a private directory, with
-   `reach-around build`. No token exists in the process during the build.
+   `reach-around build`. It always supplies a separate `--gated-out` directory.
+   When the build produces `kit.html`, `KIT_KV_ID` is required in the settings;
+   the script binds that namespace as `KIT` and uploads the file to `kit/v1`.
+   Pages receives only the public site output. No token exists in the process
+   during the build.
 2. **Derives the link ids from the build manifest** (`jq -c '.links | keys'`),
    so the Worker accepts exactly the links the page publishes and the two
    cannot drift.
@@ -683,8 +687,9 @@ sanitized, generic version (placeholders only). It does this:
 5. **Offers `--dry-run`**, which builds, writes the config and prints the
    plan, then stops before any wrangler command. It also asks you to type
    `deploy` to confirm unless you pass `--yes`.
-6. **Gives the token only to the three wrangler commands** (migrations,
-   Worker deploy, Pages deploy), each wrapped in `doppler run --only-secrets`.
+6. **Gives the token only to the wrangler commands** (migrations, gated-kit KV
+   upload when present, Worker deploy, Pages deploy), each wrapped in
+   `doppler run --only-secrets`.
    The script unsets any token inherited from your shell.
 
 Try it with `--dry-run` first:
