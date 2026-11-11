@@ -72,6 +72,24 @@ days. Without the table the report says nothing about gaps (`not_exported`).
 For response and recovery steps, see the generic
 [collection gaps runbook](collection-gaps-runbook.md).
 
+## Social numbers and the unified report (`--history`)
+
+```text
+reach-around report --input export.json --history history/social.jsonl
+```
+
+`--history FILE` reads the social-stats history ([social-history.md](social-history.md)) and adds a "Social numbers" block to the text report, a `social` object to `--json` and a `social.csv` to `--csv`. The file is read only and checked first; a damaged file exits 2. The block is private to you, like the rest of the report.
+
+* **Per platform and metric:** the latest number with its UTC time, source (`api`, `hand_kept`) and, once the cutover has arrived and `--cutover` is given, whether it is before or after.
+* **Change over 30, 90 and 365 UTC days:** only when a record exists on exactly that day before the latest one. Otherwise the line says `no record on <day>`. A missing day is a gap: it is listed (last 90 days) and is never filled, carried forward or counted as zero.
+* **Definition breaks:** a change between two records with different `era` tags is withheld ("the definition changed").
+* **Cutover:** a change window that crosses the cutover day is labeled as spanning it.
+* **Imported history (Beacons):** records with source `imported` appear only in their own block, with their own label, and are never added to or compared with the collected numbers above.
+* **YouTube:** collected YouTube Analytics figures are refused (display policy, #424). Only the Data API `subscribers` count may come from the API; a value you typed is accepted. A refused metric is named in the output.
+* **Time:** everything is UTC. With `--display-zone` each latest instant is also printed in that zone; day buckets stay UTC days.
+
+Without `--history` the report is unchanged. The HTML page and the Grafana export do not carry this block yet.
+
 ## The privacy floor
 
 No row under 5 views is printed: not a page, a source, a country, a city, a

@@ -13,31 +13,23 @@
 
    Colors come as light-dark(light, dark) pairs. The page is dark unless the
    theme's `mode` says light. */
-@font-face {
-  font-family: "Jost";
-  font-style: normal;
-  font-weight: 100 900;
-  font-display: swap;
-  src: url("fonts/jost-latin-wght-normal.woff2") format("woff2");
-}
-
 :root {
   color-scheme: dark;
   interpolate-size: allow-keywords;
 
   /* Colors: the six the theme section sets. The accent and the text on it are
      the same in light and dark, so a button keeps its brand look. */
-  --ra-color-bg: light-dark(#f4f1ec, #0e0e0e);
-  --ra-color-surface: light-dark(#ffffff, #1b1b1b);
-  --ra-color-text: light-dark(#1a1a1a, #ffffff);
-  --ra-color-accent: #fbb03b;
-  --ra-color-on-accent: #1a1a1a;
-  --ra-color-border: light-dark(#d6d1c8, #333333);
+  --ra-color-bg: var(--ra-compat-bg);
+  --ra-color-surface: var(--ra-compat-surface);
+  --ra-color-text: var(--ra-compat-text);
+  --ra-color-accent: var(--ra-brand-amber);
+  --ra-color-on-accent: var(--ra-brand-on-amber);
+  --ra-color-border: var(--ra-compat-border);
 
   /* Colors: derived from the six, so a retheme follows without extra work. */
-  --ra-color-link: light-dark(color-mix(in srgb, var(--ra-color-accent) 45%, #000000), var(--ra-color-accent));
+  --ra-color-link: light-dark(color-mix(in srgb, var(--ra-color-accent) 45%, var(--ra-color-black)), var(--ra-color-accent));
   --ra-color-on-accent-muted: color-mix(in srgb, var(--ra-color-on-accent) 85%, var(--ra-color-accent));
-  --ra-color-accent-edge: color-mix(in srgb, var(--ra-color-accent) 72%, #000000);
+  --ra-color-accent-edge: color-mix(in srgb, var(--ra-color-accent) 72%, var(--ra-color-black));
   --ra-color-chip: color-mix(in srgb, var(--ra-color-on-accent) 90%, var(--ra-color-accent));
   --ra-color-muted: color-mix(in srgb, var(--ra-color-text) 72%, var(--ra-color-bg));
   --ra-color-raised: color-mix(in srgb, var(--ra-color-text) 6%, var(--ra-color-surface));
@@ -45,34 +37,15 @@
   --ra-color-accent-soft: color-mix(in srgb, var(--ra-color-accent) 15%, var(--ra-color-surface));
   --ra-color-glow: color-mix(in srgb, var(--ra-color-text) 7%, transparent);
   --ra-color-grain: color-mix(in srgb, var(--ra-color-text) 3%, transparent);
-  --ra-color-grain-deep: color-mix(in srgb, #000000 30%, transparent);
+  --ra-color-grain-deep: color-mix(in srgb, var(--ra-color-black) 30%, transparent);
   --ra-color-edge: color-mix(in srgb, var(--ra-color-on-accent) 45%, transparent);
-  --ra-shadow-color: light-dark(rgb(70 45 20 / 0.22), rgb(0 0 0 / 0.6));
+  --ra-shadow-color: var(--ra-compat-shadow);
 
   /* Fonts: Jost is served from this site; the rest are system fallbacks. */
-  --ra-font-body: "Jost", system-ui, sans-serif;
-  --ra-font-heading: var(--ra-font-body);
-
   /* Type scale: a 1.25 ratio from 1rem on a phone. The larger steps grow
      smoothly with the viewport, and every bound is in rem so the visitor's
      default font size and zoom always win. */
-  --ra-text-xs: 0.8rem;
-  --ra-text-sm: 0.875rem;
-  --ra-text-base: clamp(1rem, 0.94rem + 0.2vw, 1.125rem);
-  --ra-text-md: clamp(1.125rem, 1.07rem + 0.2vw, 1.25rem);
-  --ra-text-lg: clamp(1.3rem, 1.2rem + 0.3vw, 1.5rem);
-  --ra-text-xl: clamp(1.75rem, 1.5rem + 0.9vw, 2.25rem);
-  --ra-text-2xl: clamp(2rem, 1.3rem + 3vw, 3.25rem);
-  --ra-line-height: 1.5;
-
-  /* Space: a 4-point rhythm. */
-  --ra-space-1: 0.25rem;
-  --ra-space-2: 0.5rem;
-  --ra-space-3: 0.75rem;
-  --ra-space-4: 1rem;
-  --ra-space-5: 1.5rem;
-  --ra-space-6: 2.5rem;
-  --ra-tap: 2.75rem;
+  /* Type and spacing primitives come from tokens.css. */
   --ra-gutter: clamp(1rem, 0.4rem + 2.5vw, 2rem);
 
   /* Shape and layout. */
@@ -80,8 +53,6 @@
   --ra-column-tablet: 45rem;
   --ra-column-desktop: 54rem;
   --ra-measure: 50ch;
-  --ra-radius: 0.5rem;
-  --ra-button-radius: 2.25rem;
   --ra-card-radius: min(calc(var(--ra-radius) * 2), 1.75rem);
   --ra-tab-radius: 0;
   --ra-avatar-radius: 50%;
@@ -101,7 +72,7 @@
      full-bleed page background; --ra-mascot-image is the giant faded mascot. */
   --ra-bg-image: none;
   --ra-bg-dim: 0;
-  --ra-color-dim: color-mix(in srgb, #000000 calc(var(--ra-bg-dim) * 100%), transparent);
+  --ra-color-dim: color-mix(in srgb, var(--ra-color-black) calc(var(--ra-bg-dim) * 100%), transparent);
   --ra-mascot-image: none;
   --ra-mascot-opacity: 0.12;
   --ra-mascot-size: cover;
