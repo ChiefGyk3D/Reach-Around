@@ -201,7 +201,8 @@ export async function rollupClickFunnel(env: FunnelRollupEnv, nowMs: number): Pr
   const read = await db.batch([
     db.prepare(
       "INSERT OR IGNORE INTO click_funnel_state (site, from_day) SELECT u.site, MIN(u.day) FROM " +
-        "(SELECT site, day FROM click_src_daily UNION SELECT site, day FROM click_country_daily) u GROUP BY u.site",
+        "(SELECT site, day FROM click_src_daily UNION SELECT site, day FROM click_country_daily " +
+        "UNION SELECT site, strftime('%Y-%m-%d', ts / 1000, 'unixepoch') AS day FROM click_events) u GROUP BY u.site",
     ),
     ...registry.map((id) => db.prepare("INSERT OR IGNORE INTO click_funnel_state (site, from_day) VALUES (?1, ?2)").bind(id, today)),
     db.prepare(
