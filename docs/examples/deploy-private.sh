@@ -28,7 +28,7 @@
 #   ZONE_NAME=example.invalid                   # optional: creates the /e/* route
 #   LEAD_RETENTION_DAYS=30                      # optional: only COMPARED with the
 #                                               # config's privacy.lead_retention_days
-#   DOPPLER_CONFIG=prd                          # optional, default prd
+#   DOPPLER_CONFIG=dev                          # optional, default dev
 
 set -euo pipefail
 
@@ -56,7 +56,7 @@ unset CLOUDFLARE_API_TOKEN
 # shellcheck source=/dev/null  # the path is supplied at run time
 . "$settings"
 
-DOPPLER_CONFIG="${DOPPLER_CONFIG:-prd}"
+DOPPLER_CONFIG="${DOPPLER_CONFIG:-dev}"
 ZONE_NAME="${ZONE_NAME:-}"
 
 fail() { echo "error: $*" >&2; exit 1; }

@@ -134,11 +134,13 @@ disclosure:
 | --- | --- | --- | --- |
 | `kind` | `sqlite` or `postgres` | `sqlite` | `postgres` is not built yet |
 | `path` | text | `data/reach-around.db` | the SQLite file; created mode 0600 in a 0700 directory |
-| `dsn_env` | text | none | the NAME of an environment variable holding a Postgres DSN; required for `postgres`; never a DSN or password |
+| `dsn_env` | `REACH_AROUND_DSN` or none | none | the one fixed environment variable name holding a Postgres DSN; required for `postgres`; never a DSN or password |
 
 Run `reach-around store status --config site.yaml` to see applied and pending
 migrations and `reach-around store migrate --config site.yaml` to apply them.
 A SQLite store is copied to `<file>.pre-<version>` first (three copies kept).
+The engine checks the fixed name again when the connection setting is used and
+refuses a changed name or type without printing its content.
 
 ### `creator`
 
@@ -166,12 +168,14 @@ creator:
 | `name` | Title | required | |
 | `url` | HTTPS URL or Tab link | required | |
 | `icon` | Slug | required | |
+| `rel_me` | boolean | `false` | Adds `me` to the external link's `rel` attribute for identity verification, including Mastodon profile verification. |
 
 ```yaml
 socials:
   - name: Example Chat
     url: https://chat.example.invalid/example
     icon: chat
+    rel_me: true
 ```
 
 ### `tabs[]` (`Tab`)

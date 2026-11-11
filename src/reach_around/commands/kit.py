@@ -14,9 +14,10 @@ from reach_around.config.numbers import Numbers, load_numbers
 from reach_around.kit.pdf import (
     Isolation,
     build_kit_pdf,
+    build_public_kit_pdf,
     chromium_renderer,
 )
-from reach_around.kit.stage import GATED_FILE
+from reach_around.kit.stage import GATED_FILE, PUBLIC_FILE
 
 
 def _iso_date(value: str) -> date:
@@ -26,10 +27,13 @@ def _iso_date(value: str) -> date:
         raise argparse.ArgumentTypeError("must be a date written YYYY-MM-DD") from None
 
 
-def _creation_date(explicit: date | None, gated_dir: Path) -> date:
+def _creation_date(
+    explicit: date | None, built_dir: Path, file: str = GATED_FILE
+) -> date:
     """The date written into the PDF: ``--date``, else SOURCE_DATE_EPOCH, else the
-    day the gated page was built (its modification time, UTC). Never the clock
-    of the print run, so the same build prints the same bytes."""
+    day the page was built (``file`` in ``built_dir``, its modification time,
+    UTC). Never the clock of the print run, so the same build prints the same
+    bytes."""
     if explicit is not None:
         return explicit
     epoch = os.environ.get("SOURCE_DATE_EPOCH")
@@ -39,11 +43,11 @@ def _creation_date(explicit: date | None, gated_dir: Path) -> date:
         except (ValueError, OverflowError, OSError):
             raise ValueError("SOURCE_DATE_EPOCH is not a valid timestamp") from None
     try:
-        stamp = (gated_dir / GATED_FILE).lstat().st_mtime
+        stamp = (built_dir / file).lstat().st_mtime
     except OSError as exc:
         raise ValueError(
-            f"{GATED_FILE} is not in the gated directory; run reach-around build "
-            "with --gated-out first"
+            f"{file} is not in {built_dir}; run reach-around build first "
+            "(with --gated-out for the private PDF)"
         ) from exc
     return datetime.fromtimestamp(stamp, UTC).date()
 
@@ -58,17 +62,52 @@ def _numbers(args: argparse.Namespace) -> Numbers | None:
     return None if path is None else load_numbers(path)
 
 
-def _run(args: argparse.Namespace) -> int:
+def _run_public(args: argparse.Namespace) -> int:
     try:
+        if args.gated_out is not None:
+            raise ValueError(
+                "--public prints the public page only; it does not take --gated-out"
+            )
+        if args.isolation not in (None, "netns"):
+            raise ValueError(
+                "--public requires --isolation netns for offline rendering"
+            )
+        config = load_site_config(args.config)
+        created = _creation_date(args.date, args.site_out, PUBLIC_FILE)
+        isolation: Isolation = args.isolation or "netns"
+        result = build_public_kit_pdf(
+            config,
+            site_dir=args.site_out,
+            out_dir=args.out_dir,
+            name=args.name or f"kit-public-{created.isoformat()}.pdf",
+            created=created,
+            renderer=chromium_renderer(args.chromium, isolation=isolation),
+            overwrite=args.overwrite,
+            protect=[args.config.resolve().parent],
+            numbers=_numbers(args),
+        )
+    except (ConfigError, ValueError, OSError) as exc:
+        print("error: " + " ".join(str(exc).split()), file=sys.stderr)
+        return 1
+    print(result.path)
+    return 0
+
+
+def _run(args: argparse.Namespace) -> int:
+    if args.public:
+        return _run_public(args)
+    try:
+        if args.gated_out is None:
+            raise ValueError("--gated-out is required unless --public is given")
         config = load_site_config(args.config)
         created = _creation_date(args.date, args.gated_out)
-        isolation: Isolation = args.isolation
+        isolation: Isolation = args.isolation or "off"
         result = build_kit_pdf(
             config,
             gated_dir=args.gated_out,
             site_dir=args.site_out,
             out_dir=args.out_dir,
-            name=args.name,
+            name=args.name or "kit.pdf",
             created=created,
             renderer=chromium_renderer(args.chromium, isolation=isolation),
             overwrite=args.overwrite,
@@ -84,7 +123,7 @@ def _run(args: argparse.Namespace) -> int:
 
 
 def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
-    kit = subparsers.add_parser("kit", help="media kit tools (private PDF)")
+    kit = subparsers.add_parser("kit", help="media kit tools (PDF)")
     actions = kit.add_subparsers(dest="kit_command", required=True)
     pdf = actions.add_parser(
         "pdf",
@@ -95,14 +134,23 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
         "bytes. The build fails if a private value is found in the PDF text. The "
         "file is private: it goes to an owner-only directory outside the site "
         "output, the gated directory, the config directory and any git work "
-        "tree, and is never published. Prints the path on success.",
+        "tree, and is never published. With --public the public half of the "
+        "kit (the page the site publishes, public numbers only) is printed "
+        "the same way, with a 'Valid as of' line and a dated file name. Prints "
+        "the path on success.",
+    )
+    pdf.add_argument(
+        "--public",
+        action="store_true",
+        help="print the public half of the kit instead (needs no --gated-out; "
+        "default file name kit-public-YYYY-MM-DD.pdf)",
     )
     pdf.add_argument("--config", type=Path, required=True, help="site config file")
     pdf.add_argument(
         "--gated-out",
         type=Path,
-        required=True,
-        help="the gated directory the build wrote (holds kit.html)",
+        help="the gated directory the build wrote (holds kit.html); required "
+        "unless --public",
     )
     pdf.add_argument(
         "--site-out",
@@ -123,7 +171,10 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
         "config, if it exists); the printed headline numbers are checked "
         "against it",
     )
-    pdf.add_argument("--name", default="kit.pdf", help="file name (default kit.pdf)")
+    pdf.add_argument(
+        "--name",
+        help="file name (default kit.pdf, or kit-public-YYYY-MM-DD.pdf with --public)",
+    )
     pdf.add_argument(
         "--date",
         type=_iso_date,
@@ -138,9 +189,10 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
     pdf.add_argument(
         "--isolation",
         choices=("off", "netns"),
-        default="off",
-        help="netns also runs the browser in its own network namespace "
-        "(unprivileged user namespaces; the browser sandbox is off in that mode)",
+        default=None,
+        help="netns runs the browser in its own network namespace and is required "
+        "for --public; off keeps browser-level defenses only for private PDFs "
+        "(the browser sandbox is off in netns mode)",
     )
     pdf.add_argument("--overwrite", action="store_true", help="replace an existing PDF")
     kit.set_defaults(func=_run)

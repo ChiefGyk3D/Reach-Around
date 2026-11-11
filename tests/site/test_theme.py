@@ -280,6 +280,47 @@ def test_mode_dark_forces_dark_tokens(tmp_path: Path) -> None:
     assert "color-scheme" not in css_for(tmp_path, {"mode": "auto"})
 
 
+def _page_css(tmp_path: Path, theme: object) -> tuple[str, str, str]:
+    out = tmp_path / "out"
+    build_site(load(tmp_path, theme), out, today=TODAY)
+    return (
+        read(out, "static/tokens.css"),
+        read(out, "static/site.css"),
+        read(out, "static/theme.css"),
+    )
+
+
+def test_default_is_dark_and_light_is_an_explicit_opt_in(tmp_path: Path) -> None:
+    tokens, site, theme = _page_css(tmp_path, None)
+    assert "color-scheme: dark;" in tokens
+    assert "color-scheme" not in theme
+    # Every surface color is a light-dark() pair, so one color-scheme value
+    # selects a whole palette and the two halves cannot mix.
+    for name in ("bg", "surface", "text", "border", "shadow"):
+        assert re.search(rf"--ra-compat-{name}: light-dark\(", tokens), name
+    assert "--ra-color-link: light-dark(" in site
+
+    light_dir = tmp_path / "light"
+    light_dir.mkdir()
+    _, _, light_theme = _page_css(light_dir, {"mode": "light"})
+    assert "color-scheme: light;" in light_theme
+    assert "color-scheme: dark;" not in light_theme
+
+
+def test_light_mode_resolves_the_light_half_of_every_pair(tmp_path: Path) -> None:
+    tokens, _, _ = _page_css(tmp_path, None)
+    for match in re.finditer(
+        r"--ra-compat-(\w+): light-dark\(([^,]+(?:\([^)]*\))?[^,]*), ", tokens
+    ):
+        assert match.group(2).strip() != "", match.group(1)
+    light_bg = re.search(r"--ra-compat-bg: light-dark\((#\w+), (#\w+)\)", tokens)
+    assert light_bg is not None
+    # Light half is lighter than the dark half, so the light result is light.
+    assert int(light_bg.group(1)[1:], 16) > int(light_bg.group(2)[1:], 16)
+    # The guard bites: a dark-only constant would not match the pair pattern.
+    assert not re.search(r"--ra-compat-bg: #[0-9A-Fa-f]{6};", tokens)
+
+
 # --- the built page ---------------------------------------------------------
 
 
@@ -291,8 +332,8 @@ def test_theme_css_overrides_defaults_in_the_built_page(tmp_path: Path) -> None:
     assert ":root" in css
     assert "--ra-color-bg: #101010;" in css
     assert "--ra-column-width: 40rem;" in css
-    site_css = read(out, "static/site.css")
-    # site.css declares every default and reads each through var(--ra-*).
+    site_css = read(out, "static/tokens.css") + read(out, "static/site.css")
+    # The bridge and site styles declare every default and consume it through vars.
     for token in ("color-bg", "column-width", "radius", "button-radius", "font-body"):
         assert f"--ra-{token}:" in site_css
         assert f"var(--ra-{token})" in site_css
@@ -336,7 +377,7 @@ def test_default_theme_builds_the_same_page_as_before(tmp_path: Path) -> None:
     html = (out / "index.html").read_text()
     theme_tag = f'<link rel="stylesheet" href="{asset(out, "static/theme.css")}">\n'
     assert html.count(theme_tag) == 1
-    assert html.replace(theme_tag, "").count('<link rel="stylesheet"') == 1
+    assert html.replace(theme_tag, "").count('<link rel="stylesheet"') == 2
     assert html.count("theme.") == 1
     # The example instance still matches its golden output byte for byte.
     example = tmp_path / "example"

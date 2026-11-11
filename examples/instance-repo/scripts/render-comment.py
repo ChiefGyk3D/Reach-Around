@@ -248,8 +248,7 @@ VOCAB: dict[str, tuple[str, str]] = {
     ),
     "db_setting": (
         "the database setting is not right",
-        "dsn_env holds the NAME of an environment variable, in capitals, "
-        "never the password itself.",
+        "Set dsn_env to REACH_AROUND_DSN. Never put the password itself there.",
     ),
     "crypto_address": (
         "the crypto address has the wrong length or characters",
@@ -553,6 +552,7 @@ KNOWN_FIELDS: frozenset[str] = frozenset(
         "raw_keep_days",
         "redirects",
         "refresh_within_days",
+        "rel_me",
         "result",
         "retention_days",
         "reveal",

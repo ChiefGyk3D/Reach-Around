@@ -246,6 +246,9 @@ def _cycle(
                 as_of_utc=utc_stamp(stamp),
                 source="api",
                 run_id=run_id,
+                api_provider=(
+                    "youtube_data_api" if outcome.platform == "youtube" else None
+                ),
             )
             for outcome in outcomes
             if outcome.status == "ok" and outcome.count is not None
@@ -258,6 +261,9 @@ def _cycle(
                 source="api",
                 run_id=run_id,
                 note=figure.note,
+                api_provider=(
+                    "youtube_analytics" if figure.platform == "youtube" else None
+                ),
             )
             for figure in figures
         ]

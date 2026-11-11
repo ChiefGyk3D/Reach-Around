@@ -53,6 +53,7 @@ kit:
 | `kit/retry/index.html` | `--out` (published) | everyone; only when the kit has gated content |
 | `kit.html` | `--gated-out` (never published) | a visitor who passed the gate, served by the Worker |
 | `kit.pdf` | `kit pdf --out-dir` (private, never published) | you, the owner (see [The private PDF](#the-private-pdf)) |
+| `kit-public-YYYY-MM-DD.pdf` | `kit pdf --public --out-dir` (the public half; you decide where it goes) | anyone you give it to (see [The public PDF](#the-public-pdf)) |
 
 ```sh
 reach-around build --config site.yaml --out site-out --gated-out gated-out
@@ -402,6 +403,58 @@ a local image beyond dropping its metadata; a browser bug (the sealed page, the
 policy and the optional namespace are the defenses); and what you do with the
 file afterwards. Exit code 0 on success, 1 for any refusal (one line on standard
 error), 2 for a usage error.
+
+## The public PDF
+
+`reach-around kit pdf --public` prints the public half of the kit (the page the
+site publishes at `/kit/`: the title, the introduction, the contact line, the
+tags, the audience numbers with their dates and the combined audience) to a
+dated PDF, so any brand can save a copy. It is the answer to the owner's
+decision of 2026-11-08 (issue #425): the light public kit also gets a
+downloadable PDF. It carries a "Valid as of YYYY-MM-DD (UTC)" line (the
+creation date) and the "Live since" line when `cutover_date` has arrived.
+
+```sh
+reach-around build --config site.yaml --out site-out
+reach-around kit pdf --public --config site.yaml --site-out site-out \
+  --out-dir ~/kit-pdfs
+```
+
+It uses the same code as the private PDF, with the same options (`--config`,
+`--site-out`, `--out-dir`, `--name`, `--date`, `--numbers`, `--chromium`,
+`--isolation`, `--overwrite`), and the same sealing: an allowlisted rebuild of
+the page with nothing that can load, a Content-Security-Policy that forbids every
+load, headless Chromium with the network cut off, a fixed Info dictionary, the
+same size and page limits, the same confined owner-only write (never inside the
+public output, the config directory or a git work tree, never through a link) and
+the same removal of the work directory. Differences:
+
+- **No `--gated-out`.** It reads `kit/index.html` from `--site-out`; giving
+  `--gated-out` with `--public` is an error. The gated page is never opened.
+- **File name.** The default is `kit-public-YYYY-MM-DD.pdf` (the creation date,
+  see `--date`); `--name` overrides it.
+- **The gate box is dropped.** The email form, its text and the zone menu mean
+  nothing on paper, so the stager removes those two boxes whole. Every other form,
+  input, select or script, and any inline script, still stops the build.
+- **The same display policy.** The build refuses what the private PDF refuses
+  (collected YouTube Analytics figures), and a field marked owner-report-only
+  never reaches the public projection, so engagement figures are not in it.
+- **A wider leak check.** The text of the finished PDF is searched for every
+  gated value (partners, case studies, packages, rates, engagement notes,
+  testimonials, audience details, the disclosure statement and the inquiry
+  details), for the Turnstile site key and for gate-form words. A hit fails the
+  build, names the field and never the value, and writes nothing. A gated value
+  that equals a public value (for example the same text in the contact line) is
+  not a leak. The same pass checks that every public text, the "Valid as of"
+  line and the "Live since" line are in the PDF, which catches a stale
+  `--site-out` (rebuild first) and text the renderer lost.
+- **No warning banner.** The file holds public figures only, so the "private: do
+  not publish" notice is not printed. It is still written owner-only; you copy it
+  where you want it.
+
+Defaults the owner may change: the "Valid as of" day is the creation date, not
+the day the numbers were read (each row keeps its own "as of" date). The dated
+"valid as of" line for the deeper kit request flow is separate work (#426).
 
 ## Contact line
 

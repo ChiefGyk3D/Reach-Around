@@ -39,6 +39,7 @@ _LOCK_POLL = 0.02
 
 SOURCES = ("api", "hand_kept", "imported")
 TYPES = ("record", "correction")
+API_PROVIDERS = ("youtube_analytics", "youtube_data_api")
 
 _SLUG = re.compile(r"^[a-z0-9][a-z0-9-]{0,39}$")
 _METRIC = re.compile(r"^[a-z][a-z0-9_]{0,39}$")
@@ -46,7 +47,7 @@ _RUN_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 _AS_OF = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
 _HASH = re.compile(r"^[0-9a-f]{64}$")
 _REQUIRED = ("platform", "metric", "value", "as_of_utc", "source", "run_id", "prev")
-_OPTIONAL = ("note", "era", "type")
+_OPTIONAL = ("note", "era", "type", "api_provider")
 
 
 class HistoryError(Exception):
@@ -64,6 +65,7 @@ class Record:
     note: str | None = None
     era: str | None = None
     type: str = "record"
+    api_provider: str | None = None
 
     @property
     def day_key(self) -> tuple[str, str, str, str]:
@@ -119,6 +121,11 @@ def validate(record: Record, now: datetime | None = None) -> None:
         raise HistoryError("as_of_utc is in the future")
     if record.source not in SOURCES:
         raise HistoryError("source must be api or hand_kept")
+    if record.api_provider is not None:
+        if record.source != "api":
+            raise HistoryError("api_provider is allowed only for API records")
+        if record.api_provider not in API_PROVIDERS:
+            raise HistoryError("api_provider is not recognized")
     if not isinstance(record.run_id, str) or not _RUN_ID.match(record.run_id):
         raise HistoryError("run_id must be 1 to 64 letters, digits, . _ -")
     if record.type not in TYPES:
@@ -152,6 +159,8 @@ def _line_bytes(record: Record, prev: str) -> bytes:
         obj["era"] = record.era
     if record.type != "record":
         obj["type"] = record.type
+    if record.api_provider is not None:
+        obj["api_provider"] = record.api_provider
     text = json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
     return text.encode("ascii")
 
@@ -177,7 +186,9 @@ def _no_constant(_: str) -> Any:
     raise ValueError("not a number")
 
 
-def _parse_line(raw: bytes, number: int) -> tuple[Record, str]:
+def _parse_line(
+    raw: bytes, number: int, now: datetime | None = None
+) -> tuple[Record, str]:
     where = f"line {number}"
     if not raw:
         raise HistoryError(f"{where}: blank line")
@@ -211,15 +222,16 @@ def _parse_line(raw: bytes, number: int) -> tuple[Record, str]:
         note=obj.get("note"),
         era=obj.get("era"),
         type=obj.get("type", "record"),
+        api_provider=obj.get("api_provider"),
     )
     try:
-        validate(record)
+        validate(record, now)
     except HistoryError as exc:
         raise HistoryError(f"{where}: {exc}") from None
     return record, prev
 
 
-def _parse(data: bytes) -> tuple[tuple[Record, ...], str]:
+def _parse(data: bytes, now: datetime | None = None) -> tuple[tuple[Record, ...], str]:
     """All records in ``data`` and the digest of the last line."""
     if not data:
         return (), GENESIS
@@ -230,7 +242,7 @@ def _parse(data: bytes) -> tuple[tuple[Record, ...], str]:
     days: set[tuple[str, str, str, str]] = set()
     expect = GENESIS
     for number, raw in enumerate(data[:-1].split(b"\n"), start=1):
-        record, prev = _parse_line(raw, number)
+        record, prev = _parse_line(raw, number, now)
         if prev != expect:
             raise HistoryError(f"line {number}: the hash chain is broken")
         if record.type == "record":
@@ -348,7 +360,7 @@ def _open_parent(path: Path) -> int:
 
 
 def read_history(path: Path, *, max_bytes: int = MAX_FILE_BYTES) -> History:
-    """Validate the whole file and return it. A missing file is an empty history."""
+    """Validate the whole file and return it. A missing file is an error."""
     try:
         dir_fd = _open_parent(path)
     except OSError:
@@ -357,7 +369,7 @@ def read_history(path: Path, *, max_bytes: int = MAX_FILE_BYTES) -> History:
         try:
             fd = os.open(path.name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=dir_fd)
         except FileNotFoundError:
-            return History(())
+            raise HistoryError("cannot open the history file") from None
         except OSError:
             raise HistoryError("cannot open the history file (a symlink?)") from None
         try:
@@ -369,7 +381,7 @@ def read_history(path: Path, *, max_bytes: int = MAX_FILE_BYTES) -> History:
             os.close(fd)
     finally:
         os.close(dir_fd)
-    return History(_parse(data)[0])
+    return History(_parse(data, datetime.now(UTC))[0])
 
 
 def append_records(
