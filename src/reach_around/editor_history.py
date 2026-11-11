@@ -421,8 +421,10 @@ class History:
             _unlink(dir_fd, "index.json")
         return _fresh()
 
-    def _save(self, dir_fd: int, state: _State) -> None:
+    def _save(self, dir_fd: int, state: _State, *, clean: bool = True) -> None:
         _write_atomic(dir_fd, "index.json", _dump_index(state))
+        if not clean:
+            return
         keep = {e.filename() for e in state.entries}
         for name in os.listdir(dir_fd):
             if _SNAP_NAME.fullmatch(name) and name not in keep:
@@ -596,17 +598,28 @@ class History:
                 loaded = self._read_state_text(dir_fd, target)
                 if isinstance(loaded, Refusal):
                     return loaded
+                previous = _State(
+                    list(state.entries),
+                    state.cursor,
+                    state.next,
+                    state.produced,
+                    state.pending,
+                )
                 del state.entries[state.cursor + 1 :]
                 restored = self._store(dir_fd, state, loaded, target.label)
                 target_cursor = len(state.entries) - 1
                 state.pending = (target_cursor, restored.hash)
                 try:
-                    self._save(dir_fd, state)
+                    self._save(dir_fd, state, clean=False)
                 except OSError as exc:
                     raise HistoryError(
                         f"cannot save the history: {exc.strerror or 'I/O error'}"
                     ) from exc
-                write(loaded)
+                try:
+                    write(loaded)
+                except BaseException:
+                    self._save(dir_fd, previous)
+                    raise
                 state.cursor = target_cursor
                 state.produced = restored.hash
                 state.pending = None
