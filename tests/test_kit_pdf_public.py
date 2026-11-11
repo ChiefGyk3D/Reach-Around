@@ -8,7 +8,7 @@ The browser is a stand-in (``fake_renderer``); the real one is covered by
 from __future__ import annotations
 
 import base64
-from datetime import date
+from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
 
@@ -28,6 +28,7 @@ from kitpdfharness import (
 )
 from reach_around.cli import main
 from reach_around.config import SiteConfig, load_site_config
+from reach_around.config.numbers import Numbers, NumbersEntry
 from reach_around.kit.output import OutputError
 from reach_around.kit.pdf import (
     PdfError,
@@ -222,6 +223,42 @@ def test_a_gated_value_in_the_public_pdf_text_fails_the_build(tmp_path: Path) ->
         public_run(tmp_path, leaky)
     assert CANARY not in str(caught.value)  # names the field, never the value
     assert not (tmp_path / "private" / "kit-public.pdf").exists()
+
+
+def test_a_short_gated_value_in_the_public_pdf_text_fails() -> None:
+    doc = kit_doc()
+    doc["rates"] = [{"item": "Synthetic placement", "price_text": "VIP"}]
+    config = make_config(doc)
+    public_text = (
+        "Example Creator media kit A fake creator used in tests. "
+        "Streams games & talks. "
+        "Twitch Followers 1,200 2027-03-01 YouTube Subscribers 3,400 2027-03-05 "
+        "4,600 Price: VIP"
+    )
+
+    with pytest.raises(PdfLeakError, match=r"kit\.rates\[0\]\.price_text"):
+        check_text(config.kit, public_text, public=True)  # type: ignore[arg-type]
+
+
+def test_a_gated_value_equal_to_resolved_public_numbers_is_allowed() -> None:
+    doc = kit_doc()
+    doc["metrics"] = [{"platform": "twitch", "label": "Followers", "source": "counts"}]
+    doc["rates"] = [{"item": "Synthetic placement", "price_text": "12,345"}]
+    config = make_config(doc)
+    numbers = Numbers(
+        entries={
+            "twitch": NumbersEntry(
+                count=12345,
+                as_of=datetime(2027, 3, 9, 12, 0, tzinfo=UTC),
+            )
+        }
+    )
+    public_text = (
+        "Example Creator media kit A fake creator used in tests. "
+        "Streams games & talks. Twitch Followers 12,345 2027-03-09 12,345"
+    )
+
+    check_text(config.kit, public_text, numbers, public=True)  # type: ignore[arg-type]
 
 
 def test_the_gate_key_in_the_public_pdf_text_fails_the_build(tmp_path: Path) -> None:

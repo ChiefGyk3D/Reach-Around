@@ -431,6 +431,54 @@ def _flat(text: str) -> str:
     )
 
 
+def _short_gated_strings(kit: KitConfig) -> list[tuple[str, str]]:
+    """Gated prose omitted from the substring guard because it is too short."""
+    found: list[tuple[str, str]] = []
+    if kit.disclosure is not None and len(kit.disclosure) < GUARD_MIN_LENGTH:
+        found.append(("kit.disclosure", kit.disclosure))
+    for name in (
+        "partners",
+        "case_studies",
+        "services",
+        "rates",
+        "testimonials",
+        "demographics",
+    ):
+        for index, item in enumerate(getattr(kit, name)):
+            for field, value in text_fields(item):
+                if field != "url" and value and len(value) < GUARD_MIN_LENGTH:
+                    found.append((f"kit.{name}[{index}].{field}", value))
+    if kit.inquiry is not None:
+        for field, value in kit.inquiry.model_dump().items():
+            if isinstance(value, str) and value and len(value) < GUARD_MIN_LENGTH:
+                found.append((f"kit.inquiry.{field}", value))
+    return found
+
+
+def _contains_exact(text: str, value: str) -> bool:
+    """Match a short value as text of its own, not inside another word."""
+    visible = unicodedata.normalize("NFKC", text).casefold()
+    visible = "".join(ch for ch in visible if unicodedata.category(ch) != "Cf")
+    needle = unicodedata.normalize("NFKC", value).casefold()
+    needle = "".join(ch for ch in needle if unicodedata.category(ch) != "Cf")
+    pattern = re.escape(needle).replace(r"\ ", r"\s+")
+    return re.search(r"(?<!\w)" + pattern + r"(?!\w)", visible) is not None
+
+
+def _public_pdf_values(kit: KitConfig, numbers: Numbers | None) -> set[str]:
+    """Public values, including the resolved figures rendered in this PDF."""
+    allowed = _public_values(kit)
+    resolved = resolve_metrics(kit, numbers)
+    for row in _metric_rows(resolved):
+        allowed.add(canonical(row["value"]))
+        if row["as_of"]:
+            allowed.add(canonical(row["as_of"]))
+    total = _total(unified_total(resolved), resolved)
+    if total is not None:
+        allowed.add(canonical(total["value"]))
+    return allowed
+
+
 def check_text(
     kit: KitConfig,
     text: str,
@@ -454,7 +502,7 @@ def check_text(
                 "written"
             )
     if public:
-        allowed = _public_values(kit)
+        allowed = _public_pdf_values(kit, numbers)
         contact = canonical(kit.contact) if kit.contact is not None else ""
         for field, value in _gated_strings(kit):
             if canonical(value) in allowed:
@@ -462,6 +510,16 @@ def check_text(
             if field == "kit.inquiry.email" and canonical(value) in contact:
                 continue
             if _flat(value) in flat:
+                raise PdfLeakError(
+                    f"the gated field {field} appears in the public PDF text; "
+                    "nothing was written"
+                )
+        for field, value in _short_gated_strings(kit):
+            if canonical(value) in allowed:
+                continue
+            if field == "kit.inquiry.email" and canonical(value) in contact:
+                continue
+            if _contains_exact(text, value):
                 raise PdfLeakError(
                     f"the gated field {field} appears in the public PDF text; "
                     "nothing was written"
