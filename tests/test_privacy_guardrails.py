@@ -13,6 +13,20 @@ ROOT = Path(__file__).parents[1]
 POLICY = ROOT / "docs" / "audience-analysis-privacy.md"
 
 
+def test_live_status_request_has_owner_voice_privacy_wording() -> None:
+    privacy = " ".join(
+        (ROOT / "docs" / "privacy.md").read_text(encoding="utf-8").split()
+    )
+
+    assert (
+        "When you open my Live tab, your browser asks my site for the current "
+        "stream status. My code sets no cookies and does not collect or store "
+        "identifiers from that request. The live-status data is limited to "
+        "booleans and timestamps: whether each stream is live, when it went "
+        "live, and when the status was checked."
+    ) in privacy
+
+
 def test_do_not_collect_policy_is_public_and_linked_from_privacy_page() -> None:
     policy = POLICY.read_text(encoding="utf-8")
     privacy = (ROOT / "docs" / "privacy.md").read_text(encoding="utf-8")
