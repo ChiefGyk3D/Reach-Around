@@ -12,6 +12,13 @@ ROOT = Path(__file__).resolve().parent.parent
 _YAML_BLOCK = re.compile(r"^```yaml\n(.*?)^```$", re.DOTALL | re.MULTILINE)
 
 
+def operations_kit_refresh_section() -> str:
+    text = (ROOT / "docs" / "operations.md").read_text(encoding="utf-8")
+    start = text.index("## Every 30 days: refresh the media kit")
+    end = text.find("\n## ", start + 1)
+    return text[start:] if end == -1 else text[start:end]
+
+
 def first_yaml_block(doc: Path) -> str:
     match = _YAML_BLOCK.search(doc.read_text(encoding="utf-8"))
     assert match is not None, f"no fenced yaml block in {doc}"
@@ -61,3 +68,30 @@ def test_kit_guide_example_validates(tmp_path: Path) -> None:
     config = load_site_config(sample)
     assert config.kit is not None and config.kit.has_gated_content
     assert config.kit.turnstile_site_key is not None
+
+
+def test_operations_kit_refresh_commands_are_in_run_order() -> None:
+    section = operations_kit_refresh_section()
+    commands = [
+        "reach-around counts history-add --config site.yaml",
+        "reach-around counts refresh --config site.yaml",
+        "reach-around build --config site.yaml --out site-out --gated-out gated-out",
+        "reach-around counts stale --config site.yaml",
+        "reach-around check --config site.yaml --numbers numbers.json --production",
+        "~/private/deploy.sh ~/private/deploy.settings",
+        "reach-around kit pdf --config site.yaml --site-out site-out",
+        "reach-around kit pdf --public --config site.yaml --site-out site-out",
+        "SELECT COUNT(*) AS lead_count FROM leads",
+        "SELECT value FROM kit_meta WHERE key = 'last_purge_ts'",
+    ]
+    positions = [section.index(command) for command in commands]
+    assert positions == sorted(positions)
+
+
+def test_operations_kit_refresh_stops_on_stale_numbers_and_links_dependencies() -> None:
+    section = operations_kit_refresh_section()
+    assert "Do not publish while either command reports a stale number" in section
+    assert "[hand-kept number hygiene](../CHANGELOG.md#unreleased) (#389)" in section
+    assert (
+        "[analytics operations runbook](#every-week-about-20-minutes) (#403)" in section
+    )
