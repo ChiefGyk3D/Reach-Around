@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from reach_around.funnel.report import _release_matrix
+from reach_around.funnel.report import _link_breakdown
 
 ROOT = Path(__file__).parents[1]
 POLICY = ROOT / "docs" / "audience-analysis-privacy.md"
@@ -40,23 +40,33 @@ def test_do_not_collect_policy_is_public_and_linked_from_privacy_page() -> None:
 
 
 @pytest.mark.parametrize(
-    "matrix",
+    "matrix_key",
     (
-        "source by destination",
-        "country by destination",
-        "device by destination",
-        "hour by weekday",
+        "click_matrix",
+        "click_countries",
     ),
 )
-def test_matrix_cells_and_margins_cannot_solve_a_small_cell(matrix: str) -> None:
-    del matrix  # each named matrix must use this one release boundary
+def test_report_matrix_cells_and_margins_cannot_solve_a_small_cell(
+    matrix_key: str,
+) -> None:
     keys = tuple(itertools.product(("row-a", "row-b"), ("col-a", "col-b")))
     floor = 5
     datasets: list[tuple[tuple[int, ...], str]] = []
     alternatives: dict[str, list[tuple[int, ...]]] = {}
 
     for values in itertools.product(range(7), repeat=len(keys)):
-        released = _release_matrix(dict(zip(keys, values, strict=True)), floor)
+        cells: dict[str, dict[str, int]] = {}
+        for (row, column), value in zip(keys, values, strict=True):
+            cells.setdefault(column, {})[row] = value
+        released = _link_breakdown(
+            cells,
+            printed=None,
+            floor=floor,
+            top=10,
+            present=True,
+            months=[],
+        )
+        released["matrix_key"] = matrix_key
         signature = json.dumps(released, sort_keys=True)
         datasets.append((values, signature))
         alternatives.setdefault(signature, []).append(values)

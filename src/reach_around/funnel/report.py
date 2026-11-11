@@ -553,27 +553,23 @@ def _link_breakdown(
         ):
             continue
         matrix_cells.update({(label, link): value for label, value in cells.items()})
-    results = _fold_matrix(matrix_cells, floor)
+    matrix_release = _release_matrix(matrix_cells, floor)
+    results: dict[str, list[tuple[str, int]]] = defaultdict(list)
+    for cell in matrix_release["cells"]:
+        results[str(cell["column"])].append((str(cell["row"]), int(cell["value"])))
 
     def total(link: str) -> int:
-        return sum(n for _, n in results[link].shown) + results[link].other
+        return sum(n for _, n in results[link])
 
     order = sorted(results, key=lambda link: (-total(link), link))
     shown = order[:top]
     label_totals: dict[str, int] = defaultdict(int)
     cell_rows: list[dict[str, Any]] = []
     for link in shown:
-        for label, n in results[link].shown:
+        for label, n in results[link]:
             cell_rows.append({"label": label, "destination": link, "clicks": n})
-            label_totals[label] += n
-        if results[link].other:
-            cell_rows.append(
-                {
-                    "label": REMAINDER,
-                    "destination": link,
-                    "clicks": results[link].other,
-                }
-            )
+            if label != REMAINDER:
+                label_totals[label] += n
     withheld = sum(1 for cells in by_link.values() if cells) - len(results)
     state = "ok"
     if any(by_link.values()) and not cell_rows and not len(order) > top:

@@ -16,8 +16,8 @@ log, cache, queue and export:
 Reports apply the existing privacy floor and complementary suppression to every
 matrix. Printed cells, row totals and column totals are calculated from the
 same safe-to-release cells, so their margins do not reveal a suppressed value.
-Source by destination, country by destination, device by destination and hour
-by weekday all share this rule.
+The source by destination and country by destination matrices both share this
+rule.
 
 The Worker may read request fields transiently to enforce limits and derive
 closed aggregate categories. It drops the original values before storage and
