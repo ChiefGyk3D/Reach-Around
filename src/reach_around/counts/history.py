@@ -403,6 +403,25 @@ def append_records(
         os.close(dir_fd)
 
 
+def dump_new_history(records: Sequence[Record], *, now: datetime | None = None) -> str:
+    """Validate and serialize a complete new history file."""
+    if not records:
+        raise HistoryError("a new history needs at least one record")
+    moment = now if now is not None else datetime.now(UTC)
+    lines: list[bytes] = []
+    previous = GENESIS
+    for record in records:
+        validate(record, moment)
+        line = _line_bytes(record, previous)
+        lines.append(line)
+        previous = _digest(line)
+    data = b"\n".join(lines) + b"\n"
+    if len(data) > MAX_FILE_BYTES:
+        raise HistoryError("the history file would be too large")
+    _parse(data)
+    return data.decode("ascii")
+
+
 def _append(
     dir_fd: int,
     path: Path,

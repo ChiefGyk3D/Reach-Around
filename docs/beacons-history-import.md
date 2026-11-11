@@ -37,11 +37,13 @@ Choose a new private file that is separate from the history file populated by
 
 ```text
 reach-around counts history-import-beacons \
+  --config site.yaml \
   --csv beacons-link-in-bio.csv \
   --file beacons-pre-cutover-history.jsonl \
   --dry-run
 
 reach-around counts history-import-beacons \
+  --config site.yaml \
   --csv beacons-link-in-bio.csv \
   --file beacons-pre-cutover-history.jsonl
 ```

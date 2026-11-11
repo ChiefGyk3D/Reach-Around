@@ -48,6 +48,7 @@ from reach_around.counts.history import (
     HistoryError,
     Record,
     append_records,
+    dump_new_history,
     new_run_id,
     read_history,
 )
@@ -392,7 +393,7 @@ def _dispatch(args: argparse.Namespace) -> int:
     if args.counts_command == "history-verify":
         return run_history_verify(args)
     if args.counts_command == "history-import-beacons":
-        return run_beacons_import(args.csv, args.file, args.dry_run)
+        return run_beacons_import(args.config, args.csv, args.file, args.dry_run)
     if args.counts_command == "import":
         return _run_import(args)
     if args.counts_command == "stale":
@@ -454,16 +455,37 @@ def _register_history(
     )
     beacons.add_argument("--csv", type=Path, required=True, help="Beacons CSV export")
     beacons.add_argument(
+        "--config",
+        type=Path,
+        required=True,
+        help="site config whose collection history must remain separate",
+    )
+    beacons.add_argument(
         "--file", type=Path, required=True, help="new pre-cutover history file"
     )
     beacons.add_argument("--dry-run", action="store_true")
 
 
-def run_beacons_import(csv_path: Path, target: Path, dry_run: bool) -> int:
+def run_beacons_import(
+    config_path: Path, csv_path: Path, target: Path, dry_run: bool
+) -> int:
     """Import Beacons Daily rows into a dedicated, previously empty history file."""
     try:
+        config = load_site_config(config_path)
+        collection_history = history_path(config, config_path)
         data = _read(csv_path, MAX_BEACONS_BYTES)
         export = parse_beacons_csv(data)
+        if collection_history is not None and (
+            target.resolve() == collection_history.resolve()
+            or (
+                target.exists()
+                and collection_history.exists()
+                and target.samefile(collection_history)
+            )
+        ):
+            raise BeaconsImportError(
+                "destination must differ from configured numbers.history_file"
+            )
         if target.exists() and target.stat().st_size:
             raise BeaconsImportError(
                 "destination history file is not empty; imported data is never merged"
@@ -483,14 +505,14 @@ def run_beacons_import(csv_path: Path, target: Path, dry_run: bool) -> int:
             for day in export.days
             for metric, value in (("views", day.views), ("clicks", day.clicks))
         ]
+        serialized = dump_new_history(records)
         if dry_run:
             print(
                 f"verified: {export.row_count} export rows, {len(export.days)} daily "
                 f"rows, {len(records)} history records; dry run, nothing written"
             )
             return EXIT_OK
-        for start in range(0, len(records), 200):
-            append_records(target, records[start : start + 200])
+        write_atomic(target, serialized)
     except (BeaconsImportError, ConfigError, HistoryError, OSError) as exc:
         print(f"error: Beacons history not imported: {exc}", file=sys.stderr)
         return EXIT_USAGE

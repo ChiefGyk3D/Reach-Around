@@ -60,7 +60,10 @@ def _empty(value: str, row: int, field: str) -> None:
 def _count(value: str, row: int, field: str) -> int:
     if not _INTEGER.fullmatch(value):
         raise _fail(row, f"{field} must be a non-negative whole number")
-    return int(value)
+    try:
+        return int(value)
+    except ValueError:
+        raise _fail(row, f"{field} must be a non-negative whole number") from None
 
 
 def _ctr(value: str, row: int) -> None:
