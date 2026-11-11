@@ -82,7 +82,28 @@ def test_components_use_tokens_only() -> None:
     assert body.strip()
     assert not re.search(r"#[0-9a-fA-F]{3,8}\b|\b(?:rgba?|hsla?|oklch)\(", body)
     assert not re.search(r"font-family\s*:(?!\s*var\()", body)
+    assert not re.search(r"(?<![-\w.])\d*\.?\d+(?:rem|em)\b", body)
+    assert not re.search(r"(?:line-height|letter-spacing)\s*:(?!\s*var\()", body)
     assert "prefers-color-scheme" not in body
+
+
+def test_solid_chip_hover_preserves_on_amber_foreground() -> None:
+    interactive_hover = re.search(
+        r"([^{}]+\.ra-c-chip[^{}]*:hover[^{}]*)\s*\{([^{}]+)\}",
+        CSS,
+    )
+    assert interactive_hover
+    selectors, declarations = interactive_hover.groups()
+    assert ":not(.ra-c-chip--solid)" in selectors
+    assert "color: var(--ra-brand-amber)" in declarations
+
+
+def test_explicit_false_aria_current_does_not_select_chip() -> None:
+    selected = re.search(r"([^{}]*\[aria-pressed=\"true\"\][^{}]*)\s*\{([^{}]+)\}", CSS)
+    assert selected
+    selectors, declarations = selected.groups()
+    assert '[aria-current]:not([aria-current="false"])' in selectors
+    assert "background-color: var(--ra-brand-amber)" in declarations
 
 
 def test_every_component_has_every_state() -> None:
