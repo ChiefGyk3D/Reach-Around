@@ -261,6 +261,36 @@ def test_a_gated_value_equal_to_resolved_public_numbers_is_allowed() -> None:
     check_text(config.kit, public_text, numbers, public=True)  # type: ignore[arg-type]
 
 
+@pytest.mark.parametrize(
+    "public_value",
+    ["Example Social API", "Example views", "2027-03-08"],
+)
+def test_a_gated_value_equal_to_public_analytics_is_allowed(
+    public_value: str,
+) -> None:
+    doc = kit_doc()
+    doc["analytics"] = [
+        {
+            "platform": "instagram",
+            "synced_with": "Example Social API",
+            "as_of": "2027-03-08",
+            "followers": 12_460,
+            "followers_30_day_percent": 4.26,
+            "stats": [{"label": "Example views", "value": 1_260_000}],
+        }
+    ]
+    doc["partners"] = [{"name": public_value}]
+    config = make_config(doc)
+    public_text = (
+        "Example Creator media kit A fake creator used in tests. "
+        "Streams games & talks. "
+        "Twitch Followers 1,200 2027-03-01 YouTube Subscribers 3,400 2027-03-05 "
+        f"4,600 {public_value}"
+    )
+
+    check_text(config.kit, public_text, public=True)  # type: ignore[arg-type]
+
+
 def test_the_gate_key_in_the_public_pdf_text_fails_the_build(tmp_path: Path) -> None:
     def leaky(html: str, work: Path) -> bytes:
         return make_pdf([[f"stray {SITE_KEY} value"]])

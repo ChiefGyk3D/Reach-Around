@@ -93,6 +93,25 @@ def test_analytics_is_public_but_owner_report_only_data_stays_out() -> None:
     assert "engagement" not in public
 
 
+@pytest.mark.parametrize(
+    "public_value",
+    ["Example Social API", "Example views", "2027-03-09"],
+)
+def test_gated_text_equal_to_public_analytics_is_not_a_leak(
+    tmp_path: Path, public_value: str
+) -> None:
+    config = make_config(
+        kit_doc(
+            analytics=[analytics_rows()[0] | {"as_of": "2027-03-09"}],
+            partners=[{"name": public_value}],
+        )
+    )
+
+    out, _ = build(tmp_path, config)
+
+    assert public_value in (out / "kit" / "index.html").read_text(encoding="utf-8")
+
+
 @pytest.mark.parametrize("platform", ["youtube", "kick", "bluesky"])
 def test_analytics_refuses_platforms_outside_the_public_tab_set(platform: str) -> None:
     row = analytics_rows()[0] | {"platform": platform}

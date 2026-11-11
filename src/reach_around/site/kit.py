@@ -377,6 +377,10 @@ def _public_values(kit: KitConfig) -> set[str]:
         values.add(metric.label)
         if metric.as_of is not None:
             values.add(metric.as_of.isoformat())
+    for analytics in kit.analytics:
+        values.add(analytics.synced_with)
+        values.add(analytics.as_of.isoformat())
+        values.update(stat.label for stat in analytics.stats)
     return {canonical(v) for v in values}
 
 
