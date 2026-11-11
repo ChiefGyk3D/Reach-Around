@@ -43,7 +43,7 @@ describe("loadSites: valid config", () => {
   it("refuses_a_destination_kind_outside_the_closed_vocabulary", () => {
     const r = load({ links: { ...good.links, destination_kinds: { "example-one": "product" } } });
     expect(r.sites).toEqual([]);
-    expect(r.errors).toEqual(["bad-site:links"]);
+    expect(r.errors).toEqual(["site-bad:links"]);
   });
 
   it("legacy_one_site_shorthand_still_works", () => {
