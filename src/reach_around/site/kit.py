@@ -733,11 +733,39 @@ def _content(
         "contact": projection["contact"],
         "tags": projection["tags"],
         "metrics": _metric_rows(metrics, config, today, live_day),
+        "analytics": _analytics_rows(projection["analytics"], today),
         "engagement": rows_for(projection.get("engagement", [])),
         "engagement_note": ACROSS_PLATFORMS_NOTE,
         "engagement_formulas": FORMULAS,
         "total": _total(projection["unified_total"], metrics, live_day),
     }
+
+
+def _compact_number(value: int) -> str:
+    if value >= 1_000_000:
+        return f"{value / 1_000_000:.1f}M"
+    if value >= 1_000:
+        return f"{value / 1_000:.1f}k"
+    return str(value)
+
+
+def _analytics_rows(rows: list[Any], today: date | None) -> list[dict[str, Any]]:
+    return [
+        {
+            "platform": row.platform,
+            "platform_name": platform_name(row.platform),
+            "synced_with": row.synced_with,
+            "as_of": row.as_of.isoformat(),
+            "followers": _compact_number(row.followers),
+            "delta": f"{row.followers_30_day_percent:+.1f}%",
+            "stats": [
+                {"label": stat.label, "value": _compact_number(stat.value)}
+                for stat in row.stats
+            ],
+            "updated": today.isoformat() if today is not None else "",
+        }
+        for row in rows
+    ]
 
 
 def _categories(kit: KitConfig) -> str:

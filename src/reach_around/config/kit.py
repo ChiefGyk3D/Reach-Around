@@ -76,6 +76,7 @@ KIT_FIELD_POLICY: Mapping[str, FieldPolicy] = {
     "tags": FieldPolicy("public"),
     "photo": FieldPolicy("public"),
     "metrics": FieldPolicy("public"),
+    "analytics": FieldPolicy("public"),
     "unified_total": FieldPolicy("public"),
     "turnstile_site_key": FieldPolicy("public"),
     "partners": FieldPolicy("gated"),
@@ -334,6 +335,39 @@ class PlatformMetric(_Model):
         return self
 
 
+class AnalyticsStat(_Model):
+    """One extensible count tile beside the required follower tile."""
+
+    label: Text60
+    value: Annotated[StrictInt, Field(ge=0, le=MAX_ENGAGEMENT_COUNT)]
+
+
+class PlatformAnalytics(_Model):
+    """One explicitly sourced public analytics row for an allowed platform."""
+
+    platform: Literal["instagram", "tiktok", "threads", "twitch"]
+    synced_with: Text80
+    as_of: date
+    followers: Annotated[StrictInt, Field(ge=0, le=MAX_ENGAGEMENT_COUNT)]
+    followers_30_day_percent: Annotated[float, Field(ge=-100, le=1_000_000)]
+    stats: list[AnalyticsStat] = Field(default_factory=list, max_length=20)
+
+    @field_validator("as_of", mode="before")
+    @classmethod
+    def _as_of_is_a_date(cls, value: object) -> object:
+        return _iso_date(value)
+
+    @model_validator(mode="after")
+    def _stats_are_unique(self) -> PlatformAnalytics:
+        labels: set[str] = set()
+        for stat in self.stats:
+            key = unicodedata.normalize("NFKC", stat.label).casefold()
+            if key in labels:
+                raise ValueError(f"the stat {stat.label!r} is listed more than once")
+            labels.add(key)
+        return self
+
+
 class EngagementRow(_Model):
     """Owner-kept inputs for one platform and one UTC period.
 
@@ -400,6 +434,7 @@ class KitConfig(_Model):
     # A few content category chips for the header, public on every page.
     tags: list[Text30] = Field(default_factory=list, max_length=8)
     metrics: list[PlatformMetric] = Field(default_factory=list, max_length=30)
+    analytics: list[PlatformAnalytics] = Field(default_factory=list, max_length=4)
     # Owner-kept inputs for engagement and average views, per platform and UTC
     # period. Public: the figures are worked out in code, never typed.
     engagement: list[EngagementRow] = Field(default_factory=list, max_length=30)
@@ -481,6 +516,17 @@ class KitConfig(_Model):
                     "more than once"
                 )
             seen.add(key)
+        return self
+
+    @model_validator(mode="after")
+    def _analytics_platforms_are_unique(self) -> KitConfig:
+        seen: set[str] = set()
+        for row in self.analytics:
+            if row.platform in seen:
+                raise ValueError(
+                    f"the analytics row for {row.platform!r} is listed more than once"
+                )
+            seen.add(row.platform)
         return self
 
     @property

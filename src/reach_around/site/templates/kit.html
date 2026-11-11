@@ -1,6 +1,6 @@
 {# SPDX-License-Identifier: Apache-2.0 #}
 {% extends "base.html" %}
-{% from "_kit_parts.html" import numbers, gate_form %}
+{% from "_kit_parts.html" import analytics, numbers, gate_form %}
 {% import "_frames.html" as frames with context %}
 {% set page_frames = frame_plan|length > 0 %}
 {% block content %}
@@ -23,6 +23,7 @@
 {% endif %}
 </div>
 {{ numbers(kit, "kit-numbers-title", true, zone_choices) }}
+{{ analytics(kit, "kit-analytics-title") }}
 {% if form %}
 <section class="kit-gate-box" aria-labelledby="kit-gate-title">
 <h3 id="kit-gate-title"{% if frame_plan %} class="{{ frames.cls("head")|trim }}"{% endif %}>More details</h3>

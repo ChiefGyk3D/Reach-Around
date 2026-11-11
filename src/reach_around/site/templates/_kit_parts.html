@@ -30,6 +30,30 @@
 {% endif %}
 {% endmacro %}
 
+{% macro analytics(kit, heading_id) %}
+{% if kit.analytics %}
+<section class="kit-analytics" aria-labelledby="{{ heading_id }}">
+<h3 id="{{ heading_id }}">Platform analytics</h3>
+<nav class="kit-analytics-tabs" aria-label="Platform analytics">
+{% for row in kit.analytics %}<a href="#kit-analytics-{{ row.platform }}">{{ row.platform_name }}</a>{% endfor %}
+</nav>
+{% for row in kit.analytics %}
+<article class="kit-analytics-panel" id="kit-analytics-{{ row.platform }}" aria-labelledby="kit-analytics-{{ row.platform }}-title">
+<div class="kit-analytics-head">
+<h4 id="kit-analytics-{{ row.platform }}-title">{{ row.platform_name }} analytics</h4>
+<p class="kit-sync">Synced with {{ row.synced_with }} on <time datetime="{{ row.as_of }}">{{ row.as_of }}</time></p>
+</div>
+<div class="kit-stat-grid">
+<div class="kit-stat-tile"><span>Followers</span><strong>{{ row.followers }}</strong><small>{{ row.delta }} last 30 days</small></div>
+{% for stat in row.stats %}<div class="kit-stat-tile"><span>{{ stat.label }}</span><strong>{{ stat.value }}</strong></div>{% endfor %}
+</div>
+<p class="kit-note kit-updated">Last updated <time datetime="{{ row.updated }}">{{ row.updated }}</time></p>
+</article>
+{% endfor %}
+</section>
+{% endif %}
+{% endmacro %}
+
 {% macro engagement(kit, heading_id, framed=false) %}
 {% if kit.engagement %}
 <section class="kit-engagement" aria-labelledby="{{ heading_id }}">
