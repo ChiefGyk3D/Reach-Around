@@ -4,6 +4,7 @@
 {% from "_kit_parts.html" import analytics, numbers, engagement %}
 {% block content %}
 <section class="kit" aria-labelledby="kit-title">
+<div class="kit-deck-intro">
 <div class="kit-head">
 {% if kit.photo %}
 <img class="kit-photo" src="{{ asset_url(kit.photo, root) }}" alt="" width="1200" height="675">
@@ -12,7 +13,7 @@
 {% if kit.tags %}
 <ul class="profile-tags kit-tags">
 {% for tag in kit.tags %}
-<li class="profile-tag">{{ tag }}</li>
+<li class="profile-tag ra-c-chip ra-c-chip--amber">{{ tag }}</li>
 {% endfor %}
 </ul>
 {% endif %}
@@ -22,6 +23,7 @@
 {% endif %}
 </div>
 {{ numbers(kit, "kit-numbers-title") }}
+</div>
 {{ analytics(kit, "kit-analytics-title") }}
 {{ engagement(kit, "kit-engagement-title") }}
 {% if kit.partners %}
@@ -201,7 +203,7 @@
 <input id="inq-website" name="website" type="text" tabindex="-1" autocomplete="off">
 </div>
 <p class="kit-note kit-field-wide">Sent directly to the site owner. This site keeps no copy.</p>
-<button class="kit-submit" type="submit">Send inquiry</button>
+<button class="kit-submit ra-c-btn" type="submit">Send inquiry</button>
 </form>
 </aside>
 </div>

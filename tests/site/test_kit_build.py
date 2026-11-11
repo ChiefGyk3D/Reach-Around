@@ -179,6 +179,37 @@ def test_public_kit_page_shows_header_numbers_total_and_dates(tmp_path: Path) ->
     assert "oldest" in html.lower() and "2027-03-01" in html
 
 
+def test_press_deck_headline_total_always_carries_its_source_date(
+    tmp_path: Path,
+) -> None:
+    out, gated = build(tmp_path)
+    for page in (out / "kit" / "index.html", gated / GATED_FILE):
+        html = page.read_text(encoding="utf-8")
+        match = re.search(
+            r'<p class="kit-headline-number[^>]*>.*?'
+            r"<strong[^>]*>4,600</strong>.*?"
+            r'<time datetime="2027-03-01">2027-03-01</time> UTC.*?</p>',
+            html,
+            re.S,
+        )
+        assert match, page
+
+
+def test_press_deck_uses_the_shared_brand_components_without_changing_the_gate(
+    tmp_path: Path,
+) -> None:
+    out, _ = build(tmp_path, make_config(gated_doc(tags=["Synthetic media"])))
+    html = (out / "kit" / "index.html").read_text(encoding="utf-8")
+    assert re.search(r'href="\.\./static/components\.[a-f0-9]+\.css"', html)
+    assert 'class="kit-headline ra-c-plate ra-c-plate--amber ra-c-ticks' in html
+    assert 'class="profile-tag ra-c-chip ra-c-chip--amber"' in html
+    assert re.search(
+        rf'<form class="kit-gate" method="post" action="{re.escape(GATE_ACTION)}">',
+        html,
+    )
+    assert 'class="kit-submit ra-c-btn"' in html
+
+
 def test_counts_metric_uses_the_numbers_file_and_a_missing_one_is_left_out(
     tmp_path: Path,
 ) -> None:
