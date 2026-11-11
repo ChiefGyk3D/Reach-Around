@@ -20,7 +20,7 @@ from reach_around.config import ConfigError, load_site_config
 from reach_around.config.numbers import Numbers, load_numbers
 from reach_around.editor.server import MAX_IDLE_SECONDS, run_editor
 from reach_around.preview import PreviewError, serve
-from reach_around.site.build import build_site, manifest_json
+from reach_around.site.build import build_site, build_variants, manifest_json
 from reach_around.site.inventory import InventoryEntry, inventory_json
 from reach_around.site.visibility import today_in
 
@@ -55,6 +55,11 @@ def _parser() -> argparse.ArgumentParser:
         "--out", type=Path, required=True, help="output directory (emptied first)"
     )
     build.add_argument("--overrides", type=Path, help=_OVERRIDES_HELP)
+    build.add_argument(
+        "--all-layout-variants",
+        action="store_true",
+        help="render classic, stack, chips, bento and tabs below <out>/v/",
+    )
     build.add_argument(
         "--manifest",
         type=Path,
@@ -251,6 +256,7 @@ def _build(
     numbers_path: Path | None = None,
     inventory_path: Path | None = None,
     gated_out: Path | None = None,
+    all_layout_variants: bool = False,
 ) -> int:
     try:
         target = _manifest_target(out_dir, manifest_path, config_path)
@@ -272,7 +278,8 @@ def _build(
                     file=sys.stderr,
                 )
         today = today_in(config.timezone, datetime.now(UTC))
-        manifest = build_site(
+        builder = build_variants if all_layout_variants else build_site
+        manifest = builder(
             config,
             out_dir,
             today=today,
@@ -316,6 +323,7 @@ def main(argv: list[str] | None = None) -> int:
             args.numbers,
             args.assets_inventory,
             args.gated_out,
+            args.all_layout_variants,
         )
     if args.command == "serve":
         return _serve(args.config, args.host, args.port, args.overrides)

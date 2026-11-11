@@ -148,6 +148,22 @@ be overridden by a creator who adds a stylesheet of their own.
   WCAG AA; the tests compute the ratios (dark `#1A1A1A` on `#FBB03B` is 9.4:1,
   white on `#0E0E0E` is 19.3:1).
 
+## Page-level layout variants
+
+`page.layout` adds four dark-only, single-page review presentations without
+changing the classic renderer. Stack uses a status strip, equal Watch actions
+and ordered two-column groups. Chips adds plain in-page anchors that become a
+sticky left navigation on desktop. Bento uses a 2, 4 and 6 column tile grid at
+phone, tablet and desktop widths. Tabs keeps every section and visible heading
+in the HTML, then the local `variants.js` applies the tab behavior and roving
+keyboard focus. With script unavailable, every tab section remains visible.
+
+All variants use the shared `--ra-*` tokens, 44 px touch targets, at least 8 px
+control spacing and the existing focus ring. Safe-area inset fallbacks protect
+the sticky chip bar. No variant makes an external request. The hidden
+`data-live-badge-hook` in the status strip is reserved for a future same-origin
+live source; it has no behavior today.
+
 ## Icons
 
 Social icons come from a small local set in `static/icons/`, from

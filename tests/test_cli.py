@@ -3,6 +3,7 @@ import json
 from pathlib import Path
 
 import pytest
+import yaml
 
 from reach_around import __version__
 from reach_around.cli import main
@@ -26,6 +27,77 @@ def test_build_command_writes_the_site(tmp_path: Path) -> None:
     assert main(["build", "--config", str(EXAMPLE), "--out", str(out)]) == 0
     assert (out / "index.html").is_file()
     assert not (out / "manifest.json").exists()
+
+
+def test_build_all_layout_variants_writes_the_review_tree(tmp_path: Path) -> None:
+    config = tmp_path / "site.yaml"
+    intents = (
+        "watch",
+        "videos",
+        "follow",
+        "community",
+        "support",
+        "work",
+        "shop",
+        "blog",
+    )
+    tabs = []
+    for intent in intents:
+        icons = ("twitch", "kick") if intent == "watch" else ("link", "link")
+        tabs.append(
+            {
+                "id": intent,
+                "title": "Work with me" if intent == "work" else intent.title(),
+                "intent": intent,
+                "blocks": [
+                    {
+                        "id": f"{intent}-{icon}-{number}",
+                        "title": f"{intent.title()} {icon}",
+                        "url": f"https://example.com/{intent}/{icon}",
+                        "icon": icon,
+                    }
+                    for number, icon in enumerate(icons, 1)
+                ],
+            }
+        )
+    config.write_text(
+        yaml.safe_dump(
+            {
+                "version": 1,
+                "creator": {"name": "Example Creator"},
+                "page": {
+                    "layout": "stack",
+                    "status": {"text": "Next stream Friday"},
+                    "watch": ["watch-twitch-1", "watch-kick-2"],
+                },
+                "tabs": tabs,
+            }
+        ),
+        encoding="utf-8",
+    )
+    out = tmp_path / "review"
+    assert (
+        main(
+            [
+                "build",
+                "--config",
+                str(config),
+                "--out",
+                str(out),
+                "--all-layout-variants",
+            ]
+        )
+        == 0
+    )
+    assert {path.parent.name for path in (out / "v").glob("*/index.html")} == {
+        "classic",
+        "stack",
+        "chips",
+        "bento",
+        "tabs",
+    }
+    inventory = json.loads((tmp_path / "review.assets.json").read_text())
+    assert all(path.startswith("v/") for path in inventory["files"])
 
 
 def test_build_writes_the_manifest_next_to_out_by_default(tmp_path: Path) -> None:

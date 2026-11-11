@@ -6,6 +6,7 @@ while the project is alpha, every release is `0.x` and anything can change betwe
 
 ## [Unreleased]
 
+- Page layout variants (#556): new `page.layout` values `stack`, `chips`, `bento` and progressively enhanced `tabs` reuse ordered intent tabs and links, add an owner-written status and equal Twitch/Kick Watch actions, and stay dark, responsive and local-only. `classic` remains the default with byte-identical output. `reach-around build --all-layout-variants` writes all five layouts below `/v/` from one config for owner review.
 - The D1 backup restore test now closes its fixture database setup connection before the export subprocess starts, removing an intermittent missing-table failure under xdist (#530). No backup or restore behavior changes.
 - Audience-analysis privacy guardrails (#408): public `docs/audience-analysis-privacy.md` records the do-not-collect list and is linked from the privacy guide and threat model. One complementary-suppression boundary now covers the shipped source by destination and country by destination matrices; an exhaustive small-dataset test proves their printed cells and margins cannot solve a suppressed value. The Worker dump test now plants synthetic IPv4, IPv6, user-agent, header and cookie values across every request-route class and checks every database value, bind and log argument.
 - Crypto section type sizes (#513, epic #509): the address and the note use the extra small size token and the Show QR code summary the small one. Styling only; the drawer behavior is unchanged. Test in `tests/site/test_crypto_type.py`.

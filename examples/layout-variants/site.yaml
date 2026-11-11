@@ -1,0 +1,112 @@
+# Synthetic owner-review site for issue #556. All names and URLs are made up.
+version: 1
+timezone: America/New_York
+creator:
+  name: Example Creator
+  header: centered
+theme:
+  mode: dark
+page:
+  layout: stack
+  status:
+    text: Live Friday at 8 PM Eastern
+    schedule: "Next stream: November 13"
+  # Config order is display order. Both partners receive identical treatment.
+  watch: [watch-twitch, watch-kick]
+tabs:
+  - id: watch
+    title: Watch
+    intent: watch
+    blocks:
+      - id: watch-twitch
+        title: Watch on Twitch
+        url: https://watch.example.com/twitch
+        icon: twitch
+      - id: watch-kick
+        title: Watch on Kick
+        url: https://watch.example.com/kick
+        icon: kick
+  - id: videos
+    title: Videos
+    intent: videos
+    blocks:
+      - id: latest-video
+        title: Latest video
+        url: https://video.example.com/latest
+        icon: youtube
+      - id: video-archive
+        title: Video archive
+        url: https://video.example.com/archive
+        icon: youtube
+  - id: follow
+    title: Follow
+    intent: follow
+    blocks:
+      - id: example-feed
+        title: Example feed
+        url: https://feed.example.com/
+        icon: rss
+      - id: example-updates
+        title: Example updates
+        url: https://updates.example.com/
+        icon: link
+  - id: community
+    title: Community
+    intent: community
+    blocks:
+      - id: example-chat
+        title: Example chat
+        url: https://chat.example.com/
+        icon: discord
+      - id: example-forum
+        title: Example forum
+        url: https://forum.example.com/
+        icon: link
+  - id: support
+    title: Support
+    intent: support
+    blocks:
+      - id: example-membership
+        title: Example membership
+        url: https://support.example.com/membership
+        icon: patreon
+      - id: example-tip
+        title: Example tip page
+        url: https://support.example.com/tip
+        icon: link
+  - id: work
+    title: Work with me
+    intent: work
+    blocks:
+      - id: example-project
+        title: Start a project
+        url: https://work.example.com/project
+        icon: email
+      - id: example-media-kit
+        title: Example media kit
+        url: https://work.example.com/media-kit
+        icon: link
+  - id: shop
+    title: Shop
+    intent: shop
+    blocks:
+      - id: example-merch
+        title: Example merchandise
+        url: https://shop.example.com/merch
+        icon: merch
+      - id: example-gear
+        title: Example gear list
+        url: https://shop.example.com/gear
+        icon: link
+  - id: blog
+    title: Blog
+    intent: blog
+    blocks:
+      - id: latest-post
+        title: Latest post
+        url: https://blog.example.com/latest
+        icon: link
+      - id: post-archive
+        title: Post archive
+        url: https://blog.example.com/archive
+        icon: rss

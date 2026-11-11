@@ -160,6 +160,25 @@ class Link(_Model):
 Layout = Literal["list", "grid", "cards"]
 HeaderStyle = Literal["compact", "centered", "hero"]
 PageLayout = Literal["tabs", "sections"]
+PageVariant = Literal["classic", "stack", "chips", "bento", "tabs"]
+Intent = Literal[
+    "watch", "videos", "follow", "community", "support", "work", "shop", "blog"
+]
+
+
+class PageStatus(_Model):
+    """Owner-written status copy. A later live source may replace the badge only."""
+
+    text: Subtitle
+    schedule: Subtitle | None = None
+
+
+class Page(_Model):
+    """Presentation choices for the public link page."""
+
+    layout: PageVariant = "classic"
+    status: PageStatus | None = None
+    watch: list[Slug] = Field(default_factory=list)
 
 
 class Section(_Model):
@@ -229,6 +248,7 @@ Block = Annotated[
 class Tab(_Model):
     id: Slug
     title: Title
+    intent: Intent | None = None
     layout: Layout = "list"
     page_title: PageTitle | None = None
     # Only read by ``page_layout: sections``: whether this tab's section starts
@@ -327,6 +347,7 @@ class SiteConfig(_Model):
     version: Literal[1]
     creator: Creator
     tabs: list[Tab] = Field(min_length=1)
+    page: Page = Page()
     page_layout: PageLayout = "tabs"
     disclosure: DisclosureField | None = None
     timezone: str = "America/New_York"
@@ -389,6 +410,55 @@ class SiteConfig(_Model):
             raise ValueError(
                 f"id {MEDIA_KIT_ID!r} is reserved for the profile card button"
             )
+        return self
+
+    @model_validator(mode="after")
+    def _page_variant_is_complete(self) -> SiteConfig:
+        """Review layouts use tabs as ordered intent groups and links as items."""
+        page = self.page
+        if page.layout == "classic":
+            return self
+        if page.status is None:
+            raise ValueError(f"page.status is required for page.layout: {page.layout}")
+        if self.theme.mode == "light":
+            raise ValueError("page layout variants require the dark theme")
+        if len(page.watch) != 2:
+            raise ValueError("page.watch must contain exactly two link ids")
+
+        links: dict[str, Link] = {}
+        intents: set[str] = set()
+        for tab in self.tabs:
+            if tab.intent is None:
+                raise ValueError(
+                    f"tab {tab.id!r} needs intent for page.layout: {page.layout}"
+                )
+            if tab.intent in intents:
+                raise ValueError(f"tab intent {tab.intent!r} may appear only once")
+            intents.add(tab.intent)
+            group_links: list[Link] = []
+            for block in tab.blocks:
+                if isinstance(block, Link):
+                    group_links.append(block)
+                elif isinstance(block, Section):
+                    group_links.extend(block.links)
+                else:
+                    raise ValueError(
+                        f"tab {tab.id!r}: page layout variants support only links "
+                        "and link sections"
+                    )
+            links.update((link.id, link) for link in group_links)
+            if tab.intent != "watch" and not 2 <= len(group_links) <= 6:
+                raise ValueError(
+                    f"tab {tab.id!r} must contain 2 to 6 links for a page layout "
+                    "variant"
+                )
+
+        missing = [ident for ident in page.watch if ident not in links]
+        if missing:
+            raise ValueError(f"page.watch link id {missing[0]!r} is missing")
+        icons = {links[ident].icon for ident in page.watch}
+        if icons != {"twitch", "kick"}:
+            raise ValueError("page.watch must name one Twitch and one Kick link")
         return self
 
     @model_validator(mode="after")

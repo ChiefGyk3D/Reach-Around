@@ -7,6 +7,8 @@ from reach_around.config.loader import ConfigError, load_yaml
 from reach_around.config.models import (
     Creator,
     Link,
+    Page,
+    PageStatus,
     Section,
     SiteConfig,
     Social,
@@ -23,6 +25,8 @@ __all__ = [
     "Features",
     "Footer",
     "Link",
+    "Page",
+    "PageStatus",
     "Privacy",
     "Section",
     "SiteConfig",

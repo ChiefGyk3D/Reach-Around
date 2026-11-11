@@ -19,6 +19,9 @@
 {% endif %}
 <link rel="stylesheet" href="{{ root }}{{ asset("static/tokens.css") }}">
 <link rel="stylesheet" href="{{ root }}{{ asset("static/site.css") }}">
+{% if page_variant is defined and page_variant %}
+<link rel="stylesheet" href="{{ root }}{{ asset("static/variants.css") }}">
+{% endif %}
 <link rel="stylesheet" href="{{ root }}{{ asset("static/theme.css") }}">
 {% if has_crypto %}
 <link rel="stylesheet" href="{{ root }}{{ asset("static/crypto.css") }}">
@@ -58,6 +61,9 @@
 {% endif %}
 {% if zone_choices is defined and zone_choices %}
 <script src="{{ root }}{{ asset("static/zone.js") }}" defer></script>
+{% endif %}
+{% if page_variant is defined and page_variant == "tabs" %}
+<script src="{{ root }}{{ asset("static/variants.js") }}" defer></script>
 {% endif %}
 </head>
 <body{% if frame_motion is defined and frame_motion %} class="ra-mo"{% endif %}{% if page_views and page_id %} data-page-id="{{ page_id }}" data-view-route="{{ view_route }}"{% endif %}>

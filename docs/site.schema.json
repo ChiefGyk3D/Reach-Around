@@ -1471,6 +1471,76 @@
       "title": "NumbersConfig",
       "type": "object"
     },
+    "Page": {
+      "additionalProperties": false,
+      "description": "Presentation choices for the public link page.",
+      "properties": {
+        "layout": {
+          "default": "classic",
+          "enum": [
+            "classic",
+            "stack",
+            "chips",
+            "bento",
+            "tabs"
+          ],
+          "title": "Layout",
+          "type": "string"
+        },
+        "status": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PageStatus"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "watch": {
+          "items": {
+            "pattern": "^[a-z0-9][a-z0-9-]{0,39}$",
+            "type": "string"
+          },
+          "title": "Watch",
+          "type": "array"
+        }
+      },
+      "title": "Page",
+      "type": "object"
+    },
+    "PageStatus": {
+      "additionalProperties": false,
+      "description": "Owner-written status copy. A later live source may replace the badge only.",
+      "properties": {
+        "schedule": {
+          "anyOf": [
+            {
+              "maxLength": 500,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Schedule"
+        },
+        "text": {
+          "maxLength": 500,
+          "minLength": 1,
+          "title": "Text",
+          "type": "string"
+        }
+      },
+      "required": [
+        "text"
+      ],
+      "title": "PageStatus",
+      "type": "object"
+    },
     "Partner": {
       "additionalProperties": false,
       "properties": {
@@ -2169,6 +2239,28 @@
           "title": "Id",
           "type": "string"
         },
+        "intent": {
+          "anyOf": [
+            {
+              "enum": [
+                "watch",
+                "videos",
+                "follow",
+                "community",
+                "support",
+                "work",
+                "shop",
+                "blog"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Intent"
+        },
         "layout": {
           "default": "list",
           "enum": [
@@ -2703,6 +2795,14 @@
         }
       ],
       "default": null
+    },
+    "page": {
+      "$ref": "#/$defs/Page",
+      "default": {
+        "layout": "classic",
+        "status": null,
+        "watch": []
+      }
     },
     "page_layout": {
       "default": "tabs",

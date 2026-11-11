@@ -1,0 +1,57 @@
+{# SPDX-License-Identifier: Apache-2.0 #}
+{% extends "base.html" %}
+{% from "_macros.html" import link_anchor with context %}
+{% macro status(large=false) -%}
+<section class="variant-status{% if large %} variant-status-large{% endif %}" aria-labelledby="status-title">
+<h2 id="status-title" class="sr-only">Status</h2>
+<p class="variant-status-text">{{ page.status.text }}</p>
+{% if page.status.schedule %}<p class="variant-status-schedule">{{ page.status.schedule }}</p>{% endif %}
+{# Future live-source hook: unhide and fill this badge from a same-origin source. #}
+<span class="variant-live-badge" data-live-badge-hook hidden>Live</span>
+</section>
+{%- endmacro %}
+{% macro watch_links() -%}
+<div class="variant-watch" aria-label="Watch live">
+{% for link in watch %}{{ link_anchor(link, click_tracking, " variant-watch-link") }}{% endfor %}
+</div>
+{%- endmacro %}
+{% macro group(item, tile=false) -%}
+<section class="variant-group" id="group-{{ item.tab.intent }}">
+<h2>{{ item.tab.title }}</h2>
+<div class="variant-group-links">
+{% for link in item.links %}{{ link_anchor(link, click_tracking, " variant-tile" if tile else "") }}{% endfor %}
+</div>
+</section>
+{%- endmacro %}
+{% macro panel(item) -%}
+<section class="variant-tab-panel" id="panel-{{ item.id }}" role="tabpanel" aria-labelledby="tab-{{ item.id }}">
+<h2>{{ item.title }}</h2>
+{% for child in item.groups %}{{ group(child) }}{% endfor %}
+</section>
+{%- endmacro %}
+{% block content %}
+<div class="variant variant-{{ page_variant }}">
+{% if page_variant == "bento" %}
+<div class="variant-bento">
+{{ status(true) }}
+{% for link in watch %}{{ link_anchor(link, click_tracking, " variant-watch-link variant-tile") }}{% endfor %}
+{% for item in groups %}{{ group(item, true) }}{% endfor %}
+</div>
+{% else %}
+<div class="variant-hero">{{ status() }}{{ watch_links() }}</div>
+{% if page_variant == "chips" %}
+<nav class="variant-chip-nav" aria-label="Link groups">
+{% for item in groups %}<a href="#group-{{ item.tab.intent }}">{{ item.tab.title }}</a>{% endfor %}
+</nav>
+{% endif %}
+{% if page_variant == "tabs" %}
+<div class="variant-tab-list" role="tablist" aria-label="Link groups">
+{% for item in tab_panels %}<button id="tab-{{ item.id }}" type="button" role="tab" aria-controls="panel-{{ item.id }}" aria-selected="{{ 'true' if loop.first else 'false' }}" tabindex="{{ '0' if loop.first else '-1' }}">{{ item.label }}</button>{% endfor %}
+</div>
+<div class="variant-tab-panels">{% for item in tab_panels %}{{ panel(item) }}{% endfor %}</div>
+{% else %}
+<div class="variant-groups">{% for item in groups %}{{ group(item) }}{% endfor %}</div>
+{% endif %}
+{% endif %}
+</div>
+{% endblock %}

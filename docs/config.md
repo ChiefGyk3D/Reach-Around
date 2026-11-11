@@ -81,6 +81,7 @@ escapes it when it renders.
 | `version` | integer | required | must be exactly `1` |
 | `creator` | Creator | required | see below |
 | `tabs` | list of Tab | required | at least one tab |
+| `page` | Page | classic layout | page-level layout and owner-written status; see [`page`](#page) |
 | `disclosure` | text or Disclosure | none | the footer line for affiliate links; see [`disclosure`](#disclosure) |
 | `timezone` | text | `America/New_York` | must be a known IANA zone name; decides which calendar day "today" is for scheduled links |
 | `cutover_date` | date | absent | optional; the UTC calendar day the site went live (`YYYY-MM-DD`); see [`cutover_date`](#cutover_date) |
@@ -182,6 +183,7 @@ socials:
 | --- | --- | --- | --- |
 | `id` | Slug | required | unique across the site |
 | `title` | Title | required | the label in the navigation |
+| `intent` | `watch`, `videos`, `follow`, `community`, `support`, `work`, `shop` or `blog` | none | Required by non-classic `page.layout`; tabs are shown in config order and the title becomes the group heading. |
 | `page_title` | page title text | none | Replaces the whole browser title of this tab's page; see [Page titles](#page-titles). It is not called `title` because that key is the navigation label. |
 | `open` | true or false | unset | Only with [`page_layout: sections`](#page_layout): whether this tab's section starts open. Unset opens the first section only. |
 | `blocks` | list of Link or Section | required | may be empty |
@@ -237,6 +239,61 @@ tabs:
       title: Example Boom Stand
       url: https://shop.example.com/stand
 ```
+
+## `page`
+
+`page.layout` selects the whole link-page presentation. `classic` is the
+default and keeps the existing tab pages byte-for-byte. The review layouts are
+`stack`, `chips`, `bento` and `tabs`. They are dark-only and render the tabs as
+ordered intent groups on one page. Each non-Watch tab must contain 2 to 6 links
+(directly or inside link sections).
+
+| Field | Type | Default | Constraints |
+| --- | --- | --- | --- |
+| `layout` | `classic`, `stack`, `chips`, `bento` or `tabs` | `classic` | Non-classic layouts require the rest of this table. |
+| `status.text` | Subtitle | none | Required owner-written live or next-stream line. No live data source is contacted. |
+| `status.schedule` | Subtitle | none | Optional second schedule line. |
+| `watch` | list of link ids | empty | Exactly two for a non-classic layout, naming one Twitch-icon link and one Kick-icon link. Config order is display order; both receive identical treatment. |
+
+Tabs provide group order and headings. Use these intents for the default
+information order: `videos`, `follow`, `community`, `support`, `work`, `shop`,
+`blog`. Change tab order or title to override the order or heading. The
+`examples/layout-variants/site.yaml` file shows the complete synthetic setup.
+
+```yaml
+page:
+  layout: stack
+  status:
+    text: Live Friday at 8 PM Eastern
+    schedule: "Next stream: November 13"
+  watch: [watch-twitch, watch-kick]
+tabs:
+  - id: watch
+    title: Watch
+    intent: watch
+    blocks:
+      - id: watch-twitch
+        title: Watch on Twitch
+        url: https://watch.example.com/twitch
+        icon: twitch
+      - id: watch-kick
+        title: Watch on Kick
+        url: https://watch.example.com/kick
+        icon: kick
+```
+
+The built status includes a hidden `data-live-badge-hook` marker. A future
+same-origin live-status feature may populate that marker; today the configured
+text is the complete status and no request or live script is added.
+
+To render every layout from one config for owner review:
+
+```console
+PYTHONPATH=src ~/.local/share/reach-around-dev/venv-shared/bin/reach-around build --config examples/layout-variants/site.yaml --out site-out --all-layout-variants
+```
+
+The review pages are written to `/v/classic/`, `/v/stack/`, `/v/chips/`,
+`/v/bento/` and `/v/tabs/` below the output directory.
 
 ## `page_layout`
 

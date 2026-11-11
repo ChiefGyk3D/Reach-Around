@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import shutil
+import tempfile
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import date
@@ -149,6 +150,8 @@ _FRAME_STYLE = Path("static") / "frame.css"
 _FRAME_ART = (Path("static") / "frame.svg", Path("static") / "frame-lite.svg")
 # The display-zone script (#372): linked from the public kit page only.
 _ZONE_SCRIPT = Path("static") / "zone.js"
+_VARIANT_STYLE = Path("static") / "variants.css"
+_VARIANT_SCRIPT = Path("static") / "variants.js"
 
 
 # Published only for a site with an email block; the script only if one uses it.
@@ -164,7 +167,7 @@ def _page_path(tab_index: int, tab: Tab) -> Path:
 
 def _page_paths(config: SiteConfig, with_kit: bool = True) -> set[Path]:
     """Every HTML file the build writes (``with_kit`` adds the kit's pages)."""
-    if config.page_layout == "sections":
+    if config.page.layout != "classic" or config.page_layout == "sections":
         pages = {Path("index.html")}
     else:
         pages = {_page_path(i, tab) for i, tab in enumerate(config.tabs)}
@@ -200,7 +203,7 @@ def _font_preloads(
 
 
 def _nav(config: SiteConfig, current: int, root: str) -> list[dict[str, Any]]:
-    if config.page_layout == "sections":
+    if config.page.layout != "classic" or config.page_layout == "sections":
         return []  # one page: no tab bar, the sections are on the page
     return [
         {
@@ -222,6 +225,17 @@ def _internal_href(
     tabs live at ``<prefix><id>/``. The config was validated at load, so every
     id is known.
     """
+    if config.page.layout != "classic":
+        homes = {
+            tab.id: (root if tab.intent == "watch" else f"#group-{tab.intent}")
+            for tab in config.tabs
+        }
+
+        def variant_href(url: str) -> str:
+            tab_id, fragment = parse_tab_ref(url)
+            return f"#{fragment}" if fragment is not None else homes[tab_id]
+
+        return variant_href
     if config.page_layout == "sections":
         return _section_href(config, root, shown)
     prefix = "" if root == "./" else root
@@ -409,6 +423,87 @@ def _render_sections_page(
     )
 
 
+def _variant_groups(
+    config: SiteConfig, shown: list[list[Block]]
+) -> list[dict[str, Any]]:
+    groups: list[dict[str, Any]] = []
+    for tab, blocks in zip(config.tabs, shown, strict=True):
+        links = _links_in(blocks)
+        if tab.intent != "watch":
+            groups.append({"tab": tab, "links": links})
+    return groups
+
+
+def _variant_panels(groups: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    by_intent = {item["tab"].intent: item for item in groups}
+    specs = (
+        ("watch", "Watch", ("videos", "follow")),
+        ("community", "Community", ("community",)),
+        ("support", "Support", ("support",)),
+        ("work", "Work", ("work",)),
+        ("shop", "Shop", ("shop", "blog")),
+    )
+    return [
+        {
+            "id": ident,
+            "label": label,
+            "title": label if ident != "work" else "Work with me",
+            "groups": [by_intent[intent] for intent in intents if intent in by_intent],
+        }
+        for ident, label, intents in specs
+    ]
+
+
+def _render_variant_page(
+    env: Environment,
+    config: SiteConfig,
+    shown: list[list[Block]],
+    custom_css: bool,
+) -> str:
+    every = [block for blocks in shown for block in blocks]
+    links = {link.id: link for link in _links_in(every)}
+    groups = _variant_groups(config, shown)
+    first = config.tabs[0]
+    creator = config.creator
+    if creator.avatar is not None and _is_remote(creator.avatar):
+        creator = creator.model_copy(update={"avatar": None})
+    return env.get_template("variants.html").render(
+        creator=creator,
+        tab=first,
+        blocks=every,
+        groups=groups,
+        tab_panels=_variant_panels(groups),
+        watch=[links[ident] for ident in config.page.watch],
+        page=config.page,
+        page_variant=config.page.layout,
+        nav=[],
+        tab_href=_internal_href(config, "./", shown),
+        root="",
+        page_title=page_title(config, first.title, home=True, own=first.page_title),
+        disclosure=_disclosure_line(config),
+        show_disclosure=_show_disclosure(
+            config, any(link.affiliate for link in _links_in(every))
+        ),
+        show_cookie_banner=sets_cookies(config),
+        click_tracking=config.features.click_tracking,
+        footer_credit=config.footer.credit,
+        footer_credit_text=config.footer.text,
+        footer_credit_url=CREDIT_URL,
+        page_views=config.analytics.page_views,
+        page_id=first.id,
+        view_route=config.analytics.route,
+        has_crypto=False,
+        has_email=False,
+        has_email_script=False,
+        has_platforms=False,
+        has_live=False,
+        profile_card=_profile_card(config),
+        cookie_text=intro_text(config),
+        custom_css=custom_css,
+        page_frames=_page_has_frames(config, every),
+    )
+
+
 def _render_privacy(
     env: Environment,
     config: SiteConfig,
@@ -550,7 +645,11 @@ def _render_pages(
     shown: list[list[Block]],
     custom_css: bool,
 ) -> dict[Path, str]:
-    if config.page_layout == "sections":
+    if config.page.layout != "classic":
+        pages = {
+            Path("index.html"): _render_variant_page(env, config, shown, custom_css)
+        }
+    elif config.page_layout == "sections":
         pages = {
             Path("index.html"): _render_sections_page(env, config, shown, custom_css)
         }
@@ -757,6 +856,11 @@ def build_site(
     if kit is None:
         static.pop(_KIT_STYLE, None)
         static.pop(_ZONE_SCRIPT, None)
+    if config.page.layout == "classic":
+        static.pop(_VARIANT_STYLE, None)
+        static.pop(_VARIANT_SCRIPT, None)
+    elif config.page.layout != "tabs":
+        static.pop(_VARIANT_SCRIPT, None)
     if config.theme.frame == "none":
         static.pop(_FRAME_STYLE, None)
         for rel in _FRAME_ART:
@@ -888,3 +992,53 @@ def build_site(
             *kit_render.warnings,
         ),
     )
+
+
+PAGE_VARIANTS = ("classic", "stack", "chips", "bento", "tabs")
+
+
+def build_variants(
+    config: SiteConfig,
+    out_dir: Path,
+    *,
+    today: date,
+    protect: Iterable[Path] = (),
+    overrides: Path | None = None,
+    assets_dir: Path | None = None,
+    numbers: Numbers | None = None,
+    gated_out: Path | None = None,
+    number_day: date | None = None,
+) -> BuildManifest:
+    """Build every page layout below ``v/<layout>/`` for owner review."""
+    out = _check_out_dir(out_dir, protect)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    manifests: list[BuildManifest] = []
+    with tempfile.TemporaryDirectory(prefix=".ra-variants-", dir=out.parent) as work:
+        staged = Path(work)
+        for layout in PAGE_VARIANTS:
+            page = config.page.model_copy(update={"layout": layout})
+            variant = config.model_copy(update={"page": page})
+            manifest = build_site(
+                variant,
+                staged / "v" / layout,
+                today=today,
+                protect=protect,
+                overrides=overrides,
+                assets_dir=assets_dir,
+                numbers=numbers,
+                gated_out=gated_out,
+                number_day=number_day,
+            )
+            manifests.append(manifest)
+        _empty(out)
+        shutil.copytree(staged, out, dirs_exist_ok=True)
+
+    inventory = {
+        f"v/{layout}/{path}": entry
+        for layout, manifest in zip(PAGE_VARIANTS, manifests, strict=True)
+        for path, entry in manifest.inventory.items()
+    }
+    warnings = tuple(
+        dict.fromkeys(w for manifest in manifests for w in manifest.warnings)
+    )
+    return replace(manifests[0], inventory=inventory, warnings=warnings)
