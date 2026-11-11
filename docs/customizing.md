@@ -301,6 +301,13 @@ What to know:
 
 ## Your own images: avatar, favicon, background, mascot
 
+Local file paths are resolved beneath the directory containing `site.yaml` by
+default. `reach-around build --assets-dir DIR` selects a different asset-set
+root, which lets one config use synthetic development files or private-instance
+production files with the same relative paths. Asset sets are not merged: every
+referenced file must exist under the selected root. The ownership and storage
+convention is documented in [Instance repositories](instance-repos.md#public-development-and-production-asset-sets).
+
 The engine ships no artwork. Four image slots are config keys, and each takes
 a file that lives in your instance folder (the folder that holds `site.yaml`):
 

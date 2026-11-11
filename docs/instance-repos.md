@@ -87,6 +87,47 @@ with the default `GITHUB_TOKEN`. Use a fine-grained read-only token or a
 GitHub App scoped to those two things, stored as an environment secret, and
 only in the steps that pull and check out.
 
+## Public, development and production asset sets
+
+An asset set is a directory tree whose paths match the local paths in
+`site.yaml`. For example, a config value of `media/avatar.png` needs that path
+under the selected asset-set root.
+
+- The public engine repository contains only synthetic example assets and
+  addresses. They are development placeholders, not an owner's production
+  identity. `public-assets.json` records the reviewed files under the example
+  asset roots, and `scripts/check-public-assets.py` makes CI refuse a changed or
+  added file there until the public placeholder inventory is deliberately
+  reviewed and updated.
+- A private instance repository contains the owner's real publishable assets,
+  such as an avatar, background, wallet address and scannable QR image. These
+  are private in the sense that their source files belong to the instance, even
+  though a production build may publish them. Credentials, private keys and
+  seed phrases are never assets and must not be committed anywhere.
+- Development uses the public synthetic set when working on the engine. A
+  private instance may instead use its real set during local validation. One
+  real set for private development and production is the default convention;
+  separate `assets/dev` and `assets/production` trees are optional when the
+  owner actually needs different published files.
+
+`reach-around build` uses the config's directory by default, preserving the
+existing instance layout. Pass `--assets-dir` to select another set explicitly:
+
+```sh
+# Public engine development with synthetic files
+reach-around build --config examples/instance/site.yaml \
+  --assets-dir examples/instance --out out
+
+# Private instance production with a separately stored real set
+reach-around build --config private-instance/site.yaml \
+  --assets-dir private-instance/assets/production --out out
+```
+
+The config keeps the same logical paths in both cases. Only the selected root
+changes. The engine does not merge sets or fall back from one set to another,
+so a missing file stops the build instead of silently mixing development and
+production assets.
+
 ## What must never be committed
 
 - API tokens, `.env` files, Doppler tokens and credentials of any kind. The
