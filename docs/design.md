@@ -1,23 +1,46 @@
 # Design and theme tokens
 
-The link page is plain HTML and one stylesheet. No script runs to draw it, no
+`static/tokens.css` is the shared token layer. Dark is the default and light applies only when the
+config sets `theme.mode: light`. Its
+`--ra-brand-*` properties mirror the NPNC amber, ground, surface, carbon and
+plate palette. It also owns the Jost body stack, a heading stack that follows the body until a
+heading face is bundled, type
+scale, four-point spacing scale, border widths and radii. `site.css` maps its
+existing semantic component properties onto that layer so the S1 bridge does
+not alter layout or current rendering. The component alignment slices can move
+those compatibility mappings to the brand values without introducing another
+token source.
+
+The bridge declares `--ra-brand-amber`, `--ra-brand-on-amber`,
+`--ra-brand-ground`, `--ra-brand-surface`, `--ra-brand-text`,
+`--ra-brand-muted`, `--ra-brand-rule`, `--ra-brand-gray`,
+`--ra-brand-carbon`, `--ra-brand-carbon-line`, `--ra-brand-plate`,
+`--ra-brand-amber-deep`, `--ra-brand-glow`, `--ra-brand-glow-strong`,
+`--ra-brand-shadow`, `--ra-compat-bg`, `--ra-compat-surface`,
+`--ra-compat-text`, `--ra-compat-border`, `--ra-compat-shadow-warm`,
+`--ra-compat-shadow`, `--ra-color-black`, `--ra-font-mono`,
+`--ra-radius-square`, `--ra-rule-width` and `--ra-rule-accent-width` in
+addition to the semantic properties documented below.
+
+The link page is plain HTML and two stylesheets, `static/tokens.css` and
+`static/site.css`. No script runs to draw it, no
 font or image comes from another host, and nothing is styled inline, so a strict
 Content Security Policy can stay on. Every color, size, radius, space and
 shadow reads a `--ra-*` custom property declared once in the `:root` block of
-`static/site.css`. A creator restyles the page by changing tokens, never by
+`static/tokens.css` (`site.css` maps its semantic properties onto them). A creator restyles the page by changing tokens, never by
 editing the stylesheet.
 
 ## How to restyle
 
 1. Set the `theme` section of the config (see [config.md](config.md#theme)).
    The build writes only the values you change to `static/theme.css`, which
-   loads after `site.css`.
+   loads after `tokens.css` and `site.css`.
 2. Start from a preset in `examples/themes/` and paste it under `theme:`:
    - `dark-hero.yaml`: charcoal, warm orange, pill buttons. Pair it with
      `creator.header: hero`.
    - `light-clean.yaml`: soft gray page, white cards, deep blue accent.
    - `brand-dark.yaml`: a generic dark brand kit (amber accent `#FBB03B`,
-     near-black ground, light text, a muted warm gray). Dark only. Change the
+     near-black ground, light text, a muted warm gray). Dark preset. Change the
      hex values to your own kit. Jost, the body face, ships with the engine; for
      a display face such as Orbitron, follow
      [Heading font: Orbitron](config.md#heading-font-orbitron). No font host is

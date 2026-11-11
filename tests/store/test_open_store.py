@@ -34,6 +34,20 @@ def test_postgres_is_a_seam_not_yet_built() -> None:
         open_store(config, {"REACH_AROUND_DSN": "postgresql://u:pw@h/db"})
 
 
+def test_postgres_refuses_noncanonical_connection_variable() -> None:
+    with pytest.raises(ValueError, match="dsn_env must be REACH_AROUND_DSN"):
+        StoreConfig(kind="postgres", dsn_env="SYNTHETIC_CONNECTION")  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("dsn_env", ["SYNTHETIC_CONNECTION", ["REACH_AROUND_DSN"]])
+def test_postgres_rechecks_connection_variable_at_use_time(dsn_env: object) -> None:
+    config = StoreConfig.model_construct(kind="postgres", dsn_env=dsn_env)
+    with pytest.raises(StoreError) as caught:
+        open_store(config, {"SYNTHETIC_CONNECTION": "synthetic-secret"})
+    assert str(caught.value) == "bad_connection_setting"
+    assert "SYNTHETIC" not in str(caught.value)
+
+
 def test_postgres_requires_dsn_env() -> None:
     with pytest.raises(ValueError):
         StoreConfig(kind="postgres")
@@ -46,7 +60,7 @@ def test_no_dsn_or_password_field_exists() -> None:
 
 def test_dsn_env_must_be_a_variable_name() -> None:
     with pytest.raises(ValueError):
-        StoreConfig(kind="postgres", dsn_env="postgresql://u:pw@h/db")
+        StoreConfig(kind="postgres", dsn_env="postgresql://u:pw@h/db")  # type: ignore[arg-type]
 
 
 def test_defaults_keep_plan_1_example_loading() -> None:

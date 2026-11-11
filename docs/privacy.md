@@ -1,5 +1,8 @@
 # Privacy: lead retention and deletion requests
 
+For the analytics boundary that applies across tables, logs, caches, queues and
+exports, see the [Audience-analysis do-not-collect list](audience-analysis-privacy.md).
+
 This page is for the site owner who runs the media kit gate. It covers what the
 Worker keeps about a person who typed an email address into the gate, for how
 long, and how you honor a request to delete it. It is not legal advice, and the

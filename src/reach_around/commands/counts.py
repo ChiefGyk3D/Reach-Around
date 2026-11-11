@@ -28,6 +28,11 @@ from reach_around.config.cutover import utc_today
 from reach_around.config.loader import _read
 from reach_around.config.numbers import load_numbers
 from reach_around.config.stale import REMIND_DAYS, due_numbers
+from reach_around.counts.beacons import (
+    MAX_BEACONS_BYTES,
+    BeaconsImportError,
+    parse_beacons_csv,
+)
 from reach_around.counts.files import (
     LOCK_WAIT_SECONDS,
     FileLock,
@@ -43,6 +48,7 @@ from reach_around.counts.history import (
     HistoryError,
     Record,
     append_records,
+    dump_new_history,
     new_run_id,
     read_history,
 )
@@ -240,6 +246,9 @@ def _cycle(
                 as_of_utc=utc_stamp(stamp),
                 source="api",
                 run_id=run_id,
+                api_provider=(
+                    "youtube_data_api" if outcome.platform == "youtube" else None
+                ),
             )
             for outcome in outcomes
             if outcome.status == "ok" and outcome.count is not None
@@ -252,6 +261,9 @@ def _cycle(
                 source="api",
                 run_id=run_id,
                 note=figure.note,
+                api_provider=(
+                    "youtube_analytics" if figure.platform == "youtube" else None
+                ),
             )
             for figure in figures
         ]
@@ -386,6 +398,8 @@ def _dispatch(args: argparse.Namespace) -> int:
         return run_history_add(args)
     if args.counts_command == "history-verify":
         return run_history_verify(args)
+    if args.counts_command == "history-import-beacons":
+        return run_beacons_import(args.config, args.csv, args.file, args.dry_run)
     if args.counts_command == "import":
         return _run_import(args)
     if args.counts_command == "stale":
@@ -438,6 +452,81 @@ def _register_history(
         "1 when the file is damaged (including a truncated last line).",
     )
     _where(verify)
+    beacons = actions.add_parser(
+        "history-import-beacons",
+        help="import a Beacons Link in Bio analytics CSV into a separate history file",
+        description="Strictly validate a Beacons Link in Bio analytics CSV and write "
+        "only its Daily views and clicks as imported history. The destination must "
+        "not already contain data. Exit 0 imported, 2 refused.",
+    )
+    beacons.add_argument("--csv", type=Path, required=True, help="Beacons CSV export")
+    beacons.add_argument(
+        "--config",
+        type=Path,
+        required=True,
+        help="site config whose collection history must remain separate",
+    )
+    beacons.add_argument(
+        "--file", type=Path, required=True, help="new pre-cutover history file"
+    )
+    beacons.add_argument("--dry-run", action="store_true")
+
+
+def run_beacons_import(
+    config_path: Path, csv_path: Path, target: Path, dry_run: bool
+) -> int:
+    """Import Beacons Daily rows into a dedicated, previously empty history file."""
+    try:
+        config = load_site_config(config_path)
+        collection_history = history_path(config, config_path)
+        data = _read(csv_path, MAX_BEACONS_BYTES)
+        export = parse_beacons_csv(data)
+        if collection_history is not None and (
+            target.resolve() == collection_history.resolve()
+            or (
+                target.exists()
+                and collection_history.exists()
+                and target.samefile(collection_history)
+            )
+        ):
+            raise BeaconsImportError(
+                "destination must differ from configured numbers.history_file"
+            )
+        if target.exists() and target.stat().st_size:
+            raise BeaconsImportError(
+                "destination history file is not empty; imported data is never merged"
+            )
+        if target.is_symlink() or target.is_dir():
+            raise BeaconsImportError("destination must be a regular file path")
+        records = [
+            Record(
+                platform="link-page",
+                metric=metric,
+                value=value,
+                as_of_utc=f"{day.day.isoformat()}T00:00:00Z",
+                source="imported",
+                run_id="beacons-import",
+                note="Beacons",
+            )
+            for day in export.days
+            for metric, value in (("views", day.views), ("clicks", day.clicks))
+        ]
+        serialized = dump_new_history(records)
+        if dry_run:
+            print(
+                f"verified: {export.row_count} export rows, {len(export.days)} daily "
+                f"rows, {len(records)} history records; dry run, nothing written"
+            )
+            return EXIT_OK
+        write_atomic(target, serialized)
+    except (BeaconsImportError, ConfigError, HistoryError, OSError) as exc:
+        print(f"error: Beacons history not imported: {exc}", file=sys.stderr)
+        return EXIT_USAGE
+    print(
+        f"verified: {export.row_count} export rows, {len(export.days)} daily rows, "
+        f"{len(records)} history records"
+    )
+    return EXIT_OK
 
 
 def _run(args: argparse.Namespace) -> int:

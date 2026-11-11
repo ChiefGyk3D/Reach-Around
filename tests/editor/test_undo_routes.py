@@ -13,6 +13,7 @@ from test_routes import CONFIG, Editor, body_of, make, sha
 
 from editorharness import Response, request, tree_snapshot
 from reach_around import editing
+from reach_around.editor.service import EditorService, RouteError
 from reach_around.editor_history import History
 
 TITLE = {"id": "first", "field": "title"}
@@ -110,6 +111,52 @@ def test_a_new_op_clears_redo(ed: Editor) -> None:
     assert state(ed)["can_redo"] is False
     got = move(ed, "redo")
     assert got.status == 409 and body_of(got)["error"]["code"] == "nothing_to_redo"
+
+
+def restore_service(tmp_path: Path) -> tuple[EditorService, Path, str, str, int]:
+    config = tmp_path / "site.yaml"
+    first = CONFIG.replace("First", "One")
+    latest = first.replace("One", "Two")
+    config.write_text(latest, encoding="utf-8")
+    history = History(config)
+    history.record_write(CONFIG, first, "First edit")
+    history.record_write(first, latest, "Second edit")
+    first_id = next(e.id for e in history.summary().entries if e.hash == sha(first))
+    service = EditorService(config, lambda path: path.read_bytes())
+    return service, config, first, latest, first_id
+
+
+def test_restore_history_entry_is_undoable(tmp_path: Path) -> None:
+    service, config, first, latest, first_id = restore_service(tmp_path)
+
+    got = service.run_restore(
+        json.dumps({"id": first_id, "base": sha(latest)}).encode(),
+        "127.0.0.1",
+        8001,
+    )
+
+    assert config.read_text(encoding="utf-8") == first
+    assert got["history"]["hash"] == sha(first)
+    service.run_move(
+        json.dumps({"base": sha(first)}).encode(), "undo", "127.0.0.1", 8001
+    )
+    assert config.read_text(encoding="utf-8") == latest
+
+
+def test_restore_history_entry_refuses_an_outside_edit(tmp_path: Path) -> None:
+    service, config, _first, latest, first_id = restore_service(tmp_path)
+    outside = latest.replace("# keep me", "# edited elsewhere")
+    config.write_text(outside, encoding="utf-8")
+
+    with pytest.raises(RouteError) as caught:
+        service.run_restore(
+            json.dumps({"id": first_id, "base": sha(outside)}).encode(),
+            "127.0.0.1",
+            8001,
+        )
+
+    assert caught.value.code == "outside_edit"
+    assert config.read_text(encoding="utf-8") == outside
 
 
 def test_nothing_to_undo_is_409_and_writes_nothing(ed: Editor) -> None:

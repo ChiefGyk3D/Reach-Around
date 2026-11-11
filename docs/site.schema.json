@@ -2061,6 +2061,11 @@
           "title": "Name",
           "type": "string"
         },
+        "rel_me": {
+          "default": false,
+          "title": "Rel Me",
+          "type": "boolean"
+        },
         "url": {
           "maxLength": 2048,
           "title": "Url",
@@ -2103,6 +2108,7 @@
         "dsn_env": {
           "anyOf": [
             {
+              "const": "REACH_AROUND_DSN",
               "type": "string"
             },
             {

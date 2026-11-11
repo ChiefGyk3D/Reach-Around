@@ -29,7 +29,11 @@ day,views,clicks
 
 Limits, all enforced: 5 MiB, 10,000 rows, UTF-8, a regular file (a symlink, directory or pipe is refused), no day twice, no negative or fractional count, no `NaN`, no repeated JSON key.
 
-This page defines only the shape it needs. The Beacons export format itself is not assumed: the importer (#376) maps whatever the owner downloads to this shape. Until it exists, build the file by hand or with a spreadsheet. The Beacons file stays out of the repository.
+This page defines only the shape the reconciliation needs. Beacons' verified
+Link in Bio export has a different shape; the strict importer and its format
+are documented in [Importing Beacons link-page history](beacons-history-import.md).
+The Beacons file stays out of the repository. Make this smaller comparison file
+from its `Daily` rows without copying titles or URLs.
 
 ### Reach Around's own numbers
 
