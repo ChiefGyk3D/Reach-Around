@@ -56,7 +56,7 @@ def check(root: Path, inventory_path: Path) -> list[str]:
         found.update(
             path.resolve()
             for path in directory.rglob("*")
-            if path.is_file() and not path.name.startswith(".")
+            if path.is_file() and path.name != ".gitkeep"
         )
     reviewed_paths = set(reviewed)
     for path in sorted(found - reviewed_paths):

@@ -1,10 +1,14 @@
 {
   "roots": [
-    "examples/crypto/media",
+    "examples/crypto",
+    "examples/instance/fonts",
     "examples/instance/media"
   ],
   "files": {
+    "examples/crypto/site.yaml": "4e3dbce357acb3e6428c0eda54f05ee42fe2da5ef78772c7dbf2aa9d79fbf646",
     "examples/crypto/media/qr-example.png": "30a4ccae76a27be3da57a21c7df92f48b46e90fd26b909fa0b034fbc1e9427b0",
+    "examples/instance/fonts/OFL-Orbitron.txt": "ab609b0e110d622435ff337cdf233288556e011bbf9bd0550be98846c0630819",
+    "examples/instance/fonts/orbitron-wght.ttf": "f42db2dd16e642258e35782916eceb1dcdbea06fb958d77ad71dc5963587e8fd",
     "examples/instance/media/mascot.svg": "73e9847dc87705f6e9f14a321e553cc3553d077bd3d07344a4d4e21eaf9f5cf9"
   }
 }
