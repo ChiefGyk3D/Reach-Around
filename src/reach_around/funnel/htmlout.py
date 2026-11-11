@@ -101,6 +101,11 @@ svg{min-width:640px}
 .sw{display:inline-block;width:12px;height:12px;vertical-align:-1px;margin-right:5px}
 details{margin-top:8px}
 summary{cursor:pointer;color:var(--muted)}
+.tabs{display:flex;gap:var(--ra-space-2);margin-bottom:var(--ra-space-3)}
+.tabs label{display:flex;align-items:center;min-height:44px;padding:var(--ra-space-2) var(--ra-space-4);border:1px solid var(--ra-brand-rule);background:var(--ra-brand-carbon);color:var(--ra-brand-text)}
+.tab-radio{position:absolute;opacity:0;pointer-events:none}
+#links-tab:checked~.tabs label[for="links-tab"],#social-icons-tab:checked~.tabs label[for="social-icons-tab"]{border-color:var(--ra-brand-amber);color:var(--ra-brand-amber)}
+#social-icons-panel{display:none}#social-icons-tab:checked~#links-panel{display:none}#social-icons-tab:checked~#social-icons-panel{display:block}
 .wrap{max-width:100%;overflow-x:auto}
 @media(min-width:48rem){main{padding-inline:var(--ra-space-5)}.tiles{grid-template-columns:repeat(3,minmax(0,1fr))}
 .charts,.cols,.cols2{grid-template-columns:repeat(2,minmax(0,1fr))}}
@@ -469,8 +474,7 @@ def _pairs_table(title: str, t: dict[str, Any], label: str) -> str:
     )
 
 
-def _links(view: dict[str, Any]) -> str:
-    t = view["links"]
+def _destination_table(t: dict[str, Any], label: str) -> str:
     if t["state"] != "ok":
         rows = _state_row(t["state"], 4)
     else:
@@ -491,11 +495,26 @@ def _links(view: dict[str, Any]) -> str:
         if t["more_rows"]:
             rows += f'<tr><td colspan="4" class="note">{t["more_rows"]} more rows (raise --top)</td></tr>'
     return (
+        f'<div id="{label}" role="tabpanel">'
+        '<div class="wrap"><table><thead><tr><th>Link</th><th class="n">Clicks</th>'
+        f'<th class="n">Rate</th><th></th></tr></thead><tbody>{rows}</tbody></table></div></div>'
+    )
+
+
+def _links(view: dict[str, Any]) -> str:
+    return (
         '<section class="ra-c-plate"><h2>Content clicks per link</h2>'
         f'<p class="note">Rate is {escape(LINK_RATE_LABEL)}; a link has no views of its own. '
-        "Link names are the closed destination vocabulary the click ping carries.</p>"
-        '<div class="wrap"><table><thead><tr><th>Link</th><th class="n">Clicks</th>'
-        f'<th class="n">Rate</th><th></th></tr></thead><tbody>{rows}</tbody></table></div></section>'
+        "Names are the closed destination vocabulary the click ping carries.</p>"
+        '<input class="tab-radio" type="radio" name="destination-tab" id="links-tab" checked>'
+        '<input class="tab-radio" type="radio" name="destination-tab" id="social-icons-tab">'
+        '<div class="tabs" role="tablist" aria-label="Destination kind">'
+        '<label role="tab" for="links-tab">Links</label>'
+        '<label role="tab" for="social-icons-tab">Social icons</label>'
+        "</div>"
+        + _destination_table(view["links"], "links-panel")
+        + _destination_table(view["social_icons"], "social-icons-panel")
+        + "</section>"
     )
 
 
@@ -600,8 +619,8 @@ def render_html(view: dict[str, Any], *, generated_at: datetime) -> str:
         "</div>",
         "</section><!-- funnel -->",
         '<p class="note" style="margin-top:16px">Clicks are counts, not people. '
-        "Human-likely is an estimate. The world map and the Links and Social icons "
-        "tabs are not in this version (see docs/report.md).</p>",
+        "Human-likely is an estimate. The world map is not in this version "
+        "(see docs/report.md).</p>",
         "</div>",
         "</main></body></html>",
     ]

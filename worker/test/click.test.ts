@@ -58,8 +58,8 @@ function click(
 
 async function rows() {
   const res = await testEnv.DB.prepare(
-    "SELECT id, ts, link_id, country FROM click_events",
-  ).all<{ id: number; ts: number; link_id: string; country: string | null }>();
+    "SELECT id, ts, link_id, destination_kind, country FROM click_events",
+  ).all<{ id: number; ts: number; link_id: string; destination_kind: string; country: string | null }>();
   return res.results;
 }
 
@@ -80,6 +80,7 @@ describe("click endpoint", () => {
     const r = await rows();
     expect(r).toHaveLength(1);
     expect(r[0].link_id).toBe("example-one");
+    expect(r[0].destination_kind).toBe("link");
     expect(r[0].country === null || /^[A-Z]{2}$/.test(r[0].country)).toBe(true);
     expect(typeof r[0].ts).toBe("number");
   });
@@ -92,7 +93,7 @@ describe("click endpoint", () => {
       name: string;
     }>();
     expect(cols.results.map((c) => c.name).sort()).toEqual(
-      ["country", "id", "link_id", "site", "src", "ts"].sort(),
+      ["country", "destination_kind", "id", "link_id", "site", "src", "ts"].sort(),
     );
     expect(JSON.stringify(r)).not.toContain("198.51.100.7");
   });

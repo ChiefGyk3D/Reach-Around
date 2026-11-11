@@ -218,6 +218,7 @@ deployments keep working). Synthetic example:
     "mode": "beacon",
     "pages": ["home", "support"],
     "link_ids": {"example-one": "home", "example-two": "support"},
+    "destination_kinds": {"example-one": "link", "example-two": "social_icon"},
     "geo": "city"
   },
   "blog": {
@@ -225,6 +226,7 @@ deployments keep working). Synthetic example:
     "mode": "edge",
     "pages": "html-200",
     "link_ids": {"support-cta": "*"},
+    "destination_kinds": {"support-cta": "link"},
     "geo": "city",
     "utm_allowlist": ["bluesky", "mastodon", "mail"],
     "min_cell": 5

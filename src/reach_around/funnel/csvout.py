@@ -250,20 +250,24 @@ def owner_csv_files(view: dict[str, Any]) -> dict[str, bytes]:
         )
         if section["below_floor"]:
             pattern_rows.append([metric, BELOW, section["below_floor"], "below_floor"])
-    link_rows: list[list[Any]] = [
-        [
-            x["label"],
-            x["clicks"],
-            x["rate"],
-            "capped" if x["rate_capped"] else "",
-            "row",
+
+    def destination_rows(name: str) -> list[list[Any]]:
+        section = view[name]
+        rows = [
+            [
+                x["label"],
+                x["clicks"],
+                x["rate"],
+                "capped" if x["rate_capped"] else "",
+                "row",
+            ]
+            for x in section["rows"]
         ]
-        for x in view["links"]["rows"]
-    ]
-    if view["links"]["below_floor"]:
-        link_rows.append([BELOW, view["links"]["below_floor"], "", "", "below_floor"])
-    if view["links"]["state"] != "ok":
-        link_rows = [["", "", "", "", view["links"]["state"]]]
+        if section["below_floor"]:
+            rows.append([BELOW, section["below_floor"], "", "", "below_floor"])
+        if section["state"] != "ok":
+            return [["", "", "", "", section["state"]]]
+        return rows
 
     def views(name: str) -> list[list[Any]]:
         t = view[name]
@@ -312,7 +316,11 @@ def owner_csv_files(view: dict[str, Any]) -> dict[str, bytes]:
         ),
         "owner_links.csv": render_csv(
             ["link", "clicks", "clicks_per_100_page_views", "note", "row_type"],
-            link_rows,
+            destination_rows("links"),
+        ),
+        "owner_social_icons.csv": render_csv(
+            ["social_icon", "clicks", "clicks_per_100_page_views", "note", "row_type"],
+            destination_rows("social_icons"),
         ),
         "owner_sources.csv": render_csv(_TABLE_HEADER, views("sources")),
         "owner_devices.csv": render_csv(_TABLE_HEADER, views("devices")),

@@ -48,6 +48,7 @@ CLASSES = ("h", "v", "a", "s")
 SRC_KINDS = ("d", "i", "r", "u", "o")
 DIMS = ("browser", "os", "device", "lang", "vp", "net", "reason")
 KIT_KINDS = ("unlock", "view", "verify")
+DESTINATION_KINDS = ("link", "social_icon")
 
 
 class ExportError(ValueError):
@@ -134,6 +135,7 @@ SPECS: dict[str, Spec] = {
             "site": "site",
             "ts": "ts",
             "link_id": "slug",
+            "destination_kind": "destination_kind",
             "country": "country0",
             "src": "csrc",
         },
@@ -150,6 +152,7 @@ SPECS: dict[str, Spec] = {
             "site": "site",
             "day": "day",
             "link_id": "slug",
+            "destination_kind": "destination_kind",
             "src": "csrc1",
             "clicks": "pos",
         },
@@ -163,6 +166,7 @@ SPECS: dict[str, Spec] = {
             "site": "site",
             "day": "day",
             "link_id": "slug",
+            "destination_kind": "destination_kind",
             "country": "country",
             "clicks": "pos",
         },
@@ -176,6 +180,7 @@ SPECS: dict[str, Spec] = {
             "site": "site",
             "month": "month",
             "link_id": "slug",
+            "destination_kind": "destination_kind",
             "src": "csrc1",
             "clicks": "pos",
         },
@@ -189,6 +194,7 @@ SPECS: dict[str, Spec] = {
             "site": "site",
             "month": "month",
             "link_id": "slug",
+            "destination_kind": "destination_kind",
             "country": "country",
             "clicks": "pos",
         },
@@ -433,6 +439,8 @@ def _check_value(kind: str, value: Any, where: str) -> Any:
         choices = DIMS
     elif kind == "kit_kind":
         choices = KIT_KINDS
+    elif kind == "destination_kind":
+        choices = DESTINATION_KINDS
     else:  # pragma: no cover - a spec typo
         raise AssertionError(kind)
     if not isinstance(value, str):
@@ -502,6 +510,8 @@ def _validate_row(table: str, row: Any, where: str) -> dict[str, Any]:
     _cross_check(table, out, where)
     if "site" in spec.columns and table != "kit_events":
         out.setdefault("site", "links")
+    if table.startswith("click_") and "link_id" in spec.columns:
+        out.setdefault("destination_kind", "link")
     return out
 
 

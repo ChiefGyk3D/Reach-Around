@@ -25,6 +25,7 @@ const SITES = JSON.stringify({
     mode: "beacon",
     pages: ["home"],
     link_ids: { twitch: "home", kick: "home" },
+    destination_kinds: { twitch: "social_icon", kick: "link" },
     sources: ["instagram", "bluesky"],
   },
   nosrc: { hosts: ["plain.example.test"], mode: "beacon", pages: ["home"], link_ids: { twitch: "home" } },
@@ -61,19 +62,19 @@ describe("the click route increments the marginal counters", () => {
     await handleClick(click("", { country: "US" }), env());
     await handleClick(click("?s=tiktok", { country: "US" }), env());
     await handleClick(click("", { id: "kick" }), env());
-    const src = await q<{ link_id: string; src: string; clicks: number }>("SELECT link_id, src, clicks FROM click_src_daily ORDER BY link_id, src");
+    const src = await q<{ link_id: string; destination_kind: string; src: string; clicks: number }>("SELECT link_id, destination_kind, src, clicks FROM click_src_daily ORDER BY link_id, src");
     expect(src).toEqual([
-      { link_id: "kick", src: "direct", clicks: 1 },
-      { link_id: "twitch", src: "direct", clicks: 1 },
-      { link_id: "twitch", src: "instagram", clicks: 2 },
-      { link_id: "twitch", src: "other", clicks: 1 },
+      { link_id: "kick", destination_kind: "link", src: "direct", clicks: 1 },
+      { link_id: "twitch", destination_kind: "social_icon", src: "direct", clicks: 1 },
+      { link_id: "twitch", destination_kind: "social_icon", src: "instagram", clicks: 2 },
+      { link_id: "twitch", destination_kind: "social_icon", src: "other", clicks: 1 },
     ]);
     // Country covers the attributed clicks too, which keep no country on the raw row.
-    const cc = await q<{ link_id: string; country: string; clicks: number }>("SELECT link_id, country, clicks FROM click_country_daily ORDER BY link_id, country");
+    const cc = await q<{ link_id: string; destination_kind: string; country: string; clicks: number }>("SELECT link_id, destination_kind, country, clicks FROM click_country_daily ORDER BY link_id, country");
     expect(cc).toEqual([
-      { link_id: "kick", country: "ZZ", clicks: 1 },
-      { link_id: "twitch", country: "DE", clicks: 1 },
-      { link_id: "twitch", country: "US", clicks: 3 },
+      { link_id: "kick", destination_kind: "link", country: "ZZ", clicks: 1 },
+      { link_id: "twitch", destination_kind: "social_icon", country: "DE", clicks: 1 },
+      { link_id: "twitch", destination_kind: "social_icon", country: "US", clicks: 3 },
     ]);
     expect(await q("SELECT country FROM click_events WHERE src IS NOT NULL AND country IS NOT NULL")).toEqual([]);
   });
@@ -101,8 +102,8 @@ describe("the click route increments the marginal counters", () => {
 
   it("the_counters_have_no_column_that_could_hold_a_pair_or_a_person", async () => {
     const cols = async (t: string) => (await q<{ name: string }>(`SELECT name FROM pragma_table_info('${t}')`)).map((c) => c.name);
-    expect(await cols("click_src_daily")).toEqual(["site", "day", "link_id", "src", "clicks"]);
-    expect(await cols("click_country_daily")).toEqual(["site", "day", "link_id", "country", "clicks"]);
+    expect(await cols("click_src_daily")).toEqual(["site", "day", "link_id", "src", "clicks", "destination_kind"]);
+    expect(await cols("click_country_daily")).toEqual(["site", "day", "link_id", "country", "clicks", "destination_kind"]);
   });
 
   it("the_counter_day_is_a_utc_day_and_never_finer", async () => {
@@ -114,7 +115,7 @@ describe("the click route increments the marginal counters", () => {
 describe("row bounds: reserved cells, hourly slices, one overflow row, an integrity marker", () => {
   const ts = Date.UTC(2027, 0, 5, 12);
   const seedSrc = (n: number, link = "seed") =>
-    DB.batch(Array.from({ length: n }, (_, i) => DB.prepare("INSERT INTO click_src_daily VALUES ('links','2027-01-05',?,?,1)").bind(link, `s${i}`)));
+    DB.batch(Array.from({ length: n }, (_, i) => DB.prepare("INSERT INTO click_src_daily (site,day,link_id,src,clicks) VALUES ('links','2027-01-05',?,?,1)").bind(link, `s${i}`)));
   const cellsOf = async (t: string, col: string, link: string) =>
     (await q<Record<string, string>>(`SELECT ${col} AS v FROM ${t} WHERE link_id = '${link}' ORDER BY ${col}`)).map((r) => r.v);
 
@@ -172,7 +173,7 @@ describe("row bounds: reserved cells, hourly slices, one overflow row, an integr
     const letters = "ABCDEFGHIJKLMNOPQRSTUVWXY";
     const codes: string[] = [];
     for (const a of letters) for (const b of letters) if (codes.length < COUNTRY_DAY_CAP + RESERVED_PER_LINK) codes.push(a + b);
-    await DB.batch(codes.map((c) => DB.prepare("INSERT INTO click_country_daily VALUES ('links','2027-01-05','seed',?,1)").bind(c)));
+    await DB.batch(codes.map((c) => DB.prepare("INSERT INTO click_country_daily (site,day,link_id,country,clicks) VALUES ('links','2027-01-05','seed',?,1)").bind(c)));
     await count(ts, "links", "twitch", null, "QQ"); // reserved
     await count(ts, "links", "twitch", null, "RR"); // reserved
     await count(ts, "links", "twitch", null, "SS"); // overflow
@@ -417,7 +418,7 @@ describe("monthly rollup and retention", () => {
 
   it("a_month_over_its_cap_folds_the_smallest_cells", async () => {
     await DB.batch(
-      Array.from({ length: 305 }, (_, i) => DB.prepare("INSERT INTO click_src_daily VALUES ('links','2027-01-05','twitch',?,?)").bind(`s${i}`, 400 - i)),
+      Array.from({ length: 305 }, (_, i) => DB.prepare("INSERT INTO click_src_daily (site,day,link_id,src,clicks) VALUES ('links','2027-01-05','twitch',?,?)").bind(`s${i}`, 400 - i)),
     );
     await rollupClickFunnel({ DB }, Date.UTC(2027, 1, 10));
     const rows = await q<{ src: string; clicks: number }>("SELECT src, clicks FROM click_src_monthly");
@@ -472,7 +473,7 @@ describe("monthly rollup and retention", () => {
   });
 
   it("the_hard_ceiling_drops_day_cells_even_when_the_month_is_missing", async () => {
-    await DB.prepare("INSERT INTO click_src_daily VALUES ('links','2027-01-05','twitch','instagram',3)").run();
+    await DB.prepare("INSERT INTO click_src_daily (site,day,link_id,src,clicks) VALUES ('links','2027-01-05','twitch','instagram',3)").run();
     // A month log row exists only after a roll; make the roll impossible by pre-logging nothing and
     // running past the ceiling: the roll happens first, so check that the day is gone either way.
     await rollupClickFunnel({ DB }, Date.UTC(2027, 0, 5) + (DAY_HARD_KEEP_DAYS + 1) * DAY);
@@ -480,10 +481,10 @@ describe("monthly rollup and retention", () => {
   });
 
   it("monthly_rows_are_kept_25_months_and_not_longer", async () => {
-    const rows = (m: string) => DB.prepare("INSERT INTO click_src_monthly VALUES ('links',?,'twitch','instagram',9)").bind(m);
+    const rows = (m: string) => DB.prepare("INSERT INTO click_src_monthly (site,month,link_id,src,clicks) VALUES ('links',?,'twitch','instagram',9)").bind(m);
     await DB.batch([rows("2024-12"), rows("2025-01"), rows("2026-12"), rows("2027-01")]);
     await DB.batch(["2024-12", "2025-01"].map((m) => DB.prepare("INSERT INTO click_month_log VALUES ('links',?,1,0,0)").bind(m)));
-    await DB.prepare("INSERT INTO click_country_monthly VALUES ('links','2024-12','twitch','US',9)").run();
+    await DB.prepare("INSERT INTO click_country_monthly (site,month,link_id,country,clicks) VALUES ('links','2024-12','twitch','US',9)").run();
     // Current month 2027-02: the 25 closed months are 2025-01 .. 2027-01.
     await rollupClickFunnel({ DB }, Date.UTC(2027, 1, 10));
     expect((await q<{ month: string }>("SELECT month FROM click_src_monthly ORDER BY month")).map((r) => r.month)).toEqual(["2025-01", "2026-12", "2027-01"]);
@@ -494,15 +495,15 @@ describe("monthly rollup and retention", () => {
 
 describe("migration 0011 constraints", () => {
   it.each([
-    ["INSERT INTO click_src_daily VALUES ('links','2027-01-05','twitch','Instagram',1)"],
-    ["INSERT INTO click_src_daily VALUES ('links','2027-01-05','twitch','a b',1)"],
-    ["INSERT INTO click_src_daily VALUES ('links','2027-01-05','twitch','x',0)"],
-    ["INSERT INTO click_src_daily VALUES ('Links','2027-01-05','twitch','x',1)"],
-    ["INSERT INTO click_country_daily VALUES ('links','2027-01-05','twitch','us',1)"],
-    ["INSERT INTO click_country_daily VALUES ('links','2027-01-05','twitch','USA',1)"],
-    ["INSERT INTO click_country_daily VALUES ('links','2027-01-05','twitch','U1',1)"],
-    ["INSERT INTO click_country_monthly VALUES ('links','2027-01','twitch','198.51.100.7',1)"],
-    ["INSERT INTO click_src_monthly VALUES ('links','2027-1','twitch','x',1)"],
+    ["INSERT INTO click_src_daily (site,day,link_id,src,clicks) VALUES ('links','2027-01-05','twitch','Instagram',1)"],
+    ["INSERT INTO click_src_daily (site,day,link_id,src,clicks) VALUES ('links','2027-01-05','twitch','a b',1)"],
+    ["INSERT INTO click_src_daily (site,day,link_id,src,clicks) VALUES ('links','2027-01-05','twitch','x',0)"],
+    ["INSERT INTO click_src_daily (site,day,link_id,src,clicks) VALUES ('Links','2027-01-05','twitch','x',1)"],
+    ["INSERT INTO click_country_daily (site,day,link_id,country,clicks) VALUES ('links','2027-01-05','twitch','us',1)"],
+    ["INSERT INTO click_country_daily (site,day,link_id,country,clicks) VALUES ('links','2027-01-05','twitch','USA',1)"],
+    ["INSERT INTO click_country_daily (site,day,link_id,country,clicks) VALUES ('links','2027-01-05','twitch','U1',1)"],
+    ["INSERT INTO click_country_monthly (site,month,link_id,country,clicks) VALUES ('links','2027-01','twitch','198.51.100.7',1)"],
+    ["INSERT INTO click_src_monthly (site,month,link_id,src,clicks) VALUES ('links','2027-1','twitch','x',1)"],
   ])("refuses_%s", async (sql) => {
     await expect(DB.prepare(sql).run()).rejects.toThrow();
   });

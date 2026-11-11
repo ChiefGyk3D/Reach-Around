@@ -123,6 +123,7 @@ fi
 # 2. Link ids come from the build manifest, so the Worker accepts exactly the
 #    links the page publishes.
 link_ids="$(jq -c '.links | keys' "$manifest")"
+destination_kinds="$(jq -cS '.destination_kinds' "$manifest")"
 printf '%s' "$link_ids" \
   | grep -Eq '^\[("[a-z0-9-]{1,40}"(, ?)?)+\]$' \
   || fail "the manifest produced no valid link ids"
@@ -157,6 +158,7 @@ sed \
   -e "s|^namespace_id = \"[^\"]*\"|namespace_id = \"${RATELIMIT_NAMESPACE_ID}\"|" \
   -e "s|^SITE_HOST = \"[^\"]*\"|SITE_HOST = \"${SITE_HOST}\"|" \
   -e "s|^LINK_IDS = '[^']*'|LINK_IDS = '${link_ids}'|" \
+  -e "s|^DESTINATION_KINDS = '[^']*'|DESTINATION_KINDS = '${destination_kinds}'|" \
   "$REPO_DIR/worker/wrangler.toml" > "$wrangler_toml"
 sed -i "/^\[vars\]\$/a LEAD_RETENTION_DAYS = \"${lead_retention}\"" "$wrangler_toml"
 grep -qxF "LEAD_RETENTION_DAYS = \"${lead_retention}\"" "$wrangler_toml" \

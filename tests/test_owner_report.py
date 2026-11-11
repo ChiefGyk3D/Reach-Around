@@ -172,6 +172,84 @@ def test_every_section_of_the_layout_is_present(report: dict[str, Any]) -> None:
     assert report["period"]["since"] == "2026-11-02"
 
 
+def test_links_and_social_icons_are_independently_floored_tabs(tmp_path: Path) -> None:
+    tables = fixture_tables()
+    day = _ts(LAST)
+    tables["click_events"] = (
+        [
+            {
+                "site": "links",
+                "ts": day,
+                "link_id": "regular-a",
+                "destination_kind": "link",
+            }
+        ]
+        * 10
+        + [
+            {
+                "site": "links",
+                "ts": day,
+                "link_id": "regular-b",
+                "destination_kind": "link",
+            }
+        ]
+        * 8
+        + [
+            {
+                "site": "links",
+                "ts": day,
+                "link_id": "regular-small",
+                "destination_kind": "link",
+            }
+        ]
+        * 2
+        + [
+            {
+                "site": "links",
+                "ts": day,
+                "link_id": "social-a",
+                "destination_kind": "social_icon",
+            }
+        ]
+        * 9
+        + [
+            {
+                "site": "links",
+                "ts": day,
+                "link_id": "social-b",
+                "destination_kind": "social_icon",
+            }
+        ]
+        * 7
+        + [
+            {
+                "site": "links",
+                "ts": day,
+                "link_id": "social-small",
+                "destination_kind": "social_icon",
+            }
+        ]
+    )
+    view = owner_view(report_of(tmp_path, tables))
+
+    assert [row["label"] for row in view["links"]["rows"]] == ["regular-b"]
+    assert view["links"]["below_floor"] == 12
+    assert [row["label"] for row in view["social_icons"]["rows"]] == ["social-b"]
+    assert view["social_icons"]["below_floor"] == 10
+
+    page = render_html(view, generated_at=NOW)
+    assert 'role="tablist"' in page
+    assert ">Links</label>" in page
+    assert ">Social icons</label>" in page
+    assert "regular-small" not in page and "social-small" not in page
+
+
+def test_old_click_export_defaults_destinations_to_links(tmp_path: Path) -> None:
+    view = owner_view(report_of(tmp_path, fixture_tables()))
+    assert view["links"]["state"] == "ok"
+    assert view["social_icons"]["rows"] == []
+
+
 def test_layout_a_puts_the_shared_component_overview_before_details(
     report: dict[str, Any],
 ) -> None:

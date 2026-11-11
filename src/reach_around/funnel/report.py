@@ -945,9 +945,11 @@ def _build_report(
         if r["bot_class"] in wanted:
             places[_geo_label(r["country"], r["region"], r["city"], geo)] += r["views"]
     links: dict[str, int] = defaultdict(int)
+    social_icons: dict[str, int] = defaultdict(int)
     click_sources: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
     for r in click_rows:
-        links[r["link_id"]] += 1
+        destination = social_icons if r["destination_kind"] == "social_icon" else links
+        destination[r["link_id"]] += 1
         click_sources[r["link_id"]][r.get("src") or "none"] += 1
     kit: dict[str, int] = defaultdict(int)
     for r in kit_rows:
@@ -1010,8 +1012,15 @@ def _build_report(
             withheld.append("kit_unlocks")
 
     links_section = _section(links, floor, top, "click_events" in export.present)
+    social_icons_section = _section(
+        social_icons, floor, top, "click_events" in export.present
+    )
     printed_links = (
-        [row["label"] for row in links_section["rows"]]
+        [
+            row["label"]
+            for section in (links_section, social_icons_section)
+            for row in section["rows"]
+        ]
         if "click_events" in export.present
         else None
     )
@@ -1132,6 +1141,7 @@ def _build_report(
             **_section(places, floor, top, "view_geo_daily" in export.present),
         },
         "links": links_section,
+        "social_icons": social_icons_section,
         "click_sources": {},  # joint suppression with "links", filled below
         "release": release,
         "capacity": {
@@ -1193,8 +1203,15 @@ def _build_report(
             "human_views_seen": bool(human),
         },
     }
+    all_destinations_section = {
+        "rows": [*links_section["rows"], *social_icons_section["rows"]]
+    }
     report["click_sources"] = _joint_click_sources(
-        click_sources, links_section, floor, top, "click_events" in export.present
+        click_sources,
+        all_destinations_section,
+        floor,
+        top,
+        "click_events" in export.present,
     )
     unsafe = any(
         _suppress(cells, floor).dropped
@@ -1557,6 +1574,7 @@ def render_text(report: dict[str, Any]) -> str:
     geo = report["geography"]
     _table(f"Geography by {geo['level']} (classes: {classes})", geo, lines)
     _table("Link clicks by link", report["links"], lines)
+    _table("Social icon clicks by icon", report["social_icons"], lines)
     _table("Link clicks by source -> link", report["click_sources"], lines)
     if report["click_sources"].get("links_withheld"):
         lines.append(

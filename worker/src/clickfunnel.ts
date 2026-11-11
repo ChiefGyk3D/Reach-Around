@@ -74,10 +74,11 @@ export function utcMonth(ms: number): string {
  */
 export function clickCounterStatements(
   db: D1Database,
-  p: { site: string; ts: number; linkId: string; src: string | null; listsSources: boolean; country: string | null },
+  p: { site: string; ts: number; linkId: string; destinationKind?: "link" | "social_icon"; src: string | null; listsSources: boolean; country: string | null },
 ): D1PreparedStatement[] {
   const day = utcDay(p.ts);
   const hour = new Date(p.ts).getUTCHours();
+  const destinationKind = p.destinationKind ?? "link";
   const out: D1PreparedStatement[] = [];
   const guard = "WHERE NOT EXISTS (SELECT 1 FROM click_seal WHERE site = ?1 AND day = ?2) ";
   // A new cell is made only while this hour's slice of the budget lasts AND one of: the destination
@@ -96,8 +97,8 @@ export function clickCounterStatements(
   // ?4 label, ?5 cap, ?9 fold label, ?10 direct label.
   const insert = (table: string, col: string, conflict: string, direct: string) =>
     `WITH f(fold) AS (SELECT ${fold(table, col, "?4", "?5", direct)}) ` +
-    `INSERT INTO ${table} (site, day, link_id, ${col}, clicks) ` +
-    "SELECT ?1, ?2, CASE WHEN f.fold THEN ?8 ELSE ?3 END, CASE WHEN f.fold THEN ?9 ELSE ?4 END, 1 FROM f " +
+    `INSERT INTO ${table} (site, day, link_id, destination_kind, ${col}, clicks) ` +
+    "SELECT ?1, ?2, CASE WHEN f.fold THEN ?8 ELSE ?3 END, CASE WHEN f.fold THEN 'link' ELSE ?16 END, CASE WHEN f.fold THEN ?9 ELSE ?4 END, 1 FROM f " +
     `${guard}` +
     `ON CONFLICT (${conflict}) DO UPDATE SET clicks = clicks + 1`;
   const srcLabel = p.src ?? DIRECT;
@@ -122,13 +123,13 @@ export function clickCounterStatements(
     out.push(
       db
         .prepare(insert("click_src_daily", "src", "site, day, link_id, src", "?10"))
-        .bind(p.site, day, p.linkId, srcLabel, SRC_DAY_CAP, RESERVED_PER_LINK, HOUR_BUDGET, OVERFLOW_LINK, OTHER, DIRECT, hour),
+        .bind(p.site, day, p.linkId, srcLabel, SRC_DAY_CAP, RESERVED_PER_LINK, HOUR_BUDGET, OVERFLOW_LINK, OTHER, DIRECT, hour, null, null, null, null, destinationKind),
     );
   }
   out.push(
     db
       .prepare(insert("click_country_daily", "country", "site, day, link_id, country", "''"))
-      .bind(p.site, day, p.linkId, countryLabel, COUNTRY_DAY_CAP, RESERVED_PER_LINK, HOUR_BUDGET, OVERFLOW_LINK, UNKNOWN_COUNTRY, null, hour),
+      .bind(p.site, day, p.linkId, countryLabel, COUNTRY_DAY_CAP, RESERVED_PER_LINK, HOUR_BUDGET, OVERFLOW_LINK, UNKNOWN_COUNTRY, null, hour, null, null, null, null, destinationKind),
   );
   // The hourly slice of the new-cell budget, AFTER the inserts: it counts the cells THIS click made.
   // A cell the insert just made holds exactly 1 click (an older cell holds more, and a folded click
@@ -167,12 +168,12 @@ export interface FunnelRollupResult {
 /** Monthly sum of one daily table, folding everything past the top `cap` cells into the fold label. */
 function monthSql(daily: string, monthly: string, col: string, fold: string): string {
   return (
-    `INSERT INTO ${monthly} (site, month, link_id, ${col}, clicks) ` +
-    `WITH s AS (SELECT link_id, ${col} AS v, SUM(clicks) AS c FROM ${daily} ` +
-    "WHERE site = ?1 AND substr(day, 1, 7) = ?2 GROUP BY link_id, v), " +
-    "r AS (SELECT link_id, v, c, ROW_NUMBER() OVER (ORDER BY (link_id = ?4) ASC, c DESC, link_id, v) AS rn FROM s) " +
-    `SELECT ?1, ?2, CASE WHEN rn <= ?3 THEN link_id ELSE ?4 END, CASE WHEN rn <= ?3 THEN v ELSE '${fold}' END, SUM(c) FROM r ` +
-    `GROUP BY CASE WHEN rn <= ?3 THEN link_id ELSE ?4 END, CASE WHEN rn <= ?3 THEN v ELSE '${fold}' END`
+    `INSERT INTO ${monthly} (site, month, link_id, destination_kind, ${col}, clicks) ` +
+    `WITH s AS (SELECT link_id, destination_kind AS k, ${col} AS v, SUM(clicks) AS c FROM ${daily} ` +
+    "WHERE site = ?1 AND substr(day, 1, 7) = ?2 GROUP BY link_id, k, v), " +
+    "r AS (SELECT link_id, k, v, c, ROW_NUMBER() OVER (ORDER BY (link_id = ?4) ASC, c DESC, link_id, v) AS rn FROM s) " +
+    `SELECT ?1, ?2, CASE WHEN rn <= ?3 THEN link_id ELSE ?4 END, CASE WHEN rn <= ?3 THEN k ELSE 'link' END, CASE WHEN rn <= ?3 THEN v ELSE '${fold}' END, SUM(c) FROM r ` +
+    `GROUP BY CASE WHEN rn <= ?3 THEN link_id ELSE ?4 END, CASE WHEN rn <= ?3 THEN k ELSE 'link' END, CASE WHEN rn <= ?3 THEN v ELSE '${fold}' END`
   );
 }
 

@@ -682,6 +682,7 @@ jobs:
           # The link ids the deploy derives from the build manifest (the same
           # output "Write deploy config" uses), not the optional variable.
           LINK_IDS: ${{ steps.manifest.outputs.link_ids }}
+          DESTINATION_KINDS: ${{ steps.manifest.outputs.destination_kinds }}
           VIEWS_PER_HOUR: ${{ vars.VIEWS_PER_HOUR }}
           BOT_VIEWS_PER_HOUR: ${{ vars.BOT_VIEWS_PER_HOUR }}
           ACCOUNT_VIEWS_PER_HOUR: ${{ vars.ACCOUNT_VIEWS_PER_HOUR }}
@@ -708,6 +709,7 @@ jobs:
           RATELIMIT_NAMESPACE_ID: ${{ vars.RATELIMIT_NAMESPACE_ID }}
           SITE_HOST: ${{ vars.SITE_HOST }}
           LINK_IDS: ${{ steps.manifest.outputs.link_ids }}
+          DESTINATION_KINDS: ${{ steps.manifest.outputs.destination_kinds }}
           LEAD_RETENTION_DAYS: ${{ steps.manifest.outputs.lead_retention_days }}
           ALERTS_CONFIG: ${{ steps.manifest.outputs.alerts_config }}
           ZONE_NAME: ${{ vars.ZONE_NAME }}
@@ -734,11 +736,13 @@ jobs:
           # [[ =~ ]] tests the whole value (grep is line by line).
           [[ "${LINK_IDS:-}" =~ ^\[\"[a-z0-9-]{1,40}\"(,\"[a-z0-9-]{1,40}\"){0,199}\]$ ]] \
             || { echo "::error::the derived link id list is missing or invalid"; exit 1; }
+          destination_kinds="${DESTINATION_KINDS:-{\"example-one\":\"link\",\"example-two\":\"link\"}}"
           sed \
             -e "s|^database_id = \"[^\"]*\"|database_id = \"${D1_DATABASE_ID}\"|" \
             -e "s|^namespace_id = \"[^\"]*\"|namespace_id = \"${RATELIMIT_NAMESPACE_ID}\"|" \
             -e "s|^SITE_HOST = \"[^\"]*\"|SITE_HOST = \"${SITE_HOST}\"|" \
             -e "s|^LINK_IDS = '[^']*'|LINK_IDS = '${LINK_IDS}'|" \
+            -e "s|^DESTINATION_KINDS = '[^']*'|DESTINATION_KINDS = '${destination_kinds}'|" \
             wrangler.toml > wrangler.deploy.toml
           grep -qF "${D1_DATABASE_ID}" wrangler.deploy.toml
           grep -qF "${SITE_HOST}" wrangler.deploy.toml

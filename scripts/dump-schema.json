@@ -39,14 +39,16 @@
       "day",
       "link_id",
       "country",
-      "clicks"
+      "clicks",
+      "destination_kind"
     ],
     "click_country_monthly": [
       "site",
       "month",
       "link_id",
       "country",
-      "clicks"
+      "clicks",
+      "destination_kind"
     ],
     "click_events": [
       "id",
@@ -54,7 +56,8 @@
       "link_id",
       "country",
       "site",
-      "src"
+      "src",
+      "destination_kind"
     ],
     "click_funnel_state": [
       "site",
@@ -77,14 +80,16 @@
       "day",
       "link_id",
       "src",
-      "clicks"
+      "clicks",
+      "destination_kind"
     ],
     "click_src_monthly": [
       "site",
       "month",
       "link_id",
       "src",
-      "clicks"
+      "clicks",
+      "destination_kind"
     ],
     "counters": [
       "key",
