@@ -72,9 +72,9 @@ class Node_ {
 globalThis.document = { createElement: (tag) => new Node_(tag) };
 
 const { STRINGS, t } = await import("./strings.js");
-const store = await import("./store.js");
+const store = await import("./ops.js");
 const { ApiError, createClient } = await import("./api.js");
-const { renderEditor } = await import("./view.js");
+const { renderEditor } = await import("./forms.js");
 
 const HASH = "a".repeat(64);
 const CONFIG = {
@@ -156,14 +156,14 @@ test("platform steps send blanks as null and expect the handle too", () => {
   assert.equal(added[0].build(CONFIG).args.value, "42");
 });
 
-test("moves use the position inside the whole list and expect its order", async () => {
+test("link moves skip non-links and announce link-only positions", async () => {
   const calls = [];
   const s = newStore();
   const client = { post: async (route, body) => { calls.push(body); return reply(CONFIG, HASH); } };
   const actions = store.createActions({ store: s, saver: store.createSaver({ client, store: s, announce() {} }), announce() {} });
   const up = await actions.moveLink("second", -1);
   assert.equal(up.ok, true);
-  assert.deepEqual(calls[0].args, { id: "second", position: 3 });
+  assert.deepEqual(calls[0].args, { id: "second", position: 1 });
   assert.deepEqual(calls[0].expect, { order: ["first", "grp", "socials", "second"] });
   const inGroup = await actions.moveLink("in-a", 1);
   assert.deepEqual(calls[1].args, { id: "in-a", position: 2 });
@@ -175,6 +175,54 @@ test("moves use the position inside the whole list and expect its order", async 
   assert.deepEqual(calls[2].args, { block: "socials", index: 1, position: 2 });
   assert.equal(calls[2].expect.items.length, 2);
   assert.equal((await actions.movePlatform("socials", 2, 1)).moved, false);
+});
+
+test("add and remove actions build the existing editor operations", async () => {
+  const calls = [];
+  const s = newStore();
+  const client = { post: async (_route, body) => { calls.push(body); return reply(CONFIG, HASH); } };
+  const actions = store.createActions({ store: s, saver: store.createSaver({ client, store: s, announce() {} }), announce() {} });
+  await actions.addLink("main", { title: "New", url: "https://example.com/new" });
+  await actions.removeLink("first");
+  await actions.addPlatform("socials", { platform: "youtube", handle: "sample", url: "https://example.com/y" });
+  await actions.removePlatform("socials", 2);
+  assert.deepEqual(calls.map((call) => call.op), ["add_link", "remove_link", "add_platform_item", "remove_platform_item"]);
+  assert.deepEqual(calls[0].expect, { count: 4 });
+  assert.deepEqual(calls[1].expect, { order: ["first", "grp", "socials", "second"] });
+  assert.equal(calls[2].expect.items.length, 2);
+  assert.equal(calls[3].args.index, 2);
+});
+
+test("group title and subtitle are saved through field operations", async () => {
+  const calls = [];
+  const s = newStore();
+  const client = { post: async (_route, body) => { calls.push(body); return reply(CONFIG, HASH); } };
+  const actions = store.createActions({ store: s, saver: store.createSaver({ client, store: s, announce() {} }), announce() {} });
+  await actions.saveGroup("grp", { title: "Changed", subtitle: "Details" });
+  assert.deepEqual(calls.map((call) => call.args), [
+    { id: "grp", field: "title", value: "Changed" },
+    { id: "grp", field: "subtitle", value: "Details" },
+  ]);
+});
+
+test("successful saves request a preview version refresh", async () => {
+  let refreshed = 0;
+  const s = newStore();
+  const client = { post: async () => reply(CONFIG, HASH) };
+  const saver = store.createSaver({ client, store: s, announce() {}, refreshPreview: async () => { refreshed += 1; } });
+  await saver.save([{ field: "title", build: (config) => store.setLinkFieldOp(config, "first", "title", "Changed") }]);
+  assert.equal(refreshed, 1);
+});
+
+test("the app redraw helper polls version and reloads the preview frame", async () => {
+  const calls = [];
+  const frame = new Node_("iframe");
+  frame.setAttribute("src", "http://127.0.0.1:8001/");
+  const original = frame.setAttribute.bind(frame);
+  frame.setAttribute = (name, value) => { calls.push([name, value]); original(name, value); };
+  const refresh = store.createPreviewRefresh({ get: async (route) => { calls.push(["get", route]); } }, frame);
+  await refresh();
+  assert.deepEqual(calls, [["get", "version"], ["src", "http://127.0.0.1:8001/"]]);
 });
 
 test("error classes: stale, field, limit, auth, network, other", () => {
@@ -472,6 +520,13 @@ test("hostile values stay text: no element is made from them", () => {
   assert.equal(inputs[0].value, evil);
 });
 
+test("rendered forms expose add and remove controls plus editable group fields", () => {
+  const { container } = draw(CONFIG, new Proxy({}, { get: () => async () => ({ ok: true }) }));
+  for (const key of ["add:link:main", "remove:link:first", "add:platform:socials", "remove:platform:socials:1", "save:group:grp"]) {
+    assert.equal(container.all((node) => node.getAttribute("data-key") === key).length, 1, key);
+  }
+});
+
 test("a refused field shows its message with aria-invalid and takes focus; a retry clears it", async () => {
   let outcome = { ok: false, saved: 0, field: "title", problem: { kind: "field", message: "title must be text", path: "" } };
   const { container } = draw(CONFIG, { saveLink: async () => outcome });
@@ -506,7 +561,7 @@ test("move buttons: edges are disabled, a click moves and focus follows the butt
   const container = new Node_("div");
   const swapped = structuredClone(CONFIG);
   const blocks = swapped.tabs[0].blocks;
-  [blocks[0], blocks[1]] = [blocks[1], blocks[0]];
+  blocks.splice(0, blocks.length, blocks[1], blocks[2], blocks[3], blocks[0]);
   const ctx = {
     run: async (task) => task(),
     actions: { moveLink: async (id, delta) => {
@@ -519,14 +574,14 @@ test("move buttons: edges are disabled, a click moves and focus follows the butt
   const key = (k) => container.all((n) => n.getAttribute("data-key") === k)[0];
   assert.ok(key("move:link:first:up:1").hasAttribute("disabled"));
   assert.ok(!key("move:link:first:down:1").hasAttribute("disabled"));
-  assert.ok(key("move:link:second:down:4").hasAttribute("disabled"));
+  assert.ok(key("move:link:second:down:2").hasAttribute("disabled"));
   assert.ok(key("move:link:in-a:up:1").hasAttribute("disabled"));
   const button = key("move:link:first:down:1");
   assert.ok(button.textContent.startsWith(t("action.moveDown")));
   assert.ok(button.textContent.includes("First"));
   await button.fire("click");
   assert.deepEqual(moves, [["first", 1]]);
-  assert.equal(globalThis.activeNode, key("move:link:first:down:2"));
+  assert.equal(globalThis.activeNode, key("move:link:first:up:2"));
   assert.notEqual(globalThis.activeNode, button);
 });
 
@@ -534,7 +589,7 @@ test("at the new edge focus falls back to the other move button", async () => {
   const container = new Node_("div");
   const swapped = structuredClone(CONFIG);
   const blocks = swapped.tabs[0].blocks;
-  [blocks[2], blocks[3]] = [blocks[3], blocks[2]];
+  blocks.splice(0, blocks.length, blocks[3], blocks[0], blocks[1], blocks[2]);
   const ctx = {
     run: async (task) => task(),
     actions: { moveLink: async () => {
@@ -544,8 +599,8 @@ test("at the new edge focus falls back to the other move button", async () => {
   };
   renderEditor(container, CONFIG, ctx);
   const key = (k) => container.all((n) => n.getAttribute("data-key") === k)[0];
-  await key("move:link:second:up:4").fire("click");
-  assert.equal(globalThis.activeNode, key("move:link:second:up:3"));
+  await key("move:link:second:up:2").fire("click");
+  assert.equal(globalThis.activeNode, key("move:link:second:down:1"));
 });
 
 test("platform cards name the platform and position", () => {

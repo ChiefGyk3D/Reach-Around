@@ -5,12 +5,13 @@ import {
   createActions,
   createHistoryActions,
   createOperationQueue,
+  createPreviewRefresh,
   createSaver,
   createStore,
   historyShortcut,
   patchFromState,
   refreshOutsideState,
-} from "./store.js";
+} from "./ops.js";
 import { t } from "./strings.js";
 import { getToken, takeTokenFromUrl } from "./token.js";
 import {
@@ -21,7 +22,7 @@ import {
   renderPreview,
   renderStatus,
   showNote,
-} from "./view.js";
+} from "./forms.js";
 
 const store = createStore({
   phase: "starting",
@@ -54,7 +55,13 @@ document.title = t("app.title");
 
 const client = createClient(getToken);
 const operations = createOperationQueue();
-const saver = createSaver({ client, store, announce, operations });
+const saver = createSaver({
+  client,
+  store,
+  announce,
+  operations,
+  refreshPreview: createPreviewRefresh(client, frame),
+});
 const history = createHistoryActions({ client, store, announce, operations });
 const ctx = {
   actions: createActions({ store, saver, announce }),

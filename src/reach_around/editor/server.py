@@ -67,9 +67,9 @@ _MODULE_FILES = (
     "strings.js",
     "token.js",
     "api.js",
-    "store.js",
+    "ops.js",
     "announce.js",
-    "view.js",
+    "forms.js",
 )
 _ASSET_FILES = ("index.html", "app.css", *_MODULE_FILES)
 _STATIC_ROUTES = {

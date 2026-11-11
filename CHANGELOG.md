@@ -6,6 +6,12 @@ while the project is alpha, every release is `0.x` and anything can change betwe
 
 ## [Unreleased]
 
+- Editor form follow-ups (#200): forms can add and remove links and platform
+  items, edit a link group's title and subtitle, clear creator titles and
+  colors, and reload the preview after saves. Link moves and announcements
+  count links only, stale comparisons treat integral floats and integers as
+  equal, and the browser code is split into `forms.js` and `ops.js` with tested
+  redraw wiring.
 - Editor history UI (#199): the dark-only local editor now has 44 px Undo,
   Redo and History controls, Ctrl+Z and Ctrl+Shift+Z outside form fields, a
   history panel that restores earlier snapshots, outside-change and stale
