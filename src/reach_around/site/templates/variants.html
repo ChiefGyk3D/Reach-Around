@@ -16,36 +16,37 @@
 </div>
 {%- endmacro %}
 {% macro group(item, tile=false) -%}
-<section class="variant-group" id="group-{{ item.tab.intent }}">
+<div class="variant-group" id="group-{{ item.tab.intent }}">
 <h2>{{ item.tab.title }}</h2>
 <div class="variant-group-links">
 {% for link in item.links %}{{ link_anchor(link, click_tracking, " variant-tile" if tile else "") }}{% endfor %}
 </div>
-</section>
+</div>
 {%- endmacro %}
 {% macro panel(item) -%}
 <section class="variant-tab-panel" id="panel-{{ item.id }}" role="tabpanel" aria-labelledby="tab-{{ item.id }}">
 <h2>{{ item.title }}</h2>
+{% if item.id == "watch" %}{{ watch_links() }}{% endif %}
 {% for child in item.groups %}{{ group(child) }}{% endfor %}
 </section>
 {%- endmacro %}
 {% block content %}
 <div class="variant variant-{{ page_variant }}">
 {% if page_variant == "bento" %}
-<div class="variant-bento">
+<div class="variant-bento-grid">
 {{ status(true) }}
 {% for link in watch %}{{ link_anchor(link, click_tracking, " variant-watch-link variant-tile") }}{% endfor %}
 {% for item in groups %}{{ group(item, true) }}{% endfor %}
 </div>
 {% else %}
-<div class="variant-hero">{{ status() }}{{ watch_links() }}</div>
+<div class="variant-hero">{{ status() }}{% if page_variant != "tabs" %}{{ watch_links() }}{% endif %}</div>
 {% if page_variant == "chips" %}
 <nav class="variant-chip-nav" aria-label="Link groups">
 {% for item in groups %}<a href="#group-{{ item.tab.intent }}">{{ item.tab.title }}</a>{% endfor %}
 </nav>
 {% endif %}
 {% if page_variant == "tabs" %}
-<div class="variant-tab-list" role="tablist" aria-label="Link groups">
+<div class="variant-tab-list" role="tablist" aria-label="Link groups" hidden>
 {% for item in tab_panels %}<button id="tab-{{ item.id }}" type="button" role="tab" aria-controls="panel-{{ item.id }}" aria-selected="{{ 'true' if loop.first else 'false' }}" tabindex="{{ '0' if loop.first else '-1' }}">{{ item.label }}</button>{% endfor %}
 </div>
 <div class="variant-tab-panels">{% for item in tab_panels %}{{ panel(item) }}{% endfor %}</div>

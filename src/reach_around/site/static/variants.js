@@ -26,6 +26,7 @@
         select(next, true);
       });
     });
+    list.hidden = false;
     select(0, false);
   }
 })();

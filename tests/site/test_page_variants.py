@@ -162,9 +162,32 @@ def test_bento_uses_real_labeled_links_and_one_large_status_tile(
     assert html.count('class="variant-status variant-status-large') == 1
     assert "variant-tile" in html
     assert "Latest videos link 1" in html
-    bento = re.search(r'<div class="variant-bento".*?</div>\s*</div>', html, re.S)
+    bento = re.search(r'<div class="variant-bento-grid".*?</div>\s*</div>', html, re.S)
     assert bento is not None
     assert "aria-label=" not in bento.group()
+
+
+def test_bento_uses_one_centered_responsive_grid(tmp_path: Path) -> None:
+    out, html = build(tmp_path, "bento")
+    assert 'class="variant-bento-grid"' in html
+    assert html.count('class="variant-bento-grid"') == 1
+    css = static_text(out, "variants", "css")
+    assert ".variant-bento-grid { display: grid" in css
+    assert "width: min(100%, 68.75rem)" in css
+    assert "grid-template-columns: repeat(2, minmax(0, 1fr))" in css
+    assert "@media (min-width: 43.75rem)" in css
+    assert "grid-template-columns: repeat(4, minmax(0, 1fr))" in css
+    assert "@media (min-width: 68.75rem)" in css
+    assert "grid-template-columns: repeat(6, minmax(0, 1fr))" in css
+
+
+@pytest.mark.parametrize("layout", ["stack", "chips", "tabs"])
+def test_watch_links_stack_full_width_below_480px(tmp_path: Path, layout: str) -> None:
+    out, _html = build(tmp_path, layout)
+    css = static_text(out, "variants", "css")
+    assert ".variant-watch-link { flex: 1 1 12rem" in css
+    assert "@media (max-width: 29.999rem)" in css
+    assert ".variant-watch-link { flex-basis: 100%; width: 100%; }" in css
 
 
 def test_tabs_fallback_shows_every_heading_and_script_enhances_accessibly(
@@ -172,11 +195,22 @@ def test_tabs_fallback_shows_every_heading_and_script_enhances_accessibly(
 ) -> None:
     out, html = build(tmp_path, "tabs")
     assert html.count('role="tab"') == 5
-    assert 'role="tablist" aria-label="Link groups"' in html
+    assert 'role="tablist" aria-label="Link groups" hidden' in html
     assert 'role="tabpanel"' in html
     panels = re.search(r'<div class="variant-tab-panels".*?</div>\s*</div>', html, re.S)
     assert panels is not None
     assert not re.search(r"\shidden(?:\s|>)", panels.group())
+    watch_panel = re.search(
+        r'<section class="variant-tab-panel" id="panel-watch".*?</section>',
+        html,
+        re.S,
+    )
+    assert watch_panel is not None
+    assert watch_panel.group().count("variant-watch-link") == 2
+    hero = re.search(r'<div class="variant-hero">.*?</div>', html, re.S)
+    assert hero is not None
+    assert "variant-watch-link" not in hero.group()
+    assert "</section></section>" not in html
     for heading in ("Watch", "Community", "Support", "Work with me", "Shop"):
         assert re.search(rf"<h2[^>]*>{re.escape(heading)}</h2>", html)
     script_tag = re.search(
@@ -188,6 +222,10 @@ def test_tabs_fallback_shows_every_heading_and_script_enhances_accessibly(
     for key in ("ArrowLeft", "ArrowRight", "Home", "End"):
         assert key in script
     assert "aria-selected" in script and ".hidden" in script
+    assert "list.hidden = false" in script
+    assert ".variant-tab-list[hidden] { display: none; }" in static_text(
+        out, "variants", "css"
+    )
 
 
 def test_variant_css_pins_mobile_tablet_desktop_and_accessibility_rules(
@@ -198,9 +236,9 @@ def test_variant_css_pins_mobile_tablet_desktop_and_accessibility_rules(
     assert "min-height: var(--ra-tap)" in css
     assert "gap: var(--ra-space-2)" in css
     assert "grid-template-columns: repeat(2, minmax(0, 1fr))" in css
-    assert "@media (min-width: 48rem)" in css
+    assert "@media (min-width: 43.75rem)" in css
     assert "grid-template-columns: repeat(4, minmax(0, 1fr))" in css
-    assert "@media (min-width: 56rem)" in css
+    assert "@media (min-width: 68.75rem)" in css
     assert "grid-template-columns: repeat(6, minmax(0, 1fr))" in css
     assert "subgrid" not in css
     assert "prefers-reduced-motion: reduce" in css

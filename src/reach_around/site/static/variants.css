@@ -6,32 +6,40 @@
 .variant-status p { margin: 0; }
 .variant-status-text { font-size: var(--ra-text-md); font-weight: 700; }
 .variant-status-schedule { color: var(--ra-color-muted); }
-.variant-watch { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--ra-space-2); }
-.variant-watch-link { min-height: var(--ra-tap); height: 100%; }
+.variant-watch { display: flex; flex-wrap: wrap; gap: var(--ra-space-2); }
+.variant-watch-link { flex: 1 1 12rem; min-width: min(100%, 12rem); min-height: var(--ra-tap); height: 100%; }
 .variant-group { scroll-margin-top: calc(var(--ra-tap) + var(--ra-space-5) + env(safe-area-inset-top, 0px)); }
 .variant-group h2, .variant-tab-panel > h2 { margin: var(--ra-space-4) 0 var(--ra-space-2); font-size: var(--ra-text-lg); }
 .variant-group-links { gap: var(--ra-space-2); }
 .variant-chip-nav { position: sticky; top: env(safe-area-inset-top, 0px); z-index: 4; display: flex; gap: var(--ra-space-2); padding: var(--ra-space-2) max(var(--ra-space-2), env(safe-area-inset-right, 0px)) var(--ra-space-2) max(var(--ra-space-2), env(safe-area-inset-left, 0px)); overflow-x: auto; background-color: var(--ra-color-bg); }
 .variant-chip-nav a, .variant-tab-list button { display: inline-flex; flex: 0 0 auto; align-items: center; justify-content: center; min-height: var(--ra-tap); padding: var(--ra-space-2) var(--ra-space-4); border: var(--ra-rule-width) solid var(--ra-color-border); border-radius: var(--ra-button-radius); color: var(--ra-color-text); background-color: var(--ra-color-surface); font: inherit; text-decoration: none; }
-.variant-bento { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--ra-space-2); }
-.variant-status-large, .variant-bento .variant-group { grid-column: 1 / -1; }
-.variant-bento .variant-group-links { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.variant.variant-bento { width: min(100%, 68.75rem); align-self: center; }
+main:has(> .variant-bento) { width: 100%; max-width: 68.75rem; }
+.variant-bento-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--ra-space-2); }
+.variant-bento-grid .variant-status-large, .variant-bento-grid .variant-group > h2 { grid-column: 1 / -1; }
+.variant-bento-grid .variant-group, .variant-bento-grid .variant-group-links { display: contents; }
 .variant-tile { min-height: calc(var(--ra-tap) * 2); border-radius: var(--ra-card-radius); }
 .variant-tab-list { display: flex; gap: var(--ra-space-2); overflow-x: auto; }
+.variant-tab-list[hidden] { display: none; }
 .variant-tab-list button[aria-selected="true"] { border-color: var(--ra-color-accent); background-color: var(--ra-color-accent); color: var(--ra-color-on-accent); }
 .variant-tab-panel { padding-block: var(--ra-space-2); }
+@media (max-width: 29.999rem) {
+  .variant-watch-link { flex-basis: 100%; width: 100%; }
+}
+@media (min-width: 43.75rem) {
+  .variant-bento-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+}
 @media (min-width: 48rem) {
   .variant-group-links { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .variant-bento { grid-template-columns: repeat(4, minmax(0, 1fr)); }
-  .variant-bento .variant-group-links { grid-template-columns: repeat(4, minmax(0, 1fr)); }
 }
 @media (min-width: 56rem) {
   .variant { width: min(100%, var(--ra-column-tablet)); align-self: center; }
   .variant-chips { display: grid; grid-template-columns: 12rem minmax(0, 1fr); align-items: start; }
   .variant-chips .variant-hero { grid-column: 1 / -1; }
   .variant-chips .variant-chip-nav { top: calc(var(--ra-space-4) + env(safe-area-inset-top, 0px)); flex-direction: column; overflow: visible; }
-  .variant-bento { grid-template-columns: repeat(6, minmax(0, 1fr)); width: min(100%, var(--ra-column-desktop)); }
-  .variant-bento .variant-group-links { grid-template-columns: repeat(6, minmax(0, 1fr)); }
+}
+@media (min-width: 68.75rem) {
+  .variant-bento-grid { grid-template-columns: repeat(6, minmax(0, 1fr)); }
 }
 @media (prefers-reduced-motion: reduce) {
   .variant *, .variant *::before, .variant *::after { scroll-behavior: auto; transition: none; animation: none; }
