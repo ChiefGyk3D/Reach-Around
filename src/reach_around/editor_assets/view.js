@@ -96,6 +96,41 @@ export function renderStatus(node, id, values) {
   node.textContent = t(id, values);
 }
 
+function historyTime(value) {
+  const date = typeof value === "number" ? new Date(value * 1000) : new Date(value);
+  return Number.isNaN(date.getTime()) ? "" : new Intl.DateTimeFormat("en-US", {
+    dateStyle: "medium",
+    timeStyle: "short",
+  }).format(date);
+}
+
+export function renderHistory(container, listing, restore) {
+  container.replaceChildren();
+  const entries = listing && Array.isArray(listing.entries) ? listing.entries : [];
+  if (entries.length === 0) {
+    container.append(textual("p", "note", t("history.empty")));
+    return;
+  }
+  const list = make("ol", "history-list");
+  const currentIndex = entries.findIndex((entry) => entry.current === true);
+  entries.forEach((entry, index) => {
+    const item = make("li", "history-entry");
+    const label = typeof entry.label === "string" && entry.label ? entry.label : t("history.version");
+    const time = historyTime(entry.time);
+    item.append(textual("p", "", [label, time].filter(Boolean).join(". ")));
+    if (entry.current === true) {
+      item.append(textual("strong", "", t("history.current")));
+    } else if (index < currentIndex && Number.isInteger(entry.id)) {
+      const button = textual("button", "button button-small", t("action.restoreVersion"));
+      button.setAttribute("type", "button");
+      button.addEventListener("click", () => restore(entry.id));
+      item.append(button);
+    }
+    list.append(item);
+  });
+  container.append(list);
+}
+
 // Only a loopback address on plain http is ever loaded into the frame.
 export function safePreviewUrl(value) {
   if (typeof value !== "string" || value.length > 200) {
