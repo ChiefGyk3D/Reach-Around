@@ -200,6 +200,11 @@ def _withhold_views(report: dict[str, Any]) -> None:
             report[key].update(
                 state="withheld", rows=[], other_below_floor=0, more_rows=0
             )
+    pattern_views = report["patterns"]["views"]
+    if pattern_views["state"] != "not_in_export":
+        pattern_views.update(
+            state="withheld", rows=[], other_below_floor=0, more_rows=0
+        )
     bots = report["bots"]
     bots.update(classes=[], other_below_floor=0, total_views=None, views_withheld=True)
     daily = report["daily"]

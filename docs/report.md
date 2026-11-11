@@ -93,7 +93,7 @@ The time-pattern section cannot report new versus returning visitors. The
 privacy model keeps no identifier across UTC days. The raw view row's
 within-day `first` flag does not answer whether someone returned on another day.
 
-Without `--history` the report is unchanged. The HTML page and the Grafana export do not carry this block yet.
+Without `--history` the report is unchanged. The HTML owner report carries the time-pattern block; the Grafana export does not yet.
 
 ## The privacy floor
 

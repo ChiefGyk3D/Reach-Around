@@ -496,6 +496,9 @@ async function writeDay(db: D1Database, w: Work, p: DayPlan, nowMs: number, leas
     }
     stmts.push(
       db
+        .prepare(`DELETE FROM view_hour_daily WHERE site = ?1 AND day = ?2 AND clicks = 0 AND ${guard.sql}`)
+        .bind(w.site, w.day, ...guard.args),
+      db
         .prepare(`UPDATE view_hour_daily SET views = 0 WHERE site = ?1 AND day = ?2 AND ${guard.sql}`)
         .bind(w.site, w.day, ...guard.args),
       db

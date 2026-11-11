@@ -133,12 +133,34 @@ def test_unsafe_small_cuts_withhold_the_view_population(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     dims = [dim("browser", "safari", 2)]
-    _, out, _ = run(capsys, "--input", str(export(tmp_path, dims, views=6)), "--json")
+    path = export(tmp_path, dims, views=6)
+    data = json.loads(path.read_text(encoding="utf-8"))
+    data["tables"]["view_hour_daily"] = [
+        {
+            "site": "links",
+            "day": DAY,
+            "hour": 9,
+            "bot_class": "h",
+            "views": 6,
+            "clicks": 5,
+        }
+    ]
+    path.write_text(json.dumps(data), encoding="utf-8")
+    code, out, err = run(capsys, "--input", str(path), "--json")
+    assert code == 0, err
     report = json.loads(out)
     assert report["browsers"]["state"] == "withheld"
     assert report["funnel"]["page_views"] is None
     assert report["pages"]["state"] == "withheld"
     assert report["devices"]["rows"] == []
+    assert report["patterns"]["views"]["state"] == "withheld"
+    assert report["patterns"]["views"]["rows"] == []
+    pattern_csv = csv_files(report, generated_at=datetime(2026, 11, 8, tzinfo=UTC))[
+        "owner_time_patterns.csv"
+    ].decode("utf-8")
+    assert ["views", "", "", "withheld"] in list(
+        csv.reader(io.StringIO(pattern_csv, newline=""))
+    )
 
 
 def test_missing_dim_table_says_not_in_export(
@@ -207,6 +229,26 @@ def test_csv_is_deterministic_for_one_stamp() -> None:
     first = csv_files(report, generated_at=when)
     assert first == csv_files(report, generated_at=when)
     assert list(first) == list(csv_files(report, generated_at=when))
+
+
+def test_owner_time_patterns_csv_preserves_each_unavailable_metric_state(
+    tmp_path: Path,
+) -> None:
+    report = build_report(load_exports([export(tmp_path, GOOD)]))
+    rows = list(
+        csv.reader(
+            io.StringIO(
+                csv_files(report, generated_at=datetime(2026, 11, 8, tzinfo=UTC))[
+                    "owner_time_patterns.csv"
+                ].decode("utf-8"),
+                newline="",
+            )
+        )
+    )
+    assert rows[1:] == [
+        ["views", "", "", "not_in_export"],
+        ["clicks", "", "", "not_in_export"],
+    ]
 
 
 def test_metadata_has_generated_at_and_window(
