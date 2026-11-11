@@ -24,7 +24,7 @@
   margin: 0 0 var(--ra-space-2);
   font-family: var(--ra-font-heading);
   font-size: var(--ra-text-md);
-  letter-spacing: 0.04em;
+  letter-spacing: var(--ra-component-title-tracking);
   color: var(--ra-brand-text);
 }
 .ra-c-plate-text { margin: 0; color: var(--ra-brand-muted); }
@@ -32,7 +32,7 @@
 /* Corner-tick frame: four amber L ticks drawn on the corners of any box, from
    gradients only (no image, no inline style). Add it to a plate or any block. */
 .ra-c-ticks {
-  --ra-c-tick: 0.875rem;
+  --ra-c-tick: var(--ra-component-tick-size);
   --ra-c-tick-line: var(--ra-rule-accent-width);
   position: relative;
   isolation: isolate;
@@ -55,7 +55,7 @@
   background-repeat: no-repeat;
 }
 .ra-c-ticks--quiet::before { opacity: 0.5; }
-.ra-c-ticks--glow { box-shadow: 0 0 1.5rem var(--ra-brand-glow); }
+.ra-c-ticks--glow { box-shadow: 0 0 var(--ra-component-glow-size) var(--ra-brand-glow); }
 
 /* Chip: a small square label. Static, or a link or button when interactive. */
 .ra-c-chip {
@@ -63,13 +63,13 @@
   display: inline-flex;
   align-items: center;
   gap: var(--ra-space-1);
-  min-height: 1.75rem;
+  min-height: var(--ra-component-chip-min-height);
   padding: var(--ra-space-1) var(--ra-space-3);
   font-family: var(--ra-font-heading);
   font-size: var(--ra-text-xs);
   font-weight: 600;
-  line-height: 1.2;
-  letter-spacing: 0.08em;
+  line-height: var(--ra-component-control-line-height);
+  letter-spacing: var(--ra-component-control-tracking);
   text-transform: uppercase;
   text-decoration: none;
   color: var(--ra-brand-text);
@@ -88,8 +88,8 @@ a.ra-c-chip, button.ra-c-chip {
 @media (pointer: coarse) {
   a.ra-c-chip, button.ra-c-chip { min-height: var(--ra-tap); padding-inline: var(--ra-space-4); }
 }
-a.ra-c-chip:is(:hover, .is-hover), button.ra-c-chip:is(:hover, .is-hover), span.ra-c-chip.is-hover { border-color: var(--ra-brand-amber); color: var(--ra-brand-amber); }
-.ra-c-chip.ra-c-chip[aria-pressed="true"], .ra-c-chip.ra-c-chip[aria-current] {
+a.ra-c-chip:not(.ra-c-chip--solid):is(:hover, .is-hover), button.ra-c-chip:not(.ra-c-chip--solid):is(:hover, .is-hover), span.ra-c-chip:not(.ra-c-chip--solid).is-hover { border-color: var(--ra-brand-amber); color: var(--ra-brand-amber); }
+.ra-c-chip.ra-c-chip[aria-pressed="true"], .ra-c-chip.ra-c-chip[aria-current]:not([aria-current="false"]) {
   color: var(--ra-brand-on-amber);
   background-color: var(--ra-brand-amber);
   border-color: var(--ra-brand-amber);
@@ -113,8 +113,8 @@ a.ra-c-chip:is(:hover, .is-hover), button.ra-c-chip:is(:hover, .is-hover), span.
   font-family: var(--ra-font-heading);
   font-size: var(--ra-text-sm);
   font-weight: 700;
-  line-height: 1.2;
-  letter-spacing: 0.08em;
+  line-height: var(--ra-component-control-line-height);
+  letter-spacing: var(--ra-component-control-tracking);
   text-transform: uppercase;
   text-align: center;
   text-decoration: none;
@@ -125,7 +125,7 @@ a.ra-c-chip:is(:hover, .is-hover), button.ra-c-chip:is(:hover, .is-hover), span.
   border-radius: var(--ra-radius-square);
   transition: background-color var(--ra-duration), border-color var(--ra-duration), color var(--ra-duration), box-shadow var(--ra-duration);
 }
-.ra-c-btn:is(:hover, .is-hover) { background-color: var(--ra-brand-amber); border-color: var(--ra-brand-text); box-shadow: 0 0 1rem var(--ra-brand-glow-strong); }
+.ra-c-btn:is(:hover, .is-hover) { background-color: var(--ra-brand-amber); border-color: var(--ra-brand-text); box-shadow: 0 0 var(--ra-component-button-glow-size) var(--ra-brand-glow-strong); }
 .ra-c-btn:is(:active, .is-active) { background-color: var(--ra-brand-plate); border-color: var(--ra-brand-amber); color: var(--ra-brand-amber); box-shadow: none; }
 .ra-c-btn--secondary { color: var(--ra-brand-amber); background-color: transparent; border-color: var(--ra-brand-amber); }
 .ra-c-btn--secondary:is(:hover, .is-hover) { color: var(--ra-brand-amber); background-color: var(--ra-brand-glow); border-color: var(--ra-brand-amber); box-shadow: none; }

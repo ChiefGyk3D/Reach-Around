@@ -21,7 +21,11 @@ The bridge declares `--ra-brand-amber`, `--ra-brand-on-amber`,
 `--ra-compat-shadow`, `--ra-color-black`, `--ra-font-mono`,
 `--ra-radius-square`, `--ra-rule-width` and `--ra-rule-accent-width` in
 addition to the semantic properties documented below. Component geometry and
-type metrics use the `--ra-component-*` tokens in the same bridge.
+type metrics use the `--ra-component-*` tokens in the same bridge:
+`--ra-component-button-glow-size`, `--ra-component-chip-min-height`,
+`--ra-component-control-line-height`, `--ra-component-control-tracking`,
+`--ra-component-glow-size`, `--ra-component-tick-size` and
+`--ra-component-title-tracking`.
 
 ## Shared components (S2)
 
