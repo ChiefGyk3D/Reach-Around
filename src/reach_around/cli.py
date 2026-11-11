@@ -56,6 +56,11 @@ def _parser() -> argparse.ArgumentParser:
     )
     build.add_argument("--overrides", type=Path, help=_OVERRIDES_HELP)
     build.add_argument(
+        "--assets-dir",
+        type=Path,
+        help="asset-set root (default: the directory containing --config)",
+    )
+    build.add_argument(
         "--manifest",
         type=Path,
         help="where to write the link manifest (default: <out>.manifest.json "
@@ -251,6 +256,7 @@ def _build(
     numbers_path: Path | None = None,
     inventory_path: Path | None = None,
     gated_out: Path | None = None,
+    assets_dir: Path | None = None,
 ) -> int:
     try:
         target = _manifest_target(out_dir, manifest_path, config_path)
@@ -278,7 +284,7 @@ def _build(
             today=today,
             protect=[config_path],
             overrides=overrides,
-            assets_dir=config_path.parent,
+            assets_dir=assets_dir if assets_dir is not None else config_path.parent,
             numbers=numbers,
             gated_out=gated_out,
             number_day=datetime.now(UTC).date(),
@@ -316,6 +322,7 @@ def main(argv: list[str] | None = None) -> int:
             args.numbers,
             args.assets_inventory,
             args.gated_out,
+            args.assets_dir,
         )
     if args.command == "serve":
         return _serve(args.config, args.host, args.port, args.overrides)

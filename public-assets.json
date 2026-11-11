@@ -1,0 +1,10 @@
+{
+  "roots": [
+    "examples/crypto/media",
+    "examples/instance/media"
+  ],
+  "files": {
+    "examples/crypto/media/qr-example.png": "30a4ccae76a27be3da57a21c7df92f48b46e90fd26b909fa0b034fbc1e9427b0",
+    "examples/instance/media/mascot.svg": "73e9847dc87705f6e9f14a321e553cc3553d077bd3d07344a4d4e21eaf9f5cf9"
+  }
+}
