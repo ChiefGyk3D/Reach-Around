@@ -100,17 +100,21 @@ week.
 
 This is the kit-specific extension to the
 [analytics operations runbook](#every-week-about-20-minutes) (#403). Follow the
-[hand-kept number hygiene](../CHANGELOG.md#unreleased) (#389); this list does
+[hand-kept number hygiene](config.md#hand-kept-numbers) (#389); this list does
 not replace either runbook. It assumes the private instance and deploy script
 are already configured as described in [deploy.md](deploy.md). Keep all values,
 exports and PDFs outside this public repository.
 
 Run these steps in order:
 
-1. Type each hand-kept number and its UTC `as_of` date into `site.yaml`. If the
-   instance has `numbers.history_file`, append the same observation for every
-   changed platform, replacing the placeholders and repeating the command as
-   needed:
+1. Update each hand-kept number and its UTC `as_of` date at its source. For a
+   typed platform count or a kit metric with `source: manual`, edit `site.yaml`.
+   For a kit metric with `source: counts`, update `numbers.json` with
+   `reach-around counts import` (preferred for a CSV) or edit that entry's value
+   and `as_of` date directly. If the instance has `numbers.history_file`, append
+   the same observation for every directly edited value, replacing the
+   placeholders and repeating the command as needed; `counts import` appends
+   imported observations itself.
 
    ```bash
    reach-around counts history-add --config site.yaml \
@@ -146,9 +150,12 @@ Run these steps in order:
    `counts stale` exits 0 and the production check passes. Never change an
    `as_of` date without obtaining the current value.
 
-5. Publish with the existing private deploy script. This runbook adds no
-   deployment setup; use the already-reviewed settings and approval described
-   in [deploy.md](deploy.md#a-private-deploy-script).
+5. Publish with the existing private deploy script. Set `KIT_KV_ID` in its
+   private settings file to the gated kit's KV namespace id. The script rebuilds
+   both outputs, uploads `gated-out/kit.html` to the Worker's private `KIT`
+   binding, and publishes only the public output to Pages. This runbook adds no
+   other deployment setup; use the already-reviewed settings and approval
+   described in [deploy.md](deploy.md#a-private-deploy-script).
 
    ```bash
    ~/private/deploy.sh ~/private/deploy.settings

@@ -91,7 +91,7 @@ def test_operations_kit_refresh_commands_are_in_run_order() -> None:
 def test_operations_kit_refresh_stops_on_stale_numbers_and_links_dependencies() -> None:
     section = operations_kit_refresh_section()
     assert "Do not publish while either command reports a stale number" in section
-    assert "[hand-kept number hygiene](../CHANGELOG.md#unreleased) (#389)" in section
+    assert "[hand-kept number hygiene](config.md#hand-kept-numbers) (#389)" in section
     assert (
         "[analytics operations runbook](#every-week-about-20-minutes) (#403)" in section
     )
