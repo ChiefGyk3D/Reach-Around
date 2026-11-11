@@ -195,6 +195,84 @@ test("error classes: stale, field, limit, auth, network, other", () => {
   assert.equal(store.classify(new Error("plain")).kind, "network");
 });
 
+test("state keeps undo, redo and outside-edit availability", () => {
+  const patched = store.patchFromState({
+    config: CONFIG,
+    hash: HASH,
+    can_undo: true,
+    can_redo: false,
+    outside_edit: true,
+  });
+  assert.equal(patched.canUndo, true);
+  assert.equal(patched.canRedo, false);
+  assert.equal(patched.outsideEdit, true);
+  assert.equal(store.patchFromState({}).canUndo, false);
+  assert.equal(store.patchFromState({}).canRedo, false);
+  assert.equal(store.patchFromState({}).outsideEdit, false);
+});
+
+test("history actions use the current hash and announce completed changes", async () => {
+  assert.equal(typeof store.createHistoryActions, "function");
+  const s = newStore();
+  s.set({ canUndo: true, canRedo: true, outsideEdit: false });
+  const calls = [];
+  const said = [];
+  const client = {
+    get: async (route) => {
+      calls.push(["GET", route]);
+      return { entries: [{ id: 4, label: "Changed title", time: "2026-11-10T13:00:00Z", hash: HASH }], current: 4 };
+    },
+    post: async (route, body) => {
+      calls.push(["POST", route, body]);
+      return reply(CONFIG, "b".repeat(64), { history: { label: "Changed title" } });
+    },
+  };
+  const history = store.createHistoryActions({ client, store: s, announce: (message) => said.push(message) });
+  assert.equal((await history.load()).entries[0].label, "Changed title");
+  await history.undo();
+  assert.deepEqual(calls[1], ["POST", "undo", { base: HASH }]);
+  await history.redo();
+  assert.deepEqual(calls[2], ["POST", "redo", { base: "b".repeat(64) }]);
+  await history.restore(4);
+  assert.deepEqual(calls[3], ["POST", "history/restore", { id: 4, base: "b".repeat(64) }]);
+  assert.ok(said.some((message) => message.startsWith("Undone:")));
+  assert.ok(said.some((message) => message.startsWith("Redone:")));
+  assert.ok(said.some((message) => message.startsWith("Restored:")));
+});
+
+test("outside-edit undo offers safe recovery and uses the fresh hash", async () => {
+  assert.equal(typeof store.createHistoryActions, "function");
+  const s = newStore();
+  const freshHash = "c".repeat(64);
+  const calls = [];
+  const client = {
+    post: async (route, body) => {
+      calls.push([route, body]);
+      if (calls.length === 1) {
+        throw new ApiError(409, "outside_edit", "changed outside", "", {
+          state: { config: CONFIG, hash: freshHash, can_undo: true, can_redo: false, outside_edit: true },
+        });
+      }
+      return reply(CONFIG, "d".repeat(64), { history: { label: "Earlier version" } });
+    },
+  };
+  const history = store.createHistoryActions({ client, store: s, announce() {} });
+  const refused = await history.undo();
+  assert.equal(refused.problem.kind, "outside-edit");
+  assert.equal(refused.problem.action, "Restore the earlier version");
+  assert.equal(s.get().outsideEdit, true);
+  await history.restoreEarlier();
+  assert.deepEqual(calls[1], ["undo", { base: freshHash, anyway: true }]);
+});
+
+test("editor shortcuts leave form editing alone", () => {
+  assert.equal(typeof store.historyShortcut, "function");
+  assert.equal(store.historyShortcut({ key: "z", ctrlKey: true, shiftKey: false, metaKey: false }, { tagName: "DIV", isContentEditable: false }), "undo");
+  assert.equal(store.historyShortcut({ key: "Z", ctrlKey: true, shiftKey: true, metaKey: false }, { tagName: "DIV", isContentEditable: false }), "redo");
+  assert.equal(store.historyShortcut({ key: "z", ctrlKey: true, shiftKey: false, metaKey: false }, { tagName: "INPUT", isContentEditable: false }), "");
+  assert.equal(store.historyShortcut({ key: "z", ctrlKey: false, shiftKey: false, metaKey: false }, { tagName: "DIV", isContentEditable: false }), "");
+});
+
 test("api.js carries the fresh state of a 409 and Retry-After of a 429", async () => {
   const make = (status, body, headers) => async () => ({
     ok: false,
@@ -289,6 +367,64 @@ test("saves run one at a time", async () => {
   release();
   await Promise.all([one, two]);
   assert.deepEqual(log, ["start creator.name", "end creator.name", "start creator.title", "end creator.title"]);
+});
+
+test("history waits for an in-flight save and uses the hash from its reply", async () => {
+  const s = newStore();
+  const log = [];
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const freshHash = "e".repeat(64);
+  const client = { post: async (route, body) => {
+    log.push(["start", route, body.base]);
+    if (route === "op") {
+      await gate;
+      s.set(store.patchFromState(reply(CONFIG, freshHash).state));
+    }
+    log.push(["end", route, body.base]);
+    return reply(CONFIG, freshHash);
+  } };
+  const operations = store.createOperationQueue();
+  const saver = store.createSaver({ client, store: s, announce() {}, operations });
+  const history = store.createHistoryActions({ client, store: s, announce() {}, operations });
+  const saving = saver.save(store.settingSteps(CONFIG, { "creator.name": "A" }).steps);
+  const undoing = history.undo();
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.deepEqual(log, [["start", "op", HASH]]);
+  release();
+  await Promise.all([saving, undoing]);
+  assert.deepEqual(log, [
+    ["start", "op", HASH],
+    ["end", "op", HASH],
+    ["start", "undo", freshHash],
+    ["end", "undo", freshHash],
+  ]);
+});
+
+test("an outside-change refresh replaces history metadata with the fresh state", async () => {
+  const s = newStore();
+  const freshHash = "f".repeat(64);
+  const fresh = {
+    config: { ...CONFIG, creator: { ...CONFIG.creator, name: "Outside" } },
+    hash: freshHash,
+    can_undo: false,
+    can_redo: true,
+    outside_edit: true,
+  };
+  const changed = await store.refreshOutsideState({
+    client: { get: async (route) => {
+      assert.equal(route, "state");
+      return fresh;
+    } },
+    store: s,
+  });
+  assert.equal(changed, true);
+  assert.equal(s.get().hash, freshHash);
+  assert.equal(s.get().canUndo, false);
+  assert.equal(s.get().canRedo, true);
+  assert.equal(s.get().outsideEdit, true);
+  assert.equal(s.get().outsideChanged, true);
+  assert.equal(s.get().message, "status.outside");
 });
 
 function draw(config = CONFIG, actions = {}) {
