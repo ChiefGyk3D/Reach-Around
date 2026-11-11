@@ -9,6 +9,16 @@ long, and how you honor a request to delete it. It is not legal advice, and the
 public privacy page your site shows is generated from `features.kit_gate`
 separately.
 
+## Live status request: draft for owner review
+
+When Live is enabled, your browser asks my site for the current stream status as
+soon as you open any tab page or the privacy page, then asks again every minute
+while the page is visible. My code sets no cookies and does not collect or store
+identifiers from those requests. The response contains a format version, a cache
+time, and the time the status was checked. For each stream it contains whether
+the stream is live, when it went live, and a fixed diagnostic code such as `ok`
+or `auth_failed`; the code never contains platform or visitor data.
+
 ## What a lead is
 
 A lead is one row in the Worker's D1 `leads` table: the address as the visitor
