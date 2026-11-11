@@ -6,9 +6,9 @@ Rendered from ``owner_view``, which is derived from the floored report and
 nothing else, so the page can show no figure the floored JSON does not hold.
 The file has inline CSS and inline SVG, no script, no font, no image, no link
 that loads anything, and a content security policy that blocks every request
-the page could make. It is dark only, has no animation, and puts a border on
-nothing (there are no buttons). It is for the owner to open locally; it is not
-a public page and the site build never includes it.
+the page could make. It is dark only, has no animation, and uses tokenized
+borders on its report plates (there are no buttons). It is for the owner to
+open locally; it is not a public page and the site build never includes it.
 
 Gaps (UTC days with no exported rows) are drawn as gaps; a day under the floor
 is drawn as a tick on the baseline, never as zero. Axis labels print only 0 and

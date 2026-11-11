@@ -9,8 +9,10 @@ from __future__ import annotations
 import csv
 import io
 import json
+import os
 import re
 import stat
+from collections.abc import Iterator
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -184,20 +186,54 @@ def test_layout_a_puts_the_shared_component_overview_before_details(
     assert "--ra-space-4" in page
 
 
+@pytest.fixture(scope="module")
+def owner_report_browser() -> Iterator[Any]:
+    playwright = pytest.importorskip("playwright.sync_api")
+    with playwright.sync_playwright() as driver:
+        browser = driver.chromium.launch(
+            args=["--no-sandbox"],
+            executable_path=os.environ.get("RA_CHROMIUM") or None,
+        )
+        yield browser
+        browser.close()
+
+
+@pytest.mark.visual
 @pytest.mark.parametrize(
-    ("width", "layout_rule"),
+    ("width", "columns"),
     [
-        (390, ".tiles,.charts,.cols,.cols2{grid-template-columns:minmax(0,1fr)}"),
-        (820, "@media(min-width:48rem)"),
-        (1440, "@media(min-width:70rem)"),
+        (390, {"tiles": 1, "charts": 1, "cols": 1, "cols2": 1}),
+        (820, {"tiles": 3, "charts": 2, "cols": 2, "cols2": 2}),
+        (1440, {"tiles": 3, "charts": 2, "cols": 3, "cols2": 2}),
     ],
 )
-def test_layout_a_has_a_mobile_first_rule_for_each_supported_width(
-    report: dict[str, Any], width: int, layout_rule: str
+def test_layout_a_computes_the_supported_viewport_layout_without_page_overflow(
+    report: dict[str, Any],
+    owner_report_browser: Any,
+    width: int,
+    columns: dict[str, int],
 ) -> None:
-    page = page_of(report)
-    assert layout_rule in page, width
-    assert ".wrap{max-width:100%;overflow-x:auto}" in page
+    context = owner_report_browser.new_context(viewport={"width": width, "height": 900})
+    browser_page = context.new_page()
+    browser_page.set_content(page_of(report), wait_until="load")
+
+    assert browser_page.evaluate("document.documentElement.scrollWidth") <= width
+    for class_name, expected in columns.items():
+        tracks = browser_page.locator(f".{class_name}").first.evaluate(
+            "element => getComputedStyle(element).gridTemplateColumns.split(' ').length"
+        )
+        assert tracks == expected, (width, class_name, tracks)
+
+    if width == 390:
+        chart_wraps = browser_page.locator(".charts .wrap")
+        assert chart_wraps.count() == 2
+        for index in range(chart_wraps.count()):
+            dimensions = chart_wraps.nth(index).evaluate(
+                "element => [element.clientWidth, element.scrollWidth]"
+            )
+            assert dimensions[1] > dimensions[0], dimensions
+
+    context.close()
 
 
 def test_window_is_the_last_seven_days_with_previous_window(
