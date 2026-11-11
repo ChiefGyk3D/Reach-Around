@@ -270,7 +270,10 @@ def test_manifest_lists_only_visible_links(tmp_path: Path) -> None:
     assert "spring-meetup" not in manifest.links
     assert manifest.links["example-mic"] == "https://shop.example.com/mic?ref=example"
     assert "gear-picks" not in manifest.links  # sections are not links
+    assert manifest.destination_kinds["example-mic"] == "link"
+    assert set(manifest.destination_kinds) == set(manifest.links)
     assert json.loads(manifest_json(manifest)) == {
+        "destination_kinds": manifest.destination_kinds,
         "links": manifest.links,
         "lead_retention_days": 30,
     }

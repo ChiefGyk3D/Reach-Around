@@ -287,6 +287,7 @@ def owner_view(report: dict[str, Any]) -> dict[str, Any]:
             "clicks": pattern_clicks,
         },
         "links": _links(report),
+        "social_icons": _links({**report, "links": report["social_icons"]}),
         "sources": _table(report["sources"]),
         "devices": _table(report["devices"]),
         "browsers": _table(report["browsers"]),

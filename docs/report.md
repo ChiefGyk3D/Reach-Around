@@ -546,8 +546,14 @@ Rules the page follows:
   bound too, a change to a hidden (below-floor) cell can refuse a repeat that
   looks identical; this is conservative, not a leak.
 
+The content-click section has CSS-only Links and Social icons tabs. The closed
+`link` or `social_icon` kind travels from the private build manifest through
+the click rows and rollups. Each tab is floored independently. An older export
+without the field is read as `link`. CSV writes `owner_links.csv` and
+`owner_social_icons.csv`.
+
 Not in this version (issue #438 stays open for them): the world map shaded by
-views, the Links and Social icons tabs and pagination (the page shows `--top`
-rows), and click rate by source, device and country (these need clicks and
+views, pagination (the page shows `--top` rows), and click rate by source,
+device and country (these need clicks and
 views for the same cut; the released clicks by source and country are shown
 beside the views tables instead).

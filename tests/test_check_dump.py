@@ -493,8 +493,11 @@ def insert(table: str, values: str, cols: str = "") -> str:
     [
         insert("counters", f"'x', '2026-01-01', {IPV4_INT}"),
         insert("counters", "'x', '2026-01-01', 16777216"),
-        insert("click_events", f"1, {IPV4_INT}, 'a', 'US', 'main', NULL"),
-        insert("click_events", f"{IPV4_INT}, 1792000000000, 'a', 'US', 'main', NULL"),
+        insert("click_events", f"1, {IPV4_INT}, 'a', 'US', 'main', NULL, 'link'"),
+        insert(
+            "click_events",
+            f"{IPV4_INT}, 1792000000000, 'a', 'US', 'main', NULL, 'link'",
+        ),
         insert("kit_meta", f"'k', {IPV4_INT}"),
         insert("view_meta", f"'k', '{IPV4_INT}'"),
         insert("view_meta", f"'k', {IPV4_INT}"),
@@ -522,7 +525,7 @@ def test_a_whole_number_address_in_a_numeric_column_is_caught(
     "stmt",
     [
         insert("counters", "'x', '2026-01-01', 1234"),
-        insert("click_events", "1, 1792000000000, 'a', 'US', 'main', NULL"),
+        insert("click_events", "1, 1792000000000, 'a', 'US', 'main', NULL, 'link'"),
         insert("kit_meta", "'last_purge_ts', 1792000000000"),
         insert("kit_meta", "'n', 12"),
         insert("view_meta", "'rolled_through', '2027-03-13'"),
@@ -539,7 +542,8 @@ def test_ordinary_numbers_pass(stmt: str, tmp_path: Path) -> None:
 def test_a_timestamp_outside_the_plausible_window_is_caught(tmp_path: Path) -> None:
     for ts in ("1792000000", "5", "99999999999999"):
         r = run(
-            SCHEMA_DUMP + insert("click_events", f"1, {ts}, 'a', 'US', 'main', NULL"),
+            SCHEMA_DUMP
+            + insert("click_events", f"1, {ts}, 'a', 'US', 'main', NULL, 'link'"),
             tmp_path=tmp_path,
         )
         assert r.returncode == 1, ts
@@ -646,7 +650,7 @@ def test_a_number_in_a_column_with_no_rule_is_refused(
     [
         ("counters", "'x', '2026-01-01', {n}"),
         ("kit_meta", "'k', {n}"),
-        ("click_events", "1, {n}, 'a', 'US', 'main', NULL"),
+        ("click_events", "1, {n}, 'a', 'US', 'main', NULL, 'link'"),
         ("view_meta", "'k', '{n}'"),
     ],
 )

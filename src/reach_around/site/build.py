@@ -18,7 +18,7 @@ from dataclasses import dataclass, field, replace
 from datetime import date
 from importlib import resources
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from jinja2 import Environment
 
@@ -88,6 +88,9 @@ class BuildManifest:
     # Days the Worker keeps a lead: the same config value the privacy page
     # prints. The deploy writes it to the Worker as LEAD_RETENTION_DAYS.
     lead_retention_days: int
+    destination_kinds: dict[str, Literal["link", "social_icon"]] = field(
+        default_factory=dict
+    )
     # The owner alerts choice rendered for the Worker's ALERTS_CONFIG, or None
     # when alerts are off (then the manifest has no such key).
     alerts_config: str | None = None
@@ -595,6 +598,9 @@ def _manifest(config: SiteConfig, shown: list[list[Block]]) -> BuildManifest:
         for link in _links_in(blocks)
         if not is_tab_ref(link.url)
     }
+    destination_kinds: dict[str, Literal["link", "social_icon"]] = {
+        ident: "link" for ident in links
+    }
     for blocks in shown:
         for block in blocks:
             if isinstance(block, Platforms):
@@ -603,11 +609,18 @@ def _manifest(config: SiteConfig, shown: list[list[Block]]) -> BuildManifest:
                     for ident, entry in zip(block.item_ids, block.items, strict=True)
                     if not is_tab_ref(entry.url)
                 )
+                destination_kinds.update(
+                    (ident, "social_icon")
+                    for ident, entry in zip(block.item_ids, block.items, strict=True)
+                    if not is_tab_ref(entry.url)
+                )
     card = config.profile_card
     if card is not None and card.button is not None:
         links[MEDIA_KIT_ID] = card.button.url
+        destination_kinds[MEDIA_KIT_ID] = "link"
     return BuildManifest(
         links=links,
+        destination_kinds=destination_kinds,
         lead_retention_days=config.privacy.lead_retention_days,
         alerts_config=alerts_worker_value(config.alerts),
     )
@@ -615,7 +628,11 @@ def _manifest(config: SiteConfig, shown: list[list[Block]]) -> BuildManifest:
 
 def manifest_json(manifest: BuildManifest) -> str:
     """The manifest file text. It is never written into the published site."""
+    destination_kinds = manifest.destination_kinds or {
+        ident: "link" for ident in manifest.links
+    }
     body: dict[str, object] = {
+        "destination_kinds": destination_kinds,
         "links": manifest.links,
         "lead_retention_days": manifest.lead_retention_days,
     }

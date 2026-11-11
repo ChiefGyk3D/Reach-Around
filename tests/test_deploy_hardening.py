@@ -337,12 +337,25 @@ def test_the_after_doppler_guard_bites() -> None:
 
 
 def run_derive(
-    tmp_path: Path, links: Any, link_ids: str | None
+    tmp_path: Path,
+    links: Any,
+    link_ids: str | None,
+    destination_kinds: Any | None = None,
+    keep_destination_kinds: bool = False,
 ) -> tuple[subprocess.CompletedProcess[str], str]:
     """Run the script with a GITHUB_OUTPUT file; return the result and its text."""
     manifest = tmp_path / "site-out.manifest.json"
     manifest.write_text(
-        json.dumps({"links": links, "lead_retention_days": 30}), encoding="utf-8"
+        json.dumps(
+            {
+                "links": links,
+                "destination_kinds": destination_kinds
+                if destination_kinds is not None
+                else {name: "link" for name in links},
+                "lead_retention_days": 30,
+            }
+        ),
+        encoding="utf-8",
     )
     out = tmp_path / "github-output"
     out.write_text("", encoding="utf-8")
@@ -359,7 +372,36 @@ def run_derive(
     )
     text = out.read_text(encoding="utf-8")
     # The retention line is covered by its own tests; these look at link_ids.
-    return done, text.replace("lead_retention_days=30\n", "")
+    text = text.replace("lead_retention_days=30\n", "")
+    if not keep_destination_kinds:
+        text = re.sub(r"^destination_kinds=.*\n", "", text, flags=re.M)
+    return done, text
+
+
+def test_destination_kinds_are_validated_and_emitted(tmp_path: Path) -> None:
+    links: dict[str, Any] = {"example-one": {}, "socials-example": {}}
+    done, out = run_derive(
+        tmp_path,
+        links,
+        None,
+        {"example-one": "link", "socials-example": "social_icon"},
+        True,
+    )
+    assert done.returncode == 0, done.stdout + done.stderr
+    assert (
+        'destination_kinds={"example-one":"link","socials-example":"social_icon"}\n'
+        in out
+    )
+
+    done, out = run_derive(
+        tmp_path,
+        links,
+        None,
+        {"example-one": "product", "socials-example": "link"},
+        True,
+    )
+    assert done.returncode == 1
+    assert "invalid destination_kinds" in done.stdout and out == ""
 
 
 def test_the_derived_list_is_the_builds_ids_sorted_and_compact(tmp_path: Path) -> None:

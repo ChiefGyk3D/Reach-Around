@@ -445,6 +445,11 @@ def test_each_platform_click_is_in_the_manifest(tmp_path: Path) -> None:
         "socials-kick": "https://example.com/kick",
         "socials-twitch-2": "https://example.com/twitch2",
     }
+    assert manifest.destination_kinds == {
+        "socials-twitch": "social_icon",
+        "socials-kick": "social_icon",
+        "socials-twitch-2": "social_icon",
+    }
     assert "socials-kick" in manifest_json(manifest)
 
 

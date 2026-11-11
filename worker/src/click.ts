@@ -200,6 +200,7 @@ export async function handleClick(request: Request, env: Env): Promise<Response>
     if (site === null) return noContent();
     if (killedSites(env.CLICKS_KILL_SITES).has(site.id)) return noContent(); // CONTROL:click-kill-site
     if (!site.linkIds.has(linkId)) return noContent();
+    const destinationKind = site.linkKinds.get(linkId) ?? "link";
 
     // 2b. Body: never read; ignored when it cannot be shown small.
     if (!(await bodyAcceptable(request))) return noContent();
@@ -227,8 +228,8 @@ export async function handleClick(request: Request, env: Env): Promise<Response>
     const now = Date.now();
     const src = clickSource(new URL(request.url), site.sources);
     const country = countryOf(request);
-    await env.DB.prepare("INSERT INTO click_events (ts, link_id, country, site, src) VALUES (?, ?, ?, ?, ?)")
-      .bind(now - (now % HOUR_MS), linkId, null, site.id, src) // country lives only in the aggregate counter
+    await env.DB.prepare("INSERT INTO click_events (ts, link_id, destination_kind, country, site, src) VALUES (?, ?, ?, ?, ?, ?)")
+      .bind(now - (now % HOUR_MS), linkId, destinationKind, null, site.id, src) // country lives only in the aggregate counter
       .run();
     // The marginal funnel counters (#331): a count per (day, link, label), no row per click. They run
     // apart from the raw row, so a missing table or a failure here never drops the raw click; a failure
@@ -239,6 +240,7 @@ export async function handleClick(request: Request, env: Env): Promise<Response>
           site: site.id,
           ts: now,
           linkId,
+          destinationKind,
           src,
           listsSources: site.sources !== undefined,
           country,

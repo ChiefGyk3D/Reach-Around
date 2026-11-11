@@ -38,6 +38,7 @@ export const MAX_MIN_CELL = 50;
 export const MAX_RAW_KEEP = 90;
 
 export type GeoLevel = "country" | "region" | "city";
+export type DestinationKind = "link" | "social_icon";
 
 export interface Site {
   id: string;
@@ -47,6 +48,8 @@ export interface Site {
   pages: ReadonlySet<string> | "html-200";
   /** Link or action id -> page id it belongs to, or "*" for no single page. */
   linkIds: ReadonlyMap<string, string>;
+  /** Link id -> closed report tab. Missing entries default to `link`. */
+  linkKinds: ReadonlyMap<string, DestinationKind>;
   geo?: GeoLevel;
   utmAllowlist?: string[];
   /** Closed list of `s` source labels (bio links and the like); absent means `s` is not read. */
@@ -66,13 +69,14 @@ export interface SitesEnv {
   SITE_HOST?: string;
   PAGE_IDS?: string;
   LINK_IDS?: string;
+  DESTINATION_KINDS?: string;
 }
 
 const SLUG = /^[a-z0-9][a-z0-9-]{0,39}$/;
 const SITE_ID = /^[a-z0-9][a-z0-9-]{0,19}$/;
 const UTM = /^[a-z0-9-]{1,30}$/;
 const LABEL = /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/;
-const SITE_KEYS = new Set(["hosts", "mode", "pages", "link_ids", "geo", "utm_allowlist", "sources", "min_cell", "raw_keep_days"]);
+const SITE_KEYS = new Set(["hosts", "mode", "pages", "link_ids", "destination_kinds", "geo", "utm_allowlist", "sources", "min_cell", "raw_keep_days"]);
 
 /** Lower-case host name: two or more labels, final label has a letter, no port, wildcard, path or IP literal. */
 export function validHost(host: unknown): host is string {
@@ -206,7 +210,18 @@ function buildSite(id: string, body: unknown): Site | null {
     }
   }
 
-  const site: Site = { id, hosts, mode, pages, linkIds };
+  const linkKinds = new Map<string, DestinationKind>();
+  if (body.destination_kinds !== undefined) {
+    if (!isPlainObject(body.destination_kinds)) return null;
+    if (Object.keys(body.destination_kinds).length > MAX_LINK_IDS) return null;
+    for (const [lid, kind] of Object.entries(body.destination_kinds)) {
+      if (!linkIds.has(lid) || (kind !== "link" && kind !== "social_icon")) return null;
+      linkKinds.set(lid, kind);
+    }
+  }
+  for (const lid of linkIds.keys()) if (!linkKinds.has(lid)) linkKinds.set(lid, "link");
+
+  const site: Site = { id, hosts, mode, pages, linkIds, linkKinds };
 
   if (body.geo !== undefined) {
     if (body.geo !== "country" && body.geo !== "region" && body.geo !== "city") return null;
@@ -279,7 +294,20 @@ function legacy(env: SitesEnv): SitesResult {
   const links = ids(env.LINK_IDS, (s) => s.length >= 1 && s.length <= 40 && !s.includes("/") && s !== "." && s !== "..") ?? [];
   const linkIds = new Map<string, string>();
   for (const l of links.slice(0, MAX_LINK_IDS)) linkIds.set(l, "*");
-  return { sites: [{ id: "links", hosts: [host], mode: "beacon", pages: new Set(pages), linkIds }], errors: [] };
+  const linkKinds = new Map<string, DestinationKind>([...linkIds.keys()].map((id) => [id, "link"]));
+  if (env.DESTINATION_KINDS !== undefined) {
+    try {
+      const parsed: unknown = JSON.parse(env.DESTINATION_KINDS);
+      if (!isPlainObject(parsed) || Object.keys(parsed).length !== linkIds.size) return { sites: [], errors: ["legacy-destination-kinds"] };
+      for (const [id, kind] of Object.entries(parsed)) {
+        if (!linkIds.has(id) || (kind !== "link" && kind !== "social_icon")) return { sites: [], errors: ["legacy-destination-kinds"] };
+        linkKinds.set(id, kind);
+      }
+    } catch {
+      return { sites: [], errors: ["legacy-destination-kinds"] };
+    }
+  }
+  return { sites: [{ id: "links", hosts: [host], mode: "beacon", pages: new Set(pages), linkIds, linkKinds }], errors: [] };
 }
 
 function parseSites(text: string): SitesResult {

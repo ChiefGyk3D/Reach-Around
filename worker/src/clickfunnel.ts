@@ -13,7 +13,7 @@
 // Caps. Once a (site, day) holds the per-table cap, or the site-wide daily click budget
 // is used up, a label that has no row yet goes into ONE overflow row per (site, day)
 // ('overflow-all', 'other' or 'ZZ'). Rows per (site, day) are therefore at most the cap
-// plus one. Counting never stops: existing cells and the overflow row keep adding.
+// plus one per destination kind. Counting never stops: existing cells and the overflow row keep adding.
 //
 // Seal. The hourly job (rollupClickFunnel) seals a day once it is closed plus a
 // grace period; the increment statements write nothing for a sealed day.
@@ -40,7 +40,7 @@ export const COUNTRY_MONTH_CAP = 400;
  * goes on (existing cells and the overflow row) and the day is recorded in `click_capacity`.
  */
 export const HOUR_BUDGET = 150;
-/** The one overflow link per (site, day) and per (site, month): every cell past the cap lands here. */
+/** The overflow link per (site, day/month, destination kind): every cell past the cap lands here. */
 export const OVERFLOW_LINK = "overflow-all";
 export const DAY_KEEP_DAYS = 90;
 /** Day cells go at this age even when their month could not be rolled up. */
@@ -74,30 +74,31 @@ export function utcMonth(ms: number): string {
  */
 export function clickCounterStatements(
   db: D1Database,
-  p: { site: string; ts: number; linkId: string; src: string | null; listsSources: boolean; country: string | null },
+  p: { site: string; ts: number; linkId: string; destinationKind?: "link" | "social_icon"; src: string | null; listsSources: boolean; country: string | null },
 ): D1PreparedStatement[] {
   const day = utcDay(p.ts);
   const hour = new Date(p.ts).getUTCHours();
+  const destinationKind = p.destinationKind ?? "link";
   const out: D1PreparedStatement[] = [];
   const guard = "WHERE NOT EXISTS (SELECT 1 FROM click_seal WHERE site = ?1 AND day = ?2) ";
   // A new cell is made only while this hour's slice of the budget lasts AND one of: the destination
   // is under its reserved cells (a `direct` cell is always reserved), or the general pool is not full.
-  // Anything else goes to ONE overflow row per (site, day). Existing cells and the overflow row always
+  // Anything else goes to one overflow row per (site, day, destination kind). Existing cells and the overflow row always
   // keep counting. Rows per (site, day) are at most the general cap plus (RESERVED_PER_LINK + 1) per
-  // destination plus the overflow row.
+  // destination-kind pair plus one overflow row per kind.
   // Shared: ?1 site, ?2 day, ?3 link, ?6 reserved per link, ?7 hour budget, ?8 overflow link, ?11 hour.
   // The fold test for one table: label, general cap and always-reserved label are the given parameters.
   const fold = (table: string, col: string, label: string, cap: string, direct: string) =>
-    `NOT (EXISTS (SELECT 1 FROM ${table} WHERE site = ?1 AND day = ?2 AND link_id = ?3 AND ${col} = ${label}) ` +
+    `NOT (EXISTS (SELECT 1 FROM ${table} WHERE site = ?1 AND day = ?2 AND link_id = ?3 AND destination_kind = ?16 AND ${col} = ${label}) ` +
     "OR (COALESCE((SELECT clicks FROM click_budget WHERE site = ?1 AND day = ?2 AND hour = ?11), 0) < ?7 AND (" +
-    `${label} = ${direct} OR (SELECT count(*) FROM ${table} WHERE site = ?1 AND day = ?2 AND link_id = ?3 AND ${col} <> ${direct}) < ?6 OR ` +
+    `${label} = ${direct} OR (SELECT count(*) FROM ${table} WHERE site = ?1 AND day = ?2 AND link_id = ?3 AND destination_kind = ?16 AND ${col} <> ${direct}) < ?6 OR ` +
     `(SELECT COALESCE(SUM(MAX(c - ?6, 0)), 0) FROM (SELECT count(*) AS c FROM ${table} WHERE site = ?1 AND day = ?2 ` +
-    `AND link_id <> ?8 AND ${col} <> ${direct} GROUP BY link_id)) < ${cap})))`;
+    `AND link_id <> ?8 AND ${col} <> ${direct} GROUP BY link_id, destination_kind)) < ${cap})))`;
   // ?4 label, ?5 cap, ?9 fold label, ?10 direct label.
   const insert = (table: string, col: string, conflict: string, direct: string) =>
     `WITH f(fold) AS (SELECT ${fold(table, col, "?4", "?5", direct)}) ` +
-    `INSERT INTO ${table} (site, day, link_id, ${col}, clicks) ` +
-    "SELECT ?1, ?2, CASE WHEN f.fold THEN ?8 ELSE ?3 END, CASE WHEN f.fold THEN ?9 ELSE ?4 END, 1 FROM f " +
+    `INSERT INTO ${table} (site, day, link_id, destination_kind, ${col}, clicks) ` +
+    "SELECT ?1, ?2, CASE WHEN f.fold THEN ?8 ELSE ?3 END, ?16, CASE WHEN f.fold THEN ?9 ELSE ?4 END, 1 FROM f " +
     `${guard}` +
     `ON CONFLICT (${conflict}) DO UPDATE SET clicks = clicks + 1`;
   const srcLabel = p.src ?? DIRECT;
@@ -115,26 +116,26 @@ export function clickCounterStatements(
       )
       .bind(
         p.site, day, p.linkId, srcLabel, SRC_DAY_CAP, RESERVED_PER_LINK, HOUR_BUDGET, OVERFLOW_LINK, null,
-        DIRECT, hour, countryLabel, COUNTRY_DAY_CAP, null, p.ts - (p.ts % HOUR_MS),
+        DIRECT, hour, countryLabel, COUNTRY_DAY_CAP, null, p.ts - (p.ts % HOUR_MS), destinationKind,
       ),
   );
   if (p.listsSources) {
     out.push(
       db
-        .prepare(insert("click_src_daily", "src", "site, day, link_id, src", "?10"))
-        .bind(p.site, day, p.linkId, srcLabel, SRC_DAY_CAP, RESERVED_PER_LINK, HOUR_BUDGET, OVERFLOW_LINK, OTHER, DIRECT, hour),
+        .prepare(insert("click_src_daily", "src", "site, day, link_id, destination_kind, src", "?10"))
+        .bind(p.site, day, p.linkId, srcLabel, SRC_DAY_CAP, RESERVED_PER_LINK, HOUR_BUDGET, OVERFLOW_LINK, OTHER, DIRECT, hour, null, null, null, null, destinationKind),
     );
   }
   out.push(
     db
-      .prepare(insert("click_country_daily", "country", "site, day, link_id, country", "''"))
-      .bind(p.site, day, p.linkId, countryLabel, COUNTRY_DAY_CAP, RESERVED_PER_LINK, HOUR_BUDGET, OVERFLOW_LINK, UNKNOWN_COUNTRY, null, hour),
+      .prepare(insert("click_country_daily", "country", "site, day, link_id, destination_kind, country", "''"))
+      .bind(p.site, day, p.linkId, countryLabel, COUNTRY_DAY_CAP, RESERVED_PER_LINK, HOUR_BUDGET, OVERFLOW_LINK, UNKNOWN_COUNTRY, null, hour, null, null, null, null, destinationKind),
   );
   // The hourly slice of the new-cell budget, AFTER the inserts: it counts the cells THIS click made.
   // A cell the insert just made holds exactly 1 click (an older cell holds more, and a folded click
   // makes no (link, label) cell), so click volume on existing cells never uses the budget up.
   const made = (table: string, col: string, label: string) =>
-    `(SELECT count(*) FROM ${table} WHERE site = ?1 AND day = ?2 AND link_id = ?3 AND ${col} = ${label} AND clicks = 1)`;
+    `(SELECT count(*) FROM ${table} WHERE site = ?1 AND day = ?2 AND link_id = ?3 AND destination_kind = ?7 AND ${col} = ${label} AND clicks = 1)`;
   const madeSrc = p.listsSources ? `${made("click_src_daily", "src", "?4")} + ` : "";
   const madeAll = `${madeSrc}${made("click_country_daily", "country", "?5")}`;
   out.push(
@@ -144,7 +145,7 @@ export function clickCounterStatements(
           `${guard}AND (${madeAll}) > 0 ` +
           "ON CONFLICT (site, day, hour) DO UPDATE SET clicks = clicks + excluded.clicks",
       )
-      .bind(p.site, day, p.linkId, srcLabel, countryLabel, hour),
+      .bind(p.site, day, p.linkId, srcLabel, countryLabel, hour, destinationKind),
   );
   return out;
 }
@@ -167,12 +168,12 @@ export interface FunnelRollupResult {
 /** Monthly sum of one daily table, folding everything past the top `cap` cells into the fold label. */
 function monthSql(daily: string, monthly: string, col: string, fold: string): string {
   return (
-    `INSERT INTO ${monthly} (site, month, link_id, ${col}, clicks) ` +
-    `WITH s AS (SELECT link_id, ${col} AS v, SUM(clicks) AS c FROM ${daily} ` +
-    "WHERE site = ?1 AND substr(day, 1, 7) = ?2 GROUP BY link_id, v), " +
-    "r AS (SELECT link_id, v, c, ROW_NUMBER() OVER (ORDER BY (link_id = ?4) ASC, c DESC, link_id, v) AS rn FROM s) " +
-    `SELECT ?1, ?2, CASE WHEN rn <= ?3 THEN link_id ELSE ?4 END, CASE WHEN rn <= ?3 THEN v ELSE '${fold}' END, SUM(c) FROM r ` +
-    `GROUP BY CASE WHEN rn <= ?3 THEN link_id ELSE ?4 END, CASE WHEN rn <= ?3 THEN v ELSE '${fold}' END`
+    `INSERT INTO ${monthly} (site, month, link_id, destination_kind, ${col}, clicks) ` +
+    `WITH s AS (SELECT link_id, destination_kind AS k, ${col} AS v, SUM(clicks) AS c FROM ${daily} ` +
+    "WHERE site = ?1 AND substr(day, 1, 7) = ?2 GROUP BY link_id, k, v), " +
+    "r AS (SELECT link_id, k, v, c, ROW_NUMBER() OVER (ORDER BY (link_id = ?4) ASC, c DESC, link_id, v) AS rn FROM s) " +
+    `SELECT ?1, ?2, CASE WHEN rn <= ?3 THEN link_id ELSE ?4 END, k, CASE WHEN rn <= ?3 THEN v ELSE '${fold}' END, SUM(c) FROM r ` +
+    `GROUP BY CASE WHEN rn <= ?3 THEN link_id ELSE ?4 END, k, CASE WHEN rn <= ?3 THEN v ELSE '${fold}' END`
   );
 }
 

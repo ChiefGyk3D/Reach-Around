@@ -6,7 +6,7 @@ import { describe, expect, it } from "vitest";
 import { MAX_SITES, killedSites, loadSites, siteForRequest } from "../../src/sites";
 
 const good = {
-  links: { hosts: ["links.example.test"], mode: "beacon", pages: ["home", "support"], link_ids: { "example-one": "home" } },
+  links: { hosts: ["links.example.test"], mode: "beacon", pages: ["home", "support"], link_ids: { "example-one": "home" }, destination_kinds: { "example-one": "social_icon" } },
   blog: {
     hosts: ["blog.example.test"],
     mode: "edge",
@@ -32,18 +32,27 @@ describe("loadSites: valid config", () => {
     expect(blog.utmAllowlist).toEqual(["bluesky", "mail"]);
     expect(blog.sources).toEqual(["bio-ig", "mail"]);
     expect(blog.linkIds.get("support-cta")).toBe("*");
+    expect(blog.linkKinds.get("support-cta")).toBe("link");
     const links = r.sites.find((s) => s.id === "links")!;
+    expect(links.linkKinds.get("example-one")).toBe("social_icon");
     expect((links.pages as ReadonlySet<string>).has("home")).toBe(true);
     expect(links.geo).toBeUndefined();
     expect(links.sources).toBeUndefined();
   });
 
+  it("refuses_a_destination_kind_outside_the_closed_vocabulary", () => {
+    const r = load({ links: { ...good.links, destination_kinds: { "example-one": "product" } } });
+    expect(r.sites).toEqual([]);
+    expect(r.errors).toEqual(["site-bad:links"]);
+  });
+
   it("legacy_one_site_shorthand_still_works", () => {
-    const r = loadSites({ SITE_HOST: "Links.Example.Test", PAGE_IDS: '["home"]', LINK_IDS: '["a","b"]' });
+    const r = loadSites({ SITE_HOST: "Links.Example.Test", PAGE_IDS: '["home"]', LINK_IDS: '["a","b"]', DESTINATION_KINDS: '{"a":"social_icon","b":"link"}' });
     expect(r.errors).toEqual([]);
     expect(r.sites).toHaveLength(1);
     expect(r.sites[0]).toMatchObject({ id: "links", hosts: ["links.example.test"], mode: "beacon" });
     expect([...r.sites[0]!.linkIds.keys()]).toEqual(["a", "b"]);
+    expect(r.sites[0]!.linkKinds.get("a")).toBe("social_icon");
   });
 
   it("nothing_configured_means_no_sites_and_no_error", () => {

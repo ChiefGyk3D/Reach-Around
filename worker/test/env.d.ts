@@ -7,6 +7,7 @@ declare global {
       DB: D1Database;
       SITE_HOST: string;
       LINK_IDS: string;
+      DESTINATION_KINDS: string;
       TEST_MIGRATIONS: D1Migration[];
     }
   }

@@ -36,6 +36,7 @@ import sys
 
 ID = re.compile(r"[a-z0-9-]{1,40}")  # used with fullmatch: `$` would allow "\n"
 MAX_LINK_IDS = 200  # worker/src/sites.ts MAX_LINK_IDS (a test keeps them equal)
+DESTINATION_KINDS = {"link", "social_icon"}
 # worker/src/kit/leadretention.ts MAX_LEAD_RETENTION_DAYS (a test keeps them equal)
 MAX_LEAD_RETENTION_DAYS = 365
 PLAIN_DAYS = re.compile(r"[1-9][0-9]{0,2}")  # used with fullmatch
@@ -137,6 +138,7 @@ def main(argv: list[str]) -> int:
         with open(argv[1], encoding="utf-8") as handle:
             document = json.load(handle)
         built = valid_ids(document["links"])
+        kinds = document.get("destination_kinds")
         days = retention_days(document["lead_retention_days"])
         raw = os.environ.get("LINK_IDS", "")
         allowed = valid_ids(json.loads(raw)) if raw else set()
@@ -172,6 +174,17 @@ def main(argv: list[str]) -> int:
             )
     if built is None:
         return refuse("the manifest holds a link id outside the allowed grammar")
+    if kinds is None:
+        kinds = {name: "link" for name in built}
+    if (
+        type(kinds) is not dict
+        or set(kinds) != built
+        or not all(
+            type(value) is str and value in DESTINATION_KINDS
+            for value in kinds.values()
+        )
+    ):
+        return refuse("the manifest has invalid destination_kinds")
     if allowed is None:
         return refuse("LINK_IDS holds a value outside the allowed grammar")
     if not built:
@@ -192,6 +205,11 @@ def main(argv: list[str]) -> int:
         derived = json.dumps(sorted(built), separators=(",", ":"))
         with open(out, "a", encoding="utf-8") as handle:
             handle.write(f"link_ids={derived}\n")
+            handle.write(
+                "destination_kinds="
+                + json.dumps(kinds, sort_keys=True, separators=(",", ":"))
+                + "\n"
+            )
             handle.write(f"lead_retention_days={days}\n")
             if alerts is not None:
                 handle.write(f"alerts_config={alerts}\n")
