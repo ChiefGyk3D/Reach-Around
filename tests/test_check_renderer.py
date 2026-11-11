@@ -181,6 +181,26 @@ def test_a_bad_config_renders_a_numbered_plain_sentence(
     assert "Nothing was built" in text
 
 
+def test_a_bad_dsn_env_names_the_only_accepted_variable(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    config = GOOD_YAML.replace(
+        "tabs:\n",
+        "store: {kind: postgres, dsn_env: SYNTHETIC_CONNECTION}\ntabs:\n",
+    )
+    code, report = engine_report(tmp_path, capsys, config)
+    assert code == 2
+    fix = "Set dsn_env to REACH_AROUND_DSN. Never put the password itself there."
+    assert report["errors"][0]["fix"] == fix
+
+    done, out = render(tmp_path, wrap(code, report))
+    assert done.returncode == 0, done.stderr
+    assert (
+        "Fix: Set dsn\\_env to REACH\\_AROUND\\_DSN\\. Never put the password "
+        "itself there\\."
+    ) in body(out)
+
+
 def test_changed_blocks_are_listed(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

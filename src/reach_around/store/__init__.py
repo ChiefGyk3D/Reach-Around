@@ -54,6 +54,8 @@ def open_store(
 ) -> Store:
     """Open the configured store, migrating it unless ``migrate`` is false."""
     if config.kind == "postgres":
+        if type(config.dsn_env) is not str or config.dsn_env != "REACH_AROUND_DSN":
+            raise StoreError("bad_connection_setting")
         # Seam for Task 3: PostgresStore(env[config.dsn_env]) goes here.
         raise StoreError("the postgres store is not available in this build")
     store = SqliteStore(config.path)
