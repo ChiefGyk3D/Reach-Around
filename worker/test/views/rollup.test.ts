@@ -391,11 +391,15 @@ describe("rollup budget", () => {
     await insert(randomRows(5, N).map((r) => ({ ...r, ts: D13 + (r.ts % DAY) })));
     const spy = spyDb();
     const res = await rollupClosedDays(envOf({ DB: spy.DB }), NOW);
+    const hourRows = (await q<{ n: number }>("SELECT COUNT(*) AS n FROM view_hour_daily"))[0]!.n;
     // Documented: at most one core row, one geo row and seven dimension rows
     // per raw row, plus one log row and the heartbeat (5 keys).
-    expect(res.rows).toBeLessThanOrEqual(N * 9 + 1);
-    // Tighter on real distributions: the random generator has few distinct values.
-    expect(res.rows).toBeLessThan(N);
+    expect(res.rows - hourRows).toBeLessThanOrEqual(N * 9 + 1);
+    // Tighter on real distributions: the random generator has few distinct
+    // values. Hour rows are a separate, closed 24 x 4 vocabulary and were not
+    // part of this bound when it was introduced.
+    expect(res.rows - hourRows).toBeLessThan(N);
+    expect(hourRows).toBeLessThanOrEqual(24 * 4);
     expect(spy.calls.rowsWritten).toBeLessThanOrEqual(res.rows + 10); // heartbeat keys and the lease
     expect(spy.calls.rowsWritten).toBeGreaterThanOrEqual(res.rows);
   });
