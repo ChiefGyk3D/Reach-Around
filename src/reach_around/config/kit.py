@@ -254,15 +254,67 @@ class ServicePackage(_Model):
     price_text: Text80 | None = None
 
 
+Percentage = Annotated[StrictInt, Field(ge=0, le=100)]
+
+
+class GenderSplit(_Model):
+    male: Percentage
+    female: Percentage
+
+    @model_validator(mode="after")
+    def _totals_one_hundred(self) -> GenderSplit:
+        if self.male + self.female != 100:
+            raise ValueError("male and female gender percentages must total 100")
+        return self
+
+
+class AgeSplit(_Model):
+    range: Text30
+    all: Percentage
+    male: Percentage
+    female: Percentage
+
+
+class PlaceShare(_Model):
+    name: Text80
+    percentage: Percentage
+
+
 class Demographic(_Model):
-    label: Text60
-    value: Text80
+    platform: str
     as_of: date
+    gender: GenderSplit
+    ages: list[AgeSplit] = Field(min_length=1, max_length=12)
+    countries: list[PlaceShare] = Field(min_length=1, max_length=10)
+    cities: list[PlaceShare] = Field(default_factory=list, max_length=10)
+
+    @field_validator("platform")
+    @classmethod
+    def _known_platform(cls, value: str) -> str:
+        if value == "youtube":
+            raise ValueError(
+                "YouTube Analytics demographics stay in the internal dashboard "
+                "and are refused in the media kit"
+            )
+        if value not in PLATFORM_SLUGS:
+            raise ValueError(
+                "platform must be a platform name from the platforms block"
+            )
+        return value
 
     @field_validator("as_of", mode="before")
     @classmethod
     def _as_of_is_a_date(cls, value: object) -> object:
         return _iso_date(value)
+
+    @model_validator(mode="after")
+    def _chart_rules(self) -> Demographic:
+        for field in ("all", "male", "female"):
+            if sum(getattr(row, field) for row in self.ages) != 100:
+                raise ValueError(f"{field.title()} age percentages must total 100")
+        if self.platform == "threads" and self.cities:
+            raise ValueError("Threads demographics must not include cities")
+        return self
 
 
 # A plain address in the shape the Worker's form grammar accepts for visitors:
@@ -704,7 +756,9 @@ def kit_warnings(
                 )
             )
     for demo in kit.demographics:
-        found.append(_age_warning(f"kit demographic {demo.label!r}", demo.as_of, today))
+        found.append(
+            _age_warning(f"kit demographic {demo.platform!r}", demo.as_of, today)
+        )
     return [w for w in found if w is not None]
 
 

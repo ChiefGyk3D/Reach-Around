@@ -156,6 +156,35 @@
   font-variant-numeric: tabular-nums;
 }
 
+.kit-demographic { display: grid; gap: var(--ra-space-3); padding: var(--ra-space-4); border: 1px solid var(--ra-color-border); border-radius: var(--ra-card-radius); background: var(--ra-color-surface); }
+.kit-demographic h5 { margin: 0; font-size: var(--ra-text-base); }
+.kit-demographic-grid, .kit-place-grid { display: grid; gap: var(--ra-space-4); }
+.kit-gender { display: grid; grid-template-columns: minmax(7rem, 10rem) 1fr; gap: var(--ra-space-3); align-items: center; margin: 0; }
+.kit-gender figcaption { grid-column: 1 / -1; }
+.kit-gender-pie { width: 100%; max-width: 10rem; transform: rotate(-90deg); }
+.kit-gender-pie circle { fill: none; stroke-width: 8; }
+.kit-pie-base { stroke: var(--ra-color-border); }
+.kit-pie-male { stroke: var(--ra-color-link); }
+.kit-pie-female { stroke: var(--ra-color-accent); }
+.kit-chart-key { display: grid; gap: var(--ra-space-2); margin: 0; padding: 0; list-style: none; }
+.kit-key { display: inline-block; width: 1rem; height: 1rem; margin-inline-end: var(--ra-space-2); border: 2px solid var(--ra-color-text); vertical-align: text-bottom; }
+.kit-key-male { background: var(--ra-color-link); border-radius: 50%; }
+.kit-key-female { background: var(--ra-color-accent); }
+.kit-age-switch { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--ra-space-2); }
+.kit-age-switch label { display: grid; min-height: var(--ra-tap); padding-inline: var(--ra-space-3); place-items: center; border: 1px solid var(--ra-color-border); border-radius: var(--ra-button-radius); font-weight: 700; cursor: pointer; }
+.kit-age-switch input:focus-visible + label { outline: 3px solid var(--ra-color-link); outline-offset: 2px; }
+.kit-age-switch input:checked + label { border-color: var(--ra-color-link); background: var(--ra-color-link); color: var(--ra-color-background); }
+.kit-age-bars { grid-column: 1 / -1; display: grid; gap: var(--ra-space-2); }
+.kit-bar-row { display: grid; grid-template-columns: minmax(5.5rem, 1fr) minmax(6rem, 3fr) 3rem; gap: var(--ra-space-2); align-items: center; }
+.kit-bar-row progress { width: 100%; height: 1rem; accent-color: var(--ra-color-accent); }
+.kit-bar-row strong { text-align: end; font-variant-numeric: tabular-nums; }
+.kit-age-male, .kit-age-female { display: none; }
+.kit-age-switch input[id$="-male"]:checked ~ .kit-age-bars .kit-age-all, .kit-age-switch input[id$="-female"]:checked ~ .kit-age-bars .kit-age-all { display: none; }
+.kit-age-switch input[id$="-male"]:checked ~ .kit-age-bars .kit-age-male, .kit-age-switch input[id$="-female"]:checked ~ .kit-age-bars .kit-age-female { display: grid; }
+@media (min-width: 42rem) {
+  .kit-demographic-grid, .kit-place-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
 .kit-gate { display: grid; gap: var(--ra-space-3); max-width: 28rem; }
 .kit-field { display: grid; gap: var(--ra-space-1); }
 .kit-gate label { font-weight: 600; }

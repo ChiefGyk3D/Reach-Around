@@ -367,7 +367,13 @@ def test_a_gated_date_is_guarded_but_a_date_that_is_also_public_is_not(
 ) -> None:
     kit = gated_doc()
     kit["demographics"] = [
-        {"label": "Top city", "value": "Exampleville", "as_of": "2031-07-04"}
+        {
+            "platform": "instagram",
+            "as_of": "2031-07-04",
+            "gender": {"male": 50, "female": 50},
+            "ages": [{"range": "18-24", "all": 100, "male": 100, "female": 100}],
+            "countries": [{"name": "Exampleville", "percentage": 100}],
+        }
     ]
     config = make_config(kit)
     # 2027-03-01 is a public metric date and a safe repeat; the build is fine

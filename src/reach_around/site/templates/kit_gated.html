@@ -113,17 +113,56 @@
 {% if kit.demographics %}
 <section class="kit-demographics" aria-labelledby="kit-demographics-title">
 <h3 id="kit-demographics-title">Audience details</h3>
-<table class="kit-table">
-<caption class="sr-only">Audience details, each with the date it was read</caption>
-<thead>
-<tr><th scope="col">Detail</th><th scope="col">Value</th><th scope="col">As of</th></tr>
-</thead>
-<tbody>
 {% for demo in kit.demographics %}
-<tr><th scope="row">{{ demo.label }}</th><td>{{ demo.value }}</td><td><time datetime="{{ demo.as_of }}">{{ demo.as_of }}</time></td></tr>
+<article class="kit-demographic" aria-labelledby="kit-demo-{{ loop.index }}-title">
+<h4 id="kit-demo-{{ loop.index }}-title">{{ demo.platform_name }}</h4>
+<p class="kit-note">As of <time datetime="{{ demo.as_of }}">{{ demo.as_of }}</time> UTC</p>
+<div class="kit-demographic-grid">
+<figure class="kit-gender">
+<figcaption><strong>Gender</strong></figcaption>
+<svg class="kit-gender-pie" viewBox="0 0 42 42" role="img" aria-label="{{ demo.platform_name }} gender: {{ demo.gender.male }}% male, {{ demo.gender.female }}% female">
+<circle class="kit-pie-base" cx="21" cy="21" r="15.9" pathLength="100"></circle>
+<circle class="kit-pie-male" cx="21" cy="21" r="15.9" pathLength="100" stroke-dasharray="{{ demo.gender.male }} 100"></circle>
+<circle class="kit-pie-female" cx="21" cy="21" r="15.9" pathLength="100" stroke-dasharray="{{ demo.gender.female }} 100" stroke-dashoffset="-{{ demo.gender.male }}"></circle>
+</svg>
+<ul class="kit-chart-key">
+<li><span class="kit-key kit-key-male" aria-hidden="true"></span>{{ demo.gender.male }}% male</li>
+<li><span class="kit-key kit-key-female" aria-hidden="true"></span>{{ demo.gender.female }}% female</li>
+</ul>
+</figure>
+<section class="kit-age" aria-labelledby="kit-demo-{{ loop.index }}-age-title">
+<h5 id="kit-demo-{{ loop.index }}-age-title">Age</h5>
+<div class="kit-age-switch">
+<input class="sr-only" type="radio" name="kit-age-{{ loop.index }}" id="kit-age-{{ loop.index }}-all" checked>
+<label for="kit-age-{{ loop.index }}-all">All</label>
+<input class="sr-only" type="radio" name="kit-age-{{ loop.index }}" id="kit-age-{{ loop.index }}-male">
+<label for="kit-age-{{ loop.index }}-male">Male</label>
+<input class="sr-only" type="radio" name="kit-age-{{ loop.index }}" id="kit-age-{{ loop.index }}-female">
+<label for="kit-age-{{ loop.index }}-female">Female</label>
+<div class="kit-age-bars">
+{% for age in demo.ages %}
+<div class="kit-bar-row kit-age-all"><span>{{ age.range }}</span><progress value="{{ age.all }}" max="100" aria-label="{{ age.range }}, all: {{ age.all }}%">{{ age.all }}%</progress><strong>{{ age.all }}%</strong></div>
+<div class="kit-bar-row kit-age-male"><span>{{ age.range }}</span><progress value="{{ age.male }}" max="100" aria-label="{{ age.range }}, male: {{ age.male }}%">{{ age.male }}%</progress><strong>{{ age.male }}%</strong></div>
+<div class="kit-bar-row kit-age-female"><span>{{ age.range }}</span><progress value="{{ age.female }}" max="100" aria-label="{{ age.range }}, female: {{ age.female }}%">{{ age.female }}%</progress><strong>{{ age.female }}%</strong></div>
 {% endfor %}
-</tbody>
-</table>
+</div>
+</div>
+</section>
+</div>
+<div class="kit-place-grid">
+<section aria-labelledby="kit-demo-{{ loop.index }}-countries-title">
+<h5 id="kit-demo-{{ loop.index }}-countries-title">Top countries</h5>
+{% for place in demo.countries %}<div class="kit-bar-row"><span>{{ place.name }}</span><progress value="{{ place.percentage }}" max="100" aria-label="{{ place.name }}: {{ place.percentage }}%">{{ place.percentage }}%</progress><strong>{{ place.percentage }}%</strong></div>{% endfor %}
+</section>
+{% if demo.cities %}
+<section aria-labelledby="kit-demo-{{ loop.index }}-cities-title">
+<h5 id="kit-demo-{{ loop.index }}-cities-title">Top cities</h5>
+{% for place in demo.cities %}<div class="kit-bar-row"><span>{{ place.name }}</span><progress value="{{ place.percentage }}" max="100" aria-label="{{ place.name }}: {{ place.percentage }}%">{{ place.percentage }}%</progress><strong>{{ place.percentage }}%</strong></div>{% endfor %}
+</section>
+{% endif %}
+</div>
+</article>
+{% endfor %}
 </section>
 {% endif %}
 {% if inquiry %}

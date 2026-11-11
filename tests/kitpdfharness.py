@@ -79,7 +79,13 @@ def kit_doc() -> dict[str, Any]:
         ],
         "rates": [{"item": "Sponsored video fake", "price_text": "Ask me!"}],
         "demographics": [
-            {"label": "Top country", "value": "Exampleland 40%", "as_of": "2027-03-01"}
+            {
+                "platform": "instagram",
+                "as_of": "2027-03-01",
+                "gender": {"male": 40, "female": 60},
+                "ages": [{"range": "18-24", "all": 100, "male": 100, "female": 100}],
+                "countries": [{"name": "Exampleland", "percentage": 40}],
+            }
         ],
     }
 

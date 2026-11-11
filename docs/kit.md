@@ -53,7 +53,18 @@ kit:
   testimonials:
     - {quote: An example quote., name: Example Person, brand: Example Brand}
   demographics:
-    - {label: Top country, value: Exampleland 40%, as_of: 2027-03-01}
+    - platform: instagram
+      as_of: 2027-03-01
+      gender: {male: 40, female: 60}
+      ages:
+        - {range: 18-24, all: 35, male: 30, female: 38}
+        - {range: 25-34, all: 65, male: 70, female: 62}
+      countries:
+        - {name: Exampleland, percentage: 70}
+        - {name: Sample Republic, percentage: 30}
+      cities:
+        - {name: Example City, percentage: 55}
+        - {name: Sample Junction, percentage: 45}
   disclosure: An example statement about how paid work is marked.
 ```
 
@@ -77,6 +88,23 @@ The build writes only `kit.html` there (and removes it if the kit no longer has
 gated content); anything else in that directory is left alone. Upload the
 gated file with the Worker deploy, never with the Pages deploy: the deploy
 publishes only `--out`.
+
+### Structured demographics
+
+Each demographics entry is for one configured platform and one UTC `as_of`
+day. `gender.male` and `gender.female` are whole percentages and must total
+100. Every age row supplies the percentage for the All, Male and Female views;
+each of those three columns must total 100 across the rows. Country and city
+percentages are whole numbers from 0 through 100 and may be a top list rather
+than a complete distribution. Threads entries do not accept `cities` because
+Threads does not provide that chart. YouTube demographics are refused because
+YouTube Analytics figures stay in the internal dashboard only.
+
+The gated page renders a gender pie, CSS-only All, Male and Female age chips,
+and country and city bars. Every chart prints its labels and percentages, so
+color is never the only way to read it. The page uses inline SVG and native
+progress bars and loads no chart script. Demographics remain gated and are
+included in the private PDF; they never enter the public page or public PDF.
 
 ### Public page
 
