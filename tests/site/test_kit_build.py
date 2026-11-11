@@ -443,8 +443,8 @@ def test_structured_demographic_charts_are_accessible_and_script_free(
     assert 'aria-label="Instagram gender: 40% male, 60% female"' in html
     assert "Gender" in html and "40% male" in html and "60% female" in html
     for view in ("All", "Male", "Female"):
-        assert f">{view}</label>" in html
-    assert html.count('type="radio"') == 3
+        assert f">{view}</summary>" in html
+    assert "<input" not in html
     assert 'value="35" max="100"' in html
     assert "Exampleland" in html and "70%" in html
     assert "Example City" in html and "55%" in html
