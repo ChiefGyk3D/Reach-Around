@@ -20,6 +20,7 @@ features:
 kit:
   title: Example Creator media kit
   about: A fake creator who streams games and talks about gear.
+  photo: media/kit-photo.jpg
   contact: Brand deals - partners at example.com
   tags: [Gaming, Hardware]
   turnstile_site_key: 0x4AAAAAAAexampleKey
@@ -27,7 +28,7 @@ kit:
     - {platform: twitch, label: Followers, value: 1200, as_of: 2027-03-01}
     - {platform: youtube, label: Subscribers, source: counts}
   partners:
-    - {name: Acme Fake Co, note: 2026 sponsor, url: "https://example.com/acme"}
+    - {name: Acme Fake Co, logo: media/acme-fake.png, note: 2026 sponsor, url: "https://example.com/acme"}
   case_studies:
     - title: Launch week
       summary: A fake product launch on stream.
@@ -68,7 +69,7 @@ publishes only `--out`.
 
 ### Public page
 
-Header (the kit title, the optional content tags and the description), the headline numbers each with the date
+Header (the optional wide photo, kit title, optional content tags and the description), the headline numbers each with the date
 it was read, and the unified total. The total adds up the numbers that are not
 marked `in_total: false`; it says how many numbers it adds up and the date of
 the oldest one, and notes that people who follow on several platforms are
@@ -164,6 +165,14 @@ root-based asset links (`/static/...`) because the Worker serves it from any
 path. Partner links open with `rel="noopener noreferrer"`. It contains no
 script, and no form unless `kit.inquiry` is set.
 
+Partners with a `logo` appear in a responsive logo grid. The first six partners
+are visible immediately; any remaining partners are under a native **Show more**
+disclosure that needs no script. A partner without a logo keeps the existing
+text presentation. The optional header `photo` and partner `logo` values are
+local PNG or JPEG paths under the instance directory. The public photo is
+fingerprinted with the site's public assets. Partner logos are embedded only in
+the gated page, so their files and bytes are not published before the gate.
+
 YouTube Analytics values collected with private OAuth scopes are never accepted
 as kit input. A YouTube engagement figure may appear here only when the owner
 types it into the config and sets `owner_supplied: true`; the page labels every
@@ -215,7 +224,7 @@ cannot reach a gated field, and the two pages go to two separate directories.
 
 | Field | Visibility | Owner-report marker |
 | --- | --- | --- |
-| title, about, contact, tags, metrics, unified_total, turnstile_site_key | public | no |
+| title, about, photo, contact, tags, metrics, unified_total, turnstile_site_key | public | no |
 | partners, case_studies, services, rates, testimonials, demographics, inquiry, disclosure | gated | no |
 | engagement | gated | `owner_report_only`; YouTube figures require `owner_supplied: true` |
 | unlock_link | private | no |

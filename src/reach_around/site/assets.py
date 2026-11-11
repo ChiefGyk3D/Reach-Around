@@ -85,6 +85,24 @@ def _slots(config: SiteConfig) -> Iterator[tuple[str, str, str]]:
             elif isinstance(block, Section):
                 for n, item in enumerate(block.links):
                     yield from _thumb(f"{shown}.links[{n}]", item)
+    if config.kit is not None:
+        if config.kit.photo is not None:
+            yield "kit.photo", config.kit.photo, "image"
+        for index, partner in enumerate(config.kit.partners):
+            if partner.logo is not None:
+                yield f"kit.partners[{index}].logo", partner.logo, "image"
+
+
+def _public_slots(config: SiteConfig) -> Iterator[tuple[str, str, str]]:
+    for slot in _slots(config):
+        if not slot[0].startswith("kit.partners["):
+            yield slot
+
+
+def _partner_logo_slots(config: SiteConfig) -> Iterator[tuple[str, str, str]]:
+    for slot in _slots(config):
+        if slot[0].startswith("kit.partners["):
+            yield slot
 
 
 def referenced_assets(config: SiteConfig) -> list[str]:
@@ -202,9 +220,9 @@ def _check_license_text(key: str, rel: str, data: bytes) -> None:
         )
 
 
-def collect_assets(config: SiteConfig, assets_dir: Path | None) -> dict[Path, bytes]:
-    """Read every file the config names; the result maps output path to bytes."""
-    slots = list(_slots(config))
+def _collect(
+    slots: list[tuple[str, str, str]], assets_dir: Path | None
+) -> dict[Path, bytes]:
     if not slots:
         return {}
     if assets_dir is None:
@@ -239,3 +257,16 @@ def collect_assets(config: SiteConfig, assets_dir: Path | None) -> dict[Path, by
                 check_content(key, rel, data)
             files[Path(rel)] = data
     return files
+
+
+def collect_assets(config: SiteConfig, assets_dir: Path | None) -> dict[Path, bytes]:
+    """Read files that may be published; gated partner logos are excluded."""
+    return _collect(list(_public_slots(config)), assets_dir)
+
+
+def collect_partner_logos(
+    config: SiteConfig, assets_dir: Path | None
+) -> dict[str, bytes]:
+    """Read gated partner logos without adding them to the public asset map."""
+    found = _collect(list(_partner_logo_slots(config)), assets_dir)
+    return {path.as_posix(): data for path, data in found.items()}

@@ -1279,6 +1279,18 @@
           "title": "Partners",
           "type": "array"
         },
+        "photo": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Photo"
+        },
         "rates": {
           "items": {
             "$ref": "#/$defs/Rate"
@@ -1737,6 +1749,18 @@
     "Partner": {
       "additionalProperties": false,
       "properties": {
+        "logo": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Logo"
+        },
         "name": {
           "maxLength": 80,
           "minLength": 1,
