@@ -4,7 +4,7 @@
 {% if creator.socials %}
 <ul class="socials">
 {% for social in creator.socials %}
-<li><a class="social{{ frames.cls("ctl") }}"{% if social.url.startswith('tab:') %} href="{{ tab_href(social.url) }}"{% else %} href="{{ social.url }}" rel="noopener noreferrer"{% endif %}>{% if social.icon in icon_slugs %}<span class="icon icon-{{ social.icon }}" aria-hidden="true"></span><span class="sr-only">{{ social.name }}</span>{% else %}<span class="social-label">{{ social.name }}</span>{% endif %}</a></li>
+<li><a class="social{{ frames.cls("ctl") }}"{% if social.url.startswith('tab:') %} href="{{ tab_href(social.url) }}"{% else %} href="{{ social.url }}" rel="{% if social.rel_me %}me {% endif %}noopener noreferrer"{% endif %}>{% if social.icon in icon_slugs %}<span class="icon icon-{{ social.icon }}" aria-hidden="true"></span><span class="sr-only">{{ social.name }}</span>{% else %}<span class="social-label">{{ social.name }}</span>{% endif %}</a></li>
 {% endfor %}
 </ul>
 {% endif %}

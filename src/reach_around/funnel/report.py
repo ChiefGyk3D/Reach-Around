@@ -20,6 +20,7 @@ from typing import Any
 
 from reach_around.funnel.export import CLASSES, Export
 from reach_around.funnel.gaps import coverage_for_window
+from reach_around.funnel.social import social_lines
 
 FLOOR = 5
 # Report section -> the ``dim`` value in view_dim_daily it is built from.
@@ -1534,6 +1535,8 @@ def render_text(report: dict[str, Any]) -> str:
                 f"  {'(classes below the floor)':<28} {bots['other_below_floor']:>8}"
             )
     _table("Bot reasons (not human-likely)", bots["reasons"], lines)
+    if "social" in report:
+        lines.extend(social_lines(report["social"]))
     lines.append("")
     lines.append(
         "Human-likely is an estimate; crawlers that never run the script are "
