@@ -139,6 +139,30 @@ def test_window_across_the_cutover_is_labeled() -> None:
     assert "era" not in change(only(no_cut, "bluesky"), 30)
 
 
+@pytest.mark.parametrize(
+    ("records", "status_text"),
+    [
+        ([rec("bluesky", TODAY, 20)], "no record"),
+        (
+            [
+                rec("bluesky", TODAY, 20, era="current"),
+                rec("bluesky", TODAY - timedelta(days=30), 10, era="old"),
+            ],
+            "withheld",
+        ),
+    ],
+)
+def test_non_ok_change_across_cutover_keeps_cutover_label(
+    records: list[Record], status_text: str
+) -> None:
+    block = social(records, cutover=date(2026, 10, 20))
+
+    rendered = "\n".join(social_lines(block))
+
+    assert status_text in rendered
+    assert f"{status_text}" in rendered and "[spans the cutover" in rendered
+
+
 def test_future_cutover_adds_no_label() -> None:
     recs = [rec("bluesky", TODAY, 20), rec("bluesky", TODAY - timedelta(days=30), 10)]
     c = change(only(social(recs, cutover=date(2026, 12, 1)), "bluesky"), 30)

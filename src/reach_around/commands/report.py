@@ -114,6 +114,7 @@ def run_report(args: argparse.Namespace) -> int:
         cutover_text = _day(args.cutover, "--cutover")
         cutover = date.fromisoformat(cutover_text) if cutover_text else None
         export = load_exports(list(args.input))
+        history = read_history(args.history) if args.history is not None else None
         diagnostics: dict[str, object] | None = {} if args.diagnostics else None
         options = dict(
             site=args.site,
@@ -144,9 +145,9 @@ def run_report(args: argparse.Namespace) -> int:
                 **options,
             )
         annotate(report, zone=zone, cutover=cutover, today=utc_today())
-        if args.history is not None:
+        if history is not None:
             report["social"] = build_social(
-                read_history(args.history),
+                history,
                 cutover=cutover,
                 today=utc_today(),
                 zone=zone,

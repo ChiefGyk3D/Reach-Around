@@ -223,12 +223,13 @@ def build_social(
 def _change_text(row: dict[str, Any]) -> str:
     head = f"{row['days']}d "
     if row["status"] == "no_record":
-        return head + f"no record on {row['baseline_day']}"
-    if row["status"] == "definition_changed":
-        return head + "withheld (the definition changed)"
-    text = head + f"{row['change']:+d}"
-    if row["percent"] is not None:
-        text += f" ({row['percent']:+.1f}%)"
+        text = head + f"no record on {row['baseline_day']}"
+    elif row["status"] == "definition_changed":
+        text = head + "withheld (the definition changed)"
+    else:
+        text = head + f"{row['change']:+d}"
+        if row["percent"] is not None:
+            text += f" ({row['percent']:+.1f}%)"
     if "era" in row:
         text += f" [{row['era_text']}]"
     return text
