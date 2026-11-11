@@ -34,7 +34,7 @@ def stage(target: Path) -> Path:
 
 def run_node(node: str, script: Path) -> subprocess.CompletedProcess[str]:
     return subprocess.run(  # noqa: S603 - fixed argv: node and a staged copy of our script
-        [node, "--test", "--test-reporter=spec", str(script)],
+        [node, "--test-reporter=spec", str(script)],
         cwd=script.parent,
         capture_output=True,
         text=True,

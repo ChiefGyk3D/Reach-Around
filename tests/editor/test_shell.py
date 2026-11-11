@@ -88,6 +88,15 @@ def test_there_is_one_polite_live_region_and_a_status_line() -> None:
     assert 'role="status"' in regions[0]
 
 
+def test_the_shell_has_keyboard_accessible_history_controls() -> None:
+    html = asset("index.html")
+    assert 'id="undo"' in html
+    assert 'id="redo"' in html
+    assert 'id="history-toggle"' in html
+    assert 'id="history-panel"' in html
+    assert 'role="alert"' in html
+
+
 def test_visible_text_comes_from_strings_js() -> None:
     html = asset("index.html")
     strings = asset("strings.js")
@@ -97,11 +106,12 @@ def test_visible_text_comes_from_strings_js() -> None:
         assert re.search(rf'^\s*"?{re.escape(ident)}"?\s*:', strings, re.M), ident
 
 
-def test_css_has_focus_reduced_motion_and_color_scheme_rules() -> None:
+def test_css_has_focus_reduced_motion_and_dark_color_scheme_rules() -> None:
     css = asset("app.css")
     assert ":focus-visible" in css
     assert "prefers-reduced-motion" in css
-    assert "prefers-color-scheme" in css
+    assert "color-scheme: dark" in css
+    assert "prefers-color-scheme" not in css
     assert ".visually-hidden" in css
     assert "margin-inline-start" in css or "inline-size" in css
     assert not re.search(r"@import|url\(", css)

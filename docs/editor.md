@@ -11,9 +11,9 @@ opening the file. The design is in
 
 **What ships today is the server and a page with forms.** The page has one
 form per group of settings (creator, look, each link, each platform item), see
-[The forms](#the-forms). It cannot yet add or remove a link or a platform
-item, upload an image, or undo and redo (the undo and redo routes exist; the
-page has no buttons for them). For everything else, change the config by hand
+[The forms](#the-forms), plus undo, redo and history controls. It cannot yet
+add or remove a link or a platform item or upload an image. For everything
+else, change the config by hand
 or with the commands in
 [Customizing](customizing.md#editing-without-breaking-the-file).
 
@@ -117,15 +117,16 @@ of git: the instance template's `.gitignore` already does. The editor does not
 edit your `.gitignore` (the helper exists in `reach_around.editor_history` but
 the editor never calls it).
 
-**Undo and redo.** `POST /__edit/api/undo` and `/redo` step through the
-history (see [Undo, redo and history](#undo-redo-and-history)); the browser
-page has no controls for them yet.
+**Undo and redo.** The Undo and Redo buttons, or Ctrl+Z and Ctrl+Shift+Z when
+focus is outside a form control, step through the history. The History button
+lists snapshot labels and times without sending their contents to the browser,
+and can restore an earlier version.
 
 - Undo and redo work only while the file still hashes to what the editor wrote
   last. After an outside edit they return a refusal (`outside_edit`) and change
   nothing.
-- "Restore anyway" (`"anyway": true` on undo) first keeps the outside version
-  as its own snapshot, so the step can itself be undone.
+- "Restore the earlier version" (`"anyway": true` on undo) first keeps the
+  outside version as its own snapshot, so the step can itself be undone.
 - A new change after an undo drops the redo line.
 - A snapshot whose content no longer matches its recorded hash is not restored.
   A corrupted index is set aside as `index.json.corrupt-*` and the history
@@ -136,9 +137,10 @@ of the file. An edit request names the `base` hash the client last saw and the
 old value (`expect`) of what it touches. If the file has changed since but those
 values are the same, the edit is applied on top of the outside change. If a
 value moved, nothing is written and the reply is `409 stale` with the fresh
-state. The server does not overwrite a field someone else changed. The page does
-not watch the file; a client can poll `GET /__edit/api/version`, and the page
-learns of an outside change when a save comes back `409 stale`.
+state. The server does not overwrite a field someone else changed. The page
+polls `GET /__edit/api/version`, shows "The file changed outside the editor."
+without replacing in-progress form values, and also shows a stale banner when
+a save comes back `409 stale`.
 
 ## Safety model, in plain words
 
@@ -289,8 +291,8 @@ reported as an outside edit. If the history cannot be saved *before* anything is
 written, the reply is `409 history_unavailable` and the file is untouched. A raw
 write failure is `500 io_error` with the fresh `state`; reread it before retrying.
 
-After `outside_edit`, show the message and a "Restore anyway" button. That
-button repeats the undo with `"anyway": true` and the `base` from the refusal's
+After `outside_edit`, the page shows "Restore the earlier version." That button
+repeats the undo with `"anyway": true` and the `base` from the refusal's
 `state`. The outside version is saved as a history state first, so redo brings
 it back. It also works when the outside edit left a file that does not load.
 
@@ -323,7 +325,7 @@ The page has one form per group of settings. Nothing is saved until you press th
 | Each link | title, address, subtitle, icon, "affiliate link", "feature this link" |
 | Each platform item | handle, address, display name, count label, follower count, count date |
 
-Everything else in the config is shown read-only under "All settings" and is changed in a text editor. Adding and removing links or platform items, uploads and undo and redo buttons come in later versions.
+Everything else in the config is shown read-only under "All settings" and is changed in a text editor. Adding and removing links or platform items and uploads come in later versions.
 
 How a save works:
 
@@ -359,15 +361,13 @@ Limits that hold today:
 
 Known gaps (not built yet):
 
-- Add and remove for links and platform items, drag and drop, and an undo or
-  redo button in the page (the routes exist).
+- Add and remove for links and platform items, and drag and drop.
 - A real preview: the preview listener serves a placeholder, and `build.ok` does
   not run a build.
 - Image upload (the guard has the path and the size cap; no route), and any
   image slot: `editing.ASSET_KEYS` is empty and no `validate_slot` is passed, so
   the save-time asset hook is unused.
 - A shutdown route or a stop button; stop with Ctrl+C or wait for the idle time.
-- Watching the file for outside edits from the page.
 - A log line per change (the server is silent).
 - A media folder, and any image slot other than `creator.avatar`.
 
