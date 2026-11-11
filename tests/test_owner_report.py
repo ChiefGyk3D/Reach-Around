@@ -170,6 +170,36 @@ def test_every_section_of_the_layout_is_present(report: dict[str, Any]) -> None:
     assert report["period"]["since"] == "2026-11-02"
 
 
+def test_layout_a_puts_the_shared_component_overview_before_details(
+    report: dict[str, Any],
+) -> None:
+    page = page_of(report)
+    overview = page.index('<section class="report-overview')
+    details = page.index('<div class="report-details')
+    assert overview < details
+    overview_html = page[overview:details]
+    assert len(re.findall(r'class="[^"]*\bra-c-plate\b', overview_html)) == 3
+    assert "ra-c-ticks" in overview_html
+    assert "--ra-brand-ground" in page
+    assert "--ra-space-4" in page
+
+
+@pytest.mark.parametrize(
+    ("width", "layout_rule"),
+    [
+        (390, ".tiles,.charts,.cols,.cols2{grid-template-columns:minmax(0,1fr)}"),
+        (820, "@media(min-width:48rem)"),
+        (1440, "@media(min-width:70rem)"),
+    ],
+)
+def test_layout_a_has_a_mobile_first_rule_for_each_supported_width(
+    report: dict[str, Any], width: int, layout_rule: str
+) -> None:
+    page = page_of(report)
+    assert layout_rule in page, width
+    assert ".wrap{max-width:100%;overflow-x:auto}" in page
+
+
 def test_window_is_the_last_seven_days_with_previous_window(
     report: dict[str, Any],
 ) -> None:
@@ -184,7 +214,7 @@ def test_window_is_the_last_seven_days_with_previous_window(
     assert "2026-10-26 to 2026-11-01 UTC" in page
 
 
-def test_page_is_self_contained_dark_static_and_borderless(
+def test_page_is_self_contained_dark_static_and_uses_tokenized_borders(
     report: dict[str, Any],
 ) -> None:
     page = page_of(report)
@@ -203,8 +233,10 @@ def test_page_is_self_contained_dark_static_and_borderless(
         "<iframe",
     ):
         assert forbidden not in page, forbidden
-    low = page.lower().replace("box-sizing:border-box", "")
-    assert not re.search(r"border(?!-radius|-collapse)", low)
+    low = page.lower()
+    assert "border:var(--ra-rule-width) solid var(--ra-brand-rule)" in low
+    assert "border-radius:var(--ra-radius-square)" in low
+    assert "<button" not in low
     for forbidden in ("animation", "transition", "@keyframes", "outline"):
         assert forbidden not in low, forbidden
     for forbidden in ("#fff", "white", "cream", "background:#f", "background:#e"):

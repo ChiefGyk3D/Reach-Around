@@ -30,44 +30,79 @@ CSP = (
 BELOW = "below the privacy floor"
 
 CSS = """
-:root{color-scheme:dark;--ra-brand-amber:#FBB03B;--ra-brand-ground:#0F0F0F;
+:root{color-scheme:dark;--ra-brand-amber:#FBB03B;--ra-brand-on-amber:#1A1A1A;
+--ra-brand-ground:#0F0F0F;--ra-brand-surface:#202020;--ra-brand-text:#F0F0F0;
+--ra-brand-muted:#B5ADA2;--ra-brand-rule:#3A3530;--ra-brand-carbon:#181818;
+--ra-brand-carbon-line:#282828;--ra-brand-plate:#281808;--ra-brand-amber-deep:#AF6A0E;
 --ra-font-body:Jost,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
---bg:#101216;--panel:#181b21;--row:#1e222a;--text:#e8eaed;
---muted:#b4bac4;--views:#8ab4ff;--clicks:#ffb74d;--bar:#5f95f2;--axis:#8b929d;
---gap:#2a2f39}
+--ra-font-heading:var(--ra-font-body);--ra-text-xs:.8rem;--ra-text-sm:.875rem;
+--ra-text-md:clamp(1.125rem,1.07rem + .2vw,1.25rem);
+--ra-text-xl:clamp(1.75rem,1.5rem + .9vw,2.25rem);
+--ra-text-2xl:clamp(2rem,1.3rem + 3vw,3.25rem);--ra-line-height:1.5;
+--ra-space-1:.25rem;--ra-space-2:.5rem;--ra-space-3:.75rem;--ra-space-4:1rem;
+--ra-space-5:1.5rem;--ra-space-6:2.5rem;--ra-radius-square:0;
+--ra-rule-width:1px;--ra-rule-accent-width:3px;--ra-component-tick-size:.875rem;
+--ra-component-title-tracking:.04em;
+--bg:#0f0f0f;--panel:#202020;--row:#181818;--text:#f0f0f0;
+--muted:#b5ada2;--views:#8ab4ff;--clicks:#fbb03b;--bar:#fbb03b;
+--axis:#b5ada2;--gap:#2a2f39}
 *{box-sizing:border-box}
-body{margin:0;background:var(--bg);color:var(--text);
-font:16px/1.5 var(--ra-font-body)}
-main{max-width:1840px;margin:0 auto;padding:20px 16px 40px}
-h1{font-size:1.5rem;margin:0 0 4px}
-h2{font-size:1.1rem;margin:0 0 10px}
-p{margin:4px 0}
-.muted{color:var(--muted)}
-.note{color:var(--muted);font-size:.9rem}
-.grid{display:grid;gap:16px;margin-top:16px}
-.tiles{grid-template-columns:repeat(3,1fr)}
-.charts{grid-template-columns:repeat(2,1fr)}
-.cols{grid-template-columns:repeat(3,1fr)}
-.cols2{grid-template-columns:repeat(2,1fr)}
-@media(max-width:1100px){.cols{grid-template-columns:repeat(2,1fr)}}
-@media(max-width:800px){.tiles,.charts,.cols,.cols2{grid-template-columns:1fr}}
-section,.tile{background:var(--panel);border-radius:6px;padding:14px 16px;min-width:0}
-.tile .big{font-size:2.2rem;font-weight:600;line-height:1.2}
-.tile .label{color:var(--muted)}
+body{margin:0;background:var(--ra-brand-ground);color:var(--ra-brand-text);
+font:16px/var(--ra-line-height) var(--ra-font-body)}
+main{max-width:90rem;margin:0 auto;padding:var(--ra-space-5) var(--ra-space-4) var(--ra-space-6)}
+header{max-width:72rem}
+h1,h2{font-family:var(--ra-font-heading)}
+h1{font-size:var(--ra-text-2xl);line-height:1.1;margin:0 0 var(--ra-space-2)}
+h2{font-size:var(--ra-text-md);margin:0 0 var(--ra-space-3)}
+p{margin:var(--ra-space-1) 0}
+.muted,.note{color:var(--ra-brand-muted)}
+.note{font-size:var(--ra-text-sm)}
+.grid{display:grid;gap:var(--ra-space-4);margin-top:var(--ra-space-4)}
+.tiles,.charts,.cols,.cols2{grid-template-columns:minmax(0,1fr)}
+.report-overview{margin-top:var(--ra-space-5);padding:var(--ra-space-4) 0}
+.report-overview>h2{color:var(--ra-brand-amber);font-size:var(--ra-text-xl)}
+.report-details{margin-top:var(--ra-space-5)}
+.ra-c-plate{box-sizing:border-box;padding:var(--ra-space-4);
+background-color:var(--ra-brand-surface);color:var(--ra-brand-text);
+border:var(--ra-rule-width) solid var(--ra-brand-rule);border-radius:var(--ra-radius-square)}
+.ra-c-plate--carbon{background-color:var(--ra-brand-carbon);border-color:var(--ra-brand-carbon-line)}
+.ra-c-plate--amber{background-color:var(--ra-brand-plate);border-color:var(--ra-brand-amber-deep);
+border-top:var(--ra-rule-accent-width) solid var(--ra-brand-amber)}
+.ra-c-plate-title{margin:0 0 var(--ra-space-2);font-family:var(--ra-font-heading);
+font-size:var(--ra-text-md);letter-spacing:var(--ra-component-title-tracking);color:var(--ra-brand-text)}
+.ra-c-ticks{--ra-c-tick:var(--ra-component-tick-size);--ra-c-tick-line:var(--ra-rule-accent-width);
+position:relative;isolation:isolate}
+.ra-c-ticks::before{content:"";position:absolute;inset:calc(var(--ra-space-1) * -1);z-index:-1;
+pointer-events:none;background:
+linear-gradient(var(--ra-brand-amber),var(--ra-brand-amber)) top left/var(--ra-c-tick) var(--ra-c-tick-line),
+linear-gradient(var(--ra-brand-amber),var(--ra-brand-amber)) top left/var(--ra-c-tick-line) var(--ra-c-tick),
+linear-gradient(var(--ra-brand-amber),var(--ra-brand-amber)) top right/var(--ra-c-tick) var(--ra-c-tick-line),
+linear-gradient(var(--ra-brand-amber),var(--ra-brand-amber)) top right/var(--ra-c-tick-line) var(--ra-c-tick),
+linear-gradient(var(--ra-brand-amber),var(--ra-brand-amber)) bottom left/var(--ra-c-tick) var(--ra-c-tick-line),
+linear-gradient(var(--ra-brand-amber),var(--ra-brand-amber)) bottom left/var(--ra-c-tick-line) var(--ra-c-tick),
+linear-gradient(var(--ra-brand-amber),var(--ra-brand-amber)) bottom right/var(--ra-c-tick) var(--ra-c-tick-line),
+linear-gradient(var(--ra-brand-amber),var(--ra-brand-amber)) bottom right/var(--ra-c-tick-line) var(--ra-c-tick);
+background-repeat:no-repeat}
+.tile{min-width:0}
+.tile .big{font-size:var(--ra-text-2xl);font-weight:600;line-height:1.1;color:var(--ra-brand-amber)}
+.tile .label{color:var(--ra-brand-muted)}
 table{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums}
 th,td{text-align:left;padding:5px 8px;vertical-align:middle}
-th{color:var(--muted);font-weight:600;font-size:.85rem}
+th{color:var(--ra-brand-muted);font-weight:600;font-size:var(--ra-text-xs)}
 td.n,th.n{text-align:right}
-tbody tr:nth-child(odd){background:var(--row)}
-.bar{display:block;height:8px;background:var(--bar);border-radius:2px}
+tbody tr:nth-child(odd){background:var(--ra-brand-carbon)}
+.bar{display:block;height:8px;background:var(--bar)}
 .barcell{width:30%}
 svg{width:100%;height:auto;display:block}
-@media(max-width:800px){svg{min-width:640px}}
+svg{min-width:640px}
 .legend{display:flex;flex-wrap:wrap;gap:4px 16px;margin:6px 0;font-size:.9rem}
 .sw{display:inline-block;width:12px;height:12px;vertical-align:-1px;margin-right:5px}
 details{margin-top:8px}
 summary{cursor:pointer;color:var(--muted)}
-.wrap{overflow-x:auto}
+.wrap{max-width:100%;overflow-x:auto}
+@media(min-width:48rem){main{padding-inline:var(--ra-space-5)}.tiles{grid-template-columns:repeat(3,minmax(0,1fr))}
+.charts,.cols,.cols2{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(min-width:70rem){.cols{grid-template-columns:repeat(3,minmax(0,1fr))}}
 """
 
 
@@ -151,7 +186,7 @@ def _tile(name: str, tile: dict[str, Any], view: dict[str, Any]) -> str:
         else ""
     )
     return (
-        f'<div class="tile"><h2>{title}</h2><div class="big">{escape(big)}</div>'
+        f'<div class="tile ra-c-plate ra-c-plate--amber"><h2>{title}</h2><div class="big">{escape(big)}</div>'
         f'<p class="label">{escape(small)}</p>{gap_html}{chg_html}</div>'
     )
 
@@ -284,7 +319,7 @@ def _daily(view: dict[str, Any]) -> str:
     days = d["days"]
     if d["views_state"] == "not_released":
         return (
-            "<section><h2>Views and clicks, daily (UTC days)</h2>"
+            '<section class="ra-c-plate"><h2>Views and clicks, daily (UTC days)</h2>'
             "<p>A released period carries no daily series and no comparison "
             "window: day-level figures from two releases could be differenced. "
             "Run an ad-hoc window (--days, --since, --until) for the owner "
@@ -292,7 +327,7 @@ def _daily(view: dict[str, Any]) -> str:
         )
     if not days:
         return (
-            "<section><h2>Views and clicks, daily (UTC days)</h2>"
+            '<section class="ra-c-plate"><h2>Views and clicks, daily (UTC days)</h2>'
             "<p>No days to chart in this window.</p></section>"
         )
     key = (
@@ -323,13 +358,13 @@ def _daily(view: dict[str, Any]) -> str:
         "Daily click rate, clicks per 100 page views, UTC days",
     )
     return (
-        '<div class="grid charts"><section><h2>Views and clicks, daily (UTC days)</h2>'
+        '<div class="grid charts"><section class="ra-c-plate"><h2>Views and clicks, daily (UTC days)</h2>'
         f"{key}{notes}{chart1}"
-        "</section><section><h2>Click rate, daily (UTC days)</h2>"
+        '</section><section class="ra-c-plate"><h2>Click rate, daily (UTC days)</h2>'
         f'<p class="note">Click rate is {escape(RATE_LABEL)}. Days under the floor are left out. '
         f"A value above 100 is shown as 100 and marked in the table ({escape(CAPPED_NOTE)}).</p>"
         f"{chart2}</section></div>"
-        f'<section style="margin-top:16px"><details open><summary>Daily table (day, views, clicks, rate)</summary>'
+        f'<section class="ra-c-plate" style="margin-top:16px"><details open><summary>Daily table (day, views, clicks, rate)</summary>'
         f"{_daily_table(days)}</details></section>"
     )
 
@@ -368,7 +403,7 @@ def _views_table(title: str, t: dict[str, Any], label: str, note: str = "") -> s
             rows += f'<tr><td colspan="2" class="note">{t["more_rows"]} more rows (raise --top)</td></tr>'
     extra = f'<p class="note">{escape(note)}</p>' if note else ""
     return (
-        f'<section><h2>{escape(title)}</h2>{extra}<div class="wrap"><table>'
+        f'<section class="ra-c-plate"><h2>{escape(title)}</h2>{extra}<div class="wrap"><table>'
         f'<thead><tr><th>{escape(label)}</th><th class="n">Views</th></tr></thead>'
         f"<tbody>{rows}</tbody></table></div></section>"
     )
@@ -386,7 +421,7 @@ def _clicks_table(title: str, t: dict[str, Any], label: str) -> str:
             or '<tr><td colspan="2">no data in this period</td></tr>'
         )
     return (
-        f'<section><h2>{escape(title)}</h2><div class="wrap"><table>'
+        f'<section class="ra-c-plate"><h2>{escape(title)}</h2><div class="wrap"><table>'
         f'<thead><tr><th>{escape(label)}</th><th class="n">Clicks</th></tr></thead>'
         f"<tbody>{rows}</tbody></table></div></section>"
     )
@@ -405,7 +440,7 @@ def _pairs_table(title: str, t: dict[str, Any], label: str) -> str:
             or '<tr><td colspan="3">no data in this period</td></tr>'
         )
     return (
-        f'<section><h2>{escape(title)}</h2><div class="wrap"><table>'
+        f'<section class="ra-c-plate"><h2>{escape(title)}</h2><div class="wrap"><table>'
         f'<thead><tr><th>{escape(label)}</th><th>Link</th><th class="n">Clicks</th></tr></thead>'
         f"<tbody>{rows}</tbody></table></div></section>"
     )
@@ -433,7 +468,7 @@ def _links(view: dict[str, Any]) -> str:
         if t["more_rows"]:
             rows += f'<tr><td colspan="4" class="note">{t["more_rows"]} more rows (raise --top)</td></tr>'
     return (
-        "<section><h2>Content clicks per link</h2>"
+        '<section class="ra-c-plate"><h2>Content clicks per link</h2>'
         f'<p class="note">Rate is {escape(LINK_RATE_LABEL)}; a link has no views of its own. '
         "Link names are the closed destination vocabulary the click ping carries.</p>"
         '<div class="wrap"><table><thead><tr><th>Link</th><th class="n">Clicks</th>'
@@ -497,11 +532,15 @@ def render_html(view: dict[str, Any], *, generated_at: datetime) -> str:
             "or post this page.</p>"
         ),
         era_html + warn + _coverage_note(view) + "</header>",
+        '<section class="report-overview ra-c-ticks" aria-labelledby="overview-heading">',
+        '<h2 id="overview-heading">Overview</h2>',
         '<div class="grid tiles">',
         _tile("views", view["tiles"]["views"], view),
         _tile("clicks", view["tiles"]["clicks"], view),
         _tile("click_rate", view["tiles"]["click_rate"], view),
         "</div>",
+        "</section>",
+        '<div class="report-details">',
         _daily(view),
         '<div class="grid cols" style="margin-top:16px">',
         _links(view),
@@ -531,6 +570,7 @@ def render_html(view: dict[str, Any], *, generated_at: datetime) -> str:
         '<p class="note" style="margin-top:16px">Clicks are counts, not people. '
         "Human-likely is an estimate. The world map and the Links and Social icons "
         "tabs are not in this version (see docs/report.md).</p>",
+        "</div>",
         "</main></body></html>",
     ]
     return "\n".join(parts) + "\n"
