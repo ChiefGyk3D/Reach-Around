@@ -282,6 +282,45 @@ def test_higher_floor_hides_more(
             assert row[-1] >= 50, (table, row)
 
 
+def test_higher_floor_refuses_an_archive_written_at_a_lower_floor(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    src = write(tmp_path, sample())
+    archive_dir = tmp_path / "archive"
+    archive_dir.mkdir()
+    (archive_dir / "links-2026-10.json").write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "site": "links",
+                "month": "2026-10",
+                "floor": 5,
+                "capacity_ok": True,
+                "sources": [{"link_id": "kit", "label": "direct", "clicks": 40}],
+                "countries": [{"link_id": "kit", "label": "US", "clicks": 40}],
+            }
+        )
+    )
+    out = tmp_path / "g.sqlite3"
+
+    code, stdout, err = run(
+        capsys,
+        "--input",
+        str(src),
+        "--output",
+        str(out),
+        "--floor",
+        "50",
+        "--archive",
+        str(archive_dir),
+    )
+
+    assert code == 2
+    assert stdout == ""
+    assert "floor" in err
+    assert not out.exists()
+
+
 def test_site_selection(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     src = write(tmp_path, sample())
     out = tmp_path / "g.sqlite3"

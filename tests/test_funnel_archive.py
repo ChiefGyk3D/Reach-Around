@@ -130,6 +130,41 @@ def test_floor_below_minimum_refused() -> None:
         archive.build_records(export(), site="links", floor=FLOOR - 1, today=TODAY)
 
 
+@pytest.mark.parametrize(
+    "missing",
+    ["click_src_monthly", "click_country_monthly", "click_month_log"],
+)
+def test_cli_refuses_an_incomplete_monthly_export_before_retention(
+    tmp_path: Path, missing: str
+) -> None:
+    tables = {
+        "click_src_monthly": [src("2026-10", "kit", "direct", 40)],
+        "click_country_monthly": [cty("2026-10", "kit", "US", 40)],
+        "click_month_log": [log("2026-10")],
+    }
+    del tables[missing]
+    export_file = tmp_path / "export.json"
+    export_file.write_text(json.dumps({"version": 1, "tables": tables}))
+    archive_dir = tmp_path / "archive"
+    archive_dir.mkdir()
+    old = archive_dir / "links-2020-01.json"
+    old.write_text("keep")
+
+    assert (
+        main(
+            [
+                "analytics-archive",
+                "--input",
+                str(export_file),
+                "--archive",
+                str(archive_dir),
+            ]
+        )
+        == 2
+    )
+    assert old.read_text() == "keep"
+
+
 def test_other_site_rows_are_ignored() -> None:
     ex = export()
     ex.click_src_monthly.append(
@@ -173,6 +208,16 @@ def test_old_months_are_dropped_and_nothing_else_is_touched(tmp_path: Path) -> N
     assert names == ["links-2026-10.json", "notes.txt"]
 
 
+def test_retention_refuses_a_matching_stale_symlink(tmp_path: Path) -> None:
+    stale = tmp_path / "links-2020-01.json"
+    stale.symlink_to(tmp_path / "missing.json")
+
+    with pytest.raises(archive.ArchiveError, match="regular file"):
+        archive.write_records(tmp_path, [], today=TODAY)
+
+    assert stale.is_symlink()
+
+
 def test_symlinked_archive_directory_is_refused(tmp_path: Path) -> None:
     real = tmp_path / "real"
     real.mkdir()
@@ -212,6 +257,17 @@ def test_load_rejects_month_that_disagrees_with_filename(tmp_path: Path) -> None
     archive.write_records(tmp_path, build(export()), today=TODAY)
     (tmp_path / "links-2026-10.json").rename(tmp_path / "links-2026-09.json")
     with pytest.raises(archive.ArchiveError):
+        archive.load_archive(tmp_path, site="links", today=TODAY)
+
+
+def test_load_rejects_duplicate_cells(tmp_path: Path) -> None:
+    archive.write_records(tmp_path, build(export()), today=TODAY)
+    path = tmp_path / "links-2026-10.json"
+    data = json.loads(path.read_text())
+    data["sources"].append(data["sources"][0].copy())
+    path.write_text(json.dumps(data))
+
+    with pytest.raises(archive.ArchiveError, match="repeats a cell"):
         archive.load_archive(tmp_path, site="links", today=TODAY)
 
 

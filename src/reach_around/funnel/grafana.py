@@ -142,6 +142,10 @@ class Subset:
     def with_archive(self, records: list[dict[str, Any]]) -> None:
         """Add the monthly series from validated archive records (already floored)."""
         for rec in records:
+            if rec["floor"] < self.floor:
+                raise GrafanaExportError(
+                    "the archive floor is below the requested Grafana floor"
+                )
             month = rec["month"]
             per_link: dict[str, int] = defaultdict(int)
             per_source: dict[str, int] = defaultdict(int)

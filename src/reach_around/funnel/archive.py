@@ -57,6 +57,11 @@ _LABEL = re.compile(r"[a-z0-9.() -]{1,80}")
 _COUNTRY = re.compile(r"[A-Z]{2}|other|\(below the floor\)")
 _KEYS = {"version", "site", "month", "floor", "capacity_ok", "sources", "countries"}
 _ROW_KEYS = {"link_id", "label", "clicks"}
+_REQUIRED_TABLES = {
+    "click_src_monthly",
+    "click_country_monthly",
+    "click_month_log",
+}
 MAX_CLICKS = 10**12
 
 
@@ -110,6 +115,12 @@ def build_records(
         raise ValueError(f"the floor cannot be below {FLOOR}")
     if not _SITE.fullmatch(site):
         raise ValueError("the site must be a short lowercase slug")
+    missing = _REQUIRED_TABLES - export.present
+    if missing:
+        raise ArchiveError(
+            "the export is missing required monthly tables: "
+            + ", ".join(sorted(missing))
+        )
     first, last = window(today)
     logged = {r["month"]: r for r in export.click_month_log if r["site"] == site}
     records: list[dict[str, Any]] = []
@@ -204,11 +215,12 @@ def write_records(
                 )
             result.unchanged.append(rec["month"])
         for name, _site, month in _month_files(dir_fd):
+            st = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
+            if not stat.S_ISREG(st.st_mode):
+                raise ArchiveError("an archive month path is not a regular file")
             if _index(month) < first:
-                st = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
-                if stat.S_ISREG(st.st_mode):
-                    os.unlink(name, dir_fd=dir_fd)
-                    result.dropped.append(month)
+                os.unlink(name, dir_fd=dir_fd)
+                result.dropped.append(month)
     finally:
         os.close(dir_fd)
     return result
@@ -254,6 +266,7 @@ def _no_const(_: str) -> Any:
 def _check_rows(rows: Any, floor: int, label_re: re.Pattern[str]) -> None:
     if not isinstance(rows, list) or len(rows) > 5000:
         raise ArchiveError("an archive file has a bad table")
+    cells: set[tuple[str, str]] = set()
     for r in rows:
         if (
             not isinstance(r, dict)
@@ -266,6 +279,10 @@ def _check_rows(rows: Any, floor: int, label_re: re.Pattern[str]) -> None:
             or not floor <= r["clicks"] <= MAX_CLICKS
         ):
             raise ArchiveError("an archive file has a row that is not allowed")
+        cell = (r["link_id"], r["label"])
+        if cell in cells:
+            raise ArchiveError("an archive file repeats a cell")
+        cells.add(cell)
 
 
 def load_archive(directory: Path, *, site: str, today: date) -> list[dict[str, Any]]:
