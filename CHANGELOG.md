@@ -7,6 +7,12 @@ while the project is alpha, every release is `0.x` and anything can change betwe
 ## [Unreleased]
 
 - Owner report time patterns (#410, epic #245): migration `0015_hour_patterns.sql` adds one bounded daily aggregate keyed only by site, UTC day, UTC hour and bot class, with view and click counts and no source, country, device or visitor field. The daily view rollup fills classified views, the existing click seal sums the already hour-rounded `click_events` rows into the human class, and both retention jobs purge the rows with their other daily rollups. The owner-only text, JSON, HTML and CSV report gains floored weekday-and-hour ranked lists, likely-human by default. Weekdays always come from UTC days; `--display-zone` relabels hours only. The report states that new versus returning visitors is unavailable because no identifier persists across days.
+- Editor form follow-ups (#200): forms can add and remove links and platform
+  items, edit a link group's title and subtitle, clear creator titles and
+  colors, and reload the preview after saves. Link moves and announcements
+  count links only, stale comparisons treat integral floats and integers as
+  equal, and the browser code is split into `forms.js` and `ops.js` with tested
+  redraw wiring.
 - Public and private asset sets (#533): the public engine now records and checks its synthetic example assets, while real publishable files stay in a private instance repository. `reach-around build --assets-dir DIR` explicitly selects a development or production asset root without changing the config's logical paths; the config directory remains the default.
 - Live status request privacy wording (#312, epic #246): `docs/privacy.md` gains
   a short owner-voice draft for review stating that every tab and privacy page

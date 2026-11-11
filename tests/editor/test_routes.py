@@ -13,7 +13,9 @@ import pytest
 
 from editorharness import Response, request, tree_snapshot
 from reach_around import editing
+from reach_around.config import load_yaml
 from reach_around.editor.server import EditorSession
+from reach_around.editor.service import _canon
 from reach_around.editor_history import History, Restored
 
 CONFIG = """\
@@ -480,6 +482,51 @@ def test_expect_with_unknown_keys_is_422(ed: Editor) -> None:
 def test_a_matching_base_ignores_expect(ed: Editor) -> None:
     got = ed.op("set", {"key": "creator.name", "value": "M"}, expect={"value": "wrong"})
     assert got.status == 200
+
+
+def test_integral_float_expect_matches_integer_after_an_unrelated_edit(
+    ed: Editor,
+) -> None:
+    base = sha(ed.text)
+    ed.config.write_text(ed.text + "# outside\n", encoding="utf-8")
+    got = ed.post(
+        {
+            "base": base,
+            "op": "set_platform_item_field",
+            "args": {"block": "socials", "index": 1, "field": "count", "value": 11},
+            "expect": {"value": 10.0, "handle": "examplecreator"},
+        }
+    )
+    assert got.status == 200, got.body
+
+
+def test_stale_comparison_canonicalizes_integral_floats_like_integers() -> None:
+    assert _canon(1.0) == _canon(1)
+
+
+@pytest.mark.parametrize("key", ["creator.title", "theme.colors.accent"])
+def test_set_can_clear_optional_creator_title_and_colors(
+    tmp_path: Path, key: str
+) -> None:
+    text = CONFIG.replace("creator:\n", "creator:\n  title: Links\n")
+    text = text.replace("tabs:\n", "theme:\n  colors:\n    accent: '#123456'\ntabs:\n")
+    config = tmp_path / "site.yaml"
+    config.write_text(text, encoding="utf-8")
+    session = EditorSession(config)
+    session.start()
+    editor = Editor(session, config)
+    try:
+        got = editor.op("set", {"key": key, "value": ""})
+        assert got.status == 200, got.body
+        raw = load_yaml(config)
+        assert isinstance(raw, dict)
+        if key == "creator.title":
+            assert "title" not in raw["creator"]
+            assert raw["tabs"][0]["title"] == "Links"
+        else:
+            assert "accent" not in raw["theme"]["colors"]
+    finally:
+        session.shutdown()
 
 
 def test_a_link_removed_outside_makes_the_op_stale_not_a_500(ed: Editor) -> None:

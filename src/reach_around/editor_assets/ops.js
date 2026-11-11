@@ -1,4 +1,4 @@
-// State and editing logic. No DOM and no network code of its own: the client
+// Operations and state logic. No DOM and no network code of its own: the client
 // and announcer are passed in, so all of this can run (and be tested) as is.
 import { t } from "./strings.js";
 
@@ -70,25 +70,25 @@ export function linkLists(config) {
   for (const tab of list(config && config.tabs)) {
     const tabName = typeof tab.title === "string" ? tab.title : String(tab.id);
     const blocks = list(tab.blocks);
-    lists.push(makeList(blocks, { id: "links.tab", name: tabName }));
+    lists.push(makeList(blocks, { id: "links.tab", name: tabName }, tab.id));
     for (const block of blocks) {
       if (Array.isArray(block.links)) {
         const name = typeof block.title === "string" ? block.title : String(block.id);
-        lists.push(makeList(list(block.links), { id: "links.group", name }));
+        lists.push(makeList(list(block.links), { id: "links.group", name }, null, block));
       }
     }
   }
   return lists.filter((entry) => entry.links.length > 0);
 }
 
-function makeList(entries, heading) {
+function makeList(entries, heading, tab = null, group = null) {
   const links = [];
   entries.forEach((entry, index) => {
     if (typeof entry.url === "string" && typeof entry.id === "string") {
-      links.push({ data: entry, position: index + 1 });
+      links.push({ data: entry, position: index + 1, linkPosition: links.length + 1 });
     }
   });
-  return { heading, ids: entries.map((entry) => orNull(entry.id)), links };
+  return { heading, ids: entries.map((entry) => orNull(entry.id)), links, tab, group };
 }
 
 export function findLink(config, id) {
@@ -166,6 +166,26 @@ export function setLinkFieldOp(config, id, field, value) {
       name: shortName(found ? found.data.title : id),
     }),
   };
+}
+
+export function addLinkOp(config, tab, link) {
+  const found = linkLists(config).find((entry) => entry.tab === tab);
+  return { op: "add_link", args: { tab, link }, expect: { count: found ? found.ids.length : 0 }, label: t("label.addLink") };
+}
+
+export function removeLinkOp(config, id) {
+  const found = findLink(config, id);
+  return { op: "remove_link", args: { id }, expect: { order: found ? found.ids : [] }, label: t("label.removeLink", { name: shortName(found ? found.data.title : id) }) };
+}
+
+export function addPlatformOp(config, block, item) {
+  const found = findPlatformBlock(config, block);
+  return { op: "add_platform_item", args: { block, item }, expect: { items: found ? found.items : [] }, label: t("label.addPlatform") };
+}
+
+export function removePlatformOp(config, block, index) {
+  const found = findPlatformBlock(config, block);
+  return { op: "remove_platform_item", args: { block, index }, expect: { items: found ? found.items : [] }, label: t("label.removePlatform") };
 }
 
 export function moveLinkOp(config, id, position) {
@@ -326,6 +346,17 @@ export function createOperationQueue() {
   };
 }
 
+export function createPreviewRefresh(client, frame) {
+  return async () => {
+    await client.get("version");
+    const src = frame.getAttribute("src");
+    if (src) {
+      frame.removeAttribute("src");
+      frame.setAttribute("src", src);
+    }
+  };
+}
+
 // A failure as the forms need it: { kind, message, ... }.
 export function classify(error) {
   const status = error && typeof error.status === "number" ? error.status : 0;
@@ -430,7 +461,7 @@ export function historyShortcut(event, target) {
 
 // ---- the saver: ops one at a time, store updated from each reply -------------------
 
-export function createSaver({ client, store, announce, operations = createOperationQueue() }) {
+export function createSaver({ client, store, announce, operations = createOperationQueue(), refreshPreview = async () => {} }) {
   async function run(steps) {
     if (steps.length === 0) {
       announce(t("save.nothing"));
@@ -465,6 +496,7 @@ export function createSaver({ client, store, announce, operations = createOperat
       saved += 1;
     }
     store.set({ message: "status.saved" });
+    await refreshPreview();
     announce([t("announce.saved", { label }), warning].filter(Boolean).join(" "));
     return { ok: true, saved, warning };
   }
@@ -510,13 +542,39 @@ export function createActions({ store, saver, announce }) {
     savePlatform(block, index, draft) {
       return saver.save(platformSteps(store.get().config, block, index, draft));
     },
+    addLink(tab, draft) {
+      const link = { title: String(draft.title || "").trim(), url: String(draft.url || "").trim() };
+      return saver.save([{ field: "title", build: (now) => addLinkOp(now, tab, link) }]);
+    },
+    removeLink(id) {
+      return saver.save([{ field: "remove", build: (now) => removeLinkOp(now, id) }]);
+    },
+    addPlatform(block, draft) {
+      const item = Object.fromEntries(Object.entries(draft).map(([key, value]) => [key, String(value).trim()]).filter(([, value]) => value !== ""));
+      return saver.save([{ field: "platform", build: (now) => addPlatformOp(now, block, item) }]);
+    },
+    removePlatform(block, index) {
+      return saver.save([{ field: "remove", build: (now) => removePlatformOp(now, block, index) }]);
+    },
+    saveGroup(id, draft) {
+      const steps = ["title", "subtitle"].filter((field) => Object.hasOwn(draft, field)).map((field) => ({
+        field,
+        build: (now) => setLinkFieldOp(now, id, field, linkValue(field, draft[field])),
+      }));
+      return saver.save(steps);
+    },
     moveLink(id, delta) {
       const found = findLink(store.get().config, id);
       if (!found) {
         return Promise.resolve({ ok: true, saved: 0, moved: false });
       }
-      const position = found.position + delta;
-      return reorder(found.ids.length, position, (now) => moveLinkOp(now, id, position), shortName(found.data.title));
+      const target = found.linkPosition + delta;
+      const holder = linkLists(store.get().config).find((entry) => entry.ids === found.ids || entry.ids.join("\0") === found.ids.join("\0"));
+      if (!holder || target < 1 || target > holder.links.length) {
+        return Promise.resolve({ ok: true, saved: 0, moved: false });
+      }
+      const position = holder.links[target - 1].position;
+      return reorder(holder.links.length, target, (now) => moveLinkOp(now, id, position), shortName(found.data.title));
     },
     movePlatform(block, index, delta) {
       const found = findPlatformBlock(store.get().config, block);

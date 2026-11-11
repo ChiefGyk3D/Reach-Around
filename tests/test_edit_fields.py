@@ -131,7 +131,6 @@ def test_set_link_field_hostile_text_stays_text(cfg: Path, value: str) -> None:
         ("first", "id", "other", "cannot be set"),
         ("nope", "title", "X", "no link"),
         ("links", "title", "X", "is a tab"),
-        ("group", "title", "X", "is a section"),
         ("first", "title", "", "non-empty"),
         ("first", "title", "a\nb", "one line"),
         ("first", "title", " padded", "whitespace"),
@@ -148,6 +147,21 @@ def test_set_link_field_refuses_bad_input(
     assert message in refused(
         cfg, editing.set_link_field, link_id=link_id, field=field, value=value
     )
+
+
+def test_set_link_field_edits_a_groups_own_title_and_subtitle(cfg: Path) -> None:
+    edit(cfg, editing.set_link_field, link_id="group", field="title", value="Changed")
+    edit(
+        cfg, editing.set_link_field, link_id="group", field="subtitle", value="Details"
+    )
+    group = next(
+        block
+        for tab in raw_of(cfg)["tabs"]
+        for block in tab["blocks"]
+        if block["id"] == "group"
+    )
+    assert group["title"] == "Changed"
+    assert group["subtitle"] == "Details"
 
 
 def test_set_link_field_refuses_a_multi_line_value(cfg: Path) -> None:

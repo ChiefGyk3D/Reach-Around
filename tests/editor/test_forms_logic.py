@@ -55,12 +55,12 @@ def test_the_forms_logic_passes_under_node(tmp_path: Path) -> None:
 
 
 def test_the_node_tests_go_red_on_broken_logic(tmp_path: Path) -> None:
-    """The negative case: a mutated store.js must fail the same script."""
+    """The negative case: a mutated ops.js must fail the same script."""
     node = node_or_none()
     if node is None:
         pytest.skip("node is not installed; the browser-side logic was not run")
     script = stage(tmp_path)
-    store = tmp_path / "store.js"
+    store = tmp_path / "ops.js"
     text = store.read_text(encoding="utf-8")
     mutated = text.replace(
         "{ base: current.hash, ...step", '{ base: "0".repeat(64), ...step'

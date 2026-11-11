@@ -1,6 +1,6 @@
-// Rendering. Values reach the page only through textContent, or through
+// Forms and rendering. Values reach the page only through textContent, or through
 // setAttribute on attributes named here. Nothing is parsed as markup.
-import { COLOR_KEYS, MODES, dotted, linkLists, platformBlocks } from "./store.js";
+import { COLOR_KEYS, MODES, dotted, linkLists, platformBlocks } from "./ops.js";
 import { t } from "./strings.js";
 
 const MAX_DEPTH = 12;
@@ -348,6 +348,14 @@ function moveButtons(ctx, spec) {
   return box;
 }
 
+function actionButton(ctx, label, key, action) {
+  const button = textual("button", "button button-small", label);
+  button.setAttribute("type", "button");
+  keyed(button, key);
+  button.addEventListener("click", () => ctx.run(action));
+  return button;
+}
+
 function settingField(config, name, label, extra) {
   const value = dotted(config, name);
   return { name, label, kind: "text", value: value === null ? "" : value, ...extra };
@@ -420,21 +428,25 @@ function linkCard(ctx, link, list) {
     optional: true,
     value: data[field] === undefined ? "" : data[field],
   });
-  const first = link.position === 1;
-  const last = link.position === list.ids.length;
+  const first = link.linkPosition === 1;
+  const last = link.linkPosition === list.links.length;
   const item = make("li");
   item.append(
     buildForm(ctx, {
       level: "h6",
       title: t("link.card", { name }),
       saveKey: "save:link:" + data.id,
-      extras: moveButtons(ctx, {
+      extras: (() => {
+        const controls = moveButtons(ctx, {
         name,
         first,
         last,
-        key: (delta, way) => "move:link:" + data.id + ":" + way + ":" + (link.position + delta),
+        key: (delta, way) => "move:link:" + data.id + ":" + way + ":" + (link.linkPosition + delta),
         move: (delta) => ctx.actions.moveLink(data.id, delta),
-      }),
+        });
+        controls.append(actionButton(ctx, t("action.removeLink"), "remove:link:" + data.id, () => ctx.actions.removeLink(data.id)));
+        return controls;
+      })(),
       fields: [
         { name: "title", label: t("link.title"), kind: "text", value: data.title },
         { name: "url", label: t("link.url"), kind: "text", value: data.url },
@@ -458,6 +470,30 @@ function linksSection(ctx, config) {
   }
   for (const entry of lists) {
     section.append(textual("h5", "", t(entry.heading.id, { name: entry.heading.name })));
+    if (entry.group) {
+      section.append(buildForm(ctx, {
+        level: "h6",
+        title: t("links.group", { name: entry.heading.name }),
+        saveKey: "save:group:" + entry.group.id,
+        fields: [
+          { name: "title", label: t("link.title"), kind: "text", value: entry.group.title },
+          { name: "subtitle", label: t("link.subtitle"), kind: "text", optional: true, value: entry.group.subtitle || "" },
+        ],
+        submit: (draft) => ctx.actions.saveGroup(entry.group.id, draft),
+      }));
+    }
+    if (entry.tab) {
+      section.append(buildForm(ctx, {
+        level: "h6",
+        title: t("action.addLink"),
+        saveKey: "add:link:" + entry.tab,
+        fields: [
+          { name: "title", label: t("link.title"), kind: "text", value: "" },
+          { name: "url", label: t("link.url"), kind: "text", value: "" },
+        ],
+        submit: (draft) => ctx.actions.addLink(entry.tab, draft),
+      }));
+    }
     const cards = make("ul", "cards");
     for (const link of entry.links) {
       cards.append(linkCard(ctx, link, entry));
@@ -483,13 +519,17 @@ function platformCard(ctx, block, index) {
       level: "h6",
       title: t("platform.card", { platform: name, index, count: block.items.length }),
       saveKey: "save:platform:" + block.id + ":" + index,
-      extras: moveButtons(ctx, {
+      extras: (() => {
+        const controls = moveButtons(ctx, {
         name,
         first: index === 1,
         last: index === block.items.length,
         key: (delta, way) => "move:platform:" + block.id + ":" + way + ":" + (index + delta),
         move: (delta) => ctx.actions.movePlatform(block.id, index, delta),
-      }),
+        });
+        controls.append(actionButton(ctx, t("action.removePlatform"), "remove:platform:" + block.id + ":" + index, () => ctx.actions.removePlatform(block.id, index)));
+        return controls;
+      })(),
       fields: [
         text("handle", t("platform.handle")),
         text("url", t("platform.url")),
@@ -517,6 +557,17 @@ function platformsSection(ctx, config) {
   }
   for (const block of blocks) {
     section.append(textual("h5", "", t("platforms.block", { name: block.id })));
+    section.append(buildForm(ctx, {
+      level: "h6",
+      title: t("action.addPlatform"),
+      saveKey: "add:platform:" + block.id,
+      fields: [
+        { name: "platform", label: t("platform.name"), kind: "text", value: "" },
+        { name: "handle", label: t("platform.handle"), kind: "text", value: "" },
+        { name: "url", label: t("platform.url"), kind: "text", value: "" },
+      ],
+      submit: (draft) => ctx.actions.addPlatform(block.id, draft),
+    }));
     const cards = make("ul", "cards");
     block.items.forEach((_item, position) => {
       cards.append(platformCard(ctx, block, position + 1));

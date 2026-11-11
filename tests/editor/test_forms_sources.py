@@ -8,7 +8,7 @@ from importlib import resources
 
 import pytest
 
-JS_NAMES = ("app.js", "api.js", "store.js", "strings.js", "view.js")
+JS_NAMES = ("app.js", "api.js", "strings.js", "forms.js", "ops.js")
 ATTRIBUTES = {
     "class",
     "for",
@@ -73,8 +73,8 @@ def attribute_problems(text: str) -> list[str]:
 
 def test_the_forms_sources_were_collected() -> None:
     assert string_ids()
-    assert len(source("view.js")) > 5000
-    assert len(source("store.js")) > 5000
+    assert len(source("forms.js")) > 5000
+    assert len(source("ops.js")) > 5000
 
 
 def test_every_literal_string_id_exists() -> None:
@@ -121,20 +121,20 @@ def test_no_unused_strings_pile_up() -> None:
 
 
 def test_no_user_visible_text_is_written_in_code() -> None:
-    for name in ("view.js", "store.js", "app.js"):
+    for name in ("forms.js", "ops.js", "app.js"):
         assert literal_text_problems(source(name)) == [], name
 
 
 def test_only_known_attributes_are_set() -> None:
-    for name in ("view.js", "app.js"):
+    for name in ("forms.js", "app.js"):
         assert attribute_problems(source(name)) == [], name
 
 
 def test_every_button_has_an_explicit_type() -> None:
-    view = source("view.js")
+    view = source("forms.js")
     made = len(re.findall(r'make\(\s*"button"', view))
     typed = len(re.findall(r'setAttribute\(\s*"type",\s*"(button|submit)"\s*\)', view))
-    assert made == 2  # the Save button and the shared Move up / Move down loop
+    assert made == 2  # Save and the shared Move up / Move down loop
     assert typed >= made
 
 
@@ -145,10 +145,11 @@ def test_network_goes_only_through_the_client_and_known_editor_routes() -> None:
             assert not re.search(
                 r"\bfetch\s*\(|XMLHttpRequest|WebSocket|sendBeacon", text
             )
-    store = source("store.js")
+    store = source("ops.js")
     calls = re.findall(r"client\.(get|post)\(\s*([^,)]*)", store)
     assert calls == [
         ("get", '"state"'),
+        ("get", '"version"'),
         ("get", '"history"'),
         ("post", '"undo"'),
         ("post", '"redo"'),
@@ -156,11 +157,11 @@ def test_network_goes_only_through_the_client_and_known_editor_routes() -> None:
         ("post", '"undo"'),
         ("post", '"op"'),
     ]
-    assert not re.search(r"client\.", source("view.js"))
+    assert not re.search(r"client\.", source("forms.js"))
 
 
 def test_forms_never_navigate_or_open_anything() -> None:
-    for name in ("view.js", "store.js", "app.js"):
+    for name in ("forms.js", "ops.js", "app.js"):
         text = source(name)
         assert not re.search(
             r"\blocation\s*\.\s*(href|assign|replace)|window\.open", text
@@ -169,7 +170,7 @@ def test_forms_never_navigate_or_open_anything() -> None:
 
 
 def test_the_form_view_uses_text_content_for_values() -> None:
-    view = source("view.js")
+    view = source("forms.js")
     assert view.count("textContent") >= 8
     assert not re.search(
         r"\.(inner|outer)HTML|insertAdjacent|createContextualFragment", view
