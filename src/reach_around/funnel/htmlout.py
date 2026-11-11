@@ -51,9 +51,9 @@ body{margin:0;background:var(--ra-brand-ground);color:var(--ra-brand-text);
 font:16px/var(--ra-line-height) var(--ra-font-body)}
 main{max-width:90rem;margin:0 auto;padding:var(--ra-space-5) var(--ra-space-4) var(--ra-space-6)}
 header{max-width:72rem}
-h1,h2{font-family:var(--ra-font-heading)}
+h1,h2,h3{font-family:var(--ra-font-heading)}
 h1{font-size:var(--ra-text-2xl);line-height:1.1;margin:0 0 var(--ra-space-2)}
-h2{font-size:var(--ra-text-md);margin:0 0 var(--ra-space-3)}
+h2,h3{font-size:var(--ra-text-md);margin:0 0 var(--ra-space-3)}
 p{margin:var(--ra-space-1) 0}
 .muted,.note{color:var(--ra-brand-muted)}
 .note{font-size:var(--ra-text-sm)}
@@ -62,6 +62,8 @@ p{margin:var(--ra-space-1) 0}
 .report-overview{margin-top:var(--ra-space-5);padding:var(--ra-space-4) 0}
 .report-overview>h2{color:var(--ra-brand-amber);font-size:var(--ra-text-xl)}
 .report-details{margin-top:var(--ra-space-5)}
+.funnel{margin-top:var(--ra-space-5)}
+.funnel>h2{color:var(--ra-brand-amber);font-size:var(--ra-text-xl)}
 .ra-c-plate{box-sizing:border-box;padding:var(--ra-space-4);
 background-color:var(--ra-brand-surface);color:var(--ra-brand-text);
 border:var(--ra-rule-width) solid var(--ra-brand-rule);border-radius:var(--ra-radius-square)}
@@ -449,19 +451,20 @@ def _patterns(view: dict[str, Any]) -> str:
 
 def _pairs_table(title: str, t: dict[str, Any], label: str) -> str:
     if t["state"] != "ok":
-        rows = _state_row(t["state"], 3)
+        rows = _state_row(t["state"], 4)
     else:
         rows = (
             "".join(
                 f"<tr><td>{escape(r['label'])}</td><td>{escape(r['destination'])}</td>"
-                f'<td class="n">{r["clicks"]}</td></tr>'
+                f'<td class="n">{r["clicks"]}</td><td class="n">{r["ratio"]}%</td></tr>'
                 for r in t["rows"]
             )
-            or '<tr><td colspan="3">no data in this period</td></tr>'
+            or '<tr><td colspan="4">no data in this period</td></tr>'
         )
     return (
-        f'<section class="ra-c-plate"><h2>{escape(title)}</h2><div class="wrap"><table>'
-        f'<thead><tr><th>{escape(label)}</th><th>Link</th><th class="n">Clicks</th></tr></thead>'
+        f'<section class="ra-c-plate"><h3>{escape(title)}</h3><div class="wrap"><table>'
+        f'<thead><tr><th>{escape(label)}</th><th>Destination</th><th class="n">Clicks</th>'
+        '<th class="n">Ratio of shown destination clicks</th></tr></thead>'
         f"<tbody>{rows}</tbody></table></div></section>"
     )
 
@@ -578,16 +581,24 @@ def render_html(view: dict[str, Any], *, generated_at: datetime) -> str:
             nyet["countries"],
         ),
         "</div>",
-        '<div class="grid cols2" style="margin-top:16px">',
+        '<section class="funnel" aria-labelledby="funnel-heading">',
+        '<h2 id="funnel-heading">Funnel</h2>',
+        '<p class="note">Source and country paths use released aggregate clicks. '
+        "Percentages are ratios of the shown clicks for a destination, never rates. "
+        "Landing and hop attribution are not collected.</p>",
+        '<div class="grid cols2">',
         _clicks_table(
             "Clicks by source (released period)", view["clicks_by_source"], "Source"
         ),
         _clicks_table(
             "Clicks by country (released period)", view["clicks_by_country"], "Country"
         ),
-        _pairs_table("Source by link", view["source_by_destination"], "Source"),
-        _pairs_table("Country by link", view["country_by_destination"], "Country"),
+        _pairs_table("Source to destination", view["source_by_destination"], "Source"),
+        _pairs_table(
+            "Country to destination", view["country_by_destination"], "Country"
+        ),
         "</div>",
+        "</section><!-- funnel -->",
         '<p class="note" style="margin-top:16px">Clicks are counts, not people. '
         "Human-likely is an estimate. The world map and the Links and Social icons "
         "tabs are not in this version (see docs/report.md).</p>",
