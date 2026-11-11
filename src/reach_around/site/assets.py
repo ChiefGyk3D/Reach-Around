@@ -21,6 +21,7 @@ from pathlib import Path
 
 from reach_around.config.models import Link, Section, SiteConfig
 from reach_around.config.pathlimits import check_path_bytes
+from reach_around.kit.stage import StageError, _scrub_jpeg, _scrub_png
 from reach_around.site.assetcheck import check_content
 from reach_around.site.theme import (
     IMAGE_EXTENSIONS,
@@ -37,6 +38,7 @@ FONT_EXTENSIONS = (".woff2", ".woff", ".ttf", ".otf")
 
 _KINDS: dict[str, tuple[str, ...]] = {
     "image": IMAGE_EXTENSIONS,
+    "recent_thumbnail": (".png", ".jpg", ".jpeg"),
     "thumbnail": IMAGE_EXTENSIONS,
     "font": FONT_EXTENSIONS,
     "license": LICENSE_EXTENSIONS,
@@ -73,7 +75,11 @@ def _slots(config: SiteConfig) -> Iterator[tuple[str, str, str]]:
         yield "theme.fonts.license", theme.fonts.license, "license"
     if config.kit is not None:
         for index, post in enumerate(config.kit.recent_posts):
-            yield f"kit.recent_posts[{index}].thumbnail", post.thumbnail, "image"
+            yield (
+                f"kit.recent_posts[{index}].thumbnail",
+                post.thumbnail,
+                "recent_thumbnail",
+            )
     for t, tab in enumerate(config.tabs):
         for b, block in enumerate(tab.blocks):
             src = getattr(block, "src", None)
@@ -248,15 +254,34 @@ def _collect(
     files: dict[Path, bytes] = {}
     for key, rel, kind in slots:
         _check_slot(key, rel, kind)
-        if kind == "thumbnail":
+        if kind in ("thumbnail", "recent_thumbnail"):
             kib = MAX_THUMBNAIL_BYTES // 1024
-            _read(
+            advice = (
+                "resize it and try again"
+                if kind == "recent_thumbnail"
+                else "a thumbnail is drawn at 44 px, so resize it "
+                "(for example 128 px wide) and try again"
+            )
+            data = _read(
                 assets_dir,
                 rel,
                 MAX_THUMBNAIL_BYTES,
-                f"{key}: {rel!r} is larger than {kib} KiB; a thumbnail is drawn "
-                "at 44 px, so resize it (for example 128 px wide) and try again",
+                f"{key}: {rel!r} is larger than {kib} KiB; {advice}",
             )
+            if kind == "recent_thumbnail":
+                check_content(key, rel, data)
+                try:
+                    data = (
+                        _scrub_png(data)
+                        if rel.lower().endswith(".png")
+                        else _scrub_jpeg(data)
+                    )
+                except StageError as exc:
+                    raise ValueError(
+                        f"{key}: {rel!r} cannot be scrubbed: {exc}"
+                    ) from exc
+                files[Path(rel)] = data
+                continue
         if Path(rel) not in files:
             if kind == "license":
                 data = _read(

@@ -140,13 +140,15 @@ updated" line prints the build date. These rows are public on both kit pages and
 in the public PDF. They do not change the owner-report-only rule for engagement
 figures, and they cannot contain YouTube Analytics figures.
 `recent_posts` adds a "Most recent posts" grid grouped by platform. Every post
-needs `views`, `likes`, `comments` and a `thumbnail` path relative to the
-instance directory. Threads posts may also carry `reposts` and `quotes`. The
-build copies and fingerprints each image, and the page loads it from the same
-site. Remote image addresses, absolute paths and paths outside the instance are
-refused. Supply or generate these image files inside the instance before the
-build. YouTube recent-post figures are refused and stay out of the public kit;
-keep collected YouTube Analytics figures in the owner-only dashboard.
+needs `views`, `likes`, `comments` and a PNG or JPEG `thumbnail` path relative
+to the instance directory. Threads posts may also carry `reposts` and `quotes`.
+The build removes PNG text chunks and JPEG metadata, caps the source at 256
+KiB, fingerprints the scrubbed image and loads it from the same site. Remote
+image addresses, absolute paths and paths outside the instance are refused.
+Supply or generate these image files inside the instance before the build.
+Recent-post pictures are left out of PDFs; the post counts remain. YouTube
+recent-post figures are refused and stay out of the public kit; keep collected
+YouTube Analytics figures in the owner-only dashboard.
 
 When the config sets [`cutover_date`](config.md#cutover_date) and that UTC day
 has arrived, a small line "Live since 2026-11-08 (UTC)" sits above the numbers

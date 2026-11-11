@@ -155,6 +155,8 @@ def test_recent_posts_validate_platform_counts_and_local_thumbnail() -> None:
         "//example.com/post.png",
         "/media/post.png",
         "../post.png",
+        "media\\post.png",
+        "media/post.webp",
     ):
         with pytest.raises(ValidationError):
             RecentPost.model_validate(

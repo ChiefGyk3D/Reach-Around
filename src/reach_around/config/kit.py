@@ -524,14 +524,9 @@ class RecentPost(_Model):
     @field_validator("thumbnail")
     @classmethod
     def _local_thumbnail(cls, value: str) -> str:
-        parts = value.split("/")
-        if (
-            not value
-            or value.startswith("/")
-            or ":" in value
-            or any(part in ("", ".", "..") for part in parts)
-        ):
-            raise ValueError("thumbnail must be a plain relative instance file path")
+        value = check_image_path(value)
+        if not value.lower().endswith((".png", ".jpg", ".jpeg")):
+            raise ValueError("thumbnail must be a PNG or JPEG image")
         return value
 
     @model_validator(mode="after")
