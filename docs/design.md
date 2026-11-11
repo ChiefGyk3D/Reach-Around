@@ -20,7 +20,26 @@ The bridge declares `--ra-brand-amber`, `--ra-brand-on-amber`,
 `--ra-compat-text`, `--ra-compat-border`, `--ra-compat-shadow-warm`,
 `--ra-compat-shadow`, `--ra-color-black`, `--ra-font-mono`,
 `--ra-radius-square`, `--ra-rule-width` and `--ra-rule-accent-width` in
-addition to the semantic properties documented below.
+addition to the semantic properties documented below. Component geometry and
+type metrics use the `--ra-component-*` tokens in the same bridge:
+`--ra-component-button-glow-size`, `--ra-component-chip-min-height`,
+`--ra-component-control-line-height`, `--ra-component-control-tracking`,
+`--ra-component-glow-size`, `--ra-component-tick-size` and
+`--ra-component-title-tracking`.
+
+## Shared components (S2)
+
+`static/components.css` holds the brand component layer, built only from
+`tokens.css`: a plate (`ra-c-plate`, with `--carbon` and `--amber`), a
+corner-tick frame (`ra-c-ticks`, `--quiet`, `--glow`), chips (`ra-c-chip`,
+`--amber`, `--solid`, `aria-pressed`, `aria-current`, disabled) and buttons
+(`ra-c-btn`, `--secondary`, `--ghost`). Corners are square, buttons keep the
+44 px tap target, and one white 3 px focus ring serves every component. The
+`.is-hover`, `.is-active` and `.is-focus` classes draw a state on demand for the
+sheet. No page links the file yet. Open `docs/design-sheet/components.html`
+through a static server rooted at the repository to see every component in every
+state. These brand components are dark only. Contrast pairs are tested in
+`tests/site/test_components.py`.
 
 The link page is plain HTML and two stylesheets, `static/tokens.css` and
 `static/site.css`. No script runs to draw it, no

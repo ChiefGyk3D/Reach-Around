@@ -838,7 +838,44 @@ def build_site(
                 f"redirects.socials would hide {shadowed[0]}: rename the tab "
                 "(its id must not be 'socials') or turn the redirect off"
             )
-        files[Path("_redirects")] = render_redirects(socials).encode("ascii")
+    tab_redirects = config.redirects.tabs if config.redirects else {}
+    if tab_redirects:
+        hidden = sorted(
+            old
+            for old in tab_redirects
+            if any(
+                p in (f"{old}.html", f"{old}/index.html") or p.startswith(f"{old}/")
+                for p in published
+            )
+        )
+        if hidden:
+            raise ValueError(
+                f"redirects.tabs old slug would hide current tab {hidden[0]!r}"
+            )
+        if socials is not None and "socials" in tab_redirects:
+            raise ValueError(
+                "redirects.tabs old slug 'socials' conflicts with redirects.socials"
+            )
+        current_routes = {
+            tab.id: (
+                "/"
+                if i == 0 or (config.page_layout == "sections" and not shown[i])
+                else f"/#{tab.id}"
+                if config.page_layout == "sections"
+                else f"/{tab.id}/"
+            )
+            for i, tab in enumerate(config.tabs)
+        }
+        missing = sorted(set(tab_redirects.values()) - current_routes.keys())
+        if missing:
+            raise ValueError(f"redirects.tabs points to unknown tab id {missing[0]!r}")
+        routes = {
+            old: current_routes[current] for old, current in tab_redirects.items()
+        }
+    else:
+        routes = {}
+    if socials is not None or routes:
+        files[Path("_redirects")] = render_redirects(socials, routes).encode("ascii")
     immutable, revalidate = cache_patterns(
         published, {path.as_posix() for path in named.hashed}
     )

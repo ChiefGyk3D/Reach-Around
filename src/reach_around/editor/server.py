@@ -9,9 +9,10 @@ and nowhere else.
 
 Routes are limited to the shell, the static files, ``GET /__edit/api/state``,
 ``GET /__edit/api/version``, ``GET /__edit/api/history``, ``POST /__edit/api/op``,
-``POST /__edit/api/undo``, ``POST /__edit/api/redo`` and 404 for everything
-else. A refused or malformed request never writes and never produces a 5xx:
-the guard runs inside ``parse_request``, before any route.
+``POST /__edit/api/undo``, ``POST /__edit/api/redo``,
+``POST /__edit/api/history/restore`` and 404 for everything else. A refused or
+malformed request never writes and never produces a 5xx: the guard runs inside
+``parse_request``, before any route.
 """
 
 from __future__ import annotations
@@ -516,6 +517,8 @@ class _EditorHandler(_Handler):
         path = self.route_path()
         if path == "/__edit/api/op":
             self._json_route(self._op)
+        elif path == "/__edit/api/history/restore":
+            self._json_route(self._restore)
         elif path in ("/__edit/api/undo", "/__edit/api/redo"):
             self._json_route(lambda: self._move(path.rsplit("/", 1)[1]))
         else:
@@ -574,6 +577,13 @@ class _EditorHandler(_Handler):
         session = self.owner
         return session.service.run_move(
             body, kind, self._preview_host(), session.preview_port
+        )
+
+    def _restore(self) -> dict[str, Any]:
+        body = self._mutation_body()
+        session = self.owner
+        return session.service.run_restore(
+            body, self._preview_host(), session.preview_port
         )
 
 
