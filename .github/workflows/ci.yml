@@ -47,6 +47,7 @@ jobs:
         ruff check .
         ruff format --check .
         python3 -I scripts/check-token-drift
+        python3 -I scripts/check-public-assets.py
       typecheck-install-command: |
         pip install --require-hashes -r requirements-dev.txt
         pip install --no-deps -e .

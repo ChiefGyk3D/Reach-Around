@@ -5,11 +5,12 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 from pathlib import Path
 
 import pytest
 
-from assetpaths import asset
+from assetpaths import asset, asset_file
 from reach_around.cli import main
 from reach_around.site.inventory import load_inventory
 
@@ -18,6 +19,36 @@ EXAMPLE = Path(__file__).resolve().parents[1] / "examples" / "instance" / "site.
 
 def build(out: Path, *extra: str) -> int:
     return main(["build", "--config", str(EXAMPLE), "--out", str(out), *extra])
+
+
+def test_an_explicit_asset_set_supplies_local_files(tmp_path: Path) -> None:
+    instance = tmp_path / "instance"
+    instance.mkdir()
+    config = instance / "site.yaml"
+    config.write_text(EXAMPLE.read_text(encoding="utf-8"), encoding="utf-8")
+    assets = tmp_path / "dev-assets"
+    shutil.copytree(EXAMPLE.parent / "media", assets / "media")
+    shutil.copytree(EXAMPLE.parent / "fonts", assets / "fonts")
+
+    out = tmp_path / "site-out"
+    assert (
+        main(
+            [
+                "build",
+                "--config",
+                str(config),
+                "--assets-dir",
+                str(assets),
+                "--out",
+                str(out),
+            ]
+        )
+        == 0
+    )
+    assert (
+        asset_file(out, "media/mascot.svg").read_bytes()
+        == (assets / "media" / "mascot.svg").read_bytes()
+    )
 
 
 def test_the_inventory_is_written_beside_out_by_default(tmp_path: Path) -> None:
