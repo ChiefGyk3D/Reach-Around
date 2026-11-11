@@ -36,7 +36,9 @@ corner-tick frame (`ra-c-ticks`, `--quiet`, `--glow`), chips (`ra-c-chip`,
 (`ra-c-btn`, `--secondary`, `--ghost`). Corners are square, buttons keep the
 44 px tap target, and one white 3 px focus ring serves every component. The
 `.is-hover`, `.is-active` and `.is-focus` classes draw a state on demand for the
-sheet. No page links the file yet. Open `docs/design-sheet/components.html`
+sheet. The media-kit pages are the first consumer and load the component layer
+after `kit.css`, so the shared component rules win over legacy kit styles. Open
+`docs/design-sheet/components.html`
 through a static server rooted at the repository to see every component in every
 state. These brand components are dark only. Contrast pairs are tested in
 `tests/site/test_components.py`.

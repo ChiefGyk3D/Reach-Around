@@ -201,6 +201,7 @@ def test_press_deck_uses_the_shared_brand_components_without_changing_the_gate(
     out, _ = build(tmp_path, make_config(gated_doc(tags=["Synthetic media"])))
     html = (out / "kit" / "index.html").read_text(encoding="utf-8")
     assert re.search(r'href="\.\./static/components\.[a-f0-9]+\.css"', html)
+    assert html.index("kit.") < html.index("components.")
     assert 'class="kit-headline ra-c-plate ra-c-plate--amber ra-c-ticks' in html
     assert 'class="profile-tag ra-c-chip ra-c-chip--amber"' in html
     assert re.search(
