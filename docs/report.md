@@ -463,8 +463,8 @@ the visitor came in on, and no click is tied to a view or to a person. A high
 `direct` share means few shared links carry a label. CSV `metadata.csv` carries
 `period`, `period_start_utc` and `period_end_utc`.
 
-Not part of this change: grouping destinations by platform, the landing and hop
-tables (#334), device pairs, and a marker for
+Not part of this change: grouping destinations by platform, landing and hop
+collection, device pairs, and a marker for
 windows that span the cutover (#371).
 
 ## Owner report page (`--html`)
@@ -486,9 +486,14 @@ so it shows no figure the floored JSON does not hold. Sections: overview tiles
 (views, clicks, click rate, each with the change against the previous window of
 the same length when both figures are printable), followed by a daily views and clicks chart
 and a daily click rate chart (UTC days), the daily table, clicks per link,
-sources, devices, browsers, operating systems, countries, and the released
-clicks by source and country with the source by link and country by link
-tables when `--period` was used. The matching CSV files are `owner_tiles.csv`,
+sources, devices, browsers, operating systems and countries. A Funnel section
+groups the released clicks by source and country with the source-to-destination
+and country-to-destination tables when `--period` was used. Each path shows its
+click count and its ratio of the shown clicks for that destination. The ratio is
+computed only from cells and destination totals that already passed the floor
+and complementary suppression; it is labeled as a ratio, never a rate. Landing
+and hop attribution are not collected and are not inferred. The matching CSV
+files are `owner_tiles.csv`,
 `owner_daily.csv`, `owner_links.csv`, `owner_sources.csv`, `owner_devices.csv`,
 `owner_countries.csv`, `owner_clicks_by_source.csv` and
 `owner_clicks_by_country.csv`; Grafana can read the same data.

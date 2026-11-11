@@ -21,7 +21,9 @@ import pytest
 from reach_around.cli import main
 from reach_around.funnel.csvout import csv_files
 from reach_around.funnel.export import ExportError, load_exports
+from reach_around.funnel.htmlout import render_html
 from reach_around.funnel.ledger import init_ledger
+from reach_around.funnel.owner import owner_view
 from reach_around.funnel.release import release_report
 from reach_around.funnel.report import (
     REMAINDER,
@@ -162,6 +164,55 @@ def test_matrix_and_country_table_print_whole_clean_destinations(
     assert "instagram -> twitch" in text
     assert "Clicks by country and destination" in text
     assert "not people" in text
+
+
+def test_owner_funnel_ratios_use_only_printed_destination_clicks(
+    tmp_path: Path,
+) -> None:
+    src = {
+        "twitch": {"instagram": 12, "direct": 8},
+        "kick": {"instagram": 9, "bluesky": 6},
+    }
+    report = report_of(tmp_path, {"click_src_daily": src_rows(src)})
+
+    rows = owner_view(report)["source_by_destination"]["rows"]
+
+    assert {
+        (row["label"], row["destination"]): (row["clicks"], row["ratio"])
+        for row in rows
+    } == {
+        ("bluesky", "kick"): (6, 40.0),
+        ("instagram", "kick"): (9, 60.0),
+        ("direct", "twitch"): (8, 40.0),
+        ("instagram", "twitch"): (12, 60.0),
+    }
+
+
+def test_owner_html_has_a_count_only_funnel_section_with_ratios_not_rates(
+    tmp_path: Path,
+) -> None:
+    report = report_of(
+        tmp_path,
+        {
+            "click_src_daily": src_rows({"twitch": {"instagram": 12, "direct": 8}}),
+            "click_country_daily": cc_rows({"twitch": {"US": 14, "DE": 6}}),
+        },
+    )
+
+    page = render_html(
+        owner_view(report), generated_at=datetime(2026, 11, 10, tzinfo=UTC)
+    )
+    start = page.index('<section class="funnel')
+    funnel = page[start : page.index("</section><!-- funnel -->", start)]
+
+    assert '<h2 id="funnel-heading">Funnel</h2>' in funnel
+    assert "Source to destination" in funnel
+    assert "Country to destination" in funnel
+    assert "Ratio of shown destination clicks" in funnel
+    assert "60.0%" in funnel and "70.0%" in funnel
+    assert funnel.lower().count("rate") == 1
+    assert "never rates" in funnel.lower()
+    assert "Landing and hop attribution are not collected." in funnel
 
 
 def test_a_small_cell_is_merged_into_one_remainder_not_a_reason_to_hide_the_rest(

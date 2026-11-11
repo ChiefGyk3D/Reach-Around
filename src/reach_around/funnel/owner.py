@@ -224,10 +224,20 @@ def _released(section: dict[str, Any], key: str) -> dict[str, Any]:
 def _pairs(section: dict[str, Any], key: str) -> dict[str, Any]:
     if section["state"] != "ok":
         return {"state": section["state"], "rows": []}
+    destination_totals = {
+        row["destination"]: row["clicks"] for row in section["destinations"]
+    }
     return {
         "state": "ok",
         "rows": [
-            {"label": c[key], "destination": c["destination"], "clicks": c["clicks"]}
+            {
+                "label": c[key],
+                "destination": c["destination"],
+                "clicks": c["clicks"],
+                "ratio": round(
+                    c["clicks"] * 100 / destination_totals[c["destination"]], 1
+                ),
+            }
             for c in section["cells"]
         ],
     }
