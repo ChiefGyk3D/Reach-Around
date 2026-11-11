@@ -71,6 +71,75 @@ def test_default_is_301_to_root_for_both_paths(tmp_path: Path) -> None:
     ]
 
 
+def test_old_tab_slugs_redirect_to_current_tab_routes(tmp_path: Path) -> None:
+    files = built(cfg({"tabs": {"archive": "s", "old-home": "home"}}), tmp_path / "o")
+    assert rules(files["_redirects"].decode()) == [
+        ["/archive", "/s/", "301"],
+        ["/archive/", "/s/", "301"],
+        ["/old-home", "/", "301"],
+        ["/old-home/", "/", "301"],
+    ]
+
+
+def test_old_tab_slugs_follow_section_routes(tmp_path: Path) -> None:
+    config = cfg({"tabs": {"archive": "s"}}).model_copy(
+        update={"page_layout": "sections"}
+    )
+    files = built(config, tmp_path / "o")
+    assert rules(files["_redirects"].decode()) == [
+        ["/archive", "/#s", "301"],
+        ["/archive/", "/#s", "301"],
+    ]
+
+
+def test_old_tab_slug_for_omitted_section_redirects_to_page(tmp_path: Path) -> None:
+    data = site_data()
+    data["tabs"][1]["blocks"] = [
+        {
+            "id": "gone",
+            "title": "Gone",
+            "url": "https://example.org/old",
+            "show_until": "2027-01-01",
+        }
+    ]
+    config = SiteConfig.model_validate(
+        {
+            **data,
+            "page_layout": "sections",
+            "redirects": {"tabs": {"archive": "s"}},
+        }
+    )
+
+    files = built(config, tmp_path / "o")
+
+    assert rules(files["_redirects"].decode()) == [
+        ["/archive", "/", "301"],
+        ["/archive/", "/", "301"],
+    ]
+
+
+def test_static_redirect_limit_counts_socials_and_tab_rules(tmp_path: Path) -> None:
+    at_limit = {f"old-{i}": "s" for i in range(999)}
+    assert "_redirects" in built(
+        cfg({"socials": {}, "tabs": at_limit}), tmp_path / "allowed"
+    )
+
+    over_limit = {**at_limit, "old-999": "s"}
+    with pytest.raises(ValueError, match=r"2,002.*2,000"):
+        build_site(
+            cfg({"socials": {}, "tabs": over_limit}),
+            tmp_path / "refused",
+            today=TODAY,
+        )
+    assert not (tmp_path / "refused").exists()
+
+
+def test_old_slug_cannot_hide_a_current_tab(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match=r"redirects\.tabs.*hide.*s"):
+        build_site(cfg({"tabs": {"s": "home"}}), tmp_path / "o", today=TODAY)
+    assert not (tmp_path / "o").exists()
+
+
 def test_302_switch(tmp_path: Path) -> None:
     files = built(cfg({"socials": {"status": 302}}), tmp_path / "o")
     got = rules(files["_redirects"].decode())
@@ -180,6 +249,19 @@ def test_render_guard_bites_on_a_bad_target() -> None:
     odd = SocialsRedirect.model_construct(status=307, target="/")
     with pytest.raises(ValueError, match="status"):
         render_redirects(odd)
+
+
+@pytest.mark.parametrize(
+    "tab_routes",
+    [
+        {"old\n/injected": "/"},
+        {"old": "/\n/injected /target 301"},
+        {"old": "https://outside.example/"},
+    ],
+)
+def test_render_refuses_unvalidated_tab_routes(tab_routes: dict[str, str]) -> None:
+    with pytest.raises(ValueError):
+        render_redirects(None, tab_routes)
 
 
 @pytest.mark.parametrize("target", ["/socials", "/socials/"])
