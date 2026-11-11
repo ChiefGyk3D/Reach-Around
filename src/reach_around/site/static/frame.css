@@ -1,29 +1,24 @@
 /* SPDX-License-Identifier: Apache-2.0 */
-/* Border frames (theme.frame). Published and linked only when a frame level is
-   on, after site.css and the block stylesheets, so a rule here wins a tie.
+/* Border frames (theme.frame). Published and linked only when a frame is on,
+   after site.css and the block stylesheets, so a rule here wins a tie. Dark
+   only: the frame adds no light palette, no cream and no white.
 
-   One frame, drawn from the brand's button, as a border only: each element keeps
-   the fill, text color and palette it has without the frame (amber stays
-   amber, dark stays dark), and the frame adds heavy stepped graphite brackets split at the middle of each edge, angled end-cap
-   plates, long amber rules and a faint glow under the bottom rule, with the
-   element's own lettering. The graphite parts are two small packaged SVG files used as a
-   nine-slice border image (frame.svg with plates, frame-lite.svg brackets only),
-   scaled by the element's height through --ra-fr-s (pixels per original pixel
-   of the 318 px tall artwork). The amber parts (rules, dashes, stubs, glow) and
-   nothing else are CSS gradients that read the theme accent, so a retheme follows.
-   No markup beyond one class per element, no inline style and no embedded image.
+   A frame is a border only: each element keeps its own fill, text color and
+   palette (amber stays amber, dark stays dark). Two looks:
 
-   Levels: ra-l1 is the lite frame (brackets, rules, stubs), ra-l2 the full frame
-   (adds the end-cap plates and their dashes), ra-l3 the full frame with the
-   center rules and the glow (at most theme.frame_l3_max per page). */
+   minimal (ra-mn): stepped graphite brackets split at the middle of each edge,
+   a thin amber outline on them, two thin amber rules and small dashes. The
+   brackets are one packaged SVG (frame-lite.svg) used as a nine-slice border
+   image scaled by the element's height through --ra-fr-s (pixels per original
+   pixel of the 318 px tall artwork); the rules are CSS gradients.
 
-/* Registered colors so the light show can animate a rule's color without
-   touching layout: the top rules (ct), the two corner dashes (c1, c2) and the
-   side stubs (cs). Still by default: they start at the full accent. */
-@property --ra-fr-ct { syntax: "<color>"; inherits: false; initial-value: transparent; }
-@property --ra-fr-c1 { syntax: "<color>"; inherits: false; initial-value: transparent; }
-@property --ra-fr-c2 { syntax: "<color>"; inherits: false; initial-value: transparent; }
-@property --ra-fr-cs { syntax: "<color>"; inherits: false; initial-value: transparent; }
+   faithful (ra-fa): the brand button art, one static SVG per size class
+   (frame-fa-<size>.svg, drawn at that size and used at 100% 100% on ::before,
+   above the element's own fill and below its text). The -am files carry ink
+   rules for solid amber fills. Under 60 px high the art is the reduced variant.
+   The art keeps its own colors (brand amber rules, graphite brackets with an
+   edge highlight so they read on dark and on amber). No markup beyond classes,
+   no inline style and no embedded image. */
 
 :root {
   --ra-fr-amber: var(--ra-color-accent);
@@ -31,51 +26,32 @@
 
 body .ra-bx.ra-bx {
   --u: calc(var(--ra-fr-s) * 1px);
-  --ra-fr-a: linear-gradient(var(--ra-fr-amber), var(--ra-fr-amber));
-  --ra-fr-ct: var(--ra-fr-amber);
-  --ra-fr-c1: var(--ra-fr-amber);
-  --ra-fr-c2: var(--ra-fr-amber);
-  --ra-fr-cs: var(--ra-fr-amber);
-  --ra-fr-gt: linear-gradient(var(--ra-fr-ct), var(--ra-fr-ct));
-  --ra-fr-g1: linear-gradient(var(--ra-fr-c1), var(--ra-fr-c1));
-  --ra-fr-g2: linear-gradient(var(--ra-fr-c2), var(--ra-fr-c2));
-  --ra-fr-gs: linear-gradient(var(--ra-fr-cs), var(--ra-fr-cs));
   position: relative;
   isolation: isolate;
   box-sizing: border-box;
-  min-height: calc(var(--u) * 318);
-  padding-block: calc(var(--u) * 40);
-  padding-inline: calc(var(--u) * 100);
-  border: 1px solid transparent;
   border-radius: 0;
   box-shadow: none;
+  padding-block: calc(var(--u) * 40);
+  padding-inline: calc(var(--u) * 100);
+}
+body .ra-mn.ra-bx {
+  --ra-fr-a: linear-gradient(var(--ra-fr-amber), var(--ra-fr-amber));
+  min-height: calc(var(--u) * 318);
+  border: 1px solid transparent;
   border-image-slice: 159 210 fill;
   border-image-width: calc(var(--u) * 159) calc(var(--u) * 210);
   border-image-repeat: stretch;
   border-image-source: url("frame-lite.svg");
+  padding-inline: calc(var(--u) * 80);
 }
-body .ra-bx.ra-bx.ra-s1 { --ra-fr-s: 0.11; }
-body .ra-bx.ra-bx.ra-s2 { --ra-fr-s: 0.15; }
-body .ra-bx.ra-bx.ra-s3 { --ra-fr-s: 0.19; }
-body .ra-bx.ra-bx.ra-s4 { --ra-fr-s: 0.24; }
-body .ra-bx.ra-bx.ra-s5 { --ra-fr-s: 0.28; }
+body .ra-bx.ra-s1 { --ra-fr-s: 0.11; }
+body .ra-bx.ra-s2 { --ra-fr-s: 0.15; }
+body .ra-bx.ra-s3 { --ra-fr-s: 0.19; }
+body .ra-bx.ra-s4 { --ra-fr-s: 0.24; }
+body .ra-bx.ra-s5 { --ra-fr-s: 0.28; }
 
-/* The element paints its own fill; the graphite border image sits on top and
-   every amber part (rules, dashes, stubs) is in ::before, above the graphite,
-   so it can carry the bloom. */
-body .ra-l1.ra-bx { padding-inline: calc(var(--u) * 80); }
-body :is(.ra-l2, .ra-l3).ra-bx {
-  border-image-slice: 159 500 fill;
-  border-image-width: calc(var(--u) * 159) calc(var(--u) * 500);
-  border-image-source: url("frame.svg");
-}
-
-/* The amber light: long rules, corner dashes, mid-edge stubs and, on the full
-   frame, the plate dashes. Rules stop short of the end-cap plates so they never
-   cross them. L2 and L3 give the light a bloom that hugs it (a drop shadow of
-   the pseudo-element's own amber, not of the box): L2 one tight shadow, L3 a
-   tight one plus the full soft one. Print and forced colors drop the whole layer. */
-.ra-bx::before {
+/* Minimal: rules, corner dashes and mid-edge stubs above the brackets' gaps. */
+.ra-mn::before {
   content: "";
   position: absolute;
   inset: -1px;
@@ -83,9 +59,9 @@ body :is(.ra-l2, .ra-l3).ra-bx {
   pointer-events: none;
   background-repeat: no-repeat;
   background-image:
-    var(--ra-fr-gt), var(--ra-fr-a),
-    var(--ra-fr-g1), var(--ra-fr-g2), var(--ra-fr-a), var(--ra-fr-a),
-    var(--ra-fr-gs), var(--ra-fr-gs);
+    var(--ra-fr-a), var(--ra-fr-a),
+    var(--ra-fr-a), var(--ra-fr-a), var(--ra-fr-a), var(--ra-fr-a),
+    var(--ra-fr-a), var(--ra-fr-a);
   background-position:
     50% calc(var(--u) * 17), 50% calc(100% - var(--u) * 17),
     left calc(var(--u) * 34) top calc(var(--u) * 30),
@@ -100,118 +76,46 @@ body :is(.ra-l2, .ra-l3).ra-bx {
     calc(var(--u) * 42) max(3px, calc(var(--u) * 6)), calc(var(--u) * 42) max(3px, calc(var(--u) * 6)),
     calc(var(--u) * 5) calc(var(--u) * 16), calc(var(--u) * 5) calc(var(--u) * 16);
 }
-body :is(.ra-l2, .ra-l3).ra-bx::before {
-  background-image:
-    var(--ra-fr-gt), var(--ra-fr-gt), var(--ra-fr-gt), var(--ra-fr-a),
-    var(--ra-fr-a), var(--ra-fr-a),
-    var(--ra-fr-g1), var(--ra-fr-g2), var(--ra-fr-a), var(--ra-fr-a),
-    var(--ra-fr-gs), var(--ra-fr-gs),
-    var(--ra-fr-g1), var(--ra-fr-g2), var(--ra-fr-a), var(--ra-fr-a);
-  background-position:
-    left calc(var(--u) * 195) top calc(var(--u) * 17),
-    right calc(var(--u) * 195) top calc(var(--u) * 17),
-    50% calc(var(--u) * 17),
-    left calc(var(--u) * 195) bottom calc(var(--u) * 17),
-    right calc(var(--u) * 195) bottom calc(var(--u) * 17),
-    50% calc(100% - var(--u) * 17),
-    left calc(var(--u) * 34) top calc(var(--u) * 30),
-    right calc(var(--u) * 34) top calc(var(--u) * 30),
-    left calc(var(--u) * 34) bottom calc(var(--u) * 30),
-    right calc(var(--u) * 34) bottom calc(var(--u) * 30),
-    left calc(var(--u) * 14) top 50%, right calc(var(--u) * 14) top 50%,
-    left calc(var(--u) * 285) top calc(var(--u) * 13.5),
-    right calc(var(--u) * 285) top calc(var(--u) * 13.5),
-    left calc(var(--u) * 396) bottom calc(var(--u) * 22.5),
-    right calc(var(--u) * 396) bottom calc(var(--u) * 22.5);
-  background-size:
-    calc(var(--u) * 60) max(3px, calc(var(--u) * 6)), calc(var(--u) * 60) max(3px, calc(var(--u) * 6)),
-    max(0px, calc(100% - var(--u) * 960)) max(3px, calc(var(--u) * 6)),
-    calc(var(--u) * 60) max(3px, calc(var(--u) * 6)), calc(var(--u) * 60) max(3px, calc(var(--u) * 6)),
-    max(0px, calc(100% - var(--u) * 960)) max(3px, calc(var(--u) * 6)),
-    calc(var(--u) * 42) max(3px, calc(var(--u) * 6)), calc(var(--u) * 42) max(3px, calc(var(--u) * 6)),
-    calc(var(--u) * 42) max(3px, calc(var(--u) * 6)), calc(var(--u) * 42) max(3px, calc(var(--u) * 6)),
-    calc(var(--u) * 5) calc(var(--u) * 16), calc(var(--u) * 5) calc(var(--u) * 16),
-    calc(var(--u) * 72) max(3px, calc(var(--u) * 6)), calc(var(--u) * 72) max(3px, calc(var(--u) * 6)),
-    calc(var(--u) * 63) max(3px, calc(var(--u) * 5.5)), calc(var(--u) * 63) max(3px, calc(var(--u) * 5.5));
-  filter: drop-shadow(0 0 max(5px, calc(var(--u) * 18)) var(--ra-fr-amber));
-}
-/* L3 adds the long center bars top and bottom and the full soft bloom. */
-body .ra-l3.ra-bx::before {
-  background-image:
-    var(--ra-fr-gt), var(--ra-fr-gt), var(--ra-fr-gt), var(--ra-fr-a),
-    var(--ra-fr-a), var(--ra-fr-a),
-    var(--ra-fr-g1), var(--ra-fr-g2), var(--ra-fr-a), var(--ra-fr-a),
-    var(--ra-fr-gs), var(--ra-fr-gs),
-    var(--ra-fr-g1), var(--ra-fr-g2), var(--ra-fr-a), var(--ra-fr-a),
-    var(--ra-fr-gt), var(--ra-fr-a);
-  background-position:
-    left calc(var(--u) * 195) top calc(var(--u) * 17),
-    right calc(var(--u) * 195) top calc(var(--u) * 17),
-    50% calc(var(--u) * 17),
-    left calc(var(--u) * 195) bottom calc(var(--u) * 17),
-    right calc(var(--u) * 195) bottom calc(var(--u) * 17),
-    50% calc(100% - var(--u) * 17),
-    left calc(var(--u) * 34) top calc(var(--u) * 30),
-    right calc(var(--u) * 34) top calc(var(--u) * 30),
-    left calc(var(--u) * 34) bottom calc(var(--u) * 30),
-    right calc(var(--u) * 34) bottom calc(var(--u) * 30),
-    left calc(var(--u) * 14) top 50%, right calc(var(--u) * 14) top 50%,
-    left calc(var(--u) * 285) top calc(var(--u) * 13.5),
-    right calc(var(--u) * 285) top calc(var(--u) * 13.5),
-    left calc(var(--u) * 396) bottom calc(var(--u) * 22.5),
-    right calc(var(--u) * 396) bottom calc(var(--u) * 22.5),
-    50% 0, 50% 100%;
-  background-size:
-    calc(var(--u) * 60) max(3px, calc(var(--u) * 6)), calc(var(--u) * 60) max(3px, calc(var(--u) * 6)),
-    max(0px, calc(100% - var(--u) * 960)) max(3px, calc(var(--u) * 6)),
-    calc(var(--u) * 60) max(3px, calc(var(--u) * 6)), calc(var(--u) * 60) max(3px, calc(var(--u) * 6)),
-    max(0px, calc(100% - var(--u) * 960)) max(3px, calc(var(--u) * 6)),
-    calc(var(--u) * 42) max(3px, calc(var(--u) * 6)), calc(var(--u) * 42) max(3px, calc(var(--u) * 6)),
-    calc(var(--u) * 42) max(3px, calc(var(--u) * 6)), calc(var(--u) * 42) max(3px, calc(var(--u) * 6)),
-    calc(var(--u) * 5) calc(var(--u) * 16), calc(var(--u) * 5) calc(var(--u) * 16),
-    calc(var(--u) * 72) max(3px, calc(var(--u) * 6)), calc(var(--u) * 72) max(3px, calc(var(--u) * 6)),
-    calc(var(--u) * 63) max(3px, calc(var(--u) * 5.5)), calc(var(--u) * 63) max(3px, calc(var(--u) * 5.5)),
-    42.6% max(3px, calc(var(--u) * 6)), 42.6% max(3px, calc(var(--u) * 6));
-  filter:
-    drop-shadow(0 0 max(4px, calc(var(--u) * 14)) var(--ra-fr-amber))
-    drop-shadow(0 0 max(12px, calc(var(--u) * 50))
-      color-mix(in srgb, var(--ra-fr-amber) 80%, transparent));
-}
 
-/* The light show, only when theme.frame_motion is live (body.ra-mo), only for
-   visitors who have not asked for reduced motion, only on L3 frames (their
-   number is capped by theme.frame_l3_max, so only a few paint at once) and only
-   as color changes of paint layers: nothing moves or resizes. Timings follow
-   the brand's camera border: the top rules switch on and off with 0.3 s ramps
-   over about 4 s, the two corner dashes blink slowly in turn, the side stubs
-   flicker faintly, the bottom rule and glow stay still. */
-@media (prefers-reduced-motion: no-preference) {
-  body.ra-mo .ra-l3.ra-bx {
-    animation:
-      ra-fr-top 4s linear infinite,
-      ra-fr-d1 5.6s ease-in-out infinite,
-      ra-fr-d2 5.6s ease-in-out -2.8s infinite,
-      ra-fr-side 0.28s steps(1, end) infinite alternate;
-  }
+/* Faithful: the layer is the art; padding keeps the lettering clear of the
+   brackets and plates (about a third of the art height on each side). */
+.ra-fa::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background: 0 0 / 100% 100% no-repeat;
 }
-@keyframes ra-fr-top {
-  0% { --ra-fr-ct: color-mix(in srgb, var(--ra-fr-amber) 57%, transparent); }
-  7.5% { --ra-fr-ct: var(--ra-fr-amber); }
-  25% { --ra-fr-ct: color-mix(in srgb, var(--ra-fr-amber) 94%, transparent); }
-  85% { --ra-fr-ct: color-mix(in srgb, var(--ra-fr-amber) 92%, transparent); }
-  92.5%, 100% { --ra-fr-ct: color-mix(in srgb, var(--ra-fr-amber) 57%, transparent); }
+body .ra-fa.ra-bx {
+  padding-block: calc(var(--u) * 40);
+  padding-inline: calc(var(--u) * 120);
 }
-@keyframes ra-fr-d1 {
-  0%, 100% { --ra-fr-c1: var(--ra-fr-amber); }
-  50% { --ra-fr-c1: color-mix(in srgb, var(--ra-fr-amber) 73%, transparent); }
-}
-@keyframes ra-fr-d2 {
-  0%, 100% { --ra-fr-c2: var(--ra-fr-amber); }
-  50% { --ra-fr-c2: color-mix(in srgb, var(--ra-fr-amber) 73%, transparent); }
-}
-@keyframes ra-fr-side {
-  0% { --ra-fr-cs: var(--ra-fr-amber); }
-  100% { --ra-fr-cs: color-mix(in srgb, var(--ra-fr-amber) 86%, transparent); }
+body .ra-z-xs { --ra-fr-s: 0.14; }
+body .ra-z-sm, body .ra-z-md { --ra-fr-s: 0.15; }
+body .ra-z-wd { --ra-fr-s: 0.18; }
+body .ra-z-lg, body .ra-z-xl { --ra-fr-s: 0.25; }
+body .ra-z-card { --ra-fr-s: 0.41; }
+.ra-z-xs::before { background-image: url("frame-fa-xs.svg"); }
+.ra-z-sm::before { background-image: url("frame-fa-sm.svg"); }
+.ra-z-md::before { background-image: url("frame-fa-md.svg"); }
+.ra-z-wd::before { background-image: url("frame-fa-wd.svg"); }
+.ra-z-lg::before { background-image: url("frame-fa-lg.svg"); }
+.ra-z-xl::before { background-image: url("frame-fa-xl.svg"); }
+.ra-z-card::before { background-image: url("frame-fa-card.svg"); }
+.ra-am.ra-z-xs::before { background-image: url("frame-fa-xs-am.svg"); }
+.ra-am.ra-z-sm::before { background-image: url("frame-fa-sm-am.svg"); }
+.ra-am.ra-z-md::before { background-image: url("frame-fa-md-am.svg"); }
+.ra-am.ra-z-wd::before { background-image: url("frame-fa-wd-am.svg"); }
+.ra-am.ra-z-lg::before { background-image: url("frame-fa-lg-am.svg"); }
+.ra-am.ra-z-xl::before { background-image: url("frame-fa-xl-am.svg"); }
+.ra-am.ra-z-card::before { background-image: url("frame-fa-card-am.svg"); }
+/* On a narrow screen the wide art would squash, so use the narrow drawings. */
+@media (max-width: 640px) {
+  .ra-z-xl::before { background-image: url("frame-fa-lg.svg"); }
+  .ra-am.ra-z-xl::before { background-image: url("frame-fa-lg-am.svg"); }
+  .ra-z-md::before, .ra-z-wd::before { background-image: url("frame-fa-sm.svg"); }
+  .ra-am.ra-z-md::before, .ra-am.ra-z-wd::before { background-image: url("frame-fa-sm-am.svg"); }
 }
 
 @media screen {

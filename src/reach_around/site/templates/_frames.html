@@ -1,16 +1,12 @@
 {# SPDX-License-Identifier: Apache-2.0 #}
 {# Border frames (theme.frame). `frame_plan` maps a component slot to its level
-   and `frame_sizes` to its size class; both are empty when the feature is off,
-   so cls() prints nothing. cls(slot) goes on the element and is the only markup
-   a frame needs: the artwork is two packaged SVG files used by frame.css as a
-   border image, so markup does not grow with the number of frames. An L3 slot
-   gets L3 until `theme.frame_l3_max` of them are on the page (counted in page order
-   by `frame_l3_take`, reset by base.html), then L2. #}
+   ("minimal" or "faithful"); a slot left out is not framed, and the plan is
+   empty when the feature is off, so cls() prints nothing. cls(slot) goes on the
+   element and is the only markup a frame needs: the artwork is packaged SVG
+   files used by frame.css, so markup does not grow with the number of frames. #}
 {% macro cls(slot) -%}
 {%- if slot in frame_plan -%}
-{%- set level = frame_plan[slot] -%}
-{%- if level == "l3" -%}
-{%- if not frame_l3_take() -%}{%- set level = "l2" -%}{%- endif -%}
-{%- endif %} ra-bx ra-{{ level }} ra-{{ frame_sizes[slot] }}{% if slot in frame_bare %} ra-bare{% elif slot == "head" %} ra-head{% endif %}
+{%- if frame_plan[slot] == "faithful" %} ra-bx ra-fa ra-z-{{ frame_art[slot] }}{% if slot in frame_amber %} ra-am{% endif %}
+{%- else %} ra-bx ra-mn ra-{{ frame_sizes[slot] }}{% endif %}{% if slot in frame_bare %} ra-bare{% elif slot == "head" %} ra-head{% endif %}
 {%- endif -%}
 {%- endmacro %}

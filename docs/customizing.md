@@ -227,78 +227,77 @@ A font on someone else's server is refused. See
 
 ### Border frames
 
-An optional look, off by default: `theme.frame` puts one border system on
-every button, card, tab, heading, input and stat tile of the link page and the
-media kit. The frame is drawn from the stream button: a border only, over the element's own fill:
-heavy stepped graphite brackets that split at the middle of each edge, angled
-end-cap plates with small accent dashes, long accent rules and a faint accent
-bloom of amber light hugging the rules, with the element's own lettering. The brackets are two small
-packaged SVG files used as a nine-slice `border-image`; the rules,
-dashes and glow are CSS gradients that read your accent, so a retheme follows.
-The artwork is scaled by the element's height (the bracket bar is about 6
-percent of it), so a button, a heading banner and the media kit title tile all
-get the same frame at their own size. A frame is never thinner than a few
-pixels and never a hairline.
+An optional look, off by default: `theme.frame` draws a border on chosen
+elements of the link page and the media kit. A frame is a border only: it is
+painted over the element's own fill and keeps its lettering, so amber stays
+amber and dark stays dark. The whole look is dark only (there is no cream, no
+white and no light palette).
 
-| Level | What it draws | Where it goes |
+| `theme.frame` | What it is |
+| --- | --- |
+| `none` | The default. No frame markup, no frame stylesheet, no frame art. |
+| `minimal` | The light frame: stepped graphite brackets split at the middle of each edge with a thin amber outline, two thin amber rules and small dashes. Every framed element gets this. |
+| `faithful` | The brand button art, traced from the owner's reference: metallic stepped brackets, end-cap plates with amber dashes, double rules. Used on the classes below that ask for it; the others fall back to their own default. |
+
+The old names still work: `l1` is `minimal`, and `l2` and `l3` are `faithful`.
+The glow, `frame_motion` and `frame_l3_max` are gone with the L3 look; the two
+keys are still accepted (so an older config validates) and ignored.
+
+A fully framed page is too noisy, so each element class has a default level:
+
+| Class (`frame_classes` key) | Element | Default |
 | --- | --- | --- |
-| `l1` | The lite frame: brackets, rules, dashes and stubs. | Every framed element when `theme.frame` is `l1`; at higher levels the small controls and containers: tabs, social buttons, platform chips, inputs, crypto and email cards, the footer and cookie notice, the audience table |
-| `l2` | The full frame: adds the end-cap plates and their dashes. | Link buttons, platform cards, section headings, group titles, the combined audience tile |
-| `l3` | The full frame plus the long center bars and the full soft bloom around every amber rule and dash (L2 has a tighter bloom, L1 none). | The featured link, the hero tiles (the media kit title tile, the profile card, the `hero` header card) and the main call to action (the media kit submit button) |
+| `featured` | the featured link | `faithful` |
+| `cta` | big primary buttons (the media kit submit button) | `faithful` |
+| `link` | ordinary links | `minimal` |
+| `platform` | platform links | `minimal` |
+| `head` | section headers and group titles | `minimal` |
+| `tab` | tabs | `minimal` |
+| `hero` | profile card, media kit title tile | `minimal` |
+| `tile`, `chip`, `ctl` | platform chips, small chips, header social icons | `none` |
+| `stat`, `card`, `field` | audience total, crypto and email cards, the audience table, inputs | `none` |
+| `foot`, `bar` | footer, cookie notice | `none` |
 
-`theme.frame` is the strongest level the build may use: `l1` draws the lite
-frame everywhere, `l2` adds the plates, `l3` adds the glow. L3 is the heaviest
-frame, so a page carries at most `theme.frame_l3_max` of them (an integer from
-1 to 64, default 1). The packaged templates give the first L3 slots on a page
-(in page order) L3 and the rest L2. The build refuses a page with more L3 frames
-than the limit (an override template that writes them itself stops the build,
-naming the page), and refuses a frame inside another frame.
+With `theme.frame: minimal` the faithful defaults are capped to minimal. An
+unframed class looks exactly as it does with the feature off. To change one
+class, set it under `theme.frame_classes` (any of `none`, `minimal`,
+`faithful`; the config schema lists the keys and refuses others). An override
+wins over the default and the cap, and does nothing while `theme.frame` is
+`none`:
 
 ```yaml
 theme:
-  frame: l3
-  frame_l3_max: 4
-  frame_motion: live   # optional, see "The light show" below
+  frame: faithful
+  frame_classes:
+    tab: faithful    # the faithful art on the tabs
+    link: none       # plain links
 ```
 
-The light show: the frames are still by default (every rule at full strength
-with its soft glow). `theme.frame_motion: live` (default `none`) adds a slow
-pulse from the brand's camera border, only on L3 frames and only for visitors
-who have not asked for reduced motion (`prefers-reduced-motion: no-preference`).
-The long top rules switch on and off with 0.3 second ramps over a 4 second
-cycle, the two corner dashes dim and brighten slowly in turn (about 27 percent
-swing, out of phase), the small side stubs flicker faintly (about 14 percent,
-changing about 3.5 times a second, far below the general flash threshold), and
-the bottom rule and the glow stay still. It is CSS only: each animation is a
-color change of a paint layer, so nothing moves, no layout shifts and no script
-or video loads. L3 frames are the only ones animated because
-`theme.frame_l3_max` caps how many of them one page carries, which bounds the
-paint work, and many frames moving at once would be too much motion.
+The faithful art is one static SVG per size class (`frame-fa-<size>.svg`, drawn
+at that size and used at 100% by 100%), with an `-am` variant whose rules and
+dashes are ink so they show on a solid amber fill (the featured link, the main
+buttons and the tabs use it). Short elements (under 60 px) get the reduced
+drawing: simpler brackets, top plates only. On a narrow screen the wide
+drawings switch to narrow ones so nothing is squashed. The art is generated by
+`scripts/gen-frame-art.py`. Its amber is the brand amber, not your accent.
 
 What to know:
 
-- The frame takes the place of the button radius on framed elements (it has
-  chamfered corners). Unframed elements keep `button_style` and `radius`.
-- Frames never nest. A card that holds buttons (a crypto or email card, the
-  profile card) carries the frame itself and its buttons stay unframed, plain
-  buttons that keep their own look; a control on its own (a tab, a social button, the media kit submit
-  button) carries its own frame.
-- The frame paints no fill and changes no text color: every element keeps the fill and text it has without a frame, so contrast is the same as unframed. There is no
-  amber lettering. The brackets are dark graphite with a light amber outline, so they read on an amber fill and on a dark one; the amber rules and their bloom sit on top.
-- The packaged `static/frame.css` and the two `frame*.svg` files are
-  fingerprinted and published only when the feature is on. There is no
-  `style` attribute, inline script, data URI, new font or third-party
-  request, so the CSP is unchanged, and the markup per frame is one class
-  string. Frames are still by default; only `frame_motion: live` animates, and
-  only the paint colors of L3 frames, and only for visitors without a
-  reduced-motion setting. Focus rings stay clear of the frame, tap targets
-  stay at least 44 px, and forced-colors and print replace the artwork with a
-  plain border.
+- The frame takes the place of the button radius on framed elements. Unframed
+  elements keep `button_style` and `radius`.
+- Frames never nest, and the build refuses an override template that nests one.
+- The frame paints no fill and changes no text color, so contrast is exactly
+  the unframed contrast. The brackets are graphite with a light edge, so they
+  read on an amber fill and on a dark one.
+- The packaged `static/frame.css` and the `frame*.svg` files are fingerprinted
+  and published only when a frame is on. There is no `style` attribute, inline
+  script, data URI, new font or third-party request, so the CSP is unchanged.
+  Nothing animates. Focus rings stay clear of the frame, and forced-colors and
+  print replace the artwork with a plain border.
 - The privacy page, the 404 page, the retry page and the gated media kit page
   (the one the PDF renderer prints) carry no frame.
 - Image blocks, text blocks, dividers and the live player are not framed.
-- Your own `custom.css` is still checked by the same rules as before; the
-  frame adds nothing to what it may contain.
+- Your own `custom.css` is still checked by the same rules as before.
 
 ## Your own images: avatar, favicon, background, mascot
 

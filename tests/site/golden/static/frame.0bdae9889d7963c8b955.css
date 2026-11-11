@@ -1,0 +1,191 @@
+/* SPDX-License-Identifier: Apache-2.0 */
+/* Border frames (theme.frame). Published and linked only when a frame is on,
+   after site.css and the block stylesheets, so a rule here wins a tie. Dark
+   only: the frame adds no light palette, no cream and no white.
+
+   A frame is a border only: each element keeps its own fill, text color and
+   palette (amber stays amber, dark stays dark). Two looks:
+
+   minimal (ra-mn): stepped graphite brackets split at the middle of each edge,
+   a thin amber outline on them, two thin amber rules and small dashes. The
+   brackets are one packaged SVG (frame-lite.svg) used as a nine-slice border
+   image scaled by the element's height through --ra-fr-s (pixels per original
+   pixel of the 318 px tall artwork); the rules are CSS gradients.
+
+   faithful (ra-fa): the brand button art, one static SVG per size class
+   (frame-fa-<size>.svg, drawn at that size and used at 100% 100% on ::before,
+   above the element's own fill and below its text). The -am files carry ink
+   rules for solid amber fills. Under 60 px high the art is the reduced variant.
+   The art keeps its own colors (brand amber rules, graphite brackets with an
+   edge highlight so they read on dark and on amber). No markup beyond classes,
+   no inline style and no embedded image. */
+
+:root {
+  --ra-fr-amber: var(--ra-color-accent);
+}
+
+body .ra-bx.ra-bx {
+  --u: calc(var(--ra-fr-s) * 1px);
+  position: relative;
+  isolation: isolate;
+  box-sizing: border-box;
+  border-radius: 0;
+  box-shadow: none;
+  padding-block: calc(var(--u) * 40);
+  padding-inline: calc(var(--u) * 100);
+}
+body .ra-mn.ra-bx {
+  --ra-fr-a: linear-gradient(var(--ra-fr-amber), var(--ra-fr-amber));
+  min-height: calc(var(--u) * 318);
+  border: 1px solid transparent;
+  border-image-slice: 159 210 fill;
+  border-image-width: calc(var(--u) * 159) calc(var(--u) * 210);
+  border-image-repeat: stretch;
+  border-image-source: url("frame-lite.27c3e7a5c0bbdb8debc7.svg");
+  padding-inline: calc(var(--u) * 80);
+}
+body .ra-bx.ra-s1 { --ra-fr-s: 0.11; }
+body .ra-bx.ra-s2 { --ra-fr-s: 0.15; }
+body .ra-bx.ra-s3 { --ra-fr-s: 0.19; }
+body .ra-bx.ra-s4 { --ra-fr-s: 0.24; }
+body .ra-bx.ra-s5 { --ra-fr-s: 0.28; }
+
+/* Minimal: rules, corner dashes and mid-edge stubs above the brackets' gaps. */
+.ra-mn::before {
+  content: "";
+  position: absolute;
+  inset: -1px;
+  z-index: -1;
+  pointer-events: none;
+  background-repeat: no-repeat;
+  background-image:
+    var(--ra-fr-a), var(--ra-fr-a),
+    var(--ra-fr-a), var(--ra-fr-a), var(--ra-fr-a), var(--ra-fr-a),
+    var(--ra-fr-a), var(--ra-fr-a);
+  background-position:
+    50% calc(var(--u) * 17), 50% calc(100% - var(--u) * 17),
+    left calc(var(--u) * 34) top calc(var(--u) * 30),
+    right calc(var(--u) * 34) top calc(var(--u) * 30),
+    left calc(var(--u) * 34) bottom calc(var(--u) * 30),
+    right calc(var(--u) * 34) bottom calc(var(--u) * 30),
+    left calc(var(--u) * 14) top 50%, right calc(var(--u) * 14) top 50%;
+  background-size:
+    max(0px, calc(100% - var(--u) * 400)) max(3px, calc(var(--u) * 6)),
+    max(0px, calc(100% - var(--u) * 400)) max(3px, calc(var(--u) * 6)),
+    calc(var(--u) * 42) max(3px, calc(var(--u) * 6)), calc(var(--u) * 42) max(3px, calc(var(--u) * 6)),
+    calc(var(--u) * 42) max(3px, calc(var(--u) * 6)), calc(var(--u) * 42) max(3px, calc(var(--u) * 6)),
+    calc(var(--u) * 5) calc(var(--u) * 16), calc(var(--u) * 5) calc(var(--u) * 16);
+}
+
+/* Faithful: the layer is the art; padding keeps the lettering clear of the
+   brackets and plates (about a third of the art height on each side). */
+.ra-fa::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background: 0 0 / 100% 100% no-repeat;
+}
+body .ra-fa.ra-bx {
+  padding-block: calc(var(--u) * 40);
+  padding-inline: calc(var(--u) * 120);
+}
+body .ra-z-xs { --ra-fr-s: 0.14; }
+body .ra-z-sm, body .ra-z-md { --ra-fr-s: 0.15; }
+body .ra-z-wd { --ra-fr-s: 0.18; }
+body .ra-z-lg, body .ra-z-xl { --ra-fr-s: 0.25; }
+body .ra-z-card { --ra-fr-s: 0.41; }
+.ra-z-xs::before { background-image: url("frame-fa-xs.767f361f333a875f6963.svg"); }
+.ra-z-sm::before { background-image: url("frame-fa-sm.ef0ac4997fef3061c79f.svg"); }
+.ra-z-md::before { background-image: url("frame-fa-md.69491a4f4125cf2201c8.svg"); }
+.ra-z-wd::before { background-image: url("frame-fa-wd.04675324145768713e35.svg"); }
+.ra-z-lg::before { background-image: url("frame-fa-lg.0216178f0c029b81b755.svg"); }
+.ra-z-xl::before { background-image: url("frame-fa-xl.dc4e0c1e0051cfac0878.svg"); }
+.ra-z-card::before { background-image: url("frame-fa-card.3486fe0a964199847a6d.svg"); }
+.ra-am.ra-z-xs::before { background-image: url("frame-fa-xs-am.ebea4a94db06b3acb23e.svg"); }
+.ra-am.ra-z-sm::before { background-image: url("frame-fa-sm-am.cab736c290e82f4233e9.svg"); }
+.ra-am.ra-z-md::before { background-image: url("frame-fa-md-am.72344dec2ced0014f3b7.svg"); }
+.ra-am.ra-z-wd::before { background-image: url("frame-fa-wd-am.ae519ede136760eb72fb.svg"); }
+.ra-am.ra-z-lg::before { background-image: url("frame-fa-lg-am.f64f63ad17f0faa95d9a.svg"); }
+.ra-am.ra-z-xl::before { background-image: url("frame-fa-xl-am.35d0893be4b4dae735a4.svg"); }
+.ra-am.ra-z-card::before { background-image: url("frame-fa-card-am.7baad5717c80c1236892.svg"); }
+/* On a narrow screen the wide art would squash, so use the narrow drawings. */
+@media (max-width: 640px) {
+  .ra-z-xl::before { background-image: url("frame-fa-lg.0216178f0c029b81b755.svg"); }
+  .ra-am.ra-z-xl::before { background-image: url("frame-fa-lg-am.f64f63ad17f0faa95d9a.svg"); }
+  .ra-z-md::before, .ra-z-wd::before { background-image: url("frame-fa-sm.ef0ac4997fef3061c79f.svg"); }
+  .ra-am.ra-z-md::before, .ra-am.ra-z-wd::before { background-image: url("frame-fa-sm-am.cab736c290e82f4233e9.svg"); }
+}
+
+@media screen {
+  a.link.ra-bx::after { display: none; }
+}
+
+/* Interactive frames keep the component's own hover (lift and brightness);
+   the brackets and rules move with the element, and the frame keeps no box
+   shadow of its own so the chamfered art is never boxed. The focus ring is
+   drawn out past the brackets so it is never clipped. */
+body .ra-bx:focus-visible {
+  outline: 3px solid var(--ra-color-link);
+  outline-offset: 4px;
+}
+body .ra-bare:focus-visible { outline-color: var(--ra-color-on-accent); outline-offset: -5px; }
+
+/* Per-component layout inside a frame. */
+body a.link.ra-bx, body .platform-link.ra-bx { height: auto; }
+body .ra-bx.ra-head { display: flex; align-items: center; margin: 0 0 var(--ra-space-2); padding-inline: calc(var(--u) * 130); }
+body :is(.crypto-card, .email-card).ra-bx { padding-block: calc(var(--u) * 60); }
+body .kit-table.ra-bx { padding-inline: calc(var(--u) * 40); }
+body .ra-bx.ra-s5 { padding-block: calc(var(--u) * 80); padding-inline: calc(var(--u) * 170); }
+body .ra-bx.ra-bare { padding-inline: calc(var(--u) * 50); }
+body main > .ra-bx { margin-inline: var(--ra-gutter); }
+/* The footer and the cookie notice are slim bars, not slabs. */
+body footer.ra-bx {
+  display: flex;
+  flex-flow: row wrap;
+  justify-content: center;
+  align-items: center;
+  gap: 0 var(--ra-space-4);
+  margin-top: var(--ra-space-4);
+  padding-block: calc(var(--u) * 30);
+  padding-inline: calc(var(--u) * 170);
+}
+body footer.ra-bx p { margin: 0; }
+body footer.ra-bx .disclosure { flex: 1 1 100%; max-width: none; margin: 0; padding-top: var(--ra-space-1); }
+body footer.ra-bx .credit a, body footer.ra-bx .privacy-link a { padding-block: var(--ra-space-1); }
+body .cookie-banner.ra-bx {
+  display: flex;
+  flex-flow: row wrap;
+  align-items: center;
+  gap: var(--ra-space-2) var(--ra-space-4);
+  margin-top: var(--ra-space-3);
+  padding-block: calc(var(--u) * 30);
+  padding-inline: calc(var(--u) * 170);
+}
+body .cookie-banner.ra-bx p { margin: 0; flex: 1 1 18rem; font-size: var(--ra-text-sm); }
+body .cookie-banner.ra-bx form { flex: 0 0 auto; }
+/* The audience table fills its frame. */
+body .kit-table.ra-bx {
+  display: table;
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+}
+body h2.ra-bx, body h3.ra-bx { overflow-wrap: anywhere; }
+body .ra-bx .social-label { border: 0; padding: 0; }
+.section:has(> summary.ra-bx) > .section-subtitle { margin: var(--ra-space-3) 0 0; }
+.section:has(> summary.ra-bx), .tab-section:has(> summary.ra-bx) {
+  border: 0; background: none; box-shadow: none;
+}
+.section:has(> summary.ra-bx) .section-links { padding-top: var(--ra-space-3); }
+.section-links:has(.ra-bx) { padding-top: var(--ra-space-3); }
+
+@media (forced-colors: active) {
+  .ra-bx::before { display: none; }
+  body .ra-bx.ra-bx { border: 2px solid CanvasText; border-image: none; background: none; color: CanvasText; }
+}
+@media print {
+  .ra-bx::before { display: none; }
+  body .ra-bx.ra-bx { border: 1px solid CanvasText; border-image: none; background: none; color: CanvasText; }
+}
