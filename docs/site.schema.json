@@ -1888,6 +1888,17 @@
             }
           ],
           "default": null
+        },
+        "tabs": {
+          "maxProperties": 1000,
+          "patternProperties": {
+            "^[a-z0-9][a-z0-9-]{0,39}$": {
+              "pattern": "^[a-z0-9][a-z0-9-]{0,39}$",
+              "type": "string"
+            }
+          },
+          "title": "Tabs",
+          "type": "object"
         }
       },
       "title": "Redirects",

@@ -1,18 +1,18 @@
 # SPDX-License-Identifier: Apache-2.0
 """The optional top-level ``redirects`` config.
 
-When ``redirects.socials`` is present the build writes a ``_redirects`` file that
-sends the old ``/socials`` page (and ``/socials/``) to a root-relative target,
-``/`` by default. When the key is absent no ``_redirects`` file is written and
-the build output is unchanged. See ``reach_around.site.redirects``.
+``redirects.socials`` configures the old ``/socials`` cutover and
+``redirects.tabs`` maps old tab slugs to current tab ids. Each source is emitted
+with and without a trailing slash. When neither option has rules, no
+``_redirects`` file is written. See ``reach_around.site.redirects``.
 """
 
 from __future__ import annotations
 
 import re
-from typing import Literal
+from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, field_validator
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator
 
 # A root-relative path: a leading slash, then plain characters. No scheme, no
 # host, no query or fragment, no whitespace or control character, no backslash.
@@ -21,6 +21,8 @@ MAX_TARGET = 200
 # The two paths this option owns. A target equal to either would redirect a
 # path to itself (a loop).
 SOCIALS_PATHS = ("/socials", "/socials/")
+_SLUG = re.compile(r"^[a-z0-9][a-z0-9-]{0,39}$")
+TabSlug = Annotated[str, StringConstraints(pattern=_SLUG.pattern)]
 
 
 def target_problem(value: object) -> str | None:
@@ -73,3 +75,4 @@ class Redirects(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     socials: SocialsRedirect | None = None
+    tabs: dict[TabSlug, TabSlug] = Field(default_factory=dict, max_length=1000)
