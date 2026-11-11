@@ -828,8 +828,8 @@ def test_a_tick_is_drawn_per_series_for_its_own_under_floor_day(
     assert rows["2026-11-06"]["clicks_status"] == "ok"
     page = page_of(rep)
     first = page[page.index("<svg") : page.index("</svg>")]
-    assert 'l4 -7 l4 7z" fill="#8ab4ff"' in first  # a views tick
-    assert 'l4 -7 l4 7z" fill="#ffb74d"' not in first  # no clicks tick
+    assert 'l4 -7 l4 7z" fill="var(--views)"' in first  # a views tick
+    assert 'l4 -7 l4 7z" fill="var(--clicks)"' not in first  # no clicks tick
 
 
 def test_header_shows_the_requested_window_even_with_a_gap_at_the_edge(

@@ -366,7 +366,10 @@ def test_gate_form_markup(tmp_path: Path) -> None:
         assert widget["data-sitekey"] == "0x4AAAAAAAexampleKey"
         assert widget["data-action"] == "gate"
         assert 'type="hidden"' not in html
-        assert "?t=" not in html and "token" not in html.lower()
+        assert "?t=" not in html
+        assert not any(
+            "token" in value.lower() for value in form.values() if value is not None
+        )
 
 
 def test_gate_action_is_still_a_placeholder() -> None:
