@@ -6,6 +6,12 @@ while the project is alpha, every release is `0.x` and anything can change betwe
 
 ## [Unreleased]
 
+- Editor form follow-ups (#200): forms can add and remove links and platform
+  items, edit a link group's title and subtitle, clear creator titles and
+  colors, and reload the preview after saves. Link moves and announcements
+  count links only, stale comparisons treat integral floats and integers as
+  equal, and the browser code is split into `forms.js` and `ops.js` with tested
+  redraw wiring.
 - Public and private asset sets (#533): the public engine now records and checks its synthetic example assets, while real publishable files stay in a private instance repository. `reach-around build --assets-dir DIR` explicitly selects a development or production asset root without changing the config's logical paths; the config directory remains the default.
 - Live status request privacy wording (#312, epic #246): `docs/privacy.md` gains
   a short owner-voice draft for review stating that every tab and privacy page

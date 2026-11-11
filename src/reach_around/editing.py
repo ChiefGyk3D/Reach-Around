@@ -1074,7 +1074,9 @@ def _tab_blocks(root: MappingNode, tab_id: str) -> _Seq:
     raise EditError(f"no tab with id {tab_id!r}; tabs are: {known}")
 
 
-def _find_link(root: MappingNode, link_id: str) -> tuple[_Seq, int]:
+def _find_link(
+    root: MappingNode, link_id: str, *, allow_section: bool = False
+) -> tuple[_Seq, int]:
     """The list that holds link ``link_id`` and its index in that list."""
     tabs = _get(root, "tabs")
     if tabs is not None and isinstance(tabs[1], SequenceNode):
@@ -1094,9 +1096,11 @@ def _find_link(root: MappingNode, link_id: str) -> tuple[_Seq, int]:
             for holder in holders:
                 for index, item in enumerate(holder.node.value):
                     if isinstance(item, MappingNode) and _scalar(item, "id") == link_id:
-                        if _get(item, "links") is not None:
+                        if _get(item, "links") is not None and not allow_section:
                             raise EditError(f"{link_id!r} is a section, not a link")
-                        if _get(item, "url") is None:
+                        if _get(item, "url") is None and not (
+                            allow_section and _get(item, "links") is not None
+                        ):
                             raise EditError(f"{link_id!r} is not a link")
                         return holder, index
     raise EditError(f"no link with id {link_id!r}")
@@ -1409,7 +1413,9 @@ def set_link_field(
     """
     shown, python_value = parse_link_field(field, value)
     lines = text.splitlines(keepends=True)
-    holder, index = _find_link(_compose(text), link_id)
+    holder, index = _find_link(
+        _compose(text), link_id, allow_section=field in ("title", "subtitle")
+    )
     items = _items(text, lines, holder.node, holder.floor)
     node = holder.node.value[index]
     if not isinstance(node, MappingNode):  # _items already refused anything else
@@ -1722,7 +1728,7 @@ def _check_avatar(value: str) -> None:
         ) from None
 
 
-def parse_set_value(key: str, value: str) -> tuple[str, Any]:
+def parse_set_value(key: str, value: str) -> tuple[str | None, Any]:
     """The YAML text and the Python value for ``set KEY VALUE``."""
     if key not in SET_KEYS:
         raise EditError(
@@ -1740,6 +1746,8 @@ def parse_set_value(key: str, value: str) -> tuple[str, Any]:
         if shown.endswith("."):
             shown += "0"
         return shown, float(shown)
+    if value == "" and (key == "creator.title" or key.startswith("theme.colors.")):
+        return None, None
     check_text(value, key)
     if key == "creator.avatar":
         _check_avatar(value)
@@ -1753,6 +1761,7 @@ def set_value(
     parts = key.split(".")
     lines = text.splitlines(keepends=True)
     node: MappingNode = _compose(text)
+    ancestors: list[tuple[ScalarNode, MappingNode]] = []
     depth = 0
     while depth < len(parts) - 1:
         found = _get(node, parts[depth])
@@ -1766,6 +1775,10 @@ def set_value(
                 f"{'.'.join(parts[: depth + 1])} is written in flow style "
                 "({...}); edit it by hand or rewrite it as a block mapping"
             )
+        key_node = found[0]
+        if not isinstance(key_node, ScalarNode):
+            raise EditError(f"{parts[depth]} is not a scalar key")
+        ancestors.append((key_node, child))
         node = child
         depth += 1
     leaf = _get(node, parts[depth]) if depth == len(parts) - 1 else None
@@ -1780,12 +1793,29 @@ def set_value(
         if not simple:
             raise EditError(f"{key} has an empty or multi-line value; edit it by hand")
         row = old.start_mark.line
-        lines[row] = (
-            lines[row][: old.start_mark.column]
-            + shown
-            + lines[row][old.end_mark.column :]
-        )
+        if shown is None:
+            del lines[row]
+            if len(node.value) == 1 and ancestors:
+                key_node, _child = ancestors[-1]
+                parent_row = key_node.start_mark.line
+                colon = lines[parent_row].find(":", key_node.end_mark.column)
+                comment = lines[parent_row].find("#", colon + 1)
+                suffix = (
+                    lines[parent_row][comment:].rstrip("\n") if comment >= 0 else ""
+                )
+                gap = " " if suffix else ""
+                lines[parent_row] = (
+                    lines[parent_row][: colon + 1] + " {}" + gap + suffix + "\n"
+                )
+        else:
+            lines[row] = (
+                lines[row][: old.start_mark.column]
+                + shown
+                + lines[row][old.end_mark.column :]
+            )
     else:
+        if shown is None:
+            return text, copy.deepcopy(raw)
         first = node.value[0][0] if node.value else None
         if first is None:
             raise EditError(f"{'.'.join(parts[:depth])} is empty; edit it by hand")
@@ -1805,5 +1835,8 @@ def set_value(
     cursor = expected
     for part in parts[:-1]:
         cursor = cursor.setdefault(part, {})
-    cursor[parts[-1]] = python_value
+    if shown is None:
+        cursor.pop(parts[-1], None)
+    else:
+        cursor[parts[-1]] = python_value
     return _finish(text, lines), expected

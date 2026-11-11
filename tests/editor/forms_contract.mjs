@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
-// Drives the shipped editor logic (store.js, api.js) against a REAL editor
+// Drives the shipped editor logic (ops.js, api.js) against a REAL editor
 // server: argv = port token config-path scenario. Prints one JSON line.
 import fs from "node:fs";
 
 const [port, token, configPath, scenario] = process.argv.slice(2);
 const { createClient } = await import("./api.js");
-const store = await import("./store.js");
+const store = await import("./ops.js");
 
 const origin = "http://127.0.0.1:" + port;
 const fetcher = (path, init) =>

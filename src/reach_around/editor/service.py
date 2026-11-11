@@ -112,6 +112,8 @@ def json_safe(value: Any) -> Any:
 
 
 def _canon(value: Any) -> str:
+    if isinstance(value, float) and value.is_integer():
+        value = int(value)
     return json.dumps(json_safe(value), sort_keys=True, separators=(",", ":"))
 
 

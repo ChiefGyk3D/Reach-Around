@@ -123,3 +123,21 @@ def test_avatar_command_matches_the_function(cfg: Path, tmp_path: Path) -> None:
 def test_other_creator_keys_are_still_refused(cfg: Path) -> None:
     for key in ("creator.favicon", "creator.header", "creator.socials"):
         refused(cfg, editing.set_value, key=key, value="img/x.png")
+
+
+@pytest.mark.parametrize(
+    ("key", "line"),
+    [
+        ("creator.title", "  title: Links\n"),
+        ("theme.colors.accent", "    accent: '#123456'\n"),
+    ],
+)
+def test_set_value_clears_optional_title_and_colors(
+    cfg: Path, key: str, line: str
+) -> None:
+    text = cfg.read_text(encoding="utf-8")
+    text = text.replace("creator:\n", "creator:\n  title: Links\n")
+    text = text.replace("tabs:\n", "theme:\n  colors:\n    accent: '#123456'\ntabs:\n")
+    cfg.write_text(text, encoding="utf-8")
+    edit(cfg, editing.set_value, key=key, value="")
+    assert line not in cfg.read_text(encoding="utf-8").split("tabs:\n", 1)[0]

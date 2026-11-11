@@ -11,8 +11,8 @@ opening the file. The design is in
 
 **What ships today is the server and a page with forms.** The page has one
 form per group of settings (creator, look, each link, each platform item), see
-[The forms](#the-forms), plus undo, redo and history controls. It cannot yet
-add or remove a link or a platform item or upload an image. For everything
+[The forms](#the-forms), plus add, remove, undo, redo and history controls. It
+cannot yet upload an image. For everything
 else, change the config by hand
 or with the commands in
 [Customizing](customizing.md#editing-without-breaking-the-file).
@@ -65,9 +65,10 @@ In the browser, with the forms:
 - **Look:** color mode (auto, light, dark), background dim (0 to 0.9) and the six
   theme colors.
 - **Each link:** title, address, subtitle, icon, "affiliate link", "feature this
-  link", and its place in the list (Move up, Move down).
+  link", add, remove and its place in the link-only list (Move up, Move down).
+- **Each link group:** its own title and subtitle.
 - **Each platform item:** handle, address, display name, count label, follower
-  count and count date, and its place in the list.
+  count and count date, add, remove and its place in the list.
 
 Through the server's edit route (for a client that has the key; the tests do
 this) the operations are:
@@ -82,9 +83,8 @@ this) the operations are:
 These are the functions of `reach_around.editing`, the same ones behind
 `reach-around add-link`, `remove-link`, `move-link`, `set` and
 `set-link-field`. The four platform operations have no command; only the
-editor's route reaches them. The page does not use `add_link`, `remove_link` or
-the two platform add and remove operations yet, and it never sets
-`creator.avatar`. Everything else in the config (tabs, sections, other blocks,
+editor's route reaches them. The page never sets `creator.avatar`. Everything
+else in the config (tabs, sections, other blocks,
 the theme beyond the keys above, overrides) is shown read-only under "All
 settings" and is edited by hand.
 
@@ -183,7 +183,7 @@ Both listeners are on random free ports.
 
 | Method | Path | Result |
 |---|---|---|
-| GET | `/__edit/`, `/__edit/app.css` and the ES modules (`app.js`, `strings.js`, `token.js`, `api.js`, `store.js`, `announce.js`, `view.js`) | the static shell: the forms and the sandboxed preview frame. No key needed, and the shell holds none |
+| GET | `/__edit/`, `/__edit/app.css` and the ES modules (`app.js`, `strings.js`, `token.js`, `api.js`, `ops.js`, `announce.js`, `forms.js`) | the static shell: the forms and the sandboxed preview frame. No key needed, and the shell holds none |
 | GET | `/__edit/api/state` | the config as JSON, see below (key) |
 | GET | `/__edit/api/version` | `{"version": N, "hash": "...", "build": {"ok": true}}`; `N` changes when the file changes. Polling it does not reset the idle timer (key) |
 | POST | `/__edit/api/op` | runs one edit operation (key, `Content-Type: application/json`, at most 64 KiB) |
@@ -320,12 +320,13 @@ The page has one form per group of settings. Nothing is saved until you press th
 
 | Form | Fields |
 |---|---|
-| Creator | name, title |
+| Creator | name, title, which can be cleared |
 | Look | color mode (auto, light, dark), background dim (0 to 0.9), the six theme colors |
 | Each link | title, address, subtitle, icon, "affiliate link", "feature this link" |
+| Each link group | title, subtitle |
 | Each platform item | handle, address, display name, count label, follower count, count date |
 
-Everything else in the config is shown read-only under "All settings" and is changed in a text editor. Adding and removing links or platform items and uploads come in later versions.
+Everything else in the config is shown read-only under "All settings" and is changed in a text editor. Uploads come in a later version.
 
 How a save works:
 
@@ -334,11 +335,12 @@ How a save works:
 - If the field changed in the file while you were editing (`409 stale`), nothing is saved, the forms show what the file holds now, and the page says so.
 - Too many changes (`429`) says how many seconds to wait, from `Retry-After`.
 - If the site does not build, a note above the forms shows the build error from the state.
-- Optional boxes (subtitle, icon, name, label, count, count date) are removed from the file when left empty. A title, address or handle cannot be empty, and a color or the creator title cannot be removed once set; the server refuses and says so.
-- Links and platform items move with the Move up and Move down buttons (drag and drop is not part of this version). The button keeps focus where it moved to, and the move is announced ("Moved X to position 2 of 5").
+- Optional boxes (subtitle, icon, name, label, count, count date, creator title and colors) are removed from the file when left empty. A link title, address or handle cannot be empty.
+- Links and platform items move with the Move up and Move down buttons (drag and drop is not part of this version). Link positions and announcements count links only, even when other blocks sit between them. The button keeps focus where it moved to.
+- After a save the page polls `/api/version` and reloads the preview frame.
 - Every control has a visible label and a hint or error tied to it with `aria-describedby`; errors use text, not color alone. Results are spoken through the polite live region.
 
-The code is `store.js` (state, the operation bodies and the saver, with no DOM), `view.js` (the forms; values go in only with `textContent`, `.value` and a fixed list of attributes) and `app.js` (wiring). Tests: `tests/editor/test_forms_sources.py` (source guards), `test_forms_logic.py` with `forms_logic.mjs` (Node, stubs and a small fake DOM) and `test_forms_contract.py` (the shipped modules against a real editor server). The Node tests need `node` 20 or later and are skipped without it; with `CI` set they fail instead.
+The code is `ops.js` (state, operation bodies and the saver, with no DOM), `forms.js` (forms and rendering; values go in only with `textContent`, `.value` and a fixed list of attributes) and `app.js` (wiring). Tests: `tests/editor/test_forms_sources.py` (source guards), `test_forms_logic.py` with `forms_logic.mjs` (Node, stubs and a small fake DOM) and `test_forms_contract.py` (the shipped modules against a real editor server). The Node tests need `node` 20 or later and are skipped without it; with `CI` set they fail instead.
 
 ## Limits and known gaps
 
@@ -361,7 +363,7 @@ Limits that hold today:
 
 Known gaps (not built yet):
 
-- Add and remove for links and platform items, and drag and drop.
+- Drag and drop.
 - A real preview: the preview listener serves a placeholder, and `build.ok` does
   not run a build.
 - Image upload (the guard has the path and the size cap; no route), and any

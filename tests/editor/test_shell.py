@@ -140,7 +140,7 @@ def test_the_client_handles_the_error_shape_and_sends_no_credentials() -> None:
 
 
 def test_the_preview_address_is_checked_before_it_is_used() -> None:
-    view = asset("view.js")
+    view = asset("forms.js")
     assert '"http:"' in view
     for host in ("127.0.0.1", "localhost", "[::1]"):
         assert host in view

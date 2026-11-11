@@ -48,9 +48,9 @@ SHELL_FILES = {
     "strings.js",
     "token.js",
     "api.js",
-    "store.js",
+    "ops.js",
     "announce.js",
-    "view.js",
+    "forms.js",
 }
 BUDGET_BYTES = 150 * 1024
 IMPORT_SPECIFIER = re.compile(
