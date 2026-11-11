@@ -747,6 +747,18 @@ def _content(
     today: date | None = None,
 ) -> dict[str, Any]:
     metrics: list[ResolvedMetric] = projection["metrics"]
+    posts: dict[str, list[dict[str, Any]]] = {}
+    for post in projection.get("recent_posts", []):
+        posts.setdefault(platform_name(post.platform), []).append(
+            {
+                "thumbnail": post.thumbnail,
+                "views": f"{post.views:,}",
+                "likes": f"{post.likes:,}",
+                "comments": f"{post.comments:,}",
+                "reposts": f"{post.reposts:,}" if post.reposts is not None else None,
+                "quotes": f"{post.quotes:,}" if post.quotes is not None else None,
+            }
+        )
     return {
         "live_since": (
             {
@@ -764,6 +776,7 @@ def _content(
         "tags": projection["tags"],
         "metrics": _metric_rows(metrics, config, today, live_day),
         "analytics": _analytics_rows(projection["analytics"], today),
+        "recent_posts": posts,
         "engagement": rows_for(projection.get("engagement", [])),
         "engagement_note": ACROSS_PLATFORMS_NOTE,
         "engagement_formulas": FORMULAS,

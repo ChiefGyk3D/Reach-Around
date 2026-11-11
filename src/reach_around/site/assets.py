@@ -71,6 +71,9 @@ def _slots(config: SiteConfig) -> Iterator[tuple[str, str, str]]:
             yield key, font, "font"
     if theme.fonts.license is not None:
         yield "theme.fonts.license", theme.fonts.license, "license"
+    if config.kit is not None:
+        for index, post in enumerate(config.kit.recent_posts):
+            yield f"kit.recent_posts[{index}].thumbnail", post.thumbnail, "image"
     for t, tab in enumerate(config.tabs):
         for b, block in enumerate(tab.blocks):
             src = getattr(block, "src", None)

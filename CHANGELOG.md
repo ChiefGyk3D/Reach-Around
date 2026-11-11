@@ -28,6 +28,8 @@ while the project is alpha, every release is `0.x` and anything can change betwe
   cache and checked times, stream booleans and timestamps, and fixed diagnostic
   codes that contain no platform or visitor data.
 - Analytics report brand layout A (#522, epic #508): the dark, self-contained owner report now puts its overview first in amber shared-component plates and follows it with chart and table detail plates. The report uses the shared `ra-c-` component vocabulary and brand token palette, stays mobile first at 390, 820 and 1440 px, and keeps chart marks at WCAG AA non-text contrast. Its floored owner-only data path and public-output policy are unchanged.
+- Media kit recent posts (#548): the public kit can show a mobile-first grid of recent posts grouped by platform, with an instance-local thumbnail and view, like and comment counts. Threads posts can also show repost and quote counts. Thumbnails pass through the existing local asset checks and fingerprinting, so the grid never hotlinks or makes an external request. YouTube recent-post figures are refused and remain owner-only under the display policy.
+
 - Editor history UI (#199): the dark-only local editor now has 44 px Undo,
   Redo and History controls, Ctrl+Z and Ctrl+Shift+Z outside form fields, a
   history panel that restores earlier snapshots, outside-change and stale

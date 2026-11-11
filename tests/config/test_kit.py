@@ -25,6 +25,7 @@ from reach_around.config.kit import (
     Partner,
     PlatformMetric,
     Rate,
+    RecentPost,
     gated_projection,
     kit_warnings,
     policy_gaps,
@@ -134,6 +135,81 @@ def test_a_full_kit_validates() -> None:
     )
     assert kit.rates[0].price_text == "Ask me!"
     assert kit.unlock_link is False
+
+
+def test_recent_posts_validate_platform_counts_and_local_thumbnail() -> None:
+    post = RecentPost.model_validate(
+        {
+            "platform": "tiktok",
+            "thumbnail": "media/post-one.png",
+            "views": 1200,
+            "likes": 80,
+            "comments": 7,
+        }
+    )
+    assert post.thumbnail == "media/post-one.png"
+    assert post.views == 1200
+
+    for bad_thumbnail in (
+        "https://example.com/post.png",
+        "//example.com/post.png",
+        "/media/post.png",
+        "../post.png",
+    ):
+        with pytest.raises(ValidationError):
+            RecentPost.model_validate(
+                {
+                    "platform": "tiktok",
+                    "thumbnail": bad_thumbnail,
+                    "views": 1,
+                    "likes": 2,
+                    "comments": 3,
+                }
+            )
+
+
+def test_threads_recent_posts_take_reposts_and_quotes_only() -> None:
+    threads = RecentPost.model_validate(
+        {
+            "platform": "threads",
+            "thumbnail": "media/thread.png",
+            "views": 90,
+            "likes": 8,
+            "comments": 3,
+            "reposts": 2,
+            "quotes": 1,
+        }
+    )
+    assert (threads.reposts, threads.quotes) == (2, 1)
+
+    with pytest.raises(ValidationError, match="Threads"):
+        RecentPost.model_validate(
+            {
+                "platform": "tiktok",
+                "thumbnail": "media/video.png",
+                "views": 90,
+                "likes": 8,
+                "comments": 3,
+                "reposts": 2,
+            }
+        )
+
+
+def test_youtube_recent_post_figures_are_refused_from_the_kit() -> None:
+    with pytest.raises(ValidationError, match="YouTube.*recent post"):
+        KitConfig.model_validate(
+            kit_doc(
+                recent_posts=[
+                    {
+                        "platform": "youtube",
+                        "thumbnail": "media/video.png",
+                        "views": 90,
+                        "likes": 8,
+                        "comments": 3,
+                    }
+                ]
+            )
+        )
 
 
 def test_unlock_link_defaults_false_and_must_be_a_real_bool() -> None:
@@ -360,6 +436,7 @@ def test_policy_classifies_every_field() -> None:
         "tags",
         "metrics",
         "analytics",
+        "recent_posts",
         "unified_total",
         "turnstile_site_key",
     }
@@ -411,6 +488,7 @@ def test_public_projection_has_only_header_and_headline_numbers() -> None:
         "tags",
         "metrics",
         "analytics",
+        "recent_posts",
         "unified_total",
         "turnstile_site_key",
     }
@@ -427,6 +505,7 @@ def test_gated_projection_adds_gated_fields_but_never_private() -> None:
         "about",
         "contact",
         "metrics",
+        "recent_posts",
         "unified_total",
         "turnstile_site_key",
         "partners",
