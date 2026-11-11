@@ -150,9 +150,10 @@ def test_last_line_missing_only_newline_is_truncated(tmp_path: Path) -> None:
         read_history(path)
 
 
-def test_empty_file_is_valid_and_missing_file_reads_empty(tmp_path: Path) -> None:
+def test_empty_file_is_valid_and_missing_file_is_refused(tmp_path: Path) -> None:
     path = tmp_path / "h.jsonl"
-    assert read_history(path).records == ()
+    with pytest.raises(HistoryError, match="cannot open the history file"):
+        read_history(path)
     path.write_bytes(b"")
     assert read_history(path).records == ()
 
@@ -262,6 +263,29 @@ def test_era_and_note_round_trip(tmp_path: Path) -> None:
     got = read_history(path).records[0]
     assert got.era == "includes-gifted-2026-08-11"
     assert got.note == "kept by hand"
+
+
+def test_api_provider_is_validated_and_round_trips(tmp_path: Path) -> None:
+    path = tmp_path / "h.jsonl"
+    add(path, rec(api_provider="youtube_data_api"))
+    assert read_history(path).records[0].api_provider == "youtube_data_api"
+    with pytest.raises(HistoryError, match="api_provider"):
+        add(
+            path,
+            rec(
+                as_of_utc="2026-11-09T09:00:00Z",
+                source="hand_kept",
+                api_provider="youtube_data_api",
+            ),
+        )
+    with pytest.raises(HistoryError, match="api_provider"):
+        add(
+            path,
+            rec(
+                as_of_utc="2026-11-09T09:00:00Z",
+                api_provider="youtube_other_api",
+            ),
+        )
 
 
 def _worker(args: tuple[str, int]) -> None:
