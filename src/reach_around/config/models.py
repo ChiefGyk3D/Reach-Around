@@ -241,6 +241,7 @@ class Social(_Model):
     name: Title
     url: HttpsUrl
     icon: Slug
+    rel_me: bool = False
 
     @field_validator("url")
     @classmethod

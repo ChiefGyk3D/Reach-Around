@@ -168,12 +168,14 @@ creator:
 | `name` | Title | required | |
 | `url` | HTTPS URL or Tab link | required | |
 | `icon` | Slug | required | |
+| `rel_me` | boolean | `false` | Adds `me` to the external link's `rel` attribute for identity verification, including Mastodon profile verification. |
 
 ```yaml
 socials:
   - name: Example Chat
     url: https://chat.example.invalid/example
     icon: chat
+    rel_me: true
 ```
 
 ### `tabs[]` (`Tab`)

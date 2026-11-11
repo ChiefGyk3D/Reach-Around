@@ -72,6 +72,24 @@ days. Without the table the report says nothing about gaps (`not_exported`).
 For response and recovery steps, see the generic
 [collection gaps runbook](collection-gaps-runbook.md).
 
+## Social numbers and the unified report (`--history`)
+
+```text
+reach-around report --input export.json --history history/social.jsonl
+```
+
+`--history FILE` reads the social-stats history ([social-history.md](social-history.md)) and adds a "Social numbers" block to the text report, a `social` object to `--json` and a `social.csv` to `--csv`. The file is read only and checked first; a damaged file exits 2. The block is private to you, like the rest of the report.
+
+* **Per platform and metric:** the latest number with its UTC time, source (`api`, `hand_kept`) and, once the cutover has arrived and `--cutover` is given, whether it is before or after.
+* **Change over 30, 90 and 365 UTC days:** only when a record exists on exactly that day before the latest one. Otherwise the line says `no record on <day>`. A missing day is a gap: it is listed (last 90 days) and is never filled, carried forward or counted as zero.
+* **Definition breaks:** a change between two records with different `era` tags is withheld ("the definition changed").
+* **Cutover:** a change window that crosses the cutover day is labeled as spanning it.
+* **Imported history (Beacons):** records with source `imported` appear only in their own block, with their own label, and are never added to or compared with the collected numbers above.
+* **YouTube:** collected YouTube Analytics figures are refused (display policy, #424). Only the Data API `subscribers` count may come from the API; a value you typed is accepted. A refused metric is named in the output.
+* **Time:** everything is UTC. With `--display-zone` each latest instant is also printed in that zone; day buckets stay UTC days.
+
+Without `--history` the report is unchanged. The HTML page and the Grafana export do not carry this block yet.
+
 ## The privacy floor
 
 No row under 5 views is printed: not a page, a source, a country, a city, a
@@ -253,6 +271,40 @@ Everything below is made up. Save it as `export.json`.
 page views, 6 clicks and 5 kit views; the geography table shows US and DE and
 leaves nothing under the floor out of sight; the bots section shows the automated
 share. Add `--json` for the same data as JSON, `--geo city` for cities.
+
+## The 25 month archive: `reach-around analytics-archive`
+
+Day cells go after 90 days, so a comparison a year after the cutover needs the
+monthly rollups kept somewhere else. This job keeps the last 25 closed UTC
+months of the click funnel (source by link, country by link) in a directory of
+your private instance repo:
+
+```
+reach-around analytics-archive --input export.json --archive archive/ [--site links] [--floor 5]
+```
+
+The export must carry `click_src_monthly`, `click_country_monthly` and
+`click_month_log` (the rollup marker; a month without a marker is skipped, it
+may be partial). Each cell goes through the report's remainder rule before it is
+written, so the archive holds only cells at the floor, one `(below the floor)`
+line per link, and no link that cannot be made safe. One file per site and
+month, `<site>-<YYYY-MM>.json`. A capacity problem in the month is kept as one
+yes or no flag, not as numbers.
+
+- Append-only: a month file is created once. The same data again changes
+  nothing; different data for an archived month is refused (exit 2), because
+  two versions of a month can be differenced. Let late counts appear in the
+  next month.
+- Retention: files older than the 25 closed months are removed on each run;
+  other files in the directory are never touched. The directory must exist and
+  not be a symbolic link. The git history of the instance repo still holds a
+  removed file; rewrite history if that matters to you.
+- Views are not archived: the Worker has no monthly view rollup, and a month
+  built from day cells cannot be proven complete. Only the click funnel is.
+- Commit the directory to the private instance repo after each run. Never
+  publish it.
+- `reach-around grafana-export --archive archive/` adds the monthly series
+  (see `docs/grafana.md`). Day data in that file stays at 90 days.
 
 ## Not covered
 

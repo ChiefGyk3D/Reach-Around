@@ -11,6 +11,7 @@ import sqlite3
 import stat
 import subprocess
 import sys
+from contextlib import closing
 from pathlib import Path
 
 import pytest
@@ -51,34 +52,35 @@ else:
 
 def make(tmp_path: Path) -> dict[str, str]:
     db_path = tmp_path / "d1.sqlite"
-    db = sqlite3.connect(db_path)
-    for f in sorted((ROOT / "worker" / "migrations").glob("*.sql")):
-        db.executescript(schema_sql(f.read_text()))
-    db.execute(
-        "INSERT INTO view_daily (site, day, day_tz, page, src_kind, src, country,"
-        " bot_class, views, uniques) VALUES ('links', '2026-11-01', '2026-11-01',"
-        " 'home', 'd', '', 'US', 'h', 9, 0)"
-    )
-    db.execute(
-        "INSERT INTO click_events (ts, link_id, site)"
-        " VALUES (1792998000000, 'a', 'links')"
-    )
-    db.execute(
-        "INSERT INTO leads (id, email, created_ts, last_seen_ts, source) VALUES ('"
-        + "a" * 32
-        + "', 'person@example.test', 1, 1, 'gate')"
-    )
-    db.execute(
-        "INSERT INTO kit_events (ts, lead_id, kind) VALUES (1792998000000, '"
-        + "a" * 32
-        + "', 'view')"
-    )
-    db.execute(
-        "CREATE TABLE d1_migrations (id INTEGER PRIMARY KEY AUTOINCREMENT,"
-        " name TEXT UNIQUE, applied_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP)"
-    )
-    db.execute("INSERT INTO d1_migrations (name) VALUES ('0001_init.sql')")
-    db.commit()
+    with closing(sqlite3.connect(db_path)) as db:
+        for f in sorted((ROOT / "worker" / "migrations").glob("*.sql")):
+            db.executescript(schema_sql(f.read_text()))
+        db.execute(
+            "INSERT INTO view_daily (site, day, day_tz, page, src_kind, src, country,"
+            " bot_class, views, uniques) VALUES ('links', '2026-11-01', '2026-11-01',"
+            " 'home', 'd', '', 'US', 'h', 9, 0)"
+        )
+        db.execute(
+            "INSERT INTO click_events (ts, link_id, site)"
+            " VALUES (1792998000000, 'a', 'links')"
+        )
+        db.execute(
+            "INSERT INTO leads (id, email, created_ts, last_seen_ts, source) VALUES ('"
+            + "a" * 32
+            + "', 'person@example.test', 1, 1, 'gate')"
+        )
+        db.execute(
+            "INSERT INTO kit_events (ts, lead_id, kind) VALUES (1792998000000, '"
+            + "a" * 32
+            + "', 'view')"
+        )
+        db.execute(
+            "CREATE TABLE d1_migrations (id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            " name TEXT UNIQUE, applied_at TIMESTAMP NOT NULL"
+            " DEFAULT CURRENT_TIMESTAMP)"
+        )
+        db.execute("INSERT INTO d1_migrations (name) VALUES ('0001_init.sql')")
+        db.commit()
     stub = tmp_path / "wrangler-stub"
     stub.write_text(STUB.format(python=sys.executable))
     stub.chmod(0o700)
@@ -105,6 +107,24 @@ def run(env: dict[str, str], *args: str) -> subprocess.CompletedProcess[str]:
         timeout=60,
         check=False,
     )
+
+
+def test_database_setup_closes_its_connection(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    connections: list[sqlite3.Connection] = []
+    connect = sqlite3.connect
+
+    def retained_connect(database: str | Path) -> sqlite3.Connection:
+        connection = connect(database)
+        connections.append(connection)
+        return connection
+
+    monkeypatch.setattr(sqlite3, "connect", retained_connect)
+    make(tmp_path)
+
+    with pytest.raises(sqlite3.ProgrammingError, match="closed database"):
+        connections[0].execute("SELECT 1")
 
 
 def test_dry_run_is_the_default_and_writes_nothing(tmp_path: Path) -> None:

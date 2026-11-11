@@ -164,6 +164,39 @@ def test_affiliate_links_get_rel_sponsored_noopener_and_the_disclosure_is_shown(
     assert "We may earn a commission." not in other
 
 
+def test_social_rel_me_is_emitted_only_when_enabled(tmp_path: Path) -> None:
+    config = make_config(
+        creator={
+            "name": "Example Creator",
+            "socials": [
+                {
+                    "name": "Verified Profile",
+                    "url": "https://social.example.invalid/@creator",
+                    "icon": "mastodon",
+                    "rel_me": True,
+                },
+                {
+                    "name": "Other Profile",
+                    "url": "https://profile.example.invalid/creator",
+                    "icon": "link",
+                },
+            ],
+        }
+    )
+
+    build_site(config, tmp_path, today=TODAY, assets_dir=EXAMPLE.parent)
+
+    html = (tmp_path / "index.html").read_text(encoding="utf-8")
+    assert (
+        'href="https://social.example.invalid/@creator" '
+        'rel="me noopener noreferrer"' in html
+    )
+    assert (
+        'href="https://profile.example.invalid/creator" '
+        'rel="noopener noreferrer"' in html
+    )
+
+
 def test_hidden_affiliate_link_does_not_trigger_the_disclosure(
     tmp_path: Path,
 ) -> None:

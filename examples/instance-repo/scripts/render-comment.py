@@ -552,6 +552,7 @@ KNOWN_FIELDS: frozenset[str] = frozenset(
         "raw_keep_days",
         "redirects",
         "refresh_within_days",
+        "rel_me",
         "result",
         "retention_days",
         "reveal",
