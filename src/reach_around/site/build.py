@@ -863,7 +863,7 @@ def build_site(
         current_routes = {
             tab.id: (
                 "/"
-                if i == 0
+                if i == 0 or (config.page_layout == "sections" and not shown[i])
                 else f"/#{tab.id}"
                 if config.page_layout == "sections"
                 else f"/{tab.id}/"
