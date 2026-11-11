@@ -272,6 +272,40 @@ page views, 6 clicks and 5 kit views; the geography table shows US and DE and
 leaves nothing under the floor out of sight; the bots section shows the automated
 share. Add `--json` for the same data as JSON, `--geo city` for cities.
 
+## The 25 month archive: `reach-around analytics-archive`
+
+Day cells go after 90 days, so a comparison a year after the cutover needs the
+monthly rollups kept somewhere else. This job keeps the last 25 closed UTC
+months of the click funnel (source by link, country by link) in a directory of
+your private instance repo:
+
+```
+reach-around analytics-archive --input export.json --archive archive/ [--site links] [--floor 5]
+```
+
+The export must carry `click_src_monthly`, `click_country_monthly` and
+`click_month_log` (the rollup marker; a month without a marker is skipped, it
+may be partial). Each cell goes through the report's remainder rule before it is
+written, so the archive holds only cells at the floor, one `(below the floor)`
+line per link, and no link that cannot be made safe. One file per site and
+month, `<site>-<YYYY-MM>.json`. A capacity problem in the month is kept as one
+yes or no flag, not as numbers.
+
+- Append-only: a month file is created once. The same data again changes
+  nothing; different data for an archived month is refused (exit 2), because
+  two versions of a month can be differenced. Let late counts appear in the
+  next month.
+- Retention: files older than the 25 closed months are removed on each run;
+  other files in the directory are never touched. The directory must exist and
+  not be a symbolic link. The git history of the instance repo still holds a
+  removed file; rewrite history if that matters to you.
+- Views are not archived: the Worker has no monthly view rollup, and a month
+  built from day cells cannot be proven complete. Only the click funnel is.
+- Commit the directory to the private instance repo after each run. Never
+  publish it.
+- `reach-around grafana-export --archive archive/` adds the monthly series
+  (see `docs/grafana.md`). Day data in that file stays at 90 days.
+
 ## Not covered
 
 No live read: this command never calls Cloudflare, and the choice of read path
