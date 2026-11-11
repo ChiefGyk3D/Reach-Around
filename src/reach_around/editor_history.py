@@ -562,6 +562,72 @@ class History:
         """Undo even though the file was edited elsewhere, keeping that edit first."""
         return self._move(current, write, -1, anyway=True)
 
+    def restore(
+        self, current: str, entry_id: int, write: Callable[[str], object]
+    ) -> Restored | Refusal:
+        """Restore an older entry as a new, undoable history state."""
+        dir_fd = self._open_dir(create=False)
+        if dir_fd is None:
+            return Refusal("history_entry_missing", "That earlier version is gone.")
+        try:
+            lock = self._lock(dir_fd)
+            try:
+                state = self._load(dir_fd)
+                self._resolve(dir_fd, state, _sha(current))
+                outside = _sha(current) != state.produced
+                if outside:
+                    return Refusal(
+                        "outside_edit",
+                        "The file was changed outside the editor, so this would "
+                        "erase that change. Nothing was changed.",
+                    )
+                target = next(
+                    (
+                        entry
+                        for index, entry in enumerate(state.entries)
+                        if entry.n == entry_id and index < state.cursor
+                    ),
+                    None,
+                )
+                if target is None:
+                    return Refusal(
+                        "history_entry_missing", "That earlier version is gone."
+                    )
+                loaded = self._read_state_text(dir_fd, target)
+                if isinstance(loaded, Refusal):
+                    return loaded
+                del state.entries[state.cursor + 1 :]
+                restored = self._store(dir_fd, state, loaded, target.label)
+                target_cursor = len(state.entries) - 1
+                state.pending = (target_cursor, restored.hash)
+                try:
+                    self._save(dir_fd, state)
+                except OSError as exc:
+                    raise HistoryError(
+                        f"cannot save the history: {exc.strerror or 'I/O error'}"
+                    ) from exc
+                write(loaded)
+                state.cursor = target_cursor
+                state.produced = restored.hash
+                state.pending = None
+                recorded = True
+                try:
+                    self._prune(state)
+                    self._save(dir_fd, state)
+                except (OSError, HistoryError):
+                    recorded = False
+                return Restored(
+                    loaded,
+                    restored.label,
+                    state.cursor > 0,
+                    state.cursor < len(state.entries) - 1,
+                    recorded,
+                )
+            finally:
+                os.close(lock)
+        finally:
+            os.close(dir_fd)
+
     def _move(
         self,
         current: str,
