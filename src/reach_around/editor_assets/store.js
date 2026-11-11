@@ -291,6 +291,10 @@ export function patchFromState(reply) {
     hash: reply && typeof reply.hash === "string" ? reply.hash : "",
     previewUrl: reply && typeof reply.preview_url === "string" ? reply.preview_url : "",
     buildError,
+    canUndo: reply && reply.can_undo === true,
+    canRedo: reply && reply.can_redo === true,
+    outsideEdit: reply && reply.outside_edit === true,
+    outsideChanged: false,
   };
 }
 
@@ -301,6 +305,14 @@ export function classify(error) {
   const message = error && typeof error.message === "string" && error.message ? error.message : t("error.generic");
   if (status === 409 && code === "stale") {
     return { kind: "stale", message: t("save.stale"), state: error.state || null };
+  }
+  if (status === 409 && code === "outside_edit") {
+    return {
+      kind: "outside-edit",
+      message: t("history.outsideRefused"),
+      action: t("action.restoreEarlier"),
+      state: error.state || null,
+    };
   }
   if (status === 429) {
     const seconds = Number(error.retryAfter) || 0;
@@ -320,6 +332,61 @@ export function classify(error) {
     return { kind: "field", message, path: typeof error.path === "string" ? error.path : "" };
   }
   return { kind: "other", message: t("save.failed", { message }) };
+}
+
+function historyLabel(reply) {
+  const history = reply && isObject(reply.history) ? reply.history : null;
+  return history && typeof history.label === "string" && history.label
+    ? history.label
+    : t("history.version");
+}
+
+export function createHistoryActions({ client, store, announce }) {
+  async function change(call, announcement) {
+    const body = { base: store.get().hash };
+    try {
+      const reply = await call(body);
+      if (reply && reply.state) {
+        store.set(patchFromState(reply.state));
+      }
+      announce(t(announcement, { label: historyLabel(reply) }));
+      return { ok: true, reply };
+    } catch (error) {
+      const problem = classify(error);
+      if ((problem.kind === "stale" || problem.kind === "outside-edit") && problem.state) {
+        store.set(patchFromState(problem.state));
+      }
+      announce(problem.message);
+      return { ok: false, problem };
+    }
+  }
+
+  return {
+    load: () => client.get("history"),
+    undo: () => change((body) => client.post("undo", body), "announce.undone"),
+    redo: () => change((body) => client.post("redo", body), "announce.redone"),
+    restore: (id) =>
+      change(
+        (body) => client.post("history/restore", { ...body, id }),
+        "announce.restored",
+      ),
+    restoreEarlier: () =>
+      change(
+        (body) => client.post("undo", { ...body, anyway: true }),
+        "announce.restored",
+      ),
+  };
+}
+
+export function historyShortcut(event, target) {
+  const tag = target && typeof target.tagName === "string" ? target.tagName.toLowerCase() : "";
+  if (["input", "textarea", "select"].includes(tag) || (target && target.isContentEditable)) {
+    return "";
+  }
+  if (!(event.ctrlKey || event.metaKey) || String(event.key).toLowerCase() !== "z") {
+    return "";
+  }
+  return event.shiftKey ? "redo" : "undo";
 }
 
 // ---- the saver: ops one at a time, store updated from each reply -------------------

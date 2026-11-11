@@ -24,6 +24,7 @@ ATTRIBUTES = {
     "aria-describedby",
     "aria-invalid",
     "aria-labelledby",
+    "aria-expanded",
     "data-key",
     "data-string",
     "disabled",
@@ -137,7 +138,7 @@ def test_every_button_has_an_explicit_type() -> None:
     assert typed >= made
 
 
-def test_network_goes_only_through_the_client_and_only_to_op_and_state() -> None:
+def test_network_goes_only_through_the_client_and_known_editor_routes() -> None:
     for name in JS_NAMES:
         text = source(name)
         if name != "api.js":
@@ -146,7 +147,14 @@ def test_network_goes_only_through_the_client_and_only_to_op_and_state() -> None
             )
     store = source("store.js")
     calls = re.findall(r"client\.(get|post)\(\s*([^,)]*)", store)
-    assert calls == [("post", '"op"')]
+    assert calls == [
+        ("get", '"history"'),
+        ("post", '"undo"'),
+        ("post", '"redo"'),
+        ("post", '"history/restore"'),
+        ("post", '"undo"'),
+        ("post", '"op"'),
+    ]
     assert not re.search(r"client\.", source("view.js"))
 
 
