@@ -122,6 +122,7 @@ def run_report(args: argparse.Namespace) -> int:
             include_bots=args.include_bots,
             top=args.top,
             floor=args.floor,
+            display_zone=zone,
         )
         if args.period is not None:
             # Recorded in the ledger BEFORE anything is shown: no record, no cells.

@@ -337,6 +337,7 @@ def _daily(view: dict[str, Any]) -> str:
         '<span><span class="sw" style="background:var(--gap)"></span>Gap: no data for the day</span>'
         "<span>Triangle on the baseline: day under the privacy floor</span></div>"
     )
+
     views_ok = d["views_state"] == "ok"
     clicks_ok = d["clicks_state"] == "ok"
     notes = ""
@@ -420,10 +421,29 @@ def _clicks_table(title: str, t: dict[str, Any], label: str) -> str:
             )
             or '<tr><td colspan="2">no data in this period</td></tr>'
         )
+        if t.get("below_floor"):
+            rows += (
+                '<tr><td>(rows below the floor)</td><td class="n">'
+                f"{t['below_floor']}</td></tr>"
+            )
     return (
         f'<section class="ra-c-plate"><h2>{escape(title)}</h2><div class="wrap"><table>'
         f'<thead><tr><th>{escape(label)}</th><th class="n">Clicks</th></tr></thead>'
         f"<tbody>{rows}</tbody></table></div></section>"
+    )
+
+
+def _patterns(view: dict[str, Any]) -> str:
+    patterns = view["patterns"]
+    label = f"{patterns['day_timezone']} weekday and {patterns['hour_timezone']} hour"
+    return (
+        '<div style="margin-top:16px"><section class="ra-c-plate"><h2>Time patterns</h2>'
+        f'<p class="note">Weekdays stay UTC days. Hours are labeled in {escape(patterns["hour_timezone"])}.</p>'
+        '</section><div class="grid cols">'
+        + _views_table("Views by weekday and hour", patterns["views"], label)
+        + _clicks_table("Clicks by weekday and hour", patterns["clicks"], label)
+        + '</div><p class="note">New versus returning visitors is not available. '
+        "The privacy model keeps no identifier across UTC days; the within-day first flag cannot answer that question.</p></div>"
     )
 
 
@@ -542,6 +562,7 @@ def render_html(view: dict[str, Any], *, generated_at: datetime) -> str:
         "</section>",
         '<div class="report-details">',
         _daily(view),
+        _patterns(view),
         '<div class="grid cols" style="margin-top:16px">',
         _links(view),
         _views_table("Sources", view["sources"], "Source", nyet["sources"]),

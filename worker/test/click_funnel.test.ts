@@ -44,7 +44,7 @@ const click = (qs: string, o: { host?: string; id?: string; country?: string } =
     },
   });
 const q = async <T>(sql: string) => (await DB.prepare(sql).all<T>()).results;
-const TABLES = ["click_src_daily", "click_country_daily", "click_seal", "click_budget", "click_capacity", "click_funnel_state", "click_src_monthly", "click_country_monthly", "click_month_log", "click_events"];
+const TABLES = ["click_src_daily", "click_country_daily", "click_seal", "click_budget", "click_capacity", "click_funnel_state", "click_src_monthly", "click_country_monthly", "click_month_log", "click_events", "view_hour_daily"];
 
 beforeEach(async () => {
   for (const t of TABLES) await DB.prepare(`DELETE FROM ${t}`).run();
@@ -340,6 +340,21 @@ describe("a configured site with no click at all is still sealed and logged", ()
 });
 
 describe("seals cover quiet days and the month log counts exhausted days", () => {
+  it("seals_hour_rounded_clicks_into_the_human_hour_rows", async () => {
+    await DB.batch([
+      DB.prepare("INSERT INTO click_events (ts, link_id, site) VALUES (?, 'twitch', 'links')").bind(Date.UTC(2027, 0, 5, 7)),
+      DB.prepare("INSERT INTO click_events (ts, link_id, site) VALUES (?, 'kick', 'links')").bind(Date.UTC(2027, 0, 5, 7)),
+      DB.prepare("INSERT INTO click_events (ts, link_id, site) VALUES (?, 'twitch', 'links')").bind(Date.UTC(2027, 0, 5, 22)),
+    ]);
+
+    await rollupClickFunnel({ DB, sites: ["links"] }, Date.UTC(2027, 0, 6, 12));
+
+    expect(await q("SELECT day, hour, bot_class, views, clicks FROM view_hour_daily ORDER BY hour")).toEqual([
+      { day: "2027-01-05", hour: 7, bot_class: "h", views: 0, clicks: 2 },
+      { day: "2027-01-05", hour: 22, bot_class: "h", views: 0, clicks: 1 },
+    ]);
+  });
+
   it("every closed day between the first counted day and today is sealed, quiet days too", async () => {
     await count(Date.UTC(2027, 0, 1, 12), "links", "twitch", "instagram", "US");
     await count(Date.UTC(2027, 0, 5, 12), "links", "twitch", "instagram", "US");

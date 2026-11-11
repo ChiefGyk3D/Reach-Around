@@ -157,6 +157,7 @@ export async function purgeViews(env: RetentionEnv, nowMs: number, opts: PurgeOp
     { sql: "DELETE FROM view_daily WHERE day IN (SELECT day FROM view_daily WHERE day < ? LIMIT ?)", args: [aggCutoff] },
     { sql: "DELETE FROM view_dim_daily WHERE day IN (SELECT day FROM view_dim_daily WHERE day < ? LIMIT ?)", args: [aggCutoff] },
     { sql: "DELETE FROM view_geo_daily WHERE day IN (SELECT day FROM view_geo_daily WHERE day < ? LIMIT ?)", args: [aggCutoff] },
+    { sql: "DELETE FROM view_hour_daily WHERE day IN (SELECT day FROM view_hour_daily WHERE day < ? LIMIT ?)", args: [aggCutoff] },
     { sql: "DELETE FROM view_rollup_log WHERE day IN (SELECT day FROM view_rollup_log WHERE day < ? LIMIT ?)", args: [aggCutoff] },
     {
       sql: "DELETE FROM view_meta WHERE key IN (SELECT key FROM view_meta WHERE key >= 'bud:' AND key < ? LIMIT ?)",

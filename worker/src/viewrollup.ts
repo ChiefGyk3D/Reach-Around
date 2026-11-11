@@ -166,6 +166,7 @@ type Core = {
 };
 type Dim = { dim: string; value: string; bot_class: string; views: number; uniques: number };
 type Geo = { country: string; region: string; city: string; bot_class: string; views: number; uniques: number };
+type Hour = { hour: number; bot_class: string; views: number };
 
 function utcDate(ms: number): string {
   return new Date(ms).toISOString().slice(0, 10);
@@ -219,6 +220,7 @@ interface DayPlan {
   core: Core[];
   dim: Dim[];
   geo: Geo[];
+  hours: Hour[];
   raw: number;
   views: number;
   uniques: number;
@@ -335,7 +337,7 @@ function geoSql(level: "country" | "region" | "city"): string {
 
 /**
  * ONE read batch (one query) for a day: renew the lease, then count, core, the
- * seven dimensions and geography of ALL the day's raw rows. Ranking and folding
+ * seven dimensions, geography and hour buckets of ALL the day's raw rows. Ranking and folding
  * happen in D1; this function only checks that the capped output adds up.
  */
 /** The options of one site: its own entry in SITES, else the global variables. */
@@ -420,6 +422,12 @@ async function readDay(env: RollupEnv, db: D1Database, w: Work, lease: Lease, re
     db.prepare(coreSql(allow.length)).bind(...coreArgs),
     ...DIM_COLUMNS.map((c) => db.prepare(dimSql(c, DIM_TOP[c] as number)).bind(lo, hi, min, w.site)),
     db.prepare(geoSql(level)).bind(lo, hi, w.site, 0, geoMin),
+    db
+      .prepare(
+        "SELECT CAST(strftime('%H', ts / 1000, 'unixepoch') AS INTEGER) AS hour, bot_class, COUNT(*) AS views " +
+          "FROM view_events WHERE site = ?1 AND ts >= ?2 AND ts < ?3 GROUP BY 1, bot_class",
+      )
+      .bind(w.site, lo, hi),
   ]);
   if ((res[0]?.meta?.changes ?? 0) !== 1) throw new LeaseLost();
   const head = (res[1]?.results ?? [])[0] as { n: number; max_id: number; old_n: number } | undefined;
@@ -428,6 +436,7 @@ async function readDay(env: RollupEnv, db: D1Database, w: Work, lease: Lease, re
   const dim: Dim[] = [];
   for (let i = 0; i < DIM_COLUMNS.length; i++) dim.push(...((res[3 + i]?.results ?? []) as Dim[]));
   const geo = (res[3 + DIM_COLUMNS.length]?.results ?? []) as Geo[];
+  const hours = (res[4 + DIM_COLUMNS.length]?.results ?? []) as Hour[];
 
   const sum = (rows: Array<{ views: number; uniques: number }>) =>
     rows.reduce((a, r) => [a[0] + r.views, a[1] + r.uniques], [0, 0]);
@@ -436,7 +445,7 @@ async function readDay(env: RollupEnv, db: D1Database, w: Work, lease: Lease, re
   // Every raw row must appear exactly once in each table.
   const dimOk = DIM_COLUMNS.every((c) => sum(dim.filter((r) => r.dim === c))[0] === rawCount);
   if (vc !== rawCount || vg !== rawCount || !dimOk || uc !== ug) throw new RollupMismatch();
-  return { core, dim, geo, raw: rawCount, views: vc, uniques: uc, maxId: head?.max_id ?? 0, oldCount: head?.old_n ?? 0, reduced };
+  return { core, dim, geo, hours, raw: rawCount, views: vc, uniques: uc, maxId: head?.max_id ?? 0, oldCount: head?.old_n ?? 0, reduced };
 }
 
 /** The lease is mine and live, and the day is in the state this run read. */
@@ -495,6 +504,25 @@ async function writeDay(db: D1Database, w: Work, p: DayPlan, nowMs: number, leas
       stmts.push(db.prepare(`DELETE FROM ${t} WHERE site = ? AND day = ? AND ${guard.sql}`).bind(w.site, w.day, ...guard.args));
     }
     stmts.push(
+      db
+        .prepare(`DELETE FROM view_hour_daily WHERE site = ?1 AND day = ?2 AND clicks = 0 AND ${guard.sql}`)
+        .bind(w.site, w.day, ...guard.args),
+      db
+        .prepare(`UPDATE view_hour_daily SET views = 0 WHERE site = ?1 AND day = ?2 AND ${guard.sql}`)
+        .bind(w.site, w.day, ...guard.args),
+      db
+        .prepare(
+          "INSERT INTO view_hour_daily (site, day, hour, bot_class, views, clicks) " +
+            "SELECT ?1, ?2, CAST(strftime('%H', ts / 1000, 'unixepoch') AS INTEGER), bot_class, COUNT(*), 0 " +
+            `FROM view_events WHERE site = ?1 AND ts >= ?3 AND ts < ?4 AND ${guard.sql} GROUP BY 3, bot_class ` +
+            "ON CONFLICT(site, day, hour, bot_class) DO UPDATE SET views = excluded.views",
+        )
+        .bind(w.site, w.day, dayStartMs(w.day), dayStartMs(w.day) + DAY_MS, ...guard.args),
+      db
+        .prepare(`DELETE FROM view_hour_daily WHERE site = ?1 AND day = ?2 AND views = 0 AND clicks = 0 AND ${guard.sql}`)
+        .bind(w.site, w.day, ...guard.args),
+    );
+    stmts.push(
       ...insertStatements(
         db,
         "view_daily",
@@ -548,7 +576,7 @@ async function writeDay(db: D1Database, w: Work, p: DayPlan, nowMs: number, leas
   const res = await db.batch(stmts);
   const sealed = res[res.length - 1]?.meta?.changes ?? 0;
   if (sealed !== 1) throw new LeaseLost();
-  return drop ? 1 : p.core.length + p.dim.length + p.geo.length + 1;
+  return drop ? 1 : p.core.length + p.dim.length + p.geo.length + p.hours.length + 1;
 }
 
 function heartbeatStatements(

@@ -135,6 +135,26 @@ const day = (ts: number) => new Date(ts).toISOString().slice(0, 10);
 beforeEach(clearAll);
 
 describe("rollup totals", () => {
+  it("seals_at_most_one_hour_row_per_class_without_other_dimensions", async () => {
+    await insert([
+      { ts: D13 + 9 * 3_600_000, bot_class: "h", country: "US", device: "mobile" },
+      { ts: D13 + 9 * 3_600_000, bot_class: "h", country: "DE", device: "desktop" },
+      { ts: D13 + 10 * 3_600_000, bot_class: "a", country: "FR", device: "tablet" },
+    ]);
+
+    await rollupClosedDays(envOf(), NOW);
+
+    expect(
+      await q("SELECT site, day, hour, bot_class, views, clicks FROM view_hour_daily ORDER BY hour, bot_class"),
+    ).toEqual([
+      { site: "links", day: "2027-03-13", hour: 9, bot_class: "h", views: 2, clicks: 0 },
+      { site: "links", day: "2027-03-13", hour: 10, bot_class: "a", views: 1, clicks: 0 },
+    ]);
+    expect(await q<{ name: string }>("SELECT name FROM pragma_table_info('view_hour_daily')")).toEqual(
+      ["site", "day", "hour", "bot_class", "views", "clicks"].map((name) => ({ name })),
+    );
+  });
+
   it("totals_per_dimension_equal_a_brute_force_count_over_random_rows", async () => {
     for (const seed of [1, 2, 3, 4, 5, 6, 7, 8]) {
       await clearAll();
@@ -371,11 +391,15 @@ describe("rollup budget", () => {
     await insert(randomRows(5, N).map((r) => ({ ...r, ts: D13 + (r.ts % DAY) })));
     const spy = spyDb();
     const res = await rollupClosedDays(envOf({ DB: spy.DB }), NOW);
+    const hourRows = (await q<{ n: number }>("SELECT COUNT(*) AS n FROM view_hour_daily"))[0]!.n;
     // Documented: at most one core row, one geo row and seven dimension rows
     // per raw row, plus one log row and the heartbeat (5 keys).
-    expect(res.rows).toBeLessThanOrEqual(N * 9 + 1);
-    // Tighter on real distributions: the random generator has few distinct values.
-    expect(res.rows).toBeLessThan(N);
+    expect(res.rows - hourRows).toBeLessThanOrEqual(N * 9 + 1);
+    // Tighter on real distributions: the random generator has few distinct
+    // values. Hour rows are a separate, closed 24 x 4 vocabulary and were not
+    // part of this bound when it was introduced.
+    expect(res.rows - hourRows).toBeLessThan(N);
+    expect(hourRows).toBeLessThanOrEqual(24 * 4);
     expect(spy.calls.rowsWritten).toBeLessThanOrEqual(res.rows + 10); // heartbeat keys and the lease
     expect(spy.calls.rowsWritten).toBeGreaterThanOrEqual(res.rows);
   });

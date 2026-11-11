@@ -177,6 +177,14 @@
       "views",
       "uniques"
     ],
+    "view_hour_daily": [
+      "site",
+      "day",
+      "hour",
+      "bot_class",
+      "views",
+      "clicks"
+    ],
     "view_meta": [
       "key",
       "value"
@@ -299,6 +307,9 @@
     "view_events.ts": "ms",
     "view_geo_daily.uniques": "small",
     "view_geo_daily.views": "small",
+    "view_hour_daily.clicks": "small",
+    "view_hour_daily.hour": "small",
+    "view_hour_daily.views": "small",
     "view_meta.value": "ms_or_small",
     "view_rollup_log.max_id": "rowid",
     "view_rollup_log.raw_views": "small",

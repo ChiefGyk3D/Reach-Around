@@ -123,7 +123,7 @@ export async function budgets(): Promise<Array<{ key: string; value: string }>> 
 }
 
 export async function clearAll(): Promise<void> {
-  for (const t of ["view_events", "visitor_seen", "view_meta", "view_daily", "view_dim_daily", "view_geo_daily", "view_rollup_log"]) {
+  for (const t of ["view_events", "visitor_seen", "view_meta", "view_daily", "view_dim_daily", "view_geo_daily", "view_hour_daily", "view_rollup_log"]) {
     await DB.prepare(`DELETE FROM ${t}`).run();
   }
 }

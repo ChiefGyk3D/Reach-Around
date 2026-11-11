@@ -114,6 +114,19 @@ SPECS: dict[str, Spec] = {
         required=frozenset({"day", "country", "region", "city", "bot_class", "views"}),
         key=("site", "day", "country", "region", "city", "bot_class"),
     ),
+    "view_hour_daily": Spec(
+        marker="hour",
+        columns={
+            "site": "site",
+            "day": "day",
+            "hour": "hour",
+            "bot_class": "class",
+            "views": "uint",
+            "clicks": "uint",
+        },
+        required=frozenset({"day", "hour", "bot_class", "views", "clicks"}),
+        key=("site", "day", "hour", "bot_class"),
+    ),
     # Raw rows: select only these columns. There is no key; rows may repeat.
     "click_events": Spec(
         marker="link_id",
@@ -263,6 +276,7 @@ class Export:
     view_daily: list[dict[str, Any]] = field(default_factory=list)
     view_dim_daily: list[dict[str, Any]] = field(default_factory=list)
     view_geo_daily: list[dict[str, Any]] = field(default_factory=list)
+    view_hour_daily: list[dict[str, Any]] = field(default_factory=list)
     click_events: list[dict[str, Any]] = field(default_factory=list)
     click_src_daily: list[dict[str, Any]] = field(default_factory=list)
     click_country_daily: list[dict[str, Any]] = field(default_factory=list)
@@ -379,6 +393,8 @@ def _check_value(kind: str, value: Any, where: str) -> Any:
         return _check_int(value, low=1, high=MAX_INT, where=where)
     if kind == "uint":
         return _check_int(value, low=0, high=MAX_INT, where=where)
+    if kind == "hour":
+        return _check_int(value, low=0, high=23, where=where)
     if kind == "ts":
         return _check_int(value, low=0, high=MAX_TS, where=where)
     pattern: re.Pattern[str] | None = None

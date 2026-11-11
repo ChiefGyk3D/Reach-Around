@@ -239,6 +239,17 @@ def owner_csv_files(view: dict[str, Any]) -> dict[str, bytes]:
         ]
         for d in view["daily"]["days"]
     ]
+    pattern_rows: list[list[Any]] = []
+    for metric in ("views", "clicks"):
+        section = view["patterns"][metric]
+        if section["state"] != "ok":
+            pattern_rows.append([metric, "", "", section["state"]])
+            continue
+        pattern_rows.extend(
+            [metric, row["label"], row[metric], "row"] for row in section["rows"]
+        )
+        if section["below_floor"]:
+            pattern_rows.append([metric, BELOW, section["below_floor"], "below_floor"])
     link_rows: list[list[Any]] = [
         [
             x["label"],
@@ -294,6 +305,10 @@ def owner_csv_files(view: dict[str, Any]) -> dict[str, bytes]:
                 "collection",
             ],
             daily_rows,
+        ),
+        "owner_time_patterns.csv": render_csv(
+            ["metric", "utc_weekday_and_display_hour", "count", "row_type"],
+            pattern_rows,
         ),
         "owner_links.csv": render_csv(
             ["link", "clicks", "clicks_per_100_page_views", "note", "row_type"],

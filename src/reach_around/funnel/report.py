@@ -17,6 +17,7 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from reach_around.funnel.export import CLASSES, Export
 from reach_around.funnel.gaps import coverage_for_window
@@ -199,6 +200,11 @@ def _withhold_views(report: dict[str, Any]) -> None:
             report[key].update(
                 state="withheld", rows=[], other_below_floor=0, more_rows=0
             )
+    pattern_views = report["patterns"]["views"]
+    if pattern_views["state"] != "not_in_export":
+        pattern_views.update(
+            state="withheld", rows=[], other_below_floor=0, more_rows=0
+        )
     bots = report["bots"]
     bots.update(classes=[], other_below_floor=0, total_views=None, views_withheld=True)
     daily = report["daily"]
@@ -765,6 +771,7 @@ def _build_report(
     offset: int = 0,
     as_of: date | None = None,
     diagnostics: dict[str, Any] | None = None,
+    display_zone: str | None = None,
 ) -> tuple[dict[str, Any], str]:
     """The report and the digest of the exact inputs behind its cell tables."""
     if floor < FLOOR:
@@ -793,6 +800,7 @@ def _build_report(
     view_rows = [r for r in export.view_daily if r["site"] == site]
     dim_rows = [r for r in export.view_dim_daily if r["site"] == site]
     geo_rows = [r for r in export.view_geo_daily if r["site"] == site]
+    hour_rows = [r for r in export.view_hour_daily if r["site"] == site]
     click_rows = [
         {**r, "day": _utc_day(r["ts"])}
         for r in export.click_events
@@ -822,7 +830,8 @@ def _build_report(
     ]
     if days is not None:
         every = [
-            r["day"] for r in view_rows + dim_rows + geo_rows + click_rows + kit_rows
+            r["day"]
+            for r in view_rows + dim_rows + geo_rows + hour_rows + click_rows + kit_rows
         ] + counter_days
         if every:
             end = date.fromisoformat(until) if until else date.fromisoformat(max(every))
@@ -878,14 +887,18 @@ def _build_report(
             if "click_events" in export.present:
                 previous["clicks"] = _count(len(prev_clicks), floor)
 
-    view_rows, dim_rows, geo_rows = (
+    view_rows, dim_rows, geo_rows, hour_rows = (
         window(view_rows),
         window(dim_rows),
         window(geo_rows),
+        window(hour_rows),
     )
     click_rows, kit_rows = window(click_rows), window(kit_rows)
     seen_days = sorted(
-        {r["day"] for r in view_rows + dim_rows + geo_rows + click_rows + kit_rows}
+        {
+            r["day"]
+            for r in view_rows + dim_rows + geo_rows + hour_rows + click_rows + kit_rows
+        }
         | {d for d in counter_days if _in_window(d, since, until)}
     )
     wanted = set(CLASSES) if include_bots else {"h"}
@@ -947,6 +960,19 @@ def _build_report(
     daily_clicks: dict[str, int] = defaultdict(int)
     for r in click_rows:
         daily_clicks[r["day"]] += 1
+
+    pattern_views: dict[str, int] = defaultdict(int)
+    pattern_clicks: dict[str, int] = defaultdict(int)
+    hour_zone = ZoneInfo(display_zone) if display_zone is not None else UTC
+    for r in hour_rows:
+        utc_instant = datetime.fromisoformat(f"{r['day']}T{r['hour']:02d}:00:00+00:00")
+        shown_hour = utc_instant.astimezone(hour_zone).hour
+        weekday = date.fromisoformat(r["day"]).strftime("%A")
+        label = f"{weekday} {shown_hour:02d}:00"
+        if r["bot_class"] in wanted:
+            pattern_views[label] += r["views"]
+        if r["bot_class"] == "h":
+            pattern_clicks[label] += r["clicks"]
 
     human = by_class["h"]
     missing = [
@@ -1132,6 +1158,16 @@ def _build_report(
             },
             floor,
         ),
+        "patterns": {
+            "day_timezone": "UTC",
+            "hour_timezone": display_zone or "UTC",
+            "views": _section(
+                pattern_views, floor, 168, "view_hour_daily" in export.present
+            ),
+            "clicks": _section(
+                pattern_clicks, floor, 168, "view_hour_daily" in export.present
+            ),
+        },
         "previous": previous,
         **{
             name: _section(cuts[name], floor, top, "view_dim_daily" in export.present)
@@ -1414,6 +1450,22 @@ def _daily_text(report: dict[str, Any], lines: list[str]) -> None:
     )
 
 
+def _patterns_text(report: dict[str, Any], lines: list[str]) -> None:
+    patterns = report["patterns"]
+    lines.append("")
+    lines.append(
+        f"Time patterns ({patterns['day_timezone']} days; "
+        f"{patterns['hour_timezone']} hours)"
+    )
+    _table("Views by weekday and hour", patterns["views"], lines)
+    _table("Clicks by weekday and hour", patterns["clicks"], lines)
+    lines.append(
+        "  New versus returning visitors is not available. The privacy model "
+        "keeps no identifier across UTC days; the within-day first flag cannot "
+        "answer that question."
+    )
+
+
 def render_text(report: dict[str, Any]) -> str:
     period = report["period"]
     funnel = report["funnel"]
@@ -1497,6 +1549,7 @@ def render_text(report: dict[str, Any]) -> str:
     )
 
     _daily_text(report, lines)
+    _patterns_text(report, lines)
 
     classes = ", ".join(report["counted_classes"])
     _table(f"Pages (classes: {classes})", report["pages"], lines)

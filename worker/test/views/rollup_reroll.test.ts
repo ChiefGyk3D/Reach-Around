@@ -63,6 +63,17 @@ const mk = (n: number, base: Partial<R>, start = 0): R[] => Array.from({ length:
 beforeEach(clearAll);
 
 describe("late rows re-roll the whole day", () => {
+  it("rebuilds an existing view-only hourly row without violating its nonzero check", async () => {
+    await insert([{ ts: D13 + 1000 }]);
+    await rollupClosedDays({ DB, MIN_CELL: "1" }, NOW);
+    expect(await q("SELECT hour, views, clicks FROM view_hour_daily")).toEqual([{ hour: 0, views: 1, clicks: 0 }]);
+
+    await insert([{ ts: D13 + 2000 }]);
+    await rollupClosedDays({ DB, MIN_CELL: "1" }, NOW + 1000);
+
+    expect(await q("SELECT hour, views, clicks FROM view_hour_daily")).toEqual([{ hour: 0, views: 2, clicks: 0 }]);
+  });
+
   it("a_folded_cell_that_reaches_the_minimum_after_a_late_row_becomes_a_named_cell", async () => {
     const env = { TOP_SOURCES: "1000" }; // MIN_CELL default 3
     await insert([...mk(2, { src_kind: "r", src: "rare.example.test" }), ...mk(5, { src_kind: "r", src: "big.example.test" }, 100)]);

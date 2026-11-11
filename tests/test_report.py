@@ -164,6 +164,105 @@ def test_json_report_matches_the_data(
     assert shares["h"] == 223 and shares["a"] == 30 and shares["s"] == 8
 
 
+def test_hour_weekday_patterns_are_floored_and_labeled_utc(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    rows = [
+        {
+            "site": "links",
+            "day": "2026-11-02",
+            "hour": 9,
+            "bot_class": "h",
+            "views": 8,
+            "clicks": 6,
+        },
+        {
+            "site": "links",
+            "day": "2026-11-03",
+            "hour": 9,
+            "bot_class": "h",
+            "views": 4,
+            "clicks": 4,
+        },
+        {
+            "site": "links",
+            "day": "2026-11-09",
+            "hour": 9,
+            "bot_class": "h",
+            "views": 7,
+            "clicks": 5,
+        },
+        {
+            "site": "links",
+            "day": "2026-11-04",
+            "hour": 8,
+            "bot_class": "h",
+            "views": 6,
+            "clicks": 6,
+        },
+        {
+            "site": "links",
+            "day": "2026-11-02",
+            "hour": 10,
+            "bot_class": "a",
+            "views": 99,
+            "clicks": 0,
+        },
+    ]
+    path = write(tmp_path, {"tables": {"view_hour_daily": rows}})
+
+    code, out, err = run(capsys, "--input", str(path), "--json")
+
+    assert code == 0, err
+    patterns = json.loads(out)["patterns"]
+    assert patterns["day_timezone"] == "UTC"
+    assert patterns["hour_timezone"] == "UTC"
+    assert patterns["views"]["rows"] == [{"label": "Wednesday 08:00", "views": 6}]
+    assert patterns["views"]["other_below_floor"] == 19
+    assert patterns["clicks"]["rows"] == [{"label": "Wednesday 08:00", "views": 6}]
+    assert patterns["clicks"]["other_below_floor"] == 15
+    text = run(capsys, "--input", str(path))[1]
+    assert "Time patterns (UTC days; UTC hours)" in text
+    assert "New versus returning visitors is not available" in text
+
+
+def test_display_zone_relabels_pattern_hours_but_not_utc_weekdays(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    path = write(
+        tmp_path,
+        {
+            "tables": {
+                "view_hour_daily": [
+                    {
+                        "site": "links",
+                        "day": "2026-11-02",
+                        "hour": 1,
+                        "bot_class": "h",
+                        "views": 5,
+                        "clicks": 5,
+                    }
+                ]
+            }
+        },
+    )
+
+    _, out, _ = run(
+        capsys,
+        "--input",
+        str(path),
+        "--json",
+        "--display-zone",
+        "America/Los_Angeles",
+    )
+
+    patterns = json.loads(out)["patterns"]
+    assert patterns["day_timezone"] == "UTC"
+    assert patterns["hour_timezone"] == "America/Los_Angeles"
+    assert patterns["views"]["rows"] == [{"label": "Monday 17:00", "views": 5}]
+    assert patterns["clicks"]["rows"] == [{"label": "Monday 17:00", "views": 5}]
+
+
 def test_window_filters_by_day(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
