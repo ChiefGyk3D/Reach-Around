@@ -6,6 +6,7 @@ while the project is alpha, every release is `0.x` and anything can change betwe
 
 ## [Unreleased]
 
+- Analytics report brand layout A (#522, epic #508): the dark, self-contained owner report now puts its overview first in amber shared-component plates and follows it with chart and table detail plates. The report uses the shared `ra-c-` component vocabulary and brand token palette, stays mobile first at 390, 820 and 1440 px, and keeps chart marks at WCAG AA non-text contrast. Its floored owner-only data path and public-output policy are unchanged.
 - Editor history UI (#199): the dark-only local editor now has 44 px Undo,
   Redo and History controls, Ctrl+Z and Ctrl+Shift+Z outside form fields, a
   history panel that restores earlier snapshots, outside-change and stale
