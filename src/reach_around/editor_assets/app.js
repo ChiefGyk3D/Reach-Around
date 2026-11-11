@@ -4,10 +4,12 @@ import { ApiError, createClient } from "./api.js";
 import {
   createActions,
   createHistoryActions,
+  createOperationQueue,
   createSaver,
   createStore,
   historyShortcut,
   patchFromState,
+  refreshOutsideState,
 } from "./store.js";
 import { t } from "./strings.js";
 import { getToken, takeTokenFromUrl } from "./token.js";
@@ -51,15 +53,26 @@ applyStrings(document);
 document.title = t("app.title");
 
 const client = createClient(getToken);
-const saver = createSaver({ client, store, announce });
-const history = createHistoryActions({ client, store, announce });
+const operations = createOperationQueue();
+const saver = createSaver({ client, store, announce, operations });
+const history = createHistoryActions({ client, store, announce, operations });
 const ctx = {
   actions: createActions({ store, saver, announce }),
   run,
 };
 
-let busy = false;
+let active = 0;
+let preserveEditor = false;
 let drawn = null;
+
+function disableHistory() {
+  undo.disabled = true;
+  redo.disabled = true;
+  restoreEarlier.disabled = true;
+  for (const button of historyPanel.querySelectorAll("button")) {
+    button.disabled = true;
+  }
+}
 
 // The forms are rebuilt only when the config changed and never in the middle
 // of a save, so what the person typed is not wiped under their hands.
@@ -68,8 +81,9 @@ function paint(state, editor) {
   renderConfig(configView, state.config);
   renderPreview(frame, previewNote, state.previewUrl);
   showNote(buildNote, state.buildError ? t("build.failed", { message: state.buildError }) : "");
-  undo.disabled = !state.canUndo;
-  redo.disabled = !state.canRedo;
+  undo.disabled = active > 0 || !state.canUndo;
+  redo.disabled = active > 0 || !state.canRedo;
+  restoreEarlier.disabled = active > 0;
   staleBanner.hidden = !state.outsideEdit && !state.outsideChanged && state.message !== "status.stale";
   staleMessage.textContent = state.message === "status.stale" ? t("status.stale") : t("status.outside");
   restoreEarlier.hidden = !state.outsideEdit;
@@ -120,13 +134,14 @@ document.addEventListener("keydown", (event) => {
 });
 
 async function run(task) {
-  busy = true;
+  active += 1;
+  disableHistory();
   showNote(editorNote, "");
   let result;
   try {
     result = await task();
   } finally {
-    busy = false;
+    active -= 1;
   }
   const kind = result.ok ? "" : result.problem.kind;
   if (kind !== "" && kind !== "field") {
@@ -139,8 +154,8 @@ async function run(task) {
 }
 
 store.subscribe((state) => {
-  if (!busy) {
-    paint(state, true);
+  if (active === 0) {
+    paint(state, !preserveEditor);
   }
 });
 
@@ -176,14 +191,27 @@ async function load() {
 }
 
 async function pollVersion() {
-  if (store.get().phase !== "ready") {
+  if (store.get().phase !== "ready" || active > 0) {
     return;
   }
   try {
     const version = await client.get("version");
     if (version && typeof version.hash === "string" && version.hash !== store.get().hash) {
-      if (!store.get().outsideChanged) {
-        store.set({ message: "status.outside", outsideChanged: true });
+      if (active > 0) {
+        return;
+      }
+      active += 1;
+      disableHistory();
+      preserveEditor = true;
+      let changed = false;
+      try {
+        changed = await refreshOutsideState({ client, store });
+      } finally {
+        preserveEditor = false;
+        active -= 1;
+      }
+      if (changed) {
+        paint(store.get(), false);
         announce(t("status.outside"));
       }
     }

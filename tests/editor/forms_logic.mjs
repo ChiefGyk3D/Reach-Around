@@ -369,6 +369,64 @@ test("saves run one at a time", async () => {
   assert.deepEqual(log, ["start creator.name", "end creator.name", "start creator.title", "end creator.title"]);
 });
 
+test("history waits for an in-flight save and uses the hash from its reply", async () => {
+  const s = newStore();
+  const log = [];
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const freshHash = "e".repeat(64);
+  const client = { post: async (route, body) => {
+    log.push(["start", route, body.base]);
+    if (route === "op") {
+      await gate;
+      s.set(store.patchFromState(reply(CONFIG, freshHash).state));
+    }
+    log.push(["end", route, body.base]);
+    return reply(CONFIG, freshHash);
+  } };
+  const operations = store.createOperationQueue();
+  const saver = store.createSaver({ client, store: s, announce() {}, operations });
+  const history = store.createHistoryActions({ client, store: s, announce() {}, operations });
+  const saving = saver.save(store.settingSteps(CONFIG, { "creator.name": "A" }).steps);
+  const undoing = history.undo();
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.deepEqual(log, [["start", "op", HASH]]);
+  release();
+  await Promise.all([saving, undoing]);
+  assert.deepEqual(log, [
+    ["start", "op", HASH],
+    ["end", "op", HASH],
+    ["start", "undo", freshHash],
+    ["end", "undo", freshHash],
+  ]);
+});
+
+test("an outside-change refresh replaces history metadata with the fresh state", async () => {
+  const s = newStore();
+  const freshHash = "f".repeat(64);
+  const fresh = {
+    config: { ...CONFIG, creator: { ...CONFIG.creator, name: "Outside" } },
+    hash: freshHash,
+    can_undo: false,
+    can_redo: true,
+    outside_edit: true,
+  };
+  const changed = await store.refreshOutsideState({
+    client: { get: async (route) => {
+      assert.equal(route, "state");
+      return fresh;
+    } },
+    store: s,
+  });
+  assert.equal(changed, true);
+  assert.equal(s.get().hash, freshHash);
+  assert.equal(s.get().canUndo, false);
+  assert.equal(s.get().canRedo, true);
+  assert.equal(s.get().outsideEdit, true);
+  assert.equal(s.get().outsideChanged, true);
+  assert.equal(s.get().message, "status.outside");
+});
+
 function draw(config = CONFIG, actions = {}) {
   const container = new Node_("div");
   const runs = [];

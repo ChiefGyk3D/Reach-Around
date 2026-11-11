@@ -298,6 +298,34 @@ export function patchFromState(reply) {
   };
 }
 
+export async function refreshOutsideState({ client, store }) {
+  const before = store.get().hash;
+  const reply = await client.get("state");
+  if (!reply || typeof reply.hash !== "string" || reply.hash === before) {
+    return false;
+  }
+  store.set({
+    ...patchFromState(reply),
+    message: "status.outside",
+    outsideChanged: true,
+  });
+  return true;
+}
+
+export function createOperationQueue() {
+  let tail = Promise.resolve();
+  return {
+    run(task) {
+      const job = tail.then(task);
+      tail = job.then(
+        () => undefined,
+        () => undefined,
+      );
+      return job;
+    },
+  };
+}
+
 // A failure as the forms need it: { kind, message, ... }.
 export function classify(error) {
   const status = error && typeof error.status === "number" ? error.status : 0;
@@ -341,7 +369,12 @@ function historyLabel(reply) {
     : t("history.version");
 }
 
-export function createHistoryActions({ client, store, announce }) {
+export function createHistoryActions({
+  client,
+  store,
+  announce,
+  operations = createOperationQueue(),
+}) {
   async function change(call, announcement) {
     const body = { base: store.get().hash };
     try {
@@ -363,17 +396,23 @@ export function createHistoryActions({ client, store, announce }) {
 
   return {
     load: () => client.get("history"),
-    undo: () => change((body) => client.post("undo", body), "announce.undone"),
-    redo: () => change((body) => client.post("redo", body), "announce.redone"),
+    undo: () =>
+      operations.run(() => change((body) => client.post("undo", body), "announce.undone")),
+    redo: () =>
+      operations.run(() => change((body) => client.post("redo", body), "announce.redone")),
     restore: (id) =>
-      change(
-        (body) => client.post("history/restore", { ...body, id }),
-        "announce.restored",
+      operations.run(() =>
+        change(
+          (body) => client.post("history/restore", { ...body, id }),
+          "announce.restored",
+        ),
       ),
     restoreEarlier: () =>
-      change(
-        (body) => client.post("undo", { ...body, anyway: true }),
-        "announce.restored",
+      operations.run(() =>
+        change(
+          (body) => client.post("undo", { ...body, anyway: true }),
+          "announce.restored",
+        ),
       ),
   };
 }
@@ -391,9 +430,7 @@ export function historyShortcut(event, target) {
 
 // ---- the saver: ops one at a time, store updated from each reply -------------------
 
-export function createSaver({ client, store, announce }) {
-  let tail = Promise.resolve();
-
+export function createSaver({ client, store, announce, operations = createOperationQueue() }) {
   async function run(steps) {
     if (steps.length === 0) {
       announce(t("save.nothing"));
@@ -434,12 +471,7 @@ export function createSaver({ client, store, announce }) {
 
   return {
     save(steps) {
-      const job = tail.then(() => run(steps));
-      tail = job.then(
-        () => undefined,
-        () => undefined,
-      );
-      return job;
+      return operations.run(() => run(steps));
     },
   };
 }

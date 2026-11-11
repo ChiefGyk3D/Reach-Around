@@ -148,6 +148,7 @@ def test_network_goes_only_through_the_client_and_known_editor_routes() -> None:
     store = source("store.js")
     calls = re.findall(r"client\.(get|post)\(\s*([^,)]*)", store)
     assert calls == [
+        ("get", '"state"'),
         ("get", '"history"'),
         ("post", '"undo"'),
         ("post", '"redo"'),
@@ -209,6 +210,16 @@ def test_the_shell_has_the_places_the_forms_write_to() -> None:
         assert html.count(f'id="{ident}"') == 1, ident
         assert f'getElementById("{ident}")' in app, ident
     assert "<details" in html and "<summary" in html
+
+
+def test_operations_disable_history_immediately_and_poll_preserves_drafts() -> None:
+    app = source("app.js")
+    start = app.index("async function run(task)")
+    run_body = app[start : app.index("function messageFor")]
+    assert run_body.index("disableHistory();") < run_body.index("await task()")
+    assert "createOperationQueue" in app
+    assert "refreshOutsideState" in app
+    assert "paint(store.get(), false)" in app
 
 
 def test_the_form_styles_cover_errors_focus_targets_and_no_remote_files() -> None:
