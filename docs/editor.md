@@ -187,6 +187,7 @@ Both listeners are on random free ports.
 | POST | `/__edit/api/op` | runs one edit operation (key, `Content-Type: application/json`, at most 64 KiB) |
 | POST | `/__edit/api/undo`, `/__edit/api/redo` | step back or forward in the history (key, JSON, same limits) |
 | GET | `/__edit/api/history` | labels, times and hashes of the history, never its text (key) |
+| POST | `/__edit/api/history/restore` | restores an older history entry by id (key, JSON, same limits) |
 | anything else | | 404 (or 405, 415 and so on from the guard) |
 
 The guard also knows an upload path (`/__edit/api/upload`, 8 MiB,
@@ -254,6 +255,7 @@ A success is `200` with `{"state": ..., "history": {"label", "hash",
 POST /__edit/api/undo   {"base": "<hash from the last state>"}
 POST /__edit/api/undo   {"base": "<hash>", "anyway": true}
 POST /__edit/api/redo   {"base": "<hash>"}
+POST /__edit/api/history/restore   {"id": 3, "base": "<hash>"}
 ```
 
 `base` is the file hash the page last saw and is required. Unknown fields are
@@ -272,6 +274,7 @@ the fresh `state`:
 | 409 | `stale` (`path` is `base`) | `base` is not the file's current hash; nothing is changed |
 | 409 | `outside_edit` | the file was changed outside the editor; the reply also has `"restore_anyway": true` |
 | 409 | `nothing_to_undo`, `nothing_to_redo` | the history has no earlier or later state |
+| 409 | `history_entry_missing` | the requested id is not an older entry that is still present |
 | 409 | `snapshot_unreadable`, `snapshot_corrupt` | the kept copy is missing or was changed |
 | 409 | `history_unavailable` | the history folder cannot be used safely, or cannot be saved before the file is changed |
 | 500 | `io_error` | the file or its history could not be written; check the state |
@@ -300,7 +303,10 @@ it back. It also works when the outside edit left a file that does not load.
 ```
 
 Entries are oldest first; `current` marks the state the file is at. Their
-text is never sent.
+text is never sent. Send an older entry's `id` and the current file hash to
+`POST /__edit/api/history/restore`. The selected text is stored as a new
+history state before the config changes, so undo returns to the version that
+was current before the jump. The same stale-base and outside-edit guards apply.
 
 Every editor response carries a strict `Content-Security-Policy` (no
 `unsafe-*`), `X-Frame-Options: DENY`, `nosniff`, `no-referrer` and

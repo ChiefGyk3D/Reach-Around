@@ -298,9 +298,6 @@ class Creator(_Model):
         return None if value is None else check_image_path(value)
 
 
-_SECRET_NAME = re.compile(r"^[A-Z][A-Z0-9_]{1,63}$")
-
-
 class StoreConfig(_Model):
     """Where the snapshot store lives. Never holds a DSN or a password."""
 
@@ -308,12 +305,19 @@ class StoreConfig(_Model):
     path: Annotated[str, StringConstraints(min_length=1, max_length=1024)] = (
         "data/reach-around.db"
     )
-    dsn_env: str | None = None
+    dsn_env: Literal["REACH_AROUND_DSN"] | None = None
+
+    @field_validator("dsn_env", mode="before")
+    @classmethod
+    def _canonical_dsn_env(cls, value: object) -> object:
+        if value is not None and (
+            type(value) is not str or value != "REACH_AROUND_DSN"
+        ):
+            raise ValueError("dsn_env must be REACH_AROUND_DSN")
+        return value
 
     @model_validator(mode="after")
     def _postgres_needs_dsn_env(self) -> StoreConfig:
-        if self.dsn_env is not None and not _SECRET_NAME.match(self.dsn_env):
-            raise ValueError("dsn_env must be an environment variable NAME")
         if self.kind == "postgres" and self.dsn_env is None:
             raise ValueError("a postgres store requires dsn_env")
         return self

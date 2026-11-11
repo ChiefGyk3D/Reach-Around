@@ -1,0 +1,9 @@
+/* SPDX-License-Identifier: Apache-2.0 */
+/* Layout for the component sheet only. Colors and type come from the tokens. */
+body { margin: 0; background-color: var(--ra-brand-ground); color: var(--ra-brand-text); font-family: var(--ra-font-body); font-size: var(--ra-text-base); line-height: var(--ra-line-height); }
+main { max-width: 72rem; margin: 0 auto; padding: var(--ra-space-5) var(--ra-space-4); }
+h1, h2 { font-family: var(--ra-font-heading); }
+h2 { color: var(--ra-brand-amber); margin-top: var(--ra-space-6); }
+.row { display: flex; flex-wrap: wrap; gap: var(--ra-space-4); margin-bottom: var(--ra-space-4); }
+.row > .ra-c-plate { flex: 1 1 14rem; }
+.row > a.ra-c-plate { text-decoration: none; }

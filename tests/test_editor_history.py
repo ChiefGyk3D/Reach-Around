@@ -247,6 +247,31 @@ def test_failed_undo_write_leaves_pointers_alone(doc: Doc, hist: History) -> Non
     assert doc.text == "v0\n"
 
 
+def test_failed_entry_restore_preserves_history_and_redo(
+    doc: Doc, hist: History
+) -> None:
+    edit(hist, doc, "v1\n")
+    edit(hist, doc, "v2\n")
+    assert isinstance(hist.undo(doc.text, doc.write), Restored)
+    entry_id = hist.summary(sha(doc.text)).entries[0].id
+
+    def boom(_: str) -> None:
+        raise OSError("concurrent change")
+
+    with pytest.raises(OSError, match="concurrent change"):
+        hist.restore(doc.text, entry_id, boom)
+
+    summary = hist.summary(sha(doc.text))
+    assert [entry.hash for entry in summary.entries] == [
+        sha("v0\n"),
+        sha("v1\n"),
+        sha("v2\n"),
+    ]
+    assert (summary.can_undo, summary.can_redo) == (True, True)
+    assert isinstance(hist.redo(doc.text, doc.write), Restored)
+    assert doc.text == "v2\n"
+
+
 def test_noop_write_is_not_recorded(doc: Doc, hist: History) -> None:
     hist.record_write("v0\n", "v0\n", "same")
     assert not history_dir(doc).exists()
