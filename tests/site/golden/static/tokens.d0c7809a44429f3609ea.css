@@ -53,6 +53,15 @@
   --ra-text-2xl: clamp(2rem, 1.3rem + 3vw, 3.25rem);
   --ra-line-height: 1.5;
 
+  /* Shared component geometry and type metrics. */
+  --ra-component-title-tracking: 0.04em;
+  --ra-component-control-tracking: 0.08em;
+  --ra-component-control-line-height: 1.2;
+  --ra-component-tick-size: 0.875rem;
+  --ra-component-chip-min-height: 1.75rem;
+  --ra-component-glow-size: 1.5rem;
+  --ra-component-button-glow-size: 1rem;
+
   /* Four-point spacing rhythm. */
   --ra-space-1: 0.25rem;
   --ra-space-2: 0.5rem;
