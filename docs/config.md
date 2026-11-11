@@ -776,9 +776,10 @@ tabs:
 | `column_width` | length | `35rem` (560 px) | `px`, `rem`, `em`, `ch`, `%` or `vw`. |
 | `radius` | length | `0.5rem` | Base corner radius for cards and sections. |
 | `button_style` | `pill`, `rounded`, `square` | `rounded` | `rounded` is the 36 px pill radius, `pill` is fully round, `square` has no radius. |
-| `frame` | `none`, `l1`, `l2`, `l3` | `none` | Optional border frames: the strongest level the build may use. `none` writes no frame markup and does not load the frame stylesheet. See [Border frames](customizing.md#border-frames). |
-| `frame_motion` | `none`, `live` | `none` | `live` lets the top rules and dashes of each L3 frame pulse (CSS only, only for visitors without a reduced-motion setting). `none` keeps every frame still. See [Border frames](customizing.md#border-frames). |
-| `frame_l3_max` | integer 1 to 64 | `1` | The most L3 border frames (the full frame with the glow) one page may carry when `frame` is `l3`. The packaged templates give the first L3 slots on a page L3 and the rest L2; the build refuses a page over the limit. See [Border frames](customizing.md#border-frames). |
+| `frame` | `none`, `minimal`, `faithful`; `l1` (= minimal), `l2`, `l3` (= faithful) | `none` | Optional border frames, border only and dark only: the strongest level the build may use. `none` writes no frame markup and does not load the frame stylesheet. Each element class has a default level (faithful on the featured link and big buttons, minimal on tabs, links and headers, none elsewhere). See [Border frames](customizing.md#border-frames). |
+| `frame_classes` | map of class to `none`, `minimal` or `faithful` | none | Per-class override of the default placement. Keys: `featured`, `cta`, `link`, `platform`, `head`, `tab`, `hero`, `tile`, `stat`, `card`, `ctl`, `chip`, `field`, `foot`, `bar`. No effect while `frame` is `none`. See [Border frames](customizing.md#border-frames). |
+| `frame_motion` | `none`, `live` | `none` | Deprecated and ignored: the frame art is static. Accepted so an older config validates. |
+| `frame_l3_max` | integer 1 to 64 | `1` | Deprecated and ignored: there is no L3 glow frame any more. Accepted so an older config validates. |
 | `mode` | `auto`, `light`, `dark` | `auto` | `auto` is the stylesheet's own choice, which is dark. `light` forces the light palette. |
 
 ### What is accepted

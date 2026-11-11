@@ -46,16 +46,13 @@ theme:
   mascot_position: center bottom
   button_style: square
   radius: 0.25rem
-  # Optional border frames (docs/customizing.md, "Border frames"). One frame
-  # drawn from the brand button: a cream panel, heavy graphite brackets, end-cap
-  # plates, amber rules and a faint glow. l1 is the lite frame on every button,
-  # card, tab and heading; l2 adds the plates on the link buttons and headings;
-  # l3 adds the glow on the featured link, the hero tiles and the main calls to
-  # action. frame_l3_max is how many L3 frames one page may carry (1 to 64,
-  # default 1); the rest of a page's L3 slots fall back to L2. Remove both lines
-  # for the plain look.
-  frame: l3
-  frame_l3_max: 4
+  # Optional border frames (docs/customizing.md, "Border frames"). none (the
+  # default), minimal (light brackets and thin rules) or faithful (the brand
+  # button art on the featured link and the big buttons, minimal on tabs, links
+  # and headers, nothing on small icons, chips, the footer and list rows). A
+  # frame is a border only: it keeps each element's own fill. Dark only.
+  # frame_classes overrides one class, e.g. frame_classes: {tab: none}.
+  frame: faithful
 # Optional profile card after the content of every page. Uncomment to try; this
 # changes the built pages, so the golden files change with it. See
 # docs/config.md, "profile_card".

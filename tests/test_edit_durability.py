@@ -33,6 +33,11 @@ def set_mode(path: Path) -> int:
     return main(["set", "--config", str(path), "theme.mode", "light"])
 
 
+def edit_was_written(path: Path) -> bool:
+    """True when the set_mode edit landed (the comments may say "light" too)."""
+    return "  mode: light" in path.read_text()
+
+
 def change_in_place_longer(path: Path) -> None:
     path.write_text(path.read_text() + "# someone else was here\n")
 
@@ -65,7 +70,7 @@ def test_a_change_during_the_edit_is_refused(
     assert set_mode(cfg) == 1
     err = capsys.readouterr().err
     assert "changed while editing" in err and "nothing was written" in err
-    assert "light" not in cfg.read_text()
+    assert not edit_was_written(cfg)
     # a refused edit leaves the previous backup as it was (#197)
     assert (cfg.parent / "site.yaml.bak").read_text() == "old backup\n"
     assert sorted(p.name for p in cfg.parent.iterdir()) == [
@@ -196,7 +201,7 @@ def test_a_change_during_backup_creation_is_detected(
     monkeypatch.setattr(editing, seam, lambda path: change(path))
     assert set_mode(cfg) == 1
     assert "changed while editing" in capsys.readouterr().err
-    assert "light" not in cfg.read_text()
+    assert not edit_was_written(cfg)
     assert sorted(p.name for p in cfg.parent.iterdir()) == [
         "site.yaml",
         "site.yaml.bak",
@@ -290,7 +295,7 @@ def test_when_the_backup_cannot_be_kept_aside_a_copy_stands_in(
     monkeypatch.setattr(os, "link", no_links)
     monkeypatch.setattr(editing, "_before_replace", change_in_place_longer)
     assert set_mode(cfg) == 1
-    assert "light" not in cfg.read_text()
+    assert not edit_was_written(cfg)
     assert _bak(cfg).read_text() == "old backup\n"
     assert sorted(p.name for p in cfg.parent.iterdir()) == [
         "site.yaml",
