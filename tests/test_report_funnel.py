@@ -803,6 +803,51 @@ def test_cli_json_and_text(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -
     assert "crosses that edge" in capsys.readouterr().err
 
 
+def test_cli_checks_history_before_recording_period_release(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    today = datetime.now(UTC).date()
+    monday = today - timedelta(days=today.weekday() + 7)
+    day = (monday + timedelta(days=2)).isoformat()
+    path = write(
+        tmp_path,
+        {
+            "click_src_daily": src_rows({"twitch": {"direct": 40}}, day),
+            "click_seal": [
+                {
+                    "site": "links",
+                    "day": (monday + timedelta(days=n)).isoformat(),
+                    "sealed_at": 1,
+                }
+                for n in range(7)
+            ],
+        },
+    )
+    history = tmp_path / "damaged-history.jsonl"
+    history.write_text('{"truncated":', encoding="utf-8")
+    ledger = tmp_path / "ledger.jsonl"
+    init_ledger(ledger)
+    capsys.readouterr()
+
+    code = main(
+        [
+            "report",
+            "--input",
+            str(path),
+            "--period",
+            "week",
+            "--ledger",
+            str(ledger),
+            "--history",
+            str(history),
+        ]
+    )
+
+    assert code == 2
+    assert capsys.readouterr().err.startswith("error:")
+    assert ledger.read_bytes() == b""
+
+
 def test_cli_refuses_a_free_window_with_a_period(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

@@ -31,6 +31,7 @@ from typing import Any
 
 from reach_around.config.zones import format_instant
 from reach_around.funnel.owner import owner_view
+from reach_around.funnel.social import CSV_HEADER, social_csv_rows
 
 _DANGEROUS = ("=", "+", "-", "@", "\t", "\r", "\n")
 BELOW = "(rows below the floor)"
@@ -353,6 +354,8 @@ def csv_files(
             [[g["day"], "gap", g["reason"]] for g in cov["gaps"]]
             + [[p["day"], "partial", "+".join(p["reasons"])] for p in cov["partial"]],
         )
+    if "social" in report:
+        files["social.csv"] = render_csv(CSV_HEADER, social_csv_rows(report["social"]))
     files.update(owner_csv_files(owner_view(report)))
     return files
 
