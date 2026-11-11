@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="color-scheme" content="light dark">
+<meta name="color-scheme" content="dark">
 <title>Reach Around editor</title>
 <link rel="stylesheet" href="/__edit/app.css">
 <script type="module" src="/__edit/app.js"></script>
@@ -13,12 +13,25 @@
 <header class="bar">
 <h1 data-string="app.title"></h1>
 <p id="status" class="status" data-string="status.starting"></p>
+<div class="history-actions" aria-label="Change history">
+<button id="undo" class="button button-small" type="button" data-string="action.undo" disabled></button>
+<button id="redo" class="button button-small" type="button" data-string="action.redo" disabled></button>
+<button id="history-toggle" class="button button-small" type="button" data-string="action.history" aria-expanded="false" aria-controls="history-panel"></button>
+</div>
 </header>
 <nav class="bar" aria-label="Page sections">
 <a class="nav-link" href="#config" data-string="nav.config"></a>
 <a class="nav-link" href="#preview" data-string="nav.preview"></a>
 </nav>
 <div id="announcer" class="visually-hidden" role="status" aria-live="polite" aria-atomic="true"></div>
+<div id="stale-banner" class="banner" role="alert" hidden>
+<span id="stale-message"></span>
+<button id="restore-earlier" class="button button-small" type="button" data-string="action.restoreEarlier" hidden></button>
+</div>
+<section id="history-panel" class="history-panel" aria-labelledby="history-heading" hidden>
+<h2 id="history-heading" data-string="history.heading"></h2>
+<div id="history-list"></div>
+</section>
 <main class="panes">
 <section id="config" class="pane" aria-labelledby="config-heading" tabindex="-1">
 <h2 id="config-heading" data-string="config.heading"></h2>
