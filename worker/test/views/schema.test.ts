@@ -169,8 +169,8 @@ describe("page view schema", () => {
     }
   });
 
-  it("existing_click_events_unchanged", async () => {
-    expect(await columnsOf("click_events")).toEqual(["id", "ts", "link_id", "country", "site", "src"]);
+  it("click_events_has_the_destination_kind_added_by_the_latest_migration", async () => {
+    expect(await columnsOf("click_events")).toEqual(["id", "ts", "link_id", "country", "site", "src", "destination_kind"]);
   });
 
   it("view_events_defaults_are_closed_values", async () => {

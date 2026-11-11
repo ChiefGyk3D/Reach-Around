@@ -51,8 +51,8 @@ beforeEach(async () => {
   for (const t of TABLES) await DB.prepare(`DELETE FROM ${t}`).run();
 });
 
-async function count(ts: number, site: string, link: string, src: string | null, country: string | null, listsSources = true) {
-  await DB.batch(clickCounterStatements(DB, { site, ts, linkId: link, src, listsSources, country }));
+async function count(ts: number, site: string, link: string, src: string | null, country: string | null, listsSources = true, destinationKind: "link" | "social_icon" = "link") {
+  await DB.batch(clickCounterStatements(DB, { site, ts, linkId: link, src, listsSources, country, destinationKind }));
 }
 
 describe("the click route increments the marginal counters", () => {
@@ -110,6 +110,21 @@ describe("the click route increments the marginal counters", () => {
     await count(Date.UTC(2027, 0, 5, 23, 59, 59), "links", "twitch", "instagram", "US");
     expect((await q<{ day: string }>("SELECT day FROM click_src_daily"))[0]?.day).toBe("2027-01-05");
   });
+
+  it("keeps_separate_daily_cells_when_a_destination_changes_kind", async () => {
+    const ts = Date.UTC(2027, 0, 5, 12);
+    await count(ts, "links", "twitch", "instagram", "US", true, "link");
+    await count(ts, "links", "twitch", "instagram", "US", true, "social_icon");
+
+    expect(await q("SELECT destination_kind, clicks FROM click_src_daily ORDER BY destination_kind")).toEqual([
+      { destination_kind: "link", clicks: 1 },
+      { destination_kind: "social_icon", clicks: 1 },
+    ]);
+    expect(await q("SELECT destination_kind, clicks FROM click_country_daily ORDER BY destination_kind")).toEqual([
+      { destination_kind: "link", clicks: 1 },
+      { destination_kind: "social_icon", clicks: 1 },
+    ]);
+  });
 });
 
 describe("row bounds: reserved cells, hourly slices, one overflow row, an integrity marker", () => {
@@ -136,6 +151,21 @@ describe("row bounds: reserved cells, hourly slices, one overflow row, an integr
     // The other site is not affected by this site's pool.
     await count(ts, "nosrc", "twitch", "brandnew", "US");
     expect(await q("SELECT 1 FROM click_src_daily WHERE site = 'nosrc' AND src = 'brandnew'")).toHaveLength(1);
+  });
+
+  it("overflow_rows_preserve_the_destination_kind", async () => {
+    await DB.prepare("INSERT INTO click_budget VALUES ('links','2027-01-05',12,?)").bind(HOUR_BUDGET).run();
+    await count(ts, "links", "kick", "bluesky", "DE", true, "link");
+    await count(ts, "links", "twitch", "instagram", "US", true, "social_icon");
+
+    expect(await q("SELECT link_id, destination_kind, src, clicks FROM click_src_daily ORDER BY destination_kind")).toEqual([
+      { link_id: OVERFLOW_LINK, destination_kind: "link", src: "other", clicks: 1 },
+      { link_id: OVERFLOW_LINK, destination_kind: "social_icon", src: "other", clicks: 1 },
+    ]);
+    expect(await q("SELECT link_id, destination_kind, country, clicks FROM click_country_daily ORDER BY destination_kind")).toEqual([
+      { link_id: OVERFLOW_LINK, destination_kind: "link", country: "ZZ", clicks: 1 },
+      { link_id: OVERFLOW_LINK, destination_kind: "social_icon", country: "ZZ", clicks: 1 },
+    ]);
   });
 
   it("one_flooded_destination_cannot_starve_the_others_of_their_reserved_cells", async () => {
@@ -383,6 +413,22 @@ describe("seals cover quiet days and the month log counts exhausted days", () =>
 });
 
 describe("monthly rollup and retention", () => {
+  it("keeps_separate_monthly_cells_when_a_destination_changes_kind", async () => {
+    await count(Date.UTC(2027, 0, 5), "links", "twitch", "instagram", "US", true, "link");
+    await count(Date.UTC(2027, 0, 6), "links", "twitch", "instagram", "US", true, "social_icon");
+
+    await rollupClickFunnel({ DB }, Date.UTC(2027, 1, 10));
+
+    expect(await q("SELECT destination_kind, clicks FROM click_src_monthly ORDER BY destination_kind")).toEqual([
+      { destination_kind: "link", clicks: 1 },
+      { destination_kind: "social_icon", clicks: 1 },
+    ]);
+    expect(await q("SELECT destination_kind, clicks FROM click_country_monthly ORDER BY destination_kind")).toEqual([
+      { destination_kind: "link", clicks: 1 },
+      { destination_kind: "social_icon", clicks: 1 },
+    ]);
+  });
+
   it("a_closed_month_is_summed_once_and_the_current_month_is_not", async () => {
     await count(Date.UTC(2027, 0, 5), "links", "twitch", "instagram", "US");
     await count(Date.UTC(2027, 0, 20), "links", "twitch", "instagram", "DE");
@@ -418,11 +464,13 @@ describe("monthly rollup and retention", () => {
 
   it("a_month_over_its_cap_folds_the_smallest_cells", async () => {
     await DB.batch(
-      Array.from({ length: 305 }, (_, i) => DB.prepare("INSERT INTO click_src_daily (site,day,link_id,src,clicks) VALUES ('links','2027-01-05','twitch',?,?)").bind(`s${i}`, 400 - i)),
+      Array.from({ length: 305 }, (_, i) => DB.prepare("INSERT INTO click_src_daily (site,day,link_id,src,clicks,destination_kind) VALUES ('links','2027-01-05','twitch',?,?,'social_icon')").bind(`s${i}`, 400 - i)),
     );
     await rollupClickFunnel({ DB }, Date.UTC(2027, 1, 10));
     const rows = await q<{ src: string; clicks: number }>("SELECT src, clicks FROM click_src_monthly");
-    expect(await q("SELECT 1 FROM click_src_monthly WHERE link_id = 'overflow-all'")).toHaveLength(1);
+    expect(await q("SELECT destination_kind FROM click_src_monthly WHERE link_id = 'overflow-all'")).toEqual([
+      { destination_kind: "social_icon" },
+    ]);
     expect(rows).toHaveLength(301); // 300 kept + one overflow row
     const total = rows.reduce((a, r) => a + r.clicks, 0);
     expect(total).toBe(Array.from({ length: 305 }, (_, i) => 400 - i).reduce((a, b) => a + b, 0));

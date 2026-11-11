@@ -107,7 +107,7 @@ describe("the click route stores the source", () => {
 
   it("the_table_has_no_identifier_column", async () => {
     const cols = (await testEnv.DB.prepare("PRAGMA table_info(click_events)").all<{ name: string }>()).results.map((c) => c.name);
-    expect(cols.sort()).toEqual(["country", "id", "link_id", "site", "src", "ts"]);
+    expect(cols.sort()).toEqual(["country", "destination_kind", "id", "link_id", "site", "src", "ts"]);
     for (const c of cols) expect(c).not.toMatch(/ip|addr|agent|ua|cookie|visitor|session|hash|token|referr/i);
   });
 
