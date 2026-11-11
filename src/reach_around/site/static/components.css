@@ -101,7 +101,7 @@ a.ra-c-chip:is(:hover, .is-hover), button.ra-c-chip:is(:hover, .is-hover), span.
   border-color: var(--ra-brand-carbon-line);
 }
 
-/* Button: square, Orbitron label, 44 px tap target. */
+/* Button: square, heading-font label, 44 px tap target. */
 .ra-c-btn {
   box-sizing: border-box;
   display: inline-flex;

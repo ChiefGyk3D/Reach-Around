@@ -80,7 +80,7 @@ def test_staged_page_is_complete_and_sealed(tmp_path: Path) -> None:
     html = staged_html(tmp_path)
     assert f"Acme Fake Co {CANARY}" in html
     assert "Exampleland 40%" in html and "Ask me!" in html
-    assert 'href="https://example.com/acme"' in html
+    assert 'href="https://example.com/acme"' not in html
     # nothing that fetches, runs or submits
     for banned in (
         "<script",

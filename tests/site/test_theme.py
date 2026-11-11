@@ -280,6 +280,47 @@ def test_mode_dark_forces_dark_tokens(tmp_path: Path) -> None:
     assert "color-scheme" not in css_for(tmp_path, {"mode": "auto"})
 
 
+def _page_css(tmp_path: Path, theme: object) -> tuple[str, str, str]:
+    out = tmp_path / "out"
+    build_site(load(tmp_path, theme), out, today=TODAY)
+    return (
+        read(out, "static/tokens.css"),
+        read(out, "static/site.css"),
+        read(out, "static/theme.css"),
+    )
+
+
+def test_default_is_dark_and_light_is_an_explicit_opt_in(tmp_path: Path) -> None:
+    tokens, site, theme = _page_css(tmp_path, None)
+    assert "color-scheme: dark;" in tokens
+    assert "color-scheme" not in theme
+    # Every surface color is a light-dark() pair, so one color-scheme value
+    # selects a whole palette and the two halves cannot mix.
+    for name in ("bg", "surface", "text", "border", "shadow"):
+        assert re.search(rf"--ra-compat-{name}: light-dark\(", tokens), name
+    assert "--ra-color-link: light-dark(" in site
+
+    light_dir = tmp_path / "light"
+    light_dir.mkdir()
+    _, _, light_theme = _page_css(light_dir, {"mode": "light"})
+    assert "color-scheme: light;" in light_theme
+    assert "color-scheme: dark;" not in light_theme
+
+
+def test_light_mode_resolves_the_light_half_of_every_pair(tmp_path: Path) -> None:
+    tokens, _, _ = _page_css(tmp_path, None)
+    for match in re.finditer(
+        r"--ra-compat-(\w+): light-dark\(([^,]+(?:\([^)]*\))?[^,]*), ", tokens
+    ):
+        assert match.group(2).strip() != "", match.group(1)
+    light_bg = re.search(r"--ra-compat-bg: light-dark\((#\w+), (#\w+)\)", tokens)
+    assert light_bg is not None
+    # Light half is lighter than the dark half, so the light result is light.
+    assert int(light_bg.group(1)[1:], 16) > int(light_bg.group(2)[1:], 16)
+    # The guard bites: a dark-only constant would not match the pair pattern.
+    assert not re.search(r"--ra-compat-bg: #[0-9A-Fa-f]{6};", tokens)
+
+
 # --- the built page ---------------------------------------------------------
 
 

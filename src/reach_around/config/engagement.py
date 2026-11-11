@@ -95,6 +95,7 @@ def rows_for(entries: Sequence[EngagementRow]) -> list[dict[str, Any]]:
             else "",
             "period": period if has_figures else "",
             "as_of": as_of if has_figures else "",
+            "provenance": "Owner-supplied" if entry.owner_supplied else "",
         }
         out.append(
             {

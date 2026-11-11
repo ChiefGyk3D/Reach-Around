@@ -27,7 +27,7 @@
   --ra-color-border: var(--ra-compat-border);
 
   /* Colors: derived from the six, so a retheme follows without extra work. */
-  --ra-color-link: var(--ra-color-accent);
+  --ra-color-link: light-dark(color-mix(in srgb, var(--ra-color-accent) 45%, var(--ra-color-black)), var(--ra-color-accent));
   --ra-color-on-accent-muted: color-mix(in srgb, var(--ra-color-on-accent) 85%, var(--ra-color-accent));
   --ra-color-accent-edge: color-mix(in srgb, var(--ra-color-accent) 72%, var(--ra-color-black));
   --ra-color-chip: color-mix(in srgb, var(--ra-color-on-accent) 90%, var(--ra-color-accent));

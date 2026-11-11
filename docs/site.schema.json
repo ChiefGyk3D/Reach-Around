@@ -614,6 +614,11 @@
           "default": null,
           "title": "Interactions"
         },
+        "owner_supplied": {
+          "default": false,
+          "title": "Owner Supplied",
+          "type": "boolean"
+        },
         "period_end": {
           "anyOf": [
             {
@@ -2044,6 +2049,11 @@
           "minLength": 1,
           "title": "Name",
           "type": "string"
+        },
+        "rel_me": {
+          "default": false,
+          "title": "Rel Me",
+          "type": "boolean"
         },
         "url": {
           "maxLength": 2048,

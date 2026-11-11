@@ -267,6 +267,12 @@ def test_engagement_is_gated_by_policy() -> None:
     assert kit.has_gated_content
 
 
+def test_engagement_policy_marks_owner_report_only() -> None:
+    from reach_around.config.kit import KIT_FIELD_POLICY
+
+    assert KIT_FIELD_POLICY["engagement"].owner_report_only
+
+
 # --- the rows the pages print -------------------------------------------------
 
 
@@ -284,6 +290,7 @@ def test_rows_carry_platform_measure_formula_period_and_date() -> None:
         "start": "2027-02-01",
         "end": "2027-02-28",
         "as_of": "2027-03-01",
+        "provenance": "",
         "note": "",
     }
     assert eng["measure"] == "Engagement rate"

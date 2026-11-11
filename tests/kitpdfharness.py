@@ -106,6 +106,8 @@ def make_pdf(
     title: str = "Kit",
     creator: bool = True,
     form_xobject: bool = False,
+    annotation: bool = False,
+    tagged: bool = False,
     stamp: str | None = None,
 ) -> bytes:
     """A classic-xref PDF. Each page is a list of text lines. One Type0 font with
@@ -156,7 +158,10 @@ def make_pdf(
         + " ".join(f"{p} 0 R" for p in page_ids)
         + "]>>"
     ).encode()
-    objects[3] = b"<</Type /Catalog\n/Pages 2 0 R>>"
+    catalog_extra = (
+        "\n/StructTreeRoot 7 0 R\n/MarkInfo <</Marked true>>" if tagged else ""
+    )
+    objects[3] = f"<</Type /Catalog\n/Pages 2 0 R{catalog_extra}>>".encode()
     objects[4] = (
         b"<</Type /Font\n/Subtype /Type0\n/BaseFont /AAAAAA+Test\n"
         b"/Encoding /Identity-H\n/ToUnicode 5 0 R>>"
@@ -177,15 +182,24 @@ def make_pdf(
         ops.append("ET")
         content_id = page_ids[index] + 1
         extra = " /XObject <</X1 6 0 R>>" if form_xobject else ""
+        annotation_extra = "\n/Annots [8 0 R]" if annotation and index == 0 else ""
         objects[page_ids[index]] = (
             f"<</Type /Page\n/Parent 2 0 R\n/Resources <</Font <</F4 4 0 R>>{extra}>>\n"
-            f"/MediaBox [0 0 612 792]\n/Contents {content_id} 0 R>>"
+            f"/MediaBox [0 0 612 792]\n/Contents {content_id} 0 R{annotation_extra}>>"
         ).encode()
         objects[content_id] = stream("\n".join(ops).encode())
     if form_xobject:
         objects[6] = (
             b"<</Type /XObject\n/Subtype /Form\n/BBox [0 0 1 1]\n/Length 0>> "
             b"stream\n\nendstream"
+        )
+    if tagged:
+        objects[7] = b"<</Type /StructTreeRoot\n/K [9 0 R]>>"
+        objects[9] = b"<</Type /StructElem\n/S /Figure\n/Alt (hidden description)>>"
+    if annotation:
+        objects[8] = (
+            b"<</Type /Annot\n/Subtype /Link\n/Rect [0 0 1 1]\n"
+            b"/A <</S /URI\n/URI (https://example.invalid/hidden)>> >>"
         )
 
     body = bytearray(b"%PDF-1.4\n%\xd3\xeb\xe9\xe1\n")

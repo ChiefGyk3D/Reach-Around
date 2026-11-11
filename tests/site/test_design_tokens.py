@@ -28,7 +28,10 @@ def test_token_layer_is_the_only_shipped_color_and_font_source() -> None:
     assert "--ra-brand-ground: #0F0F0F" in token_css
     assert "--ra-brand-plate: #281808" in token_css
     assert "--ra-brand-carbon: #181818" in token_css
-    assert '"Orbitron"' in token_css and '"Jost"' in token_css
+    assert '"Jost"' in token_css
+    # No heading face is bundled, so headings follow the body face.
+    assert '"Orbitron"' not in token_css
+    assert "--ra-font-heading: var(--ra-font-body);" in token_css
 
     for path in STATIC.iterdir():
         if path.name == "tokens.css" or not path.name.endswith(".css"):

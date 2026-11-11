@@ -59,29 +59,40 @@ MAX_ENGAGEMENT_COUNT = 10**12
 
 Visibility = Literal["public", "gated", "private"]
 
+
+@dataclass(frozen=True)
+class FieldPolicy:
+    visibility: Visibility
+    owner_report_only: bool = False
+
+
+# The richer policy table records provenance requirements as well as audience.
+# DISPLAY_POLICY remains the visibility-only view used by existing callers.
+KIT_FIELD_POLICY: Mapping[str, FieldPolicy] = {
+    "title": FieldPolicy("public"),
+    "about": FieldPolicy("public"),
+    "contact": FieldPolicy("public"),
+    "tags": FieldPolicy("public"),
+    "metrics": FieldPolicy("public"),
+    "unified_total": FieldPolicy("public"),
+    "turnstile_site_key": FieldPolicy("public"),
+    "partners": FieldPolicy("gated"),
+    "case_studies": FieldPolicy("gated"),
+    "services": FieldPolicy("gated"),
+    "rates": FieldPolicy("gated"),
+    "engagement": FieldPolicy("gated", owner_report_only=True),
+    "testimonials": FieldPolicy("gated"),
+    "demographics": FieldPolicy("gated"),
+    "inquiry": FieldPolicy("gated"),
+    "disclosure": FieldPolicy("gated"),
+    "unlock_link": FieldPolicy("private"),
+}
+
 # Every KitConfig field, plus the computed ``unified_total``, has exactly one
 # entry. A field with no entry is a bug (``policy_gaps`` and a test catch it),
 # and ``visibility`` raises for it instead of guessing.
 DISPLAY_POLICY: Mapping[str, Visibility] = {
-    "title": "public",
-    "about": "public",
-    "contact": "public",
-    "tags": "public",
-    "metrics": "public",
-    "unified_total": "public",
-    "turnstile_site_key": "public",
-    "partners": "gated",
-    "case_studies": "gated",
-    "services": "gated",
-    "rates": "gated",
-    # Owner decision: gated. To make it public later, change this one line to
-    # "public" (the pages render from the projection, so nothing else moves).
-    "engagement": "gated",
-    "testimonials": "gated",
-    "demographics": "gated",
-    "inquiry": "gated",
-    "disclosure": "gated",
-    "unlock_link": "private",
+    name: rule.visibility for name, rule in KIT_FIELD_POLICY.items()
 }
 
 # Fields that are never printed in the private PDF although their level is not
@@ -327,6 +338,7 @@ class EngagementRow(_Model):
         None
     )
     counts: Text120 | None = None
+    owner_supplied: StrictBool = False
 
     @field_validator("platform")
     @classmethod
@@ -466,6 +478,24 @@ def visibility(name: str) -> Visibility:
     return DISPLAY_POLICY[name]
 
 
+def enforce_display_policy(kit: KitConfig) -> None:
+    """Refuse private-scope platform data that did not come from the owner."""
+    if not KIT_FIELD_POLICY["engagement"].owner_report_only:
+        return
+    for index, entry in enumerate(kit.engagement):
+        has_figures = any(
+            value is not None
+            for value in (entry.views, entry.posts, entry.interactions)
+        )
+        if entry.platform == "youtube" and has_figures and not entry.owner_supplied:
+            raise ValueError(
+                "kit.engagement["
+                f"{index}] contains YouTube Analytics figures. Collected YouTube "
+                "Analytics values may not be used in a kit; enter the figures by "
+                "hand and set owner_supplied: true to show them in the deeper kit."
+            )
+
+
 def policy_gaps(
     fields: Iterable[str], policy: Mapping[str, Visibility] = DISPLAY_POLICY
 ) -> list[str]:
@@ -587,6 +617,11 @@ def _project(
     }
     out: dict[str, Any] = {}
     for name, level in DISPLAY_POLICY.items():
+        rule = KIT_FIELD_POLICY.get(name)
+        # An owner-report-only field is a hard audience restriction: it never
+        # reaches the public projection, whatever level the table gives it.
+        if rule is not None and rule.owner_report_only and "gated" not in allowed:
+            continue
         if level in allowed:
             out[name] = values[name] if name in values else getattr(kit, name)
     return out
