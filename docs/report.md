@@ -45,11 +45,22 @@ were switched off; that day is always partial). Coverage is account-wide, not
 per site, and the report says so (`coverage.scope` is `account`); a table with no
 rows is `not_monitored`, not complete. The text report prints "Collection gaps"
 before the funnel, lists the days and says that a gap is not a zero and that the
-totals cover only the time data was collected. JSON has a `coverage` object
+totals cover only the time data was collected. Each funnel figure is also
+labeled `spans collection gap`, and JSON sets
+`funnel.spans_collection_gap`, so a number stays labeled when it is copied out
+of context. JSON has a `coverage` object
 (`status` of `complete`, `gaps`, `not_monitored` or `not_exported`, counts, and the day lists, at
 most 60 each); `metadata.csv` gets `coverage_status`, `coverage_gap_days` and
 `coverage_partial_days`, and a `gaps.csv` (`day,status,reason`) appears only
 when there is a gap. A gap day never becomes a row of zeros in any table.
+
+The owner page (`--html`) and the owner CSV carry the same label. When the
+window spans a gap the page opens with a "Collection gaps in this window" note,
+each of the views, clicks and click rate tiles says "Spans a collection gap",
+and the daily table marks gap and partial days. `funnel.csv` has a `coverage`
+column (`spans_collection_gap` or empty) on every figure, `owner_tiles.csv` has
+the same `coverage` column, and `owner_daily.csv` has a `collection` column
+(`gap`, `partial` or empty). The `status` columns keep their existing words.
 
 What it does not claim: coverage is sampled once an hour, so a kill switch
 flipped on and off inside one hour can be missed; days before the first coverage
@@ -57,6 +68,27 @@ row are unmonitored (nothing is known, not a gap and not a zero); today and the
 first covered day are not judged; a window ending after the newest day in the
 export does not flag the days after it, so pass `--until` when checking recent
 days. Without the table the report says nothing about gaps (`not_exported`).
+
+For response and recovery steps, see the generic
+[collection gaps runbook](collection-gaps-runbook.md).
+
+## Social numbers and the unified report (`--history`)
+
+```text
+reach-around report --input export.json --history history/social.jsonl
+```
+
+`--history FILE` reads the social-stats history ([social-history.md](social-history.md)) and adds a "Social numbers" block to the text report, a `social` object to `--json` and a `social.csv` to `--csv`. The file is read only and checked first; a damaged file exits 2. The block is private to you, like the rest of the report.
+
+* **Per platform and metric:** the latest number with its UTC time, source (`api`, `hand_kept`) and, once the cutover has arrived and `--cutover` is given, whether it is before or after.
+* **Change over 30, 90 and 365 UTC days:** only when a record exists on exactly that day before the latest one. Otherwise the line says `no record on <day>`. A missing day is a gap: it is listed (last 90 days) and is never filled, carried forward or counted as zero.
+* **Definition breaks:** a change between two records with different `era` tags is withheld ("the definition changed").
+* **Cutover:** a change window that crosses the cutover day is labeled as spanning it.
+* **Imported history (Beacons):** records with source `imported` appear only in their own block, with their own label, and are never added to or compared with the collected numbers above.
+* **YouTube:** collected YouTube Analytics figures are refused (display policy, #424). Only the Data API `subscribers` count may come from the API; a value you typed is accepted. A refused metric is named in the output.
+* **Time:** everything is UTC. With `--display-zone` each latest instant is also printed in that zone; day buckets stay UTC days.
+
+Without `--history` the report is unchanged. The HTML page and the Grafana export do not carry this block yet.
 
 ## The privacy floor
 
@@ -93,7 +125,7 @@ aggregate label and a count; there is no per-visitor row and no unique count.
 | File | Columns | Rows |
 |---|---|---|
 | `metadata.csv` | `key,value` | `generated_at_utc`, `window_since_utc`, `window_until_utc`, `days_with_data` (not in a released `--period` report), `requested_since_utc`, `requested_until_utc`, `requested_days`, `timezone` (always `UTC`), `site`, `privacy_floor_views`, `counted_classes`, `geography_level`, `report_version`, `coverage_status`, `coverage_gap_days`, `coverage_partial_days` |
-| `funnel.csv` | `step,value,status` | page views, clicks, kit views, kit unlocks, the two ratios; status `ok`, `below_floor`, `not_in_export`, `not_available`, `n/a` |
+| `funnel.csv` | `step,value,status,coverage` | page views, clicks, kit views, kit unlocks, the two ratios; status `ok`, `below_floor`, `not_in_export`, `not_available`, `n/a`; coverage `spans_collection_gap` when the window spans a collection gap, else empty |
 | `pages.csv`, `sources.csv`, `geography.csv`, `links.csv`, `devices.csv`, `browsers.csv`, `systems.csv`, `bot_reasons.csv` | `label,views,row_type` | `row`, one `below_floor` row for the merged remainder, or a single row typed `withheld` or `not_in_export` |
 | `bot_classes.csv` | `class,name,views,share_percent,row_type` | as above |
 | `click_matrix.csv`, `click_countries.csv` | `source,destination,clicks,row_type` and `country,destination,clicks,row_type` | `cell` (a printed cell of a whole destination), or a single row typed `withheld` or `not_in_export` |
@@ -239,6 +271,40 @@ Everything below is made up. Save it as `export.json`.
 page views, 6 clicks and 5 kit views; the geography table shows US and DE and
 leaves nothing under the floor out of sight; the bots section shows the automated
 share. Add `--json` for the same data as JSON, `--geo city` for cities.
+
+## The 25 month archive: `reach-around analytics-archive`
+
+Day cells go after 90 days, so a comparison a year after the cutover needs the
+monthly rollups kept somewhere else. This job keeps the last 25 closed UTC
+months of the click funnel (source by link, country by link) in a directory of
+your private instance repo:
+
+```
+reach-around analytics-archive --input export.json --archive archive/ [--site links] [--floor 5]
+```
+
+The export must carry `click_src_monthly`, `click_country_monthly` and
+`click_month_log` (the rollup marker; a month without a marker is skipped, it
+may be partial). Each cell goes through the report's remainder rule before it is
+written, so the archive holds only cells at the floor, one `(below the floor)`
+line per link, and no link that cannot be made safe. One file per site and
+month, `<site>-<YYYY-MM>.json`. A capacity problem in the month is kept as one
+yes or no flag, not as numbers.
+
+- Append-only: a month file is created once. The same data again changes
+  nothing; different data for an archived month is refused (exit 2), because
+  two versions of a month can be differenced. Let late counts appear in the
+  next month.
+- Retention: files older than the 25 closed months are removed on each run;
+  other files in the directory are never touched. The directory must exist and
+  not be a symbolic link. The git history of the instance repo still holds a
+  removed file; rewrite history if that matters to you.
+- Views are not archived: the Worker has no monthly view rollup, and a month
+  built from day cells cannot be proven complete. Only the click funnel is.
+- Commit the directory to the private instance repo after each run. Never
+  publish it.
+- `reach-around grafana-export --archive archive/` adds the monthly series
+  (see `docs/grafana.md`). Day data in that file stays at 90 days.
 
 ## Not covered
 

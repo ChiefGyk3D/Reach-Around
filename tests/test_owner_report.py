@@ -265,7 +265,7 @@ def test_gap_day_is_a_gap_not_zero(report: dict[str, Any]) -> None:
     csv_row = next(
         r for r in csv_rows(files, "owner_daily.csv") if r[0] == "2026-11-04"
     )
-    assert csv_row == ["2026-11-04", "", "gap", "", "gap", "", ""]
+    assert csv_row == ["2026-11-04", "", "gap", "", "gap", "", "", ""]
 
 
 def test_one_small_day_also_hides_the_smallest_printed_day() -> None:
@@ -299,6 +299,7 @@ def test_empty_export_still_renders(tmp_path: Path) -> None:
             "clicks_status",
             "click_rate",
             "note",
+            "collection",
         ]
     ]
 
@@ -486,6 +487,23 @@ def test_hostile_labels_are_escaped_in_html(report: dict[str, Any]) -> None:
     )
     page = render_html(view, generated_at=NOW)
     assert "<img" not in page and "&lt;img" in page
+
+
+def test_html_labels_a_window_that_spans_the_cutover(tmp_path: Path) -> None:
+    report = report_of(tmp_path, fixture_tables(), as_of=LAST)
+    report["era"] = {
+        "cutover_utc": "2026-11-05",
+        "window": "spans",
+        "text": "spans the cutover (numbers from before and after are added together)",
+    }
+    page = page_of(report)
+    assert (
+        "Cutover 2026-11-05 UTC: this window spans the cutover "
+        "(numbers from before and after are added together)." in page
+    )
+    assert "window is spans" not in page
+    report["era"] = {"cutover_utc": "2026-11-05", "window": "after", "text": "after"}
+    assert "this window is after." in page_of(report)
 
 
 # ---- CLI --------------------------------------------------------------------
@@ -810,8 +828,8 @@ def test_a_tick_is_drawn_per_series_for_its_own_under_floor_day(
     assert rows["2026-11-06"]["clicks_status"] == "ok"
     page = page_of(rep)
     first = page[page.index("<svg") : page.index("</svg>")]
-    assert 'l4 -7 l4 7z" fill="#8ab4ff"' in first  # a views tick
-    assert 'l4 -7 l4 7z" fill="#ffb74d"' not in first  # no clicks tick
+    assert 'l4 -7 l4 7z" fill="var(--views)"' in first  # a views tick
+    assert 'l4 -7 l4 7z" fill="var(--clicks)"' not in first  # no clicks tick
 
 
 def test_header_shows_the_requested_window_even_with_a_gap_at_the_edge(

@@ -10,6 +10,7 @@ from pathlib import Path
 
 STATIC = resources.files("reach_around.site") / "static"
 SITE = (STATIC / "site.css").read_text()
+TOKENS = (STATIC / "tokens.css").read_text()
 CRYPTO = (STATIC / "crypto.css").read_text()
 DOC = (Path(__file__).resolve().parents[2] / "docs" / "design.md").read_text()
 
@@ -60,7 +61,7 @@ def test_grid_tracks_never_exceed_the_screen() -> None:
 
 def test_type_scale_steps_are_fluid_rem_clamps() -> None:
     for step in ("base", "md", "lg", "xl", "2xl"):
-        line = re.search(rf"--ra-text-{step}:\s*([^;]+);", SITE)
+        line = re.search(rf"--ra-text-{step}:\s*([^;]+);", TOKENS)
         assert line is not None, step
         assert re.fullmatch(r"clamp\([\d.]+rem, [^,]+, [\d.]+rem\)", line.group(1)), (
             step,

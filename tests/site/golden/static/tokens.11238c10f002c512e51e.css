@@ -1,0 +1,72 @@
+/* SPDX-License-Identifier: Apache-2.0 */
+/* NPNC design-token bridge. Dark is the default; light applies only when the
+   theme's `mode` is `light`, which flips color-scheme and selects the light half
+   of each light-dark() pair. Compatibility values keep this slice visual-neutral. */
+@font-face {
+  font-family: "Jost";
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url("fonts/jost-latin-wght-normal.7726a5cd6f3c0e876c02.woff2") format("woff2");
+}
+
+:root {
+  color-scheme: dark;
+
+  /* Published NPNC palette. */
+  --ra-brand-amber: #FBB03B;
+  --ra-brand-on-amber: #1A1A1A;
+  --ra-brand-ground: #0F0F0F;
+  --ra-brand-surface: #202020;
+  --ra-brand-text: #F0F0F0;
+  --ra-brand-muted: #B5ADA2;
+  --ra-brand-rule: #3A3530;
+  --ra-brand-gray: #808080;
+  --ra-brand-carbon: #181818;
+  --ra-brand-carbon-line: #282828;
+  --ra-brand-plate: #281808;
+  --ra-brand-amber-deep: #AF6A0E;
+  --ra-brand-glow: rgb(251 176 59 / 0.16);
+  --ra-brand-glow-strong: rgb(251 176 59 / 0.35);
+  --ra-brand-shadow: rgb(0 0 0 / 0.5);
+
+  /* Pre-bridge dark values, retained until the component alignment slices. */
+  --ra-compat-bg: light-dark(#F4F1EC, #0E0E0E);
+  --ra-compat-surface: light-dark(#FFFFFF, #1B1B1B);
+  --ra-compat-text: light-dark(#1A1A1A, #FFFFFF);
+  --ra-compat-border: light-dark(#D6D1C8, #333333);
+  --ra-color-black: #000000;
+  --ra-compat-shadow-warm: rgb(70 45 20 / 0.22);
+  --ra-compat-shadow: light-dark(rgb(70 45 20 / 0.22), rgb(0 0 0 / 0.6));
+
+  /* Type. Jost is the bundled face; headings follow the body until a heading
+     face is bundled or a theme sets one. */
+  --ra-font-body: "Jost", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --ra-font-heading: var(--ra-font-body);
+  --ra-font-mono: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+  --ra-text-xs: 0.8rem;
+  --ra-text-sm: 0.875rem;
+  --ra-text-base: clamp(1rem, 0.94rem + 0.2vw, 1.125rem);
+  --ra-text-md: clamp(1.125rem, 1.07rem + 0.2vw, 1.25rem);
+  --ra-text-lg: clamp(1.3rem, 1.2rem + 0.3vw, 1.5rem);
+  --ra-text-xl: clamp(1.75rem, 1.5rem + 0.9vw, 2.25rem);
+  --ra-text-2xl: clamp(2rem, 1.3rem + 3vw, 3.25rem);
+  --ra-line-height: 1.5;
+
+  /* Four-point spacing rhythm. */
+  --ra-space-1: 0.25rem;
+  --ra-space-2: 0.5rem;
+  --ra-space-3: 0.75rem;
+  --ra-space-4: 1rem;
+  --ra-space-5: 1.5rem;
+  --ra-space-6: 2.5rem;
+  --ra-tap: 2.75rem;
+
+  /* Square brand corners plus current compatibility radii. */
+  --ra-radius-square: 0;
+  --ra-radius: 0.5rem;
+  --ra-button-radius: 2.25rem;
+  --ra-rule-width: 1px;
+  --ra-rule-accent-width: 3px;
+  --ra-duration: 150ms;
+}

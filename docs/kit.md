@@ -4,7 +4,7 @@
 The media kit is two pages for two audiences. The public page shows your name,
 a short description and your headline numbers to anyone. The gated page holds
 the detail you only want to show people who pass a short check: past partners,
-case studies, rates and audience details.
+case studies, packages, rates, testimonials, audience details and a disclosure statement.
 
 Everything here is synthetic: a fake creator, `example.com` and made-up brands.
 Replace them with your own.
@@ -21,6 +21,7 @@ kit:
   title: Example Creator media kit
   about: A fake creator who streams games and talks about gear.
   contact: Brand deals - partners at example.com
+  tags: [Gaming, Hardware]
   turnstile_site_key: 0x4AAAAAAAexampleKey
   metrics:
     - {platform: twitch, label: Followers, value: 1200, as_of: 2027-03-01}
@@ -31,10 +32,17 @@ kit:
     - title: Launch week
       summary: A fake product launch on stream.
       result: Ten thousand fake views.
+  services:
+    - title: Example package
+      included: [One example item, Another example item]
+      price_text: Ask me!
   rates:
     - {item: Sponsored video, price_text: Ask me!}
+  testimonials:
+    - {quote: An example quote., name: Example Person, brand: Example Brand}
   demographics:
     - {label: Top country, value: Exampleland 40%, as_of: 2027-03-01}
+  disclosure: An example statement about how paid work is marked.
 ```
 
 ## What the build writes
@@ -45,13 +53,14 @@ kit:
 | `kit/retry/index.html` | `--out` (published) | everyone; only when the kit has gated content |
 | `kit.html` | `--gated-out` (never published) | a visitor who passed the gate, served by the Worker |
 | `kit.pdf` | `kit pdf --out-dir` (private, never published) | you, the owner (see [The private PDF](#the-private-pdf)) |
+| `kit-public-YYYY-MM-DD.pdf` | `kit pdf --public --out-dir` (the public half; you decide where it goes) | anyone you give it to (see [The public PDF](#the-public-pdf)) |
 
 ```sh
 reach-around build --config site.yaml --out site-out --gated-out gated-out
 ```
 
-`--gated-out` is required when the kit has partners, case studies, rates or
-demographics. It may not be the output directory, inside it, or a parent of it.
+`--gated-out` is required when the kit has partners, case studies, packages,
+rates, testimonials, demographics or a disclosure statement. It may not be the output directory, inside it, or a parent of it.
 The build writes only `kit.html` there (and removes it if the kit no longer has
 gated content); anything else in that directory is left alone. Upload the
 gated file with the Worker deploy, never with the Pages deploy: the deploy
@@ -59,7 +68,7 @@ publishes only `--out`.
 
 ### Public page
 
-Header (the kit title and description), the headline numbers each with the date
+Header (the kit title, the optional content tags and the description), the headline numbers each with the date
 it was read, and the unified total. The total adds up the numbers that are not
 marked `in_total: false`; it says how many numbers it adds up and the date of
 the oldest one, and notes that people who follow on several platforms are
@@ -145,10 +154,57 @@ so it reveals nothing about the check. It is marked `noindex`. There is no
 
 ### Gated page
 
-A complete page (header, navigation, the same numbers, then partners, case
-studies, a rates table and audience details), marked `noindex`, with root-based
-asset links (`/static/...`) because the Worker serves it from any path. Partner
-links open with `rel="noopener noreferrer"`. It contains no script and no form.
+A complete page (header, navigation, the same numbers, the Engagement table when
+the config has `engagement` rows (average views per post and engagement rate per
+platform, each with its formula, UTC period and as-of date, or `not available`;
+see the [config reference](config.md#kit)), then partners, case
+studies, packages, a rates table, testimonials, audience details, the disclosure statement and, when `kit.inquiry` is set, the
+[business inquiry form](#the-business-inquiry-form)), marked `noindex`, with
+root-based asset links (`/static/...`) because the Worker serves it from any
+path. Partner links open with `rel="noopener noreferrer"`. It contains no
+script, and no form unless `kit.inquiry` is set.
+
+YouTube Analytics values collected with private OAuth scopes are never accepted
+as kit input. A YouTube engagement figure may appear here only when the owner
+types it into the config and sets `owner_supplied: true`; the page labels every
+such figure `Owner-supplied`. The public pages never receive those rows.
+
+### The business inquiry form
+
+Set `kit.inquiry` (see the [config reference](config.md#kit)) and the gated page
+gains a "Business Inquiries" block: the owner's email and PGP fingerprint, taken
+from the config, and a plain HTML form beside them. It is on the gated page only,
+so it is as private as the partners and the rates; the public page, the retry
+page and every other published file hold none of it (a test searches the whole
+public output for the address, the fingerprint and the route).
+
+The form has `name` (required, 80 characters), `email` (optional, strict address
+grammar, 254), `brand` (80), `budget` (40) and `details` (800, line breaks
+allowed), plus the `website` honeypot. It has no script and no Turnstile widget:
+the visitor already passed the gate, and the Worker re-checks the unlock cookie
+on every post. It posts to `POST /k/inquiry` on the Worker
+(`worker/src/kit/inquiry.ts`). What the Worker does with it, in order: kill switch,
+method, origin (the site's own), content type, configuration, the unlock cookie
+(no valid cookie goes back to the gate page), a per-client limiter, a 16 KiB body
+cap, strict field rules (no control, hidden or bidirectional characters in the
+one-line fields; unknown or repeated fields refused), the honeypot (a bot is told
+it worked and nothing is sent), the daily budget, then delivery. Nothing is
+stored. The answer is a redirect to one of two fixed pages, `/k/inquiry/sent` and
+`/k/inquiry/error`, that say the same thing every time and echo nothing.
+
+**Delivery.** The inquiry is sent once as the owner alert event
+`inquiry_received` over the channels the owner enabled (Discord or Matrix; the
+email channel has no provider yet), so the owner must add `inquiry_received` to
+`alerts.events` and enable a channel ([alerts](alerts.md)). With no alert
+configured the visitor sees the "not sent" page and nothing is lost silently.
+The text is neutralized like every alert (no markup, mention or link survives,
+line breaks become spaces), so a visitor cannot make the alert do anything. The
+daily alert budget (`DAILY_ALERT_BUDGET`, default 20) is also the daily cap on
+inquiries.
+
+The private PDF prints the owner details and drops the form (the form's
+`<aside>` is chrome, like the footer). The privacy page gains one entry for the
+form when `kit.inquiry` is set.
 
 ## The wall between the two
 
@@ -156,6 +212,13 @@ The boundary is structural. The rule for what is public is the display policy
 table in `reach_around/config/kit.py`; the public page is rendered from
 `public_projection` and the gated page from `gated_projection`, so a template
 cannot reach a gated field, and the two pages go to two separate directories.
+
+| Field | Visibility | Owner-report marker |
+| --- | --- | --- |
+| title, about, contact, tags, metrics, unified_total, turnstile_site_key | public | no |
+| partners, case_studies, services, rates, testimonials, demographics, inquiry, disclosure | gated | no |
+| engagement | gated | `owner_report_only`; YouTube figures require `owner_supplied: true` |
+| unlock_link | private | no |
 
 What the build enforces:
 
@@ -196,7 +259,9 @@ What the build enforces:
 
 What is **not** guaranteed: the search cannot catch every transformation a
 custom template could apply (base64 and other arbitrary transforms are out of
-scope), and values under 6 characters are not searched. Those rest on the
+scope), and values under 6 characters are not searched (one exception: a
+`kit.disclosure` that short fails the build if it is the whole content of an
+element in a public file, such as the same text in the site footer). Those rest on the
 structure in points 1 and 2. If you use an override template for the kit pages,
 review it as code that handles gated-adjacent text. If the same wording must
 appear on a public page, reword one of them.
@@ -248,7 +313,7 @@ page. Use a local avatar file if you want it on the gated page too.
 ## The private PDF
 
 `reach-around kit pdf` prints the whole gated kit (the numbers, partners, case
-studies, rates and audience details) to a PDF for you, the owner. It is never
+studies, packages, rates, testimonials, audience details and the disclosure statement) to a PDF for you, the owner. It is never
 published and never linked from a page.
 
 ```sh
@@ -338,6 +403,58 @@ a local image beyond dropping its metadata; a browser bug (the sealed page, the
 policy and the optional namespace are the defenses); and what you do with the
 file afterwards. Exit code 0 on success, 1 for any refusal (one line on standard
 error), 2 for a usage error.
+
+## The public PDF
+
+`reach-around kit pdf --public` prints the public half of the kit (the page the
+site publishes at `/kit/`: the title, the introduction, the contact line, the
+tags, the audience numbers with their dates and the combined audience) to a
+dated PDF, so any brand can save a copy. It is the answer to the owner's
+decision of 2026-11-08 (issue #425): the light public kit also gets a
+downloadable PDF. It carries a "Valid as of YYYY-MM-DD (UTC)" line (the
+creation date) and the "Live since" line when `cutover_date` has arrived.
+
+```sh
+reach-around build --config site.yaml --out site-out
+reach-around kit pdf --public --config site.yaml --site-out site-out \
+  --out-dir ~/kit-pdfs
+```
+
+It uses the same code as the private PDF, with the same options (`--config`,
+`--site-out`, `--out-dir`, `--name`, `--date`, `--numbers`, `--chromium`,
+`--isolation`, `--overwrite`), and the same sealing: an allowlisted rebuild of
+the page with nothing that can load, a Content-Security-Policy that forbids every
+load, headless Chromium with the network cut off, a fixed Info dictionary, the
+same size and page limits, the same confined owner-only write (never inside the
+public output, the config directory or a git work tree, never through a link) and
+the same removal of the work directory. Differences:
+
+- **No `--gated-out`.** It reads `kit/index.html` from `--site-out`; giving
+  `--gated-out` with `--public` is an error. The gated page is never opened.
+- **File name.** The default is `kit-public-YYYY-MM-DD.pdf` (the creation date,
+  see `--date`); `--name` overrides it.
+- **The gate box is dropped.** The email form, its text and the zone menu mean
+  nothing on paper, so the stager removes those two boxes whole. Every other form,
+  input, select or script, and any inline script, still stops the build.
+- **The same display policy.** The build refuses what the private PDF refuses
+  (collected YouTube Analytics figures), and a field marked owner-report-only
+  never reaches the public projection, so engagement figures are not in it.
+- **A wider leak check.** The text of the finished PDF is searched for every
+  gated value (partners, case studies, packages, rates, engagement notes,
+  testimonials, audience details, the disclosure statement and the inquiry
+  details), for the Turnstile site key and for gate-form words. A hit fails the
+  build, names the field and never the value, and writes nothing. A gated value
+  that equals a public value (for example the same text in the contact line) is
+  not a leak. The same pass checks that every public text, the "Valid as of"
+  line and the "Live since" line are in the PDF, which catches a stale
+  `--site-out` (rebuild first) and text the renderer lost.
+- **No warning banner.** The file holds public figures only, so the "private: do
+  not publish" notice is not printed. It is still written owner-only; you copy it
+  where you want it.
+
+Defaults the owner may change: the "Valid as of" day is the creation date, not
+the day the numbers were read (each row keeps its own "as of" date). The dated
+"valid as of" line for the deeper kit request flow is separate work (#426).
 
 ## Contact line
 

@@ -597,8 +597,9 @@ def test_the_badge_uses_the_tab_bar_pair_inverted_and_it_is_readable(out: Path) 
     assert rule is not None
     assert "background-color: var(--ra-color-on-accent)" in rule.group(1)
     assert re.search(r"[^-]color: var\(--ra-color-accent\)", rule.group(1))
-    accent = re.search(r"--ra-color-accent: (#[0-9a-f]{6})", css)
-    on_accent = re.search(r"--ra-color-on-accent: (#[0-9a-f]{6})", css)
+    tokens = (out / asset(out, "static/tokens.css")).read_text(encoding="utf-8")
+    accent = re.search(r"--ra-brand-amber: (#[0-9A-Fa-f]{6})", tokens)
+    on_accent = re.search(r"--ra-brand-on-amber: (#[0-9A-Fa-f]{6})", tokens)
     assert accent and on_accent
     hi, lo = sorted((_luminance(accent.group(1)), _luminance(on_accent.group(1))))[::-1]
     assert (hi + 0.05) / (lo + 0.05) >= 4.5

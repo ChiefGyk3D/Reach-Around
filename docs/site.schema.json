@@ -24,7 +24,8 @@
               "kit_unlocked",
               "lead_captured",
               "gate_failed_repeatedly",
-              "analytics_health"
+              "analytics_health",
+              "inquiry_received"
             ],
             "type": "string"
           },
@@ -568,6 +569,121 @@
       "title": "EmailSpell",
       "type": "object"
     },
+    "EngagementRow": {
+      "additionalProperties": false,
+      "description": "Owner-kept inputs for one platform and one UTC period.\n\nThe kit works out average views per post and the engagement rate from these\n(see ``reach_around.config.engagement``). A row with no figures is a platform\nwith no source: it prints ``not available``. ``counts`` says what the\nplatform counts as an interaction, because definitions differ.",
+      "properties": {
+        "as_of": {
+          "anyOf": [
+            {
+              "format": "date",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "As Of"
+        },
+        "counts": {
+          "anyOf": [
+            {
+              "maxLength": 120,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Counts"
+        },
+        "interactions": {
+          "anyOf": [
+            {
+              "maximum": 1000000000000,
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Interactions"
+        },
+        "owner_supplied": {
+          "default": false,
+          "title": "Owner Supplied",
+          "type": "boolean"
+        },
+        "period_end": {
+          "anyOf": [
+            {
+              "format": "date",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Period End"
+        },
+        "period_start": {
+          "anyOf": [
+            {
+              "format": "date",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Period Start"
+        },
+        "platform": {
+          "title": "Platform",
+          "type": "string"
+        },
+        "posts": {
+          "anyOf": [
+            {
+              "maximum": 1000000,
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Posts"
+        },
+        "views": {
+          "anyOf": [
+            {
+              "maximum": 1000000000000,
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Views"
+        }
+      },
+      "required": [
+        "platform"
+      ],
+      "title": "EngagementRow",
+      "type": "object"
+    },
     "Features": {
       "additionalProperties": false,
       "description": "Which data-collecting features the site uses.",
@@ -1002,6 +1118,33 @@
       "title": "Image",
       "type": "object"
     },
+    "Inquiry": {
+      "additionalProperties": false,
+      "description": "The business inquiry form on the gated page and the owner details beside it.\n\nThe address and the key fingerprint are the owner's own, taken from here and never\nhard-coded. The form posts to the Worker (``/k/inquiry``); where the message goes is\nthe Worker's alert channels, not this block.",
+      "properties": {
+        "email": {
+          "title": "Email",
+          "type": "string"
+        },
+        "pgp_fingerprint": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Pgp Fingerprint"
+        }
+      },
+      "required": [
+        "email"
+      ],
+      "title": "Inquiry",
+      "type": "object"
+    },
     "InstagramSource": {
       "additionalProperties": false,
       "properties": {
@@ -1087,6 +1230,39 @@
           "title": "Demographics",
           "type": "array"
         },
+        "disclosure": {
+          "anyOf": [
+            {
+              "maxLength": 500,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Disclosure"
+        },
+        "engagement": {
+          "items": {
+            "$ref": "#/$defs/EngagementRow"
+          },
+          "maxItems": 30,
+          "title": "Engagement",
+          "type": "array"
+        },
+        "inquiry": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Inquiry"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
         "metrics": {
           "items": {
             "$ref": "#/$defs/PlatformMetric"
@@ -1109,6 +1285,32 @@
           },
           "maxItems": 30,
           "title": "Rates",
+          "type": "array"
+        },
+        "services": {
+          "items": {
+            "$ref": "#/$defs/ServicePackage"
+          },
+          "maxItems": 20,
+          "title": "Services",
+          "type": "array"
+        },
+        "tags": {
+          "items": {
+            "maxLength": 30,
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 8,
+          "title": "Tags",
+          "type": "array"
+        },
+        "testimonials": {
+          "items": {
+            "$ref": "#/$defs/Testimonial"
+          },
+          "maxItems": 10,
+          "title": "Testimonials",
           "type": "array"
         },
         "title": {
@@ -2056,6 +2258,47 @@
       "title": "Section",
       "type": "object"
     },
+    "ServicePackage": {
+      "additionalProperties": false,
+      "description": "One named package: a title, what is included, and a price as text.\n\n``price_text`` is free text (``Ask me!`` is fine); nothing is computed from\nit. Both the list and the price are optional.",
+      "properties": {
+        "included": {
+          "items": {
+            "maxLength": 120,
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 12,
+          "title": "Included",
+          "type": "array"
+        },
+        "price_text": {
+          "anyOf": [
+            {
+              "maxLength": 80,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Price Text"
+        },
+        "title": {
+          "maxLength": 80,
+          "minLength": 1,
+          "title": "Title",
+          "type": "string"
+        }
+      },
+      "required": [
+        "title"
+      ],
+      "title": "ServicePackage",
+      "type": "object"
+    },
     "Social": {
       "additionalProperties": false,
       "properties": {
@@ -2069,6 +2312,11 @@
           "minLength": 1,
           "title": "Name",
           "type": "string"
+        },
+        "rel_me": {
+          "default": false,
+          "title": "Rel Me",
+          "type": "boolean"
         },
         "url": {
           "maxLength": 2048,
@@ -2233,6 +2481,44 @@
         "title"
       ],
       "title": "Tab",
+      "type": "object"
+    },
+    "Testimonial": {
+      "additionalProperties": false,
+      "description": "One partner quote. The owner supplies the text and is responsible for\nhaving permission to quote it; nothing here checks that.",
+      "properties": {
+        "brand": {
+          "anyOf": [
+            {
+              "maxLength": 80,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Brand"
+        },
+        "name": {
+          "maxLength": 80,
+          "minLength": 1,
+          "title": "Name",
+          "type": "string"
+        },
+        "quote": {
+          "maxLength": 300,
+          "minLength": 1,
+          "title": "Quote",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "quote"
+      ],
+      "title": "Testimonial",
       "type": "object"
     },
     "Text": {

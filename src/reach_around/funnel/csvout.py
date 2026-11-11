@@ -31,6 +31,7 @@ from typing import Any
 
 from reach_around.config.zones import format_instant
 from reach_around.funnel.owner import owner_view
+from reach_around.funnel.social import CSV_HEADER, social_csv_rows
 
 _DANGEROUS = ("=", "+", "-", "@", "\t", "\r", "\n")
 BELOW = "(rows below the floor)"
@@ -84,6 +85,9 @@ def _flow_rows(section: dict[str, Any]) -> list[list[Any]]:
     return rows
 
 
+SPANS_GAP = "spans_collection_gap"
+
+
 def _funnel_rows(report: dict[str, Any]) -> list[list[Any]]:
     funnel = report["funnel"]
     steps = [
@@ -92,20 +96,28 @@ def _funnel_rows(report: dict[str, Any]) -> list[list[Any]]:
         ("kit_views", "kit_events"),
         ("kit_unlocks", "kit_events"),
     ]
+    # A figure that spans a collection gap keeps its status and gets the label in
+    # its own column, so it stays labeled when a row is copied out (#402).
+    span = SPANS_GAP if funnel["spans_collection_gap"] else ""
     rows: list[list[Any]] = []
     for key, table in steps:
         if table in funnel["missing"]:
-            rows.append([key, "", "not_in_export"])
+            rows.append([key, "", "not_in_export", ""])
         elif key in funnel["not_scoped"]:
-            rows.append([key, "", "not_available"])
+            rows.append([key, "", "not_available", ""])
         elif funnel[key] is None:
-            rows.append([key, "", "below_floor"])
+            rows.append([key, "", "below_floor", span])
         else:
-            rows.append([key, funnel[key], "ok"])
+            rows.append([key, funnel[key], "ok", span])
     for key in ("clicks_per_100_views", "kit_views_per_100_views"):
         value = funnel[key]
         rows.append(
-            [key, "" if value is None else value, "ok" if value is not None else "n/a"]
+            [
+                key,
+                "" if value is None else value,
+                "ok" if value is not None else "n/a",
+                span if value is not None else "",
+            ]
         )
     return rows
 
@@ -194,11 +206,12 @@ _SECTIONS: list[tuple[str, str]] = [
 def owner_csv_files(view: dict[str, Any]) -> dict[str, bytes]:
     """The owner report tables (#438), from the same view the HTML page uses."""
     tiles = view["tiles"]
+    span = SPANS_GAP if view["coverage"]["spans_gap"] else ""
     tile_rows: list[list[Any]] = []
     for name in ("views", "clicks"):
         t = tiles[name]
         tile_rows.append(
-            [name, t["state"], t["value"], t["previous"], t["change_percent"], ""]
+            [name, t["state"], t["value"], t["previous"], t["change_percent"], "", span]
         )
     r = tiles["click_rate"]
     tile_rows.append(
@@ -209,6 +222,7 @@ def owner_csv_files(view: dict[str, Any]) -> dict[str, bytes]:
             r["previous"],
             r["change_points"],
             "capped" if r["capped"] else "",
+            span,
         ]
     )
 
@@ -221,6 +235,7 @@ def owner_csv_files(view: dict[str, Any]) -> dict[str, bytes]:
             d["clicks_status"],
             d["rate"],
             "capped" if d["rate_capped"] else "",
+            d["collection"],
         ]
         for d in view["daily"]["days"]
     ]
@@ -256,7 +271,16 @@ def owner_csv_files(view: dict[str, Any]) -> dict[str, bytes]:
 
     return {
         "owner_tiles.csv": render_csv(
-            ["tile", "status", "value", "previous_window", "change", "note"], tile_rows
+            [
+                "tile",
+                "status",
+                "value",
+                "previous_window",
+                "change",
+                "note",
+                "coverage",
+            ],
+            tile_rows,
         ),
         "owner_daily.csv": render_csv(
             [
@@ -267,6 +291,7 @@ def owner_csv_files(view: dict[str, Any]) -> dict[str, bytes]:
                 "clicks_status",
                 "click_rate",
                 "note",
+                "collection",
             ],
             daily_rows,
         ),
@@ -297,7 +322,9 @@ def csv_files(
         "metadata.csv": render_csv(
             ["key", "value"], _meta_rows(report, generated_at, requested or {})
         ),
-        "funnel.csv": render_csv(["step", "value", "status"], _funnel_rows(report)),
+        "funnel.csv": render_csv(
+            ["step", "value", "status", "coverage"], _funnel_rows(report)
+        ),
     }
     for key, name in _SECTIONS:
         files[name] = render_csv(_TABLE_HEADER, _table_rows(report[key]))
@@ -327,6 +354,8 @@ def csv_files(
             [[g["day"], "gap", g["reason"]] for g in cov["gaps"]]
             + [[p["day"], "partial", "+".join(p["reasons"])] for p in cov["partial"]],
         )
+    if "social" in report:
+        files["social.csv"] = render_csv(CSV_HEADER, social_csv_rows(report["social"]))
     files.update(owner_csv_files(owner_view(report)))
     return files
 

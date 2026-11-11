@@ -20,6 +20,7 @@ from typing import Any
 
 from reach_around.funnel.export import CLASSES, Export
 from reach_around.funnel.gaps import coverage_for_window
+from reach_around.funnel.social import social_lines
 
 FLOOR = 5
 # Report section -> the ``dim`` value in view_dim_daily it is built from.
@@ -1049,6 +1050,7 @@ def _build_report(
         "counted_classes": sorted(wanted),
         "coverage": coverage.as_dict(),
         "funnel": {
+            "spans_collection_gap": coverage.spans_gap,
             "page_views": page_views,
             "clicks": click_total,
             "kit_views": kit_views,
@@ -1388,8 +1390,9 @@ def render_text(report: dict[str, Any]) -> str:
     lines.append(f"Reach Around report: site {report['site']}, {span}")
     era = report.get("era")
     if era:
+        verb = "" if era["window"] == "spans" else "is "
         lines.append(
-            f"Cutover: {era['cutover_utc']} UTC; this window is {era['text']}."
+            f"Cutover: {era['cutover_utc']} UTC; this window {verb}{era['text']}."
         )
     display = report.get("display")
     if display:
@@ -1414,6 +1417,8 @@ def render_text(report: dict[str, Any]) -> str:
         ("Kit unlocks", "kit_unlocks", "kit_events"),
     ]
     for label, key, table in steps:
+        if funnel["spans_collection_gap"]:
+            label += " (spans collection gap)"
         if table in funnel["missing"]:
             text = "not in this export"
         else:
@@ -1423,7 +1428,10 @@ def render_text(report: dict[str, Any]) -> str:
         lines.append(f"  {label:<28} {text}")
     per = funnel["clicks_per_100_views"]
     if per is not None:
-        lines.append(f"  Clicks per 100 views: {per} (a ratio, not a conversion rate)")
+        gap_label = " (spans collection gap)" if funnel["spans_collection_gap"] else ""
+        lines.append(
+            f"  Clicks per 100 views{gap_label}: {per} (a ratio, not a conversion rate)"
+        )
         if per > 100:
             lines.append(
                 "  Note: more than 100 per 100 views; some visitors click without "
@@ -1431,7 +1439,8 @@ def render_text(report: dict[str, Any]) -> str:
             )
     kper = funnel["kit_views_per_100_views"]
     if kper is not None:
-        lines.append(f"  Kit views per 100 page views: {kper}")
+        gap_label = " (spans collection gap)" if funnel["spans_collection_gap"] else ""
+        lines.append(f"  Kit views per 100 page views{gap_label}: {kper}")
     if report["bots"].get("views_withheld"):
         lines.append(
             "  Page-view figures are withheld: a small remainder could be "
@@ -1484,6 +1493,8 @@ def render_text(report: dict[str, Any]) -> str:
                 f"  {'(classes below the floor)':<28} {bots['other_below_floor']:>8}"
             )
     _table("Bot reasons (not human-likely)", bots["reasons"], lines)
+    if "social" in report:
+        lines.extend(social_lines(report["social"]))
     lines.append("")
     lines.append(
         "Human-likely is an estimate; crawlers that never run the script are "

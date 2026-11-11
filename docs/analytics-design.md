@@ -491,6 +491,7 @@ identifier, no address, no pair of source and country.
 | Click rows | 90 days (shipped) | 90 days | |
 | Click funnel day cells (`click_src_daily`, `click_country_daily`) | 90 whole days | 125 days | Removed after the month is rolled up; a ceiling removes them anyway |
 | Click funnel monthly rollups | 25 months | 25 months | Sums of a closed month; no timestamp finer than a month |
+| Local monthly archive (`analytics-archive`) | 25 closed UTC months | 25 months | Floored before it is written; one file per site and month in the private instance repo; no day-level data (#399) |
 | Hour counters in `view_meta` | 48 hours (budget), previous hour (cap) | n/a | |
 
 **Deviation to confirm (D-A2).** The request for this design said "90 days
@@ -533,6 +534,12 @@ selector (one page per site, or a site column) and these panels:
 8. **Collector health:** last rollup success, rollup lag, days rolled in the
    reduced mode, late rows, config errors, network-data age. A stale heartbeat
    is shown in red (Plan 4 A8; the alert for a stale heartbeat is still planned).
+
+The coverage log is compared with the UTC calendar. Missing or partly collected
+days stay gaps with a closed reason (`outage`, `quota`, `kill_switch` or
+`site_kill_switch`), never zero rows. Every total or ratio whose window crosses
+a gap carries that fact with the figure. Response and recovery are described in
+the generic [collection gaps runbook](collection-gaps-runbook.md).
 
 Small-cell rule for the blog: cells under the site's `min_cell` (default 5 for
 the blog, 3 for `links`) fold into `other` on every panel, and the dashboard
@@ -695,6 +702,7 @@ T-17 is written for lead data; the same reasoning applies to analytics data.
 | B3 | **Deletion on request is impossible:** nothing identifies a person, so a request to delete "my views" cannot be met | Say so in the privacy text; keep the raw window short; offer the opt-out signals (GPC, DNT) | Privacy text test |
 | B4 | **Small-audience re-identification:** on a small blog, a rare city plus a referrer host plus a known minute can single out one person, and a daily code plus a rare city can too | Hour-rounded timestamps (D-A1), `min_cell` suppression, city in raw rows and in the geography aggregate (the aggregates never join it to device facts: separate marginal tables, as shipped; raw rows do keep them together for the raw window), short raw window; accepted residual: one-view cells remain inside `other` and DB readers can read raw rows during the window | Rollup test that no aggregate table joins geography to device facts; suppression test; residual stated in the register |
 | B5 | **The network flag becomes a profile:** a VPN or hosting flag stored with city and referrer marks a person as privacy-conscious or as a researcher | In the aggregates the class lives only in `view_dim_daily` (dimension `net`), never joined to geography or source. In raw `view_events` the class sits in the same row as city and source for the raw window; that is a **stated residual**: anyone with D1 read access can combine them until the row ages out, which is why the raw window is short and why the pull reads aggregates only. Option if the maintainer wants it closed: drop `net` from raw rows after the bot classification has used it (D-A7) | Aggregate-level schema test: `net` appears in no aggregate table that has `city` or source columns. No such claim is made for `view_events` |
+| B6 | **The 25 month archive becomes a long-lived profile store (#399, #333):** a copy kept longer than the 90 day ceiling lets a reader difference months, recover a small cell that the report had folded, or find a figure that should never be public | Only the monthly click rollups are archived, never a raw row, a day cell, a view figure or a collected platform figure (so the YouTube Analytics refusal of #424 and `owner_report_only` need no new rule here: those figures cannot reach it); every cell runs through the report's own remainder rule BEFORE it is written; the archive holds no timestamp, address, user agent or identifier; a month file is created once and a changed month is refused (no quiet correction that could be differenced); files older than 25 closed months are removed and nothing else in the directory is touched; reads are validated and refuse a cell under the stored floor; the directory belongs in the private instance repo and is never published | `tests/test_funnel_archive.py`: small cells folded, no day or raw fields, window of 25 closed months, changed month refused, symlinked directory and file refused, tampered file refused, old months dropped and other files kept. Residual: git history of the instance repo keeps a removed month file; the owner must rewrite history or accept that copy; the monthly series in the Grafana file can be differenced against a released month by someone who holds both, so share a chart, not the file |
 
 ## 15. UNVERIFIED items to close before building
 

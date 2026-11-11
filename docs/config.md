@@ -166,12 +166,14 @@ creator:
 | `name` | Title | required | |
 | `url` | HTTPS URL or Tab link | required | |
 | `icon` | Slug | required | |
+| `rel_me` | boolean | `false` | Adds `me` to the external link's `rel` attribute for identity verification, including Mastodon profile verification. |
 
 ```yaml
 socials:
   - name: Example Chat
     url: https://chat.example.invalid/example
     icon: chat
+    rel_me: true
 ```
 
 ### `tabs[]` (`Tab`)
@@ -260,8 +262,8 @@ With `sections` the build writes one `index.html` (plus `privacy/` and
   work as on a tab page, and the crypto, email and platforms assets load once
   for the page when any section uses them.
 
-Zero-click rule for support pages: put the primary support actions (tip, Ko-fi,
-Patreon, shop) as plain link blocks in the open section, so they are visible
+Zero-click rule for support pages: put the primary support actions (store first, then tip, Ko-fi,
+Patreon) as plain link blocks in the open section, so they are visible
 buttons, and put only crypto and secondary groups in closed sections (a crypto
 tab, or a `section` block with `collapsed: true`). Each summary is a full-width
 row at least 44 px tall with the same focus ring as every other control.
@@ -915,11 +917,17 @@ end. Text must be quoted if YAML would read it as a number.
 | `title` | text | required | at most 120 characters |
 | `about` | text | required | at most 1000 characters |
 | `contact` | text | none | one plain-text line for brands, at most 200 characters; see the note below |
+| `tags` | list of text | none | at most 8 content category tags, each 1 to 30 characters, none repeated (compared ignoring case and width, so `Tech` and `Ｔech` count as the same tag); public |
 | `metrics` | list of metric | none | at most 30; each `platform` and `label` pair once |
+| `engagement` | list of engagement row | none | at most 30; each platform and period once; gated; see below |
 | `partners` | list of partner | none | at most 50 |
 | `case_studies` | list of case study | none | at most 20 |
+| `services` | list of package | none | at most 20; named packages, shown above the rates table |
 | `rates` | list of rate | none | at most 30 |
+| `testimonials` | list of testimonial | none | at most 10; partner quotes, gated |
 | `demographics` | list of demographic | none | at most 30 |
+| `inquiry` | inquiry block | none | the business inquiry form on the gated page and the owner details beside it; see the note below. Needs `features.kit_gate` |
+| `disclosure` | text | none | a short statement, at most 500 characters; gated; see the note below |
 | `turnstile_site_key` | text | none | public key of the Turnstile widget on the gate form; 1 to 64 letters, digits, `-` or `_`. Without it the form has an empty widget slot and the build warns |
 | `unlock_link` | true or false | `false` | v1 has no emailed unlock link, so `true` is refused with a clear error until it exists |
 
@@ -939,23 +947,92 @@ A **metric** is one headline number: `platform` (a platform name such as
 
 A **partner** has `name` (80), optional `note` (200) and optional `url` (https
 only). A **case study** has `title` (100), `summary` (500) and `result` (300).
-A **rate** has `item` (80) and `price_text` (80); the price is text, so
-`Ask me!` or `From $200` are fine. A **demographic** has `label` (60), `value`
+A **package** (`services`) has `title` (80), optional `included` (a list of at
+most 12 lines, 120 characters each) and optional `price_text` (80; free text such
+as `Ask me!`, never computed). Packages sit above the rates table on the gated
+page and in the owner PDF; the rates table keeps working beside them, and a
+price is allowed per package but not required. A **rate** has `item` (80) and `price_text` (80); the price is text, so
+`Ask me!` or `From $200` are fine. A **testimonial** has `quote` (300), `name` (80) and optional `brand` (80). The
+text is yours: you are responsible for having permission to quote it, and
+nothing checks that. It is shown only on the gated page and in the owner PDF,
+never on the public page. Left out or empty, nothing is printed. A **demographic** has `label` (60), `value`
 (80) and a required `as_of`.
+
+**Engagement and average views.** `engagement` holds owner-kept inputs for one
+platform and one UTC period; the kit works the two figures out in code and never
+takes them typed. An **engagement row** has `platform`, `period_start` and
+`period_end` (UTC days, the period at most 366 days), `as_of` (the day you read
+the numbers, not before the period ends), `views` (0 up to 1,000,000,000,000),
+`posts` (1 up to 1,000,000: the posts, videos or streams in the period),
+`interactions` (0 up to 1,000,000,000,000) and an optional `counts` (120
+characters) that says what the platform counts as an interaction. Every figure
+is optional, but if any is given the period and `as_of` are required.
+
+- **Average views per post** = `views` / `posts`, rounded half up to a whole
+  number (2.5 becomes 3).
+- **Engagement rate** = `interactions` / `views` x 100, rounded half up to one
+  decimal place, printed with a percent sign (0.05 becomes 0.1%). The rate can
+  pass 100% when a platform counts more interactions than views.
+- The arithmetic is exact integer math (no floating point), so the same inputs
+  always print the same text. The formula text is printed under each measure.
+- A figure whose inputs are missing (or whose divisor is zero) prints
+  `not available`; the row is kept, never hidden and never filled in. A row with
+  only a `platform` is a platform with no source (owner decision Q6, 2026-11-08).
+  Twitch, Kick and every other platform use the same layout.
+- Nothing is added or averaged across platforms, and the page says so.
+- An old or future `as_of` warns like any other date. The numbers file is not
+  read: it holds follower counts only, so these inputs live in the config.
+
+The rows are gated (owner decision): they print on the gated page and in the
+owner PDF only, and the public page and public projection carry none of them. To
+make them public later, change `"engagement": "gated"` to `"public"` in
+`DISPLAY_POLICY` (`reach_around/config/kit.py`) and render the table on the
+public page.
+
+**Disclosure statement.** `kit.disclosure` is optional: a couple of sentences, in
+your own words, on how you disclose paid relationships and affiliate links and
+what content a brand can expect to sit next to. Reach Around supplies no
+wording; the FTC's Disclosures 101 for social media influencers is the
+reference for what to cover. It is shown on the gated page and in the owner PDF
+only. It is not the site-wide footer [`disclosure`](#disclosure) that goes under
+every page: if the two texts are the same, the build stops (the leak search
+finds the gated text on a public page), so word them differently. Left out,
+nothing is printed.
 
 **Display policy.** The table is fixed, not a setting:
 
 | Field | Shown |
 | --- | --- |
-| `title`, `about`, `contact`, `metrics`, the unified total | public |
-| `partners`, `case_studies`, `rates`, `demographics` | gated (only after the gate) |
+| `title`, `about`, `contact`, `tags`, `metrics`, the unified total | public |
+| `partners`, `case_studies`, `services`, `rates`, `engagement`, `demographics`, `disclosure`, `inquiry`, `testimonials` | gated (only after the gate) |
 | `turnstile_site_key` | public (it ships in the gate form; the key is public by design) |
 | `unlock_link` | private (configuration, never shown) |
 
 The public half therefore shows the header and the headline numbers and nothing
-else. If `partners`, `case_studies`, `rates` or `demographics` is not empty,
+else. If `partners`, `case_studies`, `services`, `rates`, `engagement`, `demographics`, `disclosure`, `inquiry` or `testimonials` is set,
 `features.kit_gate` must be `true`; the config is refused otherwise, so gated
 content can never be published with no gate.
+
+**Tags.** `tags` is an optional short list of content categories (for example
+`Gaming` or `Hardware`) shown as chips under the kit title, so a brand sees the
+niche at a glance. They use the same chip style as the
+[`profile_card`](#profile_card) tags and print on the public page, the gated
+page and the owner PDF, escaped. Up to 8, each 1 to 30 characters of plain text;
+a repeat (ignoring case) is refused. Left out or empty, nothing is printed.
+
+**Inquiry block.** `inquiry` has `email` (required: one plain ASCII address, at
+most 254 characters) and `pgp_fingerprint` (optional: 40 or 64 hexadecimal
+digits, spaces between groups allowed; it is printed in upper-case groups of
+four). Both are the owner's own values, printed on the gated page beside the
+form and in the private PDF, and nowhere on the public half. The form itself is
+described in the [media kit guide](kit.md#the-business-inquiry-form).
+
+```text
+kit:
+  inquiry:
+    email: owner@example.com
+    pgp_fingerprint: 0123 4567 89AB CDEF 0123 4567 89AB CDEF 0123 4567
+```
 
 **Contact line.** `contact` is optional and is yours to decide: write whatever
 you are willing to publish, such as `Brand deals: partners at example.com`.
@@ -986,14 +1063,39 @@ features:
 kit:
   title: Example Creator media kit
   about: A fake creator used to show the settings.
+  tags: [Gaming, Hardware]
   metrics:
     - {platform: twitch, label: Followers, value: 1200, as_of: 2027-03-01}
     - {platform: bluesky, label: Followers, source: counts}
   partners:
     - {name: Acme Fake Co, url: "https://example.com/acme"}
+  services:
+    - title: Example package
+      included: [One example item, Another example item]
+      price_text: Ask me!
   rates:
     - {item: Sponsored video, price_text: Ask me!}
+  engagement:
+    - platform: twitch
+      period_start: 2027-02-01
+      period_end: 2027-02-28
+      as_of: 2027-03-01
+      views: 12000
+      posts: 8
+      interactions: 600
+      counts: Chat messages and follows
+      owner_supplied: false
+    - platform: kick
+  testimonials:
+    - {quote: An example quote., name: Example Person, brand: Example Brand}
+  disclosure: An example statement about how paid work is marked.
 ```
+
+`owner_supplied` defaults to `false`. YouTube Analytics figures use private
+OAuth scopes, so collected values are refused in every kit build. To include a
+YouTube engagement row, type the figures by hand and set `owner_supplied: true`.
+That row appears only in the deeper, gated kit and the private owner PDF, with
+an `Owner-supplied` label. It never appears in the public kit.
 
 ## `numbers`
 
@@ -1220,7 +1322,7 @@ privacy: [alerts](alerts.md). Unknown keys are refused.
 | Key | Type | Default | Meaning |
 | --- | --- | --- | --- |
 | `channels` | list of `discord`, `matrix`, `email` | none | Where alerts go. Each needs its bindings; email has no provider yet. |
-| `events` | list of `kit_unlocked`, `lead_captured`, `gate_failed_repeatedly`, `analytics_health` | none | What alerts. Both lists must be non-empty for anything to be sent. |
+| `events` | list of `kit_unlocked`, `lead_captured`, `gate_failed_repeatedly`, `analytics_health`, `inquiry_received` | none | What alerts. Both lists must be non-empty for anything to be sent. |
 | `visitor_email` | `full`, `masked`, `none` | `full` | How the visitor's address appears in an alert. |
 | `max_per_minute` | integer, 1-30 | `5` | Messages one channel sends per minute, the held-back notice included. |
 | `matrix.allowed_hosts` | list of up to 4 host names | none | The Matrix homeserver host names the access token may be sent to, matched exactly. Required when `matrix` is a channel. Lowercase DNS names only: no IP address, embedded IP, private or wildcard-DNS name. |

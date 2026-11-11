@@ -19,6 +19,8 @@ from reach_around.funnel import grafana
 from reach_around.funnel.csvout import csv_files
 from reach_around.funnel.export import ExportError, load_exports
 from reach_around.funnel.gaps import classify, coverage_for_window
+from reach_around.funnel.htmlout import render_html
+from reach_around.funnel.owner import owner_view
 from reach_around.funnel.report import build_report, render_text
 
 TODAY = date(2026, 11, 9)
@@ -175,6 +177,92 @@ def test_report_lists_gaps_with_reasons_and_says_totals_cover_collected_time(
     assert "it is not a zero" in text
     # The note comes before the first figure.
     assert text.index("Collection gaps") < text.index("Funnel")
+
+
+def test_report_labels_kit_figures_when_the_window_spans_a_gap(
+    tmp_path: Path,
+) -> None:
+    path = _export(tmp_path, "kit-gap.json")
+    data = json.loads(path.read_text(encoding="utf-8"))
+    data["tables"]["kit_events"] = [
+        {"ts": 1_794_096_000_000, "kind": "view"} for _ in range(5)
+    ]
+    path.write_text(json.dumps(data), encoding="utf-8")
+
+    report = build_report(load_exports([path]), as_of=TODAY, until="2026-11-08")
+    text = render_text(report)
+
+    assert report["funnel"]["spans_collection_gap"] is True
+    assert "Kit views (spans collection gap)" in text
+    assert "Kit unlocks (spans collection gap)" in text
+
+
+def _csv(files: dict[str, bytes], name: str) -> list[list[str]]:
+    import csv
+    import io
+
+    return list(csv.reader(io.StringIO(files[name].decode("utf-8"))))
+
+
+def _gap_report(tmp_path: Path) -> dict[str, Any]:
+    return build_report(
+        load_exports([_export(tmp_path)]), as_of=TODAY, until="2026-11-08"
+    )
+
+
+def test_html_page_and_tiles_carry_the_gap_label(tmp_path: Path) -> None:
+    from datetime import UTC, datetime
+
+    report = _gap_report(tmp_path)
+    assert owner_view(report)["coverage"]["spans_gap"] is True
+    page = render_html(
+        owner_view(report), generated_at=datetime(2026, 11, 9, tzinfo=UTC)
+    )
+    assert "Collection gaps in this window: 3 full-day gaps, 1 partial days" in page
+    assert page.count("Spans a collection gap") == 3  # views, clicks, click rate
+    assert "2026-11-03 (collection gap)" in page
+    assert "2026-11-06 (partial collection)" in page
+
+
+def test_owner_and_funnel_csv_carry_the_gap_label(tmp_path: Path) -> None:
+    from datetime import UTC, datetime
+
+    files = csv_files(
+        _gap_report(tmp_path), generated_at=datetime(2026, 11, 9, tzinfo=UTC)
+    )
+    tiles = _csv(files, "owner_tiles.csv")
+    assert tiles[0][-1] == "coverage"
+    assert [r[-1] for r in tiles[1:]] == ["spans_collection_gap"] * 3
+    funnel = {r[0]: r for r in _csv(files, "funnel.csv")[1:]}
+    assert _csv(files, "funnel.csv")[0] == ["step", "value", "status", "coverage"]
+    assert funnel["page_views"][2:] == ["ok", "spans_collection_gap"]
+    daily = {r[0]: r[-1] for r in _csv(files, "owner_daily.csv")[1:]}
+    assert daily["2026-11-03"] == "gap"
+    assert daily["2026-11-06"] == "partial"
+    assert daily["2026-11-02"] == ""
+
+
+def test_clean_window_has_no_gap_label_in_html_or_csv(tmp_path: Path) -> None:
+    from datetime import UTC, datetime
+
+    clean = tmp_path / "c.json"
+    clean.write_text(
+        json.dumps(
+            {
+                "tables": {
+                    "view_daily": [view("2026-11-02")],
+                    "analytics_coverage": [cov("2026-11-01"), cov("2026-11-02")],
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    rep = build_report(load_exports([clean]), as_of=TODAY, until="2026-11-02")
+    now = datetime(2026, 11, 9, tzinfo=UTC)
+    assert "collection gap" not in render_html(owner_view(rep), generated_at=now)
+    files = csv_files(rep, generated_at=now)
+    assert "spans_collection_gap" not in files["funnel.csv"].decode()
+    assert "spans_collection_gap" not in files["owner_tiles.csv"].decode()
 
 
 def test_report_without_gaps_or_coverage_is_unchanged_text(tmp_path: Path) -> None:

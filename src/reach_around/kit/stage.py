@@ -7,8 +7,11 @@ tampered file or a bug can put anything in it. The output is built from an
 allowlist, never edited in place:
 
 * only known layout tags and attributes are rebuilt (``class``, table ``scope``,
-  ``datetime``, an ``https`` link target); the live-site chrome (skip link,
-  navigation, footer with its cookie form, links back to the site) is dropped;
+  ``datetime``); link targets and image descriptions are omitted because PDF
+  annotations and tagged structures are outside page-content text extraction;
+  the live-site chrome (skip link,
+  navigation, footer with its cookie form, the inquiry form's aside, links back to the
+  site) is dropped;
 * a tag that can run code, fetch, nest a document or submit anything (script,
   iframe, form, object, embed, base, svg, video, a refresh meta, ...) stops the
   build instead of being quietly removed, because its presence means the page is
@@ -33,6 +36,7 @@ import re
 import stat
 import struct
 from dataclasses import dataclass
+from datetime import date
 from html.parser import HTMLParser
 from pathlib import Path
 
@@ -41,8 +45,13 @@ MAX_CSS_BYTES = 1024 * 1024
 MAX_CSS_TOTAL = 3 * 1024 * 1024
 MAX_IMAGE_BYTES = 2 * 1024 * 1024
 MAX_IMAGES = 8
-MAX_HREF = 2048
 GATED_FILE = "kit.html"
+# The public half: the page the site publishes, in the site output directory.
+PUBLIC_FILE = "kit/index.html"
+# Boxes of the public page that mean nothing on paper (the gate form, the zone
+# menu that needs a script). They are dropped whole in public mode, and only
+# there; any other form, input or script still stops the build.
+_PUBLIC_DROP = frozenset({"kit-gate-box", "kit-zone"})
 
 CSP = (
     "default-src 'none'; img-src data:; style-src 'unsafe-inline'; "
@@ -61,7 +70,7 @@ PRINT_CSS = (
     "animation:none!important;transition:none!important}"
     "main{max-width:none!important;margin:0!important;padding:0!important}"
     ".skip-link,.cookie-banner{display:none!important}"
-    "article,tr,li,.kit-numbers,.kit-partners,.kit-rates,.kit-demographics"
+    "article,tr,li,.kit-numbers,.kit-engagement,.kit-partners,.kit-services,.kit-rates,.kit-testimonials,.kit-demographics,.kit-disclosure"
     "{break-inside:avoid}"
     "h1,h2,h3,h4{break-after:avoid}"
     "table{width:100%;border-collapse:collapse}"
@@ -99,8 +108,9 @@ _FORBIDDEN = frozenset(
         "picture",
     }
 )
-# Dropped with everything inside them: the live-site chrome.
-_CHROME = frozenset({"footer", "nav"})
+# Dropped with everything inside them: the live-site chrome, and the inquiry form's
+# <aside> (a form means nothing on paper; the owner details are not inside it).
+_CHROME = frozenset({"footer", "nav", "aside"})
 _KEEP = frozenset(
     {
         "header",
@@ -151,6 +161,13 @@ _KEEP = frozenset(
     }
 )
 _VOID = frozenset({"br", "hr", "img"})
+# Every HTML void element: inside a dropped box none of them has an end tag.
+_VOID_ANY = frozenset(
+    {"area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta",
+     "param", "source", "track", "wbr"}
+)  # fmt: skip
+# Attributes that run code or load a script differently from a plain src.
+_CODE_ATTRS = frozenset({"onload", "onerror", "integrity", "nomodule", "type"})
 _CLASS = re.compile(r"[A-Za-z0-9_-]+")
 _DATETIME = re.compile(r"[0-9T:+\-.Z ]{1,40}")
 _SCOPE = frozenset({"col", "row", "colgroup", "rowgroup"})
@@ -410,9 +427,12 @@ def embed_image(site_dir: Path, src: str) -> str:
 
 
 class _Rebuild(HTMLParser):
-    def __init__(self, site_dir: Path) -> None:
+    def __init__(self, site_dir: Path, *, public: bool = False) -> None:
         super().__init__(convert_charrefs=True)
         self.site_dir = site_dir
+        self.public = public
+        self._dropped: list[str] = []
+        self._skip_script = 0
         self.body: list[str] = []
         self.css: list[bytes] = []
         self.images = 0
@@ -423,6 +443,13 @@ class _Rebuild(HTMLParser):
         self._hidden: list[str] = []
 
     # -- helpers
+    def _root_based(self, url: str) -> str:
+        """The public kit page lives at /kit/ and links its files as
+        ``../static/...``; that is the same file as ``/static/...``."""
+        if self.public and url.startswith("../static/"):
+            return url[2:]
+        return url
+
     def _attrs(self, tag: str, attrs: list[tuple[str, str | None]]) -> str:
         found = {k.lower(): (v or "") for k, v in attrs}
         out: list[str] = []
@@ -437,20 +464,13 @@ class _Rebuild(HTMLParser):
                     out.append(f'{key}="{found[key]}"')
         if tag == "time" and _DATETIME.fullmatch(found.get("datetime", "")):
             out.append(f'datetime="{found["datetime"]}"')
-        if tag == "a":
-            href = found.get("href", "")
-            if (
-                href.startswith("https://")
-                and len(href) <= MAX_HREF
-                and not any(c.isspace() or c in '"<>' or ord(c) < 32 for c in href)
-            ):
-                out.append(f'href="{html.escape(href, quote=True)}" rel="noreferrer"')
         if tag == "img":
             self.images += 1
             if self.images > MAX_IMAGES:
                 raise StageError(f"the page has more than {MAX_IMAGES} images")
-            out.append(f'src="{embed_image(self.site_dir, found.get("src", ""))}"')
-            out.append(f'alt="{html.escape(found.get("alt", ""), quote=True)}"')
+            src = self._root_based(found.get("src", ""))
+            out.append(f'src="{embed_image(self.site_dir, src)}"')
+            out.append('alt=""')
         return (" " + " ".join(out)) if out else ""
 
     # -- parser events
@@ -460,6 +480,26 @@ class _Rebuild(HTMLParser):
             if tag in _CHROME:
                 self._chrome_depth += 1
             return
+        if self._dropped:
+            if tag not in _VOID_ANY:
+                self._dropped.append(tag)
+            return
+        if (
+            self.public
+            and self._in_body
+            and _PUBLIC_DROP & set((dict(attrs).get("class") or "").split())
+        ):
+            if tag not in _VOID_ANY:
+                self._dropped.append(tag)
+            return
+        if self.public and tag == "script" and not self._in_body:
+            # the page's own deferred helper script: never run (no JavaScript,
+            # and the sealed copy has no script tag); only a plain /static/ file
+            # is accepted, an inline script stops the build as always
+            src = self._root_based(dict(attrs).get("src") or "")
+            if _STATIC.fullmatch(src) and not _CODE_ATTRS & names:
+                self._skip_script += 1
+                return
         if tag in _CHROME:
             self._chrome_depth = 1
             return
@@ -510,6 +550,14 @@ class _Rebuild(HTMLParser):
             if tag in _CHROME:
                 self._chrome_depth -= 1
             return
+        if self._skip_script and tag == "script":
+            self._skip_script -= 1
+            return
+        if self._dropped:
+            if tag in self._dropped:
+                index = len(self._dropped) - 1 - self._dropped[::-1].index(tag)
+                del self._dropped[index:]
+            return
         if self._hidden:
             # close only the matching open element; a stray end tag changes
             # nothing, so hidden content stays hidden until its own element ends
@@ -536,6 +584,7 @@ class _Rebuild(HTMLParser):
         if (
             self._in_body
             and not self._chrome_depth
+            and not self._dropped
             and not self._hidden
             and not self._skip_a
         ):
@@ -545,7 +594,8 @@ class _Rebuild(HTMLParser):
         found = {k.lower(): (v or "") for k, v in attrs}
         if "stylesheet" not in found.get("rel", "").lower().split():
             return
-        path = _static_file(self.site_dir, found.get("href", ""), (".css",))
+        href = self._root_based(found.get("href", ""))
+        path = _static_file(self.site_dir, href, (".css",))
         self.css.append(_read_regular(path, MAX_CSS_BYTES, "a stylesheet"))
 
 
@@ -565,34 +615,59 @@ def _check_gated_dir(gated_dir: Path) -> None:
         )
 
 
-def stage_page(gated_dir: Path, site_dir: Path) -> StagedPage:
+def valid_as_of_text(day: date) -> str:
+    """The line printed on the public PDF; a UTC calendar day."""
+    return f"Valid as of {day.isoformat()} (UTC)"
+
+
+def stage_page(
+    gated_dir: Path,
+    site_dir: Path,
+    *,
+    public: bool = False,
+    valid_as_of: date | None = None,
+) -> StagedPage:
     """The sealed print document for ``gated_dir/kit.html``; ``site_dir`` is the
-    public output the page's stylesheets and images come from."""
-    _check_gated_dir(gated_dir)
-    page = gated_dir / GATED_FILE
+    public output the page's stylesheets and images come from.
+
+    With ``public`` the page is the public kit, ``kit/index.html`` in
+    ``site_dir`` (``gated_dir`` is then not used). The gate form box and the zone
+    menu are dropped whole and the page's own helper script is never carried
+    over; nothing else is relaxed. ``valid_as_of`` adds a "Valid as of" line
+    with that UTC day."""
+    if public:
+        name, base = PUBLIC_FILE, site_dir
+        if (site_dir / "kit").is_symlink():
+            raise StageError("the public kit directory is a symbolic link")
+    else:
+        _check_gated_dir(gated_dir)
+        name, base = GATED_FILE, gated_dir
+    page = base / name
     if not os.path.lexists(page):
+        where = "site output" if public else "gated"
+        hint = "" if public else " with --gated-out"
         raise StageError(
-            f"{GATED_FILE} is not in the gated directory; run reach-around build "
-            "with --gated-out first"
+            f"{name} is not in the {where} directory; run reach-around build"
+            f"{hint} first"
         )
-    raw = _read_regular(page, MAX_PAGE_BYTES, GATED_FILE)
+    raw = _read_regular(page, MAX_PAGE_BYTES, name)
     try:
         text = raw.decode("utf-8")
     except UnicodeDecodeError as exc:
-        raise StageError(f"{GATED_FILE} is not valid UTF-8") from exc
+        raise StageError(f"{name} is not valid UTF-8") from exc
     if "\x00" in text:
-        raise StageError(f"{GATED_FILE} contains a NUL byte")
+        raise StageError(f"{name} contains a NUL byte")
     site_root = Path(os.path.abspath(site_dir))
     if site_root.is_symlink() or not site_root.is_dir():
         raise StageError(
             "the site output directory is a symbolic link or not a directory; "
             "use the real path"
         )
-    parser = _Rebuild(site_root)
+    parser = _Rebuild(site_root, public=public)
     parser.feed(text)
     parser.close()
     if not parser.body:
-        raise StageError(f"{GATED_FILE} has no page content")
+        raise StageError(f"{name} has no page content")
     css_parts: list[str] = []
     total = 0
     for sheet in parser.css:
@@ -600,11 +675,16 @@ def stage_page(gated_dir: Path, site_dir: Path) -> StagedPage:
         if total > MAX_CSS_TOTAL:
             raise StageError("the stylesheets are larger than the limit")
         css_parts.append(clean_css(sheet, "a stylesheet"))
+    line = (
+        ""
+        if valid_as_of is None
+        else f'<p class="kit-valid-as-of">{valid_as_of_text(valid_as_of)}</p>'
+    )
     document = (
         '<!doctype html><html lang="en"><head><meta charset="utf-8">'
         f'<meta http-equiv="Content-Security-Policy" content="{CSP}">'
         "<title>Media kit</title>"
         f"<style>{''.join(css_parts)}</style><style>{PRINT_CSS}</style>"
-        f"</head><body>{''.join(parser.body)}</body></html>"
+        f"</head><body>{''.join(parser.body)}{line}</body></html>"
     )
     return StagedPage(html=document)

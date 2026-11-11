@@ -1,15 +1,23 @@
 {# SPDX-License-Identifier: Apache-2.0 #}
 {% extends "base.html" %}
 {% set page_frames = false %}{% set frame_plan = {} %}
-{% from "_kit_parts.html" import numbers %}
+{% from "_kit_parts.html" import numbers, engagement %}
 {% block content %}
 <section class="kit" aria-labelledby="kit-title">
 <h2 id="kit-title">{{ kit.title }}</h2>
+{% if kit.tags %}
+<ul class="profile-tags kit-tags">
+{% for tag in kit.tags %}
+<li class="profile-tag">{{ tag }}</li>
+{% endfor %}
+</ul>
+{% endif %}
 <p class="kit-about">{{ kit.about }}</p>
 {% if kit.contact %}
 <p class="kit-about kit-contact">{{ kit.contact }}</p>
 {% endif %}
 {{ numbers(kit, "kit-numbers-title") }}
+{{ engagement(kit, "kit-engagement-title") }}
 {% if kit.partners %}
 <section class="kit-partners" aria-labelledby="kit-partners-title">
 <h3 id="kit-partners-title">Past partners</h3>
@@ -32,6 +40,26 @@
 {% endfor %}
 </section>
 {% endif %}
+{% if kit.services %}
+<section class="kit-services" aria-labelledby="kit-services-title">
+<h3 id="kit-services-title">Packages</h3>
+{% for service in kit.services %}
+<article class="kit-case kit-service">
+<h4>{{ service.title }}</h4>
+{% if service.included %}
+<ul class="kit-list kit-included">
+{% for line in service.included %}
+<li>{{ line }}</li>
+{% endfor %}
+</ul>
+{% endif %}
+{% if service.price_text %}
+<p class="kit-price"><strong>Price:</strong> {{ service.price_text }}</p>
+{% endif %}
+</article>
+{% endfor %}
+</section>
+{% endif %}
 {% if kit.rates %}
 <section class="kit-rates" aria-labelledby="kit-rates-title">
 <h3 id="kit-rates-title">Rates</h3>
@@ -48,6 +76,17 @@
 </table>
 </section>
 {% endif %}
+{% if kit.testimonials %}
+<section class="kit-testimonials" aria-labelledby="kit-testimonials-title">
+<h3 id="kit-testimonials-title">Testimonials</h3>
+{% for item in kit.testimonials %}
+<article class="kit-case kit-quote">
+<p>{{ item.quote }}</p>
+<p class="kit-note kit-attribution">{{ item.name }}{% if item.brand %}, <span class="kit-brand">{{ item.brand }}</span>{% endif %}</p>
+</article>
+{% endfor %}
+</section>
+{% endif %}
 {% if kit.demographics %}
 <section class="kit-demographics" aria-labelledby="kit-demographics-title">
 <h3 id="kit-demographics-title">Audience details</h3>
@@ -62,6 +101,57 @@
 {% endfor %}
 </tbody>
 </table>
+</section>
+{% endif %}
+{% if inquiry %}
+<section class="kit-inquiry-block" aria-labelledby="kit-inquiry-title">
+<h3 id="kit-inquiry-title">Business Inquiries</h3>
+<div class="kit-inquiry-grid">
+<dl class="kit-owner">
+<dt>Email</dt>
+<dd class="kit-owner-email">{{ inquiry.email }}</dd>
+{% if inquiry.pgp_fingerprint %}
+<dt>PGP fingerprint</dt>
+<dd class="kit-fingerprint">{{ inquiry.pgp_fingerprint }}</dd>
+{% endif %}
+</dl>
+<aside class="kit-inquiry" aria-label="Inquiry form">
+<form class="kit-inquiry-form" method="post" action="{{ inquiry.action }}">
+<p class="kit-field">
+<label for="inq-name">Name (required)</label>
+<input id="inq-name" name="name" type="text" autocomplete="name" maxlength="{{ inquiry.limits.name }}" required aria-required="true">
+</p>
+<p class="kit-field">
+<label for="inq-email">Email address</label>
+<input id="inq-email" name="email" type="email" inputmode="email" autocomplete="email" maxlength="{{ inquiry.limits.email }}">
+</p>
+<p class="kit-field">
+<label for="inq-brand">Brand</label>
+<input id="inq-brand" name="brand" type="text" autocomplete="organization" maxlength="{{ inquiry.limits.brand }}">
+</p>
+<p class="kit-field">
+<label for="inq-budget">Budget</label>
+<input id="inq-budget" name="budget" type="text" maxlength="{{ inquiry.limits.budget }}">
+</p>
+<p class="kit-field kit-field-wide">
+<label for="inq-details">Details</label>
+<textarea id="inq-details" name="details" rows="4" maxlength="{{ inquiry.limits.details }}"></textarea>
+</p>
+<div class="kit-hp" aria-hidden="true">
+<label for="inq-website">Leave this field empty</label>
+<input id="inq-website" name="website" type="text" tabindex="-1" autocomplete="off">
+</div>
+<p class="kit-note kit-field-wide">Sent directly to the site owner. This site keeps no copy.</p>
+<button class="kit-submit" type="submit">Send inquiry</button>
+</form>
+</aside>
+</div>
+</section>
+{% endif %}
+{% if kit.disclosure %}
+<section class="kit-disclosure" aria-labelledby="kit-disclosure-title">
+<h3 id="kit-disclosure-title">Disclosure</h3>
+<p>{{ kit.disclosure }}</p>
 </section>
 {% endif %}
 <p><a href="{{ root }}kit/">Back to the public kit page</a></p>

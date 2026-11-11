@@ -110,13 +110,17 @@ must be a relative path inside the config's folder (no `..`, no symlinked
 folder, not the config, numbers, status or lock file); put the config in your
 private instance checkout and the file lands there.
 
-The bundled example workflow (`examples/instance-repo`) does not carry the
-history file yet: it mounts only the config and `numbers.json` and stages only
-`numbers.json`. Until it does (tracked as its own issue), run the refresh where
-the checkout is writable and commit the file yourself. Run
-`reach-around counts history-verify` before the commit so a damaged file is
-never committed over a good one, and use a plain fast-forward push; never
-force-push the history.
+The bundled example workflow (`examples/instance-repo`) carries the history file
+when `numbers.history_file` is `history/social.jsonl`. The refresh job mounts the
+history folder writable for the engine only, checks the result with
+`counts history-verify` (offline, read-only), and hands it across the job
+boundary beside `numbers.json`. The publish job checks it again, refuses a file
+that does not begin with every byte of the committed one (append-only), and
+stages it in the same pull request (and skips the run, with a warning, while the open bot branch holds history rows main does not have yet, so they are never discarded; only `history/social.jsonl` is carried, and any other file the engine writes in that folder stops the run), which keeps the same bot-only and
+files-changed checks (`numbers.json` and `history/social.jsonl` only). If you
+run the refresh by hand, run `reach-around counts history-verify` before the
+commit so a damaged file is never committed over a good one, and use a plain
+fast-forward push; never force-push the history.
 
 Keep the file out of anything public: it is not read by `reach-around build`,
 and a public site or artifact should only ever get floored, labeled aggregates.

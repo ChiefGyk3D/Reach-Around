@@ -83,6 +83,8 @@ fields:
       - {name: Cutover and Beacons parity, color: RED, description: "Epic #246"}
       - {name: Social platform analytics, color: YELLOW, description: "Epic #364"}
       - {name: Analytics production readiness, color: GRAY, description: "Epic #365"}
+      - {name: Brand alignment with the main blog, color: PINK, description: "Epic #508"}
+      - {name: Link page and support page updates, color: YELLOW, description: "Epic #509"}
   - {name: Decision, type: text}
   - name: Priority
     type: single_select

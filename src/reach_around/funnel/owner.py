@@ -123,8 +123,22 @@ def _series_status(day_gap: bool, series_state: str, value: int | None) -> str:
     return "ok" if value is not None else "below_floor"
 
 
+def _coverage(report: dict[str, Any]) -> dict[str, Any]:
+    """Collection coverage for the window (#402); figures that span a gap say so."""
+    cov = report["coverage"]
+    return {
+        "status": cov["status"],
+        "spans_gap": bool(report["funnel"]["spans_collection_gap"]),
+        "gap_days": cov["gap_days"],
+        "partial_days": cov["partial_days"],
+    }
+
+
 def _daily(report: dict[str, Any]) -> dict[str, Any]:
     daily = report["daily"]
+    cov = report["coverage"]
+    collection = {g["day"]: "gap" for g in cov["gaps"]}
+    collection.update({p["day"]: "partial" for p in cov["partial"]})
     rows = []
     for d in daily["days"]:
         r = rate(d["clicks"], d["views"])
@@ -148,6 +162,7 @@ def _daily(report: dict[str, Any]) -> dict[str, Any]:
                 "rate": r["value"],
                 "rate_status": rate_status,
                 "rate_capped": r["capped"],
+                "collection": collection.get(d["day"], ""),
             }
         )
     return {
@@ -248,6 +263,7 @@ def owner_view(report: dict[str, Any]) -> dict[str, Any]:
         "period": release["period"],
         "released": release["period"] is not None,
         "counted_classes": report["counted_classes"],
+        "coverage": _coverage(report),
         "tiles": _tiles(report),
         "daily": _daily(report),
         "links": _links(report),

@@ -54,23 +54,45 @@ from reach_around.config.numbers import Numbers
 # characters only, so it can sit in an attribute with no escaping surprises.
 _SITE_KEY = re.compile(r"[0-9A-Za-z_-]{1,64}")
 
+MAX_PERIOD_DAYS = 366
+MAX_ENGAGEMENT_COUNT = 10**12
+
 Visibility = Literal["public", "gated", "private"]
+
+
+@dataclass(frozen=True)
+class FieldPolicy:
+    visibility: Visibility
+    owner_report_only: bool = False
+
+
+# The richer policy table records provenance requirements as well as audience.
+# DISPLAY_POLICY remains the visibility-only view used by existing callers.
+KIT_FIELD_POLICY: Mapping[str, FieldPolicy] = {
+    "title": FieldPolicy("public"),
+    "about": FieldPolicy("public"),
+    "contact": FieldPolicy("public"),
+    "tags": FieldPolicy("public"),
+    "metrics": FieldPolicy("public"),
+    "unified_total": FieldPolicy("public"),
+    "turnstile_site_key": FieldPolicy("public"),
+    "partners": FieldPolicy("gated"),
+    "case_studies": FieldPolicy("gated"),
+    "services": FieldPolicy("gated"),
+    "rates": FieldPolicy("gated"),
+    "engagement": FieldPolicy("gated", owner_report_only=True),
+    "testimonials": FieldPolicy("gated"),
+    "demographics": FieldPolicy("gated"),
+    "inquiry": FieldPolicy("gated"),
+    "disclosure": FieldPolicy("gated"),
+    "unlock_link": FieldPolicy("private"),
+}
 
 # Every KitConfig field, plus the computed ``unified_total``, has exactly one
 # entry. A field with no entry is a bug (``policy_gaps`` and a test catch it),
 # and ``visibility`` raises for it instead of guessing.
 DISPLAY_POLICY: Mapping[str, Visibility] = {
-    "title": "public",
-    "about": "public",
-    "contact": "public",
-    "metrics": "public",
-    "unified_total": "public",
-    "turnstile_site_key": "public",
-    "partners": "gated",
-    "case_studies": "gated",
-    "rates": "gated",
-    "demographics": "gated",
-    "unlock_link": "private",
+    name: rule.visibility for name, rule in KIT_FIELD_POLICY.items()
 }
 
 # Fields that are never printed in the private PDF although their level is not
@@ -96,6 +118,9 @@ def _plain(value: str) -> str:
     return value
 
 
+Text30 = Annotated[
+    StrictStr, Field(min_length=1, max_length=30), AfterValidator(_plain)
+]
 Text60 = Annotated[
     StrictStr, Field(min_length=1, max_length=60), AfterValidator(_plain)
 ]
@@ -161,11 +186,32 @@ class CaseStudy(_Model):
     result: Text300
 
 
+class Testimonial(_Model):
+    """One partner quote. The owner supplies the text and is responsible for
+    having permission to quote it; nothing here checks that."""
+
+    quote: Text300
+    name: Text80
+    brand: Text80 | None = None
+
+
 class Rate(_Model):
     """One rates-card line. ``price_text`` is text, so ``Ask me!`` is fine."""
 
     item: Text80
     price_text: Text80
+
+
+class ServicePackage(_Model):
+    """One named package: a title, what is included, and a price as text.
+
+    ``price_text`` is free text (``Ask me!`` is fine); nothing is computed from
+    it. Both the list and the price are optional.
+    """
+
+    title: Text80
+    included: list[Text120] = Field(default_factory=list, max_length=12)
+    price_text: Text80 | None = None
 
 
 class Demographic(_Model):
@@ -177,6 +223,58 @@ class Demographic(_Model):
     @classmethod
     def _as_of_is_a_date(cls, value: object) -> object:
         return _iso_date(value)
+
+
+# A plain address in the shape the Worker's form grammar accepts for visitors:
+# ASCII, one @, dot-separated atoms, a dotted domain. Plain characters only, so
+# it prints and sits in an attribute with no escaping surprises and can never
+# carry a header break.
+_OWNER_EMAIL = re.compile(
+    r"[A-Za-z0-9_+-]+(?:\.[A-Za-z0-9_+-]+)*"
+    r"@(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,63}"
+)
+_FINGERPRINT_LENGTHS = (
+    40,
+    64,
+)  # OpenPGP v4 (SHA-1) and v6 (SHA-256) fingerprints, in hex digits
+
+
+class Inquiry(_Model):
+    """The business inquiry form on the gated page and the owner details beside it.
+
+    The address and the key fingerprint are the owner's own, taken from here and never
+    hard-coded. The form posts to the Worker (``/k/inquiry``); where the message goes is
+    the Worker's alert channels, not this block.
+    """
+
+    email: StrictStr
+    pgp_fingerprint: StrictStr | None = None
+
+    @field_validator("email")
+    @classmethod
+    def _email_is_plain(cls, value: str) -> str:
+        if len(value) > 254 or not _OWNER_EMAIL.fullmatch(value):
+            raise ValueError(
+                "inquiry.email must be one plain address such as name@example.com "
+                "(ASCII, no spaces, at most 254 characters)"
+            )
+        return value
+
+    @field_validator("pgp_fingerprint")
+    @classmethod
+    def _fingerprint_is_hex(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        digits = value.replace(" ", "")
+        if len(digits) not in _FINGERPRINT_LENGTHS or not re.fullmatch(
+            r"[0-9A-Fa-f]+", digits
+        ):
+            raise ValueError(
+                "inquiry.pgp_fingerprint must be 40 or 64 hexadecimal digits "
+                "(spaces between groups are fine)"
+            )
+        digits = digits.upper()
+        return " ".join(digits[i : i + 4] for i in range(0, len(digits), 4))
 
 
 class PlatformMetric(_Model):
@@ -221,6 +319,60 @@ class PlatformMetric(_Model):
         return self
 
 
+class EngagementRow(_Model):
+    """Owner-kept inputs for one platform and one UTC period.
+
+    The kit works out average views per post and the engagement rate from these
+    (see ``reach_around.config.engagement``). A row with no figures is a platform
+    with no source: it prints ``not available``. ``counts`` says what the
+    platform counts as an interaction, because definitions differ.
+    """
+
+    platform: str
+    period_start: date | None = None
+    period_end: date | None = None
+    as_of: date | None = None
+    views: Annotated[StrictInt, Field(ge=0, le=MAX_ENGAGEMENT_COUNT)] | None = None
+    posts: Annotated[StrictInt, Field(ge=1, le=1_000_000)] | None = None
+    interactions: Annotated[StrictInt, Field(ge=0, le=MAX_ENGAGEMENT_COUNT)] | None = (
+        None
+    )
+    counts: Text120 | None = None
+    owner_supplied: StrictBool = False
+
+    @field_validator("platform")
+    @classmethod
+    def _known_platform(cls, value: str) -> str:
+        if value not in PLATFORM_SLUGS:
+            raise ValueError(
+                "platform must be a platform name from the platforms block"
+            )
+        return value
+
+    @field_validator("period_start", "period_end", "as_of", mode="before")
+    @classmethod
+    def _is_a_date(cls, value: object) -> object:
+        return _iso_date(value)
+
+    @model_validator(mode="after")
+    def _period_rules(self) -> EngagementRow:
+        figures = (self.views, self.posts, self.interactions)
+        if all(v is None for v in figures):
+            return self
+        if self.period_start is None or self.period_end is None or self.as_of is None:
+            raise ValueError(
+                "figures need a period (period_start and period_end, UTC days) "
+                "and an as_of date"
+            )
+        if self.period_end < self.period_start:
+            raise ValueError("period_end must not be before period_start")
+        if (self.period_end - self.period_start).days + 1 > MAX_PERIOD_DAYS:
+            raise ValueError(f"the period may be at most {MAX_PERIOD_DAYS} days")
+        if self.as_of < self.period_end:
+            raise ValueError("as_of must not be before the period ends")
+        return self
+
+
 class KitConfig(_Model):
     title: Text120
     about: Text1000
@@ -228,11 +380,26 @@ class KitConfig(_Model):
     # the page prints it escaped. The owner decides what goes here (an email
     # written as text is fine); no address or phone is required or checked.
     contact: Text200 | None = None
+    # A few content category chips for the header, public on every page.
+    tags: list[Text30] = Field(default_factory=list, max_length=8)
     metrics: list[PlatformMetric] = Field(default_factory=list, max_length=30)
+    # Owner-kept inputs for engagement and average views, per platform and UTC
+    # period. Public: the figures are worked out in code, never typed.
+    engagement: list[EngagementRow] = Field(default_factory=list, max_length=30)
     partners: list[Partner] = Field(default_factory=list, max_length=50)
     case_studies: list[CaseStudy] = Field(default_factory=list, max_length=20)
+    services: list[ServicePackage] = Field(default_factory=list, max_length=20)
     rates: list[Rate] = Field(default_factory=list, max_length=30)
+    testimonials: list[Testimonial] = Field(default_factory=list, max_length=10)
     demographics: list[Demographic] = Field(default_factory=list, max_length=30)
+    # The inquiry form (gated page only) and the owner's address and key fingerprint
+    # shown beside it. Left out: no form.
+    inquiry: Inquiry | None = None
+    # A short statement (a couple of sentences) on how paid relationships and
+    # affiliate links are disclosed and what content a brand can expect to sit
+    # next to. The owner words it; nothing is generated. Distinct from the
+    # site-wide affiliate ``disclosure`` in the page footer.
+    disclosure: Text500 | None = None
     # Public key of the Turnstile widget on the gate form. Optional: without it
     # the form renders an empty widget slot and the build warns.
     turnstile_site_key: StrictStr | None = None
@@ -257,6 +424,29 @@ class KitConfig(_Model):
                 "arrives in a later release. Leave it false or remove it."
             )
         return value
+
+    @model_validator(mode="after")
+    def _engagement_rows_are_unique(self) -> KitConfig:
+        seen: set[tuple[str, date | None, date | None]] = set()
+        for entry in self.engagement:
+            key = (entry.platform, entry.period_start, entry.period_end)
+            if key in seen:
+                raise ValueError(
+                    f"the engagement row for {entry.platform!r} and that period "
+                    "is listed more than once"
+                )
+            seen.add(key)
+        return self
+
+    @model_validator(mode="after")
+    def _tags_are_unique(self) -> KitConfig:
+        seen: set[str] = set()
+        for tag in self.tags:
+            key = unicodedata.normalize("NFKC", tag).casefold()
+            if key in seen:
+                raise ValueError(f"the tag {tag!r} is listed more than once")
+            seen.add(key)
+        return self
 
     @model_validator(mode="after")
     def _metrics_are_unique(self) -> KitConfig:
@@ -286,6 +476,24 @@ class KitConfig(_Model):
 def visibility(name: str) -> Visibility:
     """The visibility of ``name``; ``KeyError`` for a field with no rule."""
     return DISPLAY_POLICY[name]
+
+
+def enforce_display_policy(kit: KitConfig) -> None:
+    """Refuse private-scope platform data that did not come from the owner."""
+    if not KIT_FIELD_POLICY["engagement"].owner_report_only:
+        return
+    for index, entry in enumerate(kit.engagement):
+        has_figures = any(
+            value is not None
+            for value in (entry.views, entry.posts, entry.interactions)
+        )
+        if entry.platform == "youtube" and has_figures and not entry.owner_supplied:
+            raise ValueError(
+                "kit.engagement["
+                f"{index}] contains YouTube Analytics figures. Collected YouTube "
+                "Analytics values may not be used in a kit; enter the figures by "
+                "hand and set owner_supplied: true to show them in the deeper kit."
+            )
 
 
 def policy_gaps(
@@ -383,6 +591,14 @@ def kit_warnings(
         elif metric.value is not None and metric.as_of is not None:
             limit = (limits or {}).get(metric.platform, STALE_DAYS)
             found.append(_age_warning(what, metric.as_of, today, limit))
+    for entry in kit.engagement:
+        if entry.as_of is not None:
+            limit = (limits or {}).get(entry.platform, STALE_DAYS)
+            found.append(
+                _age_warning(
+                    f"kit engagement {entry.platform}", entry.as_of, today, limit
+                )
+            )
     for demo in kit.demographics:
         found.append(_age_warning(f"kit demographic {demo.label!r}", demo.as_of, today))
     return [w for w in found if w is not None]
@@ -401,6 +617,11 @@ def _project(
     }
     out: dict[str, Any] = {}
     for name, level in DISPLAY_POLICY.items():
+        rule = KIT_FIELD_POLICY.get(name)
+        # An owner-report-only field is a hard audience restriction: it never
+        # reaches the public projection, whatever level the table gives it.
+        if rule is not None and rule.owner_report_only and "gated" not in allowed:
+            continue
         if level in allowed:
             out[name] = values[name] if name in values else getattr(kit, name)
     return out

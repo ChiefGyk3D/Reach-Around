@@ -11,7 +11,7 @@ ICON_SLUGS: frozenset[str] = frozenset(
     """
     twitch kick mastodon bluesky tiktok discord youtube github instagram
     threads matrix x linkedin patreon email rss link bitcoin ethereum merch
-    monero solana
+    monero solana streamelements pixelfed
     """.split()
 )
 

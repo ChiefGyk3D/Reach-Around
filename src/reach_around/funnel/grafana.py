@@ -20,8 +20,10 @@ label suppression, not k-anonymity; a reader who holds two days or two tables
 can still subtract. The output is deterministic: rows are sorted, nothing
 carries a clock, and the file is built in one pass and moved into place whole.
 
-Only the newest 90 days are kept, counted back from the newest day in the export
-(for this site), so a long export cannot carry older data into the file.
+Only the newest 90 days of daily data are kept, counted back from the newest day
+in the export (for this site), so a long export cannot carry older data into the
+file. The monthly series (``*_monthly``) comes only from the 25 month archive
+(``reach_around.funnel.archive``), which is floored before it is written.
 """
 
 from __future__ import annotations
@@ -36,6 +38,7 @@ from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from reach_around.config.era import UNKNOWN, classify_window
 from reach_around.funnel.export import Export
 from reach_around.funnel.gaps import coverage_for_window
 from reach_around.funnel.report import (
@@ -46,18 +49,25 @@ from reach_around.funnel.report import (
     _utc_day,
 )
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 4
 RETENTION_DAYS = 90  # the ceiling for local copies (analytics-design, threat B2)
 OTHER = "(below the floor)"
 APPLICATION_ID = 0x52410335  # marks a file this job made, so it never overwrites others
 
 TABLES: dict[str, tuple[str, ...]] = {
     "grafana_meta": ("key", "value"),
+    "grafana_annotations": ("day", "text"),
     "grafana_views_daily": ("day", "bot_class", "views"),
     "grafana_pages_daily": ("day", "page", "views"),
     "grafana_sources_daily": ("day", "source", "views"),
     "grafana_countries_daily": ("day", "country", "views"),
     "grafana_clicks_daily": ("day", "link_id", "clicks"),
+    # The monthly series (issue #399): from the 25 month archive, floored before
+    # it was archived. Empty unless an archive directory is given. month is UTC
+    # YYYY-MM; a label total is a sum of archived (already floored) cells.
+    "grafana_clicks_monthly": ("month", "link_id", "clicks"),
+    "grafana_sources_monthly": ("month", "source", "clicks"),
+    "grafana_countries_monthly": ("month", "country", "clicks"),
     # Days with no or partial collection (issue #402). A day listed here has no row of
     # zeros in the tables above: draw it as a gap. status is gap or partial; reason is
     # outage, quota, kill_switch or site_kill_switch (joined with +).
@@ -66,6 +76,9 @@ TABLES: dict[str, tuple[str, ...]] = {
 
 _DDL = """
 CREATE TABLE grafana_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL) WITHOUT ROWID;
+CREATE TABLE grafana_annotations (
+    day TEXT NOT NULL PRIMARY KEY, text TEXT NOT NULL
+) WITHOUT ROWID;
 CREATE TABLE grafana_views_daily (
     day TEXT NOT NULL, bot_class TEXT NOT NULL, views INTEGER NOT NULL,
     PRIMARY KEY (day, bot_class)
@@ -86,6 +99,18 @@ CREATE TABLE grafana_clicks_daily (
     day TEXT NOT NULL, link_id TEXT NOT NULL, clicks INTEGER NOT NULL,
     PRIMARY KEY (day, link_id)
 ) WITHOUT ROWID;
+CREATE TABLE grafana_clicks_monthly (
+    month TEXT NOT NULL, link_id TEXT NOT NULL, clicks INTEGER NOT NULL,
+    PRIMARY KEY (month, link_id)
+) WITHOUT ROWID;
+CREATE TABLE grafana_sources_monthly (
+    month TEXT NOT NULL, source TEXT NOT NULL, clicks INTEGER NOT NULL,
+    PRIMARY KEY (month, source)
+) WITHOUT ROWID;
+CREATE TABLE grafana_countries_monthly (
+    month TEXT NOT NULL, country TEXT NOT NULL, clicks INTEGER NOT NULL,
+    PRIMARY KEY (month, country)
+) WITHOUT ROWID;
 CREATE TABLE grafana_gaps_daily (
     day TEXT NOT NULL, status TEXT NOT NULL, reason TEXT NOT NULL,
     PRIMARY KEY (day)
@@ -101,21 +126,55 @@ class GrafanaExportError(ValueError):
 class Subset:
     site: str = "links"
     floor: int = FLOOR
+    cutover_utc: str | None = None
+    window_era: str | None = None
+    annotations: list[tuple[str, str]] = field(default_factory=list)
     views: list[tuple[str, str, int]] = field(default_factory=list)
     pages: list[tuple[str, str, int]] = field(default_factory=list)
     sources: list[tuple[str, str, int]] = field(default_factory=list)
     countries: list[tuple[str, str, int]] = field(default_factory=list)
     clicks: list[tuple[str, str, int]] = field(default_factory=list)
     gaps: list[tuple[str, str, str]] = field(default_factory=list)
+    clicks_monthly: list[tuple[str, str, int]] = field(default_factory=list)
+    sources_monthly: list[tuple[str, str, int]] = field(default_factory=list)
+    countries_monthly: list[tuple[str, str, int]] = field(default_factory=list)
+
+    def with_archive(self, records: list[dict[str, Any]]) -> None:
+        """Add the monthly series from validated archive records (already floored)."""
+        for rec in records:
+            if rec["floor"] < self.floor:
+                raise GrafanaExportError(
+                    "the archive floor is below the requested Grafana floor"
+                )
+            month = rec["month"]
+            per_link: dict[str, int] = defaultdict(int)
+            per_source: dict[str, int] = defaultdict(int)
+            per_country: dict[str, int] = defaultdict(int)
+            for r in rec["sources"]:
+                per_link[r["link_id"]] += r["clicks"]
+                per_source[r["label"]] += r["clicks"]
+            for r in rec["countries"]:
+                per_country[r["label"]] += r["clicks"]
+            self.clicks_monthly += [(month, k, v) for k, v in sorted(per_link.items())]
+            self.sources_monthly += [
+                (month, k, v) for k, v in sorted(per_source.items())
+            ]
+            self.countries_monthly += [
+                (month, k, v) for k, v in sorted(per_country.items())
+            ]
 
     def counts(self) -> dict[str, int]:
         return {
+            "grafana_annotations": len(self.annotations),
             "grafana_views_daily": len(self.views),
             "grafana_pages_daily": len(self.pages),
             "grafana_sources_daily": len(self.sources),
             "grafana_countries_daily": len(self.countries),
             "grafana_clicks_daily": len(self.clicks),
             "grafana_gaps_daily": len(self.gaps),
+            "grafana_clicks_monthly": len(self.clicks_monthly),
+            "grafana_sources_monthly": len(self.sources_monthly),
+            "grafana_countries_monthly": len(self.countries_monthly),
         }
 
 
@@ -138,6 +197,7 @@ def build_subset(
     *,
     site: str = "links",
     floor: int = FLOOR,
+    cutover: date | None = None,
     today: date | None = None,
 ) -> Subset:
     """Reduce a validated export to the documented, floored daily subset."""
@@ -184,9 +244,23 @@ def build_subset(
         [(g.day, "gap", g.reasons[0]) for g in cov.gaps]
         + [(p.day, "partial", "+".join(p.reasons)) for p in cov.partial]
     )
+    current_day = today or datetime.now(UTC).date()
+    retained_days = sorted(day for day in days if day >= oldest)
+    since = date.fromisoformat(retained_days[0]) if retained_days else None
+    until = date.fromisoformat(retained_days[-1]) if retained_days else None
+    window_era = classify_window(since, until, cutover, current_day)
+    # an arrived cutover is always marked; only the window era needs data
+    active_cutover = cutover if cutover and cutover <= current_day else None
     return Subset(
         site=site,
         floor=floor,
+        cutover_utc=active_cutover.isoformat() if active_cutover else None,
+        window_era=window_era if active_cutover and window_era != UNKNOWN else None,
+        annotations=(
+            [(active_cutover.isoformat(), "Reach Around cutover")]
+            if active_cutover
+            else []
+        ),
         gaps=gaps,
         views=_floor_days(classes, floor, frozenset({"h"})),
         pages=_floor_days(pages, floor),
@@ -247,16 +321,30 @@ def _build_bytes(subset: Subset) -> bytes:
         con.executescript(_DDL)
         data: dict[str, list[Any]] = {
             "grafana_meta": [
+                *(
+                    [("cutover_utc", subset.cutover_utc)]
+                    if subset.cutover_utc is not None
+                    else []
+                ),
                 ("floor", str(subset.floor)),
                 ("schema_version", str(SCHEMA_VERSION)),
                 ("site", subset.site),
+                *(
+                    [("window_era", subset.window_era)]
+                    if subset.window_era is not None
+                    else []
+                ),
             ],
+            "grafana_annotations": subset.annotations,
             "grafana_views_daily": subset.views,
             "grafana_pages_daily": subset.pages,
             "grafana_sources_daily": subset.sources,
             "grafana_countries_daily": subset.countries,
             "grafana_clicks_daily": subset.clicks,
             "grafana_gaps_daily": subset.gaps,
+            "grafana_clicks_monthly": subset.clicks_monthly,
+            "grafana_sources_monthly": subset.sources_monthly,
+            "grafana_countries_monthly": subset.countries_monthly,
         }
         for table, rows in data.items():
             marks = ", ".join("?" for _ in TABLES[table])

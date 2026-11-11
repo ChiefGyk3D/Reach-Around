@@ -32,7 +32,16 @@ jobs:
         python -m pip install --upgrade pip
         pip install --require-hashes -r requirements-dev.txt
         pip install --no-deps -e .
-      test-command: pytest --cov=reach_around --cov-report=xml
+      # pytest-xdist: the suite is ~6,600 tests and ran serially (3.12 took 13m22s of a 15m
+      # limit). Coverage is only uploaded from the coverage leg (3.13), so the other legs skip
+      # it: settrace coverage made 3.12 2.7x slower than 3.13 (802s vs 301s).
+      xdist: true
+      test-command: |
+        if [ "$(python -c 'import sys; print(f"{sys.version_info[0]}.{sys.version_info[1]}")')" = "3.13" ]; then
+          pytest --cov=reach_around --cov-report=xml
+        else
+          pytest
+        fi
       lint-install-command: pip install --require-hashes -r requirements-dev.txt
       lint-command: |
         ruff check .

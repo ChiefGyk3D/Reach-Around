@@ -83,9 +83,45 @@
   clip-path: inset(50%);
 }
 
+/* Business inquiry form (gated page only): the owner's details beside the form on a wide screen,
+   stacked on a narrow one. The form is plain HTML; the page carries no script. */
+.kit-inquiry-grid { display: grid; gap: var(--ra-space-5); align-items: start; }
+.kit-owner { display: grid; gap: var(--ra-space-1); margin: 0; min-width: 0; align-content: start; }
+.kit-owner dt { color: var(--ra-color-muted); font-size: var(--ra-text-sm); }
+.kit-owner dd { margin: 0 0 var(--ra-space-3); overflow-wrap: anywhere; }
+.kit-fingerprint { font-family: var(--ra-font-mono); font-variant-numeric: tabular-nums; }
+.kit-inquiry-form { display: grid; gap: var(--ra-space-3); min-width: 0; }
+.kit-inquiry-form label { font-weight: 600; }
+.kit-inquiry-form input[type="text"], .kit-inquiry-form input[type="email"], .kit-inquiry-form textarea {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: var(--ra-tap);
+  padding: var(--ra-space-2) var(--ra-space-3);
+  border: 1px solid var(--ra-color-border);
+  border-radius: var(--ra-button-radius);
+  background-color: var(--ra-color-surface);
+  color: var(--ra-color-text);
+  font: inherit;
+}
+.kit-inquiry-form textarea { min-height: 7rem; resize: vertical; }
+.kit-inquiry-form input:focus-visible, .kit-inquiry-form textarea:focus-visible {
+  outline: 3px solid var(--ra-color-link);
+  outline-offset: 3px;
+}
+@media (min-width: 60rem) {
+  .kit-inquiry-grid { grid-template-columns: minmax(20rem, 1fr) minmax(0, 2fr); }
+  .kit-inquiry-form { grid-template-columns: repeat(2, minmax(0, 1fr)); column-gap: var(--ra-space-4); }
+  .kit-inquiry-form .kit-field-wide, .kit-inquiry-form .kit-submit { grid-column: 1 / -1; }
+  .kit-inquiry-form .kit-submit { justify-self: start; }
+}
+
 @media print {
+  .kit-inquiry { display: none; }
   .kit-gate-box, .kit-gate, .skip-link { display: none; }
   .kit-case { break-inside: avoid; border-color: CanvasText; background: none; }
   .kit-table th, .kit-table td { border-color: CanvasText; }
   .kit-note, .kit-table thead th { color: CanvasText; }
 }
+.kit-formula { display: block; }
+.kit-nowrap { white-space: nowrap; }
+.kit-tags { justify-content: flex-start; }
