@@ -91,7 +91,7 @@ escapes it when it renders.
 | `privacy` | Privacy | defaults | wording and retention for the privacy page; see [`privacy`](#privacy) |
 | `footer` | Footer | credit on | the "Made with Reach Around" link in the footer; see [`footer`](#footer) |
 | `robots` | Robots | absent | optional; when present the build writes `robots.txt`; see [`robots`](#robots) |
-| `redirects` | Redirects | absent | optional; `redirects.socials` writes a `_redirects` file that sends the old `/socials` path to the link page; see [`redirects`](#redirects) |
+| `redirects` | Redirects | absent | optional; writes a Cloudflare Pages `_redirects` file for old paths; see [`redirects`](#redirects) |
 | `analytics` | Analytics | page views off | optional page-view counting; see [`analytics`](#analytics) |
 | `store` | StoreConfig | SQLite at `data/reach-around.db` | where the snapshot store lives; see [`store`](#store) |
 | `profile_card` | ProfileCard | none | name, topic chips and a media-kit button after the content of every page; see [`profile_card`](#profile_card) |
@@ -1449,9 +1449,28 @@ documentation for what is available on your plan.
 
 ## `redirects`
 
-Optional. When the `redirects` key is **absent** (or has no `socials`), the build
-writes no `_redirects` file and the output is byte-for-byte what it was before
-this key existed. Unknown keys are refused.
+Optional. When the `redirects` key is **absent** (or has neither `socials` nor
+`tabs` rules), the build writes no `_redirects` file. Unknown keys are refused.
+
+`redirects.tabs` maps each old tab slug to a current tab id. The build writes a
+permanent redirect for both `/<old-slug>` and `/<old-slug>/`. It resolves the
+destination from the current layout: the first tab goes to `/`, later tabs go
+to `/<tab-id>/` with the `tabs` layout and `/#<tab-id>` with the `sections`
+layout. Slugs use the same lowercase letters, digits and hyphens as tab ids,
+with 1 to 40 characters. Every destination id must name a current tab, and an
+old slug cannot hide a current tab route.
+
+```yaml
+redirects:
+  tabs:
+    old-links: links
+    previous-events: events
+```
+
+Cloudflare Pages permits at most 2,000 static redirect rules. Each tab mapping
+uses two rules, and `redirects.socials` uses two more. The build fails with the
+generated count before writing output if the combined configuration would
+exceed 2,000 rules.
 
 `redirects.socials` is for the cutover: the link page replaces an old page at
 `/socials` on the same host, and shared links to it must keep working. Turning

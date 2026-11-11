@@ -71,6 +71,49 @@ def test_default_is_301_to_root_for_both_paths(tmp_path: Path) -> None:
     ]
 
 
+def test_old_tab_slugs_redirect_to_current_tab_routes(tmp_path: Path) -> None:
+    files = built(cfg({"tabs": {"archive": "s", "old-home": "home"}}), tmp_path / "o")
+    assert rules(files["_redirects"].decode()) == [
+        ["/archive", "/s/", "301"],
+        ["/archive/", "/s/", "301"],
+        ["/old-home", "/", "301"],
+        ["/old-home/", "/", "301"],
+    ]
+
+
+def test_old_tab_slugs_follow_section_routes(tmp_path: Path) -> None:
+    config = cfg({"tabs": {"archive": "s"}}).model_copy(
+        update={"page_layout": "sections"}
+    )
+    files = built(config, tmp_path / "o")
+    assert rules(files["_redirects"].decode()) == [
+        ["/archive", "/#s", "301"],
+        ["/archive/", "/#s", "301"],
+    ]
+
+
+def test_static_redirect_limit_counts_socials_and_tab_rules(tmp_path: Path) -> None:
+    at_limit = {f"old-{i}": "s" for i in range(999)}
+    assert "_redirects" in built(
+        cfg({"socials": {}, "tabs": at_limit}), tmp_path / "allowed"
+    )
+
+    over_limit = {**at_limit, "old-999": "s"}
+    with pytest.raises(ValueError, match=r"2,002.*2,000"):
+        build_site(
+            cfg({"socials": {}, "tabs": over_limit}),
+            tmp_path / "refused",
+            today=TODAY,
+        )
+    assert not (tmp_path / "refused").exists()
+
+
+def test_old_slug_cannot_hide_a_current_tab(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match=r"redirects\.tabs.*hide.*s"):
+        build_site(cfg({"tabs": {"s": "home"}}), tmp_path / "o", today=TODAY)
+    assert not (tmp_path / "o").exists()
+
+
 def test_302_switch(tmp_path: Path) -> None:
     files = built(cfg({"socials": {"status": 302}}), tmp_path / "o")
     got = rules(files["_redirects"].decode())
