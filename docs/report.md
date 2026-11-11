@@ -478,7 +478,7 @@ The page is rendered from the same floored report dictionary as the text, JSON
 and CSV output (`reach_around.funnel.owner.owner_view`), never from the export,
 so it shows no figure the floored JSON does not hold. Sections: overview tiles
 (views, clicks, click rate, each with the change against the previous window of
-the same length when both figures are printable), a daily views and clicks chart
+the same length when both figures are printable), followed by a daily views and clicks chart
 and a daily click rate chart (UTC days), the daily table, clicks per link,
 sources, devices, browsers, operating systems, countries, and the released
 clicks by source and country with the source by link and country by link
@@ -486,6 +486,12 @@ tables when `--period` was used. The matching CSV files are `owner_tiles.csv`,
 `owner_daily.csv`, `owner_links.csv`, `owner_sources.csv`, `owner_devices.csv`,
 `owner_countries.csv`, `owner_clicks_by_source.csv` and
 `owner_clicks_by_country.csv`; Grafana can read the same data.
+
+This is layout A: the overview is always first, followed by the detail sections.
+It uses the shared square `ra-c-plate` and `ra-c-ticks` components with the dark
+brand tokens. The mobile-first layout is sized for 390, 820 and 1440 px; wide
+charts scroll inside their own plate on a narrow screen instead of widening the
+page.
 
 Rules the page follows:
 
