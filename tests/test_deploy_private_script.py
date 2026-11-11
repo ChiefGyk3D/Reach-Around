@@ -26,22 +26,32 @@ pytestmark = pytest.mark.skipif(
 # A stand-in for `reach-around build`: it writes the manifest the test chose to
 # the --manifest path, like the real CLI.
 FAKE_BUILD = """#!/bin/sh
-out=""; manifest=""
+out=""; gated_out=""; manifest=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --out) out="$2"; shift 2 ;;
+    --gated-out) gated_out="$2"; shift 2 ;;
     --manifest) manifest="$2"; shift 2 ;;
     *) shift ;;
   esac
 done
 mkdir -p "$out"
+[ "${FAKE_GATED:-0}" = 0 ] || {
+  [ -n "$gated_out" ] || exit 23
+  mkdir -p "$gated_out"
+  printf 'private kit' > "$gated_out/kit.html"
+}
 [ -n "$manifest" ] || manifest="$out.manifest.json"
 cp "$FAKE_MANIFEST" "$manifest"
 """
 
 
 def _dry_run(
-    tmp_path: Path, retention: Any, variable: str | None = None
+    tmp_path: Path,
+    retention: Any,
+    variable: str | None = None,
+    *,
+    gated: bool = False,
 ) -> subprocess.CompletedProcess[str]:
     repo = tmp_path / "repo"
     (repo / "worker").mkdir(parents=True)
@@ -70,10 +80,13 @@ def _dry_run(
     ]
     if variable is not None:
         lines.append(f"LEAD_RETENTION_DAYS='{variable}'")
+    if gated:
+        lines.append(f"KIT_KV_ID={'a' * 32}")
     settings.write_text("\n".join(lines) + "\n", encoding="utf-8")
     env = {
         "PATH": f"{bindir}:/usr/bin:/bin",
         "FAKE_MANIFEST": str(manifest),
+        "FAKE_GATED": "1" if gated else "0",
         "HOME": str(tmp_path),
     }
     return subprocess.run(  # noqa: S603 - fixed argv, synthetic input
@@ -134,3 +147,12 @@ def test_the_script_does_not_read_the_retention_from_the_environment() -> None:
     text = SCRIPT.read_text(encoding="utf-8")
     assert "jq -e" in text and "lead_retention_days" in text
     assert "--manifest" in text  # the manifest sits beside, never inside, the output
+
+
+def test_a_gated_kit_is_built_outside_the_public_pages_output(tmp_path: Path) -> None:
+    done = _dry_run(tmp_path, 45, gated=True)
+    assert done.returncode == 0, done.stderr
+    private = tmp_path / "private"
+    assert (private / "gated-out" / "kit.html").read_text() == "private kit"
+    assert not list((private / "site-out").rglob("kit.html"))
+    assert _vars(tmp_path)["LEAD_RETENTION_DAYS"] == "45"

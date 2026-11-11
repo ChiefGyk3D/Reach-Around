@@ -96,6 +96,93 @@ week.
 6. **Update the Worker and the tool**: read the changelog for anything marked
    as a migration or a deploy order, and take a bookmark and a backup first.
 
+## Every 30 days: refresh the media kit
+
+This is the kit-specific extension to the
+[analytics operations runbook](#every-week-about-20-minutes) (#403). Follow the
+[hand-kept number hygiene](config.md#hand-kept-numbers) (#389); this list does
+not replace either runbook. It assumes the private instance and deploy script
+are already configured as described in [deploy.md](deploy.md). Keep all values,
+exports and PDFs outside this public repository.
+
+Run these steps in order:
+
+1. Update each hand-kept number and its UTC `as_of` date at its source. For a
+   typed platform count or a kit metric with `source: manual`, edit `site.yaml`.
+   For a kit metric with `source: counts`, update `numbers.json` with
+   `reach-around counts import` (preferred for a CSV) or edit that entry's value
+   and `as_of` date directly. If the instance has `numbers.history_file`, append
+   the same observation for every directly edited value, replacing the
+   placeholders and repeating the command as needed; `counts import` appends
+   imported observations itself.
+
+   ```bash
+   reach-around counts history-add --config site.yaml \
+     --platform <PLATFORM> --metric <METRIC> --value <NUMBER> \
+     --as-of <YYYY-MM-DD> --note "read from the dashboard"
+   ```
+
+2. Refresh every configured collector. A failed source keeps its previous
+   number, so stop if this exits nonzero and read its fixed-word status before
+   continuing.
+
+   ```bash
+   reach-around counts refresh --config site.yaml
+   ```
+
+3. Rebuild the public site and the gated kit from those same inputs.
+
+   ```bash
+   reach-around build --config site.yaml --out site-out --gated-out gated-out
+   ```
+
+4. Check the reminder and the production stale gate.
+
+   ```bash
+   reach-around counts stale --config site.yaml
+   reach-around check --config site.yaml --numbers numbers.json --production
+   ```
+
+   `counts stale` exits 4 when a hand-kept number is due and never prints its
+   value. Do not publish while either command reports a stale number. Read the
+   named platform and scope, obtain a current value from its dashboard, type
+   the value with its real UTC as-of date, then repeat steps 1 through 4 until
+   `counts stale` exits 0 and the production check passes. Never change an
+   `as_of` date without obtaining the current value.
+
+5. Publish with the existing private deploy script. Set `KIT_KV_ID` in its
+   private settings file to the gated kit's KV namespace id. The script rebuilds
+   both outputs, uploads `gated-out/kit.html` to the Worker's private `KIT`
+   binding, and publishes only the public output to Pages. This runbook adds no
+   other deployment setup; use the already-reviewed settings and approval
+   described in [deploy.md](deploy.md#a-private-deploy-script).
+
+   ```bash
+   ~/private/deploy.sh ~/private/deploy.settings
+   ```
+
+6. Regenerate both PDFs from the successful build. The private PDF stays in an
+   owner-only directory; the public PDF contains only the public projection.
+
+   ```bash
+   reach-around kit pdf --config site.yaml --site-out site-out \
+     --gated-out gated-out --out-dir ~/private/kit --overwrite
+   reach-around kit pdf --public --config site.yaml --site-out site-out \
+     --out-dir ~/private/kit-public --isolation netns --overwrite
+   ```
+
+7. Check the aggregate lead count and the last successful purge time. The
+   second value is epoch milliseconds. If it is older than the expected hourly
+   run, follow [lead retention](privacy.md#how-long-it-is-kept) before treating
+   the refresh as complete.
+
+   ```bash
+   npx wrangler d1 execute reach-around-clicks --remote \
+     --command "SELECT COUNT(*) AS lead_count FROM leads"
+   npx wrangler d1 execute reach-around-clicks --remote \
+     --command "SELECT value FROM kit_meta WHERE key = 'last_purge_ts'"
+   ```
+
 ## What to export, where it lives, how long to keep it
 
 | What | Taken | Lives in | Keep |

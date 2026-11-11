@@ -11,7 +11,8 @@
 #   3. writes a wrangler config into a private directory,
 #   4. checks the shape of every value,
 #   5. shows the plan and asks for confirmation (or stops at --dry-run),
-#   6. runs the three wrangler commands, the only place the token exists.
+#   6. uploads any gated kit and runs the three deploy commands, the only place
+#      the token exists.
 #
 # Usage: deploy-private.sh [--dry-run] [--yes] SETTINGS_FILE
 #
@@ -24,6 +25,7 @@
 #   PAGES_PROJECT=reach-around
 #   D1_DATABASE_ID=00000000-0000-0000-0000-000000000000
 #   RATELIMIT_NAMESPACE_ID=1001
+#   KIT_KV_ID=00000000000000000000000000000000 # required for a gated media kit
 #   SITE_HOST=links.example.invalid
 #   ZONE_NAME=example.invalid                   # optional: creates the /e/* route
 #   LEAD_RETENTION_DAYS=30                      # optional: only COMPARED with the
@@ -58,6 +60,7 @@ unset CLOUDFLARE_API_TOKEN
 
 DOPPLER_CONFIG="${DOPPLER_CONFIG:-dev}"
 ZONE_NAME="${ZONE_NAME:-}"
+KIT_KV_ID="${KIT_KV_ID:-}"
 
 fail() { echo "error: $*" >&2; exit 1; }
 
@@ -76,6 +79,9 @@ check RATELIMIT_NAMESPACE_ID '^[0-9]{1,12}$'
 check SITE_HOST '^[a-z0-9.-]{3,253}$'
 check PAGES_PROJECT '^[a-z0-9-]{1,58}$'
 check DOPPLER_CONFIG '^[a-z0-9_-]{1,32}$'
+if [ -n "$KIT_KV_ID" ]; then
+  check KIT_KV_ID '^[0-9a-f]{32}$'
+fi
 if [ -n "$ZONE_NAME" ]; then
   check ZONE_NAME '^[a-z0-9.-]{3,253}$'
 fi
@@ -93,16 +99,26 @@ command -v reach-around >/dev/null || fail "reach-around is not installed"
 umask 077
 mkdir -p "$PRIVATE_DIR"
 site_out="$PRIVATE_DIR/site-out"
+gated_out="$PRIVATE_DIR/gated-out"
 wrangler_toml="$PRIVATE_DIR/wrangler.deploy.toml"
 
 # 1. Build outside the repository. No token exists in this process.
 rm -rf "$site_out"
+mkdir -p "$gated_out"
 #    The manifest is written beside the output, never inside it (it would be
 #    published).
 manifest="$PRIVATE_DIR/manifest.json"
 rm -f "$manifest"
 reach-around build --config "$INSTANCE_CONFIG" --out "$site_out" \
+  --gated-out "$gated_out" \
   --manifest "$manifest"
+if [ -f "$gated_out/kit.html" ]; then
+  [ -n "$KIT_KV_ID" ] \
+    || fail "KIT_KV_ID is required when the build produces a gated media kit"
+  gated_kit="$gated_out/kit.html"
+else
+  gated_kit=""
+fi
 
 # 2. Link ids come from the build manifest, so the Worker accepts exactly the
 #    links the page publishes.
@@ -155,6 +171,10 @@ if [ -n "$alerts_config" ]; then
   grep -qxF "ALERTS_CONFIG = '${alerts_config}'" "$wrangler_toml" \
     || fail "alerts config not written"
 fi
+if [ -n "$gated_kit" ]; then
+  printf '\n[[kv_namespaces]]\nbinding = "KIT"\nid = "%s"\n' "$KIT_KV_ID" \
+    >> "$wrangler_toml"
+fi
 route_note="none (clicks are not counted)"
 if [ -n "$ZONE_NAME" ]; then
   printf '\n[[routes]]\npattern = "%s/e/*"\nzone_name = "%s"\n' \
@@ -172,6 +192,7 @@ Plan
   worker config    $wrangler_toml
   link ids         $link_ids
   lead retention   $lead_retention days
+  gated kit        ${gated_kit:-none}
   route            $route_note
   token source     Doppler project reach-around, config $DOPPLER_CONFIG
 PLAN
@@ -187,7 +208,7 @@ if [ "$assume_yes" -ne 1 ]; then
   [ "$answer" = "deploy" ] || fail "not confirmed"
 fi
 
-# 5. The only three commands that see the token. Doppler injects it into the
+# 5. These are the only commands that see the token. Doppler injects it into the
 #    child process; this script never holds or prints it.
 export CLOUDFLARE_ACCOUNT_ID
 export WRANGLER_SEND_METRICS=false
@@ -199,6 +220,10 @@ with_token() {
 cd "$REPO_DIR/worker"
 with_token npx --no-install wrangler d1 migrations apply DB --remote \
   --config "$wrangler_toml"
+if [ -n "$gated_kit" ]; then
+  with_token npx --no-install wrangler kv key put --binding KIT kit/v1 \
+    --path "$gated_kit" --remote --config "$wrangler_toml"
+fi
 with_token npx --no-install wrangler deploy --config "$wrangler_toml"
 with_token npx --no-install wrangler pages deploy "$site_out" \
   --project-name "$PAGES_PROJECT" --branch main --commit-dirty=true
