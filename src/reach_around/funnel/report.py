@@ -20,6 +20,7 @@ from typing import Any
 
 from reach_around.funnel.export import CLASSES, Export
 from reach_around.funnel.gaps import coverage_for_window
+from reach_around.funnel.social import social_lines
 
 FLOOR = 5
 # Report section -> the ``dim`` value in view_dim_daily it is built from.
@@ -466,6 +467,50 @@ def _fold(cells: Mapping[str, int], floor: int) -> Floored:
     return Floored(shown, remainder, hidden_rows)
 
 
+def _fold_matrix(
+    cells: Mapping[tuple[str, str], int], floor: int
+) -> dict[str, Floored]:
+    """Apply complementary suppression independently to every matrix column."""
+    by_column: dict[str, dict[str, int]] = defaultdict(dict)
+    for (row, column), value in cells.items():
+        by_column[column][row] = value
+    return {
+        column: folded
+        for column, column_cells in by_column.items()
+        if not (folded := _fold(column_cells, floor)).dropped
+        and (folded.shown or folded.other)
+    }
+
+
+def _release_matrix(
+    cells: Mapping[tuple[str, str], int], floor: int
+) -> dict[str, list[dict[str, str | int]]]:
+    """Return cells and margins computed only from cells safe to print."""
+    released = _fold_matrix(cells, floor)
+    printed: list[dict[str, str | int]] = []
+    row_totals: dict[str, int] = defaultdict(int)
+    column_totals: dict[str, int] = defaultdict(int)
+    for column in sorted(released):
+        folded = released[column]
+        rows = [*folded.shown]
+        if folded.other:
+            rows.append((REMAINDER, folded.other))
+        for row, value in rows:
+            printed.append({"row": row, "column": column, "value": value})
+            row_totals[row] += value
+            column_totals[column] += value
+    return {
+        "cells": printed,
+        "row_totals": [
+            {"row": row, "value": value} for row, value in sorted(row_totals.items())
+        ],
+        "column_totals": [
+            {"column": column, "value": value}
+            for column, value in sorted(column_totals.items())
+        ],
+    }
+
+
 def _link_breakdown(
     by_link: Mapping[str, Mapping[str, int]],
     printed: list[str] | None,
@@ -501,36 +546,30 @@ def _link_breakdown(
         return {"state": "not_in_export", **empty}
     if not released:
         return {"state": "period_required", **empty}
-    results: dict[str, Floored] = {}
+    matrix_cells: dict[tuple[str, str], int] = {}
     for link, cells in by_link.items():
         if not cells or (
             printed is not None and link not in printed and link != OVERFLOW_LINK
         ):
             continue
-        result = _fold(cells, floor)
-        if result.dropped or (not result.shown and not result.other):
-            continue
-        results[link] = result
+        matrix_cells.update({(label, link): value for label, value in cells.items()})
+    matrix_release = _release_matrix(matrix_cells, floor)
+    results: dict[str, list[tuple[str, int]]] = defaultdict(list)
+    for cell in matrix_release["cells"]:
+        results[str(cell["column"])].append((str(cell["row"]), int(cell["value"])))
 
     def total(link: str) -> int:
-        return sum(n for _, n in results[link].shown) + results[link].other
+        return sum(n for _, n in results[link])
 
     order = sorted(results, key=lambda link: (-total(link), link))
     shown = order[:top]
     label_totals: dict[str, int] = defaultdict(int)
     cell_rows: list[dict[str, Any]] = []
     for link in shown:
-        for label, n in results[link].shown:
+        for label, n in results[link]:
             cell_rows.append({"label": label, "destination": link, "clicks": n})
-            label_totals[label] += n
-        if results[link].other:
-            cell_rows.append(
-                {
-                    "label": REMAINDER,
-                    "destination": link,
-                    "clicks": results[link].other,
-                }
-            )
+            if label != REMAINDER:
+                label_totals[label] += n
     withheld = sum(1 for cells in by_link.values() if cells) - len(results)
     state = "ok"
     if any(by_link.values()) and not cell_rows and not len(order) > top:
@@ -1492,6 +1531,8 @@ def render_text(report: dict[str, Any]) -> str:
                 f"  {'(classes below the floor)':<28} {bots['other_below_floor']:>8}"
             )
     _table("Bot reasons (not human-likely)", bots["reasons"], lines)
+    if "social" in report:
+        lines.extend(social_lines(report["social"]))
     lines.append("")
     lines.append(
         "Human-likely is an estimate; crawlers that never run the script are "
