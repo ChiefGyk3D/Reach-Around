@@ -9,8 +9,10 @@ from __future__ import annotations
 import csv
 import io
 import json
+import os
 import re
 import stat
+from collections.abc import Iterator
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -170,6 +172,70 @@ def test_every_section_of_the_layout_is_present(report: dict[str, Any]) -> None:
     assert report["period"]["since"] == "2026-11-02"
 
 
+def test_layout_a_puts_the_shared_component_overview_before_details(
+    report: dict[str, Any],
+) -> None:
+    page = page_of(report)
+    overview = page.index('<section class="report-overview')
+    details = page.index('<div class="report-details')
+    assert overview < details
+    overview_html = page[overview:details]
+    assert len(re.findall(r'class="[^"]*\bra-c-plate\b', overview_html)) == 3
+    assert "ra-c-ticks" in overview_html
+    assert "--ra-brand-ground" in page
+    assert "--ra-space-4" in page
+
+
+@pytest.fixture(scope="module")
+def owner_report_browser() -> Iterator[Any]:
+    playwright = pytest.importorskip("playwright.sync_api")
+    with playwright.sync_playwright() as driver:
+        browser = driver.chromium.launch(
+            args=["--no-sandbox"],
+            executable_path=os.environ.get("RA_CHROMIUM") or None,
+        )
+        yield browser
+        browser.close()
+
+
+@pytest.mark.visual
+@pytest.mark.parametrize(
+    ("width", "columns"),
+    [
+        (390, {"tiles": 1, "charts": 1, "cols": 1, "cols2": 1}),
+        (820, {"tiles": 3, "charts": 2, "cols": 2, "cols2": 2}),
+        (1440, {"tiles": 3, "charts": 2, "cols": 3, "cols2": 2}),
+    ],
+)
+def test_layout_a_computes_the_supported_viewport_layout_without_page_overflow(
+    report: dict[str, Any],
+    owner_report_browser: Any,
+    width: int,
+    columns: dict[str, int],
+) -> None:
+    context = owner_report_browser.new_context(viewport={"width": width, "height": 900})
+    browser_page = context.new_page()
+    browser_page.set_content(page_of(report), wait_until="load")
+
+    assert browser_page.evaluate("document.documentElement.scrollWidth") <= width
+    for class_name, expected in columns.items():
+        tracks = browser_page.locator(f".{class_name}").first.evaluate(
+            "element => getComputedStyle(element).gridTemplateColumns.split(' ').length"
+        )
+        assert tracks == expected, (width, class_name, tracks)
+
+    if width == 390:
+        chart_wraps = browser_page.locator(".charts .wrap")
+        assert chart_wraps.count() == 2
+        for index in range(chart_wraps.count()):
+            dimensions = chart_wraps.nth(index).evaluate(
+                "element => [element.clientWidth, element.scrollWidth]"
+            )
+            assert dimensions[1] > dimensions[0], dimensions
+
+    context.close()
+
+
 def test_window_is_the_last_seven_days_with_previous_window(
     report: dict[str, Any],
 ) -> None:
@@ -184,7 +250,7 @@ def test_window_is_the_last_seven_days_with_previous_window(
     assert "2026-10-26 to 2026-11-01 UTC" in page
 
 
-def test_page_is_self_contained_dark_static_and_borderless(
+def test_page_is_self_contained_dark_static_and_uses_tokenized_borders(
     report: dict[str, Any],
 ) -> None:
     page = page_of(report)
@@ -203,8 +269,10 @@ def test_page_is_self_contained_dark_static_and_borderless(
         "<iframe",
     ):
         assert forbidden not in page, forbidden
-    low = page.lower().replace("box-sizing:border-box", "")
-    assert not re.search(r"border(?!-radius|-collapse)", low)
+    low = page.lower()
+    assert "border:var(--ra-rule-width) solid var(--ra-brand-rule)" in low
+    assert "border-radius:var(--ra-radius-square)" in low
+    assert "<button" not in low
     for forbidden in ("animation", "transition", "@keyframes", "outline"):
         assert forbidden not in low, forbidden
     for forbidden in ("#fff", "white", "cream", "background:#f", "background:#e"):
