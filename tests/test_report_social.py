@@ -326,7 +326,7 @@ def test_empty_history_still_yields_a_labeled_block() -> None:
 
 
 def make_history(tmp_path: Path) -> Path:
-    today = datetime.now(UTC).date()
+    today = (datetime.now(UTC) - timedelta(hours=9)).date()  # never future
     path = tmp_path / "social.jsonl"
     records = [
         rec("bluesky", today, 1500),
