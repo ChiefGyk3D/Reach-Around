@@ -196,9 +196,30 @@ class Partner(_Model):
 
 
 class CaseStudy(_Model):
-    title: Text100
-    summary: Text500
-    result: Text300
+    """Owner-entered aggregate results for a group of posts."""
+
+    thumbnails: list[str] = Field(min_length=1, max_length=12)
+    views: Annotated[StrictInt, Field(ge=0, le=MAX_ENGAGEMENT_COUNT)]
+    likes: Annotated[StrictInt, Field(ge=0, le=MAX_ENGAGEMENT_COUNT)]
+    comments: Annotated[StrictInt, Field(ge=0, le=MAX_ENGAGEMENT_COUNT)]
+    period_start: date
+    period_end: date
+
+    @field_validator("thumbnails")
+    @classmethod
+    def _thumbnails_are_local_images(cls, value: list[str]) -> list[str]:
+        return [_pdf_image(path) for path in value]
+
+    @field_validator("period_start", "period_end", mode="before")
+    @classmethod
+    def _period_is_a_date(cls, value: object) -> object:
+        return _iso_date(value)
+
+    @model_validator(mode="after")
+    def _period_is_ordered(self) -> CaseStudy:
+        if self.period_end < self.period_start:
+            raise ValueError("period_end must not be before period_start")
+        return self
 
 
 class Testimonial(_Model):

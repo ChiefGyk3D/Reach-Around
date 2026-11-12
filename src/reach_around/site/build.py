@@ -40,7 +40,7 @@ from reach_around.config.numbers import (
 from reach_around.config.page_title import DEFAULT_TEMPLATE, render_template
 from reach_around.config.profile_card import MEDIA_KIT_ID
 from reach_around.config.tablinks import is_tab_ref, parse_tab_ref
-from reach_around.site.assets import collect_assets, collect_partner_logos
+from reach_around.site.assets import collect_assets, collect_private_kit_assets
 from reach_around.site.cachepolicy import cache_patterns
 from reach_around.site.fingerprint import AssetMap, fingerprint
 from reach_around.site.frames import (
@@ -772,7 +772,7 @@ def build_site(
                 "kit page lives at /kit/, so rename the tab (its id must not be "
                 "'kit')"
             )
-    private_logos = collect_partner_logos(config, assets_dir)
+    private_kit_assets = collect_private_kit_assets(config, assets_dir)
     for rel, data in collect_assets(config, assets_dir).items():
         if rel in static or rel in pages_at:
             raise ValueError(f"{rel} would overwrite a file the build writes itself")
@@ -816,7 +816,7 @@ def build_site(
     # live script; the 404 page and the kit pages say False for themselves.
     env.globals["has_live_script"] = any(_has_live(blocks) for blocks in shown)
     env.globals["asset_url"] = _asset_url(named.assets)
-    env.globals["private_asset_url"] = _private_asset_url(private_logos)
+    env.globals["private_asset_url"] = _private_asset_url(private_kit_assets)
     env.globals["font_preloads"] = _font_preloads(config, named.assets)
     env.globals["frame_plan"] = plan
     env.globals["frame_sizes"] = {slot: SLOT_SIZES[slot] for slot in plan}

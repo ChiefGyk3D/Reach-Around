@@ -91,17 +91,24 @@ def _slots(config: SiteConfig) -> Iterator[tuple[str, str, str]]:
         for index, partner in enumerate(config.kit.partners):
             if partner.logo is not None:
                 yield f"kit.partners[{index}].logo", partner.logo, "image"
+        for case_index, case_study in enumerate(config.kit.case_studies):
+            for image_index, thumbnail in enumerate(case_study.thumbnails):
+                yield (
+                    f"kit.case_studies[{case_index}].thumbnails[{image_index}]",
+                    thumbnail,
+                    "image",
+                )
 
 
 def _public_slots(config: SiteConfig) -> Iterator[tuple[str, str, str]]:
     for slot in _slots(config):
-        if not slot[0].startswith("kit.partners["):
+        if not slot[0].startswith(("kit.partners[", "kit.case_studies[")):
             yield slot
 
 
-def _partner_logo_slots(config: SiteConfig) -> Iterator[tuple[str, str, str]]:
+def _private_kit_slots(config: SiteConfig) -> Iterator[tuple[str, str, str]]:
     for slot in _slots(config):
-        if slot[0].startswith("kit.partners["):
+        if slot[0].startswith(("kit.partners[", "kit.case_studies[")):
             yield slot
 
 
@@ -264,9 +271,9 @@ def collect_assets(config: SiteConfig, assets_dir: Path | None) -> dict[Path, by
     return _collect(list(_public_slots(config)), assets_dir)
 
 
-def collect_partner_logos(
+def collect_private_kit_assets(
     config: SiteConfig, assets_dir: Path | None
 ) -> dict[str, bytes]:
-    """Read gated partner logos without adding them to the public asset map."""
-    found = _collect(list(_partner_logo_slots(config)), assets_dir)
+    """Read gated kit images without adding them to the public asset map."""
+    found = _collect(list(_private_kit_slots(config)), assets_dir)
     return {path.as_posix(): data for path, data in found.items()}

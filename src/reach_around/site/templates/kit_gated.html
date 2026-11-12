@@ -46,10 +46,18 @@
 <section class="kit-cases" aria-labelledby="kit-cases-title">
 <h3 id="kit-cases-title">Case studies</h3>
 {% for case in kit.case_studies %}
-<article class="kit-case">
-<h4>{{ case.title }}</h4>
-<p>{{ case.summary }}</p>
-<p><strong>Result:</strong> {{ case.result }}</p>
+<article class="kit-case kit-case-study">
+<div class="kit-case-thumbnails">
+{% for thumbnail in case.thumbnails %}
+<img class="kit-case-thumbnail" src="{{ private_asset_url(thumbnail) }}" alt="" width="320" height="180">
+{% endfor %}
+</div>
+<dl class="kit-case-totals">
+<div><dt>Views</dt><dd>{{ case.views }}</dd></div>
+<div><dt>Likes</dt><dd>{{ case.likes }}</dd></div>
+<div><dt>Comments</dt><dd>{{ case.comments }}</dd></div>
+</dl>
+<p class="kit-note">From <time datetime="{{ case.period_start }}">{{ case.period_start }}</time> to <time datetime="{{ case.period_end }}">{{ case.period_end }}</time> (UTC)</p>
 </article>
 {% endfor %}
 </section>

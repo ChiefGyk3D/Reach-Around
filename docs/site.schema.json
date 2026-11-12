@@ -135,30 +135,53 @@
     },
     "CaseStudy": {
       "additionalProperties": false,
+      "description": "Owner-entered aggregate results for a group of posts.",
       "properties": {
-        "result": {
-          "maxLength": 300,
-          "minLength": 1,
-          "title": "Result",
+        "comments": {
+          "maximum": 1000000000000,
+          "minimum": 0,
+          "title": "Comments",
+          "type": "integer"
+        },
+        "likes": {
+          "maximum": 1000000000000,
+          "minimum": 0,
+          "title": "Likes",
+          "type": "integer"
+        },
+        "period_end": {
+          "format": "date",
+          "title": "Period End",
           "type": "string"
         },
-        "summary": {
-          "maxLength": 500,
-          "minLength": 1,
-          "title": "Summary",
+        "period_start": {
+          "format": "date",
+          "title": "Period Start",
           "type": "string"
         },
-        "title": {
-          "maxLength": 100,
-          "minLength": 1,
-          "title": "Title",
-          "type": "string"
+        "thumbnails": {
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 12,
+          "minItems": 1,
+          "title": "Thumbnails",
+          "type": "array"
+        },
+        "views": {
+          "maximum": 1000000000000,
+          "minimum": 0,
+          "title": "Views",
+          "type": "integer"
         }
       },
       "required": [
-        "result",
-        "summary",
-        "title"
+        "comments",
+        "likes",
+        "period_end",
+        "period_start",
+        "thumbnails",
+        "views"
       ],
       "title": "CaseStudy",
       "type": "object"

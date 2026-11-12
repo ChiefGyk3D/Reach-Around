@@ -30,9 +30,12 @@ kit:
   partners:
     - {name: Acme Fake Co, logo: media/acme-fake.png, note: 2026 sponsor, url: "https://example.com/acme"}
   case_studies:
-    - title: Launch week
-      summary: A fake product launch on stream.
-      result: Ten thousand fake views.
+    - thumbnails: [media/fake-post-one.png, media/fake-post-two.jpg]
+      views: 12345
+      likes: 678
+      comments: 90
+      period_start: 2027-02-01
+      period_end: 2027-02-28
   services:
     - title: Example package
       included: [One example item, Another example item]
@@ -172,6 +175,13 @@ text presentation. The optional header `photo` and partner `logo` values are
 local PNG or JPEG paths under the instance directory. The public photo is
 fingerprinted with the site's public assets. Partner logos are embedded only in
 the gated page, so their files and bytes are not published before the gate.
+
+Each case-study card is one owner-entered aggregate for a group of posts. It
+shows every local PNG or JPEG path in `thumbnails`, the required `views`,
+`likes` and `comments` totals, and the required UTC range from `period_start`
+through `period_end`. All six fields are required together. There is no
+platform field. Thumbnail files are embedded in the gated page and owner PDF
+and are never copied into the public site.
 
 YouTube Analytics values collected with private OAuth scopes are never accepted
 as kit input. A YouTube engagement figure may appear here only when the owner

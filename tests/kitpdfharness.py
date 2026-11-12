@@ -49,13 +49,6 @@ def kit_doc() -> dict[str, Any]:
                 "url": "https://example.com/acme",
             }
         ],
-        "case_studies": [
-            {
-                "title": "Launch week fake",
-                "summary": "A fake product launch on stream.",
-                "result": "Ten thousand fake views.",
-            }
-        ],
         "rates": [{"item": "Sponsored video fake", "price_text": "Ask me!"}],
         "demographics": [
             {"label": "Top country", "value": "Exampleland 40%", "as_of": "2027-03-01"}
