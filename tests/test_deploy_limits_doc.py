@@ -64,7 +64,8 @@ def test_worst_case_table_adds_up_and_is_under_the_warning_line() -> None:
     assert f"**{combined}**" in section
     assert f"| page views, rollup and purge | | | {_PAGE_VIEWS} |" in section
     assert f"| clicks (reserve) | | | {_CLICKS} |" in section
-    assert f"| click funnel (Free profile, one site, no link ids) | | | {_FUNNEL} |" in section
+    funnel_row = f"| click funnel (Free profile, one site, no link ids) | | | {_FUNNEL}"
+    assert f"{funnel_row} |" in section
     assert f"| margin | | | {_MARGIN} |" in section
     assert f"| kit purge reserve | | | {_RESERVE} |" in section
     assert combined <= d["D1_DAILY_WRITE_QUOTA"] * 0.8
