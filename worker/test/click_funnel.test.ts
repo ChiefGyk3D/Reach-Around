@@ -11,6 +11,7 @@ import {
   HOUR_BUDGET,
   RESERVED_PER_LINK,
   SRC_DAY_CAP,
+  SRC_MONTH_CAP,
   clickCounterStatements,
   rollupClickFunnel,
 } from "../src/clickfunnel";
@@ -169,7 +170,9 @@ describe("row bounds: reserved cells, hourly slices, one overflow row, an integr
   });
 
   it("one_flooded_destination_cannot_starve_the_others_of_their_reserved_cells", async () => {
-    for (let i = 0; i < 400; i++) await count(ts, "links", "flood", `f${i}`, "US");
+    // Spread over the hours of the day, as the flood must not use up one hour's slice of the new-cell
+    // budget (the hourly slice is the Free profile's lower figure, funnelcaps.ts).
+    for (let i = 0; i < 400; i++) await count(Date.UTC(2027, 0, 5) + (i % 24) * 3_600_000, "links", "flood", `f${i}`, "US");
     await count(ts, "links", "twitch", "instagram", "US");
     await count(ts, "links", "kick", "bluesky", "US");
     await count(ts, "links", "kick", "direct", "US");
@@ -464,17 +467,17 @@ describe("monthly rollup and retention", () => {
 
   it("a_month_over_its_cap_folds_the_smallest_cells", async () => {
     await DB.batch(
-      Array.from({ length: 305 }, (_, i) => DB.prepare("INSERT INTO click_src_daily (site,day,link_id,src,clicks,destination_kind) VALUES ('links','2027-01-05','twitch',?,?,'social_icon')").bind(`s${i}`, 400 - i)),
+      Array.from({ length: SRC_MONTH_CAP + 5 }, (_, i) => DB.prepare("INSERT INTO click_src_daily (site,day,link_id,src,clicks,destination_kind) VALUES ('links','2027-01-05','twitch',?,?,'social_icon')").bind(`s${i}`, 400 - i)),
     );
     await rollupClickFunnel({ DB }, Date.UTC(2027, 1, 10));
     const rows = await q<{ src: string; clicks: number }>("SELECT src, clicks FROM click_src_monthly");
     expect(await q("SELECT destination_kind FROM click_src_monthly WHERE link_id = 'overflow-all'")).toEqual([
       { destination_kind: "social_icon" },
     ]);
-    expect(rows).toHaveLength(301); // 300 kept + one overflow row
+    expect(rows).toHaveLength(SRC_MONTH_CAP + 1); // the cap kept + one overflow row
     const total = rows.reduce((a, r) => a + r.clicks, 0);
-    expect(total).toBe(Array.from({ length: 305 }, (_, i) => 400 - i).reduce((a, b) => a + b, 0));
-    expect(rows.find((r) => r.src === "other")?.clicks).toBe(400 - 300 + 400 - 301 + 400 - 302 + 400 - 303 + 400 - 304);
+    expect(total).toBe(Array.from({ length: SRC_MONTH_CAP + 5 }, (_, i) => 400 - i).reduce((a, b) => a + b, 0));
+    expect(rows.find((r) => r.src === "other")?.clicks).toBe(Array.from({ length: 5 }, (_, i) => 400 - (SRC_MONTH_CAP + i)).reduce((a, b) => a + b, 0));
   });
 
   it("day_cells_go_after_90_days_but_only_once_their_month_is_rolled_up", async () => {

@@ -36,7 +36,7 @@ export function runBudgetCheck(source: Record<string, string | undefined>): { co
   if (loadSites(env).errors.length > 0) return { code: 1, lines: ["::error::the site list does not load (SITES, or SITE_HOST with PAGE_IDS and LINK_IDS)"] };
   const a = assessDailyBudget(env as KitLimitsEnv);
   const pct = ((100 * a.combined) / a.quota).toFixed(1);
-  const sum = `combined worst-case daily D1 writes ${a.combined} of ${a.quota} (${pct} percent; page views ${a.pageViews})`;
+  const sum = `combined worst-case daily D1 writes ${a.combined} of ${a.quota} (${pct} percent; page views ${a.pageViews}; funnel ${a.funnel})`;
   if (a.invalid.length > 0) {
     return { code: 1, lines: [`::error::unusable budget settings: ${a.invalid.join(", ")}`] };
   }
