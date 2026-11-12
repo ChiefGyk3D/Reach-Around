@@ -25,7 +25,7 @@ the file.
 | Pages, Sources | `view_daily` | Likely-human only, unless `--include-bots`. Sources are direct, internal, a referrer host, or `utm:<label>`. |
 | Geography | `view_geo_daily` | `--geo country` (default), `region` or `city`. The Worker folds small cities and regions upward before the export, so a finer level may show `other`. Country codes only, no coordinates. |
 | Link clicks | `click_events` | Per link id. |
-| Link clicks by source | `click_events` | `source -> link` pairs, from the closed source label the page sent with the click (the `s` parameter; `none` when the link carried no label, `other` for a label not on the site's list). A count of clicks, never of people, and not tied to any view. Joint suppression with the per-link table: a link's breakdown prints only when every part is at or above the floor and its total is a printed row; otherwise only the link total (or the merged line) prints. The matrix presentation is a later change (#409). |
+| Link clicks by source | `click_events` | `source -> link` pairs, from the closed source label the page sent with the click (the `s` parameter; `none` when the link carried no label, `other` for a label not on the site's list). A count of clicks, never of people, and not tied to any view. Joint suppression with the per-link table: a link's breakdown prints only when every part is at or above the floor and its total is a printed row; otherwise only the link total (or the merged line) prints.  The source-by-destination matrix is the next row, released for fixed periods only. |
 | Clicks by source and destination, Top flows | `click_src_daily`, `click_src_monthly` | The matrix of "came from Instagram, went to Twitch": rows are source labels (`direct` for a click that carried none, `other` for a label not on the site's list), columns are destinations (link ids), cells are clicks. Top flows is the same printed cells as a ranked `source -> destination` list with a share of the clicks shown (never a conversion), top N then `other`. Released for one fixed period only (`--period`, below). Within a destination, cells under the floor are merged into one `(below the floor)` line built so it bounds nothing (see the section below); a destination that cannot be made safe prints nothing, and when `click_events` is in the export a destination must also be a printed row of the link table. Totals are sums of printed cells only. A note appears when half or more of the shown clicks are `direct`. |
 | Clicks by country and destination | `click_country_daily`, `click_country_monthly` | Country codes only (no region or city on clicks), counted for EVERY click when it arrives, whether or not it carried a source, so it does not depend on the raw click rows. Same period, remainder line and floor. The top N countries print; the rest, with the Worker's own `ZZ` (unknown or folded), are summed per destination into `other`. |
 | Devices, Browsers, Systems | `view_dim_daily` | Device class, browser family and operating system, from the Worker's closed-vocabulary dimension rows (`dim` = `device`, `browser`, `os`). Likely-human only unless `--include-bots`. A value the Worker folded into `other` is shown as `other`. Floored and suppressed like the pages table, and part of the same view population (see below). Version numbers, screen size, language and network type are not shown. |
@@ -316,8 +316,9 @@ yes or no flag, not as numbers.
 
 No live read: this command never calls Cloudflare, and the choice of read path
 for the owner (a read-only D1 token or a manual export) is a separate decision.
-The report does not attribute a click to a source, and it does not show
-languages, viewport size or network type (they are in `view_dim_daily` but are
+Clicks are attributed to a source only by the closed label the page sent with the
+click (see Link clicks by source); landing and hop attribution are not collected.
+The report does not show languages, viewport size or network type (they are in `view_dim_daily` but are
 not reported). Devices, browsers and systems are counts per value, never joined
 with each other: there is no "Safari on iOS" row, because the Worker stores each
 dimension on its own.
@@ -485,7 +486,7 @@ and CSV output (`reach_around.funnel.owner.owner_view`), never from the export,
 so it shows no figure the floored JSON does not hold. Sections: overview tiles
 (views, clicks, click rate, each with the change against the previous window of
 the same length when both figures are printable), followed by a daily views and clicks chart
-and a daily click rate chart (UTC days), the daily table, clicks per link,
+and a daily click rate chart (UTC days), the daily table, weekday and hour time patterns, clicks per link,
 sources, devices, browsers, operating systems and countries. A Funnel section
 groups the released clicks by source and country with the source-to-destination
 and country-to-destination tables when `--period` was used. Each path shows its
@@ -494,9 +495,9 @@ computed only from cells and destination totals that already passed the floor
 and complementary suppression; it is labeled as a ratio, never a rate. Landing
 and hop attribution are not collected and are not inferred. The matching CSV
 files are `owner_tiles.csv`,
-`owner_daily.csv`, `owner_links.csv`, `owner_sources.csv`, `owner_devices.csv`,
+`owner_daily.csv`, `owner_time_patterns.csv`, `owner_links.csv`, `owner_sources.csv`, `owner_devices.csv`,
 `owner_countries.csv`, `owner_clicks_by_source.csv` and
-`owner_clicks_by_country.csv`; Grafana can read the same data.
+`owner_clicks_by_country.csv` (plus `owner_social_icons.csv`, below); `--csv` writes them beside the section files above. Grafana can read the same data.
 
 This is layout A: the overview is always first, followed by the detail sections.
 It uses the shared square `ra-c-plate` and `ra-c-ticks` components with the dark
