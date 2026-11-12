@@ -509,6 +509,7 @@ KNOWN_FIELDS: frozenset[str] = frozenset(
         "included",
         "inquiry",
         "insights",
+        "intent",
         "interactions",
         "intro",
         "invite",
@@ -544,6 +545,7 @@ KNOWN_FIELDS: frozenset[str] = frozenset(
         "open",
         "other_sites",
         "owner_supplied",
+        "page",
         "page_layout",
         "page_title",
         "page_views",
@@ -572,6 +574,7 @@ KNOWN_FIELDS: frozenset[str] = frozenset(
         "robots",
         "room",
         "route",
+        "schedule",
         "services",
         "show",
         "show_from",
@@ -611,6 +614,7 @@ KNOWN_FIELDS: frozenset[str] = frozenset(
         "views",
         "visitor_email",
         "vods",
+        "watch",
         "youtube",
     ]
 )
