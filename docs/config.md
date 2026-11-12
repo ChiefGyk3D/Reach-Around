@@ -948,7 +948,12 @@ A **metric** is one headline number: `platform` (a platform name such as
   twice). Default `true`.
 
 A **partner** has `name` (80), optional `note` (200) and optional `url` (https
-only). A **case study** has `title` (100), `summary` (500) and `result` (300).
+only). A **case study** is an owner-entered aggregate block. It requires
+`thumbnails` (1 to 12 local PNG or JPEG paths), whole-number `views`, `likes`
+and `comments` totals (each 0 to 1,000,000,000,000), and `period_start` and
+`period_end` UTC dates (`YYYY-MM-DD`) in order. There is no platform field.
+The thumbnails and totals are gated and appear in the owner PDF, never in the
+public output.
 A **package** (`services`) has `title` (80), optional `included` (a list of at
 most 12 lines, 120 characters each) and optional `price_text` (80; free text such
 as `Ask me!`, never computed). Packages sit above the rates table on the gated
@@ -1015,14 +1020,15 @@ else. If `partners`, `case_studies`, `services`, `rates`, `engagement`, `demogra
 `features.kit_gate` must be `true`; the config is refused otherwise, so gated
 content can never be published with no gate.
 
-**Photo and partner logos.** `photo` is an optional local image path for the
-wide kit header. A partner may also have an optional local `logo` image path.
-Both fields accept PNG and JPEG files only, because those are the formats the
+**Kit images.** `photo` is an optional local image path for the wide kit
+header. A partner may also have an optional local `logo` image path, and every
+case study has one or more required local `thumbnails` paths. These fields
+accept PNG and JPEG files only, because those are the formats the
 sealed PDF renderer can safely embed. The public photo is fingerprinted in the
-public site; partner logos are embedded only in the gated page and are not
+public site; partner logos and case-study thumbnails are embedded only in the gated page and are not
 copied into the public tree. The gated page shows the
 first six partners in a responsive logo grid and puts any remaining partners
-under a script-free **Show more** disclosure. Neither setting accepts a remote
+under a script-free **Show more** disclosure. None accepts a remote
 URL.
 
 **Tags.** `tags` is an optional short list of content categories (for example

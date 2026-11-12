@@ -107,7 +107,14 @@ def test_a_full_kit_validates() -> None:
                 }
             ],
             case_studies=[
-                {"title": "Launch", "summary": "A launch.", "result": "10k views"}
+                {
+                    "thumbnails": ["media/fake-post.png"],
+                    "views": 10000,
+                    "likes": 500,
+                    "comments": 25,
+                    "period_start": "2027-02-01",
+                    "period_end": "2027-02-28",
+                }
             ],
             rates=[{"item": "Sponsored video", "price_text": "Ask me!"}],
             demographics=[
@@ -154,7 +161,15 @@ def test_site_key_is_optional_public_and_plain() -> None:
         lambda: KitConfig.model_validate(kit_doc(surprise=1)),
         lambda: Partner.model_validate({"name": "A", "surprise": 1}),
         lambda: CaseStudy.model_validate(
-            {"title": "t", "summary": "s", "result": "r", "surprise": 1}
+            {
+                "thumbnails": ["media/fake-post.png"],
+                "views": 100,
+                "likes": 10,
+                "comments": 1,
+                "period_start": "2027-02-01",
+                "period_end": "2027-02-28",
+                "surprise": 1,
+            }
         ),
         lambda: Rate.model_validate({"item": "i", "price_text": "p", "surprise": 1}),
         lambda: PlatformMetric.model_validate(manual(surprise=1)),
@@ -233,24 +248,6 @@ def test_text_rejects_html_and_hidden_characters(text: str) -> None:
         (lambda t: Partner.model_validate({"name": "A", "note": t}), 200),
         (lambda t: Rate.model_validate({"item": t, "price_text": "x"}), 80),
         (lambda t: Rate.model_validate({"item": "x", "price_text": t}), 80),
-        (
-            lambda t: CaseStudy.model_validate(
-                {"title": t, "summary": "s", "result": "r"}
-            ),
-            100,
-        ),
-        (
-            lambda t: CaseStudy.model_validate(
-                {"title": "t", "summary": t, "result": "r"}
-            ),
-            500,
-        ),
-        (
-            lambda t: CaseStudy.model_validate(
-                {"title": "t", "summary": "s", "result": t}
-            ),
-            300,
-        ),
         (lambda t: KitConfig.model_validate(kit_doc(title=t)), 120),
         (lambda t: KitConfig.model_validate(kit_doc(about=t)), 1000),
         (lambda t: PlatformMetric.model_validate(manual(label=t)), 60),
@@ -375,7 +372,16 @@ def kit_with_canaries() -> KitConfig:
     return KitConfig.model_validate(
         kit_doc(
             partners=[{"name": f"{CANARY}-partner"}],
-            case_studies=[{"title": f"{CANARY}-case", "summary": "s", "result": "r"}],
+            case_studies=[
+                {
+                    "thumbnails": [f"media/{CANARY}-case.png"],
+                    "views": 100,
+                    "likes": 10,
+                    "comments": 1,
+                    "period_start": "2027-02-01",
+                    "period_end": "2027-02-28",
+                }
+            ],
             rates=[{"item": f"{CANARY}-rate", "price_text": "Ask me!"}],
             demographics=[
                 {"label": f"{CANARY}-demo", "value": "x", "as_of": "2027-03-01"}
@@ -546,7 +552,18 @@ def test_kit_section_loads_in_a_site() -> None:
     "extra",
     [
         {"partners": [{"name": "A"}]},
-        {"case_studies": [{"title": "t", "summary": "s", "result": "r"}]},
+        {
+            "case_studies": [
+                {
+                    "thumbnails": ["media/fake-post.png"],
+                    "views": 100,
+                    "likes": 10,
+                    "comments": 1,
+                    "period_start": "2027-02-01",
+                    "period_end": "2027-02-28",
+                }
+            ]
+        },
         {"rates": [{"item": "i", "price_text": "Ask me!"}]},
         {"demographics": [{"label": "l", "value": "v", "as_of": "2027-03-01"}]},
     ],

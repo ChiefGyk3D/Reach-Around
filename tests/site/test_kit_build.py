@@ -71,13 +71,6 @@ def gated_doc(**kw: Any) -> dict[str, Any]:
                 "url": "https://example.com/acme",
             }
         ],
-        case_studies=[
-            {
-                "title": f"Launch week {CANARY}",
-                "summary": "A fake product launch.",
-                "result": "Ten thousand fake views.",
-            }
-        ],
         rates=[{"item": f"Sponsored video {CANARY}", "price_text": "Ask me!"}],
         demographics=[
             {"label": "Top country", "value": "Exampleland 40%", "as_of": "2027-03-01"}
@@ -205,8 +198,6 @@ def test_the_public_tree_holds_no_gated_text(tmp_path: Path) -> None:
         CANARY,
         "Acme Fake Co",
         "2026 sponsor",
-        "Launch week",
-        "Ten thousand fake views",
         "Sponsored video",
         "Ask me!",
         "Exampleland",
@@ -218,8 +209,6 @@ def test_the_public_tree_holds_no_gated_text(tmp_path: Path) -> None:
         CANARY,
         "Acme Fake Co",
         "2026 sponsor",
-        "Launch week",
-        "Ten thousand fake views",
         "Sponsored video",
         "Ask me!",
         "Exampleland 40%",
@@ -237,16 +226,39 @@ def test_a_gated_string_placed_in_config_never_reaches_the_public_tree(
         if place == "partners":
             kit["partners"] = [{"name": canary}]
         elif place == "case_studies":
-            kit["case_studies"] = [{"title": canary, "summary": "s", "result": "r"}]
+            asset_root = tmp_path / place
+            (asset_root / "media").mkdir(parents=True)
+            (asset_root / "media" / f"{canary}.png").write_bytes(
+                b"\x89PNG\r\n\x1a\ncase\x00\x00\x00\x00IEND\xaeB`\x82"
+            )
+            kit["case_studies"] = [
+                {
+                    "thumbnails": [f"media/{canary}.png"],
+                    "views": 100,
+                    "likes": 10,
+                    "comments": 1,
+                    "period_start": "2027-02-01",
+                    "period_end": "2027-02-28",
+                }
+            ]
         elif place == "rates":
             kit["rates"] = [{"item": canary, "price_text": "Ask me!"}]
         else:
             kit["demographics"] = [
                 {"label": canary, "value": "v", "as_of": "2027-03-01"}
             ]
-        out, gated = build(tmp_path / place, make_config(kit))
+        if place == "case_studies":
+            out, gated = build(
+                tmp_path / place, make_config(kit), assets_dir=tmp_path / place
+            )
+        else:
+            out, gated = build(tmp_path / place, make_config(kit))
         assert canary.encode() not in tree_bytes(out)
-        assert canary in (gated / GATED_FILE).read_text(encoding="utf-8")
+        page = (gated / GATED_FILE).read_text(encoding="utf-8")
+        if place == "case_studies":
+            assert "data:image/png;base64," in page
+        else:
+            assert canary in page
 
 
 def test_guard_bites_when_an_override_template_prints_a_gated_string(

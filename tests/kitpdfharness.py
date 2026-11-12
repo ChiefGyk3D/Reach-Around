@@ -8,6 +8,7 @@ Everything is synthetic: a fake creator, example.com and canary strings.
 from __future__ import annotations
 
 import getpass
+import struct
 import time
 import zlib
 from datetime import date
@@ -16,11 +17,28 @@ from pathlib import Path
 from typing import Any
 
 from reach_around.config import SiteConfig
+from reach_around.config.numbers import Numbers
 from reach_around.site.build import build_site
 
 TODAY = date(2027, 3, 10)
 CANARY = "CANARY-GATED-7f3a"
 SITE_KEY = "0x4AAAAAAAexampleKey"
+
+
+def _png() -> bytes:
+    def chunk(kind: bytes, data: bytes) -> bytes:
+        body = kind + data
+        return struct.pack(">I", len(data)) + body + struct.pack(">I", zlib.crc32(body))
+
+    return (
+        b"\x89PNG\r\n\x1a\n"
+        + chunk(b"IHDR", struct.pack(">IIBBBBB", 1, 1, 8, 2, 0, 0, 0))
+        + chunk(b"IDAT", zlib.compress(b"\x00\xff\x00\x00"))
+        + chunk(b"IEND", b"")
+    )
+
+
+CAMPAIGN_PNG = _png()
 
 
 def kit_doc() -> dict[str, Any]:
@@ -51,9 +69,12 @@ def kit_doc() -> dict[str, Any]:
         ],
         "case_studies": [
             {
-                "title": "Launch week fake",
-                "summary": "A fake product launch on stream.",
-                "result": "Ten thousand fake views.",
+                "thumbnails": ["media/campaign.png"],
+                "views": 12345,
+                "likes": 678,
+                "comments": 90,
+                "period_start": "2027-02-01",
+                "period_end": "2027-02-28",
             }
         ],
         "rates": [{"item": "Sponsored video fake", "price_text": "Ask me!"}],
@@ -84,12 +105,22 @@ def make_config(kit: dict[str, Any] | None = None) -> SiteConfig:
 
 
 def build_instance(
-    root: Path, config: SiteConfig | None = None
+    root: Path, config: SiteConfig | None = None, numbers: Numbers | None = None
 ) -> tuple[SiteConfig, Path, Path]:
     """Build a synthetic site; return the config, the public dir, the gated dir."""
     config = config or make_config()
     site, gated = root / "site", root / "gated"
-    build_site(config, site, today=TODAY, gated_out=gated)
+    assets = root / "assets"
+    (assets / "media").mkdir(parents=True)
+    (assets / "media" / "campaign.png").write_bytes(CAMPAIGN_PNG)
+    build_site(
+        config,
+        site,
+        today=TODAY,
+        numbers=numbers,
+        gated_out=gated,
+        assets_dir=assets,
+    )
     return config, site, gated
 
 

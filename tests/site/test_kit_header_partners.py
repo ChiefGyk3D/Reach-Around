@@ -79,7 +79,8 @@ def test_partner_logos_are_a_linked_grid_with_overflow_under_show_more(
     tmp_path: Path,
 ) -> None:
     _, gated = build_pages(tmp_path, kit_with_partners(8))
-    section = gated[gated.index('class="kit-partners"') : gated.index("kit-cases")]
+    start = gated.index('class="kit-partners"')
+    section = gated[start : gated.index("</section>", start)]
     assert 'class="kit-list kit-partner-grid"' in section
     assert section.count('class="kit-partner-logo"') == 8
     assert section.count('rel="noopener noreferrer"') == 8
@@ -95,7 +96,8 @@ def test_partner_logos_are_a_linked_grid_with_overflow_under_show_more(
 
 def test_six_partner_logos_need_no_show_more(tmp_path: Path) -> None:
     _, gated = build_pages(tmp_path, kit_with_partners(6))
-    section = gated[gated.index('class="kit-partners"') : gated.index("kit-cases")]
+    start = gated.index('class="kit-partners"')
+    section = gated[start : gated.index("</section>", start)]
     assert 'class="kit-list kit-partner-grid"' in section
     assert "Show more" not in section
     assert "kit-partners-more" not in section

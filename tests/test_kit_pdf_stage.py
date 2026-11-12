@@ -87,11 +87,11 @@ def test_staged_page_is_complete_and_sealed(tmp_path: Path) -> None:
         "<form",
         "<link",
         "<iframe",
-        "<img",
         "<footer",
         "@import",
     ):
         assert banned not in html
+    assert '<img class="kit-case-thumbnail" src="data:image/png;base64,' in html
     assert "url(" not in html
     assert "Content-Security-Policy" in html and "default-src 'none'" in html
     # the page's own stylesheets are inlined

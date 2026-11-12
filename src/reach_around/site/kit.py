@@ -249,6 +249,13 @@ def _gated_strings(kit: KitConfig) -> list[tuple[str, str]]:
             found.append((f"{prefix}.{derived}_formula", row["formula"]))
             if row["provenance"]:
                 found.append((f"{prefix}.owner_supplied", row["provenance"]))
+    for index, item in enumerate(kit.case_studies):
+        prefix = f"kit.case_studies[{index}]"
+        for field in ("views", "likes", "comments"):
+            value = getattr(item, field)
+            for rendered in (str(value), f"{value:,}"):
+                found.append((f"{prefix}.{field}", f"{rendered} {field}"))
+                found.append((f"{prefix}.{field}", f"{field} {rendered}"))
     if kit.inquiry is not None:
         for field, text in kit.inquiry.model_dump().items():
             if isinstance(text, str) and len(text) >= GUARD_MIN_LENGTH:
@@ -832,7 +839,17 @@ def render_kit(
         content = _content(data, live_day, config, today)
         content.update(
             partners=data["partners"],
-            case_studies=data["case_studies"],
+            case_studies=[
+                {
+                    "thumbnails": case.thumbnails,
+                    "views": f"{case.views:,}",
+                    "likes": f"{case.likes:,}",
+                    "comments": f"{case.comments:,}",
+                    "period_start": case.period_start.isoformat(),
+                    "period_end": case.period_end.isoformat(),
+                }
+                for case in data["case_studies"]
+            ],
             services=data["services"],
             rates=data["rates"],
             testimonials=data["testimonials"],

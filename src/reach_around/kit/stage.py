@@ -40,11 +40,13 @@ from datetime import date
 from html.parser import HTMLParser
 from pathlib import Path
 
+from reach_around.config.kit import MAX_KIT_PDF_IMAGES
+
 MAX_PAGE_BYTES = 2 * 1024 * 1024
 MAX_CSS_BYTES = 1024 * 1024
 MAX_CSS_TOTAL = 3 * 1024 * 1024
 MAX_IMAGE_BYTES = 2 * 1024 * 1024
-MAX_IMAGES = 51
+MAX_IMAGES = MAX_KIT_PDF_IMAGES
 GATED_FILE = "kit.html"
 # The public half: the page the site publishes, in the site output directory.
 PUBLIC_FILE = "kit/index.html"

@@ -21,7 +21,6 @@ from reach_around.config.numbers import Numbers, NumbersEntry
 from reach_around.kit.pdf import PdfError, build_kit_pdf
 from reach_around.kit.pdftext import PdfTextError, _Budget, _CMap, _show
 from reach_around.kit.stage import StageError, stage_page
-from reach_around.site.build import build_site
 
 CREATED = date(2027, 3, 10)
 CMAP = (
@@ -241,8 +240,7 @@ def test_counts_metrics_are_checked_against_the_numbers_file(tmp_path: Path) -> 
     config = make_config(doc)
     stamp = datetime(2027, 3, 9, 12, 0, tzinfo=UTC)
     numbers = Numbers(entries={"twitch": NumbersEntry(count=777, as_of=stamp)})
-    site, gated = tmp_path / "site", tmp_path / "gated"
-    build_site(config, site, today=CREATED, numbers=numbers, gated_out=gated)
+    _, site, gated = build_instance(tmp_path, config, numbers)
 
     def run(renderer_edit: tuple[str, str] | None, out: str) -> None:
         def renderer(html: str, work: Path) -> bytes:
