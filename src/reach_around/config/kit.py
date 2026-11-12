@@ -77,6 +77,7 @@ KIT_FIELD_POLICY: Mapping[str, FieldPolicy] = {
     "photo": FieldPolicy("public"),
     "metrics": FieldPolicy("public"),
     "analytics": FieldPolicy("public"),
+    "recent_posts": FieldPolicy("public"),
     "unified_total": FieldPolicy("public"),
     "turnstile_site_key": FieldPolicy("public"),
     "partners": FieldPolicy("gated"),
@@ -498,6 +499,45 @@ class EngagementRow(_Model):
         return self
 
 
+class RecentPost(_Model):
+    """Public figures for one recent post with an instance-local thumbnail."""
+
+    platform: str
+    thumbnail: StrictStr
+    views: Annotated[StrictInt, Field(ge=0, le=MAX_ENGAGEMENT_COUNT)]
+    likes: Annotated[StrictInt, Field(ge=0, le=MAX_ENGAGEMENT_COUNT)]
+    comments: Annotated[StrictInt, Field(ge=0, le=MAX_ENGAGEMENT_COUNT)]
+    reposts: Annotated[StrictInt, Field(ge=0, le=MAX_ENGAGEMENT_COUNT)] | None = None
+    quotes: Annotated[StrictInt, Field(ge=0, le=MAX_ENGAGEMENT_COUNT)] | None = None
+
+    @field_validator("platform")
+    @classmethod
+    def _known_non_youtube_platform(cls, value: str) -> str:
+        if value not in PLATFORM_SLUGS:
+            raise ValueError(
+                "platform must be a platform name from the platforms block"
+            )
+        if value == "youtube":
+            raise ValueError("YouTube recent post figures stay out of the public kit")
+        return value
+
+    @field_validator("thumbnail")
+    @classmethod
+    def _local_thumbnail(cls, value: str) -> str:
+        value = check_image_path(value)
+        if not value.lower().endswith((".png", ".jpg", ".jpeg")):
+            raise ValueError("thumbnail must be a PNG or JPEG image")
+        return value
+
+    @model_validator(mode="after")
+    def _threads_counts(self) -> RecentPost:
+        if self.platform != "threads" and (
+            self.reposts is not None or self.quotes is not None
+        ):
+            raise ValueError("reposts and quotes are only available for Threads")
+        return self
+
+
 class KitConfig(_Model):
     title: Text120
     about: Text1000
@@ -511,6 +551,7 @@ class KitConfig(_Model):
     tags: list[Text30] = Field(default_factory=list, max_length=8)
     metrics: list[PlatformMetric] = Field(default_factory=list, max_length=30)
     analytics: list[PlatformAnalytics] = Field(default_factory=list, max_length=4)
+    recent_posts: list[RecentPost] = Field(default_factory=list, max_length=30)
     # Owner-kept inputs for engagement and average views, per platform and UTC
     # period. Public: the figures are worked out in code, never typed.
     engagement: list[EngagementRow] = Field(default_factory=list, max_length=30)

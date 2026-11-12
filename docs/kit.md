@@ -2,7 +2,7 @@
 # Media kit
 
 The media kit is two pages for two audiences. The public page shows your name,
-a short description and your headline numbers to anyone. The gated page holds
+a short description, headline numbers and recent posts to anyone. The gated page holds
 the detail you only want to show people who pass a short check: past partners,
 case studies, packages, rates, testimonials, audience details and a disclosure statement.
 
@@ -35,6 +35,19 @@ kit:
       followers_30_day_percent: 4.26
       stats:
         - {label: Example views, value: 1260000}
+  recent_posts:
+    - platform: tiktok
+      thumbnail: media/recent-post.png
+      views: 1200
+      likes: 80
+      comments: 7
+    - platform: threads
+      thumbnail: media/recent-thread.png
+      views: 900
+      likes: 60
+      comments: 5
+      reposts: 4
+      quotes: 2
   partners:
     - {name: Acme Fake Co, logo: media/acme-fake.png, note: 2026 sponsor, url: "https://example.com/acme"}
   case_studies:
@@ -126,6 +139,16 @@ The sync pill prints the configured source and sync date. A separate "Last
 updated" line prints the build date. These rows are public on both kit pages and
 in the public PDF. They do not change the owner-report-only rule for engagement
 figures, and they cannot contain YouTube Analytics figures.
+`recent_posts` adds a "Most recent posts" grid grouped by platform. Every post
+needs `views`, `likes`, `comments` and a PNG or JPEG `thumbnail` path relative
+to the instance directory. Threads posts may also carry `reposts` and `quotes`.
+The build removes PNG text chunks and JPEG metadata, caps the source at 256
+KiB, fingerprints the scrubbed image and loads it from the same site. Remote
+image addresses, absolute paths and paths outside the instance are refused.
+Supply or generate these image files inside the instance before the build.
+Recent-post pictures are left out of PDFs; the post counts remain. YouTube
+recent-post figures are refused and stay out of the public kit; keep collected
+YouTube Analytics figures in the owner-only dashboard.
 
 When the config sets [`cutover_date`](config.md#cutover_date) and that UTC day
 has arrived, a small line "Live since 2026-11-08 (UTC)" sits above the numbers

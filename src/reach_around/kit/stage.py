@@ -638,6 +638,13 @@ class _Rebuild(HTMLParser):
                 self._skip_a += 1
                 self._open.append((tag, False))
                 return
+        if tag == "img" and "kit-post-thumb" in classes.split():
+            # Recent-post thumbnails are useful on the live page but add no
+            # information to paper. Leave them out of both PDF paths, which
+            # also keeps their instance-asset paths and count outside the
+            # printer's deliberately narrow /static image boundary.
+            self._open.append((tag, False))
+            return
         if tag not in _KEEP:
             self._open.append((tag, False))
             return

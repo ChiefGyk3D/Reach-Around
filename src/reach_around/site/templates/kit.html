@@ -24,6 +24,30 @@
 </div>
 {{ numbers(kit, "kit-numbers-title", true, zone_choices) }}
 {{ analytics(kit, "kit-analytics-title") }}
+{% if kit.recent_posts %}
+<section class="kit-recent" aria-labelledby="kit-recent-title">
+<h3 id="kit-recent-title">Most recent posts</h3>
+{% for platform, posts in kit.recent_posts.items() %}
+<section class="kit-platform-posts" aria-labelledby="kit-posts-{{ loop.index }}">
+<h4 id="kit-posts-{{ loop.index }}">{{ platform }}</h4>
+<ul class="kit-posts">
+{% for post in posts %}
+<li class="kit-post">
+<img class="kit-post-thumb" src="{{ asset_url(post.thumbnail, root) }}" alt="{{ platform }} recent post thumbnail" width="320" height="180" loading="lazy">
+<ul class="kit-post-counts" aria-label="Post counts">
+<li>{{ post.views }} views</li>
+<li>{{ post.likes }} likes</li>
+<li>{{ post.comments }} comments</li>
+{% if post.reposts is not none %}<li>{{ post.reposts }} reposts</li>{% endif %}
+{% if post.quotes is not none %}<li>{{ post.quotes }} quotes</li>{% endif %}
+</ul>
+</li>
+{% endfor %}
+</ul>
+</section>
+{% endfor %}
+</section>
+{% endif %}
 {% if form %}
 <section class="kit-gate-box" aria-labelledby="kit-gate-title">
 <h3 id="kit-gate-title"{% if frame_plan %} class="{{ frames.cls("head")|trim }}"{% endif %}>More details</h3>

@@ -1437,6 +1437,14 @@
           "title": "Rates",
           "type": "array"
         },
+        "recent_posts": {
+          "items": {
+            "$ref": "#/$defs/RecentPost"
+          },
+          "maxItems": 30,
+          "title": "Recent Posts",
+          "type": "array"
+        },
         "services": {
           "items": {
             "$ref": "#/$defs/ServicePackage"
@@ -2444,6 +2452,75 @@
         "price_text"
       ],
       "title": "Rate",
+      "type": "object"
+    },
+    "RecentPost": {
+      "additionalProperties": false,
+      "description": "Public figures for one recent post with an instance-local thumbnail.",
+      "properties": {
+        "comments": {
+          "maximum": 1000000000000,
+          "minimum": 0,
+          "title": "Comments",
+          "type": "integer"
+        },
+        "likes": {
+          "maximum": 1000000000000,
+          "minimum": 0,
+          "title": "Likes",
+          "type": "integer"
+        },
+        "platform": {
+          "title": "Platform",
+          "type": "string"
+        },
+        "quotes": {
+          "anyOf": [
+            {
+              "maximum": 1000000000000,
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Quotes"
+        },
+        "reposts": {
+          "anyOf": [
+            {
+              "maximum": 1000000000000,
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reposts"
+        },
+        "thumbnail": {
+          "title": "Thumbnail",
+          "type": "string"
+        },
+        "views": {
+          "maximum": 1000000000000,
+          "minimum": 0,
+          "title": "Views",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "comments",
+        "likes",
+        "platform",
+        "thumbnail",
+        "views"
+      ],
+      "title": "RecentPost",
       "type": "object"
     },
     "Redirects": {
