@@ -13,9 +13,10 @@ allowlist, never edited in place:
   navigation, footer with its cookie form, the inquiry form's aside, links back to the
   site) is dropped;
 * a tag that can run code, fetch, nest a document or submit anything (script,
-  iframe, form, object, embed, base, svg, video, a refresh meta, ...) stops the
-  build instead of being quietly removed, because its presence means the page is
-  not the one the builder wrote;
+  iframe, form, object, embed, base, video, a refresh meta, ...) stops the build
+  instead of being quietly removed, because its presence means the page is not
+  the one the builder wrote; the generated demographics chart is the sole SVG
+  exception and is rebuilt from a separate element and attribute allowlist;
 * the page's own stylesheets are read from the site output directory, only from
   ``/static/*.css``, never through a symbolic link, and inlined; ``@import``,
   ``@font-face`` and every ``url(...)`` are removed, so there is nothing to fetch;
@@ -174,6 +175,34 @@ _CLASS = re.compile(r"[A-Za-z0-9_-]+")
 _DATETIME = re.compile(r"[0-9T:+\-.Z ]{1,40}")
 _SCOPE = frozenset({"col", "row", "colgroup", "rowgroup"})
 _SPAN = re.compile(r"[1-9][0-9]?")
+_SVG_NUMBER = r"[-+]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][-+]?[0-9]+)?"
+_SVG_NUMBERS = re.compile(rf"{_SVG_NUMBER}(?:[ ,]+{_SVG_NUMBER})*")
+_SVG_PATH = re.compile(r"[MmZzLlHhVvCcSsQqTtAa0-9eE+.,\- ]+")
+_SVG_TAGS = frozenset(
+    {"svg", "g", "path", "rect", "circle", "line", "text", "title", "desc"}
+)
+_SVG_ATTRS = {
+    "svg": frozenset({"class", "viewbox", "role", "aria-label"}),
+    "g": frozenset({"class"}),
+    "path": frozenset({"class", "d"}),
+    "rect": frozenset({"class", "x", "y", "width", "height", "rx", "ry"}),
+    "circle": frozenset(
+        {
+            "class",
+            "cx",
+            "cy",
+            "r",
+            "pathlength",
+            "stroke-dasharray",
+            "stroke-dashoffset",
+        }
+    ),
+    "line": frozenset({"class", "x1", "y1", "x2", "y2"}),
+    "text": frozenset({"class", "x", "y"}),
+    "title": frozenset(),
+    "desc": frozenset(),
+}
+_SVG_CASE = {"viewbox": "viewBox", "pathlength": "pathLength"}
 _STATIC = re.compile(
     r"/static/((?:[A-Za-z0-9][A-Za-z0-9._-]*/)*[A-Za-z0-9][A-Za-z0-9._-]*)"
 )
@@ -463,6 +492,7 @@ class _Rebuild(HTMLParser):
         self._open: list[tuple[str, bool]] = []  # (tag, emitted)
         self._skip_a = 0
         self._hidden: list[str] = []
+        self._svg_open: list[str] = []
 
     # -- helpers
     def _root_based(self, url: str) -> str:
@@ -495,9 +525,59 @@ class _Rebuild(HTMLParser):
             out.append('alt=""')
         return (" " + " ".join(out)) if out else ""
 
+    def _svg_attrs(self, tag: str, attrs: list[tuple[str, str | None]]) -> str:
+        found: dict[str, str] = {}
+        for raw_name, value in attrs:
+            name = raw_name.lower()
+            if name in found or name not in _SVG_ATTRS[tag]:
+                raise StageError(
+                    f"the chart <{tag}> has an attribute that is not allowed"
+                )
+            found[name] = value or ""
+        out: list[str] = []
+        for name, value in found.items():
+            if name == "class":
+                classes = value.split()
+                if not classes or any(_CLASS.fullmatch(one) is None for one in classes):
+                    raise StageError("the chart has a class that is not allowed")
+            elif name == "role":
+                if value != "img":
+                    raise StageError("the chart has a role that is not allowed")
+            elif name == "aria-label":
+                if not value or len(value) > 500:
+                    raise StageError("the chart has an aria-label that is not allowed")
+            elif name == "d":
+                if not value or _SVG_PATH.fullmatch(value) is None:
+                    raise StageError("the chart has path data that is not allowed")
+            elif _SVG_NUMBERS.fullmatch(value) is None:
+                raise StageError(
+                    f"the chart <{tag}> has an attribute value that is not allowed"
+                )
+            out.append(
+                f'{_SVG_CASE.get(name, name)}="{html.escape(value, quote=True)}"'
+            )
+        return (" " + " ".join(out)) if out else ""
+
+    def _start_svg(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag not in _SVG_TAGS:
+            raise StageError(f"the chart has a <{tag}> element, which is not allowed")
+        if tag == "svg":
+            if self._svg_open:
+                raise StageError("the chart has a nested <svg> element")
+            found = {name.lower(): value or "" for name, value in attrs}
+            if found.get("class") != "kit-gender-pie":
+                raise StageError("the page has an <svg> element, which is not allowed")
+        elif not self._svg_open:
+            raise StageError(f"the page has a <{tag}> element, which is not allowed")
+        self.body.append(f"<{tag}{self._svg_attrs(tag, attrs)}>")
+        self._svg_open.append(tag)
+
     # -- parser events
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         names = {k.lower() for k, _ in attrs}
+        if self._svg_open:
+            self._start_svg(tag, attrs)
+            return
         if self._chrome_depth:
             if tag in _CHROME:
                 self._chrome_depth += 1
@@ -532,6 +612,9 @@ class _Rebuild(HTMLParser):
             if any(k.lower() == "http-equiv" for k, _ in attrs):
                 raise StageError("the page has a meta http-equiv tag")
             return
+        if tag == "svg" and self._in_body:
+            self._start_svg(tag, attrs)
+            return
         if tag in _FORBIDDEN:
             raise StageError(f"the page has a <{tag}> element, which is not allowed")
         if tag == "body":
@@ -563,11 +646,23 @@ class _Rebuild(HTMLParser):
             self._open.append((tag, True))
 
     def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        in_svg = bool(self._svg_open) or tag == "svg"
         self.handle_starttag(tag, attrs)
+        if in_svg:
+            self.handle_endtag(tag)
+            return
         if tag not in _VOID and not self._chrome_depth and tag in _KEEP:
             self.handle_endtag(tag)
 
     def handle_endtag(self, tag: str) -> None:
+        if self._svg_open:
+            if tag not in self._svg_open:
+                raise StageError(f"the chart has a mismatched </{tag}> tag")
+            index = len(self._svg_open) - 1 - self._svg_open[::-1].index(tag)
+            for name in reversed(self._svg_open[index:]):
+                self.body.append(f"</{name}>")
+            del self._svg_open[index:]
+            return
         if self._chrome_depth:
             if tag in _CHROME:
                 self._chrome_depth -= 1
@@ -603,6 +698,12 @@ class _Rebuild(HTMLParser):
                 return
 
     def handle_data(self, data: str) -> None:
+        if self._svg_open:
+            if self._svg_open[-1] in {"text", "title", "desc"}:
+                self.body.append(html.escape(data, quote=False))
+            elif data.strip():
+                raise StageError("the chart has text outside a text element")
+            return
         if (
             self._in_body
             and not self._chrome_depth
@@ -688,6 +789,8 @@ def stage_page(
     parser = _Rebuild(site_root, public=public)
     parser.feed(text)
     parser.close()
+    if parser._svg_open:
+        raise StageError("the chart has an unclosed SVG element")
     if not parser.body:
         raise StageError(f"{name} has no page content")
     css_parts: list[str] = []

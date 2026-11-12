@@ -189,11 +189,25 @@ def text_fields(item: Any) -> list[tuple[str, str]]:
     """(field, text) for every printed string of one list entry: a string, a
     date in the form the templates print, or each string of a list of strings."""
     found: list[tuple[str, str]] = []
-    for field, value in item.model_dump().items():
-        for one in value if isinstance(value, list) else [value]:
-            text = one.isoformat() if isinstance(one, date) else one
+
+    def visit(field: str, value: Any) -> None:
+        if isinstance(value, dict):
+            for name, child in value.items():
+                visit(f"{field}.{name}", child)
+        elif isinstance(value, list):
+            for index, child in enumerate(value):
+                # A list of plain strings keeps the bare field name (callers
+                # filter on it, for example "thumbnails"); only structured
+                # entries get an index.
+                structured = isinstance(child, (dict, list))
+                visit(f"{field}[{index}]" if structured else field, child)
+        else:
+            text = value.isoformat() if isinstance(value, date) else value
             if isinstance(text, str):
                 found.append((field, text))
+
+    for field, value in item.model_dump().items():
+        visit(field, value)
     return found
 
 
@@ -220,6 +234,11 @@ def _gated_strings(kit: KitConfig) -> list[tuple[str, str]]:
             if name == "engagement":
                 continue
             for field, text in text_fields(item):
+                # Platform slugs are public vocabulary used by the site's icon
+                # CSS, not an audience figure. Searching one would make every
+                # demographic row collide with the public stylesheet.
+                if name == "demographics" and field == "platform":
+                    continue
                 if len(text) >= GUARD_MIN_LENGTH:
                     found.append((f"kit.{name}[{index}].{field}", text))
     for index, item in enumerate(kit.engagement):
@@ -887,7 +906,11 @@ def render_kit(
             testimonials=data["testimonials"],
             disclosure=data["disclosure"],
             demographics=[
-                {"label": d.label, "value": d.value, "as_of": d.as_of.isoformat()}
+                {
+                    **d.model_dump(),
+                    "platform_name": platform_name(d.platform),
+                    "as_of": d.as_of.isoformat(),
+                }
                 for d in data["demographics"]
             ],
         )

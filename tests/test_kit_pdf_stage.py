@@ -79,7 +79,8 @@ def with_header_image(gated: Path, src: str) -> None:
 def test_staged_page_is_complete_and_sealed(tmp_path: Path) -> None:
     html = staged_html(tmp_path)
     assert f"Acme Fake Co {CANARY}" in html
-    assert "Exampleland 40%" in html and "Ask me!" in html
+    assert "Exampleland" in html and "40%" in html and "Ask me!" in html
+    assert '<svg class="kit-gender-pie"' in html
     assert 'href="https://example.com/acme"' not in html
     # nothing that fetches, runs or submits
     for banned in (
@@ -99,6 +100,25 @@ def test_staged_page_is_complete_and_sealed(tmp_path: Path) -> None:
     # navigation back to the live site is not part of a printed document
     assert "Skip to the kit" not in html and "Back to the public kit page" not in html
     assert "Cookie notice" not in html and "Preferences" not in html
+
+
+@pytest.mark.parametrize(
+    "fragment",
+    [
+        "<script>1</script>",
+        "<foreignObject><p>foreign</p></foreignObject>",
+        '<circle onload="alert(1)"></circle>',
+        '<circle href="https://example.invalid/a.svg"></circle>',
+    ],
+)
+def test_hostile_markup_inside_a_chart_svg_is_refused(
+    tmp_path: Path, fragment: str
+) -> None:
+    _, site, gated = build_instance(tmp_path)
+    page = (gated / "kit.html").read_text(encoding="utf-8")
+    write_gated(gated, page.replace("</svg>", fragment + "</svg>", 1))
+    with pytest.raises(StageError):
+        stage_page(gated, site)
 
 
 @pytest.mark.parametrize(

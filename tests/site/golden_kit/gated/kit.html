@@ -11,7 +11,7 @@
 <link rel="stylesheet" href="/static/tokens.d0c7809a44429f3609ea.css">
 <link rel="stylesheet" href="/static/site.00cd60aad974d590b95b.css">
 <link rel="stylesheet" href="/static/theme.71ca8fb8f7b69ca52f1f.css">
-<link rel="stylesheet" href="/static/kit.3190337a25d911a05d5e.css">
+<link rel="stylesheet" href="/static/kit.c1ffd32c27cc8f03aff3.css">
 </head>
 <body>
 <a class="skip-link" href="#content">Skip to the kit</a>
@@ -70,15 +70,58 @@
 </section>
 <section class="kit-demographics" aria-labelledby="kit-demographics-title">
 <h3 id="kit-demographics-title">Audience details</h3>
-<table class="kit-table">
-<caption class="sr-only">Audience details, each with the date it was read</caption>
-<thead>
-<tr><th scope="col">Detail</th><th scope="col">Value</th><th scope="col">As of</th></tr>
-</thead>
-<tbody>
-<tr><th scope="row">Top country</th><td>Exampleland 40%</td><td><time datetime="2027-03-01">2027-03-01</time></td></tr>
-</tbody>
-</table>
+<article class="kit-demographic" aria-labelledby="kit-demo-1-title">
+<h4 id="kit-demo-1-title">Instagram</h4>
+<p class="kit-note">As of <time datetime="2027-03-01">2027-03-01</time> UTC</p>
+<div class="kit-demographic-grid">
+<figure class="kit-gender">
+<figcaption><strong>Gender</strong></figcaption>
+<svg class="kit-gender-pie" viewBox="0 0 42 42" role="img" aria-label="Instagram gender: 40% male, 60% female">
+<circle class="kit-pie-base" cx="21" cy="21" r="15.9" pathLength="100"></circle>
+<circle class="kit-pie-male" cx="21" cy="21" r="15.9" pathLength="100" stroke-dasharray="40 100"></circle>
+<circle class="kit-pie-female" cx="21" cy="21" r="15.9" pathLength="100" stroke-dasharray="60 100" stroke-dashoffset="-40"></circle>
+</svg>
+<ul class="kit-chart-key">
+<li><span class="kit-key kit-key-male" aria-hidden="true"></span>40% male</li>
+<li><span class="kit-key kit-key-female" aria-hidden="true"></span>60% female</li>
+</ul>
+</figure>
+<section class="kit-age" aria-labelledby="kit-demo-1-age-title">
+<h5 id="kit-demo-1-age-title">Age</h5>
+<div class="kit-age-groups">
+<details class="kit-age-group" open>
+<summary>All</summary>
+<div class="kit-age-bars">
+<div class="kit-bar-row"><span>18-24</span><progress value="35" max="100" aria-label="18-24, all: 35%">35%</progress><strong>35%</strong></div>
+<div class="kit-bar-row"><span>25-34</span><progress value="65" max="100" aria-label="25-34, all: 65%">65%</progress><strong>65%</strong></div>
+</div>
+</details>
+<details class="kit-age-group">
+<summary>Male</summary>
+<div class="kit-age-bars">
+<div class="kit-bar-row"><span>18-24</span><progress value="30" max="100" aria-label="18-24, male: 30%">30%</progress><strong>30%</strong></div>
+<div class="kit-bar-row"><span>25-34</span><progress value="70" max="100" aria-label="25-34, male: 70%">70%</progress><strong>70%</strong></div>
+</div>
+</details>
+<details class="kit-age-group">
+<summary>Female</summary>
+<div class="kit-age-bars">
+<div class="kit-bar-row"><span>18-24</span><progress value="38" max="100" aria-label="18-24, female: 38%">38%</progress><strong>38%</strong></div>
+<div class="kit-bar-row"><span>25-34</span><progress value="62" max="100" aria-label="25-34, female: 62%">62%</progress><strong>62%</strong></div>
+</div>
+</details>
+</div>
+</section>
+</div>
+<div class="kit-place-grid">
+<section aria-labelledby="kit-demo-1-countries-title">
+<h5 id="kit-demo-1-countries-title">Top countries</h5>
+<div class="kit-bar-row"><span>Exampleland</span><progress value="70" max="100" aria-label="Exampleland: 70%">70%</progress><strong>70%</strong></div><div class="kit-bar-row"><span>Sample Republic</span><progress value="30" max="100" aria-label="Sample Republic: 30%">30%</progress><strong>30%</strong></div></section>
+<section aria-labelledby="kit-demo-1-cities-title">
+<h5 id="kit-demo-1-cities-title">Top cities</h5>
+<div class="kit-bar-row"><span>Example City</span><progress value="55" max="100" aria-label="Example City: 55%">55%</progress><strong>55%</strong></div><div class="kit-bar-row"><span>Sample Junction</span><progress value="45" max="100" aria-label="Sample Junction: 45%">45%</progress><strong>45%</strong></div></section>
+</div>
+</article>
 </section>
 <p><a href="/kit/">Back to the public kit page</a></p>
 </section>

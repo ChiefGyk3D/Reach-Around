@@ -73,7 +73,23 @@ def gated_doc(**kw: Any) -> dict[str, Any]:
         ],
         rates=[{"item": f"Sponsored video {CANARY}", "price_text": "Ask me!"}],
         demographics=[
-            {"label": "Top country", "value": "Exampleland 40%", "as_of": "2027-03-01"}
+            {
+                "platform": "instagram",
+                "as_of": "2027-03-01",
+                "gender": {"male": 40, "female": 60},
+                "ages": [
+                    {"range": "18-24", "all": 35, "male": 30, "female": 38},
+                    {"range": "25-34", "all": 65, "male": 70, "female": 62},
+                ],
+                "countries": [
+                    {"name": "Exampleland", "percentage": 70},
+                    {"name": "Sample Republic", "percentage": 30},
+                ],
+                "cities": [
+                    {"name": "Example City", "percentage": 55},
+                    {"name": "Sample Junction", "percentage": 45},
+                ],
+            }
         ],
         **kw,
     )
@@ -211,7 +227,7 @@ def test_the_public_tree_holds_no_gated_text(tmp_path: Path) -> None:
         "2026 sponsor",
         "Sponsored video",
         "Ask me!",
-        "Exampleland 40%",
+        "Exampleland",
         "https://example.com/acme",
     ):
         assert text in page, text
@@ -245,7 +261,15 @@ def test_a_gated_string_placed_in_config_never_reaches_the_public_tree(
             kit["rates"] = [{"item": canary, "price_text": "Ask me!"}]
         else:
             kit["demographics"] = [
-                {"label": canary, "value": "v", "as_of": "2027-03-01"}
+                {
+                    "platform": "instagram",
+                    "as_of": "2027-03-01",
+                    "gender": {"male": 40, "female": 60},
+                    "ages": [
+                        {"range": "18-24", "all": 100, "male": 100, "female": 100}
+                    ],
+                    "countries": [{"name": canary, "percentage": 100}],
+                }
             ]
         if place == "case_studies":
             out, gated = build(
@@ -407,6 +431,36 @@ def test_no_script_and_no_third_party_request_anywhere(tmp_path: Path) -> None:
     # tests/site/test_kit_csp.py pins which); no page loads it yet.
     headers = (out / "_headers").read_text(encoding="utf-8")
     assert headers.count("challenges.cloudflare.com") == 4
+
+
+def test_structured_demographic_charts_are_accessible_and_script_free(
+    tmp_path: Path,
+) -> None:
+    _, gated = build(tmp_path)
+    html = (gated / GATED_FILE).read_text(encoding="utf-8")
+    page = Page(html)
+
+    assert 'aria-label="Instagram gender: 40% male, 60% female"' in html
+    assert "Gender" in html and "40% male" in html and "60% female" in html
+    for view in ("All", "Male", "Female"):
+        assert f">{view}</summary>" in html
+    assert "<input" not in html
+    assert 'value="35" max="100"' in html
+    assert "Exampleland" in html and "70%" in html
+    assert "Example City" in html and "55%" in html
+    assert page.scripts == 0
+    assert "style=" not in html
+
+
+def test_threads_demographics_have_no_cities_chart(tmp_path: Path) -> None:
+    document = gated_doc()
+    row = document["demographics"][0]
+    row["platform"] = "threads"
+    row.pop("cities")
+    _, gated = build(tmp_path, make_config(document))
+    html = (gated / GATED_FILE).read_text(encoding="utf-8")
+    assert "Top countries" in html
+    assert "Top cities" not in html
 
 
 def test_gate_page_explains_the_gate_and_noscript(tmp_path: Path) -> None:

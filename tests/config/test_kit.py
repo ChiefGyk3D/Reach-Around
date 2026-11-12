@@ -69,6 +69,18 @@ def kit_doc(**kw: Any) -> dict[str, Any]:
     return doc
 
 
+def demographic(**kw: Any) -> dict[str, Any]:
+    row: dict[str, Any] = {
+        "platform": "instagram",
+        "as_of": "2027-03-01",
+        "gender": {"male": 40, "female": 60},
+        "ages": [{"range": "18-24", "all": 100, "male": 100, "female": 100}],
+        "countries": [{"name": "Exampleland", "percentage": 40}],
+    }
+    row.update(kw)
+    return row
+
+
 def site_doc(**kw: Any) -> dict[str, Any]:
     return {
         "version": 1,
@@ -117,9 +129,7 @@ def test_a_full_kit_validates() -> None:
                 }
             ],
             rates=[{"item": "Sponsored video", "price_text": "Ask me!"}],
-            demographics=[
-                {"label": "Top country", "value": "US 40%", "as_of": "2027-03-01"}
-            ],
+            demographics=[demographic()],
         )
     )
     assert kit.rates[0].price_text == "Ask me!"
@@ -385,7 +395,7 @@ def kit_with_canaries() -> KitConfig:
             ],
             rates=[{"item": f"{CANARY}-rate", "price_text": "Ask me!"}],
             demographics=[
-                {"label": f"{CANARY}-demo", "value": "x", "as_of": "2027-03-01"}
+                demographic(countries=[{"name": f"{CANARY}-demo", "percentage": 40}])
             ],
         )
     )
@@ -462,11 +472,11 @@ def test_future_dates_warn() -> None:
 
 def test_stale_demographics_warn() -> None:
     kit = KitConfig.model_validate(
-        kit_doc(
-            demographics=[{"label": "Age", "value": "18-24", "as_of": "2026-01-01"}]
-        )
+        kit_doc(demographics=[demographic(as_of="2026-01-01")])
     )
-    assert any("Age" in w and "days old" in w for w in kit_warnings(kit, None, TODAY))
+    assert any(
+        "instagram" in w and "days old" in w for w in kit_warnings(kit, None, TODAY)
+    )
 
 
 def test_stale_counts_file_entry_warns() -> None:
@@ -567,7 +577,19 @@ def test_kit_section_loads_in_a_site() -> None:
             ]
         },
         {"rates": [{"item": "i", "price_text": "Ask me!"}]},
-        {"demographics": [{"label": "l", "value": "v", "as_of": "2027-03-01"}]},
+        {
+            "demographics": [
+                {
+                    "platform": "instagram",
+                    "as_of": "2027-03-01",
+                    "gender": {"male": 50, "female": 50},
+                    "ages": [
+                        {"range": "18-24", "all": 100, "male": 100, "female": 100}
+                    ],
+                    "countries": [{"name": "Exampleland", "percentage": 100}],
+                }
+            ]
+        },
     ],
 )
 def test_gated_content_needs_the_kit_gate_feature(extra: dict[str, Any]) -> None:
