@@ -963,7 +963,9 @@ def build_site(
                 "redirects.tabs old slug 'socials' conflicts with redirects.socials"
             )
         current_routes = {
-            tab.id: (
+            tab.id: ("/" if tab.intent == "watch" else f"/#group-{tab.intent}")
+            if config.page.layout == "stack"
+            else (
                 "/"
                 if i == 0 or (config.page_layout == "sections" and not shown[i])
                 else f"/#{tab.id}"

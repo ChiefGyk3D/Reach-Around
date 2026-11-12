@@ -86,6 +86,7 @@ def test_stack_builds_one_ordered_page_with_status_and_equal_watch_links(
     assert "Live Friday at 8 PM Eastern" in html
     assert "Next stream: November 13" in html
     assert html.index("Watch link 1") < html.index("Watch link 2")
+    assert '<div class="smart-watch" role="group" aria-label="Watch">' in html
     assert len(re.findall(r'class="[^"]*\bsmart-watch-link\b', html)) == 2
     positions = [
         html.index(f'id="group-{intent}"')

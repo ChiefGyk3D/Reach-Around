@@ -428,8 +428,12 @@ class SiteConfig(_Model):
             raise ValueError("page.layout: stack requires the dark theme")
         if len(page.watch) != 2:
             raise ValueError("page.watch must contain exactly two link ids")
+        watch_tabs = [tab for tab in self.tabs if tab.intent == "watch"]
+        if len(watch_tabs) != 1:
+            raise ValueError("page.layout: stack requires exactly one watch intent")
 
         links: dict[str, Link] = {}
+        watch_links: dict[str, Link] = {}
         intents: set[str] = set()
         for tab in self.tabs:
             if tab.intent is None:
@@ -449,15 +453,26 @@ class SiteConfig(_Model):
                     raise ValueError(
                         "page.layout: stack groups support only links and link sections"
                     )
+            if tab.intent == "watch":
+                watch_links.update((link.id, link) for link in group_links)
             if tab.intent != "watch" and not 2 <= len(group_links) <= 6:
                 raise ValueError(
                     f"tab {tab.id!r} must contain 2 to 6 links for page.layout: stack"
                 )
 
-        missing = [ident for ident in page.watch if ident not in links]
+        missing = [ident for ident in page.watch if ident not in watch_links]
         if missing:
-            raise ValueError(f"page.watch link id {missing[0]!r} is missing")
-        icons = {links[ident].icon for ident in page.watch}
+            location = (
+                "missing" if missing[0] not in links else "not in the Watch group"
+            )
+            raise ValueError(f"page.watch link id {missing[0]!r} is {location}")
+        selected = [watch_links[ident] for ident in page.watch]
+        if any(
+            link.show_from is not None or link.show_until is not None
+            for link in selected
+        ):
+            raise ValueError("page.watch links cannot be scheduled")
+        icons = {link.icon for link in selected}
         if icons != {"twitch", "kick"}:
             raise ValueError("page.watch must name one Twitch and one Kick link")
         return self

@@ -97,3 +97,31 @@ def test_stack_refuses_incomplete_or_unsupported_content(
     change(data)
     with pytest.raises(ValidationError, match=message):
         SiteConfig.model_validate(data)
+
+
+def test_stack_requires_exactly_one_watch_group() -> None:
+    data = raw()
+    data["tabs"][0]["intent"] = "follow"
+
+    with pytest.raises(ValidationError, match="exactly one.*watch"):
+        SiteConfig.model_validate(data)
+
+
+def test_stack_watch_links_must_belong_to_the_watch_group() -> None:
+    data = raw()
+    data["tabs"][0]["blocks"], data["tabs"][1]["blocks"] = (
+        data["tabs"][1]["blocks"],
+        data["tabs"][0]["blocks"],
+    )
+
+    with pytest.raises(ValidationError, match="page.watch.*Watch group"):
+        SiteConfig.model_validate(data)
+
+
+@pytest.mark.parametrize("schedule_key", ["show_from", "show_until"])
+def test_stack_watch_links_cannot_be_scheduled(schedule_key: str) -> None:
+    data = raw()
+    data["tabs"][0]["blocks"][0][schedule_key] = "2027-04-01"
+
+    with pytest.raises(ValidationError, match="page.watch.*scheduled"):
+        SiteConfig.model_validate(data)

@@ -9,7 +9,7 @@
 <p class="smart-status-text">{{ page.status.text }}</p>
 {% if page.status.schedule %}<p class="smart-status-schedule">{{ page.status.schedule }}</p>{% endif %}
 </section>
-<div class="smart-watch" aria-label="Watch">
+<div class="smart-watch" role="group" aria-label="Watch">
 {% for link in watch %}{{ link_anchor(link, click_tracking, " smart-watch-link") }}{% endfor %}
 </div>
 <div class="smart-groups">
