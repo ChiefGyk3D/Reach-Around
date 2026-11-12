@@ -66,7 +66,8 @@ On `main` (from `worker/src/view.ts`, `viewrollup.ts`, `viewretention.ts`,
 | Network class column `net` | Column shipped; value is `unknown` for now (no range data loaded) |
 | `Sec-GPC` and Do Not Track honored in the Worker and in `view.js` | Shipped |
 | Single site: one `SITE_HOST`, one `PAGE_IDS` list | Shipped; this is what multi-site replaces |
-| Funnel read model and dashboard panels | Planned (Plan 4 A7 to A9) |
+| Funnel read model | Shipped as the local owner command `reach-around report` and its owner page (`docs/report.md`) |
+| Grafana dashboard panels | The floored SQLite feed ships (`reach-around grafana-export`, `docs/grafana.md`); the Plan 4 A7 to A9 panels are not verified here |
 | Privacy page text for page views | Shipped for the link page; does not yet mention the network class or a second site |
 
 So the new work in this design is: the site dimension, the blog collection

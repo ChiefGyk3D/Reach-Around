@@ -859,9 +859,10 @@ layer), run the commands below (one safe value at a time), or use
 [the local editor](editor.md). Use hand-editing for anything beyond links,
 platform items and the few `set` keys, and for tabs, sections, layouts and
 overrides. The local editor today has forms for the creator, the look, each link
-and each platform item, plus server routes that run the same operations as
-these commands; it cannot yet add or remove a link or upload an image, so it
-does not replace the other two.
+and each platform item, with add, remove, move, undo, redo and history, plus
+server routes that run the same operations as these commands; it cannot yet
+upload an image or edit tabs, sections, layouts and overrides, so it does not
+replace hand-editing.
 
 ### Editor help: the JSON Schema
 

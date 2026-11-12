@@ -108,6 +108,8 @@ By design only three outputs carry `noindex`: `404.html`, `/kit/retry/` (both th
 
 ## Border frames on and off (#444, #448)
 
+> Historical. These numbers were measured before the frame levels `none`, `minimal` and `faithful` replaced `l3`, `frame_motion` and `frame_l3_max` (#470, see [design.md](design.md) and the [`theme`](config.md#theme) reference). The old settings are now ignored and the glow and `frame.svg` are gone, so the "motion" and "light show" rows no longer apply. The new frame art and the Smart stack layout (`page.layout: stack`) have not been re-measured here.
+
 The numbers below were measured for the first frame release (#444). The frames-everywhere change (#448) is re-measured in the table at the end of this section.
 
 Measured 2026-11-08, Lighthouse 13.6.0, Chromium headless, three runs per page and strategy, median, served with the build's own `_headers` and gzip. "On" is `theme.frame: l3` (link page, kit page) and `l1` (the `dark-hero` themed page); "off" is the same site without the key. The link and kit pages score SEO 91 in both states on the scratch site used, because its tab is titled "More" (`link-text` audit); that is the scratch site, not the feature.
