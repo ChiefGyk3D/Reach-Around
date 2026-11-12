@@ -1,5 +1,42 @@
 {
   "$defs": {
+    "AgeSplit": {
+      "additionalProperties": false,
+      "properties": {
+        "all": {
+          "maximum": 100,
+          "minimum": 0,
+          "title": "All",
+          "type": "integer"
+        },
+        "female": {
+          "maximum": 100,
+          "minimum": 0,
+          "title": "Female",
+          "type": "integer"
+        },
+        "male": {
+          "maximum": 100,
+          "minimum": 0,
+          "title": "Male",
+          "type": "integer"
+        },
+        "range": {
+          "maxLength": 30,
+          "minLength": 1,
+          "title": "Range",
+          "type": "string"
+        }
+      },
+      "required": [
+        "all",
+        "female",
+        "male",
+        "range"
+      ],
+      "title": "AgeSplit",
+      "type": "object"
+    },
     "Alerts": {
       "additionalProperties": false,
       "description": "Which channels receive which owner alerts. Everything off by default.",
@@ -433,28 +470,51 @@
     "Demographic": {
       "additionalProperties": false,
       "properties": {
+        "ages": {
+          "items": {
+            "$ref": "#/$defs/AgeSplit"
+          },
+          "maxItems": 12,
+          "minItems": 1,
+          "title": "Ages",
+          "type": "array"
+        },
         "as_of": {
           "format": "date",
           "title": "As Of",
           "type": "string"
         },
-        "label": {
-          "maxLength": 60,
-          "minLength": 1,
-          "title": "Label",
-          "type": "string"
+        "cities": {
+          "items": {
+            "$ref": "#/$defs/PlaceShare"
+          },
+          "maxItems": 10,
+          "title": "Cities",
+          "type": "array"
         },
-        "value": {
-          "maxLength": 80,
-          "minLength": 1,
-          "title": "Value",
+        "countries": {
+          "items": {
+            "$ref": "#/$defs/PlaceShare"
+          },
+          "maxItems": 10,
+          "minItems": 1,
+          "title": "Countries",
+          "type": "array"
+        },
+        "gender": {
+          "$ref": "#/$defs/GenderSplit"
+        },
+        "platform": {
+          "title": "Platform",
           "type": "string"
         }
       },
       "required": [
+        "ages",
         "as_of",
-        "label",
-        "value"
+        "countries",
+        "gender",
+        "platform"
       ],
       "title": "Demographic",
       "type": "object"
@@ -1095,6 +1155,29 @@
         }
       },
       "title": "FrameClasses",
+      "type": "object"
+    },
+    "GenderSplit": {
+      "additionalProperties": false,
+      "properties": {
+        "female": {
+          "maximum": 100,
+          "minimum": 0,
+          "title": "Female",
+          "type": "integer"
+        },
+        "male": {
+          "maximum": 100,
+          "minimum": 0,
+          "title": "Male",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "female",
+        "male"
+      ],
+      "title": "GenderSplit",
       "type": "object"
     },
     "GithubSource": {
@@ -1921,6 +2004,29 @@
         "name"
       ],
       "title": "Partner",
+      "type": "object"
+    },
+    "PlaceShare": {
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "maxLength": 80,
+          "minLength": 1,
+          "title": "Name",
+          "type": "string"
+        },
+        "percentage": {
+          "maximum": 100,
+          "minimum": 0,
+          "title": "Percentage",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "name",
+        "percentage"
+      ],
+      "title": "PlaceShare",
       "type": "object"
     },
     "PlatformAnalytics": {

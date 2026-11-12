@@ -196,7 +196,11 @@ def text_fields(item: Any) -> list[tuple[str, str]]:
                 visit(f"{field}.{name}", child)
         elif isinstance(value, list):
             for index, child in enumerate(value):
-                visit(f"{field}[{index}]", child)
+                # A list of plain strings keeps the bare field name (callers
+                # filter on it, for example "thumbnails"); only structured
+                # entries get an index.
+                structured = isinstance(child, (dict, list))
+                visit(f"{field}[{index}]" if structured else field, child)
         else:
             text = value.isoformat() if isinstance(value, date) else value
             if isinstance(text, str):
