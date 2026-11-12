@@ -406,10 +406,18 @@ def _expected_text(
     ):
         for index, item in enumerate(getattr(kit, name)):
             for field, text in text_fields(item):
-                if field == "url":  # a link target, not printed text
+                if field in {"url", "thumbnails"}:  # targets, not printed text
                     continue
                 if text:
                     found.append((f"kit.{name}[{index}].{field}", text))
+            if name == "case_studies":
+                for field, label in (
+                    ("views", "Views"),
+                    ("likes", "Likes"),
+                    ("comments", "Comments"),
+                ):
+                    value = getattr(item, field)
+                    found.append((f"kit.{name}[{index}].{field}", label + f"{value:,}"))
     if (
         kit.inquiry is not None
     ):  # the owner details print; the form beside them does not

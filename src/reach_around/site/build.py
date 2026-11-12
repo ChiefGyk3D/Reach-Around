@@ -40,7 +40,7 @@ from reach_around.config.numbers import (
 from reach_around.config.page_title import DEFAULT_TEMPLATE, render_template
 from reach_around.config.profile_card import MEDIA_KIT_ID
 from reach_around.config.tablinks import is_tab_ref, parse_tab_ref
-from reach_around.site.assets import collect_assets, collect_partner_logos
+from reach_around.site.assets import collect_assets, collect_private_kit_assets
 from reach_around.site.cachepolicy import cache_patterns
 from reach_around.site.fingerprint import AssetMap, fingerprint
 from reach_around.site.frames import (
@@ -152,6 +152,7 @@ _LIVE_SCRIPT = Path("static") / "live.js"
 # Published only for a site with a kit.
 _KIT_STYLE = Path("static") / "kit.css"
 _FRAME_STYLE = Path("static") / "frame.css"
+_SMART_STACK_STYLE = Path("static") / "smart-stack.css"
 _FRAME_ART_PREFIXES = ("frame-lite", "frame-fa-")
 
 
@@ -178,7 +179,7 @@ def _page_path(tab_index: int, tab: Tab) -> Path:
 
 def _page_paths(config: SiteConfig, with_kit: bool = True) -> set[Path]:
     """Every HTML file the build writes (``with_kit`` adds the kit's pages)."""
-    if config.page_layout == "sections":
+    if config.page.layout == "stack" or config.page_layout == "sections":
         pages = {Path("index.html")}
     else:
         pages = {_page_path(i, tab) for i, tab in enumerate(config.tabs)}
@@ -225,7 +226,7 @@ def _font_preloads(
 
 
 def _nav(config: SiteConfig, current: int, root: str) -> list[dict[str, Any]]:
-    if config.page_layout == "sections":
+    if config.page.layout == "stack" or config.page_layout == "sections":
         return []  # one page: no tab bar, the sections are on the page
     return [
         {
@@ -247,6 +248,23 @@ def _internal_href(
     tabs live at ``<prefix><id>/``. The config was validated at load, so every
     id is known.
     """
+    if config.page.layout == "stack":
+        homes = {
+            tab.id: (
+                root
+                if tab.intent == "watch"
+                else f"{'' if root == './' else root}#group-{tab.intent}"
+            )
+            for tab in config.tabs
+        }
+
+        def stack_href(url: str) -> str:
+            tab_id, fragment = parse_tab_ref(url)
+            if fragment is not None:
+                return f"{'' if root == './' else root}#{fragment}"
+            return homes[tab_id]
+
+        return stack_href
     if config.page_layout == "sections":
         return _section_href(config, root, shown)
     prefix = "" if root == "./" else root
@@ -434,6 +452,57 @@ def _render_sections_page(
     )
 
 
+def _render_smart_stack_page(
+    env: Environment,
+    config: SiteConfig,
+    shown: list[list[Block]],
+    custom_css: bool,
+) -> str:
+    """Render the production one-page smart stack."""
+    every = [block for blocks in shown for block in blocks]
+    links = {link.id: link for link in _links_in(every)}
+    groups = [
+        {"tab": tab, "links": _links_in(blocks)}
+        for tab, blocks in zip(config.tabs, shown, strict=True)
+        if tab.intent != "watch"
+    ]
+    tab = config.tabs[0]
+    return env.get_template("smart_stack.html").render(
+        creator=config.creator,
+        tab=tab,
+        blocks=every,
+        groups=groups,
+        watch=[links[ident] for ident in config.page.watch],
+        page=config.page,
+        nav=[],
+        tab_href=_internal_href(config, "./", shown),
+        root="",
+        page_title=page_title(config, tab.title, home=True, own=tab.page_title),
+        disclosure=_disclosure_line(config),
+        show_disclosure=_show_disclosure(
+            config, any(link.affiliate for link in _links_in(every))
+        ),
+        show_cookie_banner=sets_cookies(config),
+        click_tracking=config.features.click_tracking,
+        footer_credit=config.footer.credit,
+        footer_credit_text=config.footer.text,
+        footer_credit_url=CREDIT_URL,
+        page_views=config.analytics.page_views,
+        page_id=tab.id,
+        view_route=config.analytics.route,
+        has_crypto=False,
+        has_email=False,
+        has_email_script=False,
+        has_platforms=False,
+        has_live=False,
+        smart_stack=True,
+        profile_card=_profile_card(config),
+        cookie_text=intro_text(config),
+        custom_css=custom_css,
+        page_frames=_page_has_frames(config, every),
+    )
+
+
 def _render_privacy(
     env: Environment,
     config: SiteConfig,
@@ -575,7 +644,11 @@ def _render_pages(
     shown: list[list[Block]],
     custom_css: bool,
 ) -> dict[Path, str]:
-    if config.page_layout == "sections":
+    if config.page.layout == "stack":
+        pages = {
+            Path("index.html"): _render_smart_stack_page(env, config, shown, custom_css)
+        }
+    elif config.page_layout == "sections":
         pages = {
             Path("index.html"): _render_sections_page(env, config, shown, custom_css)
         }
@@ -772,7 +845,7 @@ def build_site(
                 "kit page lives at /kit/, so rename the tab (its id must not be "
                 "'kit')"
             )
-    private_logos = collect_partner_logos(config, assets_dir)
+    private_kit_assets = collect_private_kit_assets(config, assets_dir)
     for rel, data in collect_assets(config, assets_dir).items():
         if rel in static or rel in pages_at:
             raise ValueError(f"{rel} would overwrite a file the build writes itself")
@@ -781,6 +854,8 @@ def build_site(
         static.pop(Path("static") / "click.js", None)
     if not config.analytics.page_views:
         static.pop(Path("static") / "view.js", None)
+    if config.page.layout != "stack":
+        static.pop(_SMART_STACK_STYLE, None)
     if not any(_has_crypto(blocks) for blocks in shown):
         for rel in _CRYPTO_FILES:
             static.pop(rel, None)
@@ -816,7 +891,7 @@ def build_site(
     # live script; the 404 page and the kit pages say False for themselves.
     env.globals["has_live_script"] = any(_has_live(blocks) for blocks in shown)
     env.globals["asset_url"] = _asset_url(named.assets)
-    env.globals["private_asset_url"] = _private_asset_url(private_logos)
+    env.globals["private_asset_url"] = _private_asset_url(private_kit_assets)
     env.globals["font_preloads"] = _font_preloads(config, named.assets)
     env.globals["frame_plan"] = plan
     env.globals["frame_sizes"] = {slot: SLOT_SIZES[slot] for slot in plan}
@@ -888,7 +963,9 @@ def build_site(
                 "redirects.tabs old slug 'socials' conflicts with redirects.socials"
             )
         current_routes = {
-            tab.id: (
+            tab.id: ("/" if tab.intent == "watch" else f"/#group-{tab.intent}")
+            if config.page.layout == "stack"
+            else (
                 "/"
                 if i == 0 or (config.page_layout == "sections" and not shown[i])
                 else f"/#{tab.id}"

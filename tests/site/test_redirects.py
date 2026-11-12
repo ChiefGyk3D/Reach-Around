@@ -92,6 +92,22 @@ def test_old_tab_slugs_follow_section_routes(tmp_path: Path) -> None:
     ]
 
 
+def test_old_tab_slugs_follow_stack_group_routes(tmp_path: Path) -> None:
+    from test_smart_stack import raw
+
+    data = raw()
+    data["tabs"][0], data["tabs"][2] = data["tabs"][2], data["tabs"][0]
+    data["redirects"] = {"tabs": {"old-watch": "watch", "old-follow": "follow"}}
+    files = built(SiteConfig.model_validate(data), tmp_path / "o")
+
+    assert rules(files["_redirects"].decode()) == [
+        ["/old-follow", "/#group-follow", "301"],
+        ["/old-follow/", "/#group-follow", "301"],
+        ["/old-watch", "/", "301"],
+        ["/old-watch/", "/", "301"],
+    ]
+
+
 def test_old_tab_slug_for_omitted_section_redirects_to_page(tmp_path: Path) -> None:
     data = site_data()
     data["tabs"][1]["blocks"] = [

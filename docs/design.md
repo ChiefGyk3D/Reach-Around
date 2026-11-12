@@ -157,6 +157,11 @@ be overridden by a creator who adds a stylesheet of their own.
 - **Single-page sections** (`page_layout: sections`) render each tab after the
   first as a `<details class="tab-section">` with the title as a heading in the
   summary. The summary is at least 44 px tall and shows the 3 px focus ring.
+- **Smart stack** (`page.layout: stack`) is the production version of layout A:
+  one dark page with status and Watch actions first, followed by intent groups
+  in config order. Group links stay in one column on phones and become two
+  columns at 48 rem, with no fixed content width that can break 320 px reflow
+  or 200% zoom. Layouts B, C, and D remain prototypes.
 - **Collapsible sections** use the native `<details>` element. The chevron
   rotates and the content eases open (in browsers that support
   `::details-content`; elsewhere it fades in). No script is involved.

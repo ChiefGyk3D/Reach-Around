@@ -128,6 +128,33 @@
   border-radius: var(--ra-card-radius);
   background-color: var(--ra-color-surface);
 }
+.kit-case-thumbnails {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--ra-space-2);
+}
+.kit-case-thumbnail {
+  display: block;
+  width: 100%;
+  height: auto;
+  aspect-ratio: 16 / 9;
+  object-fit: cover;
+  border-radius: var(--ra-card-radius);
+}
+.kit-case-totals {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--ra-space-2);
+  margin: 0;
+}
+.kit-case-totals div { min-width: 0; }
+.kit-case-totals dt { color: var(--ra-color-muted); font-size: var(--ra-text-sm); }
+.kit-case-totals dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
 
 .kit-gate { display: grid; gap: var(--ra-space-3); max-width: 28rem; }
 .kit-field { display: grid; gap: var(--ra-space-1); }

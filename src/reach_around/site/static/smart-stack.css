@@ -1,0 +1,43 @@
+/* SPDX-License-Identifier: Apache-2.0 */
+/* The production smart stack inherits the site's dark palette and tokens. */
+.smart-stack,
+.smart-groups,
+.smart-group,
+.smart-group-links {
+  display: flex;
+  min-width: 0;
+  max-width: 100%;
+  flex-direction: column;
+}
+.smart-stack {
+  flex: 1 0 auto;
+  gap: var(--ra-space-5);
+  width: 100%;
+  padding-inline: var(--ra-gutter);
+}
+.smart-status {
+  position: relative;
+  min-width: 0;
+  max-width: 100%;
+  padding: var(--ra-space-4);
+  border: var(--ra-rule-width) solid var(--ra-color-border);
+  border-inline-start: var(--ra-rule-accent-width) solid var(--ra-color-accent);
+  border-radius: var(--ra-card-radius);
+  background-color: var(--ra-color-surface);
+  box-shadow: var(--ra-shadow-card);
+}
+.smart-status p { margin: 0; }
+.smart-status-text { font-size: var(--ra-text-md); font-weight: 700; }
+.smart-status-schedule { color: var(--ra-color-muted); }
+.smart-watch { display: flex; min-width: 0; max-width: 100%; flex-wrap: wrap; gap: var(--ra-space-2); }
+.smart-watch-link { flex: 1 1 12rem; min-width: min(100%, 12rem); min-height: var(--ra-tap); height: 100%; }
+.smart-groups, .smart-group, .smart-group-links { gap: var(--ra-space-2); }
+.smart-group { scroll-margin-top: calc(var(--ra-tap) + var(--ra-space-5) + env(safe-area-inset-top, 0rem)); }
+.smart-group h2 { margin: var(--ra-space-4) 0 var(--ra-space-2); font-size: var(--ra-text-lg); }
+@media (max-width: 29.999rem) {
+  .smart-watch-link { flex-basis: 100%; width: 100%; }
+}
+@media (min-width: 48rem) {
+  .smart-stack { width: min(100%, var(--ra-column-tablet)); align-self: center; }
+  .smart-group-links { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
