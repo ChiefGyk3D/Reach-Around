@@ -14,6 +14,7 @@
 .kit-about { font-size: var(--ra-text-md); }
 .kit-note { color: var(--ra-color-muted); font-size: var(--ra-text-sm); }
 .kit-head { display: grid; gap: var(--ra-space-3); min-width: 0; }
+.kit-deck-intro { display: grid; gap: var(--ra-space-5); min-width: 0; align-items: start; }
 .kit-photo {
   display: block;
   width: 100%;
@@ -23,8 +24,18 @@
   border-radius: var(--ra-card-radius);
 }
 
-.kit-total { display: flex; flex-flow: row wrap; align-items: baseline; gap: var(--ra-space-2); }
-.kit-total-value { font-size: var(--ra-text-xl); font-variant-numeric: tabular-nums; }
+.kit-headline { display: grid; gap: var(--ra-space-2); }
+.kit-headline-label { color: var(--ra-brand-muted); font-family: var(--ra-font-heading); }
+.kit-headline-number { display: grid; gap: var(--ra-space-1); }
+.kit-headline-number strong {
+  color: var(--ra-brand-amber);
+  font-family: var(--ra-font-heading);
+  font-size: clamp(3rem, 13vw, 6rem);
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+  overflow-wrap: anywhere;
+}
+.kit-headline-number span { color: var(--ra-brand-muted); font-size: var(--ra-text-sm); }
 
 .kit-table {
   display: block;
@@ -277,6 +288,10 @@
   .kit-inquiry-form { grid-template-columns: repeat(2, minmax(0, 1fr)); column-gap: var(--ra-space-4); }
   .kit-inquiry-form .kit-field-wide, .kit-inquiry-form .kit-submit { grid-column: 1 / -1; }
   .kit-inquiry-form .kit-submit { justify-self: start; }
+}
+
+@media (min-width: 51.25rem) {
+  .kit-deck-intro { grid-template-columns: minmax(0, 4fr) minmax(20rem, 5fr); }
 }
 
 @media print {

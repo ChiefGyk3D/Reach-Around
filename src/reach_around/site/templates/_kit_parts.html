@@ -12,7 +12,10 @@
 <p class="kit-zone" data-zone-control hidden><label for="kit-zone">Also show when each UTC day begins in</label> <select id="kit-zone" data-zone-select>{% for zone in zones %}<option value="{{ zone }}">{{ zone }}</option>{% endfor %}</select></p>
 {% endif %}
 {% if kit.total %}
-<p class="kit-total{% if framed %}{{ frames.cls("stat") }}{% endif %}"><span class="kit-total-label">Combined audience</span> <strong class="kit-total-value">{{ kit.total.value }}</strong></p>
+<div class="kit-headline ra-c-plate ra-c-plate--amber ra-c-ticks">
+<p class="kit-headline-label">Combined audience</p>
+<p class="kit-headline-number"><strong>{{ kit.total.value }}</strong> <span>Figures dated <time datetime="{{ kit.total.oldest }}">{{ kit.total.oldest }}</time> UTC</span></p>
+</div>
 <p class="kit-note">Added up from {{ kit.total.counted }} {{ "number" if kit.total.counted == 1 else "numbers" }}{% if kit.total.oldest %}; the oldest is dated {{ kit.total.oldest }} (UTC){% endif %}.{% if kit.total.mixed %} These include numbers from before Reach Around and numbers from after it.{% endif %} People who follow on more than one platform are counted more than once.</p>
 {% endif %}
 <table class="kit-table{% if framed and frame_plan %}{{ frames.cls("card") }}{% endif %}">
@@ -91,6 +94,6 @@
 </div>
 <div class="cf-turnstile" data-action="gate"{% if form.site_key %} data-sitekey="{{ form.site_key }}"{% endif %}></div>
 <noscript><p class="kit-note">The check before the details needs JavaScript. Turn it on for this page, or ask the owner of this site for the details.</p></noscript>
-<button class="kit-submit{% if framed and frame_plan %}{{ frames.cls("cta") }}{% endif %}" type="submit">Show the details</button>
+<button class="kit-submit ra-c-btn{% if framed and frame_plan %}{{ frames.cls("cta") }}{% endif %}" type="submit">Show the details</button>
 </form>
 {% endmacro %}
