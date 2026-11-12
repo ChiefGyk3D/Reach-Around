@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from reach_around.config import SiteConfig
+from reach_around.config.numbers import Numbers
 from reach_around.site.build import build_site
 
 TODAY = date(2027, 3, 10)
@@ -104,7 +105,7 @@ def make_config(kit: dict[str, Any] | None = None) -> SiteConfig:
 
 
 def build_instance(
-    root: Path, config: SiteConfig | None = None
+    root: Path, config: SiteConfig | None = None, numbers: Numbers | None = None
 ) -> tuple[SiteConfig, Path, Path]:
     """Build a synthetic site; return the config, the public dir, the gated dir."""
     config = config or make_config()
@@ -112,7 +113,14 @@ def build_instance(
     assets = root / "assets"
     (assets / "media").mkdir(parents=True)
     (assets / "media" / "campaign.png").write_bytes(CAMPAIGN_PNG)
-    build_site(config, site, today=TODAY, gated_out=gated, assets_dir=assets)
+    build_site(
+        config,
+        site,
+        today=TODAY,
+        numbers=numbers,
+        gated_out=gated,
+        assets_dir=assets,
+    )
     return config, site, gated
 
 
