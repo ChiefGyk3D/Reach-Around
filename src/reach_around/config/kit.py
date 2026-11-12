@@ -222,6 +222,9 @@ class CaseStudy(_Model):
         return self
 
 
+MAX_KIT_PDF_IMAGES = 51
+
+
 class Testimonial(_Model):
     """One partner quote. The owner supplies the text and is responsible for
     having permission to quote it; nothing here checks that."""
@@ -448,6 +451,18 @@ class KitConfig(_Model):
     @classmethod
     def _photo_is_local(cls, value: str | None) -> str | None:
         return None if value is None else _pdf_image(value)
+
+    @model_validator(mode="after")
+    def _pdf_image_count_is_bounded(self) -> KitConfig:
+        images = int(self.photo is not None)
+        images += sum(partner.logo is not None for partner in self.partners)
+        images += sum(len(study.thumbnails) for study in self.case_studies)
+        if images > MAX_KIT_PDF_IMAGES:
+            raise ValueError(
+                f"the media kit may include at most {MAX_KIT_PDF_IMAGES} images "
+                "across its photo, partner logos and case-study thumbnails"
+            )
+        return self
 
     @field_validator("turnstile_site_key")
     @classmethod

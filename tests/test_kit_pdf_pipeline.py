@@ -21,6 +21,7 @@ import pytest
 
 import reach_around.commands.kit as command
 from kitpdfharness import (
+    CAMPAIGN_PNG,
     CANARY,
     SITE_KEY,
     build_instance,
@@ -92,8 +93,11 @@ def test_the_pdf_has_every_gated_and_public_text(tmp_path: Path) -> None:
     for needle in (
         f"Acme Fake Co {CANARY}",
         "2026 sponsor, fake",
-        "Launch week fake",
-        "Ten thousand fake views.",
+        "Views12,345",
+        "Likes678",
+        "Comments90",
+        "2027-02-01",
+        "2027-02-28",
         "Sponsored video fake",
         "Ask me!",
         "Exampleland 40%",
@@ -102,6 +106,54 @@ def test_the_pdf_has_every_gated_and_public_text(tmp_path: Path) -> None:
         "4,600",
     ):
         assert "".join(needle.split()) in flat, needle
+
+
+def test_case_study_image_aggregates_and_dates_reach_the_owner_pdf(
+    tmp_path: Path,
+) -> None:
+    kit = kit_doc()
+    kit["case_studies"] = [
+        {
+            "thumbnails": ["media/campaign.png"],
+            "views": 12345,
+            "likes": 678,
+            "comments": 90,
+            "period_start": "2027-02-01",
+            "period_end": "2027-02-28",
+        }
+    ]
+    config = make_config(kit)
+    assets = tmp_path / "assets"
+    (assets / "media").mkdir(parents=True)
+    (assets / "media" / "campaign.png").write_bytes(CAMPAIGN_PNG)
+    site, gated = tmp_path / "site", tmp_path / "gated"
+    build_site(config, site, today=CREATED, gated_out=gated, assets_dir=assets)
+    saw_image = False
+
+    def renderer(html: str, work: Path) -> bytes:
+        nonlocal saw_image
+        saw_image = "data:image/png;base64," in html
+        return fake_renderer(html, work)
+
+    result = build_kit_pdf(
+        config,
+        gated_dir=gated,
+        site_dir=site,
+        out_dir=tmp_path / "private",
+        name="case-study.pdf",
+        created=CREATED,
+        renderer=renderer,
+    )
+    flat = "".join(" ".join(extract_pages(result.path.read_bytes())).split())
+    assert saw_image
+    for needle in (
+        "Views12,345",
+        "Likes678",
+        "Comments90",
+        "2027-02-01",
+        "2027-02-28",
+    ):
+        assert needle in flat
 
 
 def test_the_pdf_has_no_gate_artifacts_or_private_values(tmp_path: Path) -> None:

@@ -101,8 +101,12 @@ def _slots(config: SiteConfig) -> Iterator[tuple[str, str, str]]:
 
 
 def _public_slots(config: SiteConfig) -> Iterator[tuple[str, str, str]]:
+    private_paths = {rel for _key, rel, _kind in _private_kit_slots(config)}
     for slot in _slots(config):
-        if not slot[0].startswith(("kit.partners[", "kit.case_studies[")):
+        if (
+            not slot[0].startswith(("kit.partners[", "kit.case_studies["))
+            and slot[1] not in private_paths
+        ):
             yield slot
 
 
@@ -267,7 +271,7 @@ def _collect(
 
 
 def collect_assets(config: SiteConfig, assets_dir: Path | None) -> dict[Path, bytes]:
-    """Read files that may be published; gated partner logos are excluded."""
+    """Read publishable files; paths used by gated kit images are excluded."""
     return _collect(list(_public_slots(config)), assets_dir)
 
 

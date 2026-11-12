@@ -91,8 +91,11 @@ def test_the_public_pdf_has_no_gated_text_and_no_gate_form(tmp_path: Path) -> No
     for banned in (
         CANARY,
         "2026 sponsor, fake",
-        "Launch week fake",
-        "Ten thousand fake views.",
+        "Views12,345",
+        "Likes678",
+        "Comments90",
+        "2027-02-01",
+        "2027-02-28",
         "Sponsored video fake",
         "Exampleland 40%",
         SITE_KEY,

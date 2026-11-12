@@ -9,6 +9,7 @@ import pytest
 from test_kit_build import build, kit_doc, make_config, tree_bytes
 
 from assetpaths import png
+from reach_around.site.assets import collect_assets
 from reach_around.site.kit import GATED_FILE, KitLeakError
 
 
@@ -51,6 +52,22 @@ def test_case_study_card_renders_thumbnails_totals_and_date_range(
     public = tree_bytes(out)
     assert b"fake-post-one" not in public
     assert png("one") not in public
+
+
+def test_case_study_thumbnail_is_private_when_a_public_slot_reuses_its_path(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "media").mkdir()
+    thumbnail = png("private-case-study")
+    (tmp_path / "media" / "shared.png").write_bytes(thumbnail)
+    study = aggregate()
+    study["thumbnails"] = ["media/shared.png"]
+    config = make_config(
+        kit_doc(case_studies=[study]),
+        creator={"name": "Example Creator", "avatar": "media/shared.png"},
+    )
+
+    assert collect_assets(config, tmp_path) == {}
 
 
 def test_case_studies_alone_make_the_kit_gated(tmp_path: Path) -> None:

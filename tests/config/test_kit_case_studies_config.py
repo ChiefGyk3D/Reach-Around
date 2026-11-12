@@ -61,3 +61,22 @@ def test_every_case_study_field_is_required(missing: str) -> None:
     value.pop(missing)
     with pytest.raises(ValidationError, match=missing):
         CaseStudy.model_validate(value)
+
+
+def test_pdf_image_limit_counts_photo_partner_logos_and_case_thumbnails() -> None:
+    studies = [case_study(thumbnails=[f"media/post-{n}.png" for n in range(12)])]
+    studies += [
+        case_study(thumbnails=[f"media/post-{12 + n}.png" for n in range(12)])
+        for n in range(3)
+    ]
+    partners = [
+        {"name": f"Partner {n}", "logo": f"media/logo-{n}.png"} for n in range(3)
+    ]
+    valid = kit_doc(
+        photo="media/header.png", partners=partners[:2], case_studies=studies
+    )
+    assert KitConfig.model_validate(valid).case_studies
+
+    invalid = kit_doc(photo="media/header.png", partners=partners, case_studies=studies)
+    with pytest.raises(ValidationError, match="at most 51 images"):
+        KitConfig.model_validate(invalid)
