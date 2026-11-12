@@ -258,7 +258,7 @@ keeps the existing tab or sections layout.
 | `status.schedule` | Subtitle | none | Optional second schedule line. |
 | `watch` | list of link ids | empty | Exactly two with `stack`, naming one Twitch-icon link and one Kick-icon link. Config order is display order and both links receive identical treatment. |
 
-Every tab needs a distinct `intent`, there must be exactly one `watch` tab, and the two `watch` links cannot be scheduled (`show_from`, `show_until`). Tabs provide the group order and headings. The standard information order is
+With `layout: stack`, every tab needs a distinct `intent`, there must be exactly one `watch` tab, and the two `watch` links cannot be scheduled (`show_from`, `show_until`). The validator enforces these only for that layout. Tabs provide the group order and headings. The standard information order is
 `videos`, `follow`, `community`, `support`, `work`, `shop`, `blog`; config order
 is authoritative. The generated page uses one column on phones and two columns
 for group links on wider screens. Every link remains keyboard operable, targets

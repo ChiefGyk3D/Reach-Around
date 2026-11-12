@@ -108,7 +108,7 @@ By design only three outputs carry `noindex`: `404.html`, `/kit/retry/` (both th
 
 ## Border frames on and off (#444, #448)
 
-> Historical. These numbers were measured before the frame levels `none`, `minimal` and `faithful` replaced `l3`, `frame_motion` and `frame_l3_max` (#470, see [design.md](design.md) and the [`theme`](config.md#theme) reference). The old settings are now ignored and the glow and `frame.svg` are gone, so the "motion" and "light show" rows no longer apply. The new frame art and the Smart stack layout (`page.layout: stack`) have not been re-measured here.
+> Historical. These numbers were measured before the frame levels `none`, `minimal` and `faithful` replaced `l3`, `frame_motion` and `frame_l3_max` (#470, see [design.md](design.md) and the [`theme`](config.md#theme) reference). `frame_motion` and `frame_l3_max` are now ignored, `l1`, `l2` and `l3` remain aliases (`l1` is `minimal`; `l2` and `l3` are `faithful`), and the glow and `frame.svg` are gone, so the "motion" and "light show" rows no longer apply. The new frame art and the Smart stack layout (`page.layout: stack`) have not been re-measured here.
 
 The numbers below were measured for the first frame release (#444). The frames-everywhere change (#448) is re-measured in the table at the end of this section.
 

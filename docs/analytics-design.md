@@ -70,9 +70,10 @@ On `main` (from `worker/src/view.ts`, `viewrollup.ts`, `viewretention.ts`,
 | Grafana dashboard panels | The floored SQLite feed ships (`reach-around grafana-export`, `docs/grafana.md`); the Plan 4 A7 to A9 panels are not verified here |
 | Privacy page text for page views | Shipped for the link page; does not yet mention the network class or a second site |
 
-So the new work in this design is: the site dimension, the blog collection
-path, the network-class data, the funnel and dashboard, and the text that goes
-with them.
+So the work in this design that is not yet shipped is: the site dimension, the
+blog collection path, the network-class data, the Plan 4 dashboard panels, and
+the text that goes with them. The funnel read model ships as `reach-around
+report` ([report.md](report.md)).
 
 ## 3. Data model
 
@@ -377,11 +378,13 @@ Per site, per UTC day:
 - **Funnel row:** `(site, day, page, views, uniques, clicks, clicks_per_100_views)`.
   `clicks_per_100_views` is empty when views are zero, and carries a note when
   it exceeds 100. It is not a conversion rate and the dashboard says so.
-- **Source to click is not attributed.** A click row has no source, so the
-  report shows source to page and page to click side by side, and does not
-  claim "visitors from X clicked Y". Attribution (storing the source class on
-  the click row) was Plan 4 open decision P-1 and stays out of scope here;
-  adding it later would be a new column and a privacy-text change.
+- **Source to click is attributed only by a closed label.** This section's
+  funnel row has no source. The shipped report adds the closed source label the
+  page sent with a click (`click_events`, then fixed-period source-to-destination
+  tables under the floor) and never claims "visitors from X clicked Y" as a
+  count of people or ties a click to a view. Landing and hop attribution are not
+  collected. See [report.md](report.md) ("Link clicks by source" and "Funnel
+counters").
 - Default funnel counts likely-human views only (class `h`); the other classes
   are shown in a separate traffic-quality panel.
 - Ids that map to no page (header icons, copy and QR actions) are reported
