@@ -20,6 +20,9 @@
 <link rel="stylesheet" href="{{ root }}{{ asset("static/tokens.css") }}">
 <link rel="stylesheet" href="{{ root }}{{ asset("static/site.css") }}">
 <link rel="stylesheet" href="{{ root }}{{ asset("static/theme.css") }}">
+{% if smart_stack is defined and smart_stack %}
+<link rel="stylesheet" href="{{ root }}{{ asset("static/smart-stack.css") }}">
+{% endif %}
 {% if has_crypto %}
 <link rel="stylesheet" href="{{ root }}{{ asset("static/crypto.css") }}">
 {% endif %}
