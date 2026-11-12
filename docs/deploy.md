@@ -149,7 +149,7 @@ your own; never commit real account ids, database ids or tokens.
    writes: the kit at its defaults, the page-view feature at the binding hourly ceiling
    for humans and for bots separately (the lower of the sites' budgets added up
    and the account ceiling; 24 x (human + bot) x 5.6 rows per view, plus 2,540
-   for the rollup, purge and heartbeat), the click reserve and
+   for the rollup, purge and heartbeat), the click reserve, the click funnel tables (see Click funnel in the check below) and
    the margin, against the 100,000-row free plan figure. Over 100 percent, or an
    unusable value, stops the deploy; above 80 percent is a warning. This is the
    same function and the same lines the Worker applies to itself when it loads
@@ -284,10 +284,23 @@ All values are plain decimal integers (digits only, no sign, space, exponent or 
 | kit purge reserve | | | 10000 |
 | page views, rollup and purge | | | 22700 |
 | clicks (reserve) | | | 8000 |
+| click funnel (Free profile, one site, no link ids) | | | 758 |
 | margin | | | 5000 |
-| **Total** | | | **78140** |
+| **Total** | | | **78898** |
 
-That is 78.1 percent of the default quota of 100000. Raising a budget raises this number; raise `D1_DAILY_WRITE_QUOTA` only on a plan that allows it. Counters live in the `counters` table, one row per route and hour or per day, and are purged after two days. A viral spike over a budget makes the gate unavailable until the next hour; that is the accepted trade.
+That is 78.9 percent of the default quota of 100000. Raising a budget raises this number; raise `D1_DAILY_WRITE_QUOTA` only on a plan that allows it. Counters live in the `counters` table, one row per route and hour or per day, and are purged after two days. A viral spike over a budget makes the gate unavailable until the next hour; that is the accepted trade.
+
+**Click funnel in the check (issue #332).** The funnel tables of migration `0011` (`click_src_daily`, `click_country_daily`, `click_seal`, `click_capacity`, `click_budget` and the monthly tables) are part of the combined figure and of the deploy-time check, at the caps the Worker enforces. The caps live in one file, `worker/src/funnelcaps.ts`; `worker/src/clickfunnel.ts` and `worker/src/kit/budgets.ts` both read it, and `worker/test/kit/funnelbudget.test.ts` fails if they drift apart or if a flood writes more rows than the model allows. Per site the model counts, at the caps: the most cells the two day counters can hold (the general pools, the reserved cells of every link id times two destination kinds and two tables, four overflow rows, and never more than the hourly new-cell slices allow), times three writes per cell over its life (insert, new-cell budget upsert, retention delete); plus the seal, the capacity row, 24 hourly click rows, and the month roll-up (monthly caps plus overflow rows, written once and deleted once, all counted on one day so the check fails closed). The sites and their link ids come from the same site list the page-view part counts. Counting on a cell that already exists is click-route traffic and stays inside the click reserve above; that reserve is still an allowance, not a measured bound, so the funnel figure is a bound on cell creation and retention, not on click volume. The step prints it as `funnel N`. A cap raised high enough to push the total over the quota stops the deploy, like any other limit.
+
+*Profiles (Free-first decision, owner, 2026-11-08).* D1 starts on the **Free plan with lower caps**; real row counts are measured for one week before any paid-plan decision. `free` is the default profile (source cells 40 and country cells 50 per site and day, 2 reserved cells per link id, monthly folds at 100 and 120, 12 new cells per site and UTC hour). `standard` keeps the caps the funnel was first written with (110, 160, 2, 300, 400, 150) and is the documented step up. The `free` numbers are provisional: chosen so the default deployment stays under 80 percent of the free write quota, not measured on real traffic (unverified). Moving off `free` is a code change to the `FUNNEL_CAPS` line in `funnelcaps.ts` and shows up in this check. The D1 daily write figure is the constant already used above (100,000 rows a day, `D1_DAILY_WRITE_QUOTA`); re-check it against Cloudflare before relying on it.
+
+*Extension point.* The landing and hop tables (issue #566) are not built and are **not** modeled. When they exist, add their caps to `FunnelCaps` and their writes to `funnelDailyWrites` in `funnelcaps.ts`.
+
+*Open items (issue #332, criteria 2 and 3 stay open; nothing below is done):*
+
+- [ ] Measure real row counts per funnel table (and rows written per day) on the Free plan for one full week of live traffic.
+- [ ] Compare the measured rows with the `free` caps and the figure the check prints; adjust the caps or the model if they disagree.
+- [ ] Owner decision on the paid plan after that review (stay on Free, or move to Paid and switch to `standard` or new caps).
 
 **Analytics health and coverage (issues #401, #402).** Migration `0014_health.sql` adds `analytics_coverage` (one row per UTC day, 24 letters; apply it before or with the Worker, nothing breaks if it is missing: the step logs a failure and the cron goes on). Each hourly run (in degraded mode, when the table definition is wrong, it writes nothing and sends nothing) does, before the purges and the rollup, one read batch and one write batch (coverage plus a prune of rows older than 400 days) and, only when the `analytics_health` alert is on and a condition changed, a few more queries for the message; it is set aside at most 8 of the run's `QUERY_BUDGET` and skipped below 12, so keep `QUERY_BUDGET` at 12 or more. About 24 rows written a day. Details: [alerts.md](alerts.md#analytics-health-alerts). Failure modes: [failure-modes.md](failure-modes.md).
 

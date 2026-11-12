@@ -7,6 +7,7 @@ import {
   PURGE_RESERVE,
   PAGE_VIEW_DAILY_WRITES,
   CLICK_DAILY_WRITES,
+  FUNNEL_DAILY_WRITES,
   COMBINED_MARGIN,
   combinedDailyWrites,
   resetEventCapCache,
@@ -127,7 +128,7 @@ describe("loadKitLimits", () => {
   });
   it("warns above 80 percent of the quota", () => {
     const c = L({ ROUTE_BUDGET_GATE: "200" });
-    expect(combinedDailyWrites(c)).toBe(84_140);
+    expect(combinedDailyWrites(c)).toBe(84_140 + FUNNEL_DAILY_WRITES);
     expect(c.warnings).toEqual(["combined worst-case daily D1 writes are above 80 percent of D1_DAILY_WRITE_QUOTA"]);
     expect(L().warnings).toEqual([]);
   });
@@ -144,8 +145,8 @@ describe("worstCaseDailyWrites", () => {
   it("combines kit, page views, clicks and a margin into one figure under the quota", () => {
     const c = L();
     expect(PAGE_VIEW_DAILY_WRITES).toBe(22_700);
-    expect(combinedDailyWrites(c)).toBe(worstCaseDailyWrites(c) + 22_700 + CLICK_DAILY_WRITES + COMBINED_MARGIN);
-    expect(combinedDailyWrites(c)).toBe(78_140);
+    expect(combinedDailyWrites(c)).toBe(worstCaseDailyWrites(c) + 22_700 + CLICK_DAILY_WRITES + FUNNEL_DAILY_WRITES + COMBINED_MARGIN);
+    expect(combinedDailyWrites(c)).toBe(78_140 + FUNNEL_DAILY_WRITES);
     expect(combinedDailyWrites(c)).toBeLessThan(c.d1DailyWriteQuota * 0.8);
   });
   it("storage worst case is far under the 500 MB database limit at the defaults", () => {

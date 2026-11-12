@@ -24,7 +24,7 @@
 //                        daily rows-written figure; re-check against Cloudflare)
 //
 // The load REFUSES a configuration whose COMBINED worst-case daily D1 writes
-// (kit, page views, clicks, a margin) exceed the quota, and warns above 80
+// (kit, page views, clicks, the click funnel, a margin) exceed the quota, and warns above 80
 // percent. The D1 write allowance is one per account, so the kit never gets to
 // count only itself.
 //
@@ -44,6 +44,8 @@ import { MAX_LEADS_CEILING } from "./leads";
 import { reserveBudget, utcDay, utcHour, MAX_RESERVE_LIMIT } from "./limits";
 import type { KitEventKind } from "./leads";
 import { pageViewDailyWrites, type PageViewBudgetEnv } from "../pvlimits";
+import { FUNNEL_CAPS, funnelDailyWrites, type FunnelCaps } from "../funnelcaps";
+import { loadSites } from "../sites";
 
 export type RouteName = "gate" | "view";
 
@@ -83,6 +85,18 @@ export const WRITES_PER_OP = { gate: 5, view: 2, send: 7, alert: 1, inquiry: 1 }
 export const PAGE_VIEW_DAILY_WRITES = pageViewDailyWrites({});
 /** Click route allowance per day. The click route has no global budget, only a per-client limiter, so this is a reserve, not a measured bound. */
 export const CLICK_DAILY_WRITES = 8_000;
+/**
+ * Click funnel worst case per day at `caps` (default: the caps the Worker enforces, funnelcaps.ts),
+ * for the sites the environment configures (at least one, as for page views). The sites' link ids set
+ * the reserved cells. Counting on existing cells stays in CLICK_DAILY_WRITES above.
+ */
+export function funnelDailyWritesFor(env: PageViewBudgetEnv, caps: FunnelCaps = FUNNEL_CAPS): number {
+  const r = loadSites(env ?? {});
+  const sites = r.errors.length === 0 && r.sites.length > 0 ? r.sites.map((s) => ({ links: s.linkIds.size })) : [{ links: 0 }];
+  return funnelDailyWrites(caps, sites);
+}
+/** Default funnel figure: one site with no link ids at the Worker's caps. */
+export const FUNNEL_DAILY_WRITES = funnelDailyWritesFor({});
 /** Headroom over everything above. */
 export const COMBINED_MARGIN = 5_000;
 /** Daily reserve for the purge and the hourly rollup, counted against the quota. */
@@ -153,8 +167,9 @@ export function worstCaseDailyWrites(
 export function combinedDailyWrites(
   c: Parameters<typeof worstCaseDailyWrites>[0],
   pageViews: number = PAGE_VIEW_DAILY_WRITES,
+  funnel: number = FUNNEL_DAILY_WRITES,
 ): number {
-  return worstCaseDailyWrites(c) + pageViews + CLICK_DAILY_WRITES + COMBINED_MARGIN;
+  return worstCaseDailyWrites(c) + pageViews + CLICK_DAILY_WRITES + funnel + COMBINED_MARGIN;
 }
 
 export function worstCaseStorageBytes(c: Pick<KitLimits, "maxLeads" | "maxKitEvents">): number {
@@ -195,7 +210,7 @@ export function loadKitLimits(env: KitLimitsEnv): KitLimits {
   const { c, bad } = parseKitLimits(env);
   if (bad.length > 0) throw new KitLimitsError(bad);
 
-  const worst = combinedDailyWrites(c, pageViewDailyWrites(env));
+  const worst = combinedDailyWrites(c, pageViewDailyWrites(env), funnelDailyWritesFor(env));
   if (worst > c.d1DailyWriteQuota) throw new KitLimitsError(["D1_DAILY_WRITE_QUOTA"]);
   const warnings = above80(worst, c.d1DailyWriteQuota) ? ["combined worst-case daily D1 writes are above 80 percent of D1_DAILY_WRITE_QUOTA"] : [];
   return { ...c, warnings };
@@ -206,10 +221,12 @@ export interface BudgetAssessment {
   level: "ok" | "warn" | "fail";
   /** Names of unusable variables, if any (level is then fail). */
   invalid: readonly string[];
-  /** Worst-case daily D1 writes: the kit, page views, clicks and the margin. */
+  /** Worst-case daily D1 writes: the kit, page views, clicks, the click funnel and the margin. */
   combined: number;
   /** The page-view part of `combined`. */
   pageViews: number;
+  /** The click funnel part of `combined` (funnelcaps.ts). */
+  funnel: number;
   quota: number;
 }
 
@@ -218,12 +235,13 @@ export interface BudgetAssessment {
  * (scripts/check-budget.ts). It calls the same functions on the same figures,
  * so the deploy gate and the Worker's own refusal cannot drift apart.
  */
-export function assessDailyBudget(env: KitLimitsEnv): BudgetAssessment {
+export function assessDailyBudget(env: KitLimitsEnv, funnelCaps: FunnelCaps = FUNNEL_CAPS): BudgetAssessment {
   const { c, bad } = parseKitLimits(env);
   const pageViews = pageViewDailyWrites(env);
-  const combined = combinedDailyWrites(c, pageViews);
+  const funnel = funnelDailyWritesFor(env, funnelCaps);
+  const combined = combinedDailyWrites(c, pageViews, funnel);
   const level = bad.length > 0 || combined > c.d1DailyWriteQuota ? "fail" : above80(combined, c.d1DailyWriteQuota) ? "warn" : "ok";
-  return { level, invalid: bad, combined, pageViews, quota: c.d1DailyWriteQuota };
+  return { level, invalid: bad, combined, pageViews, funnel, quota: c.d1DailyWriteQuota };
 }
 
 type DbEnv = KitLimitsEnv & { DB: D1Database };

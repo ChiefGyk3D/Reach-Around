@@ -24,22 +24,27 @@
 // them past the retention promise.
 
 import type { QueryMeter } from "./d1budget";
+import { FUNNEL_CAPS } from "./funnelcaps";
 import { meterOf } from "./d1budget";
 
-/** General cells per (site, day), on top of the reserved ones below. */
-export const SRC_DAY_CAP = 110;
-export const COUNTRY_DAY_CAP = 160;
-/** Cells every destination may always create per day (and one `direct` more), whatever the general pool holds. */
-export const RESERVED_PER_LINK = 2;
-export const SRC_MONTH_CAP = 300;
-export const COUNTRY_MONTH_CAP = 400;
+/**
+ * The caps come from funnelcaps.ts, the one place the deploy-time budget check also reads.
+ * SRC_DAY_CAP and COUNTRY_DAY_CAP are the general cells per (site, day), on top of the reserved ones.
+ * RESERVED_PER_LINK is the cells every destination may always create per day (and one `direct` more),
+ * whatever the general pool holds.
+ */
+export const SRC_DAY_CAP = FUNNEL_CAPS.srcDayCap;
+export const COUNTRY_DAY_CAP = FUNNEL_CAPS.countryDayCap;
+export const RESERVED_PER_LINK = FUNNEL_CAPS.reservedPerLink;
+export const SRC_MONTH_CAP = FUNNEL_CAPS.srcMonthCap;
+export const COUNTRY_MONTH_CAP = FUNNEL_CAPS.countryMonthCap;
 /**
  * New cells a (site, day, UTC hour) may create. The admission budget counts NEW CELLS only, never
  * clicks, so a flood of clicks on existing cells cannot use it up; each hour has its own slice, so
  * an early burst of new labels cannot stop new cells for the rest of the day. Past a slice, counting
  * goes on (existing cells and the overflow row) and the day is recorded in `click_capacity`.
  */
-export const HOUR_BUDGET = 150;
+export const HOUR_BUDGET = FUNNEL_CAPS.hourBudget;
 /** The overflow link per (site, day/month, destination kind): every cell past the cap lands here. */
 export const OVERFLOW_LINK = "overflow-all";
 export const DAY_KEEP_DAYS = 90;

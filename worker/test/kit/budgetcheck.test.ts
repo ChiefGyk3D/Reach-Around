@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   COMBINED_MARGIN,
   CLICK_DAILY_WRITES,
+  FUNNEL_DAILY_WRITES,
   PAGE_VIEW_DAILY_WRITES,
   assessDailyBudget,
   combinedDailyWrites,
@@ -13,6 +14,7 @@ import {
 import { runBudgetCheck } from "../../src/kit/budgetcheck";
 import { pageViewDailyWrites, pageViewSiteCount } from "../../src/pvlimits";
 import { MAX_SITES } from "../../src/sites";
+import { FUNNEL_CAPS, funnelDailyWrites } from "../../src/funnelcaps";
 
 describe("pageViewDailyWrites", () => {
   it("is exactly the documented 22,700 at the default budgets (120 human + 30 bot per hour)", () => {
@@ -47,7 +49,7 @@ describe("the page-view budget in the kit's combined check", () => {
     const kit = worstCaseDailyWrites(loadKitLimits({}));
     // choose the quota to equal the combined figure at pv=500, pvbot=100
     const e = { VIEWS_PER_HOUR: "500", BOT_VIEWS_PER_HOUR: "100" };
-    const need = kit + pageViewDailyWrites(e) + CLICK_DAILY_WRITES + COMBINED_MARGIN;
+    const need = kit + pageViewDailyWrites(e) + CLICK_DAILY_WRITES + FUNNEL_DAILY_WRITES + COMBINED_MARGIN;
     expect(() => loadKitLimits({ ...e, D1_DAILY_WRITE_QUOTA: String(need) })).not.toThrow();
     expect(() => loadKitLimits({ ...e, D1_DAILY_WRITE_QUOTA: String(need - 1) })).toThrow(KitLimitsError);
   });
@@ -61,8 +63,8 @@ describe("assessDailyBudget agrees with loadKitLimits", () => {
     { VIEWS_PER_HOUR: "700" },
     { ROUTE_BUDGET_GATE: "200" },
     { D1_DAILY_WRITE_QUOTA: "abc" },
-    { D1_DAILY_WRITE_QUOTA: "78140" },
-    { D1_DAILY_WRITE_QUOTA: "78119" },
+    { D1_DAILY_WRITE_QUOTA: String(78_140 + FUNNEL_DAILY_WRITES) },
+    { D1_DAILY_WRITE_QUOTA: String(78_119 + FUNNEL_DAILY_WRITES) },
   ];
   for (const e of cases) {
     it(`verdict for ${JSON.stringify(e)}`, () => {
@@ -84,23 +86,25 @@ describe("runBudgetCheck (the deploy-time gate)", () => {
   it("passes quietly at the defaults and says ok", () => {
     const r = runBudgetCheck({});
     expect(r.code).toBe(0);
-    expect(r.lines).toEqual(["combined worst-case daily D1 writes 78140 of 100000 (78.1 percent; page views 22700): ok"]);
+    const total = 78_140 + FUNNEL_DAILY_WRITES;
+    expect(r.lines).toEqual([`combined worst-case daily D1 writes ${total} of 100000 (${(total / 1000).toFixed(1)} percent; page views 22700; funnel ${FUNNEL_DAILY_WRITES}): ok`]);
   });
   it("warns, exit 0, above 80 percent, and not at exactly 80", () => {
     // pv 200: page views 24*230*5.6=30912+2540=33452; combined = 42420+33452+8000+5000 = 88872
     const r = runBudgetCheck({ VIEWS_PER_HOUR: "200" });
     expect(r.code).toBe(0);
     expect(r.lines[0]).toMatch(/^::warning::.*above 80 percent$/);
-    const at80 = runBudgetCheck({ D1_DAILY_WRITE_QUOTA: "97675" }); // 78140 is exactly 80.0 percent of 97675
-    expect(at80.lines[0]).toMatch(/^combined .*: ok$/);
-    expect(runBudgetCheck({ D1_DAILY_WRITE_QUOTA: "97649" }).lines[0]).toMatch(/^::warning::/);
+    const total = 78_140 + FUNNEL_DAILY_WRITES;
+    const at80 = Math.ceil((total * 10) / 8); // the smallest quota at which total is still at most 80 percent
+    expect(runBudgetCheck({ D1_DAILY_WRITE_QUOTA: String(at80) }).lines[0]).toMatch(/^combined .*: ok$/);
+    expect(runBudgetCheck({ D1_DAILY_WRITE_QUOTA: String(at80 - 1) }).lines[0]).toMatch(/^::warning::/);
   });
   it("fails, exit 1, over the quota and names no value", () => {
     const r = runBudgetCheck({ VIEWS_PER_HOUR: "900" });
     expect(r.code).toBe(1);
     expect(r.lines[0]).toMatch(/^::error::.*is over the quota$/);
-    expect(runBudgetCheck({ D1_DAILY_WRITE_QUOTA: "78119" }).code).toBe(1);
-    expect(runBudgetCheck({ D1_DAILY_WRITE_QUOTA: "78140" }).code).toBe(0);
+    expect(runBudgetCheck({ D1_DAILY_WRITE_QUOTA: String(78_119 + FUNNEL_DAILY_WRITES) }).code).toBe(1);
+    expect(runBudgetCheck({ D1_DAILY_WRITE_QUOTA: String(78_140 + FUNNEL_DAILY_WRITES) }).code).toBe(0);
   });
   it("fails on an unusable value, by name only", () => {
     for (const bad of ["abc", "1e3", "-5", "100001", "1.5", "007x", "9999999"]) {
@@ -190,7 +194,9 @@ describe("pageViewDailyWrites uses the binding ceiling per class", () => {
 describe("the deploy check counts sites and ceilings", () => {
   const one = { SITE_HOST: "links.example.test", PAGE_IDS: '["home"]', LINK_IDS: '["a"]' };
   it("the one-site shorthand from the workflow is one site", () => {
-    expect(runBudgetCheck(one)).toEqual(runBudgetCheck({}));
+    // One link id adds reserved funnel cells, so compare the site-count part (page views) and the funnel at one site.
+    expect(assessDailyBudget(one).pageViews).toBe(assessDailyBudget({}).pageViews);
+    expect(assessDailyBudget(one).funnel).toBe(funnelDailyWrites(FUNNEL_CAPS, [{ links: 1 }]));
   });
   it("refuses a SITES text that makes the total pass the quota", () => {
     const r = runBudgetCheck({ SITES: siteList(8) });
