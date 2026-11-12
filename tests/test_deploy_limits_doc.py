@@ -13,6 +13,7 @@ _WRITES = {"gate": 5, "view": 2, "alert": 1, "send": 7, "inquiry": 1}
 _RESERVE = 10_000
 _PAGE_VIEWS = 22_700
 _CLICKS = 8_000
+_FUNNEL = 758  # Free profile, one site, no link ids (worker/src/funnelcaps.ts)
 _MARGIN = 5_000
 
 
@@ -59,10 +60,11 @@ def test_worst_case_table_adds_up_and_is_under_the_warning_line() -> None:
     }
     assert rows == expected
     total = sum(expected.values()) + _RESERVE
-    combined = total + _PAGE_VIEWS + _CLICKS + _MARGIN
+    combined = total + _PAGE_VIEWS + _CLICKS + _FUNNEL + _MARGIN
     assert f"**{combined}**" in section
     assert f"| page views, rollup and purge | | | {_PAGE_VIEWS} |" in section
     assert f"| clicks (reserve) | | | {_CLICKS} |" in section
+    assert f"| click funnel (Free profile, one site, no link ids) | | | {_FUNNEL} |" in section
     assert f"| margin | | | {_MARGIN} |" in section
     assert f"| kit purge reserve | | | {_RESERVE} |" in section
     assert combined <= d["D1_DAILY_WRITE_QUOTA"] * 0.8
