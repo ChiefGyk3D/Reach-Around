@@ -454,6 +454,8 @@ def _short_gated_strings(kit: KitConfig) -> list[tuple[str, str]]:
     ):
         for index, item in enumerate(getattr(kit, name)):
             for field, value in text_fields(item):
+                if name == "demographics" and field == "platform":
+                    continue  # public vocabulary, as in the long-value guard
                 if field != "url" and value and len(value) < GUARD_MIN_LENGTH:
                     found.append((f"kit.{name}[{index}].{field}", value))
     if kit.inquiry is not None:

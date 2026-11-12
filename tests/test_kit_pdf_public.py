@@ -294,6 +294,29 @@ def test_a_gated_value_equal_to_public_analytics_is_allowed(
     check_text(config.kit, public_text, public=True)  # type: ignore[arg-type]
 
 
+def test_a_demographic_platform_name_is_public_vocabulary_in_the_pdf_guard() -> None:
+    doc = kit_doc()
+    doc["demographics"][0]["platform"] = "kick"
+    doc["analytics"] = [
+        {
+            "platform": "twitch",
+            "synced_with": "Example Social API",
+            "as_of": "2027-03-08",
+            "followers": 12_460,
+            "followers_30_day_percent": 4.26,
+        }
+    ]
+    config = make_config(doc)
+    public_text = (
+        "Example Creator media kit A fake creator used in tests. "
+        "Streams games & talks. "
+        "Twitch Followers 1,200 2027-03-01 YouTube Subscribers 3,400 2027-03-05 "
+        "4,600 Kick Followers 12,460"
+    )
+
+    check_text(config.kit, public_text, public=True)  # type: ignore[arg-type]
+
+
 def test_the_gate_key_in_the_public_pdf_text_fails_the_build(tmp_path: Path) -> None:
     def leaky(html: str, work: Path) -> bytes:
         return make_pdf([[f"stray {SITE_KEY} value"]])
