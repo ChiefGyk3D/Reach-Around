@@ -40,6 +40,15 @@ describe("(a) funnel writes are counted in the worst case", () => {
     });
     expect(assessDailyBudget({ SITES: sites }).funnel).toBe(2 * assessDailyBudget({ SITE_HOST: "a.example.test", PAGE_IDS: '["home"]' }).funnel);
   });
+  it("a list with one malformed site still counts the valid sites the Worker serves", () => {
+    const ids = Object.fromEntries(Array.from({ length: 6 }, (_, i) => [`l${i}`, "home"]));
+    const good = { hosts: ["a.example.test"], mode: "beacon", pages: ["home"], link_ids: ids };
+    const bad = { hosts: ["b.example.test"], mode: "nope", pages: ["home"], link_ids: {} };
+    const alone = assessDailyBudget({ SITES: JSON.stringify({ a: good }) }).funnel;
+    const mixed = assessDailyBudget({ SITES: JSON.stringify({ a: good, b: bad }) }).funnel;
+    expect(alone).toBeGreaterThan(assessDailyBudget({}).funnel);
+    expect(mixed).toBe(alone);
+  });
   it("the deploy check reports it and still passes at the defaults", () => {
     const r = runBudgetCheck({});
     expect(r.code).toBe(0);

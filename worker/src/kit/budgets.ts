@@ -92,7 +92,8 @@ export const CLICK_DAILY_WRITES = 8_000;
  */
 export function funnelDailyWritesFor(env: PageViewBudgetEnv, caps: FunnelCaps = FUNNEL_CAPS): number {
   const r = loadSites(env ?? {});
-  const sites = r.errors.length === 0 && r.sites.length > 0 ? r.sites.map((s) => ({ links: s.linkIds.size })) : [{ links: 0 }];
+  // A malformed entry disables only itself (sites.ts); the valid ones are still served, so count them.
+  const sites = r.sites.length > 0 ? r.sites.map((s) => ({ links: s.linkIds.size })) : [{ links: 0 }];
   return funnelDailyWrites(caps, sites);
 }
 /** Default funnel figure: one site with no link ids at the Worker's caps. */
