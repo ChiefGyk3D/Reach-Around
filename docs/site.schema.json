@@ -107,6 +107,30 @@
       "title": "Analytics",
       "type": "object"
     },
+    "AnalyticsStat": {
+      "additionalProperties": false,
+      "description": "One extensible count tile beside the required follower tile.",
+      "properties": {
+        "label": {
+          "maxLength": 60,
+          "minLength": 1,
+          "title": "Label",
+          "type": "string"
+        },
+        "value": {
+          "maximum": 1000000000000,
+          "minimum": 0,
+          "title": "Value",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "label",
+        "value"
+      ],
+      "title": "AnalyticsStat",
+      "type": "object"
+    },
     "BlueskySource": {
       "additionalProperties": false,
       "properties": {
@@ -1223,6 +1247,14 @@
           "title": "About",
           "type": "string"
         },
+        "analytics": {
+          "items": {
+            "$ref": "#/$defs/PlatformAnalytics"
+          },
+          "maxItems": 4,
+          "title": "Analytics",
+          "type": "array"
+        },
         "case_studies": {
           "items": {
             "$ref": "#/$defs/CaseStudy"
@@ -1889,6 +1921,62 @@
         "name"
       ],
       "title": "Partner",
+      "type": "object"
+    },
+    "PlatformAnalytics": {
+      "additionalProperties": false,
+      "description": "One explicitly sourced public analytics row for an allowed platform.",
+      "properties": {
+        "as_of": {
+          "format": "date",
+          "title": "As Of",
+          "type": "string"
+        },
+        "followers": {
+          "maximum": 1000000000000,
+          "minimum": 0,
+          "title": "Followers",
+          "type": "integer"
+        },
+        "followers_30_day_percent": {
+          "maximum": 1000000,
+          "minimum": -100,
+          "title": "Followers 30 Day Percent",
+          "type": "number"
+        },
+        "platform": {
+          "enum": [
+            "instagram",
+            "tiktok",
+            "threads",
+            "twitch"
+          ],
+          "title": "Platform",
+          "type": "string"
+        },
+        "stats": {
+          "items": {
+            "$ref": "#/$defs/AnalyticsStat"
+          },
+          "maxItems": 20,
+          "title": "Stats",
+          "type": "array"
+        },
+        "synced_with": {
+          "maxLength": 80,
+          "minLength": 1,
+          "title": "Synced With",
+          "type": "string"
+        }
+      },
+      "required": [
+        "as_of",
+        "followers",
+        "followers_30_day_percent",
+        "platform",
+        "synced_with"
+      ],
+      "title": "PlatformAnalytics",
       "type": "object"
     },
     "PlatformItem": {

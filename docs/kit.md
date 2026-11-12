@@ -27,6 +27,14 @@ kit:
   metrics:
     - {platform: twitch, label: Followers, value: 1200, as_of: 2027-03-01}
     - {platform: youtube, label: Subscribers, source: counts}
+  analytics:
+    - platform: instagram
+      synced_with: Example Social API
+      as_of: 2027-03-08
+      followers: 12460
+      followers_30_day_percent: 4.26
+      stats:
+        - {label: Example views, value: 1260000}
   partners:
     - {name: Acme Fake Co, logo: media/acme-fake.png, note: 2026 sponsor, url: "https://example.com/acme"}
   case_studies:
@@ -78,6 +86,18 @@ marked `in_total: false`; it says how many numbers it adds up and the date of
 the oldest one, and notes that people who follow on several platforms are
 counted more than once. A number with no value is left out. With nothing to add
 there is no total line.
+
+Optional `analytics` rows render a platform tab row and one stat-tile grid for
+each configured platform. The allowed platforms are `instagram`, `tiktok`,
+`threads` and `twitch`; YouTube is not accepted here. Every row requires the
+literal `synced_with` source name, its `as_of` sync date, the follower count and
+the 30-day follower percentage change. `stats` is an optional extensible list of
+additional labeled count tiles. Counts use one decimal with `k` or `M` at one
+thousand and one million; percentages use one decimal and always show a sign.
+The sync pill prints the configured source and sync date. A separate "Last
+updated" line prints the build date. These rows are public on both kit pages and
+in the public PDF. They do not change the owner-report-only rule for engagement
+figures, and they cannot contain YouTube Analytics figures.
 
 When the config sets [`cutover_date`](config.md#cutover_date) and that UTC day
 has arrived, a small line "Live since 2026-11-08 (UTC)" sits above the numbers
@@ -234,7 +254,7 @@ cannot reach a gated field, and the two pages go to two separate directories.
 
 | Field | Visibility | Owner-report marker |
 | --- | --- | --- |
-| title, about, photo, contact, tags, metrics, unified_total, turnstile_site_key | public | no |
+| title, about, photo, contact, tags, metrics, analytics, unified_total, turnstile_site_key | public | no |
 | partners, case_studies, services, rates, testimonials, demographics, inquiry, disclosure | gated | no |
 | engagement | gated | `owner_report_only`; YouTube figures require `owner_supplied: true` |
 | unlock_link | private | no |

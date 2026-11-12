@@ -1134,6 +1134,14 @@ kit:
   metrics:
     - {platform: twitch, label: Followers, value: 1200, as_of: 2027-03-01}
     - {platform: bluesky, label: Followers, source: counts}
+  analytics:
+    - platform: instagram
+      synced_with: Example Social API
+      as_of: 2027-03-08
+      followers: 12460
+      followers_30_day_percent: 4.26
+      stats:
+        - {label: Example views, value: 1260000}
   partners:
     - {name: Acme Fake Co, url: "https://example.com/acme"}
   services:
@@ -1163,6 +1171,17 @@ OAuth scopes, so collected values are refused in every kit build. To include a
 YouTube engagement row, type the figures by hand and set `owner_supplied: true`.
 That row appears only in the deeper, gated kit and the private owner PDF, with
 an `Owner-supplied` label. It never appears in the public kit.
+
+`analytics` is an optional public list with at most one row for each of
+`instagram`, `tiktok`, `threads` and `twitch`. Each row requires `synced_with`
+(plain source text printed exactly as entered), an `as_of` UTC date,
+`followers`, and `followers_30_day_percent` (at least -100). Its optional
+`stats` list accepts additional unique `{label, value}` count tiles. Follower
+and stat values are nonnegative integers. The public kit formats counts with
+one decimal and `k` or `M`, formats the percentage with one decimal and a sign,
+and prints the build date separately as "Last updated." YouTube, Kick and all
+other platforms are refused in this list. The existing `engagement` field stays
+owner-report-only and never enters public output.
 
 ## `numbers`
 
