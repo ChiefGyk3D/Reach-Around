@@ -81,6 +81,7 @@ escapes it when it renders.
 | `version` | integer | required | must be exactly `1` |
 | `creator` | Creator | required | see below |
 | `tabs` | list of Tab | required | at least one tab |
+| `page` | Page | classic layout | production smart stack settings; see [`page`](#page) |
 | `disclosure` | text or Disclosure | none | the footer line for affiliate links; see [`disclosure`](#disclosure) |
 | `timezone` | text | `America/New_York` | must be a known IANA zone name; decides which calendar day "today" is for scheduled links |
 | `cutover_date` | date | absent | optional; the UTC calendar day the site went live (`YYYY-MM-DD`); see [`cutover_date`](#cutover_date) |
@@ -184,6 +185,7 @@ socials:
 | --- | --- | --- | --- |
 | `id` | Slug | required | unique across the site |
 | `title` | Title | required | the label in the navigation |
+| `intent` | `watch`, `videos`, `follow`, `community`, `support`, `work`, `shop` or `blog` | none | Required by `page.layout: stack`; the tab becomes an ordered group and its title becomes the group heading. |
 | `page_title` | page title text | none | Replaces the whole browser title of this tab's page; see [Page titles](#page-titles). It is not called `title` because that key is the navigation label. |
 | `open` | true or false | unset | Only with [`page_layout: sections`](#page_layout): whether this tab's section starts open. Unset opens the first section only. |
 | `blocks` | list of Link or Section | required | may be empty |
@@ -239,6 +241,53 @@ tabs:
       title: Example Boom Stand
       url: https://shop.example.com/stand
 ```
+
+## `page`
+
+`page.layout: stack` selects the owner-approved smart stack. It is dark-only
+and renders the tabs as ordered groups on one page. The `watch` intent supplies
+the two primary Watch links. Every other group must contain 2 to 6 links,
+directly or inside link sections. Other block types are refused so content is
+never silently omitted. A config without `page`, or with `layout: classic`,
+keeps the existing tab or sections layout.
+
+| Field | Type | Default | Constraints |
+| --- | --- | --- | --- |
+| `layout` | `classic` or `stack` | `classic` | `stack` requires the remaining fields and a dark theme. |
+| `status.text` | Subtitle | none | Required owner-written live or next-stream line. |
+| `status.schedule` | Subtitle | none | Optional second schedule line. |
+| `watch` | list of link ids | empty | Exactly two with `stack`, naming one Twitch-icon link and one Kick-icon link. Config order is display order and both links receive identical treatment. |
+
+Tabs provide the group order and headings. The standard information order is
+`videos`, `follow`, `community`, `support`, `work`, `shop`, `blog`; config order
+is authoritative. The generated page uses one column on phones and two columns
+for group links on wider screens. Every link remains keyboard operable, targets
+stay at least 44 px tall, and the layout reflows at 320 px and 200% zoom.
+
+```yaml
+page:
+  layout: stack
+  status:
+    text: Live Friday at 8 PM Eastern
+    schedule: "Next stream: November 13"
+  watch: [watch-one, watch-two]
+tabs:
+  - id: watch
+    title: Watch
+    intent: watch
+    blocks:
+      - id: watch-one
+        title: Watch one
+        url: https://example.com/watch-one
+        icon: twitch
+      - id: watch-two
+        title: Watch two
+        url: https://example.com/watch-two
+        icon: kick
+```
+
+Layouts B, C, and D remain prototypes and are not accepted by the production
+configuration.
 
 ## `page_layout`
 

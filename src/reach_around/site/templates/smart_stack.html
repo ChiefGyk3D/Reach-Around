@@ -1,0 +1,26 @@
+{# SPDX-License-Identifier: Apache-2.0 #}
+{% extends "base.html" %}
+{% from "_macros.html" import link_anchor with context %}
+{% import "_frames.html" as frames with context %}
+{% block content %}
+<div class="smart-stack">
+<section class="smart-status{{ frames.cls("hero") }}" aria-labelledby="smart-status-title">
+<h2 id="smart-status-title" class="sr-only">Status</h2>
+<p class="smart-status-text">{{ page.status.text }}</p>
+{% if page.status.schedule %}<p class="smart-status-schedule">{{ page.status.schedule }}</p>{% endif %}
+</section>
+<div class="smart-watch" aria-label="Watch">
+{% for link in watch %}{{ link_anchor(link, click_tracking, " smart-watch-link") }}{% endfor %}
+</div>
+<div class="smart-groups">
+{% for item in groups %}
+<section class="smart-group" id="group-{{ item.tab.intent }}" aria-labelledby="group-{{ item.tab.intent }}-title">
+<h2 id="group-{{ item.tab.intent }}-title">{{ item.tab.title }}</h2>
+<div class="smart-group-links">
+{% for link in item.links %}{{ link_anchor(link, click_tracking) }}{% endfor %}
+</div>
+</section>
+{% endfor %}
+</div>
+</div>
+{% endblock %}
