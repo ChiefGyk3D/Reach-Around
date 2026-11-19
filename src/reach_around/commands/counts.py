@@ -18,10 +18,13 @@ import json
 import os
 import sys
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, MutableMapping
+from contextlib import AbstractContextManager, nullcontext
+from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
 from functools import partial
 from pathlib import Path
+from typing import TextIO
 
 from reach_around.config import ConfigError, SiteConfig, load_site_config
 from reach_around.config.cutover import utc_today
@@ -69,6 +72,15 @@ from reach_around.counts.refresh import (
     render_status,
     select,
 )
+from reach_around.counts.secret_sink import (
+    DopplerSink,
+    MetaStyleSink,
+    PairStyleSink,
+    ScopeBusy,
+    SinkError,
+    TokenHolder,
+    scope_lock,
+)
 from reach_around.net.egress import Transport
 from reach_around.net.fetch import fetch_json
 
@@ -80,6 +92,68 @@ EXIT_WRITE = 1
 EXIT_USAGE = 2
 EXIT_SOURCE_FAILED = 3
 EXIT_DUE = 4
+
+
+@dataclass(frozen=True)
+class DopplerSpec:
+    """Where the Doppler sink writes. ``repr`` never shows the API token."""
+
+    project: str
+    config: str
+    token: TokenHolder = field(repr=False)
+
+
+DOPPLER_TOKEN_ENV = "REACH_AROUND_DOPPLER_TOKEN"  # noqa: S105 (a name, not a value)
+DOPPLER_PROJECT_ENV = "REACH_AROUND_DOPPLER_PROJECT"
+DOPPLER_CONFIG_ENV = "REACH_AROUND_DOPPLER_CONFIG"
+
+
+def doppler_spec(
+    args: argparse.Namespace,
+    env: MutableMapping[str, str],
+    stdin: TextIO,
+    held_token: TokenHolder | None = None,
+) -> DopplerSpec:
+    """Resolve the sink settings; ``ValueError`` names variables, never values.
+
+    The API token comes from one line of stdin (preferred) or the environment,
+    never argv. It is in a ``TokenHolder`` from the moment it is read, so no
+    local here is a plain string for it. The environment copy is read once and
+    removed here, before any network work, even when setup then fails. That
+    narrows the exposure; it cannot undo what the launcher already did with the
+    variable.
+    """
+    # The command line entry point already removed the variable before argument
+    # parsing and passes it as ``held_token``; the pop covers other callers.
+    from_env = TokenHolder(env.pop(DOPPLER_TOKEN_ENV, ""))
+    from_env.strip()
+    if held_token is not None:
+        if not from_env:
+            from_env.adopt(held_token)
+        held_token.clear()
+    project = args.doppler_project or env.get(DOPPLER_PROJECT_ENV, "")
+    config = args.doppler_config or env.get(DOPPLER_CONFIG_ENV, "")
+    if args.doppler_token_stdin:
+        token = TokenHolder(stdin.readline())
+        token.strip()
+        from_env.clear()
+        source = "stdin"
+    else:
+        token = from_env
+        source = DOPPLER_TOKEN_ENV
+    missing = [
+        label
+        for label, present in (
+            (source, bool(token)),
+            (DOPPLER_PROJECT_ENV + " or --doppler-project", bool(project)),
+            (DOPPLER_CONFIG_ENV + " or --doppler-config", bool(config)),
+        )
+        if not present
+    ]
+    if missing:
+        token.clear()
+        raise ValueError(f"--token-sink doppler needs: {', '.join(missing)}")
+    return DopplerSpec(project, config, token)
 
 
 def default_transport() -> Transport | None:
@@ -103,6 +177,7 @@ def run_refresh(
     transport: Transport | None = None,
     now: Callable[[], datetime] = lambda: datetime.now(UTC),
     lock_wait: float = LOCK_WAIT_SECONDS,
+    doppler: DopplerSpec | None = None,
 ) -> int:
     try:
         config = load_site_config(config_path)
@@ -121,6 +196,19 @@ def run_refresh(
         print(f"error: {exc}", file=sys.stderr)
         return EXIT_USAGE
 
+    sinks: Sinks | None = None
+    if doppler is not None:
+        try:
+            sinks = build_sinks(doppler, transport)
+        except SinkError as exc:
+            print(
+                f"error: the Doppler sink is not usable ({exc.kind})", file=sys.stderr
+            )
+            return EXIT_USAGE
+        finally:
+            # The sink holds what it needs; the spec lets the token go.
+            doppler.token.clear()
+
     if dry_run:
         for source in sources:
             print(
@@ -130,10 +218,11 @@ def run_refresh(
         return EXIT_OK
 
     try:
-        # One lock for the whole load, fetch, merge and write cycle: a second run
-        # started meanwhile waits, then reads what this one wrote, so a stale copy
-        # can never replace a newer number.
-        with FileLock(paths.lock, wait=lock_wait):
+        # The writer scope is taken first, so a second run fails fast instead of
+        # waiting on the output lock. One lock for the whole load, fetch, merge and
+        # write cycle: a second run started meanwhile waits, then reads what this
+        # one wrote, so a stale copy can never replace a newer number.
+        with _writer_scope(doppler), FileLock(paths.lock, wait=lock_wait):
             return _cycle(
                 paths,
                 sources,
@@ -142,6 +231,7 @@ def run_refresh(
                 transport,
                 now,
                 history,
+                sinks,
             )
     except LockBusy:
         print(
@@ -149,12 +239,52 @@ def run_refresh(
             file=sys.stderr,
         )
         return EXIT_WRITE
+    except ScopeBusy:
+        print(
+            "error: another writer holds this Doppler project and config; "
+            "nothing was fetched",
+            file=sys.stderr,
+        )
+        return EXIT_SOURCE_FAILED
+    except SinkError as exc:
+        print(
+            f"error: the Doppler sink lock state is not usable ({exc.kind}); "
+            "nothing was fetched",
+            file=sys.stderr,
+        )
+        return EXIT_USAGE
     except LockLost as exc:
         print(f"error: {exc}; nothing was written", file=sys.stderr)
         return EXIT_WRITE
     except OSError as exc:
         print(f"error: cannot use the output folder: {exc.strerror}", file=sys.stderr)
         return EXIT_WRITE
+
+
+def _writer_scope(spec: DopplerSpec | None) -> AbstractContextManager[None]:
+    """One run at a time per Doppler project and config; no-op without a sink."""
+    if spec is None:
+        return nullcontext()
+    return scope_lock(spec.project, spec.config)
+
+
+@dataclass(frozen=True)
+class Sinks:
+    pair: PairStyleSink  # Twitch and TikTok: a failed store fails the source
+    # Instagram and Threads: a failed store prints a health line and the count
+    # goes on with the old token (the session catches the sink error).
+    meta: MetaStyleSink
+
+
+def build_sinks(spec: DopplerSpec, transport: Transport | None) -> Sinks:
+    """The three source contracts over one verified Doppler sink."""
+    fetch = partial(
+        fetch_json,
+        transport=transport if transport is not None else default_transport(),
+        sleep=default_sleep,
+    )
+    sink = DopplerSink(spec.project, spec.config, spec.token.get(), fetch)
+    return Sinks(PairStyleSink(sink), MetaStyleSink(sink))
 
 
 def _write_failed(exc: Exception) -> None:
@@ -190,6 +320,7 @@ def _cycle(
     transport: Transport | None,
     now: Callable[[], datetime],
     history: Path | None = None,
+    sinks: Sinks | None = None,
 ) -> int:
     try:
         previous = (
@@ -208,6 +339,9 @@ def _cycle(
         now=lambda: stamp,
         sleep=default_sleep,
         accept_drop=accept,
+        token_sink=sinks.pair if sinks is not None else None,
+        meta_sink=sinks.meta if sinks is not None else None,
+        tiktok_sink=sinks.pair if sinks is not None else None,
     )
     for outcome in outcomes:
         if outcome.status == "ok":
@@ -530,12 +664,25 @@ def run_beacons_import(
 
 
 def _run(args: argparse.Namespace) -> int:
+    spec = None
+    if args.sink_kind == "doppler":
+        held = getattr(args, "doppler_held_token", None)
+        args.doppler_held_token = None
+        try:
+            spec = doppler_spec(args, os.environ, sys.stdin, held)
+        except ValueError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return EXIT_USAGE
+        finally:
+            if held is not None:
+                held.clear()
     return run_refresh(
         args.config,
         args.out,
         args.only,
         args.dry_run,
         accept_drop=args.accept_drop,
+        doppler=spec,
     )
 
 
@@ -733,6 +880,32 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
         "--dry-run",
         action="store_true",
         help="print hosts and kinds that would be fetched; fetch and write nothing",
+    )
+    refresh_parser.add_argument(
+        "--token-sink",
+        dest="sink_kind",
+        choices=("none", "doppler"),
+        default="none",
+        help="where a rotated token is stored. none (default): refresh stays "
+        "manual and a refresh-needed health line is printed. doppler: store the "
+        "rotated value in Doppler and verify it by read-back before any success "
+        "(docs/token-sink.md)",
+    )
+    refresh_parser.add_argument(
+        "--doppler-project",
+        metavar="NAME",
+        help=f"Doppler project (default: ${DOPPLER_PROJECT_ENV})",
+    )
+    refresh_parser.add_argument(
+        "--doppler-config",
+        metavar="NAME",
+        help=f"Doppler config, e.g. dev (default: ${DOPPLER_CONFIG_ENV})",
+    )
+    refresh_parser.add_argument(
+        "--doppler-token-stdin",
+        action="store_true",
+        help="read the Doppler API token from one line of stdin instead of "
+        f"${DOPPLER_TOKEN_ENV}; the token is never an argument",
     )
     import_parser = actions.add_parser(
         "import",
