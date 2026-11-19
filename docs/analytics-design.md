@@ -248,7 +248,7 @@ that one site rather than the whole collector):
 - Per-site `landings` and `hops` (issue #566): closed lists of at most 12 labels each
   (`^[a-z0-9-]{1,30}$`, `other` and `none` reserved) for the click route's `l` (the page of
   ours the click was made on, a build-time constant, never stored) and `h` (the surface of
-  ours the visitor came from, one step, read from the page address) parameters. They are read
+  ours the visitor came from, one step; click.js only forwards an `h` that the page address already carries, since no internal link writes one yet) parameters. They are read
   by the same parser as `s` (one value, judged raw, percent escapes that decode to a listed
   label are that label): a listed value is kept, any other valid value is `other`, a missing or
   malformed one is `none`, and the text is never stored. A site without the list writes no
