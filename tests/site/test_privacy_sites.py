@@ -46,7 +46,7 @@ def make(**analytics: Any) -> SiteConfig:
 
 
 def views_text(config: SiteConfig) -> str:
-    items = [i for i in collected_items(config) if "page views" in i.what]
+    items = [i for i in collected_items(config) if "Each view records" in i.what]
     assert len(items) == 1
     i = items[0]
     return f"{i.what} {i.why} {i.kept}"
@@ -54,29 +54,33 @@ def views_text(config: SiteConfig) -> str:
 
 # -- every stored column has a plain-words phrase ------------------------------
 
-# One phrase per column of the raw table. "INTERNAL" columns carry no personal
-# data and no new fact for the visitor (a row id, the first-of-the-day flag that
-# the daily code sets, and the closed reason list, which the text covers as "a
-# short reason").
+# One phrase per column of the raw table, each a phrase the approved copy
+# really contains. "INTERNAL" columns carry no personal data and no new fact for
+# the visitor (a row id, the first-of-the-day flag that the daily code sets, and
+# the closed reason list, which the text covers as "a short reason").
+# "net" (network type) is always "unknown" today and the page no longer claims
+# one (owner decision 2026-11-19, issue #598), so it has no phrase. When a
+# network dataset ships (#412) it needs a real phrase on the page again, and
+# this entry must change with it.
 PHRASES: dict[str, str] = {
-    "ts": "to the hour",
-    "page": "the page",
+    "ts": "and the hour",
+    "page": "records the page",
     "src_kind": "referring site",
     "src": "referring site",
     "country": "country",
     "region": "region",
     "city": "city",
     "browser": "browser",
-    "bmajor": "its version",
+    "bmajor": "and version",
     "os": "operating system",
-    "device": "kind of device",
+    "device": "device kind",
     "lang": "language",
-    "vp": "window width",
-    "net": "network type",
+    "vp": "window sizes",
+    "net": "",
     "bot_class": "automated",
     "reason": "short reason",
     "first": "daily code",
-    "site": "name of the site",
+    "site": "site name",
     "id": "",
 }
 
@@ -125,17 +129,17 @@ def test_the_guard_bites_a_new_column_with_no_disclosure() -> None:
 
 def test_text_says_the_ip_address_is_never_stored_and_the_raw_ua_is_not() -> None:
     text = views_text(make())
-    assert "IP address is never stored" in text
-    assert "raw browser identification is not stored" in text
-    assert "nothing is stored in your browser" in text
+    assert "IP address and raw browser identification are never stored" in text
+    assert "The counter stores nothing in your browser" in text
 
 
-def test_text_names_the_network_type_and_says_no_address_is_sent_out() -> None:
+def test_text_does_not_claim_a_network_type_or_lists() -> None:
     text = views_text(make())
-    assert "network type" in text
-    assert "VPN" in text and "hosting provider" in text
-    assert "on our own server" in text
-    assert "no address is sent to anyone else" in text
+    assert "Each view records" in text  # loose collection: the item was found
+    for claim in ("network type", "VPN", "hosting provider", "lists we hold"):
+        assert claim not in text, claim
+    assert "It cannot reveal the address" in text
+    assert "Short hashed counters limit flooding" in text
 
 
 def test_text_says_daily_codes_differ_between_sites() -> None:
@@ -154,19 +158,20 @@ def test_single_site_text_says_so_and_multi_site_text_names_the_others() -> None
 
 def test_text_says_small_totals_are_merged_and_no_per_person_deletion() -> None:
     text = views_text(make())
-    assert "merged into 'other'" in text
-    assert "cannot find and delete the views of one person" in text
+    assert "Small groups are combined as “other.”" in text
+    assert "Per-person deletion is not possible" in text
     assert "Global Privacy Control" in text and "Do Not Track" in text
 
 
 def test_retention_numbers_come_from_config() -> None:
     default = views_text(make())
     assert f"deleted after {DEFAULT_RAW_KEEP_DAYS} days" in default
-    assert f"up to {AGGREGATE_KEEP_DAYS} days" in default
+    assert f"Anonymous totals are deleted after {AGGREGATE_KEEP_DAYS} days" in default
     text = views_text(make(raw_keep_days=14))
     assert "deleted after 14 days" in text
     assert "deleted after 7 days" not in text
-    assert "end of the same day" in text
+    assert "deleted at day’s end" in text
+    assert "deleted within about two hours" in text
 
 
 def test_aggregate_keep_matches_the_worker() -> None:
@@ -197,7 +202,7 @@ def test_text_is_not_present_when_page_views_are_off() -> None:
     )
     text = " ".join(f"{i.what} {i.why} {i.kept}" for i in collected_items(config))
     assert "blog.example.test" not in text
-    assert "page views" not in text
+    assert "Each view records" not in text
 
 
 # -- hostile config values -----------------------------------------------------

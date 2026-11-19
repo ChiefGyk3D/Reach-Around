@@ -13,6 +13,7 @@ from reach_around.config import SiteConfig
 from reach_around.config.privacy import (
     DEFAULT_LEAD_RETENTION_DAYS,
     MAX_LEAD_RETENTION_DAYS,
+    RAW_CLICK_KEEP_DAYS,
 )
 from reach_around.site.build import build_site, manifest_json
 from reach_around.site.privacy import Disclosure, collected_items, sets_cookies
@@ -69,20 +70,169 @@ def test_default_disclosure_lists_click_counts_and_says_no_ip_address() -> None:
     items = collected_items(make_config())
     assert len(items) == 1
     text = text_of(items)
-    assert "country" in text
-    assert "no IP address" in text
-    assert "90 days" in text
+    assert "no IP address or country" in text
+    assert "Hourly records are deleted after 90 days" in text
 
 
-def test_click_disclosure_labels_depend_on_lists_and_none_vs_other() -> None:
-    text = text_of(collected_items(make_config())).replace("\n", " ")
-    # Page and earlier-page labels are recorded only where the site lists them.
-    assert "only where this site's counter has a fixed list of them" in text
-    # A valid label not on the list is other; a missing or unusable one is none.
-    assert "a label not on the list is counted only as other" in text
-    assert "a missing or unusable label is counted only as none" in text
-    # The old blanket claim must not return.
-    assert "anything not on the list is counted only as other" not in text
+def test_click_item_says_clicks_are_counted_with_gpc_or_dnt() -> None:
+    what = collected_items(make_config())[0].what
+    assert "Global Privacy Control and Do Not Track do not stop click counting" in what
+
+
+def test_click_disclosure_says_none_vs_other_and_keeps_totals_apart() -> None:
+    what = collected_items(make_config())[0].what
+    assert "outside the creator’s fixed list count as “other.”" in what
+    assert "Missing or unusable labels count as “none.”" in what
+    assert "Source and country are never combined" in what
+
+
+WORKER = Path(__file__).resolve().parents[2] / "worker" / "src"
+
+
+def purge_call_arguments(source: str) -> list[int]:
+    """Argument counts of every purgeOldEvents( ... ) call in the source."""
+    counts = []
+    for args in re.findall(r"purgeOldEvents\(([^)]*)\)", source):
+        # An object literal such as { ...env, DB: whole } is one argument.
+        args = re.sub(r"\{[^}]*\}", "obj", args)
+        counts.append(len(args.split(",")))
+    return counts
+
+
+def test_raw_click_retention_is_what_the_worker_really_does() -> None:
+    retention = (WORKER / "retention.ts").read_text(encoding="utf-8")
+    default = re.search(r"DEFAULT_KEEP_DAYS = (\d+);", retention)
+    assert default  # the guard collected something
+    assert int(default.group(1)) == RAW_CLICK_KEEP_DAYS == 90
+    # The cron job runs the purge with no window of its own, so the default
+    # is the whole story. A third argument would change what is kept.
+    counts = purge_call_arguments((WORKER / "index.ts").read_text(encoding="utf-8"))
+    assert counts and set(counts) == {2}, counts
+
+
+def test_the_purge_guard_bites_a_call_with_its_own_window() -> None:
+    assert purge_call_arguments("purgeOldEvents({ ...env }, now, 30)") == [3]
+    assert purge_call_arguments("await purgeOldEvents({ ...env }, now);") == [2]
+
+
+@pytest.mark.parametrize("bad", [1, 30, 89, 91, 3650])
+def test_click_retention_other_than_the_workers_is_refused(bad: int) -> None:
+    with pytest.raises(ValidationError, match="retention_days"):
+        make_config(privacy={"retention_days": bad})
+
+
+def test_click_retention_accepts_the_workers_value() -> None:
+    assert make_config(privacy={"retention_days": 90}).privacy.retention_days == 90
+
+
+def test_click_retention_says_hourly_daily_and_monthly() -> None:
+    kept = collected_items(make_config())[0].kept
+    assert f"Hourly records are deleted after {RAW_CLICK_KEEP_DAYS} days." in kept
+    assert "Daily counts are deleted after 90 days." in kept
+    assert "Monthly totals are kept for up to 25 months." in kept
+
+
+FORBIDDEN_WORDS = (
+    "network type",
+    "hosting provider",
+    "VPN",
+    "Tor",
+    "landing",
+    "hop",
+    "YouTube",  # the live block's players are Twitch and Kick only
+)
+ALERTS = {"channels": ["discord"], "events": ["kit_unlocked"]}
+LIVE_BLOCK = {
+    "id": "live",
+    "players": [
+        {"platform": "kick", "channel": "examplekick"},
+        {"platform": "twitch", "channel": "exampletwitch"},
+    ],
+}
+
+
+def every_feature_config() -> SiteConfig:
+    return make_config(
+        features={"kit_gate": True},
+        analytics={"page_views": True, "other_sites": ["blog.example.test"]},
+        alerts=ALERTS,
+        tabs=[{"id": "start", "title": "Start", "blocks": [LIVE_BLOCK]}],
+    )
+
+
+def has_word(word: str, text: str) -> bool:
+    return re.search(rf"\b{word}\b", text) is not None
+
+
+def test_page_never_names_what_is_not_collected(tmp_path: Path) -> None:
+    config = every_feature_config()
+    items = collected_items(config)
+    assert len(items) >= 7  # loose collection: the whole page was read
+    build_site(config, tmp_path, today=TODAY)
+    page = (tmp_path / "privacy" / "index.html").read_text()
+    body = re.sub(r"<[^>]+>", " ", text_of(items) + " " + page)
+    for word in FORBIDDEN_WORDS:
+        assert not has_word(word, body), word
+
+
+def test_the_forbidden_word_guard_bites() -> None:
+    assert has_word("VPN", "looks like a VPN or proxy")
+    assert has_word("hop", "one hop label")
+    assert has_word("network type", "a network type")
+    assert not has_word("hop", "shopping")  # whole words only
+
+
+def test_items_come_in_order_and_each_follows_its_flag() -> None:
+    assert len(collected_items(make_config())) == 1
+    heads = [i.what for i in collected_items(every_feature_config())]
+    assert heads[0].startswith("When you click a link")
+    assert "The same counter also counts" in heads[1]
+    assert heads[2].startswith("When the live block is on")
+    assert heads[3].startswith("When the live block is on, the site can show a Twitch")
+    assert heads[4].startswith("When alerts are on")
+    assert "email address you enter" in heads[5]
+
+
+def test_live_and_player_items_follow_the_live_block_only() -> None:
+    on = text_of(collected_items(every_feature_config()))
+    assert "whether the creator is live" in on
+    assert "The player loads only after you click to play." in on
+    assert "Twitch or Kick stream player" in on
+    no_live = make_config(
+        features={"kit_gate": True}, analytics={"page_views": True}, alerts=ALERTS
+    )
+    off = text_of(collected_items(no_live))
+    assert "whether the creator is live" not in off
+    assert "player" not in off
+
+
+def test_alerts_item_follows_the_alerts_section_only() -> None:
+    on = text_of(collected_items(every_feature_config()))
+    assert "When alerts are on" in on
+    assert "are not deleted automatically by this site" in on
+    assert "When alerts are on" not in text_of(collected_items(make_config()))
+    # A channel with no event is not enabled, so nothing is said.
+    half = make_config(alerts={"channels": ["discord"]})
+    assert half.alerts.enabled is False
+    assert "When alerts are on" not in text_of(collected_items(half))
+
+
+def test_alerts_item_says_an_alert_never_carries_an_ip_address() -> None:
+    items = collected_items(every_feature_config())
+    alerts = [i for i in items if i.what.startswith("When alerts are on")]
+    assert len(alerts) == 1
+    what = alerts[0].what
+    assert "It never includes an IP address" in what
+    assert "can include your full or masked IP" not in what
+    # The Worker's own list of what an alert never carries (the source of truth).
+    fmt = (WORKER / "alerts" / "format.ts").read_text(encoding="utf-8")
+    assert "Never an IP, user" in fmt
+
+
+def test_page_views_item_follows_analytics_page_views_only() -> None:
+    assert "counter counts" not in text_of(collected_items(make_config()))
+    on = make_config(analytics={"page_views": True})
+    assert "This counter counts this site only." in text_of(collected_items(on))
 
 
 def test_no_item_is_marked_sensitive() -> None:
@@ -157,17 +307,19 @@ def test_every_page_links_to_privacy_in_the_footer(tmp_path: Path) -> None:
         ).resolve()
 
 
-def test_privacy_page_states_the_retention_numbers_from_config(
+def test_privacy_page_states_the_workers_click_and_the_configured_lead_numbers(
     tmp_path: Path,
 ) -> None:
     config = make_config(
         features={"kit_gate": True},
-        privacy={"retention_days": 30, "lead_retention_days": 45},
+        privacy={"retention_days": 90, "lead_retention_days": 45},
     )
     build_site(config, tmp_path, today=TODAY)
     page = (tmp_path / "privacy" / "index.html").read_text()
-    assert "30 days" in page and "45 days" in page
-    assert "90 days" not in page and "365 days" not in page
+    assert "Hourly records are deleted after 90 days" in page  # the Worker's own
+    assert "Daily counts are deleted after 90 days" in page
+    assert "45 days" in page  # the lead number does come from config
+    assert "365 days" not in page
 
 
 def test_default_lead_retention_prints_the_workers_default_30_days(

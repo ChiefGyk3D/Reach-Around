@@ -10,7 +10,94 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from reach_around.config.analytics import AGGREGATE_KEEP_DAYS
+from reach_around.config.blocks import Live
 from reach_around.config.models import SiteConfig
+from reach_around.config.privacy import RAW_CLICK_KEEP_DAYS
+
+# The wording below is owner-approved copy (issue #598), used verbatim. Only the
+# {...} placeholders are filled from the config. Do not reword it here; change
+# the approved copy first.
+CLICK_WHAT = (
+    "When you click a link, the site stores the link, its source label, and the "
+    "hour. Labels outside the creator’s fixed list count as “other.” "
+    "Missing or unusable labels count as “none.” The record has no IP "
+    "address or country. Separate daily totals count clicks by source and by "
+    "country. Source and country are never combined or linked to a page view or "
+    "person. Global Privacy Control and Do Not Track do not stop click counting."
+)
+CLICK_WHY = (
+    "These records count link clicks and show daily totals by source or country."
+)
+CLICK_KEPT = (
+    "Hourly records are deleted after {RETENTION_DAYS} days. Daily counts are "
+    "deleted after 90 days. Monthly totals are kept for up to 25 months."
+)
+
+# {SITES} is a whole sentence built from the config (see _page_views), not the
+# approved copy's "The counter counts views on {SITES}." (owner direction).
+VIEWS_WHAT = (
+    "{SITES} Each view records the page, referring site’s name, campaign and "
+    "source labels, one of four window sizes, and the hour. It keeps browser and "
+    "version, operating system, device kind, language, and the location detail "
+    "enabled: country, region, and city. It marks the view as likely human or "
+    "automated and gives a short reason. Source labels outside the site’s "
+    "list count as “other.” Labels use lower-case letters, digits, and "
+    "hyphens, with a 30-character limit. The server creates a daily code from "
+    "the address and site name. It cannot reveal the address. Short hashed "
+    "counters limit flooding. The IP address and raw browser identification are "
+    "never stored. The counter stores nothing in your browser."
+)
+VIEWS_WHY = (
+    "The daily code counts one person once per day on one site. Short counters "
+    "stop one client from flooding the counter. Global Privacy Control and Do "
+    "Not Track stop all view data from being sent. Small groups are combined as "
+    "“other.”"
+)
+VIEWS_KEPT = (
+    "View records are deleted after {RAW_KEEP_DAYS} days. The daily code is "
+    "deleted at day’s end. Abuse counters are deleted within about two "
+    "hours. Anonymous totals are deleted after {AGGREGATE_KEEP_DAYS} days. "
+    "Per-person deletion is not possible because the records do not identify "
+    "anyone."
+)
+
+LIVE_WHAT = (
+    "When the live block is on, the link page and privacy page ask the site’s "
+    "server whether the creator is live. They ask when the page opens and every "
+    "minute while it stays open. The answer contains each channel’s live "
+    "status and a few times. No cookies or identifiers are sent or kept."
+)
+LIVE_WHY = "These checks show whether the creator’s channels are live."
+LIVE_KEPT = "The live checks keep no cookies or identifiers."
+
+# PLAYER_* and ALERTS_* are the corrected copy (second copy file, 2026-11-19);
+# it replaces the first file's versions.
+PLAYER_WHAT = (
+    "When the live block is on, the site can show a Twitch or Kick stream "
+    "player. The player loads only after you click to play. The platform then "
+    "sees your IP address."
+)
+PLAYER_WHY = "The player lets you watch the stream on this site."
+PLAYER_KEPT = (
+    "The platform’s own rules apply. The site stores nothing about the player "
+    "or your IP address."
+)
+
+ALERTS_WHAT = (
+    "When alerts are on, the site can notify the creator when someone unlocks "
+    "the kit or a new lead is stored. A notice has fixed wording, the UTC time, "
+    "and a count. It may include your full or masked email address. It may "
+    "leave the address out and say “a visitor.” It never includes an IP "
+    "address, browser identification, cookie, token, country, or code derived "
+    "from you."
+)
+ALERTS_WHY = (
+    "The notice tells the creator that a kit was unlocked or a new lead was stored."
+)
+ALERTS_KEPT = (
+    "Copies in the creator’s chat service or mailbox are not deleted "
+    "automatically by this site. The creator deletes them there."
+)
 
 
 @dataclass(frozen=True)
@@ -29,32 +116,24 @@ def collected_items(config: SiteConfig) -> list[Disclosure]:
     if config.features.click_tracking:
         items.append(
             Disclosure(
-                what=(
-                    "A count of link clicks: which link was clicked, the "
-                    "visitor's country, the short source label the link "
-                    "you came in on carried (from a fixed list), the short "
-                    "label of the page the click was made on, and, if you "
-                    "came from another page of ours, the short label of that "
-                    "page (these two are recorded only where this site's "
-                    "counter has a fixed list of them; each is a closed "
-                    "label: a label not on the list is counted only as "
-                    "other, and a missing or unusable label is counted only "
-                    "as none), with the "
-                    "time rounded to the hour, with no IP address stored. "
-                    "Totals of these counts per day and per month hold no "
-                    "time finer than a day."
-                ),
-                why="To see which links are useful. The counts are anonymous.",
-                kept=(
-                    f"{config.privacy.retention_days} days for the hourly "
-                    "click records; the daily and monthly totals for up to "
-                    "25 months"
-                ),
+                what=CLICK_WHAT,
+                why=CLICK_WHY,
+                # The Worker purges raw click rows at one fixed window (a test
+                # pins RAW_CLICK_KEEP_DAYS to it), never at a configured one.
+                kept=CLICK_KEPT.replace("{RETENTION_DAYS}", str(RAW_CLICK_KEEP_DAYS)),
                 sensitive=False,
             )
         )
     if config.analytics.page_views:
         items.append(_page_views(config))
+    # Live, player and alerts follow the page views and precede the kit items.
+    # The live block and its player facade come from the same block (a site may
+    # have one), so one flag shows both. Alerts have a site-config section.
+    if any(isinstance(b, Live) for tab in config.tabs for b in tab.blocks):
+        items.append(Disclosure(LIVE_WHAT, LIVE_WHY, LIVE_KEPT, sensitive=False))
+        items.append(Disclosure(PLAYER_WHAT, PLAYER_WHY, PLAYER_KEPT, sensitive=False))
+    if config.alerts.enabled:
+        items.append(Disclosure(ALERTS_WHAT, ALERTS_WHY, ALERTS_KEPT, sensitive=False))
     if config.features.kit_gate:
         items.append(
             Disclosure(
@@ -112,45 +191,11 @@ def _page_views(config: SiteConfig) -> Disclosure:
             "site, the counts are kept separately and this page names it."
         )
     return Disclosure(
-        what=(
-            "A count of page views. Each view records the page, the referring "
-            "site's name only (never the full address), a campaign label if "
-            "the link you followed carried one (the short utm_source label: at "
-            "most 30 characters of lower-case letters, digits and hyphens), a "
-            "source label if the link carried one (the short s= label: the "
-            "same form, and anything not on this site's own list is counted "
-            "only as other), and your window width as one of four sizes. From "
-            "your request the server works out and keeps only: your browser and "
-            "its version, your operating system, the kind of device, your language, "
-            "and "
-            "your country, region and city (as far as the counter is set to "
-            "record them). It also marks the view as likely a person or likely "
-            "automated, with a short reason, and works out a network type when "
-            "it can (for example: looks like a hosting provider, a VPN or "
-            "proxy, or Tor). That work is done on our own server from lists we "
-            "hold, so no address is sent to anyone else. The time of a view is "
-            "kept to the hour only. It also keeps a daily code made from your "
-            "address and the name of the site that changes every day and "
-            "cannot be turned back into the address, so one person is counted "
-            "once a day on that site. " + sites + " Your IP address is never "
-            "stored, your raw browser identification is not stored, and "
-            "nothing is stored in your browser."
-        ),
-        why=(
-            "To see which pages are read and where visitors come from. Nothing "
-            "is sent if your browser sends Global Privacy Control or Do Not "
-            "Track. Totals for small groups are merged into 'other'. Nothing "
-            "in these records identifies a person, so we cannot find and "
-            "delete the views of one person on request; the individual "
-            f"records are deleted automatically after {analytics.raw_keep_days} "
-            "days."
-        ),
-        kept=(
-            f"Each view record is deleted after {analytics.raw_keep_days} days; "
-            "the daily code is deleted at the end of the same day; only "
-            f"anonymous totals are kept longer, for up to {AGGREGATE_KEEP_DAYS} "
-            "days"
-        ),
+        what=VIEWS_WHAT.replace("{SITES}", sites),
+        why=VIEWS_WHY,
+        kept=VIEWS_KEPT.replace(
+            "{RAW_KEEP_DAYS}", str(analytics.raw_keep_days)
+        ).replace("{AGGREGATE_KEEP_DAYS}", str(AGGREGATE_KEEP_DAYS)),
         sensitive=False,
     )
 
