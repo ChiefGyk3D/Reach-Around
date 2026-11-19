@@ -519,3 +519,151 @@ def test_project_and_config_flags_override_the_environment(
     )
     assert main(args) == 0
     assert ("flag-proj", "dev_flag", "TWITCH_USER_ACCESS_TOKEN") in doppler.store
+
+
+# ---- round 1 hardening: destination, single writer, env token --------------
+
+
+def test_no_constructor_argument_can_change_the_destination(
+    doppler: FakeDoppler,
+) -> None:
+    import inspect
+
+    params = inspect.signature(DopplerSink.__init__).parameters
+    assert set(params) == {"self", "project", "config", "token", "fetch"}
+    for extra in ("base_url", "host", "url", "base"):
+        with pytest.raises(TypeError):
+            make_sink(doppler, **{extra: "http://127.0.0.1:1"})
+    seen: list[tuple[str, int]] = []
+    inner = doppler.transport()
+
+    def record(request: TransportRequest) -> RawResponse:
+        seen.append((request.host, request.port))
+        answer: RawResponse = inner(request)
+        return answer
+
+    fetch = partial(fetch_json, transport=record, sleep=lambda s: None)
+    DopplerSink(PROJECT, CONFIG, API_TOKEN, fetch).put({"A_B": "value-1"})
+    assert seen and set(seen) == {("api.doppler.com", 443)}
+
+
+def test_cli_exposes_no_destination_option(
+    site: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    doppler: FakeDoppler,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    for flag in ("--doppler-base-url", "--doppler-url", "--doppler-host"):
+        with pytest.raises(SystemExit) as caught:
+            main(refresh_args(site, "--token-sink", "doppler", flag, "http://x"))
+        assert caught.value.code == 2
+        assert "unrecognized arguments" in capsys.readouterr().err
+    sink_env(monkeypatch)
+    monkeypatch.setenv("REACH_AROUND_DOPPLER_BASE_URL", "http://127.0.0.1:1")
+    monkeypatch.setenv("REACH_AROUND_DOPPLER_URL", "http://127.0.0.1:1")
+    use(monkeypatch, doppler.transport(FakeTransport(twitch_routes())))
+    assert main(refresh_args(site, "--token-sink", "doppler")) == 0
+    assert doppler.requests
+
+
+def test_build_sinks_takes_no_destination() -> None:
+    import inspect
+
+    assert set(inspect.signature(counts_cmd.build_sinks).parameters) == {
+        "spec",
+        "transport",
+    }
+
+
+def test_api_token_leaves_the_environment_before_any_network_work(
+    site: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    doppler: FakeDoppler,
+) -> None:
+    import os
+
+    sink_env(monkeypatch)
+    inner = doppler.transport(FakeTransport(twitch_routes()))
+    seen: list[bool] = []
+
+    def watch(request: TransportRequest) -> RawResponse:
+        seen.append(
+            "REACH_AROUND_DOPPLER_TOKEN" in os.environ
+            or API_TOKEN in os.environ.values()
+        )
+        answer: RawResponse = inner(request)
+        return answer
+
+    use(monkeypatch, watch)
+    assert main(refresh_args(site, "--token-sink", "doppler")) == 0
+    assert seen and not any(seen)
+    assert "REACH_AROUND_DOPPLER_TOKEN" not in os.environ
+    assert API_TOKEN not in os.environ.values()
+    assert doppler.requests[0][2]["Authorization"] == f"Bearer {API_TOKEN}"
+
+
+def test_api_token_leaves_the_environment_even_when_setup_fails(
+    site: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import os
+
+    monkeypatch.setenv("REACH_AROUND_DOPPLER_TOKEN", API_TOKEN)
+    use(monkeypatch, FakeTransport(twitch_routes()))
+    assert main(refresh_args(site, "--token-sink", "doppler")) == 2
+    assert "REACH_AROUND_DOPPLER_TOKEN" not in os.environ
+
+
+def test_stdin_run_also_clears_a_stray_env_token(
+    site: Path, monkeypatch: pytest.MonkeyPatch, doppler: FakeDoppler
+) -> None:
+    import io
+    import os
+
+    sink_env(monkeypatch)
+    monkeypatch.setattr(sys, "stdin", io.StringIO(API_TOKEN + "\n"))
+    use(monkeypatch, doppler.transport(FakeTransport(twitch_routes())))
+    args = refresh_args(site, "--token-sink", "doppler", "--doppler-token-stdin")
+    assert main(args) == 0
+    assert "REACH_AROUND_DOPPLER_TOKEN" not in os.environ
+
+
+def test_scope_lock_admits_one_writer_and_holds_only_a_pid(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from reach_around.counts.secret_sink import ScopeBusy, scope_lock
+
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    with scope_lock(PROJECT, CONFIG):
+        files = [p for p in tmp_path.rglob("*") if p.is_file()]
+        assert len(files) == 1
+        assert files[0].read_text().strip().isdigit()
+        assert PROJECT not in files[0].name
+        with pytest.raises(ScopeBusy):
+            with scope_lock(PROJECT, CONFIG):
+                raise AssertionError("second writer must not get in")
+        with scope_lock(PROJECT, "dev_other"):  # another config, another scope
+            pass
+    with scope_lock(PROJECT, CONFIG):  # free again after release
+        pass
+
+
+def test_refresh_refuses_a_second_writer_to_the_same_config(
+    site: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    doppler: FakeDoppler,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from reach_around.counts.secret_sink import scope_lock
+
+    sink_env(monkeypatch)
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    use(monkeypatch, doppler.transport(FakeTransport(twitch_routes())))
+    with scope_lock(PROJECT, CONFIG):
+        assert main(refresh_args(site, "--token-sink", "doppler")) == 3
+    err = capsys.readouterr().err
+    assert "another writer" in err
+    assert doppler.requests == []
+    no_leak(err)
+    sink_env(monkeypatch)  # the first run consumed the token variable
+    assert main(refresh_args(site, "--token-sink", "doppler")) == 0

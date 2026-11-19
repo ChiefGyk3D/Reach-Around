@@ -23,13 +23,17 @@ token it already holds, and the owner must check the secret (see the docs).
 
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import hmac
 import json
+import os
 import re
 import sys
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterator, Mapping
+from contextlib import contextmanager
 from datetime import date
+from pathlib import Path
 from typing import Any, Protocol, TextIO
 from urllib.parse import urlencode
 
@@ -52,6 +56,40 @@ class SinkError(Exception):
         self.kind = kind
         super().__init__(kind)
         self.__suppress_context__ = True
+
+
+class ScopeBusy(Exception):
+    """Another run already owns this project and config."""
+
+
+@contextmanager
+def scope_lock(project: str, config: str) -> Iterator[None]:
+    """Advisory single-writer lock for one project and config.
+
+    The file lives under the XDG state directory, is named by a digest of the
+    scope, and holds only this process id. It never holds a secret. The lock
+    ends with the process, so a crash leaves nothing stale. It stops two runs
+    of this tool; it cannot stop other writers (see docs/token-sink.md).
+    """
+    base = os.environ.get("XDG_STATE_HOME") or str(Path.home() / ".local" / "state")
+    folder = Path(base) / "reach-around"
+    folder.mkdir(mode=0o700, parents=True, exist_ok=True)
+    name = hashlib.sha256(f"{project}\0{config}".encode()).hexdigest()[:24]
+    fd = os.open(
+        folder / f"doppler-{name}.lock",
+        os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW,
+        0o600,
+    )
+    try:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise ScopeBusy from None
+        os.ftruncate(fd, 0)
+        os.write(fd, f"{os.getpid()}\n".encode())
+        yield
+    finally:
+        os.close(fd)
 
 
 class SecretSink(Protocol):
@@ -79,8 +117,6 @@ class DopplerSink:
         config: str,
         token: str,
         fetch: Fetch,
-        *,
-        base_url: str = API_BASE,
     ) -> None:
         if not _SCOPE_NAME.fullmatch(project) or not _SCOPE_NAME.fullmatch(config):
             raise SinkError("bad_input")
@@ -90,7 +126,7 @@ class DopplerSink:
         self._config = config
         self._token = token
         self._fetch = fetch
-        self._base = base_url.rstrip("/")
+        self._base = API_BASE
 
     def __repr__(self) -> str:
         return "DopplerSink(project=<set>, config=<set>, token=<hidden>)"

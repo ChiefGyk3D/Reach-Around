@@ -13,13 +13,14 @@ health line, and `auto_refresh: true` is still refused (`refresh_needs_sink`).
 ```
 export REACH_AROUND_DOPPLER_PROJECT=<project>   # injected, not built in
 export REACH_AROUND_DOPPLER_CONFIG=dev          # use dev until the owner says prd
-# the API token comes from the environment or one line of stdin, never argv:
-export REACH_AROUND_DOPPLER_TOKEN=...           # or add --doppler-token-stdin
-reach-around counts refresh --config site.yaml --token-sink doppler
+# preferred: the API token on one line of stdin, never argv
+reach-around counts refresh --config site.yaml --token-sink doppler --doppler-token-stdin
+# kept for compatibility: the REACH_AROUND_DOPPLER_TOKEN variable (see below)
 ```
 
 `--doppler-project` and `--doppler-config` override the two variables (names are
-not secret). There is no option for the token itself. The sources must also set
+not secret). There is no option for the token itself, and no option or variable
+for the service address: the sink always talks to `https://api.doppler.com`. The sources must also set
 `auto_refresh: true` as before.
 
 ## What it guarantees
@@ -40,6 +41,18 @@ not secret). There is no option for the token itself. The sources must also set
   `refresh_store_failed` health line.
 
 ## Know before you switch it on
+
+- The API token: stdin is the preferred source. If the environment variable is
+  used, the run reads it once and removes it from its own environment before
+  any network work. That narrows the exposure; it cannot undo what the shell,
+  service manager or launcher already did with the variable.
+- Single writer. Doppler's update call returns no revision that a read could be
+  pinned to (docs.doppler.com, secrets update, read 2026-11-19), so the
+  read-back proves the value was stored at read time, not that no one wrote
+  after it. Give each project and config one owner: this collector run. The tool
+  takes an advisory lock per project and config (a file under the state
+  directory holding only a process id) and refuses a second run of itself; it
+  cannot stop other writers, so keep people and other jobs out of that config.
 
 - A write that lands but fails verification (or times out) leaves the new value
   in the manager while the run keeps the old one. Twitch and TikTok rotate the

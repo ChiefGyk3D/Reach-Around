@@ -18,7 +18,8 @@ import json
 import os
 import sys
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, MutableMapping
+from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
 from functools import partial
@@ -75,7 +76,9 @@ from reach_around.counts.secret_sink import (
     DopplerSink,
     MetaStyleSink,
     PairStyleSink,
+    ScopeBusy,
     SinkError,
+    scope_lock,
 )
 from reach_around.net.egress import Transport
 from reach_around.net.fetch import fetch_json
@@ -106,20 +109,24 @@ DOPPLER_CONFIG_ENV = "REACH_AROUND_DOPPLER_CONFIG"
 
 def doppler_spec(
     args: argparse.Namespace,
-    env: Mapping[str, str],
+    env: MutableMapping[str, str],
     stdin: TextIO,
 ) -> DopplerSpec:
     """Resolve the sink settings; ``ValueError`` names variables, never values.
 
-    The API token comes from the environment or one line of stdin, never argv.
+    The API token comes from one line of stdin (preferred) or the environment,
+    never argv. The environment copy is read once and removed here, before any
+    network work, even when setup then fails. That narrows the exposure; it
+    cannot undo what the launcher already did with the variable.
     """
+    from_env = env.pop(DOPPLER_TOKEN_ENV, "").strip()
     project = args.doppler_project or env.get(DOPPLER_PROJECT_ENV, "")
     config = args.doppler_config or env.get(DOPPLER_CONFIG_ENV, "")
     if args.doppler_token_stdin:
         token = stdin.readline().strip()
         source = "stdin"
     else:
-        token = env.get(DOPPLER_TOKEN_ENV, "").strip()
+        token = from_env
         source = DOPPLER_TOKEN_ENV
     missing = [
         label
@@ -197,7 +204,7 @@ def run_refresh(
         # One lock for the whole load, fetch, merge and write cycle: a second run
         # started meanwhile waits, then reads what this one wrote, so a stale copy
         # can never replace a newer number.
-        with FileLock(paths.lock, wait=lock_wait):
+        with FileLock(paths.lock, wait=lock_wait), _writer_scope(doppler):
             return _cycle(
                 paths,
                 sources,
@@ -214,12 +221,26 @@ def run_refresh(
             file=sys.stderr,
         )
         return EXIT_WRITE
+    except ScopeBusy:
+        print(
+            "error: another writer holds this Doppler project and config; "
+            "nothing was fetched",
+            file=sys.stderr,
+        )
+        return EXIT_SOURCE_FAILED
     except LockLost as exc:
         print(f"error: {exc}; nothing was written", file=sys.stderr)
         return EXIT_WRITE
     except OSError as exc:
         print(f"error: cannot use the output folder: {exc.strerror}", file=sys.stderr)
         return EXIT_WRITE
+
+
+def _writer_scope(spec: DopplerSpec | None) -> AbstractContextManager[None]:
+    """One run at a time per Doppler project and config; no-op without a sink."""
+    if spec is None:
+        return nullcontext()
+    return scope_lock(spec.project, spec.config)
 
 
 @dataclass(frozen=True)
