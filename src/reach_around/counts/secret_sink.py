@@ -409,9 +409,13 @@ class _Token(Protocol):
 class MetaStyleSink:
     """The Instagram and Threads ``MetaTokenSink`` contract.
 
-    ``store`` returns nothing and raises on failure. The new expiry day lives in
-    the config, not the secret manager, so the sink prints it as an action line
-    (content-free: the secret NAME and a date).
+    ``store`` returns nothing and raises ``SinkError`` on failure. The Meta
+    session catches that error, prints its ``refresh_store_failed`` health line,
+    drops the new token and goes on to read the count with the old one, which a
+    Meta refresh does not retire. So a failed store does NOT fail an Instagram
+    or Threads source; only Twitch and TikTok do (their old token is retired).
+    The new expiry day lives in the config, not the secret manager, so the sink
+    prints it as an action line (content-free: the secret NAME and a date).
     """
 
     def __init__(self, sink: SecretSink, stream: TextIO | None = None) -> None:

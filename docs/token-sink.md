@@ -31,14 +31,17 @@ for the service address: the sink always talks to `https://api.doppler.com`. The
 - The value is never printed, logged, returned, put in an exception or `repr`,
   passed on argv, or written to disk. The update call's answer echoes every
   value; the adapter drops it unread. The request is never replayed.
-- Failure is reported, never success. A failed or unverified store fails the
-  source (`refresh_store_failed` for Twitch and TikTok), keeps the old token in
+- Failure is reported, never success. For Twitch and TikTok a failed or unverified store fails the
+  source (`refresh_store_failed`), keeps the old token in
   use for the run, writes no new number, and prints the usual
   `token-health: ... kind=rotated_unstored` line plus
   `secret-sink: source=<slug> kind=<word>`, where `<word>` is `store_failed`,
-  `verify_failed`, `verify_mismatch` or `bad_input`. Instagram and Threads keep
-  using the old token for the count, as today, and print their
-  `refresh_store_failed` health line.
+  `verify_failed`, `verify_mismatch` or `bad_input`. Instagram and Threads differ:
+  a Meta refresh does not retire the old token, so a failed or unverified store
+  does not fail the source. The run keeps the old token, drops the new one,
+  prints `token-health: source=<slug> kind=refresh_store_failed` plus the
+  `secret-sink:` line, and still reads and writes the count. Watch that health
+  line; the stored token is not renewed until a store succeeds.
 
 ## Know before you switch it on
 

@@ -270,8 +270,10 @@ def _writer_scope(spec: DopplerSpec | None) -> AbstractContextManager[None]:
 
 @dataclass(frozen=True)
 class Sinks:
-    pair: PairStyleSink  # Twitch and TikTok
-    meta: MetaStyleSink  # Instagram and Threads
+    pair: PairStyleSink  # Twitch and TikTok: a failed store fails the source
+    # Instagram and Threads: a failed store prints a health line and the count
+    # goes on with the old token (the session catches the sink error).
+    meta: MetaStyleSink
 
 
 def build_sinks(spec: DopplerSpec, transport: Transport | None) -> Sinks:

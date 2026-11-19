@@ -16,8 +16,8 @@ import logging
 import pwd
 import sys
 import threading
-from collections.abc import Iterator
-from datetime import date
+from collections.abc import Callable, Iterator
+from datetime import UTC, date, datetime, timedelta
 from functools import partial
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
@@ -118,7 +118,9 @@ class FakeDoppler:
         self.thread.join(timeout=5)
         assert not self.thread.is_alive()
 
-    def transport(self, other: FakeTransport | None = None) -> Any:
+    def transport(
+        self, other: FakeTransport | None = None
+    ) -> Callable[[TransportRequest], RawResponse]:
         """A fetch transport that sends api.doppler.com to this local server."""
 
         def send(request: TransportRequest) -> RawResponse:
@@ -460,6 +462,107 @@ def test_unverified_store_does_not_report_success_and_keeps_health_line(
     assert "token-health: source=twitch kind=rotated_unstored" in out.err
     no_leak(out.out, out.err)
     assert not (site / "numbers.json").exists()
+
+
+META_TOKEN = "SENTINEL-META-OLD"
+META_NEW = "SENTINEL-META-NEW"
+IG_SOURCE = (
+    "{platform: instagram, kind: instagram, auto_refresh: true, token_expires: %s}"
+)
+TH_SOURCE = (
+    "{platform: threads, kind: threads, user_id: '1234567890', "
+    "auto_refresh: true, token_expires: %s}"
+)
+META_CASES = {
+    "instagram": (
+        IG_SOURCE,
+        "INSTAGRAM_ACCESS_TOKEN",
+        "https://graph.instagram.com/v27.0/me?",
+        "https://graph.instagram.com/refresh_access_token?",
+        {"followers_count": 1234},
+        "1234",
+    ),
+    "threads": (
+        TH_SOURCE,
+        "THREADS_ACCESS_TOKEN",
+        "https://graph.threads.com/v1.0/1234567890/threads_insights?",
+        "https://graph.threads.com/refresh_access_token?",
+        {
+            "data": [
+                {"name": "followers_count", "total_value": {"value": 987}},
+            ]
+        },
+        "987",
+    ),
+}
+
+
+def meta_site(
+    root: Path, monkeypatch: pytest.MonkeyPatch, platform: str
+) -> tuple[str, dict[str, Any], str]:
+    """A one-source Instagram or Threads site; returns name, routes, count."""
+    source, env_name, count_url, refresh_url, body, count = META_CASES[platform]
+    soon = (datetime.now(UTC).date() + timedelta(days=5)).isoformat()
+    item = f'          - {{platform: {platform}, handle: "@example", url: "https://example.com/m"}}\n'
+    config = TWITCH_CONFIG.split("          - {platform")[0] + item
+    config += "numbers:\n  sources:\n    - "
+    (root / "site.yaml").write_text(config + (source % soon) + "\n")
+    monkeypatch.setenv(env_name, META_TOKEN)
+    routes: dict[str, Any] = {
+        refresh_url: reply(
+            {"access_token": META_NEW, "token_type": "bearer", "expires_in": 5184000}
+        ),
+        count_url: reply(body),
+    }
+    return env_name, routes, count
+
+
+@pytest.mark.parametrize("platform", ["instagram", "threads"])
+def test_meta_sources_store_a_refreshed_token_through_the_cli(
+    site: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    doppler: FakeDoppler,
+    capsys: pytest.CaptureFixture[str],
+    platform: str,
+) -> None:
+    env_name, routes, count = meta_site(site, monkeypatch, platform)
+    sink_env(monkeypatch)
+    use(monkeypatch, doppler.transport(FakeTransport(routes)))
+    assert main(refresh_args(site, "--token-sink", "doppler")) == 0
+    out = capsys.readouterr()
+    assert f"{platform}: ok {count}" in out.out
+    assert f"secret-sink: source={platform} stored name={env_name}" in out.err
+    assert doppler.store[(PROJECT, CONFIG, env_name)] == META_NEW
+    assert "refresh_store_failed" not in out.err
+    for text in (out.out, out.err):
+        assert META_TOKEN not in text and META_NEW not in text
+
+
+@pytest.mark.parametrize("platform", ["instagram", "threads"])
+def test_meta_failed_store_keeps_the_old_token_and_says_so(
+    site: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    doppler: FakeDoppler,
+    capsys: pytest.CaptureFixture[str],
+    platform: str,
+) -> None:
+    # Unlike Twitch and TikTok, a Meta refresh does not retire the old token, so
+    # a failed store does not fail the source: the count is read with the old
+    # token, the new token is dropped, and the health line says the store failed.
+    env_name, routes, count = meta_site(site, monkeypatch, platform)
+    sink_env(monkeypatch)
+    doppler.mode = "mutate"
+    transport = FakeTransport(routes)
+    use(monkeypatch, doppler.transport(transport))
+    assert main(refresh_args(site, "--token-sink", "doppler")) == 0
+    out = capsys.readouterr()
+    assert f"{platform}: ok {count}" in out.out
+    assert f"secret-sink: source={platform} kind=verify_mismatch" in out.err
+    assert f"token-health: source={platform} kind=refresh_store_failed" in out.err
+    assert f"access_token={META_TOKEN}" in transport.urls[-1]  # the old token
+    assert META_NEW not in transport.urls[-1]
+    for text in (out.out, out.err):
+        assert META_TOKEN not in text and META_NEW not in text
 
 
 def test_missing_project_or_token_is_a_usage_error_naming_only_variables(
