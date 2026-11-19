@@ -290,6 +290,8 @@ pool) or lower the general caps. This is the single most important number to
 revisit after the week of measurement, and it is why Owner decision 3 exists.
 Other sites add their own rows to the check; nothing here sets a site count.
 
+Free-plan rollout (owner decision, 2026-11-19): only ONE site (the links page) turns on `landings` and `hops` on the Free plan for now. Two sites that both list both tables model at about 100,400 writes a day (the independent review reproduced 100,472 at 1 link id each and 100,376 at 0), over the 100,000 quota, and the kit routes fail closed (`loadKitLimits` throws `KitLimitsError` when worst exceeds quota). Even two sites with no new tables already model at 99,888 (99.9 percent), because page views cost about 20,000 a day per site, so the new tables only tip a full budget. A second site turns the tables on only after a paid plan or trimmed page-view caps. No cap number changes.
+
 Rows read, INFERRED and not modeled by the existing check: each click runs
 several `count(*)` subqueries over that site and day's cells to decide whether
 to fold (`worker/src/clickfunnel.ts`). Two more tables of up to 40 cells add
@@ -426,6 +428,7 @@ rows read per funnel table and compares them with section 10.
    - B: forward `s` along with `h`. Source survives a hop, but it makes the source count mean "first outside source", changing what the existing table means.
 
 3. **Which caps for the Free profile?** (section 10 shows headroom of about 0.8 percent of the 100000 figure at 20 link ids)
+   - Decided 2026-11-19: only ONE site (the links page) turns on `landings` and `hops` on the Free plan for now. Two sites that both list both tables model at about 100,400 writes a day (the independent review reproduced 100,472 at 1 link id each and 100,376 at 0), over the 100,000 quota, and the kit routes fail closed (`loadKitLimits` throws `KitLimitsError` when worst exceeds quota). Even two sites with no new tables already model at 99,888 (99.9 percent), because page views cost about 20,000 a day per site, so the new tables only tip a full budget. A second site turns the tables on only after a paid plan or trimmed page-view caps. No cap number changes.
    - A (recommended): landing 24, hop 16, reserved 1, monthly 40 and 30, hour budget 16, as proposed, then trim reserved to 0 if a site passes about 15 link ids.
    - B: smaller still (landing 12, hop 8, reserved 0): fits any link count, but folds earlier.
    - C: wait for the measurement week to set any number, and ship the tables with the existing caps only. Safest on budget; delays the build.
