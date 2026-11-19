@@ -260,68 +260,92 @@ class DopplerSink:
         # returns only a fixed word. The error is raised here, outside any
         # handler, from a frame that holds no value, so nothing a traceback can
         # reach carries one.
-        kind = self._attempt(values)
-        values = {}
+        kind = ""
+        try:
+            kind = self._attempt(values)
+        finally:
+            values = {}  # on every exit, interrupts included
         if kind:
             raise SinkError(kind)
 
     def _attempt(self, values: Mapping[str, str]) -> str:
-        """Store and verify; return ``""`` on success, else a failure word."""
-        if not 0 < len(values) <= MAX_VALUES:
-            return "bad_input"
-        for name, value in values.items():
-            if (
-                not isinstance(name, str)
-                or not _SECRET_NAME.fullmatch(name)
-                or not isinstance(value, str)
-                or not 0 < len(value) <= MAX_VALUE
-                or not value.isprintable()
-            ):
-                return "bad_input"
-        body = json.dumps(
-            {"project": self._project, "config": self._config, "secrets": dict(values)}
-        ).encode("utf-8")
+        """Store and verify; return ``""`` on success, else a failure word.
+
+        Every local that holds a value is cleared on every exit, an interrupt
+        included, so no frame a propagating exception reaches keeps one.
+        """
+        body = b""
+        name = value = ""
         try:
-            # The answer echoes every value. It is dropped at once: never kept,
-            # logged or returned. A POST is never replayed by the fetch helper.
-            self._fetch(
-                self._base + WRITE_PATH,
-                method="POST",
-                body=body,
-                headers=self._headers(),
-                follow_redirects=False,
-            )
-        except Exception:
-            return "store_failed"
-        for name, value in values.items():
-            kind = self._verify(name, value)
-            if kind:
-                return kind
-        return ""
+            if not 0 < len(values) <= MAX_VALUES:
+                return "bad_input"
+            for name, value in values.items():
+                if (
+                    not isinstance(name, str)
+                    or not _SECRET_NAME.fullmatch(name)
+                    or not isinstance(value, str)
+                    or not 0 < len(value) <= MAX_VALUE
+                    or not value.isprintable()
+                ):
+                    return "bad_input"
+            body = json.dumps(
+                {
+                    "project": self._project,
+                    "config": self._config,
+                    "secrets": dict(values),
+                }
+            ).encode("utf-8")
+            try:
+                # The answer echoes every value. It is dropped at once: never
+                # kept, logged or returned. A POST is never replayed.
+                self._fetch(
+                    self._base + WRITE_PATH,
+                    method="POST",
+                    body=body,
+                    headers=self._headers(),
+                    follow_redirects=False,
+                )
+            except Exception:
+                return "store_failed"
+            for name, value in values.items():
+                kind = self._verify(name, value)
+                if kind:
+                    return kind
+            return ""
+        finally:
+            values = {}
+            body = b""
+            name = value = ""
 
     def _verify(self, name: str, expected: str) -> str:
         query = urlencode(
             {"project": self._project, "config": self._config, "name": name}
         )
+        reply: dict[str, Any] = {}
+        entry: Any = None
+        raw: Any = None
         try:
-            reply: dict[str, Any] = self._fetch(
-                f"{self._base}{READ_PATH}?{query}",
-                headers=self._headers(),
-                follow_redirects=False,
-            )
-        except Exception:
-            return "verify_failed"
-        raw = None
-        entry = reply.get("value")
-        if isinstance(entry, dict):
-            raw = entry.get("raw")
-        # Compare digests, then let the reply go. A restricted or masked value
-        # has no raw text and cannot be verified, so it fails.
-        if not isinstance(raw, str):
-            return "verify_failed"
-        same = hmac.compare_digest(_digest(raw), _digest(expected))
-        del raw, entry, reply
-        return "" if same else "verify_mismatch"
+            try:
+                reply = self._fetch(
+                    f"{self._base}{READ_PATH}?{query}",
+                    headers=self._headers(),
+                    follow_redirects=False,
+                )
+            except Exception:
+                return "verify_failed"
+            entry = reply.get("value")
+            if isinstance(entry, dict):
+                raw = entry.get("raw")
+            # Compare digests, then let the reply go. A restricted or masked
+            # value has no raw text and cannot be verified, so it fails.
+            if not isinstance(raw, str):
+                return "verify_failed"
+            same = hmac.compare_digest(_digest(raw), _digest(expected))
+            return "" if same else "verify_mismatch"
+        finally:
+            raw = entry = None
+            reply = {}
+            expected = ""
 
 
 class _Pair(Protocol):

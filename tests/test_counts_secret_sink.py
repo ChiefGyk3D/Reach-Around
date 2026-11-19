@@ -836,6 +836,39 @@ def test_adapters_leave_no_secret_in_any_reachable_frame(
     no_leak(render_with_locals(exc))
 
 
+@pytest.mark.parametrize("stop", [KeyboardInterrupt, SystemExit])
+@pytest.mark.parametrize("phase", ["POST", "GET"])
+@pytest.mark.parametrize("adapter", ["put", "meta", "pair"])
+def test_a_base_exception_from_the_transport_leaves_no_secret_in_any_frame(
+    doppler: FakeDoppler, stop: type[BaseException], phase: str, adapter: str
+) -> None:
+    good = doppler.transport()
+
+    def stop_now() -> None:
+        raise stop
+
+    def pick(request: TransportRequest) -> RawResponse:
+        if request.method == phase:
+            del request  # keep this test frame free of the request
+            stop_now()
+        return good(request)
+
+    fetch = partial(fetch_json, transport=pick, sleep=lambda s: None)
+    sink = make_sink(doppler, fetch=fetch)
+    meta = MetaStyleSink(sink, io.StringIO())
+    pair = PairStyleSink(sink, io.StringIO())
+    calls = {
+        "put": lambda: sink.put({"A_TOKEN": ACCESS, "B_TOKEN": REFRESH}),
+        "meta": lambda: meta.store(
+            NewToken(ACCESS), "A_TOKEN", "instagram", date(2026, 1, 1)
+        ),
+        "pair": lambda: pair.store(TokenPair(ACCESS, REFRESH), NAMES, "twitch"),
+    }
+    exc = capture_exc(calls[adapter])
+    assert type(exc) is stop
+    no_leak(render_with_locals(exc))
+
+
 def test_token_holder_never_shows_its_value_and_can_be_released() -> None:
     import copy
     import pickle

@@ -158,61 +158,70 @@ def fetch_json(
     attempts = max(1, min(max_attempts, MAX_ATTEMPTS)) if method == "GET" else 1
     redirects = 0
     attempt = 0
-    while True:
-        attempt += 1
-        request = TransportRequest(
-            host=host,
-            path=path,
-            headers=base,
-            method=method,
-            body=body,
-            deadline=clock() + timeout,
-            max_bytes=max_bytes,
-        )
-        try:
-            response = send(request)
-        except EgressBlocked as exc:
-            raise FetchError(f"egress_{exc.reason}") from None
-        status = response.status
-        if 300 <= status < 400:
-            location = response.headers.get("location")
-            if (
-                not follow_redirects
-                or method != "GET"
-                or location is None
-                or redirects >= MAX_REDIRECTS
-            ):
-                raise FetchError("redirect")
-            try:
-                next_host, next_path = _target(
-                    urljoin(f"https://{host}{path}", location)
-                )
-            except FetchError:
-                raise FetchError("redirect") from None
-            if next_host != host:
-                raise FetchError("redirect")
-            redirects += 1
-            path = next_path
-            continue
-        if status == 429 or status >= 500:
-            kind = "rate_limited" if status == 429 else "server_error"
-            if attempt >= attempts:
-                raise FetchError(kind)
-            wait = parse_retry_after(response.headers.get("retry-after"), now())
-            if wait is None:
-                wait = min(2.0 ** (attempt - 1), MAX_RETRY_AFTER)
-            elif wait > MAX_RETRY_AFTER:
-                raise FetchError(kind)
-            sleep(min(wait + jitter(), MAX_RETRY_AFTER))
-            continue
-        if not 200 <= status < 300:
-            code = (
-                _error_code(response.headers, response.body)
-                if error_code and status in (400, 401)
-                else None
+    request: TransportRequest | None = None
+    try:
+        while True:
+            attempt += 1
+            request = TransportRequest(
+                host=host,
+                path=path,
+                headers=base,
+                method=method,
+                body=body,
+                deadline=clock() + timeout,
+                max_bytes=max_bytes,
             )
-            raise FetchError(f"http_{status}", code)
-        return _decode(response.headers, response.body, max_bytes, extra_json_types)
+            try:
+                response = send(request)
+            except EgressBlocked as exc:
+                raise FetchError(f"egress_{exc.reason}") from None
+            status = response.status
+            if 300 <= status < 400:
+                location = response.headers.get("location")
+                if (
+                    not follow_redirects
+                    or method != "GET"
+                    or location is None
+                    or redirects >= MAX_REDIRECTS
+                ):
+                    raise FetchError("redirect")
+                try:
+                    next_host, next_path = _target(
+                        urljoin(f"https://{host}{path}", location)
+                    )
+                except FetchError:
+                    raise FetchError("redirect") from None
+                if next_host != host:
+                    raise FetchError("redirect")
+                redirects += 1
+                path = next_path
+                continue
+            if status == 429 or status >= 500:
+                kind = "rate_limited" if status == 429 else "server_error"
+                if attempt >= attempts:
+                    raise FetchError(kind)
+                wait = parse_retry_after(response.headers.get("retry-after"), now())
+                if wait is None:
+                    wait = min(2.0 ** (attempt - 1), MAX_RETRY_AFTER)
+                elif wait > MAX_RETRY_AFTER:
+                    raise FetchError(kind)
+                sleep(min(wait + jitter(), MAX_RETRY_AFTER))
+                continue
+            if not 200 <= status < 300:
+                code = (
+                    _error_code(response.headers, response.body)
+                    if error_code and status in (400, 401)
+                    else None
+                )
+                raise FetchError(f"http_{status}", code)
+            return _decode(response.headers, response.body, max_bytes, extra_json_types)
+    finally:
+        # Whatever leaves this function (a result, an error, or an interrupt),
+        # no frame it can reach keeps the credential-bearing request parts.
+        request = None
+        base = {}
+        headers = None
+        body = None
 
 
 def _decode(
