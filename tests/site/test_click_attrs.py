@@ -120,7 +120,7 @@ LANDING = re.compile(r"^[a-z0-9-]{1,30}$")
 def test_every_counted_page_carries_its_landing_label_as_a_build_constant(
     tmp_path: Path,
 ) -> None:
-    """Issue #566: the landing label is the page the click is made on, baked in at build time."""
+    """Issue #566: the landing label is the page the click is made on (build time)."""
     build(tmp_path)
     seen = 0
     for page in sorted(tmp_path.rglob("*.html")):
@@ -138,7 +138,9 @@ def test_every_counted_page_carries_its_landing_label_as_a_build_constant(
 def test_landing_label_is_absent_when_click_tracking_is_off(tmp_path: Path) -> None:
     config = load_site_config(EXAMPLE)
     config = config.model_copy(
-        update={"features": config.features.model_copy(update={"click_tracking": False})}
+        update={
+            "features": config.features.model_copy(update={"click_tracking": False})
+        }
     )
     build_site(config, tmp_path, today=TODAY, assets_dir=EXAMPLE.parent)
     for page in sorted(tmp_path.rglob("*.html")):

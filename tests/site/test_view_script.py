@@ -92,7 +92,10 @@ def test_page_id_and_route_are_data_attributes_on_tab_pages_only(
     build(tmp_path, analytics={"page_views": True, "route": "/stats/pv/"})
     home = (tmp_path / "index.html").read_text()
     more = (tmp_path / "more" / "index.html").read_text()
-    assert '<body data-page-id="start" data-view-route="/stats/pv/" data-landing="start">' in home
+    assert (
+        '<body data-page-id="start" data-view-route="/stats/pv/" data-landing="start">'
+        in home
+    )
     assert 'data-page-id="more"' in more
     privacy = (tmp_path / "privacy" / "index.html").read_text()
     assert "data-page-id" not in privacy

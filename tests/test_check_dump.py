@@ -181,7 +181,9 @@ FUNNEL_ROWS = (
         "site, month, link_id, destination_kind, hop, clicks",
         "'links', '2027-01', 'twitch', 'link', 'other', 40",
     )
-    + _ins("click_budget_lh", "site, day, hour, clicks", "'links', '2027-01-05', 12, 16")
+    + _ins(
+        "click_budget_lh", "site, day, hour, clicks", "'links', '2027-01-05', 12, 16"
+    )
     + _ins("click_landing_state", "site, from_day", "'links', '2027-01-05'")
     + _ins("click_seal", "site, day, sealed_at", "'links', '2027-01-05', 1792000000000")
     + _ins(
