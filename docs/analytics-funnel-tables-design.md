@@ -410,7 +410,7 @@ rows read per funnel table and compares them with section 10.
 
 ## 14. Rollout (INFERRED, for Owner decision 4)
 
-1. Build PR 1: config lists, parser, migration, counters, seal and roll-up, budget model. Ship with the report still saying "not collected".
+1. Build PR 1: config lists, parser, migration, counters, seal and roll-up, budget model. Ship with the report saying "collected but not yet shown in the report", since the Worker collects from this PR (this supersedes the earlier plan to keep saying "not collected"; the sentence is dropped here, as section 13 says).
 2. Let the tables fill during the Free-plan measurement week (`docs/deploy.md` open items) so one week of data covers all six counter tables.
 3. Build PR 2: export, report, CSV, owner page, docs (#334's section for these tables).
 
@@ -422,7 +422,7 @@ rows read per funnel table and compares them with section 10.
    - C: no landing table; use the link-to-page map the funnel already has (`docs/analytics-design.md` section 6.1). Cheapest, but gives no cut for a destination that appears on several pages.
 
 2. **Does an internal link keep the visitor's `s` source?**
-   - A (recommended): the build drops `s` and writes only `h`. The hop table then says "from our surface", the source table says "from outside", with no chain.
+   - A (recommended, chosen 2026-11-19; the link writer is planned and tracked in #593, so until it exists the hop table collects only `none`): the build drops `s` and writes only `h`. The hop table then says "from our surface", the source table says "from outside", with no chain.
    - B: forward `s` along with `h`. Source survives a hop, but it makes the source count mean "first outside source", changing what the existing table means.
 
 3. **Which caps for the Free profile?** (section 10 shows headroom of about 0.8 percent of the 100000 figure at 20 link ids)

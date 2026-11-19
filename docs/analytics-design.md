@@ -253,7 +253,7 @@ that one site rather than the whole collector):
   label are that label): a listed value is kept, any other valid value is `other`, a missing or
   malformed one is `none`, and the text is never stored. A site without the list writes no
   cells for it. Each is its own marginal counter (`click_landing_daily`, `click_hop_daily` and
-  monthly twins); no table holds two labels, and an internal link carries `h` but not `s`.
+  monthly twins); no table holds two labels, and an internal link is planned to carry `h` but not `s` (tracked in #593; until the link writer exists the hop table collects only `none`).
 - Per-site `sources`: a closed list (at most 40 labels, `^[a-z0-9-]{1,30}$`,
   `other` and `direct` reserved) of labels carried in the `s` parameter, so a bio link can
   be attributed without storing anything. Precedence: `s`, then `utm_source`,
