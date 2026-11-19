@@ -60,13 +60,67 @@ class SinkError(Exception):
         self.__suppress_context__ = True
 
 
+class TokenHolder:
+    """Holds one API token so no frame needs a plain string for it.
+
+    The text is never in ``repr``, ``str``, a pickle or a copy, and there is no
+    ``__dict__``. ``clear`` releases it. Code that must send the token takes it
+    with ``get`` inside one expression and never names it in a local.
+    """
+
+    __slots__ = ("_value",)
+
+    def __init__(self, value: str = "") -> None:
+        self._value = value
+
+    def get(self) -> str:
+        return self._value
+
+    def clear(self) -> None:
+        self._value = ""
+
+    def strip(self) -> None:
+        self._value = self._value.strip()
+
+    def adopt(self, other: TokenHolder) -> None:
+        """Move ``other``'s text here (stripped); ``other`` is cleared."""
+        self._value = other._value.strip()
+        other._value = ""
+
+    def __bool__(self) -> bool:
+        return bool(self._value)
+
+    def __repr__(self) -> str:
+        return "TokenHolder(<hidden>)"
+
+    __str__ = __repr__
+
+    def __reduce__(self) -> tuple[Any, ...]:
+        raise TypeError("a token holder cannot be copied or pickled")
+
+    def __copy__(self) -> TokenHolder:
+        raise TypeError("a token holder cannot be copied or pickled")
+
+    def __deepcopy__(self, memo: object) -> TokenHolder:
+        raise TypeError("a token holder cannot be copied or pickled")
+
+
 class ScopeBusy(Exception):
     """Another run already owns this project and config."""
 
 
 def _passwd_home() -> str:
-    """The effective user's home from the passwd database, not the environment."""
-    return pwd.getpwuid(os.geteuid()).pw_dir
+    """The effective user's home from the passwd database, not the environment.
+
+    No passwd entry, or an empty or relative path, is ``unsafe_state``.
+    """
+    try:
+        home = pwd.getpwuid(os.geteuid()).pw_dir
+    except KeyError:
+        home = ""
+    if not isinstance(home, str) or not home or not os.path.isabs(home):
+        raise SinkError("unsafe_state")
+    return home
 
 
 def lock_dir() -> Path:
@@ -174,9 +228,15 @@ class DopplerSink:
         token: str,
         fetch: Fetch,
     ) -> None:
-        if not _SCOPE_NAME.fullmatch(project) or not _SCOPE_NAME.fullmatch(config):
-            raise SinkError("bad_input")
-        if not token or not token.isprintable() or token != token.strip():
+        valid = bool(
+            _SCOPE_NAME.fullmatch(project)
+            and _SCOPE_NAME.fullmatch(config)
+            and token
+            and token.isprintable()
+            and token == token.strip()
+        )
+        if not valid:
+            token = ""  # no raw token stays in a frame the error can reach
             raise SinkError("bad_input")
         self._project = project
         self._config = config
@@ -196,8 +256,19 @@ class DopplerSink:
         }
 
     def put(self, values: Mapping[str, str]) -> None:
+        # The work (and every value-bearing local) lives in ``_attempt``, which
+        # returns only a fixed word. The error is raised here, outside any
+        # handler, from a frame that holds no value, so nothing a traceback can
+        # reach carries one.
+        kind = self._attempt(values)
+        values = {}
+        if kind:
+            raise SinkError(kind)
+
+    def _attempt(self, values: Mapping[str, str]) -> str:
+        """Store and verify; return ``""`` on success, else a failure word."""
         if not 0 < len(values) <= MAX_VALUES:
-            raise SinkError("bad_input")
+            return "bad_input"
         for name, value in values.items():
             if (
                 not isinstance(name, str)
@@ -206,7 +277,7 @@ class DopplerSink:
                 or not 0 < len(value) <= MAX_VALUE
                 or not value.isprintable()
             ):
-                raise SinkError("bad_input")
+                return "bad_input"
         body = json.dumps(
             {"project": self._project, "config": self._config, "secrets": dict(values)}
         ).encode("utf-8")
@@ -221,11 +292,14 @@ class DopplerSink:
                 follow_redirects=False,
             )
         except Exception:
-            raise SinkError("store_failed") from None
+            return "store_failed"
         for name, value in values.items():
-            self._verify(name, value)
+            kind = self._verify(name, value)
+            if kind:
+                return kind
+        return ""
 
-    def _verify(self, name: str, expected: str) -> None:
+    def _verify(self, name: str, expected: str) -> str:
         query = urlencode(
             {"project": self._project, "config": self._config, "name": name}
         )
@@ -236,7 +310,7 @@ class DopplerSink:
                 follow_redirects=False,
             )
         except Exception:
-            raise SinkError("verify_failed") from None
+            return "verify_failed"
         raw = None
         entry = reply.get("value")
         if isinstance(entry, dict):
@@ -244,11 +318,10 @@ class DopplerSink:
         # Compare digests, then let the reply go. A restricted or masked value
         # has no raw text and cannot be verified, so it fails.
         if not isinstance(raw, str):
-            raise SinkError("verify_failed")
+            return "verify_failed"
         same = hmac.compare_digest(_digest(raw), _digest(expected))
         del raw, entry, reply
-        if not same:
-            raise SinkError("verify_mismatch")
+        return "" if same else "verify_mismatch"
 
 
 class _Pair(Protocol):
@@ -322,14 +395,17 @@ class MetaStyleSink:
         self._stream = stream
 
     def store(self, token: _Token, name: str, source: str, expires_on: date) -> None:
+        kind = ""
         try:
             self._sink.put({name: token.value})
         except SinkError as exc:
-            _report(self._stream, f"secret-sink: source={source} kind={exc.kind}")
-            raise
+            kind = exc.kind
         except Exception:
-            _report(self._stream, f"secret-sink: source={source} kind=store_failed")
-            raise SinkError("store_failed") from None
+            kind = "store_failed"
+        if kind:
+            # Raised outside the handler: no chained error, no value in a frame.
+            _report(self._stream, f"secret-sink: source={source} kind={kind}")
+            raise SinkError(kind)
         _report(
             self._stream,
             f"secret-sink: source={source} stored name={name}; set token_expires "

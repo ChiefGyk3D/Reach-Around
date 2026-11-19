@@ -78,6 +78,7 @@ from reach_around.counts.secret_sink import (
     PairStyleSink,
     ScopeBusy,
     SinkError,
+    TokenHolder,
     scope_lock,
 )
 from reach_around.net.egress import Transport
@@ -99,7 +100,7 @@ class DopplerSpec:
 
     project: str
     config: str
-    token: str = field(repr=False)
+    token: TokenHolder = field(repr=False)
 
 
 DOPPLER_TOKEN_ENV = "REACH_AROUND_DOPPLER_TOKEN"  # noqa: S105 (a name, not a value)
@@ -111,36 +112,46 @@ def doppler_spec(
     args: argparse.Namespace,
     env: MutableMapping[str, str],
     stdin: TextIO,
-    held_token: str = "",
+    held_token: TokenHolder | None = None,
 ) -> DopplerSpec:
     """Resolve the sink settings; ``ValueError`` names variables, never values.
 
     The API token comes from one line of stdin (preferred) or the environment,
-    never argv. The environment copy is read once and removed here, before any
-    network work, even when setup then fails. That narrows the exposure; it
-    cannot undo what the launcher already did with the variable.
+    never argv. It is in a ``TokenHolder`` from the moment it is read, so no
+    local here is a plain string for it. The environment copy is read once and
+    removed here, before any network work, even when setup then fails. That
+    narrows the exposure; it cannot undo what the launcher already did with the
+    variable.
     """
     # The command line entry point already removed the variable before argument
     # parsing and passes it as ``held_token``; the pop covers other callers.
-    from_env = (env.pop(DOPPLER_TOKEN_ENV, "") or held_token).strip()
+    from_env = TokenHolder(env.pop(DOPPLER_TOKEN_ENV, ""))
+    from_env.strip()
+    if held_token is not None:
+        if not from_env:
+            from_env.adopt(held_token)
+        held_token.clear()
     project = args.doppler_project or env.get(DOPPLER_PROJECT_ENV, "")
     config = args.doppler_config or env.get(DOPPLER_CONFIG_ENV, "")
     if args.doppler_token_stdin:
-        token = stdin.readline().strip()
+        token = TokenHolder(stdin.readline())
+        token.strip()
+        from_env.clear()
         source = "stdin"
     else:
         token = from_env
         source = DOPPLER_TOKEN_ENV
     missing = [
         label
-        for label, value in (
-            (source, token),
-            (DOPPLER_PROJECT_ENV + " or --doppler-project", project),
-            (DOPPLER_CONFIG_ENV + " or --doppler-config", config),
+        for label, present in (
+            (source, bool(token)),
+            (DOPPLER_PROJECT_ENV + " or --doppler-project", bool(project)),
+            (DOPPLER_CONFIG_ENV + " or --doppler-config", bool(config)),
         )
-        if not value
+        if not present
     ]
     if missing:
+        token.clear()
         raise ValueError(f"--token-sink doppler needs: {', '.join(missing)}")
     return DopplerSpec(project, config, token)
 
@@ -194,6 +205,9 @@ def run_refresh(
                 f"error: the Doppler sink is not usable ({exc.kind})", file=sys.stderr
             )
             return EXIT_USAGE
+        finally:
+            # The sink holds what it needs; the spec lets the token go.
+            doppler.token.clear()
 
     if dry_run:
         for source in sources:
@@ -267,7 +281,7 @@ def build_sinks(spec: DopplerSpec, transport: Transport | None) -> Sinks:
         transport=transport if transport is not None else default_transport(),
         sleep=default_sleep,
     )
-    sink = DopplerSink(spec.project, spec.config, spec.token, fetch)
+    sink = DopplerSink(spec.project, spec.config, spec.token.get(), fetch)
     return Sinks(PairStyleSink(sink), MetaStyleSink(sink))
 
 
@@ -650,14 +664,16 @@ def run_beacons_import(
 def _run(args: argparse.Namespace) -> int:
     spec = None
     if args.sink_kind == "doppler":
+        held = getattr(args, "doppler_held_token", None)
+        args.doppler_held_token = None
         try:
-            held = getattr(args, "doppler_held_token", "")
-            args.doppler_held_token = ""
             spec = doppler_spec(args, os.environ, sys.stdin, held)
-            del held
         except ValueError as exc:
             print(f"error: {exc}", file=sys.stderr)
             return EXIT_USAGE
+        finally:
+            if held is not None:
+                held.clear()
     return run_refresh(
         args.config,
         args.out,

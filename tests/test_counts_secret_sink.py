@@ -10,6 +10,7 @@ tests prove the adapter never logs, returns or raises what it was sent.
 from __future__ import annotations
 
 import http.client
+import io
 import json
 import logging
 import sys
@@ -697,6 +698,263 @@ def test_hard_linked_lock_file_is_refused_and_not_modified(lock_home: Path) -> N
             raise AssertionError("must not get in")
     assert seen.value.kind == "unsafe_state"
     assert victim.read_text() == "keep me"
+
+
+# ---- no secret in any frame an exception can reach (round 3) --------------
+
+
+def render_with_locals(exc: BaseException | None) -> str:
+    """Format ``exc`` and its whole cause and context chain, locals included.
+
+    Each link is formatted on its own as well, so a suppressed context is still
+    rendered the way a hostile traceback formatter would.
+    """
+    import traceback
+
+    out: list[str] = []
+    seen: set[int] = set()
+    todo = [exc]
+    while todo:
+        item = todo.pop()
+        if item is None or id(item) in seen:
+            continue
+        seen.add(id(item))
+        out.append(
+            "".join(
+                traceback.TracebackException.from_exception(
+                    item, capture_locals=True
+                ).format()
+            )
+        )
+        todo += [item.__cause__, item.__context__]
+    return "\n".join(out)
+
+
+def capture_exc(call: Any) -> BaseException:
+    """Run ``call`` and return what it raised; this frame holds no secret."""
+    try:
+        call()
+    except BaseException as exc:  # noqa: BLE001 (the test wants any failure)
+        return exc
+    raise AssertionError("expected a failure")
+
+
+def test_locals_guard_bites_a_leaky_frame_would_be_caught() -> None:
+    def leaky() -> None:
+        value = ACCESS  # noqa: F841 (shown by the local capture)
+        raise SinkError("store_failed")
+
+    with pytest.raises(AssertionError):
+        no_leak(render_with_locals(capture_exc(leaky)))
+
+
+@pytest.mark.parametrize(
+    ("mode", "kind"),
+    [
+        ("fail500", "store_failed"),
+        ("drop", "verify_failed"),
+        ("restricted", "verify_failed"),
+        ("mutate", "verify_mismatch"),
+    ],
+)
+def test_no_failure_kind_leaves_a_secret_in_any_reachable_frame(
+    doppler: FakeDoppler, mode: str, kind: str
+) -> None:
+    doppler.mode = mode
+    sink = make_sink(doppler)
+    exc = capture_exc(lambda: sink.put({"A_TOKEN": ACCESS, "B_TOKEN": REFRESH}))
+    assert isinstance(exc, SinkError)
+    assert exc.kind == kind
+    assert exc.__context__ is None and exc.__cause__ is None
+    no_leak(render_with_locals(exc))
+
+
+def test_bad_input_leaves_no_secret_in_any_reachable_frame(
+    doppler: FakeDoppler,
+) -> None:
+    sink = make_sink(doppler)
+    exc = capture_exc(lambda: sink.put({"A_TOKEN": ACCESS + "\nbad"}))
+    assert isinstance(exc, SinkError) and exc.kind == "bad_input"
+    no_leak(render_with_locals(exc))
+    fetch = partial(fetch_json, transport=doppler.transport(), sleep=lambda s: None)
+    exc = capture_exc(lambda: DopplerSink(PROJECT, CONFIG, API_TOKEN + " ", fetch))
+    assert isinstance(exc, SinkError) and exc.kind == "bad_input"
+    no_leak(render_with_locals(exc))
+
+
+def test_a_raising_transport_leaves_no_secret_in_any_reachable_frame(
+    doppler: FakeDoppler,
+) -> None:
+    def boom(url: str, **kw: Any) -> dict[str, object]:
+        raise RuntimeError(f"transport said {ACCESS} {API_TOKEN}")
+
+    sink = make_sink(doppler, fetch=boom)
+    exc = capture_exc(lambda: sink.put({"A_TOKEN": ACCESS}))
+    assert isinstance(exc, SinkError) and exc.kind == "store_failed"
+    no_leak(render_with_locals(exc))
+
+    calls: list[str] = []
+
+    def read_boom(url: str, **kw: Any) -> dict[str, object]:
+        calls.append(kw.get("method", "GET"))
+        if kw.get("method") == "POST":
+            return {}
+        raise RuntimeError(f"transport said {ACCESS} {API_TOKEN}")
+
+    sink = make_sink(doppler, fetch=read_boom)
+    exc = capture_exc(lambda: sink.put({"A_TOKEN": ACCESS}))
+    assert isinstance(exc, SinkError) and exc.kind == "verify_failed"
+    assert calls == ["POST", "GET"]
+    no_leak(render_with_locals(exc))
+
+
+def test_adapters_leave_no_secret_in_any_reachable_frame(
+    doppler: FakeDoppler,
+) -> None:
+    doppler.mode = "mutate"
+    meta = MetaStyleSink(make_sink(doppler), io.StringIO())
+    exc = capture_exc(
+        lambda: meta.store(NewToken(ACCESS), "A_TOKEN", "instagram", date(2026, 1, 1))
+    )
+    assert isinstance(exc, SinkError)
+    no_leak(render_with_locals(exc))
+
+    class Odd:
+        def put(self, values: Any) -> None:
+            raise ValueError(f"odd {ACCESS}")
+
+    odd: Any = Odd()
+    meta_odd = MetaStyleSink(odd, io.StringIO())
+    exc = capture_exc(
+        lambda: meta_odd.store(
+            NewToken(ACCESS), "A_TOKEN", "instagram", date(2026, 1, 1)
+        )
+    )
+    assert isinstance(exc, SinkError) and exc.kind == "store_failed"
+    assert exc.__context__ is None
+    no_leak(render_with_locals(exc))
+
+
+def test_token_holder_never_shows_its_value_and_can_be_released() -> None:
+    import copy
+    import pickle
+
+    holder = secret_sink.TokenHolder(API_TOKEN)
+    no_leak(repr(holder), str(holder), f"{holder}", f"{holder!r}", repr([holder]))
+    assert not hasattr(holder, "__dict__")
+    assert holder.get() == API_TOKEN and bool(holder)
+    with pytest.raises(TypeError):
+        pickle.dumps(holder)
+    with pytest.raises(TypeError):
+        copy.copy(holder)
+    holder.clear()
+    assert not holder and holder.get() == ""
+
+
+def test_bad_option_and_help_leave_no_token_in_any_reachable_frame(
+    site: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import os
+
+    for extra in (["--no-such-option"], ["--help"], ["--bogus-flag", "x"]):
+        sink_env(monkeypatch)
+        argv = refresh_args(site, "--token-sink", "doppler", *extra)
+        exc = capture_exc(lambda: main(argv))
+        assert isinstance(exc, SystemExit)
+        no_leak(render_with_locals(exc))
+        assert "REACH_AROUND_DOPPLER_TOKEN" not in os.environ
+    capsys.readouterr()
+
+
+def test_setup_failure_leaves_no_token_in_any_reachable_frame() -> None:
+    import argparse
+
+    for stdin_mode in (False, True):
+        args = argparse.Namespace(
+            doppler_project="", doppler_config="", doppler_token_stdin=stdin_mode
+        )
+        env = {"REACH_AROUND_DOPPLER_TOKEN": API_TOKEN}
+        stream = io.StringIO(API_TOKEN + "\n")
+        exc = capture_exc(lambda: counts_cmd.doppler_spec(args, env, stream))
+        assert isinstance(exc, ValueError)
+        no_leak(render_with_locals(exc))
+        stream = io.StringIO(API_TOKEN + "\n")
+        exc = capture_exc(
+            lambda: counts_cmd.doppler_spec(
+                args, {}, stream, secret_sink.TokenHolder(API_TOKEN)
+            )
+        )
+        assert isinstance(exc, ValueError)
+        no_leak(render_with_locals(exc))
+
+
+def test_spec_token_is_a_holder_for_env_and_stdin_alike() -> None:
+    import argparse
+
+    for stdin_mode in (False, True):
+        args = argparse.Namespace(
+            doppler_project=PROJECT,
+            doppler_config=CONFIG,
+            doppler_token_stdin=stdin_mode,
+        )
+        held = secret_sink.TokenHolder(API_TOKEN)
+        spec = counts_cmd.doppler_spec(args, {}, io.StringIO(API_TOKEN + "\n"), held)
+        assert isinstance(spec.token, secret_sink.TokenHolder)
+        assert spec.token.get() == API_TOKEN
+        no_leak(repr(spec), str(spec))
+        assert not held  # the carried copy was released
+
+
+def test_the_sink_still_receives_the_token_and_the_holder_is_released(
+    site: Path, monkeypatch: pytest.MonkeyPatch, doppler: FakeDoppler
+) -> None:
+    sink_env(monkeypatch)
+    seen: list[Any] = []
+    real = counts_cmd.build_sinks
+
+    def spy(spec: Any, transport: Any) -> Any:
+        seen.append(spec)
+        return real(spec, transport)
+
+    monkeypatch.setattr(counts_cmd, "build_sinks", spy)
+    use(monkeypatch, doppler.transport(FakeTransport(twitch_routes())))
+    assert main(refresh_args(site, "--token-sink", "doppler")) == 0
+    assert doppler.requests[0][2]["Authorization"] == f"Bearer {API_TOKEN}"
+    assert seen and not seen[0].token  # released right after sink construction
+
+
+def test_unknown_passwd_entry_is_a_fixed_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def missing(uid: int) -> Any:
+        raise KeyError(f"getpwuid(): uid not found: {uid}")
+
+    monkeypatch.setattr(secret_sink.pwd, "getpwuid", missing)
+    exc = capture_exc(_REAL_PASSWD_HOME)
+    assert isinstance(exc, SinkError) and exc.kind == "unsafe_state"
+    assert exc.__context__ is None and exc.__cause__ is None
+
+
+@pytest.mark.parametrize("home", ["", "relative/home", ".", "~"])
+def test_empty_or_relative_passwd_home_is_refused(
+    monkeypatch: pytest.MonkeyPatch, home: str
+) -> None:
+    class Entry:
+        pw_dir = home
+
+    monkeypatch.setattr(secret_sink.pwd, "getpwuid", lambda uid: Entry())
+    exc = capture_exc(_REAL_PASSWD_HOME)
+    assert isinstance(exc, SinkError) and exc.kind == "unsafe_state"
+
+
+def test_an_absolute_passwd_home_is_accepted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class Entry:
+        pw_dir = "/home/someone"
+
+    monkeypatch.setattr(secret_sink.pwd, "getpwuid", lambda uid: Entry())
+    assert _REAL_PASSWD_HOME() == "/home/someone"
 
 
 def test_wide_mode_lock_file_is_refused(lock_home: Path) -> None:
