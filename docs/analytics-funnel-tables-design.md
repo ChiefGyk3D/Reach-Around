@@ -281,13 +281,40 @@ before relying on it, so this is unverified):
 | Today, one site, no link ids | 78898 | 78.9 percent |
 | Proposed, one site, no link ids | 79178 | 79.2 percent |
 | Proposed, one site, 5 link ids | 79418 | 79.4 percent |
-| Proposed, one site, 20 link ids | 80138 | 80.1 percent |
+| Proposed, one site, 20 link ids, reserved 1 (untrimmed worst case) | 80138 | 80.1 percent |
+| Proposed, one site, 20 link ids, reserved 0 (chosen trim applied) | 79658 | 79.7 percent |
 
-Read this carefully: the headroom is small. The loader warns above 80 percent,
-and the 20-link case crosses it, so the build PR must either keep reserved cells
-for these tables at 0 (a link keeps only the `none` cell through the general
-pool) or lower the general caps. This is the single most important number to
-revisit after the week of measurement, and it is why Owner decision 3 exists (decided 2026-11-19: reserved 1, trimmed to 0 if a site passes about 15 link ids).
+Arithmetic, with the per-site formula of `funnelcaps.ts`. The other writes
+(everything except this site's funnel rows) are 78898 - 758 = 78140. Per site:
+cells = min(general caps + links x 2 kinds x 4 tables x (reserved + 1), hour
+slices 24 x (16 + 1) = 408) + 8 overflow rows; writes = 3 x cells + 2 + 24 +
+month, with month = 2 x (100 + 120 + 40 + 30 + 8 + 1) = 598 (so 624 fixed). The
+general caps are 40 + 50 + 24 + 16 = 130.
+
+- Reserved 1: each link adds 2 x 4 x 2 = 16 cells. At 20 link ids, 130 + 320 +
+  8 = 458 cells, 3 x 458 + 624 = 1998 writes, 78140 + 1998 = 80138. This is the
+  untrimmed worst case. It is not the profile that applies to a site this size,
+  because the chosen rule (Owner decision 3, option A) sets reserved to 0 once a
+  site has more than 15 link ids. Applying the 408 hour bound of the formula
+  would lower it to 1872 writes (80012, 80.0 percent), still over 80 percent.
+- Reserved 0 (the profile for any site with more than 15 link ids): each link
+  adds 2 x 4 x 1 = 8 cells. At 20 link ids, 130 + 160 + 8 = 298 cells (under
+  the 408 hour bound), 3 x 298 + 624 = 1518 writes, 78140 + 1518 = 79658, which
+  is 79.7 percent.
+- Why 15: at 15 link ids with reserved 1, 130 + 240 + 8 = 378 cells, 3 x 378 +
+  624 = 1758 writes, 79898 (79.9 percent), under 80 percent. At 17 link ids
+  the hour bound binds and the figure passes 80 percent (80012), so a threshold
+  of "more than 15" trims before the warning level with a small margin.
+
+Read this carefully: the headroom is small, but the chosen rule keeps it. The
+loader warns above 80 percent. With the trim, the 20-link case is 79.7 percent,
+below the warning; only the untrimmed worst case crosses it. The build PR must
+implement the trim as a deterministic rule (more than 15 link ids on a site sets
+reserved to 0 for these tables; a link then keeps only the `none` cell through
+the general pool) and add a budget-check test at 15 and 16 link ids, or lower
+the general caps. This is the single most important number to revisit after the
+week of measurement, and it is why Owner decision 3 exists (decided 2026-11-19:
+reserved 1, trimmed to 0 if a site passes about 15 link ids).
 Other sites add their own rows to the check; nothing here sets a site count.
 
 Rows read, INFERRED and not modeled by the existing check: each click runs
@@ -427,7 +454,7 @@ All eight were decided by the owner on 2026-11-19. Each chose option A, the reco
    - A (recommended, CHOSEN): the build drops `s` and writes only `h`. The hop table then says "from our surface", the source table says "from outside", with no chain.
    - B: forward `s` along with `h`. Source survives a hop, but it makes the source count mean "first outside source", changing what the existing table means.
 
-3. **Which caps for the Free profile?** (section 10 shows headroom of about 0.8 percent of the 100000 figure at 20 link ids) **DECIDED 2026-11-19: option A.**
+3. **Which caps for the Free profile?** (section 10: at 20 link ids the total is 80.1 percent untrimmed and 79.7 percent with the chosen trim) **DECIDED 2026-11-19: option A.**
    - A (recommended, CHOSEN): landing 24, hop 16, reserved 1, monthly 40 and 30, hour budget 16, as proposed, then trim reserved to 0 if a site passes about 15 link ids.
    - B: smaller still (landing 12, hop 8, reserved 0): fits any link count, but folds earlier.
    - C: wait for the measurement week to set any number, and ship the tables with the existing caps only. Safest on budget; delays the build.
