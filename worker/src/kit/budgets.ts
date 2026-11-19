@@ -46,6 +46,7 @@ import type { KitEventKind } from "./leads";
 import { pageViewDailyWrites, type PageViewBudgetEnv } from "../pvlimits";
 import { FUNNEL_CAPS, funnelDailyWrites, type FunnelCaps } from "../funnelcaps";
 import { loadSites } from "../sites";
+import { CLICK_ACCOUNT_DAILY_WRITES } from "../clickceiling";
 
 export type RouteName = "gate" | "view";
 
@@ -83,17 +84,22 @@ export const WRITES_PER_OP = { gate: 5, view: 2, send: 7, alert: 1, inquiry: 1 }
  * VIEWS_PER_HOUR and BOT_VIEWS_PER_HOUR instead (pvlimits.ts).
  */
 export const PAGE_VIEW_DAILY_WRITES = pageViewDailyWrites({});
-/** Click route allowance per day. The click route has no global budget, only a per-client limiter, so this is a reserve, not a measured bound. */
-export const CLICK_DAILY_WRITES = 8_000;
+/**
+ * Click route writes per UTC day, all sites together: the ceiling the click route enforces
+ * (clickceiling.ts) plus its dropped-count cap. It is derived from that file, so the model is the
+ * enforced bound, whatever the number of sites (each site gets an equal share of it).
+ */
+export const CLICK_DAILY_WRITES = CLICK_ACCOUNT_DAILY_WRITES;
 /**
  * Click funnel worst case per day at `caps` (default: the caps the Worker enforces, funnelcaps.ts),
  * for the sites the environment configures (at least one, as for page views). The sites' link ids set
- * the reserved cells. Counting on existing cells stays in CLICK_DAILY_WRITES above.
+ * the reserved cells; a site that lists `landings` or `hops` also writes those tables, one that does not, does not.
+ * Counting on existing cells stays in CLICK_DAILY_WRITES above.
  */
 export function funnelDailyWritesFor(env: PageViewBudgetEnv, caps: FunnelCaps = FUNNEL_CAPS): number {
   const r = loadSites(env ?? {});
   // A malformed entry disables only itself (sites.ts); the valid ones are still served, so count them.
-  const sites = r.sites.length > 0 ? r.sites.map((s) => ({ links: s.linkIds.size })) : [{ links: 0 }];
+  const sites = r.sites.length > 0 ? r.sites.map((s) => ({ links: s.linkIds.size, landings: s.landings !== undefined, hops: s.hops !== undefined })) : [{ links: 0 }];
   return funnelDailyWrites(caps, sites);
 }
 /** Default funnel figure: one site with no link ids at the Worker's caps. */

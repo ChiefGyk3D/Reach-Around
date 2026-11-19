@@ -31,8 +31,15 @@ def collected_items(config: SiteConfig) -> list[Disclosure]:
             Disclosure(
                 what=(
                     "A count of link clicks: which link was clicked, the "
-                    "visitor's country, and the short source label the link "
-                    "you came in on carried (from a fixed list), with the "
+                    "visitor's country, the short source label the link "
+                    "you came in on carried (from a fixed list), the short "
+                    "label of the page the click was made on, and, if you "
+                    "came from another page of ours, the short label of that "
+                    "page (these two are recorded only where this site's "
+                    "counter has a fixed list of them; each is a closed "
+                    "label: a label not on the list is counted only as "
+                    "other, and a missing or unusable label is counted only "
+                    "as none), with the "
                     "time rounded to the hour, with no IP address stored. "
                     "Totals of these counts per day and per month hold no "
                     "time finer than a day."

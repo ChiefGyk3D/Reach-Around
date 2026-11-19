@@ -46,7 +46,7 @@ const click = (qs: string, o: { host?: string; id?: string; country?: string } =
     },
   });
 const q = async <T>(sql: string) => (await DB.prepare(sql).all<T>()).results;
-const TABLES = ["click_src_daily", "click_country_daily", "click_seal", "click_budget", "click_capacity", "click_funnel_state", "click_src_monthly", "click_country_monthly", "click_month_log", "click_events", "view_hour_daily"];
+const TABLES = ["click_src_daily", "click_country_daily", "click_landing_daily", "click_hop_daily", "click_budget_lh", "click_landing_state", "click_landing_monthly", "click_hop_monthly", "click_seal", "click_budget", "click_capacity", "click_funnel_state", "click_src_monthly", "click_country_monthly", "click_month_log", "click_events", "view_hour_daily"];
 
 beforeEach(async () => {
   for (const t of TABLES) await DB.prepare(`DELETE FROM ${t}`).run();

@@ -245,6 +245,15 @@ that one site rather than the whole collector):
   both sites and records `view_meta('config_err')`.
 - `mode`: `beacon` or `edge`. `pages`: an id list (beacon) or the literal
   `html-200` (edge: any path the origin served as a successful HTML page).
+- Per-site `landings` and `hops` (issue #566): closed lists of at most 12 labels each
+  (`^[a-z0-9-]{1,30}$`, `other` and `none` reserved) for the click route's `l` (the page of
+  ours the click was made on, a build-time constant, never stored) and `h` (the surface of
+  ours the visitor came from, one step; click.js only forwards an `h` that the page address already carries, since no internal link writes one yet) parameters. They are read
+  by the same parser as `s` (one value, judged raw, percent escapes that decode to a listed
+  label are that label): a listed value is kept, any other valid value is `other`, a missing or
+  malformed one is `none`, and the text is never stored. A site without the list writes no
+  cells for it. Each is its own marginal counter (`click_landing_daily`, `click_hop_daily` and
+  monthly twins); no table holds two labels, and an internal link is planned to carry `h` but not `s` (tracked in #593; until the link writer exists the hop table collects only `none`).
 - Per-site `sources`: a closed list (at most 40 labels, `^[a-z0-9-]{1,30}$`,
   `other` and `direct` reserved) of labels carried in the `s` parameter, so a bio link can
   be attributed without storing anything. Precedence: `s`, then `utm_source`,
@@ -382,9 +391,10 @@ Per site, per UTC day:
   funnel row has no source. The shipped report adds the closed source label the
   page sent with a click (`click_events`, then fixed-period source-to-destination
   tables under the floor) and never claims "visitors from X clicked Y" as a
-  count of people or ties a click to a view. Landing and hop attribution are not
-  collected; their design is [analytics-funnel-tables-design.md](analytics-funnel-tables-design.md)
-  (issue #566, not built). See [report.md](report.md) ("Link clicks by source" and "Funnel
+  count of people or ties a click to a view. Landing and hop attribution are
+  collected by the Worker for a site that lists `landings` or `hops` (see section 4 and
+  [analytics-funnel-tables-design.md](analytics-funnel-tables-design.md), issue #566, migration
+  `0017`), but the report does not show them yet. See [report.md](report.md) ("Link clicks by source" and "Funnel
 counters").
 - Default funnel counts likely-human views only (class `h`); the other classes
   are shown in a separate traffic-quality panel.

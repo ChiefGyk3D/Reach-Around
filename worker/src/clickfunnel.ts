@@ -2,9 +2,11 @@
 //
 // Funnel rollups for clicks (issues #331 and #409), aggregate only.
 //
-// Two marginal counters, one pair each, never a three-way cell:
-//   click_src_daily      site x day x link x source label
-//   click_country_daily  site x day x link x country
+// Four marginal counters, one label each, never a pair of labels in one row (issue #566 added the last two):
+//   click_src_daily      site x day x link x kind x source label
+//   click_country_daily  site x day x link x kind x country
+//   click_landing_daily  site x day x link x kind x landing (the page of ours the click was made on)
+//   click_hop_daily      site x day x link x kind x hop (the surface of ours the visitor came from)
 // The click route increments them when a click arrives (clickCounterStatements),
 // so country by link covers every click, with or without a source. Nothing
 // finer than a UTC day is kept, and nothing identifies a visitor: a row is a
@@ -13,7 +15,7 @@
 // Caps. Once a (site, day) holds the per-table cap, or the site-wide daily click budget
 // is used up, a label that has no row yet goes into ONE overflow row per (site, day)
 // ('overflow-all', 'other' or 'ZZ'). Rows per (site, day) are therefore at most the cap
-// plus one per destination kind. Counting never stops: existing cells and the overflow row keep adding.
+// plus one per destination kind. Existing cells and the overflow row keep adding, until the site's daily click write ceiling (clickceiling.ts) is spent; then the click route writes nothing more that day.
 //
 // Seal. The hourly job (rollupClickFunnel) seals a day once it is closed plus a
 // grace period; the increment statements write nothing for a sealed day.
@@ -45,6 +47,14 @@ export const COUNTRY_MONTH_CAP = FUNNEL_CAPS.countryMonthCap;
  * goes on (existing cells and the overflow row) and the day is recorded in `click_capacity`.
  */
 export const HOUR_BUDGET = FUNNEL_CAPS.hourBudget;
+/** The landing and hop tables: general cells per (site, day), reserved cells per destination, month fold caps. */
+export const LANDING_DAY_CAP = FUNNEL_CAPS.landingDayCap;
+export const HOP_DAY_CAP = FUNNEL_CAPS.hopDayCap;
+export const LH_RESERVED_PER_LINK = FUNNEL_CAPS.lhReservedPerLink;
+export const LANDING_MONTH_CAP = FUNNEL_CAPS.landingMonthCap;
+export const HOP_MONTH_CAP = FUNNEL_CAPS.hopMonthCap;
+/** Their own hourly slice of the new-cell budget (click_budget_lh), apart from HOUR_BUDGET. */
+export const LH_HOUR_BUDGET = FUNNEL_CAPS.lhHourBudget;
 /** The overflow link per (site, day/month, destination kind): every cell past the cap lands here. */
 export const OVERFLOW_LINK = "overflow-all";
 export const DAY_KEEP_DAYS = 90;
@@ -54,8 +64,10 @@ export const MONTHS_KEPT = 25;
 export const GRACE_HOURS = 2;
 /** The label of a click that carried no (or no valid) source. */
 export const DIRECT = "direct";
-/** The fold label for a source. */
+/** The fold label for a source, a landing or a hop. */
 export const OTHER = "other";
+/** The landing and hop label of a click that carried no (or no valid) value. */
+export const NONE = "none";
 /** The country counter's label for an unknown country or a folded one. */
 export const UNKNOWN_COUNTRY = "ZZ";
 
@@ -79,7 +91,19 @@ export function utcMonth(ms: number): string {
  */
 export function clickCounterStatements(
   db: D1Database,
-  p: { site: string; ts: number; linkId: string; destinationKind?: "link" | "social_icon"; src: string | null; listsSources: boolean; country: string | null },
+  p: {
+    site: string;
+    ts: number;
+    linkId: string;
+    destinationKind?: "link" | "social_icon";
+    src: string | null;
+    listsSources: boolean;
+    country: string | null;
+    /** The landing label; undefined when the site lists no landings (no cell is written). */
+    landing?: string;
+    /** The hop label; undefined when the site lists no hops (no cell is written). */
+    hop?: string;
+  },
 ): D1PreparedStatement[] {
   const day = utcDay(p.ts);
   const hour = new Date(p.ts).getUTCHours();
@@ -93,36 +117,51 @@ export function clickCounterStatements(
   // destination-kind pair plus one overflow row per kind.
   // Shared: ?1 site, ?2 day, ?3 link, ?6 reserved per link, ?7 hour budget, ?8 overflow link, ?11 hour.
   // The fold test for one table: label, general cap and always-reserved label are the given parameters.
-  const fold = (table: string, col: string, label: string, cap: string, direct: string) =>
+  // The reserved-cell and hour-budget parameters and the budget table are per axis: source and country
+  // use ?6, ?7 and click_budget; landing and hop use their own slice (click_budget_lh).
+  const fold = (table: string, col: string, label: string, cap: string, direct: string, reserved = "?6", budget = "?7", budgetTable = "click_budget") =>
     `NOT (EXISTS (SELECT 1 FROM ${table} WHERE site = ?1 AND day = ?2 AND link_id = ?3 AND destination_kind = ?16 AND ${col} = ${label}) ` +
-    "OR (COALESCE((SELECT clicks FROM click_budget WHERE site = ?1 AND day = ?2 AND hour = ?11), 0) < ?7 AND (" +
-    `${label} = ${direct} OR (SELECT count(*) FROM ${table} WHERE site = ?1 AND day = ?2 AND link_id = ?3 AND destination_kind = ?16 AND ${col} <> ${direct}) < ?6 OR ` +
-    `(SELECT COALESCE(SUM(MAX(c - ?6, 0)), 0) FROM (SELECT count(*) AS c FROM ${table} WHERE site = ?1 AND day = ?2 ` +
+    `OR (COALESCE((SELECT clicks FROM ${budgetTable} WHERE site = ?1 AND day = ?2 AND hour = ?11), 0) < ${budget} AND (` +
+    `${label} = ${direct} OR (SELECT count(*) FROM ${table} WHERE site = ?1 AND day = ?2 AND link_id = ?3 AND destination_kind = ?16 AND ${col} <> ${direct}) < ${reserved} OR ` +
+    `(SELECT COALESCE(SUM(MAX(c - ${reserved}, 0)), 0) FROM (SELECT count(*) AS c FROM ${table} WHERE site = ?1 AND day = ?2 ` +
     `AND link_id <> ?8 AND ${col} <> ${direct} GROUP BY link_id, destination_kind)) < ${cap})))`;
+  // The landing and hop inserts bind ?4 label, ?5 cap, ?6 reserved and ?7 hour budget like the others do, but the
+  // budget they read is their own table.
+  const lhFoldOwn = (table: string, col: string) => fold(table, col, "?4", "?5", "''", "?6", "?7", "click_budget_lh");
   // ?4 label, ?5 cap, ?9 fold label, ?10 direct label.
-  const insert = (table: string, col: string, conflict: string, direct: string) =>
-    `WITH f(fold) AS (SELECT ${fold(table, col, "?4", "?5", direct)}) ` +
+  const insert = (table: string, col: string, conflict: string, direct: string, lh = false) =>
+    `WITH f(fold) AS (SELECT ${lh ? lhFoldOwn(table, col) : fold(table, col, "?4", "?5", direct)}) ` +
     `INSERT INTO ${table} (site, day, link_id, destination_kind, ${col}, clicks) ` +
     "SELECT ?1, ?2, CASE WHEN f.fold THEN ?8 ELSE ?3 END, ?16, CASE WHEN f.fold THEN ?9 ELSE ?4 END, 1 FROM f " +
     `${guard}` +
     `ON CONFLICT (${conflict}) DO UPDATE SET clicks = clicks + 1`;
+  const landingOn = p.landing !== undefined;
+  const hopOn = p.hop !== undefined;
   const srcLabel = p.src ?? DIRECT;
   const countryLabel = p.country ?? UNKNOWN_COUNTRY;
   // The capacity counter, FIRST so it sees the state the inserts below see: a click that would
   // overflow on either axis adds ONE to that day's folded count (a click, not a cell). It records the
   // UTC hour the day's overflow began. Counted clicks are the denominator (country counts every click).
   const srcFold = p.listsSources ? `${fold("click_src_daily", "src", "?4", "?5", "?10")} OR ` : "";
+  // Landing (?17, cap ?19) and hop (?18, cap ?20) on their own reserved count (?21) and hour slice (?22).
+  const lhFold = (table: string, col: string, label: string, cap: string) => fold(table, col, label, cap, "''", "?21", "?22", "click_budget_lh");
+  const lhFolds =
+    (landingOn ? ` OR ${lhFold("click_landing_daily", "landing", "?17", "?19")}` : "") +
+    (hopOn ? ` OR ${lhFold("click_hop_daily", "hop", "?18", "?20")}` : "");
+  const capacityBind: unknown[] = [
+    p.site, day, p.linkId, srcLabel, SRC_DAY_CAP, RESERVED_PER_LINK, HOUR_BUDGET, OVERFLOW_LINK, null,
+    DIRECT, hour, countryLabel, COUNTRY_DAY_CAP, null, p.ts - (p.ts % HOUR_MS), destinationKind,
+  ];
+  // SQLite needs every index up to the highest one used bound, so the extra six only when a table is on.
+  if (landingOn || hopOn) capacityBind.push(p.landing ?? null, p.hop ?? null, LANDING_DAY_CAP, HOP_DAY_CAP, LH_RESERVED_PER_LINK, LH_HOUR_BUDGET);
   out.push(
     db
       .prepare(
         "INSERT INTO click_capacity (site, day, marked_at, first_hour, folded) SELECT ?1, ?2, ?15, ?11, 1 " +
-          `${guard}AND (${srcFold}${fold("click_country_daily", "country", "?12", "?13", "''")}) ` +
+          `${guard}AND (${srcFold}${fold("click_country_daily", "country", "?12", "?13", "''")}${lhFolds}) ` +
           "ON CONFLICT (site, day) DO UPDATE SET folded = folded + 1",
       )
-      .bind(
-        p.site, day, p.linkId, srcLabel, SRC_DAY_CAP, RESERVED_PER_LINK, HOUR_BUDGET, OVERFLOW_LINK, null,
-        DIRECT, hour, countryLabel, COUNTRY_DAY_CAP, null, p.ts - (p.ts % HOUR_MS), destinationKind,
-      ),
+      .bind(...capacityBind),
   );
   if (p.listsSources) {
     out.push(
@@ -136,6 +175,20 @@ export function clickCounterStatements(
       .prepare(insert("click_country_daily", "country", "site, day, link_id, destination_kind, country", "''"))
       .bind(p.site, day, p.linkId, countryLabel, COUNTRY_DAY_CAP, RESERVED_PER_LINK, HOUR_BUDGET, OVERFLOW_LINK, UNKNOWN_COUNTRY, null, hour, null, null, null, null, destinationKind),
   );
+  if (landingOn) {
+    out.push(
+      db
+        .prepare(insert("click_landing_daily", "landing", "site, day, link_id, destination_kind, landing", "''", true))
+        .bind(p.site, day, p.linkId, p.landing, LANDING_DAY_CAP, LH_RESERVED_PER_LINK, LH_HOUR_BUDGET, OVERFLOW_LINK, OTHER, null, hour, null, null, null, null, destinationKind),
+    );
+  }
+  if (hopOn) {
+    out.push(
+      db
+        .prepare(insert("click_hop_daily", "hop", "site, day, link_id, destination_kind, hop", "''", true))
+        .bind(p.site, day, p.linkId, p.hop, HOP_DAY_CAP, LH_RESERVED_PER_LINK, LH_HOUR_BUDGET, OVERFLOW_LINK, OTHER, null, hour, null, null, null, null, destinationKind),
+    );
+  }
   // The hourly slice of the new-cell budget, AFTER the inserts: it counts the cells THIS click made.
   // A cell the insert just made holds exactly 1 click (an older cell holds more, and a folded click
   // makes no (link, label) cell), so click volume on existing cells never uses the budget up.
@@ -152,6 +205,19 @@ export function clickCounterStatements(
       )
       .bind(p.site, day, p.linkId, srcLabel, countryLabel, hour, destinationKind),
   );
+  // The landing and hop tables have their own slice, so a flood on either axis pair cannot starve the other.
+  if (landingOn || hopOn) {
+    const madeLh = [landingOn ? made("click_landing_daily", "landing", "?4") : "", hopOn ? made("click_hop_daily", "hop", "?5") : ""].filter(Boolean).join(" + ");
+    out.push(
+      db
+        .prepare(
+          `INSERT INTO click_budget_lh (site, day, hour, clicks) SELECT ?1, ?2, ?6, ${madeLh} ` +
+            `${guard}AND (${madeLh}) > 0 ` +
+            "ON CONFLICT (site, day, hour) DO UPDATE SET clicks = clicks + excluded.clicks",
+        )
+        .bind(p.site, day, p.linkId, p.landing ?? null, p.hop ?? null, hour, destinationKind),
+    );
+  }
   return out;
 }
 
@@ -208,7 +274,13 @@ export async function rollupClickFunnel(env: FunnelRollupEnv, nowMs: number): Pr
     db.prepare(
       "INSERT OR IGNORE INTO click_funnel_state (site, from_day) SELECT u.site, MIN(u.day) FROM " +
         "(SELECT site, day FROM click_src_daily UNION SELECT site, day FROM click_country_daily " +
+        "UNION SELECT site, day FROM click_landing_daily UNION SELECT site, day FROM click_hop_daily " +
         "UNION SELECT site, strftime('%Y-%m-%d', ts / 1000, 'unixepoch') AS day FROM click_events) u GROUP BY u.site",
+    ),
+    // The first day the landing and hop tables held a cell for a site (a period before it is "not collected").
+    db.prepare(
+      "INSERT OR IGNORE INTO click_landing_state (site, from_day) SELECT u.site, MIN(u.day) FROM " +
+        "(SELECT site, day FROM click_landing_daily UNION SELECT site, day FROM click_hop_daily) u GROUP BY u.site",
     ),
     ...registry.map((id) => db.prepare("INSERT OR IGNORE INTO click_funnel_state (site, from_day) VALUES (?1, ?2)").bind(id, today)),
     db.prepare(
@@ -268,6 +340,8 @@ export async function rollupClickFunnel(env: FunnelRollupEnv, nowMs: number): Pr
       db
         .prepare(monthSql("click_country_daily", "click_country_monthly", "country", UNKNOWN_COUNTRY))
         .bind(site, m, COUNTRY_MONTH_CAP, OVERFLOW_LINK),
+      db.prepare(monthSql("click_landing_daily", "click_landing_monthly", "landing", OTHER)).bind(site, m, LANDING_MONTH_CAP, OVERFLOW_LINK),
+      db.prepare(monthSql("click_hop_daily", "click_hop_monthly", "hop", OTHER)).bind(site, m, HOP_MONTH_CAP, OVERFLOW_LINK),
       db
         .prepare(
           "INSERT OR IGNORE INTO click_month_log (site, month, rolled_at, exhausted_days, folded_clicks) VALUES (?1, ?2, ?3, " +
@@ -292,16 +366,23 @@ export async function rollupClickFunnel(env: FunnelRollupEnv, nowMs: number): Pr
     `DELETE FROM ${t} WHERE (day <= ?1 AND EXISTS (SELECT 1 FROM click_month_log l WHERE l.site = ${t}.site AND l.month = substr(${t}.day, 1, 7))) OR day <= ?2`;
   const leftover = (t: string) => `SELECT 1 FROM ${t} c WHERE c.site = %T.site AND c.day = %T.day`;
   const noCells = (t: string) =>
-    `NOT EXISTS (${leftover("click_src_daily").replace(/%T/g, t)}) AND NOT EXISTS (${leftover("click_country_daily").replace(/%T/g, t)})`;
+    ["click_src_daily", "click_country_daily", "click_landing_daily", "click_hop_daily"]
+      .map((d) => `NOT EXISTS (${leftover(d).replace(/%T/g, t)})`)
+      .join(" AND ");
   await db.batch([
     db.prepare(rolled("click_src_daily")).bind(dayCut, hardCut),
     db.prepare(rolled("click_country_daily")).bind(dayCut, hardCut),
+    db.prepare(rolled("click_landing_daily")).bind(dayCut, hardCut),
+    db.prepare(rolled("click_hop_daily")).bind(dayCut, hardCut),
     db.prepare("DELETE FROM view_hour_daily WHERE day <= ?1").bind(dayCut),
     db.prepare(`DELETE FROM click_seal WHERE day <= ?1 AND ${noCells("click_seal")}`).bind(dayCut),
     db.prepare(`DELETE FROM click_budget WHERE day <= ?1 AND ${noCells("click_budget")}`).bind(dayCut),
+    db.prepare(`DELETE FROM click_budget_lh WHERE day <= ?1 AND ${noCells("click_budget_lh")}`).bind(dayCut),
     db.prepare(`DELETE FROM click_capacity WHERE day <= ?1 AND ${noCells("click_capacity")}`).bind(dayCut),
     db.prepare("DELETE FROM click_src_monthly WHERE month < ?1").bind(monthCut),
     db.prepare("DELETE FROM click_country_monthly WHERE month < ?1").bind(monthCut),
+    db.prepare("DELETE FROM click_landing_monthly WHERE month < ?1").bind(monthCut),
+    db.prepare("DELETE FROM click_hop_monthly WHERE month < ?1").bind(monthCut),
     db.prepare("DELETE FROM click_month_log WHERE month < ?1").bind(monthCut),
   ]);
   return result;

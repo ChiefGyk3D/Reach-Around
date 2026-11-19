@@ -2,7 +2,7 @@
 // Analytics health and collection coverage (issues #401, #402). Mocked fetch only: no network, no secret.
 import { env as testEnv } from "cloudflare:workers";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { createDispatcher } from "../src/alerts/dispatcher";
+import { CEILING_RESERVE, createDispatcher } from "../src/alerts/dispatcher";
 import { formatAlert } from "../src/alerts/format";
 import { HEALTH_CONDITIONS } from "../src/alerts/types";
 import {
@@ -76,6 +76,7 @@ beforeEach(async () => {
     DB.prepare("DELETE FROM analytics_coverage"),
     DB.prepare("DELETE FROM alert_quota"),
     DB.prepare("DELETE FROM alert_dedup"),
+    DB.prepare("DELETE FROM counters WHERE key GLOB 'cw-*' OR key GLOB 'cd-*'"),
   ]);
 });
 
@@ -201,6 +202,118 @@ describe("each condition fires once and clears", () => {
     await bud(HOUR + 11, 10);
     const c = await tick(e, d, mockFetch(), NOW + 12 * HOUR_MS);
     expect(c.f.bodies.join("")).toContain("the alert budget has room again");
+  });
+});
+
+describe("click ceiling (hardening, Refs #566)", () => {
+  const day = "2026-11-09";
+  const counter = (key: string, d: string, n: number) =>
+    DB.prepare("INSERT INTO counters (key, day, count) VALUES (?1, ?2, ?3) ON CONFLICT (key, day) DO UPDATE SET count = ?3")
+      .bind(key, d, n)
+      .run();
+  beforeEach(async () => {
+    await DB.prepare("DELETE FROM counters WHERE key GLOB 'cw-*' OR key GLOB 'cd-*'").run();
+  });
+
+  it("quiet while the day's click charge is under the ceiling", async () => {
+    await healthy();
+    await counter("cw-links", day, 100);
+    const a = await tick(env());
+    expect(a.res.active).not.toContain("click_ceiling_reached");
+  });
+
+  it("fires when the charge leaves no room for a click, and says dropped clicks are at least N", async () => {
+    await healthy();
+    await counter("cw-links", day, 7_498);
+    await counter("cd-links", day, 500);
+    const a = await tick(env());
+    expect(a.res.active).toContain("click_ceiling_reached");
+    const body = a.f.bodies.join("");
+    expect(body).toContain("click ceiling was reached today");
+    expect(body).toContain("dropped clicks today: at least 500");
+    expect(body).not.toContain("links");
+    expect(await stateOf("click_ceiling_reached")).not.toBeNull();
+  });
+
+  const spendGeneral = (n: number) =>
+    DB.prepare("INSERT INTO alert_quota (site, channel, scope, window_start, count) VALUES ('links.example.test','all','day',?1,?2)")
+      .bind(Date.UTC(2026, 10, 9), n)
+      .run();
+
+  it("with the general alert budget spent, the owner still gets exactly one ceiling notification (reserved unit)", async () => {
+    await healthy();
+    await DB.prepare("DELETE FROM alert_quota").run();
+    await spendGeneral(50);
+    await counter("cd-links", day, 5);
+    const d = createDispatcher();
+    const a = await tick(env(), d);
+    expect(a.res.active).toContain("click_ceiling_reached");
+    expect(a.f.bodies.filter((b) => b.includes("click ceiling was reached today"))).toHaveLength(1);
+    expect(await stateOf("click_ceiling_reached")).not.toBeNull();
+    // Later hours of the same day: state dedupe, nothing more is sent.
+    const b = await tick(env(), d, mockFetch(), NOW + HOUR_MS);
+    expect(b.f.bodies.filter((x) => x.includes("click ceiling"))).toHaveLength(0);
+  });
+
+  it("the reservation is bounded: no more than CEILING_RESERVE ceiling messages a UTC day, and the general budget is untouched", async () => {
+    await healthy();
+    await DB.prepare("DELETE FROM alert_quota").run();
+    await spendGeneral(50);
+    const e = env();
+    const d = createDispatcher();
+    const sent: number[] = [];
+    for (let i = 0; i < 6; i++) {
+      // Flap the condition each hour so every tick wants to send a transition.
+      await counter("cd-links", day, i % 2 === 0 ? 5 : 0);
+      await DB.prepare("DELETE FROM counters WHERE key GLOB 'cd-*' AND count = 0").run();
+      const t = await tick(e, d, mockFetch(), NOW + i * 10 * 60_000);
+      sent.push(t.f.bodies.filter((b) => b.includes("click")).length);
+    }
+    expect(sent.reduce((a, b) => a + b, 0)).toBeLessThanOrEqual(CEILING_RESERVE);
+    const row = await DB.prepare("SELECT count FROM alert_quota WHERE channel = 'all' AND scope = 'day'").first<{ count: number }>();
+    expect(row?.count).toBe(50);
+    const r = await DB.prepare("SELECT count FROM alert_quota WHERE channel = 'ceiling' AND scope = 'day'").first<{ count: number }>();
+    expect(r?.count).toBeLessThanOrEqual(CEILING_RESERVE);
+  });
+
+  it("the reserve does not exist when the owner set the alert budget to 0", async () => {
+    await healthy();
+    await counter("cd-links", day, 5);
+    const a = await tick(env({ DAILY_ALERT_BUDGET: "0" }));
+    expect(a.f.calls).not.toHaveBeenCalled();
+  });
+
+  it("fires on a dropped click alone, sums across sites, and ignores other days", async () => {
+    await healthy();
+    await counter("cd-links", day, 3);
+    await counter("cd-blog", day, 4);
+    await counter("cd-links", "2026-11-08", 400);
+    const a = await tick(env());
+    expect(a.res.active).toContain("click_ceiling_reached");
+    expect(a.f.bodies.join("")).toContain("dropped clicks today: at least 7");
+  });
+
+  it("yesterday's saturation does not fire today, and it clears the next UTC day", async () => {
+    await healthy();
+    await counter("cw-links", "2026-11-08", 7_500);
+    await counter("cd-links", "2026-11-08", 500);
+    expect((await tick(env())).res.active).not.toContain("click_ceiling_reached");
+    await counter("cd-links", day, 1);
+    const d = createDispatcher();
+    expect((await tick(env(), d)).res.active).toContain("click_ceiling_reached");
+    await meta("rollup_last_ok", String(NOW + 12 * HOUR_MS - 60_000));
+    await meta("rolled_through:links", "2026-11-09");
+    await bud(HOUR + 11, 10);
+    const c = await tick(env(), d, mockFetch(), NOW + 12 * HOUR_MS);
+    expect(c.f.bodies.join("")).toContain("clicks are being counted again");
+  });
+
+  it("reads only: the counters are unchanged by the health step", async () => {
+    await healthy();
+    await counter("cw-links", day, 7_500);
+    await tick(env());
+    const r = await DB.prepare("SELECT count FROM counters WHERE key = 'cw-links' AND day = ?1").bind(day).first<{ count: number }>();
+    expect(r?.count).toBe(7_500);
   });
 });
 
@@ -600,7 +713,7 @@ describe("coverage (gaps)", () => {
   });
 
   it("coverageLetter prefers the kill switch, then the budget", () => {
-    const inp = { meta: new Map(), views: new Map([[HOUR - 1, 480]]), alertToday: 0, schemaOk: true, siteViews: new Map() };
+    const inp = { meta: new Map(), views: new Map([[HOUR - 1, 480]]), alertToday: 0, clickDropped: 0, clickChargedMax: 0, schemaOk: true, siteViews: new Map() };
     expect(coverageLetter(inp, HOUR, { killed: true, accountLimit: 480 })).toBe("k");
     expect(coverageLetter(inp, HOUR, { killed: false, accountLimit: 480 })).toBe("q");
     expect(coverageLetter(inp, HOUR, { killed: false, accountLimit: 0 })).toBe("o");

@@ -34,8 +34,9 @@ set -euo pipefail
 # Tables worth keeping. Everything else in the database is left out on purpose.
 tables=(
   alert_dedup alert_quota analytics_coverage
-  click_budget click_capacity click_country_daily click_country_monthly
-  click_events click_funnel_state click_month_log click_seal
+  click_budget click_budget_lh click_capacity click_country_daily click_country_monthly
+  click_events click_funnel_state click_hop_daily click_hop_monthly
+  click_landing_daily click_landing_monthly click_landing_state click_month_log click_seal
   click_src_daily click_src_monthly
   counters d1_migrations kit_meta
   view_daily view_dim_daily view_geo_daily view_meta view_rollup_log

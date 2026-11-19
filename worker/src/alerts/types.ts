@@ -16,7 +16,8 @@ export type HealthCondition =
   | "rollup_stale"
   | "zero_views"
   | "view_budget_hit"
-  | "alert_budget_near";
+  | "alert_budget_near"
+  | "click_ceiling_reached";
 
 export const HEALTH_CONDITIONS: readonly HealthCondition[] = [
   "rollup_overdue",
@@ -24,6 +25,7 @@ export const HEALTH_CONDITIONS: readonly HealthCondition[] = [
   "zero_views",
   "view_budget_hit",
   "alert_budget_near",
+  "click_ceiling_reached",
 ];
 
 export type HealthState = "firing" | "cleared";

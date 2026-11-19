@@ -317,7 +317,7 @@ yes or no flag, not as numbers.
 No live read: this command never calls Cloudflare, and the choice of read path
 for the owner (a read-only D1 token or a manual export) is a separate decision.
 Clicks are attributed to a source only by the closed label the page sent with the
-click (see Link clicks by source); landing and hop attribution are not collected.
+click (see Link clicks by source); landing and hop attribution are collected by the Worker (issue #566) but not shown in the report yet.
 The report does not show languages, viewport size or network type (they are in `view_dim_daily` but are
 not reported). Devices, browsers and systems are counts per value, never joined
 with each other: there is no "Safari on iOS" row, because the Worker stores each
@@ -464,8 +464,8 @@ the visitor came in on, and no click is tied to a view or to a person. A high
 `direct` share means few shared links carry a label. CSV `metadata.csv` carries
 `period`, `period_start_utc` and `period_end_utc`.
 
-Not part of this change: grouping destinations by platform, landing and hop
-collection, device pairs, and a marker for
+Not part of this change: grouping destinations by platform, a landing and hop
+report section (the tables are collected, issue #566), device pairs, and a marker for
 windows that span the cutover (#371).
 
 ## Owner report page (`--html`)
@@ -493,7 +493,7 @@ and country-to-destination tables when `--period` was used. Each path shows its
 click count and its ratio of the shown clicks for that destination. The ratio is
 computed only from cells and destination totals that already passed the floor
 and complementary suppression; it is labeled as a ratio, never a rate. Landing
-and hop attribution are not collected and are not inferred. The matching CSV
+and hop counters are collected but not yet part of this report, and are not inferred. The matching CSV
 files are `owner_tiles.csv`,
 `owner_daily.csv`, `owner_time_patterns.csv`, `owner_links.csv`, `owner_sources.csv`, `owner_devices.csv`,
 `owner_countries.csv`, `owner_clicks_by_source.csv` and

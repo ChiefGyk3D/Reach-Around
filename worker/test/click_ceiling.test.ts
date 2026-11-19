@@ -1,0 +1,144 @@
+// SPDX-License-Identifier: Apache-2.0
+// Hardening: bound click write amplification (Refs #566). An enforced, atomic per-site daily
+// admission ceiling, charged at the rows one click really writes, checked before any click write.
+import { env as testEnv } from "cloudflare:workers";
+import { beforeEach, describe, expect, it } from "vitest";
+import { handleClick, type Env } from "../src/click";
+import {
+  CLICK_ADMIT_CEILING,
+  CLICK_DROP_COUNT_CAP,
+  CLICK_ACCOUNT_DAILY_WRITES,
+  siteShare,
+  admitClick,
+  clickWriteCost,
+} from "../src/clickceiling";
+import { CLICK_DAILY_WRITES } from "../src/kit/budgets";
+
+const DB = testEnv.DB;
+const SITES = JSON.stringify({
+  links: {
+    hosts: ["links.example.test"], mode: "beacon", pages: ["home"], link_ids: { twitch: "home" },
+    sources: ["instagram"], landings: ["home"], hops: ["blog"],
+  },
+  plain: { hosts: ["plain.example.test"], mode: "beacon", pages: ["home"], link_ids: { twitch: "home" } },
+});
+const UA = "Mozilla/5.0 (X11; Linux x86_64; rv:130.0) Gecko/20100101 Firefox/130.0";
+let n = 0;
+const env = (): Env => ({ DB, SITES, CLICK_LIMITER: { limit: async () => ({ success: true }) } });
+const click = (host = "links.example.test") =>
+  new Request("https://worker.example.test/e/c/twitch?l=home&h=blog", {
+    method: "POST",
+    headers: { "User-Agent": UA, "CF-Connecting-IP": `198.51.100.${++n % 250}`, "Ping-From": `https://${host}/` },
+  });
+const day = () => new Date().toISOString().slice(0, 10);
+const count = async (key: string): Promise<number> =>
+  (await DB.prepare("SELECT count FROM counters WHERE key = ?1 AND day = ?2").bind(key, day()).first<{ count: number }>())?.count ?? 0;
+const seed = (key: string, c: number) =>
+  DB.prepare("INSERT INTO counters (key, day, count) VALUES (?1, ?2, ?3) ON CONFLICT (key, day) DO UPDATE SET count = ?3").bind(key, day(), c).run();
+const events = async () => (await DB.prepare("SELECT count(*) AS c FROM click_events").first<{ c: number }>())!.c;
+const SHARE2 = siteShare(CLICK_ADMIT_CEILING, 2); // the route tests serve two sites
+const FULL = clickWriteCost({ sources: true, landings: true, hops: true });
+
+beforeEach(async () => {
+  for (const t of ["click_src_daily", "click_country_daily", "click_landing_daily", "click_hop_daily", "click_seal", "click_budget", "click_budget_lh", "click_capacity", "click_events", "counters"]) {
+    await DB.prepare(`DELETE FROM ${t}`).run();
+  }
+});
+
+describe("the cost of one click is the rows it writes", () => {
+  it("counts admission, raw row with its index, country, capacity and each enabled axis", () => {
+    // admission 1 + click_events 2 (row and ts index) + country 1 + capacity 1
+    expect(clickWriteCost({})).toBe(5);
+    expect(clickWriteCost({ sources: true })).toBe(6);
+    expect(clickWriteCost({ landings: true })).toBe(6);
+    expect(clickWriteCost({ hops: true })).toBe(6);
+    expect(FULL).toBe(8);
+  });
+});
+
+describe("admitClick", () => {
+  it("admits up to the ceiling and not one write past it", async () => {
+    await seed("cw-links", CLICK_ADMIT_CEILING - FULL);
+    expect(await admitClick(DB, "links", Date.now(), FULL)).toBe(true);
+    expect(await count("cw-links")).toBe(CLICK_ADMIT_CEILING);
+    expect(await admitClick(DB, "links", Date.now(), 1)).toBe(false);
+    expect(await count("cw-links")).toBe(CLICK_ADMIT_CEILING);
+  });
+  it("refuses a click that would cross the ceiling and counts it as dropped", async () => {
+    await seed("cw-links", CLICK_ADMIT_CEILING - FULL + 1);
+    expect(await admitClick(DB, "links", Date.now(), FULL)).toBe(false);
+    expect(await count("cw-links")).toBe(CLICK_ADMIT_CEILING - FULL + 1);
+    expect(await count("cd-links")).toBe(1);
+  });
+  it("stops writing the dropped count at its cap, so refused requests cost no more writes", async () => {
+    await seed("cw-links", CLICK_ADMIT_CEILING);
+    for (let i = 0; i < CLICK_DROP_COUNT_CAP + 25; i++) expect(await admitClick(DB, "links", Date.now(), FULL)).toBe(false);
+    expect(await count("cd-links")).toBe(CLICK_DROP_COUNT_CAP);
+  });
+  it("gives each site an equal share, so one site cannot spend another's", async () => {
+    const half = siteShare(CLICK_ADMIT_CEILING, 2);
+    await seed("cw-links", half);
+    expect(await admitClick(DB, "links", Date.now(), 1, 2)).toBe(false);
+    expect(await admitClick(DB, "plain", Date.now(), FULL, 2)).toBe(true);
+    await seed("cw-plain", half - 1);
+    expect(await admitClick(DB, "plain", Date.now(), 2, 2)).toBe(false);
+  });
+  it("is atomic: concurrent admissions never exceed the ceiling", async () => {
+    await seed("cw-links", CLICK_ADMIT_CEILING - 3 * FULL);
+    const r = await Promise.all(Array.from({ length: 12 }, () => admitClick(DB, "links", Date.now(), FULL)));
+    expect(r.filter(Boolean).length).toBe(3);
+    expect(await count("cw-links")).toBe(CLICK_ADMIT_CEILING);
+  });
+});
+
+describe("the click route", () => {
+  it("writes nothing for a click past the ceiling and answers it exactly like a counted click", async () => {
+    const ok = await handleClick(click(), env());
+    expect(await events()).toBe(1);
+    const spent = await count("cw-links");
+    expect(spent).toBe(FULL);
+    await seed("cw-links", SHARE2);
+    const before = await events();
+    const over = await handleClick(click(), env());
+    expect(over.status).toBe(ok.status);
+    expect(over.status).toBe(204);
+    expect(await over.text()).toBe(await ok.clone().text());
+    expect([...over.headers]).toEqual([...ok.headers]);
+    expect(await events()).toBe(before);
+    for (const t of ["click_country_daily", "click_landing_daily", "click_hop_daily", "click_src_daily"]) {
+      const c = (await DB.prepare(`SELECT COALESCE(SUM(clicks), 0) AS c FROM ${t}`).first<{ c: number }>())!.c;
+      expect(c, t).toBe(1);
+    }
+    expect(await count("cd-links")).toBe(1);
+  });
+  it("charges a site without the optional lists at the smaller cost", async () => {
+    await handleClick(click("plain.example.test"), env());
+    expect(await count("cw-plain")).toBe(clickWriteCost({}));
+  });
+  it("total writes per site per day cannot pass the modeled ceiling, however many clicks arrive", async () => {
+    await seed("cw-links", SHARE2 - 10 * FULL);
+    for (let i = 0; i < 40; i++) await handleClick(click(), env());
+    expect(await events()).toBe(10);
+    expect(await count("cw-links")).toBe(SHARE2);
+    expect(await count("cd-links")).toBe(30);
+  });
+  it("fails closed: an admission error records nothing and still answers 204", async () => {
+    const broken = { ...env(), DB: { ...DB, prepare: () => { throw new Error("db down"); } } as unknown as D1Database };
+    const r = await handleClick(click(), broken);
+    expect(r.status).toBe(204);
+    expect(await events()).toBe(0);
+  });
+});
+
+describe("the budget model derives from the enforced ceiling", () => {
+  it("CLICK_DAILY_WRITES is the ceiling plus the dropped-count cap, and nothing else", () => {
+    expect(CLICK_ACCOUNT_DAILY_WRITES).toBe(CLICK_ADMIT_CEILING + CLICK_DROP_COUNT_CAP);
+    expect(CLICK_DAILY_WRITES).toBe(CLICK_ACCOUNT_DAILY_WRITES);
+  });
+  it("shares never add up to more than the total, for any number of sites", () => {
+    for (let n = 1; n <= 40; n++) {
+      expect(n * siteShare(CLICK_ADMIT_CEILING, n)).toBeLessThanOrEqual(CLICK_ADMIT_CEILING);
+      expect(n * siteShare(CLICK_DROP_COUNT_CAP, n)).toBeLessThanOrEqual(CLICK_DROP_COUNT_CAP);
+    }
+  });
+});

@@ -74,6 +74,17 @@ def test_default_disclosure_lists_click_counts_and_says_no_ip_address() -> None:
     assert "90 days" in text
 
 
+def test_click_disclosure_labels_depend_on_lists_and_none_vs_other() -> None:
+    text = text_of(collected_items(make_config())).replace("\n", " ")
+    # Page and earlier-page labels are recorded only where the site lists them.
+    assert "only where this site's counter has a fixed list of them" in text
+    # A valid label not on the list is other; a missing or unusable one is none.
+    assert "a label not on the list is counted only as other" in text
+    assert "a missing or unusable label is counted only as none" in text
+    # The old blanket claim must not return.
+    assert "anything not on the list is counted only as other" not in text
+
+
 def test_no_item_is_marked_sensitive() -> None:
     config = make_config(features={"kit_gate": True})
     assert collected_items(config)

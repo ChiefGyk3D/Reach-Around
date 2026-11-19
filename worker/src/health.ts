@@ -16,6 +16,9 @@
 //                      views in the 24 hours before, and the kill switch is off
 //   view_budget_hit    the account hourly view budget was reached in the last 3 hours
 //   alert_budget_near  today's alert budget is at least 80 percent used
+//   click_ceiling_reached  a click was refused today, or a site's click write charge (cw-<site>) leaves
+//                      no room for another click (clickceiling.ts); the count is the dropped clicks
+//                      today (cd-<site>, saturates at its cap: "at least")
 //
 // RULES.
 // - Reads only counters and the heartbeat in view_meta (the same keys the
@@ -46,6 +49,7 @@ import { DEFAULT_ACCOUNT_HUMAN_PER_HOUR, MAX_VIEWS_PER_HOUR, positiveInt } from 
 import { loadKitLimits } from "./kit/budgets";
 import { CHANNEL_IDS, HEALTH_CONDITIONS, type ChannelId, type HealthCondition } from "./alerts/types";
 import { padHour } from "./viewretention";
+import { CLICK_ADMIT_CEILING, clickWriteCost, siteShare } from "./clickceiling";
 import { killedSites, loadSites } from "./sites";
 import { flagOn } from "./view";
 
@@ -131,6 +135,9 @@ interface Inputs {
   /** site id -> hour number -> accepted human views, from bud:<hour>:<site>:pv */
   siteViews: Map<string, Map<number, number>>;
   alertToday: number;
+  /** Today's click ceiling counters: total dropped (cd-*) and the largest charged (cw-*) of any site. Counts only, no site. */
+  clickDropped: number;
+  clickChargedMax: number;
   /** False when analytics_coverage is not the table migration 0014 creates. */
   schemaOk: boolean;
 }
@@ -157,6 +164,10 @@ async function readInputs(db: D1Database, env: HealthEnv, hour: number, nowMs: n
       )
       .bind(siteKey(env.SITE_HOST), windowStart("day", nowMs)),
     db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'analytics_coverage'"),
+    // Read only. Today's click ceiling counters (clickceiling.ts); one batch unit, no write.
+    db
+      .prepare("SELECT key, count FROM counters WHERE day = ?1 AND (key GLOB 'cw-*' OR key GLOB 'cd-*') LIMIT 32")
+      .bind(utcDate(nowMs)),
   ]);
   const ddl = String(((res[3]?.results ?? [])[0] as { sql?: string } | undefined)?.sql ?? "");
   const schemaOk = SCHEMA_MARKS.every((m) => ddl.includes(m));
@@ -179,7 +190,15 @@ async function readInputs(db: D1Database, env: HealthEnv, hour: number, nowMs: n
   }
   const row = (res[2]?.results ?? [])[0] as { count?: number } | undefined;
   const alertToday = typeof row?.count === "number" && Number.isInteger(row.count) && row.count >= 0 ? row.count : 0;
-  return { meta, views, siteViews, alertToday, schemaOk };
+  let clickDropped = 0;
+  let clickChargedMax = 0;
+  for (const r of (res[4]?.results ?? []) as Array<{ key: string; count: number }>) {
+    const n = r.count;
+    if (typeof r.key !== "string" || !Number.isInteger(n) || n < 0) continue;
+    if (r.key.startsWith("cd-")) clickDropped += n;
+    else if (r.key.startsWith("cw-")) clickChargedMax = Math.max(clickChargedMax, n);
+  }
+  return { meta, views, siteViews, alertToday, clickDropped, clickChargedMax, schemaOk };
 }
 
 interface Verdict {
@@ -191,7 +210,7 @@ interface Verdict {
 export function evaluate(
   inp: Inputs,
   nowMs: number,
-  opts: { killed: boolean; killedSites?: ReadonlySet<string>; accountLimit: number; alertBudget: number },
+  opts: { killed: boolean; killedSites?: ReadonlySet<string>; accountLimit: number; alertBudget: number; clickSites?: number },
 ): Map<HealthCondition, Verdict> {
   const out = new Map<HealthCondition, Verdict>();
   const hour = Math.floor(nowMs / HOUR_MS);
@@ -254,6 +273,11 @@ export function evaluate(
       count: 0,
     });
   }
+
+  // click_ceiling_reached: a refused click, or no room left under a site's share for even the cheapest click.
+  const share = siteShare(CLICK_ADMIT_CEILING, opts.clickSites ?? 1);
+  const full = inp.clickChargedMax + clickWriteCost({}) > share;
+  out.set("click_ceiling_reached", { active: inp.clickDropped > 0 || full, count: inp.clickDropped });
   return out;
 }
 
@@ -327,7 +351,7 @@ export async function runHealth(env: HealthEnv, db: D1Database, nowMs: number, d
     } catch {
       alertBudget = 0;
     }
-    const verdicts = evaluate(inp, nowMs, { killed, killedSites: killSites, accountLimit, alertBudget });
+    const verdicts = evaluate(inp, nowMs, { killed, killedSites: killSites, accountLimit, alertBudget, clickSites: configured.length });
     for (const [c, v] of verdicts) if (v.active) result.active.push(c);
 
     const disp = deps.dispatcher ?? { notify: notifyOwner };

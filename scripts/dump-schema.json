@@ -27,6 +27,12 @@
       "hour",
       "clicks"
     ],
+    "click_budget_lh": [
+      "site",
+      "day",
+      "hour",
+      "clicks"
+    ],
     "click_capacity": [
       "site",
       "day",
@@ -60,6 +66,42 @@
       "destination_kind"
     ],
     "click_funnel_state": [
+      "site",
+      "from_day"
+    ],
+    "click_hop_daily": [
+      "site",
+      "day",
+      "link_id",
+      "destination_kind",
+      "hop",
+      "clicks"
+    ],
+    "click_hop_monthly": [
+      "site",
+      "month",
+      "link_id",
+      "destination_kind",
+      "hop",
+      "clicks"
+    ],
+    "click_landing_daily": [
+      "site",
+      "day",
+      "link_id",
+      "destination_kind",
+      "landing",
+      "clicks"
+    ],
+    "click_landing_monthly": [
+      "site",
+      "month",
+      "link_id",
+      "destination_kind",
+      "landing",
+      "clicks"
+    ],
+    "click_landing_state": [
       "site",
       "from_day"
     ],
@@ -276,6 +318,8 @@
     "alert_quota.window_start": "ms",
     "click_budget.clicks": "small",
     "click_budget.hour": "small",
+    "click_budget_lh.clicks": "small",
+    "click_budget_lh.hour": "small",
     "click_capacity.first_hour": "small",
     "click_capacity.folded": "small",
     "click_capacity.marked_at": "ms",
@@ -283,6 +327,10 @@
     "click_country_monthly.clicks": "small",
     "click_events.id": "rowid",
     "click_events.ts": "ms",
+    "click_hop_daily.clicks": "small",
+    "click_hop_monthly.clicks": "small",
+    "click_landing_daily.clicks": "small",
+    "click_landing_monthly.clicks": "small",
     "click_month_log.exhausted_days": "small",
     "click_month_log.folded_clicks": "small",
     "click_month_log.rolled_at": "ms",

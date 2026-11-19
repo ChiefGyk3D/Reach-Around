@@ -317,6 +317,8 @@ week of measurement, and it is why Owner decision 3 exists (decided 2026-11-19:
 reserved 1, trimmed to 0 if a site passes about 15 link ids).
 Other sites add their own rows to the check; nothing here sets a site count.
 
+Free-plan rollout (owner decision, 2026-11-19): only ONE site (the links page) turns on `landings` and `hops` on the Free plan for now. Two sites that both list both tables model at about 100,400 writes a day (the independent review reproduced 100,472 at 1 link id each and 100,376 at 0), over the 100,000 quota, and the kit routes fail closed (`loadKitLimits` throws `KitLimitsError` when worst exceeds quota). Even two sites with no new tables already model at 99,888 (99.9 percent), because page views cost about 20,000 a day per site, so the new tables only tip a full budget. A second site turns the tables on only after a paid plan or trimmed page-view caps. No cap number changes.
+
 Rows read, INFERRED and not modeled by the existing check: each click runs
 several `count(*)` subqueries over that site and day's cells to decide whether
 to fold (`worker/src/clickfunnel.ts`). Two more tables of up to 40 cells add
@@ -327,6 +329,10 @@ The measurement week should record reads as well as writes.
 
 Storage: well under a megabyte per site for 90 days of day cells (tens of bytes
 a row, about 140 to 460 cells a day). INFERRED and not a constraint.
+
+### 10.1 Click write ceiling (supersedes "counting never stops" for volume)
+
+Added after a security review: a per-client limit does not bound click-route writes across clients, and each accepted click mutates up to eight rows. The click route now charges every click, before any write, to an atomic per-UTC-day ceiling of 7500 row writes, split equally over the configured sites (5 rows for a site with no optional lists, up to 8 with source, landing and hop), plus a dropped-count cap of 500. The model's click figure is that sum (8000, whatever the number of sites) and is derived from the enforced constants. Past the ceiling a click gets the same empty 204 and only the counting stops. This changes the earlier rule "counting never stops": it still holds across the fold (existing cells and the overflow row keep adding) but no longer holds for volume once the day's write ceiling is spent. It fails closed on purpose, because exhausting the account's D1 write allowance would stop every other feature. Only the HTTP representation of a refused click is identical to an admitted one (an empty 204); timing differs and the design makes no constant-time claim. Any valid-looking traffic can spend the ceiling; this is accepted on the Free plan because a signed per-click token does not fit a static no-cookie site, and the owner notices through the health condition `click_ceiling_reached` (reads `cw-`/`cd-` for today, read only, content-free, "dropped clicks today: at least N"). Owner decision needed if a higher ceiling or a front-of-D1 aggregation is wanted; see docs/deploy.md, Click write ceiling.
 
 ## 11. How #334's report consumes the tables
 
@@ -437,7 +443,7 @@ rows read per funnel table and compares them with section 10.
 
 ## 14. Rollout (INFERRED, decided in Owner decision 4 on 2026-11-19)
 
-1. Build PR 1: config lists, parser, migration, counters, seal and roll-up, budget model. Ship with the report still saying "not collected".
+1. Build PR 1: config lists, parser, migration, counters, seal and roll-up, budget model. Ship with the report saying "collected but not yet shown in the report", since the Worker collects from this PR (this supersedes the earlier plan to keep saying "not collected"; the sentence is dropped here, as section 13 says).
 2. Let the tables fill during the Free-plan measurement week (`docs/deploy.md` open items) so one week of data covers all six counter tables.
 3. Build PR 2: export, report, CSV, owner page, docs (#334's section for these tables).
 
@@ -451,10 +457,11 @@ All eight were decided by the owner on 2026-11-19. Each chose option A, the reco
    - C: no landing table; use the link-to-page map the funnel already has (`docs/analytics-design.md` section 6.1). Cheapest, but gives no cut for a destination that appears on several pages.
 
 2. **Does an internal link keep the visitor's `s` source?** **DECIDED 2026-11-19: option A.**
-   - A (recommended, CHOSEN): the build drops `s` and writes only `h`. The hop table then says "from our surface", the source table says "from outside", with no chain.
+   - A (recommended, CHOSEN; the link writer is planned and tracked in #593, so until it exists the hop table collects only `none`): the build drops `s` and writes only `h`. The hop table then says "from our surface", the source table says "from outside", with no chain.
    - B: forward `s` along with `h`. Source survives a hop, but it makes the source count mean "first outside source", changing what the existing table means.
 
 3. **Which caps for the Free profile?** (section 10: at 20 link ids the total is 80.1 percent untrimmed and 79.7 percent with the chosen trim) **DECIDED 2026-11-19: option A.**
+   - Decided 2026-11-19: only ONE site (the links page) turns on `landings` and `hops` on the Free plan for now. Two sites that both list both tables model at about 100,400 writes a day (the independent review reproduced 100,472 at 1 link id each and 100,376 at 0), over the 100,000 quota, and the kit routes fail closed (`loadKitLimits` throws `KitLimitsError` when worst exceeds quota). Even two sites with no new tables already model at 99,888 (99.9 percent), because page views cost about 20,000 a day per site, so the new tables only tip a full budget. A second site turns the tables on only after a paid plan or trimmed page-view caps. No cap number changes.
    - A (recommended, CHOSEN): landing 24, hop 16, reserved 1, monthly 40 and 30, hour budget 16, as proposed, then trim reserved to 0 if a site passes about 15 link ids.
    - B: smaller still (landing 12, hop 8, reserved 0): fits any link count, but folds earlier.
    - C: wait for the measurement week to set any number, and ship the tables with the existing caps only. Safest on budget; delays the build.

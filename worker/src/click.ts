@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 import { normalizeAddress } from "./address";
 import { limiterKeyOrIsolate } from "./ratekey";
-import { clickCounterStatements } from "./clickfunnel";
+import { admitClick, clickWriteCost } from "./clickceiling";
+import { NONE, clickCounterStatements } from "./clickfunnel";
 import { killedSites, loadSites, siteForRequest } from "./sites";
 
 /** Workers Rate Limiting binding (the subset we use). */
@@ -137,20 +138,26 @@ function linkIdFromPath(pathname: string): string | null {
 }
 
 /**
- * The closed-set source label of a click (issue #329). Read only for a site
- * that lists sources (an empty list is still a closed list: every valid label
- * is "other"). One `s` value, judged raw (the Kelvin sign and dotless i
- * lowercase into ASCII, so they are refused first); a label not on the site's
- * list is stored as the fixed "other", and its text is never kept. A missing,
- * repeated or malformed `s` is null (no source). Nothing else on the URL is read.
+ * The closed-set label of one query parameter (`s` source, `h` hop, `l` landing; issues #329 and
+ * #566). One parser for all three, so they cannot drift. Read only for a site that has the list (an
+ * empty list is still a closed list: every valid label is "other"). One value, judged raw (the Kelvin
+ * sign and dotless i lowercase into ASCII, so they are refused first). The value is read through
+ * URLSearchParams, so a percent escape that decodes to a valid label is that label; one that decodes to
+ * anything else is refused. A label not on the list is returned as the fixed "other" and its text is never
+ * kept. A missing, repeated or malformed value is null. Nothing else on the URL is read.
  */
-export function clickSource(url: URL, sources: readonly string[] | undefined): string | null {
-  if (sources === undefined) return null;
-  const all = url.searchParams.getAll("s");
+export function closedLabel(url: URL, param: string, list: readonly string[] | undefined): string | null {
+  if (list === undefined) return null;
+  const all = url.searchParams.getAll(param);
   if (all.length !== 1 || !SRC_RAW.test(all[0])) return null;
   const label = all[0].toLowerCase();
   if (!SRC.test(label)) return null;
-  return sources.includes(label) ? label : "other";
+  return list.includes(label) ? label : "other";
+}
+
+/** The closed-set source label of a click (issue #329); null is no source. */
+export function clickSource(url: URL, sources: readonly string[] | undefined): string | null {
+  return closedLabel(url, "s", sources);
 }
 
 function countryOf(request: Request): string | null {
@@ -228,6 +235,14 @@ export async function handleClick(request: Request, env: Env): Promise<Response>
     const now = Date.now();
     const src = clickSource(new URL(request.url), site.sources);
     const country = countryOf(request);
+    // Landing (`l`) and hop (`h`): only for a site that lists them; a missing or malformed value is "none".
+    const reqUrl = new URL(request.url);
+    const landing = site.landings === undefined ? undefined : (closedLabel(reqUrl, "l", site.landings) ?? NONE);
+    const hop = site.hops === undefined ? undefined : (closedLabel(reqUrl, "h", site.hops) ?? NONE);
+    // Write ceiling: charged at the rows this click writes, before ANY click write. Past it the answer is
+    // the same empty 204 and only the counting stops (clickceiling.ts).
+    const cost = clickWriteCost({ sources: site.sources !== undefined, landings: landing !== undefined, hops: hop !== undefined });
+    if (!(await admitClick(env.DB, site.id, now, cost, loadSites(env).sites.length))) return noContent(); // CONTROL:click-write-ceiling
     await env.DB.prepare("INSERT INTO click_events (ts, link_id, destination_kind, country, site, src) VALUES (?, ?, ?, ?, ?, ?)")
       .bind(now - (now % HOUR_MS), linkId, destinationKind, null, site.id, src) // country lives only in the aggregate counter
       .run();
@@ -244,6 +259,8 @@ export async function handleClick(request: Request, env: Env): Promise<Response>
           src,
           listsSources: site.sources !== undefined,
           country,
+          landing,
+          hop,
         }),
       );
     } catch {

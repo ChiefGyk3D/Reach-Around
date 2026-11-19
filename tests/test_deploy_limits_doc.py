@@ -63,7 +63,7 @@ def test_worst_case_table_adds_up_and_is_under_the_warning_line() -> None:
     combined = total + _PAGE_VIEWS + _CLICKS + _FUNNEL + _MARGIN
     assert f"**{combined}**" in section
     assert f"| page views, rollup and purge | | | {_PAGE_VIEWS} |" in section
-    assert f"| clicks (reserve) | | | {_CLICKS} |" in section
+    assert f"| clicks (enforced ceiling, all sites) | | | {_CLICKS} |" in section
     funnel_row = f"| click funnel (Free profile, one site, no link ids) | | | {_FUNNEL}"
     assert f"{funnel_row} |" in section
     assert f"| margin | | | {_MARGIN} |" in section
@@ -109,5 +109,16 @@ def test_doc_defaults_match_the_worker_source() -> None:
     )
     assert derived == _PAGE_VIEWS
     assert "PAGE_VIEW_DAILY_WRITES = pageViewDailyWrites({})" in src
-    assert f"CLICK_DAILY_WRITES = {_CLICKS:_}" in src
+    assert "CLICK_DAILY_WRITES = CLICK_ACCOUNT_DAILY_WRITES" in src
+    cc = (ROOT / "worker" / "src" / "clickceiling.ts").read_text(encoding="utf-8")
+    ceiling = re.search(r"CLICK_ADMIT_CEILING = ([0-9_]+)", cc)
+    drops = re.search(r"CLICK_DROP_COUNT_CAP = ([0-9_]+)", cc)
+    assert ceiling is not None and drops is not None
+    assert (
+        int(ceiling.group(1).replace("_", "")) + int(drops.group(1).replace("_", ""))
+        == _CLICKS
+    )
+    assert (
+        "CLICK_ACCOUNT_DAILY_WRITES = CLICK_ADMIT_CEILING + CLICK_DROP_COUNT_CAP" in cc
+    )
     assert f"COMBINED_MARGIN = {_MARGIN:_}" in src

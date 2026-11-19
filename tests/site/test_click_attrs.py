@@ -110,4 +110,38 @@ def test_click_script_sends_a_source_only_when_exactly_one_s_value() -> None:
     import reach_around
 
     js = (Path(reach_around.__file__).parent / "site/static/click.js").read_text()
-    assert 'getAll("s")' in js and "all.length !== 1" in js
+    assert "getAll(name)" in js and 'paramLabel("s")' in js and "all.length !== 1" in js
+
+
+BODY = re.compile(r"<body\b[^>]*>", re.IGNORECASE)
+LANDING = re.compile(r"^[a-z0-9-]{1,30}$")
+
+
+def test_every_counted_page_carries_its_landing_label_as_a_build_constant(
+    tmp_path: Path,
+) -> None:
+    """Issue #566: the landing label is the page the click is made on (build time)."""
+    build(tmp_path)
+    seen = 0
+    for page in sorted(tmp_path.rglob("*.html")):
+        if page.name == "404.html":
+            continue
+        (tag,) = BODY.findall(page.read_text(encoding="utf-8"))
+        attrs = dict(ATTR.findall(tag))
+        if "data-link-id" not in page.read_text(encoding="utf-8"):
+            continue
+        assert LANDING.match(attrs["data-landing"]), (page, tag)
+        seen += 1
+    assert seen > 0
+
+
+def test_landing_label_is_absent_when_click_tracking_is_off(tmp_path: Path) -> None:
+    config = load_site_config(EXAMPLE)
+    config = config.model_copy(
+        update={
+            "features": config.features.model_copy(update={"click_tracking": False})
+        }
+    )
+    build_site(config, tmp_path, today=TODAY, assets_dir=EXAMPLE.parent)
+    for page in sorted(tmp_path.rglob("*.html")):
+        assert "data-landing" not in page.read_text(encoding="utf-8"), page
