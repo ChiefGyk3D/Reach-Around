@@ -15,7 +15,7 @@
 // Caps. Once a (site, day) holds the per-table cap, or the site-wide daily click budget
 // is used up, a label that has no row yet goes into ONE overflow row per (site, day)
 // ('overflow-all', 'other' or 'ZZ'). Rows per (site, day) are therefore at most the cap
-// plus one per destination kind. Counting never stops: existing cells and the overflow row keep adding.
+// plus one per destination kind. Existing cells and the overflow row keep adding, until the site's daily click write ceiling (clickceiling.ts) is spent; then the click route writes nothing more that day.
 //
 // Seal. The hourly job (rollupClickFunnel) seals a day once it is closed plus a
 // grace period; the increment statements write nothing for a sealed day.

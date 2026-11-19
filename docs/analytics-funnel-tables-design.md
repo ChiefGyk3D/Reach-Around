@@ -303,6 +303,10 @@ The measurement week should record reads as well as writes.
 Storage: well under a megabyte per site for 90 days of day cells (tens of bytes
 a row, about 140 to 460 cells a day). INFERRED and not a constraint.
 
+### 10.1 Click write ceiling (supersedes "counting never stops" for volume)
+
+Added after a security review: a per-client limit does not bound click-route writes across clients, and each accepted click mutates up to eight rows. The click route now charges every click, before any write, to an atomic per-UTC-day ceiling of 7500 row writes, split equally over the configured sites (5 rows for a site with no optional lists, up to 8 with source, landing and hop), plus a dropped-count cap of 500. The model's click figure is that sum (8000, whatever the number of sites) and is derived from the enforced constants. Past the ceiling a click gets the same empty 204 and only the counting stops. This changes the earlier rule "counting never stops": it still holds across the fold (existing cells and the overflow row keep adding) but no longer holds for volume once the day's write ceiling is spent. It fails closed on purpose, because exhausting the account's D1 write allowance would stop every other feature. Owner decision needed if a higher ceiling or a front-of-D1 aggregation is wanted; see docs/deploy.md, Click write ceiling.
+
 ## 11. How #334's report consumes the tables
 
 #334 added the source and country sections; this design only extends the

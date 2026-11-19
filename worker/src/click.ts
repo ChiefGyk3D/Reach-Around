@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 import { normalizeAddress } from "./address";
 import { limiterKeyOrIsolate } from "./ratekey";
+import { admitClick, clickWriteCost } from "./clickceiling";
 import { NONE, clickCounterStatements } from "./clickfunnel";
 import { killedSites, loadSites, siteForRequest } from "./sites";
 
@@ -238,6 +239,10 @@ export async function handleClick(request: Request, env: Env): Promise<Response>
     const reqUrl = new URL(request.url);
     const landing = site.landings === undefined ? undefined : (closedLabel(reqUrl, "l", site.landings) ?? NONE);
     const hop = site.hops === undefined ? undefined : (closedLabel(reqUrl, "h", site.hops) ?? NONE);
+    // Write ceiling: charged at the rows this click writes, before ANY click write. Past it the answer is
+    // the same empty 204 and only the counting stops (clickceiling.ts).
+    const cost = clickWriteCost({ sources: site.sources !== undefined, landings: landing !== undefined, hops: hop !== undefined });
+    if (!(await admitClick(env.DB, site.id, now, cost, loadSites(env).sites.length))) return noContent(); // CONTROL:click-write-ceiling
     await env.DB.prepare("INSERT INTO click_events (ts, link_id, destination_kind, country, site, src) VALUES (?, ?, ?, ?, ?, ?)")
       .bind(now - (now % HOUR_MS), linkId, destinationKind, null, site.id, src) // country lives only in the aggregate counter
       .run();
