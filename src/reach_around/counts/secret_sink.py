@@ -28,7 +28,9 @@ import hashlib
 import hmac
 import json
 import os
+import pwd
 import re
+import stat
 import sys
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
@@ -62,31 +64,85 @@ class ScopeBusy(Exception):
     """Another run already owns this project and config."""
 
 
+def _passwd_home() -> str:
+    """The effective user's home from the passwd database, not the environment."""
+    return pwd.getpwuid(os.geteuid()).pw_dir
+
+
+def lock_dir() -> Path:
+    """The one lock folder for every writer of this user."""
+    return Path(_passwd_home()) / ".local" / "state" / "reach-around"
+
+
+def lock_file(project: str, config: str) -> Path:
+    name = hashlib.sha256(f"{project}\0{config}".encode()).hexdigest()[:24]
+    return lock_dir() / f"doppler-{name}.lock"
+
+
+def _open_state_dir(folder: Path) -> int:
+    """Open the lock folder safely; ``SinkError('unsafe_state')`` if not ours."""
+    try:
+        folder.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            os.mkdir(folder, 0o700)
+        except FileExistsError:
+            pass
+        fd = os.open(
+            folder, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+        )
+    except OSError:
+        raise SinkError("unsafe_state") from None
+    info = os.fstat(fd)
+    if info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) != 0o700:
+        os.close(fd)
+        raise SinkError("unsafe_state")
+    return fd
+
+
 @contextmanager
 def scope_lock(project: str, config: str) -> Iterator[None]:
     """Advisory single-writer lock for one project and config.
 
-    The file lives under the XDG state directory, is named by a digest of the
-    scope, and holds only this process id. It never holds a secret. The lock
-    ends with the process, so a crash leaves nothing stale. It stops two runs
-    of this tool; it cannot stop other writers (see docs/token-sink.md).
+    The folder comes from the passwd database, never from the environment, so
+    every run of this user takes the same lock. The folder and file are checked
+    (owner, mode, a plain file with one link) before anything is written. The
+    file is named by a digest of the scope and holds only this process id. It
+    never holds a secret. The lock ends with the process, so a crash leaves
+    nothing stale. It stops two runs of this tool on this host and account; it
+    cannot stop other writers (see docs/token-sink.md).
     """
-    base = os.environ.get("XDG_STATE_HOME") or str(Path.home() / ".local" / "state")
-    folder = Path(base) / "reach-around"
-    folder.mkdir(mode=0o700, parents=True, exist_ok=True)
-    name = hashlib.sha256(f"{project}\0{config}".encode()).hexdigest()[:24]
-    fd = os.open(
-        folder / f"doppler-{name}.lock",
-        os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW,
-        0o600,
-    )
+    path = lock_file(project, config)
+    dfd = _open_state_dir(path.parent)
     try:
+        try:
+            fd = os.open(
+                path.name,
+                os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC,
+                0o600,
+                dir_fd=dfd,
+            )
+        except OSError:
+            raise SinkError("unsafe_state") from None
+    finally:
+        os.close(dfd)
+    try:
+        info = os.fstat(fd)
+        if (
+            not stat.S_ISREG(info.st_mode)
+            or info.st_uid != os.geteuid()
+            or info.st_nlink != 1
+            or stat.S_IMODE(info.st_mode) & 0o077
+        ):
+            raise SinkError("unsafe_state")
         try:
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             raise ScopeBusy from None
-        os.ftruncate(fd, 0)
-        os.write(fd, f"{os.getpid()}\n".encode())
+        try:
+            os.ftruncate(fd, 0)
+            os.write(fd, f"{os.getpid()}\n".encode())
+        except OSError:
+            raise SinkError("unsafe_state") from None
         yield
     finally:
         os.close(fd)

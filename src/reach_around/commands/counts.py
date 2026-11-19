@@ -111,6 +111,7 @@ def doppler_spec(
     args: argparse.Namespace,
     env: MutableMapping[str, str],
     stdin: TextIO,
+    held_token: str = "",
 ) -> DopplerSpec:
     """Resolve the sink settings; ``ValueError`` names variables, never values.
 
@@ -119,7 +120,9 @@ def doppler_spec(
     network work, even when setup then fails. That narrows the exposure; it
     cannot undo what the launcher already did with the variable.
     """
-    from_env = env.pop(DOPPLER_TOKEN_ENV, "").strip()
+    # The command line entry point already removed the variable before argument
+    # parsing and passes it as ``held_token``; the pop covers other callers.
+    from_env = (env.pop(DOPPLER_TOKEN_ENV, "") or held_token).strip()
     project = args.doppler_project or env.get(DOPPLER_PROJECT_ENV, "")
     config = args.doppler_config or env.get(DOPPLER_CONFIG_ENV, "")
     if args.doppler_token_stdin:
@@ -201,10 +204,11 @@ def run_refresh(
         return EXIT_OK
 
     try:
-        # One lock for the whole load, fetch, merge and write cycle: a second run
-        # started meanwhile waits, then reads what this one wrote, so a stale copy
-        # can never replace a newer number.
-        with FileLock(paths.lock, wait=lock_wait), _writer_scope(doppler):
+        # The writer scope is taken first, so a second run fails fast instead of
+        # waiting on the output lock. One lock for the whole load, fetch, merge and
+        # write cycle: a second run started meanwhile waits, then reads what this
+        # one wrote, so a stale copy can never replace a newer number.
+        with _writer_scope(doppler), FileLock(paths.lock, wait=lock_wait):
             return _cycle(
                 paths,
                 sources,
@@ -228,6 +232,13 @@ def run_refresh(
             file=sys.stderr,
         )
         return EXIT_SOURCE_FAILED
+    except SinkError as exc:
+        print(
+            f"error: the Doppler sink lock state is not usable ({exc.kind}); "
+            "nothing was fetched",
+            file=sys.stderr,
+        )
+        return EXIT_USAGE
     except LockLost as exc:
         print(f"error: {exc}; nothing was written", file=sys.stderr)
         return EXIT_WRITE
@@ -640,7 +651,10 @@ def _run(args: argparse.Namespace) -> int:
     spec = None
     if args.sink_kind == "doppler":
         try:
-            spec = doppler_spec(args, os.environ, sys.stdin)
+            held = getattr(args, "doppler_held_token", "")
+            args.doppler_held_token = ""
+            spec = doppler_spec(args, os.environ, sys.stdin, held)
+            del held
         except ValueError as exc:
             print(f"error: {exc}", file=sys.stderr)
             return EXIT_USAGE

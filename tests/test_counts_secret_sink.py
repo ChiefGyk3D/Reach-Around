@@ -25,6 +25,7 @@ from urllib.parse import parse_qs, urlsplit
 import pytest
 
 import reach_around.commands.counts as counts_cmd
+import reach_around.counts.secret_sink as secret_sink
 from fakenet import FakeTransport, reply
 from reach_around.cli import main
 from reach_around.counts.meta_user import HealthAlert as MetaAlert
@@ -39,6 +40,8 @@ from reach_around.counts.secret_sink import (
 from reach_around.counts.twitch_user import HealthAlert, TokenNames, TokenPair
 from reach_around.net.egress import RawResponse, TransportRequest
 from reach_around.net.fetch import fetch_json
+
+_REAL_PASSWD_HOME = secret_sink._passwd_home
 
 API_TOKEN = "SENTINEL-DOPPLER-API-TOKEN"
 ACCESS = "SENTINEL-ACCESS-NEW"
@@ -627,17 +630,30 @@ def test_stdin_run_also_clears_a_stray_env_token(
     assert "REACH_AROUND_DOPPLER_TOKEN" not in os.environ
 
 
-def test_scope_lock_admits_one_writer_and_holds_only_a_pid(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+@pytest.fixture(autouse=True)
+def lock_home(tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Point the lock root at a scratch home: no test writes under the real one.
+
+    The seam is a module function; the CLI and the environment cannot reach it.
+    """
+    home = tmp_path_factory.mktemp("lockhome")
+    monkeypatch.setattr(secret_sink, "_passwd_home", lambda: str(home))
+    return home
+
+
+def _lock_dir(home: Path) -> Path:
+    return home / ".local" / "state" / "reach-around"
+
+
+def test_scope_lock_admits_one_writer_and_holds_only_a_pid(lock_home: Path) -> None:
     from reach_around.counts.secret_sink import ScopeBusy, scope_lock
 
-    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
     with scope_lock(PROJECT, CONFIG):
-        files = [p for p in tmp_path.rglob("*") if p.is_file()]
+        files = [p for p in lock_home.rglob("*") if p.is_file()]
         assert len(files) == 1
         assert files[0].read_text().strip().isdigit()
         assert PROJECT not in files[0].name
+        assert files[0].stat().st_mode & 0o777 == 0o600
         with pytest.raises(ScopeBusy):
             with scope_lock(PROJECT, CONFIG):
                 raise AssertionError("second writer must not get in")
@@ -647,23 +663,210 @@ def test_scope_lock_admits_one_writer_and_holds_only_a_pid(
         pass
 
 
-def test_refresh_refuses_a_second_writer_to_the_same_config(
+def test_lock_path_ignores_home_and_xdg_state_home(
+    lock_home: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    before = secret_sink.lock_file(PROJECT, CONFIG)
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "x"))
+    monkeypatch.setenv("HOME", str(tmp_path / "h"))
+    assert secret_sink.lock_file(PROJECT, CONFIG) == before
+    assert before.parent == _lock_dir(lock_home)
+    assert not (tmp_path / "x").exists() and not (tmp_path / "h").exists()
+
+
+def test_lock_root_comes_from_the_passwd_database() -> None:
+    import os
+    import pwd
+
+    assert _REAL_PASSWD_HOME() == pwd.getpwuid(os.geteuid()).pw_dir
+
+
+def test_hard_linked_lock_file_is_refused_and_not_modified(lock_home: Path) -> None:
+    import os
+
+    folder = _lock_dir(lock_home)
+    folder.mkdir(parents=True, mode=0o700)
+    victim = lock_home / "victim"
+    victim.write_text("keep me")
+    victim.chmod(0o600)
+    os.link(victim, secret_sink.lock_file(PROJECT, CONFIG))
+    with pytest.raises(SinkError) as seen:
+        with secret_sink.scope_lock(PROJECT, CONFIG):
+            raise AssertionError("must not get in")
+    assert seen.value.kind == "unsafe_state"
+    assert victim.read_text() == "keep me"
+
+
+def test_wide_mode_lock_file_is_refused(lock_home: Path) -> None:
+    folder = _lock_dir(lock_home)
+    folder.mkdir(parents=True, mode=0o700)
+    path = secret_sink.lock_file(PROJECT, CONFIG)
+    path.write_text("")
+    path.chmod(0o644)
+    with pytest.raises(SinkError) as seen:
+        with secret_sink.scope_lock(PROJECT, CONFIG):
+            raise AssertionError("must not get in")
+    assert seen.value.kind == "unsafe_state"
+
+
+def test_symlinked_state_directory_is_refused(lock_home: Path) -> None:
+    other = lock_home / "elsewhere"
+    other.mkdir(mode=0o700)
+    folder = _lock_dir(lock_home)
+    folder.parent.mkdir(parents=True)
+    folder.symlink_to(other)
+    with pytest.raises(SinkError) as seen:
+        with secret_sink.scope_lock(PROJECT, CONFIG):
+            raise AssertionError("must not get in")
+    assert seen.value.kind == "unsafe_state"
+    assert list(other.iterdir()) == []
+
+
+def test_wrong_mode_state_directory_is_refused(lock_home: Path) -> None:
+    folder = _lock_dir(lock_home)
+    folder.mkdir(parents=True)
+    folder.chmod(0o755)
+    with pytest.raises(SinkError) as seen:
+        with secret_sink.scope_lock(PROJECT, CONFIG):
+            raise AssertionError("must not get in")
+    assert seen.value.kind == "unsafe_state"
+    assert list(folder.iterdir()) == []
+
+
+def test_state_directory_owned_by_someone_else_is_refused(
+    lock_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import os
+
+    _lock_dir(lock_home).mkdir(parents=True, mode=0o700)
+    monkeypatch.setattr(os, "geteuid", lambda: 12345)
+    with pytest.raises(SinkError) as seen:
+        with secret_sink.scope_lock(PROJECT, CONFIG):
+            raise AssertionError("must not get in")
+    assert seen.value.kind == "unsafe_state"
+
+
+def test_unsafe_lock_state_gets_its_own_fixed_message(
     site: Path,
     monkeypatch: pytest.MonkeyPatch,
     doppler: FakeDoppler,
-    tmp_path: Path,
+    lock_home: Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    from reach_around.counts.secret_sink import scope_lock
-
+    folder = _lock_dir(lock_home)
+    folder.mkdir(parents=True)
+    folder.chmod(0o755)
     sink_env(monkeypatch)
-    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     use(monkeypatch, doppler.transport(FakeTransport(twitch_routes())))
-    with scope_lock(PROJECT, CONFIG):
-        assert main(refresh_args(site, "--token-sink", "doppler")) == 3
+    code = main(refresh_args(site, "--token-sink", "doppler"))
     err = capsys.readouterr().err
-    assert "another writer" in err
+    assert code != 0
+    assert "output folder" not in err
+    assert "unsafe_state" in err
+    assert str(lock_home) not in err
     assert doppler.requests == []
     no_leak(err)
-    sink_env(monkeypatch)  # the first run consumed the token variable
+
+
+def test_refresh_refuses_a_second_writer_through_the_real_path(
+    site: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    doppler: FakeDoppler,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The first run holds both locks; the second must fail fast, before any request."""
+    from reach_around.counts.files import FileLock
+
+    real_lock = counts_cmd.FileLock
+    monkeypatch.setattr(
+        counts_cmd,
+        "FileLock",
+        lambda path, wait=120.0: real_lock(path, wait=0.2),
+    )
+    assert FileLock is real_lock
+    inner = doppler.transport(FakeTransport(twitch_routes()))
+    state: dict[str, Any] = {"nested": False}
+
+    def outer(request: TransportRequest) -> RawResponse:
+        if not state["nested"]:
+            state["nested"] = True
+            sink_env(monkeypatch)
+            seen = len(doppler.requests)
+            state["code"] = main(refresh_args(site, "--token-sink", "doppler"))
+            state["extra"] = len(doppler.requests) - seen
+            state["fetched"] = state.get("fetched", 0)
+        answer: RawResponse = inner(request)
+        return answer
+
+    use(monkeypatch, outer)
+    sink_env(monkeypatch)
     assert main(refresh_args(site, "--token-sink", "doppler")) == 0
+    err = capsys.readouterr().err
+    assert state["code"] == 3
+    assert state["extra"] == 0
+    assert "another writer" in err
+    assert "another counts refresh" not in err
+
+
+def test_scope_lock_is_taken_before_the_output_lock(
+    site: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    doppler: FakeDoppler,
+) -> None:
+    order: list[str] = []
+    real_lock = counts_cmd.FileLock
+    real_scope = counts_cmd.scope_lock
+
+    class Spy:
+        def __init__(self, path: Path, wait: float = 120.0) -> None:
+            self._inner = real_lock(path, wait=wait)
+
+        def __enter__(self) -> None:
+            order.append("output")
+            self._inner.__enter__()
+
+        def __exit__(self, *exc: object) -> None:
+            self._inner.__exit__(*exc)
+
+    def scoped(project: str, config: str) -> Any:
+        order.append("scope")
+        return real_scope(project, config)
+
+    monkeypatch.setattr(counts_cmd, "FileLock", Spy)
+    monkeypatch.setattr(counts_cmd, "scope_lock", scoped)
+    sink_env(monkeypatch)
+    use(monkeypatch, doppler.transport(FakeTransport(twitch_routes())))
+    assert main(refresh_args(site, "--token-sink", "doppler")) == 0
+    assert order == ["scope", "output"]
+
+
+def test_bad_option_leaves_no_api_token_in_the_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import os
+
+    monkeypatch.setenv("REACH_AROUND_DOPPLER_TOKEN", API_TOKEN)
+    with pytest.raises(SystemExit):
+        main(["counts", "refresh", "--no-such-option"])
+    assert "REACH_AROUND_DOPPLER_TOKEN" not in os.environ
+    assert API_TOKEN not in os.environ.values()
+
+
+def test_a_run_without_the_sink_drops_the_token_and_still_works(
+    site: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import os
+
+    monkeypatch.setenv("REACH_AROUND_DOPPLER_TOKEN", API_TOKEN)
+    assert main(refresh_args(site, "--dry-run")) == 0
+    assert "REACH_AROUND_DOPPLER_TOKEN" not in os.environ
+    assert main(["--version"]) == 0
+
+
+def test_a_help_exit_also_scrubs_the_token(monkeypatch: pytest.MonkeyPatch) -> None:
+    import os
+
+    monkeypatch.setenv("REACH_AROUND_DOPPLER_TOKEN", API_TOKEN)
+    with pytest.raises(SystemExit):
+        main(["counts", "refresh", "--help"])
+    assert "REACH_AROUND_DOPPLER_TOKEN" not in os.environ

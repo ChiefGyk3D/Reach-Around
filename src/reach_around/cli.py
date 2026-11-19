@@ -16,6 +16,7 @@ from pathlib import Path
 from jinja2 import TemplateError
 
 from reach_around import __version__, commands, edit_cli
+from reach_around.commands.counts import DOPPLER_TOKEN_ENV
 from reach_around.config import ConfigError, load_site_config
 from reach_around.config.numbers import Numbers, load_numbers
 from reach_around.editor.server import MAX_IDLE_SECONDS, run_editor
@@ -308,8 +309,21 @@ def _build(
 
 
 def main(argv: list[str] | None = None) -> int:
+    # The sink token leaves the environment before anything else runs, so a
+    # bad option or any early exit cannot leave it behind. It is held privately
+    # for the sink; a run that does not use the sink simply drops it.
+    held = os.environ.pop(DOPPLER_TOKEN_ENV, "")
+    try:
+        return _main(argv, held)
+    finally:
+        held = ""
+        os.environ.pop(DOPPLER_TOKEN_ENV, None)
+
+
+def _main(argv: list[str] | None, held_token: str) -> int:
     parser = _parser()
     args = parser.parse_args(sys.argv[1:] if argv is None else argv)
+    args.doppler_held_token = held_token
     if args.version:
         print(f"reach-around {__version__}")
         return 0
