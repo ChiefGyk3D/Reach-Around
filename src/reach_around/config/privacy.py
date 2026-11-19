@@ -16,6 +16,9 @@ from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 # LEAD_RETENTION_DAYS, so the page and the purge cannot disagree.
 DEFAULT_LEAD_RETENTION_DAYS = 30
 MAX_LEAD_RETENTION_DAYS = 365
+# worker/src/retention.ts DEFAULT_KEEP_DAYS, used by the cron purge with no
+# override (a test keeps them equal and checks the call has no window argument).
+RAW_CLICK_KEEP_DAYS = 90
 
 
 class _Model(BaseModel):
@@ -38,7 +41,12 @@ class Privacy(_Model):
     intro: Annotated[str, StringConstraints(min_length=1, max_length=2000)] | None = (
         None
     )
-    retention_days: int = Field(default=90, ge=1, le=3650)
+    # The Worker deletes raw click rows at one fixed window and no deploy
+    # variable changes it, so the only honest value is the Worker's own; any
+    # other number would make the privacy page promise what the code does not do.
+    retention_days: int = Field(
+        default=RAW_CLICK_KEEP_DAYS, ge=RAW_CLICK_KEEP_DAYS, le=RAW_CLICK_KEEP_DAYS
+    )
     # The ONE lead retention setting: the privacy page prints it and the deploy
     # writes it to the Worker as LEAD_RETENTION_DAYS. Strict: a quoted number or
     # a boolean is a mistake, not a retention.

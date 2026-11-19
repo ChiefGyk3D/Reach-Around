@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from reach_around.config.analytics import AGGREGATE_KEEP_DAYS
 from reach_around.config.blocks import Live
 from reach_around.config.models import SiteConfig
+from reach_around.config.privacy import RAW_CLICK_KEEP_DAYS
 
 # The wording below is owner-approved copy (issue #598), used verbatim. Only the
 # {...} placeholders are filled from the config. Do not reword it here; change
@@ -69,22 +70,34 @@ LIVE_WHAT = (
 LIVE_WHY = "These checks show whether the creator’s channels are live."
 LIVE_KEPT = "The live checks keep no cookies or identifiers."
 
+# PLAYER_* and ALERTS_* are the corrected copy (second copy file, 2026-11-19);
+# it replaces the first file's versions.
 PLAYER_WHAT = (
-    "A Twitch, Kick, or YouTube player loads only after you click to play it. "
-    "The platform then sees your IP address, as it does with any embedded video. "
-    "This site does not control what the platform does with it."
+    "When the live block is on, the site can show a Twitch or Kick stream "
+    "player. The player loads only after you click to play. The platform then "
+    "sees your IP address."
 )
-PLAYER_WHY = "The player loads the stream you chose to play."
-PLAYER_KEPT = "The platform’s own rules apply. This site stores nothing."
+PLAYER_WHY = "The player lets you watch the stream on this site."
+PLAYER_KEPT = (
+    "The platform’s own rules apply. The site stores nothing about the player "
+    "or your IP address."
+)
 
 ALERTS_WHAT = (
-    "When owner alerts are on, the site can tell the creator when something "
-    "happens, such as a new inquiry. The alert can include your full or masked "
-    "IP address, or leave it out, based on the creator’s setting. It goes to "
-    "the creator’s own chat or mailbox."
+    "When alerts are on, the site can notify the creator when someone unlocks "
+    "the kit or a new lead is stored. A notice has fixed wording, the UTC time, "
+    "and a count. It may include your full or masked email address. It may "
+    "leave the address out and say “a visitor.” It never includes an IP "
+    "address, browser identification, cookie, token, country, or code derived "
+    "from you."
 )
-ALERTS_WHY = "Alerts tell the creator when an event happens."
-ALERTS_KEPT = "Alerts are outside the automatic deletion periods described above."
+ALERTS_WHY = (
+    "The notice tells the creator that a kit was unlocked or a new lead was stored."
+)
+ALERTS_KEPT = (
+    "Copies in the creator’s chat service or mailbox are not deleted "
+    "automatically by this site. The creator deletes them there."
+)
 
 
 @dataclass(frozen=True)
@@ -105,9 +118,9 @@ def collected_items(config: SiteConfig) -> list[Disclosure]:
             Disclosure(
                 what=CLICK_WHAT,
                 why=CLICK_WHY,
-                kept=CLICK_KEPT.replace(
-                    "{RETENTION_DAYS}", str(config.privacy.retention_days)
-                ),
+                # The Worker purges raw click rows at one fixed window (a test
+                # pins RAW_CLICK_KEEP_DAYS to it), never at a configured one.
+                kept=CLICK_KEPT.replace("{RETENTION_DAYS}", str(RAW_CLICK_KEEP_DAYS)),
                 sensitive=False,
             )
         )

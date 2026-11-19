@@ -176,7 +176,9 @@ What the public privacy page says today (owner decision 2026-11-19, #598): the
 hourly click record holds the link, its source label and the hour, with no IP
 address and no country; daily totals count clicks by source and by country,
 never together and never linked to a page view or a person; hourly records are
-deleted after `privacy.retention_days`, daily counts after 90 days and monthly
+deleted after 90 days (the Worker's fixed window in `worker/src/retention.ts`;
+`privacy.retention_days` accepts only 90 so the page cannot promise another
+number), daily counts after 90 days and monthly
 totals are kept up to 25 months; and clicks are counted even when the browser
 sends Global Privacy Control or Do Not Track (page views honor the signal,
 clicks do not yet; a follow-up issue changes that). The page is silent on the
