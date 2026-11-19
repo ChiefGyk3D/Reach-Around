@@ -138,20 +138,20 @@ CATEGORIES = (
     "operating system",
     "device",
     "language",
-    "window width",
+    "window size",
     "country",
     "region",
     "city",
     "referring site",
     "automated",
     "daily",
-    "IP address is never stored",
+    "IP address and raw browser identification are never stored",
 )
 
 
 def test_privacy_lists_every_derived_category_when_on() -> None:
     items = collected_items(make_config(analytics={"page_views": True}))
-    views = [i for i in items if "page views" in i.what]
+    views = [i for i in items if "Each view records" in i.what]
     assert len(views) == 1
     text = f"{views[0].what} {views[0].why} {views[0].kept}"
     for needle in CATEGORIES:
@@ -162,7 +162,7 @@ def test_privacy_lists_every_derived_category_when_on() -> None:
 def test_privacy_says_nothing_about_page_views_when_off() -> None:
     off = collected_items(make_config())
     text = " ".join(f"{i.what} {i.why} {i.kept}" for i in off).lower()
-    for needle in ("page view", "browser", "referring", "window width", "city"):
+    for needle in ("each view", "browser", "referring", "window size", "city"):
         assert needle not in text
 
 
@@ -170,7 +170,7 @@ def test_privacy_when_only_page_views_are_on(tmp_path: Path) -> None:
     build(tmp_path, analytics={"page_views": True}, features={"click_tracking": False})
     page = (tmp_path / "privacy" / "index.html").read_text()
     assert "collects nothing" not in page
-    assert "page view" in page.lower()
+    assert "Each view records" in page
 
 
 def test_golden_privacy_pages(tmp_path: Path, update_golden: bool) -> None:
@@ -252,20 +252,22 @@ def test_view_js_uses_no_fetch_xhr_storage_cookie_or_eval() -> None:
 def test_every_key_the_script_sends_has_a_disclosure_phrase() -> None:
     phrases = {
         "r": "referring site",
-        "u": "campaign label",
+        "u": "campaign",
         "s": "source label",
-        "w": "window width",
+        "w": "window size",
     }
     sent = set(re.findall(r'params\.append\("(\w)"', script_text()))
     assert sent == set(phrases)  # a new key must be added here and disclosed
     items = collected_items(make_config(analytics={"page_views": True}))
-    views = [i for i in items if "page views" in i.what]
+    views = [i for i in items if "Each view records" in i.what]
     assert len(views) == 1
     text = f"{views[0].what} {views[0].why}"
     for key in sorted(sent):
         assert phrases[key] in text, key
-    assert "utm_source" in text and "30 characters" in text
-    assert "s=" in text  # names the parameter the source label comes from
+    # The label rules the approved copy states (it no longer names the
+    # utm_source or s= parameters themselves).
+    assert "30-character limit" in text
+    assert "lower-case letters, digits, and hyphens" in text
 
 
 def test_view_js_checks_opt_outs_when_it_sends_not_only_at_start() -> None:

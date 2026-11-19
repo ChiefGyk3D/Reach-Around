@@ -6,10 +6,16 @@ exports, see the [Audience-analysis do-not-collect list](audience-analysis-priva
 This page is for the site owner who runs the media kit gate. It covers what the
 Worker keeps about a person who typed an email address into the gate, for how
 long, and how you honor a request to delete it. It is not legal advice, and the
-public privacy page your site shows is generated from `features.kit_gate`
-separately.
+public privacy page your site shows is generated from the site config
+(`features`, `analytics`, the live block and `alerts`) separately, in the
+owner-approved wording in `src/reach_around/site/privacy.py`.
 
-## Live status request: draft for owner review
+## Live status request
+
+The generated page carries this when the site has a live block (the item after
+the page views, followed by a player item that says the streaming platform sees
+the visitor's IP address once the visitor clicks to play). The page's short
+wording is `LIVE_WHAT` in `privacy.py`; the fuller description of the request is:
 
 When Live is enabled, your browser asks my site for the current stream status as
 soon as you open any tab page or the privacy page, then asks again every minute
@@ -164,4 +170,15 @@ a person. A raw click row carries at most a source label and never a country; co
 report prints a three-way cell. Day counts are kept 90 days, with a site-wide daily cap on their number; the monthly
 totals made from them are kept 25 months. Because nothing identifies a person,
 a deletion request cannot be matched to a counter row; the retention above is
-the control. The public privacy page states this in plain words.
+the control.
+
+What the public privacy page says today (owner decision 2026-11-19, #598): the
+hourly click record holds the link, its source label and the hour, with no IP
+address and no country; daily totals count clicks by source and by country,
+never together and never linked to a page view or a person; hourly records are
+deleted after `privacy.retention_days`, daily counts after 90 days and monthly
+totals are kept up to 25 months; and clicks are counted even when the browser
+sends Global Privacy Control or Do Not Track (page views honor the signal,
+clicks do not yet; a follow-up issue changes that). The page is silent on the
+landing and hop counters because those tables are not collected yet; the
+sentence about them returns when they are switched on.

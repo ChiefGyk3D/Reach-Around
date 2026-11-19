@@ -591,12 +591,13 @@ Requirements for the rewritten disclosure (plain words, American English):
 1. Say what is recorded per view: the page, the referring site's name only, an
    optional campaign label, and the window width letter (links only).
 2. Say that from the request the server works out and keeps only: browser and
-   operating system, device kind, language, **country, region and city**, a
-   likely-person-or-automated mark, and **a network type** (for example "looks
-   like a hosting provider, VPN or proxy"). This last item is missing from the
-   text today.
-3. Say that the network type is worked out on our own server from lists we hold,
-   and that no address is sent to anyone else.
+   operating system, device kind, language, **country, region and city**, and a
+   likely-person-or-automated mark. The page does NOT mention a network type:
+   the value is always `unknown` today, so claiming one would say more than the
+   code does (owner decision 2026-11-19, #598).
+3. Network type, "lists we hold" and the hosting, VPN or Tor wording stay off
+   the page until a network dataset ships (#412). When it does, this item and
+   the page text return together, with the guard phrase for the `net` column.
 4. Say that a daily code made from the address is kept for at most the rest of
    the day to count each visitor once, cannot be turned back into the address,
    and differs between our sites, so the sites cannot be linked.
@@ -606,7 +607,10 @@ Requirements for the rewritten disclosure (plain words, American English):
    records (7 days by default), the daily code (the rest of the day), anonymous
    totals (up to 90 days).
 7. Say that a browser sending Global Privacy Control or Do Not Track is not
-   counted, in both collection modes.
+   counted, in both collection modes. This holds for page views only. Clicks are
+   counted even when the signal is sent, and the click item on the page says so
+   (owner decision 2026-11-19, #598); a follow-up makes clicks honor the signal
+   and then the page drops the exception.
 8. Say that totals for small groups are merged into "other".
 9. State that there is no per-person deletion because nothing identifies a
    person, and say how long raw records live.
