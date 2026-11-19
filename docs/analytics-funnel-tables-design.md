@@ -1,6 +1,6 @@
 # Landing and hop funnel tables: design
 
-Status: design only, no code. Issue: ChiefGyk3D/Reach-Around#566 (deferred from
+Status: design only, no code. Owner decisions 1 to 8 DECIDED 2026-11-19 (all option A, see the end). Issue: ChiefGyk3D/Reach-Around#566 (deferred from
 #331 by the owner decision of 2026-11-11). Consumer: #334 (the report's funnel
 section). Related: #332 (Free-plan budget, merged as #578), #329 (source label).
 
@@ -38,7 +38,7 @@ design adds the landing and hop tables.
 | The deploy-time check models funnel writes at those caps; its extension point names this issue: add the caps to `FunnelCaps` and the writes to `funnelDailyWrites`, nothing else changes | `worker/src/funnelcaps.ts`, `docs/deploy.md` ("Extension point") |
 | Report floor of 5, remainder rule, joint suppression, fixed periods only for the funnel counters, a release ledger | `docs/report.md` ("Funnel counters: fixed periods, months and the floor") |
 | The report says landing and hop attribution "are not collected and are not inferred" | `docs/report.md`, `docs/analytics-design.md` section 6 |
-| "A hop carries only a closed source label" | `docs/audience-analysis-privacy.md` |
+| "A hop carries only a closed label" (reworded, decision 6) | `docs/audience-analysis-privacy.md` |
 | Per-site `sources`: closed list, at most 40 labels, `^[a-z0-9-]{1,30}$`, `other` and `direct` reserved | `docs/analytics-design.md` section 4, `worker/src/sites.ts` |
 
 ## 3. Definitions
@@ -49,7 +49,7 @@ today (`clickSource` in `worker/src/click.ts`, lines 147 to 154): the value is
 read through `URL.searchParams`, so percent escapes are decoded first, and the
 decoded text is then judged against `^[A-Za-z0-9-]{1,30}$`, lowercased and
 looked up in the closed list. The code comment says "judged raw", but the
-check runs on the decoded value. See Owner decision 8.
+check runs on the decoded value. Owner decision 8 (decided 2026-11-19) keeps this one shared parser for `s`, `h` and `l`.
 
 - **Source** (`s`): where the visitor came from (a bio link, a platform). Exists.
 - **Landing** (`l`): the page of OUR site the visitor was on when they clicked.
@@ -57,7 +57,7 @@ check runs on the decoded value. See Owner decision 8.
   page of a multi-page visit, so "landing" is defined as the page the click was
   made on. The build knows the page id when it renders the page, so `click.js`
   sends it as a build-time constant (for example from a `data-page` attribute),
-  never from a stored value. See Owner decision 1 for the alternative.
+  never from a stored value. Decided 2026-11-19 (Owner decision 1, option A); the alternatives are recorded there.
 - **Hop** (`h`): the closed label of the OUR surface the visitor came from
   one step earlier, carried in the URL of an internal cross-site link (links
   page to blog, blog to support). One step only, never a chain: each internal
@@ -93,7 +93,7 @@ Rules:
 - A hop label is a surface id (a site), not a person, handle or campaign. It
   has the same grammar as a source label, so the sentence in
   `docs/audience-analysis-privacy.md` ("a hop carries only a closed source
-  label") stays true in spirit; Owner decision 6 covers the wording.
+  label") is reworded by Owner decision 6 (decided 2026-11-19) to "a closed label", and hop and landing labels come from the site's own list.
 - Adding a label is a config change that needs no migration; removing one folds
   its old rows nowhere (they stay as written until retention removes them).
 
@@ -146,7 +146,7 @@ The same machinery as the existing counters: a general pool of cells per (site,
 day), reserved cells per destination, an hourly slice of a new-cell budget,
 one overflow row per (site, day, destination kind), counting never stops.
 
-Proposed Free-profile numbers (provisional, INFERRED, not measured):
+Free-profile numbers (decided 2026-11-19, Owner decision 3; the figures are still INFERRED, not measured):
 
 | Cap | Landing | Hop | Existing source | Existing country |
 |---|---|---|---|---|
@@ -157,8 +157,8 @@ Proposed Free-profile numbers (provisional, INFERRED, not measured):
 
 The new-cell hour budget: the Free profile today is 12 per (site, UTC hour)
 shared by two tables (`worker/src/funnelcaps.ts`). Four tables can make up to
-four new cells per click, so the proposed shared figure is 16. Owner decision 5
-asks whether landing and hop get their own slice so a flood of fake source
+four new cells per click, so the decided hour budget is 16. Owner decision 5 (decided 2026-11-19)
+gives landing and hop their own slice so a flood of fake source
 labels cannot use up the budget for them.
 
 Why the numbers are small: the vocabularies are closed, so the most distinct
@@ -281,13 +281,40 @@ before relying on it, so this is unverified):
 | Today, one site, no link ids | 78898 | 78.9 percent |
 | Proposed, one site, no link ids | 79178 | 79.2 percent |
 | Proposed, one site, 5 link ids | 79418 | 79.4 percent |
-| Proposed, one site, 20 link ids | 80138 | 80.1 percent |
+| Proposed, one site, 20 link ids, reserved 1 (untrimmed worst case) | 80138 | 80.1 percent |
+| Proposed, one site, 20 link ids, reserved 0 (chosen trim applied) | 79658 | 79.7 percent |
 
-Read this carefully: the headroom is small. The loader warns above 80 percent,
-and the 20-link case crosses it, so the build PR must either keep reserved cells
-for these tables at 0 (a link keeps only the `none` cell through the general
-pool) or lower the general caps. This is the single most important number to
-revisit after the week of measurement, and it is why Owner decision 3 exists.
+Arithmetic, with the per-site formula of `funnelcaps.ts`. The other writes
+(everything except this site's funnel rows) are 78898 - 758 = 78140. Per site:
+cells = min(general caps + links x 2 kinds x 4 tables x (reserved + 1), hour
+slices 24 x (16 + 1) = 408) + 8 overflow rows; writes = 3 x cells + 2 + 24 +
+month, with month = 2 x (100 + 120 + 40 + 30 + 8 + 1) = 598 (so 624 fixed). The
+general caps are 40 + 50 + 24 + 16 = 130.
+
+- Reserved 1: each link adds 2 x 4 x 2 = 16 cells. At 20 link ids, 130 + 320 +
+  8 = 458 cells, 3 x 458 + 624 = 1998 writes, 78140 + 1998 = 80138. This is the
+  untrimmed worst case. It is not the profile that applies to a site this size,
+  because the chosen rule (Owner decision 3, option A) sets reserved to 0 once a
+  site has more than 15 link ids. Applying the 408 hour bound of the formula
+  would lower it to 1872 writes (80012, 80.0 percent), still over 80 percent.
+- Reserved 0 (the profile for any site with more than 15 link ids): each link
+  adds 2 x 4 x 1 = 8 cells. At 20 link ids, 130 + 160 + 8 = 298 cells (under
+  the 408 hour bound), 3 x 298 + 624 = 1518 writes, 78140 + 1518 = 79658, which
+  is 79.7 percent.
+- Why 15: at 15 link ids with reserved 1, 130 + 240 + 8 = 378 cells, 3 x 378 +
+  624 = 1758 writes, 79898 (79.9 percent), under 80 percent. At 17 link ids
+  the hour bound binds and the figure passes 80 percent (80012), so a threshold
+  of "more than 15" trims before the warning level with a small margin.
+
+Read this carefully: the headroom is small, but the chosen rule keeps it. The
+loader warns above 80 percent. With the trim, the 20-link case is 79.7 percent,
+below the warning; only the untrimmed worst case crosses it. The build PR must
+implement the trim as a deterministic rule (more than 15 link ids on a site sets
+reserved to 0 for these tables; a link then keeps only the `none` cell through
+the general pool) and add a budget-check test at 15 and 16 link ids, or lower
+the general caps. This is the single most important number to revisit after the
+week of measurement, and it is why Owner decision 3 exists (decided 2026-11-19:
+reserved 1, trimmed to 0 if a site passes about 15 link ids).
 Other sites add their own rows to the check; nothing here sets a site count.
 
 Free-plan rollout (owner decision, 2026-11-19): only ONE site (the links page) turns on `landings` and `hops` on the Free plan for now. Two sites that both list both tables model at about 100,400 writes a day (the independent review reproduced 100,472 at 1 link id each and 100,376 at 0), over the 100,000 quota, and the kit routes fail closed (`loadKitLimits` throws `KitLimitsError` when worst exceeds quota). Even two sites with no new tables already model at 99,888 (99.9 percent), because page views cost about 20,000 a day per site, so the new tables only tip a full budget. A second site turns the tables on only after a paid plan or trimmed page-view caps. No cap number changes.
@@ -414,7 +441,7 @@ Python (`tests/`):
 Operational (not CI): the one-week Free-plan measurement records rows written and
 rows read per funnel table and compares them with section 10.
 
-## 14. Rollout (INFERRED, for Owner decision 4)
+## 14. Rollout (INFERRED, decided in Owner decision 4 on 2026-11-19)
 
 1. Build PR 1: config lists, parser, migration, counters, seal and roll-up, budget model. Ship with the report saying "collected but not yet shown in the report", since the Worker collects from this PR (this supersedes the earlier plan to keep saying "not collected"; the sentence is dropped here, as section 13 says).
 2. Let the tables fill during the Free-plan measurement week (`docs/deploy.md` open items) so one week of data covers all six counter tables.
@@ -422,40 +449,42 @@ rows read per funnel table and compares them with section 10.
 
 ## Owner decisions
 
-1. **What does "landing" mean?**
-   - A (recommended): the page of our site the click was made on, baked into the page by the build, sent as `l`. Nothing stored client-side.
+All eight were decided by the owner on 2026-11-19. Each chose option A, the recommended one. The other options stay visible as the record.
+
+1. **What does "landing" mean?** **DECIDED 2026-11-19: option A.**
+   - A (recommended, CHOSEN): the page of our site the click was made on, baked into the page by the build, sent as `l`. Nothing stored client-side.
    - B: the first page of the visit, carried forward in the URL across internal links. Richer, but a forwarded entry page plus `h` rebuilds more of a path, and it needs rules for every internal link.
    - C: no landing table; use the link-to-page map the funnel already has (`docs/analytics-design.md` section 6.1). Cheapest, but gives no cut for a destination that appears on several pages.
 
-2. **Does an internal link keep the visitor's `s` source?**
-   - A (recommended, chosen 2026-11-19; the link writer is planned and tracked in #593, so until it exists the hop table collects only `none`): the build drops `s` and writes only `h`. The hop table then says "from our surface", the source table says "from outside", with no chain.
+2. **Does an internal link keep the visitor's `s` source?** **DECIDED 2026-11-19: option A.**
+   - A (recommended, CHOSEN; the link writer is planned and tracked in #593, so until it exists the hop table collects only `none`): the build drops `s` and writes only `h`. The hop table then says "from our surface", the source table says "from outside", with no chain.
    - B: forward `s` along with `h`. Source survives a hop, but it makes the source count mean "first outside source", changing what the existing table means.
 
-3. **Which caps for the Free profile?** (section 10 shows headroom of about 0.8 percent of the 100000 figure at 20 link ids)
+3. **Which caps for the Free profile?** (section 10: at 20 link ids the total is 80.1 percent untrimmed and 79.7 percent with the chosen trim) **DECIDED 2026-11-19: option A.**
    - Decided 2026-11-19: only ONE site (the links page) turns on `landings` and `hops` on the Free plan for now. Two sites that both list both tables model at about 100,400 writes a day (the independent review reproduced 100,472 at 1 link id each and 100,376 at 0), over the 100,000 quota, and the kit routes fail closed (`loadKitLimits` throws `KitLimitsError` when worst exceeds quota). Even two sites with no new tables already model at 99,888 (99.9 percent), because page views cost about 20,000 a day per site, so the new tables only tip a full budget. A second site turns the tables on only after a paid plan or trimmed page-view caps. No cap number changes.
-   - A (recommended): landing 24, hop 16, reserved 1, monthly 40 and 30, hour budget 16, as proposed, then trim reserved to 0 if a site passes about 15 link ids.
+   - A (recommended, CHOSEN): landing 24, hop 16, reserved 1, monthly 40 and 30, hour budget 16, as proposed, then trim reserved to 0 if a site passes about 15 link ids.
    - B: smaller still (landing 12, hop 8, reserved 0): fits any link count, but folds earlier.
    - C: wait for the measurement week to set any number, and ship the tables with the existing caps only. Safest on budget; delays the build.
 
-4. **When does the report show them?**
-   - A (recommended): collect first (PR 1), measure alongside #332 for a week, then ship the report (PR 2).
+4. **When does the report show them?** **DECIDED 2026-11-19: option A.**
+   - A (recommended, CHOSEN): collect first (PR 1), measure alongside #332 for a week, then ship the report (PR 2).
    - B: ship tables and report together.
    - C: collect only, show the report after the paid-plan decision.
 
-5. **Hour budget slice for these tables.**
-   - A (recommended): a separate slice for landing and hop (one extra small table or a `scope` column rebuild, as 0016 did), so source and country floods cannot starve them and the reverse.
+5. **Hour budget slice for these tables.** **DECIDED 2026-11-19: option A.**
+   - A (recommended, CHOSEN): a separate slice for landing and hop (one extra small table or a `scope` column rebuild, as 0016 did), so source and country floods cannot starve them and the reverse.
    - B: share the existing slice, raised from 12 to 16. No schema change; one flood can starve all four.
 
-6. **Wording of "A hop carries only a closed source label"** in `docs/audience-analysis-privacy.md`.
-   - A (recommended): change it to "a closed label" and say hop and landing labels come from the site's own list.
+6. **Wording of "A hop carries only a closed source label"** (now "a closed label") in `docs/audience-analysis-privacy.md`. **DECIDED 2026-11-19: option A.**
+   - A (recommended, CHOSEN): change it to "a closed label" and say hop and landing labels come from the site's own list.
    - B: keep it and require every hop label to also be on the site's `sources` list (one vocabulary, fewer lists, but mixes "outside" and "our surface").
 
-7. **Where the vocabularies live.**
-   - A (recommended): per-site config lists (`landings`, `hops`), like `sources`.
+7. **Where the vocabularies live.** **DECIDED 2026-11-19: option A.**
+   - A (recommended, CHOSEN): per-site config lists (`landings`, `hops`), like `sources`.
    - B: one global list shared by every site (simpler, but a site shows labels it never uses and the cell count grows).
    - C: fixed in code (no config work, but every new page is a code change and a deploy).
 
-8. **Percent-encoded values of `s`, `h` and `l`.** Verified in `clickSource`: `URLSearchParams` decodes first, so `?s=inst%61gram` is the listed label today.
-   - A (recommended): keep one shared parser for all three. Percent escapes that decode to a valid label are accepted as that label; escapes that decode to anything else are `none`. No behavior change for `s`, nothing is stored (the decoded text is only compared against the closed list), and the three parameters cannot disagree.
+8. **Percent-encoded values of `s`, `h` and `l`.** Verified in `clickSource`: `URLSearchParams` decodes first, so `?s=inst%61gram` is the listed label today. **DECIDED 2026-11-19: option A.**
+   - A (recommended, CHOSEN): keep one shared parser for all three. Percent escapes that decode to a valid label are accepted as that label; escapes that decode to anything else are `none`. No behavior change for `s`, nothing is stored (the decoded text is only compared against the closed list), and the three parameters cannot disagree.
    - B: reject any raw query value containing `%` for all three. This changes `s` (a visible behavior change, with a test update) and needs a raw-query parser instead of `URLSearchParams`, with its own edge cases (`+`, repeated keys).
    - C: strict for `h` and `l` only. Two parser contracts for one kind of value; not recommended.
