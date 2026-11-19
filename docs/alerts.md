@@ -226,6 +226,7 @@ real zero and stays one. See [report.md](report.md#gaps) and
   notice instead of an alert, so the notice counts inside the limit; the next
   minute's first message says how many were held back (that count is kept in
   isolate memory, best effort). With `max_per_minute: 1` there is no notice.
+- The `click_ceiling_reached` health alert is the compensating control for click ceiling exhaustion, so it has its own small daily quota (2 units per UTC day, one for firing and one for cleared, kept apart from `DAILY_ALERT_BUDGET`) and a spent general budget cannot suppress it. The per-minute and per-channel limits and the condition's state dedupe still apply. Those at most 2 rows a day sit inside the model's margin. `DAILY_ALERT_BUDGET` of 0 still switches every alert off.
 - The daily ceiling is the kit's `DAILY_ALERT_BUDGET` (default 20 per UTC day).
   It counts events that obtained at least one send slot, that is attempted
   sends, once per event whatever the number of channels. An event with no

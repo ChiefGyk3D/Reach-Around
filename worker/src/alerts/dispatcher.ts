@@ -93,6 +93,9 @@ export interface DispatchDeps {
 }
 
 export const WINDOW_MS = MINUTE_MS;
+/** Daily units kept apart for the click-ceiling health signal (firing and cleared), outside DAILY_ALERT_BUDGET. */
+export const CEILING_RESERVE = 2;
+const CEILING_QUOTA_KEY = "ceiling";
 export const DEDUP_MS = 10 * 60_000;
 const DEDUP_MAX_ENTRIES = 200;
 /** Hard ceiling on the bytes of one outgoing message body. */
@@ -273,10 +276,11 @@ export function createDispatcher() {
       const day = windowStart("day", now);
       let claimed = false;
       let dailyTaken = false;
+      let dailyKey = "all";
       const granted: Array<{ ch: Channel; count: number }> = [];
       const undo = async (): Promise<void> => {
         for (const g of granted) await refundQuota(env.DB, site, g.ch.id, "minute", minute).catch(() => undefined);
-        if (dailyTaken) await refundQuota(env.DB, site, "all", "day", day).catch(() => undefined);
+        if (dailyTaken) await refundQuota(env.DB, site, dailyKey, "day", day).catch(() => undefined);
         if (claimed && hash !== null) await releaseDedup(env.DB, site, hash).catch(() => undefined);
       };
       let errored = false;
@@ -308,7 +312,13 @@ export function createDispatcher() {
           await undo();
           return receipt;
         }
-        if ((await reserveQuota(env.DB, site, "all", "day", day, dailyBudget)) === null) {
+        // The click-ceiling health signal has its own small daily quota ("ceiling", CEILING_RESERVE units),
+        // so the general budget cannot suppress it; the per-minute and per-channel limits above still apply.
+        // An owner who set the general budget to 0 switched alerts off, and that still holds.
+        const reserved = event.kind === "analytics_health" && event.condition === "click_ceiling_reached";
+        dailyKey = reserved ? CEILING_QUOTA_KEY : "all";
+        const dailyLimit = reserved ? (dailyBudget === 0 ? 0 : CEILING_RESERVE) : dailyBudget;
+        if ((await reserveQuota(env.DB, site, dailyKey, "day", day, dailyLimit)) === null) {
           status.dailyRefused++;
           log.log("alert", "over_budget", "route_budget");
           await undo();

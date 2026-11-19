@@ -2,7 +2,7 @@
 // Analytics health and collection coverage (issues #401, #402). Mocked fetch only: no network, no secret.
 import { env as testEnv } from "cloudflare:workers";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { createDispatcher } from "../src/alerts/dispatcher";
+import { CEILING_RESERVE, createDispatcher } from "../src/alerts/dispatcher";
 import { formatAlert } from "../src/alerts/format";
 import { HEALTH_CONDITIONS } from "../src/alerts/types";
 import {
@@ -233,6 +233,54 @@ describe("click ceiling (hardening, Refs #566)", () => {
     expect(body).toContain("dropped clicks today: at least 500");
     expect(body).not.toContain("links");
     expect(await stateOf("click_ceiling_reached")).not.toBeNull();
+  });
+
+  const spendGeneral = (n: number) =>
+    DB.prepare("INSERT INTO alert_quota (site, channel, scope, window_start, count) VALUES ('links.example.test','all','day',?1,?2)")
+      .bind(Date.UTC(2026, 10, 9), n)
+      .run();
+
+  it("with the general alert budget spent, the owner still gets exactly one ceiling notification (reserved unit)", async () => {
+    await healthy();
+    await DB.prepare("DELETE FROM alert_quota").run();
+    await spendGeneral(50);
+    await counter("cd-links", day, 5);
+    const d = createDispatcher();
+    const a = await tick(env(), d);
+    expect(a.res.active).toContain("click_ceiling_reached");
+    expect(a.f.bodies.filter((b) => b.includes("click ceiling was reached today"))).toHaveLength(1);
+    expect(await stateOf("click_ceiling_reached")).not.toBeNull();
+    // Later hours of the same day: state dedupe, nothing more is sent.
+    const b = await tick(env(), d, mockFetch(), NOW + HOUR_MS);
+    expect(b.f.bodies.filter((x) => x.includes("click ceiling"))).toHaveLength(0);
+  });
+
+  it("the reservation is bounded: no more than CEILING_RESERVE ceiling messages a UTC day, and the general budget is untouched", async () => {
+    await healthy();
+    await DB.prepare("DELETE FROM alert_quota").run();
+    await spendGeneral(50);
+    const e = env();
+    const d = createDispatcher();
+    const sent: number[] = [];
+    for (let i = 0; i < 6; i++) {
+      // Flap the condition each hour so every tick wants to send a transition.
+      await counter("cd-links", day, i % 2 === 0 ? 5 : 0);
+      await DB.prepare("DELETE FROM counters WHERE key GLOB 'cd-*' AND count = 0").run();
+      const t = await tick(e, d, mockFetch(), NOW + i * 10 * 60_000);
+      sent.push(t.f.bodies.filter((b) => b.includes("click")).length);
+    }
+    expect(sent.reduce((a, b) => a + b, 0)).toBeLessThanOrEqual(CEILING_RESERVE);
+    const row = await DB.prepare("SELECT count FROM alert_quota WHERE channel = 'all' AND scope = 'day'").first<{ count: number }>();
+    expect(row?.count).toBe(50);
+    const r = await DB.prepare("SELECT count FROM alert_quota WHERE channel = 'ceiling' AND scope = 'day'").first<{ count: number }>();
+    expect(r?.count).toBeLessThanOrEqual(CEILING_RESERVE);
+  });
+
+  it("the reserve does not exist when the owner set the alert budget to 0", async () => {
+    await healthy();
+    await counter("cd-links", day, 5);
+    const a = await tick(env({ DAILY_ALERT_BUDGET: "0" }));
+    expect(a.f.calls).not.toHaveBeenCalled();
   });
 
   it("fires on a dropped click alone, sums across sites, and ignores other days", async () => {
