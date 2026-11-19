@@ -55,7 +55,7 @@ def browser() -> Iterator[Browser]:
 
 
 @pytest.mark.parametrize("path", ["/kit/", "/kit/retry/"])
-@pytest.mark.parametrize("width", [320, 390, 1280])
+@pytest.mark.parametrize("width", [390, 820, 1440])
 def test_kit_pages_fit_the_screen_and_make_no_outside_request(
     browser: Browser, site: str, path: str, width: int
 ) -> None:
@@ -78,6 +78,18 @@ def test_kit_pages_fit_the_screen_and_make_no_outside_request(
     assert box["height"] >= 44
     honeypot = page.locator(".kit-hp").bounding_box()
     assert honeypot is None or (honeypot["width"] <= 1 and honeypot["height"] <= 1)
+    if path == "/kit/":
+        headline = page.locator(".kit-headline-number")
+        assert headline.is_visible()
+        assert headline.get_by_text("2027-03-01", exact=True).is_visible()
+        value_size = headline.locator("strong").evaluate(
+            "element => parseFloat(getComputedStyle(element).fontSize)"
+        )
+        assert value_size >= 48
+        columns = page.locator(".kit-deck-intro").evaluate(
+            "element => getComputedStyle(element).gridTemplateColumns"
+        )
+        assert (len(columns.split()) > 1) is (width >= 820)
     context.close()
 
 

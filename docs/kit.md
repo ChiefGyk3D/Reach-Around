@@ -121,12 +121,19 @@ included in the private PDF; they never enter the public page or public PDF.
 
 ### Public page
 
-Header (the optional wide photo, kit title, optional content tags and the description), the headline numbers each with the date
-it was read, and the unified total. The total adds up the numbers that are not
+The page uses a dark press-deck layout built from the shared brand components.
+Its introduction and audience panel stack on a phone and sit side by side from
+820 px upward. The combined audience is the one large headline number. Its
+visible "As of" date is the oldest date among the metrics included in that
+total, so the number and date come from the same resolved inputs as the detail
+table. The optional wide photo, kit title, content tags and description remain
+in the introduction.
+
+The total adds up the numbers that are not
 marked `in_total: false`; it says how many numbers it adds up and the date of
 the oldest one, and notes that people who follow on several platforms are
 counted more than once. A number with no value is left out. With nothing to add
-there is no total line.
+there is no headline total.
 
 Optional `analytics` rows render a platform tab row and one stat-tile grid for
 each configured platform. The allowed platforms are `instagram`, `tiktok`,

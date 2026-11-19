@@ -23,8 +23,8 @@ from reach_around.site.kit import GATED_FILE
 def test_tags_render_in_the_public_header_before_the_numbers(tmp_path: Path) -> None:
     out, _ = build(tmp_path, make_config(gated_doc(tags=["Gaming", "Hardware"])))
     html = (out / "kit" / "index.html").read_text(encoding="utf-8")
-    assert 'class="profile-tag">Gaming</li>' in html
-    assert 'class="profile-tag">Hardware</li>' in html
+    assert 'class="profile-tag ra-c-chip ra-c-chip--amber">Gaming</li>' in html
+    assert 'class="profile-tag ra-c-chip ra-c-chip--amber">Hardware</li>' in html
     assert html.index("profile-tags") < html.index("Audience numbers")
     assert html.index("kit-title") < html.index("profile-tags")
 
@@ -32,7 +32,7 @@ def test_tags_render_in_the_public_header_before_the_numbers(tmp_path: Path) -> 
 def test_tags_render_on_the_gated_page_too(tmp_path: Path) -> None:
     _, gated = build(tmp_path, make_config(gated_doc(tags=["Gaming"])))
     page = (gated / GATED_FILE).read_text(encoding="utf-8")
-    assert 'class="profile-tag">Gaming</li>' in page
+    assert 'class="profile-tag ra-c-chip ra-c-chip--amber">Gaming</li>' in page
 
 
 def test_tags_alone_do_not_create_a_gated_page(tmp_path: Path) -> None:

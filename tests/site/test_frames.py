@@ -93,7 +93,7 @@ def test_default_is_none_and_writes_nothing(tmp_path: Path) -> None:
     out = build(tmp_path, None)
     assert not list((out / "static").glob("frame.*.css"))
     for rel, html in pages(out).items():
-        assert "ra-" not in html and "frame" not in html, rel
+        assert "ra-bx" not in html and "frame" not in html, rel
 
 
 @pytest.mark.parametrize("bad", ["L1", "l4", "", "full", True, 1])
@@ -261,7 +261,7 @@ def test_an_override_does_nothing_while_the_frame_is_none(tmp_path: Path) -> Non
         gated_out=out.parent / (out.name + "-g"),
     )
     for rel, html in pages(out).items():
-        assert "ra-" not in html, rel
+        assert "ra-bx" not in html, rel
     assert not list((out / "static").glob("frame*"))
 
 
@@ -283,7 +283,7 @@ def test_nothing_is_framed_when_off(tmp_path: Path) -> None:
         gated_out=out.parent / (out.name + "-g"),
     )
     for rel, html in pages(out).items():
-        assert "ra-" not in html, rel
+        assert "ra-bx" not in html, rel
     assert not list((out / "static").glob("frame*"))
 
 
@@ -357,7 +357,8 @@ def test_the_gated_page_carries_no_frame(tmp_path: Path) -> None:
     out, gated = tmp_path / "out", tmp_path / "gated"
     build_site(SiteConfig.model_validate(data), out, today=TODAY, gated_out=gated)
     text = (gated / "kit.html").read_text(encoding="utf-8")
-    assert "ra-" not in text and "<svg" not in text and "frame." not in text
+    assert "ra-bx" not in text and "ra-fa" not in text
+    assert "<svg" not in text and "frame." not in text
 
 
 def test_plan_levels() -> None:

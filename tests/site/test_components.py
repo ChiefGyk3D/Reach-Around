@@ -148,8 +148,9 @@ def test_the_sheet_renders_every_class_in_every_state() -> None:
     assert 'content="noindex"' in html
 
 
-def test_components_are_published_but_not_linked_by_any_page() -> None:
+def test_components_are_linked_only_by_the_media_kit_slice() -> None:
     template = (
         resources.files("reach_around.site") / "templates" / "base.html"
     ).read_text(encoding="utf-8")
-    assert "components.css" not in template
+    assert "{% if has_kit is defined and has_kit %}" in template
+    assert 'asset("static/components.css")' in template

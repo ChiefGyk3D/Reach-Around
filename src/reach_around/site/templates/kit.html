@@ -5,6 +5,7 @@
 {% set page_frames = frame_plan|length > 0 %}
 {% block content %}
 <section class="kit" aria-labelledby="kit-title">
+<div class="kit-deck-intro">
 <div class="kit-head{% if "hero" in frame_plan %}{{ frames.cls("hero") }}{% endif %}">
 {% if kit.photo %}
 <img class="kit-photo" src="{{ asset_url(kit.photo, root) }}" alt="" width="1200" height="675">
@@ -13,7 +14,7 @@
 {% if kit.tags %}
 <ul class="profile-tags kit-tags">
 {% for tag in kit.tags %}
-<li class="profile-tag">{{ tag }}</li>
+<li class="profile-tag ra-c-chip ra-c-chip--amber">{{ tag }}</li>
 {% endfor %}
 </ul>
 {% endif %}
@@ -23,6 +24,7 @@
 {% endif %}
 </div>
 {{ numbers(kit, "kit-numbers-title", true, zone_choices) }}
+</div>
 {{ analytics(kit, "kit-analytics-title") }}
 {% if kit.recent_posts %}
 <section class="kit-recent" aria-labelledby="kit-recent-title">
@@ -49,7 +51,7 @@
 </section>
 {% endif %}
 {% if form %}
-<section class="kit-gate-box" aria-labelledby="kit-gate-title">
+<section class="kit-gate-box ra-c-plate ra-c-plate--carbon" aria-labelledby="kit-gate-title">
 <h3 id="kit-gate-title"{% if frame_plan %} class="{{ frames.cls("head")|trim }}"{% endif %}>More details</h3>
 <p>{{ form.categories | capitalize }} are shown after a short check. Enter an email address and pass the check to see them.</p>
 <p class="kit-note">The address is not checked, and nothing is sent to it. It is kept for a limited time so the owner can follow up; see the <a href="{{ root }}privacy/">privacy page</a> for what is kept and for how long.</p>

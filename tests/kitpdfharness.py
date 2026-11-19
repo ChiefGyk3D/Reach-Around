@@ -287,7 +287,8 @@ def fake_renderer(html: str, work: Path) -> bytes:
     parser = _Text()
     parser.feed(html)
     lines = parser.lines
-    # 40 lines a page: the first page ends with a ligature glyph, which must not
-    # land inside a table row.
-    pages = [lines[i : i + 40] for i in range(0, len(lines), 40)] or [["empty"]]
+    # 41 lines a page (was 40; the layout B headline moved a break into a row):
+    # the first page ends with a ligature glyph, which must not land inside a
+    # table row.
+    pages = [lines[i : i + 41] for i in range(0, len(lines), 41)] or [["empty"]]
     return make_pdf(pages, title="Chromium title")
