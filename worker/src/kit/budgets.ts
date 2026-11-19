@@ -88,12 +88,13 @@ export const CLICK_DAILY_WRITES = 8_000;
 /**
  * Click funnel worst case per day at `caps` (default: the caps the Worker enforces, funnelcaps.ts),
  * for the sites the environment configures (at least one, as for page views). The sites' link ids set
- * the reserved cells. Counting on existing cells stays in CLICK_DAILY_WRITES above.
+ * the reserved cells; a site that lists `landings` or `hops` also writes those tables, one that does not, does not.
+ * Counting on existing cells stays in CLICK_DAILY_WRITES above.
  */
 export function funnelDailyWritesFor(env: PageViewBudgetEnv, caps: FunnelCaps = FUNNEL_CAPS): number {
   const r = loadSites(env ?? {});
   // A malformed entry disables only itself (sites.ts); the valid ones are still served, so count them.
-  const sites = r.sites.length > 0 ? r.sites.map((s) => ({ links: s.linkIds.size })) : [{ links: 0 }];
+  const sites = r.sites.length > 0 ? r.sites.map((s) => ({ links: s.linkIds.size, landings: s.landings !== undefined, hops: s.hops !== undefined })) : [{ links: 0 }];
   return funnelDailyWrites(caps, sites);
 }
 /** Default funnel figure: one site with no link ids at the Worker's caps. */

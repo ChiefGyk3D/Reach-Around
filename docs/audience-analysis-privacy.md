@@ -6,7 +6,7 @@ log, cache, queue and export:
 
 - No raw or partial IP address.
 - No user-agent string, TLS or HTTP fingerprint, or other fingerprinting signal.
-- No cross-site or third-party identifier. A hop carries only a closed source label.
+- No cross-site or third-party identifier. A hop carries only a closed label (a source, or the label of one of our own pages from the site's own list).
 - No cookie, `localStorage`, `sessionStorage` or `IndexedDB` value is used to recognize a visitor.
 - No analytics row is joined to an individual, including an email, account, handle, lead or donation.
 - No precise location. Clicks use country only, never coordinates, postal code, ASN or organization.

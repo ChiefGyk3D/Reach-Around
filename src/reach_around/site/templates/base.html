@@ -64,7 +64,7 @@
 <script src="{{ root }}{{ asset("static/zone.js") }}" defer></script>
 {% endif %}
 </head>
-<body{% if page_views and page_id %} data-page-id="{{ page_id }}" data-view-route="{{ view_route }}"{% endif %}>
+<body{% if page_views and page_id %} data-page-id="{{ page_id }}" data-view-route="{{ view_route }}"{% endif %}{% if click_tracking and page_id is defined and page_id %} data-landing="{{ page_id }}"{% endif %}>
 <a class="skip-link" href="#content">{{ skip_label if skip_label is defined else "Skip to links" }}</a>
 <main id="content"{% if wide is defined and wide %} class="main-wide"{% endif %}>
 {% include "_nav.html" %}

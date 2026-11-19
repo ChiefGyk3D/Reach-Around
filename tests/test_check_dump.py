@@ -161,6 +161,28 @@ FUNNEL_ROWS = (
         "click_capacity", "site, day, marked_at", "'links', '2027-01-05', 1792000000000"
     )
     + _ins("click_funnel_state", "site, from_day", "'links', '2027-01-01'")
+    + _ins(
+        "click_landing_daily",
+        "site, day, link_id, destination_kind, landing, clicks",
+        "'links', '2027-01-05', 'twitch', 'link', 'home', 12",
+    )
+    + _ins(
+        "click_hop_daily",
+        "site, day, link_id, destination_kind, hop, clicks",
+        "'links', '2027-01-05', 'twitch', 'link', 'blog', 3",
+    )
+    + _ins(
+        "click_landing_monthly",
+        "site, month, link_id, destination_kind, landing, clicks",
+        "'links', '2027-01', 'twitch', 'link', 'home', 40",
+    )
+    + _ins(
+        "click_hop_monthly",
+        "site, month, link_id, destination_kind, hop, clicks",
+        "'links', '2027-01', 'twitch', 'link', 'other', 40",
+    )
+    + _ins("click_budget_lh", "site, day, hour, clicks", "'links', '2027-01-05', 12, 16")
+    + _ins("click_landing_state", "site, from_day", "'links', '2027-01-05'")
     + _ins("click_seal", "site, day, sealed_at", "'links', '2027-01-05', 1792000000000")
     + _ins(
         "click_month_log",

@@ -151,12 +151,16 @@ reach.
 ## Click counters (funnel rollups, aggregate only)
 
 Besides the hour-rounded click rows (kept 90 days), the Worker keeps counts of
-clicks per day: by link and source label, and by link and country. A counter
-row is a count and closed labels (a link id, a label from the site's fixed list
-or `direct` or `other`, a two-letter country code). Not collected: a cookie, a
+clicks per day: by link and source label, by link and country, by link and landing
+label (the page of ours the click was made on) and by link and hop label (the page
+of ours the visitor came from, one step). A counter row is a count and closed labels
+(a link id, a label from the site's fixed list or `direct`, `none` or `other`, a
+two-letter country code). The landing label is a constant the build puts on the page, and the hop
+label is read from the page address; neither is stored in the browser, and each is a
+separate count that is never joined to another. Not collected: a cookie, a
 stored identifier, an IP address, a user agent, a referrer address, a timestamp
 finer than a day on these tables, or any link between a click and a page view or
-a person. A raw click row carries at most a source label and never a country; country exists only in the counter (rows written before this change are cleared by an owner-run script, `scripts/clear-click-country.sh`, after the new Worker is counting). Source and country are never stored together, and no
+a person. A raw click row carries at most a source label and never a country; country exists only in the counter (rows written before this change are cleared by an owner-run script, `scripts/clear-click-country.sh`, after the new Worker is counting). Source, country, landing and hop are never stored together, and no
 report prints a three-way cell. Day counts are kept 90 days, with a site-wide daily cap on their number; the monthly
 totals made from them are kept 25 months. Because nothing identifies a person,
 a deletion request cannot be matched to a counter row; the retention above is
