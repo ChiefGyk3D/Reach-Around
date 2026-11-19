@@ -43,16 +43,21 @@ for the service address: the sink always talks to `https://api.doppler.com`. The
 ## Know before you switch it on
 
 - The API token: stdin is the preferred source. If the environment variable is
-  used, the run reads it once and removes it from its own environment before
-  any network work. That narrows the exposure; it cannot undo what the shell,
+  used, the program removes it from its own environment at startup, before
+  the arguments are read, and holds it privately only for the sink. A run that
+  does not use the sink drops it. That narrows the exposure; it cannot undo what the shell,
   service manager or launcher already did with the variable.
 - Single writer. Doppler's update call returns no revision that a read could be
   pinned to (docs.doppler.com, secrets update, read 2026-11-19), so the
   read-back proves the value was stored at read time, not that no one wrote
   after it. Give each project and config one owner: this collector run. The tool
-  takes an advisory lock per project and config (a file under the state
-  directory holding only a process id) and refuses a second run of itself; it
-  cannot stop other writers, so keep people and other jobs out of that config.
+  takes an advisory lock per project and config (a file in one fixed state
+  folder under the account's home from the system user database, not from
+  `HOME` or `XDG_STATE_HOME`, holding only a process id) before any other work,
+  and refuses a second run of itself at once. The folder and file must be owned
+  by the account, the folder mode 0700 and the file mode 0600 with one link;
+  anything else is refused with `unsafe_state`. A local lock cannot stop writers
+  on other hosts or accounts, so keep people and other jobs out of that config.
 
 - A write that lands but fails verification (or times out) leaves the new value
   in the manager while the run keeps the old one. Twitch and TikTok rotate the

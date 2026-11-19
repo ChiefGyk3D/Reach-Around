@@ -631,7 +631,9 @@ def test_stdin_run_also_clears_a_stray_env_token(
 
 
 @pytest.fixture(autouse=True)
-def lock_home(tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch) -> Path:
+def lock_home(
+    tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
+) -> Path:
     """Point the lock root at a scratch home: no test writes under the real one.
 
     The seam is a module function; the CLI and the environment cannot reach it.
@@ -775,15 +777,13 @@ def test_refresh_refuses_a_second_writer_through_the_real_path(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     """The first run holds both locks; the second must fail fast, before any request."""
-    from reach_around.counts.files import FileLock
+    from reach_around.counts.files import FileLock as real_lock
 
-    real_lock = counts_cmd.FileLock
     monkeypatch.setattr(
         counts_cmd,
         "FileLock",
         lambda path, wait=120.0: real_lock(path, wait=0.2),
     )
-    assert FileLock is real_lock
     inner = doppler.transport(FakeTransport(twitch_routes()))
     state: dict[str, Any] = {"nested": False}
 
@@ -813,9 +813,10 @@ def test_scope_lock_is_taken_before_the_output_lock(
     monkeypatch: pytest.MonkeyPatch,
     doppler: FakeDoppler,
 ) -> None:
+    from reach_around.counts.files import FileLock as real_lock
+    from reach_around.counts.secret_sink import scope_lock as real_scope
+
     order: list[str] = []
-    real_lock = counts_cmd.FileLock
-    real_scope = counts_cmd.scope_lock
 
     class Spy:
         def __init__(self, path: Path, wait: float = 120.0) -> None:
