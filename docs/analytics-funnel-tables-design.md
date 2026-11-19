@@ -44,7 +44,12 @@ design adds the landing and hop tables.
 ## 3. Definitions
 
 Three closed labels can travel with a click. Each is one value from a list the
-site owner writes in config. Each is judged exactly like `s` today.
+site owner writes in config. Each is parsed with the same code path as `s`
+today (`clickSource` in `worker/src/click.ts`, lines 147 to 154): the value is
+read through `URL.searchParams`, so percent escapes are decoded first, and the
+decoded text is then judged against `^[A-Za-z0-9-]{1,30}$`, lowercased and
+looked up in the closed list. The code comment says "judged raw", but the
+check runs on the decoded value. See Owner decision 8.
 
 - **Source** (`s`): where the visitor came from (a bio link, a platform). Exists.
 - **Landing** (`l`): the page of OUR site the visitor was on when they clicked.
@@ -222,6 +227,31 @@ is written once (`docs/analytics-design.md` threat B6): landing and hop must
 not be added to a month file that already exists, because a changed month is
 refused. They appear only in months closed after `from_day`.
 
+**Archive format and cutover (verified against the code).** The v1 record has
+exactly the keys `version, site, month, floor, capacity_ok, sources, countries`
+(`_KEYS` in `archive.py`, line 58), the reader accepts only
+`ARCHIVE_VERSION == 1` (line 310) and a different payload for an existing month
+is refused. Adding fields to v1 is therefore not possible. The rule:
+
+- **v2** is a new format version (`ARCHIVE_VERSION` becomes 2 for new writes).
+  A v2 record has the v1 keys plus `landings` and `hops`, and every row in
+  every list carries `destination_kind` (see section 11, prerequisite).
+- **Cutover.** v2 starts at the first month that closes after `from_day`
+  (section 8). That month name is recorded as `archive_v2_from_month`
+  (INFERRED name) beside `from_day`. Month files before it stay v1, are never
+  rewritten and are read unchanged. Months from it on are written as v2 only.
+- **Reader.** It accepts v1 and v2. For a v1 file the key set must equal the v1
+  set exactly and `landings` and `hops` are "not collected", never zero. For a
+  v2 file the key set must equal the v2 set exactly. A v1 file at or after the
+  cutover month, or a v2 file before it, is refused as a schema mismatch.
+- **Write-once holds.** No existing file is touched; the same data again is a
+  no-op and different data is refused, in both versions. v1 rows have no kind
+  (the existing `_ROW_KEYS` are `link_id, label, clicks`); they are read as
+  before and are not reinterpreted.
+- Tests: a v1 month file is read unchanged after the change; a v2 file in a
+  pre-cutover month is refused (negative); a v1 file after the cutover is
+  refused; a second write of a different v2 payload is refused.
+
 ## 10. Free-plan row-count budget (estimates)
 
 Method: extend the model already in `worker/src/funnelcaps.ts`
@@ -276,6 +306,21 @@ a row, about 140 to 460 cells a day). INFERRED and not a constraint.
 #334 added the source and country sections; this design only extends the
 pattern, so the report change is small.
 
+- **Prerequisite: destination kind in the export key.** Migration 0016 made
+  `(site, day or month, link_id, destination_kind, label)` the counter key. The
+  Python side did not follow: the four existing click `Spec` entries
+  (`src/reach_around/funnel/export.py` lines 148 to 203) list `destination_kind`
+  as a column, but their `key` is `(site, day or month, link_id, label)`, so a
+  `link` row and a `social_icon` row with the same id and label would be
+  refused as duplicates or merged. This must be fixed first, in its own change
+  before the new specs: add `destination_kind` to `key` and to `required` on
+  those four specs, then carry it through the report grouping, the CSV
+  (`csvout.py`), the owner page and the archive rows (a `destination_kind`
+  field on each row, in v2). The four new specs are written with kind in the
+  key from the start. Test: two rows differing only in kind are accepted and
+  kept apart through export, report, CSV and archive (negative: two rows with
+  the same kind are still refused as duplicates). The value is only `link` or
+  `social_icon`, as the 0016 CHECK says.
 - **Export.** `reach_around.funnel.export` gets four more `Spec` entries (the
   list at `src/reach_around/funnel/export.py` lines near 148 to 190 is the
   model: column map, required columns, strict row validation). A missing table
@@ -344,7 +389,7 @@ case proving the guard bites. Reviewers revert-prove each fix.
 
 Worker (vitest, `worker/test`):
 
-1. **Parsing.** For `l` and `h`: one valid listed value is kept; unlisted valid is `other`; missing is `none`; repeated, over 30 chars, non-ASCII, Kelvin sign, dotless i, percent-encoded, empty, whitespace are all `none` and store no text. A site without `landings` or `hops` writes no cell (negative case: a site with them does).
+1. **Parsing.** For `l` and `h`: one valid listed value is kept; unlisted valid is `other`; missing is `none`; repeated, over 30 chars, non-ASCII, Kelvin sign, dotless i, empty, whitespace, and a percent escape that decodes to anything outside `[A-Za-z0-9-]` (for example `%20`, `%C4%B1`) are all `none` and store no text; a percent escape that decodes to a listed label (`inst%61gram`) is the listed label, exactly as `s` is today (Owner decision 8, recommended A). Add the same case to the `s` tests so the three parameters cannot drift. A site without `landings` or `hops` writes no cell (negative case: a site with them does).
 2. **Counting.** One click writes exactly one to each enabled table; sealed day writes nothing; link and social-icon kinds stay separate cells.
 3. **Caps and fold.** A flood of distinct valid labels past the pool folds into `overflow-all` and `other`; existing cells keep counting; reserved cells survive a flood of fake labels on another destination; the hour slice caps new cells and folds the rest.
 4. **Budget model.** Extend `worker/test/kit/funnelbudget.test.ts`: the modeled rows are at least the rows a real flood writes (negative: a deliberately reduced model fails); `FUNNEL_CAPS` still the only copy.
@@ -402,3 +447,8 @@ rows read per funnel table and compares them with section 10.
    - A (recommended): per-site config lists (`landings`, `hops`), like `sources`.
    - B: one global list shared by every site (simpler, but a site shows labels it never uses and the cell count grows).
    - C: fixed in code (no config work, but every new page is a code change and a deploy).
+
+8. **Percent-encoded values of `s`, `h` and `l`.** Verified in `clickSource`: `URLSearchParams` decodes first, so `?s=inst%61gram` is the listed label today.
+   - A (recommended): keep one shared parser for all three. Percent escapes that decode to a valid label are accepted as that label; escapes that decode to anything else are `none`. No behavior change for `s`, nothing is stored (the decoded text is only compared against the closed list), and the three parameters cannot disagree.
+   - B: reject any raw query value containing `%` for all three. This changes `s` (a visible behavior change, with a test update) and needs a raw-query parser instead of `URLSearchParams`, with its own edge cases (`+`, repeated keys).
+   - C: strict for `h` and `l` only. Two parser contracts for one kind of value; not recommended.
