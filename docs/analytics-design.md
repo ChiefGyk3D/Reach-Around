@@ -383,7 +383,8 @@ Per site, per UTC day:
   page sent with a click (`click_events`, then fixed-period source-to-destination
   tables under the floor) and never claims "visitors from X clicked Y" as a
   count of people or ties a click to a view. Landing and hop attribution are not
-  collected. See [report.md](report.md) ("Link clicks by source" and "Funnel
+  collected; their design is [analytics-funnel-tables-design.md](analytics-funnel-tables-design.md)
+  (issue #566, not built). See [report.md](report.md) ("Link clicks by source" and "Funnel
 counters").
 - Default funnel counts likely-human views only (class `h`); the other classes
   are shown in a separate traffic-quality panel.
