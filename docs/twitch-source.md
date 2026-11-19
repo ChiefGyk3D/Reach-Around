@@ -59,8 +59,9 @@ numbers:
   not stored, so there is no early warning before the first 401.
 - `auto_refresh: true` is opt-in and is refused (`refresh_needs_sink`, before
   any request) unless the caller supplies a sink that stores the rotated pair.
-  The shipped `NoopSink` does not count, and the command line supplies no other
-  sink, so today the setting only works for code that embeds the collector.
+  The shipped `NoopSink` does not count, and the command line supplies no sink
+  by default, so the setting works for code that embeds the collector or with
+  the opt-in `--token-sink doppler` flag (docs/token-sink.md).
 
 ## Failure words
 
