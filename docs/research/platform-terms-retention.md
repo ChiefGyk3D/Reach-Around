@@ -1,7 +1,7 @@
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 # Platform terms: retention, deletion and display
 
-Refs #382 (epic #364, social platform analytics). Draft for the maintainer. This is a reading of vendor pages, not legal advice. Rows above the Bluesky row were read on 2026-11-19 from the vendor page named in the Source column. The Bluesky, Mastodon, Discord and GitHub rows carry only what the repo research notes record (read 2026-10-23, drafts not yet independently reviewed), each cell tagged with its source path, date and status. VERIFIED means the quoted or paraphrased rule is on that page. INFERRED means the rule is carried over from a related page. NOT FOUND means the text could not be located.
+Refs #382 (epic #364, social platform analytics). Draft for the maintainer. This is a reading of vendor pages, not legal advice. Rows above the Bluesky row, except the Kick and Social Blade rows, were read on 2026-11-19 from the vendor page named in the Source column. The Kick and Social Blade rows were read from text the owner pasted on 2026-11-19 and were not checked against the live vendor pages. The Bluesky, Mastodon, Discord and GitHub rows carry only what the repo research notes record (read 2026-10-23, drafts not yet independently reviewed), each cell tagged with its source path, date and status. VERIFIED means the quoted or paraphrased rule is on that page. INFERRED means the rule is carried over from a related page. NOT FOUND means the text could not be located.
 
 ## Table
 
@@ -23,7 +23,7 @@ Refs #382 (epic #364, social platform analytics). Draft for the maintainer. This
 Notes:
 
 * A "90 days" figure for Meta appears in a third-party summary. It is not in the Meta terms and is not used here.
-* Owner decision 2026-11-08: store Twitch data only from user-authorized calls.
+* The owner decision of 2026-11-08 (store Twitch data only from user-authorized calls) is superseded by the 2026-11-19 Twitch decision under Owner decisions: history is hand-kept and no Twitch API data is stored beyond the 24-hour cache.
 
 ## What this means for the history store
 
@@ -61,17 +61,17 @@ Source: the owner pasted Social Blade's Developer Terms of Service on 2026-11-19
 * **History.** Collection of a profile starts on the day it is first queried, with no history before that (2.6). Whether the API returns accumulated history is not stated. [owner-pasted Developer Terms, 2026-11-19, V against the pasted text, not checked against the live page]
 * **Use and sharing.** Data is for the licensee's own use, with no resale or licensing, and not for use as part of other products or services (3.1). Public sharing is allowed, a blog post is the example, with credit to Social Blade (3.1). No repackaging or resale (3.4). No modification beyond formatting (3.6). No disclosure to third parties without consent (4.1). [owner-pasted Developer Terms, 2026-11-19, V against the pasted text, not checked against the live page]
 * **Tension to resolve.** 4.1 (no third-party disclosure without consent) sits awkwardly with 3.1 (public sharing with credit). Flagged for the owner; ask Social Blade or read both clauses together before any public display.
-* **Termination.** Either party may terminate at any time. On termination all copies must be destroyed and the destruction certified (13). A store holding Social Blade data therefore needs the redaction record (#586) first. [owner-pasted Developer Terms, 2026-11-19, V against the pasted text, not checked against the live page]
+* **Termination.** Either party may terminate at any time. On termination all copies must be destroyed and the destruction certified (13). A tombstone record (#586) alone does not meet this, because git history keeps the old values. A store holding Social Blade data therefore needs a documented true deletion path that covers the working store and the private repository history, plus the certification step. [owner-pasted Developer Terms, 2026-11-19, V against the pasted text, not checked against the live page]
 * **Money and changes.** Credits are prepaid and non-refundable, and the price can change at Social Blade's discretion (8). Modifications bind after a 30-day conformance period (5). [owner-pasted Developer Terms, 2026-11-19, V against the pasted text, not checked against the live page]
 * **Credentials.** The token and client id are secret (3.3); they belong in Doppler dev. [owner-pasted Developer Terms, 2026-11-19, V against the pasted text, not checked against the live page]
 * **Not recorded.** Platform coverage (Kick, TikTok, Twitch), pricing, rate limits and API history depth are not in the pasted text: not recorded. The owner will check coverage and pricing in a browser.
-* **Inferred.** Because the API is not a pass-through of platform APIs, platform retention rules (for example Twitch Schedule 1 C) are Social Blade's obligation, not ours. [INFERRED, not confirmed by Social Blade or Twitch] Residual risk: a platform could still treat the data as its own, and we have not tested that.
+* **Inferred.** Because the API is not a pass-through of platform APIs, it is unclear which platform retention rules (for example Twitch Schedule 1 C) apply to derived platform data. UNRESOLVED. Not being a pass-through API describes product scope, not which obligations apply to derived platform data. Confirm with Social Blade, and check the platform terms, before any collection or display. [not confirmed by Social Blade or any platform]
 
 **Status: evaluated, conditional.** No collector is approved. Prerequisites to any collector:
 
 1. The owner confirms platform coverage and pricing.
 2. Attribution to Social Blade on every display.
-3. The deletion path (tombstone record, #586).
+3. A documented true deletion path that covers the working store and the private repository history, plus the certification step. The history store for Social Blade data must live outside git-tracked public history or be rewritable. The tombstone record (#586) alone is not the prerequisite.
 4. The token stored in Doppler dev.
 
 Hand-kept numbers stay until then.
@@ -81,7 +81,7 @@ Hand-kept numbers stay until then.
 The owner decided the items below on 2026-11-19. The earlier options and recommendations are superseded.
 
 1. **YouTube authorized analytics history.** DECIDED 2026-11-19. Authorized analytics stay private to the owner only. Public pages use public counts only. The 30-day refresh-or-delete rule applies to stored authorized data.
-2. **Twitch.** DECIDED 2026-11-19. History is hand-kept by the owner. No Twitch API data is stored beyond the 24-hour cache. Written authorization from Twitch is not being sought.
+2. **Twitch.** DECIDED 2026-11-19. This supersedes the 2026-11-08 decision to store Twitch data from user-authorized calls. History is hand-kept by the owner. No Twitch API data is stored beyond the 24-hour cache. Written authorization from Twitch is not being sought.
 3. **Meta (Instagram, Threads).** DECIDED 2026-11-19. Store only the owner's own-account counts, for the documented purpose of the public media kit. A deletion path (tombstone record, #586) is a prerequisite before the collector (#393) ships.
 4. **Kick and TikTok.** DECIDED 2026-11-19. Kick and Twitch are treated equally: history is hand-kept by the owner and no Kick API data is stored beyond a 24-hour cache, per the Kick Developer Agreement the owner pasted (see the Kick section). The owner may optionally ask Kick for written authorization later; not pursued now. TikTok is hand-kept for now.
 5. **Instagram and Threads token-store failure.** DECIDED 2026-11-19. Keep today's behavior: the old token is kept, the count is written and a health line is printed. No change.
