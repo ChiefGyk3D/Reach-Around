@@ -1,7 +1,7 @@
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 # Platform terms: retention, deletion and display
 
-Refs #382 (epic #364, social platform analytics). Draft for the maintainer. This is a reading of vendor pages, not legal advice. Rows above the Bluesky row were read on 2026-11-19 from the vendor page named in the Source column. The Bluesky, Mastodon, Discord and GitHub rows carry only what the repo research notes record (read 2026-10-23, drafts not yet independently reviewed), each cell tagged with its source path, date and status. VERIFIED means the quoted or paraphrased rule is on that page. INFERRED means the rule is carried over from a related page. NOT FOUND means the text could not be located.
+Refs #382 (epic #364, social platform analytics). Draft for the maintainer. This is a reading of vendor pages, not legal advice. Rows above the Bluesky row, except the Kick and Social Blade rows, were read on 2026-11-19 from the vendor page named in the Source column. The Kick and Social Blade rows were read from text the owner pasted on 2026-11-19 and were not checked against the live vendor pages. The Bluesky, Mastodon, Discord and GitHub rows carry only what the repo research notes record (read 2026-10-23, drafts not yet independently reviewed), each cell tagged with its source path, date and status. VERIFIED means the quoted or paraphrased rule is on that page. INFERRED means the rule is carried over from a related page. NOT FOUND means the text could not be located.
 
 ## Table
 
@@ -13,7 +13,8 @@ Refs #382 (epic #364, social platform analytics). Draft for the maintainer. This
 | Meta (Facebook, Instagram) | Platform Data | No fixed day count. Delete as soon as reasonably possible when no longer necessary, when you stop operating, when Meta requests, or when the user requests deletion (3.d) | Update or delete promptly after a request from Meta or the user (3.d) | 3.a.iv bans selling, licensing or purchasing Platform Data; 3.c restricts sharing. Instagram Platform policy 6.2: do not use the Instagram Platform to simply display User Content, or to import or back up content without permission | [Meta Platform Terms](https://developers.facebook.com/terms/) (updated February 3, 2026); [Meta developer policies](https://developers.facebook.com/devpolicy/) | 2026-11-19 | VERIFIED |
 | Threads | Platform Data | Same as Meta | Same as Meta | Same as Meta. No Threads-specific data rules exist | same | 2026-11-19 | INFERRED |
 | TikTok | TikTok Information (Display API) | "Not kept for longer than necessary"; no numeric period for the Display API (the 15-day rule belongs to the Research API) | Delete on termination | Use solely to develop, maintain and support your Applications; may only be made available to End Users "on a personal, non-exclusive, non-sublicensable, non-transferrable basis" | [TikTok Developer Terms of Service](https://www.tiktok.com/legal/page/global/tik-tok-developer-terms-of-service/en) (modified Dec 26, 2025); [Developer Data Sharing Agreement](https://www.tiktok.com/legal/page/global/tiktok-data-sharing-agreement/en) (effective January 22, 2026, names Display API) | 2026-11-19 | VERIFIED |
-| Kick | Developer data | NOT FOUND | NOT FOUND | NOT FOUND | docs.kick.com App Setup mentions Developer Terms and Conditions without a link; the kick.com footer lists only terms-of-service, privacy-policy and dmca-policy. The terms are likely behind the logged-in developer settings | 2026-11-19 | NOT FOUND |
+| Kick | Kick Content and Program Materials (Developer Agreement) | Do not store copies unless (a) prior written authorization from Kick, (b) you control the rights, or (c) cache for only 24 hours without further sharing with third parties (Schedule 1 C) | Delete on termination, on revocation or reduction of end-user authorization, or on request by Kick or the end user (Schedule 1 C, 5.2, 8.4) | Re-syndication and re-distribution of API data is prohibited (Schedule 1 C). Kick Data may not be sold, licensed, monetized, distributed commercially or made available to third parties without Kick's prior written permission (5.2). Attribute and give a clear path to the source (6). See the Kick section | Kick Developer Agreement, pasted by the owner from the developer portal; no "Last modified" date shown in the paste | 2026-11-19 | VERIFIED against the pasted text only, not checked against the live page |
+| Social Blade | Service Data (public aggregate statistics) via the API | Not recorded for storage as such. Data is licensed for the licensee's own use (3.1); on termination all copies must be destroyed and certified (13) | Destroy all copies on termination and certify it (13); either party may terminate at any time (13) | Public sharing allowed with credit to Social Blade (3.1, a blog post is the example); no repackaging or resale (3.4); no modification beyond formatting (3.6); no disclosure to third parties without consent (4.1), which is in tension with 3.1 public sharing | Social Blade Developer Terms of Service, pasted by the owner; Social Blade's own site returned HTTP 403 to automated fetches on 2026-11-19 | 2026-11-19 | VERIFIED against the pasted text only, not checked against the live page. See the Social Blade section |
 | Bluesky | Public counts and post URIs | Not recorded. Note recommends counts and URIs only, and re-checking deleted posts (INFERRED, docs/research/bluesky.md, 2026-10-23) | Not recorded. Note says deletions may not propagate for other people's post text (INFERRED, docs/research/bluesky.md, 2026-10-23) | Not recorded. Note says public counts in a repo-hosted dashboard are consistent with the open model, opt in per account (INFERRED, docs/research/bluesky.md, 2026-10-23). Terms of Service page does not address API use or third-party storage (VERIFIED as read in the note, UNVERIFIED whether a developer policy exists). Developer terms: not yet researched; tracked in #585 (Tier 2, follows cutover) | docs/research/bluesky.md | 2026-10-23 (note date) | INFERRED |
 | Mastodon | Public counts and statuses | Not recorded. Note: no central ToS; each instance sets its own rules; docs read state no storage limits (VERIFIED absence on pages read, UNVERIFIED for any instance; docs/research/mastodon.md, 2026-10-23) | not recorded. Per-instance terms: not yet researched; tracked in #585 (Tier 2, follows cutover) | not recorded. Per-instance terms: not yet researched; tracked in #585 (Tier 2, follows cutover) | docs/research/mastodon.md | 2026-10-23 (note date) | INFERRED |
 | Discord | Server counts (approximate) | not recorded. Developer Policy and Developer Terms returned HTTP 403, so storage limits are UNVERIFIED (docs/research/discord.md, 2026-10-23). not yet researched; tracked in #585 (Tier 2, follows cutover) | not recorded. not yet researched; tracked in #585 (Tier 2, follows cutover) | not recorded. Note advises against storing member IDs, names or message content (INFERRED, docs/research/discord.md, 2026-10-23). not yet researched; tracked in #585 (Tier 2, follows cutover) | docs/research/discord.md | 2026-10-23 (note date) | INFERRED |
@@ -22,7 +23,7 @@ Refs #382 (epic #364, social platform analytics). Draft for the maintainer. This
 Notes:
 
 * A "90 days" figure for Meta appears in a third-party summary. It is not in the Meta terms and is not used here.
-* Owner decision 2026-11-08: store Twitch data only from user-authorized calls.
+* The owner decision of 2026-11-08 (store Twitch data only from user-authorized calls) is superseded by the 2026-11-19 Twitch decision under Owner decisions: history is hand-kept and no Twitch API data is stored beyond the 24-hour cache.
 
 ## What this means for the history store
 
@@ -39,23 +40,49 @@ Proposals:
 5. **Deletion on request or revocation.** Uses the same path as expiry (item 3), not a removal of rows: for the platform, the revoked or expired `api` records are replaced in effect by a redaction (tombstone) record that blanks the value and keeps the line and its hash, so `counts history-verify` still passes. Steps: (a) identify the platform's `api` records to redact and note the trigger and its date (YouTube: 30 days from revocation, 7 days from a trigger; Twitch: on revocation; Meta: on user request); (b) append the tombstone records; (c) run `counts history-verify`; (d) record the date and what was redacted. Because the private repository's git history still holds the old values, a redaction alone does not delete them. Where a deadline requires true deletion, the only route is the other path: an owner-approved rewrite of the file, re-chaining every later `prev`, plus a history rewrite of the private repository, run as its own destructive operation with a backup and a restore plan. The owner chooses per case; neither mechanism is built, and [social-history.md](../social-history.md) today documents only `correction` records, which keep the original line.
 6. **Display.** Never feed `api` rows from YouTube authorized calls, Twitch or Meta into a public page or a sponsor deck. Public output uses hand-kept or owner-published aggregates only.
 
+## Kick
+
+Source: the owner pasted Kick's Developer Agreement on 2026-11-19, read from the developer portal. The paste shows no "Last modified" date. This replaces the earlier NOT FOUND row. Facts are tagged [owner-pasted Developer Agreement, 2026-11-19, V against the pasted text, not checked against the live page]. Section and schedule numbers refer to that agreement. Paraphrased, not copied.
+
+* **Storage.** Schedule 1 C has the same shape as Twitch Schedule 1 C: no copies of Kick Content or Program Materials unless (a) prior written authorization from Kick, (b) you control the rights, or (c) a 24-hour cache with no further sharing with third parties. Re-syndication and re-distribution of API data is prohibited. [owner-pasted Developer Agreement, 2026-11-19, V against the pasted text, not checked against the live page]
+* **Deletion.** Delete on termination, on revocation or reduction of end-user authorization, or on request by Kick or the end user (Schedule 1 C, 5.2, 8.4). [owner-pasted Developer Agreement, 2026-11-19, V against the pasted text, not checked against the live page]
+* **Use and sharing (5.2).** Kick Data may be used only for the listed purposes. It may not be sold, licensed, monetized, distributed commercially, or made available to or shared with third parties without Kick's prior written permission. [owner-pasted Developer Agreement, 2026-11-19, V against the pasted text, not checked against the live page]
+* **Gray area.** A public page showing API-derived numbers is arguably "made available to third parties". [INFERRED, not confirmed by Kick] The same reading applies to Twitch's no-further-sharing rule.
+* **Consent and privacy.** Consent is needed for access to subscriber and follower information (Schedule 1 A.3). A public privacy notice is required (Schedule 1 A.4). [owner-pasted Developer Agreement, 2026-11-19, V against the pasted text, not checked against the live page]
+* **Metadata.** No selling, licensing or distributing metadata (Schedule 1 B). Marketing and Research uses need a separate agreement. [owner-pasted Developer Agreement, 2026-11-19, V against the pasted text, not checked against the live page]
+* **Control by Kick.** Kick may terminate or suspend at any time for any reason (8.2). Keys are secret and revocable, and Kick has audit and monitoring rights (3.6). Apps are reviewed and can be rejected for any reason (3.5). When displaying Program Materials, attribute and give a clear path to the source (6). [owner-pasted Developer Agreement, 2026-11-19, V against the pasted text, not checked against the live page]
+* **Consequence.** Decided by the owner on 2026-11-19: Kick and Twitch are treated equally. History is hand-kept by the owner and no Kick API data is stored beyond a 24-hour cache. The owner may optionally ask Kick for written authorization (5.2 and Schedule 1 C both allow prior written permission); that is not being pursued now.
+
+## Social Blade
+
+Source: the owner pasted Social Blade's Developer Terms of Service on 2026-11-19. Social Blade's own site returned HTTP 403 to automated fetches on 2026-11-19, so nothing here was checked against the live page. Every fact below is tagged [owner-pasted Developer Terms, 2026-11-19, V against the pasted text, not checked against the live page]. Section numbers refer to those terms. The terms are paraphrased, not copied.
+
+* **License and scope.** The license is to view Service Data through the API (2.2). Only public aggregate statistics (such as follower count) and derived public stats are covered. The API is not a pass-through of platform APIs, and results resemble the website (2.5). [owner-pasted Developer Terms, 2026-11-19, V against the pasted text, not checked against the live page]
+* **History.** Collection of a profile starts on the day it is first queried, with no history before that (2.6). Whether the API returns accumulated history is not stated. [owner-pasted Developer Terms, 2026-11-19, V against the pasted text, not checked against the live page]
+* **Use and sharing.** Data is for the licensee's own use, with no resale or licensing, and not for use as part of other products or services (3.1). Public sharing is allowed, a blog post is the example, with credit to Social Blade (3.1). No repackaging or resale (3.4). No modification beyond formatting (3.6). No disclosure to third parties without consent (4.1). [owner-pasted Developer Terms, 2026-11-19, V against the pasted text, not checked against the live page]
+* **Tension to resolve.** 4.1 (no third-party disclosure without consent) sits awkwardly with 3.1 (public sharing with credit). Flagged for the owner; ask Social Blade or read both clauses together before any public display.
+* **Termination.** Either party may terminate at any time. On termination all copies must be destroyed and the destruction certified (13). A tombstone record (#586) alone does not meet this, because git history keeps the old values. A store holding Social Blade data therefore needs a documented true deletion path that covers the working store and the private repository history, plus the certification step. [owner-pasted Developer Terms, 2026-11-19, V against the pasted text, not checked against the live page]
+* **Money and changes.** Credits are prepaid and non-refundable, and the price can change at Social Blade's discretion (8). Modifications bind after a 30-day conformance period (5). [owner-pasted Developer Terms, 2026-11-19, V against the pasted text, not checked against the live page]
+* **Credentials.** The token and client id are secret (3.3); they belong in Doppler dev. [owner-pasted Developer Terms, 2026-11-19, V against the pasted text, not checked against the live page]
+* **Not recorded.** Platform coverage (Kick, TikTok, Twitch), pricing, rate limits and API history depth are not in the pasted text: not recorded. The owner will check coverage and pricing in a browser.
+* **Inferred.** Because the API is not a pass-through of platform APIs, it is unclear which platform retention rules (for example Twitch Schedule 1 C) apply to derived platform data. UNRESOLVED. Not being a pass-through API describes product scope, not which obligations apply to derived platform data. Confirm with Social Blade, and check the platform terms, before any collection or display. [not confirmed by Social Blade or any platform]
+
+**Status: evaluated, conditional.** No collector is approved. Prerequisites to any collector:
+
+1. The owner confirms platform coverage and pricing.
+2. Attribution to Social Blade on every display.
+3. A documented true deletion path that covers the working store and the private repository history, plus the certification step. The history store for Social Blade data must live outside git-tracked public history or be rewritable. The tombstone record (#586) alone is not the prerequisite.
+4. The token stored in Doppler dev.
+
+Hand-kept numbers stay until then.
+
 ## Owner decisions
 
-Recommended option first in each.
+The owner decided the items below on 2026-11-19. The earlier options and recommendations are superseded.
 
-1. **YouTube authorized analytics history.**
-   a. (Recommended) Keep authorized analytics history private to the owner only, with no public or sponsor display of authorized data (III.E.3.b), and a 30-day expiry. This matches the blocker on #397.
-   b. Store only manually exported numbers as `hand_kept`.
-   c. Do not store YouTube authorized data at all.
-2. **Twitch.** The 24-hour cache rule blocks a long history of Twitch API data unless one of its exceptions applies.
-   a. (Recommended) Ask Twitch for written authorization, and keep the follower number by hand in the meantime.
-   b. Treat the data as user-authorized (own channel) with deletion on revocation. This is a reading of the terms that Twitch has not confirmed.
-   c. Hand-keep every Twitch number permanently.
-3. **Meta (Facebook, Instagram, Threads).**
-   a. (Recommended) Keep analytics with a documented purpose and a deletion path on user request.
-   b. Hand-keep the numbers only.
-   c. Drop Meta API history.
-4. **Kick and TikTok.**
-   a. (Recommended) The owner supplies the Kick developer terms text so the row can be filled in. For TikTok, use the same documented-purpose-and-deletion approach (it only requires deletion on termination and "not longer than necessary").
-   b. Hand-keep both until the Kick terms are read.
-   c. Skip API collection for both.
+1. **YouTube authorized analytics history.** DECIDED 2026-11-19. Authorized analytics stay private to the owner only. Public pages use public counts only. The 30-day refresh-or-delete rule applies to stored authorized data.
+2. **Twitch.** DECIDED 2026-11-19. This supersedes the 2026-11-08 decision to store Twitch data from user-authorized calls. History is hand-kept by the owner. No Twitch API data is stored beyond the 24-hour cache. Written authorization from Twitch is not being sought.
+3. **Meta (Instagram, Threads).** DECIDED 2026-11-19. Store only the owner's own-account counts, for the documented purpose of the public media kit. A deletion path (tombstone record, #586) is a prerequisite before the collector (#393) ships.
+4. **Kick and TikTok.** DECIDED 2026-11-19. Kick and Twitch are treated equally: history is hand-kept by the owner and no Kick API data is stored beyond a 24-hour cache, per the Kick Developer Agreement the owner pasted (see the Kick section). The owner may optionally ask Kick for written authorization later; not pursued now. TikTok is hand-kept for now.
+5. **Instagram and Threads token-store failure.** DECIDED 2026-11-19. Keep today's behavior: the old token is kept, the count is written and a health line is printed. No change.
+6. **Social Blade.** Not yet decided. Evaluated and conditional; see the Social Blade section.
