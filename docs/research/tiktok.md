@@ -41,7 +41,7 @@ TikTok has an official, free path for a creator's own data: Login Kit (OAuth) pl
 
 ## Tokens and unattended access
 
-Access token: 24 hours. Refresh token: 365 days, and the refresh response may return a new refresh token that must replace the old one. A daily job can keep access indefinitely if it persists the rotated refresh token every run; if the token is lost or a year passes without it being exercised, the user must redo consent. The store must be writable by the job.
+Access token: 2 hours. Refresh token: 180 days, rotated on every refresh; reusing an old refresh token fails, so the new one must replace the old one (source: issue #388 comment https://github.com/ChiefGyk3D/Reach-Around/issues/388#issuecomment-6727197379, read 2026-11-08, replaces the earlier 24-hour and 365-day values). A daily job can keep access indefinitely if it persists the rotated refresh token every run; if the token is lost or 180 days pass without it being exercised, the user must redo consent. The store must be writable by the job.
 
 ## Fallbacks
 
@@ -82,4 +82,4 @@ Official API (Display API, followers and per-video stats) if the app passes revi
 ## Review
 
 Verdict: FIX. Reviewer fetch date for every source: 2026-10-23. Verdict is from the independent review (REVIEW.md, Reach Around #1).
-Changed: added Sandbox rules; III.3(e) wording later verified from the primary page (see Developer Terms bullet); corrected the unaudited-cap source note; marked "all public videos via cursor" and the 6-hour cover expiry UNVERIFIED. Confirmed by the review: webhook list (no new-video event), token lifetimes (24 h / 365 d, rotating), `user.info.stats` fields, 600/min rate limit, review requirement. Still not verified: cover URL expiry, `video.list` coverage, the reliability anecdote.
+Changed: added Sandbox rules; III.3(e) wording later verified from the primary page (see Developer Terms bullet); corrected the unaudited-cap source note; marked "all public videos via cursor" and the 6-hour cover expiry UNVERIFIED. Confirmed by the review: webhook list (no new-video event), token lifetimes (24 h / 365 d, rotating; superseded 2026-11-08 by 2 h / 180 d from the #388 comment), `user.info.stats` fields, 600/min rate limit, review requirement. Still not verified: cover URL expiry, `video.list` coverage, the reliability anecdote.
