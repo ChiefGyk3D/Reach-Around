@@ -39,7 +39,7 @@ function clampCount(n: unknown): number {
 }
 
 /** Fixed wording for each health condition: [firing phrase, normal phrase]. The count (hours or days) is appended only where shown. */
-const HEALTH_WORDS: Record<HealthCondition, { firing: string; ok: string; unit: string }> = {
+const HEALTH_WORDS: Record<HealthCondition, { firing: string; ok: string; unit: string; label?: string }> = {
   rollup_overdue: {
     firing: "the daily rollup has not finished in over 3 hours",
     ok: "the daily rollup is running again",
@@ -65,6 +65,13 @@ const HEALTH_WORDS: Record<HealthCondition, { firing: string; ok: string; unit: 
     ok: "the alert budget has room again",
     unit: "",
   },
+  click_ceiling_reached: {
+    firing: "the daily click ceiling was reached today and later clicks were not counted",
+    ok: "clicks are being counted again",
+    unit: "",
+    // The dropped counter saturates at its cap, so the figure is a floor.
+    label: "dropped clicks today: at least",
+  },
 };
 
 function formatHealth(event: Extract<AlertEvent, { kind: "analytics_health" }>): AlertMessage {
@@ -85,7 +92,10 @@ function formatHealth(event: Extract<AlertEvent, { kind: "analytics_health" }>):
     };
   }
   const n = clampCount(event.count);
-  const size = words.unit !== "" && n > 0 ? ` (about ${n} ${words.unit})` : "";
+  const size =
+    words.label !== undefined
+      ? n > 0 ? ` (${words.label} ${n})` : ""
+      : words.unit !== "" && n > 0 ? ` (about ${n} ${words.unit})` : "";
   return {
     subject: "Reach Around: analytics health",
     text: capMessage(`Reach Around health: ${words.firing}${size} (as of ${when}). See the failure-mode runbook.`),

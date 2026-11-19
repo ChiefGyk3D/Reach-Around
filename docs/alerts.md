@@ -147,6 +147,7 @@ and daily limits.
 | `zero_views` | a site counted likely-human views in the 24 hours before and none in the last 24, and that site is not switched off (`VIEWS_KILL`, or its id in `VIEWS_KILL_SITES`). Per site, but the alert names no site | views are counted again. If the hourly counters are gone (the 48 hour purge, a new database) there is no data: an active alert is kept, and cleared only when traffic is seen or after 7 days |
 | `view_budget_hit` | the account-wide hourly view budget was reached in the last 3 hours (further views were dropped) | three hours pass without it |
 | `alert_budget_near` | today's alert budget is at least 80 percent used | the next UTC day |
+| `click_ceiling_reached` | a click was refused today by the click write ceiling, or a site's charge leaves no room for another click. The message says "dropped clicks today: at least N" (the count saturates at its cap and sums all sites; no site is named). Read only, from the `cw-` and `cd-` counters | the next UTC day |
 
 Design rules, each pinned by a test (`worker/test/health.test.ts`):
 
