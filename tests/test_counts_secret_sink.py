@@ -13,6 +13,7 @@ import http.client
 import io
 import json
 import logging
+import pwd
 import sys
 import threading
 from collections.abc import Iterator
@@ -859,7 +860,7 @@ def test_bad_option_and_help_leave_no_token_in_any_reachable_frame(
     for extra in (["--no-such-option"], ["--help"], ["--bogus-flag", "x"]):
         sink_env(monkeypatch)
         argv = refresh_args(site, "--token-sink", "doppler", *extra)
-        exc = capture_exc(lambda: main(argv))
+        exc = capture_exc(partial(main, argv))
         assert isinstance(exc, SystemExit)
         no_leak(render_with_locals(exc))
         assert "REACH_AROUND_DOPPLER_TOKEN" not in os.environ
@@ -875,13 +876,17 @@ def test_setup_failure_leaves_no_token_in_any_reachable_frame() -> None:
         )
         env = {"REACH_AROUND_DOPPLER_TOKEN": API_TOKEN}
         stream = io.StringIO(API_TOKEN + "\n")
-        exc = capture_exc(lambda: counts_cmd.doppler_spec(args, env, stream))
+        exc = capture_exc(partial(counts_cmd.doppler_spec, args, env, stream))
         assert isinstance(exc, ValueError)
         no_leak(render_with_locals(exc))
         stream = io.StringIO(API_TOKEN + "\n")
         exc = capture_exc(
-            lambda: counts_cmd.doppler_spec(
-                args, {}, stream, secret_sink.TokenHolder(API_TOKEN)
+            partial(
+                counts_cmd.doppler_spec,
+                args,
+                {},
+                stream,
+                secret_sink.TokenHolder(API_TOKEN),
             )
         )
         assert isinstance(exc, ValueError)
@@ -929,7 +934,7 @@ def test_unknown_passwd_entry_is_a_fixed_failure(
     def missing(uid: int) -> Any:
         raise KeyError(f"getpwuid(): uid not found: {uid}")
 
-    monkeypatch.setattr(secret_sink.pwd, "getpwuid", missing)
+    monkeypatch.setattr(pwd, "getpwuid", missing)
     exc = capture_exc(_REAL_PASSWD_HOME)
     assert isinstance(exc, SinkError) and exc.kind == "unsafe_state"
     assert exc.__context__ is None and exc.__cause__ is None
@@ -942,7 +947,7 @@ def test_empty_or_relative_passwd_home_is_refused(
     class Entry:
         pw_dir = home
 
-    monkeypatch.setattr(secret_sink.pwd, "getpwuid", lambda uid: Entry())
+    monkeypatch.setattr(pwd, "getpwuid", lambda uid: Entry())
     exc = capture_exc(_REAL_PASSWD_HOME)
     assert isinstance(exc, SinkError) and exc.kind == "unsafe_state"
 
@@ -953,7 +958,7 @@ def test_an_absolute_passwd_home_is_accepted(
     class Entry:
         pw_dir = "/home/someone"
 
-    monkeypatch.setattr(secret_sink.pwd, "getpwuid", lambda uid: Entry())
+    monkeypatch.setattr(pwd, "getpwuid", lambda uid: Entry())
     assert _REAL_PASSWD_HOME() == "/home/someone"
 
 

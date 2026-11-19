@@ -45,8 +45,16 @@ for the service address: the sink always talks to `https://api.doppler.com`. The
 - The API token: stdin is the preferred source. If the environment variable is
   used, the program removes it from its own environment at startup, before
   the arguments are read, and holds it privately only for the sink. A run that
-  does not use the sink drops it. That narrows the exposure; it cannot undo what the shell,
-  service manager or launcher already did with the variable.
+  does not use the sink drops it. The token, from the environment or stdin
+  alike, is kept in a small holder object that never shows its value and is
+  released once the sink is built, so it is not a plain string in the program's
+  frames while arguments are parsed or errors are formatted. Failures inside the
+  sink are raised from code that holds no value. That narrows the exposure; it
+  cannot undo what the shell, service manager or launcher already did with the
+  variable.
+- If the system user database has no entry for the account, or its home path is
+  empty or relative, the lock cannot be placed and the run stops with
+  `unsafe_state`.
 - Single writer. Doppler's update call returns no revision that a read could be
   pinned to (docs.doppler.com, secrets update, read 2026-11-19), so the
   read-back proves the value was stored at read time, not that no one wrote
