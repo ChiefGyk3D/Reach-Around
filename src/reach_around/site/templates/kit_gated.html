@@ -131,7 +131,8 @@
 <li><span class="kit-key kit-key-male" aria-hidden="true"></span>{{ demo.gender.male }}% male</li>
 <li><span class="kit-key kit-key-female" aria-hidden="true"></span>{{ demo.gender.female }}% female</li>
 </ul>
-</figure>{% endif %}
+</figure>
+{% endif %}
 {% if "ages" in demo.withheld %}<p class="kit-note">Age: not shown (a share of an audience this size could be under 5 people).</p>{% else %}<section class="kit-age" aria-labelledby="kit-demo-{{ loop.index }}-age-title">
 <h5 id="kit-demo-{{ loop.index }}-age-title">Age</h5>
 <div class="kit-age-groups">
@@ -146,13 +147,15 @@
 </details>
 {% endfor %}
 </div>
-</section>{% endif %}
+</section>
+{% endif %}
 </div>
 <div class="kit-place-grid">
 {% if "countries" in demo.withheld %}<p class="kit-note">Countries: not shown (a share of an audience this size could be under 5 people).</p>{% else %}<section aria-labelledby="kit-demo-{{ loop.index }}-countries-title">
 <h5 id="kit-demo-{{ loop.index }}-countries-title">Top countries</h5>
 {% for place in demo.countries %}<div class="kit-bar-row"><span>{{ place.name }}</span><progress value="{{ place.percentage }}" max="100" aria-label="{{ place.name }}: {{ place.percentage }}%">{{ place.percentage }}%</progress><strong>{{ place.percentage }}%</strong></div>{% endfor %}
-</section>{% endif %}
+</section>
+{% endif %}
 {% if demo.cities and "cities" in demo.withheld %}<p class="kit-note">Cities: not shown (a share of an audience this size could be under 5 people).</p>{% elif demo.cities %}
 <section aria-labelledby="kit-demo-{{ loop.index }}-cities-title">
 <h5 id="kit-demo-{{ loop.index }}-cities-title">Top cities</h5>

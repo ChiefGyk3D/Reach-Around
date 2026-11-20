@@ -117,8 +117,8 @@ def test_public_kit_groups_recent_posts_with_local_thumbnails_and_counts(
     assert "1,234 views" in page
     assert "56 likes" in page
     assert "7 comments" in page
-    assert "4 reposts" in page
-    assert "2 quotes" in page
+    assert "Under 5 reposts" in page
+    assert "Under 5 quotes" in page
     assert (
         "https://"
         not in page.split('class="kit-recent"', 1)[1].split("</section>", 1)[0]

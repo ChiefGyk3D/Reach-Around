@@ -465,3 +465,35 @@ def test_an_unrelated_metric_row_does_not_satisfy_the_analytics_tile() -> None:
     )
     with pytest.raises(PdfError):
         check_text(config.kit, text, public=True)  # type: ignore[arg-type]
+
+
+def _demo(all_: int, male: int, female: int) -> Any:
+    from reach_around.config.kit import Demographic
+
+    return Demographic.model_validate(
+        {
+            "platform": "instagram",
+            "as_of": "2027-03-01",
+            "gender": {"male": 50, "female": 50},
+            "ages": [
+                {"range": "18-24", "all": all_, "male": male, "female": female},
+                {
+                    "range": "25-34",
+                    "all": 100 - all_,
+                    "male": 100 - male,
+                    "female": 100 - female,
+                },
+            ],
+            "countries": [{"name": "Exampleland", "percentage": 50}],
+        }
+    )
+
+
+def test_each_age_column_is_checked_on_its_own() -> None:
+    from reach_around.site.kit import demographic_withheld
+
+    assert demographic_withheld(_demo(10, 10, 10), [100]) == frozenset()
+    assert demographic_withheld(_demo(3, 10, 10), [100]) == {"ages"}  # all column
+    assert demographic_withheld(_demo(10, 3, 10), [100]) == {"ages"}  # male column
+    assert demographic_withheld(_demo(10, 10, 3), [100]) == {"ages"}  # female column
+    assert demographic_withheld(_demo(3, 3, 3), []) == frozenset()  # no printed count
