@@ -2004,6 +2004,11 @@
           "title": "Layout",
           "type": "string"
         },
+        "live_badges": {
+          "default": false,
+          "title": "Live Badges",
+          "type": "boolean"
+        },
         "status": {
           "anyOf": [
             {
@@ -3642,6 +3647,7 @@
       "default": {
         "featured": null,
         "layout": "classic",
+        "live_badges": false,
         "status": null,
         "watch": []
       }

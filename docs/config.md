@@ -258,6 +258,7 @@ keeps the existing tab or sections layout.
 | `status.text` | Subtitle | none | Required owner-written live or next-stream line. |
 | `status.schedule` | Subtitle | none | Optional second schedule line. |
 | `watch` | list of link ids | empty | Exactly two with `stack`, naming one Twitch-icon link and one Kick-icon link. Config order is display order and both links receive identical treatment. |
+| `live_badges` | boolean | `false` | Needs `layout: stack` and a real boolean. Adds an empty, hidden LIVE / OFFLINE badge to each of the two Watch links (identical markup for Twitch and Kick) and one polite status region, and publishes the `live.js` script on the home page. The script reads the same-origin `/e/live` document; see [Live badges on the Watch links](live.md#live-badges-on-the-watch-links). Off, nothing is added. |
 | `featured.link` | link id | none | One link promoted above the groups. It must exist in a tab, and `page.featured` needs `layout: stack`. |
 | `featured.kicker` | text, 1 to 60 characters | none | Required with `featured`. A short plain-text label above the link, such as `New this week`. No control characters, no leading or trailing space. |
 | `featured.show_from`, `featured.show_until` | date `YYYY-MM-DD` | none | Optional, inclusive days. Like the same keys on a link, they are compared with the day of the build; `show_until` must not be before `show_from`. Outside the window the slot is not rendered. |

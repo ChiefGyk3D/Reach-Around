@@ -227,6 +227,7 @@ class Page(_Model):
     status: PageStatus | None = None
     watch: list[Slug] = Field(default_factory=list)
     featured: PageFeatured | None = None
+    live_badges: StrictBool = False
 
     @field_validator("featured", mode="before")
     @classmethod
@@ -508,6 +509,8 @@ class SiteConfig(_Model):
         if page.layout == "classic":
             if page.featured is not None:
                 raise ValueError("page.featured needs page.layout: stack")
+            if page.live_badges:
+                raise ValueError("page.live_badges needs page.layout: stack")
             for tab in self.tabs:
                 if tab.collapsed:
                     raise ValueError(

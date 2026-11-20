@@ -10,7 +10,8 @@
 {% if page.status.schedule %}<p class="smart-status-schedule">{{ page.status.schedule }}</p>{% endif %}
 </section>
 <div class="smart-watch" role="group" aria-label="Watch">
-{% for link in watch %}{{ link_anchor(link, click_tracking, " smart-watch-link") }}{% endfor %}
+{% for link in watch %}{{ link_anchor(link, click_tracking, " smart-watch-link", link.icon if page.live_badges else "") }}{% endfor %}
+{% if page.live_badges %}<p class="sr-only" data-watch-status role="status" aria-live="polite" aria-atomic="true"></p>{% endif %}
 </div>
 {% if featured %}
 <section class="smart-featured" aria-labelledby="smart-featured-kicker">
