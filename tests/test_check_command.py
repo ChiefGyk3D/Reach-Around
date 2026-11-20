@@ -110,6 +110,29 @@ CASES: list[tuple[str, Any, list[str]]] = [
         ],
     ),
     (
+        "two current site_nav items",
+        lambda d: d.update(
+            site_nav={
+                "items": [
+                    {"title": "A", "url": "https://a.example.com/", "current": True},
+                    {"title": "B", "url": "https://b.example.com/", "current": True},
+                ]
+            }
+        ),
+        ["more than one site_nav item is marked current", "Fix: "],
+    ),
+    (
+        "site_nav with nowhere to show",
+        lambda d: d.update(
+            site_nav={
+                "items": [{"title": "A", "url": "https://a.example.com/"}],
+                "header": False,
+                "footer": False,
+            }
+        ),
+        ["the site_nav bar and footer line are both turned off", "Fix: "],
+    ),
+    (
         "missing title",
         lambda d: d["tabs"][1]["blocks"][0].pop("title"),
         ['Tab "More", block "extra", field "title": ', "is missing"],

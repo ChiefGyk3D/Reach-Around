@@ -246,6 +246,14 @@ VOCAB: dict[str, tuple[str, str]] = {
         "the profile card is empty",
         "Add tags or a button, or delete profile_card.",
     ),
+    "site_nav_current": (
+        "more than one site_nav item is marked current",
+        "Keep current: true on one item, the site this page belongs to.",
+    ),
+    "site_nav_off": (
+        "the site_nav bar and footer line are both turned off",
+        "Turn header or footer back on, or delete site_nav.",
+    ),
     "db_setting": (
         "the database setting is not right",
         "Set dsn_env to REACH_AROUND_DSN. Never put the password itself there.",
@@ -487,6 +495,7 @@ KNOWN_FIELDS: frozenset[str] = frozenset(
         "credit_text",
         "cta",
         "ctl",
+        "current",
         "cutover_date",
         "demographics",
         "description",
@@ -607,6 +616,7 @@ KNOWN_FIELDS: frozenset[str] = frozenset(
         "show_from",
         "show_on_hub",
         "show_until",
+        "site_nav",
         "sitemap",
         "socials",
         "source",

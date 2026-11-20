@@ -1,0 +1,13 @@
+{# SPDX-License-Identifier: Apache-2.0 #}
+{# The property bar (#671): `bar` in the page header, `foot` as the footer family line. #}
+{% macro render(kind, label) %}
+{% if site_nav and (site_nav.header if kind == "bar" else site_nav.footer) %}
+<nav class="site-nav site-nav-{{ kind }}" aria-label="{{ label }}">
+<ul>
+{% for item in site_nav.items %}
+<li><a href="{{ item.url }}" rel="noopener noreferrer"{% if item.current %} aria-current="page"{% endif %}>{{ item.title }}</a></li>
+{% endfor %}
+</ul>
+</nav>
+{% endif %}
+{% endmacro %}

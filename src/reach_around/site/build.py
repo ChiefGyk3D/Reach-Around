@@ -933,6 +933,7 @@ def build_site(
     )
     env.globals["asset"] = named.assets
     env.globals["footer_copyright"] = config.footer.copyright_line(today.year)
+    env.globals["site_nav"] = config.site_nav
     # Every page with a tab bar carries the nav badge, so every such page gets the
     # live script; the 404 page and the kit pages say False for themselves.
     env.globals["has_live_script"] = any(_has_live(blocks) for blocks in shown)

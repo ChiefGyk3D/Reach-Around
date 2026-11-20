@@ -70,6 +70,10 @@
 <body{% if page_views and page_id %} data-page-id="{{ page_id }}" data-view-route="{{ view_route }}"{% endif %}{% if click_tracking and page_id is defined and page_id %} data-landing="{{ page_id }}"{% endif %}{% if beacon_token is defined and beacon_token and page_id is defined and page_id %} data-token-route="/e/t"{% endif %}>
 <a class="skip-link" href="#content">{{ skip_label if skip_label is defined else "Skip to links" }}</a>
 <main id="content"{% if wide is defined and wide %} class="main-wide"{% endif %}>
+{% import "_site_nav.html" as site_nav_bar %}
+{% if site_nav and site_nav.header %}
+{{ site_nav_bar.render("bar", "Sites")|trim }}
+{% endif %}
 {% include "_nav.html" %}
 {% include "_header.html" %}
 {% block content %}{% endblock %}

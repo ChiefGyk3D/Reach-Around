@@ -7,6 +7,10 @@
 {% if footer_copyright %}
 <p class="disclosure copyright">{{ footer_copyright }}</p>
 {% endif %}
+{% import "_site_nav.html" as site_nav_line %}
+{% if site_nav and site_nav.footer %}
+{{ site_nav_line.render("foot", "More from this creator")|trim }}
+{% endif %}
 <p class="privacy-link"><a href="{{ root }}privacy/">Privacy</a></p>
 {% if footer_credit %}
 <p class="credit"><a href="{{ footer_credit_url }}" rel="noopener noreferrer">{{ footer_credit_text }}</a></p>

@@ -368,6 +368,35 @@ a:focus-visible, summary:focus-visible, button:focus-visible {
 .live-badge[hidden] { display: none; }
 .live-dot { width: 0.5em; height: 0.5em; border-radius: 50%; background-color: currentColor; }
 
+/* Property bar (#671): the creator's own sites, as a wrapping row of real links in
+   the page header and as a family line in the footer. No script, no clipping:
+   items wrap on the narrowest phone and at 200 percent zoom. The current item is bold and
+   underlined as well as marked aria-current, so it never relies on color. */
+.site-nav { margin: 0 0 var(--ra-space-3); font-size: var(--ra-text-sm); }
+.site-nav ul { display: flex; flex-wrap: wrap; justify-content: center; gap: 0 var(--ra-space-2); margin: 0; padding: 0; list-style: none; }
+.site-nav a {
+  display: inline-flex;
+  align-items: center;
+  min-width: var(--ra-tap);
+  min-height: var(--ra-tap);
+  padding: 0 var(--ra-space-3);
+  color: var(--ra-color-muted);
+  text-decoration: underline;
+  text-decoration-color: transparent;
+  text-underline-offset: 0.3em;
+  overflow-wrap: anywhere;
+}
+.site-nav a:hover { color: var(--ra-color-text); text-decoration-color: currentColor; }
+.site-nav a:focus-visible { outline-offset: -0.125rem; }
+.site-nav a[aria-current="page"] {
+  color: var(--ra-color-text);
+  font-weight: 700;
+  text-decoration-color: currentColor;
+  text-decoration-thickness: 0.15em;
+}
+.site-nav-foot { margin: 0 0 var(--ra-space-2); }
+/* end property bar */
+
 @media (max-width: 26.875rem) {
   .tabs a {
     padding: 0 var(--ra-space-2);
@@ -777,7 +806,7 @@ main > footer { margin-top: var(--ra-space-5); color: var(--ra-color-muted); fon
 /* Print: no background, plain text on paper, every link's address visible. */
 @media print {
   body { background: none; color: CanvasText; }
-  body::before, .tabs, .skip-link, .cookie-banner, .copy-button { display: none; }
+  body::before, .tabs, .site-nav-bar, .skip-link, .cookie-banner, .copy-button { display: none; }
   main { max-width: none; min-height: 0; padding: 0; }
   main > :not(.tabs) { padding-inline: 0; }
   .site-header, .blocks > li, .section[open] .section-links, .tab-section[open] > .blocks { animation: none; }

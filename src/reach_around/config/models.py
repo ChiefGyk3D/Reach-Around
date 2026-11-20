@@ -21,6 +21,7 @@ from pydantic import (
     ConfigDict,
     Discriminator,
     Field,
+    StrictBool,
     StringConstraints,
     Tag,
     ValidationError,
@@ -55,6 +56,8 @@ from reach_around.config.profile_card import (
 )
 from reach_around.config.redirects import Redirects
 from reach_around.config.robots import Robots
+from reach_around.config.site_nav import MAX_ITEMS as MAX_NAV_ITEMS
+from reach_around.config.site_nav import NavTitle
 from reach_around.config.tablinks import is_tab_ref, parse_tab_ref
 from reach_around.config.theme import Theme
 from reach_around.site.theme import check_image_path
@@ -401,6 +404,33 @@ class ProfileCard(_Model):
         return self
 
 
+class SiteNavItem(_Model):
+    title: NavTitle
+    url: HttpsUrl
+    current: StrictBool = False
+
+    @field_validator("url")
+    @classmethod
+    def _url_is_https(cls, value: str) -> str:
+        return check_https_url(value)
+
+
+class SiteNav(_Model):
+    """The property bar: the creator's own sites, in the header and the footer."""
+
+    items: list[SiteNavItem] = Field(min_length=1, max_length=MAX_NAV_ITEMS)
+    header: StrictBool = True
+    footer: StrictBool = True
+
+    @model_validator(mode="after")
+    def _one_current_and_somewhere_to_show(self) -> SiteNav:
+        if sum(item.current for item in self.items) > 1:
+            raise ValueError("site_nav: only one item can be current")
+        if not self.header and not self.footer:
+            raise ValueError("site_nav needs header or footer turned on")
+        return self
+
+
 class SiteConfig(_Model):
     version: Literal[1]
     creator: Creator
@@ -418,6 +448,7 @@ class SiteConfig(_Model):
     redirects: Redirects | None = None
     store: StoreConfig = StoreConfig()
     profile_card: ProfileCard | None = None
+    site_nav: SiteNav | None = None
     numbers: NumbersConfig | None = None
     analytics: Analytics = Analytics()
     kit: KitConfig | None = None
