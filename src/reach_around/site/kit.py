@@ -31,6 +31,7 @@ it (``tests/site/test_kit_csp.py::test_only_the_gate_pages_load_the_vendor_scrip
 from __future__ import annotations
 
 import html
+import math
 import os
 import re
 import secrets
@@ -757,6 +758,10 @@ def _total(
 ) -> dict[str, Any] | None:
     if total.total is None:
         return None
+    # A printed total minus the printed members would isolate a member under
+    # the floor, so one such member hides the total.
+    if any(m.in_total and m.value is not None and 0 < m.value < FLOOR for m in metrics):
+        return None
     dates = [m.as_of for m in metrics if m.in_total and m.value is not None and m.as_of]
     return {
         "value": shown_count(total.total),
@@ -831,6 +836,24 @@ def _compact_number(value: int) -> str:
     return str(value)
 
 
+def _change_text(followers: int, percent: float) -> str:
+    """The 30-day change, or "" when it would pin a count under the floor.
+
+    The reader can work back to the earlier count (followers / (1 + percent)).
+    The percent is printed with one decimal, so every whole count the printed
+    figure allows is checked, not just the nearest one.
+    """
+    if 0 < followers < FLOOR:
+        return ""
+    low, high = percent - 0.05, percent + 0.05
+    if 1 + low / 100 > 0:
+        first = math.ceil(followers / (1 + high / 100))
+        last = math.floor(followers / (1 + low / 100))
+        if any(0 < n < FLOOR for n in range(max(first, 0), min(last, FLOOR) + 1)):
+            return ""
+    return f"{percent:+.1f}%"
+
+
 def _analytics_rows(rows: list[Any], today: date | None) -> list[dict[str, Any]]:
     return [
         {
@@ -839,12 +862,7 @@ def _analytics_rows(rows: list[Any], today: date | None) -> list[dict[str, Any]]
             "synced_with": row.synced_with,
             "as_of": row.as_of.isoformat(),
             "followers": _compact_number(row.followers),
-            # A change worked out from a count under the floor would pin it.
-            "delta": (
-                ""
-                if 0 < row.followers < FLOOR
-                else f"{row.followers_30_day_percent:+.1f}%"
-            ),
+            "delta": _change_text(row.followers, row.followers_30_day_percent),
             "stats": [
                 {"label": stat.label, "value": _compact_number(stat.value)}
                 for stat in row.stats

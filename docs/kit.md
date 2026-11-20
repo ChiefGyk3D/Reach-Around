@@ -124,8 +124,11 @@ included in the private PDF; they never enter the public page or public PDF.
 A count of 1 to 4 is never printed in the kit: a headline number, the combined
 total, the followers and stat tiles of a platform analytics tab, and the views and
 clicks of the "Before Reach Around" block print "Under 5" on the page and in both
-PDFs. Zero prints as zero, and 5 prints as 5. When the followers of a tab are under
-the floor its 30-day change is not printed either, since it would pin the count.
+PDFs. Zero prints as zero, and 5 prints as 5. A printed total minus the printed members would isolate a small member, so a
+combined total is not printed while any number that counts toward it is 1 to 4.
+The 30-day change of a tab is not printed when the followers are under the floor
+or when the change would let a reader work back to an earlier count under it.
+An average views per post under 5 prints "Under 5" as well.
 Demographics are percentages the owner types, not counts, so they are not floored.
 The PDF text check expects the "Under 5" form, so a page that printed the number
 fails the build. Collected YouTube Analytics and Instagram insights figures are

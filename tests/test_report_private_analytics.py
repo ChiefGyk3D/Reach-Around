@@ -417,3 +417,21 @@ def test_private_sentinels_never_reach_the_public_site_or_either_pdf(
     assert leaks(texts, forms) == []
     # the guard bites: one page carrying a derived form is caught
     assert leaks([*texts, "<p>Views 7.7M</p>"], forms) == ["7.7M"]
+
+
+def test_no_printed_remainder_or_row_pins_a_cell_under_the_floor() -> None:
+    """Every small dataset: a printed row is at least the floor and a printed
+    remainder is at least the floor, so subtracting the printed rows from the
+    followers count (printed elsewhere) cannot isolate a cell under it."""
+    import itertools
+
+    values = (0, 1, 3, 4, 5, 9)
+    checked = 0
+    for a, b, c, other in itertools.product(values, values, values, (0, 2, 5, 6)):
+        recs = ages(("18_24", a), ("25_34", b), ("35_44", c))
+        if other:
+            recs.append(rec("fdemo_age_other", other))
+        g = group(block(recs), AGE)
+        checked += 1
+        assert all(r["value"] >= 5 for r in g["rows"])
+        assert g["other"] is None or g["other"] >= 5

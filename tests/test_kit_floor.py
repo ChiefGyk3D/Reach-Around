@@ -45,10 +45,26 @@ def test_a_headline_metric_follows_the_floor(value: int, text: str) -> None:
     assert rows[0]["value"] == text
 
 
-def test_a_total_under_five_is_not_printed_and_five_is() -> None:
-    low = [metric(2), metric(2)]
-    assert _total(UnifiedTotal(4, 2, 0), low)["value"] == UNDER_FLOOR  # type: ignore[index]
-    assert _total(UnifiedTotal(5, 2, 0), low)["value"] == "5"  # type: ignore[index]
+def total_of(*values: int | None) -> dict[str, Any] | None:
+    members = [metric(v) for v in values]
+    counted = [v for v in values if v is not None]
+    return _total(UnifiedTotal(sum(counted), len(counted), 0), members)
+
+
+def test_a_total_is_hidden_when_a_member_is_under_the_floor() -> None:
+    # 12 minus the printed 7 would isolate the 4 and the 1 hidden behind "Under 5"
+    assert total_of(7, 4, 1) is None
+    assert total_of(7, 5) is not None
+    assert total_of(5, 4) is None
+    assert total_of(5, 5) is not None
+    assert total_of(7, 0)["value"] == "7"  # type: ignore[index]
+    assert total_of(5, 5)["value"] == "10"  # type: ignore[index]
+
+
+def test_a_member_outside_the_total_does_not_hide_it() -> None:
+    members = [metric(9), metric(4)]
+    members[1] = ResolvedMetric("twitch", "Followers", "manual", 4, TODAY, False)
+    assert _total(UnifiedTotal(9, 1, 0), members) is not None
 
 
 class Row:
@@ -69,6 +85,27 @@ def test_analytics_followers_and_stats_follow_the_floor() -> None:
     ok = _analytics_rows([Row(5, 5)], TODAY)[0]
     assert ok["followers"] == "5"
     assert ok["stats"][0]["value"] == "5"
+
+
+@pytest.mark.parametrize(
+    ("followers", "pct", "printed"),
+    [
+        (5, 25.0, False),  # the count before was 4
+        (6, 20.0, True),  # before: 5
+        (1000, 0.5, True),  # before: about 995
+        (4, 50.0, False),
+        (5, -50.0, True),  # before: 10
+        (2, 300.0, False),
+        (50, 1150.0, False),  # before: about 4
+        (50, 900.0, True),  # before: 5
+        (0, -100.0, True),
+    ],
+)
+def test_the_change_never_pins_a_count_under_the_floor(
+    followers: int, pct: float, printed: bool
+) -> None:
+    delta = _analytics_rows([Row(followers, 9, pct)], TODAY)[0]["delta"]
+    assert bool(delta) is printed
 
 
 def test_the_change_is_not_printed_when_the_followers_are_under_the_floor() -> None:
@@ -155,3 +192,27 @@ def test_imported_history_counts_follow_the_floor() -> None:
     )
     row = display_rows(history, None)[0]
     assert (row["views"], row["clicks"]) == (UNDER_FLOOR, "5")
+
+
+def engagement_value(views: int, posts: int) -> str:
+    from reach_around.config.engagement import rows_for
+    from reach_around.config.kit import EngagementRow
+
+    row = EngagementRow.model_validate(
+        {
+            "platform": "twitch",
+            "period_start": "2027-02-01",
+            "period_end": "2027-02-28",
+            "as_of": "2027-03-01",
+            "views": views,
+            "posts": posts,
+            "interactions": 1,
+        }
+    )
+    return str(rows_for([row])[0]["value"])
+
+
+def test_an_average_views_figure_follows_the_floor() -> None:
+    assert engagement_value(9, 3) == UNDER_FLOOR
+    assert engagement_value(15, 3) == "5"
+    assert engagement_value(0, 3) == "0"
