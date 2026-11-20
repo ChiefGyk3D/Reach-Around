@@ -176,7 +176,7 @@ describe("click route: the modes", () => {
   it("observe does not let the lane cap bind even when BEACON_LANE_CAP_ENFORCED is on", async () => {
     const lim = clickLimits(siteShare(CLICK_ADMIT_CEILING, 2));
     await seed("cwl-u-links", lim.unverified + 1_000);
-    await seed("cf-links-twitch", 1); // not the link's first click, so the lane cap is what would refuse it
+    await seed("cf-links_twitch", 1); // not the link's first click, so the lane cap is what would refuse it
     await handleClick(click(), clickEnv("observe", { BEACON_LANE_CAP_ENFORCED: "1" }));
     expect(await events()).toBe(1);
   });
@@ -197,7 +197,7 @@ describe("click route: the modes", () => {
     const lim = clickLimits(siteShare(CLICK_ADMIT_CEILING, 2));
     expect(lim.general).toBeLessThan(lim.share);
     await seed("cwl-v-links", 0);
-    await seed("cf-links-twitch", 1);
+    await seed("cf-links_twitch", 1);
     await seed("cw-links", lim.general); // the general day budget is spent
     await handleClick(click(withToken(await token())), clickEnv("observe"));
     expect(await events()).toBe(0);

@@ -175,6 +175,6 @@ def test_the_budget_gate_step_sees_the_mode() -> None:
     steps = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))["jobs"]["deploy"][
         "steps"
     ]
-    gate = [s for s in steps if "check-budget" in str(s.get("run", ""))]
+    gate = [s for s in steps if s.get("name") == "Check the page-view write budget"]
     assert len(gate) == 1
     assert gate[0]["env"]["BEACON_MODE"] == "${{ vars.BEACON_MODE }}"
