@@ -604,16 +604,21 @@ Requirements for the rewritten disclosure (plain words, American English):
 5. Say plainly: **the IP address is never stored**, no cookie or other data is
    put in the browser, and the raw browser identification is not stored.
 6. Say the retention in numbers taken from the config, not hard-coded: raw
-   records (7 days by default), the daily code (the rest of the day), anonymous
-   totals (up to 90 days).
+   records (normally 7 days by default), the daily code (the end of each day),
+   abuse counters (about two hours) and anonymous totals (90 days). Also say
+   that a day's records are kept a little longer while the site has not yet
+   added them to its daily totals, and state the ceiling: they are never kept
+   longer than min(3 x the keep window, 90) days, the same rule the Worker
+   applies (`worker/src/viewretention.ts`, `HARD_CEILING_FACTOR` and
+   `MAX_RAW_KEEP_DAYS`). A test pins the page's rule to the Worker's.
 7. Say that a browser sending Global Privacy Control or Do Not Track is not
    counted, in both collection modes. This holds for page views only. Clicks are
    counted even when the signal is sent, and the click item on the page says so
    (owner decision 2026-11-19, #598); a follow-up makes clicks honor the signal
    and then the page drops the exception.
 8. Say that totals for small groups are merged into "other".
-9. State that there is no per-person deletion because nothing identifies a
-   person, and say how long raw records live.
+9. State that records for a specific person cannot be deleted because the
+   records do not identify anyone, and say how long raw records live (item 6).
 10. Name the sites the collector serves, and that the count for each site is
     kept separately.
 11. The blog's privacy page (no-php-no-cry#84) must carry the same facts for the

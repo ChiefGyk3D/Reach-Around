@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from reach_around.config.analytics import AGGREGATE_KEEP_DAYS
+from reach_around.config.analytics import AGGREGATE_KEEP_DAYS, MAX_RAW_KEEP_DAYS
 from reach_around.config.blocks import Live
 from reach_around.config.models import SiteConfig
 from reach_around.config.privacy import RAW_CLICK_KEEP_DAYS
@@ -53,13 +53,19 @@ VIEWS_WHY = (
     "Not Track stop all view data from being sent. Small groups are combined as "
     "“other.”"
 )
+# The hard cap is the Worker's rule for records its totals have not yet counted:
+# min(3 x the keep window, the 90 day ceiling) (worker/src/viewretention.ts).
 VIEWS_KEPT = (
-    "View records are deleted after {RAW_KEEP_DAYS} days. The daily code is "
-    "deleted at day’s end. Abuse counters are deleted within about two "
-    "hours. Anonymous totals are deleted after {AGGREGATE_KEEP_DAYS} days. "
-    "Per-person deletion is not possible because the records do not identify "
-    "anyone."
+    "View records are normally deleted after {RAW_KEEP_DAYS} days. If the site "
+    "has not yet added a day’s records to its daily totals, the records are "
+    "kept a little longer so the totals are not lost. They are never kept "
+    "longer than {RAW_HARD_CAP_DAYS} days. The daily code is deleted at the "
+    "end of each day. Abuse counters are deleted within about two hours. "
+    "Anonymous totals are deleted after {AGGREGATE_KEEP_DAYS} days. Records do "
+    "not identify anyone, so records for a specific person cannot be deleted."
 )
+# The Worker's multiplier for unrolled raw rows and its ceiling (kept equal by a test).
+RAW_HARD_CAP_FACTOR = 3
 
 LIVE_WHAT = (
     "When the live block is on, the link page and privacy page ask the site’s "
@@ -193,9 +199,12 @@ def _page_views(config: SiteConfig) -> Disclosure:
     return Disclosure(
         what=VIEWS_WHAT.replace("{SITES}", sites),
         why=VIEWS_WHY,
-        kept=VIEWS_KEPT.replace(
-            "{RAW_KEEP_DAYS}", str(analytics.raw_keep_days)
-        ).replace("{AGGREGATE_KEEP_DAYS}", str(AGGREGATE_KEEP_DAYS)),
+        kept=VIEWS_KEPT.replace("{RAW_KEEP_DAYS}", str(analytics.raw_keep_days))
+        .replace(
+            "{RAW_HARD_CAP_DAYS}",
+            str(min(RAW_HARD_CAP_FACTOR * analytics.raw_keep_days, MAX_RAW_KEEP_DAYS)),
+        )
+        .replace("{AGGREGATE_KEEP_DAYS}", str(AGGREGATE_KEEP_DAYS)),
         sensitive=False,
     )
 
