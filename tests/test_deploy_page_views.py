@@ -550,16 +550,23 @@ KIT_VARS = [
     "DAILY_ALERT_BUDGET",
     "DAILY_SEND_BUDGET",
     "D1_DAILY_WRITE_QUOTA",
+    "CLICK_DAILY_WRITE_CEILING",
 ]
 
 
 def test_a_kit_limit_override_reaches_the_deploy_config(tmp_path: Path) -> None:
-    extra = {**ON, "ROUTE_BUDGET_GATE": "180", "D1_DAILY_WRITE_QUOTA": "150000"}
+    extra = {
+        **ON,
+        "ROUTE_BUDGET_GATE": "180",
+        "D1_DAILY_WRITE_QUOTA": "150000",
+        "CLICK_DAILY_WRITE_CEILING": "7500",
+    }
     assert _check(extra).returncode == 0
     assert _write(tmp_path, extra).returncode == 0
     data = tomllib.loads(_out(tmp_path))
     assert data["vars"]["ROUTE_BUDGET_GATE"] == "180"
     assert data["vars"]["D1_DAILY_WRITE_QUOTA"] == "150000"
+    assert data["vars"]["CLICK_DAILY_WRITE_CEILING"] == "7500"
     assert "MAX_LEADS" not in data["vars"]
 
 

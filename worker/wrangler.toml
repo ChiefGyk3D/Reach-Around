@@ -113,6 +113,11 @@ crons = ["5 * * * *"]
 # DAILY_ALERT_BUDGET = "20"        # owner alerts per UTC day (0 to 1000)
 # DAILY_SEND_BUDGET = "0"          # emails per UTC day; 0 = none (no send route in v1)
 # D1_DAILY_WRITE_QUOTA = "1600000" # worst-case daily writes must fit under this (paid plan: 50 million a month over 31 days)
+# CLICK_DAILY_WRITE_CEILING = "300000" # click row writes per UTC day, all sites (1000 to 10000000).
+#                                  # Free plan: "7500" with D1_DAILY_WRITE_QUOTA = "100000". Unusable: clicks refused
+# BEACON_LANE_CAP_ENFORCED = "0"   # "1" or "true" makes the unverified-lane cap (15 percent of a site's share)
+#                                  # bind; default off, since until tokens exist every click is unverified.
+#                                  # Anything but 0, false, 1, true or empty refuses clicks
 # LEAD_RETENTION_DAYS = "30"       # days a lead is kept (1 to 365); invalid falls back to 30.
 #                                  # The deploy writes this from privacy.lead_retention_days in site.yaml
 

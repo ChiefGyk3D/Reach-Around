@@ -148,6 +148,7 @@ and daily limits.
 | `view_budget_hit` | the account-wide hourly view budget was reached in the last 3 hours (further views were dropped) | three hours pass without it |
 | `alert_budget_near` | today's alert budget is at least 80 percent used | the next UTC day |
 | `click_ceiling_reached` | a click was refused today by the click write ceiling, or a site's charge leaves no room for another click under its general daily budget (its share less the first-click reserve; an hour slice or the unverified lane spent counts as a refusal once a click is refused). The message says "dropped clicks today: at least N" (the count saturates at its cap and sums all sites; no site is named). Read only, from the `cw-` and `cd-` counters | the next UTC day |
+| `click_setup_invalid` | clicks were refused today because the hashing key, the daily click ceiling setting or the lane switch is missing or unusable. The message says "clicks are being refused because the hashing key or a click setting is missing or unusable" and names no variable and no value. Read only, from one content-free flag (`cs-bad`) the click route writes once a day while it refuses; see the secret and settings paragraph under Click write ceiling in [deploy.md](deploy.md) | the next UTC day after the setting is fixed |
 
 Design rules, each pinned by a test (`worker/test/health.test.ts`):
 

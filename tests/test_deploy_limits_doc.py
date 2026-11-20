@@ -38,6 +38,7 @@ def test_defaults_table_collected_every_variable() -> None:
         "DAILY_ALERT_BUDGET",
         "DAILY_SEND_BUDGET",
         "D1_DAILY_WRITE_QUOTA",
+        "CLICK_DAILY_WRITE_CEILING",
     }
 
 
@@ -153,3 +154,21 @@ def test_click_ceiling_section_states_the_enforced_numbers() -> None:
     assert quota == 1_600_000
     assert 50_000_000 // 31 >= quota
     assert "100,000-row free plan figure" not in text
+    # the click ceiling is a documented setting with the Worker's default and range, and a Free-plan value
+    row = re.search(
+        r"^\| `CLICK_DAILY_WRITE_CEILING` \| (\d+) to (\d+) \| (\d+) \|", text, re.M
+    )
+    assert row is not None
+    assert (int(row.group(1)), int(row.group(2)), int(row.group(3))) == (
+        const("CLICK_CEILING_MIN"),
+        const("CLICK_CEILING_MAX"),
+        ceiling,
+    )
+    assert "set `D1_DAILY_WRITE_QUOTA` to `100000` and this to `7500`" in text
+    # the free-plan pair fits: kit 42440 + page views + funnel + margin + ceiling + drop cap, under 80 percent
+    free = 42_440 + _PAGE_VIEWS + _FUNNEL + _MARGIN + 7_500
+    assert free + const("CLICK_DROP_COUNT_CAP") <= 100_000 * 0.8
+    # the secret requirement, the health condition and the lane switch are documented
+    assert "The hashing secret is required on every Worker that counts clicks" in text
+    assert "click_setup_invalid" in text
+    assert "BEACON_LANE_CAP_ENFORCED" in text
