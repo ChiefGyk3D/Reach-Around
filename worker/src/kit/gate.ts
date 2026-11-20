@@ -176,6 +176,10 @@ async function gate(request: Request, env: GateEnv, deps: GateDeps): Promise<Res
 
   if (!(await challengePassed(env, form.turnstile, fetchFn, now))) return fail("turnstile");
 
+  // REVOCATION DESIGN (plan 3, Task 15 and decision D2): `leads.session_floor_ts` ends the cookies
+  // that were issued before it; it is not a block list, and the schema has no blocked flag. The kit
+  // is open to any visitor who passes Turnstile, so a lead that passes the gate again is issued a new
+  // cookie, whose iat is not below the floor. Deleting the lead is the way to remove a lead entirely.
   // Lead storage (30 day retention is the scheduled purge, leadretention.ts). The visitor's
   // fields never choose the source, the verified flag or the country.
   let lead: { id: string; created: boolean } | null;
@@ -250,7 +254,9 @@ async function view(request: Request, env: GateEnv, deps: GateDeps): Promise<Res
     return back("other");
   }
   if (lead === null) return back("expired");
-  if (lead.session_floor_ts !== null && claims.iat * 1000 < lead.session_floor_ts) return back("expired");
+  // Compared in whole seconds (the token's iat is whole seconds), so a floor set during the same
+  // second as a fresh unlock never refuses that fresh cookie.
+  if (lead.session_floor_ts !== null && claims.iat < Math.floor(lead.session_floor_ts / 1000)) return back("expired");
 
   let page: string | null;
   try {

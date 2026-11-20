@@ -294,6 +294,28 @@ describe("POST /k/gate failures all look the same (no oracle)", () => {
     expect(row!.count).toBe(2);
   });
 
+  // Design (plan 3, Task 15): a session floor only invalidates cookies issued before it. A fresh
+  // gate pass for the same lead issues a cookie that works. There is no blocked flag in the schema.
+  const FLOORS: { name: string; floorMs: number | null; reUnlocks: boolean }[] = [
+    { name: "no floor", floorMs: null, reUnlocks: true },
+    { name: "floor before now", floorMs: T0 - 1000, reUnlocks: true },
+    { name: "floor at now", floorMs: T0, reUnlocks: true },
+    { name: "floor set later in the same second", floorMs: T0 + 500, reUnlocks: true },
+  ];
+  for (const c of FLOORS) {
+    it(`an existing lead with ${c.name} gets a working new cookie; an older cookie stays refused`, async () => {
+      const id = await seedLead({ id: "c".repeat(32), floor: c.floorMs });
+      await testEnv.DB.prepare("UPDATE leads SET email = ? WHERE id = ?").bind(EMAIL, id).run();
+      const older = await unlockCookieFor({ lid: id, iat: NOW_SEC - 60 });
+      const { res } = await post();
+      expect(res.headers.get("set-cookie") !== null).toBe(c.reUnlocks);
+      const fresh = await view({ cookie: cookieHeader(res) });
+      expect(fresh.status).toBe(200);
+      const old = await view({ cookie: older });
+      expect(old.status).toBe(c.floorMs !== null && (NOW_SEC - 60) * 1000 < c.floorMs ? 303 : 200);
+    });
+  }
+
   it("kill switch answers 503 before anything else, for every method and route", async () => {
     for (const [method, path] of [["POST", GATE_ROUTE], ["GET", GATE_ROUTE], ["GET", VIEW_ROUTE]] as const) {
       const f = fake();
