@@ -80,7 +80,22 @@ DEMO_METRICS = ("viewerPercentage",)
 GEO_DIMENSIONS = ("country",)
 GEO_METRICS = ("views",)
 GEO_SORT = "-views"
-GEO_MAX_RESULTS = 25
+# ASSUMED: the reference lists maxResults and startIndex (VERIFIED-SUMMARY); the
+# largest page the API accepts for this report is NOT known, and startIndex being
+# 1-based is ASSUMED. A refused page size shows as an http_4xx word.
+GEO_PAGE_SIZE = 100
+GEO_MAX_PAGES = 3  # a hard cap: at most 300 countries are read per run
+GEO_NAMED_MAX = 25  # countries stored by name; everything else is summed
+# ASSUMED: the documented ageGroup values; any other label is a bad row.
+AGE_LABELS = {
+    "age13-17": "a13_17",
+    "age18-24": "a18_24",
+    "age25-34": "a25_34",
+    "age35-44": "a35_44",
+    "age45-54": "a45_54",
+    "age55-64": "a55_64",
+    "age65-": "a65_up",
+}
 # VERIFIED-SUMMARY: data trails by 48 to 72 hours, so the last day asked for is
 # 3 days before today (UTC).
 DATA_LAG_DAYS = 3
@@ -106,9 +121,14 @@ API_PROVIDER = "youtube_analytics"
 
 MAX_ROWS = 1000
 MAX_TOKEN_LEN = 2048
+# Output limits, checked before any record is built. One history append takes at
+# most MAX_BATCH (200) records; a report over its limit fails alone (too_large).
+DAILY_MAX_FIGURES = 2 * DAILY_WINDOW_DAYS
+DEMO_MAX_FIGURES = len(AGE_LABELS) * 3 + 1  # every age x gender, plus demo_other
+GEO_MAX_FIGURES = GEO_NAMED_MAX + 1  # named countries plus geo_other_views
+MAX_RUN_FIGURES = DAILY_MAX_FIGURES + DEMO_MAX_FIGURES + GEO_MAX_FIGURES
 _DAY = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")  # used with fullmatch
-_AGE = re.compile(r"^age(\d{2})-(\d{2})?$")
-_COUNTRY = re.compile(r"^[A-Z]{2}$")
+_COUNTRY = re.compile(r"[A-Z]{2}", re.ASCII)  # used with fullmatch
 _GENDER = {"female": "f", "male": "m", "user_specified": "u"}
 _HTTP = re.compile(r"^http_[45][0-9]{2}$")
 _PASS_KINDS = frozenset(
@@ -250,6 +270,7 @@ class _Session:
         *,
         sort: str | None = None,
         max_results: int | None = None,
+        start_index: int | None = None,
     ) -> dict[str, object]:
         params = {
             "ids": IDS,
@@ -262,6 +283,8 @@ class _Session:
             params["sort"] = sort
         if max_results is not None:
             params["maxResults"] = str(max_results)
+        if start_index is not None:
+            params["startIndex"] = str(start_index)
         return self.fetch(
             REPORTS_URL + "?" + urlencode(params),
             headers={"Authorization": f"Bearer {self.access}"},
@@ -310,13 +333,6 @@ def _daily(session: _Session, first: date, last: date) -> Report:
     return out, skipped
 
 
-def _age_label(age: object) -> str | None:
-    found = _AGE.match(age) if isinstance(age, str) else None
-    if found is None:
-        return None
-    return f"a{found.group(1)}_{found.group(2) or 'up'}"
-
-
 def _demographics(session: _Session, first: date, last: date) -> Report:
     names = (*DEMO_DIMENSIONS, *DEMO_METRICS)
     rows = _table(session.report(first, last, DEMO_DIMENSIONS, DEMO_METRICS), names)
@@ -329,14 +345,19 @@ def _demographics(session: _Session, first: date, last: date) -> Report:
         if key in seen:
             raise YoutubeAnalyticsError("bad_report")
         seen.add(key)
+        # Only the documented labels count; any other label is a bad row (it is
+        # not folded into demo_other, so an odd answer cannot grow the output).
+        label_age = AGE_LABELS.get(age) if isinstance(age, str) else None
+        label_sex = _GENDER.get(gender) if isinstance(gender, str) else None
+        if label_age is None or label_sex is None:
+            skipped += 1
+            continue
         try:
             bp = _basis_points(percent)
         except YoutubeAnalyticsError:
             skipped += 1
             continue
-        label_age = _age_label(age)
-        label_sex = _GENDER.get(gender) if isinstance(gender, str) else None
-        if bp < DEMO_FLOOR_BP or label_age is None or label_sex is None:
+        if bp < DEMO_FLOOR_BP:
             folded += bp
         else:
             cells[f"demo_{label_age}_{label_sex}"] = bp
@@ -353,18 +374,30 @@ def _demographics(session: _Session, first: date, last: date) -> Report:
 
 def _geography(session: _Session, first: date, last: date) -> Report:
     names = (*GEO_DIMENSIONS, *GEO_METRICS)
-    rows = _table(
-        session.report(
-            first,
-            last,
-            GEO_DIMENSIONS,
-            GEO_METRICS,
-            sort=GEO_SORT,
-            max_results=GEO_MAX_RESULTS,
-        ),
-        names,
-    )
-    cells: dict[str, int] = {}
+    # Bounded pagination: at most GEO_MAX_PAGES requests of GEO_PAGE_SIZE rows. A
+    # page longer than asked for is refused (the answer cannot be trusted).
+    rows: list[list[object]] = []
+    start = 1
+    for _ in range(GEO_MAX_PAGES):
+        page = _table(
+            session.report(
+                first,
+                last,
+                GEO_DIMENSIONS,
+                GEO_METRICS,
+                sort=GEO_SORT,
+                max_results=GEO_PAGE_SIZE,
+                start_index=start,
+            ),
+            names,
+        )
+        if len(page) > GEO_PAGE_SIZE:
+            raise YoutubeAnalyticsError("too_large")
+        rows.extend(page)
+        if len(page) < GEO_PAGE_SIZE:
+            break
+        start += GEO_PAGE_SIZE
+    counts: dict[str, int] = {}
     folded = 0
     seen: set[object] = set()
     skipped = 0
@@ -379,17 +412,26 @@ def _geography(session: _Session, first: date, last: date) -> Report:
             continue
         if (
             not isinstance(country, str)
-            or not _COUNTRY.match(country)
+            or not _COUNTRY.fullmatch(country)
             or country == "ZZ"  # unknown territory
             or count < GEO_FLOOR_VIEWS
         ):
             folded += count
         else:
-            cells[f"geo_{country.lower()}_views"] = count
+            counts[country] = count
+    # Do not trust the vendor's order: the largest GEO_NAMED_MAX countries are
+    # named, every other country is summed.
+    ranked = sorted(counts.items(), key=lambda item: (-item[1], item[0]))
+    cells = {
+        f"geo_{country.lower()}_views": count
+        for country, count in ranked[:GEO_NAMED_MAX]
+    }
+    folded += sum(count for _, count in ranked[GEO_NAMED_MAX:])
     window = f"{first.isoformat()} to {last.isoformat()}"
     note = (
-        f"views by country, UTC {window}, top {GEO_MAX_RESULTS} countries only; "
-        f"countries under {GEO_FLOOR_VIEWS} views are summed into geo_other_views"
+        f"views by country, UTC {window}; the {GEO_NAMED_MAX} largest countries "
+        f"with at least {GEO_FLOOR_VIEWS} views are named, every other country read "
+        f"(up to {GEO_MAX_PAGES * GEO_PAGE_SIZE}) is summed into geo_other_views"
     )
     out = [Measure(metric, value, note) for metric, value in sorted(cells.items())]
     if folded:
@@ -431,17 +473,21 @@ def collect_youtube(
     # refresh that failed (every other exception is turned into that word).
     session = _Session(env, fetch)
     last = today - timedelta(days=DATA_LAG_DAYS)
-    reports: tuple[tuple[Callable[[_Session, date, date], Report], int], ...] = (
-        (_daily, DAILY_WINDOW_DAYS),
-        (_demographics, DEMO_WINDOW_DAYS),
-        (_geography, DEMO_WINDOW_DAYS),
+    # (report, window in days, most figures it may give). The limits are read
+    # here, at call time, and checked before anything is kept.
+    reports: tuple[tuple[Callable[[_Session, date, date], Report], int, int], ...] = (
+        (_daily, DAILY_WINDOW_DAYS, DAILY_MAX_FIGURES),
+        (_demographics, DEMO_WINDOW_DAYS, DEMO_MAX_FIGURES),
+        (_geography, DEMO_WINDOW_DAYS, GEO_MAX_FIGURES),
     )
     measures: list[Measure] = []
     words: list[str] = []
-    for run, days in reports:
+    for run, days, limit in reports:
         word = ""
         try:
             got, skipped = run(session, last - timedelta(days=days - 1), last)
+            if len(got) > limit or len(measures) + len(got) > MAX_RUN_FIGURES:
+                raise YoutubeAnalyticsError("too_large")
             measures.extend(got)
             if skipped:
                 word = "bad_row"

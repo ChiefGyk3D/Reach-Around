@@ -31,7 +31,15 @@ from typing import Any
 
 from reach_around.config.era import classify_era, classify_window
 from reach_around.config.zones import format_instant
-from reach_around.counts.history import History, Point, Record, Series, parse_as_of
+from reach_around.counts.history import (
+    ANALYTICS_PROVIDER,
+    History,
+    Point,
+    Record,
+    Series,
+    looks_like_youtube_analytics,
+    parse_as_of,
+)
 
 WINDOWS = (30, 90, 365)
 GAP_WINDOW_DAYS = 90
@@ -58,6 +66,13 @@ NOTES = (
 
 
 def _refused(record: Record) -> bool:
+    # YouTube Analytics is the owner's private authorized data. It is refused by
+    # its provider tag whatever the platform slug is, and an untagged API record
+    # with one of the collector's metric names is refused too (an older line).
+    if record.api_provider == ANALYTICS_PROVIDER:
+        return True
+    if record.source == "api" and looks_like_youtube_analytics(record.metric):
+        return True
     if record.source != "api" or not record.platform.startswith("youtube"):
         return False
     return not (

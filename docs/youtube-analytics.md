@@ -20,15 +20,22 @@ policy (III.E.3.b, see [platform terms](research/platform-terms-retention.md))
 bars showing them to anyone but the authorizing user, and the owner decided on
 2026-11-19 that they stay private. They go only to the history file in the
 private instance repository, as `source: api` records with
-`api_provider: youtube_analytics`. The site build never reads that file. Two
-tests guard it: an import-graph test fails if site, kit, editor, config, preview
-or editing code can reach the collector, and a leak test builds a public site
-beside a history file holding these figures and fails if any value or figure
-name appears in the output.
+`api_provider: youtube_analytics`. The tag is set by the collector for every one
+of these figures, whatever the source's `platform` slug is called. Nothing
+infers it from the slug. The site build never reads the history file. Three
+tests guard it. A differential test builds the public site from one config
+twice, with a history file full of these figures and without one, and requires
+the whole output trees to be byte-identical (so a renderer printing a derived
+form such as `987.7k` is caught too). A test fails if the build opens the
+history file at all. An import-graph test (static, defense in depth) fails if
+site, kit, editor, config, preview or editing code can reach the collector.
 
-`reach-around report` refuses these records today (`_refused` in
-`funnel/social.py`, display policy, #424), so the owner cannot see them there
-yet. They can be read from the history file itself.
+`reach-around report` refuses these records (`_refused` in `funnel/social.py`,
+display policy, #424), so the owner cannot see them there yet. It refuses by the
+provider tag, and also refuses an untagged `api` record whose metric name is one
+the collector writes (`views_1d`, `watch_minutes_1d`, `demo_*`, `geo_*_views`),
+to cover a line written without the tag. A hand-kept record of the same name is
+not refused. They can be read from the history file itself.
 
 ## What is stored
 
@@ -36,9 +43,17 @@ yet. They can be read from the history file itself.
 | --- | --- |
 | `views_1d`, `watch_minutes_1d` | one record per UTC day for the last 7 processed days; the record's time is that day |
 | `demo_a18_24_f` and so on | share of viewers by age group and gender over 28 UTC days, in hundredths of a percent (4025 is 40.25 percent) |
-| `demo_other` | the sum of cells under 2.00 percent and of unknown labels |
-| `geo_us_views` and so on | views by country over 28 UTC days, top 25 countries |
-| `geo_other_views` | the sum of countries under 100 views, and of unknown territory |
+| `demo_other` | the sum of known cells under 2.00 percent. Only the documented age labels (13-17, 18-24, 25-34, 35-44, 45-54, 55-64, 65 and over; ASSUMED list) and the three gender labels are accepted; any other label is a bad row, not folded |
+| `geo_us_views` and so on | views by country over 28 UTC days: the 25 largest countries with at least 100 views |
+| `geo_other_views` | the sum of every other country read (under 100 views, outside the 25 largest, or the unknown territory code) |
+
+Geography reads up to 3 pages of 100 countries (`maxResults`, `startIndex`; the
+largest page size the API accepts is not known and the 1-based start index is
+ASSUMED), so at most 300 countries per run. The collector sorts them itself
+rather than trusting the answer's order. Output is bounded before any record is
+built: at most 14 daily figures, 22 demographic figures and 26 geography figures
+(62 in a run), far under the 200 records one history append takes. A report that
+returns more than its limit fails alone with `too_large`; the others are kept.
 
 The folding floors (2.00 percent, 100 views) are this project's choice
 (ASSUMED: YouTube does not publish its own thresholds). They reduce noise. They
@@ -109,6 +124,7 @@ described in the platform terms note.
 
 ## Quota
 
-One request per report, three reports per run (one daily series, one
-demographics, one geography), no retry loop beyond the fetch layer's bound. The
+Three reports per run (one daily series, one demographics, one geography). The
+geography report takes 1 to 3 requests (pages), so a run makes 3 to 5 report
+requests, plus the token exchange. No retry loop beyond the fetch layer's bound. The
 daily quota figure was not found on the vendor pages read.

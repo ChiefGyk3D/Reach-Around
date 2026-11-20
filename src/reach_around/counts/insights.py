@@ -25,7 +25,7 @@ from reach_around.config.numbers_sources import (
     TiktokSource,
     YoutubeSource,
 )
-from reach_around.counts.history import MAX_VALUE
+from reach_around.counts.history import ANALYTICS_PROVIDER, MAX_VALUE
 from reach_around.counts.meta_user import MetaError, threads_insights
 from reach_around.counts.tiktok_user import TiktokError, video_stats
 from reach_around.counts.youtube_analytics import (
@@ -107,6 +107,9 @@ class Figure:
     note: str
     # A figure about a past UTC day carries that day; None means the run time.
     as_of_utc: str | None = None
+    # Provenance, set by the collector that made the figure. It is never inferred
+    # from ``platform``, which is a display slug the owner may rename.
+    api_provider: str | None = None
 
 
 @dataclass(frozen=True)
@@ -144,7 +147,14 @@ def _youtube(
         return
     failures.extend(InsightFailure(source.platform, word) for word in words)
     figures.extend(
-        Figure(source.platform, m.metric, m.value, m.note, m.as_of_utc)
+        Figure(
+            source.platform,
+            m.metric,
+            m.value,
+            m.note,
+            m.as_of_utc,
+            ANALYTICS_PROVIDER,  # always, whatever the platform slug is
+        )
         for m in measures
     )
 

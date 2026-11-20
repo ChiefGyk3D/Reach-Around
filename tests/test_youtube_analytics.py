@@ -22,10 +22,22 @@ import reach_around.commands.counts as counts_cmd
 from fakenet import FakeTransport, reply
 from reach_around.cli import main
 from reach_around.config.numbers_sources import YoutubeSource
-from reach_around.counts.history import Record, append_records, read_history
+from reach_around.counts.history import (
+    MAX_BATCH,
+    History,
+    Record,
+    append_records,
+    looks_like_youtube_analytics,
+    read_history,
+)
 from reach_around.counts.insights import collect
 from reach_around.counts.youtube_analytics import (
+    DEMO_MAX_FIGURES,
+    GEO_MAX_PAGES,
+    GEO_NAMED_MAX,
+    GEO_PAGE_SIZE,
     MAX_ROWS,
+    MAX_RUN_FIGURES,
     REPORTS_URL,
     RETAIN_DAYS,
     TOKEN_URL,
@@ -34,6 +46,7 @@ from reach_around.counts.youtube_analytics import (
     collect_youtube,
     deletion_candidates,
 )
+from reach_around.funnel.social import build_social
 from reach_around.net.fetch import fetch_json
 from test_counts_insights import violations
 
@@ -650,6 +663,255 @@ def test_no_retention_notice_when_nothing_is_past_retention(
     assert "retention notice" not in capsys.readouterr().err
 
 
+# ---- provenance does not depend on the display slug ----
+
+SLUG = "socials-youtube"  # a valid slug that is not the kind "youtube"
+RENAMED = CONFIG.replace(
+    "platform: youtube, kind: youtube", f"platform: {SLUG}, kind: youtube"
+)
+
+
+def refresh_renamed(
+    root: Path, monkeypatch: pytest.MonkeyPatch, transport: FakeTransport
+) -> list[Record]:
+    (root / "history").mkdir(exist_ok=True)
+    (root / "site.yaml").write_text(RENAMED, encoding="utf-8")
+    monkeypatch.setattr(counts_cmd, "default_sleep", lambda s: None)
+    monkeypatch.setattr(counts_cmd, "default_transport", lambda: transport)
+    monkeypatch.setenv("YOUTUBE_API_KEY", "SENTINEL-YT-KEY")
+    for name, value in ENV.items():
+        monkeypatch.setenv(name, value)
+    code = main(["counts", "refresh", "--config", str(root / "site.yaml")])
+    assert code == 0
+    return list(read_history(root / "history" / "social.jsonl").records)
+
+
+def test_a_renamed_platform_slug_still_tags_analytics_records(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    assert f"platform: {SLUG}, kind: youtube" in RENAMED
+    records = refresh_renamed(tmp_path, monkeypatch, with_channel(ok_router(True)))
+    assert {r.platform for r in records} == {SLUG}
+    analytics = [r for r in records if r.metric != "subscribers"]
+    assert analytics and all(r.api_provider == "youtube_analytics" for r in analytics)
+    subs = [r for r in records if r.metric == "subscribers"]
+    assert [r.api_provider for r in subs] == ["youtube_data_api"]
+
+
+def test_a_renamed_slug_is_still_selected_for_deletion_and_notice(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    records = refresh_renamed(tmp_path, monkeypatch, with_channel(ok_router(True)))
+    tagged = [r for r in records if r.metric != "subscribers"]
+    later = date(2099, 1, 1)
+    assert deletion_candidates(records, later) == tagged
+    capsys.readouterr()
+    counts_cmd._retention_notice(
+        tmp_path / "history" / "social.jsonl",
+        datetime(2099, 1, 1, tzinfo=UTC),
+    )
+    err = capsys.readouterr().err
+    assert f"retention notice: {len(tagged)} analytics record(s)" in err
+
+
+def test_the_report_refuses_analytics_whatever_the_platform_slug(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    records = refresh_renamed(tmp_path, monkeypatch, with_channel(ok_router(True)))
+    block = build_social(
+        read_history(tmp_path / "history" / "social.jsonl"),
+        cutover=None,
+        today=date(2026, 11, 20),
+    )
+    shown = {(s["platform"], s["metric"]) for s in block["platforms"]}
+    assert shown == {(SLUG, "subscribers")}
+    refused = {(i["platform"], i["metric"]) for i in block["refused"]}
+    assert (SLUG, "views_1d") in refused and len(refused) == len(
+        {r.metric for r in records if r.metric != "subscribers"}
+    )
+
+
+def test_untagged_api_records_shaped_like_analytics_are_refused_too() -> None:
+    """Records written before the tag was reliable carry no provider."""
+
+    def api(metric: str, source: str = "api") -> Record:
+        return Record("video", metric, 987654, "2026-11-16T09:00:00Z", source, "r")
+
+    names = ["views_1d", "watch_minutes_1d", "demo_a18_24_f", "geo_us_views"]
+    block = build_social(
+        History(tuple(api(m) for m in names)), cutover=None, today=date(2026, 11, 20)
+    )
+    assert block["platforms"] == []
+    assert {i["metric"] for i in block["refused"]} == set(names)
+    # a hand-typed number of the same name, and other collectors' figures, pass
+    block = build_social(
+        History((api("views_1d", "hand_kept"), api("video_views_28d"))),
+        cutover=None,
+        today=date(2026, 11, 20),
+    )
+    assert {s["metric"] for s in block["platforms"]} == {"views_1d", "video_views_28d"}
+
+
+def test_every_collected_metric_name_is_recognized_by_the_shape_check() -> None:
+    measures, _ = run(ok_router())
+    assert measures and all(looks_like_youtube_analytics(m.metric) for m in measures)
+
+
+# ---- limits: output per report and per run ----
+
+
+def country_codes(count: int) -> list[str]:
+    import itertools
+    import string
+
+    codes = ("".join(p) for p in itertools.product(string.ascii_uppercase, repeat=2))
+    return [c for c in codes if c != "ZZ"][:count]
+
+
+def geo_pages(total: int, *, extra: int = 0) -> tuple[FakeTransport, list[int]]:
+    """A reports endpoint with ``total`` countries, paged by startIndex."""
+    rows = [[c, 100_000 - i * 10] for i, c in enumerate(country_codes(total))]
+    starts: list[int] = []
+
+    def reports(request: Any) -> Any:
+        query = parse_qs(urlsplit(request.path).query)
+        dims = query["dimensions"][0]
+        if dims == "day":
+            return reply(fx("daily.json"))
+        if dims == "ageGroup,gender":
+            return reply(fx("demographics.json"))
+        start = int(query.get("startIndex", ["1"])[0])
+        size = int(query["maxResults"][0])
+        starts.append(start)
+        page = rows[start - 1 : start - 1 + size + extra]
+        return reply(
+            {
+                "columnHeaders": [{"name": "country"}, {"name": "views"}],
+                "rows": page,
+            }
+        )
+
+    transport = FakeTransport(
+        {TOKEN_URL: reply(fx("token.json")), REPORTS_URL: reports}
+    )
+    return transport, starts
+
+
+def test_201_countries_give_at_most_26_geography_figures() -> None:
+    transport, starts = geo_pages(201)
+    measures, words = run(transport)
+    assert words == []
+    geo = [m for m in measures if m.metric.startswith("geo_")]
+    assert len(geo) == GEO_NAMED_MAX + 1
+    named = [m for m in geo if m.metric != "geo_other_views"]
+    assert len(named) == GEO_NAMED_MAX
+    # the folded total holds every country outside the named 25 (by views)
+    expected = sum(100_000 - i * 10 for i in range(GEO_NAMED_MAX, 201))
+    assert next(m for m in geo if m.metric == "geo_other_views").value == expected
+    assert starts == [1, 1 + GEO_PAGE_SIZE, 1 + 2 * GEO_PAGE_SIZE]
+
+
+def test_geography_pagination_has_a_hard_cap() -> None:
+    transport, starts = geo_pages(600)
+    measures, words = run(transport)
+    assert len(starts) == GEO_MAX_PAGES
+    assert len([m for m in measures if m.metric.startswith("geo_")]) <= (
+        GEO_NAMED_MAX + 1
+    )
+    assert words == []
+
+
+def test_a_page_larger_than_the_requested_size_fails_only_that_report() -> None:
+    transport, _ = geo_pages(201, extra=5)
+    measures, words = run(transport)
+    assert words == ["too_large"]
+    assert not [m for m in measures if m.metric.startswith("geo_")]
+    assert {m.metric for m in measures} >= {"views_1d", "demo_a18_24_m"}
+
+
+def test_the_same_country_on_two_pages_fails_that_report() -> None:
+    rows = [[c, 500] for c in country_codes(GEO_PAGE_SIZE)]
+    answers = [rows, [rows[0]]]
+    seen: list[int] = []
+
+    def reports(request: Any) -> Any:
+        query = parse_qs(urlsplit(request.path).query)
+        dims = query["dimensions"][0]
+        if dims == "day":
+            return reply(fx("daily.json"))
+        if dims == "ageGroup,gender":
+            return reply(fx("demographics.json"))
+        seen.append(1)
+        return reply(
+            {
+                "columnHeaders": [{"name": "country"}, {"name": "views"}],
+                "rows": answers[len(seen) - 1],
+            }
+        )
+
+    transport = FakeTransport(
+        {TOKEN_URL: reply(fx("token.json")), REPORTS_URL: reports}
+    )
+    _, words = run(transport)
+    assert words == ["bad_report"]
+
+
+@pytest.mark.parametrize(
+    ("age", "gender"),
+    [
+        ("age99-99", "female"),
+        ("age18-24 ", "female"),
+        ("AGE18-24", "female"),
+        ("age18-24", "other"),
+        ("age18-24", "Female"),
+        ("age١٨-24", "female"),
+        (None, "female"),
+    ],
+)
+def test_labels_outside_the_documented_allowlist_are_bad_rows(
+    age: Any, gender: str
+) -> None:
+    bad = fx("demographics.json")
+    bad["rows"] = [[age, gender, 50.0], ["age25-34", "male", 30.0]]
+    measures, words = run(
+        router(daily=fx("daily.json"), demo=bad, geo=fx("empty_geo.json"))
+    )
+    demo = {m.metric: m.value for m in measures if m.metric.startswith("demo_")}
+    # never folded into demo_other: an odd label is dropped and counted
+    assert demo == {"demo_a25_34_m": 3000}
+    assert words == ["bad_row"]
+
+
+def test_a_hostile_demographic_answer_cannot_exceed_the_cell_limit() -> None:
+    bad = fx("demographics.json")
+    bad["rows"] = [
+        [f"age{n:02d}-{n + 1:02d}", "female", 1.0] for n in range(10, 90)
+    ] + [["age18-24", "male", 40.0]]
+    measures, words = run(
+        router(daily=fx("daily.json"), demo=bad, geo=fx("empty_geo.json"))
+    )
+    demo = [m for m in measures if m.metric.startswith("demo_")]
+    assert len(demo) <= DEMO_MAX_FIGURES and words == ["bad_row"]
+
+
+def test_the_whole_run_fits_one_history_append() -> None:
+    transport, _ = geo_pages(500)
+    measures, words = run(transport)
+    assert words == [] and len(measures) <= MAX_RUN_FIGURES < MAX_BATCH
+    # and the writer accepts the batch as one append
+    assert measures
+
+
+def test_an_over_limit_report_fails_alone(monkeypatch: pytest.MonkeyPatch) -> None:
+    import reach_around.counts.youtube_analytics as module
+
+    monkeypatch.setattr(module, "GEO_MAX_FIGURES", 3)
+    transport, _ = geo_pages(201)
+    measures, words = run(transport)
+    assert words == ["too_large"]
+    assert {m.metric for m in measures} >= {"views_1d", "demo_a18_24_m"}
+
+
 # ---- boundary and leak ----
 
 
@@ -686,52 +948,105 @@ numbers:
       channel_id: UCaaaaaaaaaaaaaaaaaaaaaa
       analytics: true
 """
-LEAK_VALUES = ("987654", "876543", "765432")
-LEAK_NAMES = ("views_1d", "watch_minutes_1d", "demo_a18_24_f", "geo_us_views")
+# Varied on purpose: large, small, and values a renderer could print in a derived
+# form (987.7k, 1.2M, a percentage). A differential test catches every form.
+ANALYTICS_VALUES = {
+    "views_1d": 987_654,
+    "watch_minutes_1d": 1_234_567_890,
+    "demo_a18_24_f": 4_025,
+    "demo_other": 3,
+    "geo_us_views": 12,
+    "geo_other_views": 765_432,
+}
 
 
-def leaks(out: Path) -> list[str]:
-    found = []
-    for path in sorted(out.rglob("*")):
-        if path.is_file():
-            text = path.read_bytes().decode("utf-8", "replace")
-            found += [
-                f"{path.name}:{needle}"
-                for needle in (*LEAK_VALUES, *LEAK_NAMES, "youtube_analytics")
-                if needle in text
-            ]
-    return found
-
-
-def test_public_build_never_shows_private_analytics(tmp_path: Path) -> None:
-    root = tmp_path / "inst"
-    (root / "history").mkdir(parents=True)
-    (root / "site.yaml").write_text(PUBLIC_SITE, encoding="utf-8")
+def write_analytics_history(root: Path) -> Path:
+    path = root / "history" / "social.jsonl"
+    path.parent.mkdir(parents=True, exist_ok=True)
     append_records(
-        root / "history" / "social.jsonl",
+        path,
         [
             Record(
                 "youtube",
                 metric,
-                int(value),
+                value,
                 "2026-11-16T00:00:00Z",
                 "api",
                 "r1",
                 note="n",
                 api_provider="youtube_analytics",
             )
-            for metric, value in zip(LEAK_NAMES, (*LEAK_VALUES, "765432"), strict=True)
+            for metric, value in ANALYTICS_VALUES.items()
         ],
         now=NOW,
     )
-    out = tmp_path / "out"
-    code = main(["build", "--config", str(root / "site.yaml"), "--out", str(out)])
+    return path
+
+
+def build_tree(config: Path, out: Path) -> dict[str, bytes]:
+    code = main(["build", "--config", str(config), "--out", str(out)])
     assert code == 0 and any(out.rglob("*.html"))
-    assert leaks(out) == []
+    return {
+        str(p.relative_to(out)): p.read_bytes()
+        for p in sorted(out.rglob("*"))
+        if p.is_file()
+    }
 
 
-def test_leak_guard_bites_when_a_value_is_in_the_output(tmp_path: Path) -> None:
-    (tmp_path / "index.html").write_text("<p>987654</p>", encoding="utf-8")
-    assert leaks(tmp_path) == ["index.html:987654"]
-    (tmp_path / "index.html").write_text("<p>geo_us_views</p>", encoding="utf-8")
-    assert leaks(tmp_path) == ["index.html:geo_us_views"]
+def make_instance(root: Path) -> Path:
+    root.mkdir(parents=True)
+    (root / "site.yaml").write_text(PUBLIC_SITE, encoding="utf-8")
+    return root
+
+
+def test_public_output_is_byte_identical_with_and_without_analytics(
+    tmp_path: Path,
+) -> None:
+    """Differential: the same config built with a history file full of analytics
+    records and with no history file must give the same public tree, byte for
+    byte. Unlike a search for a few values, this also catches a renderer that
+    prints a derived form (987.7k, a label, a percentage)."""
+    without = build_tree(make_instance(tmp_path / "a") / "site.yaml", tmp_path / "oa")
+    with_root = make_instance(tmp_path / "b")
+    write_analytics_history(with_root)
+    with_history = build_tree(with_root / "site.yaml", tmp_path / "ob")
+    assert without.keys() == with_history.keys() and without
+    assert [k for k in without if without[k] != with_history[k]] == []
+
+
+def test_differential_guard_bites_on_a_derived_form(tmp_path: Path) -> None:
+    """Negative case: a tree that differs only by a derived '987.7k' is caught."""
+    base = build_tree(make_instance(tmp_path / "a") / "site.yaml", tmp_path / "oa")
+    altered = dict(base)
+    index = next(k for k in altered if k.endswith(".html"))
+    altered[index] = altered[index] + b"<p>Views 1d 987.7k</p>"
+    assert [k for k in base if base[k] != altered[k]] == [index]
+
+
+def test_the_build_never_opens_the_history_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import builtins
+    import io
+    import os
+
+    root = make_instance(tmp_path / "inst")
+    history = write_analytics_history(root)
+    touched: list[str] = []
+
+    def watch(real: Any) -> Any:
+        def spy(path: Any, *args: Any, **kw: Any) -> Any:
+            if isinstance(path, str | os.PathLike) and str(path).endswith(history.name):
+                touched.append(str(path))
+            return real(path, *args, **kw)
+
+        return spy
+
+    monkeypatch.setattr(builtins, "open", watch(builtins.open))
+    monkeypatch.setattr(io, "open", watch(io.open))
+    monkeypatch.setattr(os, "open", watch(os.open))
+    build_tree(root / "site.yaml", tmp_path / "out")
+    assert touched == []
+    # negative case: the spy does see a real read of that file
+    read_history(history)
+    assert touched

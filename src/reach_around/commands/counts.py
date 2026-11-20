@@ -398,8 +398,9 @@ def _cycle(
                 as_of_utc=utc_stamp(stamp),
                 source="api",
                 run_id=run_id,
+                # by the kind of source, never by its display slug
                 api_provider=(
-                    "youtube_data_api" if outcome.platform == "youtube" else None
+                    "youtube_data_api" if outcome.kind == "youtube" else None
                 ),
             )
             for outcome in outcomes
@@ -413,9 +414,7 @@ def _cycle(
                 source="api",
                 run_id=run_id,
                 note=figure.note,
-                api_provider=(
-                    "youtube_analytics" if figure.platform == "youtube" else None
-                ),
+                api_provider=figure.api_provider,
             )
             for figure in figures
         ]

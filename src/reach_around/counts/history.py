@@ -40,6 +40,22 @@ _LOCK_POLL = 0.02
 SOURCES = ("api", "hand_kept", "imported")
 TYPES = ("record", "correction")
 API_PROVIDERS = ("youtube_analytics", "youtube_data_api")
+ANALYTICS_PROVIDER = "youtube_analytics"
+
+# The metric names the YouTube Analytics collector writes (#391). A record with
+# one of these names and source ``api`` is treated as private analytics even when
+# its provider tag is missing (an older or hand-edited line), so a report can
+# still refuse it. ASCII only, whole name.
+_ANALYTICS_SHAPE = re.compile(
+    r"views_1d|watch_minutes_1d|demo_[a-z0-9_]{1,34}|geo_[a-z_]{1,20}views",
+    re.ASCII,
+)
+
+
+def looks_like_youtube_analytics(metric: str) -> bool:
+    """True for a metric name the YouTube Analytics collector uses."""
+    return _ANALYTICS_SHAPE.fullmatch(metric) is not None
+
 
 _SLUG = re.compile(r"^[a-z0-9][a-z0-9-]{0,39}$")
 _METRIC = re.compile(r"^[a-z][a-z0-9_]{0,39}$")
