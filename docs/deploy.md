@@ -322,25 +322,26 @@ Project secrets (this Cloudflare token, later the Mailgun and collector
 tokens) live in the Doppler project `reach-around`, with configs `dev`, `stg`
 and `prd`. The `dev` config holds the deploy credentials for the test deploy
 (and nothing else the deploy does not need). For a local deploy, read the
-token from the `dev` config:
+rotating key value (`CLOUDFLARE_KEY_VALUE`) from the `dev` config:
 
 ```
-doppler run --project reach-around --config dev --only-secrets CLOUDFLARE_API_TOKEN -- <command>
+doppler run --project reach-around --config dev --only-secrets CLOUDFLARE_KEY_VALUE -- <command>
 ```
 
-The deploy workflow reads the token from Doppler over OIDC, and falls back to
-a GitHub `test` environment secret named `CLOUDFLARE_API_TOKEN` when Doppler is
-not configured. Never paste a token into chat, issues or commits.
+The deploy workflow reads the rotating key value (`CLOUDFLARE_KEY_VALUE`) from
+Doppler over OIDC and uses it directly as the Cloudflare API token. No
+`CLOUDFLARE_API_TOKEN` secret is needed in the `dev` config. When Doppler is
+not configured, it falls back to a GitHub `test` environment secret named
+`CLOUDFLARE_API_TOKEN`. Never paste a token into chat, issues or commits.
 
-**Where the token is available.** The Doppler action exports every secret in
-the config it reads into the job environment (`GITHUB_ENV`). From the Doppler
-step on, the Cloudflare token is therefore inherited by every later step and
-by every action's post-run hook, whether or not that step lists it in `env:`.
-It is not limited to the wrangler steps. Narrowing it to the steps that need it
-waits on git-your-ship-together#207. Until then the workflow keeps every
-package install before the Doppler step, and a test fails if an install or an
-unlisted action is added after it. That test checks order only; the YAML cannot
-prove the inherited-environment boundary.
+**Where the token is available.** The workflow asks the Doppler action for
+that one name only, in its `outputs` form: the value is masked and returned as
+one step output, and nothing is written to the job environment (`GITHUB_ENV`).
+Only the steps that map it into their own `env:` (the presence check and the
+three wrangler steps) can read it; other steps and post-run hooks do not
+inherit it. A test checks this mapping. Package installs still run before the
+Doppler step, and a test fails if an install or an unlisted action is added
+after it.
 
 **The token is account-wide.** It covers Pages, D1, Workers Scripts and zone
 routes for the whole account, not just this project. Rotation keeps two such
@@ -352,16 +353,17 @@ real isolation. That is an owner decision, tracked in issue #206.
 **Service-token fallback.** The `DOPPLER_TOKEN` secret is emergency-only. It is
 a long-lived credential stored in GitHub; do not leave it set while OIDC works.
 
-**CI config.** The Doppler action exports every secret in the config it reads
-into the rest of the job, so the test deploy reads the `dev` config, which must hold
-only the deploy token (`CLOUDFLARE_API_TOKEN`). Runtime secrets such as the
-Mailgun key stay in `stg` and `prd`. The optional `CLOUDFLARE_PURGE_TOKEN` is
-not in `dev` either: it stays a GitHub `test` environment secret so it reaches
-only the purge step and never the wrangler steps. To rotate the token automatically, add a Doppler Cloudflare
-Tokens rotated secret in `dev` (it injects `CLOUDFLARE_KEY_NAME` and
-`CLOUDFLARE_KEY_VALUE`) and set `CLOUDFLARE_API_TOKEN` to
-`${CLOUDFLARE_KEY_VALUE}`. Create the two tokens it rotates with identical
-permissions, as in the token table above.
+**CI config.** The test deploy reads the `dev` config. It needs only the
+rotating key value (`CLOUDFLARE_KEY_VALUE`), and the workflow requests that
+name alone. Runtime secrets such as the Mailgun key stay in `stg` and `prd`.
+The optional `CLOUDFLARE_PURGE_TOKEN` is not in `dev` either: it stays a GitHub
+`test` environment secret so it reaches only the purge step and never the
+wrangler steps. To rotate the token automatically, add a Doppler Cloudflare
+Tokens rotated secret in `dev` (it provides `CLOUDFLARE_KEY_NAME` and
+`CLOUDFLARE_KEY_VALUE`). The deploy uses `CLOUDFLARE_KEY_VALUE` as the API
+token directly, so do not add a `CLOUDFLARE_API_TOKEN` secret to `dev`. Create
+the two tokens it rotates with identical permissions, as in the token table
+above. The value must be at least 8 characters, which a real token always is.
 
 **Identity.** Create a Doppler service account with Viewer on `reach-around`
 config `dev` only, and an OIDC identity on it with issuer
@@ -584,12 +586,13 @@ names, add them as `allowed-endpoints` with no wildcards, change
 `egress-policy` to `block`, and re-run. If the names still vary per run, leave
 the job in audit.
 
-To store the token, let Doppler read the value from its prompt instead of
-putting it on the command line (a value typed as an argument lands in your
-shell history and the process list):
+To store a token by hand (when you do not use the rotating secret), store it
+under the name the deploy reads, `CLOUDFLARE_KEY_VALUE`, and let Doppler read
+the value from its prompt instead of putting it on the command line (a value
+typed as an argument lands in your shell history and the process list):
 
 ```
-doppler secrets set CLOUDFLARE_API_TOKEN --project reach-around --config dev
+doppler secrets set CLOUDFLARE_KEY_VALUE --project reach-around --config dev
 ```
 
 Do the same for `dev` and `prd` as needed. If the Doppler CLI nags about a
@@ -663,8 +666,8 @@ through standard input, so it appears neither on screen nor in the process
 list:
 
 ```
-doppler run --project reach-around --config dev --only-secrets CLOUDFLARE_API_TOKEN -- \
-  sh -c 'printf "header = \"Authorization: Bearer %s\"\n" "$CLOUDFLARE_API_TOKEN" \
+doppler run --project reach-around --config dev --only-secrets CLOUDFLARE_KEY_VALUE -- \
+  sh -c 'printf "header = \"Authorization: Bearer %s\"\n" "$CLOUDFLARE_KEY_VALUE" \
     | curl -sS -K - https://api.cloudflare.com/client/v4/user/tokens/verify \
     | jq "{success, status: .result.status, expires_on: .result.expires_on}"'
 ```
