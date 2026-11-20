@@ -161,9 +161,9 @@ def test_text_says_small_totals_are_merged_and_no_per_person_deletion() -> None:
     text = views_text(make())
     assert "Small groups are combined as “other.”" in text
     assert (
-        "Records do not identify anyone, so records for a specific person cannot be deleted."
-        in text
-    )
+        "Records do not identify anyone, so records for a specific person "
+        "cannot be deleted."
+    ) in text
     assert "Global Privacy Control" in text and "Do Not Track" in text
 
 
@@ -181,7 +181,9 @@ def test_retention_numbers_come_from_config() -> None:
 @pytest.mark.parametrize(
     ("keep", "cap"), [(7, 21), (14, 42), (30, 90), (60, 90), (90, 90)]
 )
-def test_text_states_the_retention_ceiling_the_worker_enforces(keep: int, cap: int) -> None:
+def test_text_states_the_retention_ceiling_the_worker_enforces(
+    keep: int, cap: int
+) -> None:
     text = views_text(make(raw_keep_days=keep))
     assert f"After {cap} days, they are due for deletion no matter what." in text
     assert "which can occasionally be delayed for a short time" in text
