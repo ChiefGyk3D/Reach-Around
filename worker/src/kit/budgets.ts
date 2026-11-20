@@ -53,7 +53,15 @@ import type { KitEventKind } from "./leads";
 import { pageViewDailyWrites, type PageViewBudgetEnv } from "../pvlimits";
 import { FUNNEL_CAPS, funnelDailyWrites, type FunnelCaps } from "../funnelcaps";
 import { loadSites } from "../sites";
-import { CLICK_ACCOUNT_DAILY_WRITES, CLICK_ADMIT_CEILING, CLICK_CEILING_MAX, CLICK_CEILING_MIN, clickAccountWrites } from "../clickceiling";
+import {
+  CLICK_ACCOUNT_DAILY_WRITES,
+  CLICK_ADMIT_CEILING,
+  CLICK_CEILING_MAX,
+  CLICK_CEILING_MIN,
+  clickAccountWrites,
+  clickWriteCost,
+  firstClickReserveShort,
+} from "../clickceiling";
 
 export type RouteName = "gate" | "view";
 
@@ -254,6 +262,8 @@ export interface BudgetAssessment {
   /** The click funnel part of `combined` (funnelcaps.ts). */
   funnel: number;
   quota: number;
+  /** True when a site's first-click reserve cannot hold one maximum click charge per link (level is then fail). */
+  reserveShort: boolean;
 }
 
 /**
@@ -266,8 +276,17 @@ export function assessDailyBudget(env: KitLimitsEnv, funnelCaps: FunnelCaps = FU
   const pageViews = pageViewDailyWrites(env);
   const funnel = funnelDailyWritesFor(env, funnelCaps);
   const combined = combinedDailyWrites(c, pageViews, funnel);
-  const level = bad.length > 0 || combined > c.d1DailyWriteQuota ? "fail" : above80(combined, c.d1DailyWriteQuota) ? "warn" : "ok";
-  return { level, invalid: bad, combined, pageViews, funnel, quota: c.d1DailyWriteQuota };
+  // The first-click reserve: each served site's reserve must hold one maximum click charge per link id.
+  const served = loadSites(env ?? {}).sites;
+  const reserveShort = firstClickReserveShort(
+    c.clickCeiling,
+    served.map((s) => ({
+      links: s.linkIds.size,
+      cost: clickWriteCost({ sources: s.sources !== undefined, landings: s.landings !== undefined, hops: s.hops !== undefined }),
+    })),
+  );
+  const level = bad.length > 0 || reserveShort || combined > c.d1DailyWriteQuota ? "fail" : above80(combined, c.d1DailyWriteQuota) ? "warn" : "ok";
+  return { level, invalid: bad, combined, pageViews, funnel, quota: c.d1DailyWriteQuota, reserveShort };
 }
 
 type DbEnv = KitLimitsEnv & { DB: D1Database };

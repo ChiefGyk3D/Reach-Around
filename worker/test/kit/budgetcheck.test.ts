@@ -60,7 +60,7 @@ describe("the page-view budget in the kit's combined check", () => {
   });
 });
 
-/** The default figure without the funnel: kit 42440 + page views 22700 + clicks 300500 + margin 5000. */
+/** The default figure without the funnel: kit 42440 + page views 22700 + clicks 300501 + margin 5000. */
 const BASE = 70_140 + CLICK_DAILY_WRITES;
 
 describe("assessDailyBudget agrees with loadKitLimits", () => {
@@ -302,24 +302,88 @@ describe("the deploy gate reads every variable the Worker's loader reads", () =>
   });
 });
 
+describe("the first-click reserve is checked against the number of links", () => {
+  // One site, no optional lists: a click is charged 9. At a 1000 ceiling the site's reserve is 200 (20 percent),
+  // which holds 22 first clicks (22 x 9 = 198), not 23.
+  const ids = (n: number) => JSON.stringify(Array.from({ length: n }, (_, i) => `l${i}`));
+  const one = (n: number, extra: Record<string, string> = {}) => ({
+    SITE_HOST: "links.example.test",
+    PAGE_IDS: '["home"]',
+    LINK_IDS: ids(n),
+    CLICK_DAILY_WRITE_CEILING: "1000",
+    D1_DAILY_WRITE_QUOTA: "999999999",
+    ...extra,
+  });
+  it.each([
+    [22, 0],
+    [23, 1],
+  ])("%i links at a 1000 ceiling: exit %i", (n, code) => {
+    const r = runBudgetCheck(one(n));
+    expect(r.code).toBe(code);
+    if (code === 1) {
+      expect(r.lines).toEqual(["::error::CLICK_DAILY_WRITE_CEILING is too small to keep a first click for every link: raise it"]);
+    }
+  });
+  it("the model reports it and the level is fail, whatever the quota", () => {
+    expect(assessDailyBudget(one(23)).reserveShort).toBe(true);
+    expect(assessDailyBudget(one(23)).level).toBe("fail");
+    expect(assessDailyBudget(one(22)).reserveShort).toBe(false);
+    expect(assessDailyBudget(one(22)).level).not.toBe("fail");
+  });
+  it("uses each site's own maximum charge (a site that lists everything is charged 13)", () => {
+    const sites = (n: number) =>
+      JSON.stringify({
+        a: {
+          hosts: ["a.example.test"], mode: "beacon", pages: ["home"],
+          link_ids: Object.fromEntries(Array.from({ length: n }, (_, i) => [`l${i}`, "home"])),
+          sources: ["x"], landings: ["home"], hops: ["blog"],
+        },
+      });
+    // 200 / 13 = 15 first clicks
+    expect(assessDailyBudget({ SITES: sites(15), CLICK_DAILY_WRITE_CEILING: "1000", D1_DAILY_WRITE_QUOTA: "999999999" }).reserveShort).toBe(false);
+    expect(assessDailyBudget({ SITES: sites(16), CLICK_DAILY_WRITE_CEILING: "1000", D1_DAILY_WRITE_QUOTA: "999999999" }).reserveShort).toBe(true);
+  });
+  it("more sites share the ceiling, so each site's reserve is smaller", () => {
+    const two = JSON.stringify({
+      a: { hosts: ["a.example.test"], mode: "beacon", pages: ["home"], link_ids: Object.fromEntries(Array.from({ length: 12 }, (_, i) => [`l${i}`, "home"])) },
+      b: { hosts: ["b.example.test"], mode: "beacon", pages: ["home"], link_ids: {} },
+    });
+    // share 500, reserve 100: 11 first clicks at 9, so 12 links is short
+    expect(assessDailyBudget({ SITES: two, CLICK_DAILY_WRITE_CEILING: "1000", D1_DAILY_WRITE_QUOTA: "999999999" }).reserveShort).toBe(true);
+    expect(assessDailyBudget({ SITES: two, CLICK_DAILY_WRITE_CEILING: "2000", D1_DAILY_WRITE_QUOTA: "999999999" }).reserveShort).toBe(false);
+  });
+  it("the defaults and the documented Free-plan pair keep every link a first click up to a large site", () => {
+    expect(assessDailyBudget({ SITE_HOST: "links.example.test", PAGE_IDS: '["home"]', LINK_IDS: ids(200) }).reserveShort).toBe(false);
+    expect(assessDailyBudget({ SITE_HOST: "links.example.test", PAGE_IDS: '["home"]', LINK_IDS: ids(115), D1_DAILY_WRITE_QUOTA: "100000", CLICK_DAILY_WRITE_CEILING: "7500" }).reserveShort).toBe(false);
+  });
+});
+
+describe("a click-only deployment (page views off) is checked with the same function", () => {
+  it("passes the Free-plan pair and refuses the default ceiling on a Free quota", () => {
+    const base = { SITE_HOST: "links.example.test", PAGE_IDS: '["home"]', LINK_IDS: '["alpha"]' };
+    expect(runBudgetCheck({ ...base, D1_DAILY_WRITE_QUOTA: "100000", CLICK_DAILY_WRITE_CEILING: "7500" }).code).toBe(0);
+    expect(runBudgetCheck({ ...base, D1_DAILY_WRITE_QUOTA: "100000" }).code).toBe(1);
+  });
+});
+
 describe("the click ceiling setting in the budget check (Free-plan deployment)", () => {
   const free = { D1_DAILY_WRITE_QUOTA: "100000", CLICK_DAILY_WRITE_CEILING: "7500" };
-  it("the documented Free-plan pair passes, and is the old 78898 figure", () => {
+  it("the documented Free-plan pair passes, and is the old figure plus the setup-flag write", () => {
     const r = runBudgetCheck(free);
     expect(r.code).toBe(0);
-    expect(r.lines[0]).toContain(`${78_140 + FUNNEL_DAILY_WRITES} of 100000`);
-    expect(assessDailyBudget(free).combined).toBe(78_140 + FUNNEL_DAILY_WRITES);
+    expect(r.lines[0]).toContain(`${78_141 + FUNNEL_DAILY_WRITES} of 100000`);
+    expect(assessDailyBudget(free).combined).toBe(78_141 + FUNNEL_DAILY_WRITES);
   });
   it("the Free-plan quota alone (default ceiling) is refused, and so is the ceiling alone on a too-small quota", () => {
     expect(runBudgetCheck({ D1_DAILY_WRITE_QUOTA: "100000" }).code).toBe(1);
-    // 70140 + ceiling + 500 + funnel (758) must stay at or under 100000: 28602 is the largest ceiling
-    expect(runBudgetCheck({ D1_DAILY_WRITE_QUOTA: "100000", CLICK_DAILY_WRITE_CEILING: "28602" }).code).toBe(0);
-    expect(runBudgetCheck({ D1_DAILY_WRITE_QUOTA: "100000", CLICK_DAILY_WRITE_CEILING: "28603" }).code).toBe(1);
+    // 70140 + ceiling + 501 + funnel (758) must stay at or under 100000: 28601 is the largest ceiling
+    expect(runBudgetCheck({ D1_DAILY_WRITE_QUOTA: "100000", CLICK_DAILY_WRITE_CEILING: "28601" }).code).toBe(0);
+    expect(runBudgetCheck({ D1_DAILY_WRITE_QUOTA: "100000", CLICK_DAILY_WRITE_CEILING: "28602" }).code).toBe(1);
   });
   it("the verdict follows the configured ceiling exactly (the Worker and the check read one value)", () => {
     for (const c of ["1000", "7500", "300000", "5000000"]) {
       const a = assessDailyBudget({ CLICK_DAILY_WRITE_CEILING: c, D1_DAILY_WRITE_QUOTA: "999999999" });
-      expect(a.combined).toBe(70_140 + Number(c) + 500 + FUNNEL_DAILY_WRITES);
+      expect(a.combined).toBe(70_140 + Number(c) + 501 + FUNNEL_DAILY_WRITES);
       expect(combinedDailyWrites(loadKitLimits({ CLICK_DAILY_WRITE_CEILING: c, D1_DAILY_WRITE_QUOTA: "999999999" }), a.pageViews, a.funnel)).toBe(a.combined);
     }
   });

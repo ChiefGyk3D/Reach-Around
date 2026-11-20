@@ -134,7 +134,7 @@ describe("loadKitLimits", () => {
   it("warns above 80 percent of the quota", () => {
     // gate 8000/h adds 24 x (8000 - 150) x 5 = 942000 to the default figure: between 80 and 100 percent of 1600000
     const c = L({ ROUTE_BUDGET_GATE: "8000" });
-    expect(combinedDailyWrites(c)).toBe(370_640 + 942_000 + FUNNEL_DAILY_WRITES);
+    expect(combinedDailyWrites(c)).toBe(370_641 + 942_000 + FUNNEL_DAILY_WRITES);
     expect(c.warnings).toEqual(["combined worst-case daily D1 writes are above 80 percent of D1_DAILY_WRITE_QUOTA"]);
     expect(L().warnings).toEqual([]);
   });
@@ -152,9 +152,9 @@ describe("worstCaseDailyWrites", () => {
     const c = L();
     expect(PAGE_VIEW_DAILY_WRITES).toBe(22_700);
     expect(combinedDailyWrites(c)).toBe(worstCaseDailyWrites(c) + 22_700 + CLICK_DAILY_WRITES + FUNNEL_DAILY_WRITES + COMBINED_MARGIN);
-    // 42440 kit + 22700 page views + 300500 clicks + 5000 margin
-    expect(CLICK_DAILY_WRITES).toBe(300_500);
-    expect(combinedDailyWrites(c)).toBe(370_640 + FUNNEL_DAILY_WRITES);
+    // 42440 kit + 22700 page views + 300501 clicks (ceiling, dropped-count cap, setup flag) + 5000 margin
+    expect(CLICK_DAILY_WRITES).toBe(300_501);
+    expect(combinedDailyWrites(c)).toBe(370_641 + FUNNEL_DAILY_WRITES);
     expect(combinedDailyWrites(c)).toBeLessThan(c.d1DailyWriteQuota * 0.8);
   });
   it("storage worst case is far under the 500 MB database limit at the defaults", () => {

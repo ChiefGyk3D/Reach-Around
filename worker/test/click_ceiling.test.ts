@@ -15,6 +15,7 @@ import {
   CLICK_UNVERIFIED_PERCENT,
   siteShare,
   admitClick,
+  CLICK_SETUP_FLAG_WRITES,
   clickAccountWrites,
   clickLimits,
   clickWriteCost,
@@ -152,6 +153,37 @@ describe("the cost of one click is the rows it writes", () => {
     expect(await count("cw-one")).toBe(charged);
   });
 
+  // The write charge is a conservative upper bound, not a count of the rows a click changes. A repeat click on a
+  // link that already has its cells changes fewer rows than it is charged: the first-click marker, the new-cell
+  // budget rows and the capacity row are charged but not written. Pinned here: the charge is never below the
+  // rows changed, and the over-charge is exactly those rows.
+  it.each(combos)("a repeat click is charged at least the rows it changes, and the over-charge is bounded: sources=$sources landings=$landings hops=$hops", async (on) => {
+    const sites = JSON.stringify({
+      one: {
+        hosts: ["one.example.test"], mode: "beacon", pages: ["home"], link_ids: { twitch: "home" },
+        ...(on.sources ? { sources: ["instagram"] } : {}),
+        ...(on.landings ? { landings: ["home"] } : {}),
+        ...(on.hops ? { hops: ["blog"] } : {}),
+      },
+    });
+    await handleClick(click("one.example.test"), { ...env(), SITES: sites });
+    const chargedBefore = await count("cw-one");
+    const before = await snapshot();
+    await handleClick(click("one.example.test"), { ...env(), SITES: sites });
+    const after = await snapshot();
+    const changed = [...after].filter((r) => !before.has(r));
+    const raw = changed.filter((r) => r.startsWith("click_events|")).length;
+    const measured = changed.length + raw; // the raw row counts twice: its ts index is a second write
+    const charged = (await count("cw-one")) - chargedBefore;
+    expect(charged).toBe(clickWriteCost(on));
+    expect(charged).toBeGreaterThanOrEqual(measured);
+    // not written by a repeat click: the marker, the new-cell budget row(s) and the capacity row
+    const lh = on.landings || on.hops;
+    const overCharge = 1 + 1 + (lh ? 1 : 0) + 1;
+    expect(charged - measured).toBe(overCharge);
+    expect(charged - measured).toBeLessThanOrEqual(4);
+  });
+
   // The new lane counters: what one admitted click charges, compared with the rows it changed.
   it("charges the day total, the hour slice and the lane the same cost, and marks the link's first click once", async () => {
     await handleClick(click("plain.example.test"), env());
@@ -175,8 +207,10 @@ describe("the ceiling arithmetic", () => {
   it("is 300000 writes a day, with the dropped-count cap on top, and nothing of the old figure is left", () => {
     expect(CLICK_ADMIT_CEILING).toBe(300_000);
     expect(CLICK_DROP_COUNT_CAP).toBe(500);
-    expect(CLICK_ACCOUNT_DAILY_WRITES).toBe(300_500);
-    expect(CLICK_DAILY_WRITES).toBe(300_500);
+    // 300000 charged writes + 500 dropped-count writes + 1 setup-flag write (`cs-bad`, once a day)
+    expect(CLICK_SETUP_FLAG_WRITES).toBe(1);
+    expect(CLICK_ACCOUNT_DAILY_WRITES).toBe(300_501);
+    expect(CLICK_DAILY_WRITES).toBe(300_501);
   });
   it("one site: the budgets add up as documented", () => {
     expect(CLICK_FIRST_RESERVE_PERCENT).toBe(20);
@@ -286,12 +320,13 @@ describe("admitClick", () => {
       const sites = 40;
       const l = clickLimits(siteShare(CLICK_ADMIT_CEILING, sites));
       await seedSeen("links", "a", NOON);
+      const cost = 100; // a larger charge keeps the number of calls small; the arithmetic is the same
       for (let h = 0; h < 24; h++) {
-        for (let i = 0; i < Math.ceil(l.hourSlice / FULL) + 2; i++) await admitClick(DB, "links", NOON - 12 * 3_600_000 + h * 3_600_000 + 300_000, FULL, sites, { linkId: "a", lane: "v" });
+        for (let i = 0; i < Math.ceil(l.hourSlice / cost) + 2; i++) await admitClick(DB, "links", NOON - 12 * 3_600_000 + h * 3_600_000 + 300_000, cost, sites, { linkId: "a", lane: "v" });
       }
       const total = await count("cw-links", NOON);
       expect(total).toBeLessThanOrEqual(l.general);
-      expect(total).toBeGreaterThan(l.general - FULL); // the day budget, not an hour slice, was the limit
+      expect(total).toBeGreaterThan(l.general - cost); // the day budget, not an hour slice, was the limit
     });
   });
 
@@ -505,7 +540,7 @@ describe("the click ceiling is a validated setting", () => {
     expect(parseLaneCapFlag(v)).toBe(want);
   });
   it("the model reserves the configured ceiling plus the dropped-count cap", () => {
-    expect(clickAccountWrites(7_500)).toBe(8_000);
+    expect(clickAccountWrites(7_500)).toBe(8_001);
     expect(clickAccountWrites(CLICK_ADMIT_CEILING)).toBe(CLICK_ACCOUNT_DAILY_WRITES);
   });
   it("a lower ceiling is enforced by the route: the same click is refused at a share it does not fit", async () => {
@@ -560,9 +595,25 @@ describe("clicks refused for an unusable setup are never silent", () => {
 });
 
 describe("the budget model derives from the enforced ceiling", () => {
-  it("CLICK_DAILY_WRITES is the ceiling plus the dropped-count cap, and nothing else", () => {
-    expect(CLICK_ACCOUNT_DAILY_WRITES).toBe(CLICK_ADMIT_CEILING + CLICK_DROP_COUNT_CAP);
+  it("CLICK_DAILY_WRITES is the ceiling plus the dropped-count cap plus the setup flag, and nothing else", () => {
+    expect(CLICK_ACCOUNT_DAILY_WRITES).toBe(CLICK_ADMIT_CEILING + CLICK_DROP_COUNT_CAP + CLICK_SETUP_FLAG_WRITES);
     expect(CLICK_DAILY_WRITES).toBe(CLICK_ACCOUNT_DAILY_WRITES);
+  });
+  it("a day that goes from valid to invalid settings stays inside the modeled bound", async () => {
+    // A day at its limits: the charged writes are at the ceiling, the dropped count is at its cap,
+    // then the settings become unusable and clicks are refused for that. All three counters are
+    // bounded and together stay within what the budget model reserves for the click route.
+    const small = 1_000; // a small valid ceiling, one site
+    const e = { ...env(), SITES: JSON.stringify({ one: { hosts: ["one.example.test"], mode: "beacon", pages: ["home"], link_ids: { twitch: "home" } } }), CLICK_DAILY_WRITE_CEILING: String(small) };
+    await seed("cw-one", small);
+    await seedSeen("one", "twitch");
+    for (let i = 0; i < CLICK_DROP_COUNT_CAP + 20; i++) await handleClick(click("one.example.test"), e);
+    expect(await count("cd-one")).toBe(CLICK_DROP_COUNT_CAP);
+    for (let i = 0; i < 5; i++) await handleClick(click("one.example.test"), { ...e, CLICK_DAILY_WRITE_CEILING: "abc" });
+    expect(await count("cs-bad")).toBe(CLICK_SETUP_FLAG_WRITES);
+    const written = (await count("cw-one")) + (await count("cd-one")) + (await count("cs-bad"));
+    expect(written).toBeLessThanOrEqual(clickAccountWrites(small));
+    expect(written).toBe(small + CLICK_DROP_COUNT_CAP + CLICK_SETUP_FLAG_WRITES); // the bound is reached, not just kept
   });
   it("shares never add up to more than the total, for any number of sites", () => {
     for (let n = 1; n <= 40; n++) {

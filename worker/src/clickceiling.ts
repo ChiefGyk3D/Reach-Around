@@ -52,8 +52,13 @@ export const CLICK_CEILING_MIN = 1_000;
 export const CLICK_CEILING_MAX = 10_000_000;
 /** Most dropped clicks recorded per UTC day, all sites together (one write each; past it a refused click writes nothing). */
 export const CLICK_DROP_COUNT_CAP = 500;
-/** Worst-case click-route writes per UTC day, whatever the number of sites: what the model reserves. */
-export const CLICK_ACCOUNT_DAILY_WRITES = CLICK_ADMIT_CEILING + CLICK_DROP_COUNT_CAP;
+/** Writes of the `cs-bad` setup flag a UTC day (written once, then a repeat is a no-op). */
+export const CLICK_SETUP_FLAG_WRITES = 1;
+/**
+ * Worst-case click-route writes per UTC day, whatever the number of sites: what the model reserves (the charged
+ * ceiling, the dropped-count writes and the setup flag).
+ */
+export const CLICK_ACCOUNT_DAILY_WRITES = CLICK_ADMIT_CEILING + CLICK_DROP_COUNT_CAP + CLICK_SETUP_FLAG_WRITES;
 /** Percent of a site's share held back for the first click of each link each UTC day. */
 export const CLICK_FIRST_RESERVE_PERCENT = 20;
 /** Percent of a site's share the unverified lane may be charged in a UTC day. */
@@ -66,7 +71,19 @@ export type ClickLane = "v" | "u";
 
 /** Worst-case click-route writes per UTC day at a configured ceiling: what the budget model reserves. */
 export function clickAccountWrites(ceiling: number): number {
-  return ceiling + CLICK_DROP_COUNT_CAP;
+  return ceiling + CLICK_DROP_COUNT_CAP + CLICK_SETUP_FLAG_WRITES;
+}
+
+/**
+ * True when a site's first-click reserve cannot hold one maximum-size click charge per link: the reserve is a
+ * best-effort shared pool (not a guarantee, and not an authentication boundary), and this is the deploy-time
+ * test that it is at least big enough for every link to use it once. `sites` lists, per served site, its link
+ * count and its largest single-click charge; the ceiling is split equally over them.
+ */
+export function firstClickReserveShort(ceiling: number, sites: ReadonlyArray<{ links: number; cost: number }>): boolean {
+  if (sites.length === 0) return false;
+  const reserved = clickLimits(siteShare(ceiling, sites.length)).reserved;
+  return sites.some((s) => s.links * s.cost > reserved);
 }
 
 /**

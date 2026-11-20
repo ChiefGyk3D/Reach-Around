@@ -26,7 +26,7 @@ import { pageViewDailyWrites } from "../../src/pvlimits";
 
 const base = (() => {
   const c = loadKitLimits({});
-  return worstCaseDailyWrites(c) + pageViewDailyWrites({}) + 300_500 + 5_000;
+  return worstCaseDailyWrites(c) + pageViewDailyWrites({}) + 300_501 + 5_000;
 })();
 
 describe("(a) funnel writes are counted in the worst case", () => {

@@ -12,7 +12,7 @@ _END = "## Secrets and Doppler"
 _WRITES = {"gate": 5, "view": 2, "alert": 1, "send": 7, "inquiry": 1}
 _RESERVE = 10_000
 _PAGE_VIEWS = 22_700
-_CLICKS = 300_500
+_CLICKS = 300_501
 _FUNNEL = 758  # Free profile, one site, no link ids (worker/src/funnelcaps.ts)
 _MARGIN = 5_000
 
@@ -114,13 +114,17 @@ def test_doc_defaults_match_the_worker_source() -> None:
     cc = (ROOT / "worker" / "src" / "clickceiling.ts").read_text(encoding="utf-8")
     ceiling = re.search(r"CLICK_ADMIT_CEILING = ([0-9_]+)", cc)
     drops = re.search(r"CLICK_DROP_COUNT_CAP = ([0-9_]+)", cc)
-    assert ceiling is not None and drops is not None
+    flag = re.search(r"CLICK_SETUP_FLAG_WRITES = ([0-9_]+)", cc)
+    assert ceiling is not None and drops is not None and flag is not None
     assert (
-        int(ceiling.group(1).replace("_", "")) + int(drops.group(1).replace("_", ""))
+        int(ceiling.group(1).replace("_", ""))
+        + int(drops.group(1).replace("_", ""))
+        + int(flag.group(1).replace("_", ""))
         == _CLICKS
     )
     assert (
-        "CLICK_ACCOUNT_DAILY_WRITES = CLICK_ADMIT_CEILING + CLICK_DROP_COUNT_CAP" in cc
+        "CLICK_ACCOUNT_DAILY_WRITES = CLICK_ADMIT_CEILING + CLICK_DROP_COUNT_CAP"
+        " + CLICK_SETUP_FLAG_WRITES" in cc
     )
     assert f"COMBINED_MARGIN = {_MARGIN:_}" in src
 
@@ -141,8 +145,14 @@ def test_click_ceiling_section_states_the_enforced_numbers() -> None:
     text = (ROOT / "docs" / "deploy.md").read_text(encoding="utf-8")
     start = text.index("**Click write ceiling")
     para = text[start : text.index("**Click funnel in the check", start)]
-    assert f"ceiling of {ceiling} row writes" in para
-    assert f"ceiling plus drop cap, {ceiling + const('CLICK_DROP_COUNT_CAP')}" in para
+    assert f"ceiling on its write charge of {ceiling}" in para
+    total = ceiling + const("CLICK_DROP_COUNT_CAP") + const("CLICK_SETUP_FLAG_WRITES")
+    assert f"ceiling plus drop cap plus the setup flag, {total}" in para
+    # the charge is documented as a conservative bound, with the changed-rows range, not "the rows it writes"
+    assert "deliberately conservative upper bound" in para
+    assert "6 to 9 rows" in para and "9 to 13" in para
+    assert "really writes" not in text
+    assert "best-effort shared pool" in para
     assert reserve == 20 and "that 20 percent is held back" in para
     assert f"at most {lane} percent of the share" in para
     assert slices == 12 and "one twelfth of the share" in para
@@ -167,7 +177,10 @@ def test_click_ceiling_section_states_the_enforced_numbers() -> None:
     assert "set `D1_DAILY_WRITE_QUOTA` to `100000` and this to `7500`" in text
     # the free-plan pair fits: kit 42440 + page views + funnel + margin + ceiling + drop cap, under 80 percent
     free = 42_440 + _PAGE_VIEWS + _FUNNEL + _MARGIN + 7_500
-    assert free + const("CLICK_DROP_COUNT_CAP") <= 100_000 * 0.8
+    assert (
+        free + const("CLICK_DROP_COUNT_CAP") + const("CLICK_SETUP_FLAG_WRITES")
+        <= 100_000 * 0.8
+    )
     # the secret requirement, the health condition and the lane switch are documented
     assert "The hashing secret is required on every Worker that counts clicks" in text
     assert "click_setup_invalid" in text
