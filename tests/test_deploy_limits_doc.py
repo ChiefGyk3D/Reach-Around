@@ -181,6 +181,13 @@ def test_click_ceiling_section_states_the_enforced_numbers() -> None:
         free + const("CLICK_DROP_COUNT_CAP") + const("CLICK_SETUP_FLAG_WRITES")
         <= 100_000 * 0.8
     )
+    # an invalid click ceiling is documented as the exception to "every reservation refuses"
+    assert "or any value is invalid, every reservation refuses" not in text
+    assert "every limit then refuses" not in text
+    assert "is the one exception: it refuses clicks and fails the deploy check" in text
+    toml = (ROOT / "worker" / "wrangler.toml").read_text(encoding="utf-8")
+    assert "every limit then refuses" not in toml
+    assert "invalid CLICK_DAILY_WRITE_CEILING refuses clicks" in toml
     # the secret requirement, the health condition and the lane switch are documented
     assert "The hashing secret is required on every Worker that counts clicks" in text
     assert "click_setup_invalid" in text

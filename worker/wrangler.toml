@@ -104,7 +104,9 @@ crons = ["5 * * * *"]
 #   TWITCH_CLIENT_ID, TWITCH_CLIENT_SECRET, KICK_CLIENT_ID, KICK_CLIENT_SECRET
 
 # Media kit limits (docs/deploy.md, "Kit limits and the daily write budget"). Placeholders
-# only. Digits only; anything else is rejected and every limit then refuses. Paid plan:
+# only. Digits only; anything else is rejected: an invalid kit or quota setting refuses kit
+# reservations, while an invalid CLICK_DAILY_WRITE_CEILING refuses clicks and fails the deploy
+# check without taking the kit routes or the owner alerts down. Paid plan:
 # the limits cap the bill, so every limit fails closed.
 # ROUTE_BUDGET_GATE = "150"        # gate requests per UTC hour (0 to 100000)
 # ROUTE_BUDGET_VIEW = "300"        # gated-page views per UTC hour
