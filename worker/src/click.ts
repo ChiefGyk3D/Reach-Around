@@ -285,6 +285,9 @@ export async function handleClick(request: Request, env: Env): Promise<Response>
     // The lane: with BEACON_MODE off every click is unverified. In observe and enforce a currently valid token
     // for this site and network earns the verified lane. Observe only records the lane (the cap never binds);
     // enforce binds the unverified lane's cap; off leaves the BEACON_LANE_CAP_ENFORCED switch as it was.
+    // NOTE: the enforce branch below is unreachable while ENFORCE_AVAILABLE is false (beaconmode.ts), because
+    // parseBeaconMode refuses "enforce" and the route returns before this line; it has no test of its own until
+    // that constant flips, and the slice that flips it must add one (cap binds for the unverified lane only).
     const lane = beacon.mode === "off" ? "u" : await beaconLane(request, beacon.keys, site.id, now);
     const enforceLaneCap = beacon.mode === "enforce" ? true : beacon.mode === "observe" ? false : laneCap;
     const admitted = await admitClick(env.DB, site.id, now, cost, loadSites(env).sites.length, {

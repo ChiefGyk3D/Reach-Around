@@ -280,7 +280,9 @@ The test deploy (`deploy-test.yml`) writes `BEACON_MODE = "observe"` and the `MI
 
 **What a token proves, and what it does not.** A token proves only that something asked the Worker for one in the last 15 minutes from the same network prefix (a /24 for IPv4, a /48 for IPv6) and for the same site. The site comes from the `Origin` or `Ping-From` header, which the sender chooses, and nothing yet limits who may ask for a token beyond the per-client limiter, or how often one token may be used inside its window. So the verified lane is **not proof of a real visitor**, and nothing becomes enforceable in this slice. The verified lane is still held below the whole share: it is charged against the general day budget (the share less the 20 percent first-click reserve) and the one-twelfth hour slice, the same limits as every other click.
 
-**Responses.** The mint answers `200` with `{"t": "<token>", "ttl": 900}` and `Cache-Control: no-store` only when it issues a token. Every other outcome, on every route, is the empty 204.
+**What a visitor sees, and what is sent.** With the token on, the view beacon waits up to 1.5 seconds for the token request and then goes without one, so a visitor who leaves the page inside that window sends no view beacon and is not counted. Observe mode does not change what the server counts for a request it receives, but it can change what is sent. A visitor whose network changes between the token request and a click (IPv6 to IPv4, Wi-Fi to cellular) fails the network check and is recorded as unverified; that is expected, not an error.
+
+**Responses.** The mint answers `200` with `{"t": "<token>", "ttl": 900}` and `Cache-Control: no-store` only when it issues a token. Every other outcome, on every route, is the empty 204. The mint honors the same kill switches as the routes it serves: it issues nothing for a site whose click route and view route are both off (`CLICKS_KILL`, `CLICKS_KILL_SITES`, `VIEWS_KILL`, `VIEWS_KILL_SITES`), and a click-only (`edge`) site still gets a token because its clicks use one.
 
 ## Kit limits and the daily write budget
 

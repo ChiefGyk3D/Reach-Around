@@ -199,9 +199,13 @@ const tick = async () => {
   vm.runInContext(fs.readFileSync(process.argv[2], "utf8"), sandbox);
   for (const step of cfg.steps) {
     if (step === "flush") await tick();
-    else if (step === "timers") {
-      const due = timers.splice(0).sort((a, b) => a.ms - b.ms);
-      for (const t of due) t.fn();
+    else if (step === "timers" || step.startsWith("timers:")) {
+      // "timers:N" runs only the timers that wait N ms or less; "timers" runs all.
+      const limit = step === "timers" ? Infinity : Number(step.slice(7));
+      const all = timers.splice(0).sort((a, b) => a.ms - b.ms);
+      for (const t of all) {
+        if (t.ms <= limit) t.fn(); else timers.push(t);
+      }
       await tick();
     } else if (step === "click") {
       const ev = { target: node, preventDefault: () => { result.prevented = true; } };
@@ -390,6 +394,38 @@ def test_view_sends_the_token_in_the_url_after_one_request(tmp_path: Path) -> No
     assert out["sent"] == [f"/e/v/home?t={TOKEN}"]
 
 
+def test_view_waits_at_most_1500_ms_for_the_token(tmp_path: Path) -> None:
+    # Nothing is sent while a shorter timer fires, and the beacon goes at the cap.
+    early = _run("view.js", tmp_path, fetch="hang", steps=["flush", "timers:1499"])
+    assert early["sent"] == []
+    at_cap = _run(
+        "view.js", tmp_path, fetch="hang", steps=["flush", "timers:1499", "timers:1500"]
+    )
+    assert at_cap["sent"] == ["/e/v/home"]
+
+
+def test_click_retries_a_failed_token_request_at_most_once_a_minute(
+    tmp_path: Path,
+) -> None:
+    out = _run(
+        "click.js",
+        tmp_path,
+        fetch="reject",
+        steps=["flush", "timers", "click", "flush", "click", "flush", "click"],
+    )
+    assert len(out["fetches"]) == 1  # the idle ask; no click started another
+    assert out["sent"] == ["/e/c/twitch"] * 3
+    # After the minute has passed a click may ask again.
+    later = _run(
+        "click.js",
+        tmp_path,
+        fetch="reject",
+        steps=["flush", "timers", "click", "flush", "advance", "click", "flush"],
+        advanceMs=61_000,
+    )
+    assert len(later["fetches"]) == 2
+
+
 def test_view_still_sends_once_when_the_token_request_hangs(tmp_path: Path) -> None:
     out = _run(
         "view.js", tmp_path, fetch="hang", steps=["flush", "timers", "flush", "timers"]
@@ -507,3 +543,40 @@ def test_the_content_security_policy_is_unchanged_by_the_token(tmp_path: Path) -
 def test_the_flag_must_be_a_real_boolean(bad: Any) -> None:
     with pytest.raises(ValidationError):
         make_config(beacon_token=bad)
+
+
+# The other two page renderers pass the flag too: a single-page sections layout
+# and the smart stack.
+
+
+def _raw_with_token(**top: Any) -> dict[str, Any]:
+    cfg = make_config(beacon_token=True).model_dump(mode="json")
+    cfg.update(top)
+    return cfg
+
+
+@pytest.mark.parametrize("on", [False, True])
+def test_the_sections_layout_carries_the_attribute_only_when_on(
+    tmp_path: Path, on: bool
+) -> None:
+    raw = _raw_with_token(page_layout="sections")
+    raw["analytics"]["beacon_token"] = on
+    build_site(SiteConfig.model_validate(raw), tmp_path, today=date(2027, 3, 10))
+    home = (tmp_path / "index.html").read_text(encoding="utf-8")
+    assert ("data-token-route" in home) is on
+    assert (
+        "data-token-route" in (tmp_path / "privacy" / "index.html").read_text()
+    ) is False
+
+
+@pytest.mark.parametrize("on", [False, True])
+def test_the_smart_stack_carries_the_attribute_only_when_on(
+    tmp_path: Path, on: bool
+) -> None:
+    from test_smart_stack import raw as stack_raw  # the layout's own fixture
+
+    cfg = stack_raw()
+    cfg["analytics"] = {"page_views": True, "beacon_token": on}
+    build_site(SiteConfig.model_validate(cfg), tmp_path, today=date(2027, 3, 10))
+    home = (tmp_path / "index.html").read_text(encoding="utf-8")
+    assert ("data-token-route" in home) is on

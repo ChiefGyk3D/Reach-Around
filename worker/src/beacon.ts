@@ -24,7 +24,7 @@ import { parseBeaconMode, type BeaconMode } from "./beaconmode";
 import { markClickSetupInvalid, type ClickLane } from "./clickceiling";
 import { fromB64url, keyUsable, toB64url } from "./kit/token";
 import { limiterKey, secretBytes } from "./ratekey";
-import { loadSites, siteForRequest, type SitesEnv } from "./sites";
+import { killedSites, loadSites, siteForRequest, type SitesEnv } from "./sites";
 
 /** How long a token lives: 15 minutes, whatever a signer put in it. */
 export const BEACON_TTL_SECONDS = 900;
@@ -216,6 +216,15 @@ export interface MintEnv extends SitesEnv, BeaconEnv {
   DB: D1Database;
   /** Same secret the click and view routes hash with; the mint limiter key comes from it. */
   VIEW_HASH_SECRET?: string;
+  /** The same kill switches the click and view routes read, so a route that is off has no use for a token. */
+  CLICKS_KILL?: string;
+  CLICKS_KILL_SITES?: string;
+  VIEWS_KILL?: string;
+  VIEWS_KILL_SITES?: string;
+}
+
+function switchOn(v: string | undefined): boolean {
+  return typeof v === "string" && (v.toLowerCase() === "1" || v.toLowerCase() === "true");
 }
 
 /** Every refusal is this exact response: an empty 204. */
@@ -225,7 +234,7 @@ function noContent(): Response {
 
 /**
  * Handle `POST /e/t`: mint one token for the site whose host matches Origin or Ping-From, bound to the
- * caller's coarse network prefix. Check order: mode, method, URL, path, opt-out signals, site, body, keys,
+ * caller's coarse network prefix. Check order: mode, method, URL, path, opt-out signals, site, kill switches, body, keys,
  * client address, per-client limiter. Success is the only answer with a body (the token and its life in
  * seconds); every other outcome is the empty 204 the other routes give. Stores nothing, writes no D1 row
  * (except the once-a-day setup flag), sets no cookie.
@@ -246,6 +255,12 @@ export async function handleMint(request: Request, env: MintEnv, nowMs: number =
     if (request.headers.get("DNT")?.trim() === "1") return noContent();
     const site = siteForRequest(loadSites(env).sites, request);
     if (site === null) return noContent();
+    // A token is only useful to a route that is on for this site. The click route counts every listed site
+    // (a click-only `edge` site included, so it still gets a token); the view route counts only `beacon`
+    // sites. When neither is on, nothing is issued and no limiter allowance is spent.
+    const clicksOn = !switchOn(env.CLICKS_KILL) && !killedSites(env.CLICKS_KILL_SITES).has(site.id);
+    const viewsOn = site.mode === "beacon" && !switchOn(env.VIEWS_KILL) && !killedSites(env.VIEWS_KILL_SITES).has(site.id);
+    if (!clicksOn && !viewsOn) return noContent(); // CONTROL:beacon-mint-kill
     if (!(await bodyAcceptable(request))) return noContent();
 
     const key = env.BEACON_HMAC_KEY;

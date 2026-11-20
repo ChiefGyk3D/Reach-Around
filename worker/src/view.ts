@@ -649,9 +649,10 @@ async function accept(
  * Handle `POST /e/v/:pageId`. Check order, cheapest first, nothing writes
  * before the budget step:
  *   kill switch, method, URL/path/id caps, Sec-GPC / DNT, site from Origin
- *   (or Ping-From, 256 header cap), per-site kill, that site's page allowlist, Content-Length, rate
- *   limit, bounded body read and parse, derive, classify, bots mode,
- *   budget, visitor_seen, view_events.
+ *   (or Ping-From, 256 header cap), per-site kill, that site's page allowlist, BEACON_MODE (an unusable
+ *   value records nothing and sets the setup flag; a missing key with the mode on only sets the flag),
+ *   Content-Length, rate limit, bounded body read and parse, derive, classify, bots mode, the token's
+ *   lane (read from the URL, a label only), budget, the lane row, visitor_seen, view_events.
  * Always returns an empty 204.
  */
 export async function handleView(
