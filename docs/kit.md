@@ -597,11 +597,16 @@ the steps and what is not covered are in [privacy.md](privacy.md).
 `POST /k/gate` and `GET /k/view` live in `worker/src/kit/gate.ts`; the gate
 form posts to `/k/gate`. They ship off at the cutover (`features.kit_gate`).
 
-- **Every refusal is the same answer** (a 303 to `/kit/retry/`, no body, no
-  cookie): wrong origin, content type, size, user agent, address, limiter,
-  budget, Turnstile. A refused view goes to `/kit/`, including when the page
-  itself is missing or the store fails: only the closed-vocabulary log says
-  which. Nothing before a passed Turnstile check writes to the database.
+- **Every refusal of a real request is the same answer** (a 303 to
+  `/kit/retry/`, no body, no cookie): wrong origin, content type, size, user
+  agent, address, limiter, budget, Turnstile, a bad binding. A refused view goes
+  to `/kit/`, including when the page itself is missing or the store fails (a
+  database read error on the lead or the floor also refuses, never opens): only
+  the closed-vocabulary log says which. **Exceptions, stated plainly:** the kill
+  switch answers the fixed 503 page for every method; `GET /k/gate` and any
+  method but GET or HEAD on `/k/view` get an empty 404; any other path under
+  `/k/` never reaches the gate (see below). Nothing before a passed Turnstile
+  check writes to the database.
 - **At the lead cap the answer does not change.** Once `MAX_LEADS` leads are
   stored, or the per-day new-lead cap (100 a day, a constant in
   `worker/src/kit/gate.ts`) is spent, a new address is unlocked exactly like a
@@ -622,8 +627,14 @@ form posts to `/k/gate`. They ship off at the cutover (`features.kit_gate`).
   the hourly route counters are purged after two days by the hourly job (one
   query, last in the run).
 - **Limits, in the order a request meets them.** (1) `GATE_LIMITER`: each client
-  has its own allowance for the gate and another for the view; documented value
-  1 per 60 seconds, well under the hourly budgets. (2) `GATE_CHECK_LIMITER`: an
+  has its own gate allowance, 1 per 60 seconds documented, well under the hourly
+  budget. The view has its own binding, `KIT_VIEW_LIMITER` (not `VIEW_LIMITER`,
+  which is the page-view beacon's), about 10 per 60 seconds per client
+  documented, so a visitor can reload, use the back button or return from the
+  inquiry form. At 10 a minute one address could still spend `ROUTE_BUDGET_VIEW`
+  (300 an hour) in half an hour of sustained requests; that is a refusal, never
+  a bill, and the remedies are a higher budget, a lower allowance or the edge
+  rule (issue #613). (2) `GATE_CHECK_LIMITER`: an
   allowance per coarse network (a /24 for IPv4, a /48 for IPv6, hashed with a
   key and a label of its own, never stored) on requests about to reach
   Turnstile, 20 per 60 seconds per network documented, a binding with no
@@ -631,8 +642,9 @@ form posts to `/k/gate`. They ship off at the cutover (`features.kit_gate`).
   share, so no group of hosts can starve visitors on other networks.
   (3) `ROUTE_BUDGET_GATE` (default 150 an hour) is charged only after the body
   parsed and Turnstile passed, so junk posts cannot spend it. A client over its
-  allowance spends no budget. The two required bindings are
-  `GATE_LIMITER` and `GATE_CHECK_LIMITER`; if one is missing the gate refuses.
+  allowance spends no budget. The required bindings are
+  `GATE_LIMITER` and `GATE_CHECK_LIMITER` for the gate and `KIT_VIEW_LIMITER`
+  for the view; if one is missing that route refuses.
   A rate rule at the edge (issue #613) is another layer in front; the gate does
   not depend on it for correctness.
 - **Per-location busy signal (a monitoring hint only).** The optional
@@ -656,14 +668,29 @@ form posts to `/k/gate`. They ship off at the cutover (`features.kit_gate`).
   is never below the rows created, so the daily cap cannot be exceeded. After
   such a failure the counter can be above the rows (a unit lost for the day),
   never below.
-- **Other `/k/` paths** keep the Worker's every-path-204 answer. The plan's
-  table said 404; this is an intentional difference.
+- **Other `/k/` paths** (anything but `/k/gate`, `/k/view` and the inquiry
+  routes) never reach the gate: they keep the Worker's every-path-204 answer.
+  The plan's table said 404; this is an intentional difference. The empty 404
+  above is only for the wrong method on the two gate routes.
 - **Session floor.** `leads.session_floor_ts` is in milliseconds (plan 3 Task 15
   says seconds; that is superseded, and migration 0009 is not edited). Only
   `setSessionFloor` in `worker/src/kit/leads.ts` writes it (and
   `setUnstoredSessionFloor` writes the one kit-wide floor for unlocks that stored
   no lead). A cookie issued in a second at or before the floor's second stops
-  working; a lead that passes the gate again gets a new cookie.
+  working; a lead that passes the gate again gets a new cookie. **Nothing in
+  this change writes either floor yet**: the revoke task that will call them is
+  not built, so until it lands a leaked cookie works for its whole lifetime,
+  24 hours by default (`TOKEN_TTL_SECONDS`).
+- **Counter growth.** The single-use claim rows are written after Turnstile
+  passes and before the business budget is charged, so a request the budget then
+  refuses still leaves a claim row. The hourly purge deletes at most 500 counter
+  rows a run, and growth is bounded by the per-network allowance in front of
+  Turnstile (20 a minute per network).
+- **Accepted risk: spending the new-lead cap.** A client that passes Turnstile
+  can use plus-tag or invented addresses to spend the per-day new-lead cap (100)
+  or `MAX_LEADS`. Visitors are still unlocked; the owner loses storage of later
+  addresses until the day or old leads roll over. The `lead_cap_reached` alert
+  tells the owner, and the unlock alert still carries each address.
 - **Privacy.** The unlock alert carries the visitor's address to the configured
   alert sink. The privacy wording for the gate must be published before the
   gate is turned on.

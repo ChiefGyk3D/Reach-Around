@@ -10,8 +10,8 @@
 //
 // ORDER (cheap and free first, anything that writes last): kill switch, method,
 // origin, content type, user agent, configuration, declared length, per-client
-// limiter, bounded body read and parse, the global check ceiling (a binding), Turnstile
-// and its single-use claim, the small business route budget, lead storage, unlock
+// limiter, bounded body read and parse, the per-coarse-network check allowance (a binding),
+// Turnstile and its single-use claim, the small business route budget, lead storage, unlock
 // event, token and cookie, owner alert. Nothing before a passed Turnstile check
 // writes to D1.
 //
@@ -21,8 +21,18 @@
 // the per-day new-lead cap) a new address is unlocked with the same response as a
 // known one, only not stored (see the REVOCATION DESIGN and LEAD STORAGE notes below).
 //
-// Every other path under /k/ keeps the Worker's existing every-path-204 answer
-// (index.ts); the plan's table said 404 for them. That is intentional.
+// Exceptions to the one refusal answer: the kill switch gives the fixed 503 page; GET /k/gate and any
+// method but GET or HEAD on /k/view give an empty 404; a bad configuration closes the route with the
+// usual redirect. Every other path under /k/ never reaches this file: the Worker's existing
+// every-path-204 answer applies (index.ts), where the plan's table said 404. That is intentional.
+//
+// KNOWN GAPS, stated plainly: nothing in this change writes the revocation floors yet
+// (setSessionFloor, setUnstoredSessionFloor are written by the later revoke task), so a leaked cookie
+// lives for its TTL (24 hours by default). Counter rows (single-use claims) are written before the
+// business budget is charged; the hourly purge deletes at most 500 an hour; growth is bounded by the
+// per-network allowance in front of it. An attacker who passes Turnstile can spend the new-lead cap
+// with plus-tag addresses: accepted, covered by the `lead_cap_reached` alert, and the unlock alert
+// still carries each address.
 //
 // Nothing here logs request data. The only logging is the kit logger's closed
 // vocabulary. The address and the token never leave this file except in the
@@ -82,6 +92,12 @@ export interface GateEnv
    * gate refuses.
    */
   GATE_CHECK_LIMITER?: MinuteLimiter;
+  /**
+   * Workers Rate Limiting binding for GET /k/view, per client (keyed hash, label "view"). Its own
+   * binding, with a higher allowance than the gate's (about 10 per 60 s), so a visitor can reload.
+   * (Not named VIEW_LIMITER: that is the page-view beacon route's binding.) Required for /k/view.
+   */
+  KIT_VIEW_LIMITER?: MinuteLimiter;
   /**
    * Optional Workers Rate Limiting binding, ONE shared key, set far above expected peak. It is a
    * PER-LOCATION busy signal: Cloudflare counts a rate limit separately in each of its locations, so it
@@ -413,16 +429,17 @@ async function view(request: Request, env: GateEnv, deps: GateDeps): Promise<Res
   const claims = raw === null ? null : await verifyToken(cfg.keys, raw, Math.floor(now / 1000)); // CONTROL:view-token
   if (claims === null) return back("expired");
 
-  // Per-client minute limiter, the same keyed hash as the gate but its own purpose label, so a
-  // client's gate and view allowances are separate and one client cannot spend another's.
+  // Per-client minute limiter on its OWN binding (KIT_VIEW_LIMITER, about 10 per 60 s documented), with
+  // the same keyed hash as the gate but its own purpose label. A visitor can reload, use the back button
+  // or return from the inquiry form; one client still cannot spend the view budget or another's allowance.
   const limiterSecret = secretBytes(env.VIEW_HASH_SECRET);
-  if (limiterSecret === null || typeof env.VIEW_HASH_SECRET !== "string" || !hasLimiter(env.GATE_LIMITER)) {
+  if (limiterSecret === null || typeof env.VIEW_HASH_SECRET !== "string" || !hasLimiter(env.KIT_VIEW_LIMITER)) {
     log.log("link", "closed", "binding");
     return redirect(VIEW_FAIL_PAGE);
   }
   const address = normalizeAddress(request.headers.get("cf-connecting-ip"));
   const key = address === null ? null : await limiterKey(limiterSecret, env.VIEW_HASH_SECRET, "view", address);
-  if (!(await checkIpMinute(env.GATE_LIMITER, key))) return back("ip_minute"); // CONTROL:view-ip-minute
+  if (!(await checkIpMinute(env.KIT_VIEW_LIMITER, key))) return back("ip_minute"); // CONTROL:view-ip-minute
 
   if (!(await reserveRoute({ ...env, DB: env.DB }, "view", now))) return back("route_budget"); // CONTROL:view-route-budget
 

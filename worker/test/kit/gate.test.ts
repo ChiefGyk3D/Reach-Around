@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createDispatcher } from "../../src/alerts/dispatcher";
 import { GATED_KV_KEY, GATE_ROUTE, VIEW_ROUTE, handleGate, type GateEnv } from "../../src/kit/gate";
 import { setSessionFloor, setUnstoredSessionFloor } from "../../src/kit/leads";
+import { mintUnstoredId } from "../../src/kit/unstored";
 import { COOKIE_NAME, signToken } from "../../src/kit/token";
 import { resetEventCapCache } from "../../src/kit/budgets";
 import worker from "../../src/index";
@@ -80,6 +81,7 @@ function baseEnv(over: Record<string, unknown> = {}): GateEnv {
     SITE_HOST: HOST,
     KIT: kv(),
     GATE_LIMITER: limiter(),
+    KIT_VIEW_LIMITER: limiter(),
     GATE_CHECK_LIMITER: limiter(),
     TOKEN_HMAC_KEY: KEY,
     TURNSTILE_SECRET: "1x0000000000000000000000000000000AA",
@@ -676,26 +678,45 @@ describe("per-client limits do not spend shared budgets", () => {
 
   it("one client over its view allowance cannot spend the view budget or block another client", async () => {
     await seedLead();
-    const lim = keyedLimiter(1);
-    const e = baseEnv({ GATE_LIMITER: lim });
+    const lim = keyedLimiter(3);
+    const e = baseEnv({ KIT_VIEW_LIMITER: lim });
     const ck = await unlockCookieFor();
     const hdr = (ip: string) => ({ cookie: ck, headers: { "cf-connecting-ip": ip } });
-    const first = await view(hdr("203.0.113.10"), e);
-    expect(first.status).toBe(200);
+    for (let i = 0; i < 3; i++) expect((await view(hdr("203.0.113.10"), e)).status).toBe(200);
     for (let i = 0; i < 5; i++) expect((await view(hdr("203.0.113.10"), e)).status).toBe(303);
     const spent = await testEnv.DB.prepare("SELECT count FROM counters WHERE key = 'route-view'").first<{ count: number }>();
-    expect(spent!.count).toBe(1);
+    expect(spent!.count).toBe(3);
     expect((await view(hdr("203.0.113.11"), e)).status).toBe(200);
   });
 
-  it("the gate and the view keep separate per-client allowances", async () => {
+  it("a visitor can reload the gated page: the view allowance is higher than the gate's", async () => {
     await seedLead();
-    const lim = keyedLimiter(1);
-    const e = baseEnv({ GATE_LIMITER: lim });
+    // The documented values: 1 per 60 s per client for the gate, 10 per 60 s for the view.
+    const gateLim = keyedLimiter(1);
+    const viewLim = keyedLimiter(10);
+    const e = baseEnv({ GATE_LIMITER: gateLim, KIT_VIEW_LIMITER: viewLim });
+    const ck = await unlockCookieFor();
+    for (let i = 0; i < 8; i++) expect((await view({ cookie: ck }, e)).status).toBe(200); // reloads, back button, a preview HEAD
+    expect(gateLim.hits.size).toBe(0); // viewing never touches the gate's allowance
+  });
+
+  it("the gate and the view keep separate per-client allowances (separate bindings)", async () => {
+    await seedLead();
+    const gateLim = keyedLimiter(1);
+    const viewLim = keyedLimiter(1);
+    const e = baseEnv({ GATE_LIMITER: gateLim, KIT_VIEW_LIMITER: viewLim });
     const g = await post({}, e);
     expect(g.res.headers.get("set-cookie")).not.toBeNull();
     expect((await view({ cookie: await unlockCookieFor() }, e)).status).toBe(200);
-    expect(lim.hits.size).toBe(2);
+    expect(gateLim.hits.size).toBe(1);
+    expect(viewLim.hits.size).toBe(1);
+  });
+
+  it("a missing view limiter binding refuses the view and writes nothing", async () => {
+    await seedLead();
+    const res = await view({ cookie: await unlockCookieFor() }, baseEnv({ KIT_VIEW_LIMITER: undefined }));
+    expect(res.status).toBe(303);
+    expect(await count("counters")).toBe(0);
   });
 
   it("a view with no usable client address is refused before the budget", async () => {
@@ -963,6 +984,97 @@ describe("session floor writer", () => {
   it("refuses a non-finite time", async () => {
     const id = await seedLead();
     await expect(setSessionFloor(testEnv.DB, id, Number.NaN)).rejects.toThrow(RangeError);
+  });
+});
+
+/** A D1 whose statements matching `bad` throw when run: a read error on one table. */
+function failingOn(bad: RegExp): D1Database {
+  return new Proxy(testEnv.DB, {
+    get(t, p) {
+      if (p === "prepare") {
+        return (q: string) => {
+          if (bad.test(q)) throw new Error("database unavailable");
+          return t.prepare(q);
+        };
+      }
+      const v = Reflect.get(t, p, t);
+      return typeof v === "function" ? v.bind(t) : v;
+    },
+  });
+}
+
+describe("/k/view fails closed when the database cannot be read", () => {
+  it("a failing lead lookup gives the fixed redirect and no page", async () => {
+    await seedLead();
+    const e = baseEnv({ DB: failingOn(/FROM leads/) });
+    const res = await view({ cookie: await unlockCookieFor() }, e);
+    expect(res.status).toBe(303);
+    expect(res.headers.get("location")).toBe("/kit/");
+    expect(await res.text()).not.toContain(CANARY);
+  });
+
+  it("a failing unstored-floor read gives the fixed redirect and no page", async () => {
+    const lid = await mintUnstoredId(KEY);
+    const e = baseEnv({ DB: failingOn(/FROM kit_meta/) });
+    const res = await view({ cookie: await unlockCookieFor({ lid }) }, e);
+    expect(res.status).toBe(303);
+    expect(res.headers.get("location")).toBe("/kit/");
+    expect(await res.text()).not.toContain(CANARY);
+    // and the same cookie opens the page when the read works, so the refusal is the failure's doing
+    expect((await view({ cookie: await unlockCookieFor({ lid }) })).status).toBe(200);
+  });
+});
+
+describe("challenge time freshness", () => {
+  // A challenge solved 5 minutes ago is still valid at the vendor, so the bound must be wider than that.
+  const MIN = 60_000;
+  const cases: [string, number, boolean][] = [
+    ["4.5 minutes old", -4.5 * MIN, true],
+    ["9 minutes old", -9 * MIN, true],
+    ["11 minutes old", -11 * MIN, false],
+    ["9 minutes in the future", 9 * MIN, true],
+    ["11 minutes in the future", 11 * MIN, false],
+  ];
+  for (const [name, offset, ok] of cases) {
+    it(`${ok ? "accepts" : "refuses"} a challenge ${name}`, async () => {
+      const { res } = await post({}, baseEnv(), fake({ challenge: T0 + offset }));
+      expect(res.headers.get("set-cookie") !== null).toBe(ok);
+    });
+  }
+});
+
+describe("alerts and key rotation", () => {
+  it("a notify that throws releases the day's claim", async () => {
+    await testEnv.DB.prepare("INSERT INTO leads (id, email, created_ts, last_seen_ts, source) VALUES (?, ?, 1, 1, 'gate')")
+      .bind("e".repeat(32), EMAIL)
+      .run();
+    const e = baseEnv({ MAX_LEADS: "1" });
+    const boom = (async () => {
+      throw new Error("sink exploded");
+    }) as unknown as typeof import("../../src/alerts/dispatcher").notifyOwner;
+    const ctx = { waitUntil: (p: Promise<unknown>) => void pending.push(p) };
+    const res = await handleGate(req({ fields: { email: "new@example.com", "cf-turnstile-response": "ok2" } }), e, {
+      fetchFn: fake().fn,
+      nowMs: T0,
+      notify: boom,
+      ctx,
+    });
+    await Promise.all(pending.splice(0));
+    expect(res.headers.get("set-cookie")).not.toBeNull(); // the unlock itself is unaffected
+    expect(await testEnv.DB.prepare("SELECT count FROM counters WHERE key = 'leadcap-alert'").first()).toBeNull();
+  });
+
+  it("an unstored cookie minted under the previous key is still recognized after rotation", async () => {
+    const OLD = "o".repeat(40);
+    const lid = await mintUnstoredId(OLD);
+    const rotated = baseEnv({ TOKEN_HMAC_KEY: KEY, TOKEN_HMAC_KEY_PREVIOUS: OLD });
+    const cookie = await unlockCookieFor({ lid, key: OLD });
+    expect((await view({ cookie }, rotated)).status).toBe(200);
+    // the unstored floor applies to it (it was recognized as unstored, not looked up as a lead)
+    await setUnstoredSessionFloor(testEnv.DB, T0);
+    expect((await view({ cookie }, rotated)).status).toBe(303);
+    // without the previous key the token itself no longer verifies
+    expect((await view({ cookie }, baseEnv())).status).toBe(303);
   });
 });
 
