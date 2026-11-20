@@ -495,6 +495,17 @@ def test_export_refuses_a_history_with_collected_records(tmp_path: Path) -> None
     mixed.write_text(dump_new_history(records), encoding="utf-8")
     with pytest.raises(ConfigError):
         export_imported(read_history(mixed))
+    # an imported record of another platform is refused too (platform rule alone)
+    others = [
+        Record("twitch", m, 5, "2025-12-01T00:00:00Z", "imported", "r", note="Beacons")
+        for m in ("views", "clicks")
+    ]
+    only_other = tmp_path / "other.jsonl"
+    only_other.write_text(
+        dump_new_history([*history.records, *others]), encoding="utf-8"
+    )
+    with pytest.raises(ConfigError):
+        export_imported(read_history(only_other))
 
 
 def test_export_command_writes_a_file_the_kit_reads(
