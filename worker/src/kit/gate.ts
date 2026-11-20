@@ -37,6 +37,7 @@ import { killedResponse, originAllowList } from "./guard";
 import { MAX_FORM_BYTES, readForm } from "./input";
 import { isBotUserAgent } from "../click";
 import { getLead, getLeadByEmail, getUnstoredSessionFloor, upsertLead } from "./leads";
+import { coarseNetwork } from "./network";
 import { isUnstoredId, mintUnstoredId } from "./unstored";
 import { checkIpMinute, reserveBudget, utcDay, type MinuteLimiter } from "./limits";
 import { forRequest, type Reason } from "./log";
@@ -57,11 +58,12 @@ const BODY_DEADLINE_MS = 5000;
 const COUNTRY_RE = /^[A-Z]{2}$/;
 /** How far the vendor's challenge time may sit from this Worker's clock. */
 const CHALLENGE_SKEW_MS = 10 * 60_000;
-/** The key every request shares in GATE_CHECK_LIMITER (one global allowance). */
-const CHECK_KEY = "gate-check";
-/** Counter keys (table `counters`, one row a day each): new leads stored, and the once-a-day cap alert. */
+/** The one key every request shares in GATE_WATCH_LIMITER (monitoring only, never a refusal). */
+const WATCH_KEY = "gate-watch";
+/** Counter keys (table `counters`, one row a day each): new leads stored, and the once-a-day alert claims. */
 const NEW_LEAD_KEY = "newlead";
 const CAP_ALERT_KEY = "leadcap-alert";
+const BUSY_ALERT_KEY = "gatebusy-alert";
 /**
  * New leads stored per UTC day. Past it (or past MAX_LEADS) a new address is unlocked but not stored,
  * exactly like a known one from the visitor's side. A code constant, not a setting.
@@ -74,11 +76,18 @@ export interface GateEnv
   /** Keys the limiter key hash, the same secret the click, view and inquiry routes use. */
   VIEW_HASH_SECRET?: string;
   /**
-   * Workers Rate Limiting binding: ONE global allowance for requests that are about to reach Turnstile
-   * (so it caps vendor calls and the claim writes). Larger than the per-client limiter; no D1 write.
-   * Required; without it the gate refuses.
+   * Workers Rate Limiting binding for requests about to reach Turnstile, PARTITIONED by a keyed hash of
+   * the coarse network (a /24 or /48, label "gnet"), so one network can use up only its own share and
+   * cannot starve another. It caps vendor calls and claim writes; no D1 write. Required; without it the
+   * gate refuses.
    */
   GATE_CHECK_LIMITER?: MinuteLimiter;
+  /**
+   * Optional Workers Rate Limiting binding, ONE shared key, set far above expected peak. It is a
+   * MONITORING signal only: when it reports over its limit the request still proceeds, and the owner gets
+   * one closed health alert a day (`gate_busy`). It is never the protection and never refuses anyone.
+   */
+  GATE_WATCH_LIMITER?: MinuteLimiter;
 }
 
 export interface GateDeps {
@@ -178,12 +187,52 @@ function countryOf(request: Request): string | null {
   return c !== null && COUNTRY_RE.test(c) && c !== "XX" ? c : null;
 }
 
-/** True for the first unstored unlock of a UTC day: one health alert a day, never one per visitor. */
-async function capAlertOnce(env: GateEnv, nowMs: number): Promise<boolean> {
+/**
+ * One closed health alert per UTC day for `key`. The day's claim is taken first (so concurrent requests
+ * send one), the alert is sent after the response, and when no channel accepted it the claim is released,
+ * so a later request retries. Never throws.
+ */
+async function healthAlertOnce(
+  env: GateEnv,
+  deps: GateDeps,
+  key: string,
+  condition: "lead_cap_reached" | "gate_busy",
+  nowMs: number,
+  dispatch: DispatchDeps,
+): Promise<void> {
+  if (deps.ctx === undefined) return;
+  const day = utcDay(nowMs);
   try {
-    return await reserveBudget(env.DB, CAP_ALERT_KEY, utcDay(nowMs), 1);
+    if (!(await reserveBudget(env.DB, key, day, 1))) return;
   } catch {
-    return false;
+    return;
+  }
+  const send = deps.notify ?? notifyOwner;
+  const release = async (): Promise<void> => {
+    try {
+      await env.DB.prepare("DELETE FROM counters WHERE key = ?1 AND day = ?2").bind(key, day).run();
+    } catch {
+      // The claim then holds for the rest of the day: one missed alert, never a repeat.
+    }
+  };
+  deps.ctx.waitUntil(
+    (async () => {
+      try {
+        const receipt = await send(env, { kind: "analytics_health", atMs: nowMs, condition, state: "firing", count: 0 }, dispatch);
+        if (!receipt.some((r) => r.ok)) await release();
+      } catch {
+        await release();
+      }
+    })(),
+  );
+}
+
+/** Give back one daily new-lead unit (never below zero). */
+async function refundNewLead(db: D1Database, day: string): Promise<void> {
+  try {
+    await db.prepare("UPDATE counters SET count = count - 1 WHERE key = ?1 AND day = ?2 AND count > 0").bind(NEW_LEAD_KEY, day).run();
+  } catch {
+    // A unit that could not be returned only makes the day's cap slightly stricter.
   }
 }
 
@@ -234,11 +283,24 @@ async function gate(request: Request, env: GateEnv, deps: GateDeps): Promise<Res
   if (form.email === null) return fail("email");
   if (form.turnstile === null) return fail("turnstile");
 
-  // TWO BUDGETS. This one is a larger, global ceiling on requests that are about to call Turnstile
-  // (a Workers Rate Limiting binding, no D1 write): it caps vendor calls and claim writes. The small
-  // business budget (ROUTE_BUDGET_GATE) is charged only after the body parsed AND Turnstile passed, so
-  // junk posts cannot spend it. An edge rate rule (issue #613) is the other layer in front of both.
-  if (!(await checkIpMinute(checkLimiter, CHECK_KEY))) return fail("route_budget"); // CONTROL:gate-check-ceiling
+  // TWO BUDGETS. This one is an allowance PER COARSE NETWORK (a /24 or /48, keyed hash with its own
+  // label) on requests about to call Turnstile (a Workers Rate Limiting binding, no D1 write): it caps
+  // vendor calls and claim writes without letting one network use up another's share. The small business
+  // budget (ROUTE_BUDGET_GATE) is charged only after the body parsed AND Turnstile passed, so junk posts
+  // cannot spend it. An edge rate rule (issue #613) is another layer in front, not needed for correctness.
+  const network = coarseNetwork(address);
+  const netKey = network === null ? null : await limiterKey(limiterSecret, secretText, "gnet", network);
+  if (!(await checkIpMinute(checkLimiter, netKey))) return fail("route_budget"); // CONTROL:gate-check-ceiling
+
+  // Account-wide signal, monitoring only: over its (very high) limit nothing is refused; the owner is told.
+  let busy = false;
+  if (hasLimiter(env.GATE_WATCH_LIMITER)) {
+    try {
+      busy = (await env.GATE_WATCH_LIMITER.limit({ key: WATCH_KEY }))?.success === false;
+    } catch {
+      busy = false;
+    }
+  }
 
   if (!(await challengePassed(env, form.turnstile, fetchFn, now))) return fail("turnstile");
 
@@ -264,8 +326,21 @@ async function gate(request: Request, env: GateEnv, deps: GateDeps): Promise<Res
     let lead: { id: string } | null = null;
     if (known !== null) {
       lead = await upsertLead(env.DB, form.email, "gate", countryOf(request), now, limits.maxLeads);
-    } else if (await reserveBudget(env.DB, NEW_LEAD_KEY, utcDay(now), deps.newLeadsPerDay ?? NEW_LEADS_PER_DAY)) {
-      lead = await upsertLead(env.DB, form.email, "gate", countryOf(request), now, limits.maxLeads);
+    } else {
+      // Admission and creation: the daily unit is taken atomically (one conditional upsert), the row is
+      // created atomically (one statement that says whether it created it), and the unit is given back
+      // whenever no row was created (the cap refused, or a concurrent request for the same address
+      // created it first). So the day's counter equals the rows created and never overshoots.
+      const day = utcDay(now);
+      if (await reserveBudget(env.DB, NEW_LEAD_KEY, day, deps.newLeadsPerDay ?? NEW_LEADS_PER_DAY)) {
+        let made: { id: string; created: boolean } | null = null;
+        try {
+          made = await upsertLead(env.DB, form.email, "gate", countryOf(request), now, limits.maxLeads);
+        } finally {
+          if (made === null || !made.created) await refundNewLead(env.DB, day);
+        }
+        lead = made;
+      }
     }
     if (lead === null) {
       stored = false;
@@ -301,12 +376,10 @@ async function gate(request: Request, env: GateEnv, deps: GateDeps): Promise<Res
     if (deps.fetchFn !== undefined) dispatch.fetchFn = deps.fetchFn;
     try {
       deps.ctx.waitUntil(send(env, { kind: "kit_unlocked", atMs: now, email: form.email }, dispatch).catch(() => undefined));
-      if (!stored && (await capAlertOnce(env, now))) {
-        // Closed health word, once per UTC day: the owner learns that new addresses are not being stored.
-        deps.ctx.waitUntil(
-          send(env, { kind: "analytics_health", atMs: now, condition: "lead_cap_reached", state: "firing", count: 0 }, dispatch).catch(() => undefined),
-        );
-      }
+      // Closed health words, each at most once per UTC day and retried while no channel takes them: that
+      // new addresses are not being stored, and that the gate is far busier than usual.
+      if (!stored) await healthAlertOnce(env, deps, CAP_ALERT_KEY, "lead_cap_reached", now, dispatch);
+      if (busy) await healthAlertOnce(env, deps, BUSY_ALERT_KEY, "gate_busy", now, dispatch);
     } catch {
       // Never fails the request.
     }

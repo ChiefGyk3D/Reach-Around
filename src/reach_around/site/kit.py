@@ -22,8 +22,10 @@ The CSP exception for the Turnstile widget lives here too (``gate_path_extras``,
 #257): ``_headers`` gives ``https://challenges.cloudflare.com`` to ``script-src``
 and ``frame-src`` on the two exact widget paths (``GATE_PATHS``), and only when
 the kit has a gate form and a ``turnstile_site_key``. No other path gets it.
-Not here, on purpose: the Turnstile script tag. The widget slot is markup only,
-so the pages still make no third-party request.
+The same two pages, and only when a site key is set, carry the Turnstile script
+tag (``TURNSTILE_SCRIPT``, implicit rendering, ``async defer``, no inline code):
+it is their one third-party request. No other page and not the gated page loads
+it (``tests/site/test_kit_csp.py::test_only_the_gate_pages_load_the_vendor_script``).
 """
 
 from __future__ import annotations

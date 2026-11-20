@@ -9,6 +9,7 @@ site-wide strict policy byte for byte.
 
 from __future__ import annotations
 
+import re
 from datetime import date
 from pathlib import Path
 
@@ -148,3 +149,21 @@ def test_only_the_gate_pages_load_the_vendor_script(tmp_path: Path) -> None:
         # every vendor URL on the page is on the origin the policy allows, and nowhere else
         assert html.count(ORIGIN) == 1
         assert ORIGIN in blocks[path]["Content-Security-Policy"]
+
+
+def test_the_docs_describe_the_script_and_cite_tests_that_exist() -> None:
+    root = Path(__file__).resolve().parents[2]
+    # the module docstring no longer says the script tag is absent
+    import reach_around.site.kit as kit_module
+
+    doc = kit_module.__doc__ or ""
+    assert "Not here, on purpose" not in doc
+    assert "TURNSTILE_SCRIPT" in doc
+    # every test the threat model cites for #257 exists in the test files
+    text = (root / "docs" / "security" / "threat-model.md").read_text(encoding="utf-8")
+    (line,) = [ln for ln in text.splitlines() if ln.startswith("- exists (#257)")]
+    names = set(re.findall(r"`(test_[a-z0-9_]+)`", line))
+    assert "test_only_the_gate_pages_load_the_vendor_script" in names
+    corpus = "\n".join(p.read_text(encoding="utf-8") for p in (root / "tests" / "site").glob("test_kit_*.py"))
+    missing = sorted(n for n in names if f"def {n}(" not in corpus)
+    assert missing == []

@@ -623,14 +623,31 @@ form posts to `/k/gate`. They ship off at the cutover (`features.kit_gate`).
   query, last in the run).
 - **Limits, in the order a request meets them.** (1) `GATE_LIMITER`: each client
   has its own allowance for the gate and another for the view; documented value
-  1 per 60 seconds, well under the hourly budgets. (2) `GATE_CHECK_LIMITER`: one
-  global allowance on requests about to reach Turnstile, 20 per 60 seconds
-  documented (about 1200 an hour), a binding with no database write; it caps
-  vendor calls. (3) `ROUTE_BUDGET_GATE` (default 150 an hour) is charged only
-  after the body parsed and Turnstile passed, so junk posts cannot spend it.
-  A client over its allowance spends no budget. Both bindings are required; if
-  one is missing the gate refuses. A rate rule at the edge (issue #613) is the
-  other layer in front of all of these.
+  1 per 60 seconds, well under the hourly budgets. (2) `GATE_CHECK_LIMITER`: an
+  allowance per coarse network (a /24 for IPv4, a /48 for IPv6, hashed with a
+  key and a label of its own, never stored) on requests about to reach
+  Turnstile, 20 per 60 seconds per network documented, a binding with no
+  database write; it caps vendor calls, and one network can use up only its own
+  share, so no group of hosts can starve visitors on other networks.
+  (3) `ROUTE_BUDGET_GATE` (default 150 an hour) is charged only after the body
+  parsed and Turnstile passed, so junk posts cannot spend it. A client over its
+  allowance spends no budget. The two required bindings are
+  `GATE_LIMITER` and `GATE_CHECK_LIMITER`; if one is missing the gate refuses.
+  A rate rule at the edge (issue #613) is another layer in front; the gate does
+  not depend on it for correctness.
+- **Busy signal (monitoring only).** The optional `GATE_WATCH_LIMITER` binding
+  has one shared key and a limit set far above expected peak (600 per 60
+  seconds documented). When it reports over its limit nothing is refused: the
+  request goes on and the owner gets the closed health alert `gate_busy`, at
+  most once a day (docs/alerts.md). A missing binding switches the signal off.
+- **Daily alerts and a down sink.** `lead_cap_reached` and `gate_busy` each
+  take the day's claim before sending and give it back when no channel accepted
+  the message, so a later request tries again (after the alert dispatcher's own
+  10 minute window for identical messages).
+- **New-lead admission is one step.** The daily new-lead unit is taken by one
+  conditional statement and given back whenever no row was created (the cap
+  refused, or a concurrent request for the same address created it first), so
+  the day's counter equals the rows created, whatever the interleaving.
 - **Other `/k/` paths** keep the Worker's every-path-204 answer. The plan's
   table said 404; this is an intentional difference.
 - **Session floor.** `leads.session_floor_ts` is in milliseconds (plan 3 Task 15

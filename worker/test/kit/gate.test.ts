@@ -27,6 +27,8 @@ function fake(
     siteverify?: "ok" | "throw" | "wrong-host" | "wrong-action" | "error-code" | "500";
     /** The vendor's challenge time in ms (default T0); "missing" omits it, "garbage" sends text that is not a time. */
     challenge?: number | "missing" | "garbage";
+    /** The alert webhook's answer status (default 204). */
+    discord?: number;
   } = {},
 ): Fake {
   const calls: Fake["calls"] = [];
@@ -48,7 +50,7 @@ function fake(
       if (mode === "error-code") r["error-codes"] = ["timeout-or-duplicate"];
       return new Response(JSON.stringify(r), { status: 200, headers: { "content-type": "application/json" } });
     }
-    return new Response(null, { status: 204 });
+    return new Response(null, { status: opts.discord ?? 204 });
   });
   return { calls, fn: fn as unknown as typeof fetch };
 }
@@ -336,23 +338,89 @@ describe("gate routes: refusals, limits and session rules", () => {
     expect(await count("leads")).toBe(2);
   });
 
-  it("the global check ceiling caps the calls that reach Turnstile, and writes nothing to D1", async () => {
-    // One global allowance of 3 across every client key, like the real binding's single key.
-    const all = new Map<string, number>();
-    const ceiling: Limiter = {
-      keys: [],
-      async limit(o) {
-        const n = (all.get(o.key) ?? 0) + 1;
-        all.set(o.key, n);
-        return { success: n <= 3 };
-      },
-    };
+  // The pre-Turnstile allowance is partitioned by a keyed hash of the coarse network (a /24 for IPv4, a
+  // /48 for IPv6), so one network can use up only its own share.
+  const vendorCalls = (f: Fake) => f.calls.filter((c) => c.url.includes("siteverify")).length;
+
+  it("one network cannot starve another: each network has its own allowance before Turnstile", async () => {
+    const lim = keyedLimiter(3);
     const f = fake();
-    const e = baseEnv({ GATE_CHECK_LIMITER: ceiling });
-    for (let i = 0; i < 10; i++) await post(junk(i), e, f);
-    expect(f.calls.filter((c) => c.url.includes("siteverify"))).toHaveLength(3);
-    expect(await count("counters")).toBe(0);
-    expect(all.size).toBe(1); // one shared key, not one per client
+    const e = baseEnv({ GATE_CHECK_LIMITER: lim });
+    // Network A: ten different hosts of one /24, all well-formed, none with a valid token.
+    for (let i = 0; i < 10; i++) await post({ headers: { "cf-connecting-ip": `203.0.113.${100 + i}` }, fields: { email: `a${i}@example.com`, "cf-turnstile-response": "bad" + i } }, e, f);
+    expect(vendorCalls(f)).toBe(3);
+    // Network B (another /24) is untouched and unlocks.
+    const real = await post({ headers: { "cf-connecting-ip": "198.51.100.7" }, fields: { email: "real@example.com", "cf-turnstile-response": "ok1" } }, e, f);
+    expect(real.res.headers.get("set-cookie")).not.toBeNull();
+    expect(await count("counters")).toBeGreaterThan(0); // only the verified visitor wrote rows
+    expect(lim.hits.size).toBe(2); // one key per network, never one shared key
+  });
+
+  it("many distinct networks together cannot starve any one visitor", async () => {
+    const lim = keyedLimiter(1);
+    const e = baseEnv({ GATE_CHECK_LIMITER: lim });
+    for (let i = 0; i < 40; i++) await post({ headers: { "cf-connecting-ip": `10.${i}.0.1` }, fields: { email: `m${i}@example.com`, "cf-turnstile-response": "bad" + i } }, e);
+    const real = await post({ headers: { "cf-connecting-ip": "198.51.100.7" }, fields: { email: "real@example.com", "cf-turnstile-response": "ok1" } }, e);
+    expect(real.res.headers.get("set-cookie")).not.toBeNull();
+  });
+
+  it("the network key groups a /24 and a /48, hides the address, and differs by network", async () => {
+    const lim = limiter();
+    const e = baseEnv({ GATE_CHECK_LIMITER: lim });
+    const ips = ["203.0.113.1", "203.0.113.200", "203.0.114.1", "2001:db8:abcd:1::1", "2001:db8:abcd:ffff::9", "2001:db8:abce::1"];
+    for (const [i, ip] of ips.entries()) {
+      await post({ headers: { "cf-connecting-ip": ip }, fields: { email: `k${i}@example.com`, "cf-turnstile-response": "bad" + i } }, e);
+    }
+    const [a1, a2, b, c1, c2, d] = lim.keys;
+    expect(a1).toBe(a2);
+    expect(a1).not.toBe(b);
+    expect(c1).toBe(c2);
+    expect(c1).not.toBe(d);
+    expect(a1).not.toBe(c1);
+    for (const k of lim.keys) expect(k).toMatch(/^[0-9a-f]{32}$/);
+  });
+
+  it("the network key is not the per-client key (distinct domain labels)", async () => {
+    const client = limiter();
+    const net = limiter();
+    await post({}, baseEnv({ GATE_LIMITER: client, GATE_CHECK_LIMITER: net }));
+    expect(client.keys[0]).not.toBe(net.keys[0]);
+  });
+
+  // The account-wide signal is monitoring only: it never refuses, it raises one closed health word a day.
+  describe("account-wide busy signal", () => {
+    it("never refuses a visitor, and tells the owner once a day in closed words", async () => {
+      const f = fake();
+      const e = baseEnv({ GATE_WATCH_LIMITER: limiter(false) });
+      const one = await post({ fields: { email: "w1@example.com", "cf-turnstile-response": "ok1" } }, e, f);
+      const two = await post({ headers: { "cf-connecting-ip": "198.51.100.9" }, fields: { email: "w2@example.com", "cf-turnstile-response": "ok2" } }, e, f);
+      expect(one.res.headers.get("set-cookie")).not.toBeNull();
+      expect(two.res.headers.get("set-cookie")).not.toBeNull();
+      const busy = f.calls.filter((c) => c.url.startsWith("https://discord.com/") && c.body.includes("far more requests"));
+      expect(busy).toHaveLength(1);
+      expect(busy[0]!.body).not.toContain("example.com");
+    });
+
+    it("a quiet signal raises nothing, and a missing binding is fine", async () => {
+      const f = fake();
+      await post({}, baseEnv({ GATE_WATCH_LIMITER: limiter(true) }), f);
+      await post({ fields: { email: "w3@example.com", "cf-turnstile-response": "ok3" } }, baseEnv(), f);
+      expect(f.calls.filter((c) => c.body.includes("far more requests"))).toHaveLength(0);
+    });
+
+    it("an unavailable sink releases the day's claim, so a later request retries", async () => {
+      const e = baseEnv({ GATE_WATCH_LIMITER: limiter(false) });
+      const down = fake({ discord: 500 });
+      await post({ fields: { email: "w4@example.com", "cf-turnstile-response": "ok4" } }, e, down);
+      expect(await testEnv.DB.prepare("SELECT count FROM counters WHERE key = 'gatebusy-alert'").first()).toBeNull();
+      // The dispatcher's own 10 minute dedup window (a failed send still holds it) must pass first.
+      const later = T0 + 11 * 60_000;
+      const up = fake({ challenge: later });
+      await post({ headers: { "cf-connecting-ip": "198.51.100.9" }, fields: { email: "w5@example.com", "cf-turnstile-response": "ok5" } }, e, up, later);
+      expect(up.calls.filter((c) => c.body.includes("far more requests"))).toHaveLength(1);
+      await post({ headers: { "cf-connecting-ip": "198.51.100.10" }, fields: { email: "w6@example.com", "cf-turnstile-response": "ok6" } }, e, up, later);
+      expect(up.calls.filter((c) => c.body.includes("far more requests"))).toHaveLength(1);
+    });
   });
 
   it("a request refused before Turnstile (bad body) does not use the check ceiling", async () => {
@@ -722,6 +790,65 @@ describe("lead cap: the answer does not depend on whether the address is stored"
     expect(capped).toHaveLength(1);
     expect(capped[0]!.body).not.toContain("x1@");
     expect(await count("leads")).toBe(1);
+  });
+
+  it("an unavailable sink does not use up the day's cap alert: it is released and a later unlock retries", async () => {
+    const e = await atCap();
+    const unstored = (n: number, f: Fake, at = T0) =>
+      post({ headers: { "cf-connecting-ip": `203.0.113.${80 + n}` }, fields: { email: `u${n}@example.com`, "cf-turnstile-response": "ok" + (10 + n) } }, e, f, at);
+    const capped = (f: Fake) => f.calls.filter((c) => c.url.startsWith("https://discord.com/") && c.body.includes("lead limit"));
+    const down = fake({ discord: 500 });
+    await unstored(1, down);
+    expect(capped(down).length).toBeGreaterThan(0); // it tried
+    expect(await testEnv.DB.prepare("SELECT count FROM counters WHERE key = 'leadcap-alert'").first()).toBeNull(); // and let go of the claim
+    // After the dispatcher's own 10 minute dedup window (a failed send still holds it).
+    const later = T0 + 11 * 60_000;
+    const up = fake({ challenge: later });
+    await unstored(2, up, later);
+    expect(capped(up)).toHaveLength(1);
+    await unstored(3, up, later);
+    expect(capped(up)).toHaveLength(1); // delivered once: now taken for the day
+  });
+
+  // Admission and creation: the daily unit is given back whenever no row was created, so the counter
+  // equals the rows created, whatever the interleaving.
+  it("concurrent first-time posts for one address take one daily unit and create one row", async () => {
+    const e = baseEnv();
+    const run = (i: number) =>
+      handleGate(req({ headers: { "cf-connecting-ip": `203.0.113.${100 + i}` }, fields: { email: "same@example.com", "cf-turnstile-response": "ok" + (20 + i) } }), e, {
+        fetchFn: fake().fn,
+        nowMs: T0,
+        notify: createDispatcher().notify,
+        newLeadsPerDay: 3,
+      });
+    const results = await Promise.all([0, 1, 2, 3, 4, 5].map(run));
+    expect(results.every((r) => r.headers.get("set-cookie") !== null)).toBe(true);
+    expect(await count("leads")).toBe(1);
+    const row = await testEnv.DB.prepare("SELECT count FROM counters WHERE key = 'newlead'").first<{ count: number }>();
+    expect(row!.count).toBe(1);
+  });
+
+  it("concurrent posts for distinct addresses never store more than the daily cap, and the counter equals the rows", async () => {
+    const e = baseEnv();
+    const run = (i: number) =>
+      handleGate(req({ headers: { "cf-connecting-ip": `203.0.113.${120 + i}` }, fields: { email: `d${i}@example.com`, "cf-turnstile-response": "ok" + (40 + i) } }), e, {
+        fetchFn: fake().fn,
+        nowMs: T0,
+        notify: createDispatcher().notify,
+        newLeadsPerDay: 3,
+      });
+    const results = await Promise.all([0, 1, 2, 3, 4, 5, 6, 7].map(run));
+    expect(results.every((r) => r.headers.get("set-cookie") !== null)).toBe(true);
+    expect(await count("leads")).toBe(3);
+    const row = await testEnv.DB.prepare("SELECT count FROM counters WHERE key = 'newlead'").first<{ count: number }>();
+    expect(row!.count).toBe(3);
+  });
+
+  it("a unit taken for a lead the cap then refuses is given back too", async () => {
+    const e = await atCap(); // MAX_LEADS 1, one lead stored
+    await post({ fields: { email: "new@example.com", "cf-turnstile-response": "ok2" } }, e, fake(), T0, { newLeadsPerDay: 5 });
+    const row = await testEnv.DB.prepare("SELECT count FROM counters WHERE key = 'newlead'").first<{ count: number }>();
+    expect(row === null || row.count === 0).toBe(true);
   });
 
   it("a stored lead keeps its behavior: a known address under the cap is stored once and refreshed", async () => {
