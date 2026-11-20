@@ -60,7 +60,10 @@ vm.runInContext(fs.readFileSync(process.argv[2], "utf8"), sandbox);
 const atLoad = log.ping;
 for (const [k, v] of Object.entries(cfg.late || {})) nav[k] = v;
 if (cfg.event) {
-  handlers[cfg.event]({ target: node, preventDefault: () => { log.prevented = true; } });
+  handlers[cfg.event]({
+    target: node,
+    preventDefault: () => { log.prevented = true; },
+  });
 }
 process.stdout.write(JSON.stringify({
   sent, ping: log.ping, removed: log.removed, prevented: log.prevented, atLoad,
@@ -197,7 +200,9 @@ def test_a_normal_visitor_keeps_the_ping_at_load(tmp_path: Path) -> None:
 def test_a_signal_that_appears_later_strips_the_ping_on_other_gestures(
     tmp_path: Path, event: str
 ) -> None:
-    out = _run(tmp_path, {}, native=True, event=event, late={"globalPrivacyControl": True})
+    out = _run(
+        tmp_path, {}, native=True, event=event, late={"globalPrivacyControl": True}
+    )
     assert out["atLoad"] == "/e/c/twitch"
     assert out["ping"] is None
     assert out["sent"] == []
@@ -211,7 +216,9 @@ def test_other_gestures_never_send_a_beacon(tmp_path: Path, event: str) -> None:
 
 
 @pytest.mark.parametrize("prop", ["globalPrivacyControl", "doNotTrack", "msDoNotTrack"])
-def test_a_throwing_signal_getter_fails_toward_privacy(tmp_path: Path, prop: str) -> None:
+def test_a_throwing_signal_getter_fails_toward_privacy(
+    tmp_path: Path, prop: str
+) -> None:
     beacon = _run(tmp_path, {}, native=False, throwing=[prop])
     assert beacon["sent"] == [], prop
     native = _run(tmp_path, {}, native=True, throwing=[prop])

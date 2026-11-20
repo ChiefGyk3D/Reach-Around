@@ -149,7 +149,9 @@ def test_click_disclosure_says_none_vs_other_and_keeps_totals_apart() -> None:
 
 
 WORKER = Path(__file__).resolve().parents[2] / "worker" / "src"
-STATIC = Path(__file__).resolve().parents[2] / "src" / "reach_around" / "site" / "static"
+STATIC = (
+    Path(__file__).resolve().parents[2] / "src" / "reach_around" / "site" / "static"
+)
 
 
 def purge_call_arguments(source: str) -> list[int]:
