@@ -53,6 +53,9 @@ const OPTED_OUT: Array<[string, Record<string, string>]> = [
   ["both signals", { "Sec-GPC": "1", DNT: "1" }],
   ["GPC on, DNT off", { "Sec-GPC": "1", DNT: "0" }],
   ["DNT on, GPC off", { "Sec-GPC": "0", DNT: "1" }],
+  ["proxy-joined Sec-GPC: 1, 1", { "Sec-GPC": "1, 1" }],
+  ["proxy-joined DNT: 0,1", { DNT: "0,1" }],
+  ["proxy-joined DNT: 1 , 0", { DNT: "1 , 0" }],
 ];
 
 const NORMAL: Array<[string, Record<string, string>]> = [
@@ -62,6 +65,9 @@ const NORMAL: Array<[string, Record<string, string>]> = [
   ["both off", { "Sec-GPC": "0", DNT: "0" }],
   ["DNT: null", { DNT: "null" }],
   ["Sec-GPC: empty", { "Sec-GPC": "" }],
+  ["DNT: 11", { DNT: "11" }],
+  ["Sec-GPC: 0, 0", { "Sec-GPC": "0, 0" }],
+  ["DNT: true", { DNT: "true" }],
 ];
 
 describe("click opt-out signals", () => {

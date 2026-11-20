@@ -77,12 +77,12 @@ def test_default_disclosure_lists_click_counts_and_says_no_ip_address() -> None:
 def test_click_item_says_clicks_honor_gpc_and_dnt() -> None:
     what = collected_items(make_config())[0].what
     assert (
-        "The site honors Global Privacy Control and Do Not Track for link clicks, "
-        "just as it does for page views. If your browser sends either signal, the "
-        "click is not counted. Nothing about it is sent or stored. The link still "
-        "opens normally."
+        "The site honors Global Privacy Control and Do Not Track for link clicks. "
+        "If your browser sends either signal, the click is not counted. Nothing "
+        "about it is sent or stored. The link still opens normally."
     ) in what
     assert "do not stop click counting" not in what
+    assert "just as it does for page views" not in what
 
 
 def test_page_promise_matches_click_code_in_both_places() -> None:
@@ -97,18 +97,43 @@ def test_page_promise_matches_click_code_in_both_places() -> None:
 
 
 def checks_signal_js(source: str) -> bool:
-    return "globalPrivacyControl" in source and "doNotTrack" in source
+    """The signals are read AND the result is used before anything is sent."""
+    return (
+        "navigator.globalPrivacyControl" in source
+        and "navigator.doNotTrack" in source
+        and "if (optedOutSafe())" in source
+        and source.index("if (optedOutSafe())") < source.index("navigator.sendBeacon(")
+    )
 
 
 def checks_signal_ts(source: str) -> bool:
-    return "Sec-GPC" in source and '"DNT"' in source
+    """Both headers are read AND the opt-out is checked in the click handler."""
+    return (
+        'get("Sec-GPC")' in source
+        and 'get("DNT")' in source
+        and "optedOut(request)" in source
+    )
 
 
-def test_the_signal_guard_bites() -> None:
-    assert not checks_signal_js("navigator.sendBeacon(u)")
-    assert not checks_signal_js("navigator.globalPrivacyControl")
-    assert not checks_signal_ts('request.headers.get("Sec-GPC")')
-    assert checks_signal_ts('get("Sec-GPC") === "1" || get("DNT") === "1"')
+def test_the_signal_guard_bites_on_the_real_files() -> None:
+    click_js = (STATIC / "click.js").read_text(encoding="utf-8")
+    click_ts = (WORKER / "click.ts").read_text(encoding="utf-8")
+    assert checks_signal_js(click_js)
+    assert checks_signal_ts(click_ts)
+    for old, new in (
+        ("navigator.globalPrivacyControl", "navigator.zzGpc"),
+        ("navigator.doNotTrack", "navigator.zzDnt"),
+        ("if (optedOutSafe())", "if (false)"),
+    ):
+        assert old in click_js
+        assert not checks_signal_js(click_js.replace(old, new)), old
+    for old, new in (
+        ('get("Sec-GPC")', 'get("X-Zz")'),
+        ('get("DNT")', 'get("X-Zz")'),
+        ("optedOut(request)", "false"),
+    ):
+        assert old in click_ts
+        assert not checks_signal_ts(click_ts.replace(old, new)), old
 
 
 def test_click_disclosure_says_none_vs_other_and_keeps_totals_apart() -> None:

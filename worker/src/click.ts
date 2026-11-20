@@ -110,11 +110,14 @@ function killed(env: Env): boolean {
   return lower === "1" || lower === "true";
 }
 
-/** True when the request carries Sec-GPC: 1 or DNT: 1 (the only values either signal defines). */
+/** One header value is an opt-out when any comma-separated token, trimmed, is "1" (a proxy may join repeats). */
+function signalOn(value: string | null): boolean {
+  return value !== null && value.split(",").some((token) => token.trim() === "1");
+}
+
+/** True when the request carries Sec-GPC: 1 or DNT: 1 (the only values either signal defines); fails toward privacy. */
 function optedOut(request: Request): boolean {
-  return (
-    request.headers.get("Sec-GPC")?.trim() === "1" || request.headers.get("DNT")?.trim() === "1"
-  );
+  return signalOn(request.headers.get("Sec-GPC")) || signalOn(request.headers.get("DNT"));
 }
 
 /**
