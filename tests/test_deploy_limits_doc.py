@@ -210,7 +210,7 @@ def test_click_ceiling_section_states_the_enforced_numbers() -> None:
 
 
 def _rate_limit(name: str) -> tuple[int, int]:
-    """(limit, period) of a commented placeholder [[ratelimits]] block in worker/wrangler.toml."""
+    """(limit, period) of a commented placeholder rate-limit block in wrangler.toml."""
     text = (ROOT / "worker" / "wrangler.toml").read_text(encoding="utf-8")
     m = re.search(
         rf'^# name = "{name}"\n(?:#[^\n]*\n)*?#\s+limit = (\d+)\n#\s+period = (\d+)',
@@ -222,9 +222,9 @@ def _rate_limit(name: str) -> tuple[int, int]:
 
 
 def test_one_client_cannot_spend_an_hours_view_budget_alone() -> None:
-    # The per-client view allowance, taken for a whole hour, must stay below the default hourly view
-    # budget: one address can never exhaust it by itself (two or more can; the edge rule and the budget
-    # itself cover that).
+    # The per-client view allowance, taken for a whole hour, must stay below the
+    # default hourly view budget: one address can never exhaust it by itself (two
+    # or more can; the edge rule and the budget itself cover that).
     limit, period = _rate_limit("KIT_VIEW_LIMITER")
     per_hour = limit * (3600 // period)
     budget = _defaults(_section())["ROUTE_BUDGET_VIEW"]
@@ -235,5 +235,5 @@ def test_one_client_cannot_spend_an_hours_view_budget_alone() -> None:
 
 
 def test_the_pin_bites_on_a_too_generous_allowance() -> None:
-    # Negative case for the rule above: 10 per 60 s is 600 an hour, over the 300 default.
+    # Negative case for the rule above: 10 per 60 s is 600 an hour, over 300.
     assert 10 * (3600 // 60) >= _defaults(_section())["ROUTE_BUDGET_VIEW"]

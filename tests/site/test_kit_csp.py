@@ -144,9 +144,12 @@ def test_only_the_gate_pages_load_the_vendor_script(tmp_path: Path) -> None:
     # exactly the two pages whose _headers block allows the origin
     assert naming == ["kit/index.html", "kit/retry/index.html"]
     blocks = header_blocks(out)
-    for rel, path in (("kit/index.html", "/kit/"), ("kit/retry/index.html", "/kit/retry/")):
+    for rel, path in (
+        ("kit/index.html", "/kit/"),
+        ("kit/retry/index.html", "/kit/retry/"),
+    ):
         html = (out / rel).read_text(encoding="utf-8")
-        # every vendor URL on the page is on the origin the policy allows, and nowhere else
+        # every vendor URL on the page is on the origin the policy allows
         assert html.count(ORIGIN) == 1
         assert ORIGIN in blocks[path]["Content-Security-Policy"]
 
@@ -164,6 +167,9 @@ def test_the_docs_describe_the_script_and_cite_tests_that_exist() -> None:
     (line,) = [ln for ln in text.splitlines() if ln.startswith("- exists (#257)")]
     names = set(re.findall(r"`(test_[a-z0-9_]+)`", line))
     assert "test_only_the_gate_pages_load_the_vendor_script" in names
-    corpus = "\n".join(p.read_text(encoding="utf-8") for p in (root / "tests" / "site").glob("test_kit_*.py"))
+    corpus = "\n".join(
+        p.read_text(encoding="utf-8")
+        for p in (root / "tests" / "site").glob("test_kit_*.py")
+    )
     missing = sorted(n for n in names if f"def {n}(" not in corpus)
     assert missing == []

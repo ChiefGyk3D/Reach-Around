@@ -459,7 +459,10 @@ def test_scripts_and_third_party_requests_only_where_the_widget_is(
         # The public page links the one same-origin display-zone script (#372)
         # plus the Turnstile script; the retry page carries only Turnstile's;
         # the gated page carries none.
-        expected = {out / "kit" / "index.html": 2, out / "kit" / "retry" / "index.html": 1}
+        expected = {
+            out / "kit" / "index.html": 2,
+            out / "kit" / "retry" / "index.html": 1,
+        }
         assert Page(text).scripts == expected.get(path, 0), path
         assert (turnstile in text) == (path != gated / GATED_FILE), path
         # the script is the only third-party reference, and is the vendor origin
@@ -480,7 +483,9 @@ def test_turnstile_script_tag_is_explicitly_deferred_and_has_no_inline_code(
     for rel in ("kit/index.html", "kit/retry/index.html"):
         page = Page((out / rel).read_text(encoding="utf-8"))
         (tag,) = [
-            a for a in page.find("script") if "challenges.cloudflare.com" in (a.get("src") or "")
+            a
+            for a in page.find("script")
+            if "challenges.cloudflare.com" in (a.get("src") or "")
         ]
         assert tag["src"] == "https://challenges.cloudflare.com/turnstile/v0/api.js"
         assert "async" in tag and "defer" in tag
@@ -497,7 +502,8 @@ def test_no_site_key_loads_no_turnstile_script(tmp_path: Path) -> None:
 
 
 def test_form_fields_are_the_ones_the_worker_accepts(tmp_path: Path) -> None:
-    # worker/src/kit/input.ts accepts email, website and the widget's cf-turnstile-response;
+    # worker/src/kit/input.ts accepts email, website and the widget's
+    # cf-turnstile-response;
     # worker/test/kit/gate.test.ts posts exactly these three.
     out, _ = build(tmp_path)
     for rel in ("kit/index.html", "kit/retry/index.html"):
@@ -505,7 +511,9 @@ def test_form_fields_are_the_ones_the_worker_accepts(tmp_path: Path) -> None:
         names = {a["name"] for a in page.find("input")} - {"mode"}
         assert names == {"email", "website"}
         # the widget container the script fills with the third field
-        (widget,) = [a for a in page.find("div") if "cf-turnstile" in (a.get("class") or "")]
+        (widget,) = [
+            a for a in page.find("div") if "cf-turnstile" in (a.get("class") or "")
+        ]
         assert widget["data-action"] == "gate"
 
 
