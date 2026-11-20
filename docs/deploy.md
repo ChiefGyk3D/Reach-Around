@@ -620,6 +620,209 @@ Two read-only checks you run by hand against a deployed site (issue #272). Neith
 
 Wiring into `deploy-test.yml` is deliberately not done: the deploy job runs under `harden-runner` in block mode with a fixed allow-list that cannot name the site host, and it holds the Cloudflare token. A smoke step there needs the host added to the allow-list and the token blanked for that step (as the purge step does).
 
+## Deploying the Worker from an instance repo
+
+The Worker and D1 half of the test deploy is a reusable workflow,
+`.github/workflows/deploy-worker.yml` (issue #596). An instance repository
+calls it for its staging and production Worker, so the config writing, the
+budget check, the migrations and the deploy exist once. `deploy-test.yml` still
+carries the same steps inline for now: a same-repository `uses: ./...` call
+fails zizmor 1.30.1 and `uses: $/...` fails actionlint 1.7.12 (both CI pins),
+so a follow-up pull request, after this one is merged, switches `deploy-test.yml`
+to call the workflow pinned by commit
+(`uses: ChiefGyk3D/Reach-Around/.github/workflows/deploy-worker.yml@<sha> # <version>`),
+the same way an instance repo calls it. Tests keep the two copies' deploy
+config equal until then.
+
+**The instance template does not call it yet.** An instance repository can call
+this workflow, but the shipped template
+(`examples/instance-repo/.github/workflows/deploy.yml`) still does the older
+inline Worker deploy, with a `secrets.CLOUDFLARE_API_TOKEN` token. Moving the
+template to the reusable workflow is deliberately deferred and tracked in issue
+#694 ("Instance template: call the reusable Worker deploy workflow instead of
+the inline Worker deploy"). Until #694 lands, a repository copied from the
+current template does NOT get the OIDC-only reusable deploy; it has to add the
+call below itself.
+
+The reusable workflow does not publish the site; the caller does that with its own
+Pages step. It reads no GitHub secret: the Cloudflare token comes from Doppler
+over GitHub OIDC (the `CLOUDFLARE_KEY_VALUE` secret of one Doppler project and
+config), as one masked output that only the wrangler steps read.
+
+**What the caller must provide.** The call goes on a job with
+`permissions: { contents: read, id-token: write }` (permissions are checked when
+the workflow is parsed, so a job that is skipped at run time still needs them),
+after a job that uploads the site manifest as an artifact (the build job of
+`deploy-test.yml` and the instance template do). Pin the call by commit, with the
+version in a comment, as every other action. The called job runs in the GitHub
+environment you name, so that environment's reviewers and deployment-branch rule
+gate it, and it refuses any ref other than `main`.
+
+```yaml
+  worker:
+    needs: validate
+    if: github.ref == 'refs/heads/main'
+    permissions:
+      contents: read
+      id-token: write
+    uses: ChiefGyk3D/Reach-Around/.github/workflows/deploy-worker.yml@<40-hex> # vX.Y.Z
+    with:
+      environment: staging
+      engine_ref: <40-hex, the commit in engine.lock>
+      worker_name: reach-around-clicks-staging
+      # The artifact names and the manifest file of the instance template's
+      # validate job (a test keeps these equal to its upload steps):
+      site_artifact: site-out
+      manifest_artifact: site-manifest
+      manifest_file: manifest.json
+      doppler_identity_id: ${{ vars.DOPPLER_IDENTITY_ID }}
+      doppler_config: dev
+      cloudflare_account_id: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+      d1_database_id: ${{ vars.D1_DATABASE_ID }}
+      ratelimit_namespace_id: ${{ vars.RATELIMIT_NAMESPACE_ID }}
+      site_host: ${{ vars.SITE_HOST }}
+      zone_name: ${{ vars.ZONE_NAME }}
+```
+
+The values come from repository variables (a calling job cannot read an
+environment's own variables, so set them at repository level, or pass literals).
+None is a secret.
+
+| Input | Required | What it is |
+|---|---|---|
+| `environment` | yes | The caller's GitHub environment, 2 to 31 characters of `[a-z0-9-]` starting with a letter. Its reviewers and branch rule gate the job. The workflow checks the shape only: it cannot prove the environment exists, and GitHub creates an unprotected one on first use. |
+| `engine_repo`, `engine_ref` | `engine_ref` | `engine_repo` must be `ChiefGyk3D/Reach-Around` (any other value is refused; a fork keeps and calls its own copy of this workflow). `engine_ref` is a full 40-character commit (the one in `engine.lock`) or a release tag like `v1.2.3`. Before anything is checked out, a first job asks the GitHub compare API (base the ref, head `main`) and refuses unless the status is `identical` or `ahead`, so only a commit on the engine's `main` deploys. The called job then checks out the commit that call resolved, so a tag cannot move in between. |
+| `worker_name` | yes | The Worker name, always passed as `--name`. `worker/wrangler.toml` names the test Worker `reach-around-clicks`, so a staging Worker must be named here, or the deploy would replace the test Worker. No default, on purpose. |
+| `manifest_artifact`, `manifest_file` | no | The artifact (default `site-manifest`) and the one file in it (default `site-out.manifest.json`; the instance template uses `manifest.json`). |
+| `site_artifact` | no | The built site (default `site-out`), read only to check page ids when `page_views` is `true`. |
+| `doppler_identity_id`, `doppler_project`, `doppler_config` | identity, config | The Doppler OIDC identity (an id, not a secret), the project (default `reach-around`) and the config that holds `CLOUDFLARE_KEY_VALUE`. Use a config of the right tier: `dev` for the test and staging Workers, `prd` only for production, as its own approved step. |
+| `cloudflare_account_id`, `d1_database_id`, `ratelimit_namespace_id`, `site_host` | yes | The account, the D1 database (lowercase UUID shape; the all-zero placeholder is refused), the click limiter namespace and the site host. Every namespace id is a plain number with no leading zero, so `01001` is refused as a shape and the placeholders `1001`, `1002` and `1004` are refused as numbers. |
+| `zone_name`, `route_pattern` | no | `zone_name` must be the site host or a parent domain of it. With a zone, the Worker gets the `/e/*` route. `route_pattern` replaces the default `<site_host>/e/*`: its host must be exactly `site_host` (no wildcard host such as `*` or `*.example.org`, no other host of the zone), only the path may use `*`, and it needs `zone_name`. Both are checked again where the config is written. |
+| `sites` | no | A `SITES` JSON object (`docs/analytics-design.md`, section 4), written as the `SITES` var. The Worker then ignores the one-site shorthand, so `site_host` must be one of the hosts named in it. |
+| `link_ids`, `lead_retention_days` | no | Only compared with the manifest, which is what is deployed. A difference is a warning. |
+| `live_twitch_handle`, `live_kick_handle`, `live_kv_id` | no | The Live poller (`docs/live.md`); a handle needs a real KV id. |
+| `page_views`, `page_ids`, `view_limiter_namespace_id`, `views_per_hour`, `bot_views_per_hour`, `account_views_per_hour`, `account_bot_views_per_hour` | no | Page views, exactly as in "Page views" above. Only the text `true` turns them on. |
+| `route_budget_gate`, `route_budget_view`, `max_leads`, `max_kit_events`, `daily_alert_budget`, `daily_send_budget`, `d1_daily_write_quota`, `click_daily_write_ceiling` | no | The kit limits and the D1 quota, digits only, as in "Kit limits and the daily write budget". The write-budget check runs with them and stops the deploy when the projection is over quota. |
+| `beacon_mode`, `mint_limiter_namespace_id` | no | The beacon token, `off` or `observe` only. |
+| `quiet`, `clicks_kill`, `views_kill`, `scheduled_kill`, `kit_kill` | no | Booleans, default false. See below. `quiet` sets the first three on and skips migrations; `kit_kill` is separate and quiet never sets it. |
+
+**Order for a deploy that migrates** (`docs/cutover-runbook.md`, 2.3): call it
+once with `quiet: true`. That deploys the Worker with `CLICKS_KILL`,
+`VIEWS_KILL` and `SCHEDULED_KILL` all on, and does **not** run migrations. Then
+verify the quiet state (the next scheduled trigger returns at once), take the
+Time Travel bookmark and the backup, and call it again with `quiet: false`: it
+applies `wrangler d1 migrations apply DB --remote`, then deploys the Worker with
+the switches off. The Worker stays quiet through the migrations because the
+first call's deploy is still live. A normal call does the migrations and the
+deploy in that order, as `deploy-test.yml` always did. The three switches can
+also be set one by one (`clicks_kill`, `views_kill`, `scheduled_kill`); only a
+true value is written, as `"1"`, into the throwaway config.
+
+**The kit is not part of quiet.** The cutover runbook's quiet state also
+assumes `KIT_KILL` is engaged (2.2, 2.3), because the three switches cover the
+click, view and scheduled paths only. This workflow does not turn it on for
+you: pass `kit_kill: true` on every call while the kit must stay closed. It
+matters on the normal call too. The deploy config is written fresh each time, so
+a call without `kit_kill` (or without a kill switch) deploys the Worker with that
+variable removed and the route open again. The Worker reads `KIT_KILL` as a plain
+variable (`worker/src/kit/env.ts`: `1` or `true` engaged, anything unreadable
+counts as engaged).
+
+**What a quiet deploy does with the new code and the old schema.** A quiet
+deploy puts new Worker code in front of a database that has not been migrated
+(migration `0016` adds `destination_kind` to `click_events`; the runbook applies
+it before the Worker that writes the field). I read the code, I did not run it:
+the click route returns on `CLICKS_KILL` as its first statement
+(`worker/src/click.ts`, `handleClick`, before any D1 call and before it reads the
+body); the view route returns on `VIEWS_KILL` first (`view.ts`); every scheduled
+trigger returns on `SCHEDULED_KILL` before any D1 or Live work (`index.ts`); the
+kit routes return on `KIT_KILL` first (`kit/gate.ts`, `kit/inquiry.ts`). The one
+D1 write before a kill check is `handleMint` (`beacon.ts`) when the beacon
+configuration is invalid, and it touches only the old `counters` table. The Live
+route reads no D1. So with the switches on, nothing reaches a `0016` table or
+column. The migration step comes after this deploy in the runbook order, and
+migrations are forward only.
+
+**Rollback with the kill switches.** To stop counting without a rollback, call
+it with `quiet: true` (or only the switch you need): the Worker deploys with the
+route or the scheduled jobs off and no migration runs. To go back, call it again
+with the switches false. Migrations only go forward, so a bad migration is not
+undone by a redeploy: restore from the Time Travel bookmark and backup
+(`docs/backup-restore.md`). Rolling back the site itself is the DNS step in
+"Rolling back".
+
+**Never move `engine.lock` during a 48 hour soak.** `engine_ref` is the pin
+that decides which Worker is deployed. Changing it (or the image, or the
+workflow pin) in the middle of the staging soak restarts the evidence the
+cutover needs, so any engine bump waits until the soak report is written.
+
+**What actually gates a deploy.** The workflow's own checks are shape checks and
+a refusal of any ref but `main`; they are not the access control. Read it this
+way:
+
+- Callers must not run this from a `pull_request_target` (or any event that
+  gives a pull request secrets or an environment). Call it from a push to `main`
+  or a manual run on `main` only.
+- In a called workflow `github.ref` is, as I read the GitHub documentation, the
+  CALLER's ref, so the `main` check tests the caller's branch. UNVERIFIED: not
+  confirmed by a run.
+- The real controls are who can write to the caller's `main`, and the GitHub
+  environment's protection: deployment branches limited to `main` and a required
+  reviewer (not the author). An environment that does not exist yet is created
+  unprotected on first use, so create and protect it before the first call.
+- Concurrency: the called job takes the group `deploy-worker-<worker_name>`
+  with `cancel-in-progress: false`, so two calls for one Worker do not run at
+  the same time. It is not a queue: GitHub keeps at most one pending run per
+  group and cancels an older pending one when a newer one arrives. Callers that
+  need every call to run, in order, must serialize their own calls (for example
+  one call per manual run, or a `needs` chain). A caller may add its own group
+  (use a different name).
+
+**Doppler identity pins** (one identity per tier, Viewer on one config only; a
+`dev` identity must not read `prd`). On the identity's OIDC claims, pin
+`sub` to the immutable form described in "Secrets and Doppler" (numeric owner and
+repository ids), with the exact environment:
+
+```
+repo:<owner>@<owner-id>/<repo>@<repo-id>:environment:<exact environment>
+```
+
+and, where Doppler lets you add the claim, `job_workflow_ref` to
+`ChiefGyk3D/Reach-Around/.github/workflows/deploy-worker.yml@<release ref or main>`
+and `ref` to `refs/heads/main`. UNVERIFIED for a called workflow: which of these
+claims the token carries when the job is in a reusable workflow (the subject
+uses the environment either way; `job_workflow_ref` names the called file). Check
+the claims of a real token before relying on any pin beyond `sub`.
+
+**Masking.** The Doppler action masks the token before handing it over, and the
+workflow passes it only through the `env:` of three steps. UNVERIFIED: that the
+masking holds for every way a step could print it; a step that receives the
+token can read it, which is why only wrangler steps get it.
+
+**Egress.** The called workflow has two jobs, both in block mode with explicit
+lists (the `validate` job needs `api.github.com` and `github.com` only). Both
+lists are unmeasured; see "Egress control".
+
+**Caveats, none of them tested by a run yet.**
+
+- Repository-level variables only for the call. A calling job cannot read an
+  environment's own variables, so the `vars.*` passed in `with:` must be set on
+  the repository (or passed as literals). Check where each value lives first.
+- The Pages job and the Worker call each hold the environment. After the
+  follow-up that switches `deploy-test.yml` to the call, the `test`
+  environment's reviewer approves twice, once per job. Today it approves once.
+- Check the Doppler OIDC subject for the called job. The identity's claim
+  mapping decides whether the called job (which runs under the environment named
+  in `environment`) may fetch `CLOUDFLARE_KEY_VALUE`; confirm it matches before
+  the first run.
+- The optional `sites` check uses `jq`, which the GitHub-hosted Ubuntu runners
+  have. A self-hosted runner needs it installed.
+
+**Not run for you.** The workflow has not been run end to end by the change that
+added it: the first run is on a staging environment, from `main`, with a
+reviewer present. Its egress allow-list is unmeasured, like the one in
+"Egress control".
+
 ## Egress control
 
 The jobs start with `step-security/harden-runner`, followed by an egress

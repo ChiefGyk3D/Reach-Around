@@ -80,7 +80,11 @@ If you need a change the engine does not offer, prefer an
 If you do fork, point `ENGINE_REPO` in `engine.lock` at your fork, build and
 publish your own image, and pin that image's digest. The image's signature
 identity is the release workflow, so a fork's image has a different identity
-and the checks in `releasing.md` need that identity changed to match.
+and the checks in `releasing.md` need that identity changed to match. The
+reusable Worker deploy (`deploy-worker.yml`, see "Deploying the Worker from an
+instance repo" in `deploy.md`) only deploys the engine `ChiefGyk3D/Reach-Around`
+and refuses any other `engine_repo`: a fork keeps and calls its own copy of
+`deploy-worker.yml`.
 
 If the engine repository or its image is private, the runner cannot pull them
 with the default `GITHUB_TOKEN`. Use a fine-grained read-only token or a
