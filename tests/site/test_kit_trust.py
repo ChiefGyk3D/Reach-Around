@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Callable
 from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
@@ -17,7 +18,6 @@ from typing import Any
 import pytest
 from test_kit_build import (
     CANARY,
-    GATED_FILE,
     TODAY,
     build,
     gated_doc,
@@ -50,6 +50,7 @@ from reach_around.kit.pdf import (
     build_public_kit_pdf,
 )
 from reach_around.kit.pdftext import extract_pages
+from reach_around.site.kit import GATED_FILE
 
 STAMP = datetime(2027, 3, 9, 12, 0, tzinfo=UTC)
 SRC = Path(__file__).resolve().parents[2] / "src" / "reach_around"
@@ -180,7 +181,7 @@ def row(page: str, platform: str, measure: str | None = None) -> str:
     """The headline-number table row of one platform."""
     for found in re.findall(r"<tr><th scope=\"row\">.*?</tr>", page, re.S):
         if f'">{platform}</th>' in found:
-            return found
+            return str(found)
     raise AssertionError(f"no row for {platform}")
 
 
@@ -302,7 +303,8 @@ def test_the_total_takes_the_weakest_label_of_what_it_adds(tmp_path: Path) -> No
         page = built(tmp_path / str(next(runs)), doc, **kw)[0]
         block = re.search(r"Weakest label among.*?</p>", page, re.S)
         assert block
-        return re.findall(r"kit-trust-([a-z-]+)\"", page.split(block.group(0))[0])[-1]
+        found = re.findall(r"kit-trust-([a-z-]+)\"", page.split(block.group(0))[0])
+        return str(found[-1])
 
     twitch = [{"platform": "twitch", "label": "Followers", "source": "counts"}]
     assert total_label(trust_doc(metrics=twitch), numbers=numbers(twitch=900)) == API
@@ -564,7 +566,7 @@ def test_label_text_never_prints_a_count_under_the_floor(tmp_path: Path) -> None
     assert not re.search(r"(?<![\w.-])3(?![\w-])", kick)
 
 
-GATED_FIELDS = {
+GATED_FIELDS: dict[str, Callable[[str], dict[str, Any]]] = {
     "partners": lambda c: {"partners": [{"name": f"Acme {c}", "note": f"Note {c}"}]},
     "rates": lambda c: {"rates": [{"item": f"Item {c}", "price_text": f"Ask {c}"}]},
     "services": lambda c: {
@@ -719,7 +721,7 @@ def pdf_kit(**extra: Any) -> dict[str, Any]:
     return doc
 
 
-def pdfs(tmp_path: Path, doc: dict[str, Any], **kw: Any) -> tuple[Path, Path, Any]:
+def pdfs(tmp_path: Path, doc: dict[str, Any], **kw: Any) -> tuple[Any, Path, Path]:
     config, site, gated = build_instance(tmp_path, pdf_config(doc), **kw)
     return config, site, gated
 
