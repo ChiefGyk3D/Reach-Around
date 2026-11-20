@@ -182,8 +182,38 @@ def test_doppler_fetch_comes_after_every_install_step() -> None:
     uses = steps[fetch]["uses"]
     assert uses.startswith("ChiefGyk3D/git-your-ship-together/")
     assert steps[fetch]["with"]["project"] == "reach-around"
-    assert steps[fetch]["with"]["config"] == "ci"
+    assert steps[fetch]["with"]["config"] == "dev"
     assert "vars.DOPPLER_IDENTITY_ID" in steps[fetch]["with"]["identity-id"]
+
+
+def test_rotating_key_value_is_the_token_and_never_enters_the_environment() -> None:
+    """The deploy uses the rotating key value (CLOUDFLARE_KEY_VALUE) as the
+    Cloudflare API token. The Doppler step returns only that name as one masked
+    output (nothing goes to GITHUB_ENV), and each wrangler step maps it into its
+    own env, falling back to the GitHub secret."""
+    steps = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))["jobs"]["deploy"][
+        "steps"
+    ]
+    fetch = _step("Fetch Cloudflare credentials from Doppler")
+    assert fetch["with"]["export"] == "outputs"
+    assert fetch["with"]["names"] == "CLOUDFLARE_KEY_VALUE"
+    expected = (
+        "${{ fromJSON(steps." + fetch["id"] + ".outputs.secrets).CLOUDFLARE_KEY_VALUE"
+        " || secrets.CLOUDFLARE_API_TOKEN }}"
+    )
+    mapped = [
+        s["name"]
+        for s in steps
+        if s.get("env", {}).get("CLOUDFLARE_API_TOKEN") == expected
+    ]
+    assert mapped == [
+        "Require the Cloudflare token",
+        "Apply D1 migrations",
+        "Deploy the Worker",
+        "Publish the site to Pages",
+    ]
+    # no step reads the token from the job environment, and none relies on it
+    assert "env.CLOUDFLARE_API_TOKEN" not in WORKFLOW.read_text(encoding="utf-8")
 
 
 def test_manifest_is_read_by_a_tokenless_isolated_step() -> None:

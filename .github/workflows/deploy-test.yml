@@ -860,15 +860,21 @@ jobs:
           WRANGLER_SEND_METRICS: "false"
         run: npx --no-install wrangler --version
 
-      # From here on the token is in the job environment: Doppler exports every
-      # secret in the config it reads, so the `ci` config must hold only what
-      # this deploy needs. No install step follows. On a repository without
-      # Doppler the same name comes from the GitHub `test` environment secret.
+      # The deploy uses the rotating key value (CLOUDFLARE_KEY_VALUE, from the
+      # `dev` config) as the Cloudflare API token; no CLOUDFLARE_API_TOKEN
+      # secret is needed there. The action returns only that one name, masked,
+      # as a single output: nothing is written to the job environment, so only
+      # the steps below that map it into their own env can read it. On a
+      # repository without Doppler (the output is empty) the same token comes
+      # from the GitHub `test` environment secret.
       - name: Fetch Cloudflare credentials from Doppler
+        id: cf_doppler
         uses: ChiefGyk3D/git-your-ship-together/.github/actions/doppler-secrets@01f397834f7acc553593abefbba135b18f580730 # v1.34.0
         with:
           project: reach-around
-          config: ci
+          config: dev
+          export: outputs
+          names: CLOUDFLARE_KEY_VALUE
           identity-id: ${{ vars.DOPPLER_IDENTITY_ID }}
           token: ${{ secrets.DOPPLER_TOKEN }}
 
@@ -876,13 +882,13 @@ jobs:
       # the GitHub secret supplied it: fail, never skip.
       - name: Require the Cloudflare token
         env:
-          CLOUDFLARE_API_TOKEN: ${{ env.CLOUDFLARE_API_TOKEN || secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_API_TOKEN: ${{ fromJSON(steps.cf_doppler.outputs.secrets).CLOUDFLARE_KEY_VALUE || secrets.CLOUDFLARE_API_TOKEN }}
         run: |
           set -eu
           if [ -n "${CLOUDFLARE_API_TOKEN:-}" ]; then
             echo "Cloudflare token present (value not shown)."
           else
-            echo "::error::CLOUDFLARE_API_TOKEN is not set: Doppler (project reach-around, config ci) and the GitHub secret both gave nothing (see docs/deploy.md)"
+            echo "::error::CLOUDFLARE_API_TOKEN is not set: Doppler (project reach-around, config dev) and the GitHub secret both gave nothing (see docs/deploy.md)"
             exit 1
           fi
 
@@ -890,7 +896,7 @@ jobs:
       - name: Apply D1 migrations
         working-directory: worker
         env:
-          CLOUDFLARE_API_TOKEN: ${{ env.CLOUDFLARE_API_TOKEN || secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_API_TOKEN: ${{ fromJSON(steps.cf_doppler.outputs.secrets).CLOUDFLARE_KEY_VALUE || secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           WRANGLER_SEND_METRICS: "false"
         run: npx --no-install wrangler d1 migrations apply DB --remote --config wrangler.deploy.toml
@@ -898,7 +904,7 @@ jobs:
       - name: Deploy the Worker
         working-directory: worker
         env:
-          CLOUDFLARE_API_TOKEN: ${{ env.CLOUDFLARE_API_TOKEN || secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_API_TOKEN: ${{ fromJSON(steps.cf_doppler.outputs.secrets).CLOUDFLARE_KEY_VALUE || secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           WRANGLER_SEND_METRICS: "false"
         run: npx --no-install wrangler deploy --config wrangler.deploy.toml
@@ -906,7 +912,7 @@ jobs:
       - name: Publish the site to Pages
         working-directory: worker
         env:
-          CLOUDFLARE_API_TOKEN: ${{ env.CLOUDFLARE_API_TOKEN || secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_API_TOKEN: ${{ fromJSON(steps.cf_doppler.outputs.secrets).CLOUDFLARE_KEY_VALUE || secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           PAGES_PROJECT: ${{ vars.PAGES_PROJECT }}
           WRANGLER_SEND_METRICS: "false"
@@ -920,10 +926,10 @@ jobs:
       # CLOUDFLARE_PURGE_TOKEN (scope: Zone > Cache Purge, one zone only) and the
       # variable ZONE_ID are set. It never fails the deploy: a refused purge is
       # a warning and a line in the job summary. The purge token stays a GitHub
-      # `test` environment secret, never in the Doppler `ci` config, so it
+      # `test` environment secret, never in the Doppler `dev` config, so it
       # reaches this step only and not the wrangler steps. The script gives it
       # to curl on stdin. The deploy token is blanked here: this step has no
-      # use for it.
+      # use for it (it is not in the job environment, so this is belt and braces).
       - name: Purge changed paths from the edge cache (optional)
         env:
           CLOUDFLARE_API_TOKEN: ""
