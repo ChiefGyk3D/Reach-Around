@@ -101,7 +101,11 @@ def callee_steps() -> list[dict[str, Any]]:
 
 
 def step(name: str, path: Path = CALLEE) -> dict[str, Any]:
-    steps: list[dict[str, Any]] = load(path)["jobs"]["deploy"]["steps"]
+    jobs: dict[str, Any] = load(path)["jobs"]
+    # `deploy` first; the callee's `validate` job holds the pin and compare steps
+    steps: list[dict[str, Any]] = [
+        s for job in ("deploy", "validate") if job in jobs for s in jobs[job]["steps"]
+    ]
     found = [s for s in steps if s.get("name") == name]
     assert len(found) == 1, name
     return found[0]
@@ -385,9 +389,171 @@ def test_a_good_sites_value_passes_and_is_written(tmp_path: Path) -> None:
     assert f"SITES = '{sites}'" in active_lines(tmp_path / "wrangler.deploy.toml")
 
 
+ZONE = {"ZONE_NAME": "example.test"}
+HOST = CHECK_BASE["SITE_HOST"]  # staging.example.test
+
+
 @pytest.mark.parametrize("bad", ["a b/e/*", "x/e/*;rm", "Host/e/*", "nopath", "/e/*"])
-def test_a_bad_route_pattern_is_refused(bad: str) -> None:
-    assert _check({"ROUTE_PATTERN": bad}).returncode != 0
+def test_a_malformed_route_pattern_is_refused(bad: str) -> None:
+    done = _check({**ZONE, "ROUTE_PATTERN": bad})
+    assert done.returncode != 0
+    assert "route_pattern" in done.stdout
+
+
+@pytest.mark.parametrize(
+    "route",
+    [
+        "*/*",
+        "***/*",
+        "*.*/*",
+        "*/e/*",
+        "*.example.test/e/*",
+        "example.test/e/*",
+        "victim.example.test/*",
+        "victim.example.org/*",
+        f"{HOST}.evil.test/e/*",
+        f"x{HOST}/e/*",
+    ],
+)
+def test_a_route_that_is_not_exactly_the_site_host_is_refused(route: str) -> None:
+    done = _check({**ZONE, "ROUTE_PATTERN": route})
+    assert done.returncode != 0, route
+    assert "route_pattern" in done.stdout
+
+
+def test_a_route_needs_the_zone_and_the_exact_host_passes() -> None:
+    assert _check({"ROUTE_PATTERN": f"{HOST}/e/*"}).returncode != 0
+    assert _check({**ZONE, "ROUTE_PATTERN": f"{HOST}/e/*"}).returncode == 0
+    assert _check({**ZONE, "ROUTE_PATTERN": f"{HOST}/x/*"}).returncode == 0
+
+
+@pytest.mark.parametrize(
+    "zone", ["other.test", "ample.test", "test.example", "evil.com"]
+)
+def test_the_zone_must_be_the_site_host_or_a_parent_of_it(zone: str) -> None:
+    done = _check({"ZONE_NAME": zone})
+    assert done.returncode != 0
+    assert "ZONE_NAME" in done.stdout
+
+
+@pytest.mark.parametrize("zone", ["example.test", "staging.example.test", "test"])
+def test_a_parent_zone_or_the_host_itself_passes(zone: str) -> None:
+    # "test" is only 4 characters, still a plain hostname of 3 or more
+    assert _check({"ZONE_NAME": zone}).returncode == 0
+
+
+@pytest.mark.parametrize(
+    "env",
+    [
+        {"ZONE_NAME": "other.test"},
+        {"ZONE_NAME": "example.test", "ROUTE_PATTERN": "*.example.test/e/*"},
+        {"ZONE_NAME": "example.test", "ROUTE_PATTERN": "***/*"},
+        {"ZONE_NAME": "example.test", "ROUTE_PATTERN": "victim.example.test/*"},
+        {"ROUTE_PATTERN": "staging.example.test/e/*"},
+    ],
+)
+def test_the_write_step_locks_the_zone_and_the_route_again(
+    tmp_path: Path, env: dict[str, str]
+) -> None:
+    # The second lock: the write step refuses these on its own, with no
+    # Check configuration step in front of it.
+    done = render(tmp_path, {**STAGING_ENV, "ZONE_NAME": "", **env})
+    assert done.returncode != 0
+    assert (
+        not (tmp_path / "wrangler.deploy.toml").exists() or "::error::" in done.stdout
+    )
+
+
+@pytest.mark.parametrize(
+    "ns", ["01001", "001001", "01002", "01004", "02001", "0", "00", "1e3", " 1", "1\n2"]
+)
+def test_namespace_ids_have_no_leading_zero_and_so_compare_numerically(ns: str) -> None:
+    # 01001 is the placeholder 1001 spelled with a zero: refused, as a shape.
+    assert _check({"RATELIMIT_NAMESPACE_ID": ns}).returncode != 0
+    assert (
+        _check(
+            {
+                "PAGE_VIEWS": "true",
+                "PAGE_IDS": '["home"]',
+                "ZONE_NAME": "example.test",
+                "VIEW_LIMITER_NAMESPACE_ID": ns,
+            }
+        ).returncode
+        != 0
+    )
+    assert (
+        _check({"BEACON_MODE": "observe", "MINT_LIMITER_NAMESPACE_ID": ns}).returncode
+        != 0
+    )
+
+
+def test_a_namespace_id_with_a_leading_zero_is_refused_by_the_write_step(
+    tmp_path: Path,
+) -> None:
+    for name in ("RATELIMIT_NAMESPACE_ID",):
+        done = render(tmp_path, {**STAGING_ENV, name: "03001"})
+        assert done.returncode != 0
+        assert "RATELIMIT_NAMESPACE_ID" in done.stdout
+
+
+@pytest.mark.parametrize(
+    "uuid",
+    [
+        "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeee",  # one short
+        "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeeee",  # one long
+        "-" * 36,
+        "aaaaaaaabbbbccccddddeeeeeeeeeeeeeeee",
+        "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE",
+        "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee\nx",
+        "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeeg",
+        "aaaa-aaaa-bbbb-cccc-dddd-eeeeeeeeeeee"[:36],
+    ],
+)
+def test_the_d1_database_id_must_be_uuid_shaped(uuid: str) -> None:
+    done = _check({"D1_DATABASE_ID": uuid})
+    assert done.returncode != 0
+    assert "D1_DATABASE_ID" in done.stdout
+
+
+def test_the_write_step_locks_the_uuid_shape_again(tmp_path: Path) -> None:
+    done = render(tmp_path, {**STAGING_ENV, "D1_DATABASE_ID": "-" * 36})
+    assert done.returncode != 0
+    assert "D1_DATABASE_ID" in done.stdout
+
+
+def test_the_site_host_must_be_one_of_the_hosts_in_sites() -> None:
+    other = '{"links":{"hosts":["other.example.test"],"mode":"beacon"}}'
+    done = _check({"SITES": other})
+    assert done.returncode != 0
+    assert "SITES" in done.stdout
+    assert _check({"SITES": '{"links":{"mode":"beacon"}}'}).returncode != 0
+    both = f'{{"a":{{"hosts":["other.example.test"]}},"b":{{"hosts":["{HOST}"]}}}}'
+    assert _check({"SITES": both}).returncode == 0
+
+
+@pytest.mark.parametrize("value", ['["a"]\nzzz', 'zzz\n["a"]', '["A"]', "[]", '["a"] '])
+def test_link_ids_is_tested_as_a_whole_value(value: str) -> None:
+    done = _check({"LINK_IDS": value})
+    assert done.returncode != 0
+    assert "LINK_IDS" in done.stdout
+
+
+@pytest.mark.parametrize("value", ['["a"]', '["a","b-1"]', '["a", "b"]'])
+def test_a_good_link_ids_passes(value: str) -> None:
+    assert _check({"LINK_IDS": value}).returncode == 0
+
+
+def test_kit_kill_is_its_own_input_and_quiet_does_not_set_it(tmp_path: Path) -> None:
+    env = step("Write deploy config")["env"]
+    assert env["KIT_KILL"] == "${{ inputs.kit_kill }}"
+    assert "quiet" not in env["KIT_KILL"]
+    spec = call_spec()["inputs"]["kit_kill"]
+    assert spec["type"] == "boolean" and spec["default"] is False
+    done = render(tmp_path, {**STAGING_ENV, "KIT_KILL": "true"})
+    assert done.returncode == 0, done.stdout + done.stderr
+    assert 'KIT_KILL = "1"' in active_lines(tmp_path / "wrangler.deploy.toml")
+    done = render(tmp_path, {**STAGING_ENV, "KIT_KILL": "false"})
+    assert 'KIT_KILL = "1"' not in active_lines(tmp_path / "wrangler.deploy.toml")
 
 
 def test_a_route_pattern_overrides_the_default_route(tmp_path: Path) -> None:
@@ -403,30 +569,146 @@ def test_a_route_pattern_overrides_the_default_route(tmp_path: Path) -> None:
 # ---- the engine pin -------------------------------------------------------------
 
 
-def _pin(repo: str, ref: str) -> subprocess.CompletedProcess[str]:
+ENGINE = "ChiefGyk3D/Reach-Around"
+SHA = "0123456789abcdef" * 2 + "01234567"
+
+
+def _pin(
+    repo: str, ref: str, environment: str = "staging"
+) -> subprocess.CompletedProcess[str]:
     return subprocess.run(  # noqa: S603 - fixed argv and sample values
         ["/bin/bash", "-c", step("Check the engine pin")["run"]],
-        env={"PATH": "/usr/bin:/bin", "ENGINE_REPO": repo, "ENGINE_REF": ref},
+        env={
+            "PATH": "/usr/bin:/bin",
+            "ENVIRONMENT": environment,
+            "ENGINE_REPO": repo,
+            "ENGINE_REF": ref,
+        },
         capture_output=True,
         text=True,
         check=False,
     )
 
 
-@pytest.mark.parametrize("ref", ["main", "v0.2.0", "a" * 39, "A" * 40, "a" * 41, ""])
-def test_the_engine_ref_must_be_a_full_commit(ref: str) -> None:
-    assert _pin("ChiefGyk3D/Reach-Around", ref).returncode != 0
+@pytest.mark.parametrize(
+    "ref",
+    ["main", "v0.2", "v0.2.0-rc1", "V0.2.0", "a" * 39, "A" * 40, "a" * 41, ""],
+)
+def test_the_engine_ref_must_be_a_commit_or_a_release_tag(ref: str) -> None:
+    assert _pin(ENGINE, ref).returncode != 0
 
 
-@pytest.mark.parametrize("repo", ["", "owner", "a/b/c", "o/n;x", "o/n n"])
-def test_the_engine_repo_must_be_owner_and_name(repo: str) -> None:
-    assert _pin(repo, "a" * 40).returncode != 0
+@pytest.mark.parametrize("ref", [SHA, "v0.2.0", "v10.20.30"])
+def test_a_commit_or_release_tag_passes_the_shape_check(ref: str) -> None:
+    assert _pin(ENGINE, ref).returncode == 0
 
 
-def test_a_good_engine_pin_passes() -> None:
+@pytest.mark.parametrize(
+    "repo",
+    ["", "owner", "a/b/c", "o/n;x", "o/n n", "someone/Reach-Around", "ChiefGyk3D/fork"],
+)
+def test_only_the_engine_repository_is_accepted(repo: str) -> None:
+    done = _pin(repo, SHA)
+    assert done.returncode != 0
+    assert "engine_repo" in done.stdout
+
+
+@pytest.mark.parametrize(
+    "environment",
+    ["", "a", "Staging", "1abc", "-x", "a_b", "a" * 32, "a b", "ok\nbad", "a/b"],
+)
+def test_a_bad_environment_name_is_refused(environment: str) -> None:
+    done = _pin(ENGINE, SHA, environment)
+    assert done.returncode != 0
+    assert "environment" in done.stdout
+
+
+@pytest.mark.parametrize(
+    "environment", ["test", "staging", "production", "a1", "a" * 31]
+)
+def test_a_plain_environment_name_passes(environment: str) -> None:
+    assert _pin(ENGINE, SHA, environment).returncode == 0
+
+
+def _compare(
+    tmp_path: Path, reply: str, exit_code: int = 0, ref: str = SHA
+) -> subprocess.CompletedProcess[str]:
+    """Run the compare step with a fake `gh` that answers with `reply`."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    fake = bin_dir / "gh"
+    fake.write_text(
+        '#!/bin/bash\necho "$@" > "$FAKE_GH_ARGS"\n'
+        f"printf '%s\\n' '{reply}'\nexit {exit_code}\n",
+        encoding="utf-8",
+    )
+    fake.chmod(0o755)
+    out = tmp_path / "github-output"
+    out.write_text("", encoding="utf-8")
+    return subprocess.run(  # noqa: S603 - fixed argv and sample values
+        ["/bin/bash", "-c", step("Check the engine ref is on main")["run"]],
+        env={
+            "PATH": f"{bin_dir}:/usr/bin:/bin",
+            "FAKE_GH_ARGS": str(tmp_path / "args"),
+            "GITHUB_OUTPUT": str(out),
+            "GH_TOKEN": "fake",
+            "ENGINE_REPO": ENGINE,
+            "ENGINE_REF": ref,
+        },
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+@pytest.mark.parametrize("status", ["identical", "ahead"])
+def test_a_ref_that_is_main_or_behind_main_passes_the_compare(
+    tmp_path: Path, status: str
+) -> None:
+    done = _compare(tmp_path, f"{status} {SHA}")
+    assert done.returncode == 0, done.stdout + done.stderr
+    assert (tmp_path / "github-output").read_text() == f"engine_sha={SHA}\n"
+    # base is the ref, head is main: `ahead` then means the ref is an ancestor
+    args = (tmp_path / "args").read_text().split()
+    assert args[:2] == ["api", f"repos/{ENGINE}/compare/{SHA}...main"]
+
+
+@pytest.mark.parametrize("status", ["diverged", "behind", "", "Ahead", "ahead!"])
+def test_a_ref_that_is_not_on_main_fails_the_compare(
+    tmp_path: Path, status: str
+) -> None:
+    done = _compare(tmp_path, f"{status} {SHA}")
+    assert done.returncode != 0
+    assert "not on the engine's main" in done.stdout
+    assert (tmp_path / "github-output").read_text() == ""
+
+
+def test_a_failed_api_call_fails_closed(tmp_path: Path) -> None:
+    # a ref that does not exist makes `gh api` exit non-zero
+    done = _compare(tmp_path, "", exit_code=1)
+    assert done.returncode != 0
+    assert (tmp_path / "github-output").read_text() == ""
+
+
+@pytest.mark.parametrize("sha", ["", "xyz", "A" * 40, "a" * 39])
+def test_an_unresolvable_commit_fails_the_compare(tmp_path: Path, sha: str) -> None:
+    done = _compare(tmp_path, f"ahead {sha}")
+    assert done.returncode != 0
+    assert (tmp_path / "github-output").read_text() == ""
+
+
+def test_the_deploy_job_checks_out_the_commit_the_compare_resolved() -> None:
+    data = load(CALLEE)
+    checkout = next(
+        s for s in callee_steps() if "actions/checkout@" in s.get("uses", "")
+    )
+    assert checkout["with"]["ref"] == "${{ needs.validate.outputs.engine_sha }}"
+    # the repository is fixed too, not taken from an input
+    assert checkout["with"]["repository"] == ENGINE
+    assert data["jobs"]["deploy"]["needs"] == "validate"
     assert (
-        _pin("ChiefGyk3D/Reach-Around", "0123456789abcdef" * 2 + "01234567").returncode
-        == 0
+        data["jobs"]["validate"]["outputs"]["engine_sha"]
+        == "${{ steps.compare.outputs.engine_sha }}"
     )
 
 
@@ -485,7 +767,7 @@ def test_the_callee_pins_are_the_ones_deploy_test_already_used() -> None:
 def test_the_callee_has_one_job_with_least_privilege() -> None:
     data = load(CALLEE)
     assert data["permissions"] == {"contents": "read"}
-    assert list(data["jobs"]) == ["deploy"]
+    assert list(data["jobs"]) == ["validate", "deploy"]
     job = data["jobs"]["deploy"]
     # id-token only on the one job that fetches the credentials
     assert job["permissions"] == {"contents": "read", "id-token": "write"}
@@ -494,6 +776,23 @@ def test_the_callee_has_one_job_with_least_privilege() -> None:
     assert job["environment"] == "${{ inputs.environment }}"  # the caller's gate
     assert "env" not in job  # no job-level env: the token is never job-wide
     assert "continue-on-error" not in CALLEE.read_text(encoding="utf-8")
+    # the validate job: no environment, no id-token, nothing but a read-only token
+    check = data["jobs"]["validate"]
+    assert check["permissions"] == {"contents": "read"}
+    assert "environment" not in check and "env" not in check
+    assert check["if"] == "github.ref == 'refs/heads/main'"
+    assert not any(s.get("id") == "cf_doppler" for s in check["steps"])
+    assert load(CALLEE)["jobs"]["validate"]["steps"][0]["with"]["egress-policy"] == (
+        "block"
+    )
+
+
+def test_one_deploy_per_worker_name_at_a_time() -> None:
+    job = load(CALLEE)["jobs"]["deploy"]
+    assert job["concurrency"] == {
+        "group": "deploy-worker-${{ inputs.worker_name }}",
+        "cancel-in-progress": False,
+    }
 
 
 def test_the_callee_reads_no_github_secret_and_takes_none() -> None:
@@ -513,7 +812,11 @@ def test_the_callee_reads_no_github_secret_and_takes_none() -> None:
         assert not re.search(r"token|secret|key|password", name), name
     # the one credential is the masked Doppler output, mapped into exactly the
     # steps that need it, never into GITHUB_ENV
-    assert "GITHUB_ENV" not in text and "GITHUB_OUTPUT" not in text
+    assert "GITHUB_ENV" not in text
+    # GITHUB_OUTPUT is used once, by the validate job, for the engine commit
+    assert text.count("GITHUB_OUTPUT") == 1
+    deploy_text = yaml.safe_dump(load(CALLEE)["jobs"]["deploy"])
+    assert "GITHUB_OUTPUT" not in deploy_text
     carriers = [
         s["name"] for s in callee_steps() if "CLOUDFLARE_API_TOKEN" in s.get("env", {})
     ]
@@ -592,3 +895,20 @@ def test_the_inline_and_reusable_write_steps_have_the_same_script() -> None:
     for line in inline.splitlines():
         if "DESTINATION_KINDS" in line or "destination_kinds" in line:
             assert line in reusable.splitlines(), line
+
+
+def test_the_docs_state_the_gating_and_kit_caveats_plainly() -> None:
+    text = " ".join((ROOT / "docs" / "deploy.md").read_text(encoding="utf-8").split())
+    for needle in (
+        "must not run this from a `pull_request_target`",
+        "CALLER's ref",
+        "UNVERIFIED",
+        "deployment branches limited to `main` and a required reviewer",
+        ":environment:<exact environment>",
+        "job_workflow_ref",
+        "one identity per tier",
+        "pass `kit_kill: true` on every call",
+        "a fork keeps and calls its own copy",
+        "cannot prove the environment exists",
+    ):
+        assert needle in text, needle

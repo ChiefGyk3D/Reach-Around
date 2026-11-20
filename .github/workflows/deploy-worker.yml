@@ -93,6 +93,12 @@ on:
         description: Deploy with SCHEDULED_KILL on.
         type: boolean
         default: false
+      kit_kill:
+        description: >-
+          Deploy with KIT_KILL on (the media kit routes answer closed). Quiet does not set it, and a deploy without it
+          removes it, so pass it on every call while the kit must stay closed.
+        type: boolean
+        default: false
       cloudflare_account_id:
         description: Cloudflare account id (not a secret).
         type: string
@@ -214,13 +220,86 @@ permissions:
   contents: read
 
 jobs:
+  # Checks what must be true before the environment's secrets and reviewers are
+  # involved: the environment name has a plain shape, the engine is the
+  # engine, and the commit to deploy is on the engine's main. It has no
+  # environment, no id-token and no secret; its one token is the read-only
+  # GITHUB_TOKEN of this run. The called job below takes the engine commit from
+  # here, so a tag cannot move between the check and the checkout.
+  validate:
+    name: Check the environment and the engine pin
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      engine_sha: ${{ steps.compare.outputs.engine_sha }}
+    steps:
+      - uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43 # v2.22.3
+        with:
+          # block, explicit list. UNMEASURED, like the deploy job's list.
+          egress-policy: block
+          allowed-endpoints: >-
+            api.github.com:443
+            github.com:443
+            results-receiver.actions.githubusercontent.com:443
+
+      # The environment cannot be proved to exist here (GitHub creates one on
+      # first use, with no protection); only its shape is checked. The real gate
+      # is the environment's own protection rules in the caller's repository.
+      - name: Check the engine pin
+        env:
+          ENVIRONMENT: ${{ inputs.environment }}
+          ENGINE_REPO: ${{ inputs.engine_repo }}
+          ENGINE_REF: ${{ inputs.engine_ref }}
+        run: |
+          set -eu
+          [[ "$ENVIRONMENT" =~ ^[a-z][a-z0-9-]{1,30}$ ]] \
+            || { echo "::error::environment must be 2 to 31 lowercase letters, digits and dashes, starting with a letter"; exit 1; }
+          # Only the engine itself: a fork keeps its own copy of this workflow.
+          [[ "$ENGINE_REPO" == "ChiefGyk3D/Reach-Around" ]] \
+            || { echo "::error::engine_repo must be ChiefGyk3D/Reach-Around"; exit 1; }
+          engine_ref_re='^([0-9a-f]{40}|v[0-9]+\.[0-9]+\.[0-9]+)$'
+          [[ "$ENGINE_REF" =~ $engine_ref_re ]] \
+            || { echo "::error::engine_ref must be a full 40-character commit or a release tag like v1.2.3"; exit 1; }
+
+      # The commit must be on the engine's main: GitHub's compare of the ref
+      # (base) with main (head) says "identical" or "ahead" only when the ref is
+      # main or an ancestor of it. A branch-only or unrelated commit is
+      # "diverged" or "behind", and a ref that does not exist fails the call.
+      # The commit it resolves to goes to the called job.
+      - name: Check the engine ref is on main
+        id: compare
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ENGINE_REPO: ${{ inputs.engine_repo }}
+          ENGINE_REF: ${{ inputs.engine_ref }}
+        run: |
+          set -eu
+          answer="$(gh api "repos/${ENGINE_REPO}/compare/${ENGINE_REF}...main" --jq '.status + " " + .merge_base_commit.sha')"
+          status="${answer%% *}"
+          sha="${answer#* }"
+          case "$status" in
+            identical|ahead) ;;
+            *) echo "::error::engine_ref is not on the engine's main (compare says: ${status})"; exit 1 ;;
+          esac
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]] \
+            || { echo "::error::the engine commit could not be resolved"; exit 1; }
+          echo "engine_sha=${sha}" >> "$GITHUB_OUTPUT"
+
   deploy:
     name: Deploy Worker and migrate D1
+    needs: validate
     # Refuse any ref other than main. The caller's environment can also restrict
     # deployment branches and require a reviewer.
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    # One deploy per Worker at a time, whatever the callers do.
+    concurrency:
+      group: deploy-worker-${{ inputs.worker_name }}
+      cancel-in-progress: false
     environment: ${{ inputs.environment }}
     permissions:
       contents: read
@@ -267,25 +346,12 @@ jobs:
           fi
           echo "egress canary: allowed hosts accept TCP 443"
 
-      # The engine pin must be a full commit: a branch or tag name could move
-      # between this check and the checkout of a repository that is not ours.
-      - name: Check the engine pin
-        env:
-          ENGINE_REPO: ${{ inputs.engine_repo }}
-          ENGINE_REF: ${{ inputs.engine_ref }}
-        run: |
-          set -eu
-          [[ "$ENGINE_REPO" =~ ^[A-Za-z0-9._-]{1,100}/[A-Za-z0-9._-]{1,100}$ ]] \
-            || { echo "::error::engine_repo must be owner/name"; exit 1; }
-          [[ "$ENGINE_REF" =~ ^[0-9a-f]{40}$ ]] \
-            || { echo "::error::engine_ref must be a full 40-character commit"; exit 1; }
-
       # Only the Worker and the check scripts are needed. They come from the
-      # engine at the pinned commit, wherever the caller lives.
+      # engine at the commit the validate job resolved and found on main.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          repository: ${{ inputs.engine_repo }}
-          ref: ${{ inputs.engine_ref }}
+          repository: ChiefGyk3D/Reach-Around
+          ref: ${{ needs.validate.outputs.engine_sha }}
           path: engine
           sparse-checkout: |
             worker
@@ -356,7 +422,7 @@ jobs:
           case "${BEACON_MODE:-}" in
             ""|off) ;;
             observe)
-              [[ "${MINT_LIMITER_NAMESPACE_ID:-}" =~ ^[0-9]{1,12}$ ]] \
+              [[ "${MINT_LIMITER_NAMESPACE_ID:-}" =~ ^[1-9][0-9]{0,11}$ ]] \
                 || { echo "::error::BEACON_MODE is observe but the repository variable MINT_LIMITER_NAMESPACE_ID is not a number (docs/deploy.md)"; exit 1; }
               [ "${MINT_LIMITER_NAMESPACE_ID}" != "1004" ] \
                 || { echo "::error::MINT_LIMITER_NAMESPACE_ID is the placeholder from wrangler.toml"; exit 1; }
@@ -378,15 +444,21 @@ jobs:
           # [[ =~ ]] tests the WHOLE value (grep tests line by line, and a value
           # with a valid first line would pass). These are inputs of a reusable
           # workflow, so any caller can hand them over.
-          [[ "$D1_DATABASE_ID" =~ ^[0-9a-f-]{36}$ ]] \
+          uuid_re='^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+          [[ "$D1_DATABASE_ID" =~ $uuid_re ]] \
             || { echo "::error::D1_DATABASE_ID is not a UUID"; exit 1; }
-          [[ "$RATELIMIT_NAMESPACE_ID" =~ ^[0-9]{1,12}$ ]] \
+          # Namespace ids are plain numbers without a leading zero, so the text
+          # compares below are numeric compares too (01001 is not a spelling of 1001).
+          [[ "$RATELIMIT_NAMESPACE_ID" =~ ^[1-9][0-9]{0,11}$ ]] \
             || { echo "::error::RATELIMIT_NAMESPACE_ID is not a number"; exit 1; }
           [[ "$SITE_HOST" =~ ^[a-z0-9.-]{3,253}$ ]] \
             || { echo "::error::SITE_HOST is not a plain hostname"; exit 1; }
           if [ -n "${ZONE_NAME:-}" ]; then
             [[ "$ZONE_NAME" =~ ^[a-z0-9.-]{3,253}$ ]] \
               || { echo "::error::ZONE_NAME is not a plain hostname"; exit 1; }
+            # The zone must be the site host or one of its parent domains.
+            [[ "$SITE_HOST" == "$ZONE_NAME" || "$SITE_HOST" == *".$ZONE_NAME" ]] \
+              || { echo "::error::ZONE_NAME is not a suffix of SITE_HOST"; exit 1; }
           fi
           [[ "$WORKER_NAME" =~ ^[a-z0-9][a-z0-9-]{0,62}$ ]] \
             || { echo "::error::worker_name is not a valid Worker name"; exit 1; }
@@ -402,17 +474,29 @@ jobs:
               || { echo "::error::SITES must be one JSON object of plain characters"; exit 1; }
             printf '%s' "$SITES" | jq -e 'type == "object"' > /dev/null \
               || { echo "::error::SITES is not a JSON object"; exit 1; }
+            # The Worker serves the hosts named here: the site host must be one.
+            printf '%s' "$SITES" \
+              | jq -e --arg h "$SITE_HOST" '[.[] | objects | (.hosts // []) | .[]] | index($h) != null' > /dev/null \
+              || { echo "::error::SITE_HOST is not one of the hosts in SITES"; exit 1; }
           fi
-          # The route pattern lands in a config file as well.
+          # The route pattern lands in a config file as well. It routes traffic of
+          # the zone to this Worker, so it names the site host exactly (no wildcard
+          # host, no other host of the zone) and needs the zone.
           if [ -n "${ROUTE_PATTERN:-}" ]; then
             route_re='^[a-z0-9.*-]{3,253}/[A-Za-z0-9._/*-]{0,100}$'
             [[ "$ROUTE_PATTERN" =~ $route_re ]] \
               || { echo "::error::route_pattern is not a plain host and path pattern"; exit 1; }
+            [ -n "${ZONE_NAME:-}" ] \
+              || { echo "::error::route_pattern needs zone_name"; exit 1; }
+            [[ "${ROUTE_PATTERN%%/*}" == "$SITE_HOST" ]] \
+              || { echo "::error::route_pattern host must be exactly the site host"; exit 1; }
           fi
           # LINK_IDS is optional: the deployed list comes from the build itself.
-          # If set it is only compared (warnings), but must be valid.
+          # If set it is only compared (warnings), but must be valid. [[ =~ ]]
+          # tests the whole value (grep is line by line).
           if [ -n "${LINK_IDS:-}" ]; then
-            printf '%s' "$LINK_IDS" | grep -Eq '^\[("[a-z0-9-]{1,40}"(, ?)?)+\]$' \
+            link_ids_re='^\[("[a-z0-9-]{1,40}"(, ?)?)+\]$'
+            [[ "$LINK_IDS" =~ $link_ids_re ]] \
               || { echo "::error::LINK_IDS must be a JSON array of link ids"; exit 1; }
           fi
           # Live Worker: enabled by a handle. Fail closed: no KV id, no deploy.
@@ -451,7 +535,7 @@ jobs:
                 || { echo "::error::PAGE_IDS must be a JSON array of tab ids"; exit 1; }
               [ -n "${VIEW_LIMITER_NAMESPACE_ID:-}" ] \
                 || { echo "::error::Page views are enabled but the repository variable VIEW_LIMITER_NAMESPACE_ID is not set (docs/deploy.md)"; exit 1; }
-              [[ "$VIEW_LIMITER_NAMESPACE_ID" =~ ^[0-9]{1,12}$ ]] \
+              [[ "$VIEW_LIMITER_NAMESPACE_ID" =~ ^[1-9][0-9]{0,11}$ ]] \
                 || { echo "::error::VIEW_LIMITER_NAMESPACE_ID is not a number"; exit 1; }
               if [ "$VIEW_LIMITER_NAMESPACE_ID" = "1002" ]; then
                 echo "::error::VIEW_LIMITER_NAMESPACE_ID is the placeholder from wrangler.toml"
@@ -646,12 +730,38 @@ jobs:
           CLICKS_KILL: ${{ inputs.quiet || inputs.clicks_kill }}
           VIEWS_KILL: ${{ inputs.quiet || inputs.views_kill }}
           SCHEDULED_KILL: ${{ inputs.quiet || inputs.scheduled_kill }}
+          KIT_KILL: ${{ inputs.kit_kill }}
         run: |
           set -eu
           # Second lock on the derived list (the script already validated it).
           # [[ =~ ]] tests the whole value (grep is line by line).
           [[ "${LINK_IDS:-}" =~ ^\[\"[a-z0-9-]{1,40}\"(,\"[a-z0-9-]{1,40}\"){0,199}\]$ ]] \
             || { echo "::error::the derived link id list is missing or invalid"; exit 1; }
+          # Second lock on the ids and hosts that land in the file (the values
+          # were validated in "Check configuration"; this step can be reached
+          # with nothing else in between, so it checks again).
+          uuid_re='^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+          [[ "${D1_DATABASE_ID:-}" =~ $uuid_re ]] \
+            || { echo "::error::D1_DATABASE_ID is not a UUID"; exit 1; }
+          [[ "${RATELIMIT_NAMESPACE_ID:-}" =~ ^[1-9][0-9]{0,11}$ ]] \
+            || { echo "::error::RATELIMIT_NAMESPACE_ID is not a number"; exit 1; }
+          [[ "${SITE_HOST:-}" =~ ^[a-z0-9.-]{3,253}$ ]] \
+            || { echo "::error::SITE_HOST is not a plain hostname"; exit 1; }
+          if [ -n "${ZONE_NAME:-}" ]; then
+            [[ "$ZONE_NAME" =~ ^[a-z0-9.-]{3,253}$ ]] \
+              || { echo "::error::ZONE_NAME is not a plain hostname"; exit 1; }
+            [[ "$SITE_HOST" == "$ZONE_NAME" || "$SITE_HOST" == *".$ZONE_NAME" ]] \
+              || { echo "::error::ZONE_NAME is not a suffix of SITE_HOST"; exit 1; }
+          fi
+          if [ -n "${ROUTE_PATTERN:-}" ]; then
+            route_re='^[a-z0-9.*-]{3,253}/[A-Za-z0-9._/*-]{0,100}$'
+            [[ "$ROUTE_PATTERN" =~ $route_re ]] \
+              || { echo "::error::route_pattern is not a plain host and path pattern"; exit 1; }
+            [ -n "${ZONE_NAME:-}" ] \
+              || { echo "::error::route_pattern needs zone_name"; exit 1; }
+            [[ "${ROUTE_PATTERN%%/*}" == "$SITE_HOST" ]] \
+              || { echo "::error::route_pattern host must be exactly the site host"; exit 1; }
+          fi
           # The default is set outside the expansion: a `}` inside ${V:-...}
           # closes it early and leaves a stray brace after a supplied value (#666).
           destination_kinds="${DESTINATION_KINDS:-}"
@@ -754,7 +864,7 @@ jobs:
           if [ "${PAGE_VIEWS:-}" = "true" ]; then
             [[ "${PAGE_IDS:-}" =~ ^\[(\"[a-z0-9][a-z0-9-]{0,39}\"(,\ ?)?)+\]$ ]] \
               || { echo "::error::PAGE_IDS must be a JSON array of tab ids when page views are enabled"; exit 1; }
-            [[ "${VIEW_LIMITER_NAMESPACE_ID:-}" =~ ^[0-9]{1,12}$ ]] \
+            [[ "${VIEW_LIMITER_NAMESPACE_ID:-}" =~ ^[1-9][0-9]{0,11}$ ]] \
               || { echo "::error::VIEW_LIMITER_NAMESPACE_ID must be a number when page views are enabled"; exit 1; }
             if [ "${VIEW_LIMITER_NAMESPACE_ID}" = "1002" ]; then
               echo "::error::VIEW_LIMITER_NAMESPACE_ID is the placeholder from wrangler.toml"
@@ -799,7 +909,7 @@ jobs:
           case "${BEACON_MODE:-}" in
             ""|off) ;;
             observe)
-              [[ "${MINT_LIMITER_NAMESPACE_ID:-}" =~ ^[0-9]{1,12}$ ]] \
+              [[ "${MINT_LIMITER_NAMESPACE_ID:-}" =~ ^[1-9][0-9]{0,11}$ ]] \
                 || { echo "::error::BEACON_MODE is observe but MINT_LIMITER_NAMESPACE_ID is not a number"; exit 1; }
               if [ "${MINT_LIMITER_NAMESPACE_ID}" = "1004" ]; then
                 echo "::error::MINT_LIMITER_NAMESPACE_ID is the placeholder from wrangler.toml"
@@ -833,8 +943,9 @@ jobs:
 
           # Kill switches (docs/cutover-runbook.md 2.3). Only the text true turns
           # one on; anything else writes nothing, as the switches are unset in
-          # wrangler.toml. A quiet deploy has all three on.
-          for name in CLICKS_KILL VIEWS_KILL SCHEDULED_KILL; do
+          # wrangler.toml. A quiet deploy has all three on. KIT_KILL is never
+          # turned on by quiet: it is its own input (see docs/deploy.md).
+          for name in CLICKS_KILL VIEWS_KILL SCHEDULED_KILL KIT_KILL; do
             eval "value=\${$name:-}"
             if [ "$value" = "true" ]; then
               sed -i "/^\[vars\]$/a $name = \"1\"" wrangler.deploy.toml
