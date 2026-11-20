@@ -7,12 +7,12 @@ import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-_START = "## Kit limits and the free-plan budget"
+_START = "## Kit limits and the daily write budget"
 _END = "## Secrets and Doppler"
 _WRITES = {"gate": 5, "view": 2, "alert": 1, "send": 7, "inquiry": 1}
 _RESERVE = 10_000
 _PAGE_VIEWS = 22_700
-_CLICKS = 8_000
+_CLICKS = 300_501
 _FUNNEL = 758  # Free profile, one site, no link ids (worker/src/funnelcaps.ts)
 _MARGIN = 5_000
 
@@ -38,6 +38,7 @@ def test_defaults_table_collected_every_variable() -> None:
         "DAILY_ALERT_BUDGET",
         "DAILY_SEND_BUDGET",
         "D1_DAILY_WRITE_QUOTA",
+        "CLICK_DAILY_WRITE_CEILING",
     }
 
 
@@ -113,12 +114,96 @@ def test_doc_defaults_match_the_worker_source() -> None:
     cc = (ROOT / "worker" / "src" / "clickceiling.ts").read_text(encoding="utf-8")
     ceiling = re.search(r"CLICK_ADMIT_CEILING = ([0-9_]+)", cc)
     drops = re.search(r"CLICK_DROP_COUNT_CAP = ([0-9_]+)", cc)
-    assert ceiling is not None and drops is not None
+    flag = re.search(r"CLICK_SETUP_FLAG_WRITES = ([0-9_]+)", cc)
+    assert ceiling is not None and drops is not None and flag is not None
     assert (
-        int(ceiling.group(1).replace("_", "")) + int(drops.group(1).replace("_", ""))
+        int(ceiling.group(1).replace("_", ""))
+        + int(drops.group(1).replace("_", ""))
+        + int(flag.group(1).replace("_", ""))
         == _CLICKS
     )
     assert (
-        "CLICK_ACCOUNT_DAILY_WRITES = CLICK_ADMIT_CEILING + CLICK_DROP_COUNT_CAP" in cc
+        "CLICK_ACCOUNT_DAILY_WRITES = CLICK_ADMIT_CEILING + CLICK_DROP_COUNT_CAP"
+        " + CLICK_SETUP_FLAG_WRITES" in cc
     )
     assert f"COMBINED_MARGIN = {_MARGIN:_}" in src
+
+
+def test_click_ceiling_section_states_the_enforced_numbers() -> None:
+    """The click ceiling paragraph quotes the enforced constants, no old figure."""
+    cc = (ROOT / "worker" / "src" / "clickceiling.ts").read_text(encoding="utf-8")
+
+    def const(name: str) -> int:
+        m = re.search(rf"{name} = ([0-9_]+);", cc)
+        assert m is not None, name
+        return int(m.group(1).replace("_", ""))
+
+    ceiling = const("CLICK_ADMIT_CEILING")
+    reserve = const("CLICK_FIRST_RESERVE_PERCENT")
+    lane = const("CLICK_UNVERIFIED_PERCENT")
+    slices = const("CLICK_HOUR_SLICES")
+    text = (ROOT / "docs" / "deploy.md").read_text(encoding="utf-8")
+    start = text.index("**Click write ceiling")
+    para = text[start : text.index("**Click funnel in the check", start)]
+    assert f"ceiling on its write charge of {ceiling}" in para
+    total = ceiling + const("CLICK_DROP_COUNT_CAP") + const("CLICK_SETUP_FLAG_WRITES")
+    assert f"ceiling plus drop cap plus the setup flag, {total}" in para
+    # the charge is documented as a conservative bound, with the
+    # changed-rows range, not "the rows it writes"
+    assert "deliberately conservative upper bound" in para
+    assert "6 to 9 rows" in para and "9 to 13" in para
+    assert "really writes" not in text
+    assert "best-effort shared pool" in para
+    assert reserve == 20 and "that 20 percent is held back" in para
+    assert f"at most {lane} percent of the share" in para
+    assert slices == 12 and "one twelfth of the share" in para
+    # the old ceiling's arithmetic is gone from the paragraph
+    # (the old figure is named only as history)
+    for stale in ("8000", "750 clicks", "7500 over 10 rows", "(6 rows)"):
+        assert stale not in para
+    # the docs say the same quota the Worker defaults to
+    quota = _defaults(_section())["D1_DAILY_WRITE_QUOTA"]
+    assert quota == 1_600_000
+    assert 50_000_000 // 31 >= quota
+    assert "100,000-row free plan figure" not in text
+    # the click ceiling is a documented setting with the Worker's default
+    # and range, and a Free-plan value
+    row = re.search(
+        r"^\| `CLICK_DAILY_WRITE_CEILING` \| (\d+) to (\d+) \| (\d+) \|", text, re.M
+    )
+    assert row is not None
+    assert (int(row.group(1)), int(row.group(2)), int(row.group(3))) == (
+        const("CLICK_CEILING_MIN"),
+        const("CLICK_CEILING_MAX"),
+        ceiling,
+    )
+    assert "set `D1_DAILY_WRITE_QUOTA` to `100000` and this to `7500`" in text
+    # the free-plan pair fits: kit 42440 + page views + funnel + margin
+    # + ceiling + drop cap, under 80 percent
+    free = 42_440 + _PAGE_VIEWS + _FUNNEL + _MARGIN + 7_500
+    assert (
+        free + const("CLICK_DROP_COUNT_CAP") + const("CLICK_SETUP_FLAG_WRITES")
+        <= 100_000 * 0.8
+    )
+    # an invalid click ceiling is documented as the exception to
+    # "every reservation refuses"
+    assert "or any value is invalid, every reservation refuses" not in text
+    assert "every limit then refuses" not in text
+    assert "is the one exception: it refuses clicks and fails the deploy check" in text
+    toml = (ROOT / "worker" / "wrangler.toml").read_text(encoding="utf-8")
+    assert "every limit then refuses" not in toml
+    assert "invalid CLICK_DAILY_WRITE_CEILING refuses clicks" in toml
+    # plain statements: the lane switch is not written by the workflow,
+    # and an out-of-band ceiling is not re-checked
+    assert "the deploy workflow does not write this variable" in text
+    assert "is not re-checked at runtime" in text
+    assert "costs one D1 call" in text
+    assert "cf-<site>_<link>" in text and "cf-<site>-<link>" not in text
+    workflow = (ROOT / ".github" / "workflows" / "deploy-test.yml").read_text(
+        encoding="utf-8"
+    )
+    assert "BEACON_LANE_CAP_ENFORCED" not in workflow
+    # the secret requirement, the health condition and the lane switch are documented
+    assert "The hashing secret is required on every Worker that counts clicks" in text
+    assert "click_setup_invalid" in text
+    assert "BEACON_LANE_CAP_ENFORCED" in text

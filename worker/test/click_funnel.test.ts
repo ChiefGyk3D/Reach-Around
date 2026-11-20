@@ -34,7 +34,7 @@ const SITES = JSON.stringify({
 const UA = "Mozilla/5.0 (X11; Linux x86_64; rv:130.0) Gecko/20100101 Firefox/130.0";
 const DAY = 86_400_000;
 let n = 0;
-const env = (): Env => ({ DB, SITES, CLICK_LIMITER: { limit: async () => ({ success: true }) } });
+const env = (): Env => ({ DB, SITES, CLICK_LIMITER: { limit: async () => ({ success: true }) }, VIEW_HASH_SECRET: btoa("k".repeat(32)) });
 const click = (qs: string, o: { host?: string; id?: string; country?: string } = {}) =>
   new Request(`https://worker.example.test/e/c/${o.id ?? "twitch"}${qs}`, {
     method: "POST",

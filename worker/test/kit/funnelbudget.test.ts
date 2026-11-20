@@ -26,7 +26,7 @@ import { pageViewDailyWrites } from "../../src/pvlimits";
 
 const base = (() => {
   const c = loadKitLimits({});
-  return worstCaseDailyWrites(c) + pageViewDailyWrites({}) + 8_000 + 5_000;
+  return worstCaseDailyWrites(c) + pageViewDailyWrites({}) + 300_501 + 5_000;
 })();
 
 describe("(a) funnel writes are counted in the worst case", () => {
@@ -64,12 +64,13 @@ describe("(a) funnel writes are counted in the worst case", () => {
 
 describe("(b) a cap set too high fails the check", () => {
   const high: FunnelCaps = { ...FUNNEL_CAPS, srcDayCap: 5_000, countryDayCap: 5_000, hourBudget: 5_000, srcMonthCap: 5_000, countryMonthCap: 5_000, landingDayCap: 5_000, hopDayCap: 5_000, landingMonthCap: 5_000, hopMonthCap: 5_000, lhHourBudget: 5_000 };
+  // Caps this high only overrun the paid-plan default quota (1600000) when raised much further.
+  const veryHigh: FunnelCaps = Object.fromEntries(Object.entries(high).map(([k, v]) => [k, k === "reservedPerLink" || k === "lhReservedPerLink" ? v : 200_000])) as unknown as FunnelCaps;
   it("the same environment passes with the profile caps and fails with high caps", () => {
     expect(assessDailyBudget({}, FUNNEL_CAPS).level).not.toBe("fail");
-    const a = assessDailyBudget({}, high);
+    const a = assessDailyBudget({}, veryHigh);
     expect(a.level).toBe("fail");
-    expect(a.funnel).toBe(funnelDailyWrites(high, [{ links: 0 }]));
-  });
+    expect(a.funnel).toBe(funnelDailyWrites(veryHigh, [{ links: 0 }]));  });
   it("the profile table itself passes the default budget for the Free profile", () => {
     expect(assessDailyBudget({}, FUNNEL_PROFILES.free).level).not.toBe("fail");
     expect(FUNNEL_CAPS).toBe(FUNNEL_PROFILES.free);

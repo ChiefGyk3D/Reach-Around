@@ -15,6 +15,7 @@ import { runBudgetCheck } from "../../src/kit/budgetcheck";
 import { pageViewDailyWrites, pageViewSiteCount } from "../../src/pvlimits";
 import { MAX_SITES } from "../../src/sites";
 import { FUNNEL_CAPS, funnelDailyWrites } from "../../src/funnelcaps";
+import { parseClickCeiling } from "../../src/clickceiling";
 
 describe("pageViewDailyWrites", () => {
   it("is exactly the documented 22,700 at the default budgets (120 human + 30 bot per hour)", () => {
@@ -41,11 +42,15 @@ describe("the page-view budget in the kit's combined check", () => {
     const e = { VIEWS_PER_HOUR: "1000", BOT_VIEWS_PER_HOUR: "200" };
     const c = loadKitLimits({ ...e, D1_DAILY_WRITE_QUOTA: "999999999" });
     expect(combinedDailyWrites(c, pageViewDailyWrites(e))).toBeGreaterThan(combinedDailyWrites(c));
-    // 1000+200 per hour: 24*1200*5.6 = 161,280 rows a day alone: over the default free quota
-    expect(() => loadKitLimits(e)).toThrow(KitLimitsError);
+    // 1000+200 per hour: one site is held to the account ceilings (480 and 120), so this still fits
+    expect(() => loadKitLimits(e)).not.toThrow();
+    // 10000+2000 per hour with ceilings raised to match: 24*12000*5.6 = 1,612,800 rows a day alone, over the default quota
+    const big = { VIEWS_PER_HOUR: "10000", BOT_VIEWS_PER_HOUR: "2000", ACCOUNT_VIEWS_PER_HOUR: "10000", ACCOUNT_BOT_VIEWS_PER_HOUR: "2000" };
+    expect(() => loadKitLimits(big)).toThrow(KitLimitsError);
+    expect(() => loadKitLimits({ ...big, D1_DAILY_WRITE_QUOTA: "999999999" })).not.toThrow();
     expect(() => loadKitLimits({})).not.toThrow();
   });
-  it("matches the arithmetic exactly at the 100,000 boundary", () => {
+  it("matches the arithmetic exactly at the quota boundary", () => {
     const kit = worstCaseDailyWrites(loadKitLimits({}));
     // choose the quota to equal the combined figure at pv=500, pvbot=100
     const e = { VIEWS_PER_HOUR: "500", BOT_VIEWS_PER_HOUR: "100" };
@@ -55,6 +60,9 @@ describe("the page-view budget in the kit's combined check", () => {
   });
 });
 
+/** The default figure without the funnel: kit 42440 + page views 22700 + clicks 300501 + margin 5000. */
+const BASE = 70_140 + CLICK_DAILY_WRITES;
+
 describe("assessDailyBudget agrees with loadKitLimits", () => {
   const cases: Record<string, string>[] = [
     {},
@@ -63,8 +71,10 @@ describe("assessDailyBudget agrees with loadKitLimits", () => {
     { VIEWS_PER_HOUR: "700" },
     { ROUTE_BUDGET_GATE: "200" },
     { D1_DAILY_WRITE_QUOTA: "abc" },
-    { D1_DAILY_WRITE_QUOTA: String(78_140 + FUNNEL_DAILY_WRITES) },
-    { D1_DAILY_WRITE_QUOTA: String(78_119 + FUNNEL_DAILY_WRITES) },
+    { D1_DAILY_WRITE_QUOTA: String(BASE + FUNNEL_DAILY_WRITES) },
+    { D1_DAILY_WRITE_QUOTA: String(BASE - 21 + FUNNEL_DAILY_WRITES) },
+    { ROUTE_BUDGET_GATE: "8000" },
+    { ROUTE_BUDGET_GATE: "20000" },
   ];
   for (const e of cases) {
     it(`verdict for ${JSON.stringify(e)}`, () => {
@@ -86,25 +96,30 @@ describe("runBudgetCheck (the deploy-time gate)", () => {
   it("passes quietly at the defaults and says ok", () => {
     const r = runBudgetCheck({});
     expect(r.code).toBe(0);
-    const total = 78_140 + FUNNEL_DAILY_WRITES;
-    expect(r.lines).toEqual([`combined worst-case daily D1 writes ${total} of 100000 (${(total / 1000).toFixed(1)} percent; page views 22700; funnel ${FUNNEL_DAILY_WRITES}): ok`]);
+    const total = BASE + FUNNEL_DAILY_WRITES;
+    expect(r.lines).toEqual([`combined worst-case daily D1 writes ${total} of 1600000 (${((100 * total) / 1_600_000).toFixed(1)} percent; page views 22700; funnel ${FUNNEL_DAILY_WRITES}): ok`]);
   });
   it("warns, exit 0, above 80 percent, and not at exactly 80", () => {
-    // pv 200: page views 24*230*5.6=30912+2540=33452; combined = 42420+33452+8000+5000 = 88872
-    const r = runBudgetCheck({ VIEWS_PER_HOUR: "200" });
+    // gate 8000/h: kit 24*(8000*5+600)+10040 = 1,000,000+ ; combined = 1,313,398 on the default funnel, 82 percent of 1600000
+    const r = runBudgetCheck({ ROUTE_BUDGET_GATE: "8000" });
     expect(r.code).toBe(0);
     expect(r.lines[0]).toMatch(/^::warning::.*above 80 percent$/);
-    const total = 78_140 + FUNNEL_DAILY_WRITES;
+    const total = BASE + FUNNEL_DAILY_WRITES;
     const at80 = Math.ceil((total * 10) / 8); // the smallest quota at which total is still at most 80 percent
     expect(runBudgetCheck({ D1_DAILY_WRITE_QUOTA: String(at80) }).lines[0]).toMatch(/^combined .*: ok$/);
     expect(runBudgetCheck({ D1_DAILY_WRITE_QUOTA: String(at80 - 1) }).lines[0]).toMatch(/^::warning::/);
   });
   it("fails, exit 1, over the quota and names no value", () => {
-    const r = runBudgetCheck({ VIEWS_PER_HOUR: "900" });
+    const r = runBudgetCheck({ ROUTE_BUDGET_GATE: "20000" });
     expect(r.code).toBe(1);
     expect(r.lines[0]).toMatch(/^::error::.*is over the quota$/);
-    expect(runBudgetCheck({ D1_DAILY_WRITE_QUOTA: String(78_119 + FUNNEL_DAILY_WRITES) }).code).toBe(1);
-    expect(runBudgetCheck({ D1_DAILY_WRITE_QUOTA: String(78_140 + FUNNEL_DAILY_WRITES) }).code).toBe(0);
+    expect(runBudgetCheck({ D1_DAILY_WRITE_QUOTA: String(BASE - 21 + FUNNEL_DAILY_WRITES) }).code).toBe(1);
+    expect(runBudgetCheck({ D1_DAILY_WRITE_QUOTA: String(BASE + FUNNEL_DAILY_WRITES) }).code).toBe(0);
+  });
+  it("a free-plan quota (100000 rows a day) no longer fits the click ceiling, so the check refuses it", () => {
+    const r = runBudgetCheck({ D1_DAILY_WRITE_QUOTA: "100000" });
+    expect(r.code).toBe(1);
+    expect(r.lines[0]).toMatch(/is over the quota$/);
   });
   it("fails on an unusable value, by name only", () => {
     for (const bad of ["abc", "1e3", "-5", "100001", "1.5", "007x", "9999999"]) {
@@ -182,12 +197,22 @@ describe("pageViewDailyWrites uses the binding ceiling per class", () => {
     // old projection: one site only = rows(250). Real worst case with 8 sites: ceilings 480 + 120.
     expect(pageViewDailyWrites(e, 8)).toBe(rows(600));
     expect(pageViewDailyWrites(e, 8)).toBeGreaterThan(rows(250));
-    // and the total is refused through the kit's own function
+    // the eight-site total is the larger one, through the kit's own function (the refusal at a quota
+    // between the two is the next test)
     const sites = siteList(8);
-    expect(() => loadKitLimits({ ...e, SITES: sites })).toThrow(KitLimitsError);
-    expect(assessDailyBudget({ ...e, SITES: sites }).level).toBe("fail");
-    // one site at the same budgets is still within the quota
+    expect(assessDailyBudget({ ...e, SITES: sites }).combined).toBeGreaterThan(assessDailyBudget(e).combined);
+    // one site at the same budgets is within the quota
     expect(assessDailyBudget(e).level).not.toBe("fail");
+  });
+  it("the same refusal holds at a quota between one site and eight sites", () => {
+    const e = { VIEWS_PER_HOUR: "200", BOT_VIEWS_PER_HOUR: "50" };
+    const eight = assessDailyBudget({ ...e, SITES: siteList(8) }).combined;
+    const one = assessDailyBudget(e).combined;
+    expect(eight).toBeGreaterThan(one);
+    const quota = String(eight - 1);
+    expect(() => loadKitLimits({ ...e, SITES: siteList(8), D1_DAILY_WRITE_QUOTA: quota })).toThrow(KitLimitsError);
+    expect(assessDailyBudget({ ...e, SITES: siteList(8), D1_DAILY_WRITE_QUOTA: quota }).level).toBe("fail");
+    expect(assessDailyBudget({ ...e, D1_DAILY_WRITE_QUOTA: quota }).level).not.toBe("fail");
   });
 });
 
@@ -199,9 +224,11 @@ describe("the deploy check counts sites and ceilings", () => {
     expect(assessDailyBudget(one).funnel).toBe(funnelDailyWrites(FUNNEL_CAPS, [{ links: 1 }]));
   });
   it("refuses a SITES text that makes the total pass the quota", () => {
-    const r = runBudgetCheck({ SITES: siteList(8) });
+    const eight = assessDailyBudget({ SITES: siteList(8) }).combined;
+    const r = runBudgetCheck({ SITES: siteList(8), D1_DAILY_WRITE_QUOTA: String(eight - 1) });
     expect(r.code).toBe(1);
     expect(r.lines[0]).toMatch(/is over the quota$/);
+    expect(runBudgetCheck({ SITES: siteList(8), D1_DAILY_WRITE_QUOTA: String(eight) }).code).toBe(0);
   });
   it("fails closed when the site list does not load", () => {
     for (const bad of [{ SITES: "{not json" }, { SITE_HOST: "NOT A HOST", PAGE_IDS: '["home"]' }, { SITE_HOST: "links.example.test", PAGE_IDS: "x" }]) {
@@ -256,6 +283,7 @@ describe("the deploy gate reads every variable the Worker's loader reads", () =>
       DAILY_ALERT_BUDGET: "1001",
       DAILY_SEND_BUDGET: "1001",
       D1_DAILY_WRITE_QUOTA: "999",
+      CLICK_DAILY_WRITE_CEILING: "999",
     };
     for (const n of KIT_LIMIT_VARS) {
       expect(bad[n], n).toBeDefined();
@@ -266,10 +294,118 @@ describe("the deploy gate reads every variable the Worker's loader reads", () =>
   });
   it("a kit limit override changes the verdict, not just the validation", () => {
     expect(runBudgetCheck({}).code).toBe(0);
-    const warn = runBudgetCheck({ ROUTE_BUDGET_GATE: "200" });
+    const warn = runBudgetCheck({ ROUTE_BUDGET_GATE: "8000" });
     expect(warn.lines[0]).toMatch(/^::warning::/);
-    expect(runBudgetCheck({ ROUTE_BUDGET_GATE: "400" }).code).toBe(1);
+    expect(runBudgetCheck({ ROUTE_BUDGET_GATE: "20000" }).code).toBe(1);
     expect(runBudgetCheck({ D1_DAILY_WRITE_QUOTA: "50000" }).code).toBe(1);
-    expect(runBudgetCheck({ D1_DAILY_WRITE_QUOTA: "200000" }).lines[0]).toMatch(/: ok$/);
+    expect(runBudgetCheck({ D1_DAILY_WRITE_QUOTA: "2000000" }).lines[0]).toMatch(/: ok$/);
+  });
+});
+
+describe("the first-click reserve is checked against the number of links", () => {
+  // One site, no optional lists: a click is charged 9. At a 1000 ceiling the site's reserve is 200 (20 percent),
+  // which holds 22 first clicks (22 x 9 = 198), not 23.
+  const ids = (n: number) => JSON.stringify(Array.from({ length: n }, (_, i) => `l${i}`));
+  const one = (n: number, extra: Record<string, string> = {}) => ({
+    SITE_HOST: "links.example.test",
+    PAGE_IDS: '["home"]',
+    LINK_IDS: ids(n),
+    CLICK_DAILY_WRITE_CEILING: "1000",
+    D1_DAILY_WRITE_QUOTA: "999999999",
+    ...extra,
+  });
+  it.each([
+    [22, 0],
+    [23, 1],
+  ])("%i links at a 1000 ceiling: exit %i", (n, code) => {
+    const r = runBudgetCheck(one(n));
+    expect(r.code).toBe(code);
+    if (code === 1) {
+      expect(r.lines).toEqual(["::error::CLICK_DAILY_WRITE_CEILING is too small to keep a first click for every link: raise it"]);
+    }
+  });
+  it("the model reports it and the level is fail, whatever the quota", () => {
+    expect(assessDailyBudget(one(23)).reserveShort).toBe(true);
+    expect(assessDailyBudget(one(23)).level).toBe("fail");
+    expect(assessDailyBudget(one(22)).reserveShort).toBe(false);
+    expect(assessDailyBudget(one(22)).level).not.toBe("fail");
+  });
+  it("uses each site's own maximum charge (a site that lists everything is charged 13)", () => {
+    const sites = (n: number) =>
+      JSON.stringify({
+        a: {
+          hosts: ["a.example.test"], mode: "beacon", pages: ["home"],
+          link_ids: Object.fromEntries(Array.from({ length: n }, (_, i) => [`l${i}`, "home"])),
+          sources: ["x"], landings: ["home"], hops: ["blog"],
+        },
+      });
+    // 200 / 13 = 15 first clicks
+    expect(assessDailyBudget({ SITES: sites(15), CLICK_DAILY_WRITE_CEILING: "1000", D1_DAILY_WRITE_QUOTA: "999999999" }).reserveShort).toBe(false);
+    expect(assessDailyBudget({ SITES: sites(16), CLICK_DAILY_WRITE_CEILING: "1000", D1_DAILY_WRITE_QUOTA: "999999999" }).reserveShort).toBe(true);
+  });
+  it("more sites share the ceiling, so each site's reserve is smaller", () => {
+    const two = JSON.stringify({
+      a: { hosts: ["a.example.test"], mode: "beacon", pages: ["home"], link_ids: Object.fromEntries(Array.from({ length: 12 }, (_, i) => [`l${i}`, "home"])) },
+      b: { hosts: ["b.example.test"], mode: "beacon", pages: ["home"], link_ids: {} },
+    });
+    // share 500, reserve 100: 11 first clicks at 9, so 12 links is short
+    expect(assessDailyBudget({ SITES: two, CLICK_DAILY_WRITE_CEILING: "1000", D1_DAILY_WRITE_QUOTA: "999999999" }).reserveShort).toBe(true);
+    expect(assessDailyBudget({ SITES: two, CLICK_DAILY_WRITE_CEILING: "2000", D1_DAILY_WRITE_QUOTA: "999999999" }).reserveShort).toBe(false);
+  });
+  it("the defaults and the documented Free-plan pair keep every link a first click up to a large site", () => {
+    expect(assessDailyBudget({ SITE_HOST: "links.example.test", PAGE_IDS: '["home"]', LINK_IDS: ids(200) }).reserveShort).toBe(false);
+    expect(assessDailyBudget({ SITE_HOST: "links.example.test", PAGE_IDS: '["home"]', LINK_IDS: ids(115), D1_DAILY_WRITE_QUOTA: "100000", CLICK_DAILY_WRITE_CEILING: "7500" }).reserveShort).toBe(false);
+  });
+});
+
+describe("a click-only deployment (page views off) is checked with the same function", () => {
+  it("passes the Free-plan pair and refuses the default ceiling on a Free quota", () => {
+    const base = { SITE_HOST: "links.example.test", PAGE_IDS: '["home"]', LINK_IDS: '["alpha"]' };
+    expect(runBudgetCheck({ ...base, D1_DAILY_WRITE_QUOTA: "100000", CLICK_DAILY_WRITE_CEILING: "7500" }).code).toBe(0);
+    expect(runBudgetCheck({ ...base, D1_DAILY_WRITE_QUOTA: "100000" }).code).toBe(1);
+  });
+});
+
+describe("the click ceiling setting in the budget check (Free-plan deployment)", () => {
+  const free = { D1_DAILY_WRITE_QUOTA: "100000", CLICK_DAILY_WRITE_CEILING: "7500" };
+  it("the documented Free-plan pair passes, and is the old figure plus the setup-flag write", () => {
+    const r = runBudgetCheck(free);
+    expect(r.code).toBe(0);
+    expect(r.lines[0]).toContain(`${78_141 + FUNNEL_DAILY_WRITES} of 100000`);
+    expect(assessDailyBudget(free).combined).toBe(78_141 + FUNNEL_DAILY_WRITES);
+  });
+  it("the Free-plan quota alone (default ceiling) is refused, and so is the ceiling alone on a too-small quota", () => {
+    expect(runBudgetCheck({ D1_DAILY_WRITE_QUOTA: "100000" }).code).toBe(1);
+    // 70140 + ceiling + 501 + funnel (758) must stay at or under 100000: 28601 is the largest ceiling
+    expect(runBudgetCheck({ D1_DAILY_WRITE_QUOTA: "100000", CLICK_DAILY_WRITE_CEILING: "28601" }).code).toBe(0);
+    expect(runBudgetCheck({ D1_DAILY_WRITE_QUOTA: "100000", CLICK_DAILY_WRITE_CEILING: "28602" }).code).toBe(1);
+  });
+  it("the verdict follows the configured ceiling exactly (the Worker and the check read one value)", () => {
+    for (const c of ["1000", "7500", "300000", "5000000"]) {
+      const a = assessDailyBudget({ CLICK_DAILY_WRITE_CEILING: c, D1_DAILY_WRITE_QUOTA: "999999999" });
+      expect(a.combined).toBe(70_140 + Number(c) + 501 + FUNNEL_DAILY_WRITES);
+      expect(combinedDailyWrites(loadKitLimits({ CLICK_DAILY_WRITE_CEILING: c, D1_DAILY_WRITE_QUOTA: "999999999" }), a.pageViews, a.funnel)).toBe(a.combined);
+    }
+  });
+  it("an unusable ceiling fails the deploy check by name, but does not take the kit's own limits down", () => {
+    for (const bad of ["999", "10000001", "1e5", "abc", "-1"]) {
+      expect(runBudgetCheck({ CLICK_DAILY_WRITE_CEILING: bad })).toEqual({ code: 1, lines: ["::error::unusable budget settings: CLICK_DAILY_WRITE_CEILING"] });
+      // the click route refuses and flags it; the kit routes and the owner alerts keep their own limits
+      expect(() => loadKitLimits({ CLICK_DAILY_WRITE_CEILING: bad })).not.toThrow();
+      expect(assessDailyBudget({ CLICK_DAILY_WRITE_CEILING: bad }).invalid).toEqual(["CLICK_DAILY_WRITE_CEILING"]);
+    }
+    // another bad variable still refuses the kit, whatever the ceiling says
+    expect(() => loadKitLimits({ CLICK_DAILY_WRITE_CEILING: "abc", MAX_LEADS: "0" })).toThrow(KitLimitsError);
+  });
+  it("the Worker's click parser and the budget loader agree on every usable value", () => {
+    for (const v of [undefined, "", "300000", "1000", "10000000", "007500"]) {
+      const worker = parseClickCeiling(v);
+      expect(worker, String(v)).not.toBeNull();
+      expect(loadKitLimits({ CLICK_DAILY_WRITE_CEILING: v, D1_DAILY_WRITE_QUOTA: "999999999" }).clickCeiling, String(v)).toBe(worker);
+    }
+    for (const v of ["999", "10000001", "12x", "-1", "0"]) {
+      expect(parseClickCeiling(v), v).toBeNull();
+      expect(assessDailyBudget({ CLICK_DAILY_WRITE_CEILING: v }).invalid, v).toEqual(["CLICK_DAILY_WRITE_CEILING"]);
+    }
   });
 });

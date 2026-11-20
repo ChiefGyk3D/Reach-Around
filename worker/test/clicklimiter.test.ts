@@ -113,11 +113,41 @@ describe("raw address guard (deterministic)", () => {
   });
 });
 
+describe("the click route refuses when its hashing secret is not usable", () => {
+  const cases: [string, string | undefined][] = [
+    ["missing", undefined],
+    ["empty", ""],
+    ["not base64", "not base64 !!"],
+    ["shorter than 32 bytes", btoa("a".repeat(31))],
+    ["longer than the 4096 character cap", "A".repeat(4097)],
+  ];
+  it.each(cases)("a %s secret: no limiter call, nothing recorded, same 204", async (_name, secret) => {
+    const l = recorder();
+    const ok = await handleClick(click(IP4), envWith(recorder(), SECRET));
+    await testEnv.DB.prepare("DELETE FROM click_events").run();
+    const r = await handleClick(click(IP4), envWith(l, secret));
+    expect(l.keys).toEqual([]);
+    expect(r.status).toBe(204);
+    expect(await r.text()).toBe(await ok.text());
+    const n = await testEnv.DB.prepare("SELECT COUNT(*) AS n FROM click_events").first<{ n: number }>();
+    expect(n?.n).toBe(0);
+  });
+  it("a usable secret still records (the guard is not a blanket refusal)", async () => {
+    const l = recorder();
+    await handleClick(click(IP4), envWith(l, SECRET));
+    expect(l.keys.length).toBe(1);
+    const n = await testEnv.DB.prepare("SELECT COUNT(*) AS n FROM click_events").first<{ n: number }>();
+    expect(n?.n).toBe(1);
+  });
+  it("the limiter module has no per-isolate random fallback left", async () => {
+    const src = (await import("../src/ratekey.ts?raw")).default as string;
+    expect(src).not.toContain("getRandomValues");
+    expect(src).not.toContain("limiterKeyOrIsolate");
+  });
+});
+
 describe("click limiter keys", () => {
-  for (const [name, secret] of [
-    ["with the secret", SECRET],
-    ["without the secret", undefined],
-  ] as const) {
+  for (const [name, secret] of [["with the secret", SECRET]] as const) {
     it(`no raw address or part of it reaches CLICK_LIMITER ${name}`, async () => {
       const l = recorder();
       for (const ip of [IP4, IP6, null]) await handleClick(click(ip), envWith(l, secret));
@@ -167,9 +197,9 @@ describe("click limiter keys", () => {
     expect(c.keys[0]).not.toBe(v.keys[0]);
   });
 
-  it("a client over the limit is still limited without the secret", async () => {
+  it("a client over the limit is limited", async () => {
     const l = recorder(2);
-    const e = envWith(l);
+    const e = envWith(l, SECRET);
     for (let i = 0; i < 5; i++) await handleClick(click(IP4), e);
     const n = await testEnv.DB.prepare("SELECT COUNT(*) AS n FROM click_events").first<{ n: number }>();
     expect(n?.n).toBe(2);
@@ -188,8 +218,8 @@ describe("click limiter keys", () => {
     return l.keys;
   }
 
-  for (const secret of [SECRET, undefined]) {
-    const tag = secret ? "with the secret" : "without the secret";
+  for (const secret of [SECRET]) {
+    const tag = "with the secret";
     it(`equivalent spellings share one click limiter key ${tag}`, async () => {
       for (const group of SPELLINGS) {
         const keys = new Set<string>();

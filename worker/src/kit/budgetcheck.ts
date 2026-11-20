@@ -40,6 +40,9 @@ export function runBudgetCheck(source: Record<string, string | undefined>): { co
   if (a.invalid.length > 0) {
     return { code: 1, lines: [`::error::unusable budget settings: ${a.invalid.join(", ")}`] };
   }
+  if (a.reserveShort) {
+    return { code: 1, lines: ["::error::CLICK_DAILY_WRITE_CEILING is too small to keep a first click for every link: raise it"] };
+  }
   if (a.level === "fail") return { code: 1, lines: [`::error::${sum} is over the quota`] };
   if (a.level === "warn") return { code: 0, lines: [`::warning::${sum} is above 80 percent`] };
   return { code: 0, lines: [`${sum}: ok`] };

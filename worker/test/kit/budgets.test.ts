@@ -108,12 +108,17 @@ describe("loadKitLimits", () => {
       expect((e as KitLimitsError).fields).toEqual(["D1_DAILY_WRITE_QUOTA"]);
     }
   });
+  it("the default quota is the paid plan's included rows written a month over 31 days, rounded down", () => {
+    expect(DEFAULTS.d1DailyWriteQuota).toBe(1_600_000);
+    expect(Math.floor(50_000_000 / 31)).toBeGreaterThanOrEqual(DEFAULTS.d1DailyWriteQuota);
+    expect(L().d1DailyWriteQuota).toBe(1_600_000);
+  });
   it("the kit alone fits, but kit plus page views, clicks and margin does not: refused", () => {
-    // gate 700/h: kit = 24*(3500+600)+20+10000 = 108420 > 100000 would fail alone; use 480:
-    // kit = 24*(2400+600)+20+10000 = 82020 (<100000) but combined = 82020 + 35700 = 117720
-    const kitOnly = 24 * (480 * 5 + 300 * 2) + 20 + 10_000;
-    expect(kitOnly).toBeLessThan(100_000);
-    expect(() => L({ ROUTE_BUDGET_GATE: "480" })).toThrow(KitLimitsError);
+    // gate 13000/h: kit = 24*(65000+600)+20+20+10000 = 1584440 (under 1600000), but the click
+    // ceiling, page views, funnel and margin on top of it pass the quota
+    const kitOnly = 24 * (13_000 * 5 + 300 * 2) + 20 + 20 + 10_000;
+    expect(kitOnly).toBeLessThan(DEFAULTS.d1DailyWriteQuota);
+    expect(() => L({ ROUTE_BUDGET_GATE: "13000" })).toThrow(KitLimitsError);
     // exact boundary: the combined figure equal to the quota passes, one above fails
     const q = combinedDailyWrites(L());
     expect(() => L({ D1_DAILY_WRITE_QUOTA: String(q) })).not.toThrow();
@@ -127,8 +132,9 @@ describe("loadKitLimits", () => {
     expect(src).not.toContain("above 70 percent");
   });
   it("warns above 80 percent of the quota", () => {
-    const c = L({ ROUTE_BUDGET_GATE: "200" });
-    expect(combinedDailyWrites(c)).toBe(84_140 + FUNNEL_DAILY_WRITES);
+    // gate 8000/h adds 24 x (8000 - 150) x 5 = 942000 to the default figure: between 80 and 100 percent of 1600000
+    const c = L({ ROUTE_BUDGET_GATE: "8000" });
+    expect(combinedDailyWrites(c)).toBe(370_641 + 942_000 + FUNNEL_DAILY_WRITES);
     expect(c.warnings).toEqual(["combined worst-case daily D1 writes are above 80 percent of D1_DAILY_WRITE_QUOTA"]);
     expect(L().warnings).toEqual([]);
   });
@@ -146,7 +152,9 @@ describe("worstCaseDailyWrites", () => {
     const c = L();
     expect(PAGE_VIEW_DAILY_WRITES).toBe(22_700);
     expect(combinedDailyWrites(c)).toBe(worstCaseDailyWrites(c) + 22_700 + CLICK_DAILY_WRITES + FUNNEL_DAILY_WRITES + COMBINED_MARGIN);
-    expect(combinedDailyWrites(c)).toBe(78_140 + FUNNEL_DAILY_WRITES);
+    // 42440 kit + 22700 page views + 300501 clicks (ceiling, dropped-count cap, setup flag) + 5000 margin
+    expect(CLICK_DAILY_WRITES).toBe(300_501);
+    expect(combinedDailyWrites(c)).toBe(370_641 + FUNNEL_DAILY_WRITES);
     expect(combinedDailyWrites(c)).toBeLessThan(c.d1DailyWriteQuota * 0.8);
   });
   it("storage worst case is far under the 500 MB database limit at the defaults", () => {

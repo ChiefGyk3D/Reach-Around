@@ -550,24 +550,102 @@ KIT_VARS = [
     "DAILY_ALERT_BUDGET",
     "DAILY_SEND_BUDGET",
     "D1_DAILY_WRITE_QUOTA",
+    "CLICK_DAILY_WRITE_CEILING",
 ]
 
 
 def test_a_kit_limit_override_reaches_the_deploy_config(tmp_path: Path) -> None:
-    extra = {**ON, "ROUTE_BUDGET_GATE": "180", "D1_DAILY_WRITE_QUOTA": "150000"}
+    extra = {
+        **ON,
+        "ROUTE_BUDGET_GATE": "180",
+        "D1_DAILY_WRITE_QUOTA": "150000",
+        "CLICK_DAILY_WRITE_CEILING": "7500",
+    }
     assert _check(extra).returncode == 0
     assert _write(tmp_path, extra).returncode == 0
     data = tomllib.loads(_out(tmp_path))
     assert data["vars"]["ROUTE_BUDGET_GATE"] == "180"
     assert data["vars"]["D1_DAILY_WRITE_QUOTA"] == "150000"
+    assert data["vars"]["CLICK_DAILY_WRITE_CEILING"] == "7500"
     assert "MAX_LEADS" not in data["vars"]
 
 
-def test_kit_overrides_are_not_written_when_page_views_are_off(tmp_path: Path) -> None:
+CLICK_VARS = ["D1_DAILY_WRITE_QUOTA", "CLICK_DAILY_WRITE_CEILING"]
+
+
+def test_page_view_kit_overrides_are_not_written_when_page_views_are_off(
+    tmp_path: Path,
+) -> None:
     extra = {"ROUTE_BUDGET_GATE": "180"}
     assert _check(extra).returncode == 0
     assert _write(tmp_path, extra).returncode == 0
     assert "ROUTE_BUDGET_GATE" not in tomllib.loads(_out(tmp_path))["vars"]
+
+
+@pytest.mark.parametrize("page_views", [{}, {"PAGE_VIEWS": "false"}, ON])
+def test_click_settings_reach_the_deploy_config_with_page_views_off_or_on(
+    tmp_path: Path, page_views: dict[str, str]
+) -> None:
+    """The Free-plan pair is validated and written whatever PAGE_VIEWS says."""
+    extra = {
+        **page_views,
+        "D1_DAILY_WRITE_QUOTA": "100000",
+        "CLICK_DAILY_WRITE_CEILING": "7500",
+    }
+    assert _check(extra).returncode == 0
+    assert _write(tmp_path, extra).returncode == 0
+    data = tomllib.loads(_out(tmp_path))
+    assert data["vars"]["D1_DAILY_WRITE_QUOTA"] == "100000"
+    assert data["vars"]["CLICK_DAILY_WRITE_CEILING"] == "7500"
+    if not page_views:
+        assert "PAGE_IDS" not in data["vars"]
+        assert "ratelimits" not in data or all(
+            r["name"] != "VIEW_LIMITER" for r in data["ratelimits"]
+        )
+
+
+def test_click_settings_unset_write_nothing(tmp_path: Path) -> None:
+    assert _write(tmp_path, {}).returncode == 0
+    data = tomllib.loads(_out(tmp_path))
+    for name in CLICK_VARS:
+        assert name not in data["vars"]
+
+
+@pytest.mark.parametrize("name", CLICK_VARS)
+@pytest.mark.parametrize("bad", ["12x", "-1", "1e3", "1234567890", "1\n2"])
+@pytest.mark.parametrize("page_views", [{}, {"PAGE_VIEWS": "false"}])
+def test_an_invalid_click_setting_fails_the_deploy_by_name_with_page_views_off(
+    tmp_path: Path, name: str, bad: str, page_views: dict[str, str]
+) -> None:
+    extra = {**page_views, name: bad}
+    checked = _check(extra)
+    assert checked.returncode != 0
+    assert name in checked.stdout + checked.stderr
+    written = _write(tmp_path, extra)
+    assert written.returncode != 0
+    assert name in written.stdout + written.stderr
+
+
+def test_the_click_budget_step_runs_when_page_views_are_off() -> None:
+    steps = _workflow()["jobs"]["deploy"]["steps"]
+    names = [s.get("name") for s in steps]
+    step = _step("deploy", "Check the click write budget")
+    assert step["if"] == "${{ vars.PAGE_VIEWS != 'true' }}"
+    assert "secrets." not in str(step) and "CLOUDFLARE" not in str(step)
+    env = step["env"]
+    for var in CLICK_VARS + ["SITE_HOST"]:
+        assert env[var] == "${{ vars." + var + " }}"
+    assert env["LINK_IDS"] == "${{ steps.manifest.outputs.link_ids }}"
+    # no page-view variable reaches it: they are not written when page views are off
+    for var in ("VIEWS_PER_HOUR", "ROUTE_BUDGET_GATE", "MAX_LEADS"):
+        assert var not in env
+    assert "scripts/check-budget.ts" in step["run"]
+    assert names.index("Check the click write budget") < names.index(
+        "Write deploy config"
+    )
+    assert names.index("Install Worker dependencies") < names.index(
+        "Check the click write budget"
+    )
 
 
 @pytest.mark.parametrize("name", KIT_VARS)

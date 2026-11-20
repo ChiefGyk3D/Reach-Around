@@ -22,6 +22,7 @@ const env = (): Env => ({
   DB: testEnv.DB,
   SITES,
   CLICK_LIMITER: { limit: async () => ({ success: true }) },
+  VIEW_HASH_SECRET: btoa("k".repeat(32)),
 });
 const click = (qs: string, host = "links.example.test", id = "twitch") =>
   new Request(`https://worker.example.test/e/c/${id}${qs}`, {
