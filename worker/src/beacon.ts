@@ -19,7 +19,7 @@
 // site comes from the Origin or Ping-From header, which the caller chooses, so observe records data only.
 
 import { normalizeAddress } from "./address";
-import { bodyAcceptable, MAX_URL_LENGTH, type RateLimiter } from "./click";
+import { bodyAcceptable, MAX_URL_LENGTH, optedOut, type RateLimiter } from "./click";
 import { parseBeaconMode, type BeaconMode } from "./beaconmode";
 import { markClickSetupInvalid, type ClickLane } from "./clickceiling";
 import { fromB64url, keyUsable, toB64url } from "./kit/token";
@@ -251,8 +251,8 @@ export async function handleMint(request: Request, env: MintEnv, nowMs: number =
     if (request.url.length > MAX_URL_LENGTH) return noContent();
     if (new URL(request.url).pathname !== MINT_ROUTE) return noContent();
     // A visitor who signals Global Privacy Control or Do Not Track is issued nothing.
-    if (request.headers.get("Sec-GPC")?.trim() === "1") return noContent();
-    if (request.headers.get("DNT")?.trim() === "1") return noContent();
+    // Same rule as the click route (one shared parser): any comma-separated token equal to 1 counts.
+    if (optedOut(request)) return noContent();
     const site = siteForRequest(loadSites(env).sites, request);
     if (site === null) return noContent();
     // A token is only useful to a route that is on for this site. The click route counts every listed site

@@ -118,7 +118,7 @@ function signalOn(value: string | null): boolean {
 }
 
 /** True when the request carries Sec-GPC: 1 or DNT: 1 (the only values either signal defines); fails toward privacy. */
-function optedOut(request: Request): boolean {
+export function optedOut(request: Request): boolean {
   return signalOn(request.headers.get("Sec-GPC")) || signalOn(request.headers.get("DNT"));
 }
 
