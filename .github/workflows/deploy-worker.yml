@@ -652,7 +652,12 @@ jobs:
           # [[ =~ ]] tests the whole value (grep is line by line).
           [[ "${LINK_IDS:-}" =~ ^\[\"[a-z0-9-]{1,40}\"(,\"[a-z0-9-]{1,40}\"){0,199}\]$ ]] \
             || { echo "::error::the derived link id list is missing or invalid"; exit 1; }
-          destination_kinds="${DESTINATION_KINDS:-{\"example-one\":\"link\",\"example-two\":\"link\"}}"
+          # The default is set outside the expansion: a `}` inside ${V:-...}
+          # closes it early and leaves a stray brace after a supplied value (#666).
+          destination_kinds="${DESTINATION_KINDS:-}"
+          if [ -z "$destination_kinds" ]; then
+            destination_kinds='{"example-one":"link","example-two":"link"}'
+          fi
           sed \
             -e "s|^database_id = \"[^\"]*\"|database_id = \"${D1_DATABASE_ID}\"|" \
             -e "s|^namespace_id = \"[^\"]*\"|namespace_id = \"${RATELIMIT_NAMESPACE_ID}\"|" \

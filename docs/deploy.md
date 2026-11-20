@@ -623,10 +623,16 @@ Wiring into `deploy-test.yml` is deliberately not done: the deploy job runs unde
 ## Deploying the Worker from an instance repo
 
 The Worker and D1 half of the test deploy is a reusable workflow,
-`.github/workflows/deploy-worker.yml` (issue #596). `deploy-test.yml` calls it,
-and an instance repository calls the same file for its staging and production
-Worker, so the config writing, the budget check, the migrations and the deploy
-exist once. It does not publish the site; the caller does that with its own
+`.github/workflows/deploy-worker.yml` (issue #596). An instance repository
+calls it for its staging and production Worker, so the config writing, the
+budget check, the migrations and the deploy exist once. `deploy-test.yml` still
+carries the same steps inline for now: a same-repository `uses: ./...` call
+fails zizmor 1.30.1 and `uses: $/...` fails actionlint 1.7.12 (both CI pins),
+so a follow-up pull request, after this one is merged, switches `deploy-test.yml`
+to call the workflow pinned by commit
+(`uses: ChiefGyk3D/Reach-Around/.github/workflows/deploy-worker.yml@<sha> # <version>`),
+the same way an instance repo calls it. Tests keep the two copies' deploy
+config equal until then. It does not publish the site; the caller does that with its own
 Pages step. It reads no GitHub secret: the Cloudflare token comes from Doppler
 over GitHub OIDC (the `CLOUDFLARE_KEY_VALUE` secret of one Doppler project and
 config), as one masked output that only the wrangler steps read.
@@ -708,6 +714,21 @@ that decides which Worker is deployed. Changing it (or the image, or the
 workflow pin) in the middle of the staging soak restarts the evidence the
 cutover needs, so any engine bump waits until the soak report is written.
 
+**Caveats, none of them tested by a run yet.**
+
+- Repository-level variables only for the call. A calling job cannot read an
+  environment's own variables, so the `vars.*` passed in `with:` must be set on
+  the repository (or passed as literals). Check where each value lives first.
+- The Pages job and the Worker call each hold the environment. After the
+  follow-up that switches `deploy-test.yml` to the call, the `test`
+  environment's reviewer approves twice, once per job. Today it approves once.
+- Check the Doppler OIDC subject for the called job. The identity's claim
+  mapping decides whether the called job (which runs under the environment named
+  in `environment`) may fetch `CLOUDFLARE_KEY_VALUE`; confirm it matches before
+  the first run.
+- The optional `sites` check uses `jq`, which the GitHub-hosted Ubuntu runners
+  have. A self-hosted runner needs it installed.
+
 **Not run for you.** The workflow has not been run end to end by the change that
 added it: the first run is on a staging environment, from `main`, with a
 reviewer present. Its egress allow-list is unmeasured, like the one in
@@ -718,10 +739,9 @@ reviewer present. Its egress allow-list is unmeasured, like the one in
 The jobs start with `step-security/harden-runner`, followed by an egress
 canary that says whether a failure is a broken runner network or a wrong list.
 
-- **`deploy` (in `deploy-test.yml`) and the called `deploy-worker.yml` are in
-  block mode** with an explicit allow-list of `host:443`
+- **`deploy` is in block mode** with an explicit allow-list of `host:443`
   entries (no wildcards): GitHub, the npm registry, `api.doppler.com` and
-  `api.cloudflare.com`. These are the jobs that hold the Cloudflare token.
+  `api.cloudflare.com`. This is the job that holds the Cloudflare token.
 - **`counts` is in audit mode** for two reasons that cannot be listed: the
   wheels artifact comes from a blob host whose name varies per run, and the
   Mastodon and Matrix sources use hosts named in the config. It needs no PyPI
@@ -1046,8 +1066,8 @@ refused inside `--out`, like `--manifest`).
 
 ## 3. Run it
 
-Actions > Deploy to test > Run workflow, branch `main`. After the counts refresh
-the workflow has three jobs:
+Actions > Deploy to test > Run workflow, branch `main`. The workflow has two
+jobs:
 
 1. **`build`** has read-only repository access, no secrets and no
    environment. It installs the package, runs
@@ -1058,24 +1078,19 @@ the workflow has three jobs:
    `site-manifest`. The assets inventory (`site-out.assets.json`) is written
    the same way and uploaded as `site-assets-inventory`; the job also compares
    it with the last deployment's to build the optional purge list.
-2. **`worker`** waits for `build` and calls the reusable
-   `.github/workflows/deploy-worker.yml` (see "Deploying the Worker from an
-   instance repo"), under the `test` environment, so a reviewer approves it. It
-   downloads both artifacts (a script, `.github/scripts/verify-manifest.py`, derives the Worker's `LINK_IDS`
+2. **`deploy`** waits for `build`, then waits for a reviewer to approve the
+   `test` environment. It downloads both artifacts (a script, `.github/scripts/verify-manifest.py`, derives the Worker's `LINK_IDS`
    from `site-out.manifest.json`, refuses any link id outside
    `[a-z0-9-]{1,40}` (without echoing it), an empty list, or more ids than the
    Worker's cap of 200, and only warns when the optional `LINK_IDS` variable differs), installs the Worker
-   dependencies with `npm ci --ignore-scripts`, applies D1 migrations and
-   deploys the Worker.
-3. **`deploy`** waits for `worker` and for the `test` environment, installs
-   wrangler, publishes the site with `wrangler pages deploy`, and, when
-   `CLOUDFLARE_PURGE_TOKEN` and `ZONE_ID` are set, purges the changed paths
-   (see "Caching and stale files"). It fetches its own token from Doppler, so
-   the `test` environment's reviewer approves once per job.
+   dependencies with `npm ci --ignore-scripts`, applies D1 migrations,
+   deploys the Worker, publishes the site with `wrangler pages deploy`, and,
+   when `CLOUDFLARE_PURGE_TOKEN` and `ZONE_ID` are set, purges the changed paths
+   (see "Caching and stale files").
 
-Why separate jobs: `pip install` and `npm ci` run code from third-party
+Why two jobs: `pip install` and `npm ci` run code from third-party
 dependencies. Neither runs while the Cloudflare token exists: the build job has
-no secrets, and each deploy job installs before it fetches the token. The build
+no secrets, and the deploy job installs before it fetches the token. The build
 installs Python dependencies with `pip install --require-hashes` from
 `requirements-build.txt` and `requirements.txt`, then the project itself with
 `--no-deps`, as the Containerfile does. After the Doppler step the token is in

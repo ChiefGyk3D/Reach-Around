@@ -1,6 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""The 'Write deploy config' step of deploy-worker.yml (the reusable Worker
-deploy that deploy-test.yml calls, issue #596), run against the real
+"""The 'Write deploy config' step of deploy-test.yml, run against the real
 worker/wrangler.toml with sample values."""
 
 import subprocess
@@ -12,8 +11,7 @@ import pytest
 import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
-WORKFLOW = ROOT / ".github" / "workflows" / "deploy-worker.yml"
-TEST_WORKFLOW = ROOT / ".github" / "workflows" / "deploy-test.yml"
+WORKFLOW = ROOT / ".github" / "workflows" / "deploy-test.yml"
 
 D1_ID = "11111111-2222-3333-4444-555555555555"
 NS_ID = "4242"
@@ -26,15 +24,6 @@ def _step(name: str) -> dict[str, Any]:
     workflow = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
     steps = workflow["jobs"]["deploy"]["steps"]
     found = [s for s in steps if s.get("name") == name]
-    assert len(found) == 1, name
-    step: dict[str, Any] = found[0]
-    return step
-
-
-def _test_step(job: str, name: str) -> dict[str, Any]:
-    """A step of the engine's own deploy-test.yml (the Pages half)."""
-    workflow = yaml.safe_load(TEST_WORKFLOW.read_text(encoding="utf-8"))
-    found = [s for s in workflow["jobs"][job]["steps"] if s.get("name") == name]
     assert len(found) == 1, name
     step: dict[str, Any] = found[0]
     return step
@@ -76,10 +65,10 @@ def test_the_write_step_reads_retention_from_the_manifest_step_output() -> None:
         step["env"]["LEAD_RETENTION_DAYS"]
         == "${{ steps.manifest.outputs.lead_retention_days }}"
     )
-    # never from the input: that one is only compared
-    assert "inputs.lead_retention_days" not in str(step)
+    # never from the repository variable: that one is only compared
+    assert "vars.LEAD_RETENTION_DAYS" not in str(step)
     verify = _step("Verify the build manifest")
-    assert verify["env"]["LEAD_RETENTION_DAYS"] == "${{ inputs.lead_retention_days }}"
+    assert verify["env"]["LEAD_RETENTION_DAYS"] == "${{ vars.LEAD_RETENTION_DAYS }}"
 
 
 @pytest.mark.parametrize("bad", ["", "0", "366", "abc", "4 5"])
@@ -126,15 +115,16 @@ def test_zone_name_adds_route(tmp_path: Path) -> None:
 def test_zone_name_only_where_needed() -> None:
     for name in ("Check configuration", "Write deploy config"):
         assert "ZONE_NAME" in _step(name)["env"]
-    for name in ("Apply D1 migrations", "Deploy the Worker"):
+    for name in (
+        "Apply D1 migrations",
+        "Deploy the Worker",
+        "Publish the site to Pages",
+    ):
         assert "ZONE_NAME" not in _step(name)["env"]
-    publish = _test_step("deploy", "Publish the site to Pages")
-    assert "ZONE_NAME" not in publish["env"]
 
 
 def _uploads_and_downloads() -> tuple[list[str], list[str]]:
-    workflow = yaml.safe_load(TEST_WORKFLOW.read_text(encoding="utf-8"))
-    worker = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+    workflow = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
     up = [
         str(s["with"]["path"])
         for s in workflow["jobs"]["build"]["steps"]
@@ -142,18 +132,15 @@ def _uploads_and_downloads() -> tuple[list[str], list[str]]:
     ]
     down = [
         str(s["with"]["path"])
-        for job in (workflow["jobs"]["deploy"], worker["jobs"]["deploy"])
-        for s in job["steps"]
+        for s in workflow["jobs"]["deploy"]["steps"]
         if str(s.get("uses", "")).startswith("actions/download-artifact")
     ]
     return up, down
 
 
 def test_workflow_manifest_is_a_sibling_never_inside_the_published_dir() -> None:
-    text = TEST_WORKFLOW.read_text(encoding="utf-8") + WORKFLOW.read_text(
-        encoding="utf-8"
-    )
-    workflow = yaml.safe_load(TEST_WORKFLOW.read_text(encoding="utf-8"))
+    text = WORKFLOW.read_text(encoding="utf-8")
+    workflow = yaml.safe_load(text)
     build = [
         s
         for s in workflow["jobs"]["build"]["steps"]
@@ -166,23 +153,15 @@ def test_workflow_manifest_is_a_sibling_never_inside_the_published_dir() -> None
     up, down = _uploads_and_downloads()
     assert "site-out" in up and "site-out.manifest.json" in up
     assert "site-out" in down  # collected something
-    # the manifest goes to the called workflow's own directory, never site-out
-    assert "manifest-in" in down and "site-out.manifest.json" not in down
     # the Pages upload publishes exactly the site directory
-    publish = _test_step("deploy", "Publish the site to Pages")["run"]
+    publish = _step("Publish the site to Pages")["run"]
     assert "pages deploy ../site-out " in publish + " "
 
 
 def test_doppler_fetch_comes_after_every_install_step() -> None:
     """Doppler exports every secret into the rest of the job, so no step that
-    installs packages (and could run an install script) may follow the fetch.
-    Both the called workflow and the Pages job of deploy-test.yml fetch."""
-    for workflow_path in (WORKFLOW, TEST_WORKFLOW):
-        _doppler_after_installs(workflow_path)
-
-
-def _doppler_after_installs(workflow_path: Path) -> None:
-    steps = yaml.safe_load(workflow_path.read_text(encoding="utf-8"))["jobs"]["deploy"][
+    installs packages (and could run an install script) may follow the fetch."""
+    steps = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))["jobs"]["deploy"][
         "steps"
     ]
     names = [s.get("name") for s in steps]
@@ -197,45 +176,30 @@ def _doppler_after_installs(workflow_path: Path) -> None:
     # the Doppler step is the only place the token enters the environment, and
     # the presence check follows it before any wrangler step
     assert fetch < names.index("Require the Cloudflare token")
-    after = (
+    assert names.index("Require the Cloudflare token") < names.index(
         "Apply D1 migrations"
-        if "Apply D1 migrations" in names
-        else "Publish the site to Pages"
     )
-    assert names.index("Require the Cloudflare token") < names.index(after)
     uses = steps[fetch]["uses"]
     assert uses.startswith("ChiefGyk3D/git-your-ship-together/")
-    if workflow_path == WORKFLOW:
-        # the called workflow takes project, config and identity as inputs
-        assert steps[fetch]["with"]["project"] == "${{ inputs.doppler_project }}"
-        assert steps[fetch]["with"]["config"] == "${{ inputs.doppler_config }}"
-        assert (
-            steps[fetch]["with"]["identity-id"] == "${{ inputs.doppler_identity_id }}"
-        )
-    else:
-        assert steps[fetch]["with"]["project"] == "reach-around"
-        assert steps[fetch]["with"]["config"] == "dev"
-        assert "vars.DOPPLER_IDENTITY_ID" in steps[fetch]["with"]["identity-id"]
+    assert steps[fetch]["with"]["project"] == "reach-around"
+    assert steps[fetch]["with"]["config"] == "dev"
+    assert "vars.DOPPLER_IDENTITY_ID" in steps[fetch]["with"]["identity-id"]
 
 
 def test_rotating_key_value_is_the_token_and_never_enters_the_environment() -> None:
     """The deploy uses the rotating key value (CLOUDFLARE_KEY_VALUE) as the
     Cloudflare API token. The Doppler step returns only that name as one masked
     output (nothing goes to GITHUB_ENV), and each wrangler step maps it into its
-    own env. The called workflow has no GitHub-secret fallback at all; the
-    Pages job of deploy-test.yml keeps the one it always had."""
+    own env, falling back to the GitHub secret."""
     steps = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))["jobs"]["deploy"][
         "steps"
     ]
     fetch = _step("Fetch Cloudflare credentials from Doppler")
     assert fetch["with"]["export"] == "outputs"
     assert fetch["with"]["names"] == "CLOUDFLARE_KEY_VALUE"
-    assert fetch["with"]["required"] == "true"  # nothing fetched fails the job
-    assert "token" not in fetch["with"]  # OIDC only: no service token
     expected = (
-        "${{ fromJSON(steps."
-        + fetch["id"]
-        + ".outputs.secrets).CLOUDFLARE_KEY_VALUE }}"
+        "${{ fromJSON(steps." + fetch["id"] + ".outputs.secrets).CLOUDFLARE_KEY_VALUE"
+        " || secrets.CLOUDFLARE_API_TOKEN }}"
     )
     mapped = [
         s["name"]
@@ -246,20 +210,10 @@ def test_rotating_key_value_is_the_token_and_never_enters_the_environment() -> N
         "Require the Cloudflare token",
         "Apply D1 migrations",
         "Deploy the Worker",
+        "Publish the site to Pages",
     ]
     # no step reads the token from the job environment, and none relies on it
     assert "env.CLOUDFLARE_API_TOKEN" not in WORKFLOW.read_text(encoding="utf-8")
-    assert "env.CLOUDFLARE_API_TOKEN" not in TEST_WORKFLOW.read_text(encoding="utf-8")
-    # the Pages job maps the same output (with its fallback) into one step
-    pages = [
-        s["name"]
-        for s in yaml.safe_load(TEST_WORKFLOW.read_text(encoding="utf-8"))["jobs"][
-            "deploy"
-        ]["steps"]
-        if "fromJSON(steps.cf_doppler.outputs.secrets).CLOUDFLARE_KEY_VALUE"
-        in str(s.get("env", {}).get("CLOUDFLARE_API_TOKEN", ""))
-    ]
-    assert pages == ["Require the Cloudflare token", "Publish the site to Pages"]
 
 
 def test_manifest_is_read_by_a_tokenless_isolated_step() -> None:
@@ -269,18 +223,17 @@ def test_manifest_is_read_by_a_tokenless_isolated_step() -> None:
         s
         for s in steps
         if str(s.get("uses", "")).startswith("actions/download-artifact")
-        and s["with"]["name"] == "${{ inputs.manifest_artifact }}"
+        and s["with"]["name"] == "site-manifest"
     ]
     assert len(downloads) == 1
     # its own directory, never the working directory
     assert downloads[0]["with"]["path"] == "manifest-in"
     reader = _step("Verify the build manifest")
     run = reader["run"]
-    assert 'manifest="manifest-in/${MANIFEST_FILE}"' in run
-    assert reader["env"]["MANIFEST_FILE"] == "${{ inputs.manifest_file }}"
+    assert "manifest-in/site-out.manifest.json" in run
     # Issue #206: the inline Python moved to a script so its ids can be
     # validated and tested; the step now only calls it, isolated (-I).
-    assert "python3 -I engine/.github/scripts/verify-manifest.py" in run
+    assert "python3 -I .github/scripts/verify-manifest.py" in run
     script = (ROOT / ".github" / "scripts" / "verify-manifest.py").read_text(
         encoding="utf-8"
     )
@@ -309,7 +262,7 @@ KV_ID = "0123456789abcdef0123456789abcdef"
 LIVE_ON = {"LIVE_TWITCH_HANDLE": "example_channel", "LIVE_KV_ID": KV_ID}
 CHECK_BASE = {
     "CLOUDFLARE_ACCOUNT_ID": "acct",
-    "WORKER_NAME": "reach-around-clicks-test",
+    "PAGES_PROJECT": "proj",
     "D1_DATABASE_ID": D1_ID,
     "RATELIMIT_NAMESPACE_ID": NS_ID,
     "SITE_HOST": HOST,
@@ -426,15 +379,18 @@ def test_live_negative_cases_do_bite() -> None:
 
 def test_live_variables_are_plain_variables_in_two_steps_only() -> None:
     text = WORKFLOW.read_text(encoding="utf-8")
-    assert "inputs.live_kv_id" in text
+    assert "vars.LIVE_KV_ID" in text
     assert "secrets.LIVE_KV_ID" not in text
     for name in ("Check configuration", "Write deploy config"):
         env = _step(name)["env"]
         for var in ("LIVE_KV_ID", "LIVE_TWITCH_HANDLE", "LIVE_KICK_HANDLE"):
-            assert env[var] == "${{ inputs." + var.lower() + " }}"
-    for name in ("Apply D1 migrations", "Deploy the Worker"):
+            assert env[var] == "${{ vars." + var + " }}"
+    for name in (
+        "Apply D1 migrations",
+        "Deploy the Worker",
+        "Publish the site to Pages",
+    ):
         assert "LIVE_KV_ID" not in str(_step(name))
-    assert "LIVE_KV_ID" not in str(_test_step("deploy", "Publish the site to Pages"))
     # still no write to the runner's shared files
     assert "GITHUB_ENV" not in str(_step("Write deploy config"))
     assert "GITHUB_PATH" not in str(_step("Write deploy config"))

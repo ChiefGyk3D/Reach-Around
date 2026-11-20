@@ -7,7 +7,7 @@ D1_DAILY_WRITE_QUOTA = "100000"
 LEAD_RETENTION_DAYS = "90"
 SITE_HOST = "staging.example.test"
 LINK_IDS = '["alpha","beta"]'
-DESTINATION_KINDS = '{"alpha":"link","beta":"link"}}'
+DESTINATION_KINDS = '{"alpha":"link","beta":"link"}'
 [[d1_databases]]
 binding = "DB"
 database_name = "reach-around-clicks"

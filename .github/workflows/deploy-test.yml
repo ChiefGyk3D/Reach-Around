@@ -16,17 +16,14 @@
 # sources (Mastodon, Bluesky, GitHub) still refresh and keyed sources are
 # skipped. Setup: docs/deploy.md, "Daily follower counts".
 #
-# Then three more jobs: `build` has no secrets and no environment, so pip install
-# scripts never see the Cloudflare token. `worker` calls the reusable
-# deploy-worker.yml (issue #596), the same file an instance repository calls for
-# its staging and production Worker: it checks the configuration, writes the
-# deploy config, applies the D1 migrations and deploys the Worker, with the
-# token from Doppler over OIDC. `deploy` then publishes the site to Pages with
-# its own token fetch after the last install step; the Doppler action returns
-# the token as one masked output that only the steps below map into their env
-# (docs/deploy.md). The optional cache-purge token is a separate secret on the
-# last step only. Every job that holds a token runs under harden-runner in block
-# mode; the allow-lists are unmeasured.
+# Then two more jobs: `build` has no secrets and no environment, so pip install scripts
+# never see the Cloudflare token. `deploy` fetches the token from Doppler after
+# the last install step; the Doppler action exports its whole config into the
+# job environment, so from that step on the token is inherited by every later
+# step and action post-run hook, not only the wrangler steps (narrowing that
+# waits on git-your-ship-together#207; see docs/deploy.md). The optional
+# cache-purge token is a separate secret on the last step only. Both jobs run
+# under harden-runner in block mode; the allow-lists are unmeasured.
 #
 # Caching: every static and media file is published under a content-hashed name
 # and pages are revalidated, so a deploy shows at once without any purge. The
@@ -408,67 +405,9 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
-  # The Worker and D1 half of the deploy is the reusable deploy-worker.yml, the
-  # same file an instance repository calls for its staging and production
-  # Worker (issue #596): no copy. It runs under the `test` environment, refuses
-  # any ref other than main, and gets the Cloudflare token from Doppler over
-  # OIDC. This caller job grants what the callee declares (permissions are
-  # checked when the workflow is parsed). The values are repository variables;
-  # none is a secret.
-  worker:
-    name: Deploy test Worker
-    needs: build
-    if: github.ref == 'refs/heads/main'
-    permissions:
-      contents: read
-      id-token: write # Doppler OIDC, in the called workflow's one deploy job
-    uses: ./.github/workflows/deploy-worker.yml
-    with:
-      environment: test
-      engine_repo: ${{ github.repository }}
-      engine_ref: ${{ github.sha }}
-      worker_name: reach-around-clicks
-      manifest_artifact: site-manifest
-      manifest_file: site-out.manifest.json
-      site_artifact: site-out
-      doppler_identity_id: ${{ vars.DOPPLER_IDENTITY_ID }}
-      doppler_project: reach-around
-      doppler_config: dev
-      cloudflare_account_id: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
-      d1_database_id: ${{ vars.D1_DATABASE_ID }}
-      ratelimit_namespace_id: ${{ vars.RATELIMIT_NAMESPACE_ID }}
-      site_host: ${{ vars.SITE_HOST }}
-      link_ids: ${{ vars.LINK_IDS }}
-      zone_name: ${{ vars.ZONE_NAME }}
-      lead_retention_days: ${{ vars.LEAD_RETENTION_DAYS }}
-      live_twitch_handle: ${{ vars.LIVE_TWITCH_HANDLE }}
-      live_kick_handle: ${{ vars.LIVE_KICK_HANDLE }}
-      live_kv_id: ${{ vars.LIVE_KV_ID }}
-      page_views: ${{ vars.PAGE_VIEWS }}
-      page_ids: ${{ vars.PAGE_IDS }}
-      view_limiter_namespace_id: ${{ vars.VIEW_LIMITER_NAMESPACE_ID }}
-      views_per_hour: ${{ vars.VIEWS_PER_HOUR }}
-      bot_views_per_hour: ${{ vars.BOT_VIEWS_PER_HOUR }}
-      account_views_per_hour: ${{ vars.ACCOUNT_VIEWS_PER_HOUR }}
-      account_bot_views_per_hour: ${{ vars.ACCOUNT_BOT_VIEWS_PER_HOUR }}
-      route_budget_gate: ${{ vars.ROUTE_BUDGET_GATE }}
-      route_budget_view: ${{ vars.ROUTE_BUDGET_VIEW }}
-      max_leads: ${{ vars.MAX_LEADS }}
-      max_kit_events: ${{ vars.MAX_KIT_EVENTS }}
-      daily_alert_budget: ${{ vars.DAILY_ALERT_BUDGET }}
-      daily_send_budget: ${{ vars.DAILY_SEND_BUDGET }}
-      d1_daily_write_quota: ${{ vars.D1_DAILY_WRITE_QUOTA }}
-      click_daily_write_ceiling: ${{ vars.CLICK_DAILY_WRITE_CEILING }}
-      beacon_mode: ${{ vars.BEACON_MODE }}
-      mint_limiter_namespace_id: ${{ vars.MINT_LIMITER_NAMESPACE_ID }}
-
-
-  # Publishes the static site to Pages, then the optional cache purge. The
-  # Worker is already deployed (needs: worker), so the Worker and D1 never lag
-  # the site. The Worker code is not used here, only wrangler.
   deploy:
-    name: Publish test site
-    needs: [build, worker]
+    name: Deploy test site and Worker
+    needs: build
     # Refuse any ref other than main. The `test` environment can also restrict
     # deployment branches and require a reviewer (docs/deploy.md).
     if: github.ref == 'refs/heads/main'
@@ -477,7 +416,7 @@ jobs:
     environment: test
     permissions:
       contents: read
-      id-token: write # Doppler OIDC; only this job and the Worker call, never the build job
+      id-token: write # Doppler OIDC; only this job, never the build job
     # No job-level env: the Cloudflare token is fetched from Doppler only after
     # the last install step, so no install script ever runs with it present.
     steps:
@@ -533,30 +472,208 @@ jobs:
           name: site-out
           path: site-out
 
+      # The manifest is a separate artifact so it never sits in the Pages
+      # upload directory. It goes into its own empty directory, never the
+      # working directory, so nothing in it can shadow a Python module.
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: site-manifest
+          path: manifest-in
+
       # URL paths to purge after the publish, computed in the build job.
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: site-purge-list
           path: purge-in
 
-      # Checks the plain (non-secret) Pages configuration before anything is
-      # fetched. The Worker's own configuration is checked in the called
-      # workflow. The Cloudflare token is checked after the Doppler step.
+      # Checks the plain (non-secret) configuration before anything is
+      # fetched. The Cloudflare token is checked after the Doppler step.
       - name: Check configuration
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           PAGES_PROJECT: ${{ vars.PAGES_PROJECT }}
+          D1_DATABASE_ID: ${{ vars.D1_DATABASE_ID }}
+          RATELIMIT_NAMESPACE_ID: ${{ vars.RATELIMIT_NAMESPACE_ID }}
+          SITE_HOST: ${{ vars.SITE_HOST }}
+          LINK_IDS: ${{ vars.LINK_IDS }}
+          # Optional: set it to route /e/* on the site host to the Worker.
+          ZONE_NAME: ${{ vars.ZONE_NAME }}
+          # Optional: the Live tab poller. It is ENABLED when LIVE_TWITCH_HANDLE
+          # or LIVE_KICK_HANDLE is set; then LIVE_KV_ID is required (docs/live.md).
+          LIVE_TWITCH_HANDLE: ${{ vars.LIVE_TWITCH_HANDLE }}
+          LIVE_KICK_HANDLE: ${{ vars.LIVE_KICK_HANDLE }}
+          LIVE_KV_ID: ${{ vars.LIVE_KV_ID }}
+          # Optional: page views (docs/deploy.md, "Page views on the test site").
+          # ENABLED only by PAGE_VIEWS=true; then the four below are required or
+          # validated. VIEW_HASH_SECRET is a Worker secret and is not read here.
+          PAGE_VIEWS: ${{ vars.PAGE_VIEWS }}
+          PAGE_IDS: ${{ vars.PAGE_IDS }}
+          VIEW_LIMITER_NAMESPACE_ID: ${{ vars.VIEW_LIMITER_NAMESPACE_ID }}
+          VIEWS_PER_HOUR: ${{ vars.VIEWS_PER_HOUR }}
+          BOT_VIEWS_PER_HOUR: ${{ vars.BOT_VIEWS_PER_HOUR }}
+          ACCOUNT_VIEWS_PER_HOUR: ${{ vars.ACCOUNT_VIEWS_PER_HOUR }}
+          ACCOUNT_BOT_VIEWS_PER_HOUR: ${{ vars.ACCOUNT_BOT_VIEWS_PER_HOUR }}
+          ROUTE_BUDGET_GATE: ${{ vars.ROUTE_BUDGET_GATE }}
+          ROUTE_BUDGET_VIEW: ${{ vars.ROUTE_BUDGET_VIEW }}
+          MAX_LEADS: ${{ vars.MAX_LEADS }}
+          MAX_KIT_EVENTS: ${{ vars.MAX_KIT_EVENTS }}
+          DAILY_ALERT_BUDGET: ${{ vars.DAILY_ALERT_BUDGET }}
+          DAILY_SEND_BUDGET: ${{ vars.DAILY_SEND_BUDGET }}
+          D1_DAILY_WRITE_QUOTA: ${{ vars.D1_DAILY_WRITE_QUOTA }}
+          CLICK_DAILY_WRITE_CEILING: ${{ vars.CLICK_DAILY_WRITE_CEILING }}
+          BEACON_MODE: ${{ vars.BEACON_MODE }}
+          MINT_LIMITER_NAMESPACE_ID: ${{ vars.MINT_LIMITER_NAMESPACE_ID }}
         run: |
           set -eu
-          for name in CLOUDFLARE_ACCOUNT_ID PAGES_PROJECT; do
+          # Beacon token (issue #610): exactly off or observe, or unset. enforce is not available yet.
+          case "${BEACON_MODE:-}" in
+            ""|off) ;;
+            observe)
+              [[ "${MINT_LIMITER_NAMESPACE_ID:-}" =~ ^[0-9]{1,12}$ ]] \
+                || { echo "::error::BEACON_MODE is observe but the repository variable MINT_LIMITER_NAMESPACE_ID is not a number (docs/deploy.md)"; exit 1; }
+              ;;
+            *)
+              echo "::error::BEACON_MODE must be exactly off or observe (or unset); enforce is not available yet"
+              exit 1
+              ;;
+          esac
+          for name in CLOUDFLARE_ACCOUNT_ID PAGES_PROJECT D1_DATABASE_ID \
+                      RATELIMIT_NAMESPACE_ID SITE_HOST; do
             eval "value=\${$name:-}"
             if [ -z "$value" ]; then
               echo "::error::$name is not set (see docs/deploy.md)"
               exit 1
             fi
           done
+          # Values land in a config file below, so allow only plain characters.
+          printf '%s' "$D1_DATABASE_ID" | grep -Eq '^[0-9a-f-]{36}$' \
+            || { echo "::error::D1_DATABASE_ID is not a UUID"; exit 1; }
+          printf '%s' "$RATELIMIT_NAMESPACE_ID" | grep -Eq '^[0-9]{1,12}$' \
+            || { echo "::error::RATELIMIT_NAMESPACE_ID is not a number"; exit 1; }
+          printf '%s' "$SITE_HOST" | grep -Eq '^[a-z0-9.-]{3,253}$' \
+            || { echo "::error::SITE_HOST is not a plain hostname"; exit 1; }
+          if [ -n "${ZONE_NAME:-}" ]; then
+            printf '%s' "$ZONE_NAME" | grep -Eq '^[a-z0-9.-]{3,253}$' \
+              || { echo "::error::ZONE_NAME is not a plain hostname"; exit 1; }
+          fi
           printf '%s' "$PAGES_PROJECT" | grep -Eq '^[a-z0-9-]{1,58}$' \
             || { echo "::error::PAGES_PROJECT is not a valid project name"; exit 1; }
+          # LINK_IDS is optional: the deployed list comes from the build itself.
+          # If set it is only compared (warnings), but must be valid.
+          if [ -n "${LINK_IDS:-}" ]; then
+            printf '%s' "$LINK_IDS" | grep -Eq '^\[("[a-z0-9-]{1,40}"(, ?)?)+\]$' \
+              || { echo "::error::LINK_IDS must be a JSON array of link ids"; exit 1; }
+          fi
+          # Live Worker: enabled by a handle. Fail closed: no KV id, no deploy.
+          if [ -n "${LIVE_TWITCH_HANDLE:-}" ] || [ -n "${LIVE_KICK_HANDLE:-}" ]; then
+            if [ -z "${LIVE_KV_ID:-}" ]; then
+              echo "::error::The Live Worker is enabled (LIVE_TWITCH_HANDLE or LIVE_KICK_HANDLE is set) but the repository variable LIVE_KV_ID is not set (docs/live.md)"
+              exit 1
+            fi
+            # [[ =~ ]] tests the WHOLE value; grep tests line by line and would
+            # let a value with a valid first line and a second line through.
+            [[ "$LIVE_KV_ID" =~ ^[0-9a-f]{32}$ ]] \
+              || { echo "::error::LIVE_KV_ID must be 32 lowercase hex characters"; exit 1; }
+            if [[ "$LIVE_KV_ID" =~ ^0{32}$ ]]; then
+              echo "::error::LIVE_KV_ID is the all-zero placeholder"
+              exit 1
+            fi
+            if [ -n "${LIVE_TWITCH_HANDLE:-}" ]; then
+              [[ "$LIVE_TWITCH_HANDLE" =~ ^[A-Za-z0-9_]{1,25}$ ]] \
+                || { echo "::error::LIVE_TWITCH_HANDLE is not a valid Twitch login"; exit 1; }
+            fi
+            if [ -n "${LIVE_KICK_HANDLE:-}" ]; then
+              [[ "$LIVE_KICK_HANDLE" =~ ^[A-Za-z0-9_-]{1,40}$ ]] \
+                || { echo "::error::LIVE_KICK_HANDLE is not a valid Kick slug"; exit 1; }
+            fi
+          fi
+          # Page views. Fail closed: only the exact text "true" turns them on
+          # (unset, empty and "false" are off), any other text is an error, and
+          # on, every id the Worker needs must be valid (never a placeholder).
+          # [[ =~ ]] tests the WHOLE value, as for LIVE_KV_ID.
+          case "${PAGE_VIEWS:-}" in
+            ""|false) ;;
+            true)
+              [ -n "${PAGE_IDS:-}" ] \
+                || { echo "::error::Page views are enabled (PAGE_VIEWS=true) but the repository variable PAGE_IDS is not set (docs/deploy.md)"; exit 1; }
+              [[ "$PAGE_IDS" =~ ^\[(\"[a-z0-9][a-z0-9-]{0,39}\"(,\ ?)?)+\]$ ]] \
+                || { echo "::error::PAGE_IDS must be a JSON array of tab ids"; exit 1; }
+              [ -n "${VIEW_LIMITER_NAMESPACE_ID:-}" ] \
+                || { echo "::error::Page views are enabled but the repository variable VIEW_LIMITER_NAMESPACE_ID is not set (docs/deploy.md)"; exit 1; }
+              [[ "$VIEW_LIMITER_NAMESPACE_ID" =~ ^[0-9]{1,12}$ ]] \
+                || { echo "::error::VIEW_LIMITER_NAMESPACE_ID is not a number"; exit 1; }
+              if [ "$VIEW_LIMITER_NAMESPACE_ID" = "1002" ]; then
+                echo "::error::VIEW_LIMITER_NAMESPACE_ID is the placeholder from wrangler.toml"
+                exit 1
+              fi
+              if [ "$VIEW_LIMITER_NAMESPACE_ID" = "$RATELIMIT_NAMESPACE_ID" ]; then
+                echo "::error::VIEW_LIMITER_NAMESPACE_ID must differ from RATELIMIT_NAMESPACE_ID (one namespace would share the click and view allowances)"
+                exit 1
+              fi
+              [ -n "${ZONE_NAME:-}" ] \
+                || { echo "::error::Page views are enabled but ZONE_NAME is not set: without the /e/* route the beacon never reaches the Worker"; exit 1; }
+              for name in VIEWS_PER_HOUR BOT_VIEWS_PER_HOUR ACCOUNT_VIEWS_PER_HOUR ACCOUNT_BOT_VIEWS_PER_HOUR; do
+                eval "value=\${$name:-}"
+                if [ -n "$value" ]; then
+                  if ! [[ "$value" =~ ^[0-9]{1,6}$ ]] || [ "$value" -gt 100000 ]; then
+                    echo "::error::$name must be a whole number from 0 to 100000"
+                    exit 1
+                  fi
+                fi
+              done
+              # The kit limits and the D1 quota the Worker's loader also reads
+              # (worker/src/kit/budgets.ts): the same values go to the budget
+              # check and into the deploy config, so the gate and the Worker see
+              # one environment. Shape only here; the exact ranges are the
+              # Worker's own, applied by the budget check.
+              for name in ROUTE_BUDGET_GATE ROUTE_BUDGET_VIEW MAX_LEADS MAX_KIT_EVENTS DAILY_ALERT_BUDGET DAILY_SEND_BUDGET; do
+                eval "value=\${$name:-}"
+                if [ -n "$value" ] && ! [[ "$value" =~ ^[0-9]{1,9}$ ]]; then
+                  echo "::error::$name must be digits only"
+                  exit 1
+                fi
+              done
+              ;;
+            *)
+              echo "::error::PAGE_VIEWS must be exactly true or false (or unset)"
+              exit 1
+              ;;
+          esac
+          # The D1 write quota and the daily click ceiling apply to every
+          # deployment, page views on or off: the click route enforces the
+          # ceiling whatever PAGE_VIEWS says. Shape only here; the exact ranges
+          # are the Worker's own, applied by the budget check step.
+          for name in D1_DAILY_WRITE_QUOTA CLICK_DAILY_WRITE_CEILING; do
+            eval "value=\${$name:-}"
+            if [ -n "$value" ] && ! [[ "$value" =~ ^[0-9]{1,9}$ ]]; then
+              echo "::error::$name must be digits only"
+              exit 1
+            fi
+          done
+
+      # Reads the downloaded manifest. No secret is in this step's env, and
+      # python runs isolated (-I: no working-directory imports), so a hostile
+      # artifact file cannot execute with the token present. The script also
+      # derives the Worker's LINK_IDS from the manifest (output link_ids): every
+      # id passed the closed grammar and the Worker's cap, or the step fails.
+      # A difference from the optional LINK_IDS variable is a warning only.
+      - name: Verify the build manifest
+        id: manifest
+        env:
+          LINK_IDS: ${{ vars.LINK_IDS }}
+          LEAD_RETENTION_DAYS: ${{ vars.LEAD_RETENTION_DAYS }}
+        run: |
+          set -eu
+          manifest="manifest-in/site-out.manifest.json"
+          [ "$(find manifest-in -mindepth 1 | wc -l)" = 1 ] \
+            || { echo "::error::manifest-in must hold exactly one file"; exit 1; }
+          if [ -f "$manifest" ] && [ ! -L "$manifest" ]; then
+            :
+          else
+            echo "::error::$manifest is not a regular file"
+            exit 1
+          fi
+          python3 -I .github/scripts/verify-manifest.py "$manifest"
 
       # --ignore-scripts: wrangler runs without its dependencies' install
       # scripts (verified with `wrangler --version` on Node 24), so none run.
@@ -564,6 +681,288 @@ jobs:
       - name: Install Worker dependencies
         working-directory: worker
         run: npm ci --ignore-scripts
+
+      # Page views only (docs/deploy.md, "Page views on the test site"): the
+      # build must carry the tab ids the Worker was told about. A tab missing
+      # from PAGE_IDS has its views ignored, so say so. Tokenless and isolated
+      # like the manifest step; a hostile artifact file cannot run code.
+      - name: Verify the page ids
+        if: ${{ vars.PAGE_VIEWS == 'true' }}
+        env:
+          PAGE_IDS: ${{ vars.PAGE_IDS }}
+        run: python3 -I .github/scripts/verify-page-ids.py site-out
+
+      # Page views only: the projected daily D1 writes at the configured hourly
+      # budgets, checked with the Worker's own function (worker/src/kit/budgets.ts)
+      # against the same quota and the same 80 percent line. Over the quota, or
+      # an unusable value, stops the deploy. No secret is in this step's env.
+      - name: Check the page-view write budget
+        if: ${{ vars.PAGE_VIEWS == 'true' }}
+        working-directory: worker
+        env:
+          # The site list the Worker will load (the one-site shorthand written
+          # by "Write deploy config"), so the sites sharing the account ceilings
+          # are counted by the Worker's own loader.
+          SITE_HOST: ${{ vars.SITE_HOST }}
+          PAGE_IDS: ${{ vars.PAGE_IDS }}
+          # The link ids the deploy derives from the build manifest (the same
+          # output "Write deploy config" uses), not the optional variable.
+          LINK_IDS: ${{ steps.manifest.outputs.link_ids }}
+          DESTINATION_KINDS: ${{ steps.manifest.outputs.destination_kinds }}
+          VIEWS_PER_HOUR: ${{ vars.VIEWS_PER_HOUR }}
+          BOT_VIEWS_PER_HOUR: ${{ vars.BOT_VIEWS_PER_HOUR }}
+          ACCOUNT_VIEWS_PER_HOUR: ${{ vars.ACCOUNT_VIEWS_PER_HOUR }}
+          ACCOUNT_BOT_VIEWS_PER_HOUR: ${{ vars.ACCOUNT_BOT_VIEWS_PER_HOUR }}
+          ROUTE_BUDGET_GATE: ${{ vars.ROUTE_BUDGET_GATE }}
+          ROUTE_BUDGET_VIEW: ${{ vars.ROUTE_BUDGET_VIEW }}
+          MAX_LEADS: ${{ vars.MAX_LEADS }}
+          MAX_KIT_EVENTS: ${{ vars.MAX_KIT_EVENTS }}
+          DAILY_ALERT_BUDGET: ${{ vars.DAILY_ALERT_BUDGET }}
+          DAILY_SEND_BUDGET: ${{ vars.DAILY_SEND_BUDGET }}
+          D1_DAILY_WRITE_QUOTA: ${{ vars.D1_DAILY_WRITE_QUOTA }}
+          CLICK_DAILY_WRITE_CEILING: ${{ vars.CLICK_DAILY_WRITE_CEILING }}
+          BEACON_MODE: ${{ vars.BEACON_MODE }}
+        run: |
+          set -eu
+          npx --no-install esbuild scripts/check-budget.ts --bundle --platform=node \
+            --format=esm --log-level=warning --outfile="$RUNNER_TEMP/check-budget.mjs"
+          node "$RUNNER_TEMP/check-budget.mjs"
+
+      # Page views off: the click ceiling and the D1 write quota still apply,
+      # so the same Worker function checks the click part of the daily write
+      # budget (the sites are counted from the same site list; the tab id below
+      # is a placeholder only used to count the one site, no page-view setting
+      # is read). Over the quota, or an unusable value, stops the deploy. No
+      # secret is in this step's env.
+      - name: Check the click write budget
+        if: ${{ vars.PAGE_VIEWS != 'true' }}
+        working-directory: worker
+        env:
+          SITE_HOST: ${{ vars.SITE_HOST }}
+          PAGE_IDS: '["home"]'
+          LINK_IDS: ${{ steps.manifest.outputs.link_ids }}
+          DESTINATION_KINDS: ${{ steps.manifest.outputs.destination_kinds }}
+          D1_DAILY_WRITE_QUOTA: ${{ vars.D1_DAILY_WRITE_QUOTA }}
+          CLICK_DAILY_WRITE_CEILING: ${{ vars.CLICK_DAILY_WRITE_CEILING }}
+        run: |
+          set -eu
+          npx --no-install esbuild scripts/check-budget.ts --bundle --platform=node \
+            --format=esm --log-level=warning --outfile="$RUNNER_TEMP/check-budget.mjs"
+          node "$RUNNER_TEMP/check-budget.mjs"
+
+      # worker/wrangler.toml holds fake placeholder ids. Write a deploy copy
+      # with the real values (none is a secret); it is never committed.
+      - name: Write deploy config
+        working-directory: worker
+        env:
+          D1_DATABASE_ID: ${{ vars.D1_DATABASE_ID }}
+          RATELIMIT_NAMESPACE_ID: ${{ vars.RATELIMIT_NAMESPACE_ID }}
+          SITE_HOST: ${{ vars.SITE_HOST }}
+          LINK_IDS: ${{ steps.manifest.outputs.link_ids }}
+          DESTINATION_KINDS: ${{ steps.manifest.outputs.destination_kinds }}
+          LEAD_RETENTION_DAYS: ${{ steps.manifest.outputs.lead_retention_days }}
+          ALERTS_CONFIG: ${{ steps.manifest.outputs.alerts_config }}
+          ZONE_NAME: ${{ vars.ZONE_NAME }}
+          LIVE_TWITCH_HANDLE: ${{ vars.LIVE_TWITCH_HANDLE }}
+          LIVE_KICK_HANDLE: ${{ vars.LIVE_KICK_HANDLE }}
+          LIVE_KV_ID: ${{ vars.LIVE_KV_ID }}
+          PAGE_VIEWS: ${{ vars.PAGE_VIEWS }}
+          PAGE_IDS: ${{ vars.PAGE_IDS }}
+          VIEW_LIMITER_NAMESPACE_ID: ${{ vars.VIEW_LIMITER_NAMESPACE_ID }}
+          VIEWS_PER_HOUR: ${{ vars.VIEWS_PER_HOUR }}
+          BOT_VIEWS_PER_HOUR: ${{ vars.BOT_VIEWS_PER_HOUR }}
+          ACCOUNT_VIEWS_PER_HOUR: ${{ vars.ACCOUNT_VIEWS_PER_HOUR }}
+          ACCOUNT_BOT_VIEWS_PER_HOUR: ${{ vars.ACCOUNT_BOT_VIEWS_PER_HOUR }}
+          ROUTE_BUDGET_GATE: ${{ vars.ROUTE_BUDGET_GATE }}
+          ROUTE_BUDGET_VIEW: ${{ vars.ROUTE_BUDGET_VIEW }}
+          MAX_LEADS: ${{ vars.MAX_LEADS }}
+          MAX_KIT_EVENTS: ${{ vars.MAX_KIT_EVENTS }}
+          DAILY_ALERT_BUDGET: ${{ vars.DAILY_ALERT_BUDGET }}
+          DAILY_SEND_BUDGET: ${{ vars.DAILY_SEND_BUDGET }}
+          D1_DAILY_WRITE_QUOTA: ${{ vars.D1_DAILY_WRITE_QUOTA }}
+          CLICK_DAILY_WRITE_CEILING: ${{ vars.CLICK_DAILY_WRITE_CEILING }}
+          BEACON_MODE: ${{ vars.BEACON_MODE }}
+          MINT_LIMITER_NAMESPACE_ID: ${{ vars.MINT_LIMITER_NAMESPACE_ID }}
+        run: |
+          set -eu
+          # Second lock on the derived list (the script already validated it).
+          # [[ =~ ]] tests the whole value (grep is line by line).
+          [[ "${LINK_IDS:-}" =~ ^\[\"[a-z0-9-]{1,40}\"(,\"[a-z0-9-]{1,40}\"){0,199}\]$ ]] \
+            || { echo "::error::the derived link id list is missing or invalid"; exit 1; }
+          # The default is set outside the expansion: a `}` inside ${V:-...}
+          # closes it early and leaves a stray brace after a supplied value (#666).
+          destination_kinds="${DESTINATION_KINDS:-}"
+          if [ -z "$destination_kinds" ]; then
+            destination_kinds='{"example-one":"link","example-two":"link"}'
+          fi
+          sed \
+            -e "s|^database_id = \"[^\"]*\"|database_id = \"${D1_DATABASE_ID}\"|" \
+            -e "s|^namespace_id = \"[^\"]*\"|namespace_id = \"${RATELIMIT_NAMESPACE_ID}\"|" \
+            -e "s|^SITE_HOST = \"[^\"]*\"|SITE_HOST = \"${SITE_HOST}\"|" \
+            -e "s|^LINK_IDS = '[^']*'|LINK_IDS = '${LINK_IDS}'|" \
+            -e "s|^DESTINATION_KINDS = '[^']*'|DESTINATION_KINDS = '${destination_kinds}'|" \
+            wrangler.toml > wrangler.deploy.toml
+          grep -qF "${D1_DATABASE_ID}" wrangler.deploy.toml
+          grep -qF "${SITE_HOST}" wrangler.deploy.toml
+          # Lead retention: the site config's privacy.lead_retention_days, as
+          # recorded in the build manifest and checked by verify-manifest.py
+          # (second lock here). The privacy page prints the same number, so
+          # the page and the purge cannot disagree. Always written.
+          if ! [[ "${LEAD_RETENTION_DAYS:-}" =~ ^[1-9][0-9]{0,2}$ ]] || [ "${LEAD_RETENTION_DAYS}" -gt 365 ]; then
+            echo "::error::the lead retention from the build manifest is missing or invalid"
+            exit 1
+          fi
+          sed -i "/^\[vars\]$/a LEAD_RETENTION_DAYS = \"${LEAD_RETENTION_DAYS}\"" wrangler.deploy.toml
+          grep -qxF "LEAD_RETENTION_DAYS = \"${LEAD_RETENTION_DAYS}\"" wrangler.deploy.toml
+          # Owner alerts: the site config's alerts section, as recorded in the
+          # build manifest and checked by verify-manifest.py (second lock here).
+          # Unset means alerts stay off and nothing is written. No secret is
+          # in it; webhook URL, token and dedup key are Worker secrets.
+          if [ -n "${ALERTS_CONFIG:-}" ]; then
+            alerts_re='^[{][]A-Za-z0-9_",:.[{}-]{1,990}[}]$'
+            [[ "${ALERTS_CONFIG}" =~ $alerts_re ]] \
+              || { echo "::error::the alerts config from the build manifest is invalid"; exit 1; }
+            sed -i "/^\[vars\]$/a ALERTS_CONFIG = '${ALERTS_CONFIG}'" wrangler.deploy.toml
+            grep -qxF "ALERTS_CONFIG = '${ALERTS_CONFIG}'" wrangler.deploy.toml
+          fi
+          # Optional route so click pings to /e/c/<id> on the site host reach
+          # the Worker. Values were validated in "Check configuration".
+          if [ -n "${ZONE_NAME:-}" ]; then
+            printf '\n[[routes]]\npattern = "%s/e/*"\nzone_name = "%s"\n' \
+              "${SITE_HOST}" "${ZONE_NAME}" >> wrangler.deploy.toml
+            grep -qF "pattern = \"${SITE_HOST}/e/*\"" wrangler.deploy.toml
+          fi
+          # Live Worker (docs/live.md). Enabled by a handle; then the KV id is
+          # required and is checked again here (the values were validated in
+          # "Check configuration"; this is the second lock). Adds the LIVE_KV
+          # binding, the handles and the 2-minute cron. When not enabled the
+          # file is unchanged. A placeholder id can never ship.
+          if [ -n "${LIVE_TWITCH_HANDLE:-}" ] || [ -n "${LIVE_KICK_HANDLE:-}" ]; then
+            [[ "${LIVE_KV_ID:-}" =~ ^[0-9a-f]{32}$ ]] \
+              || { echo "::error::LIVE_KV_ID must be 32 lowercase hex characters when the Live Worker is enabled"; exit 1; }
+            if [[ "${LIVE_KV_ID}" =~ ^0{32}$ ]]; then
+              echo "::error::LIVE_KV_ID is the all-zero placeholder"
+              exit 1
+            fi
+            if [ -n "${LIVE_TWITCH_HANDLE:-}" ]; then
+              [[ "$LIVE_TWITCH_HANDLE" =~ ^[A-Za-z0-9_]{1,25}$ ]] \
+                || { echo "::error::LIVE_TWITCH_HANDLE is not a valid Twitch login"; exit 1; }
+              sed -i "/^\[vars\]$/a LIVE_TWITCH_HANDLE = \"${LIVE_TWITCH_HANDLE}\"" wrangler.deploy.toml
+            fi
+            if [ -n "${LIVE_KICK_HANDLE:-}" ]; then
+              [[ "$LIVE_KICK_HANDLE" =~ ^[A-Za-z0-9_-]{1,40}$ ]] \
+                || { echo "::error::LIVE_KICK_HANDLE is not a valid Kick slug"; exit 1; }
+              sed -i "/^\[vars\]$/a LIVE_KICK_HANDLE = \"${LIVE_KICK_HANDLE}\"" wrangler.deploy.toml
+            fi
+            sed -i 's|^crons = \["5 \* \* \* \*"\]$|crons = ["5 * * * *", "*/2 * * * *"]|' wrangler.deploy.toml
+            printf '\n[[kv_namespaces]]\nbinding = "LIVE_KV"\nid = "%s"\n' "${LIVE_KV_ID}" >> wrangler.deploy.toml
+            grep -qxF 'crons = ["5 * * * *", "*/2 * * * *"]' wrangler.deploy.toml
+            grep -qxF "id = \"${LIVE_KV_ID}\"" wrangler.deploy.toml
+            # No all-zero placeholder id may remain on an active line.
+            if grep -v '^[[:space:]]*#' wrangler.deploy.toml | grep -Eq '"0{32}"'; then
+              echo "::error::a placeholder KV id is still in the deploy config"
+              exit 1
+            fi
+          fi
+          # The D1 write quota and the daily click ceiling: written whatever
+          # PAGE_VIEWS says (the click route enforces the ceiling on every
+          # deployment, and the budget check read the same two values). Unset
+          # writes nothing, so the Worker uses its defaults. Second lock: an
+          # invalid value stops the deploy, by name.
+          for name in D1_DAILY_WRITE_QUOTA CLICK_DAILY_WRITE_CEILING; do
+            eval "value=\${$name:-}"
+            if [ -n "$value" ]; then
+              if ! [[ "$value" =~ ^[0-9]{1,9}$ ]]; then
+                echo "::error::$name must be digits only"
+                exit 1
+              fi
+              sed -i "/^\[vars\]$/a $name = \"$value\"" wrangler.deploy.toml
+              grep -qxF "$name = \"$value\"" wrangler.deploy.toml
+            fi
+          done
+          # Page views. Enabled only by PAGE_VIEWS=true (second lock: the values
+          # were validated in "Check configuration"). Adds the tab ids, the
+          # optional hourly budgets and the per-client VIEW_LIMITER binding (5
+          # views per client per 60 s, as in worker/wrangler.toml). The hourly
+          # cron already in wrangler.toml runs the rollup and purge; no new cron.
+          # VIEW_HASH_SECRET is a Worker secret set once by the owner; it is never
+          # in this file. Off, the file is unchanged.
+          if [ "${PAGE_VIEWS:-}" = "true" ]; then
+            [[ "${PAGE_IDS:-}" =~ ^\[(\"[a-z0-9][a-z0-9-]{0,39}\"(,\ ?)?)+\]$ ]] \
+              || { echo "::error::PAGE_IDS must be a JSON array of tab ids when page views are enabled"; exit 1; }
+            [[ "${VIEW_LIMITER_NAMESPACE_ID:-}" =~ ^[0-9]{1,12}$ ]] \
+              || { echo "::error::VIEW_LIMITER_NAMESPACE_ID must be a number when page views are enabled"; exit 1; }
+            if [ "${VIEW_LIMITER_NAMESPACE_ID}" = "1002" ]; then
+              echo "::error::VIEW_LIMITER_NAMESPACE_ID is the placeholder from wrangler.toml"
+              exit 1
+            fi
+            if [ "${VIEW_LIMITER_NAMESPACE_ID}" = "${RATELIMIT_NAMESPACE_ID}" ]; then
+              echo "::error::VIEW_LIMITER_NAMESPACE_ID must differ from RATELIMIT_NAMESPACE_ID"
+              exit 1
+            fi
+            sed -i "/^\[vars\]$/a PAGE_IDS = '${PAGE_IDS}'" wrangler.deploy.toml
+            for name in VIEWS_PER_HOUR BOT_VIEWS_PER_HOUR ACCOUNT_VIEWS_PER_HOUR ACCOUNT_BOT_VIEWS_PER_HOUR; do
+              eval "value=\${$name:-}"
+              if [ -n "$value" ]; then
+                if ! [[ "$value" =~ ^[0-9]{1,6}$ ]] || [ "$value" -gt 100000 ]; then
+                  echo "::error::$name must be a whole number from 0 to 100000"
+                  exit 1
+                fi
+                sed -i "/^\[vars\]$/a $name = \"$value\"" wrangler.deploy.toml
+              fi
+            done
+            for name in ROUTE_BUDGET_GATE ROUTE_BUDGET_VIEW MAX_LEADS MAX_KIT_EVENTS DAILY_ALERT_BUDGET DAILY_SEND_BUDGET; do
+              eval "value=\${$name:-}"
+              if [ -n "$value" ]; then
+                if ! [[ "$value" =~ ^[0-9]{1,9}$ ]]; then
+                  echo "::error::$name must be digits only"
+                  exit 1
+                fi
+                sed -i "/^\[vars\]$/a $name = \"$value\"" wrangler.deploy.toml
+              fi
+            done
+            printf '\n[[ratelimits]]\nname = "VIEW_LIMITER"\nnamespace_id = "%s"\n  [ratelimits.simple]\n  limit = 5\n  period = 60\n' \
+              "${VIEW_LIMITER_NAMESPACE_ID}" >> wrangler.deploy.toml
+            grep -qxF "PAGE_IDS = '${PAGE_IDS}'" wrangler.deploy.toml
+            grep -qxF "namespace_id = \"${VIEW_LIMITER_NAMESPACE_ID}\"" wrangler.deploy.toml
+          fi
+
+          # Beacon token (issue #610). Written only for BEACON_MODE=observe: unset, empty or off writes
+          # nothing, and enforce is not available yet, so it fails the deploy like any other bad value.
+          # Adds the mode and the per-client MINT_LIMITER binding (6 tokens per client per 60 s).
+          # BEACON_HMAC_KEY is a Worker secret the owner sets once with `wrangler secret put`; it is never
+          # read here and never written to this file.
+          case "${BEACON_MODE:-}" in
+            ""|off) ;;
+            observe)
+              [[ "${MINT_LIMITER_NAMESPACE_ID:-}" =~ ^[0-9]{1,12}$ ]] \
+                || { echo "::error::BEACON_MODE is observe but MINT_LIMITER_NAMESPACE_ID is not a number"; exit 1; }
+              if [ "${MINT_LIMITER_NAMESPACE_ID}" = "1004" ]; then
+                echo "::error::MINT_LIMITER_NAMESPACE_ID is the placeholder from wrangler.toml"
+                exit 1
+              fi
+              if [ "${MINT_LIMITER_NAMESPACE_ID}" = "${RATELIMIT_NAMESPACE_ID}" ] || [ "${MINT_LIMITER_NAMESPACE_ID}" = "${VIEW_LIMITER_NAMESPACE_ID:-}" ]; then
+                echo "::error::MINT_LIMITER_NAMESPACE_ID must differ from the click and view limiter namespaces"
+                exit 1
+              fi
+              sed -i "/^\[vars\]$/a BEACON_MODE = \"observe\"" wrangler.deploy.toml
+              printf '\n[[ratelimits]]\nname = "MINT_LIMITER"\nnamespace_id = "%s"\n  [ratelimits.simple]\n  limit = 6\n  period = 60\n' \
+                "${MINT_LIMITER_NAMESPACE_ID}" >> wrangler.deploy.toml
+              grep -qxF "BEACON_MODE = \"observe\"" wrangler.deploy.toml
+              grep -qxF "namespace_id = \"${MINT_LIMITER_NAMESPACE_ID}\"" wrangler.deploy.toml
+              ;;
+            *)
+              echo "::error::BEACON_MODE must be exactly off or observe (or unset); enforce is not available yet"
+              exit 1
+              ;;
+          esac
+
+      # Smoke test with no secret in the environment.
+      - name: Confirm wrangler runs
+        working-directory: worker
+        env:
+          WRANGLER_SEND_METRICS: "false"
+        run: npx --no-install wrangler --version
 
       # The deploy uses the rotating key value (CLOUDFLARE_KEY_VALUE, from the
       # `dev` config) as the Cloudflare API token; no CLOUDFLARE_API_TOKEN
@@ -597,6 +996,22 @@ jobs:
             exit 1
           fi
 
+      # The wrangler steps carry the Cloudflare token.
+      - name: Apply D1 migrations
+        working-directory: worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ fromJSON(steps.cf_doppler.outputs.secrets).CLOUDFLARE_KEY_VALUE || secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          WRANGLER_SEND_METRICS: "false"
+        run: npx --no-install wrangler d1 migrations apply DB --remote --config wrangler.deploy.toml
+
+      - name: Deploy the Worker
+        working-directory: worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ fromJSON(steps.cf_doppler.outputs.secrets).CLOUDFLARE_KEY_VALUE || secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          WRANGLER_SEND_METRICS: "false"
+        run: npx --no-install wrangler deploy --config wrangler.deploy.toml
 
       - name: Publish the site to Pages
         working-directory: worker
@@ -626,7 +1041,6 @@ jobs:
           ZONE_ID: ${{ vars.ZONE_ID }}
           SITE_HOST: ${{ vars.SITE_HOST }}
         run: bash .github/scripts/purge-cache.sh purge-in/site-purge-list.txt
-
 
   # One visible alert when a SCHEDULED counts refresh failed, in the counts or
   # the wheels job (issue #317). After a counts failure the build and deploy
@@ -686,4 +1100,3 @@ jobs:
             /usr/bin/gh api -X POST "repos/${GH_REPO}/issues" -f title="$title" -f body="$body" > /dev/null
             echo "::notice::opened the alert issue"
           fi
-

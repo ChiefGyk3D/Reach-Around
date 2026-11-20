@@ -2,15 +2,26 @@
 """The reusable Worker deploy (.github/workflows/deploy-worker.yml, issue #596).
 
 Two kinds of test. The shell in the real steps is run with sample values: the
-deploy config it renders must stay byte-for-byte what deploy-test.yml wrote
-before the extraction (golden files made from the unchanged workflow), and the
-quiet switches and the Worker name override are checked. The YAML itself is
+deploy config the reusable workflow renders must equal what the inline steps of
+deploy-test.yml render (golden files, made from deploy-test.yml's own step), and
+the quiet switches and the Worker name override are checked. The YAML itself is
 guarded: pins, least-privilege permissions, no GitHub secret anywhere, no
-placeholder id, id-token only on the job that fetches credentials, and a caller
-(deploy-test.yml) that grants what the callee declares."""
+placeholder id, id-token only on the job that fetches credentials.
+
+deploy-test.yml does not call the reusable workflow yet: a same-repository
+`uses: ./...` call fails zizmor 1.30.1 (self-repository) and `$/...` fails
+actionlint 1.7.12, so a follow-up PR switches it to a commit-pinned call once
+this one is merged. Until then both files carry the same Write deploy config
+step and these tests hold them equal.
+
+To regenerate the goldens after an intended change to the step, run
+`UPDATE_WORKER_DEPLOY_GOLDEN=1 pytest tests/test_deploy_worker_workflow.py -k golden`
+and review the diff: they are rewritten from deploy-test.yml's inline step."""
 
 from __future__ import annotations
 
+import json
+import os
 import re
 import subprocess
 import tomllib
@@ -89,20 +100,23 @@ def callee_steps() -> list[dict[str, Any]]:
     return result
 
 
-def step(name: str) -> dict[str, Any]:
-    found = [s for s in callee_steps() if s.get("name") == name]
+def step(name: str, path: Path = CALLEE) -> dict[str, Any]:
+    steps: list[dict[str, Any]] = load(path)["jobs"]["deploy"]["steps"]
+    found = [s for s in steps if s.get("name") == name]
     assert len(found) == 1, name
     return found[0]
 
 
-def render(tmp_path: Path, env: dict[str, str]) -> subprocess.CompletedProcess[str]:
+def render(
+    tmp_path: Path, env: dict[str, str], path: Path = CALLEE
+) -> subprocess.CompletedProcess[str]:
     """Run the real 'Write deploy config' script against worker/wrangler.toml."""
     (tmp_path / "wrangler.toml").write_text(
         (ROOT / "worker" / "wrangler.toml").read_text(encoding="utf-8"),
         encoding="utf-8",
     )
     return subprocess.run(  # noqa: S603 - fixed argv and sample values
-        ["/bin/bash", "-c", step("Write deploy config")["run"]],
+        ["/bin/bash", "-c", step("Write deploy config", path)["run"]],
         cwd=tmp_path,
         env={"PATH": "/usr/bin:/bin", **env},
         capture_output=True,
@@ -121,20 +135,61 @@ def active_lines(path: Path) -> list[str]:
     ]
 
 
-# ---- the rendered config is what deploy-test.yml wrote before -----------------
+# ---- the rendered config is what deploy-test.yml renders ----------------------
 
 
+@pytest.mark.parametrize("path", [CALLER, CALLEE], ids=["inline", "reusable"])
 @pytest.mark.parametrize(
     ("name", "env"), [("test", TEST_ENV), ("staging", STAGING_ENV)]
 )
 def test_the_rendered_config_matches_the_golden(
-    tmp_path: Path, name: str, env: dict[str, str]
+    tmp_path: Path, path: Path, name: str, env: dict[str, str]
 ) -> None:
-    done = render(tmp_path, env)
+    done = render(tmp_path, env, path)
     assert done.returncode == 0, done.stdout + done.stderr
-    golden = active_lines(GOLDEN / f"{name}.active.toml")
+    rendered = active_lines(tmp_path / "wrangler.deploy.toml")
+    golden_file = GOLDEN / f"{name}.active.toml"
+    if os.environ.get("UPDATE_WORKER_DEPLOY_GOLDEN") == "1" and path == CALLER:
+        golden_file.write_text("\n".join(rendered) + "\n", encoding="utf-8")
+    golden = active_lines(golden_file)
     assert golden, "the golden is empty; the comparison would be vacuous"
-    assert active_lines(tmp_path / "wrangler.deploy.toml") == golden
+    assert rendered == golden
+
+
+def _destination_kinds(tmp_path: Path, env: dict[str, str], path: Path) -> str:
+    done = render(tmp_path, env, path)
+    assert done.returncode == 0, done.stdout + done.stderr
+    data = tomllib.loads((tmp_path / "wrangler.deploy.toml").read_text("utf-8"))
+    value: str = data["vars"]["DESTINATION_KINDS"]
+    return value
+
+
+@pytest.mark.parametrize("path", [CALLER, CALLEE], ids=["inline", "reusable"])
+@pytest.mark.parametrize(
+    "supplied",
+    [
+        '{"alpha":"link","beta":"social_icon"}',
+        '{"only-one":"link"}',
+    ],
+)
+def test_a_manifest_supplied_destination_kinds_is_deployed_as_valid_json(
+    tmp_path: Path, path: Path, supplied: str
+) -> None:
+    # Issue #666: a default written inside the parameter expansion appended a
+    # stray closing brace, so the Worker's JSON.parse refused the value.
+    env = {**STAGING_ENV, "DESTINATION_KINDS": supplied}
+    value = _destination_kinds(tmp_path, env, path)
+    assert json.loads(value) == json.loads(supplied)
+    assert value == supplied
+
+
+@pytest.mark.parametrize("path", [CALLER, CALLEE], ids=["inline", "reusable"])
+def test_an_unset_destination_kinds_falls_back_to_the_valid_example(
+    tmp_path: Path, path: Path
+) -> None:
+    env = {k: v for k, v in STAGING_ENV.items() if k != "DESTINATION_KINDS"}
+    value = _destination_kinds(tmp_path, env, path)
+    assert json.loads(value) == {"example-one": "link", "example-two": "link"}
 
 
 def test_the_golden_bites(tmp_path: Path) -> None:
@@ -506,62 +561,34 @@ def test_no_literal_placeholder_id_is_in_either_workflow() -> None:
             assert "00000000-0000-0000-0000-000000000000" not in line.replace(
                 '!= "00000000-0000-0000-0000-000000000000"', ""
             ), (path.name, line)
-    inputs = load(CALLER)["jobs"]["worker"]["with"]
-    for key, value in inputs.items():
-        if key.endswith("_id") or key.endswith("_ids"):
-            assert str(value).startswith("${{ vars."), (key, value)
 
 
-# ---- the caller ------------------------------------------------------------------
+# ---- no local call until the follow-up -------------------------------------------
 
 
-def test_the_caller_grants_what_the_callee_declares_and_passes_known_inputs() -> None:
-    data = load(CALLER)
-    job = data["jobs"]["worker"]
-    assert job["uses"] == "./.github/workflows/deploy-worker.yml"
-    # permissions are checked when the file is parsed, so the grant must match
-    callee_job = load(CALLEE)["jobs"]["deploy"]
-    assert job["permissions"] == callee_job["permissions"]
-    assert job["if"] == "github.ref == 'refs/heads/main'"
-    assert "secrets" not in job  # nothing is handed over, not even `inherit`
-    spec = call_spec()["inputs"]
-    passed = job["with"]
-    assert set(passed) <= set(spec), sorted(set(passed) - set(spec))
-    required = {k for k, v in spec.items() if v.get("required")}
-    assert required <= set(passed), sorted(required - set(passed))
-    # the engine runs its own Worker at the commit being deployed
-    assert passed["environment"] == "test"
-    assert passed["engine_ref"] == "${{ github.sha }}"
-    assert passed["engine_repo"] == "${{ github.repository }}"
-    # and keeps the test Worker's name, so nothing about the test deploy moved
-    assert passed["worker_name"] == "reach-around-clicks"
+def test_no_workflow_calls_a_reusable_workflow_by_a_local_path_yet() -> None:
+    # `uses: ./...` fails zizmor 1.30.1 and `uses: $/...` fails actionlint
+    # 1.7.12 (CI pins). The call is added in a follow-up as a commit-pinned
+    # `uses: ChiefGyk3D/Reach-Around/.github/workflows/deploy-worker.yml@<sha>`.
+    files = all_workflows()
+    assert CALLER in files
+    for path in files:
+        for line in path.read_text(encoding="utf-8").splitlines():
+            m = re.match(r"\s*uses:\s+(\S+)", line)
+            if m:
+                assert not m.group(1).startswith(("./", "$/")), (path.name, line)
 
 
 def test_the_test_worker_name_is_the_one_in_wrangler_toml() -> None:
+    # What deploy-test.yml will pass as worker_name once it calls the workflow.
     name = tomllib.loads((ROOT / "worker" / "wrangler.toml").read_text())["name"]
-    assert load(CALLER)["jobs"]["worker"]["with"]["worker_name"] == name
+    assert name == "reach-around-clicks"
 
 
-def test_the_pages_job_waits_for_the_worker_and_keeps_its_own_gate() -> None:
-    data = load(CALLER)
-    deploy = data["jobs"]["deploy"]
-    assert deploy["needs"] == ["build", "worker"]
-    assert deploy["environment"] == "test"
-    assert deploy["permissions"] == {"contents": "read", "id-token": "write"}
-    assert deploy["if"] == "github.ref == 'refs/heads/main'"
-    # the Worker steps are gone from the caller: no copy
-    names = [s.get("name") for s in deploy["steps"]]
-    for moved in (
-        "Write deploy config",
-        "Apply D1 migrations",
-        "Deploy the Worker",
-        "Verify the build manifest",
-    ):
-        assert moved not in names
-    live = [
-        ln
-        for ln in CALLER.read_text(encoding="utf-8").splitlines()
-        if not ln.lstrip().startswith("#")
-    ]
-    assert not any("wrangler.deploy.toml" in ln for ln in live)
-    assert not any("wrangler deploy" in ln for ln in live)
+def test_the_inline_and_reusable_write_steps_have_the_same_script() -> None:
+    inline = step("Write deploy config", CALLER)["run"]
+    reusable = step("Write deploy config")["run"]
+    # the reusable step only adds SITES, the route pattern and the kill switches
+    for line in inline.splitlines():
+        if "DESTINATION_KINDS" in line or "destination_kinds" in line:
+            assert line in reusable.splitlines(), line

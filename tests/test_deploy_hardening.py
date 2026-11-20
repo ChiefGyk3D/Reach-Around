@@ -19,42 +19,34 @@ WORKFLOW = ROOT / ".github" / "workflows" / "deploy-test.yml"
 SCRIPT = ROOT / ".github" / "scripts" / "verify-manifest.py"
 HARDEN = "step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43"
 DOPPLER_STEP = "Fetch Cloudflare credentials from Doppler"
-# The Worker and D1 half lives in the reusable workflow (issue #596); the Pages
-# half stays in deploy-test.yml. Both jobs hold the Cloudflare token.
-WORKER_WORKFLOW = ROOT / ".github" / "workflows" / "deploy-worker.yml"
-TOKEN_JOBS = [(WORKFLOW, "deploy"), (WORKER_WORKFLOW, "deploy")]
-ALL_JOBS = [(WORKFLOW, "build"), *TOKEN_JOBS]
 
 
-def load(path: Path = WORKFLOW) -> dict[str, Any]:
-    data: dict[str, Any] = yaml.safe_load(path.read_text(encoding="utf-8"))
+def load() -> dict[str, Any]:
+    data: dict[str, Any] = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
     return data
 
 
-def steps(job: str, path: Path = WORKFLOW) -> list[dict[str, Any]]:
-    result: list[dict[str, Any]] = load(path)["jobs"][job]["steps"]
+def steps(job: str) -> list[dict[str, Any]]:
+    result: list[dict[str, Any]] = load()["jobs"][job]["steps"]
     return result
 
 
 # ---- 1. egress control ----------------------------------------------------
 
 
-@pytest.mark.parametrize(("path", "job"), ALL_JOBS)
-def test_harden_runner_is_the_first_step_sha_pinned(path: Path, job: str) -> None:
-    first = steps(job, path)[0]
+@pytest.mark.parametrize("job", ["build", "deploy"])
+def test_harden_runner_is_the_first_step_sha_pinned(job: str) -> None:
+    first = steps(job)[0]
     assert re.fullmatch(
         r"step-security/harden-runner@[0-9a-f]{40}", first.get("uses", "")
     ), first
     assert first["uses"] == HARDEN
 
 
-@pytest.mark.parametrize(("path", "job"), TOKEN_JOBS)
-def test_the_deploy_job_blocks_egress_with_an_explicit_list(
-    path: Path, job: str
-) -> None:
-    # The deploy jobs hold the Cloudflare token: they must stay in block mode.
-    # Weakening one to audit must fail this test.
-    first = steps(job, path)[0]
+def test_the_deploy_job_blocks_egress_with_an_explicit_list() -> None:
+    # The deploy job holds the Cloudflare token: it must stay in block mode.
+    # Weakening it to audit must fail this test.
+    first = steps("deploy")[0]
     assert first["with"]["egress-policy"] == "block"
     endpoints = str(first["with"]["allowed-endpoints"]).split()
     assert endpoints
@@ -84,18 +76,17 @@ def test_the_build_job_audits_egress_and_says_why() -> None:
 
 
 def test_the_allow_lists_are_documented_as_unmeasured() -> None:
-    for path in (WORKFLOW, WORKER_WORKFLOW):
-        text = path.read_text(encoding="utf-8")
-        assert "UNMEASURED" in text, path  # the deploy job's block-mode list
+    text = WORKFLOW.read_text(encoding="utf-8")
+    assert "UNMEASURED" in text  # the deploy job's block-mode list
     docs = (ROOT / "docs" / "deploy.md").read_text(encoding="utf-8")
     flat = " ".join(docs.split())
     assert "unmeasured" in flat.lower()
     assert "a blocked host is named in the log" in flat
 
 
-@pytest.mark.parametrize(("path", "job"), ALL_JOBS)
-def test_an_egress_canary_follows_the_harden_step(path: Path, job: str) -> None:
-    canary = steps(job, path)[1]
+@pytest.mark.parametrize("job", ["build", "deploy"])
+def test_an_egress_canary_follows_the_harden_step(job: str) -> None:
+    canary = steps(job)[1]
     assert canary.get("name") == "Egress canary"
     assert "secrets." not in yaml.safe_dump(canary)
 
@@ -277,11 +268,9 @@ def test_non_string_or_malformed_links_are_refused(tmp_path: Path, links: Any) -
 
 def test_the_workflow_step_calls_the_script_isolated() -> None:
     step = next(
-        s
-        for s in steps("deploy", WORKER_WORKFLOW)
-        if s.get("name") == "Verify the build manifest"
+        s for s in steps("deploy") if s.get("name") == "Verify the build manifest"
     )
-    assert "python3 -I engine/.github/scripts/verify-manifest.py" in step["run"]
+    assert "python3 -I .github/scripts/verify-manifest.py" in step["run"]
     assert "<<" not in step["run"]  # no inline python any more
     assert SCRIPT.is_file()
 
@@ -321,8 +310,7 @@ def test_nothing_installs_or_runs_another_action_after_the_doppler_step() -> Non
     Closing it waits on ChiefGyk3D/git-your-ship-together#207. Until then this
     test only guards the order: after the Doppler step no step may install
     packages or run an action outside a short allow-list."""
-    for path, job in TOKEN_JOBS:
-        assert violations_after_doppler(steps(job, path)) == [], path
+    assert violations_after_doppler(steps("deploy")) == []
 
 
 def test_the_after_doppler_guard_bites() -> None:
@@ -475,13 +463,14 @@ def test_a_hostile_id_never_reaches_the_derived_output(
 
 
 def test_the_deploy_config_gets_the_derived_list_not_the_variable() -> None:
-    job = steps("deploy", WORKER_WORKFLOW)
-    manifest = next(s for s in job if s.get("name") == "Verify the build manifest")
+    manifest = next(
+        s for s in steps("deploy") if s.get("name") == "Verify the build manifest"
+    )
     assert manifest.get("id") == "manifest"
-    write = next(s for s in job if s.get("name") == "Write deploy config")
+    write = next(s for s in steps("deploy") if s.get("name") == "Write deploy config")
     assert write["env"]["LINK_IDS"] == "${{ steps.manifest.outputs.link_ids }}"
-    # and the input is no longer required (it is a comparison only)
-    check = next(s for s in job if s.get("name") == "Check configuration")
+    # and the variable is no longer required (it is a comparison only)
+    check = next(s for s in steps("deploy") if s.get("name") == "Check configuration")
     assert "SITE_HOST; do" in check["run"] and "SITE_HOST LINK_IDS" not in check["run"]
 
 

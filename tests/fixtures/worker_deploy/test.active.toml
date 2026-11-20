@@ -18,7 +18,7 @@ ALERTS_CONFIG = '{"analytics_health":true}'
 LEAD_RETENTION_DAYS = "30"
 SITE_HOST = "links-test.example.test"
 LINK_IDS = '["example-one","example-two"]'
-DESTINATION_KINDS = '{"example-one":"link","example-two":"link"}}'
+DESTINATION_KINDS = '{"example-one":"link","example-two":"link"}'
 [[d1_databases]]
 binding = "DB"
 database_name = "reach-around-clicks"
