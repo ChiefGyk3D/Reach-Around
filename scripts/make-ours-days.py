@@ -34,6 +34,7 @@ Exit: 0 done (or the check passed), 1 the check found a mismatch or a gap,
 from __future__ import annotations
 
 import argparse
+import http.client
 import json
 import os
 import re
@@ -45,10 +46,11 @@ import urllib.request
 from collections.abc import Callable, Mapping
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, NoReturn
 
 MAX_DAYS = 31
 MAX_BODY = 4 * 1024 * 1024
+TIMEOUT = 30
 MAX_ROWS = 10_000
 SITE_RE = re.compile(r"[a-z0-9][a-z0-9-]{0,31}")
 ACCOUNT_RE = re.compile(r"[0-9a-f]{32}")
@@ -70,7 +72,8 @@ def select_only(inner: Runner) -> Runner:
     """Wrap a runner so only a single plain SELECT ever reaches it."""
 
     def guarded(sql: str, params: list[Any]) -> list[dict[str, Any]]:
-        if not re.match(r"\s*SELECT\s", sql, re.IGNORECASE) or ";" in sql:
+        # ASCII whitespace only: a Unicode space is not a statement boundary.
+        if not re.match(r"[ \t\r\n]*SELECT[ \t\r\n]", sql, re.IGNORECASE) or ";" in sql:
             raise Refused("only a single SELECT statement is allowed")
         return inner(sql, params)
 
@@ -167,9 +170,9 @@ def http_runner(token: str, acct: str, db: str) -> Runner:
             },
         )
         try:
-            with opener.open(req, timeout=30) as resp:  # noqa: S310
+            with opener.open(req, timeout=TIMEOUT) as resp:  # noqa: S310
                 body = resp.read(MAX_BODY + 1)
-        except (urllib.error.URLError, OSError, ValueError):
+        except (urllib.error.URLError, OSError, ValueError, http.client.HTTPException):
             raise QueryFailed("the database call failed") from None
         if len(body) > MAX_BODY:
             raise QueryFailed("the answer is too large")
@@ -190,6 +193,8 @@ def collect(
             day = date.fromisoformat(day_text)
         except ValueError:
             raise QueryFailed(f"{metric}: row {i}: day is not YYYY-MM-DD") from None
+        if day.isoformat() != day_text:
+            raise QueryFailed(f"{metric}: row {i}: day is not YYYY-MM-DD")
         if not since <= day <= until:
             raise QueryFailed(f"{metric}: row {i}: day is outside the window")
         if day in out:
@@ -239,13 +244,39 @@ def check_out_dir(raw: str) -> Path:
 
 
 def write_new(path: Path, text: str) -> None:
+    """Create path (never overwrite, never follow a symlink), mode 0600."""
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
     try:
-        with os.fdopen(fd, "w", encoding="utf-8", newline="") as fh:
+        fh = os.fdopen(fd, "w", encoding="utf-8", newline="")
+    except BaseException:
+        os.close(fd)
+        path.unlink(missing_ok=True)
+        raise
+    try:
+        with fh:
             fh.write(text)
     except BaseException:
         path.unlink(missing_ok=True)
         raise
+
+
+def check_beacons(raw: str) -> None:
+    """The Beacons file must be a readable regular file before we write."""
+    try:
+        st = os.lstat(raw)
+    except OSError:
+        raise Refused("--beacons must be an existing file") from None
+    if not stat.S_ISREG(st.st_mode) or not os.access(raw, os.R_OK):
+        raise Refused("--beacons must be a readable regular file")
+
+
+class _Parser(argparse.ArgumentParser):
+    def error(self, message: str) -> NoReturn:
+        # argparse would echo the offending argument, which may be a secret.
+        print(
+            "usage error: unknown or missing option (no value shown)", file=sys.stderr
+        )
+        raise SystemExit(2)
 
 
 def _day(text: str, name: str) -> date:
@@ -264,7 +295,7 @@ def main(
     today: date | None = None,
     env: Mapping[str, str] | None = None,
 ) -> int:
-    ap = argparse.ArgumentParser(description=(__doc__ or "").split("\n\n")[0])
+    ap = _Parser(description=(__doc__ or "").split("\n\n")[0], allow_abbrev=False)
     ap.add_argument("--out", required=True, metavar="DIR")
     ap.add_argument("--since", required=True, metavar="DAY")
     ap.add_argument("--until", required=True, metavar="DAY")
@@ -286,6 +317,8 @@ def main(
             raise Refused("--until must be a full past UTC day (today is still open)")
         if not SITE_RE.fullmatch(args.site):
             raise Refused("--site is not a site id")
+        if args.beacons:
+            check_beacons(args.beacons)
         out_dir = check_out_dir(args.out)
         target = out_dir / f"ours-days-{since.isoformat()}_{until.isoformat()}.csv"
         if target.exists() or target.is_symlink():
@@ -300,6 +333,8 @@ def main(
         views = collect(run(*q_views), "views", since, until)
         clicks = collect(run(*q_clicks), "clicks", since, until)
         rows = merge(views, clicks)
+        if not rows:
+            raise QueryFailed("no rows for any day in the window; nothing written")
         text = "day,views,clicks\n" + "".join(
             f"{d.isoformat()},{v},{c}\n" for d, v, c in rows
         )
@@ -312,6 +347,10 @@ def main(
         return 3
     except OSError:
         print("error: could not write the output file", file=sys.stderr)
+        return 3
+    except Exception:
+        # Never a traceback (exit 1 would read as "the check found a gap").
+        print("error: unexpected failure", file=sys.stderr)
         return 3
     print(
         f"queries: 2 ok (SELECT only); view days {len(views)}, "

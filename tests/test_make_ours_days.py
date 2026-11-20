@@ -293,14 +293,34 @@ def test_no_credentials_means_usage_error_not_a_network_call(out: Path) -> None:
     assert mod.main(argv, runner=None, today=TODAY, env={}) == 2
 
 
-def test_token_is_not_an_option() -> None:
+@pytest.mark.parametrize(
+    "extra",
+    [
+        ["--token", "SECRETVALUE123"],
+        ["--token=SECRETVALUE123"],
+        ["--tok", "SECRETVALUE123"],
+    ],
+)
+def test_token_is_not_an_option_and_never_echoed(extra: list[str]) -> None:
     r = subprocess.run(  # noqa: S603 - fixed argv
-        [sys.executable, "-I", str(SCRIPT), "--token", "x", "--out", "/x"],
+        [
+            sys.executable,
+            "-I",
+            str(SCRIPT),
+            *extra,
+            "--out",
+            "/x",
+            "--since",
+            "2026-11-01",
+            "--until",
+            "2026-11-02",
+        ],
         capture_output=True,
         text=True,
         check=False,
     )
     assert r.returncode == 2
+    assert "SECRETVALUE123" not in r.stdout + r.stderr
 
 
 def test_http_runner_parses_rest_shape_and_rejects_write_flags() -> None:
