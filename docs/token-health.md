@@ -63,6 +63,17 @@ token-health: source=instagram state=expiring days_left=3
   without the command skips it. A run is red only for the reasons it already
   was.
 
+## Read this before building an alert on it
+
+- **A missing or damaged status file is not healthy.** With no status file
+  `counts tokens` reports only the dates and can exit 0. A step that posts an
+  alert (follow-up #662) must check that the status file exists and is fresh
+  before it reads exit 0 as "all tokens fine".
+- **YouTube `http_400` is labeled `rejected`, but it may be a malformed
+  request, not a bad key.** UNVERIFIED: Google's wording for each key problem
+  was not checked against its documentation. Treat a YouTube `rejected` as
+  "look at the key", and confirm in the console.
+
 ## Wiring Pushover, Discord or Matrix (yours, later)
 
 The engine sends nothing. The owner's alert channels belong to the instance

@@ -192,9 +192,13 @@ esac
 # log, the table to the step summary. Whatever it returns is ignored on purpose
 # (a refusal to report must not hide the numbers); the engine's own exit code,
 # already handled above, is what turns a run red.
+# A hung report is cut after 60 seconds where `timeout` exists (GNU coreutils;
+# not on a stock macOS), so it can never hold the refresh job.
+limit=()
+if command -v timeout >/dev/null 2>&1; then limit=(timeout 60); fi
 report_tokens() {
   local format="$1"
-  "$runtime" run --rm --read-only --cap-drop ALL \
+  ${limit[@]+"${limit[@]}"} "$runtime" run --rm --read-only --cap-drop ALL \
     --security-opt no-new-privileges:true --pids-limit 64 --memory 256m \
     --network none --tmpfs /tmp \
     --user "$(id -u):$(id -g)" ${userns[@]+"${userns[@]}"} \

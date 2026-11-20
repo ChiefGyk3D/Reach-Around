@@ -120,6 +120,20 @@ def test_a_word_wins_over_the_date_and_only_when_the_source_errored() -> None:
     assert state_of(ig(far), ok).state == "ok"
 
 
+@pytest.mark.parametrize("delta", [40, 5, -3])  # ok, expiring, expired dates
+def test_a_rejection_word_beats_every_date(delta: int) -> None:
+    expires = date.fromordinal(TODAY.toordinal() + delta)
+    bad = {"instagram": {"status": "error", "detail": "token_rejected"}}
+    assert state_of(ig(expires), bad).state == "rejected"
+
+
+@pytest.mark.parametrize("delta", [40, 5])
+def test_an_expired_word_beats_an_ok_or_expiring_date(delta: int) -> None:
+    expires = date.fromordinal(TODAY.toordinal() + delta)
+    bad = {"instagram": {"status": "error", "detail": "token_expired"}}
+    assert state_of(ig(expires), bad).state == "expired"
+
+
 def test_sources_without_a_token_are_left_out() -> None:
     class Other:
         kind = "bluesky"

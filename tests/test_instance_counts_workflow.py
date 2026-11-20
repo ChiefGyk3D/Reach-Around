@@ -283,6 +283,7 @@ case " $* " in
     printf '%s\n' "$*" >> "${FAKE_LOG:-/dev/null}"
     case " $* " in
       *" --format github "*)
+        printf 'STDERR-CANARY\n' >&2
         printf '::warning title=Token health::instagram token expiring\n' ;;
       *" --format markdown "*) printf '### Token health\n' ;;
     esac
@@ -748,6 +749,8 @@ def test_the_token_report_is_annotations_plus_a_step_summary_and_never_changes_t
             "",
             tmp_path / f"w{code}",
             {
+                "YOUTUBE_API_KEY": "canary-key-1",
+                "TWITCH_CLIENT_ID": "canary-key-2",
                 "GITHUB_STEP_SUMMARY": str(summary),
                 "FAKE_LOG": str(log),
                 "FAKE_TOKENS_EXIT": code,
@@ -759,7 +762,7 @@ def test_the_token_report_is_annotations_plus_a_step_summary_and_never_changes_t
     calls = log.read_text(encoding="utf-8")
     assert "--network none" in calls and "--read-only" in calls
     assert ":/data:ro" in calls
-    assert "-e " not in calls  # no key reaches the report container
+    assert " -e " not in calls  # no key reaches the report container
 
 
 def test_the_token_report_runs_without_a_step_summary(tmp_path: Path) -> None:
@@ -768,3 +771,57 @@ def test_the_token_report_runs_without_a_step_summary(tmp_path: Path) -> None:
     done = _run_refresh(root, env, "", tmp_path, {"FAKE_TOKENS_EXIT": "4"})
     assert done.returncode == 0, done.stderr
     assert "::warning title=Token health::" in done.stdout
+
+
+def test_the_report_container_has_no_key_no_writable_mount_and_a_silent_stderr(
+    tmp_path: Path,
+) -> None:
+    root, env = _refresh_fixture(tmp_path)
+    log = tmp_path / "docker.log"
+    log.write_text("", encoding="utf-8")
+    done = _run_refresh(
+        root,
+        env,
+        "",
+        tmp_path / "w",
+        {
+            "FAKE_LOG": str(log),
+            "GITHUB_STEP_SUMMARY": str(tmp_path / "summary.md"),
+            "YOUTUBE_API_KEY": "canary-key-1",
+            "TWITCH_CLIENT_SECRET": "canary-key-2",
+        },
+    )
+    assert done.returncode == 0, done.stderr
+    lines = log.read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 2  # github and markdown
+    for line in lines:
+        assert " -e " not in f" {line} "
+        assert "canary-key" not in line
+        assert "/config/history" not in line  # read-only config mounts only
+        assert "--network none" in line
+        assert "/config/site.yaml:ro" in line
+    # the report container's own stderr is dropped, never forwarded to the log
+    assert "STDERR-CANARY" not in done.stderr + done.stdout
+
+
+def test_the_report_container_is_cut_after_sixty_seconds(tmp_path: Path) -> None:
+    root, env = _refresh_fixture(tmp_path)
+    log = tmp_path / "timeout.log"
+    fake = tmp_path / "bin" / "timeout"
+    fake.write_text(
+        '#!/bin/bash\nprintf \'%s\\n\' "$1" >> "$FAKE_TIMEOUT_LOG"\nshift\nexec "$@"\n',
+        encoding="utf-8",
+    )
+    fake.chmod(0o755)
+    done = _run_refresh(
+        root,
+        env,
+        "",
+        tmp_path / "w",
+        {
+            "FAKE_TIMEOUT_LOG": str(log),
+            "GITHUB_STEP_SUMMARY": str(tmp_path / "summary.md"),
+        },
+    )
+    assert done.returncode == 0, done.stderr
+    assert log.read_text(encoding="utf-8").split() == ["60", "60"]
