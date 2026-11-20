@@ -144,6 +144,23 @@
           "default": "/e/v/",
           "title": "Route",
           "type": "string"
+        },
+        "turnstile_beacon": {
+          "default": false,
+          "title": "Turnstile Beacon",
+          "type": "boolean"
+        },
+        "turnstile_site_key": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Turnstile Site Key"
         }
       },
       "title": "Analytics",
@@ -3338,7 +3355,9 @@
         "other_sites": [],
         "page_views": false,
         "raw_keep_days": 7,
-        "route": "/e/v/"
+        "route": "/e/v/",
+        "turnstile_beacon": false,
+        "turnstile_site_key": null
       }
     },
     "creator": {

@@ -261,6 +261,33 @@ Convert `rollup_last_ok` with `date -u -d @$((VALUE/1000))`. More than about 2 d
 
 The route stores no address, user agent or referrer URL. After a deploy, one beacon from a browser should give a 204 and one `view_events` row with categories only; the same request with `Sec-GPC: 1` should leave no row.
 
+## The invisible bot check (`analytics.turnstile_beacon`), off by default
+
+Part of the beacon abuse work (#610, epic #246). This is the browser side only: a hidden helper page that runs Cloudflare Turnstile in invisible mode. Nothing in the Worker reads its result yet, so turning it on today changes no count; it only makes the page run the check, which is what the storage and accessibility checks below need.
+
+Config (`docs/config.md`): `analytics.turnstile_beacon: true` and `analytics.turnstile_site_key: <public key>`. The key is public; the secret key is for the Worker and is never put in this repository. Off (the default), the build has no helper page, no script and no header change, byte for byte.
+
+What the build adds when it is on:
+
+| Piece | Where | Detail |
+| --- | --- | --- |
+| Helper page | `/e-frame/` | Static, not linked from any page, `noindex` as a meta tag and as `X-Robots-Tag`. Loads Turnstile's script and `static/beacon-frame.js`, both `defer`, no inline script. Renders the widget and posts the result to its parent with a same-origin message. Opened on its own it does nothing |
+| Page script | `static/beacon.js` on every tab page that counts | After the load event and an idle moment, adds one hidden frame for `/e-frame/`. Never for a visitor with Global Privacy Control or Do Not Track (checked at start and again just before the frame is made). Waits 5 seconds, then gives up. Touches no link |
+| Frame | added by the script | `sandbox="allow-scripts allow-same-origin"`, `aria-hidden="true"`, `tabindex="-1"`, `title`, 0 by 0, removed as soon as the check ends |
+| Policy for `/e-frame/` only | `_headers` | `script-src 'self' https://challenges.cloudflare.com`, `frame-src https://challenges.cloudflare.com`, `frame-ancestors 'self'`; everything else as on every page. The full string is pinned in `tests/site/test_beacon_frame.py` |
+| Policy for every other page | `_headers` | Unchanged: `script-src 'self'`, `frame-ancestors 'none'` and trusted types. They can embed the helper because `frame-src` falls back to `default-src 'self'` |
+
+The result, in the page's memory only: `window.reachAroundBeacon` is `{state: "verified", token}` or `{state: "unverified"}`, and the document gets a `reach-around:beacon` event with the same object. A blocked script, a slow check, a failed check or a timeout all end as `unverified`; the page and every link behave the same either way, so the check fails open. The token is a Turnstile response: it lasts 300 seconds, works once and has to be checked server side (with the hostname and the action `beacon`); the Worker side is a separate change.
+
+Two things were not confirmed from Cloudflare's documents and are measured instead: whether Turnstile keeps anything in the browser (the documents disagree), and which sandbox flags it needs. The sandbox above is the minimum that lets the helper message its parent; if the measurement shows a missing flag, the fix is a one-line change in `static/beacon.js` and the test that pins it. With `allow-scripts` and `allow-same-origin` together the sandbox does not isolate the helper from the site (it could lift its own sandbox); it still blocks popups, forms and navigation of the page above. The helper is our own static file, so that is accepted.
+
+Before this is turned on for a live site, all of these must be done:
+
+1. Run the storage check (`docs/turnstile-storage-check.md`) in a clean Chromium and Firefox profile and keep the output.
+2. Run the accessibility checklist (`docs/turnstile-accessibility-check.md`).
+3. The privacy page says what the check does and what it stores, matching step 1. The generated privacy page does not mention the check yet; that wording is written separately, after step 1.
+4. Create the Turnstile widget as Invisible, limited to the site hostnames, and use its public key here.
+
 ## Beacon token (`POST /e/t`), observe mode only
 
 A short-lived signed token that a page asks the Worker for once per visit and sends back with its click ping (`?t=`) and its view beacon (`?t=`). The Worker checks it from the URL and charges the event to the **verified lane** (a currently valid token for this site and this network) or the **unverified lane** (anything else). The token is stateless: nothing is stored, no cookie is set, and the page keeps it in memory only. A visitor with Global Privacy Control or Do Not Track never asks for one or attaches one (that is all this setting covers; whether a click itself is sent under those signals is the click opt-out change's, #609), and a page whose token request fails still counts and navigates exactly as before.

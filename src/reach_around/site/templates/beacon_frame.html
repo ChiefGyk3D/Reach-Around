@@ -1,0 +1,15 @@
+{# SPDX-License-Identifier: Apache-2.0 #}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="robots" content="noindex, nofollow">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Check</title>
+<script src="{{ turnstile_script }}" defer></script>
+<script src="/{{ asset("static/beacon-frame.js") }}" defer></script>
+</head>
+<body>
+<div id="ra-turnstile" data-sitekey="{{ site_key }}" data-action="beacon"></div>
+</body>
+</html>
