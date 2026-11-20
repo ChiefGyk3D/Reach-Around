@@ -188,6 +188,13 @@ def test_click_ceiling_section_states_the_enforced_numbers() -> None:
     toml = (ROOT / "worker" / "wrangler.toml").read_text(encoding="utf-8")
     assert "every limit then refuses" not in toml
     assert "invalid CLICK_DAILY_WRITE_CEILING refuses clicks" in toml
+    # plain statements: the lane switch is not written by the workflow, an out-of-band ceiling is not re-checked
+    assert "the deploy workflow does not write this variable" in text
+    assert "is not re-checked at runtime" in text
+    assert "costs one D1 call" in text
+    assert "cf-<site>_<link>" in text and "cf-<site>-<link>" not in text
+    workflow = (ROOT / ".github" / "workflows" / "deploy-test.yml").read_text(encoding="utf-8")
+    assert "BEACON_LANE_CAP_ENFORCED" not in workflow
     # the secret requirement, the health condition and the lane switch are documented
     assert "The hashing secret is required on every Worker that counts clicks" in text
     assert "click_setup_invalid" in text

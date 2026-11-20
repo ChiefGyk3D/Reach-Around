@@ -119,7 +119,8 @@ crons = ["5 * * * *"]
 #                                  # Free plan: "7500" with D1_DAILY_WRITE_QUOTA = "100000". Unusable: clicks refused
 # BEACON_LANE_CAP_ENFORCED = "0"   # "1" or "true" makes the unverified-lane cap (15 percent of a site's share)
 #                                  # bind; default off, since until tokens exist every click is unverified.
-#                                  # Anything but 0, false, 1, true or empty refuses clicks
+#                                  # Anything but 0, false, 1, true or empty refuses clicks. The deploy
+#                                  # workflow does not write it: turn it on only by editing this file
 # LEAD_RETENTION_DAYS = "30"       # days a lead is kept (1 to 365); invalid falls back to 30.
 #                                  # The deploy writes this from privacy.lead_retention_days in site.yaml
 

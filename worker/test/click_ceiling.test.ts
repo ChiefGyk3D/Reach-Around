@@ -55,7 +55,7 @@ const L1 = clickLimits(SHARE1);
 // Noon of the current UTC day, so a seed made with the default (now) lands on the same day.
 const NOON = Math.floor(Date.now() / 86_400_000) * 86_400_000 + 12 * 3_600_000;
 /** A link that already had its first click today, so it is judged against the general budget. */
-const seedSeen = (site: string, link: string, ms = Date.now()) => seed(`cf-${site}-${link}`, 1, ms);
+const seedSeen = (site: string, link: string, ms = Date.now()) => seed(`cf-${site}_${link}`, 1, ms);
 
 beforeEach(async () => {
   for (const t of ["click_src_daily", "click_country_daily", "click_landing_daily", "click_hop_daily", "click_seal", "click_budget", "click_budget_lh", "click_capacity", "click_events", "counters"]) {
@@ -190,15 +190,15 @@ describe("the cost of one click is the rows it writes", () => {
     const cost = clickWriteCost({});
     const rows = (await DB.prepare("SELECT key, count FROM counters ORDER BY key").all<{ key: string; count: number }>()).results;
     // the only rows written are the four admission rows, so the charge covers each of them
-    expect(rows.map((r) => r.key)).toEqual(["cf-plain-twitch", `cw-plain`, `cwh-plain-${hh(Date.now())}`, "cwl-u-plain"].sort());
+    expect(rows.map((r) => r.key)).toEqual(["cf-plain_twitch", `cw-plain`, `cwh-plain-${hh(Date.now())}`, "cwl-u-plain"].sort());
     expect(rows.length).toBe(4);
     expect(await count("cw-plain")).toBe(cost);
     expect(await count(`cwh-plain-${hh(Date.now())}`)).toBe(cost);
     expect(await count("cwl-u-plain")).toBe(cost);
-    expect(await count("cf-plain-twitch")).toBe(1);
+    expect(await count("cf-plain_twitch")).toBe(1);
     expect(await count("cwl-v-plain")).toBe(0); // no token exists yet: every event is unverified
     await handleClick(click("plain.example.test"), env());
-    expect(await count("cf-plain-twitch")).toBe(1); // written once, not per click
+    expect(await count("cf-plain_twitch")).toBe(1); // written once, not per click
     expect(await count("cwl-u-plain")).toBe(2 * cost);
   });
 });
@@ -335,7 +335,7 @@ describe("admitClick", () => {
       await seed("cw-links", L1.general);
       expect(await admitClick(DB, "links", NOON, FULL, 1, { linkId: "b" })).toBe(true);
       expect(await count("cw-links", NOON)).toBe(L1.general + FULL);
-      expect(await count("cf-links-b", NOON)).toBe(1);
+      expect(await count("cf-links_b", NOON)).toBe(1);
     });
     it("only the first click: the second click on the same link is judged against the general budget", async () => {
       await seed("cw-links", L1.general);
@@ -361,10 +361,42 @@ describe("admitClick", () => {
     it("never passes the whole share, first clicks included", async () => {
       await seed("cw-links", L1.share - FULL + 1);
       expect(await admitClick(DB, "links", NOON, FULL, 1, { linkId: "b" })).toBe(false);
-      expect(await count("cf-links-b", NOON)).toBe(0); // a refused first click leaves no marker
+      expect(await count("cf-links_b", NOON)).toBe(0); // a refused first click leaves no marker
       await seed("cw-links", L1.share - FULL);
       expect(await admitClick(DB, "links", NOON, FULL, 1, { linkId: "b" })).toBe(true);
       expect(await count("cw-links", NOON)).toBe(L1.share);
+    });
+    it.each([
+      ["a", "b-c", "a-b", "c"],
+      ["x-y", "z", "x", "y-z"],
+      ["a-b-c", "d", "a-b", "c-d"],
+    ])("hyphenated site and link ids never share a marker: (%s, %s) and (%s, %s)", async (s1, l1, s2, l2) => {
+      // the second pair's general budget is spent, so only its own first-click reserve can admit it
+      await seed(`cw-${s2}`, L1.general, NOON);
+      expect(await admitClick(DB, s1, NOON, FULL, 1, { linkId: l1 })).toBe(true);
+      expect(await admitClick(DB, s2, NOON, FULL, 1, { linkId: l2 })).toBe(true);
+      // and each marker is its own row, written once
+      const markers = (await DB.prepare("SELECT key FROM counters WHERE key GLOB 'cf-*'").all<{ key: string }>()).results;
+      expect(markers.length).toBe(2);
+    });
+    it("the longest site id and link id still fit the key column (64 characters, lowercase, digits, hyphen, underscore)", async () => {
+      const site = "a".repeat(20);
+      const link = "b".repeat(40);
+      expect(await admitClick(DB, site, NOON, FULL, 1, { linkId: link })).toBe(true);
+      expect(await count(`cf-${site}_${link}`, NOON)).toBe(1);
+      expect(`cf-${site}_${link}`.length).toBe(64);
+    });
+    it("every counter key kind is injective over the site ids and link ids it is built from", async () => {
+      // site and link ids are lowercase letters, digits and hyphens; the marker joins them with a character
+      // that cannot occur in either, and the other keys end in a fixed-width hour or hold the site last
+      await admitClick(DB, "a", NOON, FULL, 1, { linkId: "b-c", lane: "u" });
+      await admitClick(DB, "a-b", NOON, FULL, 1, { linkId: "c", lane: "u" });
+      const keys = (await DB.prepare("SELECT key FROM counters ORDER BY key").all<{ key: string }>()).results.map((r) => r.key);
+      expect(new Set(keys).size).toBe(keys.length);
+      expect(keys.filter((k) => k.startsWith("cw-")).sort()).toEqual(["cw-a", "cw-a-b"]);
+      expect(keys.filter((k) => k.startsWith("cwl-")).sort()).toEqual(["cwl-u-a", "cwl-u-a-b"]);
+      expect(keys.filter((k) => k.startsWith("cwh-")).length).toBe(2);
+      expect(keys.filter((k) => k.startsWith("cf-")).length).toBe(2);
     });
     it("markers are per site and per day", async () => {
       await seed("cw-links", L1.general);

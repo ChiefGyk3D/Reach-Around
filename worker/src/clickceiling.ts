@@ -29,7 +29,7 @@
 //   cw-<site>            the charged writes of the day (all lanes); read by the health check
 //   cwh-<site>-<HH>      the charged writes of one UTC hour
 //   cwl-<lane>-<site>    the charged writes of one lane (u: unverified, v: verified)
-//   cf-<site>-<link>     marks that the link has had its first click today (written once per link per day)
+//   cf-<site>_<link>     marks that the link has had its first click today (written once per link per day)
 //   cd-<site>            clicks dropped past the limits, capped at CLICK_DROP_COUNT_CAP
 //   cs-bad               set once a day while clicks are refused for an unusable setting (no content)
 // The admission is one batch: a conditional upsert on the day row, then the hour, lane and marker rows, each
@@ -188,7 +188,7 @@ export async function admitClick(
   const hour = String(new Date(nowMs).getUTCHours()).padStart(2, "0");
   const lim = clickLimits(siteShare(opts.ceiling ?? CLICK_ADMIT_CEILING, sites));
   const lane: ClickLane = opts.lane ?? "u";
-  const marker = opts.linkId === undefined ? null : `cf-${site}-${opts.linkId}`;
+  const marker = opts.linkId === undefined ? null : `cf-${site}_${opts.linkId}`; // "_" occurs in no site id or link id, so the pair maps to one key; at most 3 + 20 + 1 + 40 = 64 characters, the key column's limit
   const hourKey = `cwh-${site}-${hour}`;
   const laneKey = `cwl-${lane}-${site}`;
   const gate = db
