@@ -595,7 +595,7 @@ the steps and what is not covered are in [privacy.md](privacy.md).
 ## The gate routes (Worker)
 
 `POST /k/gate` and `GET /k/view` live in `worker/src/kit/gate.ts`; the gate
-form posts to `/k/gate`. They ship off at the cutover (`features.kit_gate`).
+form posts to `/k/gate`. They ship off at the cutover through the Worker `KIT_KILL` switch (`worker/src/kit/env.ts`); the build keeps `features.kit_gate` true.
 
 - **Every refusal of a real request is the same answer** (a 303 to
   `/kit/retry/`, no body, no cookie): wrong origin, content type, size, user

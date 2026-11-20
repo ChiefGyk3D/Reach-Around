@@ -29,7 +29,10 @@ real switch.
    is deployed only by a manual run behind the reviewer's approval.
 4. **Every DNS write waits for the owner's explicit word in chat**, quoted with
    its time in the record of the step. No agent writes DNS on a general go-ahead.
-5. **The kit gate is off at cutover** (#605, #263), the funnel `landings` and
+5. **The kit gate is off at cutover** (#605, #263), meaning the Worker
+   `KIT_KILL` switch is engaged and the kit routes answer closed while the
+   build keeps `features.kit_gate: true` (the config is refused otherwise when the
+   kit has gated content, `src/reach_around/config/models.py`), the funnel `landings` and
    `hops` lists are off in the production config (#595), and the Workers paid
    plan is approved (#610). Off at cutover does not mean the kit is optional:
    parity (analytics and the kit) is built before the switch, and Beacons is
@@ -141,8 +144,14 @@ the result lines (no values) in #344. Do not start the DNS steps with a box open
 
 ### 2.2 Configuration
 
-- [ ] **Kit gate off at cutover**: `features.kit_gate` is `false` in the
-      production config, so no cookie is set and no cookie notice shows.
+- [ ] **Kit gate off at cutover**: the Worker `KIT_KILL` switch is engaged
+      (`worker/src/kit/env.ts`: unset or empty is off, so set it explicitly; a
+      malformed value fails closed) and the kit routes answer closed. The
+      production config keeps `features.kit_gate: true`, because a kit with
+      gated content is refused otherwise. Check on staging with the same
+      setting that `POST /k/gate` and `GET /k/view` are refused and no lead
+      row is written; whether the built pages still show a cookie notice is
+      read from the built output, not assumed.
 - [ ] The funnel `landings` and `hops` lists are **absent** from the production
       config (#595). Migration `0017` is applied later, with the Worker quiet (all three switches on, section 2.3).
 - [ ] **Beacon token mode** is the mode chosen under #610. The public repository
@@ -195,11 +204,11 @@ the result lines (no values) in #344. Do not start the DNS steps with a box open
          outage gap, not as `kill_switch`. Keep it short and clear it as soon
          as the migrations are done.
          The three switches cover the click, view and scheduled paths only,
-         not the kit routes. The quiet state assumes `features.kit_gate` is
-         `false` (2.2) and the inquiry route is off or handled as that item
-         says; if either is on, the kit routes can still write to D1 and need
-         their own switch (`KIT_KILL`, read in `worker/src/kit/env.ts`) before this
-         step counts as quiet.
+         not the kit routes. The quiet state assumes `KIT_KILL` is engaged
+         (2.2) and the inquiry route is off or handled as that item says; if
+         either is on, the kit routes can still write to D1, so engage
+         `KIT_KILL` (read in `worker/src/kit/env.ts`) before this step counts
+         as quiet.
       2. Take a Time Travel bookmark and a backup (2.4).
       3. `npx wrangler d1 migrations list <DATABASE> --remote`, then apply.
          Migrations are forward only. Migration `0008` empties `visitor_seen`:
