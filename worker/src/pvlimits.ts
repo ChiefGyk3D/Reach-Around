@@ -31,6 +31,11 @@ export const PV_WRITES_PER_VIEW = { num: 28, den: 5 } as const;
 /** Rollup, purge and idle-hour heartbeat rows per day, whatever the traffic (2,200 + 250 + rounding, docs/deploy.md). */
 export const PV_FIXED_DAILY_WRITES = 2_540;
 
+/** The lane row an accepted view writes while BEACON_MODE is observe or enforce (view.ts, pvl-<lane>-<site>). */
+export const PV_LANE_ROWS_PER_VIEW = 1;
+/** The text-valued variable pageViewDailyWrites also reads (not a number, so the deploy gate checks it apart). */
+export const PAGE_VIEW_MODE_VARS = ["BEACON_MODE"] as const;
+
 /** Every page-view variable pageViewDailyWrites reads. A test keeps this equal to the environment names read below. */
 export const PAGE_VIEW_VARS = ["VIEWS_PER_HOUR", "BOT_VIEWS_PER_HOUR", "ACCOUNT_VIEWS_PER_HOUR", "ACCOUNT_BOT_VIEWS_PER_HOUR"] as const;
 
@@ -39,6 +44,8 @@ export interface PageViewBudgetEnv extends SitesEnv {
   BOT_VIEWS_PER_HOUR?: string;
   ACCOUNT_VIEWS_PER_HOUR?: string;
   ACCOUNT_BOT_VIEWS_PER_HOUR?: string;
+  /** off (default), observe or enforce: observe and enforce add one lane row per accepted view. */
+  BEACON_MODE?: string;
 }
 
 /**
@@ -78,5 +85,9 @@ export function pageViewDailyWrites(env: PageViewBudgetEnv, sites?: number): num
     positiveInt(e.ACCOUNT_BOT_VIEWS_PER_HOUR, DEFAULT_ACCOUNT_BOT_PER_HOUR, MAX_VIEWS_PER_HOUR),
   );
   const views = 24 * (human + bot);
-  return Math.ceil((views * PV_WRITES_PER_VIEW.num) / PV_WRITES_PER_VIEW.den) + PV_FIXED_DAILY_WRITES;
+  // While BEACON_MODE is on, each accepted view also writes its lane row. A value that is not off, unset or
+  // empty counts as on (the worst case, never zero).
+  const m = e.BEACON_MODE;
+  const lane = m === undefined || m === "" || m === "off" ? 0 : PV_LANE_ROWS_PER_VIEW;
+  return Math.ceil((views * (PV_WRITES_PER_VIEW.num + lane * PV_WRITES_PER_VIEW.den)) / PV_WRITES_PER_VIEW.den) + PV_FIXED_DAILY_WRITES;
 }

@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+import { handleMint, MINT_ROUTE, type MintEnv } from "./beacon";
 import { QueryMeter, meteredDb, queryBudget } from "./d1budget";
 import { handleClick, MAX_URL_LENGTH, type Env as ClickEnv } from "./click";
 import { HEALTH_MIN_BUDGET, HEALTH_QUERIES, runHealth, type HealthEnv } from "./health";
@@ -37,6 +38,15 @@ function isViewRoute(request: Request): boolean {
   }
 }
 
+function isMintRoute(request: Request): boolean {
+  if (request.url.length > MAX_URL_LENGTH) return false;
+  try {
+    return new URL(request.url).pathname === MINT_ROUTE;
+  } catch {
+    return false;
+  }
+}
+
 function isKitInquiryRoute(request: Request): boolean {
   if (request.url.length > MAX_URL_LENGTH) return false;
   try {
@@ -62,7 +72,8 @@ export default {
    * Every request, to any path, gets the same empty 204; only
    * `POST /e/c/:linkId` and `POST /e/v/:pageId` can record anything. There is
    * no redirect route, and no route returns stored data with ONE deliberate
-   * exception: `GET /e/live` (src/live.ts), which returns only booleans and
+   * exception (plus the token route below, which returns a signed token it stores nowhere, and only while
+   * BEACON_MODE is observe or enforce; any other outcome there is the same empty 204): `GET /e/live` (src/live.ts), which returns only booleans and
    * timestamps about whether two channels are live. Any other method on
    * /e/live is the same empty 204. The business inquiry form (src/kit/inquiry.ts) owns
    * `POST /k/inquiry` and two fixed GET result pages; it stores nothing.
@@ -70,6 +81,7 @@ export default {
   async fetch(request: Request, env: WorkerEnv): Promise<Response> {
     if (isLiveRoute(request)) return handleLive(request, env);
     if (isViewRoute(request)) return handleView(request, env);
+    if (isMintRoute(request)) return handleMint(request, env as unknown as MintEnv);
     if (isKitInquiryRoute(request)) return handleInquiry(request, env as unknown as InquiryEnv);
     return handleClick(request, env);
   },

@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 import { normalizeAddress } from "./address";
+import { beaconLane, beaconSetup, type BeaconEnv } from "./beacon";
 import { limiterKey, secretBytes } from "./ratekey";
 import { admitClick, clickWriteCost, markClickSetupInvalid, parseClickCeiling, parseLaneCapFlag } from "./clickceiling";
 import { NONE, clickCounterStatements } from "./clickfunnel";
@@ -10,7 +11,7 @@ export interface RateLimiter {
   limit(options: { key: string }): Promise<{ success: boolean }>;
 }
 
-export interface Env {
+export interface Env extends BeaconEnv {
   DB: D1Database;
   /**
    * The sites this collector serves (docs/analytics-design.md section 4). When
@@ -39,7 +40,7 @@ export interface Env {
   CLICK_DAILY_WRITE_CEILING?: string;
   /**
    * Optional. "1" or "true" makes the unverified lane cap bind; unset, "", "0" or "false" leave it off (the
-   * default, until tokens are enforced). Anything else refuses clicks and sets the health flag.
+   * default, until tokens are enforced). BEACON_MODE enforce binds it too, and observe never does. Anything else refuses clicks and sets the health flag.
    */
   BEACON_LANE_CAP_ENFORCED?: string;
   /**
@@ -127,7 +128,7 @@ function optedOut(request: Request): boolean {
  * headers alone: Content-Length missing, not plain digits, over the cap, or
  * Transfer-Encoding set. A body that passes is cancelled unread.
  */
-async function bodyAcceptable(request: Request): Promise<boolean> {
+export async function bodyAcceptable(request: Request): Promise<boolean> {
   const body = request.body;
   const declared = request.headers.get("Content-Length");
   if (declared !== null && (!/^\d{1,10}$/.test(declared) || Number(declared) > MAX_BODY_BYTES)) {
@@ -248,10 +249,14 @@ export async function handleClick(request: Request, env: Env): Promise<Response>
     const secret = secretBytes(env.VIEW_HASH_SECRET);
     const ceiling = parseClickCeiling(env.CLICK_DAILY_WRITE_CEILING);
     const laneCap = parseLaneCapFlag(env.BEACON_LANE_CAP_ENFORCED);
-    if (secret === null || typeof env.VIEW_HASH_SECRET !== "string" || ceiling === null || laneCap === null) {
+    const beacon = beaconSetup(env);
+    if (secret === null || typeof env.VIEW_HASH_SECRET !== "string" || ceiling === null || laneCap === null || beacon === null) {
       await markClickSetupInvalid(env.DB, Date.now());
       return noContent(); // CONTROL:click-limiter-secret
     }
+    // Tokens on, but no usable key to check them with: every click is then unverified. Not a refusal (the
+    // click still counts), but never silent: the same health flag.
+    if (beacon.mode !== "off" && beacon.keys.length === 0) await markClickSetupInvalid(env.DB, Date.now());
     const key = await limiterKey(
       secret,
       env.VIEW_HASH_SECRET,
@@ -277,12 +282,16 @@ export async function handleClick(request: Request, env: Env): Promise<Response>
     // Write ceiling: charged at the rows this click writes, before ANY click write. Past it the answer is
     // the same empty 204 and only the counting stops (clickceiling.ts).
     const cost = clickWriteCost({ sources: site.sources !== undefined, landings: landing !== undefined, hops: hop !== undefined });
-    // Every click is charged to the unverified lane: no token exists yet to prove a click came from the page.
+    // The lane: with BEACON_MODE off every click is unverified. In observe and enforce a currently valid token
+    // for this site and network earns the verified lane. Observe only records the lane (the cap never binds);
+    // enforce binds the unverified lane's cap; off leaves the BEACON_LANE_CAP_ENFORCED switch as it was.
+    const lane = beacon.mode === "off" ? "u" : await beaconLane(request, beacon.keys, site.id, now);
+    const enforceLaneCap = beacon.mode === "enforce" ? true : beacon.mode === "observe" ? false : laneCap;
     const admitted = await admitClick(env.DB, site.id, now, cost, loadSites(env).sites.length, {
       linkId,
-      lane: "u",
+      lane,
       ceiling,
-      enforceLaneCap: laneCap,
+      enforceLaneCap,
     }); // CONTROL:click-write-ceiling
     if (!admitted) return noContent();
     await env.DB.prepare("INSERT INTO click_events (ts, link_id, destination_kind, country, site, src) VALUES (?, ?, ?, ?, ?, ?)")
