@@ -320,11 +320,12 @@ The form needs, besides the gate's `TOKEN_HMAC_KEY` (so only an unlocked visitor
 
 Project secrets (this Cloudflare token, later the Mailgun and collector
 tokens) live in the Doppler project `reach-around`, with configs `dev`, `stg`
-and `prd`, plus a `ci` config for the deploy credentials only. For a local
-deploy, read the token from the `ci` config:
+and `prd`. The `dev` config holds the deploy credentials for the test deploy
+(and nothing else the deploy does not need). For a local deploy, read the
+token from the `dev` config:
 
 ```
-doppler run --project reach-around --config ci --only-secrets CLOUDFLARE_API_TOKEN -- <command>
+doppler run --project reach-around --config dev --only-secrets CLOUDFLARE_API_TOKEN -- <command>
 ```
 
 The deploy workflow reads the token from Doppler over OIDC, and falls back to
@@ -352,18 +353,18 @@ real isolation. That is an owner decision, tracked in issue #206.
 a long-lived credential stored in GitHub; do not leave it set while OIDC works.
 
 **CI config.** The Doppler action exports every secret in the config it reads
-into the rest of the job, so CI reads a dedicated config named `ci` that holds
+into the rest of the job, so the test deploy reads the `dev` config, which must hold
 only the deploy token (`CLOUDFLARE_API_TOKEN`). Runtime secrets such as the
 Mailgun key stay in `stg` and `prd`. The optional `CLOUDFLARE_PURGE_TOKEN` is
-not in `ci` either: it stays a GitHub `test` environment secret so it reaches
+not in `dev` either: it stays a GitHub `test` environment secret so it reaches
 only the purge step and never the wrangler steps. To rotate the token automatically, add a Doppler Cloudflare
-Tokens rotated secret in `ci` (it injects `CLOUDFLARE_KEY_NAME` and
+Tokens rotated secret in `dev` (it injects `CLOUDFLARE_KEY_NAME` and
 `CLOUDFLARE_KEY_VALUE`) and set `CLOUDFLARE_API_TOKEN` to
 `${CLOUDFLARE_KEY_VALUE}`. Create the two tokens it rotates with identical
 permissions, as in the token table above.
 
 **Identity.** Create a Doppler service account with Viewer on `reach-around`
-config `ci` only, and an OIDC identity on it with issuer
+config `dev` only, and an OIDC identity on it with issuer
 `https://token.actions.githubusercontent.com`, audience
 `https://github.com/<owner>`, and one subject. The job runs in the `test`
 environment, so the subject ends in `environment:test`, not a branch ref.
@@ -588,7 +589,7 @@ putting it on the command line (a value typed as an argument lands in your
 shell history and the process list):
 
 ```
-doppler secrets set CLOUDFLARE_API_TOKEN --project reach-around --config ci
+doppler secrets set CLOUDFLARE_API_TOKEN --project reach-around --config dev
 ```
 
 Do the same for `dev` and `prd` as needed. If the Doppler CLI nags about a
@@ -662,7 +663,7 @@ through standard input, so it appears neither on screen nor in the process
 list:
 
 ```
-doppler run --project reach-around --config ci --only-secrets CLOUDFLARE_API_TOKEN -- \
+doppler run --project reach-around --config dev --only-secrets CLOUDFLARE_API_TOKEN -- \
   sh -c 'printf "header = \"Authorization: Bearer %s\"\n" "$CLOUDFLARE_API_TOKEN" \
     | curl -sS -K - https://api.cloudflare.com/client/v4/user/tokens/verify \
     | jq "{success, status: .result.status, expires_on: .result.expires_on}"'

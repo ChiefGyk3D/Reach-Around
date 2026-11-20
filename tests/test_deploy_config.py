@@ -182,7 +182,7 @@ def test_doppler_fetch_comes_after_every_install_step() -> None:
     uses = steps[fetch]["uses"]
     assert uses.startswith("ChiefGyk3D/git-your-ship-together/")
     assert steps[fetch]["with"]["project"] == "reach-around"
-    assert steps[fetch]["with"]["config"] == "ci"
+    assert steps[fetch]["with"]["config"] == "dev"
     assert "vars.DOPPLER_IDENTITY_ID" in steps[fetch]["with"]["identity-id"]
 
 

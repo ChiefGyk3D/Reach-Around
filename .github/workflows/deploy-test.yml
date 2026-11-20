@@ -861,14 +861,14 @@ jobs:
         run: npx --no-install wrangler --version
 
       # From here on the token is in the job environment: Doppler exports every
-      # secret in the config it reads, so the `ci` config must hold only what
+      # secret in the config it reads, so the `dev` config must hold only what
       # this deploy needs. No install step follows. On a repository without
       # Doppler the same name comes from the GitHub `test` environment secret.
       - name: Fetch Cloudflare credentials from Doppler
         uses: ChiefGyk3D/git-your-ship-together/.github/actions/doppler-secrets@01f397834f7acc553593abefbba135b18f580730 # v1.34.0
         with:
           project: reach-around
-          config: ci
+          config: dev
           identity-id: ${{ vars.DOPPLER_IDENTITY_ID }}
           token: ${{ secrets.DOPPLER_TOKEN }}
 
@@ -882,7 +882,7 @@ jobs:
           if [ -n "${CLOUDFLARE_API_TOKEN:-}" ]; then
             echo "Cloudflare token present (value not shown)."
           else
-            echo "::error::CLOUDFLARE_API_TOKEN is not set: Doppler (project reach-around, config ci) and the GitHub secret both gave nothing (see docs/deploy.md)"
+            echo "::error::CLOUDFLARE_API_TOKEN is not set: Doppler (project reach-around, config dev) and the GitHub secret both gave nothing (see docs/deploy.md)"
             exit 1
           fi
 
@@ -920,7 +920,7 @@ jobs:
       # CLOUDFLARE_PURGE_TOKEN (scope: Zone > Cache Purge, one zone only) and the
       # variable ZONE_ID are set. It never fails the deploy: a refused purge is
       # a warning and a line in the job summary. The purge token stays a GitHub
-      # `test` environment secret, never in the Doppler `ci` config, so it
+      # `test` environment secret, never in the Doppler `dev` config, so it
       # reaches this step only and not the wrangler steps. The script gives it
       # to curl on stdin. The deploy token is blanked here: this step has no
       # use for it.
