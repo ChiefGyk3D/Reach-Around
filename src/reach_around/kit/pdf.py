@@ -41,7 +41,7 @@ import signal
 import subprocess
 import tempfile
 import unicodedata
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
@@ -74,6 +74,7 @@ from reach_around.site.kit import (
     audience_bases,
     canonical,
     demographic_withheld,
+    platform_counts,
     text_fields,
 )
 
@@ -371,6 +372,7 @@ def _expected_text(
     public: bool = False,
     imported: ImportedHistory | None = None,
     live_day: date | None = None,
+    platform_counts: Mapping[str, list[int]] | None = None,
 ) -> list[tuple[str, str]]:
     """(where, text) for everything the page must print. A headline
     number is one entry per row (platform, measure, value and date together, in
@@ -440,7 +442,10 @@ def _expected_text(
         for index, item in enumerate(getattr(kit, name)):
             withheld = (
                 demographic_withheld(
-                    item, audience_bases(item.platform, resolved, kit.analytics)
+                    item,
+                    audience_bases(
+                        item.platform, resolved, kit.analytics, platform_counts
+                    ),
                 )
                 if name == "demographics"
                 else frozenset()
@@ -543,6 +548,7 @@ def check_text(
     valid_as_of_text: str | None = None,
     imported: ImportedHistory | None = None,
     live_day: date | None = None,
+    platform_counts: Mapping[str, list[int]] | None = None,
 ) -> None:
     """Fail if a private value is in ``text`` or configured gated text is not.
 
@@ -586,7 +592,12 @@ def check_text(
                 "text from the gate form appears in the PDF; nothing was written"
             )
     expected = _expected_text(
-        kit, numbers, public=public, imported=imported, live_day=live_day
+        kit,
+        numbers,
+        public=public,
+        imported=imported,
+        live_day=live_day,
+        platform_counts=platform_counts,
     )
     if live_since_text is not None:
         expected.append(("the live-since line", live_since_text))
@@ -686,6 +697,18 @@ def build_public_kit_pdf(
     )
 
 
+def _link_page_counts(
+    config: SiteConfig, numbers: Numbers | None, created: date
+) -> dict[str, list[int]]:
+    """The link page's counts, resolved on both days the staged page may have
+    used, so a group the page withheld is not expected in the text."""
+    found: dict[str, list[int]] = {}
+    for day in {utc_today(), created}:
+        for platform, counts in platform_counts(config, numbers, day).items():
+            found.setdefault(platform, []).extend(counts)
+    return found
+
+
 def _print(
     config: SiteConfig,
     kit: KitConfig,
@@ -725,6 +748,7 @@ def _print(
         valid_as_of_text=valid_as_of_text(created) if public else None,
         imported=imported,
         live_day=day,
+        platform_counts=_link_page_counts(config, numbers, created),
     )
     path = write_private(target_dir, name, final, overwrite=overwrite)
     return PdfResult(path=path, pages=len(pages), size=len(final))

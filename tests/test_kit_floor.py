@@ -273,33 +273,49 @@ def test_recent_post_and_case_study_counts_follow_the_floor() -> None:
             "platform": "twitch",
             "thumbnail": "t.png",
             "views": 4,
-            "likes": 5,
-            "comments": 0,
-            "reposts": 3,
-            "quotes": None,
+            "likes": 3,
+            "comments": 2,
+            "reposts": 1,
+            "quotes": 4,
         },
     )()
     row = _post_rows([post])["Twitch"][0]
-    assert (row["views"], row["likes"], row["comments"]) == (UNDER_FLOOR, "5", "0")
-    assert (row["reposts"], row["quotes"]) == (UNDER_FLOOR, None)
+    assert [row[k] for k in ("views", "likes", "comments", "reposts", "quotes")] == [
+        UNDER_FLOOR
+    ] * 5
+    edge = type(
+        "P",
+        (),
+        {
+            "platform": "twitch",
+            "thumbnail": "t.png",
+            "views": 5,
+            "likes": 0,
+            "comments": 1234,
+            "reposts": None,
+            "quotes": None,
+        },
+    )()
+    out = _post_rows([edge])["Twitch"][0]
+    assert (out["views"], out["likes"], out["comments"]) == ("5", "0", "1,234")
+    assert (out["reposts"], out["quotes"]) == (None, None)
     case = type(
         "C",
         (),
         {
             "thumbnails": [],
             "views": 1,
-            "likes": 5,
+            "likes": 2,
             "comments": 4,
             "period_start": date(2027, 2, 1),
             "period_end": date(2027, 2, 28),
         },
     )()
     out = _case_rows([case])[0]
-    assert (out["views"], out["likes"], out["comments"]) == (
-        UNDER_FLOOR,
-        "5",
-        UNDER_FLOOR,
-    )
+    assert [out[k] for k in ("views", "likes", "comments")] == [UNDER_FLOOR] * 3
+    case.views, case.likes, case.comments = 5, 0, 1234
+    out = _case_rows([case])[0]
+    assert (out["views"], out["likes"], out["comments"]) == ("5", "0", "1,234")
 
 
 @pytest.mark.parametrize(
@@ -497,3 +513,211 @@ def test_each_age_column_is_checked_on_its_own() -> None:
     assert demographic_withheld(_demo(10, 3, 10), [100]) == {"ages"}  # male column
     assert demographic_withheld(_demo(10, 10, 3), [100]) == {"ages"}  # female column
     assert demographic_withheld(_demo(3, 3, 3), []) == frozenset()  # no printed count
+
+
+# --- every printed count of the platform is a base ---------------------------------
+
+
+def place_doc() -> dict[str, Any]:
+    """Only the countries group has a small cell; no kit number for instagram."""
+    doc = kit_doc()
+    doc["metrics"] = []
+    doc["analytics"] = []
+    doc["demographics"] = [
+        {
+            "platform": "instagram",
+            "as_of": "2027-03-01",
+            "gender": {"male": 50, "female": 50},
+            "ages": [
+                {"range": "18-24", "all": 50, "male": 50, "female": 50},
+                {"range": "25-34", "all": 50, "male": 50, "female": 50},
+            ],
+            "countries": [
+                {"name": "Exampleland", "percentage": 3},
+                {"name": "Otherland", "percentage": 97},
+            ],
+        }
+    ]
+    return doc
+
+
+def platform_config(doc: dict[str, Any], count: dict[str, Any] | None) -> Any:
+    from reach_around.config import SiteConfig
+
+    item: dict[str, Any] = {
+        "platform": "instagram",
+        "handle": "@example",
+        "url": "https://example.com/ig",
+    }
+    item.update(count or {})
+    return SiteConfig.model_validate(
+        {
+            "version": 1,
+            "creator": {"name": "Example Creator"},
+            "tabs": [
+                {
+                    "id": "start",
+                    "title": "Start",
+                    "blocks": [{"id": "socials", "items": [item]}],
+                }
+            ],
+            "features": {"kit_gate": True},
+            "kit": doc,
+        }
+    )
+
+
+def numbers_for(count: int) -> Any:
+    from datetime import UTC, datetime
+
+    from reach_around.config.numbers import Numbers, NumbersEntry
+
+    return Numbers(
+        entries={
+            "instagram": NumbersEntry(
+                count=count, as_of=datetime(2027, 3, 9, 12, 0, tzinfo=UTC)
+            )
+        }
+    )
+
+
+def countries_shown(
+    tmp_path: Path, doc: dict[str, Any], config: Any, numbers: Any
+) -> bool:
+    _, _, gated = build_instance(tmp_path, config, numbers)
+    return "Exampleland" in (gated / "kit.html").read_text(encoding="utf-8")
+
+
+def test_no_printed_count_for_the_platform_means_the_shares_print(
+    tmp_path: Path,
+) -> None:
+    doc = place_doc()
+    assert countries_shown(tmp_path, doc, platform_config(doc, None), None)
+
+
+def test_a_link_page_count_typed_on_the_platform_item_is_a_base(
+    tmp_path: Path,
+) -> None:
+    doc = place_doc()
+    config = platform_config(doc, {"count": 100, "as_of": "2027-03-02"})
+    assert not countries_shown(tmp_path, doc, config, None)
+    # the public link page really prints that count, so the base is real
+    _, site, _ = build_instance(tmp_path / "again", config)
+    assert "100" in (site / "index.html").read_text(encoding="utf-8")
+
+
+def test_a_link_page_count_from_the_numbers_file_is_a_base(tmp_path: Path) -> None:
+    doc = place_doc()
+    config = platform_config(doc, None)
+    assert not countries_shown(tmp_path, doc, config, numbers_for(100))
+
+
+def test_a_large_link_page_count_keeps_the_shares(tmp_path: Path) -> None:
+    doc = place_doc()
+    config = platform_config(doc, {"count": 12_000, "as_of": "2027-03-02"})
+    assert countries_shown(tmp_path, doc, config, None)
+
+
+def test_a_link_page_count_under_the_floor_is_not_printed_so_not_a_base(
+    tmp_path: Path,
+) -> None:
+    doc = place_doc()
+    config = platform_config(doc, {"count": 4, "as_of": "2027-03-02"})
+    assert countries_shown(tmp_path, doc, config, None)
+
+
+def test_the_analytics_followers_are_a_base(tmp_path: Path) -> None:
+    doc = place_doc()
+    doc["analytics"] = [
+        {
+            "platform": "instagram",
+            "synced_with": "Example Social API",
+            "as_of": "2027-03-08",
+            "followers": 100,
+            "followers_30_day_percent": 12.0,
+        }
+    ]
+    assert not countries_shown(tmp_path, doc, platform_config(doc, None), None)
+
+
+def test_a_rounded_form_is_read_at_its_true_value() -> None:
+    """A tile prints 1,004 followers as 1.0k, so a reader holds the range 950 to
+    1,049. The rule uses the true count, which is never below the reader's upper
+    bound, so a cell the reader could not call small is never hidden, and a cell
+    the reader can call small always is."""
+    from reach_around.site.kit import demographic_withheld
+
+    demo = _demo(50, 50, 50)
+    assert demographic_withheld(demo, [999]) == frozenset()
+    assert demographic_withheld(_zero_share_demo(), [999]) == {"countries"}
+    assert demographic_withheld(_zero_share_demo(), [1000]) == frozenset()
+
+
+def _zero_share_demo() -> Any:
+    from reach_around.config.kit import Demographic
+
+    return Demographic.model_validate(
+        {
+            "platform": "instagram",
+            "as_of": "2027-03-01",
+            "gender": {"male": 50, "female": 50},
+            "ages": [{"range": "18-24", "all": 100, "male": 100, "female": 100}],
+            "countries": [
+                {"name": "Exampleland", "percentage": 0},
+                {"name": "Otherland", "percentage": 100},
+            ],
+        }
+    )
+
+
+def test_the_pdf_text_check_follows_the_link_page_base(tmp_path: Path) -> None:
+    from reach_around.kit.pdf import build_kit_pdf
+
+    doc = place_doc()
+    config = platform_config(doc, {"count": 100, "as_of": "2027-03-02"})
+    _, site, gated = build_instance(tmp_path, config)
+    out = build_kit_pdf(
+        config,
+        gated_dir=gated,
+        site_dir=site,
+        out_dir=tmp_path / "o",
+        name="k.pdf",
+        created=CREATED,
+        renderer=fake_renderer,
+    ).path
+    assert "Exampleland" not in flat(out)
+    from reach_around.kit.pdftext import extract_pages
+
+    text = "\n".join(extract_pages(out.read_bytes()))
+    # the group the page withheld is not expected in the text ...
+    check_text(config.kit, text, None, None, platform_counts={"instagram": [100]})
+    # ... and with no base known the same text is missing the group
+    with pytest.raises(PdfError, match="countries"):
+        check_text(config.kit, text, None, None, platform_counts={})
+
+
+# --- the raw forms of the floored counts ---------------------------------------
+
+
+def test_the_screen_reader_count_follows_the_floor_too() -> None:
+    from reach_around.config.blocks import Platforms
+    from reach_around.site.platforms import platform_rows
+
+    block = Platforms.model_validate(
+        {
+            "id": "socials",
+            "items": [
+                {
+                    "platform": "instagram",
+                    "handle": "@a",
+                    "url": "https://example.com/a",
+                    "count": c,
+                    "as_of": "2027-03-01",
+                }
+                for c in (4, 5, 1234)
+            ],
+        }
+    )
+    rows = platform_rows(block, None, TODAY)
+    assert [r.exact for r in rows] == [UNDER_FLOOR, "5", "1,234"]
+    assert [r.short for r in rows] == [UNDER_FLOOR, "5", "1.2k"]

@@ -137,12 +137,20 @@ Three derived figures follow from that:
   floor, or when any whole earlier count under the floor would print exactly this
   change (the check uses the text a reader sees, one decimal, not the typed value).
 - **Demographic shares.** A whole-number share printed beside a count of the same
-  platform tells a reader how many people the cell holds. When the most a cell can
-  hold, given the printed followers or headline numbers of that platform and the
-  half-point rounding of the share, is 1 to 4, the whole group (gender, age,
-  countries or cities) is replaced by a "not shown" line, because its shares total
-  100 and one hidden cell would follow from the rest. With no printed count for
-  the platform there is nothing to read the share against, and the shares print.
+  platform tells a reader how many people the cell holds. The counts a share is
+  read against are every count of that platform printed at 5 or more on any page
+  or PDF of the site: the headline numbers of the kit (typed, or from the numbers
+  file), the followers of the platform's analytics tab, and the count beside the
+  platform on the link page (typed on the platforms item, or from the numbers
+  file, as the page resolves it), in its short and its exact form. A count under 5
+  prints as "Under 5" and is no base. A rounded form such as 1.2k is read at the
+  true count: the rule only ever hides more than the rounded form would allow a
+  reader to call small. When the most a cell can hold against any such count,
+  given the half-point rounding of the share, is 1 to 4, the whole group (gender,
+  age, countries or cities) is replaced by a "not shown" line, because its shares
+  total 100 and one hidden cell would follow from the rest. Only when no count of
+  the platform is printed anywhere do the shares print. A count the owner keeps
+  off every page (a figure in the history file, say) is not a base.
 
 The PDF text check expects these forms, including the tile of each analytics tab
 (its sync line, followers, change and stats), so a page that printed a number

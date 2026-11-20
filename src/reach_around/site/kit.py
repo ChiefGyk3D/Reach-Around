@@ -46,7 +46,7 @@ from typing import Any
 
 from jinja2 import Environment
 
-from reach_around.config.blocks import platform_name
+from reach_around.config.blocks import Platforms, platform_name
 from reach_around.config.cutover import cutover_label, live_since, utc_today
 from reach_around.config.engagement import ACROSS_PLATFORMS_NOTE, FORMULAS, rows_for
 from reach_around.config.era import classify_era, era_text
@@ -71,6 +71,7 @@ from reach_around.config.numbers import Numbers, stale_limit
 from reach_around.config.zones import ZONES, utc_day_start_iso
 from reach_around.funnel.floor import FLOOR, share_pins_small_count, shown_count
 from reach_around.funnel.floor import UNDER_FLOOR as UNDER_FLOOR
+from reach_around.site.platforms import platform_rows
 
 KIT_PAGE = Path("kit") / "index.html"
 RETRY_PAGE = Path("kit") / "retry" / "index.html"
@@ -781,8 +782,40 @@ def _imported_block(
     return {"heading": IMPORTED_HEADING, "note": IMPORTED_NOTE, "rows": rows}
 
 
-def audience_bases(platform: str, metrics: Any, analytics: Any) -> list[int]:
-    """The counts printed for one platform that a share could be read against."""
+def platform_counts(
+    config: Any, numbers: Numbers | None, day: date
+) -> dict[str, list[int]]:
+    """The counts the link page prints beside each platform, by platform.
+
+    Typed counts and numbers-file counts, resolved the way the page resolves
+    them (a fresh file value wins). A count under the floor prints as "Under 5"
+    and is no base. The link page prints the exact count too, so the true count
+    is what a reader can recover.
+    """
+    found: dict[str, list[int]] = {}
+    for tab in config.tabs:
+        for block in tab.blocks:
+            if not isinstance(block, Platforms):
+                continue
+            rows = platform_rows(block, numbers, day, config)
+            for entry, row in zip(block.items, rows, strict=True):
+                if row.count is not None and row.count >= FLOOR:
+                    found.setdefault(entry.platform, []).append(row.count)
+    return found
+
+
+def audience_bases(
+    platform: str,
+    metrics: Any,
+    analytics: Any,
+    link_page: Mapping[str, list[int]] | None = None,
+) -> list[int]:
+    """Every count of one platform that is printed at 5 or more, anywhere a
+    reader of the kit can see it: the kit's headline numbers (typed or from the
+    numbers file), the followers of its analytics tab, and the count beside it
+    on the link page. A rounded form (1.2k) is read at its true value: the
+    share rule is monotone, so the true count is never below what the reader can
+    rule in, and a cell the reader could not call small is never hidden for it."""
     found = [
         m.value
         for m in metrics
@@ -793,6 +826,7 @@ def audience_bases(platform: str, metrics: Any, analytics: Any) -> list[int]:
         for row in analytics
         if row.platform == platform and row.followers >= FLOOR
     ]
+    found += (link_page or {}).get(platform, [])
     return found
 
 
@@ -1039,6 +1073,7 @@ def render_kit(
         if kit.engagement and not data["engagement"]:
             data["engagement"] = kit.engagement
         content = _content(data, live_day, config, today)
+        link_counts = platform_counts(config, numbers, today)
         content.update(
             partners=data["partners"],
             case_studies=_case_rows(data["case_studies"]),
@@ -1055,7 +1090,10 @@ def render_kit(
                         demographic_withheld(
                             d,
                             audience_bases(
-                                d.platform, data["metrics"], data["analytics"]
+                                d.platform,
+                                data["metrics"],
+                                data["analytics"],
+                                link_counts,
                             ),
                         )
                     ),
