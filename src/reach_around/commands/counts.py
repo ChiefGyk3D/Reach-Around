@@ -8,7 +8,13 @@ due, 4 when something is, 2 for usage or config problems.
 Exit codes of ``refresh``: 0 every source succeeded or was intentionally
 skipped; 3 at least one source failed (its previous number is kept); 2 usage or
 config problem; 1 the result files could not be written or another refresh
-holds the lock.
+holds the lock. A ``token-health:`` line per token-holding source is printed
+after the sources (docs/token-health.md); a token that is expiring changes no
+exit code, one that was rejected or expired is already a failed source (3).
+
+``counts tokens`` prints the same report from the config and the last status
+file, with no network and no secret: exit 0 every token ok, 4 a token is
+expiring, 3 a token is expired or was rejected, 2 usage or config problem.
 """
 
 from __future__ import annotations
@@ -106,6 +112,20 @@ from reach_around.counts.secret_sink import (
     TokenHolder,
     scope_lock,
 )
+from reach_around.counts.token_health import (
+    OK as TOKEN_OK,
+)
+from reach_around.counts.token_health import (
+    TokenHealth,
+    assess,
+    render_github,
+    render_json,
+    render_markdown,
+    render_text,
+)
+from reach_around.counts.token_health import (
+    exit_code as token_exit_code,
+)
 from reach_around.counts.youtube_analytics import RETAIN_DAYS, deletion_candidates
 from reach_around.net.egress import Transport
 from reach_around.net.fetch import fetch_json
@@ -118,6 +138,7 @@ EXIT_WRITE = 1
 EXIT_USAGE = 2
 EXIT_SOURCE_FAILED = 3
 EXIT_DUE = 4
+EXIT_TOKEN_WARNING = 4  # counts tokens: a token is expiring (same code as counts stale)
 EXIT_REPLACED_UNSURE = 5  # history-redact: the file was replaced, durability unsure
 
 
@@ -380,6 +401,18 @@ def _retention_notice(history: Path, stamp: datetime) -> None:
         )
 
 
+def _print_token_health(
+    sources: list[Source], outcomes: list[Outcome], stamp: datetime
+) -> None:
+    """One ``token-health:`` line per token-holding source. Never a value; a
+    warning here changes no exit code (a rejected token already failed)."""
+    status = {
+        o.platform: {"status": o.status, "detail": o.detail or ""} for o in outcomes
+    }
+    for item in assess(sources, status, stamp.astimezone(UTC).date()):
+        print(item.line(), file=sys.stdout if item.state == TOKEN_OK else sys.stderr)
+
+
 def _cycle(
     paths: Paths,
     sources: list[Source],
@@ -424,6 +457,7 @@ def _cycle(
                     f"with --accept-drop {outcome.platform}",
                     file=sys.stderr,
                 )
+    _print_token_health(sources, outcomes, stamp)
     # The status file goes first and the numbers file last, so a failure can never
     # leave new numbers with no record of the run. If the numbers write fails, the
     # status is rewritten with ``committed: false`` (best effort) and the exit is 1.
@@ -727,6 +761,8 @@ def _dispatch(args: argparse.Namespace) -> int:
         return _run_import(args)
     if args.counts_command == "stale":
         return _run_stale(args)
+    if args.counts_command == "tokens":
+        return _run_tokens(args)
     return _run(args)
 
 
@@ -1086,6 +1122,40 @@ def run_stale(
     return EXIT_DUE if items else EXIT_OK
 
 
+_TOKEN_RENDERERS: dict[str, Callable[[list[TokenHealth]], str]] = {
+    "text": render_text,
+    "json": render_json,
+    "markdown": render_markdown,
+    "github": render_github,
+}
+
+
+def run_tokens(
+    config_path: Path,
+    status_path: Path | None,
+    fmt: str,
+    *,
+    today: date | None = None,
+) -> int:
+    """Token health from the config and the last status file. No network, no
+    secret, no value. Exit 0 ok, 4 expiring, 3 expired or rejected, 2 usage."""
+    try:
+        config = load_site_config(config_path)
+        path = status_path or config_path.parent / "numbers.status.json"
+        status = load_status(path)
+    except (ConfigError, ValueError, OSError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return EXIT_USAGE
+    sources = list(config.numbers.sources) if config.numbers is not None else []
+    report = assess(sources, status, today if today is not None else utc_today())
+    sys.stdout.write(_TOKEN_RENDERERS[fmt](report))
+    return token_exit_code(report, EXIT_SOURCE_FAILED, EXIT_TOKEN_WARNING)
+
+
+def _run_tokens(args: argparse.Namespace) -> int:
+    return run_tokens(args.config, args.status, args.format)
+
+
 def _run_import(args: argparse.Namespace) -> int:
     return run_import(args.config, args.csv, args.out, args.dry_run)
 
@@ -1190,5 +1260,23 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
         help=f"remind when a number is this many days old (default {REMIND_DAYS})",
     )
     stale_parser.add_argument("--json", action="store_true", help="machine-readable")
+    tokens_parser = actions.add_parser(
+        "tokens",
+        help="report platform token health (ok, expiring, expired, rejected)",
+        description="Reads the config and the last status file; no network, no "
+        "secret, never a token value. Exit 0 every token ok, 4 a token is "
+        "expiring, 3 a token is expired or was rejected, 2 usage or config error.",
+    )
+    tokens_parser.add_argument("--config", type=Path, required=True)
+    tokens_parser.add_argument(
+        "--status", type=Path, help="status file (default: numbers.status.json)"
+    )
+    tokens_parser.add_argument(
+        "--format",
+        choices=tuple(_TOKEN_RENDERERS),
+        default="text",
+        help="text (default), json, markdown (a step summary) or github "
+        "(Actions annotations)",
+    )
     _register_history(actions)
     counts.set_defaults(func=_dispatch)

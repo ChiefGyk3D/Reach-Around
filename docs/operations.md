@@ -75,7 +75,9 @@ week.
    inside two weeks of expiry. Platform token steps are in
    [instagram-threads-sources.md](instagram-threads-sources.md),
    [twitch-source.md](twitch-source.md) and [tiktok-source.md](tiktok-source.md);
-   a `token-health:` line in the daily refresh output is the early warning.
+   a `token-health:` line in the daily refresh output (and the Token health table in
+   the workflow's step summary, see [token-health.md](token-health.md)) is the
+   early warning.
 
 ## Every month (about an hour)
 

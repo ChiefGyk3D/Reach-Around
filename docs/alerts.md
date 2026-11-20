@@ -197,7 +197,7 @@ use it on a site with steady traffic or leave the event off. `view_budget_hit`
 reads the account-wide ceiling (`ACCOUNT_VIEWS_PER_HOUR`), not one site's own
 budget. Stale social numbers (hand-kept or failed refresh) are reported by
 `reach-around counts stale` (exit 4) and the `token-health:` lines, not by the
-Worker.
+Worker; the token report is in [token-health.md](token-health.md).
 
 ## Collection coverage and gaps
 

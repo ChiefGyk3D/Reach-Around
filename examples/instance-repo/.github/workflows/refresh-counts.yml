@@ -58,6 +58,13 @@ jobs:
       - name: Check the config in plain language
         run: scripts/check-config.sh
 
+      # Token health: scripts/refresh-counts.sh also runs `counts tokens`
+      # (offline, no keys) and shows a warning annotation while a token is
+      # expiring, an error once it is expired or was rejected, and a table in
+      # this step's summary. It only reports; a token that was rejected already
+      # fails its source below. To get the same warning in Pushover, Discord or
+      # Matrix, add a step in your own workflow (docs/token-health.md).
+      #
       # The only step with the keys. A key that is not set is left out and its
       # source is skipped. The engine keeps a suspect value out and fails only
       # that source; the others still refresh. Nothing here overrides that.

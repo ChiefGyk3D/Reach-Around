@@ -38,6 +38,14 @@
 # here, with "source_failed=true" appended to $GITHUB_OUTPUT, so the workflow
 # can commit the good numbers first and fail afterwards. Any other engine exit
 # code (a config problem, a write problem) is returned as it is.
+#
+# Token health: after the refresh the script runs `counts tokens` once more
+# (offline, no keys, read-only mounts) and shows the result as GitHub Actions
+# annotations (a warning while a token is expiring, an error once it is expired
+# or was rejected) and as a table in $GITHUB_STEP_SUMMARY. It only reports: its
+# own exit code never changes this script's, and an engine too old to know the
+# command just skips it. Sending the warning to Pushover, Discord or Matrix is
+# the instance's own choice (docs/token-health.md in the engine repository).
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -97,6 +105,8 @@ done
   echo "error: site.yaml not found" >&2
   exit 2
 }
+# The read-only mounts, kept for the offline token report below.
+config_mounts=("${mounts[@]}")
 
 # Keep numbers entered by hand (platforms without a source): the engine reads
 # the old file and only replaces what a source returns.
@@ -175,6 +185,33 @@ case "$status" in
     exit "$status"
     ;;
 esac
+
+# Token health report. Best effort and read only: the container has no network
+# and no keys, sees the config and the status file the engine just wrote, and
+# prints fixed words and day counts, never a token. Annotations go to the step
+# log, the table to the step summary. Whatever it returns is ignored on purpose
+# (a refusal to report must not hide the numbers); the engine's own exit code,
+# already handled above, is what turns a run red.
+# A hung report is cut after 60 seconds where `timeout` exists (GNU coreutils;
+# not on a stock macOS), so it can never hold the refresh job.
+limit=()
+if command -v timeout >/dev/null 2>&1; then limit=(timeout 60); fi
+report_tokens() {
+  local format="$1"
+  ${limit[@]+"${limit[@]}"} "$runtime" run --rm --read-only --cap-drop ALL \
+    --security-opt no-new-privileges:true --pids-limit 64 --memory 256m \
+    --network none --tmpfs /tmp \
+    --user "$(id -u):$(id -g)" ${userns[@]+"${userns[@]}"} \
+    "${config_mounts[@]}" -v "$workdir":/data:ro \
+    "$image" counts tokens --config /config/site.yaml \
+    --status /data/numbers.status.json --format "$format" 2>/dev/null
+}
+set +e
+report_tokens github
+if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+  report_tokens markdown >>"$GITHUB_STEP_SUMMARY"
+fi
+set -e
 
 # The engine's file is data from a container that talked to the network. It
 # reaches the repository only through the strict validator, which writes a
