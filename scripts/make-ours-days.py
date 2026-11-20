@@ -8,8 +8,9 @@ Usage: python3 -I scripts/make-ours-days.py --out DIR --since DAY --until DAY
 Runs the two acceptance queries of docs/analytics-acceptance.md for the UTC
 days SINCE to UNTIL (both full, past days) and writes
 ``DIR/ours-days-SINCE_UNTIL.csv`` in the shape check-analytics.py reads. With
-``--beacons FILE`` it then runs check-analytics.py on the two files and exits
-with its code.
+``--beacons FILE`` it then runs check-analytics.py on the two files, writes its
+table to ``DIR/ours-days-SINCE_UNTIL.check.txt`` (mode 0600, not printed) and
+exits with its code.
 
 Credentials come only from the environment, never from an argument:
   RA_D1_TOKEN         a Cloudflare API token with D1 Read and nothing else
@@ -52,7 +53,8 @@ MAX_DAYS = 31
 MAX_BODY = 4 * 1024 * 1024
 TIMEOUT = 30
 MAX_ROWS = 10_000
-SITE_RE = re.compile(r"[a-z0-9][a-z0-9-]{0,31}")
+# Same contract as worker/src/sites.ts SITE_ID and the 0008_sites.sql CHECK: 1 to 20.
+SITE_RE = re.compile(r"[a-z0-9][a-z0-9-]{0,19}")
 ACCOUNT_RE = re.compile(r"[0-9a-f]{32}")
 DB_RE = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 API = "https://api.cloudflare.com/client/v4/accounts/{acct}/d1/database/{db}/query"
@@ -321,8 +323,13 @@ def main(
             check_beacons(args.beacons)
         out_dir = check_out_dir(args.out)
         target = out_dir / f"ours-days-{since.isoformat()}_{until.isoformat()}.csv"
-        if target.exists() or target.is_symlink():
-            raise Refused("the output file already exists; it is never overwritten")
+        report = target.with_suffix(".check.txt")
+        for f in (target, report) if args.beacons else (target,):
+            if f.exists() or f.is_symlink():
+                raise Refused(
+                    "an output file already exists; it is never overwritten "
+                    "(move or delete it first)"
+                )
         if runner is None:
             creds = credentials(env)
             if creds is None:
@@ -364,23 +371,39 @@ def main(
     if not args.beacons:
         return 0
     check = Path(__file__).with_name("check-analytics.py")
-    r = subprocess.run(  # noqa: S603 - fixed argv, python and a sibling script
-        [
-            sys.executable,
-            "-I",
-            str(check),
-            "--beacons",
-            args.beacons,
-            "--ours",
-            str(target),
-            "--since",
-            since.isoformat(),
-            "--until",
-            until.isoformat(),
-        ],
-        check=False,
-    )
-    print(f"check-analytics exit={r.returncode}")
+    cmd = [
+        sys.executable,
+        "-I",
+        str(check),
+        "--beacons",
+        args.beacons,
+        "--ours",
+        str(target),
+        "--since",
+        since.isoformat(),
+        "--until",
+        until.isoformat(),
+    ]
+    # The table holds every day's counts: it goes to a private file, not the log.
+    try:
+        fd = os.open(
+            report, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600
+        )
+    except OSError:
+        print("check-analytics: could not create the report file; exit=3")
+        print("the CSV was kept: move or delete it before a rerun")
+        return 3
+    try:
+        with os.fdopen(fd, "w") as fh:
+            r = subprocess.run(  # noqa: S603 - fixed argv, python and a sibling script
+                cmd, stdout=fh, stderr=subprocess.STDOUT, check=False
+            )
+    except OSError:
+        report.unlink(missing_ok=True)
+        print("check-analytics: could not start; exit=3")
+        print("the CSV was kept: move or delete it before a rerun")
+        return 3
+    print(f"check-analytics exit={r.returncode}; table in {report}")
     return r.returncode
 
 

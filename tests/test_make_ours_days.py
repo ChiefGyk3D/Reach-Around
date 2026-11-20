@@ -176,8 +176,67 @@ def test_beacons_option_runs_the_check_and_passes_its_exit_code(
     bad = tmp_path / "x.csv"
     bad.write_text("day,views,clicks\n2026-11-01,900,20\n2026-11-02,120,30\n")
     assert go(out, Fake(), "--beacons", str(good)) == 0
-    (next(out.iterdir())).unlink()
+    for f in out.iterdir():
+        f.unlink()
     assert go(out, Fake(), "--beacons", str(bad)) == 1
+
+
+def test_check_table_goes_to_a_private_file_not_the_terminal(
+    out: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    beacons = tmp_path / "b.csv"
+    beacons.write_text("day,views,clicks\n2026-11-01,731,20\n2026-11-02,120,30\n")
+    assert go(out, Fake(), "--beacons", str(beacons)) == 1
+    said = capsys.readouterr()
+    for sentinel in ("731", "FAIL", "PASS", "2026-11-01 "):
+        assert sentinel not in said.out + said.err
+    assert "check-analytics exit=1" in said.out
+    report = out / "ours-days-2026-11-01_2026-11-02.check.txt"
+    assert str(report) in said.out
+    assert stat.S_IMODE(report.stat().st_mode) == 0o600
+    table = report.read_text()
+    assert "731" in table and "FAIL" in table and "Summary:" in table
+
+
+def test_existing_check_file_is_never_overwritten(out: Path, tmp_path: Path) -> None:
+    report = out / "ours-days-2026-11-01_2026-11-02.check.txt"
+    report.write_text("old")
+    beacons = tmp_path / "b.csv"
+    beacons.write_text("day,views,clicks\n2026-11-01,100,20\n2026-11-02,120,30\n")
+    fake = Fake()
+    assert go(out, fake, "--beacons", str(beacons)) == 2
+    assert fake.seen == []
+    assert report.read_text() == "old"
+
+
+def test_check_that_cannot_start_exits_3_and_keeps_the_csv(
+    out: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    beacons = tmp_path / "b.csv"
+    beacons.write_text("day,views,clicks\n2026-11-01,100,20\n2026-11-02,120,30\n")
+
+    def nope(*_a: object, **_k: object) -> None:
+        raise OSError("no")
+
+    monkeypatch.setattr(mod.subprocess, "run", nope)
+    assert go(out, Fake(), "--beacons", str(beacons)) == 3
+    said = capsys.readouterr().out
+    assert "could not start" in said and "move or delete" in said
+    assert [f.name for f in out.iterdir()] == ["ours-days-2026-11-01_2026-11-02.csv"]
+
+
+def test_site_id_boundary_matches_the_worker_contract(out: Path) -> None:
+    ok, too_long = "a" * 20, "a" * 21
+    assert mod.SITE_RE.fullmatch(ok) and not mod.SITE_RE.fullmatch(too_long)
+    base = ["--out", str(out), "--since", "2026-11-01", "--until", "2026-11-02"]
+    fake = Fake()
+    assert mod.main([*base, "--site", too_long], runner=fake, today=TODAY, env={}) == 2
+    assert fake.seen == []
+    assert mod.main([*base, "--site", ok], runner=fake, today=TODAY, env={}) == 0
+    assert fake.params[0][0] == ok
 
 
 def test_day_with_no_rows_is_left_out_so_it_reads_as_a_gap(out: Path) -> None:
@@ -358,3 +417,19 @@ def test_wrapper_is_thin_and_passes_exit_code() -> None:
         env={"PATH": os.environ["PATH"]},
     )
     assert r.returncode == 2, r.stdout + r.stderr
+
+
+def test_check_file_appearing_after_the_precheck_is_kept(
+    out: Path, tmp_path: Path
+) -> None:
+    report = out / "ours-days-2026-11-01_2026-11-02.check.txt"
+    beacons = tmp_path / "b.csv"
+    beacons.write_text("day,views,clicks\n2026-11-01,100,20\n2026-11-02,120,30\n")
+
+    class Racy(Fake):
+        def __call__(self, sql: str, params: list[object]) -> list[dict[str, object]]:
+            report.write_text("someone else")
+            return super().__call__(sql, params)
+
+    assert go(out, Racy(), "--beacons", str(beacons)) == 3
+    assert report.read_text() == "someone else"
