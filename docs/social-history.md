@@ -162,14 +162,17 @@ before you start one. Two things protect you, and neither replaces that rule:
 
 * The writers (`history-add`, the engine's append, a redaction, removal of
   leftovers) take turns through the lock file. An append that waits for the lock
-  while a redaction runs then opens the redacted file and succeeds on it; only a
-  writer that bypasses the lock can be refused, when its file turns out to have
-  been replaced. A redaction that cannot get the lock in time refuses.
+  while a redaction replaces the file is refused ("replaced while waiting"),
+  not continued on the new file: run it again. An append that did not wait is
+  unaffected, and so is one that creates the file. A writer that bypasses the
+  lock can also be refused, when its file turns out to have been replaced. A
+  redaction that cannot get the lock in time refuses.
 * The example refresh script (`examples/instance-repo/scripts/refresh-counts.sh`)
   works on a scratch copy and moves the result over `history/social.jsonl` at the
   end. It records the inode and SHA-256 of the file it copied and, before
-  anything is written and again under the lock (where `flock` is installed),
-  refuses with fixed words, writing nothing, if the file is no longer the same.
+  anything is written and again under the lock, refuses with fixed words, writing
+  nothing, if the file is no longer the same. It needs `flock` and refuses to
+  install the history file where that is missing.
   Without that, a redaction run during a local refresh would be undone and the
   removed values would come back. If it refuses, run the refresh again.
 
@@ -187,6 +190,9 @@ same key cannot be filled again. Only `api` rows are redacted; `hand_kept` and
 To redact by provider (for example the private analytics records), use
 `--provider youtube_analytics` instead of `--platform`. The tag on the record is
 the only selector; a platform name is never used to guess a provider.
+A provider selection covers only records that carry the tag. Rows written
+before the tag existed have none, so for an older file also run
+`--platform <slug>` to cover them.
 
 1. Record the trigger and its date (revocation, platform request, user request).
 2. Dry run (the default; prints counts only, never a value, note or hash):

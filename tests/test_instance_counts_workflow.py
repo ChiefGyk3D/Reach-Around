@@ -583,3 +583,38 @@ def test_the_workflow_runs_the_unmerged_guard_before_replacing_the_branch() -> N
     run = next(s["run"] for s in publish if "commit -m" in s.get("run", ""))
     assert "unmerged-history.sh" in run
     assert run.index("unmerged-history.sh") < run.index("push --force-with-lease")
+
+
+def _path_without(tool: str, tmp: Path) -> str:
+    """A PATH holding every program of the real PATH except ``tool``."""
+    shim = tmp / "nopath"
+    shim.mkdir()
+    for folder in os.environ["PATH"].split(os.pathsep):
+        if not os.path.isdir(folder):
+            continue
+        for entry in os.scandir(folder):
+            link = shim / entry.name
+            if (
+                entry.name != tool
+                and not link.exists()
+                and os.access(entry.path, os.X_OK)
+            ):
+                link.symlink_to(entry.path)
+    return str(shim)
+
+
+def test_without_flock_the_history_is_not_installed(tmp_path: Path) -> None:
+    """The move cannot be made safe against a redaction without the lock."""
+    root, env = _refresh_fixture(tmp_path)
+    (root / "history").mkdir(exist_ok=True)
+    target = root / "history" / "social.jsonl"
+    target.write_text("old\n")
+    numbers = root / "numbers.json"
+    numbers_before = numbers.read_bytes() if numbers.exists() else None
+    env["PATH"] = f"{tmp_path / 'bin'}:{_path_without('flock', tmp_path)}"
+    r = _run_refresh(root, env, "social.jsonl", tmp_path)
+    assert r.returncode != 0
+    assert "flock" in r.stderr
+    assert "nothing was overwritten" in r.stderr
+    assert target.read_text() == "old\n"
+    assert (numbers.read_bytes() if numbers.exists() else None) == numbers_before

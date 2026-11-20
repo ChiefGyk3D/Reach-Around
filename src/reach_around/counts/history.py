@@ -750,8 +750,16 @@ def _append(
     max_bytes: int,
     skip_days: bool,
 ) -> int:
+    # The file as it was before any wait for the writers' lock. If a redaction
+    # replaced it meanwhile, this append is refused instead of continuing on the
+    # new file (a file that did not exist yet is not a replacement).
+    before = _identity_of(dir_fd, path.name)
     sidecar = _open_sidecar(dir_fd, path.name, LOCK_WAIT_SECONDS)
     try:
+        if before is not None and _identity_of(dir_fd, path.name) != before:
+            raise HistoryError(
+                "the history file was replaced while waiting (a redaction?); run again"
+            )
         return _append_locked(dir_fd, path, records, max_bytes, skip_days)
     finally:
         os.close(sidecar)
@@ -916,6 +924,22 @@ def plan_redaction(
     return chosen
 
 
+def check_redaction_arguments(
+    reason: str, trigger_date: str, now: datetime | None = None
+) -> datetime:
+    """Validate the redaction's own arguments; return the moment it would run.
+
+    Called before anything is changed or cleaned up.
+    """
+    if type(reason) is not str or reason not in REASONS:
+        raise HistoryError("reason is not on the closed list")
+    trigger = _plain_date("trigger_date", trigger_date)
+    moment = (now if now is not None else datetime.now(UTC)).astimezone(UTC)
+    if trigger > moment.date():
+        raise HistoryError("trigger_date is in the future")
+    return moment
+
+
 def redact_records(
     path: Path,
     plan: Sequence[Record],
@@ -948,12 +972,7 @@ def redact_records(
     """
     if confirm is not True:
         raise HistoryError("redaction needs confirm=True; nothing was written")
-    if type(reason) is not str or reason not in REASONS:
-        raise HistoryError("reason is not on the closed list")
-    trigger = _plain_date("trigger_date", trigger_date)
-    moment = (now if now is not None else datetime.now(UTC)).astimezone(UTC)
-    if trigger > moment.date():
-        raise HistoryError("trigger_date is in the future")
+    moment = check_redaction_arguments(reason, trigger_date, now)
     if len(plan) > MAX_REDACT:
         raise HistoryError(f"redact at most {MAX_REDACT} records at a time")
     planned: dict[tuple[str, str, str, str], bytes] = {}

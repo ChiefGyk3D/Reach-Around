@@ -57,6 +57,7 @@ from reach_around.counts.history import (
     Record,
     RedactDurabilityError,
     append_records,
+    check_redaction_arguments,
     dump_new_history,
     find_stale_redaction_temps,
     find_unmarked_redaction_temps,
@@ -650,6 +651,7 @@ def run_history_redact(args: argparse.Namespace) -> int:
                     "removed automatically; look at them and remove them by hand"
                 )
             return EXIT_OK
+        check_redaction_arguments(args.reason, args.trigger_date)
         removed = remove_stale_redaction_temps(target, stale)
         if removed:
             _say(f"removed {removed} stale redaction temporary file(s)")

@@ -199,6 +199,13 @@ if [ -e "$workdir/history/social.jsonl" ]; then
 fi
 # Before anything is written: still the file the engine started from?
 if ! history_unchanged; then history_changed; fi
+# The final move is only safe against a redaction under the lock the engine's
+# writers take, so without flock nothing is installed (a check and a move are not
+# one step).
+if [ -n "$new_history" ] && ! command -v flock >/dev/null 2>&1; then
+  echo "refresh-counts: flock is required to install the history file safely and was not found; nothing was overwritten." >&2
+  exit 1
+fi
 if [ -f "$workdir/numbers.json" ] && [ ! -L "$workdir/numbers.json" ]; then
   python3 -I "$here/scripts/validate-numbers.py" \
     --in "$workdir/numbers.json" --out "$numbers" || {
@@ -210,21 +217,20 @@ fi
 if [ -n "$new_history" ]; then
   mkdir -p "$history_dir"
   # Take the lock the engine's history writers (append, redact) take, so a
-  # redaction cannot run between the last check and the move. Where flock is not
-  # installed the checks above and below still apply, without the lock.
+  # redaction cannot run between the last check and the move. flock is required
+  # (checked above); the checks before and after the lock catch a change made
+  # while the run waited.
   lock_file="$history_dir/.social.jsonl.lock"
   if [ -L "$lock_file" ]; then
     echo "error: the history lock file must not be a symbolic link" >&2
     exit 2
   fi
-  if command -v flock >/dev/null 2>&1; then
-    exec 9>>"$lock_file"
-    chmod 600 "$lock_file" 2>/dev/null || true
-    flock -w "${HISTORY_LOCK_WAIT_SECONDS:-30}" 9 || {
-      echo "refresh-counts: the history file is locked by another run (a redaction?); nothing was overwritten." >&2
-      exit 1
-    }
-  fi
+  exec 9>>"$lock_file"
+  chmod 600 "$lock_file" 2>/dev/null || true
+  flock -w "${HISTORY_LOCK_WAIT_SECONDS:-30}" 9 || {
+    echo "refresh-counts: the history file is locked by another run (a redaction?); nothing was overwritten." >&2
+    exit 1
+  }
   if ! history_unchanged; then history_changed; fi
   tmp="$(mktemp "$history_dir/.social.XXXXXX")"
   cp "$new_history" "$tmp"
