@@ -288,6 +288,8 @@ def test_a_gated_value_equal_to_public_analytics_is_allowed(
         "Example Creator media kit A fake creator used in tests. "
         "Streams games & talks. "
         "Twitch Followers 1,200 2027-03-01 YouTube Subscribers 3,400 2027-03-05 "
+        "Twitch analytics Synced with Example Social API on 2027-03-08 "
+        "Followers 12.5k +4.3% last 30 days Example views 1.3M "
         f"4,600 {public_value}"
     )
 
@@ -311,7 +313,9 @@ def test_a_demographic_platform_name_is_public_vocabulary_in_the_pdf_guard() -> 
         "Example Creator media kit A fake creator used in tests. "
         "Streams games & talks. "
         "Twitch Followers 1,200 2027-03-01 YouTube Subscribers 3,400 2027-03-05 "
-        "4,600 Kick Followers 12,460"
+        "4,600 Kick Followers 12,460 Twitch analytics "
+        "Synced with Example Social API on 2027-03-08 "
+        "Followers 12.5k +4.3% last 30 days"
     )
 
     check_text(config.kit, public_text, public=True)  # type: ignore[arg-type]

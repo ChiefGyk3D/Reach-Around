@@ -60,18 +60,20 @@ from reach_around.config.kit import (
 )
 from reach_around.config.models import SiteConfig
 from reach_around.config.numbers import Numbers
+from reach_around.funnel.floor import shown_count
 from reach_around.kit.output import check_name, confine_out_dir, write_private
 from reach_around.kit.pdftext import PdfTextError, extract_pages
 from reach_around.kit.stage import stage_page, valid_as_of_text
 from reach_around.site.kit import (
     GUARD_MIN_LENGTH,
-    UNDER_FLOOR,
     _analytics_rows,
     _gated_strings,
     _metric_rows,
     _public_values,
     _total,
+    audience_bases,
     canonical,
+    demographic_withheld,
     text_fields,
 )
 
@@ -399,15 +401,26 @@ def _expected_text(
     total = _total(unified_total(resolved), resolved)
     if total is not None:
         found.append(("the metric total", total["value"]))
-    # A count under the privacy floor prints as "Under 5" (#397); the text must
-    # hold that form, so a renderer or template that printed the number fails.
+    # The analytics tiles (#397): the sync line, the followers with the change
+    # beside them, and each stat. Anchored on the sync line, which no headline
+    # number row prints, so an unrelated row cannot satisfy them. A count under
+    # the privacy floor is expected as "Under 5".
     for card in _analytics_rows(kit.analytics, None):
         where = f"the analytics row {card['platform_name']!r}"
-        if card["followers"] == UNDER_FLOOR:
-            found.append((where, "Followers" + card["followers"]))
+        change = (
+            f"{card['delta']} last 30 days"
+            if card["delta"]
+            else "30-day change not shown"
+        )
+        found.append(
+            (
+                where,
+                f"Synced with {card['synced_with']} on {card['as_of']}"
+                f"Followers{card['followers']}{change}",
+            )
+        )
         for stat in card["stats"]:
-            if stat["value"] == UNDER_FLOOR:
-                found.append((where, stat["label"] + stat["value"]))
+            found.append((where, stat["label"] + stat["value"]))
     # The block "Before Reach Around" prints where the display policy puts it.
     if imported is not None and (not public or kit.imported_history_public):
         found.extend(expected_text(imported, live_day))
@@ -425,9 +438,18 @@ def _expected_text(
         "demographics",
     ):
         for index, item in enumerate(getattr(kit, name)):
+            withheld = (
+                demographic_withheld(
+                    item, audience_bases(item.platform, resolved, kit.analytics)
+                )
+                if name == "demographics"
+                else frozenset()
+            )
             for field, text in text_fields(item):
                 if field in {"url", "thumbnails"}:  # targets, not printed text
                     continue
+                if any(field.startswith(group) for group in withheld):
+                    continue  # a group held back for the privacy floor
                 if text:
                     found.append((f"kit.{name}[{index}].{field}", text))
             if name == "case_studies":
@@ -437,7 +459,9 @@ def _expected_text(
                     ("comments", "Comments"),
                 ):
                     value = getattr(item, field)
-                    found.append((f"kit.{name}[{index}].{field}", label + f"{value:,}"))
+                    found.append(
+                        (f"kit.{name}[{index}].{field}", label + shown_count(value))
+                    )
     if (
         kit.inquiry is not None
     ):  # the owner details print; the form beside them does not

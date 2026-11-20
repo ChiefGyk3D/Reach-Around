@@ -47,6 +47,11 @@ IMPORTED_LABEL = (
     "Imported history (Beacons), shown on its own and never added to or compared "
     "with the numbers above"
 )
+PRIVATE_NAME = "private analytics"
+PRIVATE_REASON = (
+    "private provider figures are not shown in this block (display policy, #424); "
+    "see the private analytics block"
+)
 REFUSED_REASON = (
     "collected YouTube Analytics figures are refused (display policy); "
     "type the figure by hand to include it"
@@ -77,6 +82,13 @@ def _refused(record: Record) -> bool:
         and record.metric == "subscribers"
         and record.api_provider == "youtube_data_api"
     )
+
+
+def _refused_name(record: Record) -> str:
+    # A private series is named by nothing but its kind: a metric such as
+    # ``fdemo_age_25_34`` names the cell it holds, and the private block may have
+    # merged that cell away.
+    return PRIVATE_NAME if record.api_provider in PRIVATE_PROVIDERS else record.metric
 
 
 def _day(point: Point) -> date:
@@ -204,10 +216,10 @@ def build_social(
             if original is None:
                 continue
             if _refused(original):
-                refused[(record.platform, record.metric)] = None
+                refused[(record.platform, _refused_name(original))] = None
                 continue
         elif _refused(record):
-            refused[(record.platform, record.metric)] = None
+            refused[(record.platform, _refused_name(record))] = None
             continue
         collected = record.source != "imported"
         groups.setdefault((collected, record.platform, record.metric), []).append(
@@ -233,7 +245,11 @@ def build_social(
         "platforms": rows[True],
         "imported": {"label": IMPORTED_LABEL, "series": rows[False]},
         "refused": [
-            {"platform": p, "metric": m, "reason": REFUSED_REASON}
+            {
+                "platform": p,
+                "metric": m,
+                "reason": PRIVATE_REASON if m == PRIVATE_NAME else REFUSED_REASON,
+            }
             for p, m in sorted(refused)
         ],
         "notes": list(NOTES),

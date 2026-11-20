@@ -76,3 +76,19 @@ def _suppress(
 
 def floor_cells(cells: Mapping[str, int], floor: int) -> Floored:
     return _suppress(cells, floor)
+
+
+def share_pins_small_count(
+    numerator: int, denominator: int, base: int, floor: int = FLOOR
+) -> bool:
+    """True if a share printed beside a count would tell a reader the cell is
+    1 to ``floor`` - 1.
+
+    The share is ``numerator / denominator`` rounded to the unit printed, so the
+    true share lies half a unit either way. The most the cell can hold is then
+    ``base * (2 * numerator + 1) / (2 * denominator)``; a cell that could hold
+    nothing above zero is a zero, and a cell that could reach the floor is not
+    pinned under it.
+    """
+    most = base * (2 * numerator + 1) // (2 * denominator)
+    return 1 <= most < floor

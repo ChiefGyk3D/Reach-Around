@@ -44,7 +44,7 @@ from reach_around.counts.history import (
     Series,
     parse_as_of,
 )
-from reach_around.funnel.floor import FLOOR, floor_cells
+from reach_around.funnel.floor import FLOOR, floor_cells, share_pins_small_count
 
 LABEL = (
     "Private platform analytics (owner only, never published; collected through "
@@ -135,6 +135,32 @@ def _count_group(
     if not rows and not other:
         return "withheld", [], None
     return "ok", rows, other or None
+
+
+def _withhold_pinning_shares(section: dict[str, Any], floor: int) -> None:
+    """Withhold a share group read against a printed count that would pin a cell.
+
+    A share printed beside a count of the same platform tells a reader how many
+    people or views the cell holds. The counts printed in the section (activity
+    figures and the totals of the count groups) are the bases; one printed cell
+    that could hold 1 to ``floor`` - 1 withholds the whole group, since the
+    shares total 100 percent and a hidden one would follow from the rest.
+    """
+    bases = [p["value"] for m in section["activity"] for p in m["points"] if p["value"]]
+    for g in section["groups"]:
+        if g["kind"] == "count" and g["state"] == "ok":
+            total = sum(r["value"] for r in g["rows"]) + (g["other"] or 0)
+            if total:
+                bases.append(total)
+    for g in section["groups"]:
+        if g["kind"] != "share" or g["state"] != "ok":
+            continue
+        if any(
+            share_pins_small_count(row["value"], 10_000, base, floor)
+            for row in g["rows"]
+            for base in bases
+        ):
+            g.update(state="withheld", rows=[], other=None)
 
 
 def build_private(
@@ -241,6 +267,8 @@ def build_private(
             state, rows, other = _count_group(cells, stored_other, floor)
             group.update(state=state, rows=rows, other=other)
         section(platform, provider)["groups"].append(group)
+    for entry in sections.values():
+        _withhold_pinning_shares(entry, floor)
     return {
         "label": LABEL,
         "timezone": "UTC",

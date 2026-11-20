@@ -15,7 +15,7 @@ from typing import Any
 
 import pytest
 
-from reach_around.counts.history import History, Record, append_records
+from reach_around.counts.history import History, Record, append_records, read_history
 from reach_around.funnel.private_analytics import (
     CSV_HEADER,
     build_private,
@@ -374,35 +374,99 @@ def leaks(texts: list[str], forms: list[str]) -> list[str]:
     return [form for form in forms if any(form in text for text in texts)]
 
 
-def test_private_sentinels_never_reach_the_public_site_or_either_pdf(
-    tmp_path: Path,
-) -> None:
-    """Sentinel values in private-provider records (YouTube and Instagram) sit in
-    a history file beside the instance; nothing public may carry them in any
-    written form (plain, comma-grouped, compact)."""
-    from kitpdfharness import build_instance, fake_renderer
-    from reach_around.kit.pdf import build_kit_pdf, build_public_kit_pdf
-    from reach_around.kit.pdftext import extract_pages
+def sentinel_config(root: Path) -> Path:
+    """A real instance: a kit with a gate and a ``numbers.history_file`` that
+    points at a history file full of private-provider sentinels."""
+    from kitpdfharness import kit_doc
 
+    kit = kit_doc()
+    kit.pop("case_studies")  # needs a picture file; not what this test is about
+    doc = {
+        "version": 1,
+        "creator": {"name": "Example Creator"},
+        "tabs": [
+            {
+                "id": "start",
+                "title": "Start",
+                "blocks": [
+                    {
+                        "id": "socials",
+                        "items": [
+                            {
+                                "platform": "youtube",
+                                "handle": "@example",
+                                "url": "https://example.com/yt",
+                            }
+                        ],
+                    }
+                ],
+            }
+        ],
+        "features": {"kit_gate": True},
+        "numbers": {
+            "history_file": "history/social.jsonl",
+            "sources": [
+                {
+                    "platform": "youtube",
+                    "kind": "youtube",
+                    "channel_id": "UCaaaaaaaaaaaaaaaaaaaaaa",
+                    "analytics": True,
+                }
+            ],
+        },
+        "kit": kit,
+    }
+    (root / "history").mkdir(parents=True)
     history_file(
-        tmp_path,
+        root / "history",
         [
             *private_records(),
             rec("views_1d", SENTINEL, platform="youtube", provider=YT),
             rec("geo_us_views", SENTINEL + 1, platform="youtube", provider=YT),
         ],
     )
-    config, site, gated = build_instance(tmp_path)
-    forms = (
-        [str(n) for n in (SENTINEL, SENTINEL + 1)]
-        + [f"{n:,}" for n in (SENTINEL, SENTINEL + 1)]
-        + ["7.7M", "7654.3k"]
+    path = root / "site.yaml"
+    path.write_text(json.dumps(doc), encoding="utf-8")
+    return path
+
+
+def test_private_sentinels_never_reach_the_public_site_or_either_pdf(
+    tmp_path: Path,
+) -> None:
+    """The build is handed the history file through ``numbers.history_file`` and
+    the file holds sentinels; nothing public or gated may carry them."""
+    from kitpdfharness import fake_renderer
+    from reach_around.cli import main
+    from reach_around.config import load_site_config
+    from reach_around.kit.pdf import build_kit_pdf, build_public_kit_pdf
+    from reach_around.kit.pdftext import extract_pages
+
+    root = tmp_path / "inst"
+    config_path = sentinel_config(root)
+    config = load_site_config(config_path)
+    assert config.numbers is not None and config.numbers.history_file is not None
+    history_path = root / config.numbers.history_file
+    assert history_path.is_file() and history_path.stat().st_size > 0
+    site, gated = tmp_path / "site", tmp_path / "gated"
+    code = main(
+        [
+            "build",
+            "--config",
+            str(config_path),
+            "--out",
+            str(site),
+            "--gated-out",
+            str(gated),
+        ]
     )
+    assert code == 0
+    forms = [str(n) for n in (SENTINEL, SENTINEL + 1)]
+    forms += [f"{n:,}" for n in (SENTINEL, SENTINEL + 1)] + ["7.7M", "7654.3k"]
     texts = [
-        p.read_text(errors="replace") for p in sorted(site.rglob("*")) if p.is_file()
-    ]
-    texts += [
-        p.read_text(errors="replace") for p in sorted(gated.rglob("*")) if p.is_file()
+        p.read_text(errors="replace")
+        for tree in (site, gated)
+        for p in sorted(tree.rglob("*"))
+        if p.is_file()
     ]
     common: dict[str, Any] = dict(
         site_dir=site, name="kit.pdf", created=date(2027, 3, 10), renderer=fake_renderer
@@ -413,10 +477,19 @@ def test_private_sentinels_never_reach_the_public_site_or_either_pdf(
     )
     for result in (public, private):
         texts.append(" ".join(extract_pages(result.path.read_bytes())))
-    assert texts
+    assert len(texts) > 3
     assert leaks(texts, forms) == []
     # the guard bites: one page carrying a derived form is caught
     assert leaks([*texts, "<p>Views 7.7M</p>"], forms) == ["7.7M"]
+
+
+def test_the_sentinel_history_really_holds_the_sentinels(tmp_path: Path) -> None:
+    """Control: the report command does read the same file and prints them."""
+    root = tmp_path / "inst"
+    sentinel_config(root)
+    history = read_history(root / "history" / "social.jsonl")
+    values = {r.value for r in history.records}
+    assert {SENTINEL, SENTINEL + 1} <= values
 
 
 def test_no_printed_remainder_or_row_pins_a_cell_under_the_floor() -> None:
@@ -435,3 +508,51 @@ def test_no_printed_remainder_or_row_pins_a_cell_under_the_floor() -> None:
         checked += 1
         assert all(r["value"] >= 5 for r in g["rows"])
         assert g["other"] is None or g["other"] >= 5
+
+
+# --- shares beside printed counts ---------------------------------------------
+
+
+def yt_shares(
+    bp: int, geo_us: int, geo_other: int, other_bp: int = 9800
+) -> list[Record]:
+    return [
+        rec("demo_a18_24_f", bp, platform="youtube", provider=YT),
+        rec("demo_other", other_bp, platform="youtube", provider=YT),
+        rec("geo_us_views", geo_us, platform="youtube", provider=YT),
+        rec("geo_other_views", geo_other, platform="youtube", provider=YT),
+    ]
+
+
+SHARE = "Viewer shares by age and gender (percent)"
+
+
+def test_a_share_beside_a_small_printed_total_is_withheld() -> None:
+    # 2.00 percent of the 150 printed views would be 3 people or views
+    g = group(block(yt_shares(200, 120, 30)), SHARE)
+    assert g["state"] == "withheld" and g["rows"] == []
+    text = "\n".join(private_lines(block(yt_shares(200, 120, 30))))
+    assert "2.00%" not in text and "withheld" in text
+
+
+def test_shares_beside_a_large_printed_total_are_printed() -> None:
+    g = group(block(yt_shares(200, 120_000, 30_000, 9800)), SHARE)
+    assert g["state"] == "ok"
+    assert rows_of(g)["18-24 F"] == 200
+
+
+@pytest.mark.parametrize(("bp", "hidden"), [(300, True), (400, False), (500, False)])
+def test_the_report_share_boundaries(bp: int, hidden: bool) -> None:
+    g = group(block(yt_shares(bp, 120, 30, other_bp=10000 - bp)), SHARE)
+    assert (g["state"] == "withheld") is hidden
+
+
+def test_a_printed_activity_count_is_also_a_base() -> None:
+    recs = [
+        rec("demo_a18_24_f", 200, platform="youtube", provider=YT),
+        rec("demo_other", 9800, platform="youtube", provider=YT),
+        rec("views_1d", 100, platform="youtube", provider=YT),
+    ]
+    assert group(block(recs), SHARE)["state"] == "withheld"
+    recs[2] = rec("views_1d", 100_000, platform="youtube", provider=YT)
+    assert group(block(recs), SHARE)["state"] == "ok"
