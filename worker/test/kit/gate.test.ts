@@ -387,8 +387,8 @@ describe("gate routes: refusals, limits and session rules", () => {
     expect(client.keys[0]).not.toBe(net.keys[0]);
   });
 
-  // The account-wide signal is monitoring only: it never refuses, it raises one closed health word a day.
-  describe("account-wide busy signal", () => {
+  // The per-location busy signal is a monitoring hint only: it never refuses, it raises one closed health word a day.
+  describe("per-location busy signal", () => {
     it("never refuses a visitor, and tells the owner once a day in closed words", async () => {
       const f = fake();
       const e = baseEnv({ GATE_WATCH_LIMITER: limiter(false) });
@@ -849,6 +849,58 @@ describe("lead cap: the answer does not depend on whether the address is stored"
     await post({ fields: { email: "new@example.com", "cf-turnstile-response": "ok2" } }, e, fake(), T0, { newLeadsPerDay: 5 });
     const row = await testEnv.DB.prepare("SELECT count FROM counters WHERE key = 'newlead'").first<{ count: number }>();
     expect(row === null || row.count === 0).toBe(true);
+  });
+
+  // An ambiguous failure: the database commits the insert and then the call throws. The unit must be
+  // KEPT (stricter admission), so the day's counter is never below the rows created.
+  it("when the insert commits but the call throws, the daily unit is kept and the cap cannot be exceeded", async () => {
+    const real = testEnv.DB;
+    const faulty = new Proxy(real, {
+      get(t, p) {
+        if (p === "prepare") {
+          return (q: string) => {
+            const st = t.prepare(q);
+            if (!q.includes("INSERT INTO leads")) return st;
+            const wrap = (s: D1PreparedStatement): D1PreparedStatement =>
+              new Proxy(s, {
+                get(x, k) {
+                  if (k === "bind") return (...a: unknown[]) => wrap(x.bind(...a));
+                  if (k === "first") {
+                    return async (...a: unknown[]) => {
+                      await (x as unknown as Record<string, (...b: unknown[]) => Promise<unknown>>).first!(...a); // commits
+                      throw new Error("connection lost after commit");
+                    };
+                  }
+                  const v = Reflect.get(x, k, x);
+                  return typeof v === "function" ? v.bind(x) : v;
+                },
+              });
+            return wrap(st);
+          };
+        }
+        const v = Reflect.get(t, p, t);
+        return typeof v === "function" ? v.bind(t) : v;
+      },
+    });
+    const e = baseEnv({ DB: faulty });
+    const extra = { newLeadsPerDay: 3 };
+    for (let round = 0; round < 2; round++) {
+      for (let i = 0; i < 6; i++) {
+        await post(
+          { headers: { "cf-connecting-ip": `203.0.113.${140 + i}` }, fields: { email: `f${i}@example.com`, "cf-turnstile-response": `ok${60 + round * 10 + i}` } },
+          e,
+          fake(),
+          T0,
+          extra,
+        );
+      }
+    }
+    const rows = await count("leads");
+    const unit = await testEnv.DB.prepare("SELECT count FROM counters WHERE key = 'newlead'").first<{ count: number }>();
+    expect(rows).toBeGreaterThan(0);
+    expect(rows).toBeLessThanOrEqual(3); // never past the daily cap
+    expect(unit!.count).toBeGreaterThanOrEqual(rows); // never fewer units than rows
+    expect(unit!.count).toBeLessThanOrEqual(3);
   });
 
   it("a stored lead keeps its behavior: a known address under the cap is stored once and refreshed", async () => {

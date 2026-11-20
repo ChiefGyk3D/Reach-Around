@@ -58,7 +58,7 @@ const BODY_DEADLINE_MS = 5000;
 const COUNTRY_RE = /^[A-Z]{2}$/;
 /** How far the vendor's challenge time may sit from this Worker's clock. */
 const CHALLENGE_SKEW_MS = 10 * 60_000;
-/** The one key every request shares in GATE_WATCH_LIMITER (monitoring only, never a refusal). */
+/** The one key every request shares in GATE_WATCH_LIMITER (a per-location monitoring hint, never a refusal). */
 const WATCH_KEY = "gate-watch";
 /** Counter keys (table `counters`, one row a day each): new leads stored, and the once-a-day alert claims. */
 const NEW_LEAD_KEY = "newlead";
@@ -84,8 +84,11 @@ export interface GateEnv
   GATE_CHECK_LIMITER?: MinuteLimiter;
   /**
    * Optional Workers Rate Limiting binding, ONE shared key, set far above expected peak. It is a
-   * MONITORING signal only: when it reports over its limit the request still proceeds, and the owner gets
-   * one closed health alert a day (`gate_busy`). It is never the protection and never refuses anyone.
+   * PER-LOCATION busy signal: Cloudflare counts a rate limit separately in each of its locations, so it
+   * is not an account-wide total. Traffic spread across locations can exceed the number without raising
+   * it, and one regional spike can raise it. It is a MONITORING hint only: when it reports over its
+   * limit the request still proceeds, and the owner gets one closed health alert a day (`gate_busy`).
+   * It is never the protection and never refuses anyone.
    */
   GATE_WATCH_LIMITER?: MinuteLimiter;
 }
@@ -292,7 +295,8 @@ async function gate(request: Request, env: GateEnv, deps: GateDeps): Promise<Res
   const netKey = network === null ? null : await limiterKey(limiterSecret, secretText, "gnet", network);
   if (!(await checkIpMinute(checkLimiter, netKey))) return fail("route_budget"); // CONTROL:gate-check-ceiling
 
-  // Account-wide signal, monitoring only: over its (very high) limit nothing is refused; the owner is told.
+  // Per-location busy signal, a monitoring hint only (not an account-wide count): over its (very high)
+  // limit nothing is refused; the owner is told.
   let busy = false;
   if (hasLimiter(env.GATE_WATCH_LIMITER)) {
     try {
@@ -329,16 +333,15 @@ async function gate(request: Request, env: GateEnv, deps: GateDeps): Promise<Res
     } else {
       // Admission and creation: the daily unit is taken atomically (one conditional upsert), the row is
       // created atomically (one statement that says whether it created it), and the unit is given back
-      // whenever no row was created (the cap refused, or a concurrent request for the same address
-      // created it first). So the day's counter equals the rows created and never overshoots.
+      // only after an UNAMBIGUOUS result that shows no row was created (the cap refused, or a concurrent
+      // request for the same address created it first). If the call throws, the outcome is unknown (the
+      // row may have been committed), so the unit is KEPT: admission errs on the stricter side.
+      // Guaranteed: the day's counter is never below the rows created, so the daily cap cannot be
+      // exceeded; it can be above them after an ambiguous failure (a lost unit, never an extra row).
       const day = utcDay(now);
       if (await reserveBudget(env.DB, NEW_LEAD_KEY, day, deps.newLeadsPerDay ?? NEW_LEADS_PER_DAY)) {
-        let made: { id: string; created: boolean } | null = null;
-        try {
-          made = await upsertLead(env.DB, form.email, "gate", countryOf(request), now, limits.maxLeads);
-        } finally {
-          if (made === null || !made.created) await refundNewLead(env.DB, day);
-        }
+        const made = await upsertLead(env.DB, form.email, "gate", countryOf(request), now, limits.maxLeads);
+        if (made === null || !made.created) await refundNewLead(env.DB, day);
         lead = made;
       }
     }

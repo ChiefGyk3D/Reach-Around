@@ -635,19 +635,27 @@ form posts to `/k/gate`. They ship off at the cutover (`features.kit_gate`).
   `GATE_LIMITER` and `GATE_CHECK_LIMITER`; if one is missing the gate refuses.
   A rate rule at the edge (issue #613) is another layer in front; the gate does
   not depend on it for correctness.
-- **Busy signal (monitoring only).** The optional `GATE_WATCH_LIMITER` binding
-  has one shared key and a limit set far above expected peak (600 per 60
-  seconds documented). When it reports over its limit nothing is refused: the
-  request goes on and the owner gets the closed health alert `gate_busy`, at
-  most once a day (docs/alerts.md). A missing binding switches the signal off.
+- **Per-location busy signal (a monitoring hint only).** The optional
+  `GATE_WATCH_LIMITER` binding has one shared key and a limit set far above
+  expected peak (600 per 60 seconds documented). Cloudflare counts a rate limit
+  separately in each of its locations, so this is not an account-wide total:
+  traffic spread across locations can exceed the number without raising it, and
+  a single regional spike can raise it. When it reports over its limit nothing
+  is refused: the request goes on and the owner gets the closed health alert
+  `gate_busy`, at most once a day (docs/alerts.md). A missing binding switches
+  the signal off.
 - **Daily alerts and a down sink.** `lead_cap_reached` and `gate_busy` each
   take the day's claim before sending and give it back when no channel accepted
   the message, so a later request tries again (after the alert dispatcher's own
   10 minute window for identical messages).
-- **New-lead admission is one step.** The daily new-lead unit is taken by one
-  conditional statement and given back whenever no row was created (the cap
-  refused, or a concurrent request for the same address created it first), so
-  the day's counter equals the rows created, whatever the interleaving.
+- **New-lead admission.** The daily new-lead unit is taken by one conditional
+  statement and given back only after a clear result that shows no row was
+  created (the cap refused, or a concurrent request for the same address
+  created it first). If the database call fails in a way that leaves it unknown
+  whether the row was written, the unit is kept. Guaranteed: the day's counter
+  is never below the rows created, so the daily cap cannot be exceeded. After
+  such a failure the counter can be above the rows (a unit lost for the day),
+  never below.
 - **Other `/k/` paths** keep the Worker's every-path-204 answer. The plan's
   table said 404; this is an intentional difference.
 - **Session floor.** `leads.session_floor_ts` is in milliseconds (plan 3 Task 15

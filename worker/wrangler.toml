@@ -156,8 +156,11 @@ crons = ["5 * * * *"]
 # cannot use up another's share. Required. 20 per 60 seconds per network is the documented value.
 # ROUTE_BUDGET_GATE is charged only after a request has parsed and passed Turnstile. An edge rate rule
 # (issue #613) is another layer in front, not needed for correctness.
-# GATE_WATCH_LIMITER is OPTIONAL and monitoring only: one shared key, set far above expected peak. Over
-# its limit nothing is refused; the owner gets the closed health alert `gate_busy` once a day.
+# GATE_WATCH_LIMITER is OPTIONAL and a per-location busy signal, a monitoring hint only: one shared key,
+# counted separately in each Cloudflare location (not an account-wide total), set far above expected
+# peak. Traffic spread across locations can exceed the number without raising it, and one regional
+# spike can raise it. Over its limit nothing is refused; the owner gets the closed health alert
+# `gate_busy` once a day.
 # [[kv_namespaces]]
 # binding = "KIT"
 # id = "00000000000000000000000000000000" # placeholder, not a real id
