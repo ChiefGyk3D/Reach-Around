@@ -86,8 +86,14 @@ Verifier rules (in `_parse` and `_parse_line`):
 All in `src/reach_around/counts/history.py` unless noted. None exist yet.
 
 ```python
-REASONS = ("platform_expiry", "platform_revocation", "platform_request",
-           "user_request", "owner_decision")
+REASONS = (
+    "platform_expiry",
+    "platform_revocation",
+    "platform_request",
+    "user_request",
+    "owner_decision",
+)
+
 
 @dataclass(frozen=True)
 class Tombstone:
@@ -96,21 +102,36 @@ class Tombstone:
     as_of_utc: str
     source: str
     reason: str
-    trigger_date: str          # YYYY-MM-DD
+    trigger_date: str  # YYYY-MM-DD
     redacted_at_utc: str
     run_id: str
     replaces: str | None = None  # Option A digest, else None
 
-def plan_redaction(history: History, *, platform: str, source: str | None,
-                   before: str | None, metric: str | None = None) -> list[Record]:
+
+def plan_redaction(
+    history: History,
+    *,
+    platform: str,
+    source: str | None,
+    before: str | None,
+    metric: str | None = None,
+) -> list[Record]:
     """Pure. The records a redaction would blank. Never touches disk."""
 
-def redact_records(path: Path, plan: Sequence[Record], *, reason: str,
-                   trigger_date: str, now: datetime | None = None,
-                   confirm: bool = False) -> int:
+
+def redact_records(
+    path: Path,
+    plan: Sequence[Record],
+    *,
+    reason: str,
+    trigger_date: str,
+    now: datetime | None = None,
+    confirm: bool = False,
+) -> int:
     """Under the same flock and fsync as append_records. Verifies the whole file
     first, writes the new file beside the old one, renames it into place, and
     returns the number of lines redacted. Refuses unless confirm is True."""
+
 
 def tombstoned(history: History) -> frozenset[tuple[str, str, str, str]]:
     """Keys that are redacted. Series skips them and counts them as gaps."""
