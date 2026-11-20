@@ -7,6 +7,7 @@
 // commands. Code 1 when the Worker would refuse the configuration (an invalid
 // value, or over the quota); a warning with code 0 above 80 percent. Values are
 // never printed, only names and totals.
+import { parseBeaconMode } from "../beaconmode";
 import { MAX_VIEWS_PER_HOUR, PAGE_VIEW_MODE_VARS, PAGE_VIEW_VARS } from "../pvlimits";
 import { loadSites } from "../sites";
 import { KIT_LIMIT_VARS, assessDailyBudget, type KitLimitsEnv } from "./budgets";
@@ -30,9 +31,9 @@ export function runBudgetCheck(source: Record<string, string | undefined>): { co
   });
   // The Worker falls back to the default for a bad page-view budget, so the
   // projection would silently be the wrong figure. Refuse here instead.
-  // BEACON_MODE is a word, not a number: off, observe or enforce exactly; the Worker refuses anything else.
+  // BEACON_MODE is a word, not a number: off or observe exactly (enforce is not available yet); the Worker refuses anything else.
   const mode = env.BEACON_MODE;
-  if (mode !== undefined && mode !== "off" && mode !== "observe" && mode !== "enforce") badPv.push("BEACON_MODE");
+  if (parseBeaconMode(mode) === null) badPv.push("BEACON_MODE");
   if (badPv.length > 0) return { code: 1, lines: [`::error::unusable budget settings: ${badPv.join(", ")}`] };
   // A site list that does not load cleanly cannot be counted: stop the deploy
   // (the projection would otherwise have to guess how many sites share the ceilings).

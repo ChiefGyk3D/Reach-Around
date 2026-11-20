@@ -50,7 +50,7 @@ describe("the beacon lane row (one more row per accepted view while BEACON_MODE 
   it("the deploy gate reads BEACON_MODE, and refuses a value the Worker cannot use", () => {
     expect(runBudgetCheck({ BEACON_MODE: "observe" }).lines.join(" ")).toContain(`page views ${on}`);
     expect(runBudgetCheck({ BEACON_MODE: "observe" }).code).toBe(0);
-    for (const m of ["Observe", "on", "1"]) {
+    for (const m of ["Observe", "on", "1", "enforce"]) {
       const r = runBudgetCheck({ BEACON_MODE: m });
       expect(r.code, m).toBe(1);
       expect(r.lines.join(" ")).toContain("BEACON_MODE");

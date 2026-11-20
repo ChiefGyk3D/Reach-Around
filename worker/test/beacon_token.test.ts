@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 import {
   BEACON_CLOCK_SKEW_SECONDS,
   BEACON_TTL_SECONDS,
+  ENFORCE_AVAILABLE,
   MAX_BEACON_TOKEN_LENGTH,
   clientHashFor,
   coarsePrefix,
@@ -199,12 +200,13 @@ describe("the coarse client hash", () => {
 });
 
 describe("BEACON_MODE", () => {
-  it("unset and empty are off; the three words are exact; anything else is unusable", () => {
+  it("unset and empty are off; off and observe are exact; anything else, enforce included, is unusable", () => {
+    expect(ENFORCE_AVAILABLE).toBe(false); // enforce waits for the issuance gate and the per-token limit
     expect(parseBeaconMode(undefined)).toBe("off");
     expect(parseBeaconMode("")).toBe("off");
     expect(parseBeaconMode("off")).toBe("off");
     expect(parseBeaconMode("observe")).toBe("observe");
-    expect(parseBeaconMode("enforce")).toBe("enforce");
+    expect(parseBeaconMode("enforce")).toBeNull();
     for (const bad of ["Observe", "ENFORCE", " observe", "observe ", "on", "1", "true", "enforced", 1, null])
       expect(parseBeaconMode(bad), String(bad)).toBeNull();
   });

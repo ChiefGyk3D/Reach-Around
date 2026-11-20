@@ -12,12 +12,15 @@
 //   prefix, a /24 for IPv4 and a /48 for IPv6), iat and exp (at most BEACON_TTL_SECONDS apart), jti (16
 //   random bytes). `ch` is recomputed on every check and never stored.
 // MODES   BEACON_MODE is off (the default: no token is minted or read), observe (tokens are minted and
-//   read, the lane is recorded, and nothing is ever refused or counted differently) or enforce (the
-//   unverified lane's cap binds, clickceiling.ts).
-// A token proves only that the page asked the Worker for one, recently, from the same network and site.
+//   read, the lane is recorded, and nothing is ever refused or counted differently). A third mode, enforce
+//   (the unverified lane's cap binds, clickceiling.ts), is built but NOT available: ENFORCE_AVAILABLE is
+//   false, so the value is unusable, until the issuance gate and the per-token limit land (later slices).
+// A token proves only that the page asked the Worker for one, recently, from the same network and site. The
+// site comes from the Origin or Ping-From header, which the caller chooses, so observe records data only.
 
 import { normalizeAddress } from "./address";
 import { bodyAcceptable, MAX_URL_LENGTH, type RateLimiter } from "./click";
+import { parseBeaconMode, type BeaconMode } from "./beaconmode";
 import { markClickSetupInvalid, type ClickLane } from "./clickceiling";
 import { fromB64url, keyUsable, toB64url } from "./kit/token";
 import { limiterKey, secretBytes } from "./ratekey";
@@ -42,10 +45,8 @@ const JTI_RE = /^[A-Za-z0-9_-]{22}$/;
 const CLAIM_KEYS = ["ch", "exp", "iat", "jti", "sid"];
 const enc = new TextEncoder();
 
-export type BeaconMode = "off" | "observe" | "enforce";
-
 export interface BeaconEnv {
-  /** "off" (default), "observe" or "enforce"; exact words only, read per request. Anything else is unusable. */
+  /** "off" (default) or "observe"; exact words only, read per request. Anything else, "enforce" included for now, is unusable. */
   BEACON_MODE?: string;
   /** Secret, at least 32 bytes. Signs and checks beacon tokens. Never the media-kit key. */
   BEACON_HMAC_KEY?: string;
@@ -62,11 +63,7 @@ export interface BeaconClaims {
   exp: number;
 }
 
-/** BEACON_MODE: unset or empty is off; the three words are exact; anything else is null (unusable). */
-export function parseBeaconMode(v: unknown): BeaconMode | null {
-  if (v === undefined || v === "") return "off";
-  return v === "off" || v === "observe" || v === "enforce" ? v : null;
-}
+export { ENFORCE_AVAILABLE, parseBeaconMode, type BeaconMode } from "./beaconmode";
 
 /** The mode and the usable keys (current first), or null when the mode is unusable. */
 export function beaconSetup(env: BeaconEnv): { mode: BeaconMode; keys: string[] } | null {

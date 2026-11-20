@@ -259,6 +259,27 @@ Convert `rollup_last_ok` with `date -u -d @$((VALUE/1000))`. More than about 2 d
 
 The route stores no address, user agent or referrer URL. After a deploy, one beacon from a browser should give a 204 and one `view_events` row with categories only; the same request with `Sec-GPC: 1` should leave no row.
 
+## Beacon token (`POST /e/t`), observe mode only
+
+A short-lived signed token that a page asks the Worker for once per visit and sends back with its click ping (`?t=`) and its view beacon (`?t=`). The Worker checks it from the URL and charges the event to the **verified lane** (a currently valid token for this site and this network) or the **unverified lane** (anything else). The token is stateless: nothing is stored, no cookie is set, and the page keeps it in memory only. A visitor with Global Privacy Control or Do Not Track never asks for one, and a page whose token request fails still counts and navigates exactly as before.
+
+**Settings** (all optional; the default is off and changes nothing):
+
+| Name | Kind | Meaning |
+| --- | --- | --- |
+| `BEACON_MODE` | variable | `off` (default; unset or empty is the same) or `observe`. **`enforce` is not available yet.** It is an unusable value: clicks and views are refused (the same empty 204) and the health flag `click_setup_invalid` is set, exactly as for any other unusable setting, until the issuance gate and the per-token limit have landed in later slices of #610. The code constant is `ENFORCE_AVAILABLE` in `worker/src/beaconmode.ts`. |
+| `BEACON_HMAC_KEY` | **secret** | At least 32 bytes, its own key (never `TOKEN_HMAC_KEY`). Set it once with `npx wrangler secret put BEACON_HMAC_KEY`; it is never written to `wrangler.toml` and CI never reads or writes it. |
+| `BEACON_HMAC_KEY_PREVIOUS` | **secret**, optional | The previous key during a rotation. It only checks; tokens signed by it keep working for their 15 minute life. |
+| `MINT_LIMITER` | rate limiter binding | 6 tokens per client per 60 seconds (key: a keyed hash of the address, never the address). Without it, or without `VIEW_HASH_SECRET`, the mint issues nothing. |
+
+The test deploy (`deploy-test.yml`) writes `BEACON_MODE = "observe"` and the `MINT_LIMITER` binding into its throwaway config only when the repository variable `BEACON_MODE` is exactly `observe` and `MINT_LIMITER_NAMESPACE_ID` is a number that differs from the click and view limiter namespaces; `off`, empty or unset writes nothing, and any other value (`enforce` included) fails the check. The budget check reads `BEACON_MODE` too. In the site config, `analytics.beacon_token: true` makes the pages ask for a token (`docs/config.md`); it is off by default.
+
+**What it records.** In observe mode a click adds its charge to `cwl-v-<site>` or `cwl-u-<site>` as before (the lane counters already in the `counters` table), and an accepted view writes one more row, `pvl-v-<site>` or `pvl-u-<site>`, in the same atomic batch as the view itself, only when the view was stored. Nothing is refused and nothing is counted differently: observe records data only. The view budget model reserves that row while the mode is on (6.6 rows per accepted view instead of 5.6, so the page-view worst case at the default budgets is 26,300 a day instead of 22,700). No migration.
+
+**What a token proves, and what it does not.** A token proves only that something asked the Worker for one in the last 15 minutes from the same network prefix (a /24 for IPv4, a /48 for IPv6) and for the same site. The site comes from the `Origin` or `Ping-From` header, which the sender chooses, and nothing yet limits who may ask for a token beyond the per-client limiter, or how often one token may be used inside its window. So the verified lane is **not proof of a real visitor**, and nothing becomes enforceable in this slice. The verified lane is still held below the whole share: it is charged against the general day budget (the share less the 20 percent first-click reserve) and the one-twelfth hour slice, the same limits as every other click.
+
+**Responses.** The mint answers `200` with `{"t": "<token>", "ttl": 900}` and `Cache-Control: no-store` only when it issues a token. Every other outcome, on every route, is the empty 204.
+
 ## Kit limits and the daily write budget
 
 The media kit Worker is sized for the Cloudflare paid plan (approved 2026-11-19; it was sized for the Free plan before, and the Free plan's 100,000 rows written a day no longer fits the click ceiling below), and the ruling is: **when a limit is reached the kit goes unavailable; the limits cap the bill.** Every limit below fails closed. A request over a route budget, a lead or event over its cap, an alert or email over the daily budget, and any invalid setting all get a refusal, never a pass. No paid feature is switched on by any of these settings.

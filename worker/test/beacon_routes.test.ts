@@ -8,7 +8,7 @@ import worker from "../src/index";
 import { normalizeAddress } from "../src/address";
 import { handleClick, type Env } from "../src/click";
 import { CLICK_ADMIT_CEILING, clickLimits, siteShare } from "../src/clickceiling";
-import { BEACON_TTL_SECONDS, clientHashFor, handleMint, signBeacon, verifyBeacon } from "../src/beacon";
+import { BEACON_TTL_SECONDS, ENFORCE_AVAILABLE, clientHashFor, handleMint, signBeacon, verifyBeacon } from "../src/beacon";
 import { signToken } from "../src/kit/token";
 import { handleView, type ViewEnv } from "../src/view";
 import { fakeLimiter, makeEnv, NOW, beacon as viewBeacon, clearAll, rows } from "./views/helpers";
@@ -82,7 +82,7 @@ beforeEach(async () => {
 
 // ---------------------------------------------------------------- click
 
-describe("click route: which lane a token earns (table, observe and enforce)", () => {
+describe("click route: which lane a token earns (table, observe)", () => {
   const cases: [string, () => Promise<string>, "v" | "u", Partial<ClickEnv>?][] = [
     ["a valid token", () => token(), "v"],
     ["no token", async () => "", "u"],
@@ -98,7 +98,7 @@ describe("click route: which lane a token earns (table, observe and enforce)", (
     ["a token signed by the previous key during a rotation", () => token({ key: KEY_OLD }), "v", { BEACON_HMAC_KEY_PREVIOUS: KEY_OLD }],
     ["a previous-key token once the rotation ends", () => token({ key: KEY_OLD }), "u"],
   ];
-  for (const mode of ["observe", "enforce"] as const) {
+  for (const mode of ["observe"] as const) {
     for (const [name, make, lane, over] of cases) {
       it(`${mode}: ${name} is the ${lane === "v" ? "verified" : "unverified"} lane, and the answer is the empty 204`, async () => {
         const t = await make();
@@ -123,7 +123,7 @@ describe("click route: which lane a token earns (table, observe and enforce)", (
     const t = await token();
     for (const q of [`?t=${t}&t=${t}`, `?T=${t}`, `?t=${t}x&t=${t}`, `?t[]=${t}`, `?tt=${t}`, `?t=`]) {
       await DB.prepare("DELETE FROM counters").run();
-      await handleClick(click(q), clickEnv("enforce"));
+      await handleClick(click(q), clickEnv("observe"));
       expect(await count("cwl-v-links"), q).toBe(0);
     }
   });
@@ -141,7 +141,7 @@ describe("click route: which lane a token earns (table, observe and enforce)", (
       body: `t=${t}`,
       headers: { "User-Agent": UA, "CF-Connecting-IP": IP, "Ping-From": "https://links.example.test/", "X-Beacon": t, Authorization: t, "Content-Length": String(t.length + 2) },
     });
-    await handleClick(req, clickEnv("enforce"));
+    await handleClick(req, clickEnv("observe"));
     expect(await count("cwl-v-links")).toBe(0);
   });
 });
@@ -181,17 +181,26 @@ describe("click route: the modes", () => {
     expect(await events()).toBe(1);
   });
 
-  it("enforce binds the unverified lane cap (without the separate flag) and leaves the verified lane free", async () => {
-    const lim = clickLimits(siteShare(CLICK_ADMIT_CEILING, 2));
-    await seed("cwl-u-links", lim.unverified); // spent
-    await seed("cf-links-twitch", 1);
-    const refused = await handleClick(click(), clickEnv("enforce"));
-    expect(await shape(refused)).toEqual(EMPTY_204);
+  it("enforce is not available yet: it is an unusable value, the click is refused and the health flag is set", async () => {
+    expect(ENFORCE_AVAILABLE).toBe(false);
+    const res = await handleClick(click(withToken(await token())), clickEnv("enforce"));
+    expect(await shape(res)).toEqual(EMPTY_204);
     expect(await events()).toBe(0);
-    const verified = await handleClick(click(withToken(await token())), clickEnv("enforce"));
-    expect(await shape(verified)).toEqual(EMPTY_204);
-    expect(await events()).toBe(1);
-    expect(await count("cwl-v-links")).toBeGreaterThan(0);
+    expect(await count("cs-bad")).toBe(1);
+    expect(await count("cwl-v-links")).toBe(0);
+    expect(await count("cwl-u-links")).toBe(0);
+  });
+
+  it("the verified lane is held below the whole share by the general budget and the hour slice", async () => {
+    // Whatever token a request carries, the verified lane is charged against the same day, hour and
+    // first-click rules: it never reaches the share's reserve (20 percent) that only a link's first click uses.
+    const lim = clickLimits(siteShare(CLICK_ADMIT_CEILING, 2));
+    expect(lim.general).toBeLessThan(lim.share);
+    await seed("cwl-v-links", 0);
+    await seed("cf-links-twitch", 1);
+    await seed("cw-links", lim.general); // the general day budget is spent
+    await handleClick(click(withToken(await token())), clickEnv("observe"));
+    expect(await events()).toBe(0);
   });
 
   it("an unusable BEACON_MODE refuses the click (nothing is guessed) and sets the health flag", async () => {
@@ -205,7 +214,7 @@ describe("click route: the modes", () => {
   });
 
   it("observe or enforce with no usable beacon key keeps counting in the unverified lane and sets the health flag", async () => {
-    for (const mode of ["observe", "enforce"]) {
+    for (const mode of ["observe"]) {
       for (const k of [undefined, "short", ""]) {
         await DB.prepare("DELETE FROM counters").run();
         await DB.prepare("DELETE FROM click_events").run();
@@ -226,19 +235,23 @@ describe("click route: the modes", () => {
     await handleClick(click(withToken(t)), e);
     const afterObserve = await count("cwl-v-links");
     expect(afterObserve).toBeGreaterThan(0);
-    e.BEACON_MODE = "enforce";
+    e.BEACON_MODE = "enforce"; // unusable: refused, nothing recorded
+    await handleClick(click(withToken(t)), e);
+    expect(await count("cwl-v-links")).toBe(afterObserve);
+    e.BEACON_MODE = "observe";
     await handleClick(click(withToken(t)), e);
     expect(await count("cwl-v-links")).toBeGreaterThan(afterObserve);
+    const afterSecond = await count("cwl-v-links");
     e.BEACON_MODE = "off";
     await handleClick(click(withToken(t)), e);
-    expect(await count("cwl-v-links")).toBeGreaterThan(afterObserve); // unchanged by the off request
-    expect(await events()).toBe(4);
+    expect(await count("cwl-v-links")).toBe(afterSecond); // unchanged by the off request
+    expect(await events()).toBe(4); // off, observe, observe and off count; the enforce request is refused
   });
 
   it("the answer never depends on the token: every case above returns the same status, body and headers as a click with no token", async () => {
-    const plain = await shape(await handleClick(click(), clickEnv("enforce")));
+    const plain = await shape(await handleClick(click(), clickEnv("observe")));
     for (const t of [await token(), "junk", await token({ sid: "plain" })]) {
-      expect(await shape(await handleClick(click(withToken(t)), clickEnv("enforce")))).toEqual(plain);
+      expect(await shape(await handleClick(click(withToken(t)), clickEnv("observe")))).toEqual(plain);
     }
     expect(plain).toEqual(EMPTY_204);
   });
@@ -255,8 +268,8 @@ type MintEnv = ClickEnv & { MINT_LIMITER?: { limit(o: { key: string }): Promise<
 const mintEnv = (mode: string | undefined, over: Partial<MintEnv> = {}): MintEnv => ({ ...clickEnv(mode), MINT_LIMITER: fakeLimiter(), ...over }) as MintEnv;
 
 describe("mint route", () => {
-  it("observe and enforce: a signed, bound, 15 minute token in a small JSON body that is not cached", async () => {
-    for (const mode of ["observe", "enforce"]) {
+  it("observe: a signed, bound, 15 minute token in a small JSON body that is not cached", async () => {
+    for (const mode of ["observe"]) {
       const res = await handleMint(mintReq(), mintEnv(mode));
       expect(res.status).toBe(200);
       expect(res.headers.get("Content-Type")).toBe("application/json");
@@ -297,6 +310,7 @@ describe("mint route", () => {
     ["mode off", mintReq(), () => mintEnv("off")],
     ["mode unset", mintReq(), () => mintEnv(undefined)],
     ["an unusable mode", mintReq(), () => mintEnv("Observe")],
+    ["enforce, which is not available yet", mintReq(), () => mintEnv("enforce")],
     ["GET", mintReq({ method: "GET" }), () => mintEnv("observe")],
     ["PUT", mintReq({ method: "PUT" }), () => mintEnv("observe")],
     ["Global Privacy Control", mintReq({ headers: { "Sec-GPC": "1" } }), () => mintEnv("observe")],
@@ -373,7 +387,7 @@ describe("view route", () => {
     ["an oversized token", async () => "b1." + "A".repeat(1000) + ".AAAA", "u"],
     ["a previous-key token", () => viewTok({ key: KEY_OLD }), "v", { BEACON_HMAC_KEY_PREVIOUS: KEY_OLD }],
   ];
-  for (const mode of ["observe", "enforce"] as const) {
+  for (const mode of ["observe"] as const) {
     for (const [name, make, lane, over] of cases) {
       it(`${mode}: ${name} is recorded as the ${lane === "v" ? "verified" : "unverified"} lane; the view is counted and the answer is the empty 204`, async () => {
         const t = await make();
@@ -398,7 +412,7 @@ describe("view route", () => {
     }
   });
 
-  it("observe and enforce count the same views as off (the lane is a label, not a filter)", async () => {
+  it("observe counts the same views as off (the lane is a label, not a filter)", async () => {
     const run = async (mode: Mode) => {
       await clearAll();
       for (let i = 0; i < 3; i++) await handleView(viewReq(i === 1 ? null : await viewTok()), viewEnv(mode), NOW);
@@ -406,7 +420,7 @@ describe("view route", () => {
     };
     const off = await run("off");
     expect(await run("observe")).toBe(off);
-    expect(await run("enforce")).toBe(off);
+
   });
 
   it("a refused view writes no lane counter (the counter is part of the accepting batch)", async () => {
@@ -425,11 +439,14 @@ describe("view route", () => {
     }
   });
 
-  it("an unusable BEACON_MODE records no view and sets the health flag", async () => {
-    const res = await handleView(viewReq(await viewTok()), viewEnv("Observe"), NOW);
-    expect(await shape(res)).toEqual(EMPTY_204);
-    expect((await rows()).length).toBe(0);
-    expect(await viewCount("cs-bad")).toBe(1);
+  it("an unusable BEACON_MODE, enforce included (not available yet), records no view and sets the health flag", async () => {
+    for (const mode of ["Observe", "enforce"]) {
+      await DB.prepare("DELETE FROM counters").run();
+      const res = await handleView(viewReq(await viewTok()), viewEnv(mode), NOW);
+      expect(await shape(res)).toEqual(EMPTY_204);
+      expect((await rows()).length, mode).toBe(0);
+      expect(await viewCount("cs-bad"), mode).toBe(1);
+    }
   });
 
   it("observe with no usable beacon key keeps counting, in the unverified lane, and sets the health flag", async () => {
@@ -441,7 +458,7 @@ describe("view route", () => {
 
   it("a token in a header earns nothing", async () => {
     const t = await viewTok();
-    const res = await handleView(viewBeacon({ headers: { "X-Beacon": t, Authorization: t, "CF-Connecting-IP": "198.51.100.7" } }), viewEnv("enforce"), NOW);
+    const res = await handleView(viewBeacon({ headers: { "X-Beacon": t, Authorization: t, "CF-Connecting-IP": "198.51.100.7" } }), viewEnv("observe"), NOW);
     expect(await shape(res)).toEqual(EMPTY_204);
     expect(await viewCount("pvl-v-links")).toBe(0);
     expect(await viewCount("pvl-u-links")).toBe(1);
