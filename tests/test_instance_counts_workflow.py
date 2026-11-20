@@ -279,6 +279,13 @@ for a in "$@"; do
   esac
 done
 case " $* " in
+  *" tokens "*)
+    printf '%s\n' "$*" >> "${FAKE_LOG:-/dev/null}"
+    case " $* " in
+      *" --format github "*) printf '::warning title=Token health::instagram token expiring, 3 days left; renew it soon\n' ;;
+      *" --format markdown "*) printf '### Token health\n' ;;
+    esac
+    exit "${FAKE_TOKENS_EXIT:-0}" ;;
   *" history-verify "*) exit 0 ;;
   *" refresh "*)
     printf '%s' "$FAKE_NUMBERS" > "$data/numbers.json"
@@ -723,3 +730,40 @@ def test_the_history_is_installed_before_numbers_json_and_numbers_keeps_mode_064
     moves = [Path(x).name for x in log.read_text().split()]
     assert moves.index("social.jsonl") < moves.index("numbers.json"), moves
     assert numbers.stat().st_mode & 0o777 == 0o644
+
+
+def test_the_token_report_is_annotations_plus_a_step_summary_and_never_changes_the_exit(
+    tmp_path: Path,
+) -> None:
+    root, env = _refresh_fixture(tmp_path)
+    summary = tmp_path / "summary.md"
+    log = tmp_path / "docker.log"
+    for code in ("0", "4", "3", "127"):
+        summary.write_text("", encoding="utf-8")
+        log.write_text("", encoding="utf-8")
+        done = _run_refresh(
+            root,
+            env,
+            "",
+            tmp_path / f"w{code}",
+            {
+                "GITHUB_STEP_SUMMARY": str(summary),
+                "FAKE_LOG": str(log),
+                "FAKE_TOKENS_EXIT": code,
+            },
+        )
+        assert done.returncode == 0, done.stderr
+        assert "::warning title=Token health::" in done.stdout
+        assert "### Token health" in summary.read_text(encoding="utf-8")
+    calls = log.read_text(encoding="utf-8")
+    assert "--network none" in calls and "--read-only" in calls
+    assert ":/data:ro" in calls
+    assert "-e " not in calls  # no key reaches the report container
+
+
+def test_the_token_report_runs_without_a_step_summary(tmp_path: Path) -> None:
+    root, env = _refresh_fixture(tmp_path)
+    env.pop("GITHUB_STEP_SUMMARY", None)
+    done = _run_refresh(root, env, "", tmp_path, {"FAKE_TOKENS_EXIT": "4"})
+    assert done.returncode == 0, done.stderr
+    assert "::warning title=Token health::" in done.stdout
