@@ -172,9 +172,13 @@ same key cannot be filled again. Only `api` rows are redacted; `hand_kept` and
    fixed words and exits 5. Run `history-verify` before anything else.
    The new file is mode 0600 and keeps the old owner and group where the
    system permits (a notice says when it could not). ACLs, extended attributes
-   and security labels are not copied. Every folder in the path to the file is
-   opened without following symlinks; a symlink anywhere in that path (not only
-   the last folder) is refused. A plan that no longer matches the file in every
+   and security labels are not copied. Redaction needs a path with no symlinks: every
+   folder in the path to the file is opened without following symlinks, and a
+   symlink anywhere in it (also in the dry run) is refused, so resolve the path
+   yourself and pass the real one (`--file`). Reading, verifying, appending and
+   `counts refresh` are unchanged and still follow a symlinked ancestor such as a
+   symlinked home or checkout folder; they refuse only a symlinked last folder or
+   file, as before. A plan that no longer matches the file in every
    field, or that lists a record twice, is refused.
    A crash can leave a `.<file>.redact-<8 hex>.tmp` beside the history file. It
    holds the proposed redacted output, so treat it as private. The dry run lists

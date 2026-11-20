@@ -84,11 +84,44 @@ def test_a_symlinked_ancestor_is_refused_and_nothing_outside_is_written(
     with pytest.raises(HistoryError, match="symlink"):
         redact_records(via, plan, **KW)
     with pytest.raises(HistoryError, match="symlink"):
-        read_history(via)
+        find_stale_redaction_temps(via)
     with pytest.raises(HistoryError, match="symlink"):
-        append_records(via, [rec(as_of_utc="2026-10-09T09:00:00Z")], now=NOW)
+        remove_stale_redaction_temps(via, [".h.jsonl.redact-0a1b2c3d.tmp"])
     assert (real / "sub" / "h.jsonl").read_bytes() == before
     assert sorted(os.listdir(real / "sub")) == ["h.jsonl"]
+
+
+def test_read_append_and_verify_still_work_through_a_symlinked_ancestor(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    real = tmp_path / "real"
+    (real / "sub").mkdir(parents=True)
+    build(real / "sub" / "h.jsonl")
+    (tmp_path / "alias").symlink_to(real)
+    via = tmp_path / "alias" / "sub" / "h.jsonl"
+    assert len(read_history(via).records) == 3
+    append_records(via, [rec(as_of_utc="2026-10-09T09:00:00Z")], now=NOW)
+    assert main(["counts", "history-verify", "--file", str(via)]) == 0
+    assert "4 records" in capsys.readouterr().out
+    # The last folder itself as a symlink was refused before and still is.
+    (tmp_path / "linkdir").symlink_to(real / "sub")
+    with pytest.raises(HistoryError):
+        read_history(tmp_path / "linkdir" / "h.jsonl")
+
+
+def test_the_cli_redact_refuses_a_symlinked_ancestor(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    real = tmp_path / "real"
+    (real / "sub").mkdir(parents=True)
+    build(real / "sub" / "h.jsonl")
+    (tmp_path / "alias").symlink_to(real)
+    before = (real / "sub" / "h.jsonl").read_bytes()
+    via = tmp_path / "alias" / "sub" / "h.jsonl"
+    assert main(cli_args(via)) == 1  # the dry run refuses too
+    assert main(cli_args(via, "--confirm")) == 1
+    assert "symlink" in capsys.readouterr().err
+    assert (real / "sub" / "h.jsonl").read_bytes() == before
 
 
 def test_a_symlink_in_the_middle_of_a_relative_path_is_refused(

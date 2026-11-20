@@ -545,16 +545,21 @@ def _read_fd(fd: int, max_bytes: int) -> bytes:
     return b"".join(chunks)
 
 
-def _open_parent(path: Path) -> int:
-    """The folder of ``path`` as a descriptor, walking the whole chain.
+def _open_parent(path: Path, *, strict: bool = False) -> int:
+    """The folder of ``path`` as a descriptor.
 
-    Each component is opened relative to the one before it with ``O_NOFOLLOW``,
-    starting at the filesystem root (absolute path) or the current directory
-    (relative path), so a symlink anywhere in the chain is refused and nothing
-    outside the apparent path is ever opened. (``openat2`` with
-    ``RESOLVE_NO_SYMLINKS`` is not used: it is not in the standard library.)
+    Default: the final folder is opened without following a symlink (an
+    ancestor symlink, such as a symlinked home or checkout folder, is followed).
+    With ``strict`` (the destructive redaction path only) every component is
+    opened relative to the one before it with ``O_NOFOLLOW``, starting at the
+    filesystem root (absolute path) or the current directory (relative path), so
+    a symlink anywhere in the chain is refused and nothing outside the apparent
+    path is opened. (``openat2`` with ``RESOLVE_NO_SYMLINKS`` is not in the
+    standard library, so the portable walk is used.)
     """
     flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    if not strict:
+        return os.open(path.parent, flags)
     folder = path.parent
     current = os.open("/" if folder.is_absolute() else ".", flags)
     try:
@@ -572,7 +577,8 @@ def _open_parent(path: Path) -> int:
                     is_link = False
                 if is_link:
                     raise HistoryError(
-                        "the history folder path holds a symlink; refused"
+                        "the history folder path holds a symlink; redaction "
+                        "needs the real path, with no symlinks"
                     ) from None
                 raise
             os.close(current)
@@ -845,7 +851,7 @@ def redact_records(
     if not planned:
         return 0
     try:
-        dir_fd = _open_parent(path)
+        dir_fd = _open_parent(path, strict=True)
     except OSError:
         raise HistoryError("cannot open the history folder") from None
     try:
@@ -1017,7 +1023,7 @@ def find_stale_redaction_temps(path: Path) -> list[str]:
     redacted output, so they are private history and should not linger.
     """
     pattern = _stale_pattern(path.name)
-    dir_fd = _open_parent(path)
+    dir_fd = _open_parent(path, strict=True)
     try:
         with os.scandir(dir_fd) as entries:
             names = [e.name for e in entries if pattern.match(e.name)]
@@ -1031,7 +1037,7 @@ def find_stale_redaction_temps(path: Path) -> list[str]:
 def remove_stale_redaction_temps(path: Path, names: Sequence[str]) -> int:
     """Remove the named stale temporaries; anything else in ``names`` is ignored."""
     pattern = _stale_pattern(path.name)
-    dir_fd = _open_parent(path)
+    dir_fd = _open_parent(path, strict=True)
     removed = 0
     try:
         for name in names:
