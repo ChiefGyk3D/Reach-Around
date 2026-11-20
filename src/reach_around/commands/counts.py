@@ -58,6 +58,7 @@ from reach_around.counts.history import (
     append_records,
     dump_new_history,
     find_stale_redaction_temps,
+    find_unmarked_redaction_temps,
     new_run_id,
     plan_redaction,
     read_history,
@@ -639,6 +640,13 @@ def run_history_redact(args: argparse.Namespace) -> int:
                     f"{len(stale)} stale redaction temporary file(s) found "
                     "(--confirm removes them): " + ", ".join(stale)
                 )
+            unmarked = find_unmarked_redaction_temps(target)
+            if unmarked:
+                _say(
+                    f"{unmarked} file(s) named like a redaction temporary have no "
+                    "marker (a crash before it was written?); they are never "
+                    "removed automatically; look at them and remove them by hand"
+                )
             return EXIT_OK
         removed = remove_stale_redaction_temps(target, stale)
         if removed:
@@ -744,7 +752,9 @@ def _register_history(
         "working file and re-chain it. Dry run by default (prints counts only); "
         "--confirm rewrites the file atomically. Only api rows unless "
         "--include-hand-kept. A tombstone does not remove the values from git "
-        "history. Exit 0 done, 1 refused, 2 usage or config error.",
+        "history. Exit 0 done, 1 refused, 2 usage or config error, 5 the file was "
+        "replaced (or may have been) but the result needs checking: run "
+        "history-verify before anything else.",
     )
     _where(redact)
     redact.add_argument("--platform", required=True)

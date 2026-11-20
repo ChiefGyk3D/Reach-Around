@@ -230,7 +230,7 @@ def validate(record: Record, now: datetime | None = None) -> None:
 
 
 def _plain_date(name: str, value: object) -> date:
-    if type(value) is not str or not _DATE.match(value):
+    if type(value) is not str or not _DATE.fullmatch(value):
         raise HistoryError(f"{name} must look like 2026-11-19")
     try:
         return date.fromisoformat(value)
@@ -252,9 +252,10 @@ def validate_tombstone(tomb: Tombstone, now: datetime | None = None) -> None:
     ):
         if type(getattr(tomb, name)) is not str:
             raise HistoryError(f"{name} must be text")
-    if not _SLUG.match(tomb.platform):
+    # fullmatch: a trailing newline is not part of a name (``$`` would allow it).
+    if not _SLUG.fullmatch(tomb.platform):
         raise HistoryError("platform must be a lowercase slug")
-    if not _METRIC.match(tomb.metric):
+    if not _METRIC.fullmatch(tomb.metric):
         raise HistoryError("metric must be lowercase letters, digits, underscores")
     when = parse_as_of(tomb.as_of_utc)
     if now is not None and when > now.astimezone(UTC):
@@ -269,7 +270,7 @@ def validate_tombstone(tomb: Tombstone, now: datetime | None = None) -> None:
         raise HistoryError("redacted_at_utc is in the future")
     if trigger > done.date():
         raise HistoryError("trigger_date is after the redaction")
-    if not _RUN_ID.match(tomb.run_id) or not tomb.run_id.startswith("redact-"):
+    if not _RUN_ID.fullmatch(tomb.run_id) or not tomb.run_id.startswith("redact-"):
         raise HistoryError("run_id of a tombstone must start with redact-")
 
 
@@ -396,7 +397,7 @@ def _parse_tombstone(
     if keys != _TOMB_FIELDS:
         raise HistoryError(f"{where}: wrong set of fields for a tombstone")
     prev = obj["prev"]
-    if type(prev) is not str or not _HASH.match(prev):
+    if type(prev) is not str or not _HASH.fullmatch(prev):
         raise HistoryError(f"{where}: prev is not a SHA-256 hex digest")
     tomb = Tombstone(
         platform=obj["platform"],
@@ -861,9 +862,11 @@ def plan_redaction(
     UTC date (``YYYY-MM-DD``): rows on earlier days are chosen; ``None`` chooses
     every day.
     """
-    if type(platform) is not str or not _SLUG.match(platform):
+    if type(platform) is not str or not _SLUG.fullmatch(platform):
         raise HistoryError("platform must be a lowercase slug")
-    if metric is not None and (type(metric) is not str or not _METRIC.match(metric)):
+    if metric is not None and (
+        type(metric) is not str or not _METRIC.fullmatch(metric)
+    ):
         raise HistoryError("metric must be lowercase letters, digits, underscores")
     if source is not None:
         if type(source) is not str or source not in SOURCES:
@@ -1315,10 +1318,10 @@ def _confirm_installed(
 
 
 _MARKER = re.compile(
-    r"^reach-around redaction marker 1\n"
+    r"reach-around redaction marker 1\n"
     r"out (\d+) (\d+) ([0-9a-f]{64})\n"
-    r"old (\d+) (\d+) ([0-9a-f]{64})\n$"
-)
+    r"old (\d+) (\d+) ([0-9a-f]{64})\n"
+)  # used with fullmatch: nothing before, nothing after, not even a newline
 _Proof = tuple[int, int, str]
 
 
@@ -1374,7 +1377,7 @@ def _read_marker(dir_fd: int, marker: str) -> tuple[_Proof, _Proof] | None:
     finally:
         os.close(fd)
     try:
-        found = _MARKER.match(raw.decode("ascii"))
+        found = _MARKER.fullmatch(raw.decode("ascii"))
     except UnicodeDecodeError:
         return None
     if found is None:
@@ -1401,9 +1404,17 @@ def _provenance(dir_fd: int, temp: str, proof: tuple[_Proof, _Proof]) -> str | N
     return None
 
 
+def _open_strict(path: Path) -> int:
+    """The folder with the strict no-symlink walk; any failure is a HistoryError."""
+    try:
+        return _open_parent(path, strict=True)
+    except OSError:
+        raise HistoryError("cannot open the history folder") from None
+
+
 def _stale_patterns(name: str) -> tuple[re.Pattern[str], re.Pattern[str]]:
-    base = r"^\." + re.escape(name) + r"\.redact-[0-9a-f]{8}\."
-    return re.compile(base + r"tmp$"), re.compile(base + r"mark$")
+    base = r"\." + re.escape(name) + r"\.redact-[0-9a-f]{8}\."
+    return re.compile(base + "tmp"), re.compile(base + "mark")  # use fullmatch
 
 
 def _is_stale(
@@ -1427,10 +1438,10 @@ def _is_stale(
         return False
     if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid():
         return False
-    if mark_re.match(name):
+    if mark_re.fullmatch(name):
         temp = name[: -len(".mark")] + ".tmp"
         return _identity_of(dir_fd, temp) is None and info.st_mtime < old_enough
-    if not temp_re.match(name):
+    if not temp_re.fullmatch(name):
         return False
     proof = _read_marker(dir_fd, _marker_name(name))
     if proof is None:
@@ -1449,15 +1460,43 @@ def find_stale_redaction_temps(path: Path) -> list[str]:
     file and every other name are never listed.
     """
     patterns = _stale_patterns(path.name)
-    dir_fd = _open_parent(path, strict=True)
+    dir_fd = _open_strict(path)
     try:
         with os.scandir(dir_fd) as entries:
             names = [
                 e.name
                 for e in entries
-                if patterns[0].match(e.name) or patterns[1].match(e.name)
+                if patterns[0].fullmatch(e.name) or patterns[1].fullmatch(e.name)
             ]
         return sorted(n for n in names if _is_stale(dir_fd, n, patterns))
+    except OSError:
+        raise HistoryError("cannot list the history folder") from None
+    finally:
+        os.close(dir_fd)
+
+
+def find_unmarked_redaction_temps(path: Path) -> int:
+    """How many regular files are named like a redaction temporary but have no marker.
+
+    A crash before the marker was written leaves such a file. Nothing proves what
+    it holds, so it is never removed automatically; this only counts them (never
+    their names or contents) so the owner knows to look.
+    """
+    temp_re = _stale_patterns(path.name)[0]
+    dir_fd = _open_strict(path)
+    try:
+        with os.scandir(dir_fd) as entries:
+            temps = [e.name for e in entries if temp_re.fullmatch(e.name)]
+        count = 0
+        for name in temps:
+            try:
+                info = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
+            except OSError:
+                continue
+            marker = _identity_of(dir_fd, _marker_name(name))
+            if stat.S_ISREG(info.st_mode) and marker is None:
+                count += 1
+        return count
     except OSError:
         raise HistoryError("cannot list the history folder") from None
     finally:
@@ -1472,7 +1511,7 @@ def remove_stale_redaction_temps(
     Holds the writers' lock, so it never runs beside an append or a redaction.
     """
     patterns = _stale_patterns(path.name)
-    dir_fd = _open_parent(path, strict=True)
+    dir_fd = _open_strict(path)
     removed = 0
     sidecar = -1
     try:
@@ -1486,7 +1525,7 @@ def remove_stale_redaction_temps(
                 except OSError:
                     raise HistoryError("cannot remove a stale temporary file") from None
                 removed += 1
-                if patterns[0].match(name):
+                if patterns[0].fullmatch(name):
                     _unlink_quietly(dir_fd, _marker_name(name))
     finally:
         if sidecar >= 0:

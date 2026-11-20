@@ -153,9 +153,25 @@ cannot be re-fetched), so restore the most recent commit that verifies.
 ## Redact stored values (tombstones)
 
 Use this when a platform's terms, a revocation or a request means a stored API
-value must go. It is the one command that rewrites the file, it is owner-run,
-and it never runs during `counts refresh` (a refresh that holds the lock makes
-it refuse, and an append that waited through it is refused too).
+value must go. It is the one command that rewrites the file, and it is
+owner-run: nothing starts it for you, `counts refresh` never calls it.
+
+Do not run a redaction and a refresh at the same time, and do not start a local
+refresh (`scripts/refresh-counts.sh`) while a redaction is running or just
+before you start one. Two things protect you, and neither replaces that rule:
+
+* The writers (`history-add`, the engine's append, a redaction, removal of
+  leftovers) take turns through the lock file. An append that waits for the lock
+  while a redaction runs then opens the redacted file and succeeds on it; only a
+  writer that bypasses the lock can be refused, when its file turns out to have
+  been replaced. A redaction that cannot get the lock in time refuses.
+* The example refresh script (`examples/instance-repo/scripts/refresh-counts.sh`)
+  works on a scratch copy and moves the result over `history/social.jsonl` at the
+  end. It records the inode and SHA-256 of the file it copied and, before
+  anything is written and again under the lock (where `flock` is installed),
+  refuses with fixed words, writing nothing, if the file is no longer the same.
+  Without that, a redaction run during a local refresh would be undone and the
+  removed values would come back. If it refuses, run the refresh again.
 
 A tombstone replaces the line of a redacted record. It keeps the key (platform,
 metric, as-of time, source), a `reason` from a closed list (`platform_expiry`,
@@ -223,6 +239,14 @@ same key cannot be filled again. Only `api` rows are redacted; `hand_kept` and
    copy (any age). A name alone proves nothing: a file with no marker, a changed
    file, or a file under a temporary name that is not the recorded one is never
    removed. A marker whose temporary is gone is removed once it is an hour old.
+   A file named like a temporary but with no marker (a crash before the marker
+   was written) is never removed automatically; the dry run only says how many
+   there are, by count. Look at them and remove them by hand.
+   Until the recovery rerun has removed a leftover, it may hold the very values
+   you are deleting: never `git add -A` or `git add history/`; add the one file
+   by name. The example `.gitignore` ignores `history/.*.redact-*` (temporary and
+   marker) and `history/.*.lock`, which covers a careless `git add`; copy those
+   lines into your own `.gitignore` if you have not started from the example.
 4. `reach-around counts history-verify --config site.yaml` must exit 0.
 5. Commit the file to the private instance repository in its own pull request.
    The bundled workflow still refuses a file that is not a byte-prefix of the

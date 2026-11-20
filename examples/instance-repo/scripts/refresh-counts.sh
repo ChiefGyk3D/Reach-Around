@@ -118,7 +118,35 @@ if [ -L "$history_dir" ] || [ -L "$history" ]; then
   exit 2
 fi
 mkdir -p "$workdir/history"
-if [ -f "$history" ]; then cp "$history" "$workdir/history/social.jsonl"; fi
+
+# The repository's history file can change while the engine runs (a
+# `counts history-redact`, an edit, a git pull). The result below was built from
+# the copy, so installing it over a changed file would undo that change, and a
+# redaction would bring the removed values back. Remember which file (device and
+# inode) and which bytes (SHA-256 of the copy) the engine started from, and
+# refuse to install over anything else.
+file_id() { stat -c '%d:%i' "$1" 2>/dev/null || stat -f '%d:%i' "$1"; }
+file_sha() { sha256sum "$1" 2>/dev/null | cut -d' ' -f1 || shasum -a 256 "$1" | cut -d' ' -f1; }
+hist_id=""
+hist_sha=""
+if [ -f "$history" ]; then
+  hist_id="$(file_id "$history")"
+  cp "$history" "$workdir/history/social.jsonl"
+  hist_sha="$(file_sha "$workdir/history/social.jsonl")"
+fi
+history_unchanged() {
+  if [ -z "$hist_id" ]; then
+    [ ! -e "$history" ] && [ ! -L "$history" ]
+    return
+  fi
+  [ ! -L "$history" ] && [ -f "$history" ] &&
+    [ "$(file_id "$history")" = "$hist_id" ] &&
+    [ "$(file_sha "$history")" = "$hist_sha" ]
+}
+history_changed() {
+  echo "refresh-counts: the history file changed while the refresh ran (a redaction, an edit or a pull?); nothing was overwritten. Run the refresh again." >&2
+  exit 1
+}
 mounts+=(-v "$workdir/history":/config/history)
 
 # "-e NAME" with no value copies the variable from this process; nothing is
@@ -169,6 +197,8 @@ if [ -e "$workdir/history/social.jsonl" ]; then
   }
   new_history="$workdir/history/social.jsonl"
 fi
+# Before anything is written: still the file the engine started from?
+if ! history_unchanged; then history_changed; fi
 if [ -f "$workdir/numbers.json" ] && [ ! -L "$workdir/numbers.json" ]; then
   python3 -I "$here/scripts/validate-numbers.py" \
     --in "$workdir/numbers.json" --out "$numbers" || {
@@ -179,6 +209,23 @@ fi
 
 if [ -n "$new_history" ]; then
   mkdir -p "$history_dir"
+  # Take the lock the engine's history writers (append, redact) take, so a
+  # redaction cannot run between the last check and the move. Where flock is not
+  # installed the checks above and below still apply, without the lock.
+  lock_file="$history_dir/.social.jsonl.lock"
+  if [ -L "$lock_file" ]; then
+    echo "error: the history lock file must not be a symbolic link" >&2
+    exit 2
+  fi
+  if command -v flock >/dev/null 2>&1; then
+    exec 9>>"$lock_file"
+    chmod 600 "$lock_file" 2>/dev/null || true
+    flock -w "${HISTORY_LOCK_WAIT_SECONDS:-30}" 9 || {
+      echo "refresh-counts: the history file is locked by another run (a redaction?); nothing was overwritten." >&2
+      exit 1
+    }
+  fi
+  if ! history_unchanged; then history_changed; fi
   tmp="$(mktemp "$history_dir/.social.XXXXXX")"
   cp "$new_history" "$tmp"
   mv -f "$tmp" "$history"

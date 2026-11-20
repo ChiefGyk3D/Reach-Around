@@ -20,3 +20,6 @@ engine/
 *.swp
 # The history append lock (written beside history/social.jsonl by the engine)
 history/.*.lock
+# Leftovers of a history redaction (history-redact): a crash can leave the
+# displaced OLD file, with the values being deleted, and its marker. Never commit.
+history/.*.redact-*
