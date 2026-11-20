@@ -68,6 +68,43 @@ Remaining items:
 | SEO 92: `meta-description` | test host | The deployed build predates #359; the current build has the description | Redeploy from main |
 | Performance 98 to 99 on mobile | test host | LCP and FCP scores of 0.94 to 0.97 on the network path; run to run variance | Host and network |
 
+## Page-weight budget (#670)
+
+Measured 2026-11-20 on the built example instance (`examples/instance`) and a media kit built with no `turnstile_site_key`, the same pages the golden tests build. A page that grows past the budget fails `tests/site/test_page_weight.py`. The numbers below and the constants in `tests/site/pageweight.py` (`BUDGET`) are one table: the test fails when they differ, so change both in the same commit.
+
+| Page type | HTML | CSS | JS | Images | Fonts | Total | Compressed | Requests | Third party |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| hub | 5200 | 59000 | 13000 | 1300 | 82000 | 160000 | 82000 | 11 | 0 |
+| tab | 3600 | 59000 | 13000 | 1300 | 82000 | 158000 | 81000 | 11 | 0 |
+| kit | 7600 | 72000 | 3300 | 500 | 33300 | 116000 | 56000 | 11 | 0 |
+| support | 4600 | 72000 | 13000 | 1300 | 82000 | 148000 | 78000 | 10 | 0 |
+
+Bytes, except Requests and Third party. Page types: `hub` is the first-tab page (`index.html`), `tab` any other tab page, `kit` the public media kit page, `support` the pages around them (privacy, `/kit/retry/` and 404; this repository has no other support-style page). Total is HTML, CSS, JS, images and fonts before compression. Compressed is the estimate described below. Requests counts the page and each distinct file it links. Third party is zero requests to any other origin.
+
+### Measured, before headroom
+
+| Page type | Page | HTML | CSS | JS | Images | Fonts | Total | Compressed | Requests |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| hub | `index.html` | 4086 | 46705 | 10332 | 997 | 65152 | 127272 | 64895 | 9 |
+| tab | `events/index.html` | 2875 | 46705 | 10332 | 997 | 65152 | 126061 | 64615 | 9 |
+| kit | `kit/index.html` | 6077 | 57126 | 2596 | 384 | 26576 | 92759 | 44414 | 9 |
+| support | `privacy/index.html` | 3620 | 37890 | 10332 | 997 | 65152 | 117991 | 62313 | 8 |
+| support | `kit/retry/index.html` | 2892 | 57126 | 0 | 384 | 26576 | 86978 | 42352 | 8 |
+
+The budget is the larger of the example-instance and kit measurements for each type, raised by about a quarter and rounded up (the kit rows use the kit measurement only, since they are the only kit pages). The example instance is the heavy case on fonts and frame art because it sets a theme font; a plain page is lighter.
+
+### Method
+
+* Build the pages with `build_site` as the golden tests do, then read the output tree.
+* A page costs its own HTML plus every distinct same-origin file its HTML links as a stylesheet, script, image, icon or preload, fonts included. Files reached only from inside a CSS file (frame border art, which loads when a frame is on) are not counted, and neither are files a script fetches later.
+* Compressed is gzip level 9 of the text files (HTML, CSS, JS, SVG, TTF) plus the raw size of everything else (WOFF2 is already compressed). It is an estimate; the host's own compression decides the real figure.
+* Third party: no `link`, `script`, `img`, `source`, `iframe`, `video`, `audio`, `embed`, `object` or `form` reference to an absolute or protocol-relative URL in a page, and no such `url()` or `@import` in an inline style or a linked stylesheet. Plain `<a href>` links leave the site by the visitor's click and are not requests.
+* One exception, outside the budget: the two gate pages (`/kit/` and `/kit/retry/`) load Cloudflare's Turnstile script (`challenges.cloudflare.com`) only when `kit.turnstile_site_key` is set. The test pins that: only those two pages, only that origin. The table above was measured without a key, so the widget's own bytes are not in it.
+
+### Lighthouse targets (not CI gates)
+
+Mobile performance 90 or more and accessibility 100, on every page type. These are targets measured by hand (see the method at the top of this page); CI does not run Lighthouse, so a regression there is not caught by a test. The measured scores above are 100 and 100.
+
 ## Browser security headers (#443)
 
 Measured 2026-11-08 with Lighthouse 13.6.0 (Chromium 156) against a local production build served with the build's own `_headers`: the example instance with a `kit:` section, mobile, best practices category. The "Trust and Safety" items are the audits `csp-xss`, `has-hsts`, `origin-isolation`, `clickjacking-mitigation` and `trusted-types-xss`. They are informational and unscored.
