@@ -113,9 +113,9 @@ def page_type(rel: str) -> str:
 class _Refs(HTMLParser):
     def __init__(self) -> None:
         super().__init__()
-        self.local = []
-        self.remote = []
-        self.stylesheets_inline = []
+        self.local: list[str] = []
+        self.remote: list[str] = []
+        self.stylesheets_inline: list[str] = []
         self._in_style = False
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
