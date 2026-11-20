@@ -16,6 +16,7 @@ from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 
 from pydantic import (
+    AfterValidator,
     BaseModel,
     ConfigDict,
     Discriminator,
@@ -103,6 +104,17 @@ class _Model(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
 
+def _day_only(value: object) -> object:
+    # A date or a quoted YYYY-MM-DD string. No datetimes, no timestamps.
+    if value is None:
+        return value
+    if type(value) is date:
+        return value
+    if isinstance(value, str) and _ISO_DATE.match(value):
+        return value
+    raise ValueError("must be a date written YYYY-MM-DD")
+
+
 class Link(_Model):
     id: Slug
     title: Title
@@ -135,14 +147,7 @@ class Link(_Model):
     @field_validator("show_from", "show_until", mode="before")
     @classmethod
     def _iso_date_only(cls, value: object) -> object:
-        # A date or a quoted YYYY-MM-DD string. No datetimes, no timestamps.
-        if value is None:
-            return value
-        if type(value) is date:
-            return value
-        if isinstance(value, str) and _ISO_DATE.match(value):
-            return value
-        raise ValueError("must be a date written YYYY-MM-DD")
+        return _day_only(value)
 
     @model_validator(mode="after")
     def _window_is_ordered(self) -> Link:
@@ -173,12 +178,59 @@ class PageStatus(_Model):
     schedule: Subtitle | None = None
 
 
+def _plain_kicker(value: str) -> str:
+    if value != value.strip() or not value.isprintable():
+        raise ValueError(
+            "kicker must be plain text with no control characters or edge spaces"
+        )
+    return value
+
+
+Kicker = Annotated[
+    str,
+    StringConstraints(min_length=1, max_length=60),
+    AfterValidator(_plain_kicker),
+]
+
+
+class PageFeatured(_Model):
+    """One link promoted above the groups, optionally only between two days."""
+
+    link: Slug
+    kicker: Kicker
+    show_from: date | None = None
+    show_until: date | None = None
+
+    @field_validator("show_from", "show_until", mode="before")
+    @classmethod
+    def _iso_date_only(cls, value: object) -> object:
+        return _day_only(value)
+
+    @model_validator(mode="after")
+    def _window_is_ordered(self) -> PageFeatured:
+        if (
+            self.show_from is not None
+            and self.show_until is not None
+            and self.show_until < self.show_from
+        ):
+            raise ValueError("show_until must not be before show_from")
+        return self
+
+
 class Page(_Model):
     """Production link-page presentation choices."""
 
     layout: PageVariant = "classic"
     status: PageStatus | None = None
     watch: list[Slug] = Field(default_factory=list)
+    featured: PageFeatured | None = None
+
+    @field_validator("featured", mode="before")
+    @classmethod
+    def _one_featured(cls, value: object) -> object:
+        if isinstance(value, list):
+            raise ValueError("page.featured accepts one link, not a list")
+        return value
 
 
 class Section(_Model):
@@ -254,6 +306,8 @@ class Tab(_Model):
     # Only read by ``page_layout: sections``: whether this tab's section starts
     # open. Unset means the first section on the page is open and the rest closed.
     open: bool | None = None
+    # Only read by ``page.layout: stack``: show the group as a closed details.
+    collapsed: bool = False
     blocks: list[Block]
 
 
@@ -421,6 +475,13 @@ class SiteConfig(_Model):
         """The smart stack uses tabs as ordered groups and links as its items."""
         page = self.page
         if page.layout == "classic":
+            if page.featured is not None:
+                raise ValueError("page.featured needs page.layout: stack")
+            for tab in self.tabs:
+                if tab.collapsed:
+                    raise ValueError(
+                        f"tab {tab.id!r}: collapsed needs page.layout: stack"
+                    )
             return self
         if page.status is None:
             raise ValueError("page.status is required for page.layout: stack")
@@ -441,6 +502,8 @@ class SiteConfig(_Model):
             if tab.intent in intents:
                 raise ValueError(f"tab intent {tab.intent!r} may appear only once")
             intents.add(tab.intent)
+            if tab.collapsed and tab.intent == "watch":
+                raise ValueError("the Watch group cannot be collapsed")
             group_links: list[Link] = []
             for block in tab.blocks:
                 if isinstance(block, Link):
@@ -472,6 +535,8 @@ class SiteConfig(_Model):
             for link in selected
         ):
             raise ValueError("page.watch links cannot be scheduled")
+        if page.featured is not None and page.featured.link not in links:
+            raise ValueError(f"page.featured link id {page.featured.link!r} is missing")
         icons = {link.icon for link in selected}
         if icons != {"twitch", "kick"}:
             raise ValueError("page.watch must name one Twitch and one Kick link")

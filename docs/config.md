@@ -257,6 +257,9 @@ keeps the existing tab or sections layout.
 | `status.text` | Subtitle | none | Required owner-written live or next-stream line. |
 | `status.schedule` | Subtitle | none | Optional second schedule line. |
 | `watch` | list of link ids | empty | Exactly two with `stack`, naming one Twitch-icon link and one Kick-icon link. Config order is display order and both links receive identical treatment. |
+| `featured.link` | link id | none | One link promoted above the groups. It must exist in a tab, and `page.featured` needs `layout: stack`. |
+| `featured.kicker` | text, 1 to 60 characters | none | Required with `featured`. A short plain-text label above the link, such as `New this week`. No control characters, no leading or trailing space. |
+| `featured.show_from`, `featured.show_until` | date `YYYY-MM-DD` | none | Optional, inclusive days. Like the same keys on a link, they are compared with the day of the build; `show_until` must not be before `show_from`. Outside the window the slot is not rendered. |
 
 With `layout: stack`, every tab needs a distinct `intent`, there must be exactly one `watch` tab, and the two `watch` links cannot be scheduled (`show_from`, `show_until`). The validator enforces these only for that layout. Tabs provide the group order and headings. The standard information order is
 `videos`, `follow`, `community`, `support`, `work`, `shop`, `blog`; config order
@@ -285,6 +288,56 @@ tabs:
         url: https://example.com/watch-two
         icon: kick
 ```
+
+### The featured slot
+
+`page.featured` promotes one link between the Watch links and the groups. There
+is at most one: a list is refused. The link also stays in its own group, and
+clicks on either copy are counted for the same link id. Outside its dates, or
+while the link itself is hidden by its own `show_from` or `show_until`, the slot
+is not rendered at all. The validation errors use fixed wording:
+
+- `page.featured link id 'x' is missing`
+- `page.featured accepts one link, not a list`
+- `page.featured needs page.layout: stack`
+
+```yaml
+page:
+  featured:
+    link: follow-one
+    kicker: New this week
+    show_from: 2027-03-01
+    show_until: 2027-03-31
+```
+
+### Collapsed groups
+
+`collapsed: true` on a tab renders that group as a native `<details>` element,
+closed on load. It is read only with `page.layout: stack`, is `false` by
+default, and the Watch group cannot be collapsed, so required content is never
+hidden unless you ask for it.
+
+```yaml
+tabs:
+  - id: shop
+    title: Shop
+    intent: shop
+    collapsed: true
+    blocks:
+      - id: example-stand
+        title: Example Boom Stand
+        url: https://shop.example.com/stand
+      - id: example-mug
+        title: Example Mug
+        url: https://shop.example.com/mug
+```
+
+The group heading sits inside the summary. The whole summary row is a target at
+least 44 px tall, it takes the site focus ring, and Enter or Space opens it
+with no script. Print styles open the group, so the links appear on paper (in
+browsers that support the `::details-content` selector). Links in a collapsed
+group are still counted by click tracking when click tracking is on. The
+group's links still count toward the 2 to 6 links rule.
 
 Layouts B, C, and D remain prototypes and are not accepted by the production
 configuration.

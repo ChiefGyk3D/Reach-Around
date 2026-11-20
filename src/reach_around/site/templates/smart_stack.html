@@ -12,13 +12,28 @@
 <div class="smart-watch" role="group" aria-label="Watch">
 {% for link in watch %}{{ link_anchor(link, click_tracking, " smart-watch-link") }}{% endfor %}
 </div>
+{% if featured %}
+<section class="smart-featured" aria-labelledby="smart-featured-kicker">
+<p id="smart-featured-kicker" class="smart-featured-kicker">{{ featured.kicker }}</p>
+{{ link_anchor(featured.link, click_tracking) }}
+</section>
+{% endif %}
 <div class="smart-groups">
 {% for item in groups %}
 <section class="smart-group" id="group-{{ item.tab.intent }}" aria-labelledby="group-{{ item.tab.intent }}-title">
+{% if item.tab.collapsed %}
+<details class="smart-collapse">
+<summary><h2 id="group-{{ item.tab.intent }}-title">{{ item.tab.title }}</h2></summary>
+<div class="smart-group-links">
+{% for link in item.links %}{{ link_anchor(link, click_tracking) }}{% endfor %}
+</div>
+</details>
+{% else %}
 <h2 id="group-{{ item.tab.intent }}-title">{{ item.tab.title }}</h2>
 <div class="smart-group-links">
 {% for link in item.links %}{{ link_anchor(link, click_tracking) }}{% endfor %}
 </div>
+{% endif %}
 </section>
 {% endfor %}
 </div>
