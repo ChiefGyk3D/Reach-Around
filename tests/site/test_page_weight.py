@@ -70,7 +70,7 @@ def stack_doc(badges: bool) -> dict[str, object]:
                 ],
             }
         )
-    out = copy.deepcopy(doc)
+    out: dict[str, object] = copy.deepcopy(doc)
     out["tabs"] = groups
     out["page"] = {
         "layout": "stack",
@@ -78,7 +78,7 @@ def stack_doc(badges: bool) -> dict[str, object]:
         "watch": ["watch-1", "watch-2"],
         "live_badges": badges,
     }
-    out.setdefault("features", {})["click_tracking"] = True
+    out["features"] = {"click_tracking": True}
     return out
 
 
