@@ -682,11 +682,18 @@ form posts to `/k/gate`. They ship off at the cutover (`features.kit_gate`).
   this change writes either floor yet**: the revoke task that will call them is
   not built, so until it lands a leaked cookie works for its whole lifetime,
   24 hours by default (`TOKEN_TTL_SECONDS`).
-- **Counter growth.** The single-use claim rows are written after Turnstile
-  passes and before the business budget is charged, so a request the budget then
-  refuses still leaves a claim row. The hourly purge deletes at most 500 counter
-  rows a run, and growth is bounded by the per-network allowance in front of
-  Turnstile (20 a minute per network).
+- **Counter growth.** Each solved challenge writes one single-use claim row,
+  after Turnstile passes and before the business budget is charged. While the
+  hour's gate budget is spent the gate reads that budget row first (a SELECT, no
+  write) and refuses without writing the claim; under budget, a request that
+  loses the race for the last unit can still leave one claim row. The claim
+  writes are bounded per network, not globally and not in the modeled worst
+  case (the `gate x 5` figure in `docs/deploy.md`): the allowance in front of
+  Turnstile (`GATE_CHECK_LIMITER`, 20 a minute per coarse network) allows at most
+  1,200 claims an hour and about 28,800 rows a day per network, about twice that
+  counting the purge deletes, multiplied by the number of networks and limited
+  by the cost of solving the challenge. The hourly purge deletes at most 500
+  counter rows a run, and is unchanged.
 - **Accepted risk: spending the new-lead cap.** A client that passes Turnstile
   can use plus-tag or invented addresses to spend the per-day new-lead cap (100)
   or `MAX_LEADS`. Visitors are still unlocked; the owner loses storage of later

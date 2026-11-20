@@ -41,7 +41,7 @@
 import { notifyOwner, type AlertsEnv, type DispatchDeps } from "../alerts/dispatcher";
 import { normalizeAddress } from "../address";
 import { limiterKey, secretBytes } from "../ratekey";
-import { loadKitLimits, recordKitEventCapped, reserveRoute } from "./budgets";
+import { gateRouteHasRoom, loadKitLimits, recordKitEventCapped, reserveRoute } from "./budgets";
 import { isKitKilled, loadKitEnv, type KitEnv } from "./env";
 import { killedResponse, originAllowList } from "./guard";
 import { MAX_FORM_BYTES, readForm } from "./input";
@@ -177,6 +177,7 @@ export async function challengePassed(
   token: string,
   fetchFn: typeof fetch,
   nowMs: number,
+  beforeClaim?: () => Promise<boolean>,
 ): Promise<boolean> {
   let challengeMs: number | null = null;
   const passed = await verifyTurnstile(env, token, "gate", fetchFn, {
@@ -188,6 +189,9 @@ export async function challengePassed(
   const at: number = challengeMs;
   if (Math.abs(nowMs - at) > CHALLENGE_SKEW_MS) return false; // CONTROL:turnstile-fresh
   try {
+    // A read-only check, before the claim write: when the hourly gate budget is already spent the
+    // request is refused right after anyway, so it must not leave a claim row behind.
+    if (beforeClaim !== undefined && !(await beforeClaim())) return false;
     const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(token)));
     let hex = "";
     for (const b of digest.slice(0, 20)) hex += b.toString(16).padStart(2, "0");
@@ -323,7 +327,16 @@ async function gate(request: Request, env: GateEnv, deps: GateDeps): Promise<Res
     }
   }
 
-  if (!(await challengePassed(env, form.turnstile, fetchFn, now))) return fail("turnstile");
+  let budgetFull = false;
+  if (
+    !(await challengePassed(env, form.turnstile, fetchFn, now, async () => {
+      const room = await gateRouteHasRoom({ ...env, DB: env.DB }, now);
+      budgetFull = !room;
+      return room;
+    }))
+  ) {
+    return fail(budgetFull ? "route_budget" : "turnstile");
+  }
 
   if (!(await reserveRoute({ ...env, DB: env.DB }, "gate", now))) return fail("route_budget"); // CONTROL:gate-route-budget
 

@@ -308,6 +308,24 @@ export async function reserveRoute(env: DbEnv, route: RouteName, nowMs: number):
   }
 }
 
+/**
+ * Read-only: is the current UTC hour's gate budget still below its limit? One SELECT, no write. The
+ * gate asks before it writes a single-use claim, so a request the budget would refuse right after
+ * leaves nothing behind. It does not reserve: reserveRoute stays the one atomic decision. Any error,
+ * or an invalid setting, answers false (the same refusal reserveRoute gives).
+ */
+export async function gateRouteHasRoom(env: DbEnv, nowMs: number): Promise<boolean> {
+  try {
+    const limit = loadKitLimits(env).routeGatePerHour;
+    const row = await env.DB.prepare("SELECT count FROM counters WHERE key = ?1 AND day = ?2")
+      .bind("route-gate", utcHour(nowMs))
+      .first<{ count: number }>();
+    return limit > 0 && (row === null || row.count < limit);
+  } catch {
+    return false;
+  }
+}
+
 async function reserveDaily(env: DbEnv, key: string, pick: (c: KitLimits) => number, nowMs: number): Promise<boolean> {
   try {
     return await reserveBudget(env.DB, key, utcDay(nowMs), pick(loadKitLimits(env)));

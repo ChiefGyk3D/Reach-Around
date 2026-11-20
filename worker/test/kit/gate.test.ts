@@ -315,6 +315,33 @@ describe("gate routes: refusals, limits and session rules", () => {
   const fromIp = (n: number) => ({ "cf-connecting-ip": `203.0.113.${n}` });
   const junk = (i: number): Opts => ({ headers: fromIp(20 + i), fields: { email: `j${i}@example.com`, "cf-turnstile-response": "bad" + i } });
 
+  it("solved challenges over a spent hourly budget write no counter rows", async () => {
+    const e = baseEnv({ ROUTE_BUDGET_GATE: "1" });
+    const first = await post({ headers: fromIp(50), fields: { email: "a@example.com", "cf-turnstile-response": "ok-a" } }, e);
+    expect(first.res.headers.get("set-cookie")).not.toBeNull(); // spends the whole budget
+    const before = await count("counters");
+    for (let i = 0; i < 5; i++) {
+      const { res } = await post({ headers: fromIp(60 + i), fields: { email: `b${i}@example.com`, "cf-turnstile-response": `ok-b${i}` } }, e);
+      expect(res.headers.get("location")).toBe("/kit/retry/");
+      expect(res.headers.get("set-cookie")).toBeNull();
+    }
+    expect(await count("counters")).toBe(before); // no claim rows, no budget change
+    const claims = await testEnv.DB.prepare("SELECT count(*) AS n FROM counters WHERE key LIKE 'ts-%'").first<{ n: number }>();
+    expect(claims!.n).toBe(1);
+  });
+
+  it("under the budget each solved challenge still writes its claim and unlocks", async () => {
+    const e = baseEnv({ ROUTE_BUDGET_GATE: "3" });
+    for (let i = 0; i < 3; i++) {
+      const { res } = await post({ headers: fromIp(70 + i), fields: { email: `c${i}@example.com`, "cf-turnstile-response": `ok-c${i}` } }, e);
+      expect(res.headers.get("set-cookie")).not.toBeNull();
+    }
+    const claims = await testEnv.DB.prepare("SELECT count(*) AS n FROM counters WHERE key LIKE 'ts-%'").first<{ n: number }>();
+    expect(claims!.n).toBe(3);
+    const row = await testEnv.DB.prepare("SELECT count FROM counters WHERE key = 'route-gate'").first<{ count: number }>();
+    expect(row!.count).toBe(3);
+  });
+
   it("junk posts from many addresses cannot spend the business budget; a real visitor still unlocks", async () => {
     const e = baseEnv({ ROUTE_BUDGET_GATE: "2" });
     for (let i = 0; i < 8; i++) {
