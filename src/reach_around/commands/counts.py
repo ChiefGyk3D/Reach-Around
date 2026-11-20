@@ -47,6 +47,7 @@ from reach_around.counts.files import (
     plan_paths,
     utc_stamp,
     write_atomic,
+    write_new_atomic,
 )
 from reach_around.counts.history import (
     API_PROVIDERS,
@@ -846,7 +847,7 @@ def run_export_imported(source: Path, out: Path) -> int:
         if source.resolve() == out.resolve():
             raise ConfigError(str(out), None, "must differ from the history file")
         text = export_imported(read_history(source))
-        write_atomic(out, text)
+        write_new_atomic(out, text)
     except (ConfigError, HistoryError, OSError) as exc:
         print(
             f"error: imported history not exported: {_safe(str(exc))}", file=sys.stderr

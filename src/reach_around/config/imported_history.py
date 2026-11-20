@@ -135,13 +135,13 @@ def _pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     out: dict[str, Any] = {}
     for key, value in pairs:
         if key in out:
-            raise _Bad(f"duplicate key {key!r}")
+            raise _Bad("duplicate key in the file")
         out[key] = value
     return out
 
 
 def _refuse_constant(name: str) -> Any:
-    raise _Bad(f"{name} is not allowed")
+    raise _Bad("a non-finite number is not allowed")
 
 
 def parse_imported(data: bytes, *, source: str = "imported history") -> ImportedHistory:
@@ -163,13 +163,9 @@ def parse_imported(data: bytes, *, source: str = "imported history") -> Imported
         raise ConfigError(source, None, "nesting is too deep") from None
     except _Bad as exc:
         raise ConfigError(source, None, str(exc)) from None
-    except ValidationError as exc:
-        where = ", ".join(
-            sorted({".".join(str(p) for p in e["loc"]) or "file" for e in exc.errors()})
-        )
-        raise ConfigError(
-            source, None, f"not an imported-history file: {where}"
-        ) from None
+    except ValidationError:
+        # Fixed words only: a key name or value from the file is never echoed.
+        raise ConfigError(source, None, "not an imported-history file") from None
     except ValueError:
         raise ConfigError(source, None, "not valid JSON") from None
 

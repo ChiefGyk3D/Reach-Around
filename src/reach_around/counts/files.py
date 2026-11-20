@@ -220,6 +220,49 @@ def _identity(info: os.stat_result) -> tuple[int, int]:
     return (info.st_dev, info.st_ino)
 
 
+def write_new_atomic(
+    path: Path,
+    text: str,
+    *,
+    before_link: Callable[[], None] | None = None,
+) -> None:
+    """Write ``text`` to a file that must not exist yet: temp file, fsync, then a
+    hard link into place, which fails with ``FileExistsError`` if anything is at
+    ``path`` by then. A file created in the meantime is never overwritten.
+    ``before_link`` is a test hook that runs just before the link."""
+    dir_fd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    tmp_name = f".{path.name}.{secrets.token_hex(8)}.tmp"
+    try:
+        fd = os.open(
+            tmp_name,
+            os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW,
+            0o600,
+            dir_fd=dir_fd,
+        )
+        try:
+            try:
+                handle = os.fdopen(fd, "w", encoding="utf-8")
+            except BaseException:
+                os.close(fd)
+                raise
+            with handle:
+                os.fchmod(handle.fileno(), 0o600)
+                handle.write(text)
+                handle.flush()
+                os.fsync(handle.fileno())
+            if before_link is not None:
+                before_link()
+            os.link(tmp_name, path.name, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
+        finally:
+            try:
+                os.unlink(tmp_name, dir_fd=dir_fd)
+            except FileNotFoundError:
+                pass
+        os.fsync(dir_fd)
+    finally:
+        os.close(dir_fd)
+
+
 def write_atomic(
     path: Path,
     text: str,

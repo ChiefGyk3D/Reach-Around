@@ -33,8 +33,11 @@ from reach_around.config.imported_history import (
 )
 from reach_around.config.kit import DISPLAY_POLICY, gated_projection, public_projection
 from reach_around.counts.beacons import parse_beacons_csv
+from reach_around.counts.files import write_new_atomic
 from reach_around.counts.history import (
+    History,
     Record,
+    Tombstone,
     dump_new_history,
     read_history,
 )
@@ -181,7 +184,6 @@ def test_the_parser_refuses_a_history_line_a_duplicate_key_and_junk() -> None:
     )
     for raw in (
         line.encode(),
-        b'{"version":1,"version":1}',
         b"not json",
         b"\xff",
         b"[]",
@@ -190,7 +192,7 @@ def test_the_parser_refuses_a_history_line_a_duplicate_key_and_junk() -> None:
             parse_imported(raw)
 
 
-def test_the_loader_refuses_a_symlink_and_a_huge_file(tmp_path: Path) -> None:
+def test_the_loader_refuses_a_symlink(tmp_path: Path) -> None:
     real = tmp_path / "real.json"
     real.write_text(json.dumps(imported_doc()), encoding="utf-8")
     link = tmp_path / "link.json"
@@ -198,10 +200,53 @@ def test_the_loader_refuses_a_symlink_and_a_huge_file(tmp_path: Path) -> None:
     assert load_imported(real).periods
     with pytest.raises(ConfigError):
         load_imported(link)
-    big = tmp_path / "big.json"
-    big.write_bytes(b" " * (300 * 1024))
-    with pytest.raises(ConfigError):
-        load_imported(big)
+
+
+def padded(size: int) -> bytes:
+    body = json.dumps(imported_doc()).encode()
+    assert len(body) < size
+    return body + b" " * (size - len(body))
+
+
+def test_the_size_cap_is_exactly_256_kib(tmp_path: Path) -> None:
+    at_cap, over = tmp_path / "at.json", tmp_path / "over.json"
+    at_cap.write_bytes(padded(262144))
+    over.write_bytes(padded(262145))
+    assert load_imported(at_cap).periods
+    with pytest.raises(ConfigError, match="too large"):
+        load_imported(over)
+
+
+def test_a_repeated_key_in_a_valid_document_is_refused() -> None:
+    text = json.dumps(imported_doc())
+    assert parse_imported(text.encode()).periods  # the shape is valid
+    doubled = text.replace('{"version": 1,', '{"version": 1, "version": 1,', 1)
+    assert doubled != text
+    with pytest.raises(ConfigError, match="duplicate key"):
+        parse_imported(doubled.encode())
+    inner = text.replace('"views":', '"views": 1, "views":', 1)
+    with pytest.raises(ConfigError, match="duplicate key"):
+        parse_imported(inner.encode())
+
+
+def test_messages_never_echo_a_key_or_value_from_the_file() -> None:
+    sentinel = "SentinelKeyName7731"
+    docs = []
+    extra = imported_doc()
+    extra[sentinel] = 1
+    docs.append(json.dumps(extra))
+    nested = imported_doc()
+    nested["periods"][0][sentinel] = 1
+    docs.append(json.dumps(nested))
+    dup = json.dumps(imported_doc()).replace(
+        '{"version": 1,', f'{{"{sentinel}": 1, "{sentinel}": 2, "version": 1,', 1
+    )
+    docs.append(dup)
+    docs.append(json.dumps(imported_doc()).replace('"Beacons"', f'"{sentinel}!"'))
+    for text in docs:
+        with pytest.raises(ConfigError) as err:
+            parse_imported(text.encode())
+        assert sentinel not in str(err.value)
 
 
 def test_the_config_key_is_a_relative_path_inside_the_config_folder() -> None:
@@ -219,6 +264,26 @@ def test_the_file_may_not_be_the_social_history_file(tmp_path: Path) -> None:
     (tmp_path / "site.yaml").write_text("", encoding="utf-8")
     with pytest.raises(ConfigError, match="history_file"):
         imported_source(cfg, tmp_path / "site.yaml")
+
+
+def test_a_hard_link_or_symlink_to_the_history_file_is_refused(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "site.yaml").write_text("", encoding="utf-8")
+    history = tmp_path / "history.jsonl"
+    history.write_text("x\n", encoding="utf-8")
+    for kind in ("hard", "sym"):
+        alias = tmp_path / f"{kind}.json"
+        if kind == "hard":
+            alias.hardlink_to(history)
+        else:
+            alias.symlink_to(history)
+        cfg = make_config(
+            kit_doc(imported_history=alias.name),
+            numbers={"history_file": history.name},
+        )
+        with pytest.raises(ConfigError, match="history_file"):
+            imported_source(cfg, tmp_path / "site.yaml")
 
 
 def test_imported_source_is_none_without_the_key(tmp_path: Path) -> None:
@@ -332,6 +397,30 @@ def test_the_block_alone_makes_the_kit_gated() -> None:
         kit_doc(imported_history="x.json", imported_history_public=True)
     ).kit
     assert pub is not None and not pub.has_gated_content
+
+
+# --- the public teaser ---
+
+
+def test_the_public_gate_teaser_names_the_category_not_the_numbers(
+    tmp_path: Path,
+) -> None:
+    doc = kit_doc(imported_history="imported-history.json")
+    out, _ = build(
+        tmp_path, make_config(doc, cutover_date="2026-06-01"), imported=imported()
+    )
+    page = (out / "kit" / "index.html").read_text(encoding="utf-8")
+    assert (
+        "Link-page history from the previous provider are shown after a short check."
+        in page
+    )
+    assert IMPORTED_HEADING not in page
+    for number in SENTINELS:
+        assert number not in page
+    pub = dict(doc, imported_history_public=True, partners=[{"name": "Acme Fake Co"}])
+    out2, _ = build(tmp_path / "p", make_config(pub), imported=imported())
+    page2 = (out2 / "kit" / "index.html").read_text(encoding="utf-8")
+    assert "Link-page history from the previous provider" not in page2
 
 
 # --- the leak search ---
@@ -557,6 +646,126 @@ def test_export_command_writes_a_file_the_kit_reads(
     )
     assert counts_cmd is not None
     capsys.readouterr()
+
+
+def imported_record(day: str, metric: str = "views", **kw: Any) -> Record:
+    fields: dict[str, Any] = {
+        "platform": "link-page",
+        "metric": metric,
+        "value": 3,
+        "as_of_utc": f"{day}T00:00:00Z",
+        "source": "imported",
+        "run_id": "beacons-import",
+        "note": "Beacons",
+    }
+    fields.update(kw)
+    return Record(**fields)
+
+
+def both(day: str, **kw: Any) -> tuple[Record, ...]:
+    """Views and clicks for one day, after the good baseline (so only ``kw``
+    can make the history unsafe)."""
+    return (
+        *good_records(),
+        imported_record(day, **kw),
+        imported_record(day, "clicks", **kw),
+    )
+
+
+def good_records() -> list[Record]:
+    return [imported_record("2026-01-01"), imported_record("2026-01-01", "clicks")]
+
+
+def test_export_accepts_the_good_baseline() -> None:
+    assert parse_imported(export_imported(History(tuple(good_records()))).encode())
+
+
+TOMB = Tombstone(
+    "link-page",
+    "views",
+    "2026-01-02T00:00:00Z",
+    "imported",
+    "owner_decision",
+    "2026-02-01",
+    "2026-02-01T00:00:00Z",
+    "redact-1",
+)
+
+
+@pytest.mark.parametrize(
+    ("history", "message"),
+    [
+        (History(()), "no records"),
+        (History(tuple(good_records()), (TOMB,)), "redacted"),
+        (History(both("2026-01-02", source="api")), "not imported link-page"),
+        (History(both("2026-01-02", platform="twitch")), "not imported link-page"),
+        (History(both("2026-01-02", type="correction")), "not imported link-page"),
+        (
+            History((*good_records(), imported_record("2026-01-02", "followers"))),
+            "not imported link-page",
+        ),
+        (History((*good_records(), imported_record("2026-01-01"))), "twice"),
+        (History(both("2026-01-02", note="Other")), "one note"),
+        (History(both("2026-01-02", note=None)), "one note"),
+        (History((*good_records(), imported_record("2026-01-02"))), "different days"),
+    ],
+    ids=[
+        "empty",
+        "tombstoned",
+        "collected-source",
+        "other-platform",
+        "correction",
+        "other-metric",
+        "duplicate-day",
+        "differing-notes",
+        "missing-note",
+        "views-and-clicks-differ",
+    ],
+)
+def test_export_refuses_each_unsafe_history(history: History, message: str) -> None:
+    with pytest.raises(ConfigError, match=message):
+        export_imported(history)
+
+
+def test_export_never_overwrites_a_file_created_in_the_race(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "out.json"
+
+    def create_it() -> None:
+        target.write_text("someone else's file", encoding="utf-8")
+
+    with pytest.raises(FileExistsError):
+        write_new_atomic(target, "new", before_link=create_it)
+    assert target.read_text(encoding="utf-8") == "someone else's file"
+    assert [p.name for p in tmp_path.iterdir()] == ["out.json"]  # no temp left
+    fresh = tmp_path / "fresh.json"
+    write_new_atomic(fresh, "new")
+    assert fresh.read_text(encoding="utf-8") == "new"
+    assert oct(fresh.stat().st_mode & 0o777) == "0o600"
+
+
+def test_export_command_loses_the_race_cleanly(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    history = beacons_history(tmp_path)
+    out = tmp_path / "imported-history.json"
+    real = write_new_atomic
+
+    def racing(path: Path, text: str) -> None:
+        def theirs() -> None:
+            path.write_text("theirs")
+
+        real(path, text, before_link=theirs)
+
+    monkeypatch.setattr(counts_cmd, "write_new_atomic", racing)
+    code = main(
+        ["counts", "history-export-imported", "--file", str(history), "--out", str(out)]
+    )
+    assert code == 2 and out.read_text(encoding="utf-8") == "theirs"
+    assert "not exported" in capsys.readouterr().err
 
 
 # --- the build command ---

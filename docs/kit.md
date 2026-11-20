@@ -324,7 +324,9 @@ part of the headline numbers or the combined audience: the numbers section is
 byte for byte what it is without the file (a test pins it).
 
 Where it shows follows the display policy table below. By default the block is
-**gated**: it is on the gated page and the private PDF, and nowhere public. Set
+**gated**: its numbers are on the gated page and the private PDF and nowhere
+public. The public gate teaser still names the category ("Link-page history from
+the previous provider"), as it does for every other gated category. Set
 `kit.imported_history_public: true` to show it on the public page and in the
 public PDF too. Era marks apply: with `cutover_date` in force a month that is
 not wholly before the cutover is left out (the collected numbers cover it), and
