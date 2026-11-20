@@ -19,7 +19,7 @@ ROOT = Path(__file__).resolve().parents[2]
 ASSETS = ROOT / "examples" / "instance"
 GOLDEN = Path(__file__).parent / "golden_site_nav"
 
-ITEMS = [
+ITEMS: list[dict[str, Any]] = [
     {"title": "Links", "url": "https://links.example.com/", "current": True},
     {"title": "Media kit", "url": "https://links.example.com/kit/"},
     {"title": "Main site", "url": "https://www.example.com/"},
