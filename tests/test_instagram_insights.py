@@ -1026,3 +1026,96 @@ def test_public_output_is_byte_identical_with_and_without_insights(
     with_history = build_tree(with_root / "site.yaml", tmp_path / "ob")
     assert without.keys() == with_history.keys() and without
     assert [k for k in without if without[k] != with_history[k]] == []
+
+
+def test_the_build_never_opens_the_history_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import builtins
+    import io
+    import os
+
+    root = make_instance(tmp_path / "inst")
+    history = write_history(root)
+    touched: list[str] = []
+
+    def watch(real: Any) -> Any:
+        def spy(path: Any, *args: Any, **kw: Any) -> Any:
+            if isinstance(path, str | os.PathLike) and str(path).endswith(history.name):
+                touched.append(str(path))
+            return real(path, *args, **kw)
+
+        return spy
+
+    monkeypatch.setattr(builtins, "open", watch(builtins.open))
+    monkeypatch.setattr(io, "open", watch(io.open))
+    monkeypatch.setattr(os, "open", watch(os.open))
+    build_tree(root / "site.yaml", tmp_path / "out")
+    assert touched == []
+    # negative case: the spy does see a real read of that file
+    read_history(history)
+    assert touched
+
+
+def test_differential_guard_bites_on_a_derived_form(tmp_path: Path) -> None:
+    """Negative case: a tree that differs only by a derived '987.7k' is caught."""
+    base = build_tree(make_instance(tmp_path / "a") / "site.yaml", tmp_path / "oa")
+    altered = dict(base)
+    index = next(k for k in altered if k.endswith(".html"))
+    altered[index] = altered[index] + b"<p>Reach 987.7k</p>"
+    assert [k for k in base if base[k] != altered[k]] == [index]
+
+
+def test_floors_and_caps_are_pinned_by_literals() -> None:
+    from reach_around.counts import instagram_insights as module
+
+    assert module.FLOOR == 5 and module.COUNTRY_NAMED_MAX == 25
+    assert module.MAX_RUN_FIGURES == 43  # 5 + 8 + 4 + 26
+    assert module.AGE_MAX_FIGURES == 8 and module.COUNTRY_MAX_FIGURES == 26
+    answers = dict(
+        activity=fx("empty.json"),
+        age=breakdown("age", [cell("18-24", 5), cell("25-34", 4)]),
+        gender=breakdown("gender", [cell("F", 5), cell("M", 4), cell("U", 4)]),
+        country=breakdown("country", [cell("US", 5), cell("CA", 4)]),
+    )
+    measures, _ = run(router(**answers))
+    assert figures(measures, "fdemo_") == {
+        "fdemo_age_18_24": 5,  # exactly at the floor is kept
+        "fdemo_age_other": 4,  # just under is folded
+        "fdemo_gender_f": 5,
+        "fdemo_gender_other": 8,
+        "fdemo_country_us": 5,
+        "fdemo_country_other": 4,
+    }
+
+
+def test_a_full_age_answer_with_an_under_floor_cell_passes() -> None:
+    labels = list(["13-17", "18-24", "25-34", "35-44", "45-54", "55-64", "65+"])
+    rows = [cell(label, 50) for label in labels[:-1]] + [cell("65+", 2)]
+    measures, words = run(
+        router(
+            activity=fx("empty.json"),
+            age=breakdown("age", rows),
+            gender=fx("empty.json"),
+            country=fx("empty.json"),
+        )
+    )
+    assert words == ["no_data"]  # only the empty activity report; age is not too_large
+    age = figures(measures, "fdemo_age_")
+    assert len(age) == 7 and age["fdemo_age_other"] == 2
+
+
+@pytest.mark.parametrize(
+    ("status", "word"), [(401, "token_rejected"), (403, "scope_missing")]
+)
+def test_a_rejected_credential_stops_the_run_after_one_request(
+    status: int, word: str
+) -> None:
+    transport = FakeTransport({INSIGHTS_URL: reply({}, status=status)})
+    measures, words = run(transport)
+    assert measures == [] and words == [word]
+    assert len(transport.calls) == 1
+    # a rejection that is not about the credential does not stop the run
+    other = FakeTransport({INSIGHTS_URL: reply({}, status=500)})
+    run(other)
+    assert len(other.calls) > 4

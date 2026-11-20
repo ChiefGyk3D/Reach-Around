@@ -78,7 +78,7 @@ data returns an empty set, not 0); an empty demographic answer stores nothing an
 not an error. Words: `no_data`, `bad_report`, `bad_row` (a bad value or label was
 skipped), `bad_aggregate`, `too_large`, `token_rejected` (401), `scope_missing`
 (403), `http_400` (also what the note's follower minimum could look like), `rate_limited`,
-`server_error`, `redirect`, `fetch_failed`. A failure exits `counts refresh` with 3
+`server_error`, `redirect`, `fetch_failed`. A rejected credential (`token_rejected`, `scope_missing`) stops the run at once: the remaining reports are not sent. A failure exits `counts refresh` with 3
 and never changes the follower count.
 
 The history store keeps one record per metric and UTC day, so a second run the same

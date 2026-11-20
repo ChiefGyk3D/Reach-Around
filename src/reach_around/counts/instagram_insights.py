@@ -414,6 +414,8 @@ def collect_instagram(
             word = _word(exc)
         if word:
             words.append(word)
+        if word in ("token_rejected", "scope_missing"):
+            break  # a rejected credential: do not send the remaining reports
     return measures, words
 
 
