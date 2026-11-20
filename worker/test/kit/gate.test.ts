@@ -296,25 +296,33 @@ describe("POST /k/gate failures all look the same (no oracle)", () => {
 
   // Design (plan 3, Task 15): a session floor only invalidates cookies issued before it. A fresh
   // gate pass for the same lead issues a cookie that works. There is no blocked flag in the schema.
-  const FLOORS: { name: string; floorMs: number | null; reUnlocks: boolean }[] = [
-    { name: "no floor", floorMs: null, reUnlocks: true },
-    { name: "floor before now", floorMs: T0 - 1000, reUnlocks: true },
-    { name: "floor at now", floorMs: T0, reUnlocks: true },
-    { name: "floor set later in the same second", floorMs: T0 + 500, reUnlocks: true },
+  // The floor is in milliseconds. Fail closed: only a cookie issued in a whole second strictly after
+  // the floor's second works, so a cookie from the floor's own second is refused.
+  const S = NOW_SEC - 60;
+  const FLOORS: { name: string; floorMs: number | null; iat: number; status: number }[] = [
+    { name: "no floor", floorMs: null, iat: S, status: 200 },
+    { name: "floor well before the cookie", floorMs: (S - 60) * 1000, iat: S, status: 200 },
+    { name: "floor after the cookie second", floorMs: (S + 1) * 1000, iat: S, status: 303 },
+    { name: "floor later in the cookie's own second", floorMs: S * 1000 + 500, iat: S, status: 303 },
+    { name: "floor at the start of the cookie's own second", floorMs: S * 1000, iat: S, status: 303 },
+    { name: "cookie from the next second after the floor", floorMs: S * 1000 + 500, iat: S + 1, status: 200 },
   ];
   for (const c of FLOORS) {
-    it(`an existing lead with ${c.name} gets a working new cookie; an older cookie stays refused`, async () => {
+    it(`view with ${c.name}: ${c.status}`, async () => {
       const id = await seedLead({ id: "c".repeat(32), floor: c.floorMs });
-      await testEnv.DB.prepare("UPDATE leads SET email = ? WHERE id = ?").bind(EMAIL, id).run();
-      const older = await unlockCookieFor({ lid: id, iat: NOW_SEC - 60 });
-      const { res } = await post();
-      expect(res.headers.get("set-cookie") !== null).toBe(c.reUnlocks);
-      const fresh = await view({ cookie: cookieHeader(res) });
-      expect(fresh.status).toBe(200);
-      const old = await view({ cookie: older });
-      expect(old.status).toBe(c.floorMs !== null && (NOW_SEC - 60) * 1000 < c.floorMs ? 303 : 200);
+      const res = await view({ cookie: await unlockCookieFor({ lid: id, iat: c.iat }) });
+      expect(res.status).toBe(c.status);
+      if (c.status === 303) expect(await res.text()).not.toContain(CANARY);
     });
   }
+
+  it("an existing lead that passes the gate again after its floor gets a working new cookie", async () => {
+    const id = await seedLead({ id: "c".repeat(32), floor: T0 - 5000 });
+    await testEnv.DB.prepare("UPDATE leads SET email = ? WHERE id = ?").bind(EMAIL, id).run();
+    const { res } = await post();
+    expect(res.headers.get("set-cookie")).not.toBeNull();
+    expect((await view({ cookie: cookieHeader(res) })).status).toBe(200);
+  });
 
   it("kill switch answers 503 before anything else, for every method and route", async () => {
     for (const [method, path] of [["POST", GATE_ROUTE], ["GET", GATE_ROUTE], ["GET", VIEW_ROUTE]] as const) {

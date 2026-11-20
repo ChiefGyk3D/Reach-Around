@@ -254,9 +254,11 @@ async function view(request: Request, env: GateEnv, deps: GateDeps): Promise<Res
     return back("other");
   }
   if (lead === null) return back("expired");
-  // Compared in whole seconds (the token's iat is whole seconds), so a floor set during the same
-  // second as a fresh unlock never refuses that fresh cookie.
-  if (lead.session_floor_ts !== null && claims.iat < Math.floor(lead.session_floor_ts / 1000)) return back("expired");
+  // The floor is in MILLISECONDS (whoever writes `session_floor_ts` must write milliseconds). The
+  // token's iat is whole seconds, so the two are compared in whole seconds and the check fails closed:
+  // only a cookie issued in a second strictly after the floor's second works. Trade-off: a fresh
+  // unlock issued in the very same second as the floor is refused once and works on the next try.
+  if (lead.session_floor_ts !== null && claims.iat <= Math.floor(lead.session_floor_ts / 1000)) return back("expired"); // CONTROL:session-floor
 
   let page: string | null;
   try {
