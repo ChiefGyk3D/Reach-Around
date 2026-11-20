@@ -110,6 +110,17 @@ function killed(env: Env): boolean {
   return lower === "1" || lower === "true";
 }
 
+/** One header value is an opt-out when any comma-separated token, trimmed, is "1" (a proxy may join repeats). */
+function signalOn(value: string | null): boolean {
+  // Trim only HTTP optional whitespace (space and tab), not Unicode spaces.
+  return value !== null && value.split(",").some((token) => token.replace(/^[ \t]+|[ \t]+$/g, "") === "1");
+}
+
+/** True when the request carries Sec-GPC: 1 or DNT: 1 (the only values either signal defines); fails toward privacy. */
+function optedOut(request: Request): boolean {
+  return signalOn(request.headers.get("Sec-GPC")) || signalOn(request.headers.get("DNT"));
+}
+
 /**
  * The click route never needs a body, so a body is never read. Returns false
  * (ignore the request) when a body is present and cannot be shown small from
@@ -190,7 +201,7 @@ async function countFailure(db: D1Database): Promise<void> {
 }
 
 /**
- * Handle `POST /e/c/:linkId`. Check order: kill switch, method, URL/path/id length caps, site (from
+ * Handle `POST /e/c/:linkId`. Check order: kill switch, method, GPC/DNT opt-out, URL/path/id length caps, site (from
  * Origin / Ping-From), per-site kill switch, that site's id allowlist, body (never read),
  * user agent, rate limit, insert. Always returns an empty 204.
  * No IP address is stored; the client address is used only as a rate-limit
@@ -203,6 +214,9 @@ export async function handleClick(request: Request, env: Env): Promise<Response>
 
     // 1. Method, then URL, path and id length caps, all before decoding.
     if (request.method !== "POST") return noContent();
+    // Global Privacy Control and Do Not Track: a visitor who sends either signal
+    // is never counted, and gets the same empty 204 as every other outcome.
+    if (optedOut(request)) return noContent(); // CONTROL:click-optout
     if (request.url.length > MAX_URL_LENGTH) return noContent();
     const pathname = new URL(request.url).pathname;
     if (pathname.length > MAX_PATH_LENGTH) return noContent();

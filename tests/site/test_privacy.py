@@ -74,9 +74,71 @@ def test_default_disclosure_lists_click_counts_and_says_no_ip_address() -> None:
     assert "Hourly records are deleted after 90 days" in text
 
 
-def test_click_item_says_clicks_are_counted_with_gpc_or_dnt() -> None:
+def test_click_item_says_clicks_honor_gpc_and_dnt() -> None:
     what = collected_items(make_config())[0].what
-    assert "Global Privacy Control and Do Not Track do not stop click counting" in what
+    assert (
+        "The site honors Global Privacy Control and Do Not Track for link clicks. "
+        "If your browser sends either signal, the click is not counted or "
+        "stored, and the site's own script sends nothing. If scripts are blocked "
+        "or fail, your browser may still send a small request to the site. The "
+        "server throws it away without storing anything about it. The link "
+        "still opens normally."
+    ) in what
+    # Truthful: the page never says the visitor's browser sends nothing.
+    assert "Nothing about it is sent" not in what
+    assert "do not stop click counting" not in what
+    assert "just as it does for page views" not in what
+
+
+def test_page_promise_matches_click_code_in_both_places() -> None:
+    """The page says clicks honor the signal only if both click paths check it."""
+    what = collected_items(make_config())[0].what
+    promised = "honors Global Privacy Control and Do Not Track for link clicks" in what
+    click_js = (STATIC / "click.js").read_text(encoding="utf-8")
+    click_ts = (WORKER / "click.ts").read_text(encoding="utf-8")
+    assert click_js and click_ts  # the guard collected something
+    assert promised == (checks_signal_js(click_js) and checks_signal_ts(click_ts))
+    assert promised
+
+
+def checks_signal_js(source: str) -> bool:
+    """The signals are read AND the result is used before anything is sent."""
+    return (
+        "navigator.globalPrivacyControl" in source
+        and "navigator.doNotTrack" in source
+        and "if (optedOutSafe())" in source
+        and source.index("if (optedOutSafe())") < source.index("navigator.sendBeacon(")
+    )
+
+
+def checks_signal_ts(source: str) -> bool:
+    """Both headers are read AND the opt-out is checked in the click handler."""
+    return (
+        'get("Sec-GPC")' in source
+        and 'get("DNT")' in source
+        and "optedOut(request)" in source
+    )
+
+
+def test_the_signal_guard_bites_on_the_real_files() -> None:
+    click_js = (STATIC / "click.js").read_text(encoding="utf-8")
+    click_ts = (WORKER / "click.ts").read_text(encoding="utf-8")
+    assert checks_signal_js(click_js)
+    assert checks_signal_ts(click_ts)
+    for old, new in (
+        ("navigator.globalPrivacyControl", "navigator.zzGpc"),
+        ("navigator.doNotTrack", "navigator.zzDnt"),
+        ("if (optedOutSafe())", "if (false)"),
+    ):
+        assert old in click_js
+        assert not checks_signal_js(click_js.replace(old, new)), old
+    for old, new in (
+        ('get("Sec-GPC")', 'get("X-Zz")'),
+        ('get("DNT")', 'get("X-Zz")'),
+        ("optedOut(request)", "false"),
+    ):
+        assert old in click_ts
+        assert not checks_signal_ts(click_ts.replace(old, new)), old
 
 
 def test_click_disclosure_says_none_vs_other_and_keeps_totals_apart() -> None:
@@ -87,6 +149,9 @@ def test_click_disclosure_says_none_vs_other_and_keeps_totals_apart() -> None:
 
 
 WORKER = Path(__file__).resolve().parents[2] / "worker" / "src"
+STATIC = (
+    Path(__file__).resolve().parents[2] / "src" / "reach_around" / "site" / "static"
+)
 
 
 def purge_call_arguments(source: str) -> list[int]:

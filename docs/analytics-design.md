@@ -614,10 +614,21 @@ Requirements for the rewritten disclosure (plain words, American English):
    cleanup runs, which can be briefly delayed (the purge is bounded and best
    effort). A test pins the page's rule to the Worker's.
 7. Say that a browser sending Global Privacy Control or Do Not Track is not
-   counted, in both collection modes. This holds for page views only. Clicks are
-   counted even when the signal is sent, and the click item on the page says so
-   (owner decision 2026-11-19, #598); a follow-up makes clicks honor the signal
-   and then the page drops the exception.
+   counted, in both collection modes. Clicks honor the signal too (`click.js` and
+   `worker/src/click.ts` both check it, #599), and the click item on the page
+   says so (owner copy 2026-11-19). A test fails if the page makes that promise
+   while either click path does not check the signal. The page does not say the
+   browser sends nothing: the links keep the native `ping` attribute so clicks
+   count without JavaScript (the unverified lane), so a visitor whose script is
+   blocked or fails may still send a small request (a browser can have
+   hyperlink auditing turned off or unsupported), which the Worker discards
+   unrecorded when it carries the signal. The guarantee covers the site's own
+   script and that server-side discard only; it does not cover other scripts on
+   the page, visitors without JavaScript, or links in shadow roots or iframes.
+   The discard answers with the same status, headers and body as a recorded
+   click; timing is not equalized. Decision (2026-11-19, pending owner
+   review): keep the attribute and state this plainly, rather than render no
+   `ping` attribute (which would stop no-JavaScript click counting).
 8. Say that totals for small groups are merged into "other".
 9. State that records for a specific person cannot be deleted because the
    records do not identify anyone, and say how long raw records live (item 6).

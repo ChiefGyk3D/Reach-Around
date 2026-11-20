@@ -159,11 +159,35 @@ def test_privacy_lists_every_derived_category_when_on() -> None:
     assert not any(i.sensitive for i in items)
 
 
+ALLOWED_CLICK_PHRASES = (
+    # The signal sentence says "your browser" and the totals sentence says
+    # "linked to a page view or person" (#599); nothing else may.
+    "if your browser sends either signal, the click is not counted or stored,",
+    "if scripts are blocked or fail, your browser may still send a small request",
+    "never combined or linked to a page view or person.",
+)
+VIEW_NEEDLES = ("each view", "browser", "referring", "window size", "city", "page view")
+
+
+def view_mentions(text: str) -> list[str]:
+    text = text.lower()
+    for phrase in ALLOWED_CLICK_PHRASES:
+        assert phrase in text
+        text = text.replace(phrase, "")
+    return [n for n in VIEW_NEEDLES if n in text]
+
+
 def test_privacy_says_nothing_about_page_views_when_off() -> None:
     off = collected_items(make_config())
-    text = " ".join(f"{i.what} {i.why} {i.kept}" for i in off).lower()
-    for needle in ("each view", "browser", "referring", "window size", "city"):
-        assert needle not in text
+    text = " ".join(f"{i.what} {i.why} {i.kept}" for i in off)
+    assert view_mentions(text) == []
+
+
+def test_the_page_view_needles_bite_on_any_other_mention() -> None:
+    off = collected_items(make_config())
+    text = " ".join(f"{i.what} {i.why} {i.kept}" for i in off)
+    for extra in ("Each view is kept.", "A page view is counted.", "Your browser."):
+        assert view_mentions(text + " " + extra), extra
 
 
 def test_privacy_when_only_page_views_are_on(tmp_path: Path) -> None:
