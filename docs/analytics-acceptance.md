@@ -46,6 +46,28 @@ SELECT date(ts / 1000, 'unixepoch') AS day, COUNT(*) AS clicks FROM click_events
 
 Both queries are scoped to one site (`links` here; use the site id that matches the Beacons page). Without the filter, an export that also holds another site, such as a blog, inflates the numbers and can fail the run for no real reason. Join the two results on `day` into one file. Click timestamps are stored in milliseconds; `date(..., 'unixepoch')` yields the UTC day. Views count the likely-human class only, which is the number to set against Beacons.
 
+### Day-2 export in one command
+
+`scripts/proof-export.sh` runs the two queries above for you, read-only, and writes `ours-days.csv`. It replaces the hand work for the 48 hour window.
+
+```text
+RA_D1_TOKEN=... RA_D1_ACCOUNT_ID=... RA_D1_DATABASE_ID=... \
+  scripts/proof-export.sh --out ~/private/proof --since 2026-11-01 --until 2026-11-02 \
+  --beacons beacons-days.csv
+```
+
+- **Credentials** come from the environment only (there is no token option). Use a D1 Read token made for this job ([what D1 Read can do](research/d1-read-token.md)); set the three variables from your secret manager, never in a file in the repository. Cloudflare has no call that tells what a token may do, so the script cannot prove the token is read-only. It refuses the one case it can see (the same value in `CLOUDFLARE_API_TOKEN`, the deploy token) and sends only single `SELECT` statements with bound parameters; it stops if an answer says the database changed.
+- **What the token can read**: by Cloudflare's documented permission model a D1 Read token cannot be scoped to one database or table (inferred from the docs, not tested live). It can read every table in the account, lead tables included, so whoever holds it can read them. The script asks only for the two aggregate queries, but the token does not enforce that. The access-protected report route is the stronger boundary; see "What it can read, and what it costs" in [d1-read-token.md](research/d1-read-token.md).
+- **Proxy**: if `https_proxy` is set in the environment, the request goes through the proxy with `CONNECT`. The TLS session still runs end to end with Cloudflare; the proxy sees the host name, not the token.
+- **Failures**: a query failure, a malformed answer or a window with no rows at all exits 3 and writes no file.
+- **Window**: `--since` and `--until` are full, past UTC days (up to 31); today is refused. `--site` defaults to `links` and is a site id of 1 to 20 characters (`a-z`, `0-9`, `-`), the same limit the Worker and its database enforce.
+- **Output**: `DIR/ours-days-SINCE_UNTIL.csv`, mode 0600, in the shape above. `DIR` must exist, be mode 700 and sit outside any git work tree, so it cannot be committed. An existing file is never overwritten; move it first.
+- **Days with no rows** are left out, so the check reports a gap instead of a quiet day. A day with views but no clicks (or the reverse) gets 0 for the empty metric.
+- **With `--beacons FILE`** it then runs `check-analytics.py` with the same window and exits with its code (0 pass, 1 mismatch or gap). The table holds every day's counts, so it is written to `DIR/ours-days-SINCE_UNTIL.check.txt` (mode 0600, never overwritten) and not printed; the terminal gets one line, `check-analytics exit=N; table in PATH`. Read the table from that file. If the check cannot be started, the exit code is 3 and the CSV stays: move or delete it (and any `.check.txt`) before a rerun. Without `--beacons` it only writes the CSV (exit 0).
+- **Prints** counts and exit codes only, never a value from the data. Exit codes: 0 done, 1 the check failed, 2 refused or bad usage, 3 the query failed.
+
+The report input is not part of this command. `reach-around report` never calls Cloudflare, so make that JSON with the `wrangler d1 execute` queries in [docs/report.md](report.md#making-the-export) and keep it in the same private directory.
+
 ## What it does
 
 For every UTC day in the window it compares each shared metric and prints one row:
