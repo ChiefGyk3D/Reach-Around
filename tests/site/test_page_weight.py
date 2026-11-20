@@ -4,6 +4,7 @@ third-party origin, and docs/performance.md carries the same numbers."""
 
 from __future__ import annotations
 
+import copy
 import re
 import shutil
 from datetime import date
@@ -11,12 +12,14 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 import pytest
+import yaml
 from pageweight import (
     BUDGET,
     DOCS_HEADING,
     FIELDS,
     GATE_ORIGINS,
     PAGE_TYPES,
+    STACK_SITES,
     docs_differences,
     docs_table,
     measure,
@@ -27,13 +30,56 @@ from pageweight import (
 )
 from test_kit_build import gated_doc, make_config
 
-from reach_around.config import load_site_config
+from reach_around.config import SiteConfig, load_site_config
 from reach_around.site.build import build_site
 
 TODAY = date(2027, 3, 10)
 ROOT = Path(__file__).resolve().parents[2]
 EXAMPLE = ROOT / "examples" / "instance" / "site.yaml"
 DOC = ROOT / "docs" / "performance.md"
+
+
+def stack_doc(badges: bool) -> dict[str, object]:
+    """The example instance's creator and theme, as a smart-stack home page."""
+    doc = yaml.safe_load(EXAMPLE.read_text(encoding="utf-8"))
+    groups = []
+    for intent, title in (
+        ("watch", "Watch"),
+        ("videos", "Latest videos"),
+        ("follow", "Follow"),
+        ("community", "Community"),
+        ("support", "Support"),
+        ("work", "Work with me"),
+        ("shop", "Shop"),
+        ("blog", "Blog"),
+    ):
+        icons = {"watch": ("twitch", "kick")}.get(intent, ("link", "link"))
+        groups.append(
+            {
+                "id": intent,
+                "title": title,
+                "intent": intent,
+                "blocks": [
+                    {
+                        "id": f"{intent}-{n}",
+                        "title": f"{title} link {n}",
+                        "url": f"https://example.com/{intent}/{n}",
+                        "icon": icons[n - 1],
+                    }
+                    for n in (1, 2)
+                ],
+            }
+        )
+    out = copy.deepcopy(doc)
+    out["tabs"] = groups
+    out["page"] = {
+        "layout": "stack",
+        "status": {"text": "Live Friday at 8 PM Eastern", "schedule": "Next: Nov 13"},
+        "watch": ["watch-1", "watch-2"],
+        "live_badges": badges,
+    }
+    out.setdefault("features", {})["click_tracking"] = True
+    return out
 
 
 @pytest.fixture(scope="module")
@@ -51,13 +97,25 @@ def sites(tmp_path_factory: pytest.TempPathFactory) -> list[Path]:
         today=TODAY,
         gated_out=base / "kg",
     )
-    return [base / "a", base / "k"]
+    for name, badges in (("stack", False), ("stack-live", True)):
+        build_site(
+            SiteConfig.model_validate(stack_doc(badges)),
+            base / name,
+            today=TODAY,
+            assets_dir=EXAMPLE.parent,
+        )
+    return [base / "a", base / "k", base / "stack", base / "stack-live"]
 
 
 def all_pages(sites: list[Path]) -> list[tuple[Path, Path]]:
-    pairs = [(root, p) for root in sites for p in sorted(root.rglob("*.html"))]
+    pairs = [
+        (root, p)
+        for root in sites
+        for p in sorted(root.rglob("*.html"))
+        if root.name not in STACK_SITES or p == root / "index.html"
+    ]
     assert len(pairs) >= 8, "the golden example pages were not all built"
-    kinds = {page_type(str(p.relative_to(root))) for root, p in pairs}
+    kinds = {page_type(str(p.relative_to(root)), root.name) for root, p in pairs}
     assert kinds == set(PAGE_TYPES), kinds
     return pairs
 
@@ -65,7 +123,7 @@ def all_pages(sites: list[Path]) -> list[tuple[Path, Path]]:
 def test_every_page_is_within_budget(sites: list[Path]) -> None:
     for root, page in all_pages(sites):
         rel = str(page.relative_to(root))
-        kind = page_type(rel)
+        kind = page_type(rel, root.name)
         assert not over_budget(kind, measure(root, page)), (
             rel,
             measure(root, page),
@@ -87,6 +145,33 @@ def test_padded_page_fails_the_budget(sites: list[Path], tmp_path: Path) -> None
 def test_no_page_references_a_third_party_origin(sites: list[Path]) -> None:
     for root, page in all_pages(sites):
         assert third_party(root, page) == [], str(page.relative_to(root))
+
+
+def test_the_stack_fixtures_are_what_their_types_say(sites: list[Path]) -> None:
+    plain = (sites[2] / "index.html").read_text(encoding="utf-8")
+    live = (sites[3] / "index.html").read_text(encoding="utf-8")
+    assert "smart-stack" in plain and "smart-stack" in live
+    assert "data-watch-badge" not in plain
+    assert live.count("data-watch-badge") == 2
+    assert (
+        measure(sites[3], sites[3] / "index.html")["js"]
+        > measure(sites[2], sites[2] / "index.html")["js"]
+    ), "the badge page loads the live script"
+
+
+@pytest.mark.parametrize("which", [2, 3], ids=["hub-stack", "hub-live"])
+def test_padded_stack_page_fails_its_own_budget(
+    sites: list[Path], tmp_path: Path, which: int
+) -> None:
+    kind = page_type("index.html", sites[which].name)
+    root = tmp_path / sites[which].name
+    shutil.copytree(sites[which], root)
+    page = root / "index.html"
+    assert not over_budget(kind, measure(root, page))
+    page.write_bytes(page.read_bytes() + b"<!--" + b"x" * BUDGET[kind]["html"] + b"-->")
+    assert any(m.startswith("html:") for m in over_budget(kind, measure(root, page)))
+    # the ordinary hub budget did not move to make room for either
+    assert BUDGET["hub"]["js"] == 13000 and BUDGET["hub"]["html"] == 5200
 
 
 def test_third_party_check_bites(sites: list[Path], tmp_path: Path) -> None:
@@ -145,7 +230,7 @@ def test_budget_headroom_is_bounded(
     """Headroom is bounded: a budget raised far above the measured pages fails."""
     biggest: dict[str, dict[str, int]] = {k: dict.fromkeys(FIELDS, 0) for k in BUDGET}
     for root, page in all_pages(sites):
-        kind = page_type(str(page.relative_to(root)))
+        kind = page_type(str(page.relative_to(root)), root.name)
         for f, v in measure(root, page).items():
             biggest[kind][f] = max(biggest[kind][f], v)
     for kind in PAGE_TYPES:

@@ -20,7 +20,7 @@ from html.parser import HTMLParser
 from pathlib import Path
 from urllib.parse import urlsplit
 
-PAGE_TYPES = ("hub", "tab", "kit", "support")
+PAGE_TYPES = ("hub", "hub-stack", "hub-live", "tab", "kit", "support")
 FIELDS = ("html", "css", "js", "images", "fonts", "total", "compressed", "requests")
 
 # Bytes, except ``requests``. Measured on the example instance and a kit with
@@ -35,6 +35,31 @@ BUDGET: dict[str, dict[str, int]] = {
         "total": 160000,
         "compressed": 82000,
         "requests": 11,
+    },
+    # The smart-stack home page (#673) is not the example hub: it lists every
+    # group's links on one page. Measured 2026-11-20 on a stack built from the
+    # example instance's creator and theme; about a quarter of headroom.
+    "hub-stack": {
+        "html": 11300,
+        "css": 65300,
+        "js": 13000,
+        "images": 1300,
+        "fonts": 81500,
+        "total": 172200,
+        "compressed": 83700,
+        "requests": 13,
+    },
+    # The same page with page.live_badges on: live.js (an optional enhancement,
+    # deferred, only on pages that turn badges on) is added to click.js.
+    "hub-live": {
+        "html": 11700,
+        "css": 65300,
+        "js": 33100,
+        "images": 1300,
+        "fonts": 81500,
+        "total": 192700,
+        "compressed": 90300,
+        "requests": 14,
     },
     "tab": {
         "html": 3600,
@@ -99,8 +124,18 @@ _FETCHED_RELS = {
 _CSS_URL = re.compile(r"url\(\s*['\"]?\s*([^'\")\s]+)|@import\s+['\"]([^'\"]+)")
 
 
-def page_type(rel: str) -> str:
-    """Classify a built page by its path under the output root."""
+# Stack fixture roots: only their home page is measured, as these types.
+STACK_SITES = {"stack": "hub-stack", "stack-live": "hub-live"}
+
+
+def page_type(rel: str, site: str = "") -> str:
+    """Classify a built page by its path under the output root.
+
+    ``site`` is the name of the output root; the two stack fixtures (see
+    ``STACK_SITES``) classify their home page as their own type.
+    """
+    if site in STACK_SITES and rel == "index.html":
+        return STACK_SITES[site]
     if rel == "index.html":
         return "hub"
     if rel == "kit/index.html":
@@ -266,7 +301,7 @@ def over_budget(kind: str, weight: dict[str, int]) -> list[str]:
 
 
 DOCS_HEADING = "## Page-weight budget (#670)"
-_ROW = re.compile(r"^\|\s*(\w+)\s*\|((?:\s*\d+\s*\|){8})\s*0\s*\|\s*$")
+_ROW = re.compile(r"^\|\s*([\w-]+)\s*\|((?:\s*\d+\s*\|){8})\s*0\s*\|\s*$")
 
 
 def docs_table(text: str) -> dict[str, dict[str, int]]:
