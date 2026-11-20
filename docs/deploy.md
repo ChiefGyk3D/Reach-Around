@@ -620,14 +620,108 @@ Two read-only checks you run by hand against a deployed site (issue #272). Neith
 
 Wiring into `deploy-test.yml` is deliberately not done: the deploy job runs under `harden-runner` in block mode with a fixed allow-list that cannot name the site host, and it holds the Cloudflare token. A smoke step there needs the host added to the allow-list and the token blanked for that step (as the purge step does).
 
+## Deploying the Worker from an instance repo
+
+The Worker and D1 half of the test deploy is a reusable workflow,
+`.github/workflows/deploy-worker.yml` (issue #596). `deploy-test.yml` calls it,
+and an instance repository calls the same file for its staging and production
+Worker, so the config writing, the budget check, the migrations and the deploy
+exist once. It does not publish the site; the caller does that with its own
+Pages step. It reads no GitHub secret: the Cloudflare token comes from Doppler
+over GitHub OIDC (the `CLOUDFLARE_KEY_VALUE` secret of one Doppler project and
+config), as one masked output that only the wrangler steps read.
+
+**What the caller must provide.** The call goes on a job with
+`permissions: { contents: read, id-token: write }` (permissions are checked when
+the workflow is parsed, so a job that is skipped at run time still needs them),
+after a job that uploads the site manifest as an artifact (the build job of
+`deploy-test.yml` and the instance template do). Pin the call by commit, with the
+version in a comment, as every other action. The called job runs in the GitHub
+environment you name, so that environment's reviewers and deployment-branch rule
+gate it, and it refuses any ref other than `main`.
+
+```yaml
+  worker:
+    needs: validate
+    if: github.ref == 'refs/heads/main'
+    permissions:
+      contents: read
+      id-token: write
+    uses: ChiefGyk3D/Reach-Around/.github/workflows/deploy-worker.yml@<40-hex> # vX.Y.Z
+    with:
+      environment: staging
+      engine_ref: <40-hex, the commit in engine.lock>
+      worker_name: reach-around-clicks-staging
+      doppler_identity_id: ${{ vars.DOPPLER_IDENTITY_ID }}
+      doppler_config: dev
+      cloudflare_account_id: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+      d1_database_id: ${{ vars.D1_DATABASE_ID }}
+      ratelimit_namespace_id: ${{ vars.RATELIMIT_NAMESPACE_ID }}
+      site_host: ${{ vars.SITE_HOST }}
+      zone_name: ${{ vars.ZONE_NAME }}
+```
+
+The values come from repository variables (a calling job cannot read an
+environment's own variables, so set them at repository level, or pass literals).
+None is a secret.
+
+| Input | Required | What it is |
+|---|---|---|
+| `environment` | yes | The caller's GitHub environment. Its reviewers and branch rule gate the job. |
+| `engine_repo`, `engine_ref` | `engine_ref` | Where the Worker source comes from and the full 40-character commit to deploy (the one in `engine.lock`). A branch or tag name is refused. |
+| `worker_name` | yes | The Worker name, always passed as `--name`. `worker/wrangler.toml` names the test Worker `reach-around-clicks`, so a staging Worker must be named here, or the deploy would replace the test Worker. No default, on purpose. |
+| `manifest_artifact`, `manifest_file` | no | The artifact (default `site-manifest`) and the one file in it (default `site-out.manifest.json`; the instance template uses `manifest.json`). |
+| `site_artifact` | no | The built site (default `site-out`), read only to check page ids when `page_views` is `true`. |
+| `doppler_identity_id`, `doppler_project`, `doppler_config` | identity, config | The Doppler OIDC identity (an id, not a secret), the project (default `reach-around`) and the config that holds `CLOUDFLARE_KEY_VALUE`. Use a config of the right tier: `dev` for the test and staging Workers, `prd` only for production, as its own approved step. |
+| `cloudflare_account_id`, `d1_database_id`, `ratelimit_namespace_id`, `site_host` | yes | The account, the D1 database (a UUID; the all-zero placeholder is refused), the click limiter namespace (the placeholder `1001` is refused) and the site host. |
+| `zone_name`, `route_pattern` | no | With a zone, the Worker gets the `/e/*` route; `route_pattern` replaces the default `<site_host>/e/*`. |
+| `sites` | no | A `SITES` JSON object (`docs/analytics-design.md`, section 4), written as the `SITES` var. The Worker then ignores the one-site shorthand. |
+| `link_ids`, `lead_retention_days` | no | Only compared with the manifest, which is what is deployed. A difference is a warning. |
+| `live_twitch_handle`, `live_kick_handle`, `live_kv_id` | no | The Live poller (`docs/live.md`); a handle needs a real KV id. |
+| `page_views`, `page_ids`, `view_limiter_namespace_id`, `views_per_hour`, `bot_views_per_hour`, `account_views_per_hour`, `account_bot_views_per_hour` | no | Page views, exactly as in "Page views" above. Only the text `true` turns them on. |
+| `route_budget_gate`, `route_budget_view`, `max_leads`, `max_kit_events`, `daily_alert_budget`, `daily_send_budget`, `d1_daily_write_quota`, `click_daily_write_ceiling` | no | The kit limits and the D1 quota, digits only, as in "Kit limits and the daily write budget". The write-budget check runs with them and stops the deploy when the projection is over quota. |
+| `beacon_mode`, `mint_limiter_namespace_id` | no | The beacon token, `off` or `observe` only. |
+| `quiet`, `clicks_kill`, `views_kill`, `scheduled_kill` | no | Booleans, default false. See below. |
+
+**Order for a deploy that migrates** (`docs/cutover-runbook.md`, 2.3): call it
+once with `quiet: true`. That deploys the Worker with `CLICKS_KILL`,
+`VIEWS_KILL` and `SCHEDULED_KILL` all on, and does **not** run migrations. Then
+verify the quiet state (the next scheduled trigger returns at once), take the
+Time Travel bookmark and the backup, and call it again with `quiet: false`: it
+applies `wrangler d1 migrations apply DB --remote`, then deploys the Worker with
+the switches off. The Worker stays quiet through the migrations because the
+first call's deploy is still live. A normal call does the migrations and the
+deploy in that order, as `deploy-test.yml` always did. The three switches can
+also be set one by one (`clicks_kill`, `views_kill`, `scheduled_kill`); only a
+true value is written, as `"1"`, into the throwaway config.
+
+**Rollback with the kill switches.** To stop counting without a rollback, call
+it with `quiet: true` (or only the switch you need): the Worker deploys with the
+route or the scheduled jobs off and no migration runs. To go back, call it again
+with the switches false. Migrations only go forward, so a bad migration is not
+undone by a redeploy: restore from the Time Travel bookmark and backup
+(`docs/backup-restore.md`). Rolling back the site itself is the DNS step in
+"Rolling back".
+
+**Never move `engine.lock` during a 48 hour soak.** `engine_ref` is the pin
+that decides which Worker is deployed. Changing it (or the image, or the
+workflow pin) in the middle of the staging soak restarts the evidence the
+cutover needs, so any engine bump waits until the soak report is written.
+
+**Not run for you.** The workflow has not been run end to end by the change that
+added it: the first run is on a staging environment, from `main`, with a
+reviewer present. Its egress allow-list is unmeasured, like the one in
+"Egress control".
+
 ## Egress control
 
 The jobs start with `step-security/harden-runner`, followed by an egress
 canary that says whether a failure is a broken runner network or a wrong list.
 
-- **`deploy` is in block mode** with an explicit allow-list of `host:443`
+- **`deploy` (in `deploy-test.yml`) and the called `deploy-worker.yml` are in
+  block mode** with an explicit allow-list of `host:443`
   entries (no wildcards): GitHub, the npm registry, `api.doppler.com` and
-  `api.cloudflare.com`. This is the job that holds the Cloudflare token.
+  `api.cloudflare.com`. These are the jobs that hold the Cloudflare token.
 - **`counts` is in audit mode** for two reasons that cannot be listed: the
   wheels artifact comes from a blob host whose name varies per run, and the
   Mastodon and Matrix sources use hosts named in the config. It needs no PyPI
@@ -952,8 +1046,8 @@ refused inside `--out`, like `--manifest`).
 
 ## 3. Run it
 
-Actions > Deploy to test > Run workflow, branch `main`. The workflow has two
-jobs:
+Actions > Deploy to test > Run workflow, branch `main`. After the counts refresh
+the workflow has three jobs:
 
 1. **`build`** has read-only repository access, no secrets and no
    environment. It installs the package, runs
@@ -964,19 +1058,24 @@ jobs:
    `site-manifest`. The assets inventory (`site-out.assets.json`) is written
    the same way and uploaded as `site-assets-inventory`; the job also compares
    it with the last deployment's to build the optional purge list.
-2. **`deploy`** waits for `build`, then waits for a reviewer to approve the
-   `test` environment. It downloads both artifacts (a script, `.github/scripts/verify-manifest.py`, derives the Worker's `LINK_IDS`
+2. **`worker`** waits for `build` and calls the reusable
+   `.github/workflows/deploy-worker.yml` (see "Deploying the Worker from an
+   instance repo"), under the `test` environment, so a reviewer approves it. It
+   downloads both artifacts (a script, `.github/scripts/verify-manifest.py`, derives the Worker's `LINK_IDS`
    from `site-out.manifest.json`, refuses any link id outside
    `[a-z0-9-]{1,40}` (without echoing it), an empty list, or more ids than the
    Worker's cap of 200, and only warns when the optional `LINK_IDS` variable differs), installs the Worker
-   dependencies with `npm ci --ignore-scripts`, applies D1 migrations,
-   deploys the Worker, publishes the site with `wrangler pages deploy`, and,
-   when `CLOUDFLARE_PURGE_TOKEN` and `ZONE_ID` are set, purges the changed paths
-   (see "Caching and stale files").
+   dependencies with `npm ci --ignore-scripts`, applies D1 migrations and
+   deploys the Worker.
+3. **`deploy`** waits for `worker` and for the `test` environment, installs
+   wrangler, publishes the site with `wrangler pages deploy`, and, when
+   `CLOUDFLARE_PURGE_TOKEN` and `ZONE_ID` are set, purges the changed paths
+   (see "Caching and stale files"). It fetches its own token from Doppler, so
+   the `test` environment's reviewer approves once per job.
 
-Why two jobs: `pip install` and `npm ci` run code from third-party
+Why separate jobs: `pip install` and `npm ci` run code from third-party
 dependencies. Neither runs while the Cloudflare token exists: the build job has
-no secrets, and the deploy job installs before it fetches the token. The build
+no secrets, and each deploy job installs before it fetches the token. The build
 installs Python dependencies with `pip install --require-hashes` from
 `requirements-build.txt` and `requirements.txt`, then the project itself with
 `--no-deps`, as the Containerfile does. After the Doppler step the token is in

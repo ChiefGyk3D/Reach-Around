@@ -1,0 +1,52 @@
+name = "reach-around-clicks"
+main = "src/index.ts"
+compatibility_date = "2026-10-01"
+[vars]
+BEACON_MODE = "observe"
+MAX_LEADS = "500"
+ROUTE_BUDGET_GATE = "100"
+ACCOUNT_BOT_VIEWS_PER_HOUR = "120"
+ACCOUNT_VIEWS_PER_HOUR = "480"
+BOT_VIEWS_PER_HOUR = "30"
+VIEWS_PER_HOUR = "120"
+PAGE_IDS = '["home","kit"]'
+CLICK_DAILY_WRITE_CEILING = "20000"
+D1_DAILY_WRITE_QUOTA = "100000"
+LIVE_KICK_HANDLE = "n0tst-kick"
+LIVE_TWITCH_HANDLE = "n0tst"
+ALERTS_CONFIG = '{"analytics_health":true}'
+LEAD_RETENTION_DAYS = "30"
+SITE_HOST = "links-test.example.test"
+LINK_IDS = '["example-one","example-two"]'
+DESTINATION_KINDS = '{"example-one":"link","example-two":"link"}}'
+[[d1_databases]]
+binding = "DB"
+database_name = "reach-around-clicks"
+database_id = "11111111-2222-3333-4444-555555555555" # placeholder, not a real id
+migrations_dir = "migrations"
+[[ratelimits]]
+name = "CLICK_LIMITER"
+namespace_id = "2001" # placeholder, not a real id
+  [ratelimits.simple]
+  limit = 20
+  period = 60
+[triggers]
+crons = ["5 * * * *", "*/2 * * * *"]
+[[routes]]
+pattern = "links-test.example.test/e/*"
+zone_name = "example.test"
+[[kv_namespaces]]
+binding = "LIVE_KV"
+id = "0123456789abcdef0123456789abcdef"
+[[ratelimits]]
+name = "VIEW_LIMITER"
+namespace_id = "2002"
+  [ratelimits.simple]
+  limit = 5
+  period = 60
+[[ratelimits]]
+name = "MINT_LIMITER"
+namespace_id = "2003"
+  [ratelimits.simple]
+  limit = 6
+  period = 60

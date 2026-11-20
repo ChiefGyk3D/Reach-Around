@@ -45,7 +45,7 @@ def key_holders(all_jobs: dict[str, Any]) -> list[tuple[str, str]]:
     return [
         (job_name, s["name"])
         for job_name, job in all_jobs.items()
-        for s in job["steps"]
+        for s in job.get("steps", [])  # the `worker` job is a reusable call
         if any(key in yaml.safe_dump(s.get("env", {})) for key in KEYS)
     ]
 
@@ -193,8 +193,10 @@ def test_the_build_uses_counts_artifacts_only_after_a_counts_success() -> None:
     assert run.count("reach-around build") == 2
     assert "--numbers counts-in/numbers.json" in run
     assert 'if [ "$USE_COUNTS" = "true" ]' in run
-    # The deploy waits for the build only; a skipped counts job is not in its path.
-    assert jobs()["deploy"]["needs"] == "build"
+    # The Worker deploy (the reusable call) waits for the build only; a skipped
+    # counts job is not in its path. The Pages job waits for both.
+    assert jobs()["worker"]["needs"] == "build"
+    assert jobs()["deploy"]["needs"] == ["build", "worker"]
 
 
 NOTIFY_IF = (
@@ -483,7 +485,7 @@ SOURCE_BUILD = re.compile(r"\bpip3?\s+wheel\b|--no-build-isolation|\bnpm\b|\s\.\
 def runs_source_code(job: dict[str, Any]) -> list[str]:
     """Run lines in a job that could build or install from source."""
     found: list[str] = []
-    for s in job["steps"]:
+    for s in job.get("steps", []):  # the `worker` job is a reusable call
         for line in str(s.get("run", "")).splitlines():
             if PIP_LINE.search(line) and (
                 SOURCE_BUILD.search(line)
@@ -511,7 +513,9 @@ def test_the_job_that_can_ask_for_an_oidc_token_installs_no_source_code() -> Non
 
 
 def test_id_token_is_in_no_job_that_runs_pip_from_source_or_the_build() -> None:
-    allowed = {"counts", "deploy"}
+    # `worker` is the call of the reusable Worker deploy (it holds no steps
+    # here; the called file's one job is guarded in test_deploy_worker_workflow.py).
+    allowed = {"counts", "worker", "deploy"}
     for name, job in jobs().items():
         if "id-token" in job.get("permissions", {}):
             assert name in allowed, name
@@ -568,7 +572,7 @@ def test_the_counts_job_starts_hardened_and_every_action_is_pinned() -> None:
     assert first["uses"].startswith("step-security/harden-runner@")
     pinned = 0
     for job in jobs().values():
-        for s in job["steps"]:
+        for s in job.get("steps", []):  # the `worker` job is a reusable call
             if "uses" in s:
                 assert re.fullmatch(r"[\w./-]+@[0-9a-f]{40}", s["uses"]), s["uses"]
                 pinned += 1
@@ -904,14 +908,17 @@ def test_the_counts_job_has_its_own_protected_environment() -> None:
     assert counts["environment"] == "counts-secrets"
     # Every job that can ask for an OIDC token names an environment, and no
     # two share one, so the Doppler subject for one cannot be used by another.
-    seen: dict[str, str] = {}
+    # The two halves of the test deploy (the reusable Worker call, whose
+    # environment is its `environment` input, and the Pages job) share `test`
+    # on purpose: one deployment, one Doppler subject, one reviewer gate. The
+    # counts job never shares.
+    seen: dict[str, set[str]] = {}
     for name, job in jobs().items():
         if "id-token" in job.get("permissions", {}):
-            env = job.get("environment")
+            env = job.get("environment") or job.get("with", {}).get("environment")
             assert isinstance(env, str) and env, name
-            assert env not in seen, (name, seen.get(env))
-            seen[env] = name
-    assert seen == {"counts-secrets": "counts", "test": "deploy"}
+            seen.setdefault(env, set()).add(name)
+    assert seen == {"counts-secrets": {"counts"}, "test": {"worker", "deploy"}}
 
 
 def test_the_engine_wheel_is_hash_checked_before_it_is_installed() -> None:

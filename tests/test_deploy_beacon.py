@@ -15,7 +15,7 @@ import pytest
 import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
-WORKFLOW = ROOT / ".github" / "workflows" / "deploy-test.yml"
+WORKFLOW = ROOT / ".github" / "workflows" / "deploy-worker.yml"
 
 BASE = {
     "PATH": "/usr/bin:/bin",
@@ -158,7 +158,7 @@ def test_check_configuration_applies_the_same_rule(
     env = {
         **BASE,
         "CLOUDFLARE_ACCOUNT_ID": "acct",
-        "PAGES_PROJECT": "proj",
+        "WORKER_NAME": "reach-around-clicks-test",
         **extra,
     }
     done = subprocess.run(  # noqa: S603 - fixed argv and sample values
@@ -177,4 +177,4 @@ def test_the_budget_gate_step_sees_the_mode() -> None:
     ]
     gate = [s for s in steps if s.get("name") == "Check the page-view write budget"]
     assert len(gate) == 1
-    assert gate[0]["env"]["BEACON_MODE"] == "${{ vars.BEACON_MODE }}"
+    assert gate[0]["env"]["BEACON_MODE"] == "${{ inputs.beacon_mode }}"

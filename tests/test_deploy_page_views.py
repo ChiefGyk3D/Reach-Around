@@ -17,7 +17,7 @@ import pytest
 import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
-WORKFLOW = ROOT / ".github" / "workflows" / "deploy-test.yml"
+WORKFLOW = ROOT / ".github" / "workflows" / "deploy-worker.yml"
 VERIFY = ROOT / ".github" / "scripts" / "verify-page-ids.py"
 
 D1_ID = "11111111-2222-3333-4444-555555555555"
@@ -34,7 +34,7 @@ BASE = {
     "LINK_IDS": '["alpha"]',
     "LEAD_RETENTION_DAYS": "30",
     "CLOUDFLARE_ACCOUNT_ID": "acct",
-    "PAGES_PROJECT": "proj",
+    "WORKER_NAME": "reach-around-clicks-test",
     "ZONE_NAME": ZONE,
 }
 ON = {"PAGE_VIEWS": "true", "PAGE_IDS": PAGES, "VIEW_LIMITER_NAMESPACE_ID": VIEW_NS}
@@ -45,8 +45,20 @@ def _workflow() -> dict[str, Any]:
     return data
 
 
+TEST_WORKFLOW = ROOT / ".github" / "workflows" / "deploy-test.yml"
+
+
+def _test_workflow() -> dict[str, Any]:
+    data: dict[str, Any] = yaml.safe_load(TEST_WORKFLOW.read_text(encoding="utf-8"))
+    return data
+
+
 def _step(job: str, name: str) -> dict[str, Any]:
-    found = [s for s in _workflow()["jobs"][job]["steps"] if s.get("name") == name]
+    """A step of the called workflow (job `deploy`) or, for job `build`, of the
+    engine's own deploy-test.yml, which builds the site and calls the Worker
+    deploy."""
+    workflow = _test_workflow() if job == "build" else _workflow()
+    found = [s for s in workflow["jobs"][job]["steps"] if s.get("name") == name]
     assert len(found) == 1, name
     step: dict[str, Any] = found[0]
     return step
@@ -301,7 +313,7 @@ def test_budget_and_page_id_steps_are_conditional_tokenless_and_ordered() -> Non
     names = [s.get("name") for s in steps]
     for name in ("Verify the page ids", "Check the page-view write budget"):
         step = _step("deploy", name)
-        assert step["if"] == "${{ vars.PAGE_VIEWS == 'true' }}"
+        assert step["if"] == "${{ inputs.page_views == 'true' }}"
         assert "secrets." not in str(step) and "CLOUDFLARE" not in str(step)
         assert names.index(name) < names.index("Write deploy config")
     # the budget step sees the site list and the ceilings the Worker will load
@@ -314,7 +326,7 @@ def test_budget_and_page_id_steps_are_conditional_tokenless_and_ordered() -> Non
         "ACCOUNT_VIEWS_PER_HOUR",
         "ACCOUNT_BOT_VIEWS_PER_HOUR",
     ):
-        assert budget_env[var] == "${{ vars." + var + " }}"
+        assert budget_env[var] == "${{ inputs." + var.lower() + " }}"
     # the link ids are the ones derived from the manifest, as in the deploy config
     assert budget_env["LINK_IDS"] == "${{ steps.manifest.outputs.link_ids }}"
     names = [s.get("name") for s in _workflow()["jobs"]["deploy"]["steps"]]
@@ -352,18 +364,24 @@ def test_page_view_variables_are_plain_variables_not_secrets() -> None:
         "VIEW_LIMITER_NAMESPACE_ID",
         "VIEWS_PER_HOUR",
     ):
-        assert "vars." + var in text
+        assert "inputs." + var.lower() in text
         assert "secrets." + var not in text
     # VIEW_HASH_SECRET is a Worker secret the owner sets once: no workflow line
     # (comments aside) reads or writes it.
     live = [ln for ln in text.splitlines() if not ln.lstrip().startswith("#")]
     assert not any("VIEW_HASH_SECRET" in ln for ln in live)
-    for name in (
-        "Apply D1 migrations",
-        "Deploy the Worker",
-        "Publish the site to Pages",
-    ):
-        body = str(_step("deploy", name))
+    bodies = {
+        name: str(_step("deploy", name))
+        for name in ("Apply D1 migrations", "Deploy the Worker")
+    }
+    publish = [
+        s
+        for s in _test_workflow()["jobs"]["deploy"]["steps"]
+        if s.get("name") == "Publish the site to Pages"
+    ]
+    assert len(publish) == 1
+    bodies["Publish the site to Pages"] = str(publish[0])
+    for name, body in bodies.items():
         for var in ("PAGE_IDS", "VIEW_LIMITER_NAMESPACE_ID", "PAGE_VIEWS"):
             assert var not in body, (name, var)
     assert "GITHUB_ENV" not in str(_step("deploy", "Write deploy config"))
@@ -537,7 +555,7 @@ def test_the_gate_receives_every_variable_the_worker_loader_reads() -> None:
     for step in ("Check the page-view write budget", "Write deploy config"):
         env = _step("deploy", step)["env"]
         for name in wanted:
-            assert env[name] == "${{ vars." + name + " }}", (step, name)
+            assert env[name] == "${{ inputs." + name.lower() + " }}", (step, name)
     # and Check configuration validates them
     assert wanted <= set(_step("deploy", "Check configuration")["env"])
 
@@ -630,11 +648,11 @@ def test_the_click_budget_step_runs_when_page_views_are_off() -> None:
     steps = _workflow()["jobs"]["deploy"]["steps"]
     names = [s.get("name") for s in steps]
     step = _step("deploy", "Check the click write budget")
-    assert step["if"] == "${{ vars.PAGE_VIEWS != 'true' }}"
+    assert step["if"] == "${{ inputs.page_views != 'true' }}"
     assert "secrets." not in str(step) and "CLOUDFLARE" not in str(step)
     env = step["env"]
     for var in CLICK_VARS + ["SITE_HOST"]:
-        assert env[var] == "${{ vars." + var + " }}"
+        assert env[var] == "${{ inputs." + var.lower() + " }}"
     assert env["LINK_IDS"] == "${{ steps.manifest.outputs.link_ids }}"
     # no page-view variable reaches it: they are not written when page views are off
     for var in ("VIEWS_PER_HOUR", "ROUTE_BUDGET_GATE", "MAX_LEADS"):

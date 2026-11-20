@@ -40,7 +40,7 @@ def test_every_action_is_pinned_by_commit_sha() -> None:
     uses = [
         s["uses"]
         for job in load()["jobs"].values()
-        for s in job["steps"]
+        for s in job.get("steps", [])  # the `worker` job is a reusable call
         if "uses" in s
     ]
     assert uses
@@ -52,7 +52,7 @@ def test_the_purge_token_is_in_exactly_one_step_and_no_other_secret_with_it() ->
     text_by_step = {
         (job, s.get("name") or s.get("uses")): yaml.safe_dump(s)
         for job, body in load()["jobs"].items()
-        for s in body["steps"]
+        for s in body.get("steps", [])  # the `worker` job is a reusable call
     }
     holders = [k for k, v in text_by_step.items() if "CLOUDFLARE_PURGE_TOKEN" in v]
     assert holders == [("deploy", PURGE_STEP)]

@@ -1,0 +1,26 @@
+name = "reach-around-clicks"
+main = "src/index.ts"
+compatibility_date = "2026-10-01"
+[vars]
+CLICK_DAILY_WRITE_CEILING = "20000"
+D1_DAILY_WRITE_QUOTA = "100000"
+LEAD_RETENTION_DAYS = "90"
+SITE_HOST = "staging.example.test"
+LINK_IDS = '["alpha","beta"]'
+DESTINATION_KINDS = '{"alpha":"link","beta":"link"}}'
+[[d1_databases]]
+binding = "DB"
+database_name = "reach-around-clicks"
+database_id = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee" # placeholder, not a real id
+migrations_dir = "migrations"
+[[ratelimits]]
+name = "CLICK_LIMITER"
+namespace_id = "3001" # placeholder, not a real id
+  [ratelimits.simple]
+  limit = 20
+  period = 60
+[triggers]
+crons = ["5 * * * *"]
+[[routes]]
+pattern = "staging.example.test/e/*"
+zone_name = "example.test"
