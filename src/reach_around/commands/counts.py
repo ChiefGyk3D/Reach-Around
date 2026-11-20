@@ -28,10 +28,15 @@ from typing import TextIO
 
 from reach_around.config import ConfigError, SiteConfig, load_site_config
 from reach_around.config.cutover import utc_today
+from reach_around.config.imported_history import parse_imported
 from reach_around.config.loader import _read
 from reach_around.config.numbers import load_numbers
 from reach_around.config.stale import REMIND_DAYS, due_numbers
 from reach_around.counts.beacons import (
+    IMPORT_NOTE,
+    IMPORT_PLATFORM,
+    IMPORT_RUN_ID,
+    IMPORT_SOURCE,
     MAX_BEACONS_BYTES,
     BeaconsImportError,
     parse_beacons_csv,
@@ -46,6 +51,7 @@ from reach_around.counts.files import (
     plan_paths,
     utc_stamp,
     write_atomic,
+    write_new_atomic,
 )
 from reach_around.counts.history import (
     API_PROVIDERS,
@@ -67,6 +73,7 @@ from reach_around.counts.history import (
     redact_records,
     remove_stale_redaction_temps,
 )
+from reach_around.counts.imported_export import export_imported
 from reach_around.counts.importer import (
     MAX_CSV_BYTES,
     ImportFailed,
@@ -712,6 +719,8 @@ def _dispatch(args: argparse.Namespace) -> int:
         return run_history_verify(args)
     if args.counts_command == "history-redact":
         return run_history_redact(args)
+    if args.counts_command == "history-export-imported":
+        return run_export_imported(args.file, args.out)
     if args.counts_command == "history-import-beacons":
         return run_beacons_import(args.config, args.csv, args.file, args.dry_run)
     if args.counts_command == "import":
@@ -818,6 +827,38 @@ def _register_history(
         "--file", type=Path, required=True, help="new pre-cutover history file"
     )
     beacons.add_argument("--dry-run", action="store_true")
+    export = actions.add_parser(
+        "history-export-imported",
+        help="write the small file the media kit reads from the imported history",
+        description="Read the history file made by history-import-beacons and write "
+        "the separate file named by kit.imported_history: views and clicks per "
+        "month, nothing per day. The site build never reads the history file. "
+        "Never overwrites a file. Exit 0 written, 2 refused.",
+    )
+    export.add_argument(
+        "--file", type=Path, required=True, help="the imported history file"
+    )
+    export.add_argument(
+        "--out", type=Path, required=True, help="new file for kit.imported_history"
+    )
+
+
+def run_export_imported(source: Path, out: Path) -> int:
+    """Write the kit-readable aggregate file from an importer history file."""
+    try:
+        if out.is_symlink() or out.exists():
+            raise ConfigError(str(out), None, "refusing to overwrite; name a new file")
+        if source.resolve() == out.resolve():
+            raise ConfigError(str(out), None, "must differ from the history file")
+        text = export_imported(read_history(source))
+        write_new_atomic(out, text)
+    except (ConfigError, HistoryError, OSError) as exc:
+        print(
+            f"error: imported history not exported: {_safe(str(exc))}", file=sys.stderr
+        )
+        return EXIT_USAGE
+    print(f"exported {len(parse_imported(text.encode()).periods)} monthly periods")
+    return EXIT_OK
 
 
 def run_beacons_import(
@@ -848,13 +889,13 @@ def run_beacons_import(
             raise BeaconsImportError("destination must be a regular file path")
         records = [
             Record(
-                platform="link-page",
+                platform=IMPORT_PLATFORM,
                 metric=metric,
                 value=value,
                 as_of_utc=f"{day.day.isoformat()}T00:00:00Z",
-                source="imported",
-                run_id="beacons-import",
-                note="Beacons",
+                source=IMPORT_SOURCE,
+                run_id=IMPORT_RUN_ID,
+                note=IMPORT_NOTE,
             )
             for day in export.days
             for metric, value in (("views", day.views), ("clicks", day.clicks))

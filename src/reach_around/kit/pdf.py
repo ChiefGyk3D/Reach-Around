@@ -50,6 +50,7 @@ from typing import Literal, NoReturn
 
 from reach_around.config.cutover import cutover_label, live_since, utc_today
 from reach_around.config.engagement import engagement_rows
+from reach_around.config.imported_history import ImportedHistory, expected_text
 from reach_around.config.kit import (
     KitConfig,
     enforce_display_policy,
@@ -360,7 +361,12 @@ def scrub_pdf(data: bytes, *, title: str, created: date) -> bytes:
 
 
 def _expected_text(
-    kit: KitConfig, numbers: Numbers | None, *, public: bool = False
+    kit: KitConfig,
+    numbers: Numbers | None,
+    *,
+    public: bool = False,
+    imported: ImportedHistory | None = None,
+    live_day: date | None = None,
 ) -> list[tuple[str, str]]:
     """(where, text) for everything the page must print. A headline
     number is one entry per row (platform, measure, value and date together, in
@@ -391,6 +397,9 @@ def _expected_text(
     total = _total(unified_total(resolved), resolved)
     if total is not None:
         found.append(("the metric total", total["value"]))
+    # The block "Before Reach Around" prints where the display policy puts it.
+    if imported is not None and (not public or kit.imported_history_public):
+        found.extend(expected_text(imported, live_day))
     if public:
         return found
     if kit.disclosure is not None:
@@ -497,6 +506,8 @@ def check_text(
     *,
     public: bool = False,
     valid_as_of_text: str | None = None,
+    imported: ImportedHistory | None = None,
+    live_day: date | None = None,
 ) -> None:
     """Fail if a private value is in ``text`` or configured gated text is not.
 
@@ -514,7 +525,7 @@ def check_text(
     if public:
         allowed = _public_pdf_values(kit, numbers)
         contact = canonical(kit.contact) if kit.contact is not None else ""
-        for field, value in _gated_strings(kit):
+        for field, value in _gated_strings(kit, imported):
             if canonical(value) in allowed:
                 continue
             if field == "kit.inquiry.email" and canonical(value) in contact:
@@ -539,7 +550,9 @@ def check_text(
             raise PdfLeakError(
                 "text from the gate form appears in the PDF; nothing was written"
             )
-    expected = _expected_text(kit, numbers, public=public)
+    expected = _expected_text(
+        kit, numbers, public=public, imported=imported, live_day=live_day
+    )
     if live_since_text is not None:
         expected.append(("the live-since line", live_since_text))
     if valid_as_of_text is not None:
@@ -568,6 +581,7 @@ def build_kit_pdf(
     overwrite: bool = False,
     protect: Sequence[Path] = (),
     numbers: Numbers | None = None,
+    imported: ImportedHistory | None = None,
 ) -> PdfResult:
     """Make the private PDF; see the module doc. ``protect`` lists more
     directories the output may not be in (the config's directory)."""
@@ -592,6 +606,7 @@ def build_kit_pdf(
         renderer=renderer,
         overwrite=overwrite,
         numbers=numbers,
+        imported=imported,
         public=False,
     )
 
@@ -607,6 +622,7 @@ def build_public_kit_pdf(
     overwrite: bool = False,
     protect: Sequence[Path] = (),
     numbers: Numbers | None = None,
+    imported: ImportedHistory | None = None,
 ) -> PdfResult:
     """Make the public-half PDF (``kit pdf --public``): the page the site
     publishes at ``/kit/``, with the gate form dropped and a "Valid as of" line
@@ -630,6 +646,7 @@ def build_public_kit_pdf(
         renderer=renderer,
         overwrite=overwrite,
         numbers=numbers,
+        imported=imported,
         public=True,
     )
 
@@ -645,6 +662,7 @@ def _print(
     renderer: Renderer,
     overwrite: bool,
     numbers: Numbers | None,
+    imported: ImportedHistory | None,
     public: bool,
 ) -> PdfResult:
     """Render, scrub, check and write one staged page. Shared by both kinds."""
@@ -670,6 +688,8 @@ def _print(
         None if day is None else cutover_label(day),
         public=public,
         valid_as_of_text=valid_as_of_text(created) if public else None,
+        imported=imported,
+        live_day=day,
     )
     path = write_private(target_dir, name, final, overwrite=overwrite)
     return PdfResult(path=path, pages=len(pages), size=len(final))

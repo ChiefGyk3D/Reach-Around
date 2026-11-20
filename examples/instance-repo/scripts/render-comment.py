@@ -514,6 +514,8 @@ KNOWN_FIELDS: frozenset[str] = frozenset(
         "id",
         "image",
         "image_alt",
+        "imported_history",
+        "imported_history_public",
         "in_total",
         "included",
         "inquiry",

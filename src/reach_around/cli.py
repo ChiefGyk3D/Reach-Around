@@ -18,6 +18,11 @@ from jinja2 import TemplateError
 from reach_around import __version__, commands, edit_cli
 from reach_around.commands.counts import DOPPLER_TOKEN_ENV
 from reach_around.config import ConfigError, load_site_config
+from reach_around.config.imported_history import (
+    ImportedHistory,
+    imported_source,
+    load_imported,
+)
 from reach_around.config.numbers import Numbers, load_numbers
 from reach_around.counts.secret_sink import TokenHolder
 from reach_around.editor.server import MAX_IDLE_SECONDS, run_editor
@@ -279,6 +284,10 @@ def _build(
                     "and were ignored",
                     file=sys.stderr,
                 )
+        imported: ImportedHistory | None = None
+        imported_file = imported_source(config, config_path)
+        if imported_file is not None:
+            imported = load_imported(imported_file)
         today = today_in(config.timezone, datetime.now(UTC))
         manifest = build_site(
             config,
@@ -290,6 +299,7 @@ def _build(
             numbers=numbers,
             gated_out=gated_out,
             number_day=datetime.now(UTC).date(),
+            imported=imported,
         )
         for warning in manifest.warnings:
             print(f"warning: {warning}", file=sys.stderr)

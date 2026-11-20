@@ -313,6 +313,45 @@ The private PDF prints the owner details and drops the form (the form's
 `<aside>` is chrome, like the footer). The privacy page gains one entry for the
 form when `kit.inquiry` is set.
 
+## Link-page history from before Reach Around
+
+`kit.imported_history` names a small JSON file beside the config: views and
+clicks per month that the previous link-page provider reported, imported once.
+The kit shows them as their own block, **Before Reach Around**, with one
+sentence saying they come from the previous provider, are not comparable to the
+numbers Reach Around collects and are not added to any total. The block is never
+part of the headline numbers or the combined audience: the numbers section is
+byte for byte what it is without the file (a test pins it).
+
+Where it shows follows the display policy table below. By default the block is
+**gated**: its numbers are on the gated page and the private PDF and nowhere
+public. The public gate teaser still names the category ("Link-page history from
+the previous provider"), as it does for every other gated category. Set
+`kit.imported_history_public: true` to show it on the public page and in the
+public PDF too. Era marks apply: with `cutover_date` in force a month that is
+not wholly before the cutover is left out (the collected numbers cover it), and
+each row carries the "before Reach Around" mark; a month with fewer days than
+the calendar month says how many days it holds.
+
+The build never reads the social history file (`numbers.history_file`): that
+file holds private analytics and tombstones, and the config is refused if
+`imported_history` names it. The kit reads only the aggregate file, made from
+the importer's history file by one extra step:
+
+```text
+reach-around counts history-export-imported \
+  --file beacons-pre-cutover-history.jsonl \
+  --out imported-history.json
+```
+
+The export checks the hash chain, accepts only the importer's link-page
+records, and writes views and clicks per calendar month with the provenance
+words (`source: imported`, `note: Beacons`, neither printed) and the days each
+month holds. It never overwrites a file. Nothing per day, per link, per
+referrer or per visitor is in it. Keep it in the private instance repository
+like the history file; both `reach-around build` and `reach-around kit pdf`
+read it from the path in the config, and a missing file stops the build.
+
 ## The wall between the two
 
 The boundary is structural. The rule for what is public is the display policy
@@ -325,7 +364,8 @@ cannot reach a gated field, and the two pages go to two separate directories.
 | title, about, photo, contact, tags, metrics, analytics, unified_total, turnstile_site_key | public | no |
 | partners, case_studies, services, rates, testimonials, demographics, inquiry, disclosure | gated | no |
 | engagement | gated | `owner_report_only`; YouTube figures require `owner_supplied: true` |
-| unlock_link | private | no |
+| imported_history | gated by default; public when `imported_history_public: true` | no |
+| imported_history_public, unlock_link | private | no |
 
 What the build enforces:
 
@@ -341,7 +381,8 @@ What the build enforces:
    through.
 3. **A search as defense in depth.** Before anything is written, each gated
    value of at least 6 characters (partner text, case study text, rate text,
-   demographic text and dates) is searched for in every public file: as written,
+   demographic text and dates, and every imported-history number with its
+   label unless the owner made the block public) is searched for in every public file: as written,
    HTML-escaped, and in a canonical form: entities, percent-encoding and JSON,
    JavaScript (`\x`, `\u`) and CSS escapes decoded until the text stops changing
    (at most 10 rounds), tags removed, Unicode NFKC, case and whitespace ignored.
