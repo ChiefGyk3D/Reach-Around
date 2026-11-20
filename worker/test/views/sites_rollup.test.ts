@@ -194,6 +194,22 @@ describe("retention per site", () => {
     expect(await q("SELECT * FROM view_events")).toEqual([]);
   });
 
+  // The privacy page states the global window and its ceiling (min(3 x keep, 90)). A per-site value can
+  // only shorten them, so the page stays an upper bound. Unrolled days: no seal, so only the ceiling applies.
+  it("a_per_site_keep_above_the_global_one_never_moves_the_unrolled_day_ceiling_later", async () => {
+    const s = JSON.stringify({ links: { hosts: ["links.example.test"], mode: "beacon", pages: ["home"], raw_keep_days: 90 } });
+    await insert(many("links", NOW - 7 * DAY, 1)); // past 3 x 2 days, no seal
+    await purgeViews({ DB, SITES: s, RAW_KEEP_DAYS: "2" }, NOW);
+    expect(await q("SELECT * FROM view_events")).toEqual([]);
+  });
+
+  it("a_lower_per_site_keep_pulls_the_unrolled_day_ceiling_earlier_never_later", async () => {
+    const s = JSON.stringify({ links: { hosts: ["links.example.test"], mode: "beacon", pages: ["home"], raw_keep_days: 2 } });
+    await insert(many("links", NOW - 7 * DAY, 1)); // past 3 x 2 days, inside the global 3 x 7
+    await purgeViews({ DB, SITES: s }, NOW);
+    expect(await q("SELECT * FROM view_events")).toEqual([]);
+  });
+
   it("rows_of_a_retired_site_age_out_with_the_global_window", async () => {
     const t = NOW - 10 * DAY;
     await insert(many("retired", t, 2));
