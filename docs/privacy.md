@@ -186,7 +186,8 @@ Worker's `click.ts` both check the signal, and a test fails if the page
 promises this while either one does not). The page does not say the browser
 sends nothing, because it may: the generated links keep the native `ping`
 attribute so clicks still count without JavaScript, and a visitor whose script
-is blocked or fails sends that small request; the Worker discards any request
+is blocked or fails may still send a small request (a browser can have
+hyperlink auditing turned off or unsupported); the Worker discards any request
 that carries the signal, whatever the page did. The guarantee covers the
 site's own script (it removes the `ping` attribute at load, on click, on
 middle-click and on the context menu, and treats an unreadable signal as an

@@ -620,7 +620,8 @@ Requirements for the rewritten disclosure (plain words, American English):
    while either click path does not check the signal. The page does not say the
    browser sends nothing: the links keep the native `ping` attribute so clicks
    count without JavaScript (the unverified lane), so a visitor whose script is
-   blocked or fails still sends a small request, which the Worker discards
+   blocked or fails may still send a small request (a browser can have
+   hyperlink auditing turned off or unsupported), which the Worker discards
    unrecorded when it carries the signal. The guarantee covers the site's own
    script and that server-side discard only; it does not cover other scripts on
    the page, visitors without JavaScript, or links in shadow roots or iframes.
