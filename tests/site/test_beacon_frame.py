@@ -38,7 +38,7 @@ HELPER_CSP = (
     "default-src 'self'; "
     f"script-src 'self' {ORIGIN}; "
     "style-src 'self'; "
-    "img-src 'self' https:; "
+    f"img-src {ORIGIN}; "
     "font-src 'self'; "
     "connect-src 'self'; "
     "object-src 'none'; "
@@ -241,7 +241,9 @@ def test_every_other_path_keeps_the_strict_policy(tmp_path: Path) -> None:
     for path, rows in blocks(on).items():
         if path != "/e-frame/":
             assert not any(ORIGIN in row for row in rows), path
-    assert on.count(ORIGIN) == 2  # script-src and frame-src of the one helper path
+    # script-src, img-src and frame-src of the one helper path, nowhere else
+    assert on.count(ORIGIN) == 3
+    assert on.count("img-src 'self' https:") == 1  # the site-wide rule only
     assert on.count("frame-ancestors 'self'") == 1
     # No ordinary page needs a new directive to embed the helper: frame-src falls
     # back to default-src 'self'.
@@ -325,6 +327,22 @@ def test_frame_ancestors_can_only_be_self() -> None:
     assert "frame-ancestors 'none'" in build_csp()
 
 
+def test_img_src_can_be_narrowed_but_never_widened() -> None:
+    narrowed = build_csp({"replace:img-src": [ORIGIN]})
+    assert f"img-src {ORIGIN};" in narrowed and "https: " not in narrowed
+    for bad in (["https:"], ["*"], ["data:"], ["http://x.test"], []):
+        with pytest.raises(OverridesError):
+            build_csp({"replace:img-src": bad})
+    with pytest.raises(OverridesError):
+        build_csp({"replace:frame-ancestors": ["'self'"]})
+
+
+def test_no_script_names_same_origin_in_the_sandbox() -> None:
+    text = (STATIC / "beacon.js").read_text(encoding="utf-8")
+    assert "allow-same-origin" not in re.sub(r"//[^\n]*", "", text)
+    assert 'setAttribute("sandbox", "allow-scripts")' in text
+
+
 def test_header_path_is_still_validated() -> None:
     with pytest.raises(OverridesError):
         render_headers(path_extras={"/*": {"frame-ancestors": ["'self'"]}})
@@ -382,13 +400,20 @@ def test_the_beacon_logic_passes_under_node(tmp_path: Path) -> None:
 @pytest.mark.parametrize(
     ("name", "old", "new"),
     [
-        ("beacon.js", "event.origin !== location.origin", "false"),
+        ("beacon.js", 'event.origin !== "null"', "false"),
         ("beacon.js", "event.source !== frame.contentWindow", "false"),
-        ("beacon.js", "allow-scripts allow-same-origin", "allow-scripts"),
+        ("beacon.js", "data.nonce !== nonce", "false"),
+        (
+            "beacon.js",
+            '"sandbox", "allow-scripts"',
+            '"sandbox", "allow-scripts allow-same-origin"',
+        ),
+        ("beacon.js", "ownKeys(data) === TOKEN_KEYS", "true"),
         ("beacon.js", "navigator.globalPrivacyControl === true", "false"),
         ("beacon.js", "dntOn(navigator.doNotTrack)", "false"),
         ("beacon.js", "TIMEOUT_MS = 5000", "TIMEOUT_MS = 500000"),
-        ("beacon-frame.js", "location.origin", '"*"'),
+        ("beacon-frame.js", "NONCE.test(nonce)", "true"),
+        ("beacon-frame.js", "nonce: nonce,", "nonce: 'x',"),
         ("beacon-frame.js", 'retry: "never"', 'retry: "auto"'),
     ],
 )
@@ -409,6 +434,9 @@ def test_scripts_use_no_storage_and_do_not_touch_links() -> None:
     for name in ("beacon.js", "beacon-frame.js"):
         text = (STATIC / name).read_text(encoding="utf-8")
         assert len(text) > 400  # loose: the file was read
+        text = "\n".join(
+            line for line in text.splitlines() if not line.lstrip().startswith("//")
+        )
         for word in BANNED:
             assert word not in text, (name, word)
         assert "preventDefault" not in text

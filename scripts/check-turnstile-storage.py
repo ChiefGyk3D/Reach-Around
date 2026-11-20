@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Measure what the invisible bot check leaves in a clean browser (#610).
 
-Usage: python3 scripts/check-turnstile-storage.py (--live | --stub)
+Usage: python3 scripts/check-turnstile-storage.py (--live | --stub | --stub-attack)
        [--browser chromium|firefox] [--executable PATH] [--wait SECONDS]
        [--json] [--strict]
 
@@ -23,8 +23,18 @@ the check to finish, and prints:
 only when you mean to, with the test key this script uses, never with a
 production key. ``--stub`` answers every challenges.cloudflare.com request
 locally with a stand-in script (no contact with Cloudflare); it only proves the
-harness works, and its numbers say nothing about Turnstile. One of the two flags
-is required so a run is never an accident.
+harness works, and its numbers say nothing about Turnstile. ``--stub-attack``
+is a stub too, but the stand-in script behaves like hostile vendor code: it tries
+to read and change the parent page and its storage from inside the frame and
+posts forged results to the parent (without the nonce, and with a wrong one). The
+report's ``attack`` section must show every attempt refused and the final state
+``unverified``. One of the three flags is required so a run is never an accident.
+
+The helper frame runs vendor code in an opaque-origin sandbox (no
+``allow-same-origin``). It is not known whether Turnstile works there. The report
+therefore says plainly whether a token arrived under that sandbox
+(``token under opaque sandbox``); with ``--live``, "no" is the signal to read
+``docs/turnstile-storage-check.md`` (fallback: a dedicated origin).
 
 Browser: Chromium by default. Set ``RA_CHROMIUM`` or pass ``--executable`` for a
 browser binary; ``--browser firefox`` uses Playwright's Firefox. Playwright must
@@ -56,6 +66,30 @@ ROOT = Path(__file__).resolve().parents[1]
 TEST_SITE_KEY = "1x00000000000000000000AA"  # Cloudflare's always-pass test key
 TURNSTILE_HOST = "challenges.cloudflare.com"
 LOCAL_HOSTS = frozenset({"127.0.0.1", "localhost"})
+# Hostile stand-in for vendor code. It never calls the callback; it tries things a
+# frame must not be able to do and records the outcome in window.__attack, which
+# the harness reads from the frame (Playwright can evaluate in any frame).
+ATTACK_SCRIPT = """
+window.turnstile = {render: function () {
+  var r = {};
+  function t(name, fn) { try { fn(); r[name] = true; } catch (e) { r[name] = false; } }
+  t("parent_dom_read", function () { void parent.document.title; });
+  t("parent_dom_write", function () {
+    parent.document.documentElement.setAttribute("data-attack", "1"); });
+  t("parent_storage_write", function () {
+    parent.localStorage.setItem("attack", "1"); });
+  t("own_storage_write", function () { localStorage.setItem("attack", "1"); });
+  t("own_cookie_read", function () { void document.cookie; });
+  var type = "reach-around-beacon";
+  t("forged_no_nonce", function () {
+    parent.postMessage({type: type, state: "token", token: "FORGED.1"}, "*"); });
+  t("forged_wrong_nonce", function () {
+    parent.postMessage({type: type, nonce: "0".repeat(32), state: "token",
+      token: "FORGED.2"}, "*"); });
+  window.__attack = r;
+  return "attack";
+}};
+"""
 STUB_SCRIPT = (
     "window.turnstile={render:function(el,o){"
     "setTimeout(function(){o.callback('STUB.token-0')},50);return 'stub'}};"
@@ -126,6 +160,22 @@ def storage_found(report: Mapping[str, Any]) -> bool:
 def render(report: Mapping[str, Any]) -> str:
     out = [f"mode: {report['mode']}  browser: {report['browser']}"]
     out.append(f"check finished: {report['state']} (waited {report['waited']:.1f}s)")
+    out.append(
+        "token under opaque sandbox: "
+        + (
+            "yes"
+            if report["token_under_sandbox"]
+            else "NO (see docs/turnstile-storage-check.md)"
+        )
+    )
+    if report["attack"] is not None:
+        out.append(
+            "attack attempts (True = it worked; only forged_no_nonce and "
+            "forged_wrong_nonce\n  should say True, meaning sent; every other "
+            "line must say False):"
+        )
+        for name, value in sorted(report["attack"].items()):
+            out.append(f"  {name}: {value}")
     out.append(f"cookies: {len(report['cookies'])}")
     for c in report["cookies"]:
         out.append(
@@ -152,7 +202,7 @@ def render(report: Mapping[str, Any]) -> str:
     out.append(f"console errors: {len(report['console_errors'])}")
     for line in report["console_errors"][:20]:
         out.append(f"  {line}")
-    if report["mode"] == "stub":
+    if report["mode"] in ("stub", "stub-attack"):
         out.append(
             "STUB RUN: no contact with Cloudflare; these numbers say nothing "
             "about Turnstile."
@@ -226,7 +276,8 @@ def build_site_dir(out: Path) -> None:
 # --- the browser run -----------------------------------------------------------
 
 _PROBE = """async () => {
-  const out = {local: [], session: [], idb: []};
+  const out = {local: [], session: [], idb: [], attack: null};
+  try { out.attack = window.__attack || null; } catch (e) {}
   try { out.local = Object.keys(localStorage); } catch (e) {}
   try { out.session = Object.keys(sessionStorage); } catch (e) {}
   try {
@@ -241,7 +292,9 @@ _PROBE = """async () => {
 def measure(args: argparse.Namespace) -> dict[str, Any]:
     from playwright.sync_api import Route, sync_playwright
 
-    stub = args.stub
+    attack = args.stub_attack
+    stub = args.stub or attack
+    attack_seen: dict[str, bool] = {}
     with tempfile.TemporaryDirectory(prefix="ra-turnstile-") as tmp:
         site = Path(tmp) / "site"
         build_site_dir(site)
@@ -281,7 +334,7 @@ def measure(args: argparse.Namespace) -> dict[str, Any]:
                             route.fulfill(
                                 status=200,
                                 content_type="text/javascript",
-                                body=STUB_SCRIPT,
+                                body=ATTACK_SCRIPT if attack else STUB_SCRIPT,
                             )
                         else:
                             route.abort()
@@ -306,6 +359,8 @@ def measure(args: argparse.Namespace) -> dict[str, Any]:
                         local.setdefault(origin, set()).update(got["local"])
                         session.setdefault(origin, set()).update(got["session"])
                         idb.setdefault(origin, set()).update(got["idb"])
+                        if got["attack"]:
+                            attack_seen.update(got["attack"])
                     state = page.evaluate(
                         "window.reachAroundBeacon"
                         " ? window.reachAroundBeacon.state : null"
@@ -314,6 +369,10 @@ def measure(args: argparse.Namespace) -> dict[str, Any]:
                         break
                     time.sleep(0.2)
                 waited = time.monotonic() - started
+                parent_state = page.evaluate(
+                    "({attr: document.documentElement.hasAttribute('data-attack'),"
+                    " storage: localStorage.getItem('attack') !== null})"
+                )
                 time.sleep(0.5)  # let late writes land before the final read
                 saved = context.storage_state(indexed_db=True)
                 for origin in saved.get("origins", []):
@@ -354,9 +413,20 @@ def measure(args: argparse.Namespace) -> dict[str, Any]:
         if host and urlsplit(url).scheme in ("http", "https", "ws", "wss"):
             hosts[host] = hosts.get(host, 0) + 1
     return {
-        "mode": "stub" if stub else "live",
+        "mode": "stub-attack" if attack else "stub" if stub else "live",
         "browser": args.browser,
         "state": state or "no result (timed out)",
+        "token_under_sandbox": state == "verified",
+        "attack": (
+            {
+                **attack_seen,
+                "parent_attr_set": parent_state["attr"],
+                "parent_storage_set": parent_state["storage"],
+                "forged_result_accepted": state == "verified",
+            }
+            if attack
+            else None
+        ),
         "waited": waited,
         "cookies": cookies,
         "local_storage": {k: sorted(v) for k, v in local.items()},
@@ -375,6 +445,11 @@ def main(argv: list[str] | None = None) -> int:
         "--live", action="store_true", help="contact Cloudflare (test key)"
     )
     mode.add_argument("--stub", action="store_true", help="answer Turnstile locally")
+    mode.add_argument(
+        "--stub-attack",
+        action="store_true",
+        help="answer with hostile stand-in vendor code (no contact with Cloudflare)",
+    )
     parser.add_argument(
         "--browser", choices=("chromium", "firefox"), default="chromium"
     )

@@ -14,8 +14,21 @@ as a header.
 
 The page loads two scripts, both ``defer`` so they run in order: Turnstile's, then
 ``static/beacon-frame.js``, which renders the widget and passes the result to the
-parent with a same-origin ``postMessage``. No inline script, so the page needs no
+parent with ``postMessage``. No inline script, so the page needs no
 ``unsafe-inline`` or nonce.
+
+What this does and does not protect: Cloudflare's script is mutable third-party
+code and it RUNS INSIDE THIS HELPER FRAME. So the frame is sandboxed with
+``allow-scripts`` and without ``allow-same-origin``: its origin is opaque, and
+code in it cannot read or change the parent page, same-origin storage or cookies.
+The page policy also gives it only the vendor origin for script, frame and image
+(``img-src``), and ``connect-src`` stays ``'self'``. It can still post any
+message to its parent, including a forged "verified" one with the nonce the parent
+put in the frame address, since the vendor script can read its own address. The
+parent therefore treats the browser-side result as a hint, and the server must
+verify the token (siteverify, hostname and action). If Turnstile does not work
+in an opaque origin, the fallback is a separate origin for the helper; see
+``docs/deploy.md``.
 """
 
 from __future__ import annotations
@@ -51,6 +64,9 @@ def frame_path_extras(config: SiteConfig) -> dict[str, dict[str, list[str]]]:
             "script-src": [TURNSTILE_ORIGIN],
             "frame-src": [TURNSTILE_ORIGIN],
             "frame-ancestors": ["'self'"],
+            # The site-wide rule allows any https image; this page runs vendor
+            # script and needs none, so it may load images from the vendor only.
+            "replace:img-src": [TURNSTILE_ORIGIN],
         }
     }
 

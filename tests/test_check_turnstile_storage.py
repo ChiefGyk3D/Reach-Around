@@ -76,6 +76,8 @@ def report(**over: object) -> dict[str, object]:
         "mode": "stub",
         "browser": "chromium",
         "state": "verified",
+        "token_under_sandbox": True,
+        "attack": None,
         "waited": 1.0,
         "cookies": [],
         "local_storage": {},
@@ -119,6 +121,28 @@ def test_render_prints_names_never_values() -> None:
     assert "STUB RUN" in text
 
 
+def test_render_says_plainly_when_no_token_came_under_the_sandbox() -> None:
+    mod = load()
+    assert "token under opaque sandbox: yes" in mod.render(report())
+    text = mod.render(report(state="unverified", token_under_sandbox=False))
+    assert "token under opaque sandbox: NO" in text
+    assert "docs/turnstile-storage-check.md" in text
+
+
+def test_the_attack_script_tries_every_documented_thing() -> None:
+    mod = load()
+    for needle in (
+        "parent.document.title",
+        "setAttribute",
+        "parent.localStorage",
+        "document.cookie",
+        "postMessage",
+        '"0".repeat(32)',
+    ):
+        assert needle in mod.ATTACK_SCRIPT, needle
+    assert "callback" not in mod.ATTACK_SCRIPT  # it never hands over a token
+
+
 def run(*args: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(  # noqa: S603 - fixed argv: this interpreter and our script
         [sys.executable, "-I", str(SCRIPT), *args],
@@ -133,6 +157,7 @@ def test_a_run_needs_an_explicit_mode() -> None:
     done = run()
     assert done.returncode == 2
     assert "--live" in done.stderr and "--stub" in done.stderr
+    assert "--stub-attack" in done.stderr
     both = run("--live", "--stub")
     assert both.returncode == 2
 
@@ -164,3 +189,42 @@ def test_stub_run_in_a_clean_browser() -> None:
     assert data["cookies"] == []
     assert data["foreign"] == ["challenges.cloudflare.com"]
     assert "STUB.token-0" not in done.stdout  # the token is never printed
+
+
+@pytest.mark.visual
+def test_hostile_vendor_code_in_the_frame_is_contained() -> None:
+    """Vendor-context code cannot read or change the parent page or its storage,
+    and forged results without the nonce never produce a verified state."""
+    env = {
+        "PATH": os.environ.get("PATH", ""),
+        "PYTHONPATH": str(ROOT / "src"),
+        "RA_CHROMIUM": os.environ.get("RA_CHROMIUM", ""),
+    }
+    done = subprocess.run(  # noqa: S603 - fixed argv
+        [sys.executable, str(SCRIPT), "--stub-attack", "--json", "--wait", "30"],
+        capture_output=True,
+        text=True,
+        timeout=120,
+        check=False,
+        env=env,
+    )
+    assert done.returncode == 0, done.stderr
+    data = json.loads(done.stdout)
+    attack = data["attack"]
+    # The attempts really ran (loose), and every one that matters was refused.
+    assert "forged_no_nonce" in attack and "parent_dom_read" in attack
+    assert attack["forged_no_nonce"] is True  # sent, so the guard was exercised
+    assert attack["forged_wrong_nonce"] is True
+    for name in (
+        "parent_dom_read",
+        "parent_dom_write",
+        "parent_storage_write",
+        "own_storage_write",
+        "own_cookie_read",
+        "parent_attr_set",
+        "parent_storage_set",
+        "forged_result_accepted",
+    ):
+        assert attack[name] is False, name
+    assert data["state"] == "unverified"  # the timeout, not a forged message
+    assert "FORGED" not in done.stdout

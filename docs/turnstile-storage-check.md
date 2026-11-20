@@ -59,7 +59,8 @@ command with the project's `safe-run.sh`.
 
 | Line | Meaning | Action |
 | --- | --- | --- |
-| `check finished: verified` | The helper loaded, Turnstile ran and a token came back | Expected for the test key |
+| `check finished: verified` and `token under opaque sandbox: yes` | The helper loaded, Turnstile ran inside the sandbox (no `allow-same-origin`) and a token came back | Expected for the test key |
+| `token under opaque sandbox: NO` | No token arrived while the frame had an opaque origin. Turnstile may need cookies or storage that an opaque origin does not give it, or a flag the sandbox lacks | Record the console errors and the hosts. Do not add `allow-same-origin`: that puts vendor code on the site's origin. Use the fallback below |
 | `check finished: unverified` or `no result` | Blocked, failed or timed out | Look at the console errors and the hosts; see the failure rows below |
 | `cookies: 0`, storage `none` | Nothing kept | The privacy page can say nothing is stored by the check |
 | a cookie or a storage key | Something is kept | Copy its name, domain, lifetime and where it came from into the privacy wording. Decide with the owner whether it is acceptable; if not, the check does not ship |
@@ -70,14 +71,42 @@ command with the project's `safe-run.sh`.
 Turnstile is contacted, or the check did not verify. Use it in a note, not as a
 gate: the answer is a decision, not a pass or fail.
 
+## The opaque-sandbox result, and the fallback
+
+The helper frame runs vendor code and is sandboxed with `allow-scripts` only (no
+`allow-same-origin`), so it has an opaque origin and cannot reach the page that
+embeds it. Cloudflare does not say whether Turnstile works there. The harness
+prints `token under opaque sandbox: yes` or `NO`; keep that line with the rest.
+If it says `NO` in both browsers:
+
+1. The check is unverified for everyone (safe, nothing breaks), so it does not
+   ship as it is.
+2. Fallback: host the helper on a dedicated origin, such as a separate Pages
+   project or a subdomain that holds no site cookies and no site storage. The
+   frame then needs no sandbox flag beyond `allow-scripts allow-same-origin` for
+   its own origin, and nothing on it matters to the site. The parent would check
+   that origin, the exact source window and the nonce. This needs the owner's
+   infrastructure (a project, a host name, a DNS record, and the ordinary pages'
+   `frame-src` naming that host), so it is a decision, not a code change made
+   here.
+3. Never widen the sandbox on the site's own origin.
+
+The attack stand-in (`--stub-attack`, no contact with Cloudflare) proves the
+containment itself: from inside the frame it tries to read and change the parent
+page, write parent and own storage, read cookies, and post forged results
+without the nonce and with a wrong one. Every one must come back refused and the
+final state must be `unverified`. Run it after any change to the sandbox, the
+message checks or the policy.
+
 ## Also record
 
 - The browser and version (`chromium --version`, Firefox "About").
 - The date, and the script's `api.js` response size if you measure it
   (the page weight budget is in `docs/performance.md`).
 - Whether the hidden frame needed a flag the sandbox does not give it (look for
-  "sandbox" in the console errors). A missing flag is a one-line change in
-  `static/beacon.js` plus its pinned test.
+  "sandbox" in the console errors). Only `allow-scripts` is given. Anything
+  else (popups, forms) needs a reason and the owner's say; `allow-same-origin`
+  is never the answer.
 - Visitors with Global Privacy Control or Do Not Track: open the page with
   `navigator.globalPrivacyControl` true (Firefox: `privacy.globalprivacy.control.enabled`;
   Chromium: an extension or a flag that sends it) and confirm no request goes to
