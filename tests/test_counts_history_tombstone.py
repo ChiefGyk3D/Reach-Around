@@ -440,7 +440,9 @@ def test_a_well_formed_tombstone_line_is_accepted(tmp_path: Path) -> None:
         {"note": "free text"},
         {"era": "x"},
         {"replaces": "a" * 64},
-        {"api_provider": "youtube_data_api"},
+        # the provider tag is allowed (see the provider tests), but only on api rows
+        {"api_provider": "youtube_data_api", "source": "hand_kept"},
+        {"api_provider": "not-a-provider"},
         {"reason": "free text"},
         {"reason": None},
         {"trigger_date": None},

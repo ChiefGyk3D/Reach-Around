@@ -49,6 +49,7 @@ from reach_around.counts.files import (
 )
 from reach_around.counts.history import (
     ANALYTICS_PROVIDER,
+    API_PROVIDERS,
     MAX_BATCH,
     REASONS,
     HistoryError,
@@ -621,6 +622,7 @@ def run_history_redact(args: argparse.Namespace) -> int:
             before=args.before,
             metric=args.metric,
             include_hand_kept=args.include_hand_kept,
+            provider=args.provider,
         )
         stale = find_stale_redaction_temps(target)
         if not args.confirm:
@@ -757,7 +759,12 @@ def _register_history(
         "history-verify before anything else.",
     )
     _where(redact)
-    redact.add_argument("--platform", required=True)
+    redact.add_argument("--platform")
+    redact.add_argument(
+        "--provider",
+        choices=API_PROVIDERS,
+        help="select records by their api_provider tag (never by platform name)",
+    )
     redact.add_argument("--metric")
     redact.add_argument("--source", choices=("api", "hand_kept", "imported"))
     redact.add_argument(

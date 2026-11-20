@@ -176,12 +176,17 @@ before you start one. Two things protect you, and neither replaces that rule:
 A tombstone replaces the line of a redacted record. It keeps the key (platform,
 metric, as-of time, source), a `reason` from a closed list (`platform_expiry`,
 `platform_revocation`, `platform_request`, `user_request`, `owner_decision`),
-the `trigger_date` that started the clock, and when it was done. It holds no
-value, note or era, and no free text. The corrections of a redacted record are
+the `trigger_date` that started the clock, and when it was done. For an API
+record it also keeps the `api_provider` tag of the record it replaces. It holds
+no value, note or era, and no free text. The corrections of a redacted record are
 removed with it. Every later line is re-chained, so no digest of the old bytes
 stays in the file. A redacted day is a gap in the series, never a zero, and the
 same key cannot be filled again. Only `api` rows are redacted; `hand_kept` and
 `imported` rows need `--include-hand-kept` (an owner choice, not a duty).
+
+To redact by provider (for example the private analytics records), use
+`--provider youtube_analytics` instead of `--platform`. The tag on the record is
+the only selector; a platform name is never used to guess a provider.
 
 1. Record the trigger and its date (revocation, platform request, user request).
 2. Dry run (the default; prints counts only, never a value, note or hash):

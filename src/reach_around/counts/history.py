@@ -157,6 +157,9 @@ class Tombstone:
     trigger_date: str  # YYYY-MM-DD
     redacted_at_utc: str
     run_id: str
+    # The provider tag of the record it replaces; the only way a later reader
+    # (deletion, revocation, the retention notice) can tell what it covered.
+    api_provider: str | None = None
 
     @property
     def day_key(self) -> tuple[str, str, str, str]:
@@ -272,6 +275,11 @@ def validate_tombstone(tomb: Tombstone, now: datetime | None = None) -> None:
         raise HistoryError("trigger_date is after the redaction")
     if not _RUN_ID.fullmatch(tomb.run_id) or not tomb.run_id.startswith("redact-"):
         raise HistoryError("run_id of a tombstone must start with redact-")
+    if tomb.api_provider is not None:
+        if type(tomb.api_provider) is not str or tomb.api_provider not in API_PROVIDERS:
+            raise HistoryError("api_provider is not recognized")
+        if tomb.source != "api":
+            raise HistoryError("api_provider is allowed only for API records")
 
 
 def new_redact_run_id(now: datetime) -> str:
@@ -319,6 +327,8 @@ def _tomb_line(tomb: Tombstone, prev: str) -> bytes:
         "run_id": tomb.run_id,
         "prev": prev,
     }
+    if tomb.api_provider is not None:
+        obj["api_provider"] = tomb.api_provider
     text = json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
     return text.encode("ascii")
 
@@ -394,7 +404,7 @@ def _parse_line(
 def _parse_tombstone(
     obj: dict[str, Any], keys: set[str], where: str, now: datetime | None
 ) -> tuple[Tombstone, str]:
-    if keys != _TOMB_FIELDS:
+    if keys - {"api_provider"} != _TOMB_FIELDS:
         raise HistoryError(f"{where}: wrong set of fields for a tombstone")
     prev = obj["prev"]
     if type(prev) is not str or not _HASH.fullmatch(prev):
@@ -408,6 +418,7 @@ def _parse_tombstone(
         trigger_date=obj["trigger_date"],
         redacted_at_utc=obj["redacted_at_utc"],
         run_id=obj["run_id"],
+        api_provider=obj.get("api_provider"),
     )
     try:
         validate_tombstone(tomb, now)
@@ -850,20 +861,31 @@ def _need_hand_kept_flag() -> HistoryError:
 def plan_redaction(
     history: History,
     *,
-    platform: str,
-    source: str | None,
-    before: str | None,
+    platform: str | None = None,
+    source: str | None = None,
+    before: str | None = None,
     metric: str | None = None,
     include_hand_kept: bool = False,
+    provider: str | None = None,
 ) -> list[Record]:
     """Pure. The live records a redaction would blank. Never touches disk.
 
     Rows from ``api`` only, unless ``include_hand_kept`` is true. ``before`` is a
     UTC date (``YYYY-MM-DD``): rows on earlier days are chosen; ``None`` chooses
-    every day.
+    every day. ``provider`` selects records by their ``api_provider`` tag and
+    nothing else (never a platform name or slug); at least one of ``platform``
+    and ``provider`` is required.
     """
-    if type(platform) is not str or not _SLUG.fullmatch(platform):
+    if platform is None and provider is None:
+        raise HistoryError("name a platform or a provider")
+    if platform is not None and (
+        type(platform) is not str or not _SLUG.fullmatch(platform)
+    ):
         raise HistoryError("platform must be a lowercase slug")
+    if provider is not None and (
+        type(provider) is not str or provider not in API_PROVIDERS
+    ):
+        raise HistoryError("provider is not recognized")
     if metric is not None and (
         type(metric) is not str or not _METRIC.fullmatch(metric)
     ):
@@ -876,7 +898,11 @@ def plan_redaction(
     cut = _plain_date("before", before).isoformat() if before is not None else None
     chosen: list[Record] = []
     for record in history.records:
-        if record.type != "record" or record.platform != platform:
+        if record.type != "record":
+            continue
+        if platform is not None and record.platform != platform:
+            continue
+        if provider is not None and record.api_provider != provider:
             continue
         if metric is not None and record.metric != metric:
             continue
@@ -1054,6 +1080,7 @@ def _redact(
                     trigger_date=trigger_date,
                     redacted_at_utc=stamp,
                     run_id=run_id,
+                    api_provider=entry.api_provider,
                 )
                 validate_tombstone(tomb, moment)
                 line = _tomb_line(tomb, prev)
