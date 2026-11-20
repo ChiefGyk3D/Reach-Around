@@ -174,6 +174,17 @@ export async function touchLead(db: D1Database, id: string, nowMs: number): Prom
   await db.prepare("UPDATE leads SET last_seen_ts = ? WHERE id = ?").bind(Math.floor(nowMs), id).run();
 }
 
+/**
+ * The ONE writer of `leads.session_floor_ts`. The unit is MILLISECONDS since 1970, like every other
+ * timestamp column here. (Plan 3 Task 15 says "nowSec"; that is superseded: /k/view in gate.ts reads
+ * the column in milliseconds, and migration 0009 is already applied and is not edited.)
+ * Cookies issued in a second at or before the floor's second stop working.
+ */
+export async function setSessionFloor(db: D1Database, id: string, nowMs: number): Promise<void> {
+  checkTs(nowMs, "nowMs");
+  await db.prepare("UPDATE leads SET session_floor_ts = ? WHERE id = ?").bind(Math.floor(nowMs), id).run();
+}
+
 export async function markVerified(db: D1Database, id: string, nowMs: number): Promise<void> {
   checkTs(nowMs, "nowMs");
   await db.prepare("UPDATE leads SET verified_ts = ? WHERE id = ?").bind(Math.floor(nowMs), id).run();

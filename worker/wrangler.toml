@@ -147,6 +147,10 @@ crons = ["5 * * * *"]
 # pattern covering /k/* on the site host, and `kit_unlocked` in the alerts events for the owner
 # alert. A missing or malformed piece makes every gate request answer the usual retry redirect and
 # stores nothing. The kit gate ships OFF at the cutover (features.kit_gate).
+# GATE_LIMITER serves both routes with separate per-client keys (a client's gate allowance and view
+# allowance are independent). Keep it well under the hourly budgets (ROUTE_BUDGET_GATE 150,
+# ROUTE_BUDGET_VIEW 300): one request per client per 60 seconds, the strictest the binding allows,
+# so one client can spend at most 60 of an hour's budget from one address.
 # [[kv_namespaces]]
 # binding = "KIT"
 # id = "00000000000000000000000000000000" # placeholder, not a real id
@@ -154,7 +158,7 @@ crons = ["5 * * * *"]
 # name = "GATE_LIMITER"
 # namespace_id = "1004" # placeholder, not a real id
 #   [ratelimits.simple]
-#   limit = 5
+#   limit = 1
 #   period = 60
 
 # Business inquiry form behind the media kit (POST /k/inquiry, src/kit/inquiry.ts). It needs

@@ -95,6 +95,11 @@ const BOT_UA = new RegExp(
   "i",
 );
 
+/** True when a user agent is missing, too long or looks like a tool, crawler or monitor. Shared with the kit gate. */
+export function isBotUserAgent(ua: string | null | undefined): boolean {
+  return !ua || ua.length > MAX_UA_LENGTH || BOT_UA.test(ua);
+}
+
 /**
  * Every outcome, accepted or ignored, is this exact response: an empty 204.
  * The caller learns nothing about which check, if any, rejected it.

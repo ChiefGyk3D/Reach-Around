@@ -582,6 +582,37 @@ delete their address sooner, use `reach-around leads delete` (dry run by
 default, SQL only with `--yes`, applied by you with `wrangler`). The numbers,
 the steps and what is not covered are in [privacy.md](privacy.md).
 
+## The gate routes (Worker)
+
+`POST /k/gate` and `GET /k/view` live in `worker/src/kit/gate.ts`; the gate
+form posts to `/k/gate`. They ship off at the cutover (`features.kit_gate`).
+
+- **Every refusal is the same answer** (a 303 to `/kit/retry/`, no body, no
+  cookie): wrong origin, content type, size, user agent, address, limiter,
+  budget, Turnstile, lead cap. A refused view goes to `/kit/`. Nothing before
+  the hourly route budget writes to the database.
+- **Accepted residual.** At the lead cap (`MAX_LEADS`), a client that has
+  already passed Turnstile can tell whether an address is a stored lead: a
+  known address unlocks, a new one gets the usual refusal. Stored leads are not
+  evicted to hide this, and a test pins the behavior.
+- **Single use.** Turnstile alone is not replay protection (a replay can briefly
+  succeed), so a passed token is also claimed once in the `counters` table and
+  looked up for today and yesterday. These rows and the hourly route counters
+  are purged after two days by the hourly job (one query, last in the run).
+- **Limits.** `GATE_LIMITER` gives each client its own allowance for the gate
+  and another for the view; the documented value is 1 per 60 seconds, well
+  under the hourly budgets. A client over its allowance spends no budget.
+- **Other `/k/` paths** keep the Worker's every-path-204 answer. The plan's
+  table said 404; this is an intentional difference.
+- **Session floor.** `leads.session_floor_ts` is in milliseconds (plan 3 Task 15
+  says seconds; that is superseded, and migration 0009 is not edited). Only
+  `setSessionFloor` in `worker/src/kit/leads.ts` writes it. A cookie issued in a
+  second at or before the floor's second stops working; a lead that passes the
+  gate again gets a new cookie.
+- **Privacy.** The unlock alert carries the visitor's address to the configured
+  alert sink. The privacy wording for the gate must be published before the
+  gate is turned on.
+
 ## Accessibility and privacy
 
 - Landmarks: one `main`, a skip link, a `nav` when there are several tabs, and

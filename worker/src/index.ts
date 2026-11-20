@@ -7,6 +7,7 @@ import { handleLive, LIVE_CRON, LIVE_ROUTE, runLivePoller, type LiveEnv } from "
 import { handleGate, isGateRoute, type GateEnv } from "./kit/gate";
 import { handleInquiry, isInquiryRoute, type InquiryEnv } from "./kit/inquiry";
 import { LEAD_PURGE_QUERIES, purgeExpiredLeads } from "./kit/leadretention";
+import { purgeOldCounters } from "./kit/limits";
 import { logEvent } from "./kit/log";
 import { rollupClickFunnel } from "./clickfunnel";
 import { loadSites } from "./sites";
@@ -24,6 +25,9 @@ type WorkerEnv = ClickEnv &
   LiveEnv &
   Partial<Pick<InquiryEnv, "INQUIRY_LIMITER" | "TOKEN_HMAC_KEY" | "TOKEN_HMAC_KEY_PREVIOUS" | "KIT_KILL" | "ALERTS_CONFIG">> &
   Partial<Pick<GateEnv, "KIT" | "GATE_LIMITER" | "TURNSTILE_SECRET" | "TOKEN_TTL_SECONDS">>;
+
+/** D1 queries the kit counter purge takes from the invocation's meter. */
+const COUNTER_PURGE_QUERIES = 1;
 
 /** The smallest QUERY_BUDGET that guarantees the lead purge its query (see scheduled()). */
 export const LEAD_FIRST_MIN_BUDGET = 9;
@@ -191,6 +195,15 @@ export default {
           // Next run retries; every step is a predicate on age.
         }
         if (!leadsFirst) await purgeLeads();
+        // Kit counters (route budgets and the single-use token claims): rows older than two UTC days,
+        // at most COUNTER_PURGE_BATCH per run, one metered query. It runs last, on what the meter has
+        // left, so it can never take a query from the rollup or the lead purge; a backlog continues
+        // on the next hourly run.
+        try {
+          await purgeOldCounters(meteredDb(env.DB, meter.slice(COUNTER_PURGE_QUERIES)), now);
+        } catch {
+          logEvent("purge", "failed", "other");
+        }
       })(),
     );
   },

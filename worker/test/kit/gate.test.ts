@@ -3,6 +3,7 @@ import { env as testEnv } from "cloudflare:workers";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createDispatcher } from "../../src/alerts/dispatcher";
 import { GATED_KV_KEY, GATE_ROUTE, VIEW_ROUTE, handleGate, type GateEnv } from "../../src/kit/gate";
+import { setSessionFloor } from "../../src/kit/leads";
 import { COOKIE_NAME, signToken } from "../../src/kit/token";
 import { resetEventCapCache } from "../../src/kit/budgets";
 import worker from "../../src/index";
@@ -31,7 +32,7 @@ function fake(opts: { siteverify?: "ok" | "throw" | "wrong-host" | "wrong-action
       const mode = opts.siteverify ?? "ok";
       if (mode === "throw") throw new Error("network");
       if (mode === "500") return new Response("{}", { status: 500 });
-      const good = new URLSearchParams(body).get("response") === "ok";
+      const good = new URLSearchParams(body).get("response")?.startsWith("ok") === true;
       const r: Record<string, unknown> = { success: good, hostname: HOST, action: "gate", "error-codes": good ? [] : ["invalid-input-response"] };
       if (mode === "wrong-host") r.hostname = "evil.example";
       if (mode === "wrong-action") r.action = "send";
@@ -93,6 +94,7 @@ function req(o: Opts = {}): Request {
     origin: ORIGIN,
     "cf-connecting-ip": "203.0.113.9",
     "cf-ipcountry": "US",
+    "user-agent": "Mozilla/5.0 (X11; Linux x86_64; rv:130.0) Gecko/20100101 Firefox/130.0",
   };
   if (o.cookie) headers.cookie = o.cookie;
   for (const [k, v] of Object.entries(o.headers ?? {})) {
@@ -162,9 +164,9 @@ describe("POST /k/gate success", () => {
       throw new Error("sink down");
     }) as unknown as typeof import("../../src/alerts/dispatcher").notifyOwner;
     const ctx = { waitUntil: (p: Promise<unknown>) => void pending.push(p) };
-    const r2 = await handleGate(req({ fields: { email: "two@example.com", "cf-turnstile-response": "ok" } }), baseEnv(), {
+    const r2 = await handleGate(req({ fields: { email: "two@example.com", "cf-turnstile-response": "ok2" } }), baseEnv(), {
       fetchFn: fake().fn,
-      nowMs: T0 + 86_400_000, // a new day, so the single-use claim of the first "ok" token does not apply
+      nowMs: T0,
       notify: bad,
       ctx,
     });
@@ -181,8 +183,9 @@ describe("POST /k/gate success", () => {
 
   it("a returning address refreshes one lead row, never a second", async () => {
     await post({ fields: { email: EMAIL, "cf-turnstile-response": "ok" } });
-    // A fresh siteverify token for the same address (the fake approves only "ok", so use a new day to clear the single-use claim).
-    await post({ fields: { email: "PAT@Example.com", "cf-turnstile-response": "ok" } }, baseEnv(), fake(), T0 + 86_400_000);
+    // A fresh siteverify token for the same address, spelled differently.
+    const again = await post({ fields: { email: "PAT@Example.com", "cf-turnstile-response": "ok2" } });
+    expect(again.res.headers.get("set-cookie")).not.toBeNull();
     expect(await count("leads")).toBe(1);
   });
 
@@ -202,6 +205,11 @@ const FAILURES: { name: string; opts?: Opts; env?: () => GateEnv; f?: () => Fake
   { name: "missing origin", opts: { headers: { origin: null } } },
   { name: "null origin", opts: { headers: { origin: "null" } } },
   { name: "wrong content type", opts: { headers: { "content-type": "application/json" } } },
+  { name: "missing user agent", opts: { headers: { "user-agent": null } } },
+  { name: "empty user agent", opts: { headers: { "user-agent": "" } } },
+  { name: "tool user agent", opts: { headers: { "user-agent": "curl/8.5.0" } } },
+  { name: "crawler user agent", opts: { headers: { "user-agent": "Mozilla/5.0 (compatible; Googlebot/2.1)" } } },
+  { name: "oversize user agent", opts: { headers: { "user-agent": "M".repeat(600) } } },
   { name: "oversize declared length", opts: { headers: { "content-length": "999999" } } },
   { name: "oversize body", opts: { fields: `email=${EMAIL}&cf-turnstile-response=ok&website=${"a".repeat(5000)}` } },
   { name: "honeypot filled", opts: { fields: { email: EMAIL, "cf-turnstile-response": "ok", website: "http://spam.example" } } },
@@ -230,7 +238,7 @@ const FAILURES: { name: string; opts?: Opts; env?: () => GateEnv; f?: () => Fake
   { name: "missing VIEW_HASH_SECRET", env: () => baseEnv({ VIEW_HASH_SECRET: undefined }) },
 ];
 
-describe("POST /k/gate failures all look the same (no oracle)", () => {
+describe("gate routes: refusals, limits and session rules", () => {
   for (const c of FAILURES) {
     it(c.name, async () => {
       if (c.name === "lead cap is full") {
@@ -455,6 +463,141 @@ describe("GET /k/view (gated content)", () => {
     expect(c.startsWith("__Host-")).toBe(true);
     for (const attr of ["Secure", "Path=/", "HttpOnly", "SameSite=Lax"]) expect(c).toContain(attr);
     expect(c).not.toMatch(/Domain/i);
+  });
+});
+
+// Per-key quota, like the real binding: each client key has its own allowance.
+function keyedLimiter(perKey: number): Limiter & { hits: Map<string, number> } {
+  const hits = new Map<string, number>();
+  return {
+    hits,
+    keys: [],
+    async limit(o) {
+      const n = (hits.get(o.key) ?? 0) + 1;
+      hits.set(o.key, n);
+      return { success: n <= perKey };
+    },
+  };
+}
+
+describe("early refusals write nothing", () => {
+  const EARLY: { name: string; opts: Opts; env?: () => GateEnv }[] = [
+    { name: "wrong origin", opts: { headers: { origin: "https://evil.example" } } },
+    { name: "missing origin", opts: { headers: { origin: null } } },
+    { name: "wrong content type", opts: { headers: { "content-type": "application/json" } } },
+    { name: "missing content type", opts: { headers: { "content-type": null } } },
+    { name: "declared size over the cap", opts: { headers: { "content-length": "999999" } } },
+    { name: "declared size not a number", opts: { headers: { "content-length": "12abc" } } },
+    { name: "no client address", opts: { headers: { "cf-connecting-ip": null } } },
+    { name: "missing user agent", opts: { headers: { "user-agent": null } } },
+    { name: "tool user agent", opts: { headers: { "user-agent": "python-requests/2.31" } } },
+    { name: "limiter says no", opts: {}, env: () => baseEnv({ GATE_LIMITER: limiter(false) }) },
+  ];
+  for (const c of EARLY) {
+    it(`${c.name}: no counters row, no lead, no Turnstile call`, async () => {
+      const f = fake();
+      const { res } = await post(c.opts, c.env?.() ?? baseEnv(), f);
+      expect(res.headers.get("location")).toBe("/kit/retry/");
+      expect(await count("counters")).toBe(0);
+      expect(await count("leads")).toBe(0);
+      expect(f.calls).toHaveLength(0);
+    });
+  }
+});
+
+describe("per-client limits do not spend shared budgets", () => {
+  it("one client over its gate allowance cannot spend the gate budget or block another client", async () => {
+    const lim = keyedLimiter(1);
+    const e = baseEnv({ GATE_LIMITER: lim });
+    const a = { headers: { "cf-connecting-ip": "203.0.113.10" } };
+    const b = { headers: { "cf-connecting-ip": "203.0.113.11" } };
+    for (let i = 0; i < 6; i++) await post({ ...a, fields: { email: EMAIL, "cf-turnstile-response": "bad" + i } }, e);
+    const spent = await testEnv.DB.prepare("SELECT count FROM counters WHERE key = 'route-gate'").first<{ count: number }>();
+    expect(spent!.count).toBe(1); // only A's first request got past its limiter
+    const other = await post({ ...b, fields: { email: "b@example.com", "cf-turnstile-response": "ok" } }, e);
+    expect(other.res.headers.get("set-cookie")).not.toBeNull();
+  });
+
+  it("one client over its view allowance cannot spend the view budget or block another client", async () => {
+    await seedLead();
+    const lim = keyedLimiter(1);
+    const e = baseEnv({ GATE_LIMITER: lim });
+    const ck = await unlockCookieFor();
+    const hdr = (ip: string) => ({ cookie: ck, headers: { "cf-connecting-ip": ip } });
+    const first = await view(hdr("203.0.113.10"), e);
+    expect(first.status).toBe(200);
+    for (let i = 0; i < 5; i++) expect((await view(hdr("203.0.113.10"), e)).status).toBe(303);
+    const spent = await testEnv.DB.prepare("SELECT count FROM counters WHERE key = 'route-view'").first<{ count: number }>();
+    expect(spent!.count).toBe(1);
+    expect((await view(hdr("203.0.113.11"), e)).status).toBe(200);
+  });
+
+  it("the gate and the view keep separate per-client allowances", async () => {
+    await seedLead();
+    const lim = keyedLimiter(1);
+    const e = baseEnv({ GATE_LIMITER: lim });
+    const g = await post({}, e);
+    expect(g.res.headers.get("set-cookie")).not.toBeNull();
+    expect((await view({ cookie: await unlockCookieFor() }, e)).status).toBe(200);
+    expect(lim.hits.size).toBe(2);
+  });
+
+  it("a view with no usable client address is refused before the budget", async () => {
+    await seedLead();
+    const res = await view({ cookie: await unlockCookieFor(), headers: { "cf-connecting-ip": null } });
+    expect(res.status).toBe(303);
+    expect(await count("counters")).toBe(0);
+  });
+});
+
+describe("lead cap (accepted residual)", () => {
+  // At the lead cap a client that already passed Turnstile can infer whether an address is a stored
+  // lead: a known address is refreshed and unlocked, a new one gets the usual refusal. The cap does
+  // not evict stored leads to hide this. This test pins the behavior so it cannot get worse silently:
+  // it must stay a single yes or no, and the refusal must stay identical to every other refusal.
+  it("known address unlocks, new address gets the standard refusal, nothing else differs", async () => {
+    await testEnv.DB.prepare("INSERT INTO leads (id, email, created_ts, last_seen_ts, source) VALUES (?, ?, 1, 1, 'gate')")
+      .bind("e".repeat(32), EMAIL)
+      .run();
+    const e = baseEnv({ MAX_LEADS: "1" });
+    const known = await post({}, e);
+    expect(known.res.headers.get("set-cookie")).not.toBeNull();
+    const fresh = await post({ fields: { email: "new@example.com", "cf-turnstile-response": "ok2" } }, e);
+    expect(fresh.res.status).toBe(303);
+    expect(fresh.res.headers.get("location")).toBe("/kit/retry/");
+    expect(fresh.res.headers.get("set-cookie")).toBeNull();
+    expect(await fresh.res.text()).toBe("");
+    expect(await count("leads")).toBe(1);
+  });
+});
+
+describe("Turnstile single use across UTC midnight", () => {
+  it("a token passed just before midnight is refused just after it", async () => {
+    const before = Date.UTC(2026, 10, 9, 23, 59, 50);
+    const after = Date.UTC(2026, 10, 10, 0, 0, 10);
+    const one = await post({}, baseEnv(), fake(), before);
+    expect(one.res.headers.get("set-cookie")).not.toBeNull();
+    const two = await post({ fields: { email: "other@example.com", "cf-turnstile-response": "ok" } }, baseEnv(), fake(), after);
+    expect(two.res.headers.get("location")).toBe("/kit/retry/");
+    expect(two.res.headers.get("set-cookie")).toBeNull();
+    expect(await count("leads")).toBe(1);
+  });
+});
+
+describe("session floor writer", () => {
+  it("setSessionFloor writes milliseconds, and /k/view honors it", async () => {
+    const id = await seedLead();
+    await setSessionFloor(testEnv.DB, id, T0);
+    const row = await testEnv.DB.prepare("SELECT session_floor_ts AS f FROM leads WHERE id = ?").bind(id).first<{ f: number }>();
+    expect(row!.f).toBe(T0);
+    expect(row!.f).toBeGreaterThan(1e12); // milliseconds, not seconds
+    expect((await view({ cookie: await unlockCookieFor({ iat: NOW_SEC }) })).status).toBe(303);
+    expect((await view({ cookie: await unlockCookieFor({ iat: NOW_SEC - 1 }) })).status).toBe(303);
+    expect((await view({ cookie: await unlockCookieFor({ iat: NOW_SEC + 1 }) })).status).toBe(200);
+  });
+  it("refuses a non-finite time", async () => {
+    const id = await seedLead();
+    await expect(setSessionFloor(testEnv.DB, id, Number.NaN)).rejects.toThrow(RangeError);
   });
 });
 

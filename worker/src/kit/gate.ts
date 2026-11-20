@@ -9,13 +9,20 @@
 //                  failure: 303 /kit/
 //
 // ORDER (cheap and free first, anything that writes last): kill switch, method,
-// origin, content type, configuration, declared length, per-client limiter,
-// hourly route budget, bounded body read and parse, Turnstile, lead upsert
-// (lead cap), unlock event, token and cookie, owner alert.
+// origin, content type, user agent, configuration, declared length, per-client
+// limiter, hourly route budget, bounded body read and parse, Turnstile (and its
+// single-use claim), lead upsert (lead cap), unlock event, token and cookie,
+// owner alert. Nothing before the route budget writes to D1.
 //
 // Failures never name their cause: the response is the same fixed redirect with
 // no body and no Set-Cookie, so a visitor learns nothing about which check
-// refused, and nothing here reveals whether an address is a stored lead.
+// refused. ONE ACCEPTED RESIDUAL: at the lead cap, a client that has already
+// passed Turnstile can infer whether an address is a stored lead (a known
+// address is refreshed and unlocked, a new one gets the usual refusal). Stored
+// leads are not evicted to hide that; a test pins the behavior.
+//
+// Every other path under /k/ keeps the Worker's existing every-path-204 answer
+// (index.ts); the plan's table said 404 for them. That is intentional.
 //
 // Nothing here logs request data. The only logging is the kit logger's closed
 // vocabulary. The address and the token never leave this file except in the
@@ -28,6 +35,7 @@ import { loadKitLimits, recordKitEventCapped, reserveRoute } from "./budgets";
 import { isKitKilled, loadKitEnv, type KitEnv } from "./env";
 import { killedResponse, originAllowList } from "./guard";
 import { MAX_FORM_BYTES, readForm } from "./input";
+import { isBotUserAgent } from "../click";
 import { getLead, upsertLead } from "./leads";
 import { checkIpMinute, reserveBudget, utcDay, type MinuteLimiter } from "./limits";
 import { forRequest, type Reason } from "./log";
@@ -95,11 +103,12 @@ function fail(reason: Reason): Response {
  * token's SHA-256 is claimed in the D1 counters table (one atomic conditional
  * upsert, limit 1), and a second use of the same token is refused here. The
  * claim is written only for tokens that passed, so a flood of junk tokens
- * writes nothing; rows are bounded by the gate route budget and purged with
- * the other counters. Residual risk: a replay inside the vendor's consistency
- * window that straddles UTC midnight lands on the next day's row. Every
- * failure (timeout, internal-error, any error code) is one `false`; the codes
- * are never shown to the visitor.
+ * writes nothing; rows are bounded by the gate route budget and are purged
+ * after two days by the hourly cron (purgeOldCounters, src/index.ts). The claim
+ * is looked up in today's and yesterday's row, so a replay that straddles UTC
+ * midnight is still refused (a token lives 300 seconds, far less than a day).
+ * Every failure (timeout, internal-error, any error code) is one `false`; the
+ * codes are never shown to the visitor.
  *
  * Not done here on purpose: `remoteip` is not sent (the existing check keeps
  * the address inside the Worker), and there is no retry (fail closed).
@@ -117,7 +126,12 @@ export async function challengePassed(
     const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(token)));
     let hex = "";
     for (const b of digest.slice(0, 20)) hex += b.toString(16).padStart(2, "0");
-    return await reserveBudget(env.DB, `ts-${hex}`, utcDay(nowMs), 1); // CONTROL:turnstile-single-use
+    const claim = `ts-${hex}`;
+    const earlier = await env.DB.prepare("SELECT 1 AS n FROM counters WHERE key = ?1 AND day = ?2")
+      .bind(claim, utcDay(Math.max(0, nowMs - 86_400_000)))
+      .first();
+    if (earlier !== null) return false; // CONTROL:turnstile-single-use-previous-day
+    return await reserveBudget(env.DB, claim, utcDay(nowMs), 1); // CONTROL:turnstile-single-use
   } catch {
     return false;
   }
@@ -138,7 +152,9 @@ async function gate(request: Request, env: GateEnv, deps: GateDeps): Promise<Res
   const now = deps.nowMs ?? Date.now();
   const fetchFn = deps.fetchFn ?? fetch;
 
-  if (request.headers.get("content-type") !== FORM_CONTENT_TYPE) return fail("other");
+  if (request.headers.get("content-type") !== FORM_CONTENT_TYPE) return fail("other"); // CONTROL:gate-content-type
+  // Missing, oversize or tool-like user agents end here, before anything is spent (shared with the click route).
+  if (isBotUserAgent(request.headers.get("user-agent"))) return fail("bot_ua"); // CONTROL:gate-bot-ua
 
   // Configuration: any missing or malformed binding closes the route (same answer, nothing spent).
   let cfg: ReturnType<typeof loadKitEnv>;
@@ -157,7 +173,7 @@ async function gate(request: Request, env: GateEnv, deps: GateDeps): Promise<Res
 
   // Declared length, header only: a body that says it is too big is never read.
   const declared = request.headers.get("content-length");
-  if (declared !== null && (!/^[0-9]{1,9}$/.test(declared) || Number(declared) > MAX_FORM_BYTES)) return fail("size");
+  if (declared !== null && (!/^[0-9]{1,9}$/.test(declared) || Number(declared) > MAX_FORM_BYTES)) return fail("size"); // CONTROL:gate-declared-length
 
   // Per-client minute limiter, keyed by a keyed hash (the raw address never reaches the binding).
   const address = normalizeAddress(request.headers.get("cf-connecting-ip"));
@@ -243,6 +259,17 @@ async function view(request: Request, env: GateEnv, deps: GateDeps): Promise<Res
   const raw = readUnlockCookie(request.headers.get("cookie"));
   const claims = raw === null ? null : await verifyToken(cfg.keys, raw, Math.floor(now / 1000)); // CONTROL:view-token
   if (claims === null) return back("expired");
+
+  // Per-client minute limiter, the same keyed hash as the gate but its own purpose label, so a
+  // client's gate and view allowances are separate and one client cannot spend another's.
+  const limiterSecret = secretBytes(env.VIEW_HASH_SECRET);
+  if (limiterSecret === null || typeof env.VIEW_HASH_SECRET !== "string" || !hasLimiter(env.GATE_LIMITER)) {
+    log.log("link", "closed", "binding");
+    return redirect(VIEW_FAIL_PAGE);
+  }
+  const address = normalizeAddress(request.headers.get("cf-connecting-ip"));
+  const key = address === null ? null : await limiterKey(limiterSecret, env.VIEW_HASH_SECRET, "view", address);
+  if (!(await checkIpMinute(env.GATE_LIMITER, key))) return back("ip_minute"); // CONTROL:view-ip-minute
 
   if (!(await reserveRoute({ ...env, DB: env.DB }, "view", now))) return back("route_budget"); // CONTROL:view-route-budget
 
