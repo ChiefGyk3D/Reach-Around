@@ -6,6 +6,10 @@ while the project is alpha, every release is `0.x` and anything can change betwe
 
 ## [Unreleased]
 
+## [0.3.0-rc.4] - 2026-11-20
+
+- Preview release candidate for 0.3.0 (#595, epic #246). It is a pre-release image for instance draft previews and the staging proof, cut from `main`. It is not the frozen soak candidate: the frozen candidate is a later, separate tag. Contents are the entries that follow, which were unreleased since `0.3.0-rc.3`.
+
 - Kit-only count sources (#689, epic #667): `numbers.sources[].show_on_hub` (default `true`, so existing configs build byte for byte as before). With `false`, `counts refresh` still fetches the source and writes it to `numbers.json`, and the media kit prints it through a `source: counts` metric (dates, old-number warnings and era marks unchanged), but the link hub prints no chip and no count for it, and the source no longer has to match a platforms item, so the daily refresh keeps running after the hub chips are removed. A kit-only source with no kit `counts` metric for its platform is refused at load with fixed words (no value echoed); `reach-around check` has a matching fixed sentence and the instance template's renderer vocabulary is regenerated. A kit-only source keyed by an item id is refused with a fixed word (the kit reads counts by platform). Schema regenerated; docs: `docs/config.md`, `docs/kit.md`, `docs/customizing.md`.
 
 - Property bar `site_nav` (#671, epic #667): an optional list of 1 to 6 of your own sites (title, https url, `current`) shown as a labeled `nav` row above the tab bar and as a family line in the footer, each switchable with `header` and `footer`. Real links with `rel="noopener noreferrer"`, `aria-current="page"` and a bold underline on the current item, targets of at least `--ra-tap`, a row that wraps instead of clipping, print hides the bar and keeps the line, no script. Not counted as clicks. Off by default; with the key absent the output is unchanged. See `docs/config.md`.
