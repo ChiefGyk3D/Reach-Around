@@ -1005,3 +1005,50 @@ def test_the_docs_say_how_concurrency_really_behaves() -> None:
         (ROOT / "docs" / "instance-repos.md").read_text(encoding="utf-8").split()
     )
     assert "calls its own copy of `deploy-worker.yml`" in forks
+
+
+# ---- the docs example matches the instance template it is written for ----------
+
+TEMPLATE = ROOT / "examples" / "instance-repo" / ".github" / "workflows" / "deploy.yml"
+
+
+def _docs_example_with() -> dict[str, Any]:
+    text = (ROOT / "docs" / "deploy.md").read_text(encoding="utf-8")
+    section = text[text.index("## Deploying the Worker from an instance repo") :]
+    block = section[section.index("```yaml\n") + 8 :]
+    block = block[: block.index("```")]
+    data = yaml.safe_load(block)
+    with_: dict[str, Any] = data["worker"]["with"]
+    return with_
+
+
+def _template_uploads() -> dict[str, str]:
+    """upload-artifact name -> path, for every upload step of the template."""
+    jobs: dict[str, Any] = load(TEMPLATE)["jobs"]
+    return {
+        str(s["with"]["name"]): str(s["with"]["path"])
+        for job in jobs.values()
+        for s in job["steps"]
+        if str(s.get("uses", "")).startswith("actions/upload-artifact@")
+    }
+
+
+def test_the_docs_example_uses_the_names_the_template_uploads() -> None:
+    example = _docs_example_with()
+    uploads = _template_uploads()
+    assert uploads, "no upload step found in the template; the check would be vacuous"
+    # the artifacts exist in the template ...
+    assert example["site_artifact"] in uploads
+    assert example["manifest_artifact"] in uploads
+    # ... and the manifest file is the one the template uploads into it
+    assert uploads[example["manifest_artifact"]].endswith(
+        "/" + example["manifest_file"]
+    )
+    # the example only names inputs the workflow has
+    assert set(example) <= set(call_spec()["inputs"])
+
+
+def test_the_docs_say_the_template_is_not_migrated_yet() -> None:
+    text = " ".join((ROOT / "docs" / "deploy.md").read_text(encoding="utf-8").split())
+    assert "#694" in text
+    assert "does NOT get the OIDC-only reusable deploy" in text

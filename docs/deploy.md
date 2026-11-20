@@ -632,7 +632,19 @@ so a follow-up pull request, after this one is merged, switches `deploy-test.yml
 to call the workflow pinned by commit
 (`uses: ChiefGyk3D/Reach-Around/.github/workflows/deploy-worker.yml@<sha> # <version>`),
 the same way an instance repo calls it. Tests keep the two copies' deploy
-config equal until then. It does not publish the site; the caller does that with its own
+config equal until then.
+
+**The instance template does not call it yet.** An instance repository can call
+this workflow, but the shipped template
+(`examples/instance-repo/.github/workflows/deploy.yml`) still does the older
+inline Worker deploy, with a `secrets.CLOUDFLARE_API_TOKEN` token. Moving the
+template to the reusable workflow is deliberately deferred and tracked in issue
+#694 ("Instance template: call the reusable Worker deploy workflow instead of
+the inline Worker deploy"). Until #694 lands, a repository copied from the
+current template does NOT get the OIDC-only reusable deploy; it has to add the
+call below itself.
+
+The reusable workflow does not publish the site; the caller does that with its own
 Pages step. It reads no GitHub secret: the Cloudflare token comes from Doppler
 over GitHub OIDC (the `CLOUDFLARE_KEY_VALUE` secret of one Doppler project and
 config), as one masked output that only the wrangler steps read.
@@ -658,6 +670,11 @@ gate it, and it refuses any ref other than `main`.
       environment: staging
       engine_ref: <40-hex, the commit in engine.lock>
       worker_name: reach-around-clicks-staging
+      # The artifact names and the manifest file of the instance template's
+      # validate job (a test keeps these equal to its upload steps):
+      site_artifact: site-out
+      manifest_artifact: site-manifest
+      manifest_file: manifest.json
       doppler_identity_id: ${{ vars.DOPPLER_IDENTITY_ID }}
       doppler_config: dev
       cloudflare_account_id: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
