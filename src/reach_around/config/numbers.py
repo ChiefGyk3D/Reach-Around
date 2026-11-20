@@ -145,6 +145,24 @@ def source_platforms(
     )
 
 
+def hub_hidden(config: Any, ident: str, platform: str) -> bool:
+    """True when the link hub must not show the count of this platforms item.
+
+    A source with ``show_on_hub: false`` is kit-only. Its key hides the items it
+    would feed (an item id first, then the platform slug, the same order the
+    build looks a count up), unless a source that shows on the hub has a key
+    that reaches the item first.
+    """
+    numbers = getattr(config, "numbers", None)
+    if numbers is None:
+        return False
+    for key in (ident, platform):
+        for source in numbers.sources:
+            if source.platform == key:
+                return not source.show_on_hub
+    return False
+
+
 @dataclass(frozen=True)
 class NumberNote:
     """One shown number: where it is and for which platform. No value.
@@ -199,6 +217,8 @@ def shown_numbers(
     found = []
     for tab, block, pairs in _platform_items(config):
         for ident, item in pairs:
+            if hub_hidden(config, ident, item.platform):
+                continue  # kit-only: the hub shows nothing to be old
             entry = None if numbers is None else numbers.lookup(ident, item.platform)
             limit = stale_limit(config, item.platform)
             count, stamp, origin = _resolve(item.count, item.as_of, entry, today, limit)

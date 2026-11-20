@@ -224,3 +224,117 @@ def test_a_source_that_matches_no_platforms_item_is_refused(
 def test_a_source_with_no_platforms_block_at_all_is_refused(tmp_path: Path) -> None:
     with pytest.raises(ConfigError, match="matches no platforms item"):
         config_with(tmp_path, NO_PLATFORMS_BLOCK, "github")
+
+
+# --- kit-only sources (show_on_hub: false, #689) -------------------------------
+
+KIT_ONLY_HEAD = """\
+version: 1
+creator: {name: Test Creator}
+features: {kit_gate: false}
+tabs:
+  - id: home
+    title: Home
+    blocks:
+      - {id: one, title: One, url: "https://example.com/1"}
+kit:
+  title: Test kit
+  about: A synthetic test kit.
+  metrics:
+    - {platform: twitch, label: Followers, source: counts}
+"""
+KIT_ONLY_SOURCE = (
+    "numbers:\n  sources:\n"
+    "    - {platform: twitch, kind: twitch, login: example, show_on_hub: false}\n"
+)
+
+
+def kit_only(tmp_path: Path, head: str = KIT_ONLY_HEAD, tail: str = "") -> SiteConfig:
+    path = tmp_path / "site.yaml"
+    path.write_text(head + (tail or KIT_ONLY_SOURCE), encoding="utf-8")
+    return load_site_config(path)
+
+
+def test_a_kit_only_source_needs_no_platforms_item(tmp_path: Path) -> None:
+    config = kit_only(tmp_path)
+    assert config.numbers is not None
+    assert config.numbers.sources[0].show_on_hub is False
+
+
+def test_show_on_hub_defaults_to_true(tmp_path: Path) -> None:
+    config = config_with(tmp_path, ONE_PLATFORM, "github")
+    assert config.numbers is not None
+    assert config.numbers.sources[0].show_on_hub is True
+
+
+def test_a_kit_only_source_with_no_kit_counts_metric_is_refused(
+    tmp_path: Path,
+) -> None:
+    head = KIT_ONLY_HEAD.replace(
+        "source: counts", "source: manual, value: 5, as_of: 2027-03-01"
+    )
+    head = head.replace("value: 5, as_of: 2027-03-01", "value: 5, as_of: 2027-03-01")
+    with pytest.raises(ConfigError) as caught:
+        kit_only(tmp_path, head)
+    message = str(caught.value)
+    assert "numbers.sources[0].platform" in message
+    assert "show_on_hub: false needs a kit metric with source: counts" in message
+    assert "twitch" not in message and "example" not in message
+
+
+def test_a_kit_only_source_with_no_kit_at_all_is_refused(tmp_path: Path) -> None:
+    head = KIT_ONLY_HEAD.split("kit:\n")[0]
+    with pytest.raises(ConfigError, match="show_on_hub: false needs a kit metric"):
+        kit_only(tmp_path, head)
+
+
+@pytest.mark.parametrize("value", ['"false"', "0", "no_such"])
+def test_show_on_hub_must_be_a_real_boolean(tmp_path: Path, value: str) -> None:
+    tail = KIT_ONLY_SOURCE.replace("show_on_hub: false", f"show_on_hub: {value}")
+    with pytest.raises(ConfigError):
+        kit_only(tmp_path, tail=tail)
+
+
+def test_a_hidden_source_may_still_match_a_platforms_item(tmp_path: Path) -> None:
+    head = KIT_ONLY_HEAD.replace(
+        "blocks:\n",
+        "blocks:\n"
+        "      - id: socials\n        items:\n"
+        '          - {platform: twitch, handle: "@x", url: "https://example.com/t"}\n',
+    )
+    assert kit_only(tmp_path, head).numbers is not None
+
+
+# --- kit-only sources are keyed by platform, never by item id (#689) -----------
+
+ITEM_ID_HEAD = KIT_ONLY_HEAD.replace(
+    "blocks:\n",
+    "blocks:\n"
+    "      - id: socials\n        items:\n"
+    '          - {platform: twitch, handle: "@x", url: "https://example.com/t"}\n'
+    '          - {platform: bluesky, handle: "@x", url: "https://example.com/b"}\n',
+)
+
+
+def test_a_kit_only_source_keyed_by_an_item_id_is_refused_with_fixed_words(
+    tmp_path: Path,
+) -> None:
+    tail = KIT_ONLY_SOURCE.replace("platform: twitch", "platform: socials-twitch")
+    with pytest.raises(ConfigError) as caught:
+        kit_only(tmp_path, ITEM_ID_HEAD, tail)
+    message = str(caught.value)
+    assert "numbers.sources[0].platform" in message
+    assert "show_on_hub: false must be keyed by a platform, not an item id" in message
+    assert "socials-twitch" not in message and "example" not in message
+
+
+def test_a_visible_item_id_source_beside_a_kit_only_platform_source_loads(
+    tmp_path: Path,
+) -> None:
+    tail = (
+        "numbers:\n  sources:\n"
+        "    - {platform: twitch, kind: twitch, login: example, show_on_hub: false}\n"
+        "    - {platform: socials-bluesky, kind: bluesky, actor: a.example.com}\n"
+    )
+    config = kit_only(tmp_path, ITEM_ID_HEAD, tail)
+    assert config.numbers is not None and len(config.numbers.sources) == 2

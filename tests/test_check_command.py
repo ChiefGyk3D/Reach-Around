@@ -685,3 +685,65 @@ def test_a_future_date_is_an_error(
     data = with_platforms(plat("kick", count=5, as_of=days_ago(-5)))
     code, out = check(capsys, write(tmp_path, data))
     assert code == 2 and "future" in out and "kick" in out
+
+
+# --- kit-only count sources (#689) ------------------------------------------
+
+
+def kit_only_config(*, with_metric: bool) -> dict[str, Any]:
+    data = good()
+    data["features"] = {"kit_gate": False}
+    data["kit"] = {
+        "title": "Example kit",
+        "about": "A synthetic test kit.",
+        "metrics": [{"platform": "github", "label": "Followers", "source": "counts"}]
+        if with_metric
+        else [],
+    }
+    data["numbers"] = {
+        "sources": [
+            {
+                "platform": "github",
+                "kind": "github",
+                "user": SENTINEL,
+                "show_on_hub": False,
+            }
+        ]
+    }
+    return data
+
+
+def test_a_kit_only_count_source_passes_the_check(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    code, out = check(capsys, write(tmp_path, kit_only_config(with_metric=True)))
+    assert code == 0, out
+
+
+def test_a_kit_only_source_with_nothing_to_feed_says_fixed_words_only(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    code, out = check(capsys, write(tmp_path, kit_only_config(with_metric=False)))
+    assert code == 2, out
+    assert "has no kit number to feed" in out
+    assert "Fix: Add a kit metric with source: counts" in out
+    assert SENTINEL not in out and "github" not in out.lower()
+
+
+def test_a_kit_only_source_keyed_by_an_item_id_says_fixed_words_only(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    data = kit_only_config(with_metric=True)
+    data["tabs"][0]["blocks"].append(
+        {
+            "id": "socials",
+            "items": [
+                {"platform": "github", "handle": "@x", "url": "https://example.com/g"}
+            ],
+        }
+    )
+    data["numbers"]["sources"][0]["platform"] = "socials-github"
+    code, out = check(capsys, write(tmp_path, data))
+    assert code == 2, out
+    assert "is keyed by an item id" in out and "Fix: Key it by the platform" in out
+    assert SENTINEL not in out and "socials-github" not in out

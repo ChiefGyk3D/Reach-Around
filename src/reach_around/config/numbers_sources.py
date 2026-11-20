@@ -73,6 +73,10 @@ class _Source(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     platform: Platform
+    # true (default): a platforms item for this platform shows the count on the
+    # link hub. false: the count feeds only the media kit and the numbers file;
+    # the hub never prints it (#689).
+    show_on_hub: Annotated[bool, Field(strict=True)] = True
 
 
 class BlueskySource(_Source):

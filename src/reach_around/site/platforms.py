@@ -9,7 +9,12 @@ from datetime import date
 from reach_around.config.blocks import Platforms
 from reach_around.config.cutover import utc_today
 from reach_around.config.era import classify_era, era_text
-from reach_around.config.numbers import Numbers, resolve_count, stale_limit
+from reach_around.config.numbers import (
+    Numbers,
+    hub_hidden,
+    resolve_count,
+    stale_limit,
+)
 from reach_around.config.tablinks import is_tab_ref
 from reach_around.funnel.floor import FLOOR, UNDER_FLOOR, shown_count
 
@@ -55,10 +60,18 @@ def platform_rows(
     cutover = getattr(config, "cutover_date", None)
     utc_day = utc_today()
     for ident, entry in zip(block.item_ids, block.items, strict=True):
-        found = None if numbers is None else numbers.lookup(ident, entry.platform)
-        count, stamp = resolve_count(
-            entry.count, entry.as_of, found, today, stale_limit(config, entry.platform)
-        )
+        if hub_hidden(config, ident, entry.platform):
+            # A kit-only source: the hub shows the link and never the count.
+            count, stamp = None, None
+        else:
+            found = None if numbers is None else numbers.lookup(ident, entry.platform)
+            count, stamp = resolve_count(
+                entry.count,
+                entry.as_of,
+                found,
+                today,
+                stale_limit(config, entry.platform),
+            )
         rows.append(
             PlatformRow(
                 id=ident,

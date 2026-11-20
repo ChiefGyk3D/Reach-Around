@@ -287,6 +287,15 @@ VOCAB: dict[str, tuple[str, str]] = {
         "the platform name is not one Reach Around knows",
         f"Use a platform name from the platforms block; see {DOCS}.",
     ),
+    "kit_only_source": (
+        "a count source with show_on_hub: false has no kit number to feed",
+        "Add a kit metric with source: counts for the same platform, or remove "
+        "show_on_hub: false.",
+    ),
+    "kit_only_item_id": (
+        "a count source with show_on_hub: false is keyed by an item id",
+        "Key it by the platform name (such as twitch), the way the kit reads it.",
+    ),
     "robots": ("the robots setting is not allowed", f"See robots in {DOCS}."),
     # --- validators that look at the whole config
     "duplicate_id": (

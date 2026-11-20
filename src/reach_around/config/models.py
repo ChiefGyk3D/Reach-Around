@@ -602,18 +602,44 @@ class SiteConfig(_Model):
         if self.numbers is None:
             return self
         known: set[str] = set()
+        item_ids: set[str] = set()
+        slugs: set[str] = set()
         for tab in self.tabs:
             for block in tab.blocks:
                 if isinstance(block, Platforms):
                     known.update(block.item_ids)
+                    item_ids.update(block.item_ids)
+                    slugs.update(item.platform for item in block.items)
                     known.update(item.platform for item in block.items)
-        problems = [
-            f"numbers.sources[{i}].platform: {source.platform!r} matches no "
-            "platforms item (use an item's platform, such as 'github', or its "
-            "id, such as 'socials-github')"
-            for i, source in enumerate(self.numbers.sources)
-            if source.platform not in known
-        ]
+        kit_counts = (
+            {m.platform for m in self.kit.metrics if m.source == "counts"}
+            if self.kit is not None
+            else set()
+        )
+        problems = []
+        for i, source in enumerate(self.numbers.sources):
+            if source.show_on_hub:
+                if source.platform not in known:
+                    problems.append(
+                        f"numbers.sources[{i}].platform: {source.platform!r} "
+                        "matches no platforms item (use an item's platform, such "
+                        "as 'github', or its id, such as 'socials-github')"
+                    )
+            elif source.platform in item_ids and source.platform not in slugs:
+                # The kit reads a count by platform slug only, so a kit-only
+                # source cannot be keyed by one item's id. Fixed words.
+                problems.append(
+                    f"numbers.sources[{i}].platform: show_on_hub: false must be "
+                    "keyed by a platform, not an item id (the kit reads counts "
+                    "by platform)"
+                )
+            elif source.platform not in kit_counts:
+                # Fixed words, no value: a kit-only source feeds the kit alone.
+                problems.append(
+                    f"numbers.sources[{i}].platform: show_on_hub: false needs a "
+                    "kit metric with source: counts for the same platform "
+                    "(the source feeds only the kit)"
+                )
         if problems:
             raise ValueError("; ".join(problems))
         return self

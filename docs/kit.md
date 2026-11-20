@@ -81,6 +81,16 @@ kit:
   disclosure: An example statement about how paid work is marked.
 ```
 
+**Counts that stay off the link hub.** A `source: counts` metric reads the
+numbers file under its `platform`. The source that fills that entry may set
+`show_on_hub: false` in [`numbers.sources`](config.md#numbers): the daily
+`counts refresh` still fetches it, the kit prints it with the same dates,
+old-number warnings and era marks, and the link hub prints no chip and no count
+for it (owner decision: follower counts live in the kit, where the trust labels
+apply). Such a source does not need a platforms item, but it must have a
+`counts` metric here for its platform; without one the config is refused,
+because the number would be shown nowhere.
+
 ## What the build writes
 
 | File | Where | Who sees it |
