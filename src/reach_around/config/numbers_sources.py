@@ -55,6 +55,13 @@ CLIENT_SECRET_ENV = "TWITCH_CLIENT_SECRET"  # noqa: S105 (a variable NAME)
 USER_TOKEN_ENV = "TWITCH_USER_ACCESS_TOKEN"  # noqa: S105 (a variable NAME)
 REFRESH_TOKEN_ENV = "TWITCH_USER_REFRESH_TOKEN"  # noqa: S105 (a variable NAME)
 
+# Fixed credential variable names for YouTube Analytics (owner OAuth). ASSUMED
+# names: no vendor text names them; they are this project's choice. Names are
+# not configurable.
+YOUTUBE_OAUTH_CLIENT_ID_ENV = "YOUTUBE_OAUTH_CLIENT_ID"
+YOUTUBE_OAUTH_CLIENT_SECRET_ENV = "YOUTUBE_OAUTH_CLIENT_SECRET"  # noqa: S105 (a NAME)
+YOUTUBE_OAUTH_REFRESH_TOKEN_ENV = "YOUTUBE_OAUTH_REFRESH_TOKEN"  # noqa: S105 (a NAME)
+
 # Fixed credential variable names for TikTok. Names are not configurable.
 TIKTOK_ACCESS_ENV = "TIKTOK_ACCESS_TOKEN"  # noqa: S105 (a variable NAME)
 TIKTOK_REFRESH_ENV = "TIKTOK_REFRESH_TOKEN"  # noqa: S105 (a variable NAME)
@@ -154,6 +161,12 @@ class YoutubeSource(_Source):
     channel_id: str
     # Only the canonical name is accepted (the key may be left out).
     api_key_env: Literal["YOUTUBE_API_KEY"] = "YOUTUBE_API_KEY"  # noqa: S105
+    # Off by default. When true, also collect the owner's authorized YouTube
+    # Analytics figures (views, watch time, demographics) with OAuth credentials
+    # from fixed environment variables. PRIVATE: never shown publicly (#391).
+    # Removal of records past 30 days is NOT done here: it is the history
+    # tombstone tool (#586). Until that is merged the owner removes them by hand.
+    analytics: Annotated[bool, Field(strict=True)] = False
 
     @field_validator("channel_id")
     @classmethod
@@ -319,6 +332,22 @@ class NumbersConfig(BaseModel):
         # empty list is almost certainly a mistake.
         if "sources" in self.model_fields_set and not self.sources:
             raise ValueError("sources must list at least one source, or be left out")
+        return self
+
+    @model_validator(mode="after")
+    def _one_analytics_source(self) -> NumbersConfig:
+        # One run appends at most 200 history records; each analytics source can
+        # add 62, so at most one source may collect YouTube Analytics (#391).
+        count = sum(
+            1
+            for source in self.sources
+            if isinstance(source, YoutubeSource) and source.analytics is True
+        )
+        if count > 1:
+            raise ValueError(
+                "analytics: true is allowed on at most one youtube source "
+                f"(found {count})"
+            )
         return self
 
     @model_validator(mode="after")

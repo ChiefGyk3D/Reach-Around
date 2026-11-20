@@ -402,7 +402,13 @@ def test_collect_figures_carry_a_note_naming_window_and_formula() -> None:
 
 
 SRC_ROOT = Path(__file__).resolve().parents[1] / "src"
-BANNED = frozenset({"reach_around.counts.history", "reach_around.counts.insights"})
+BANNED = frozenset(
+    {
+        "reach_around.counts.history",
+        "reach_around.counts.insights",
+        "reach_around.counts.youtube_analytics",
+    }
+)
 PUBLIC_SIDE = ("site", "kit", "editor", "preview", "config", "editing")
 
 
@@ -514,7 +520,11 @@ def violations(root: Path) -> list[str]:
 
 def test_owner_report_only_metrics_never_reach_the_build_or_kit() -> None:
     """Boundary: public-side code cannot reach the history store, even through a
-    chain of other modules or a dynamic import. The figures live only there."""
+    chain of other modules or a dynamic import. The figures live only there.
+
+    This check is STATIC (it reads imports from the source text). It is defense
+    in depth; the runtime proof is the differential build test in
+    tests/test_youtube_analytics.py, which compares whole public output trees."""
     assert violations(SRC_ROOT) == []
 
 

@@ -20,10 +20,18 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
-from reach_around.config.numbers_sources import ThreadsSource, TiktokSource
-from reach_around.counts.history import MAX_VALUE
+from reach_around.config.numbers_sources import (
+    ThreadsSource,
+    TiktokSource,
+    YoutubeSource,
+)
+from reach_around.counts.history import ANALYTICS_PROVIDER, MAX_VALUE
 from reach_around.counts.meta_user import MetaError, threads_insights
 from reach_around.counts.tiktok_user import TiktokError, video_stats
+from reach_around.counts.youtube_analytics import (
+    YoutubeAnalyticsError,
+    collect_youtube,
+)
 from reach_around.net.fetch import FetchError
 
 Fetch = Callable[..., dict[str, object]]
@@ -53,6 +61,11 @@ METRICS: dict[tuple[str, str], str] = {
     ): "likes+replies+reposts+quotes totals; since/until sent, window vendor-defined",
 }
 OWNER_REPORT_ONLY = frozenset(name for _, name in METRICS)
+# YouTube Analytics (#391) is the owner's authorized data: private, never shown
+# publicly. Its figure names (views_1d, watch_minutes_1d, demo_*, geo_*) are
+# produced by youtube_analytics.py; its notes state each window and the folding
+# (which reduces noise and does not stop differencing across stored windows).
+
 
 _WORDS = frozenset(
     {
@@ -77,6 +90,9 @@ _WORDS = frozenset(
         "rate_limited",
         "server_error",
         "bad_host",
+        "no_data",
+        "bad_report",
+        "bad_row",
     }
 )
 
@@ -89,6 +105,11 @@ class Figure:
     metric: str
     value: int
     note: str
+    # A figure about a past UTC day carries that day; None means the run time.
+    as_of_utc: str | None = None
+    # Provenance, set by the collector that made the figure. It is never inferred
+    # from ``platform``, which is a display slug the owner may rename.
+    api_provider: str | None = None
 
 
 @dataclass(frozen=True)
@@ -104,6 +125,40 @@ def _word(exc: Exception) -> str:
     return "fetch_failed"
 
 
+def _youtube(
+    source: YoutubeSource,
+    ok_platforms: frozenset[str],
+    env: Mapping[str, str],
+    fetch: Fetch,
+    stamp: datetime,
+    figures: list[Figure],
+    failures: list[InsightFailure],
+) -> None:
+    """Private YouTube Analytics figures; opt-in by ``analytics: true``."""
+    if source.analytics is not True or source.platform not in ok_platforms:
+        return
+    try:
+        measures, words = collect_youtube(source, env, fetch, stamp.date())
+    except YoutubeAnalyticsError as exc:
+        failures.append(InsightFailure(source.platform, _word(exc)))
+        return
+    except Exception:
+        failures.append(InsightFailure(source.platform, "fetch_failed"))
+        return
+    failures.extend(InsightFailure(source.platform, word) for word in words)
+    figures.extend(
+        Figure(
+            source.platform,
+            m.metric,
+            m.value,
+            m.note,
+            m.as_of_utc,
+            ANALYTICS_PROVIDER,  # always, whatever the platform slug is
+        )
+        for m in measures
+    )
+
+
 def collect(
     sources: list[Any],
     ok_platforms: frozenset[str],
@@ -116,6 +171,9 @@ def collect(
     failures: list[InsightFailure] = []
     stamp = now.astimezone(UTC)
     for source in sources:
+        if isinstance(source, YoutubeSource):
+            _youtube(source, ok_platforms, env, fetch, stamp, figures, failures)
+            continue
         if not isinstance(source, TiktokSource | ThreadsSource):
             continue
         if getattr(source, "insights", False) is not True:

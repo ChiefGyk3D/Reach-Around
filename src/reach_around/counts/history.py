@@ -40,6 +40,11 @@ _LOCK_POLL = 0.02
 SOURCES = ("api", "hand_kept", "imported")
 TYPES = ("record", "correction")
 API_PROVIDERS = ("youtube_analytics", "youtube_data_api")
+# YouTube Analytics records (#391) are identified ONLY by this provider tag. One
+# rule everywhere: the report refuses it, and deletion, revocation and the
+# retention notice select it. No metric-name guessing.
+ANALYTICS_PROVIDER = "youtube_analytics"
+
 
 _SLUG = re.compile(r"^[a-z0-9][a-z0-9-]{0,39}$")
 _METRIC = re.compile(r"^[a-z][a-z0-9_]{0,39}$")
@@ -238,7 +243,7 @@ def _parse(data: bytes, now: datetime | None = None) -> tuple[tuple[Record, ...]
     if not data.endswith(b"\n"):
         raise HistoryError("the last line is truncated (no newline); not repaired")
     records: list[Record] = []
-    seen: set[tuple[str, str, str, str]] = set()
+    seen: dict[tuple[str, str, str, str], str | None] = {}  # key -> its provider
     days: set[tuple[str, str, str, str]] = set()
     expect = GENESIS
     for number, raw in enumerate(data[:-1].split(b"\n"), start=1):
@@ -250,10 +255,16 @@ def _parse(data: bytes, now: datetime | None = None) -> tuple[tuple[Record, ...]
                 raise HistoryError(f"line {number}: duplicate record")
             if record.day_key in days:
                 raise HistoryError(f"line {number}: a second record for that UTC day")
-            seen.add(record.key)
+            seen[record.key] = record.api_provider
             days.add(record.day_key)
         elif record.key not in seen:
             raise HistoryError(f"line {number}: a correction with no earlier record")
+        elif seen[record.key] != record.api_provider:
+            # A correction keeps the provenance of the record it fixes, so
+            # deletion, revocation and the notice still find its value.
+            raise HistoryError(
+                f"line {number}: a correction's api_provider must match its original"
+            )
         records.append(record)
         expect = _digest(raw)
     return tuple(records), expect

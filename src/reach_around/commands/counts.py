@@ -48,6 +48,8 @@ from reach_around.counts.files import (
     write_atomic,
 )
 from reach_around.counts.history import (
+    ANALYTICS_PROVIDER,
+    MAX_BATCH,
     HistoryError,
     Record,
     append_records,
@@ -81,6 +83,7 @@ from reach_around.counts.secret_sink import (
     TokenHolder,
     scope_lock,
 )
+from reach_around.counts.youtube_analytics import RETAIN_DAYS, deletion_candidates
 from reach_around.net.egress import Transport
 from reach_around.net.fetch import fetch_json
 
@@ -312,6 +315,36 @@ def _insights(
     return collect(list(sources), ok, environment, fetch, moment)
 
 
+def fit_batch(records: list[Record]) -> tuple[list[Record], list[str]]:
+    """The records to append, and the platforms whose analytics were left out.
+
+    Within ``MAX_BATCH`` nothing changes. Over it, every YouTube Analytics record
+    is dropped (never a subscriber or another source's record) and the platforms
+    that lost figures are named, so one too-large source fails alone."""
+    if len(records) <= MAX_BATCH:
+        return records, []
+    private = [r for r in records if r.api_provider == ANALYTICS_PROVIDER]
+    kept = [r for r in records if r.api_provider != ANALYTICS_PROVIDER]
+    return kept, sorted({r.platform for r in private})
+
+
+def _retention_notice(history: Path, stamp: datetime) -> None:
+    """Tell the owner, every run, how many YouTube Analytics records are past the
+    30-day rule. A count only, never a value. Removal is the history tombstone
+    tool (#586); this run changes nothing."""
+    try:
+        records = read_history(history).records
+    except HistoryError:
+        return  # a missing or damaged file is reported by the history work itself
+    count = len(deletion_candidates(list(records), stamp.astimezone(UTC).date()))
+    if count:
+        print(
+            f"youtube: retention notice: {count} analytics record(s) are past "
+            f"{RETAIN_DAYS} days; remove them with the history tombstone tool (#586)",
+            file=sys.stderr,
+        )
+
+
 def _cycle(
     paths: Paths,
     sources: list[Source],
@@ -380,8 +413,9 @@ def _cycle(
                 as_of_utc=utc_stamp(stamp),
                 source="api",
                 run_id=run_id,
+                # by the kind of source, never by its display slug
                 api_provider=(
-                    "youtube_data_api" if outcome.platform == "youtube" else None
+                    "youtube_data_api" if outcome.kind == "youtube" else None
                 ),
             )
             for outcome in outcomes
@@ -391,16 +425,21 @@ def _cycle(
                 platform=figure.platform,
                 metric=figure.metric,
                 value=figure.value,
-                as_of_utc=utc_stamp(stamp),
+                as_of_utc=figure.as_of_utc or utc_stamp(stamp),
                 source="api",
                 run_id=run_id,
                 note=figure.note,
-                api_provider=(
-                    "youtube_analytics" if figure.platform == "youtube" else None
-                ),
+                api_provider=figure.api_provider,
             )
             for figure in figures
         ]
+        # One append takes at most MAX_BATCH records. If the assembled batch is
+        # over it, only the analytics figures of this run are left out (they are
+        # reported as too_large); subscribers and other sources are never dropped.
+        fetched, too_big = fit_batch(fetched)
+        for platform in too_big:
+            print(f"{platform}: insights error (too_large)", file=sys.stderr)
+            insight_failures.append(InsightFailure(platform, "too_large"))
         try:
             kept = append_records(history, fetched, now=stamp, skip_days=True)
         except HistoryError as exc:
@@ -411,6 +450,8 @@ def _cycle(
             return EXIT_WRITE
         if kept < len(fetched):
             print("history: today's value was already recorded; kept as it is")
+    if history is not None:
+        _retention_notice(history, stamp)
     previous_status = load_status(paths.status)
     try:
         write_atomic(
@@ -492,6 +533,21 @@ def run_history_add(args: argparse.Namespace) -> int:
     except (ConfigError, ValueError, OSError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return EXIT_USAGE
+    provider: str | None = None
+    if args.correction:
+        # A correction keeps the provenance of the record it fixes (the history
+        # validator refuses any other). No original: left untagged, and the
+        # append then refuses it for having no earlier record.
+        try:
+            earlier = read_history(target).records
+        except HistoryError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return EXIT_WRITE
+        key = (args.platform, args.metric, _as_of(args.as_of), args.source)
+        provider = next(
+            (r.api_provider for r in earlier if r.type == "record" and r.key == key),
+            None,
+        )
     record = Record(
         platform=args.platform,
         metric=args.metric,
@@ -502,6 +558,7 @@ def run_history_add(args: argparse.Namespace) -> int:
         note=args.note,
         era=args.era,
         type="correction" if args.correction else "record",
+        api_provider=provider,
     )
     try:
         append_records(target, [record])

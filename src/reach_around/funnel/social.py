@@ -31,7 +31,14 @@ from typing import Any
 
 from reach_around.config.era import classify_era, classify_window
 from reach_around.config.zones import format_instant
-from reach_around.counts.history import History, Point, Record, Series, parse_as_of
+from reach_around.counts.history import (
+    ANALYTICS_PROVIDER,
+    History,
+    Point,
+    Record,
+    Series,
+    parse_as_of,
+)
 
 WINDOWS = (30, 90, 365)
 GAP_WINDOW_DAYS = 90
@@ -58,6 +65,10 @@ NOTES = (
 
 
 def _refused(record: Record) -> bool:
+    # YouTube Analytics is the owner's private authorized data. It is refused by
+    # its provider tag whatever the platform slug is. The tag is the only rule.
+    if record.api_provider == ANALYTICS_PROVIDER:
+        return True
     if record.source != "api" or not record.platform.startswith("youtube"):
         return False
     return not (
@@ -182,8 +193,19 @@ def build_social(
     """The report's social block from a validated history."""
     refused: dict[tuple[str, str], None] = {}
     groups: dict[tuple[bool, str, str], list[Record]] = {}
+    # An original and its corrections stand or fall together: a correction goes
+    # with its original (refused if the original is), and a correction with no
+    # original is dropped, so a series is never built from a correction alone.
+    originals = {r.key: r for r in history.records if r.type == "record"}
     for record in history.records:
-        if _refused(record):
+        if record.type != "record":
+            original = originals.get(record.key)
+            if original is None:
+                continue
+            if _refused(original):
+                refused[(record.platform, record.metric)] = None
+                continue
+        elif _refused(record):
             refused[(record.platform, record.metric)] = None
             continue
         collected = record.source != "imported"
