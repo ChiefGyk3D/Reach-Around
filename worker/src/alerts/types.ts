@@ -18,7 +18,8 @@ export type HealthCondition =
   | "view_budget_hit"
   | "alert_budget_near"
   | "click_ceiling_reached"
-  | "click_setup_invalid";
+  | "click_setup_invalid"
+  | "lead_cap_reached";
 
 export const HEALTH_CONDITIONS: readonly HealthCondition[] = [
   "rollup_overdue",
@@ -28,6 +29,7 @@ export const HEALTH_CONDITIONS: readonly HealthCondition[] = [
   "alert_budget_near",
   "click_ceiling_reached",
   "click_setup_invalid",
+  "lead_cap_reached",
 ];
 
 export type HealthState = "firing" | "cleared";

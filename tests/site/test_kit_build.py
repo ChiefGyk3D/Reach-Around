@@ -445,24 +445,68 @@ def test_gate_action_is_the_worker_route() -> None:
     assert GATE_ACTION == "/k/gate"
 
 
-def test_no_script_and_no_third_party_request_anywhere(tmp_path: Path) -> None:
+def test_scripts_and_third_party_requests_only_where_the_widget_is(
+    tmp_path: Path,
+) -> None:
     out, gated = build(tmp_path)
+    turnstile = "https://challenges.cloudflare.com/turnstile/v0/api.js"
     for path in (
         out / "kit" / "index.html",
         out / "kit" / "retry" / "index.html",
         gated / GATED_FILE,
     ):
         text = path.read_text(encoding="utf-8")
-        # The public page links the one same-origin display-zone script (#372);
-        # the retry and gated pages carry none.
-        expected = 1 if path == out / "kit" / "index.html" else 0
-        assert Page(text).scripts == expected, path
-        assert "challenges.cloudflare.com" not in text
+        # The public page links the one same-origin display-zone script (#372)
+        # plus the Turnstile script; the retry page carries only Turnstile's;
+        # the gated page carries none.
+        expected = {out / "kit" / "index.html": 2, out / "kit" / "retry" / "index.html": 1}
+        assert Page(text).scripts == expected.get(path, 0), path
+        assert (turnstile in text) == (path != gated / GATED_FILE), path
+        # the script is the only third-party reference, and is the vendor origin
+        assert text.count("challenges.cloudflare.com") == (
+            0 if path == gated / GATED_FILE else 1
+        ), path
         assert "style=" not in text and "onclick" not in text.lower()
     # The CSP allows the Turnstile origin on the two gate paths only (#257;
-    # tests/site/test_kit_csp.py pins which); no page loads it yet.
+    # tests/site/test_kit_csp.py pins which).
     headers = (out / "_headers").read_text(encoding="utf-8")
     assert headers.count("challenges.cloudflare.com") == 4
+
+
+def test_turnstile_script_tag_is_explicitly_deferred_and_has_no_inline_code(
+    tmp_path: Path,
+) -> None:
+    out, _ = build(tmp_path)
+    for rel in ("kit/index.html", "kit/retry/index.html"):
+        page = Page((out / rel).read_text(encoding="utf-8"))
+        (tag,) = [
+            a for a in page.find("script") if "challenges.cloudflare.com" in (a.get("src") or "")
+        ]
+        assert tag["src"] == "https://challenges.cloudflare.com/turnstile/v0/api.js"
+        assert "async" in tag and "defer" in tag
+        # one widget container the script renders, no inline script anywhere
+        assert all(a.get("src") for a in page.find("script"))
+
+
+def test_no_site_key_loads_no_turnstile_script(tmp_path: Path) -> None:
+    doc = gated_doc()
+    del doc["turnstile_site_key"]
+    out, _ = build(tmp_path, make_config(doc))
+    for rel in ("kit/index.html", "kit/retry/index.html"):
+        assert "challenges.cloudflare.com" not in (out / rel).read_text("utf-8")
+
+
+def test_form_fields_are_the_ones_the_worker_accepts(tmp_path: Path) -> None:
+    # worker/src/kit/input.ts accepts email, website and the widget's cf-turnstile-response;
+    # worker/test/kit/gate.test.ts posts exactly these three.
+    out, _ = build(tmp_path)
+    for rel in ("kit/index.html", "kit/retry/index.html"):
+        page = Page((out / rel).read_text(encoding="utf-8"))
+        names = {a["name"] for a in page.find("input")} - {"mode"}
+        assert names == {"email", "website"}
+        # the widget container the script fills with the third field
+        (widget,) = [a for a in page.find("div") if "cf-turnstile" in (a.get("class") or "")]
+        assert widget["data-action"] == "gate"
 
 
 def test_structured_demographic_charts_are_accessible_and_script_free(

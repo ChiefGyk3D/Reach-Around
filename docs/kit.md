@@ -183,7 +183,8 @@ storage, makes no request and adds no third-party script. It is one small
 same-origin file, `static/zone.js`, loaded with `defer` and covered by the
 existing CSP (`script-src 'self'`; no change). The menu is hidden until the
 script runs, so with JavaScript off the page is plain UTC. The gated page, the
-retry page and the PDF carry no script and stay UTC.
+retry page and the PDF carry no display-zone script and stay UTC (the kit and
+retry pages do load the Turnstile script, see below).
 There is no setting to turn it on: it is part of the public kit page.
 
 If the kit has gated content, the page explains the gate and shows the form.
@@ -197,13 +198,13 @@ The form is plain HTML that works with no script on your side. It has:
   never fills it; the Worker should treat any value as a bot;
 - an empty `div` with class `cf-turnstile` and `data-action="gate"`, the slot
   for the Turnstile widget. It carries `data-sitekey` when
-  `kit.turnstile_site_key` is set. The Turnstile response is added to the form by
-  Turnstile's own script as `cf-turnstile-response`.
+  `kit.turnstile_site_key` is set. Turnstile's own script, loaded on the kit and
+  retry pages only (below), renders the widget there and adds the response to the
+  form as `cf-turnstile-response`.
 
-There are no hidden fields. The form posts to a placeholder action
-(`/kit/retry/`) until the Worker route exists (D1, #263); a post there lands on
-the retry page, which is the fail-closed behavior. When the route ships, one
-constant (`GATE_ACTION` in `reach_around/site/kit.py`) becomes `/k/gate`.
+There are no hidden fields. The form posts to the Worker route `/k/gate`
+(`GATE_ACTION` in `reach_around/site/kit.py`); every refusal there sends the
+visitor to the retry page, which carries the same form.
 
 The page says plainly that the address is not checked and nothing is sent to it,
 and links to the privacy page, which lists what the gate collects and for how
@@ -223,9 +224,18 @@ No other path gets the Turnstile origin, and no `unsafe-*`, wildcard or `data:`
 source is added. The existing per-path exception for live-tab pages (their own
 `frame-src` for the player origins) is unchanged. The gated
 page (`kit.html`, served by the Worker) is not part of `_headers`; the Worker
-sets its headers. This change only allows the origin. The page does not load
-Turnstile's script yet, so the build still makes no third-party request and the
-widget slot stays empty until that script tag lands.
+sets its headers.
+
+**The Turnstile script.** The two gate pages carry one tag,
+`<script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer>`,
+only when `kit.turnstile_site_key` is set. It uses Turnstile's implicit rendering:
+the script finds the `cf-turnstile` container (site key and action) and adds the
+response field to the form, so the site needs no script of its own for it and no
+inline code, and the policy above is all it needs. No other page, and not the
+gated page, loads it. A test pins that the page names exactly that origin, that
+the same origin is in the page's policy, and that no other page changes.
+Turnstile is third-party code outside this repository, so the measured scores in
+[performance.md](performance.md) do not include it.
 
 ### Retry page
 
@@ -589,26 +599,46 @@ form posts to `/k/gate`. They ship off at the cutover (`features.kit_gate`).
 
 - **Every refusal is the same answer** (a 303 to `/kit/retry/`, no body, no
   cookie): wrong origin, content type, size, user agent, address, limiter,
-  budget, Turnstile, lead cap. A refused view goes to `/kit/`. Nothing before
-  the hourly route budget writes to the database.
-- **Accepted residual.** At the lead cap (`MAX_LEADS`), a client that has
-  already passed Turnstile can tell whether an address is a stored lead: a
-  known address unlocks, a new one gets the usual refusal. Stored leads are not
-  evicted to hide this, and a test pins the behavior.
+  budget, Turnstile. A refused view goes to `/kit/`, including when the page
+  itself is missing or the store fails: only the closed-vocabulary log says
+  which. Nothing before a passed Turnstile check writes to the database.
+- **At the lead cap the answer does not change.** Once `MAX_LEADS` leads are
+  stored, or the per-day new-lead cap (100 a day, a constant in
+  `worker/src/kit/gate.ts`) is spent, a new address is unlocked exactly like a
+  known one but is not stored, so the visitor cannot tell the two apart and
+  invented addresses cannot lock real visitors out. The cookie carries an id
+  that looks like a lead id and is marked by a keyed tag only the Worker can
+  compute (`worker/src/kit/unstored.ts`). **What you lose at the cap:** those
+  addresses are not stored (and so not counted, not purged, not in any export)
+  until old leads age out; the unlock alert still reaches your alert sink, and
+  the closed health alert `lead_cap_reached` (docs/alerts.md) tells you once a
+  day while it is happening. Existing leads behave as before.
 - **Single use.** Turnstile alone is not replay protection (a replay can briefly
-  succeed), so a passed token is also claimed once in the `counters` table and
-  looked up for today and yesterday. These rows and the hourly route counters
-  are purged after two days by the hourly job (one query, last in the run).
-- **Limits.** `GATE_LIMITER` gives each client its own allowance for the gate
-  and another for the view; the documented value is 1 per 60 seconds, well
-  under the hourly budgets. A client over its allowance spends no budget.
+  succeed), so a passed token is also claimed once in the `counters` table, in
+  the bucket of the UTC day of the vendor's `challenge_ts`, which is the same
+  whenever the token is replayed, so the claim holds across midnight and
+  concurrent requests race on one row. A pass with no usable `challenge_ts`, or
+  one more than 10 minutes from the Worker's clock, is refused. These rows and
+  the hourly route counters are purged after two days by the hourly job (one
+  query, last in the run).
+- **Limits, in the order a request meets them.** (1) `GATE_LIMITER`: each client
+  has its own allowance for the gate and another for the view; documented value
+  1 per 60 seconds, well under the hourly budgets. (2) `GATE_CHECK_LIMITER`: one
+  global allowance on requests about to reach Turnstile, 20 per 60 seconds
+  documented (about 1200 an hour), a binding with no database write; it caps
+  vendor calls. (3) `ROUTE_BUDGET_GATE` (default 150 an hour) is charged only
+  after the body parsed and Turnstile passed, so junk posts cannot spend it.
+  A client over its allowance spends no budget. Both bindings are required; if
+  one is missing the gate refuses. A rate rule at the edge (issue #613) is the
+  other layer in front of all of these.
 - **Other `/k/` paths** keep the Worker's every-path-204 answer. The plan's
   table said 404; this is an intentional difference.
 - **Session floor.** `leads.session_floor_ts` is in milliseconds (plan 3 Task 15
   says seconds; that is superseded, and migration 0009 is not edited). Only
-  `setSessionFloor` in `worker/src/kit/leads.ts` writes it. A cookie issued in a
-  second at or before the floor's second stops working; a lead that passes the
-  gate again gets a new cookie.
+  `setSessionFloor` in `worker/src/kit/leads.ts` writes it (and
+  `setUnstoredSessionFloor` writes the one kit-wide floor for unlocks that stored
+  no lead). A cookie issued in a second at or before the floor's second stops
+  working; a lead that passes the gate again gets a new cookie.
 - **Privacy.** The unlock alert carries the visitor's address to the configured
   alert sink. The privacy wording for the gate must be published before the
   gate is turned on.
@@ -621,6 +651,7 @@ form posts to `/k/gate`. They ship off at the cutover (`features.kit_gate`).
   `th scope`, a hidden caption, and `time` elements for dates.
 - Text, borders and buttons read the same `--ra-*` color tokens as the rest of
   the site, so your theme's contrast choices apply. Targets are at least 44 px.
-- No inline script, no inline style, no event attributes, no third-party
-  request, no cookie set by the static pages. The privacy page (generated from
+- No inline script, no inline style, no event attributes, no cookie set by the
+  static pages, and no third-party request except Turnstile's script on the kit
+  and retry pages when a site key is set. The privacy page (generated from
   `features.kit_gate`) covers what the Worker collects once the gate is live.

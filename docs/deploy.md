@@ -292,9 +292,9 @@ All values are plain decimal integers (digits only, no sign, space, exponent or 
 
 | Variable | Range | Default | Meaning |
 |---|---|---|---|
-| `ROUTE_BUDGET_GATE` | 0 to 100000 | 150 | Gate requests per UTC hour |
+| `ROUTE_BUDGET_GATE` | 0 to 100000 | 150 | Gate unlocks per UTC hour, charged only after the body parsed and Turnstile passed. Requests that only reach Turnstile are capped by the `GATE_CHECK_LIMITER` binding (20 per 60 seconds documented in `wrangler.toml`; no database write) |
 | `ROUTE_BUDGET_VIEW` | 0 to 100000 | 300 | Gated-page views per UTC hour |
-| `MAX_LEADS` | 1 to 50000 | 5000 | Stored leads; at the cap a new address is refused, a known one still works |
+| `MAX_LEADS` | 1 to 50000 | 5000 | Stored leads; at the cap a new visitor is still unlocked but not stored (the answer is the same as for a known address), a known one is refreshed. See the gate routes in kit.md |
 | `MAX_KIT_EVENTS` | 1 to 500000 | 50000 | Stored kit events; at the cap events are skipped |
 | `DAILY_ALERT_BUDGET` | 0 to 1000 | 20 | Owner alerts per UTC day |
 | `DAILY_SEND_BUDGET` | 0 to 1000 | 0 | Emails per UTC day (0: none; the send route is not in v1) |

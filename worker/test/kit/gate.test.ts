@@ -3,7 +3,7 @@ import { env as testEnv } from "cloudflare:workers";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createDispatcher } from "../../src/alerts/dispatcher";
 import { GATED_KV_KEY, GATE_ROUTE, VIEW_ROUTE, handleGate, type GateEnv } from "../../src/kit/gate";
-import { setSessionFloor } from "../../src/kit/leads";
+import { setSessionFloor, setUnstoredSessionFloor } from "../../src/kit/leads";
 import { COOKIE_NAME, signToken } from "../../src/kit/token";
 import { resetEventCapCache } from "../../src/kit/budgets";
 import worker from "../../src/index";
@@ -22,7 +22,13 @@ interface Fake {
   fn: typeof fetch;
 }
 /** Fake network: siteverify approves only the token "ok" (every time, like an eventually consistent replay); Discord takes anything. */
-function fake(opts: { siteverify?: "ok" | "throw" | "wrong-host" | "wrong-action" | "error-code" | "500" } = {}): Fake {
+function fake(
+  opts: {
+    siteverify?: "ok" | "throw" | "wrong-host" | "wrong-action" | "error-code" | "500";
+    /** The vendor's challenge time in ms (default T0); "missing" omits it, "garbage" sends text that is not a time. */
+    challenge?: number | "missing" | "garbage";
+  } = {},
+): Fake {
   const calls: Fake["calls"] = [];
   const fn = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
     const u = String(url);
@@ -34,6 +40,9 @@ function fake(opts: { siteverify?: "ok" | "throw" | "wrong-host" | "wrong-action
       if (mode === "500") return new Response("{}", { status: 500 });
       const good = new URLSearchParams(body).get("response")?.startsWith("ok") === true;
       const r: Record<string, unknown> = { success: good, hostname: HOST, action: "gate", "error-codes": good ? [] : ["invalid-input-response"] };
+      const ch = opts.challenge ?? T0;
+      if (ch === "garbage") r.challenge_ts = "not a time";
+      else if (ch !== "missing") r.challenge_ts = new Date(ch).toISOString();
       if (mode === "wrong-host") r.hostname = "evil.example";
       if (mode === "wrong-action") r.action = "send";
       if (mode === "error-code") r["error-codes"] = ["timeout-or-duplicate"];
@@ -69,11 +78,12 @@ function baseEnv(over: Record<string, unknown> = {}): GateEnv {
     SITE_HOST: HOST,
     KIT: kv(),
     GATE_LIMITER: limiter(),
+    GATE_CHECK_LIMITER: limiter(),
     TOKEN_HMAC_KEY: KEY,
     TURNSTILE_SECRET: "1x0000000000000000000000000000000AA",
     VIEW_HASH_SECRET: btoa("s".repeat(40)),
     ALERT_DEDUP_KEY: "d".repeat(40),
-    ALERTS_CONFIG: JSON.stringify({ channels: ["discord"], events: ["kit_unlocked"] }),
+    ALERTS_CONFIG: JSON.stringify({ channels: ["discord"], events: ["kit_unlocked", "analytics_health"] }),
     ALERT_DISCORD_WEBHOOK: HOOK,
     ...over,
   } as unknown as GateEnv;
@@ -106,9 +116,9 @@ function req(o: Opts = {}): Request {
 }
 
 const pending: Promise<unknown>[] = [];
-async function post(o: Opts = {}, e: GateEnv = baseEnv(), f: Fake = fake(), nowMs = T0) {
+async function post(o: Opts = {}, e: GateEnv = baseEnv(), f: Fake = fake(), nowMs = T0, extra: { newLeadsPerDay?: number } = {}) {
   const ctx = { waitUntil: (p: Promise<unknown>) => void pending.push(p) };
-  const res = await handleGate(req(o), e, { fetchFn: f.fn, nowMs, notify: createDispatcher().notify, ctx });
+  const res = await handleGate(req(o), e, { fetchFn: f.fn, nowMs, notify: createDispatcher().notify, ctx, ...extra });
   await Promise.all(pending.splice(0));
   return { res, f };
 }
@@ -130,6 +140,7 @@ beforeEach(async () => {
     testEnv.DB.prepare("DELETE FROM kit_events"),
     testEnv.DB.prepare("DELETE FROM leads"),
     testEnv.DB.prepare("DELETE FROM counters"),
+    testEnv.DB.prepare("DELETE FROM kit_meta"),
     testEnv.DB.prepare("DELETE FROM alert_quota"),
     testEnv.DB.prepare("DELETE FROM alert_dedup"),
   ]);
@@ -230,7 +241,12 @@ const FAILURES: { name: string; opts?: Opts; env?: () => GateEnv; f?: () => Fake
   { name: "no client address", opts: { headers: { "cf-connecting-ip": null } } },
   { name: "route budget is zero", env: () => baseEnv({ ROUTE_BUDGET_GATE: "0" }) },
   { name: "invalid budget configuration", env: () => baseEnv({ ROUTE_BUDGET_GATE: "lots" }) },
-  { name: "lead cap is full", env: () => baseEnv({ MAX_LEADS: "1" }) },
+  { name: "check ceiling says no", env: () => baseEnv({ GATE_CHECK_LIMITER: limiter(false) }) },
+  { name: "missing check limiter binding", env: () => baseEnv({ GATE_CHECK_LIMITER: undefined }) },
+  { name: "challenge time missing", f: () => fake({ challenge: "missing" }) },
+  { name: "challenge time garbage", f: () => fake({ challenge: "garbage" }) },
+  { name: "challenge time far in the past", f: () => fake({ challenge: T0 - 3_600_000 }) },
+  { name: "challenge time far in the future", f: () => fake({ challenge: T0 + 3_600_000 }) },
   { name: "signing key too short", env: () => baseEnv({ TOKEN_HMAC_KEY: "k".repeat(31) }) },
   { name: "missing Turnstile secret", env: () => baseEnv({ TURNSTILE_SECRET: "" }) },
   { name: "missing KIT binding", env: () => baseEnv({ KIT: undefined }) },
@@ -241,11 +257,6 @@ const FAILURES: { name: string; opts?: Opts; env?: () => GateEnv; f?: () => Fake
 describe("gate routes: refusals, limits and session rules", () => {
   for (const c of FAILURES) {
     it(c.name, async () => {
-      if (c.name === "lead cap is full") {
-        await testEnv.DB.prepare("INSERT INTO leads (id, email, created_ts, last_seen_ts, source) VALUES (?, ?, 1, 1, 'gate')")
-          .bind("a".repeat(32), "other@example.com")
-          .run();
-      }
       const before = await count("leads");
       const f = c.f?.() ?? fake();
       const { res } = await post(c.opts ?? {}, c.env?.() ?? baseEnv(), f);
@@ -295,11 +306,70 @@ describe("gate routes: refusals, limits and session rules", () => {
     expect(await count("leads")).toBe(1);
   });
 
-  it("the hourly route budget stops a flood after N posts and then writes nothing more", async () => {
+  // Two budgets: a global ceiling before Turnstile (binding, no D1 write) and the small business budget
+  // charged only after the body parsed and Turnstile passed.
+  const fromIp = (n: number) => ({ "cf-connecting-ip": `203.0.113.${n}` });
+  const junk = (i: number): Opts => ({ headers: fromIp(20 + i), fields: { email: `j${i}@example.com`, "cf-turnstile-response": "bad" + i } });
+
+  it("junk posts from many addresses cannot spend the business budget; a real visitor still unlocks", async () => {
     const e = baseEnv({ ROUTE_BUDGET_GATE: "2" });
-    for (let i = 0; i < 4; i++) await post({ fields: { email: EMAIL, "cf-turnstile-response": "bad" + i } }, e);
+    for (let i = 0; i < 8; i++) {
+      const { res } = await post(junk(i), e);
+      expect(res.headers.get("set-cookie")).toBeNull();
+    }
+    const spent = await testEnv.DB.prepare("SELECT count FROM counters WHERE key = 'route-gate'").first<{ count: number }>();
+    expect(spent).toBeNull();
+    const real = await post({ headers: fromIp(99), fields: { email: "real@example.com", "cf-turnstile-response": "ok1" } }, e);
+    expect(real.res.headers.get("set-cookie")).not.toBeNull();
     const row = await testEnv.DB.prepare("SELECT count FROM counters WHERE key = 'route-gate'").first<{ count: number }>();
-    expect(row!.count).toBe(2);
+    expect(row!.count).toBe(1);
+  });
+
+  it("verified visitors do spend the business budget, and over it they are refused", async () => {
+    const e = baseEnv({ ROUTE_BUDGET_GATE: "2" });
+    const ok = (i: number): Opts => ({ headers: fromIp(40 + i), fields: { email: `v${i}@example.com`, "cf-turnstile-response": "ok" + i } });
+    expect((await post(ok(1), e)).res.headers.get("set-cookie")).not.toBeNull();
+    expect((await post(ok(2), e)).res.headers.get("set-cookie")).not.toBeNull();
+    const third = await post(ok(3), e);
+    expect(third.res.headers.get("location")).toBe("/kit/retry/");
+    expect(third.res.headers.get("set-cookie")).toBeNull();
+    expect(await count("leads")).toBe(2);
+  });
+
+  it("the global check ceiling caps the calls that reach Turnstile, and writes nothing to D1", async () => {
+    // One global allowance of 3 across every client key, like the real binding's single key.
+    const all = new Map<string, number>();
+    const ceiling: Limiter = {
+      keys: [],
+      async limit(o) {
+        const n = (all.get(o.key) ?? 0) + 1;
+        all.set(o.key, n);
+        return { success: n <= 3 };
+      },
+    };
+    const f = fake();
+    const e = baseEnv({ GATE_CHECK_LIMITER: ceiling });
+    for (let i = 0; i < 10; i++) await post(junk(i), e, f);
+    expect(f.calls.filter((c) => c.url.includes("siteverify"))).toHaveLength(3);
+    expect(await count("counters")).toBe(0);
+    expect(all.size).toBe(1); // one shared key, not one per client
+  });
+
+  it("a request refused before Turnstile (bad body) does not use the check ceiling", async () => {
+    const ceiling = limiter();
+    await post({ fields: { email: "not-an-email", "cf-turnstile-response": "ok" } }, baseEnv({ GATE_CHECK_LIMITER: ceiling }));
+    await post({ fields: { email: EMAIL } }, baseEnv({ GATE_CHECK_LIMITER: ceiling }));
+    expect(ceiling.keys).toHaveLength(0);
+  });
+
+  it("a browser-shaped submission (all three fields, honeypot empty) reaches the unlock path", async () => {
+    // The built form posts email and an empty website field; the Turnstile script adds cf-turnstile-response.
+    const body = `email=${encodeURIComponent(EMAIL)}&website=&cf-turnstile-response=ok`;
+    const { res } = await post({ fields: body });
+    expect(res.status).toBe(303);
+    expect(res.headers.get("location")).toBe("/k/view");
+    expect(res.headers.get("set-cookie")).not.toBeNull();
+    expect(await count("leads")).toBe(1);
   });
 
   // Design (plan 3, Task 15): a session floor only invalidates cookies issued before it. A fresh
@@ -425,17 +495,35 @@ describe("GET /k/view (gated content)", () => {
     }
   });
 
-  it("an empty KV key is a 404 with no body", async () => {
+  // A missing or failing page answers exactly like every other refusal, so an outage cannot tell a
+  // visitor whether a cookie was valid. Only the closed-vocabulary log tells the cause.
+  it("an empty KV key gets the same fixed redirect as an invalid cookie", async () => {
     await seedLead();
-    const res = await view({ cookie: await unlockCookieFor() }, baseEnv({ KIT: kv(null) }));
-    expect(res.status).toBe(404);
-    expect(await res.text()).toBe("");
+    const missing = await view({ cookie: await unlockCookieFor() }, baseEnv({ KIT: kv(null) }));
+    const invalid = await view({ cookie: null });
+    expect(missing.status).toBe(303);
+    expect(missing.headers.get("location")).toBe("/kit/");
+    expect(await shape(missing)).toBe(await shape(invalid));
   });
 
-  it("a failing KV read is a 404, not an error page", async () => {
+  it("a failing KV read gets the same fixed redirect, and the log names the class only", async () => {
     await seedLead();
-    const broken = { get: vi.fn(async () => { throw new Error("kv down"); }) };
-    expect((await view({ cookie: await unlockCookieFor() }, baseEnv({ KIT: broken }))).status).toBe(404);
+    const spy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    // The shared logger caps lines per minute; move the clock past the window so this line is not dropped.
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(Date.now() + 10 * 60_000);
+    try {
+      const broken = { get: vi.fn(async () => { throw new Error("kv down"); }) };
+      const res = await view({ cookie: await unlockCookieFor() }, baseEnv({ KIT: broken }));
+      expect(res.status).toBe(303);
+      expect(await shape(res)).toBe(await shape(await view({ cookie: null })));
+      const lines = spy.mock.calls.flat().map(String);
+      expect(lines.some((l) => l.includes('"r":"provider"'))).toBe(true);
+      expect(lines.join("\n")).not.toContain("kv down");
+    } finally {
+      vi.useRealTimers();
+      spy.mockRestore();
+    }
   });
 
   it("the view budget refuses when spent, and a refusal still gives the same redirect", async () => {
@@ -511,7 +599,7 @@ describe("per-client limits do not spend shared budgets", () => {
     const e = baseEnv({ GATE_LIMITER: lim });
     const a = { headers: { "cf-connecting-ip": "203.0.113.10" } };
     const b = { headers: { "cf-connecting-ip": "203.0.113.11" } };
-    for (let i = 0; i < 6; i++) await post({ ...a, fields: { email: EMAIL, "cf-turnstile-response": "bad" + i } }, e);
+    for (let i = 0; i < 6; i++) await post({ ...a, fields: { email: `a${i}@example.com`, "cf-turnstile-response": "ok" + i } }, e);
     const spent = await testEnv.DB.prepare("SELECT count FROM counters WHERE key = 'route-gate'").first<{ count: number }>();
     expect(spent!.count).toBe(1); // only A's first request got past its limiter
     const other = await post({ ...b, fields: { email: "b@example.com", "cf-turnstile-response": "ok" } }, e);
@@ -550,37 +638,135 @@ describe("per-client limits do not spend shared budgets", () => {
   });
 });
 
-describe("lead cap (accepted residual)", () => {
-  // At the lead cap a client that already passed Turnstile can infer whether an address is a stored
-  // lead: a known address is refreshed and unlocked, a new one gets the usual refusal. The cap does
-  // not evict stored leads to hide this. This test pins the behavior so it cannot get worse silently:
-  // it must stay a single yes or no, and the refusal must stay identical to every other refusal.
-  it("known address unlocks, new address gets the standard refusal, nothing else differs", async () => {
+/** The response with the cookie's token masked: what two visitors could compare byte for byte. */
+async function shape(res: Response): Promise<string> {
+  const headers = [...res.headers].map(([k, v]) => [k, k === "set-cookie" ? v.replace(/=[^;]+/, "=<token>") : v]).sort();
+  return JSON.stringify([res.status, headers, await res.text()]);
+}
+function payloadOf(res: Response): { lid: string } {
+  const token = setCookie(res)!.split("=")[1]!.split(";")[0]!;
+  const b64 = token.split(".")[1]!.replace(/-/g, "+").replace(/_/g, "/");
+  return JSON.parse(atob(b64)) as { lid: string };
+}
+
+describe("lead cap: the answer does not depend on whether the address is stored", () => {
+  async function atCap(): Promise<GateEnv> {
     await testEnv.DB.prepare("INSERT INTO leads (id, email, created_ts, last_seen_ts, source) VALUES (?, ?, 1, 1, 'gate')")
       .bind("e".repeat(32), EMAIL)
       .run();
-    const e = baseEnv({ MAX_LEADS: "1" });
+    return baseEnv({ MAX_LEADS: "1" });
+  }
+
+  it("known and unknown addresses get a byte-identical response, and only the known one is stored", async () => {
+    const e = await atCap();
     const known = await post({}, e);
-    expect(known.res.headers.get("set-cookie")).not.toBeNull();
     const fresh = await post({ fields: { email: "new@example.com", "cf-turnstile-response": "ok2" } }, e);
-    expect(fresh.res.status).toBe(303);
-    expect(fresh.res.headers.get("location")).toBe("/kit/retry/");
-    expect(fresh.res.headers.get("set-cookie")).toBeNull();
-    expect(await fresh.res.text()).toBe("");
+    expect(await shape(fresh.res)).toBe(await shape(known.res));
+    expect(fresh.res.headers.get("location")).toBe("/k/view");
+    expect(await count("leads")).toBe(1);
+    expect(await count("kit_events")).toBe(1); // only the stored lead has an unlock event
+    // the visitor-readable id has the same form either way
+    expect(payloadOf(known.res).lid).toMatch(/^[0-9a-f]{32}$/);
+    expect(payloadOf(fresh.res).lid).toMatch(/^[0-9a-f]{32}$/);
+  });
+
+  it("an unstored unlock opens /k/view like any other", async () => {
+    const e = await atCap();
+    const fresh = await post({ fields: { email: "new@example.com", "cf-turnstile-response": "ok2" } }, e);
+    const res = await view({ cookie: cookieHeader(fresh.res) }, e);
+    expect(res.status).toBe(200);
+    expect(await res.text()).toContain(CANARY);
+  });
+
+  it("the unstored session floor ends earlier unstored cookies and a later unlock works", async () => {
+    const e = await atCap();
+    const fresh = await post({ fields: { email: "new@example.com", "cf-turnstile-response": "ok2" } }, e);
+    await setUnstoredSessionFloor(testEnv.DB, T0);
+    expect((await view({ cookie: cookieHeader(fresh.res) }, e)).status).toBe(303);
+    const later = await post({ fields: { email: "new@example.com", "cf-turnstile-response": "ok3" } }, e, fake(), T0 + 5000);
+    const res = await handleGate(req({ method: "GET", path: VIEW_ROUTE, cookie: cookieHeader(later.res) }), e, { nowMs: T0 + 5000 });
+    expect(res.status).toBe(200);
+  });
+
+  it("an id that merely looks like a lead id, with no lead row and no valid tag, is refused", async () => {
+    const e = await atCap();
+    expect((await view({ cookie: await unlockCookieFor({ lid: "f".repeat(32) }) }, e)).status).toBe(303);
+  });
+
+  it("the daily new-lead cap behaves the same way: unlocked, not stored, known leads still refreshed", async () => {
+    const e = baseEnv();
+    const extra = { newLeadsPerDay: 2 };
+    const ok = (i: number): Opts => ({ headers: { "cf-connecting-ip": `203.0.113.${60 + i}` }, fields: { email: `n${i}@example.com`, "cf-turnstile-response": "ok" + i } });
+    const a = await post(ok(1), e, fake(), T0, extra);
+    const b = await post(ok(2), e, fake(), T0, extra);
+    const c = await post(ok(3), e, fake(), T0, extra);
+    expect(await count("leads")).toBe(2);
+    expect(await shape(c.res)).toBe(await shape(a.res));
+    expect(await shape(b.res)).toBe(await shape(a.res));
+    // a known address is refreshed even after the daily cap, and the next day stores again
+    const again = await post({ ...ok(1), fields: { email: "n1@example.com", "cf-turnstile-response": "ok4" } }, e, fake(), T0, extra);
+    expect(again.res.headers.get("set-cookie")).not.toBeNull();
+    expect(await count("leads")).toBe(2);
+    const nextDay = T0 + 86_400_000;
+    await post(ok(5), e, fake({ challenge: nextDay }), nextDay, extra);
+    expect(await count("leads")).toBe(3);
+  });
+
+  it("tells the owner once a day, in closed words, that the cap was reached; the address is not stored", async () => {
+    const e = await atCap();
+    const f = fake();
+    await post({ headers: { "cf-connecting-ip": "203.0.113.70" }, fields: { email: "x1@example.com", "cf-turnstile-response": "ok7" } }, e, f);
+    await post({ headers: { "cf-connecting-ip": "203.0.113.71" }, fields: { email: "x2@example.com", "cf-turnstile-response": "ok8" } }, e, f);
+    const hooks = f.calls.filter((c) => c.url.startsWith("https://discord.com/"));
+    const capped = hooks.filter((c) => c.body.includes("lead limit"));
+    expect(capped).toHaveLength(1);
+    expect(capped[0]!.body).not.toContain("x1@");
+    expect(await count("leads")).toBe(1);
+  });
+
+  it("a stored lead keeps its behavior: a known address under the cap is stored once and refreshed", async () => {
+    const e = baseEnv();
+    await post({}, e);
+    await post({ fields: { email: EMAIL, "cf-turnstile-response": "ok2" } }, e);
     expect(await count("leads")).toBe(1);
   });
 });
 
 describe("Turnstile single use across UTC midnight", () => {
+  // The claim bucket is the UTC day of the vendor's challenge time, the same for every answer about one
+  // token, so the clock at the moment of the replay does not matter.
+  const solved = Date.UTC(2026, 10, 9, 23, 59, 40);
+  const before = Date.UTC(2026, 10, 9, 23, 59, 50);
+  const after = Date.UTC(2026, 10, 10, 0, 0, 10);
+
   it("a token passed just before midnight is refused just after it", async () => {
-    const before = Date.UTC(2026, 10, 9, 23, 59, 50);
-    const after = Date.UTC(2026, 10, 10, 0, 0, 10);
-    const one = await post({}, baseEnv(), fake(), before);
+    const one = await post({}, baseEnv(), fake({ challenge: solved }), before);
     expect(one.res.headers.get("set-cookie")).not.toBeNull();
-    const two = await post({ fields: { email: "other@example.com", "cf-turnstile-response": "ok" } }, baseEnv(), fake(), after);
+    const two = await post({ fields: { email: "other@example.com", "cf-turnstile-response": "ok" } }, baseEnv(), fake({ challenge: solved }), after);
     expect(two.res.headers.get("location")).toBe("/kit/retry/");
     expect(two.res.headers.get("set-cookie")).toBeNull();
     expect(await count("leads")).toBe(1);
+  });
+
+  it("two concurrent requests with one token, one on each side of midnight, unlock exactly one", async () => {
+    const run = (email: string, ip: string, at: number) =>
+      handleGate(req({ headers: { "cf-connecting-ip": ip }, fields: { email, "cf-turnstile-response": "ok" } }), baseEnv(), {
+        fetchFn: fake({ challenge: solved }).fn,
+        nowMs: at,
+        notify: createDispatcher().notify,
+      });
+    const results = await Promise.all([
+      run("a@example.com", "203.0.113.31", Date.UTC(2026, 10, 9, 23, 59, 59, 900)),
+      run("b@example.com", "203.0.113.32", Date.UTC(2026, 10, 10, 0, 0, 0, 100)),
+    ]);
+    expect(results.filter((r) => r.headers.get("set-cookie") !== null)).toHaveLength(1);
+    expect(await count("leads")).toBe(1);
+  });
+
+  it("the claim is one row, in the bucket of the challenge day", async () => {
+    await post({}, baseEnv(), fake({ challenge: solved }), before);
+    const rows = await testEnv.DB.prepare("SELECT day FROM counters WHERE key LIKE 'ts-%'").all<{ day: string }>();
+    expect(rows.results.map((r) => r.day)).toEqual(["2026-11-09"]);
   });
 });
 

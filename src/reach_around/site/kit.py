@@ -83,6 +83,12 @@ GUARD_MIN_LENGTH = 6
 # origin and nothing for ``connect-src`` (verified). ``connect-src`` stays
 # ``'self'``: add the origin there only if a browser run names a violation.
 TURNSTILE_ORIGIN = "https://challenges.cloudflare.com"
+# The client script, loaded with implicit rendering: it finds the ``cf-turnstile``
+# container (with its site key and action) and adds the ``cf-turnstile-response``
+# field to the enclosing form. Implicit rendering needs no script of our own and no
+# inline code, so the policy needs nothing beyond the origin above. Only the gate
+# pages carry the tag, and only when a site key is set.
+TURNSTILE_SCRIPT = f"{TURNSTILE_ORIGIN}/turnstile/v0/api.js"
 # The pages that render the widget, as ``_headers`` paths. Exact paths, no
 # splat: nothing else under /kit/ and no other page is relaxed.
 GATE_PATHS = ("/kit/", "/kit/retry/")
@@ -876,6 +882,7 @@ def render_kit(
         form = {
             "action": GATE_ACTION,
             "site_key": kit.turnstile_site_key,
+            "script": TURNSTILE_SCRIPT,
             "categories": _categories(kit),
         }
     pages: dict[Path, str] = {}

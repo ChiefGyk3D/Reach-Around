@@ -151,6 +151,11 @@ crons = ["5 * * * *"]
 # allowance are independent). Keep it well under the hourly budgets (ROUTE_BUDGET_GATE 150,
 # ROUTE_BUDGET_VIEW 300): one request per client per 60 seconds, the strictest the binding allows,
 # so one client can spend at most 60 of an hour's budget from one address.
+# GATE_CHECK_LIMITER is ONE global allowance (every request shares the key "gate-check") on requests
+# about to reach Turnstile; it caps vendor calls and writes nothing to D1. Required. 20 per 60
+# seconds is the documented value (about 1200 an hour), well above ROUTE_BUDGET_GATE, which is
+# charged only after a request has parsed and passed Turnstile. An edge rate rule (issue #613) is
+# the other layer in front of both.
 # [[kv_namespaces]]
 # binding = "KIT"
 # id = "00000000000000000000000000000000" # placeholder, not a real id
@@ -159,6 +164,12 @@ crons = ["5 * * * *"]
 # namespace_id = "1004" # placeholder, not a real id
 #   [ratelimits.simple]
 #   limit = 1
+#   period = 60
+# [[ratelimits]]
+# name = "GATE_CHECK_LIMITER"
+# namespace_id = "1005" # placeholder, not a real id
+#   [ratelimits.simple]
+#   limit = 20
 #   period = 60
 
 # Business inquiry form behind the media kit (POST /k/inquiry, src/kit/inquiry.ts). It needs
