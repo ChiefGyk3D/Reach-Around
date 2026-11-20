@@ -53,12 +53,15 @@ from reach_around.counts.history import (
     REASONS,
     HistoryError,
     Record,
+    RedactDurabilityError,
     append_records,
     dump_new_history,
+    find_stale_redaction_temps,
     new_run_id,
     plan_redaction,
     read_history,
     redact_records,
+    remove_stale_redaction_temps,
 )
 from reach_around.counts.importer import (
     MAX_CSV_BYTES,
@@ -98,6 +101,7 @@ EXIT_WRITE = 1
 EXIT_USAGE = 2
 EXIT_SOURCE_FAILED = 3
 EXIT_DUE = 4
+EXIT_REPLACED_UNSURE = 5  # history-redact: the file was replaced, durability unsure
 
 
 @dataclass(frozen=True)
@@ -603,6 +607,7 @@ def run_history_redact(args: argparse.Namespace) -> int:
             metric=args.metric,
             include_hand_kept=args.include_hand_kept,
         )
+        stale = find_stale_redaction_temps(target)
         if not args.confirm:
             # Counts and dates only: never a value, note or hash.
             span = (
@@ -615,15 +620,36 @@ def run_history_redact(args: argparse.Namespace) -> int:
                 f"dry run: {len(plan)} lines would be redacted (as-of days {span}); "
                 "nothing written. Add --confirm to redact."
             )
+            if stale:
+                print(
+                    f"{len(stale)} stale redaction temporary file(s) found "
+                    "(--confirm removes them): " + ", ".join(stale)
+                )
             return EXIT_OK
-        count = redact_records(
-            target,
-            plan,
-            reason=args.reason,
-            trigger_date=args.trigger_date,
-            confirm=True,
-            include_hand_kept=args.include_hand_kept,
+        removed = remove_stale_redaction_temps(target, stale)
+        if removed:
+            print(f"removed {removed} stale redaction temporary file(s)")
+        notices: list[str] = []
+        try:
+            count = redact_records(
+                target,
+                plan,
+                reason=args.reason,
+                trigger_date=args.trigger_date,
+                confirm=True,
+                include_hand_kept=args.include_hand_kept,
+                notices=notices,
+            )
+        finally:
+            for notice in notices:
+                print(notice)
+    except RedactDurabilityError:
+        print(
+            "error: the file WAS replaced, but the folder sync failed, so "
+            "durability is uncertain; run history-verify before anything else",
+            file=sys.stderr,
         )
+        return EXIT_REPLACED_UNSURE
     except HistoryError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return EXIT_WRITE

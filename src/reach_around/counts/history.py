@@ -84,8 +84,19 @@ _TOMB_FIELDS = frozenset(
 )
 
 
+NOTICE_OWNER_NOT_KEPT = (
+    "notice: the owner and group of the old file could not be kept; "
+    "the new file belongs to the user who ran this command"
+)
+_STALE_AFTER_SECONDS = 3600.0
+
+
 class HistoryError(Exception):
     """The history file or a record is not acceptable. Never quotes content."""
+
+
+class RedactDurabilityError(HistoryError):
+    """The new file replaced the old one, but the folder sync failed afterward."""
 
 
 @dataclass(frozen=True)
@@ -535,8 +546,41 @@ def _read_fd(fd: int, max_bytes: int) -> bytes:
 
 
 def _open_parent(path: Path) -> int:
-    """The folder of ``path`` as a descriptor; a symlink as the folder is refused."""
-    return os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    """The folder of ``path`` as a descriptor, walking the whole chain.
+
+    Each component is opened relative to the one before it with ``O_NOFOLLOW``,
+    starting at the filesystem root (absolute path) or the current directory
+    (relative path), so a symlink anywhere in the chain is refused and nothing
+    outside the apparent path is ever opened. (``openat2`` with
+    ``RESOLVE_NO_SYMLINKS`` is not used: it is not in the standard library.)
+    """
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    folder = path.parent
+    current = os.open("/" if folder.is_absolute() else ".", flags)
+    try:
+        for part in folder.parts:
+            if part in ("/", "."):
+                continue
+            try:
+                following = os.open(part, flags, dir_fd=current)
+            except OSError:
+                try:
+                    is_link = stat.S_ISLNK(
+                        os.stat(part, dir_fd=current, follow_symlinks=False).st_mode
+                    )
+                except OSError:
+                    is_link = False
+                if is_link:
+                    raise HistoryError(
+                        "the history folder path holds a symlink; refused"
+                    ) from None
+                raise
+            os.close(current)
+            current = following
+        return current
+    except BaseException:
+        os.close(current)
+        raise
 
 
 def read_history(path: Path, *, max_bytes: int = MAX_FILE_BYTES) -> History:
@@ -759,6 +803,7 @@ def redact_records(
     include_hand_kept: bool = False,
     max_bytes: int = MAX_FILE_BYTES,
     lock_wait: float = LOCK_WAIT_SECONDS,
+    notices: list[str] | None = None,
 ) -> int:
     """Replace the planned records with tombstones and re-chain; return the count.
 
@@ -767,7 +812,15 @@ def redact_records(
     beside the old one, fsynced and renamed into place. The corrections of a
     redacted record are removed with it. A later line's ``prev`` is recomputed,
     so no digest of the old bytes stays. A plan that does not match the file
-    (rows already redacted or changed) is refused; an empty plan writes nothing.
+    (rows already redacted, or any field of a planned record differs from the
+    file) is refused, as is a plan with a duplicate; an empty plan writes nothing.
+
+    A failure before the rename leaves the original file. If the rename
+    succeeded and the folder sync failed, ``RedactDurabilityError`` is raised:
+    the new file is in place, only its durability is uncertain. The new file
+    keeps the old owner and group where permitted (a fixed notice is appended to
+    ``notices`` when not) and mode 0600. ACLs, extended attributes and security
+    labels are not copied.
     """
     if confirm is not True:
         raise HistoryError("redaction needs confirm=True; nothing was written")
@@ -779,15 +832,17 @@ def redact_records(
         raise HistoryError("trigger_date is in the future")
     if len(plan) > MAX_REDACT:
         raise HistoryError(f"redact at most {MAX_REDACT} records at a time")
-    keys: set[tuple[str, str, str, str]] = set()
+    planned: dict[tuple[str, str, str, str], bytes] = {}
     for item in plan:
         if type(item) is not Record or item.type != "record":
             raise HistoryError("the plan holds something that is not a record")
         validate(item)
         if item.source != "api" and include_hand_kept is not True:
             raise _need_hand_kept_flag()
-        keys.add(item.key)
-    if not keys:
+        if item.key in planned:
+            raise HistoryError("the plan holds a duplicate record")
+        planned[item.key] = _line_bytes(item, GENESIS)
+    if not planned:
         return 0
     try:
         dir_fd = _open_parent(path)
@@ -795,7 +850,15 @@ def redact_records(
         raise HistoryError("cannot open the history folder") from None
     try:
         return _redact(
-            dir_fd, path, keys, reason, trigger_date, moment, max_bytes, lock_wait
+            dir_fd,
+            path,
+            planned,
+            reason,
+            trigger_date,
+            moment,
+            max_bytes,
+            lock_wait,
+            notices,
         )
     finally:
         os.close(dir_fd)
@@ -804,12 +867,13 @@ def redact_records(
 def _redact(
     dir_fd: int,
     path: Path,
-    keys: set[tuple[str, str, str, str]],
+    planned: dict[tuple[str, str, str, str], bytes],
     reason: str,
     trigger_date: str,
     moment: datetime,
     max_bytes: int,
     lock_wait: float,
+    notices: list[str] | None,
 ) -> int:
     try:
         fd = os.open(
@@ -830,8 +894,13 @@ def _redact(
         except OSError:
             raise HistoryError("cannot read the history file") from None
         entries, _ = _parse(existing)
-        live = {e.key for e in entries if isinstance(e, Record) and e.type == "record"}
-        if not keys <= live:
+        keys = set(planned)
+        live = {
+            e.key: _line_bytes(e, GENESIS)
+            for e in entries
+            if isinstance(e, Record) and e.type == "record"
+        }
+        if any(live.get(key) != line for key, line in planned.items()):
             raise HistoryError(
                 "the plan does not match the file (rows already redacted or "
                 "changed); plan again"
@@ -870,13 +939,20 @@ def _redact(
         if len(data) > max_bytes:
             raise HistoryError("the history file would be too large")
         _parse(data)  # the result must verify before it replaces anything
-        _replace_file(dir_fd, path.name, data)
+        info = os.fstat(fd)
+        _replace_file(dir_fd, path.name, data, (info.st_uid, info.st_gid), notices)
         return len(keys)
     finally:
         os.close(fd)
 
 
-def _replace_file(dir_fd: int, name: str, data: bytes) -> None:
+def _replace_file(
+    dir_fd: int,
+    name: str,
+    data: bytes,
+    owner: tuple[int, int],
+    notices: list[str] | None,
+) -> None:
     """Write ``data`` beside ``name``, fsync, rename over it, fsync the folder."""
     temp = f".{name}.redact-{secrets.token_hex(4)}.tmp"
     try:
@@ -891,6 +967,11 @@ def _replace_file(dir_fd: int, name: str, data: bytes) -> None:
     try:
         try:
             _write_all(tfd, data)
+            try:
+                os.fchown(tfd, owner[0], owner[1])
+            except PermissionError:
+                if notices is not None:
+                    notices.append(NOTICE_OWNER_NOT_KEPT)
             os.fsync(tfd)
         finally:
             os.close(tfd)
@@ -904,6 +985,64 @@ def _replace_file(dir_fd: int, name: str, data: bytes) -> None:
     try:
         os.fsync(dir_fd)
     except OSError:
-        raise HistoryError(
-            "the write may not be durable; run history-verify before trying again"
+        raise RedactDurabilityError(
+            "the new file replaced the file, but the folder sync failed, so "
+            "durability is uncertain; run history-verify"
         ) from None
+
+
+def _stale_pattern(name: str) -> re.Pattern[str]:
+    return re.compile(r"^\." + re.escape(name) + r"\.redact-[0-9a-f]{8}\.tmp$")
+
+
+def _is_stale(dir_fd: int, name: str, pattern: re.Pattern[str]) -> bool:
+    if not pattern.match(name):
+        return False
+    try:
+        info = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
+    except OSError:
+        return False
+    return (
+        stat.S_ISREG(info.st_mode)
+        and info.st_uid == os.getuid()
+        and info.st_mtime < time.time() - _STALE_AFTER_SECONDS
+    )
+
+
+def find_stale_redaction_temps(path: Path) -> list[str]:
+    """Names of leftover ``.<file>.redact-*.tmp`` files a crashed redaction left.
+
+    Only regular files in the history folder, owned by the invoking user, of
+    exactly that name pattern and older than an hour. They hold the proposed
+    redacted output, so they are private history and should not linger.
+    """
+    pattern = _stale_pattern(path.name)
+    dir_fd = _open_parent(path)
+    try:
+        with os.scandir(dir_fd) as entries:
+            names = [e.name for e in entries if pattern.match(e.name)]
+        return sorted(n for n in names if _is_stale(dir_fd, n, pattern))
+    except OSError:
+        raise HistoryError("cannot list the history folder") from None
+    finally:
+        os.close(dir_fd)
+
+
+def remove_stale_redaction_temps(path: Path, names: Sequence[str]) -> int:
+    """Remove the named stale temporaries; anything else in ``names`` is ignored."""
+    pattern = _stale_pattern(path.name)
+    dir_fd = _open_parent(path)
+    removed = 0
+    try:
+        for name in names:
+            if type(name) is str and _is_stale(dir_fd, name, pattern):
+                try:
+                    os.unlink(name, dir_fd=dir_fd)
+                except FileNotFoundError:
+                    continue
+                except OSError:
+                    raise HistoryError("cannot remove a stale temporary file") from None
+                removed += 1
+    finally:
+        os.close(dir_fd)
+    return removed

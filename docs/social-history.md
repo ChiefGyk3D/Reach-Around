@@ -166,7 +166,20 @@ same key cannot be filled again. Only `api` rows are redacted; `hand_kept` and
    ```
 
 3. Check the count, then add `--confirm`. The file is written beside the old
-   one, fsynced and renamed into place; a failure leaves the original.
+   one, fsynced and renamed into place. A failure before the rename leaves the
+   original (exit 1). If the rename worked but the folder sync failed, the new
+   file IS in place and its durability is uncertain: the command says so in
+   fixed words and exits 5. Run `history-verify` before anything else.
+   The new file is mode 0600 and keeps the old owner and group where the
+   system permits (a notice says when it could not). ACLs, extended attributes
+   and security labels are not copied. Every folder in the path to the file is
+   opened without following symlinks; a symlink anywhere in that path (not only
+   the last folder) is refused. A plan that no longer matches the file in every
+   field, or that lists a record twice, is refused.
+   A crash can leave a `.<file>.redact-<8 hex>.tmp` beside the history file. It
+   holds the proposed redacted output, so treat it as private. The dry run lists
+   such files (regular, yours, older than an hour, exact name pattern) by count
+   and name; `--confirm` removes only those.
 4. `reach-around counts history-verify --config site.yaml` must exit 0.
 5. Commit the file to the private instance repository in its own pull request.
    The bundled workflow still refuses a file that is not a byte-prefix of the
