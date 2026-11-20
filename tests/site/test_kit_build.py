@@ -440,9 +440,9 @@ def test_gate_form_markup(tmp_path: Path) -> None:
         )
 
 
-def test_gate_action_is_still_a_placeholder() -> None:
-    # Flip this to "/k/gate" in the change that adds the Worker route (D1, #263).
-    assert GATE_ACTION == "/kit/retry/"
+def test_gate_action_is_the_worker_route() -> None:
+    # The Worker route is GATE_ROUTE in worker/src/kit/gate.ts; both name the same path.
+    assert GATE_ACTION == "/k/gate"
 
 
 def test_no_script_and_no_third_party_request_anywhere(tmp_path: Path) -> None:

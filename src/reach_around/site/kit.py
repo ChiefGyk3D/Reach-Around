@@ -65,10 +65,9 @@ RETRY_PAGE = Path("kit") / "retry" / "index.html"
 # The gated page's name inside the gated directory. No public file may use it.
 GATED_FILE = Path("kit.html")
 
-# Placeholder until the Worker route exists (D1, #263); then this becomes
-# "/k/gate" in the change that adds the route. Until then a post lands on the
-# static retry page, which fails closed.
-GATE_ACTION = "/kit/retry/"
+# The gate form posts to the Worker route (worker/src/kit/gate.ts, GATE_ROUTE, #263).
+# Every refusal there redirects to the retry page, which carries the same form.
+GATE_ACTION = "/k/gate"
 # The business inquiry form posts to the Worker route (worker/src/kit/inquiry.ts).
 # It is on the gated page only, which the Worker serves to an unlocked visitor.
 INQUIRY_ACTION = "/k/inquiry"
