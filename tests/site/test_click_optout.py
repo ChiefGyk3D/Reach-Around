@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""click.js honors Global Privacy Control and Do Not Track like view.js does (issue #599).
+"""click.js honors Global Privacy Control and Do Not Track, as view.js does (#599).
 
 With either signal on, no click ping is sent: not by sendBeacon, and not by the
 browser's own ``ping`` attribute (the attribute is removed at click time).
@@ -24,15 +24,20 @@ const fs = require("fs");
 const vm = require("vm");
 const cfg = JSON.parse(process.argv[3]);
 const sent = [];
-const log = { prevented: false, ping: cfg.native ? "/e/c/twitch" : null, removed: false };
+const log = {
+  prevented: false, removed: false, ping: cfg.native ? "/e/c/twitch" : null,
+};
 let handler = null;
 const node = {
   nodeType: 1,
   parentNode: null,
   hasAttribute: (n) => n === "data-link-id" || (n === "ping" && log.ping !== null),
-  getAttribute: (n) => (n === "data-link-id" ? "twitch" : n === "ping" ? log.ping : null),
+  getAttribute: (n) =>
+    (n === "data-link-id" ? "twitch" : n === "ping" ? log.ping : null),
   setAttribute: (n, v) => { if (n === "ping") log.ping = v; },
-  removeAttribute: (n) => { if (n === "ping") { log.ping = null; log.removed = true; } },
+  removeAttribute: (n) => {
+    if (n === "ping") { log.ping = null; log.removed = true; }
+  },
 };
 const nav = { sendBeacon: (u) => sent.push(u) };
 for (const [k, v] of Object.entries(cfg.nav)) nav[k] = v;
@@ -49,7 +54,9 @@ const sandbox = {
 vm.createContext(sandbox);
 vm.runInContext(fs.readFileSync(process.argv[2], "utf8"), sandbox);
 handler({ target: node, preventDefault: () => { log.prevented = true; } });
-process.stdout.write(JSON.stringify({ sent, ping: log.ping, removed: log.removed, prevented: log.prevented }));
+process.stdout.write(JSON.stringify({
+  sent, ping: log.ping, removed: log.removed, prevented: log.prevented,
+}));
 """
 
 
