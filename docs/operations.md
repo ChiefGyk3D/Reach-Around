@@ -227,6 +227,11 @@ Order of preference, least damage first:
    npx wrangler deploy --var VIEWS_KILL:1
    ```
 
+   `SCHEDULED_KILL:1` is a separate maintenance switch for the hourly jobs
+   (retention, health, purges, rollups). It is for D1 migrations, not for an
+   analytics rollback, because it stops no request route and pauses health sampling, its alerts and the live status for as long as it is on (the window is a `-` outage gap in reports); the steps are in
+   [cutover-runbook.md](cutover-runbook.md).
+
    Turn them back on with `:0`. `LIVE_KILL` does the same for the Live poller,
    and `VIEWS_KILL_SITES` / `CLICKS_KILL_SITES` pause named sites only (full
    table in [failure-modes.md](failure-modes.md#kill-switches)). Hours with the

@@ -60,6 +60,7 @@ stretch with clicks off is not marked.
 | `VIEWS_KILL` (`1` or `true`) | the page-view route records nothing |
 | `VIEWS_KILL_SITES` (comma list of site ids) | the same for the sites named |
 | `CLICKS_KILL`, `CLICKS_KILL_SITES` | the same for the click route |
+| `SCHEDULED_KILL` (`1` or `true`) | maintenance switch: every scheduled run (the hourly jobs and the Live poller) returns at once with no database read or write. The hourly health sample is skipped too, so health alerts and notifications are paused, the live status goes stale, and those hours show as a `-` outage gap in reports, not `kill_switch`. Use it only while D1 migrations run, then turn it back off |
 | `LIVE_KILL` | the live status route and poller; unlike the others it serves the all-unknown body |
 | `ALERTS_CONFIG` unset or empty | no alerts at all |
 

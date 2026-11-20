@@ -47,7 +47,7 @@ the results); **O+A** = the assistant prepares, the owner does the write.
 | 4 | Merge the instance PR, deploy to staging | O+A | the owner's merge |
 | 5 | Approve and run the production deploy (manual dispatch, then the reviewer click) | O | GitHub account, reviewer approval |
 | 6 | Set Worker secrets (`VIEW_HASH_SECRET` and the others) | O | Cloudflare login or a short-lived token from the secret manager; values never in chat |
-| 7 | Apply D1 migrations with the Worker idle | O+A | Cloudflare D1 write; a short-lived scoped token |
+| 7 | Apply D1 migrations with the Worker quiet (all three switches on) | O+A | Cloudflare D1 write; a short-lived scoped token |
 | 8 | Take the backup and the Time Travel bookmark | O+A | D1 read for the export, D1 edit only for a restore |
 | 9 | Import the Beacons history (#376) | A | the private CSV, supplied by the owner |
 | 10 | Export the Beacons data (links list, analytics CSV, forms and leads) | O | Beacons login |
@@ -139,7 +139,7 @@ the result lines (no values) in #344. Do not start the DNS steps with a box open
 - [ ] **Kit gate off at cutover**: `features.kit_gate` is `false` in the
       production config, so no cookie is set and no cookie notice shows.
 - [ ] The funnel `landings` and `hops` lists are **absent** from the production
-      config (#595). Migration `0017` is applied later, with the Worker idle.
+      config (#595). Migration `0017` is applied later, with the Worker quiet (all three switches on, section 2.3).
 - [ ] **Beacon token mode** is the mode chosen under #610. The public repository
       does not define it; the design and its owner decisions are in the private
       tracker. Record the mode name (not its detail) in the cutover record.
@@ -169,9 +169,32 @@ the result lines (no values) in #344. Do not start the DNS steps with a box open
       secret the production config needs (`TOKEN_HMAC_KEY` only if the gate is
       on, which it is not at cutover; alert channel credentials if alerts are on).
       Check by name: `npx wrangler secret list`.
-- [ ] **D1 migrations applied with the Worker idle.** Order, from the proven
-      staging run:
-      1. Pause both write routes: deploy with `CLICKS_KILL:1` and `VIEWS_KILL:1`.
+- [ ] **D1 migrations applied with the Worker quiet.** "Quiet" means no
+      request route and no scheduled job writes to D1. The two route switches
+      alone do not do that: the hourly scheduled run (cron `5 * * * *`: lead
+      retention, health, purges, rollups, funnel rollups, counter purges) keeps
+      writing, so a third switch pauses it. Order, from the proven staging run:
+      1. Quiet the Worker: deploy with all three switches on,
+         `npx wrangler deploy --var CLICKS_KILL:1 --var VIEWS_KILL:1 --var SCHEDULED_KILL:1`.
+         `SCHEDULED_KILL` makes every scheduled trigger (the hourly jobs and
+         the Live poller) return at once with no D1 read or write
+         ([deploy.md](deploy.md)). It does not stop a run that had already
+         started when the deploy landed, so verify before migrating: watch
+         `npx wrangler tail` (or the Worker's logs in the Cloudflare
+         dashboard) until the next scheduled trigger returns immediately, and
+         confirm no earlier scheduled invocation is still active. Do not start
+         migrations until that is confirmed.
+         What the window costs: with `SCHEDULED_KILL` on, the health sampling
+         and its alerts and notifications are paused for the whole window, the
+         live status goes stale, and the window shows in reports as a `-`
+         outage gap, not as `kill_switch`. Keep it short and clear it as soon
+         as the migrations are done.
+         The three switches cover the click, view and scheduled paths only,
+         not the kit routes. The quiet state assumes `features.kit_gate` is
+         `false` (2.2) and the inquiry route is off or handled as that item
+         says; if either is on, the kit routes can still write to D1 and need
+         their own switch (`KIT_KILL`, read in `worker/src/kit/env.ts`) before this
+         step counts as quiet.
       2. Take a Time Travel bookmark and a backup (2.4).
       3. `npx wrangler d1 migrations list <DATABASE> --remote`, then apply.
          Migrations are forward only. Migration `0008` empties `visitor_seen`:
@@ -179,8 +202,10 @@ the result lines (no values) in #344. Do not start the DNS steps with a box open
          that writes the field. Read the migration notes in
          [deploy.md](deploy.md) first.
       4. Deploy the Worker (same configuration as staging).
-      5. Smoke the route, then turn collection on (`CLICKS_KILL:0`,
-         `VIEWS_KILL:0`). Leave both unset in the committed `wrangler.toml`.
+      5. Smoke the route, then clear the switches once every migration has
+         completed: `--var CLICKS_KILL:0 --var VIEWS_KILL:0 --var SCHEDULED_KILL:0`.
+         Leave all three unset in the committed `wrangler.toml`. Retention,
+         purges and rollups catch up on the next hourly run.
 - [ ] The `/e/*` route exists on the production host (zone route, or by hand,
       [deploy.md](deploy.md), "Adding the route by hand"). Without it clicks are
       not counted.
@@ -589,7 +614,7 @@ line. Public issues get counts, exit codes and times only. Template:
 | Engine tagged, image verified | | A | | |
 | TTL lowered to 300 s | | O | | |
 | Rehearsal done (#597) | | O+A | | |
-| Migrations applied, Worker idle | | O+A | | |
+| Migrations applied, Worker quiet (three switches) | | O+A | | |
 | Switch edit | | O | | |
 | Verified on phone and laptop | | O+A | | |
 | Day-one checks (1 h, 6 h, 24 h, 48 h) | | A | | |

@@ -618,3 +618,108 @@ def test_without_flock_the_history_is_not_installed(tmp_path: Path) -> None:
     assert "nothing was overwritten" in r.stderr
     assert target.read_text() == "old\n"
     assert (numbers.read_bytes() if numbers.exists() else None) == numbers_before
+
+
+def test_numbers_json_is_not_installed_when_the_history_changes_before_the_lock(
+    tmp_path: Path,
+) -> None:
+    """A redaction between the first history check and the lock leaves both
+    outputs alone: numbers.json is installed only together with the history."""
+    real_flock = shutil.which("flock")
+    if real_flock is None:
+        pytest.skip("flock is not installed")
+    root, env = _refresh_fixture(tmp_path)
+    (root / "history").mkdir(exist_ok=True)
+    target = root / "history" / "social.jsonl"
+    target.write_text("old\n")
+    numbers = root / "numbers.json"
+    numbers.write_text('{"version": 1, "platforms": {}}\n')
+    numbers_before = numbers.read_bytes()
+    # The shim runs when the script reaches the lock, which is after the first
+    # history check: it redacts (replaces the file), then takes the real lock.
+    shim = tmp_path / "bin" / "flock"
+    shim.write_text(
+        "#!/bin/bash\n"
+        f'printf "redacted\\n" > "{target}.new"\n'
+        f'mv -f "{target}.new" "{target}"\n'
+        f'exec "{real_flock}" "$@"\n',
+        encoding="utf-8",
+    )
+    shim.chmod(0o755)
+    r = _run_refresh(root, env, "social.jsonl", tmp_path)
+    assert r.returncode != 0
+    assert "history file changed while the refresh ran" in r.stderr
+    assert "nothing was overwritten" in r.stderr
+    assert target.read_text() == "redacted\n"
+    assert numbers.read_bytes() == numbers_before  # the message is true
+    assert list(root.glob(".numbers.*")) == []  # no staged leftover
+
+
+def _mv_shim(tmp_path: Path, fail_on: str | None) -> Path:
+    """A `mv` ahead of the real one in PATH: it logs each destination and fails
+    the move whose destination ends with `fail_on`."""
+    real_mv = shutil.which("mv") or "/bin/mv"
+    log = tmp_path / "mv.log"
+    shim = tmp_path / "bin" / "mv"
+    cond = f'case "${{!#}}" in *"{fail_on}") exit 1 ;; esac\n' if fail_on else ""
+    shim.write_text(
+        f'#!/bin/bash\nprintf "%s\\n" "${{!#}}" >> "{log}"\n'
+        f'{cond}exec "{real_mv}" "$@"\n',
+        encoding="utf-8",
+    )
+    shim.chmod(0o755)
+    return log
+
+
+def _installed_fixture(tmp_path: Path) -> tuple[Path, dict[str, str], Path, Path]:
+    if shutil.which("flock") is None:
+        pytest.skip("flock is not installed")
+    root, env = _refresh_fixture(tmp_path)
+    (root / "history").mkdir(exist_ok=True)
+    target = root / "history" / "social.jsonl"
+    target.write_text("old\n")
+    numbers = root / "numbers.json"
+    numbers.write_text('{"version": 1, "platforms": {}}\n')
+    return root, env, target, numbers
+
+
+def test_a_failed_numbers_move_leaves_the_new_history_and_the_old_numbers(
+    tmp_path: Path,
+) -> None:
+    root, env, target, numbers = _installed_fixture(tmp_path)
+    before = numbers.read_bytes()
+    _mv_shim(tmp_path, "/numbers.json")
+    r = _run_refresh(root, env, "social.jsonl", tmp_path)
+    assert r.returncode != 0
+    assert "numbers.json could not be installed after the history file was" in r.stderr
+    assert "nothing was overwritten" not in r.stderr  # the history WAS installed
+    assert target.read_text() == "old\nrow\n"
+    assert numbers.read_bytes() == before
+    assert list(root.glob(".numbers.*")) == []  # the trap removed the staged file
+
+
+def test_a_failed_history_move_installs_neither_and_leaves_no_staged_file(
+    tmp_path: Path,
+) -> None:
+    root, env, target, numbers = _installed_fixture(tmp_path)
+    before = numbers.read_bytes()
+    _mv_shim(tmp_path, "/social.jsonl")
+    r = _run_refresh(root, env, "social.jsonl", tmp_path)
+    assert r.returncode != 0
+    assert "history file could not be installed; nothing was overwritten" in r.stderr
+    assert target.read_text() == "old\n"
+    assert numbers.read_bytes() == before
+    assert list(root.glob(".numbers.*")) == []
+    assert list((root / "history").glob(".social.??????")) == []
+
+
+def test_the_history_is_installed_before_numbers_json_and_numbers_keeps_mode_0644(
+    tmp_path: Path,
+) -> None:
+    root, env, target, numbers = _installed_fixture(tmp_path)
+    log = _mv_shim(tmp_path, None)
+    r = _run_refresh(root, env, "social.jsonl", tmp_path)
+    assert r.returncode == 0, r.stderr
+    moves = [Path(x).name for x in log.read_text().split()]
+    assert moves.index("social.jsonl") < moves.index("numbers.json"), moves
+    assert numbers.stat().st_mode & 0o777 == 0o644

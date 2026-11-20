@@ -206,20 +206,36 @@ if [ -n "$new_history" ] && ! command -v flock >/dev/null 2>&1; then
   echo "refresh-counts: flock is required to install the history file safely and was not found; nothing was overwritten." >&2
   exit 1
 fi
+# The two outputs are installed as an ordered pair, not atomically. numbers.json
+# is checked into a scratch file now but not put in the repository folder yet:
+# every refusal before the install (a failed check, a changed history file, a
+# held lock, a failed staging copy) leaves BOTH files as they were. The install
+# is then two renames under the lock, history first. If the first fails, neither
+# file is installed; if the second fails after the first succeeded, the history
+# is new and numbers.json is old, the message says so, and the fix is to run the
+# refresh again.
+checked_numbers=""
 if [ -f "$workdir/numbers.json" ] && [ ! -L "$workdir/numbers.json" ]; then
+  checked_numbers="$workdir/numbers.checked.json"
   python3 -I "$here/scripts/validate-numbers.py" \
-    --in "$workdir/numbers.json" --out "$numbers" || {
+    --in "$workdir/numbers.json" --out "$checked_numbers" || {
     echo "refresh-counts: the engine's numbers.json failed the check; nothing was changed." >&2
     exit 1
   }
 fi
+
+staged_history=""
+staged_numbers=""
+# A staged file that was not moved into place is removed on any exit.
+trap 'rm -f "$staged_history" "$staged_numbers"; if [ -n "$cleanup" ]; then rm -rf "$cleanup"; fi' EXIT
 
 if [ -n "$new_history" ]; then
   mkdir -p "$history_dir"
   # Take the lock the engine's history writers (append, redact) take, so a
   # redaction cannot run between the last check and the move. flock is required
   # (checked above); the checks before and after the lock catch a change made
-  # while the run waited.
+  # while the run waited. The lock is held (fd 9) until the script exits, which
+  # is after both files are in place.
   lock_file="$history_dir/.social.jsonl.lock"
   if [ -L "$lock_file" ]; then
     echo "error: the history lock file must not be a symbolic link" >&2
@@ -232,9 +248,31 @@ if [ -n "$new_history" ]; then
     exit 1
   }
   if ! history_unchanged; then history_changed; fi
-  tmp="$(mktemp "$history_dir/.social.XXXXXX")"
-  cp "$new_history" "$tmp"
-  mv -f "$tmp" "$history"
+  staged_history="$(mktemp "$history_dir/.social.XXXXXX")"
+  cp "$new_history" "$staged_history"
+fi
+if [ -n "$checked_numbers" ]; then
+  staged_numbers="$(mktemp "$here/.numbers.XXXXXX")"
+  cp "$checked_numbers" "$staged_numbers"
+  chmod 644 "$staged_numbers" # numbers.json is a public file; mktemp makes it 0600
+fi
+
+# Install, still under the lock: the history first, numbers.json only after
+# that move succeeded. Each move is one rename; a failure of the first leaves
+# both files as they were.
+if [ -n "$staged_history" ]; then
+  mv -f "$staged_history" "$history" || {
+    echo "refresh-counts: the history file could not be installed; nothing was overwritten." >&2
+    exit 1
+  }
+  staged_history=""
+fi
+if [ -n "$staged_numbers" ]; then
+  mv -f "$staged_numbers" "$numbers" || {
+    echo "refresh-counts: numbers.json could not be installed after the history file was; run the refresh again." >&2
+    exit 1
+  }
+  staged_numbers=""
 fi
 
 if [ -n "${GITHUB_OUTPUT:-}" ]; then

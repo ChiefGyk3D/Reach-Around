@@ -16,6 +16,13 @@ DESTINATION_KINDS = '{"example-one":"link","example-two":"link"}'
 # limiter; anything else leaves it on. Read on every request. Flip it with
 #   npx wrangler deploy --var CLICKS_KILL:1   (off)   /   --var CLICKS_KILL:0   (on)
 # CLICKS_KILL = "1"
+# Maintenance switch for the scheduled jobs, deliberately unset here, same rules as
+# CLICKS_KILL ("1" or "true" on, anything else off, read on every run). On, every scheduled
+# trigger (the hourly jobs and the Live poller) returns at once with no D1 read or write.
+# Set it with CLICKS_KILL and VIEWS_KILL while D1 migrations run (docs/cutover-runbook.md):
+#   npx wrangler deploy --var CLICKS_KILL:1 --var VIEWS_KILL:1 --var SCHEDULED_KILL:1   (paused)
+#   npx wrangler deploy --var CLICKS_KILL:0 --var VIEWS_KILL:0 --var SCHEDULED_KILL:0   (on)
+# SCHEDULED_KILL = "1"
 
 [[d1_databases]]
 binding = "DB"
