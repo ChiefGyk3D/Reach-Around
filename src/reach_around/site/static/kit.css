@@ -54,6 +54,14 @@
 }
 .kit-table thead th { color: var(--ra-color-muted); font-size: var(--ra-text-sm); }
 .kit-figure { font-weight: 700; font-variant-numeric: tabular-nums; }
+@media (max-width: 39.99rem) {
+  .kit-table, .kit-table tbody, .kit-table tr, .kit-table th, .kit-table td { display: block; }
+  .kit-table thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+  .kit-table tr { padding-block: var(--ra-space-2); border-bottom: 1px solid var(--ra-color-border); }
+  .kit-table th, .kit-table td { padding: var(--ra-space-1) var(--ra-space-3); border: 0; overflow-wrap: anywhere; }
+  .kit-table td:empty { display: none; }
+  .kit-table td[data-label]::before { content: attr(data-label) ": "; color: var(--ra-color-muted); }
+}
 
 .kit-analytics-tabs {
   display: flex;

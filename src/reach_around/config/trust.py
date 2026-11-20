@@ -4,8 +4,9 @@
 Exactly three labels, read from where a number came from and never chosen by a
 template:
 
-* ``api``: a collector configured in ``numbers.sources`` wrote the number into
-  the numbers file, so the platform's own interface returned it.
+* ``api``: ``counts refresh`` wrote the numbers-file entry (it records
+  ``source: api``) and a collector is still configured for the platform. An
+  entry with no recorded source, or a collector that is gone, is hand-kept.
 * ``hand-kept``: a person typed it (in the kit config or in the numbers file), or
   imported it from a platform export. An export is named in the method line;
   there is no fourth label for it (owner decision 2, 2026-11-20).
@@ -35,12 +36,12 @@ LABEL_TEXT: dict[str, str] = {API: "API", HAND_KEPT: "Hand-kept", ESTIMATE: "Est
 LEGEND_HEADING = "How to read these numbers"
 # Neutral draft wording. The owner approves it (see the pull request).
 LEGEND_SENTENCES: tuple[str, ...] = (
-    "API means the platform's own interface returned the number to this site's "
-    "collector on the date shown; no outside party audited it.",
+    "API means a collector read the number from the platform's own interface "
+    "on the date shown; no outside party audited it.",
     "Hand-kept means the owner typed the number in or imported it from a "
     "platform export, and the line beside it says which.",
-    "Estimate means the owner worked the number out and names the method; a "
-    "number older than its age limit is marked out of date.",
+    "Estimate means the owner worked the number out and names the method.",
+    "Any number older than its age limit is marked out of date.",
 )
 
 
@@ -78,17 +79,25 @@ def metric_trust(
     source: str,
     estimate: str | None,
     api_platforms: frozenset[str],
+    origin: str | None = None,
+    as_of: date | None = None,
 ) -> Trust:
     """The label of one headline metric.
 
     ``source`` is the kit metric's own (``manual`` or ``counts``). The platform
     never enters the choice except through ``api_platforms``, so two platforms
-    with the same provenance always get the same label and the same method."""
+    with the same provenance always get the same label and the same method.
+
+    API needs all of: a ``counts`` number, an entry that ``counts refresh`` wrote
+    (``origin == "api"``) and a collector still configured for the platform. A
+    number that is old stays API (the page marks it out of date); anything else
+    from the numbers file is hand-kept."""
     if estimate:
         return Trust(ESTIMATE, f"Estimate: {estimate}")
     if source == "counts":
-        if platform in api_platforms:
-            return Trust(API, "Read from the platform's API")
+        if platform in api_platforms and origin == "api":
+            when = f" on {as_of.isoformat()}" if as_of is not None else ""
+            return Trust(API, f"Read from the platform's API{when}")
         return Trust(HAND_KEPT, "Typed into the numbers file by the owner")
     return Trust(HAND_KEPT, "Typed by the owner")
 

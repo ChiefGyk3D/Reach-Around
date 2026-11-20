@@ -777,7 +777,14 @@ def _metric_rows(
 
 
 def _metric_trust(metric: ResolvedMetric, api: frozenset[str]) -> Trust:
-    return metric_trust(metric.platform, metric.source, metric.estimate, api)
+    return metric_trust(
+        metric.platform,
+        metric.source,
+        metric.estimate,
+        api,
+        metric.origin,
+        metric.as_of,
+    )
 
 
 def _is_stale(

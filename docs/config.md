@@ -710,7 +710,8 @@ manifest, and a path inside `--out` is refused.
 | --- | --- |
 | Top level | exactly `version` (1) and `platforms` |
 | Key | a platform slug (applies to every item of that platform) or an item id such as `socials-twitch` (applies to that one item and wins over the slug) |
-| Entry | exactly `count` and `as_of` |
+| Entry | `count` and `as_of`, and at most one more key, `source` |
+| `source` | optional, closed: `api` (written by `counts refresh`, the only writer of collected counts) or `hand`; any other value or key is refused. An entry without it is read as typed by hand. The media kit prints the label API only for an entry that carries `api` (see [trust labels](kit.md#trust-labels)) |
 | `count` | a whole JSON number, 0 to 10,000,000,000; `3.0`, strings, booleans and negatives are refused |
 | `as_of` | a full timestamp with `Z` or an offset, from 2000-01-01 to one day after the build |
 | Size and shape | up to 256 KiB, 1000 entries, no duplicate keys, no `NaN` or `Infinity`, deeply nested input is an error |
@@ -1438,10 +1439,17 @@ Limits worth knowing:
 {
   "version": 1,
   "platforms": {
-    "bluesky": {"count": 1234, "as_of": "2026-10-24T09:00:00Z"}
+    "bluesky": {"count": 1234, "as_of": "2026-10-24T09:00:00Z", "source": "api"}
   }
 }
 ```
+
+Each entry refresh writes carries `"source": "api"`. `counts import` writes
+`"source": "hand"`. A file written before this key existed, or an entry you type,
+has none and is read as hand-kept: until the next refresh writes `source`, the
+kit shows your collected counts as Hand-kept. That is correct, not a fault. The
+label is as honest as the file: it is your own file, so editing `source` by hand
+can make it say something untrue, and the next daily refresh overwrites it.
 
 `count` is a whole number from 0 to 10,000,000,000 and `as_of` is a UTC time in
 that exact form: the same file `reach-around build --numbers` reads (see

@@ -376,6 +376,21 @@ class Inquiry(_Model):
         return " ".join(digits[i : i + 4] for i in range(0, len(digits), 4))
 
 
+_ESTIMATE_OK = re.compile(r"[A-Za-z ,;'()-]+(?:\.(?![A-Za-z])[A-Za-z ,;'()-]*)*\.?")
+_YEAR = re.compile(r"(?<!\d)(?:19|20)\d{2}(?!\d)")
+
+
+def _estimate_text(value: str) -> str:
+    """The method line of an estimate: words and basic punctuation, a year at
+    most. No digit run that could be a small count, no URL, no handle, no dash
+    beyond a hyphen. The error never echoes the text."""
+    if _ESTIMATE_OK.fullmatch(_YEAR.sub("", value).replace("  ", " ")) is None:
+        raise ValueError(
+            "an estimate line holds only words, spaces, basic punctuation and a year"
+        )
+    return value
+
+
 class PlatformMetric(_Model):
     """One headline number for one platform.
 
@@ -392,7 +407,7 @@ class PlatformMetric(_Model):
     in_total: StrictBool = True
     # Optional and off by default: how the owner worked the number out. Setting
     # it prints the label "Estimate" with this text as the method (#626).
-    estimate: Text120 | None = None
+    estimate: Annotated[Text120, AfterValidator(_estimate_text)] | None = None
 
     @field_validator("platform")
     @classmethod
@@ -760,6 +775,8 @@ class ResolvedMetric:
     as_of: date | None
     in_total: bool
     estimate: str | None = None
+    # What wrote the numbers-file entry: "api", "hand" or None (not recorded).
+    origin: str | None = None
 
 
 @dataclass(frozen=True)
@@ -775,6 +792,7 @@ def resolve_metrics(kit: KitConfig, numbers: Numbers | None) -> list[ResolvedMet
     out: list[ResolvedMetric] = []
     for metric in kit.metrics:
         value, as_of = metric.value, metric.as_of
+        origin: str | None = None
         if metric.source == "counts":
             entry = (
                 numbers.lookup(metric.platform, metric.platform)
@@ -784,6 +802,7 @@ def resolve_metrics(kit: KitConfig, numbers: Numbers | None) -> list[ResolvedMet
             value, as_of = (
                 (entry.count, entry.as_of_date) if entry is not None else (None, None)
             )
+            origin = entry.source if entry is not None else None
         out.append(
             ResolvedMetric(
                 metric.platform,
@@ -793,6 +812,7 @@ def resolve_metrics(kit: KitConfig, numbers: Numbers | None) -> list[ResolvedMet
                 as_of,
                 metric.in_total,
                 metric.estimate,
+                origin,
             )
         )
     return out

@@ -4,7 +4,11 @@
 Shape::
 
     {"version": 1, "platforms": {"<platform slug or item id>": {
-        "count": 123, "as_of": "2026-10-24T12:00:00Z"}}}
+        "count": 123, "as_of": "2026-10-24T12:00:00Z", "source": "api"}}}
+
+``source`` is optional and closed: ``api`` (written by ``counts refresh``, the only
+writer of collected counts) or ``hand``. An entry without it is read as typed by
+hand. The kit prints the label API only for an entry that carries ``api`` (#626).
 
 The file is read at build time and never published. It is validated as strictly
 as the config: a size cap, no duplicate keys, integer counts only, a real
@@ -28,6 +32,8 @@ from reach_around.config.loader import ConfigError, _read
 
 MAX_NUMBERS_BYTES = 256 * 1024
 STALE_DAYS = 30
+# The closed values of an entry's optional ``source``.
+ENTRY_SOURCES = ("api", "hand")
 MAX_ENTRIES = 1000
 MAX_KEY = 64
 _EARLIEST = datetime(2000, 1, 1, tzinfo=UTC)
@@ -41,6 +47,7 @@ _STAMP = re.compile(
 class NumbersEntry:
     count: int
     as_of: datetime  # always UTC
+    source: str | None = None  # None (not recorded), "hand" or "api"
 
     @property
     def as_of_date(self) -> date:
@@ -289,12 +296,21 @@ def _stamp(key: str, value: Any, now: datetime) -> datetime:
 
 
 def _entry(key: str, raw: Any, now: datetime) -> NumbersEntry:
-    if not isinstance(raw, dict) or set(raw) != {"count", "as_of"}:
-        raise _Bad(f"{key}: must be an object with exactly count and as_of")
+    if (
+        not isinstance(raw, dict)
+        or not {"count", "as_of"} <= set(raw)
+        or set(raw) - {"count", "as_of", "source"}
+    ):
+        raise _Bad(f"{key}: must be an object with count and as_of, and at most source")
+    source = raw.get("source")
+    if "source" in raw and (type(source) is not str or source not in ENTRY_SOURCES):
+        raise _Bad(f"{key}: source must be one of {', '.join(ENTRY_SOURCES)}")
     count = raw["count"]
     if type(count) is not int or not 0 <= count <= MAX_COUNT:
         raise _Bad(f"{key}: count must be a whole number from 0 to {MAX_COUNT}")
-    return NumbersEntry(count=count, as_of=_stamp(key, raw["as_of"], now))
+    return NumbersEntry(
+        count=count, as_of=_stamp(key, raw["as_of"], now), source=source
+    )
 
 
 def _parse(data: bytes, now: datetime) -> Numbers:

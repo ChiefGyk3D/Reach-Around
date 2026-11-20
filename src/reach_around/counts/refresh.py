@@ -185,7 +185,7 @@ def refresh(
                 )
                 continue
             numbers[source.platform] = NumbersEntry(
-                count, now().astimezone(UTC).replace(microsecond=0)
+                count, now().astimezone(UTC).replace(microsecond=0), "api"
             )
             outcomes.append(Outcome(source.platform, source.kind, "ok", count))
     return numbers, outcomes

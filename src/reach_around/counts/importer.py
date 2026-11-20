@@ -190,6 +190,8 @@ def merge(
     merged = dict(previous)
     for row in rows:
         merged[row.key] = NumbersEntry(
-            count=row.count, as_of=datetime.combine(row.as_of, time(0), UTC)
+            count=row.count,
+            as_of=datetime.combine(row.as_of, time(0), UTC),
+            source="hand",
         )
     return merged

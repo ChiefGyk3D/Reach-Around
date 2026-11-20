@@ -72,13 +72,13 @@ BUDGET: dict[str, dict[str, int]] = {
         "requests": 11,
     },
     "kit": {
-        "html": 7600,
+        "html": 11800,
         "css": 72000,
         "js": 3300,
         "images": 500,
         "fonts": 33300,
-        "total": 116000,
-        "compressed": 56000,
+        "total": 123000,
+        "compressed": 57000,
         "requests": 11,
     },
     "support": {

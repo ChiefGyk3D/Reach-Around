@@ -58,9 +58,16 @@ SRC = Path(__file__).resolve().parents[2] / "src" / "reach_around"
 TWITCH_SOURCE = {"platform": "twitch", "kind": "twitch", "login": "example_streamer"}
 
 
-def numbers(**counts: int) -> Numbers:
+def numbers(
+    api: tuple[str, ...] = (), stamp: datetime = STAMP, **counts: int
+) -> Numbers:
+    """A numbers file; the platforms in ``api`` carry ``source: api`` as
+    ``counts refresh`` writes it, the rest are entries with no recorded source."""
     entries = {
-        name: NumbersEntry(count=count, as_of=STAMP) for name, count in counts.items()
+        name: NumbersEntry(
+            count=count, as_of=stamp, source="api" if name in api else None
+        )
+        for name, count in counts.items()
     }
     return Numbers(entries=entries)
 
@@ -153,7 +160,7 @@ TABS = [
         ],
     }
 ]
-NUMS = numbers(twitch=1200, kick=800)
+NUMS = numbers(api=("twitch",), twitch=1200, kick=800)
 
 
 def built(
@@ -179,7 +186,9 @@ def pages(tmp_path_factory: pytest.TempPathFactory) -> tuple[str, str]:
 
 def row(page: str, platform: str, measure: str | None = None) -> str:
     """The headline-number table row of one platform."""
-    for found in re.findall(r"<tr><th scope=\"row\">.*?</tr>", page, re.S):
+    for found in re.findall(
+        r"<tr role=\"row\"><th scope=\"row\" role=\"rowheader\">.*?</tr>", page, re.S
+    ):
         if f'">{platform}</th>' in found:
             return str(found)
     raise AssertionError(f"no row for {platform}")
@@ -224,9 +233,124 @@ def test_no_fourth_label_exists_in_code_templates_or_output(
 def test_a_collected_number_is_api_with_its_date(pages: tuple[str, str]) -> None:
     one = row(pages[0], "Twitch")
     assert 'class="kit-trust kit-trust-api">API</span>' in one
-    assert "Read from the platform&#39;s API" in one
+    assert "Read from the platform&#39;s API on 2027-03-09" in one
     assert "2027-03-09" in one
     assert "kit-trust-hand-kept" not in one
+
+
+def twitch_page(tmp_path: Path, nums: Numbers, **kw: Any) -> str:
+    doc = trust_doc(
+        metrics=[{"platform": "twitch", "label": "Followers", "source": "counts"}]
+    )
+    return built(tmp_path, doc, numbers=nums, **kw)[0]
+
+
+def test_a_typed_entry_for_a_configured_collector_is_hand_kept(
+    tmp_path: Path,
+) -> None:
+    # a collector is configured for twitch, but nothing recorded that it wrote
+    # this entry (a hand-typed numbers.json entry has no source)
+    for origin in (None, "hand"):
+        entry = NumbersEntry(count=900, as_of=STAMP, source=origin)
+        page = twitch_page(tmp_path / str(origin), Numbers(entries={"twitch": entry}))
+        one = row(page, "Twitch")
+        assert "kit-trust-hand-kept" in one and "kit-trust-api" not in one
+
+
+def test_an_api_entry_with_no_collector_configured_is_hand_kept(
+    tmp_path: Path,
+) -> None:
+    doc = trust_doc(
+        metrics=[{"platform": "kick", "label": "Followers", "source": "counts"}]
+    )
+    page = built(tmp_path, doc, numbers=numbers(api=("kick",), kick=800))[0]
+    one = row(page, "Kick")
+    assert "kit-trust-hand-kept" in one and "kit-trust-api" not in one
+
+
+def test_a_stale_api_entry_keeps_api_with_the_mark_and_names_its_date(
+    tmp_path: Path,
+) -> None:
+    old = datetime(2027, 1, 5, 12, 0, tzinfo=UTC)
+    page = twitch_page(tmp_path, numbers(api=("twitch",), stamp=old, twitch=900))
+    one = row(page, "Twitch")
+    assert "kit-trust-api" in one
+    assert "Read from the platform&#39;s API on 2027-01-05" in one
+    assert "(out of date)" in one
+
+
+def test_a_refresh_written_entry_prints_api_end_to_end(tmp_path: Path) -> None:
+    from fakenet import FakeTransport, reply
+    from reach_around.cli import main
+    from reach_around.commands.counts import run_refresh
+
+    root = tmp_path / "inst"
+    root.mkdir()
+    (root / "site.yaml").write_text(
+        """\
+version: 1
+creator: {name: Example Creator}
+features: {kit_gate: false}
+tabs:
+  - id: start
+    title: Start
+    blocks:
+      - {id: one, title: One, url: "https://example.com/1"}
+kit:
+  title: Example kit
+  about: A synthetic test kit.
+  metrics:
+    - {platform: github, label: Followers, source: counts}
+numbers:
+  sources:
+    - {platform: github, kind: github, user: some-user, show_on_hub: false}
+""",
+        "utf-8",
+    )
+    transport = FakeTransport(
+        {"https://api.github.com/users/some-user": reply({"followers": 24739})}
+    )
+    assert (
+        run_refresh(root / "site.yaml", None, None, False, transport=transport, env={})
+        == 0
+    )
+    written = json.loads((root / "numbers.json").read_text())
+    assert written["platforms"]["github"]["source"] == "api"
+    out = tmp_path / "out"
+    assert (
+        main(
+            [
+                "build",
+                "--config",
+                str(root / "site.yaml"),
+                "--out",
+                str(out),
+                "--numbers",
+                str(root / "numbers.json"),
+            ]
+        )
+        == 0
+    )
+    assert "kit-trust-api" in (out / "kit" / "index.html").read_text("utf-8")
+    # the same file with the key removed (an older file) prints Hand-kept
+    del written["platforms"]["github"]["source"]
+    (root / "numbers.json").write_text(json.dumps(written))
+    assert (
+        main(
+            [
+                "build",
+                "--config",
+                str(root / "site.yaml"),
+                "--out",
+                str(out),
+                "--numbers",
+                str(root / "numbers.json"),
+            ]
+        )
+        == 0
+    )
+    page = (out / "kit" / "index.html").read_text("utf-8")
+    assert "kit-trust-hand-kept" in page and "kit-trust-api" not in page
 
 
 def test_a_number_no_source_writes_is_hand_kept_not_api(
@@ -252,12 +376,15 @@ def test_a_typed_number_is_hand_kept_and_an_estimate_names_its_method(
 def test_the_label_never_comes_from_the_platform_name() -> None:
     api = frozenset({"twitch", "kick"})
     for source in ("manual", "counts"):
-        assert metric_trust("twitch", source, None, api) == metric_trust(
-            "kick", source, None, api
-        )
-    assert metric_trust("twitch", "counts", None, frozenset()).label == HAND_KEPT
-    assert metric_trust("twitch", "counts", None, api).label == API
-    assert metric_trust("twitch", "manual", None, api).label == HAND_KEPT
+        for origin in (None, "hand", "api"):
+            assert metric_trust("twitch", source, None, api, origin) == metric_trust(
+                "kick", source, None, api, origin
+            )
+    assert metric_trust("twitch", "counts", None, frozenset(), "api").label == HAND_KEPT
+    assert metric_trust("twitch", "counts", None, api, "api").label == API
+    assert metric_trust("twitch", "counts", None, api, None).label == HAND_KEPT
+    assert metric_trust("twitch", "counts", None, api, "hand").label == HAND_KEPT
+    assert metric_trust("twitch", "manual", None, api, "api").label == HAND_KEPT
 
 
 def test_an_imported_value_is_hand_kept_and_names_the_export(
@@ -307,13 +434,21 @@ def test_the_total_takes_the_weakest_label_of_what_it_adds(tmp_path: Path) -> No
         return str(found[-1])
 
     twitch = [{"platform": "twitch", "label": "Followers", "source": "counts"}]
-    assert total_label(trust_doc(metrics=twitch), numbers=numbers(twitch=900)) == API
+    assert (
+        total_label(
+            trust_doc(metrics=twitch), numbers=numbers(api=("twitch",), twitch=900)
+        )
+        == API
+    )
     mixed = [
         *twitch,
         {"platform": "youtube", "label": "S", "value": 50, "as_of": "2027-03-05"},
     ]
     assert (
-        total_label(trust_doc(metrics=mixed), numbers=numbers(twitch=900)) == HAND_KEPT
+        total_label(
+            trust_doc(metrics=mixed), numbers=numbers(api=("twitch",), twitch=900)
+        )
+        == HAND_KEPT
     )
     worst = [
         *mixed,
@@ -326,7 +461,10 @@ def test_the_total_takes_the_weakest_label_of_what_it_adds(tmp_path: Path) -> No
         },
     ]
     assert (
-        total_label(trust_doc(metrics=worst), numbers=numbers(twitch=900)) == ESTIMATE
+        total_label(
+            trust_doc(metrics=worst), numbers=numbers(api=("twitch",), twitch=900)
+        )
+        == ESTIMATE
     )
     assert weakest([]) is None
 
@@ -361,7 +499,7 @@ def test_the_legend_prints_on_the_public_and_the_gated_page(
         flat = text_of(page).replace("&#39;", "'")
         for sentence in LEGEND_SENTENCES:
             assert sentence in flat
-    assert 2 <= len(LEGEND_SENTENCES) <= 3
+    assert 3 <= len(LEGEND_SENTENCES) <= 4
 
 
 def test_a_kit_with_no_numbers_has_no_legend(tmp_path: Path) -> None:
@@ -809,7 +947,7 @@ def test_the_pdf_prints_api_only_where_a_collector_wrote_the_number(
     )
     text = public_pdf(config, site, tmp_path, numbers=NUMS)
     label, method = (
-        ("API", "Read from the platform's API")
+        ("API", "Read from the platform's API on 2027-03-09")
         if with_source
         else ("Hand-kept", "Typed into the numbers file by the owner")
     )
@@ -826,9 +964,10 @@ def test_a_pdf_without_a_metric_label_is_refused(tmp_path: Path) -> None:
     config, site, _ = pdfs(tmp_path, pdf_kit())
     strip_label(
         site / "kit" / "index.html",
-        '<td><span class="kit-trust kit-trust-hand-kept">Hand-kept</span> '
+        '<td role="cell" data-label="Source">'
+        '<span class="kit-trust kit-trust-hand-kept">Hand-kept</span> '
         '<span class="kit-note kit-method">Typed by the owner</span></td>',
-        "<td></td>",
+        '<td role="cell" data-label="Source"></td>',
     )
     with pytest.raises(PdfError, match="metric row 'Twitch' is missing"):
         public_pdf(config, site, tmp_path)
@@ -855,12 +994,16 @@ def test_an_owner_pdf_without_an_engagement_label_is_refused(tmp_path: Path) -> 
     page = gated / GATED_FILE
     html = page.read_text(encoding="utf-8")
     cell = (
-        '<td><span class="kit-trust kit-trust-hand-kept">Hand-kept</span> '
+        '<td role="cell" data-label="Source">'
+        '<span class="kit-trust kit-trust-hand-kept">Hand-kept</span> '
         '<span class="kit-note kit-method">Worked out from figures typed by the '
         "owner</span></td>"
     )
     assert cell in html
-    page.write_text(html.replace(cell, "<td></td>"), encoding="utf-8")
+    page.write_text(
+        html.replace(cell, '<td role="cell" data-label="Source"></td>'),
+        encoding="utf-8",
+    )
     with pytest.raises(PdfError, match="engagement row"):
         owner_pdf(config, site, gated, tmp_path)
 
@@ -907,3 +1050,111 @@ def test_the_pdf_check_still_catches_a_gated_value_in_the_public_text(
     )
     with pytest.raises(PdfLeakError):
         public_pdf(config, site, tmp_path)
+
+
+# --- the stale mark in the PDFs, case, and the estimate line -------------------
+
+
+@pytest.fixture
+def pdf_today(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The PDF check judges staleness on the days the page may have been built;
+    pin the real day to the PDF's own so the old numbers are old on both."""
+    import reach_around.kit.pdf as pdf_module
+
+    monkeypatch.setattr(pdf_module, "utc_today", lambda: CREATED)
+
+
+def old_pdf_kit() -> dict[str, Any]:
+    doc = pdf_kit()
+    doc["metrics"][0]["as_of"] = "2027-01-01"
+    doc["analytics"][0]["as_of"] = "2027-01-02"
+    doc["engagement"][0].update(period_end="2027-01-31", as_of="2027-02-01")
+    doc["engagement"][0]["period_start"] = "2027-01-01"
+    doc["demographics"][0]["as_of"] = "2027-01-03"
+    return doc
+
+
+def test_old_numbers_print_the_mark_in_both_pdfs(
+    tmp_path: Path, pdf_today: None
+) -> None:
+    config, site, gated = pdfs(tmp_path, old_pdf_kit())
+    public = public_pdf(config, site, tmp_path)
+    owner = owner_pdf(config, site, gated, tmp_path)
+    assert squash("2027-01-01 UTC (out of date)") in public
+    assert squash("2027-01-01 UTC (out of date)") in owner
+    assert owner.count("(outofdate)") >= 5
+
+
+@pytest.mark.parametrize("owner", [False, True])
+def test_a_pdf_page_that_lost_the_stale_mark_is_refused(
+    tmp_path: Path, pdf_today: None, owner: bool
+) -> None:
+    config, site, gated = pdfs(tmp_path, old_pdf_kit())
+    page = gated / GATED_FILE if owner else site / "kit" / "index.html"
+    html = page.read_text(encoding="utf-8")
+    assert "UTC (out of date)" in html
+    page.write_text(html.replace(" (out of date)", ""), encoding="utf-8")
+    with pytest.raises(PdfError, match="out of date|with its label"):
+        if owner:
+            owner_pdf(config, site, gated, tmp_path)
+        else:
+            public_pdf(config, site, tmp_path)
+
+
+def test_a_pdf_with_the_label_in_the_wrong_case_is_refused(tmp_path: Path) -> None:
+    config, site, _ = pdfs(tmp_path, pdf_kit())
+    strip_label(
+        site / "kit" / "index.html",
+        '<span class="kit-trust kit-trust-hand-kept">Hand-kept</span>',
+        '<span class="kit-trust kit-trust-hand-kept">hand-kept</span>',
+    )
+    with pytest.raises(PdfError, match="as written"):
+        public_pdf(config, site, tmp_path)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "about 3 people",
+        "under 5",
+        "see example.com",
+        "a — b",
+        "@owner",
+        "https://example.com/x",
+        "a.b",
+        "12345",
+        "year 20261",
+    ],
+)
+def test_an_estimate_line_refuses_digits_links_handles_and_dashes(text: str) -> None:
+    from pydantic import ValidationError
+
+    metric = {
+        "platform": "bluesky",
+        "label": "F",
+        "value": 60,
+        "as_of": "2027-03-05",
+        "estimate": text,
+    }
+    with pytest.raises(ValidationError) as caught:
+        make_config(trust_doc(metrics=[metric]))
+    assert "holds only words" in str(caught.value)
+
+
+@pytest.mark.parametrize(
+    "text", ["rounded from the profile page", "poll of 2026 viewers, roughly (typed)"]
+)
+def test_an_estimate_line_accepts_plain_words_and_a_year(text: str) -> None:
+    make_config(
+        trust_doc(
+            metrics=[
+                {
+                    "platform": "bluesky",
+                    "label": "F",
+                    "value": 60,
+                    "as_of": "2027-03-05",
+                    "estimate": text,
+                }
+            ]
+        )
+    )
