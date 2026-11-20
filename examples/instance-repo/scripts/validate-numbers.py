@@ -17,9 +17,9 @@ The shape is the one the engine writes (see the engine's numbers file format):
 Only that. Exactly those keys, plus one optional key, ``source``, whose only
 values are "api" (written by the engine's counts refresh) and "hand"; any other
 key or value is refused. The media kit prints the label API only for an entry
-that carries source api. A file with no ``source`` stays valid; ids are lowercase letters, digits, hyphens and
-underscores (at most 40 characters); counts are whole numbers from 0 to
-10**10; the stamp is a real UTC time written like 2026-10-24T12:00:00Z, from
+that carries source api. A file with no ``source`` stays valid; ids are
+lowercase letters, digits, hyphens and underscores (at most 40 characters);
+counts are whole numbers from 0 to 10**10; the stamp is a real UTC time written like 2026-10-24T12:00:00Z, from
 2000 up to one day ahead; at most 1000 entries; at most 64 KiB; no duplicate
 keys, no NaN. The input must be a regular file, not a link.
 
