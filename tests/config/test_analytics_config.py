@@ -81,13 +81,17 @@ def test_unknown_keys_are_refused() -> None:
 
 def test_the_section_has_exactly_these_fields() -> None:
     # A new field is a new fact for the privacy text: see
-    # tests/site/test_privacy_sites.py. `beacon_token` is off by default and its
-    # privacy wording is still to be written (docs/config.md says to keep it off
-    # on a live site until then).
+    # tests/site/test_privacy_sites.py. `beacon_token` and the two turnstile fields
+    # (#610) are off by default and their privacy wording is still to be written
+    # (docs/config.md and docs/deploy.md say to keep them off on a live site until
+    # then; the turnstile fields wait for the storage check,
+    # docs/turnstile-storage-check.md).
     assert set(Analytics.model_fields) == {
         "page_views",
         "beacon_token",
         "route",
         "raw_keep_days",
         "other_sites",
+        "turnstile_beacon",
+        "turnstile_site_key",
     }

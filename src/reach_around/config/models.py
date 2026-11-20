@@ -503,6 +503,19 @@ class SiteConfig(_Model):
         return self
 
     @model_validator(mode="after")
+    def _bot_check_needs_a_beacon(self) -> SiteConfig:
+        if (
+            self.analytics.turnstile_beacon
+            and not self.analytics.page_views
+            and not self.features.click_tracking
+        ):
+            raise ValueError(
+                "analytics.turnstile_beacon needs page_views or "
+                "features.click_tracking: with neither there is nothing to protect"
+            )
+        return self
+
+    @model_validator(mode="after")
     def _gated_kit_content_needs_the_gate(self) -> SiteConfig:
         if self.kit is not None and self.kit.has_gated_content:
             if not self.features.kit_gate:

@@ -5,7 +5,15 @@ from __future__ import annotations
 
 import re
 
-from pydantic import BaseModel, ConfigDict, StrictBool, StrictInt, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    StrictBool,
+    StrictInt,
+    StrictStr,
+    field_validator,
+    model_validator,
+)
 
 DEFAULT_ROUTE = "/e/v/"
 MAX_ROUTE_LENGTH = 64
@@ -29,6 +37,11 @@ _HOST = re.compile(
     r"(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z][a-z0-9-]{0,61}[a-z0-9]"
 )
 
+# A Turnstile site key is public. Cloudflare's own keys are 22 to 30 characters of
+# letters, digits, - and _; the published test keys are 24. Matched with
+# ``fullmatch`` so a trailing newline cannot slip through.
+_SITE_KEY = re.compile(r"[0-9A-Za-z_-]{16,64}")
+
 
 class Analytics(BaseModel):
     """Count page views through the Worker route. Off by default."""
@@ -47,6 +60,28 @@ class Analytics(BaseModel):
     # Other sites counted by the same collector (the Worker's SITES), named on
     # the privacy page. Host names only.
     other_sites: tuple[str, ...] = ()
+    # The invisible bot check (#610), off unless asked for. On, the build adds
+    # one hidden same-origin page that loads Cloudflare Turnstile, and a small
+    # script that opens it in a hidden frame for visitors who send neither
+    # Global Privacy Control nor Do Not Track. Needs the public site key.
+    turnstile_beacon: StrictBool = False
+    turnstile_site_key: StrictStr | None = None
+
+    @model_validator(mode="after")
+    def _check_the_bot_check(self) -> Analytics:
+        key = self.turnstile_site_key
+        if self.turnstile_beacon:
+            if key is None or _SITE_KEY.fullmatch(key) is None:
+                raise ValueError(
+                    "turnstile_site_key must be 16 to 64 letters, digits, - or _ "
+                    "when turnstile_beacon is on"
+                )
+        elif key is not None:
+            raise ValueError(
+                "turnstile_site_key is set but turnstile_beacon is off: turn "
+                "turnstile_beacon on or remove the key"
+            )
+        return self
 
     @field_validator("raw_keep_days")
     @classmethod

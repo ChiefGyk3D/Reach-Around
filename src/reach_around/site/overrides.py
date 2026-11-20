@@ -440,6 +440,26 @@ def build_csp(extra: Mapping[str, Sequence[str]] | None = None) -> str:
     """Return the Content-Security-Policy value, with optional narrow extras."""
     policy = {name: list(sources) for name, sources in _BASE_CSP.items()}
     for directive, sources in (extra or {}).items():
+        if directive == "replace:img-src":
+            # Narrow, never widen: the site-wide rule allows any https image,
+            # which is an exfiltration channel on a page that runs third-party
+            # script. The replacement list is exact origins only (``https:``
+            # alone, wildcards and ``data:`` fail the same check as any extra).
+            if isinstance(sources, str) or not sources:
+                raise OverridesError("CSP replace:img-src must be a list of sources")
+            for source in sources:
+                _check_source("img-src", source)
+            policy["img-src"] = list(dict.fromkeys(sources))
+            continue
+        if directive == "frame-ancestors":
+            # Not a list to add to: the one allowed change is 'none' -> 'self',
+            # for a page that the same site embeds (the helper page, #610).
+            if list(sources) != ["'self'"]:
+                raise OverridesError(
+                    "CSP frame-ancestors may only be changed to exactly 'self'"
+                )
+            policy[directive] = ["'self'"]
+            continue
         if directive not in _EXTENDABLE:
             raise OverridesError(f"CSP directive {directive!r} cannot be extended")
         if isinstance(sources, str) or not sources:

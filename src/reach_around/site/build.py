@@ -41,6 +41,16 @@ from reach_around.config.page_title import DEFAULT_TEMPLATE, render_template
 from reach_around.config.profile_card import MEDIA_KIT_ID
 from reach_around.config.tablinks import is_tab_ref, parse_tab_ref
 from reach_around.site.assets import collect_assets, collect_private_kit_assets
+from reach_around.site.beaconframe import (
+    FRAME_PAGE as FRAME_PAGE_PATH,
+)
+from reach_around.site.beaconframe import (
+    TURNSTILE_SCRIPT,
+    frame_noindex_paths,
+    frame_path_extras,
+    frame_paths,
+)
+from reach_around.site.beaconframe import enabled as beacon_frame_on
 from reach_around.site.cachepolicy import cache_patterns
 from reach_around.site.fingerprint import AssetMap, fingerprint
 from reach_around.site.frames import (
@@ -184,6 +194,13 @@ def _page_paths(config: SiteConfig, with_kit: bool = True) -> set[Path]:
     else:
         pages = {_page_path(i, tab) for i, tab in enumerate(config.tabs)}
     pages |= {Path("privacy") / "index.html", Path("404.html")}
+    helper = frame_paths(config)
+    if pages & helper:
+        raise ValueError(
+            "a tab would take the path /e-frame/, which the bot check's helper "
+            "page uses; rename the tab (its id must not be 'e-frame')"
+        )
+    pages |= helper
     return pages | public_paths(config) if with_kit else pages
 
 
@@ -388,6 +405,7 @@ def _render_page(
         footer_credit_text=config.footer.text,
         footer_credit_url=CREDIT_URL,
         page_views=config.analytics.page_views,
+        beacon_frame=beacon_frame_on(config),
         page_id=tab.id,
         view_route=config.analytics.route,
         beacon_token=config.analytics.beacon_token,
@@ -440,6 +458,7 @@ def _render_sections_page(
         footer_credit_text=config.footer.text,
         footer_credit_url=CREDIT_URL,
         page_views=config.analytics.page_views,
+        beacon_frame=beacon_frame_on(config),
         page_id=tab.id,
         view_route=config.analytics.route,
         beacon_token=config.analytics.beacon_token,
@@ -490,6 +509,7 @@ def _render_smart_stack_page(
         footer_credit_text=config.footer.text,
         footer_credit_url=CREDIT_URL,
         page_views=config.analytics.page_views,
+        beacon_frame=beacon_frame_on(config),
         page_id=tab.id,
         view_route=config.analytics.route,
         beacon_token=config.analytics.beacon_token,
@@ -857,6 +877,9 @@ def build_site(
         static.pop(Path("static") / "click.js", None)
     if not config.analytics.page_views:
         static.pop(Path("static") / "view.js", None)
+    if not beacon_frame_on(config):
+        static.pop(Path("static") / "beacon.js", None)
+        static.pop(Path("static") / "beacon-frame.js", None)
     if config.page.layout != "stack":
         static.pop(_SMART_STACK_STYLE, None)
     if not any(_has_crypto(blocks) for blocks in shown):
@@ -907,6 +930,15 @@ def build_site(
             env, config, shown, custom_css is not None
         ).items()
     }
+    if beacon_frame_on(config):
+        files[FRAME_PAGE_PATH] = (
+            env.get_template("beacon_frame.html")
+            .render(
+                turnstile_script=TURNSTILE_SCRIPT,
+                site_key=config.analytics.turnstile_site_key,
+            )
+            .encode("utf-8")
+        )
     kit_render = render_kit(
         env,
         config,
@@ -991,8 +1023,15 @@ def build_site(
         published, {path.as_posix() for path in named.hashed}
     )
     files[Path("_headers")] = render_headers(
-        path_extras={**_live_path_extras(config, shown), **gate_path_extras(config)},
-        noindex_paths=robots.noindex_paths if robots else (),
+        path_extras={
+            **_live_path_extras(config, shown),
+            **gate_path_extras(config),
+            **frame_path_extras(config),
+        },
+        noindex_paths=(
+            *(robots.noindex_paths if robots else ()),
+            *frame_noindex_paths(config),
+        ),
         immutable_paths=immutable,
         revalidate_paths=revalidate,
     ).encode("utf-8")
