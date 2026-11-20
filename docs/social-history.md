@@ -61,6 +61,17 @@ mark a fetched record with a correction (below).
   If the write or the `fsync` fails, only the bytes this call added are cut off
   again; if even that fails the error says to run `history-verify`.
   Two writers at once take turns; neither loses a line.
+  Writers (append, redact, removal of stale temporaries) also take turns through
+  a small lock file, `.<file>.lock` (for example `history/.social.jsonl.lock`),
+  created beside the history file with mode 0600 and never replaced or renamed,
+  so its identity stays the same while a redaction replaces the history file.
+  Reading and `history-verify` never create or need it. It holds no data; keep
+  it out of commits (the example instance repository ignores `history/.*.lock`).
+  Just before the write an append checks that the file name still refers to the
+  file it locked, and checks again after the write; if something outside (a
+  `git checkout` or `git pull` in the same folder) replaced the file in
+  between, the append reports it instead of claiming success, and the file that
+  was swapped in is left as it was.
 * It refuses a file that is already damaged, a duplicate
   (`platform`, `metric`, UTC day, `source`), a future time, and bad fields.
   A batch is all or nothing.
@@ -116,7 +127,7 @@ history folder writable for the engine only, checks the result with
 `counts history-verify` (offline, read-only), and hands it across the job
 boundary beside `numbers.json`. The publish job checks it again, refuses a file
 that does not begin with every byte of the committed one (append-only), and
-stages it in the same pull request (and skips the run, with a warning, while the open bot branch holds history rows main does not have yet, so they are never discarded; only `history/social.jsonl` is carried, and any other file the engine writes in that folder stops the run), which keeps the same bot-only and
+stages it in the same pull request (and skips the run, with a warning, while the open bot branch holds history rows main does not have yet, so they are never discarded; only `history/social.jsonl` is carried, and any other file the engine writes in that folder stops the run, except the engine's lock file `history/.social.jsonl.lock`, which is tolerated and not carried), which keeps the same bot-only and
 files-changed checks (`numbers.json` and `history/social.jsonl` only). If you
 run the refresh by hand, run `reach-around counts history-verify` before the
 commit so a damaged file is never committed over a good one, and use a plain
@@ -138,6 +149,128 @@ reach-around counts history-verify --config site.yaml
 Appends after the restored commit start from its last line. Values fetched
 after that commit are not recoverable from the platforms (a past follower count
 cannot be re-fetched), so restore the most recent commit that verifies.
+
+## Redact stored values (tombstones)
+
+Use this when a platform's terms, a revocation or a request means a stored API
+value must go. It is the one command that rewrites the file, and it is
+owner-run: nothing starts it for you, `counts refresh` never calls it.
+
+Do not run a redaction and a refresh at the same time, and do not start a local
+refresh (`scripts/refresh-counts.sh`) while a redaction is running or just
+before you start one. Two things protect you, and neither replaces that rule:
+
+* The writers (`history-add`, the engine's append, a redaction, removal of
+  leftovers) take turns through the lock file. An append that waits for the lock
+  while a redaction replaces the file is refused ("replaced while waiting"),
+  not continued on the new file: run it again. An append that did not wait is
+  unaffected, and so is one that creates the file. A writer that bypasses the
+  lock can also be refused, when its file turns out to have been replaced. A
+  redaction that cannot get the lock in time refuses.
+* The example refresh script (`examples/instance-repo/scripts/refresh-counts.sh`)
+  works on a scratch copy and moves the result over `history/social.jsonl` at the
+  end. It records the inode and SHA-256 of the file it copied and, before
+  anything is written and again under the lock, refuses with fixed words, writing
+  nothing, if the file is no longer the same. It needs `flock` and refuses to
+  install the history file where that is missing.
+  Without that, a redaction run during a local refresh would be undone and the
+  removed values would come back. If it refuses, run the refresh again.
+
+A tombstone replaces the line of a redacted record. It keeps the key (platform,
+metric, as-of time, source), a `reason` from a closed list (`platform_expiry`,
+`platform_revocation`, `platform_request`, `user_request`, `owner_decision`),
+the `trigger_date` that started the clock, and when it was done. For an API
+record it also keeps the `api_provider` tag of the record it replaces. It holds
+no value, note or era, and no free text. The corrections of a redacted record are
+removed with it. Every later line is re-chained, so no digest of the old bytes
+stays in the file. A redacted day is a gap in the series, never a zero, and the
+same key cannot be filled again. Only `api` rows are redacted; `hand_kept` and
+`imported` rows need `--include-hand-kept` (an owner choice, not a duty).
+
+To redact by provider (for example the private analytics records), use
+`--provider youtube_analytics` instead of `--platform`. The tag on the record is
+the only selector; a platform name is never used to guess a provider.
+A provider selection covers only records that carry the tag. Rows written
+before the tag existed have none, so for an older file also run
+`--platform <slug>` to cover them.
+
+1. Record the trigger and its date (revocation, platform request, user request).
+2. Dry run (the default; prints counts only, never a value, note or hash):
+
+   ```bash
+   reach-around counts history-redact --config site.yaml --platform youtube \
+     --source api --before 2026-10-20 --reason platform_expiry \
+     --trigger-date 2026-10-20
+   ```
+
+3. Check the count, then add `--confirm`. The file is written beside the old
+   one, fsynced and renamed into place. A failure before the rename leaves the
+   original (exit 1). If the rename worked but the folder sync failed, the new
+   file IS in place and its durability is uncertain: the command says so in
+   fixed words and exits 5. The same exit also covers a rename that reported an
+   error but may have happened, and an installed file that did not read back as
+   written. Run `history-verify` before anything else.
+   The swap itself is atomic where the system supports it (`renameat2` with
+   `RENAME_EXCHANGE`, Linux): the new file and the old one trade names, the old
+   one is checked to be the file that was locked, and if it is not (something
+   outside replaced it meanwhile) the trade is undone and nothing is lost. The
+   undo is trusted only after both names are checked: the history name must hold
+   the file that was swapped out and the temporary name the new output. If a
+   second replacement lands during the undo, nothing more is touched: the command
+   says so in fixed words and exits 5, and a newer file may then sit under a
+   `.<file>.redact-*.tmp` name. Look at the folder and run `history-verify`
+   before anything else. Cleanup never removes such a file (see below).
+   If the swap worked but the old copy, which still holds the redacted values,
+   cannot be removed, the command retries once, then exits 5 and names the file
+   and says plainly that the old values remain on disk until it is removed.
+   Run the same command with `--confirm` again: it removes that old copy at once,
+   whatever its age, because its marker proves what it is. If that fails too,
+   remove the named file by hand.
+   Where the system cannot do that, the name is checked once more and the new
+   file is renamed over it; a replacement in the very short gap between that
+   check and the rename cannot be detected there, so do not run `git pull` or
+   `git checkout` in that folder while a redaction runs.
+   The new file is mode 0600 and keeps the old owner and group where the
+   system permits (a notice says when it could not), whatever the umask. ACLs, extended attributes
+   and security labels are not copied. Redaction needs a path with no symlinks: every
+   folder in the path to the file is opened without following symlinks, and a
+   symlink anywhere in it (also in the dry run) is refused, so resolve the path
+   yourself and pass the real one (`--file`). Reading, verifying, appending and
+   `counts refresh` are unchanged and still follow a symlinked ancestor such as a
+   symlinked home or checkout folder; they refuse only a symlinked last folder or
+   file, as before. A plan that no longer matches the file in every
+   field, or that lists a record twice, is refused.
+   A crash can leave a `.<file>.redact-<8 hex>.tmp` beside the history file. It
+   holds the proposed redacted output, so treat it as private. Before the swap a
+   small marker file `.<file>.redact-<8 hex>.mark` records the inode and SHA-256
+   of the new file and of the file it replaces. The dry run lists leftovers by
+   count and name (names are printed escaped); `--confirm` removes only a file
+   that is regular, yours, of the exact name pattern, and that its marker proves
+   byte for byte is the redaction output (and an hour old) or the displaced old
+   copy (any age). A name alone proves nothing: a file with no marker, a changed
+   file, or a file under a temporary name that is not the recorded one is never
+   removed. A marker whose temporary is gone is removed once it is an hour old.
+   A file named like a temporary but with no marker (a crash before the marker
+   was written) is never removed automatically; the dry run only says how many
+   there are, by count. Look at them and remove them by hand.
+   Until the recovery rerun has removed a leftover, it may hold the very values
+   you are deleting: never `git add -A` or `git add history/`; add the one file
+   by name. The example `.gitignore` ignores `history/.*.redact-*` (temporary and
+   marker) and `history/.*.lock`, which covers a careless `git add`; copy those
+   lines into your own `.gitignore` if you have not started from the example.
+4. `reach-around counts history-verify --config site.yaml` must exit 0.
+5. Commit the file to the private instance repository in its own pull request.
+   The bundled workflow still refuses a file that is not a byte-prefix of the
+   committed one; accepting a labeled tombstone-only rewrite is separate work
+   (issue #586 follow-up), so until then commit this one by hand.
+6. A tombstone meets the deletion duty in the working tree only. Git still
+   holds the old versions. If the deadline needs true deletion (Social Blade,
+   or any case where git history would break it), the private-repository
+   history rewrite is a separate operation with its own approval, backup and
+   restore plan.
+7. Write down the date and what was redacted (counts only) in the instance log.
+
+Running it again with the same arguments redacts 0 lines and changes nothing.
 
 ## Reading it in code
 

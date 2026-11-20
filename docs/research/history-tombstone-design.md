@@ -1,10 +1,13 @@
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 # History store tombstone: design for owner decision
 
-Status: DRAFT design, no behavior change. Issue: #586. Epic: #364. Follows #382 and
-the owner's 2026-11-19 decisions in [platform-terms-retention.md](platform-terms-retention.md).
-Nothing in this document is built. Code, tests and the runbook step wait for the
-answers in "Decisions" below.
+Status: APPROVED 2026-11-19, built in the stacked pull request for issue #586. Epic: #364.
+Follows #382 and the owner's 2026-11-19 decisions in
+[platform-terms-retention.md](platform-terms-retention.md). The owner's answers are
+recorded in "Decisions (2026-11-19)" below. The Schema, Verifier rules and Function
+interfaces sections describe what was built. The "Decisions put to the owner"
+section is the question list as it was put, with its Option A / Option C wording
+kept for the record.
 
 ## Why this is a design and not a patch
 
@@ -47,8 +50,8 @@ narrow, explicit exception there.
 
 ## Schema
 
-A new `type` value, `tombstone`. A tombstone line replaces the line it redacts
-(Option A) or follows it (Option C), see Decisions.
+A new `type` value, `tombstone`. A tombstone line replaces the line it redacts,
+and every later line is re-chained (Decisions 1 and 3).
 
 ```json
 {"as_of_utc":"2026-10-01T09:00:00Z","metric":"subscribers","platform":"youtube","prev":"<64 hex>","reason":"platform_expiry","redacted_at_utc":"2026-11-19T12:00:00Z","run_id":"redact-20261119T120000Z-1a2b3c","source":"api","trigger_date":"2026-10-20","type":"tombstone"}
@@ -64,7 +67,9 @@ A new `type` value, `tombstone`. A tombstone line replaces the line it redacts
 | `redacted_at_utc` | when the tombstone was written; never in the future |
 | `run_id` | a `redact-...` id so a tombstone run is distinguishable from a refresh |
 | `prev` | digest the chain expects at this position, same as every line |
-| `replaces` | Option A only: 64-hex digest of the original line's bytes, see Question 3 |
+| `api_provider` | optional; the provider tag of the record it replaces (a recognized tag, on `api` rows only), so provider-based selection still finds it. Never a value |
+
+There is no `replaces` field: no digest of the original line is kept.
 
 `note` and `era` are not allowed on a tombstone (free text is where personal data
 hides). Unknown fields, duplicate keys and the 2 KiB line limit still apply.
@@ -72,18 +77,19 @@ hides). Unknown fields, duplicate keys and the 2 KiB line limit still apply.
 Verifier rules (in `_parse` and `_parse_line`):
 
 * A tombstone's `prev` must equal the running expected digest, like any line.
-* After a tombstone, the expected digest is `replaces` (Option A) or the digest of
-  the tombstone line itself (Option C or a re-chained rewrite).
-* A tombstone with no matching earlier record key, in Option C, is refused (as a
-  correction with no record is today).
+* After a tombstone, the expected digest is the digest of the tombstone line
+  itself; later lines were re-chained when it was written.
+* A tombstone over a key that still has a live record in the file is refused, and
+  so is a second tombstone for the same key.
 * A normal record or correction after a tombstone for the same key is refused:
   a redacted day cannot be re-filled from the same source and date.
 * The duplicate-day rule keeps counting the tombstoned key, so a refresh the same
   day cannot silently re-store the value.
 
-## Function interfaces (to build after approval)
+## Function interfaces
 
-All in `src/reach_around/counts/history.py` unless noted. None exist yet.
+All in `src/reach_around/counts/history.py` unless noted. Shown as built, in
+outline (see the module for the full signatures).
 
 ```python
 REASONS = (
@@ -105,16 +111,18 @@ class Tombstone:
     trigger_date: str  # YYYY-MM-DD
     redacted_at_utc: str
     run_id: str
-    replaces: str | None = None  # Option A digest, else None
+    api_provider: str | None = None  # provider tag of the replaced record
 
 
 def plan_redaction(
     history: History,
     *,
-    platform: str,
-    source: str | None,
-    before: str | None,
+    platform: str | None = None,
+    source: str | None = None,
+    before: str | None = None,
     metric: str | None = None,
+    include_hand_kept: bool = False,
+    provider: str | None = None,  # selects by the api_provider tag only
 ) -> list[Record]:
     """Pure. The records a redaction would blank. Never touches disk."""
 
@@ -127,10 +135,11 @@ def redact_records(
     trigger_date: str,
     now: datetime | None = None,
     confirm: bool = False,
+    include_hand_kept: bool = False,
 ) -> int:
-    """Under the same flock and fsync as append_records. Verifies the whole file
-    first, writes the new file beside the old one, renames it into place, and
-    returns the number of lines redacted. Refuses unless confirm is True."""
+    """Under the writers' lock file. Verifies the whole file first, writes the
+    new file beside the old one, swaps it into place, and returns the number of
+    records redacted. Refuses unless confirm is True."""
 
 
 def tombstoned(history: History) -> frozenset[tuple[str, str, str, str]]:
@@ -143,13 +152,14 @@ CLI (in `commands/counts.py`), after approval:
 reach-around counts history-redact --config site.yaml --platform youtube \
   --source api --before 2026-10-20 --reason platform_expiry --trigger-date 2026-10-20 \
   --dry-run          # prints counts only, never values
+# or select by provider tag: --provider youtube_analytics (instead of --platform)
 reach-around counts history-redact ... --confirm
 ```
 
 `--dry-run` is the default and prints only the number of lines and the date
 range. Output never includes a value, note or hash.
 
-## Runbook step (to add to docs/social-history.md after approval)
+## Runbook step (now in docs/social-history.md)
 
 1. Record the trigger and its date (revocation, platform request, user request).
 2. Run `history-redact --dry-run`; check the count matches expectations.
@@ -163,7 +173,7 @@ range. Output never includes a value, note or hash.
    restore plan. A tombstone is not that.
 7. Write down the date and what was redacted (counts only) in the instance log.
 
-## Decisions for the owner
+## Decisions put to the owner
 
 Recommended answer first on each. Answer yes or no.
 
@@ -203,7 +213,7 @@ Recommended answer first on each. Answer yes or no.
    follow-up issue, not in this one. Automatic redaction on a timer is a separate
    decision and is not proposed here.
 
-## Tests to write first (once approved)
+## Tests
 
 Red before green, in `tests/test_counts_history.py`:
 
@@ -222,3 +232,29 @@ Red before green, in `tests/test_counts_history.py`:
 * True deletion from git history of the private repository (Question 6).
 * Social Blade certified destruction (research doc, "Social Blade").
 * Automatic expiry timers (Question 8).
+
+## Decisions (2026-11-19)
+
+The owner approved all eight recommended answers on 2026-11-19.
+
+1. Yes. A tombstone removes the original content in place (Option A); a marker
+   that only hides it (Option C) is not used.
+2. Yes. The file is rewritten atomically by an owner-run command, never during a
+   refresh.
+3. Yes. Later records are re-chained; no digest of the old bytes is kept, so the
+   tombstone has no `replaces` field.
+4. Yes. The instance workflow may accept a labeled tombstone-only rewrite. Not
+   built in the code pull request; it is a follow-up change to the example
+   workflow.
+5. Yes. `reason` (closed list) and `trigger_date` are required; no free text.
+6. Yes. A tombstone meets the deletion duty in the working tree only; a
+   private-repository history rewrite stays a separate approved operation.
+7. Yes. Only `api` rows are tombstoned; `hand_kept` (and `imported`) rows need
+   `--include-hand-kept`.
+8. Yes, later. A per-platform `retain_days` warning on `counts refresh` is a
+   follow-up issue, not part of this change.
+
+Build notes: one tombstone is written per redacted record, and the corrections
+of that record are dropped with it, so `redact_records` returns the number of
+records redacted. A refresh that waited on the lock through a redaction is
+refused (the file was replaced) rather than appending to the old file.

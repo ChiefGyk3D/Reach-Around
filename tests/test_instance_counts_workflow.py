@@ -5,13 +5,17 @@ guard that is never overridden, and actions pinned by commit."""
 
 from __future__ import annotations
 
+import fcntl
 import os
 import re
 import shutil
 import subprocess
+import threading
+import time
 from pathlib import Path
 from typing import Any
 
+import pytest
 import yaml
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -279,6 +283,13 @@ case " $* " in
   *" refresh "*)
     printf '%s' "$FAKE_NUMBERS" > "$data/numbers.json"
     for f in $FAKE_HISTORY_FILES; do printf 'row\n' >> "$hist/$f"; done
+    # A redaction or an edit of the repository's file while the engine runs.
+    case "${FAKE_CONCURRENT:-}" in
+      replace)
+        printf 'redacted\n' > "$FAKE_TARGET.new"
+        mv -f "$FAKE_TARGET.new" "$FAKE_TARGET" ;;
+      append) printf 'edited\n' >> "$FAKE_TARGET" ;;
+    esac
     exit 0 ;;
 esac
 exit 1
@@ -299,7 +310,11 @@ def _refresh_fixture(tmp_path: Path) -> tuple[Path, dict[str, str]]:
 
 
 def _run_refresh(
-    root: Path, env: dict[str, str], files: str, tmp: Path
+    root: Path,
+    env: dict[str, str],
+    files: str,
+    tmp: Path,
+    extra: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     return subprocess.run(  # noqa: S603 - fixed argv, a copy of the template
         [
@@ -314,6 +329,7 @@ def _run_refresh(
         env={
             **env,
             "FAKE_HISTORY_FILES": files,
+            **(extra or {}),
             "FAKE_NUMBERS": '{"version": 1, "platforms": {"x": {"count": 5, '
             '"as_of": "2026-11-09T00:00:00Z"}}}',
         },
@@ -328,6 +344,141 @@ def test_a_refresh_that_writes_only_the_known_history_file_installs_it(
     assert r.returncode == 0, r.stderr
     assert (root / "history" / "social.jsonl").read_text() == "row\n"
     assert '"count": 5' in (root / "numbers.json").read_text()
+
+
+@pytest.mark.parametrize("how", ["replace", "append"])
+def test_a_history_file_changed_during_the_refresh_is_not_overwritten(
+    tmp_path: Path, how: str
+) -> None:
+    root, env = _refresh_fixture(tmp_path)
+    (root / "history").mkdir(exist_ok=True)
+    target = root / "history" / "social.jsonl"
+    target.write_text("old\n")
+    numbers_before = (
+        (root / "numbers.json").read_bytes()
+        if (root / "numbers.json").exists()
+        else None
+    )
+    r = _run_refresh(
+        root,
+        env,
+        "social.jsonl",
+        tmp_path,
+        {"FAKE_CONCURRENT": how, "FAKE_TARGET": str(target)},
+    )
+    assert r.returncode != 0
+    assert "history file changed while the refresh ran" in r.stderr
+    assert "nothing was overwritten" in r.stderr
+    # The concurrent change (a redaction, say) survives; the refresh did not undo it.
+    assert target.read_text() == ("redacted\n" if how == "replace" else "old\nedited\n")
+    after = (
+        (root / "numbers.json").read_bytes()
+        if (root / "numbers.json").exists()
+        else None
+    )
+    assert after == numbers_before
+
+
+def test_a_history_file_created_during_the_refresh_is_not_overwritten(
+    tmp_path: Path,
+) -> None:
+    root, env = _refresh_fixture(tmp_path)
+    (root / "history").mkdir(exist_ok=True)
+    target = root / "history" / "social.jsonl"
+    r = _run_refresh(
+        root,
+        env,
+        "social.jsonl",
+        tmp_path,
+        {"FAKE_CONCURRENT": "replace", "FAKE_TARGET": str(target)},
+    )
+    assert r.returncode != 0
+    assert target.read_text() == "redacted\n"
+
+
+def test_an_unchanged_history_file_is_still_extended(tmp_path: Path) -> None:
+    root, env = _refresh_fixture(tmp_path)
+    (root / "history").mkdir(exist_ok=True)
+    target = root / "history" / "social.jsonl"
+    target.write_text("old\n")
+    r = _run_refresh(root, env, "social.jsonl", tmp_path)
+    assert r.returncode == 0, r.stderr
+    assert target.read_text() == "old\nrow\n"
+
+
+def test_the_final_move_waits_for_the_history_lock_and_refuses_if_it_is_held(
+    tmp_path: Path,
+) -> None:
+    flock = shutil.which("flock")
+    if flock is None:
+        pytest.skip("flock is not installed")
+    root, env = _refresh_fixture(tmp_path)
+    (root / "history").mkdir(exist_ok=True)
+    target = root / "history" / "social.jsonl"
+    target.write_text("old\n")
+    fd = os.open(root / "history" / ".social.jsonl.lock", os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)  # a redaction holds this while it runs
+        r = _run_refresh(
+            root,
+            env,
+            "social.jsonl",
+            tmp_path,
+            {"HISTORY_LOCK_WAIT_SECONDS": "1"},
+        )
+    finally:
+        os.close(fd)
+    assert r.returncode != 0
+    assert "locked by another run" in r.stderr
+    assert target.read_text() == "old\n"
+
+
+def test_a_change_made_while_the_move_waits_for_the_lock_is_still_caught(
+    tmp_path: Path,
+) -> None:
+    if shutil.which("flock") is None:
+        pytest.skip("flock is not installed")
+    root, env = _refresh_fixture(tmp_path)
+    (root / "history").mkdir(exist_ok=True)
+    target = root / "history" / "social.jsonl"
+    target.write_text("old\n")
+    fd = os.open(root / "history" / ".social.jsonl.lock", os.O_RDWR | os.O_CREAT, 0o600)
+    fcntl.flock(fd, fcntl.LOCK_EX)
+
+    def redact_then_release() -> None:
+        time.sleep(2.0)  # the script has copied the file and is waiting for the lock
+        (root / "history" / "new").write_text("redacted\n")
+        os.replace(root / "history" / "new", target)
+        fcntl.flock(fd, fcntl.LOCK_UN)
+
+    worker = threading.Thread(target=redact_then_release)
+    worker.start()
+    try:
+        r = _run_refresh(
+            root,
+            env,
+            "social.jsonl",
+            tmp_path,
+            {"HISTORY_LOCK_WAIT_SECONDS": "30"},
+        )
+    finally:
+        worker.join()
+        os.close(fd)
+    assert r.returncode != 0
+    assert "history file changed while the refresh ran" in r.stderr
+    assert target.read_text() == "redacted\n"
+
+
+def test_the_engines_history_lock_file_is_tolerated_and_not_carried(
+    tmp_path: Path,
+) -> None:
+    root, env = _refresh_fixture(tmp_path)
+    r = _run_refresh(root, env, "social.jsonl .social.jsonl.lock", tmp_path)
+    assert r.returncode == 0, r.stderr
+    assert (root / "history" / "social.jsonl").read_text() == "row\n"
+    # The lock file in the repository folder is the script's own, empty one; the
+    # engine's copy (which holds "row") was not carried.
+    assert (root / "history" / ".social.jsonl.lock").read_bytes() == b""
 
 
 def test_any_other_file_in_the_history_folder_is_refused_before_anything_is_written(
@@ -350,6 +501,28 @@ def test_any_other_file_in_the_history_folder_is_refused_before_anything_is_writ
             else None
         )
         assert after == before
+
+
+def test_redaction_leftovers_and_the_lock_file_are_git_ignored(tmp_path: Path) -> None:
+    repo = tmp_path / "ig"
+    (repo / "history").mkdir(parents=True)
+    shutil.copy(TEMPLATE / ".gitignore", repo / ".gitignore")
+    _git(repo, "init", "-q")
+
+    def ignored(name: str) -> bool:
+        r = subprocess.run(  # noqa: S603 - fixed argv in a temp repo
+            [GIT, "check-ignore", "-q", "--", name], cwd=repo, check=False
+        )
+        return r.returncode == 0
+
+    for name in (
+        "history/.social.jsonl.redact-0a1b2c3d.tmp",
+        "history/.social.jsonl.redact-0a1b2c3d.mark",
+        "history/.social.jsonl.lock",
+    ):
+        assert ignored(name), name
+    for name in ("history/social.jsonl", "numbers.json", "history/notes.txt"):
+        assert not ignored(name), name
 
 
 GUARD = TEMPLATE / "scripts" / "unmerged-history.sh"
@@ -410,3 +583,38 @@ def test_the_workflow_runs_the_unmerged_guard_before_replacing_the_branch() -> N
     run = next(s["run"] for s in publish if "commit -m" in s.get("run", ""))
     assert "unmerged-history.sh" in run
     assert run.index("unmerged-history.sh") < run.index("push --force-with-lease")
+
+
+def _path_without(tool: str, tmp: Path) -> str:
+    """A PATH holding every program of the real PATH except ``tool``."""
+    shim = tmp / "nopath"
+    shim.mkdir()
+    for folder in os.environ["PATH"].split(os.pathsep):
+        if not os.path.isdir(folder):
+            continue
+        for entry in os.scandir(folder):
+            link = shim / entry.name
+            if (
+                entry.name != tool
+                and not link.exists()
+                and os.access(entry.path, os.X_OK)
+            ):
+                link.symlink_to(entry.path)
+    return str(shim)
+
+
+def test_without_flock_the_history_is_not_installed(tmp_path: Path) -> None:
+    """The move cannot be made safe against a redaction without the lock."""
+    root, env = _refresh_fixture(tmp_path)
+    (root / "history").mkdir(exist_ok=True)
+    target = root / "history" / "social.jsonl"
+    target.write_text("old\n")
+    numbers = root / "numbers.json"
+    numbers_before = numbers.read_bytes() if numbers.exists() else None
+    env["PATH"] = f"{tmp_path / 'bin'}:{_path_without('flock', tmp_path)}"
+    r = _run_refresh(root, env, "social.jsonl", tmp_path)
+    assert r.returncode != 0
+    assert "flock" in r.stderr
+    assert "nothing was overwritten" in r.stderr
+    assert target.read_text() == "old\n"
+    assert (numbers.read_bytes() if numbers.exists() else None) == numbers_before

@@ -49,13 +49,23 @@ from reach_around.counts.files import (
 )
 from reach_around.counts.history import (
     ANALYTICS_PROVIDER,
+    API_PROVIDERS,
     MAX_BATCH,
+    REASONS,
     HistoryError,
+    OldCopyRemainsError,
     Record,
+    RedactDurabilityError,
     append_records,
+    check_redaction_arguments,
     dump_new_history,
+    find_stale_redaction_temps,
+    find_unmarked_redaction_temps,
     new_run_id,
+    plan_redaction,
     read_history,
+    redact_records,
+    remove_stale_redaction_temps,
 )
 from reach_around.counts.importer import (
     MAX_CSV_BYTES,
@@ -95,6 +105,7 @@ EXIT_WRITE = 1
 EXIT_USAGE = 2
 EXIT_SOURCE_FAILED = 3
 EXIT_DUE = 4
+EXIT_REPLACED_UNSURE = 5  # history-redact: the file was replaced, durability unsure
 
 
 @dataclass(frozen=True)
@@ -584,11 +595,106 @@ def run_history_verify(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def _safe(text: str) -> str:
+    """``text`` with every control or non-ASCII character escaped, for a terminal."""
+    return "".join(
+        c if " " <= c <= "~" else c.encode("unicode_escape").decode("ascii")
+        for c in text
+    )
+
+
+def _say(message: str, stream: TextIO | None = None) -> None:
+    """Print one control-safe line: a file name can hold an escape sequence."""
+    print(_safe(message), file=stream if stream is not None else sys.stdout)
+
+
+def run_history_redact(args: argparse.Namespace) -> int:
+    try:
+        target = _history_target(args)
+    except (ConfigError, ValueError, OSError) as exc:
+        _say(f"error: {exc}", sys.stderr)
+        return EXIT_USAGE
+    try:
+        history = read_history(target)
+        plan = plan_redaction(
+            history,
+            platform=args.platform,
+            source=args.source,
+            before=args.before,
+            metric=args.metric,
+            include_hand_kept=args.include_hand_kept,
+            provider=args.provider,
+        )
+        stale = find_stale_redaction_temps(target)
+        if not args.confirm:
+            # Counts and dates only: never a value, note or hash.
+            span = (
+                f"{min(r.as_of_utc for r in plan)[:10]} to "
+                f"{max(r.as_of_utc for r in plan)[:10]}"
+                if plan
+                else "none"
+            )
+            _say(
+                f"dry run: {len(plan)} lines would be redacted (as-of days {span}); "
+                "nothing written. Add --confirm to redact."
+            )
+            if stale:
+                _say(
+                    f"{len(stale)} stale redaction temporary file(s) found "
+                    "(--confirm removes them): " + ", ".join(stale)
+                )
+            unmarked = find_unmarked_redaction_temps(target)
+            if unmarked:
+                _say(
+                    f"{unmarked} file(s) named like a redaction temporary have no "
+                    "marker (a crash before it was written?); they are never "
+                    "removed automatically; look at them and remove them by hand"
+                )
+            return EXIT_OK
+        check_redaction_arguments(args.reason, args.trigger_date)
+        removed = remove_stale_redaction_temps(target, stale)
+        if removed:
+            _say(f"removed {removed} stale redaction temporary file(s)")
+        notices: list[str] = []
+        try:
+            count = redact_records(
+                target,
+                plan,
+                reason=args.reason,
+                trigger_date=args.trigger_date,
+                confirm=True,
+                include_hand_kept=args.include_hand_kept,
+                notices=notices,
+            )
+        finally:
+            for notice in notices:
+                _say(notice)
+    except OldCopyRemainsError as exc:
+        _say(f"error: {exc}; the file is {exc.temp_name}", sys.stderr)
+        _say(
+            "if the retry fails too, remove that file by hand: the old values "
+            "stay on disk until it is gone",
+            sys.stderr,
+        )
+        return EXIT_REPLACED_UNSURE
+    except RedactDurabilityError as exc:
+        # Fixed words, never content. Exit 5: the state needs checking.
+        _say(f"error: {exc}", sys.stderr)
+        return EXIT_REPLACED_UNSURE
+    except HistoryError as exc:
+        _say(f"error: {exc}", sys.stderr)
+        return EXIT_WRITE
+    _say(f"redacted {count} lines; run history-verify, then commit the file")
+    return EXIT_OK
+
+
 def _dispatch(args: argparse.Namespace) -> int:
     if args.counts_command == "history-add":
         return run_history_add(args)
     if args.counts_command == "history-verify":
         return run_history_verify(args)
+    if args.counts_command == "history-redact":
+        return run_history_redact(args)
     if args.counts_command == "history-import-beacons":
         return run_beacons_import(args.config, args.csv, args.file, args.dry_run)
     if args.counts_command == "import":
@@ -643,6 +749,40 @@ def _register_history(
         "1 when the file is damaged (including a truncated last line).",
     )
     _where(verify)
+    redact = actions.add_parser(
+        "history-redact",
+        help="replace stored api records with tombstones (owner-run, not a refresh)",
+        description="Remove the value, note and era of matching records from the "
+        "working file and re-chain it. Dry run by default (prints counts only); "
+        "--confirm rewrites the file atomically. Only api rows unless "
+        "--include-hand-kept. A tombstone does not remove the values from git "
+        "history. Exit 0 done, 1 refused, 2 usage or config error, 5 the file was "
+        "replaced (or may have been) but the result needs checking: run "
+        "history-verify before anything else.",
+    )
+    _where(redact)
+    redact.add_argument("--platform")
+    redact.add_argument(
+        "--provider",
+        choices=API_PROVIDERS,
+        help="select records by their api_provider tag (never by platform name)",
+    )
+    redact.add_argument("--metric")
+    redact.add_argument("--source", choices=("api", "hand_kept", "imported"))
+    redact.add_argument(
+        "--before",
+        help="UTC date YYYY-MM-DD: redact rows on earlier days (default: all days)",
+    )
+    redact.add_argument("--reason", choices=REASONS, required=True)
+    redact.add_argument(
+        "--trigger-date",
+        required=True,
+        help="YYYY-MM-DD of the revocation, request or expiry that started the clock",
+    )
+    redact.add_argument("--include-hand-kept", action="store_true")
+    mode = redact.add_mutually_exclusive_group()
+    mode.add_argument("--dry-run", action="store_true", help="the default")
+    mode.add_argument("--confirm", action="store_true", help="rewrite the file")
     beacons = actions.add_parser(
         "history-import-beacons",
         help="import a Beacons Link in Bio analytics CSV into a separate history file",
