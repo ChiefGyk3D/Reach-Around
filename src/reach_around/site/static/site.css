@@ -386,7 +386,6 @@ a:focus-visible, summary:focus-visible, button:focus-visible {
   text-underline-offset: 0.3em;
   overflow-wrap: anywhere;
 }
-.site-nav a:hover { color: var(--ra-color-text); text-decoration-color: currentColor; }
 .site-nav a:focus-visible { outline-offset: -0.125rem; }
 .site-nav a[aria-current="page"] {
   color: var(--ra-color-text);
@@ -536,6 +535,7 @@ a.link-featured .link-title { font-size: var(--ra-text-lg); }
 
 @media (hover: hover) {
   .social:hover { transform: translateY(-2px); color: var(--ra-color-accent); }
+  .site-nav a:hover { color: var(--ra-color-text); text-decoration-color: currentColor; }
   .tabs a:not([aria-current="page"]):hover { background-color: var(--ra-color-accent-edge); }
   a.link:hover {
     transform: translateY(-2px);
