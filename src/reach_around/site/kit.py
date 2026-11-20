@@ -31,6 +31,7 @@ it (``tests/site/test_kit_csp.py::test_only_the_gate_pages_load_the_vendor_scrip
 from __future__ import annotations
 
 import html
+import math
 import os
 import re
 import secrets
@@ -45,7 +46,7 @@ from typing import Any
 
 from jinja2 import Environment
 
-from reach_around.config.blocks import platform_name
+from reach_around.config.blocks import Platforms, platform_name
 from reach_around.config.cutover import cutover_label, live_since, utc_today
 from reach_around.config.engagement import ACROSS_PLATFORMS_NOTE, FORMULAS, rows_for
 from reach_around.config.era import classify_era, era_text
@@ -68,6 +69,9 @@ from reach_around.config.kit import (
 from reach_around.config.models import SiteConfig
 from reach_around.config.numbers import Numbers, stale_limit
 from reach_around.config.zones import ZONES, utc_day_start_iso
+from reach_around.funnel.floor import FLOOR, share_pins_small_count, shown_count
+from reach_around.funnel.floor import UNDER_FLOOR as UNDER_FLOOR
+from reach_around.site.platforms import platform_rows
 
 KIT_PAGE = Path("kit") / "index.html"
 RETRY_PAGE = Path("kit") / "retry" / "index.html"
@@ -735,7 +739,7 @@ def _metric_rows(
         {
             "platform": "" if m.platform == "other" else platform_name(m.platform),
             "label": m.label,
-            "value": f"{m.value:,}",
+            "value": shown_count(m.value),
             "as_of": m.as_of.isoformat() if m.as_of is not None else "",
             "era": era_text(classify_era(m.as_of, live_day)),
             "stale": (
@@ -755,9 +759,13 @@ def _total(
 ) -> dict[str, Any] | None:
     if total.total is None:
         return None
+    # A printed total minus the printed members would isolate a member under
+    # the floor, so one such member hides the total.
+    if any(m.in_total and m.value is not None and 0 < m.value < FLOOR for m in metrics):
+        return None
     dates = [m.as_of for m in metrics if m.in_total and m.value is not None and m.as_of]
     return {
-        "value": f"{total.total:,}",
+        "value": shown_count(total.total),
         "counted": total.counted,
         "oldest": min(dates).isoformat() if dates else "",
         "mixed": len({classify_era(d, live_day) for d in dates} - {"unknown"}) > 1,
@@ -774,6 +782,114 @@ def _imported_block(
     return {"heading": IMPORTED_HEADING, "note": IMPORTED_NOTE, "rows": rows}
 
 
+def platform_counts(
+    config: Any, numbers: Numbers | None, day: date
+) -> dict[str, list[int]]:
+    """The counts the link page prints beside each platform, by platform.
+
+    Typed counts and numbers-file counts, resolved the way the page resolves
+    them (a fresh file value wins). A count under the floor prints as "Under 5"
+    and is no base. The link page prints the exact count too, so the true count
+    is what a reader can recover.
+    """
+    found: dict[str, list[int]] = {}
+    for tab in config.tabs:
+        for block in tab.blocks:
+            if not isinstance(block, Platforms):
+                continue
+            rows = platform_rows(block, numbers, day, config)
+            for entry, row in zip(block.items, rows, strict=True):
+                if row.count is not None and row.count >= FLOOR:
+                    found.setdefault(entry.platform, []).append(row.count)
+    return found
+
+
+def audience_bases(
+    platform: str,
+    metrics: Any,
+    analytics: Any,
+    link_page: Mapping[str, list[int]] | None = None,
+) -> list[int]:
+    """Every count of one platform that is printed at 5 or more, anywhere a
+    reader of the kit can see it: the kit's headline numbers (typed or from the
+    numbers file), the followers of its analytics tab, and the count beside it
+    on the link page. A rounded form (1.2k) is read at its true value: the
+    share rule is monotone, so the true count is never below what the reader can
+    rule in, and a cell the reader could not call small is never hidden for it."""
+    found = [
+        m.value
+        for m in metrics
+        if m.platform == platform and m.value is not None and m.value >= FLOOR
+    ]
+    found += [
+        row.followers
+        for row in analytics
+        if row.platform == platform and row.followers >= FLOOR
+    ]
+    found += (link_page or {}).get(platform, [])
+    return found
+
+
+def demographic_withheld(demo: Any, bases: list[int]) -> frozenset[str]:
+    """The groups of one demographics entry that would pin a small count.
+
+    A whole-number share printed beside a count of the same platform tells the
+    reader how many people the cell holds. A group with such a cell is withheld
+    whole, because its shares total 100 and one printed cell's complement would
+    give the hidden one back. Groups: gender, ages, countries, cities.
+    """
+
+    def pinned(percent: int, base: int) -> bool:
+        return share_pins_small_count(percent, 100, base)
+
+    hidden: set[str] = set()
+    for base in bases:
+        gender = demo.gender
+        if pinned(gender.male, base) or pinned(gender.female, base):
+            hidden.add("gender")
+        for age in demo.ages:
+            if pinned(age.all, base):
+                hidden.add("ages")
+            for sex, share in (("male", gender.male), ("female", gender.female)):
+                most_of_sex = base * (2 * share + 1) // 200
+                if pinned(getattr(age, sex), most_of_sex):
+                    hidden.add("ages")
+        for name in ("countries", "cities"):
+            if any(pinned(place.percentage, base) for place in getattr(demo, name)):
+                hidden.add(name)
+    return frozenset(hidden)
+
+
+def _post_rows(recent: list[Any]) -> dict[str, list[dict[str, Any]]]:
+    posts: dict[str, list[dict[str, Any]]] = {}
+    for post in recent:
+        posts.setdefault(platform_name(post.platform), []).append(
+            {
+                "thumbnail": post.thumbnail,
+                "views": shown_count(post.views),
+                "likes": shown_count(post.likes),
+                "comments": shown_count(post.comments),
+                "reposts": None if post.reposts is None else shown_count(post.reposts),
+                "quotes": None if post.quotes is None else shown_count(post.quotes),
+            }
+        )
+    return posts
+
+
+def _case_rows(cases: list[Any]) -> list[dict[str, Any]]:
+    return [
+        {
+            "thumbnails": case.thumbnails,
+            "views": shown_count(case.views),
+            "likes": shown_count(case.likes),
+            "comments": shown_count(case.comments),
+            "period_start": case.period_start.isoformat(),
+            "period_end": case.period_end.isoformat(),
+        }
+        for case in cases
+    ]
+
+
 def _content(
     projection: dict[str, Any],
     live_day: date | None = None,
@@ -781,18 +897,7 @@ def _content(
     today: date | None = None,
 ) -> dict[str, Any]:
     metrics: list[ResolvedMetric] = projection["metrics"]
-    posts: dict[str, list[dict[str, Any]]] = {}
-    for post in projection.get("recent_posts", []):
-        posts.setdefault(platform_name(post.platform), []).append(
-            {
-                "thumbnail": post.thumbnail,
-                "views": f"{post.views:,}",
-                "likes": f"{post.likes:,}",
-                "comments": f"{post.comments:,}",
-                "reposts": f"{post.reposts:,}" if post.reposts is not None else None,
-                "quotes": f"{post.quotes:,}" if post.quotes is not None else None,
-            }
-        )
+    posts = _post_rows(projection.get("recent_posts", []))
     return {
         "live_since": (
             {
@@ -820,11 +925,36 @@ def _content(
 
 
 def _compact_number(value: int) -> str:
+    if 0 < value < FLOOR:
+        return UNDER_FLOOR
     if value >= 1_000_000:
         return f"{value / 1_000_000:.1f}M"
     if value >= 1_000:
         return f"{value / 1_000:.1f}k"
     return str(value)
+
+
+def _change_text(followers: int, percent: float) -> str:
+    """The 30-day change, or "" when it would pin a count under the floor.
+
+    The reader sees the text, one decimal, and can work back to an earlier
+    count. Every whole earlier count whose own change prints as this very text
+    is checked, so a typed 66.72 (printed +66.7%) is tested as 66.7.
+    """
+    # Zero is withheld with the small counts: the text "-100.0%" fits every
+    # earlier count, so it tells a reader nothing, and the safe side costs
+    # nothing.
+    if followers < FLOOR:
+        return ""
+    text = f"{percent:+.1f}%"
+    shown = float(text[:-1])
+    low, high = shown - 0.05 - 1e-6, shown + 0.05 + 1e-6
+    if 1 + low / 100 > 0:
+        first = math.ceil(followers / (1 + high / 100))
+        last = math.floor(followers / (1 + low / 100))
+        if any(0 < n < FLOOR for n in range(max(first, 0), min(last, FLOOR) + 1)):
+            return ""
+    return text
 
 
 def _analytics_rows(rows: list[Any], today: date | None) -> list[dict[str, Any]]:
@@ -835,7 +965,7 @@ def _analytics_rows(rows: list[Any], today: date | None) -> list[dict[str, Any]]
             "synced_with": row.synced_with,
             "as_of": row.as_of.isoformat(),
             "followers": _compact_number(row.followers),
-            "delta": f"{row.followers_30_day_percent:+.1f}%",
+            "delta": _change_text(row.followers, row.followers_30_day_percent),
             "stats": [
                 {"label": stat.label, "value": _compact_number(stat.value)}
                 for stat in row.stats
@@ -946,19 +1076,10 @@ def render_kit(
         if kit.engagement and not data["engagement"]:
             data["engagement"] = kit.engagement
         content = _content(data, live_day, config, today)
+        link_counts = platform_counts(config, numbers, today)
         content.update(
             partners=data["partners"],
-            case_studies=[
-                {
-                    "thumbnails": case.thumbnails,
-                    "views": f"{case.views:,}",
-                    "likes": f"{case.likes:,}",
-                    "comments": f"{case.comments:,}",
-                    "period_start": case.period_start.isoformat(),
-                    "period_end": case.period_end.isoformat(),
-                }
-                for case in data["case_studies"]
-            ],
+            case_studies=_case_rows(data["case_studies"]),
             services=data["services"],
             rates=data["rates"],
             testimonials=data["testimonials"],
@@ -968,6 +1089,17 @@ def render_kit(
                     **d.model_dump(),
                     "platform_name": platform_name(d.platform),
                     "as_of": d.as_of.isoformat(),
+                    "withheld": sorted(
+                        demographic_withheld(
+                            d,
+                            audience_bases(
+                                d.platform,
+                                data["metrics"],
+                                data["analytics"],
+                                link_counts,
+                            ),
+                        )
+                    ),
                 }
                 for d in data["demographics"]
             ],

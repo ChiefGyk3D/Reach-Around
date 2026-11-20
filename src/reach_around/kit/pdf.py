@@ -41,7 +41,7 @@ import signal
 import subprocess
 import tempfile
 import unicodedata
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
@@ -60,16 +60,21 @@ from reach_around.config.kit import (
 )
 from reach_around.config.models import SiteConfig
 from reach_around.config.numbers import Numbers
+from reach_around.funnel.floor import shown_count
 from reach_around.kit.output import check_name, confine_out_dir, write_private
 from reach_around.kit.pdftext import PdfTextError, extract_pages
 from reach_around.kit.stage import stage_page, valid_as_of_text
 from reach_around.site.kit import (
     GUARD_MIN_LENGTH,
+    _analytics_rows,
     _gated_strings,
     _metric_rows,
     _public_values,
     _total,
+    audience_bases,
     canonical,
+    demographic_withheld,
+    platform_counts,
     text_fields,
 )
 
@@ -367,6 +372,7 @@ def _expected_text(
     public: bool = False,
     imported: ImportedHistory | None = None,
     live_day: date | None = None,
+    platform_counts: Mapping[str, list[int]] | None = None,
 ) -> list[tuple[str, str]]:
     """(where, text) for everything the page must print. A headline
     number is one entry per row (platform, measure, value and date together, in
@@ -397,6 +403,26 @@ def _expected_text(
     total = _total(unified_total(resolved), resolved)
     if total is not None:
         found.append(("the metric total", total["value"]))
+    # The analytics tiles (#397): the sync line, the followers with the change
+    # beside them, and each stat. Anchored on the sync line, which no headline
+    # number row prints, so an unrelated row cannot satisfy them. A count under
+    # the privacy floor is expected as "Under 5".
+    for card in _analytics_rows(kit.analytics, None):
+        where = f"the analytics row {card['platform_name']!r}"
+        change = (
+            f"{card['delta']} last 30 days"
+            if card["delta"]
+            else "30-day change not shown"
+        )
+        found.append(
+            (
+                where,
+                f"Synced with {card['synced_with']} on {card['as_of']}"
+                f"Followers{card['followers']}{change}",
+            )
+        )
+        for stat in card["stats"]:
+            found.append((where, stat["label"] + stat["value"]))
     # The block "Before Reach Around" prints where the display policy puts it.
     if imported is not None and (not public or kit.imported_history_public):
         found.extend(expected_text(imported, live_day))
@@ -414,9 +440,21 @@ def _expected_text(
         "demographics",
     ):
         for index, item in enumerate(getattr(kit, name)):
+            withheld = (
+                demographic_withheld(
+                    item,
+                    audience_bases(
+                        item.platform, resolved, kit.analytics, platform_counts
+                    ),
+                )
+                if name == "demographics"
+                else frozenset()
+            )
             for field, text in text_fields(item):
                 if field in {"url", "thumbnails"}:  # targets, not printed text
                     continue
+                if any(field.startswith(group) for group in withheld):
+                    continue  # a group held back for the privacy floor
                 if text:
                     found.append((f"kit.{name}[{index}].{field}", text))
             if name == "case_studies":
@@ -426,7 +464,9 @@ def _expected_text(
                     ("comments", "Comments"),
                 ):
                     value = getattr(item, field)
-                    found.append((f"kit.{name}[{index}].{field}", label + f"{value:,}"))
+                    found.append(
+                        (f"kit.{name}[{index}].{field}", label + shown_count(value))
+                    )
     if (
         kit.inquiry is not None
     ):  # the owner details print; the form beside them does not
@@ -508,6 +548,7 @@ def check_text(
     valid_as_of_text: str | None = None,
     imported: ImportedHistory | None = None,
     live_day: date | None = None,
+    platform_counts: Mapping[str, list[int]] | None = None,
 ) -> None:
     """Fail if a private value is in ``text`` or configured gated text is not.
 
@@ -551,7 +592,12 @@ def check_text(
                 "text from the gate form appears in the PDF; nothing was written"
             )
     expected = _expected_text(
-        kit, numbers, public=public, imported=imported, live_day=live_day
+        kit,
+        numbers,
+        public=public,
+        imported=imported,
+        live_day=live_day,
+        platform_counts=platform_counts,
     )
     if live_since_text is not None:
         expected.append(("the live-since line", live_since_text))
@@ -651,6 +697,18 @@ def build_public_kit_pdf(
     )
 
 
+def _link_page_counts(
+    config: SiteConfig, numbers: Numbers | None, created: date
+) -> dict[str, list[int]]:
+    """The link page's counts, resolved on both days the staged page may have
+    used, so a group the page withheld is not expected in the text."""
+    found: dict[str, list[int]] = {}
+    for day in {utc_today(), created}:
+        for platform, counts in platform_counts(config, numbers, day).items():
+            found.setdefault(platform, []).extend(counts)
+    return found
+
+
 def _print(
     config: SiteConfig,
     kit: KitConfig,
@@ -690,6 +748,7 @@ def _print(
         valid_as_of_text=valid_as_of_text(created) if public else None,
         imported=imported,
         live_day=day,
+        platform_counts=_link_page_counts(config, numbers, created),
     )
     path = write_private(target_dir, name, final, overwrite=overwrite)
     return PdfResult(path=path, pages=len(pages), size=len(final))

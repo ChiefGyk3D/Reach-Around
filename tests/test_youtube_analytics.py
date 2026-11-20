@@ -716,7 +716,7 @@ def test_a_renamed_slug_is_still_selected_for_deletion_and_notice(
 def test_the_report_refuses_analytics_whatever_the_platform_slug(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    records = refresh_renamed(tmp_path, monkeypatch, with_channel(ok_router(True)))
+    refresh_renamed(tmp_path, monkeypatch, with_channel(ok_router(True)))
     block = build_social(
         read_history(tmp_path / "history" / "social.jsonl"),
         cutover=None,
@@ -725,9 +725,8 @@ def test_the_report_refuses_analytics_whatever_the_platform_slug(
     shown = {(s["platform"], s["metric"]) for s in block["platforms"]}
     assert shown == {(SLUG, "subscribers")}
     refused = {(i["platform"], i["metric"]) for i in block["refused"]}
-    assert (SLUG, "views_1d") in refused and len(refused) == len(
-        {r.metric for r in records if r.metric != "subscribers"}
-    )
+    # private series are named by kind only, never by the cell they hold
+    assert refused == {(SLUG, "private analytics")}
 
 
 def test_records_are_identified_only_by_the_provider_tag() -> None:
@@ -747,7 +746,7 @@ def test_records_are_identified_only_by_the_provider_tag() -> None:
     assert deletion_candidates([untagged], today, revoked=True) == []
     block = build_social(History((tagged,)), cutover=None, today=today)
     assert block["platforms"] == [] and [i["metric"] for i in block["refused"]] == [
-        "views_1d"
+        "private analytics"
     ]
     assert deletion_candidates([tagged], today) == [tagged]
     assert deletion_candidates([tagged], today, revoked=True) == [tagged]
@@ -845,7 +844,7 @@ def test_a_legacy_tagged_original_with_untagged_correction_is_still_handled() ->
     assert deletion_candidates([orig, fix], later, revoked=True) == [orig, fix]
     block = build_social(History((orig, fix)), cutover=None, today=later)
     assert block["platforms"] == [] and [i["metric"] for i in block["refused"]] == [
-        "views_1d"
+        "private analytics"
     ]
 
 

@@ -11,12 +11,15 @@ from reach_around.config.cutover import utc_today
 from reach_around.config.era import classify_era, era_text
 from reach_around.config.numbers import Numbers, resolve_count, stale_limit
 from reach_around.config.tablinks import is_tab_ref
+from reach_around.funnel.floor import FLOOR, UNDER_FLOOR, shown_count
 
 _UNITS = ((10**3, "k"), (10**6, "M"), (10**9, "B"))
 
 
 def abbreviate(count: int) -> str:
     """3812 -> ``3.8k``. Integer math, round half up, no locale, no floats."""
+    if 0 < count < FLOOR:
+        return UNDER_FLOOR
     if count < 1000:
         return str(count)
     for index, (size, suffix) in enumerate(_UNITS):
@@ -67,7 +70,7 @@ def platform_rows(
                 label=entry.label,
                 count=count,
                 short=None if count is None else abbreviate(count),
-                exact=None if count is None else f"{count:,}",
+                exact=None if count is None else shown_count(count),
                 as_of=None if count is None or stamp is None else stamp.isoformat(),
                 stale=count is not None
                 and stamp is not None

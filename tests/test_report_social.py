@@ -257,7 +257,8 @@ def test_only_provenanced_youtube_data_api_subscribers_are_accepted() -> None:
 
     row = only(block, "youtube")
     assert row["latest"]["value"] == 123
-    assert block["refused"][0]["metric"] == "subscribers"
+    assert block["refused"][0]["metric"] == "private analytics"
+    assert "999" not in json.dumps(block)
 
 
 def test_display_zone_labels_instants() -> None:
@@ -448,3 +449,35 @@ def test_cli_history_file_is_unchanged(
     run(capsys, "--input", str(export(tmp_path, GOOD)), "--history", str(hist))
     assert hist.read_bytes() == before
     assert read_history(hist).records
+
+
+def test_refused_private_series_are_not_named_in_any_output() -> None:
+    """A refused private series would name the cell it holds (for example
+    ``fdemo_age_25_34``); with a raised floor that is the label of a cell that
+    was merged away. One generic line is printed instead, in text, JSON and CSV."""
+    recs = [
+        rec(
+            "instagram",
+            TODAY,
+            3,
+            metric="fdemo_age_25_34",
+            api_provider="instagram_insights",
+        ),
+        rec(
+            "instagram",
+            TODAY,
+            9,
+            metric="fdemo_country_de",
+            api_provider="instagram_insights",
+        ),
+        rec(
+            "instagram", TODAY, 5, metric="views_7d", api_provider="instagram_insights"
+        ),
+    ]
+    block = social(recs)
+    flat = json.dumps(block) + "\n".join(social_lines(block))
+    flat += repr(social_csv_rows(block))
+    for name in ("fdemo_age_25_34", "fdemo_country_de", "25_34", "views_7d"):
+        assert name not in flat, name
+    assert [i["metric"] for i in block["refused"]] == ["private analytics"]
+    assert "private analytics" in "\n".join(social_lines(block))

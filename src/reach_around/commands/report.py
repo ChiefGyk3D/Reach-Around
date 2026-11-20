@@ -26,6 +26,7 @@ from reach_around.funnel.export import ExportError, load_exports
 from reach_around.funnel.htmlout import render_html
 from reach_around.funnel.ledger import LedgerError, init_ledger, reanchor_ledger
 from reach_around.funnel.owner import owner_view
+from reach_around.funnel.private_analytics import build_private
 from reach_around.funnel.release import release_report
 from reach_around.funnel.report import FLOOR, build_report, render_text
 from reach_around.funnel.social import build_social
@@ -149,6 +150,13 @@ def run_report(args: argparse.Namespace) -> int:
         if history is not None:
             report["social"] = build_social(
                 history,
+                cutover=cutover,
+                today=utc_today(),
+                zone=zone,
+            )
+            report["private_analytics"] = build_private(
+                history,
+                floor=args.floor,
                 cutover=cutover,
                 today=utc_today(),
                 zone=zone,

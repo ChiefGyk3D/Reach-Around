@@ -692,7 +692,7 @@ def test_records_are_identified_only_by_the_provider_tag() -> None:
     assert block["refused"] == [] and deletion_candidates([untagged], today) == []
     block = build_social(History((tagged,)), cutover=None, today=today)
     assert block["platforms"] == [] and [i["metric"] for i in block["refused"]] == [
-        "views_7d"
+        "private analytics"
     ]
     assert deletion_candidates([tagged], today, revoked=True) == [tagged]
 
@@ -836,7 +836,7 @@ def test_a_renamed_slug_is_still_tagged_and_refused_by_the_report(
     private = [r for r in records if r.metric not in ("followers",)]
     assert private and all(r.api_provider == PROVIDER for r in private)
     block = build_social(History(tuple(records)), cutover=None, today=TODAY)
-    assert {i["metric"] for i in block["refused"]} == {r.metric for r in private}
+    assert {i["metric"] for i in block["refused"]} == {"private analytics"}
     assert all(s["metric"] == "followers" for s in block["platforms"])
 
 

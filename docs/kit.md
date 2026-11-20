@@ -119,6 +119,46 @@ color is never the only way to read it. The page uses inline SVG and native
 progress bars and loads no chart script. Demographics remain gated and are
 included in the private PDF; they never enter the public page or public PDF.
 
+### The privacy floor in the kit
+
+A count of 1 to 4 is never printed in the kit. These print "Under 5" on the page
+and in both PDFs: a headline number, the followers and stat tiles of a platform
+analytics tab, the views, likes, comments, reposts and quotes of a recent post and
+of a case study, the views and clicks of the "Before Reach Around" block, an
+average views per post, and the short count beside a platform on the link page.
+Zero prints as zero, and 5 prints as 5.
+
+Three derived figures follow from that:
+
+- **Total.** A printed total minus the printed members would isolate a small
+  member, so the combined total is not printed while any number that counts toward
+  it is 1 to 4.
+- **30-day change.** A tab's change is not printed when its followers are under the
+  floor (zero included: "-100.0%" fits every earlier count, so nothing is lost by
+  holding it back), or when any whole earlier count under the floor would print exactly this
+  change (the check uses the text a reader sees, one decimal, not the typed value).
+- **Demographic shares.** A whole-number share printed beside a count of the same
+  platform tells a reader how many people the cell holds. The counts a share is
+  read against are every count of that platform printed at 5 or more on any page
+  or PDF of the site: the headline numbers of the kit (typed, or from the numbers
+  file), the followers of the platform's analytics tab, and the count beside the
+  platform on the link page (typed on the platforms item, or from the numbers
+  file, as the page resolves it), in its short and its exact form. A count under 5
+  prints as "Under 5" and is no base. A rounded form such as 1.2k is read at the
+  true count: the rule only ever hides more than the rounded form would allow a
+  reader to call small. When the most a cell can hold against any such count,
+  given the half-point rounding of the share, is 1 to 4, the whole group (gender,
+  age, countries or cities) is replaced by a "not shown" line, because its shares
+  total 100 and one hidden cell would follow from the rest. Only when no count of
+  the platform is printed anywhere do the shares print. A count the owner keeps
+  off every page (a figure in the history file, say) is not a base.
+
+The PDF text check expects these forms, including the tile of each analytics tab
+(its sync line, followers, change and stats), so a page that printed a number
+fails the build. Collected YouTube Analytics and Instagram insights figures are
+never in the kit; they are in the owner report only
+([report.md](report.md#private-platform-analytics---history-397)).
+
 ### Public page
 
 The page uses a dark press-deck layout built from the shared brand components.

@@ -22,6 +22,7 @@ from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any
 
 from reach_around.config.blocks import platform_name
+from reach_around.funnel.floor import shown_count
 
 if TYPE_CHECKING:
     from reach_around.config.kit import EngagementRow, KitConfig
@@ -102,7 +103,7 @@ def rows_for(entries: Sequence[EngagementRow]) -> list[dict[str, Any]]:
                 **common,
                 "measure": AVERAGE_VIEWS_MEASURE,
                 "formula": AVERAGE_VIEWS_FORMULA,
-                "value": NOT_AVAILABLE if average is None else f"{average:,}",
+                "value": NOT_AVAILABLE if average is None else shown_count(average),
                 "note": "",
             }
         )
