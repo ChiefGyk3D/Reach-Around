@@ -308,22 +308,44 @@ export async function reserveRoute(env: DbEnv, route: RouteName, nowMs: number):
   }
 }
 
+/** The result of claiming a Turnstile token and taking a gate route unit together. */
+export type GateClaim = "ok" | "replay" | "budget";
+
 /**
- * Read-only: is the current UTC hour's gate budget still below its limit? One SELECT, no write. The
- * gate asks before it writes a single-use claim, so a request the budget would refuse right after
- * leaves nothing behind. It does not reserve: reserveRoute stays the one atomic decision. Any error,
- * or an invalid setting, answers false (the same refusal reserveRoute gives).
+ * Claim a verified Turnstile token (its single-use row) AND take one unit of the hourly gate budget as
+ * ONE atomic step. The claim row is written only when the unit was actually taken (a conditional insert
+ * on `changes()` in the same batch), so claim writes can never exceed the hourly gate budget, however
+ * many requests arrive at once. A token already claimed is found by one read first, so a replay spends
+ * no unit and writes nothing. Two concurrent first uses of one token both take a unit, one claim
+ * insert loses the key, and that unit is given back right after (a lost unit if the give-back fails,
+ * never an extra row). Any error or invalid setting answers "budget" or throws; callers treat a throw as
+ * a refusal.
  */
-export async function gateRouteHasRoom(env: DbEnv, nowMs: number): Promise<boolean> {
+export async function claimGateUnit(env: DbEnv, claimKey: string, claimDay: string, nowMs: number): Promise<GateClaim> {
+  if (!/^ts-[0-9a-f]{40}$/.test(claimKey)) throw new RangeError("claim key must be ts- and 40 hex digits");
+  const limit = loadKitLimits(env).routeGatePerHour;
+  if (limit <= 0) return "budget";
+  const hour = utcHour(nowMs);
+  const seen = await env.DB.prepare("SELECT 1 AS x FROM counters WHERE key = ?1 AND day = ?2").bind(claimKey, claimDay).first();
+  if (seen !== null) return "replay";
+  const [reserved, claimed] = await env.DB.batch([
+    env.DB.prepare(
+      `INSERT INTO counters (key, day, count) SELECT ?1, ?2, 1 WHERE ?3 > 0
+       ON CONFLICT (key, day) DO UPDATE SET count = count + 1 WHERE count < ?3`, // CONTROL:route-budget
+    ).bind("route-gate", hour, limit),
+    env.DB.prepare(
+      `INSERT INTO counters (key, day, count) SELECT ?1, ?2, 1 WHERE changes() = 1
+       ON CONFLICT (key, day) DO NOTHING`, // CONTROL:turnstile-single-use
+    ).bind(claimKey, claimDay),
+  ]);
+  if (reserved!.meta.changes !== 1) return "budget";
+  if (claimed!.meta.changes === 1) return "ok";
   try {
-    const limit = loadKitLimits(env).routeGatePerHour;
-    const row = await env.DB.prepare("SELECT count FROM counters WHERE key = ?1 AND day = ?2")
-      .bind("route-gate", utcHour(nowMs))
-      .first<{ count: number }>();
-    return limit > 0 && (row === null || row.count < limit);
+    await env.DB.prepare("UPDATE counters SET count = count - 1 WHERE key = ?1 AND day = ?2 AND count > 0").bind("route-gate", hour).run();
   } catch {
-    return false;
+    // The unit stays spent: the budget is slightly stricter for the hour, never looser.
   }
+  return "replay";
 }
 
 async function reserveDaily(env: DbEnv, key: string, pick: (c: KitLimits) => number, nowMs: number): Promise<boolean> {

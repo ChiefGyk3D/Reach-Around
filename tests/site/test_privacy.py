@@ -96,8 +96,11 @@ def test_page_promise_matches_click_code_in_both_places() -> None:
     promised = "honors Global Privacy Control and Do Not Track for link clicks" in what
     click_js = (STATIC / "click.js").read_text(encoding="utf-8")
     click_ts = (WORKER / "click.ts").read_text(encoding="utf-8")
-    assert click_js and click_ts  # the guard collected something
-    assert promised == (checks_signal_js(click_js) and checks_signal_ts(click_ts))
+    optout_ts = (WORKER / "optout.ts").read_text(encoding="utf-8")
+    assert click_js and click_ts and optout_ts  # the guard collected something
+    assert promised == (
+        checks_signal_js(click_js) and checks_signal_ts(click_ts, optout_ts)
+    )
     assert promised
 
 
@@ -111,11 +114,12 @@ def checks_signal_js(source: str) -> bool:
     )
 
 
-def checks_signal_ts(source: str) -> bool:
-    """Both headers are read AND the opt-out is checked in the click handler."""
+def checks_signal_ts(source: str, optout: str) -> bool:
+    """Both headers are read in the one shared parser AND the click handler uses it."""
     return (
-        'get("Sec-GPC")' in source
-        and 'get("DNT")' in source
+        'get("Sec-GPC")' in optout
+        and 'get("DNT")' in optout
+        and 'from "./optout"' in source
         and "optedOut(request)" in source
     )
 
@@ -123,8 +127,9 @@ def checks_signal_ts(source: str) -> bool:
 def test_the_signal_guard_bites_on_the_real_files() -> None:
     click_js = (STATIC / "click.js").read_text(encoding="utf-8")
     click_ts = (WORKER / "click.ts").read_text(encoding="utf-8")
+    optout_ts = (WORKER / "optout.ts").read_text(encoding="utf-8")
     assert checks_signal_js(click_js)
-    assert checks_signal_ts(click_ts)
+    assert checks_signal_ts(click_ts, optout_ts)
     for old, new in (
         ("navigator.globalPrivacyControl", "navigator.zzGpc"),
         ("navigator.doNotTrack", "navigator.zzDnt"),
@@ -135,10 +140,20 @@ def test_the_signal_guard_bites_on_the_real_files() -> None:
     for old, new in (
         ('get("Sec-GPC")', 'get("X-Zz")'),
         ('get("DNT")', 'get("X-Zz")'),
+    ):
+        assert old in optout_ts
+        assert not checks_signal_ts(click_ts, optout_ts.replace(old, new)), old
+    for old, new in (
+        ('from "./optout"', 'from "./zz"'),
         ("optedOut(request)", "false"),
     ):
         assert old in click_ts
-        assert not checks_signal_ts(click_ts.replace(old, new)), old
+        assert not checks_signal_ts(click_ts.replace(old, new), optout_ts), old
+    # The page-view and beacon routes use the same shared parser, not a copy.
+    for name in ("view.ts", "beacon.ts"):
+        route = (WORKER / name).read_text(encoding="utf-8")
+        assert 'from "./optout"' in route and "optedOut(request)" in route, name
+        assert 'get("Sec-GPC")' not in route and 'get("DNT")' not in route, name
 
 
 def test_click_disclosure_says_none_vs_other_and_keeps_totals_apart() -> None:

@@ -683,17 +683,21 @@ form posts to `/k/gate`. They ship off at the cutover (`features.kit_gate`).
   not built, so until it lands a leaked cookie works for its whole lifetime,
   24 hours by default (`TOKEN_TTL_SECONDS`).
 - **Counter growth.** Each solved challenge writes one single-use claim row,
-  after Turnstile passes and before the business budget is charged. While the
-  hour's gate budget is spent the gate reads that budget row first (a SELECT, no
-  write) and refuses without writing the claim; under budget, a request that
-  loses the race for the last unit can still leave one claim row. The claim
-  writes are bounded per network, not globally and not in the modeled worst
-  case (the `gate x 5` figure in `docs/deploy.md`): the allowance in front of
-  Turnstile (`GATE_CHECK_LIMITER`, 20 a minute per coarse network) allows at most
-  1,200 claims an hour and about 28,800 rows a day per network, about twice that
-  counting the purge deletes, multiplied by the number of networks and limited
-  by the cost of solving the challenge. The hourly purge deletes at most 500
-  counter rows a run, and is unchanged.
+  after Turnstile passes, and the claim and the hourly gate unit are one atomic
+  step: a single D1 batch takes the unit (an upsert that only counts below
+  `ROUTE_BUDGET_GATE`) and inserts the claim only if the unit was taken. Claim
+  rows therefore cannot outnumber the hour's gate budget, however many requests
+  arrive at once; at the default 150 an hour that is at most 3,600 claim rows a
+  day. A token already claimed is found by one read first and spends no unit.
+  Two concurrent first uses of one token both take a unit; the second claim
+  insert loses the key and its unit is given back at once (if the give-back
+  fails the unit stays spent, which only makes the hour stricter). While the
+  budget is spent nothing is written. The claim rows are one counters row each
+  on top of the figure in `docs/deploy.md` (`gate x 5` counts the budgeted
+  operation itself and is unchanged), now bounded by the gate budget instead of
+  by the allowance in front of Turnstile (`GATE_CHECK_LIMITER`, 20 a minute per
+  coarse network), which still limits vendor calls per network. The hourly purge
+  deletes at most 500 counter rows a run, and is unchanged.
 - **Accepted risk: spending the new-lead cap.** A client that passes Turnstile
   can use plus-tag or invented addresses to spend the per-day new-lead cap (100)
   or `MAX_LEADS`. Visitors are still unlocked; the owner loses storage of later

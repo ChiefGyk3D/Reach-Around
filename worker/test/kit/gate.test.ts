@@ -330,6 +330,48 @@ describe("gate routes: refusals, limits and session rules", () => {
     expect(claims!.n).toBe(1);
   });
 
+  const claimRows = async () =>
+    (await testEnv.DB.prepare("SELECT count(*) AS n FROM counters WHERE key LIKE 'ts-%'").first<{ n: number }>())!.n;
+  const gateSpent = async () =>
+    (await testEnv.DB.prepare("SELECT count FROM counters WHERE key = 'route-gate'").first<{ count: number }>())?.count ?? 0;
+
+  it("concurrent solved challenges cannot write more claims than the hourly budget", async () => {
+    const e = baseEnv({ ROUTE_BUDGET_GATE: "1" });
+    const results = await Promise.all(
+      Array.from({ length: 8 }, (_, i) =>
+        post({ headers: fromIp(100 + i * 2), fields: { email: `r${i}@example.com`, "cf-turnstile-response": `ok-r${i}` } }, e),
+      ),
+    );
+    expect(results.filter((r) => r.res.headers.get("set-cookie") !== null).length).toBe(1);
+    expect(await claimRows()).toBe(1);
+    expect(await gateSpent()).toBe(1);
+  });
+
+  it("concurrent solved challenges under a larger budget write exactly one claim and one unit each", async () => {
+    const e = baseEnv({ ROUTE_BUDGET_GATE: "3" });
+    const results = await Promise.all(
+      Array.from({ length: 8 }, (_, i) =>
+        post({ headers: fromIp(130 + i * 2), fields: { email: `q${i}@example.com`, "cf-turnstile-response": `ok-q${i}` } }, e),
+      ),
+    );
+    expect(results.filter((r) => r.res.headers.get("set-cookie") !== null).length).toBe(3);
+    expect(await claimRows()).toBe(3);
+    expect(await gateSpent()).toBe(3);
+  });
+
+  it("a replayed token does not spend the route budget, sequentially or concurrently", async () => {
+    const e = baseEnv({ ROUTE_BUDGET_GATE: "5" });
+    const same = (i: number): Opts => ({ headers: fromIp(170 + i * 2), fields: { email: `p${i}@example.com`, "cf-turnstile-response": "ok-same" } });
+    expect((await post(same(0), e)).res.headers.get("set-cookie")).not.toBeNull();
+    expect(await gateSpent()).toBe(1);
+    for (let i = 1; i < 4; i++) expect((await post(same(i), e)).res.headers.get("set-cookie")).toBeNull();
+    expect(await gateSpent()).toBe(1);
+    const burst = await Promise.all([4, 5, 6, 7].map((i) => post({ ...same(i), fields: { email: `p${i}@example.com`, "cf-turnstile-response": "ok-same2" } }, e)));
+    expect(burst.filter((r) => r.res.headers.get("set-cookie") !== null).length).toBe(1);
+    expect(await claimRows()).toBe(2);
+    expect(await gateSpent()).toBe(2);
+  });
+
   it("under the budget each solved challenge still writes its claim and unlocks", async () => {
     const e = baseEnv({ ROUTE_BUDGET_GATE: "3" });
     for (let i = 0; i < 3; i++) {
