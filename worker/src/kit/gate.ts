@@ -41,7 +41,7 @@
 import { notifyOwner, type AlertsEnv, type DispatchDeps } from "../alerts/dispatcher";
 import { normalizeAddress } from "../address";
 import { limiterKey, secretBytes } from "../ratekey";
-import { gateRouteHasRoom, loadKitLimits, recordKitEventCapped, reserveRoute } from "./budgets";
+import { claimGateUnit, loadKitLimits, recordKitEventCapped, reserveRoute, type KitLimitsEnv } from "./budgets";
 import { isKitKilled, loadKitEnv, type KitEnv } from "./env";
 import { killedResponse, originAllowList } from "./guard";
 import { MAX_FORM_BYTES, readForm } from "./input";
@@ -163,9 +163,12 @@ function fail(reason: Reason): Response {
  * everyone, which a staging run would show at once.
  *
  * The claim is written only for tokens that passed, so junk tokens write
- * nothing; rows are purged after two days by the hourly cron (purgeOldCounters,
- * src/index.ts). Every failure (timeout, internal-error, any error code) is one
- * `false`; the codes are never shown to the visitor.
+ * nothing, and only together with the hourly gate unit (claimGateUnit, one atomic
+ * batch: the claim insert is conditional on the unit having been taken), so claim
+ * writes cannot exceed ROUTE_BUDGET_GATE. A replayed token is found by a read and
+ * spends no unit. Rows are purged after two days by the hourly cron
+ * (purgeOldCounters, src/index.ts). Every failure (timeout, internal-error, any
+ * error code) is one "failed"; the codes are never shown to the visitor.
  *
  * Not done here on purpose: `remoteip` is not sent (the existing check keeps
  * the address inside the Worker), and there is no retry (fail closed).
@@ -173,31 +176,29 @@ function fail(reason: Reason): Response {
  * rendered with data-action="gate" and its hostname is SITE_HOST.
  */
 export async function challengePassed(
-  env: Pick<GateEnv, "TURNSTILE_SECRET" | "SITE_HOST" | "DB">,
+  env: Pick<GateEnv, "TURNSTILE_SECRET" | "SITE_HOST" | "DB"> & KitLimitsEnv,
   token: string,
   fetchFn: typeof fetch,
   nowMs: number,
-  beforeClaim?: () => Promise<boolean>,
-): Promise<boolean> {
+): Promise<"ok" | "failed" | "budget"> {
   let challengeMs: number | null = null;
   const passed = await verifyTurnstile(env, token, "gate", fetchFn, {
     onVerified: (r) => {
       challengeMs = r.challengeMs;
     },
   }); // CONTROL:turnstile
-  if (!passed || challengeMs === null) return false;
+  if (!passed || challengeMs === null) return "failed";
   const at: number = challengeMs;
-  if (Math.abs(nowMs - at) > CHALLENGE_SKEW_MS) return false; // CONTROL:turnstile-fresh
+  if (Math.abs(nowMs - at) > CHALLENGE_SKEW_MS) return "failed"; // CONTROL:turnstile-fresh
   try {
-    // A read-only check, before the claim write: when the hourly gate budget is already spent the
-    // request is refused right after anyway, so it must not leave a claim row behind.
-    if (beforeClaim !== undefined && !(await beforeClaim())) return false;
     const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(token)));
     let hex = "";
     for (const b of digest.slice(0, 20)) hex += b.toString(16).padStart(2, "0");
-    return await reserveBudget(env.DB, `ts-${hex}`, utcDay(at), 1); // CONTROL:turnstile-single-use
+    // ONE atomic step: the single-use claim row is written only if the hourly gate unit was taken.
+    const claim = await claimGateUnit(env, `ts-${hex}`, utcDay(at), nowMs);
+    return claim === "ok" ? "ok" : claim === "budget" ? "budget" : "failed";
   } catch {
-    return false;
+    return "failed";
   }
 }
 
@@ -327,18 +328,8 @@ async function gate(request: Request, env: GateEnv, deps: GateDeps): Promise<Res
     }
   }
 
-  let budgetFull = false;
-  if (
-    !(await challengePassed(env, form.turnstile, fetchFn, now, async () => {
-      const room = await gateRouteHasRoom({ ...env, DB: env.DB }, now);
-      budgetFull = !room;
-      return room;
-    }))
-  ) {
-    return fail(budgetFull ? "route_budget" : "turnstile");
-  }
-
-  if (!(await reserveRoute({ ...env, DB: env.DB }, "gate", now))) return fail("route_budget"); // CONTROL:gate-route-budget
+  const verdict = await challengePassed({ ...env, DB: env.DB }, form.turnstile, fetchFn, now);
+  if (verdict !== "ok") return fail(verdict === "budget" ? "route_budget" : "turnstile"); // CONTROL:gate-route-budget
 
   // REVOCATION DESIGN (plan 3, Task 15 and decision D2): `leads.session_floor_ts` ends the cookies
   // that were issued before it; it is not a block list, and the schema has no blocked flag. The kit
@@ -456,8 +447,6 @@ async function view(request: Request, env: GateEnv, deps: GateDeps): Promise<Res
   const key = address === null ? null : await limiterKey(limiterSecret, env.VIEW_HASH_SECRET, "view", address);
   if (!(await checkIpMinute(env.KIT_VIEW_LIMITER, key))) return back("ip_minute"); // CONTROL:view-ip-minute
 
-  if (!(await reserveRoute({ ...env, DB: env.DB }, "view", now))) return back("route_budget"); // CONTROL:view-route-budget
-
   // The floor is in MILLISECONDS (whoever writes it must write milliseconds). The token's iat is whole
   // seconds, so the two are compared in whole seconds and the check fails closed: only a cookie issued
   // in a second strictly after the floor's second works. Trade-off: a fresh unlock issued in the very
@@ -478,6 +467,11 @@ async function view(request: Request, env: GateEnv, deps: GateDeps): Promise<Res
     return back("other");
   }
   if (floorMs !== null && claims.iat <= Math.floor(floorMs / 1000)) return back("expired"); // CONTROL:session-floor
+
+  // The shared view budget is charged only for a cookie that can still read the page: lead existence and
+  // the applicable floor are checked first, so a revoked or orphaned cookie cannot spend it. The
+  // per-client limiter above stays early (it has no D1 write).
+  if (!(await reserveRoute({ ...env, DB: env.DB }, "view", now))) return back("route_budget"); // CONTROL:view-route-budget
 
   // A missing or failing page gets the SAME answer as every other refusal, so an outage cannot tell a
   // visitor whether a cookie was valid. The cause goes to the closed-vocabulary log only.

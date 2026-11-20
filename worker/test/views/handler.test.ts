@@ -179,6 +179,32 @@ describe("privacy signals and caps", () => {
     expect((await rows()).length).toBe(1);
   });
 
+  // The same joined / padded forms the click and token-mint routes treat as opted out.
+  const JOINED = ["1, 1", "0, 1", "1 , 0", "0,1", " 1", " 1\t"];
+  const NOT_SIGNALS = ["0, 1", " 1 ", "　1　", "1​", "0, 0", "11", "true", ""];
+
+  it.each(["Sec-GPC", "DNT"].flatMap((h) => JOINED.map((v) => [h, v] as const)))(
+    "opted_out_joined_%s_%j_stores_nothing",
+    async (h, v) => {
+      const spy = spyDb();
+      const env = { ...makeEnv(), DB: spy.DB };
+      const res = await handleView(beacon({ headers: { [h]: v } }), env, NOW);
+      expect(res.status).toBe(204);
+      expect(spy.calls.prepare).toBe(0);
+      expect(await rows()).toEqual([]);
+      expect(await seen()).toEqual([]);
+      expect(await budgets()).toEqual([]);
+    },
+  );
+
+  it.each(["Sec-GPC", "DNT"].flatMap((h) => NOT_SIGNALS.map((v) => [h, v] as const)))(
+    "not_a_signal_%s_%j_still_records",
+    async (h, v) => {
+      await handleView(beacon({ headers: { [h]: v } }), makeEnv(), NOW);
+      expect((await rows()).length).toBe(1);
+    },
+  );
+
   it("gpc_visitors_leave_no_trace_end_to_end", async () => {
     await handleView(beacon({ headers: { "Sec-GPC": "1" } }), makeEnv(), NOW);
     expect(await rows()).toEqual([]);

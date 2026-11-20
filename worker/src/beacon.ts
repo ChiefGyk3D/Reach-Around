@@ -19,7 +19,8 @@
 // site comes from the Origin or Ping-From header, which the caller chooses, so observe records data only.
 
 import { normalizeAddress } from "./address";
-import { bodyAcceptable, MAX_URL_LENGTH, optedOut, type RateLimiter } from "./click";
+import { bodyAcceptable, MAX_URL_LENGTH, type RateLimiter } from "./click";
+import { optedOut } from "./optout";
 import { parseBeaconMode, type BeaconMode } from "./beaconmode";
 import { markClickSetupInvalid, type ClickLane } from "./clickceiling";
 import { fromB64url, keyUsable, toB64url } from "./kit/token";

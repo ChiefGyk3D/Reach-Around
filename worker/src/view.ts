@@ -65,6 +65,7 @@ import { BOT_REASONS, classifyBot, uaSignals, type BotClass } from "./botclass";
 import { markClickSetupInvalid, type ClickLane } from "./clickceiling";
 import { MAX_PATH_LENGTH, MAX_URL_LENGTH } from "./click";
 import type { RateLimiter } from "./click";
+import { optedOut } from "./optout";
 import { classifyUserAgent, primaryLanguage } from "./ua";
 import { normalizeAddress } from "./address";
 import { limiterKey, secretBytes } from "./ratekey";
@@ -674,8 +675,7 @@ export async function handleView(
     const page = m[1] as string;
     if (page.length > MAX_ID_LENGTH) return noContent();
 
-    if (request.headers.get("Sec-GPC")?.trim() === "1") return noContent(); // CONTROL:pv-gpc
-    if (request.headers.get("DNT")?.trim() === "1") return noContent(); // CONTROL:pv-gpc
+    if (optedOut(request)) return noContent(); // CONTROL:pv-gpc
 
     // The site comes from the matched Origin / Ping-From host, never from the
     // body, path or any other claim of the client. Only beacon-mode sites

@@ -95,8 +95,11 @@ def test_the_longest_possible_body_fits_the_workers_cap() -> None:
 
 def test_the_worker_still_checks_the_signals_the_script_honors() -> None:
     src = worker_source()
-    assert 'request.headers.get("Sec-GPC")' in src
-    assert 'request.headers.get("DNT")' in src
+    # The route uses the one shared parser, which reads both headers.
+    assert 'from "./optout"' in src and "optedOut(request)" in src
+    optout = (VIEW_TS.parent / "optout.ts").read_text(encoding="utf-8")
+    assert 'request.headers.get("Sec-GPC")' in optout
+    assert 'request.headers.get("DNT")' in optout
     assert 'request.method !== "POST"' in src
     assert "Content-Length" in src  # sendBeacon with a form body sets it
 
