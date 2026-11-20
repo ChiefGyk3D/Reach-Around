@@ -179,13 +179,22 @@ the result lines (no values) in #344. Do not start the DNS steps with a box open
          `SCHEDULED_KILL` makes every scheduled trigger (the hourly jobs and
          the Live poller) return at once with no D1 read or write
          ([deploy.md](deploy.md)). It does not stop a run that had already
-         started when the deploy landed, so verify before migrating: wait for
-         the deploy to land and for any run in progress to end (at least one
-         full minute), then watch `npx wrangler tail` (or the Worker's logs in
-         the Cloudflare dashboard) through the next scheduled trigger and
-         confirm no scheduled invocation is active. Do not start migrations
-         until that is confirmed. Apply them well clear of minute five of the
-         hour, so the check sees a trigger fire and return.
+         started when the deploy landed, so verify before migrating: watch
+         `npx wrangler tail` (or the Worker's logs in the Cloudflare
+         dashboard) until the next scheduled trigger returns immediately, and
+         confirm no earlier scheduled invocation is still active. Do not start
+         migrations until that is confirmed.
+         What the window costs: with `SCHEDULED_KILL` on, the health sampling
+         and its alerts and notifications are paused for the whole window, the
+         live status goes stale, and the window shows in reports as a `-`
+         outage gap, not as `kill_switch`. Keep it short and clear it as soon
+         as the migrations are done.
+         The three switches cover the click, view and scheduled paths only,
+         not the kit routes. The quiet state assumes `features.kit_gate` is
+         `false` (2.2) and the inquiry route is off or handled as that item
+         says; if either is on, the kit routes can still write to D1 and need
+         their own switch (`KIT_KILL`, read in `worker/src/kit/env.ts`) before this
+         step counts as quiet.
       2. Take a Time Travel bookmark and a backup (2.4).
       3. `npx wrangler d1 migrations list <DATABASE> --remote`, then apply.
          Migrations are forward only. Migration `0008` empties `visitor_seen`:

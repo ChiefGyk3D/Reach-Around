@@ -40,7 +40,7 @@ invisible to page views. Days are UTC days.
 When `analytics_coverage` is in the export, the report compares the Worker's
 hourly coverage log with the calendar (UTC days, [alerts.md](alerts.md#collection-coverage-and-gaps)).
 A day with no collected hour is a gap, a day with some is partial, and each
-carries a reason: `outage` (the Worker did not run), `quota` (the account view
+carries a reason: `outage` (the Worker did not run, or the `SCHEDULED_KILL` maintenance switch paused the hourly step: that window is an `outage` gap, not `kill_switch`), `quota` (the account view
 budget was reached), `kill_switch` or `site_kill_switch` (some sites, not all,
 were switched off; that day is always partial). Coverage is account-wide, not
 per site, and the report says so (`coverage.scope` is `account`); a table with no

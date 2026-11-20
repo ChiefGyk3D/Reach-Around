@@ -56,12 +56,50 @@ describe("SCHEDULED_KILL maintenance switch", () => {
     expect(calls).toEqual([]);
   });
 
-  it("SCHEDULED_KILL=1 also stops the other cron without touching D1", async () => {
+  it("SCHEDULED_KILL=1 also stops the Live poller: no KV read or write and no outbound fetch", async () => {
     const { db, calls } = spyDb();
-    const { c, waits } = ctx();
-    await worker.scheduled({ cron: "*/2 * * * *" } as ScheduledController, env({ SCHEDULED_KILL: "1" }, db), c);
-    await Promise.all(waits);
-    expect(calls).toEqual([]);
+    const kvCalls: string[] = [];
+    const kv = {
+      get: async (k: string) => (kvCalls.push(`get ${k}`), null),
+      put: async (k: string) => void kvCalls.push(`put ${k}`),
+    };
+    const fetched: string[] = [];
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = (async (input: unknown) => {
+      fetched.push(String(input));
+      return new Response("{}", { status: 500 });
+    }) as typeof fetch;
+    const live = {
+      LIVE_KV: kv,
+      LIVE_KICK_HANDLE: "example",
+      KICK_CLIENT_ID: "id",
+      KICK_CLIENT_SECRET: "secret",
+      LIVE_TWITCH_HANDLE: "example",
+      TWITCH_CLIENT_ID: "id",
+      TWITCH_CLIENT_SECRET: "secret",
+    };
+    try {
+      // Control: without the switch the poller does reach the KV, so the spies can see it.
+      const control = ctx();
+      await worker.scheduled({ cron: "*/2 * * * *" } as ScheduledController, env(live, db), control.c);
+      await Promise.all(control.waits);
+      expect(kvCalls.length + fetched.length).toBeGreaterThan(0);
+      kvCalls.length = 0;
+      fetched.length = 0;
+
+      const { c, waits } = ctx();
+      await worker.scheduled(
+        { cron: "*/2 * * * *" } as ScheduledController,
+        env({ ...live, SCHEDULED_KILL: "1" }, db),
+        c,
+      );
+      await Promise.all(waits);
+      expect(kvCalls).toEqual([]);
+      expect(fetched).toEqual([]);
+      expect(calls).toEqual([]);
+    } finally {
+      globalThis.fetch = realFetch;
+    }
   });
 
   it.each([undefined, "0", "false", "", "yes"])("SCHEDULED_KILL=%s leaves the hourly handler running", async (v) => {

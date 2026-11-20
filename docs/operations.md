@@ -229,7 +229,7 @@ Order of preference, least damage first:
 
    `SCHEDULED_KILL:1` is a separate maintenance switch for the hourly jobs
    (retention, health, purges, rollups). It is for D1 migrations, not for an
-   analytics rollback, because it stops no request route; the steps are in
+   analytics rollback, because it stops no request route and pauses health sampling, its alerts and the live status for as long as it is on (the window is a `-` outage gap in reports); the steps are in
    [cutover-runbook.md](cutover-runbook.md).
 
    Turn them back on with `:0`. `LIVE_KILL` does the same for the Live poller,

@@ -250,6 +250,7 @@ fi
 if [ -n "$checked_numbers" ]; then
   staged_numbers="$(mktemp "$here/.numbers.XXXXXX")"
   cp "$checked_numbers" "$staged_numbers"
+  chmod 644 "$staged_numbers" # numbers.json is a public file; mktemp makes it 0600
 fi
 
 # Install, still under the lock: the history first, numbers.json only after
