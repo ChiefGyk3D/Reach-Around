@@ -621,6 +621,7 @@ KNOWN_FIELDS: frozenset[str] = frozenset(
         "title",
         "title_template",
         "token_expires",
+        "turnstile_beacon",
         "turnstile_site_key",
         "twitch",
         "unlock_link",
