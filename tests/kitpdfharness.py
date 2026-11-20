@@ -151,6 +151,7 @@ def make_pdf(
     annotation: bool = False,
     tagged: bool = False,
     stamp: str | None = None,
+    ligature_first: bool = False,
 ) -> bytes:
     """A classic-xref PDF. Each page is a list of text lines. One Type0 font with
     Identity-H codes and a ToUnicode CMap (bfchar for most characters, a bfrange
@@ -211,6 +212,8 @@ def make_pdf(
     objects[5] = stream(cmap.encode())
     for index, lines in enumerate(pages):
         ops = ["BT", "/F4 12 Tf"]
+        if index == 0 and ligature_first:
+            ops.append("<00FF> Tj")
         for line_no, line in enumerate(lines):
             codes = "".join(f"{gid[ch]:04X}" for ch in line)
             if line_no % 2:
@@ -219,7 +222,7 @@ def make_pdf(
             else:
                 ops.append(f"<{codes}> Tj")
             ops.append("0 -14 Td")
-        if index == 0:
+        if index == 0 and not ligature_first:
             ops.append("<00FF> Tj")
         ops.append("ET")
         content_id = page_ids[index] + 1
@@ -292,8 +295,8 @@ def fake_renderer(html: str, work: Path) -> bytes:
     parser = _Text()
     parser.feed(html)
     lines = parser.lines
-    # 41 lines a page (was 40; the layout B headline moved a break into a row):
-    # the first page ends with a ligature glyph, which must not land inside a
-    # table row.
+    # The ligature glyph goes first on page one: a page break moves with every
+    # line the kit adds, and a glyph at the end of the page would land inside a
+    # table row and split a value.
     pages = [lines[i : i + 41] for i in range(0, len(lines), 41)] or [["empty"]]
-    return make_pdf(pages, title="Chromium title")
+    return make_pdf(pages, title="Chromium title", ligature_first=True)

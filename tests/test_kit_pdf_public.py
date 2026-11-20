@@ -29,6 +29,7 @@ from kitpdfharness import (
 from reach_around.cli import main
 from reach_around.config import SiteConfig, load_site_config
 from reach_around.config.numbers import Numbers, NumbersEntry
+from reach_around.config.trust import LEGEND_HEADING, LEGEND_SENTENCES
 from reach_around.kit.output import OutputError
 from reach_around.kit.pdf import (
     PdfError,
@@ -434,9 +435,12 @@ def test_a_renderer_that_drops_the_valid_as_of_line_fails(tmp_path: Path) -> Non
                 [
                     "Example Creator media kit",
                     "A fake creator used in tests. Streams games & talks.",
-                    "Twitch Followers 1,200 2027-03-01",
-                    "YouTube Subscribers 3,400 2027-03-05",
+                    "Twitch Followers 1,200 Hand-kept Typed by the owner 2027-03-01",
+                    "YouTube Subscribers 3,400 Hand-kept Typed by the owner 2027-03-05",
                     "4,600",
+                    "Hand-kept Weakest label among the numbers added",
+                    LEGEND_HEADING,
+                    *LEGEND_SENTENCES,
                 ]
             ]
         )

@@ -169,6 +169,42 @@ fails the build. Collected YouTube Analytics and Instagram insights figures are
 never in the kit; they are in the owner report only
 ([report.md](report.md#private-platform-analytics---history-397)).
 
+### Trust labels
+
+Every number the kit prints carries one of exactly three labels, a short line
+that says where it came from, and its date. The label is read from the number's
+provenance when the page is built; a template never picks it, and a fourth label
+cannot be made (a test fails if one appears in code or output).
+
+| Label | Printed as | Set when |
+| --- | --- | --- |
+| API | "API", "Read from the platform's API" | a `source: counts` metric whose platform has a collector in `numbers.sources` (the same rule the stale gate uses for "kept by hand") |
+| Hand-kept | "Hand-kept", with a line that says who typed it | a typed `value`, a `counts` number no collector writes, analytics tiles, engagement inputs, case studies, recent posts and demographics (all typed by the owner), and imported data |
+| Estimate | "Estimate", then your own line | a metric with `estimate` set; there is no other way to get this label |
+
+Imported link-page history prints as Hand-kept, with the export named in the line
+("Imported from the Beacons export, last period ending 2026-02-28"); there is no
+fourth label for it. A derived figure takes the weakest label of what it adds: the
+combined total prints the weakest label of its members, and an engagement figure
+(worked out from typed inputs) is Hand-kept. Twitch and Kick use the same label
+logic and print the same markup; the label depends only on the number's source,
+never on the platform. The site build does not read the social history file, so
+provenance comes from the config, the numbers file's configured sources and the
+imported-history file.
+
+A number older than its age limit (30 days, or the platform's `numbers.stale_days`
+entry) prints "(out of date)" beside its label or date, the same rule as the
+build warning. The closed past periods of the imported block are history, so they
+carry no such mark.
+
+A legend, "How to read these numbers", prints once on the public page, the gated
+page and both PDFs (three plain sentences: what API, Hand-kept and Estimate
+mean). The wording is a neutral draft until the owner approves it. The PDF text
+check expects every label, its line and the legend, so a PDF that lost one fails
+the build. The labels print no count, so they cannot reopen the privacy floor, and
+they sit on the public page only beside numbers the display policy already makes
+public.
+
 ### Public page
 
 The page uses a dark press-deck layout built from the shared brand components.

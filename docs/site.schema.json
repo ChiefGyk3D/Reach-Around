@@ -2360,6 +2360,20 @@
           "default": null,
           "title": "As Of"
         },
+        "estimate": {
+          "anyOf": [
+            {
+              "maxLength": 120,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Estimate"
+        },
         "in_total": {
           "default": true,
           "title": "In Total",

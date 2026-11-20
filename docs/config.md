@@ -1092,7 +1092,7 @@ end. Text must be quoted if YAML would read it as a number.
 
 A **metric** is one headline number: `platform` (a platform name such as
 `twitch`, `youtube` or `other`), `label` (at most 60 characters, such as
-`Followers`), `source`, `value`, `as_of` and `in_total`.
+`Followers`), `source`, `value`, `as_of`, `in_total` and `estimate`.
 
 - `source: manual` (the default): you type `value` (a whole number, 0 up to
   1,000,000,000,000) and **must** give `as_of`, the day you read it
@@ -1103,6 +1103,10 @@ A **metric** is one headline number: `platform` (a platform name such as
 - `in_total: false` keeps a metric out of the unified total (use it for a second
   number from the same platform, such as views, so one audience is not counted
   twice). Default `true`.
+- `estimate` (optional, off by default, `source: manual` only): one plain line
+  that says how you worked the number out, at most 120 characters. The kit then
+  prints the label "Estimate" and this line beside the number. Without it a typed
+  number prints "Hand-kept"; see [trust labels](kit.md#trust-labels).
 
 A **partner** has `name` (80), optional `note` (200) and optional `url` (https
 only). A **case study** is an owner-entered aggregate block. It requires

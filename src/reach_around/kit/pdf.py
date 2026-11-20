@@ -49,7 +49,6 @@ from types import FrameType
 from typing import Literal, NoReturn
 
 from reach_around.config.cutover import cutover_label, live_since, utc_today
-from reach_around.config.engagement import engagement_rows
 from reach_around.config.imported_history import ImportedHistory, expected_text
 from reach_around.config.kit import (
     KitConfig,
@@ -60,6 +59,11 @@ from reach_around.config.kit import (
 )
 from reach_around.config.models import SiteConfig
 from reach_around.config.numbers import Numbers
+from reach_around.config.trust import (
+    LEGEND_HEADING,
+    LEGEND_SENTENCES,
+    demographic_trust,
+)
 from reach_around.funnel.floor import shown_count
 from reach_around.kit.output import check_name, confine_out_dir, write_private
 from reach_around.kit.pdftext import PdfTextError, extract_pages
@@ -67,8 +71,12 @@ from reach_around.kit.stage import stage_page, valid_as_of_text
 from reach_around.site.kit import (
     GUARD_MIN_LENGTH,
     _analytics_rows,
+    _case_rows,
+    _engagement_rows,
     _gated_strings,
+    _imported_block,
     _metric_rows,
+    _post_trust,
     _public_values,
     _total,
     audience_bases,
@@ -373,6 +381,7 @@ def _expected_text(
     imported: ImportedHistory | None = None,
     live_day: date | None = None,
     platform_counts: Mapping[str, list[int]] | None = None,
+    config: SiteConfig | None = None,
 ) -> list[tuple[str, str]]:
     """(where, text) for everything the page must print. A headline
     number is one entry per row (platform, measure, value and date together, in
@@ -385,14 +394,19 @@ def _expected_text(
     for index, tag in enumerate(kit.tags):
         found.append((f"kit.tags[{index}]", tag))
     resolved = resolve_metrics(kit, numbers)
-    for row in _metric_rows(resolved):
+    # With the config the provenance of every number is known, and so is the
+    # label the page must print beside it (#626). Without it none is expected.
+    labeled = False
+    for row in _metric_rows(resolved, config):
+        text = _trust_text(row["trust"])
+        labeled = labeled or bool(text)
         found.append(
             (
                 f"the metric row {row['platform'] or row['label']!r}",
-                row["platform"] + row["label"] + row["value"] + row["as_of"],
+                row["platform"] + row["label"] + row["value"] + text + row["as_of"],
             )
         )
-    for row in () if public else engagement_rows(kit):
+    for row in () if public else _engagement_rows(kit.engagement, config, None):
         where = f"the engagement row {row['platform']!r} {row['measure']!r}"
         found.append((where, row["platform"] + row["measure"]))
         if row["provenance"]:
@@ -400,9 +414,17 @@ def _expected_text(
         found.append((where, row["formula"]))
         found.append((where, row["value"] + row["period"]))
         found.append((where, row["as_of"]))
-    total = _total(unified_total(resolved), resolved)
+        text = _trust_text(row["trust"]) if config is not None else ""
+        if text:
+            labeled = True
+            found.append((where, row["as_of"] + "UTC" + text))
+    total = _total(unified_total(resolved), resolved, None, config)
     if total is not None:
         found.append(("the metric total", total["value"]))
+        text = _trust_text(total["trust"])
+        if text:
+            labeled = True
+            found.append(("the metric total label", text))
     # The analytics tiles (#397): the sync line, the followers with the change
     # beside them, and each stat. Anchored on the sync line, which no headline
     # number row prints, so an unrelated row cannot satisfy them. A count under
@@ -423,11 +445,30 @@ def _expected_text(
         )
         for stat in card["stats"]:
             found.append((where, stat["label"] + stat["value"]))
+        if config is not None:
+            labeled = True
+            # The line follows the last tile, which anchors it to its panel.
+            tile = (
+                card["stats"][-1]["label"] + card["stats"][-1]["value"]
+                if card["stats"]
+                else f"Followers{card['followers']}{change}"
+            )
+            found.append((where, tile + _trust_text(card["trust"])))
+    if config is not None:
+        for platform, trust in _post_trust(kit.recent_posts).items():
+            labeled = True
+            found.append(
+                (f"the recent posts of {platform!r}", platform + _trust_text(trust))
+            )
     # The block "Before Reach Around" prints where the display policy puts it.
     if imported is not None and (not public or kit.imported_history_public):
         found.extend(expected_text(imported, live_day))
+        block = _imported_block(imported, live_day)
+        if config is not None and block is not None:
+            labeled = True
+            found.append(("the imported history label", _trust_text(block["trust"])))
     if public:
-        return found
+        return _with_legend(found, labeled)
     if kit.disclosure is not None:
         found.append(("kit.disclosure", kit.disclosure))
     for name in (
@@ -457,6 +498,19 @@ def _expected_text(
                     continue  # a group held back for the privacy floor
                 if text:
                     found.append((f"kit.{name}[{index}].{field}", text))
+            if name == "case_studies" and config is not None:
+                labeled = True
+                (case,) = _case_rows([item])
+                found.append((f"kit.{name}[{index}].trust", _trust_text(case["trust"])))
+            if name == "demographics" and config is not None:
+                labeled = True
+                found.append(
+                    (
+                        f"kit.{name}[{index}].trust",
+                        f"As of {item.as_of.isoformat()} UTC"
+                        + _trust_text(demographic_trust(item.as_of).view()),
+                    )
+                )
             if name == "case_studies":
                 for field, label in (
                     ("views", "Views"),
@@ -473,6 +527,20 @@ def _expected_text(
         found.append(("kit.inquiry.email", kit.inquiry.email))
         if kit.inquiry.pgp_fingerprint is not None:
             found.append(("kit.inquiry.pgp_fingerprint", kit.inquiry.pgp_fingerprint))
+    return _with_legend(found, labeled)
+
+
+def _trust_text(trust: Mapping[str, str] | None) -> str:
+    """What a labeled number prints: the label, then the method line."""
+    return "" if trust is None else trust["text"] + trust["method"]
+
+
+def _with_legend(found: list[tuple[str, str]], labeled: bool) -> list[tuple[str, str]]:
+    """The legend is expected once any labeled number is (#626)."""
+    if labeled:
+        found.append(("the trust legend heading", LEGEND_HEADING))
+        for sentence in LEGEND_SENTENCES:
+            found.append(("the trust legend", sentence))
     return found
 
 
@@ -549,6 +617,7 @@ def check_text(
     imported: ImportedHistory | None = None,
     live_day: date | None = None,
     platform_counts: Mapping[str, list[int]] | None = None,
+    config: SiteConfig | None = None,
 ) -> None:
     """Fail if a private value is in ``text`` or configured gated text is not.
 
@@ -598,6 +667,7 @@ def check_text(
         imported=imported,
         live_day=live_day,
         platform_counts=platform_counts,
+        config=config,
     )
     if live_since_text is not None:
         expected.append(("the live-since line", live_since_text))
@@ -749,6 +819,7 @@ def _print(
         imported=imported,
         live_day=day,
         platform_counts=_link_page_counts(config, numbers, created),
+        config=config,
     )
     path = write_private(target_dir, name, final, overwrite=overwrite)
     return PdfResult(path=path, pages=len(pages), size=len(final))

@@ -48,8 +48,13 @@ from jinja2 import Environment
 
 from reach_around.config.blocks import Platforms, platform_name
 from reach_around.config.cutover import cutover_label, live_since, utc_today
-from reach_around.config.engagement import ACROSS_PLATFORMS_NOTE, FORMULAS, rows_for
-from reach_around.config.era import classify_era, era_text
+from reach_around.config.engagement import (
+    ACROSS_PLATFORMS_NOTE,
+    FORMULAS,
+    NOT_AVAILABLE,
+    rows_for,
+)
+from reach_around.config.era import SPANS, classify_era, classify_window, era_text
 from reach_around.config.imported_history import (
     IMPORTED_HEADING,
     IMPORTED_NOTE,
@@ -67,7 +72,25 @@ from reach_around.config.kit import (
     public_projection,
 )
 from reach_around.config.models import SiteConfig
-from reach_around.config.numbers import Numbers, stale_limit
+from reach_around.config.numbers import (
+    STALE_DAYS,
+    Numbers,
+    source_platforms,
+    stale_limit,
+)
+from reach_around.config.trust import (
+    LEGEND_HEADING,
+    LEGEND_SENTENCES,
+    Trust,
+    analytics_trust,
+    case_trust,
+    demographic_trust,
+    engagement_trust,
+    imported_trust,
+    metric_trust,
+    posts_trust,
+    weakest,
+)
 from reach_around.config.zones import ZONES, utc_day_start_iso
 from reach_around.funnel.floor import FLOOR, share_pins_small_count, shown_count
 from reach_around.funnel.floor import UNDER_FLOOR as UNDER_FLOOR
@@ -735,6 +758,9 @@ def _metric_rows(
     today: date | None = None,
     live_day: date | None = None,
 ) -> list[dict[str, Any]]:
+    # Without a config the provenance is unknown, so no label is attached (the
+    # PDF text check then expects none).
+    api = source_platforms(config) if config is not None else frozenset()
     return [
         {
             "platform": "" if m.platform == "other" else platform_name(m.platform),
@@ -742,20 +768,37 @@ def _metric_rows(
             "value": shown_count(m.value),
             "as_of": m.as_of.isoformat() if m.as_of is not None else "",
             "era": era_text(classify_era(m.as_of, live_day)),
-            "stale": (
-                config is not None
-                and today is not None
-                and m.as_of is not None
-                and (today - m.as_of).days > stale_limit(config, m.platform)
-            ),
+            "stale": _is_stale(m.as_of, today, config, m.platform),
+            "trust": (None if config is None else _metric_trust(m, api).view()),
         }
         for m in metrics
         if m.value is not None
     ]
 
 
+def _metric_trust(metric: ResolvedMetric, api: frozenset[str]) -> Trust:
+    return metric_trust(metric.platform, metric.source, metric.estimate, api)
+
+
+def _is_stale(
+    as_of: date | None, today: date | None, config: Any, platform: str | None
+) -> bool:
+    """Older than the platform's stale limit (the rule ``kit_warnings`` and the
+    link page use); the default limit for a figure with no platform."""
+    if as_of is None or today is None:
+        return False
+    if config is None:
+        return False
+    limit = STALE_DAYS if platform is None else stale_limit(config, platform)
+    return (today - as_of).days > limit
+
+
 def _total(
-    total: UnifiedTotal, metrics: list[ResolvedMetric], live_day: date | None = None
+    total: UnifiedTotal,
+    metrics: list[ResolvedMetric],
+    live_day: date | None = None,
+    config: Any = None,
+    today: date | None = None,
 ) -> dict[str, Any] | None:
     if total.total is None:
         return None
@@ -764,7 +807,17 @@ def _total(
     if any(m.in_total and m.value is not None and 0 < m.value < FLOOR for m in metrics):
         return None
     dates = [m.as_of for m in metrics if m.in_total and m.value is not None and m.as_of]
+    trust: dict[str, str] | None = None
+    stale = False
+    if config is not None:
+        api = source_platforms(config)
+        counted = [m for m in metrics if m.in_total and m.value is not None]
+        weak = weakest(_metric_trust(m, api) for m in counted)
+        trust = None if weak is None else weak.view()
+        stale = any(_is_stale(m.as_of, today, config, m.platform) for m in counted)
     return {
+        "trust": trust,
+        "stale": stale,
         "value": shown_count(total.total),
         "counted": total.counted,
         "oldest": min(dates).isoformat() if dates else "",
@@ -777,9 +830,20 @@ def _imported_block(
 ) -> dict[str, Any] | None:
     """The block "Before Reach Around": its own rows, never part of a total."""
     rows = display_rows(history, live_day)
-    if not rows:
+    if not rows or history is None:
         return None
-    return {"heading": IMPORTED_HEADING, "note": IMPORTED_NOTE, "rows": rows}
+    ends = [
+        p.end
+        for p in history.periods
+        if classify_window(p.start, p.end, live_day) not in (SPANS, "after")
+    ]
+    # Closed past periods: they are history, so no out-of-date mark.
+    return {
+        "heading": IMPORTED_HEADING,
+        "note": IMPORTED_NOTE,
+        "rows": rows,
+        "trust": imported_trust(history.note, max(ends)).view(),
+    }
 
 
 def platform_counts(
@@ -876,9 +940,18 @@ def _post_rows(recent: list[Any]) -> dict[str, list[dict[str, Any]]]:
     return posts
 
 
+def _post_trust(recent: list[Any]) -> dict[str, dict[str, str]]:
+    """One label per platform group of recent posts."""
+    return {
+        name: posts_trust().view()
+        for name in dict.fromkeys(platform_name(post.platform) for post in recent)
+    }
+
+
 def _case_rows(cases: list[Any]) -> list[dict[str, Any]]:
     return [
         {
+            "trust": case_trust(case.period_start, case.period_end).view(),
             "thumbnails": case.thumbnails,
             "views": shown_count(case.views),
             "likes": shown_count(case.likes),
@@ -890,6 +963,43 @@ def _case_rows(cases: list[Any]) -> list[dict[str, Any]]:
     ]
 
 
+def _engagement_rows(
+    entries: list[Any], config: Any, today: date | None
+) -> list[dict[str, Any]]:
+    """The printed engagement rows, each figure with its label and stale mark.
+    A row that prints ``not available`` has no number, so no label."""
+    out: list[dict[str, Any]] = []
+    for entry in entries:
+        trust = engagement_trust().view()
+        stale = _is_stale(entry.as_of, today, config, entry.platform)
+        for row in rows_for([entry]):
+            has_number = row["value"] != NOT_AVAILABLE
+            out.append(
+                {
+                    **row,
+                    "trust": trust if has_number else None,
+                    "stale": has_number and stale,
+                }
+            )
+    return out
+
+
+def _legend(content: dict[str, Any]) -> dict[str, Any] | None:
+    """The legend, printed once on every page that prints a labeled number."""
+    labeled = (
+        any(row["trust"] for row in content["metrics"])
+        or content["analytics"]
+        or content["recent_posts"]
+        or any(row["trust"] for row in content["engagement"])
+        or content["imported"]
+        or content.get("case_studies")
+        or content.get("demographics")
+    )
+    if not labeled:
+        return None
+    return {"heading": LEGEND_HEADING, "sentences": list(LEGEND_SENTENCES)}
+
+
 def _content(
     projection: dict[str, Any],
     live_day: date | None = None,
@@ -898,7 +1008,7 @@ def _content(
 ) -> dict[str, Any]:
     metrics: list[ResolvedMetric] = projection["metrics"]
     posts = _post_rows(projection.get("recent_posts", []))
-    return {
+    content = {
         "live_since": (
             {
                 "iso": live_day.isoformat(),
@@ -914,14 +1024,17 @@ def _content(
         "contact": projection["contact"],
         "tags": projection["tags"],
         "metrics": _metric_rows(metrics, config, today, live_day),
-        "analytics": _analytics_rows(projection["analytics"], today),
+        "analytics": _analytics_rows(projection["analytics"], today, config),
         "recent_posts": posts,
-        "engagement": rows_for(projection.get("engagement", [])),
+        "recent_trust": _post_trust(projection.get("recent_posts", [])),
+        "engagement": _engagement_rows(projection.get("engagement", []), config, today),
         "engagement_note": ACROSS_PLATFORMS_NOTE,
         "engagement_formulas": FORMULAS,
-        "total": _total(projection["unified_total"], metrics, live_day),
+        "total": _total(projection["unified_total"], metrics, live_day, config, today),
         "imported": _imported_block(projection.get("imported_history"), live_day),
     }
+    content["legend"] = _legend(content)
+    return content
 
 
 def _compact_number(value: int) -> str:
@@ -957,9 +1070,13 @@ def _change_text(followers: int, percent: float) -> str:
     return text
 
 
-def _analytics_rows(rows: list[Any], today: date | None) -> list[dict[str, Any]]:
+def _analytics_rows(
+    rows: list[Any], today: date | None, config: Any = None
+) -> list[dict[str, Any]]:
     return [
         {
+            "trust": analytics_trust(row.synced_with).view(),
+            "stale": _is_stale(row.as_of, today, config, row.platform),
             "platform": row.platform,
             "platform_name": platform_name(row.platform),
             "synced_with": row.synced_with,
@@ -1089,6 +1206,8 @@ def render_kit(
                     **d.model_dump(),
                     "platform_name": platform_name(d.platform),
                     "as_of": d.as_of.isoformat(),
+                    "trust": demographic_trust(d.as_of).view(),
+                    "stale": _is_stale(d.as_of, today, config, None),
                     "withheld": sorted(
                         demographic_withheld(
                             d,
@@ -1104,6 +1223,7 @@ def render_kit(
                 for d in data["demographics"]
             ],
         )
+        content["legend"] = _legend(content)
         inquiry: dict[str, Any] | None = None
         if data["inquiry"] is not None:
             inquiry = {
