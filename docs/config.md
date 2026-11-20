@@ -310,6 +310,35 @@ page:
     show_until: 2027-03-31
 ```
 
+### Collapsed groups
+
+`collapsed: true` on a tab renders that group as a native `<details>` element,
+closed on load. It is read only with `page.layout: stack`, is `false` by
+default, and the Watch group cannot be collapsed, so required content is never
+hidden unless you ask for it.
+
+```yaml
+tabs:
+  - id: shop
+    title: Shop
+    intent: shop
+    collapsed: true
+    blocks:
+      - id: example-stand
+        title: Example Boom Stand
+        url: https://shop.example.com/stand
+      - id: example-mug
+        title: Example Mug
+        url: https://shop.example.com/mug
+```
+
+The group heading sits inside the summary. The whole summary row is a target at
+least 44 px tall, it takes the site focus ring, and Enter or Space opens it
+with no script. Print styles open the group, so the links appear on paper (in
+browsers that support the `::details-content` selector). Links in a collapsed
+group are still counted by click tracking when click tracking is on. The
+group's links still count toward the 2 to 6 links rule.
+
 Layouts B, C, and D remain prototypes and are not accepted by the production
 configuration.
 

@@ -2942,6 +2942,11 @@
           "title": "Blocks",
           "type": "array"
         },
+        "collapsed": {
+          "default": false,
+          "title": "Collapsed",
+          "type": "boolean"
+        },
         "id": {
           "pattern": "^[a-z0-9][a-z0-9-]{0,39}$",
           "title": "Id",

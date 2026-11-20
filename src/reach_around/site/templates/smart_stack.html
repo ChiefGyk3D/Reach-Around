@@ -21,10 +21,19 @@
 <div class="smart-groups">
 {% for item in groups %}
 <section class="smart-group" id="group-{{ item.tab.intent }}" aria-labelledby="group-{{ item.tab.intent }}-title">
+{% if item.tab.collapsed %}
+<details class="smart-collapse">
+<summary><h2 id="group-{{ item.tab.intent }}-title">{{ item.tab.title }}</h2></summary>
+<div class="smart-group-links">
+{% for link in item.links %}{{ link_anchor(link, click_tracking) }}{% endfor %}
+</div>
+</details>
+{% else %}
 <h2 id="group-{{ item.tab.intent }}-title">{{ item.tab.title }}</h2>
 <div class="smart-group-links">
 {% for link in item.links %}{{ link_anchor(link, click_tracking) }}{% endfor %}
 </div>
+{% endif %}
 </section>
 {% endfor %}
 </div>

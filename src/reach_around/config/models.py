@@ -306,6 +306,8 @@ class Tab(_Model):
     # Only read by ``page_layout: sections``: whether this tab's section starts
     # open. Unset means the first section on the page is open and the rest closed.
     open: bool | None = None
+    # Only read by ``page.layout: stack``: show the group as a closed details.
+    collapsed: bool = False
     blocks: list[Block]
 
 
@@ -475,6 +477,11 @@ class SiteConfig(_Model):
         if page.layout == "classic":
             if page.featured is not None:
                 raise ValueError("page.featured needs page.layout: stack")
+            for tab in self.tabs:
+                if tab.collapsed:
+                    raise ValueError(
+                        f"tab {tab.id!r}: collapsed needs page.layout: stack"
+                    )
             return self
         if page.status is None:
             raise ValueError("page.status is required for page.layout: stack")
@@ -495,6 +502,8 @@ class SiteConfig(_Model):
             if tab.intent in intents:
                 raise ValueError(f"tab intent {tab.intent!r} may appear only once")
             intents.add(tab.intent)
+            if tab.collapsed and tab.intent == "watch":
+                raise ValueError("the Watch group cannot be collapsed")
             group_links: list[Link] = []
             for block in tab.blocks:
                 if isinstance(block, Link):
