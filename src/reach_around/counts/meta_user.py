@@ -277,6 +277,12 @@ class _Session:
             raise MetaError("fetch_failed")
         raise MetaError("fetch_failed")  # unreachable; keeps the type checker calm
 
+    def get(
+        self, path: str, params: Mapping[str, str], attempts: int = 3
+    ) -> dict[str, object]:
+        """A read-only GET with the token added; for the insights collector."""
+        return self._get(path, params, attempts)
+
     def maybe_refresh(self) -> None:
         s = self.source
         if s.token_expires is None:

@@ -240,6 +240,27 @@ class InstagramSource(_MetaSource):
         """The one environment variable NAME read. Fixed; not configurable."""
         return "INSTAGRAM_ACCESS_TOKEN"
 
+    # Off by default. PRIVATE owner insights (#393): when true, also collect the
+    # owner's account reach, views, interactions and follower demographics into the
+    # history file only. Needs ``user_id`` (the numeric Instagram professional
+    # account id, the path segment of the insights route). UNVERIFIED vendor
+    # behavior (docs/instagram-insights.md, #552).
+    analytics: Annotated[bool, Field(strict=True)] = False
+    user_id: str | None = None
+
+    @field_validator("user_id")
+    @classmethod
+    def _user_id(cls, value: str | None) -> str | None:
+        if value is not None and not _THREADS_USER_ID.fullmatch(value):
+            raise ValueError("user_id must be the numeric Instagram account id")
+        return value
+
+    @model_validator(mode="after")
+    def _analytics_needs_user_id(self) -> InstagramSource:
+        if self.analytics is True and self.user_id is None:
+            raise ValueError("analytics: true needs user_id (the numeric account id)")
+        return self
+
 
 class ThreadsSource(_MetaSource):
     kind: Literal["threads"]
@@ -337,17 +358,22 @@ class NumbersConfig(BaseModel):
     @model_validator(mode="after")
     def _one_analytics_source(self) -> NumbersConfig:
         # One run appends at most 200 history records; each analytics source can
-        # add 62, so at most one source may collect YouTube Analytics (#391).
-        count = sum(
-            1
-            for source in self.sources
-            if isinstance(source, YoutubeSource) and source.analytics is True
-        )
-        if count > 1:
-            raise ValueError(
-                "analytics: true is allowed on at most one youtube source "
-                f"(found {count})"
+        # add up to 62 (YouTube, #391) or 43 (Instagram, #393), so at most one
+        # source per provider may collect them.
+        for kind, kind_type in (
+            ("youtube", YoutubeSource),
+            ("instagram", InstagramSource),
+        ):
+            count = sum(
+                1
+                for source in self.sources
+                if isinstance(source, kind_type) and source.analytics is True
             )
+            if count > 1:
+                raise ValueError(
+                    f"analytics: true is allowed on at most one {kind} source "
+                    f"(found {count})"
+                )
         return self
 
     @model_validator(mode="after")

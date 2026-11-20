@@ -1300,6 +1300,11 @@
     "InstagramSource": {
       "additionalProperties": false,
       "properties": {
+        "analytics": {
+          "default": false,
+          "title": "Analytics",
+          "type": "boolean"
+        },
         "auto_refresh": {
           "default": false,
           "title": "Auto Refresh",
@@ -1334,6 +1339,18 @@
           ],
           "default": null,
           "title": "Token Expires"
+        },
+        "user_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "User Id"
         }
       },
       "required": [

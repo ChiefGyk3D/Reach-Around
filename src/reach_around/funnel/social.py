@@ -32,7 +32,7 @@ from typing import Any
 from reach_around.config.era import classify_era, classify_window
 from reach_around.config.zones import format_instant
 from reach_around.counts.history import (
-    ANALYTICS_PROVIDER,
+    PRIVATE_PROVIDERS,
     History,
     Point,
     Record,
@@ -65,9 +65,10 @@ NOTES = (
 
 
 def _refused(record: Record) -> bool:
-    # YouTube Analytics is the owner's private authorized data. It is refused by
-    # its provider tag whatever the platform slug is. The tag is the only rule.
-    if record.api_provider == ANALYTICS_PROVIDER:
+    # YouTube Analytics and Instagram insights are the owner's private authorized
+    # data. They are refused by their provider tag whatever the platform slug is.
+    # The tag is the only rule.
+    if record.api_provider in PRIVATE_PROVIDERS:
         return True
     if record.source != "api" or not record.platform.startswith("youtube"):
         return False
