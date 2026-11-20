@@ -1,10 +1,11 @@
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 # History store tombstone: design for owner decision
 
-Status: DRAFT design, no behavior change. Issue: #586. Epic: #364. Follows #382 and
-the owner's 2026-11-19 decisions in [platform-terms-retention.md](platform-terms-retention.md).
-Nothing in this document is built. Code, tests and the runbook step wait for the
-answers in "Decisions" below.
+Status: APPROVED 2026-11-19, built in the stacked pull request for issue #586. Epic: #364.
+Follows #382 and the owner's 2026-11-19 decisions in
+[platform-terms-retention.md](platform-terms-retention.md). The owner's answers are
+recorded in "Decisions (2026-11-19)" below; the rest of the document is the design
+as it was put to the owner.
 
 ## Why this is a design and not a patch
 
@@ -81,7 +82,7 @@ Verifier rules (in `_parse` and `_parse_line`):
 * The duplicate-day rule keeps counting the tombstoned key, so a refresh the same
   day cannot silently re-store the value.
 
-## Function interfaces (to build after approval)
+## Function interfaces
 
 All in `src/reach_around/counts/history.py` unless noted. None exist yet.
 
@@ -149,7 +150,7 @@ reach-around counts history-redact ... --confirm
 `--dry-run` is the default and prints only the number of lines and the date
 range. Output never includes a value, note or hash.
 
-## Runbook step (to add to docs/social-history.md after approval)
+## Runbook step (now in docs/social-history.md)
 
 1. Record the trigger and its date (revocation, platform request, user request).
 2. Run `history-redact --dry-run`; check the count matches expectations.
@@ -163,7 +164,7 @@ range. Output never includes a value, note or hash.
    restore plan. A tombstone is not that.
 7. Write down the date and what was redacted (counts only) in the instance log.
 
-## Decisions for the owner
+## Decisions put to the owner
 
 Recommended answer first on each. Answer yes or no.
 
@@ -203,7 +204,7 @@ Recommended answer first on each. Answer yes or no.
    follow-up issue, not in this one. Automatic redaction on a timer is a separate
    decision and is not proposed here.
 
-## Tests to write first (once approved)
+## Tests
 
 Red before green, in `tests/test_counts_history.py`:
 
@@ -222,3 +223,29 @@ Red before green, in `tests/test_counts_history.py`:
 * True deletion from git history of the private repository (Question 6).
 * Social Blade certified destruction (research doc, "Social Blade").
 * Automatic expiry timers (Question 8).
+
+## Decisions (2026-11-19)
+
+The owner approved all eight recommended answers on 2026-11-19.
+
+1. Yes. A tombstone removes the original content in place (Option A); a marker
+   that only hides it (Option C) is not used.
+2. Yes. The file is rewritten atomically by an owner-run command, never during a
+   refresh.
+3. Yes. Later records are re-chained; no digest of the old bytes is kept, so the
+   tombstone has no `replaces` field.
+4. Yes. The instance workflow may accept a labeled tombstone-only rewrite. Not
+   built in the code pull request; it is a follow-up change to the example
+   workflow.
+5. Yes. `reason` (closed list) and `trigger_date` are required; no free text.
+6. Yes. A tombstone meets the deletion duty in the working tree only; a
+   private-repository history rewrite stays a separate approved operation.
+7. Yes. Only `api` rows are tombstoned; `hand_kept` (and `imported`) rows need
+   `--include-hand-kept`.
+8. Yes, later. A per-platform `retain_days` warning on `counts refresh` is a
+   follow-up issue, not part of this change.
+
+Build notes: one tombstone is written per redacted record, and the corrections
+of that record are dropped with it, so `redact_records` returns the number of
+records redacted. A refresh that waited on the lock through a redaction is
+refused (the file was replaced) rather than appending to the old file.

@@ -10,6 +10,13 @@ file is checked first, and the new bytes are fsynced. A file that fails the
 check (including a last line cut short by a crash) is refused, never repaired
 silently. Gaps stay gaps: a missing day is reported as missing, never as zero.
 Everything is UTC. No network, no secrets, no personal data.
+
+The one exception to "never rewritten" is ``redact_records`` (issue #586): an
+explicit, owner-run command that replaces the lines of redacted records with
+tombstones and re-chains every later line, so no value, note, era or digest of
+the old bytes stays in the working file. It writes a new file beside the old
+one under the same lock and renames it into place. It never runs during a
+refresh. It does not touch git history of the file; see docs/social-history.md.
 """
 
 from __future__ import annotations
@@ -44,7 +51,14 @@ API_PROVIDERS = ("youtube_analytics", "youtube_data_api")
 # rule everywhere: the report refuses it, and deletion, revocation and the
 # retention notice select it. No metric-name guessing.
 ANALYTICS_PROVIDER = "youtube_analytics"
-
+REASONS = (
+    "platform_expiry",
+    "platform_revocation",
+    "platform_request",
+    "user_request",
+    "owner_decision",
+)
+MAX_REDACT = 100_000
 
 _SLUG = re.compile(r"^[a-z0-9][a-z0-9-]{0,39}$")
 _METRIC = re.compile(r"^[a-z][a-z0-9_]{0,39}$")
@@ -53,6 +67,21 @@ _AS_OF = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
 _HASH = re.compile(r"^[0-9a-f]{64}$")
 _REQUIRED = ("platform", "metric", "value", "as_of_utc", "source", "run_id", "prev")
 _OPTIONAL = ("note", "era", "type", "api_provider")
+_DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+_TOMB_FIELDS = frozenset(
+    (
+        "type",
+        "platform",
+        "metric",
+        "as_of_utc",
+        "source",
+        "reason",
+        "trigger_date",
+        "redacted_at_utc",
+        "run_id",
+        "prev",
+    )
+)
 
 
 class HistoryError(Exception):
@@ -71,6 +100,28 @@ class Record:
     era: str | None = None
     type: str = "record"
     api_provider: str | None = None
+
+    @property
+    def day_key(self) -> tuple[str, str, str, str]:
+        return (self.platform, self.metric, self.as_of_utc[:10], self.source)
+
+    @property
+    def key(self) -> tuple[str, str, str, str]:
+        return (self.platform, self.metric, self.as_of_utc, self.source)
+
+
+@dataclass(frozen=True)
+class Tombstone:
+    """A redacted record: its key, why and when, and no value or free text."""
+
+    platform: str
+    metric: str
+    as_of_utc: str
+    source: str
+    reason: str
+    trigger_date: str  # YYYY-MM-DD
+    redacted_at_utc: str
+    run_id: str
 
     @property
     def day_key(self) -> tuple[str, str, str, str]:
@@ -143,6 +194,55 @@ def validate(record: Record, now: datetime | None = None) -> None:
         raise HistoryError("a correction needs a note saying why")
 
 
+def _plain_date(name: str, value: object) -> date:
+    if type(value) is not str or not _DATE.match(value):
+        raise HistoryError(f"{name} must look like 2026-11-19")
+    try:
+        return date.fromisoformat(value)
+    except ValueError:
+        raise HistoryError(f"{name} is not a real date") from None
+
+
+def validate_tombstone(tomb: Tombstone, now: datetime | None = None) -> None:
+    """Raise ``HistoryError`` unless ``tomb`` is a well-formed tombstone."""
+    for name in (
+        "platform",
+        "metric",
+        "as_of_utc",
+        "source",
+        "reason",
+        "trigger_date",
+        "redacted_at_utc",
+        "run_id",
+    ):
+        if type(getattr(tomb, name)) is not str:
+            raise HistoryError(f"{name} must be text")
+    if not _SLUG.match(tomb.platform):
+        raise HistoryError("platform must be a lowercase slug")
+    if not _METRIC.match(tomb.metric):
+        raise HistoryError("metric must be lowercase letters, digits, underscores")
+    when = parse_as_of(tomb.as_of_utc)
+    if now is not None and when > now.astimezone(UTC):
+        raise HistoryError("as_of_utc is in the future")
+    if tomb.source not in SOURCES:
+        raise HistoryError("source must be api, hand_kept or imported")
+    if tomb.reason not in REASONS:
+        raise HistoryError("reason is not on the closed list")
+    trigger = _plain_date("trigger_date", tomb.trigger_date)
+    done = parse_as_of(tomb.redacted_at_utc)
+    if now is not None and done > now.astimezone(UTC):
+        raise HistoryError("redacted_at_utc is in the future")
+    if trigger > done.date():
+        raise HistoryError("trigger_date is after the redaction")
+    if not _RUN_ID.match(tomb.run_id) or not tomb.run_id.startswith("redact-"):
+        raise HistoryError("run_id of a tombstone must start with redact-")
+
+
+def new_redact_run_id(now: datetime) -> str:
+    stamp = now.astimezone(UTC).strftime("%Y%m%dT%H%M%SZ")
+    return f"redact-{stamp}-{secrets.token_hex(3)}"
+
+
 def new_run_id(now: datetime) -> str:
     stamp = now.astimezone(UTC).strftime("%Y%m%dT%H%M%SZ")
     return f"refresh-{stamp}-{secrets.token_hex(3)}"
@@ -170,6 +270,23 @@ def _line_bytes(record: Record, prev: str) -> bytes:
     return text.encode("ascii")
 
 
+def _tomb_line(tomb: Tombstone, prev: str) -> bytes:
+    obj: dict[str, Any] = {
+        "type": "tombstone",
+        "platform": tomb.platform,
+        "metric": tomb.metric,
+        "as_of_utc": tomb.as_of_utc,
+        "source": tomb.source,
+        "reason": tomb.reason,
+        "trigger_date": tomb.trigger_date,
+        "redacted_at_utc": tomb.redacted_at_utc,
+        "run_id": tomb.run_id,
+        "prev": prev,
+    }
+    text = json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+    return text.encode("ascii")
+
+
 def _digest(line: bytes) -> str:
     return hashlib.sha256(line).hexdigest()
 
@@ -193,7 +310,7 @@ def _no_constant(_: str) -> Any:
 
 def _parse_line(
     raw: bytes, number: int, now: datetime | None = None
-) -> tuple[Record, str]:
+) -> tuple[Record | Tombstone, str]:
     where = f"line {number}"
     if not raw:
         raise HistoryError(f"{where}: blank line")
@@ -212,6 +329,8 @@ def _parse_line(
     if not isinstance(obj, dict):
         raise HistoryError(f"{where}: not a JSON object")
     keys = set(obj)
+    if obj.get("type") == "tombstone":
+        return _parse_tombstone(obj, keys, where, now)
     if not set(_REQUIRED) <= keys or keys - set(_REQUIRED) - set(_OPTIONAL):
         raise HistoryError(f"{where}: wrong set of fields")
     prev = obj["prev"]
@@ -236,38 +355,77 @@ def _parse_line(
     return record, prev
 
 
-def _parse(data: bytes, now: datetime | None = None) -> tuple[tuple[Record, ...], str]:
-    """All records in ``data`` and the digest of the last line."""
+def _parse_tombstone(
+    obj: dict[str, Any], keys: set[str], where: str, now: datetime | None
+) -> tuple[Tombstone, str]:
+    if keys != _TOMB_FIELDS:
+        raise HistoryError(f"{where}: wrong set of fields for a tombstone")
+    prev = obj["prev"]
+    if type(prev) is not str or not _HASH.match(prev):
+        raise HistoryError(f"{where}: prev is not a SHA-256 hex digest")
+    tomb = Tombstone(
+        platform=obj["platform"],
+        metric=obj["metric"],
+        as_of_utc=obj["as_of_utc"],
+        source=obj["source"],
+        reason=obj["reason"],
+        trigger_date=obj["trigger_date"],
+        redacted_at_utc=obj["redacted_at_utc"],
+        run_id=obj["run_id"],
+    )
+    try:
+        validate_tombstone(tomb, now)
+    except HistoryError as exc:
+        raise HistoryError(f"{where}: {exc}") from None
+    return tomb, prev
+
+
+def _parse(
+    data: bytes, now: datetime | None = None
+) -> tuple[tuple[Record | Tombstone, ...], str]:
+    """All lines in ``data`` and the digest of the last line."""
     if not data:
         return (), GENESIS
     if not data.endswith(b"\n"):
         raise HistoryError("the last line is truncated (no newline); not repaired")
-    records: list[Record] = []
+    entries: list[Record | Tombstone] = []
     seen: dict[tuple[str, str, str, str], str | None] = {}  # key -> its provider
+    redacted: set[tuple[str, str, str, str]] = set()
     days: set[tuple[str, str, str, str]] = set()
     expect = GENESIS
     for number, raw in enumerate(data[:-1].split(b"\n"), start=1):
-        record, prev = _parse_line(raw, number, now)
+        entry, prev = _parse_line(raw, number, now)
         if prev != expect:
             raise HistoryError(f"line {number}: the hash chain is broken")
-        if record.type == "record":
-            if record.key in seen:
-                raise HistoryError(f"line {number}: duplicate record")
-            if record.day_key in days:
+        if isinstance(entry, Tombstone):
+            if entry.key in redacted:
+                raise HistoryError(f"line {number}: duplicate tombstone")
+            if entry.key in seen:
+                raise HistoryError(f"line {number}: a tombstone over a live record")
+            if entry.day_key in days:
                 raise HistoryError(f"line {number}: a second record for that UTC day")
-            seen[record.key] = record.api_provider
-            days.add(record.day_key)
-        elif record.key not in seen:
+            redacted.add(entry.key)
+            days.add(entry.day_key)
+        elif entry.key in redacted:
+            raise HistoryError(f"line {number}: that record was redacted")
+        elif entry.type == "record":
+            if entry.key in seen:
+                raise HistoryError(f"line {number}: duplicate record")
+            if entry.day_key in days:
+                raise HistoryError(f"line {number}: a second record for that UTC day")
+            seen[entry.key] = entry.api_provider
+            days.add(entry.day_key)
+        elif entry.key not in seen:
             raise HistoryError(f"line {number}: a correction with no earlier record")
-        elif seen[record.key] != record.api_provider:
+        elif seen[entry.key] != entry.api_provider:
             # A correction keeps the provenance of the record it fixes, so
             # deletion, revocation and the notice still find its value.
             raise HistoryError(
                 f"line {number}: a correction's api_provider must match its original"
             )
-        records.append(record)
+        entries.append(entry)
         expect = _digest(raw)
-    return tuple(records), expect
+    return tuple(entries), expect
 
 
 class Series:
@@ -322,6 +480,7 @@ class Series:
 @dataclass(frozen=True)
 class History:
     records: tuple[Record, ...]
+    tombstones: tuple[Tombstone, ...] = ()
 
     def series(self, platform: str, metric: str) -> Series:
         return Series(
@@ -346,6 +505,16 @@ def _lock(
                     "the history file is locked by another run"
                 ) from None
             time.sleep(_LOCK_POLL)
+
+
+def _same_file(dir_fd: int, name: str, fd: int) -> bool:
+    """True while ``name`` in the folder is still the file ``fd`` holds."""
+    try:
+        now = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
+    except OSError:
+        return False
+    held = os.fstat(fd)
+    return (now.st_dev, now.st_ino) == (held.st_dev, held.st_ino)
 
 
 def _read_fd(fd: int, max_bytes: int) -> bytes:
@@ -392,7 +561,11 @@ def read_history(path: Path, *, max_bytes: int = MAX_FILE_BYTES) -> History:
             os.close(fd)
     finally:
         os.close(dir_fd)
-    return History(_parse(data, datetime.now(UTC))[0])
+    entries = _parse(data, datetime.now(UTC))[0]
+    return History(
+        tuple(e for e in entries if isinstance(e, Record)),
+        tuple(e for e in entries if isinstance(e, Tombstone)),
+    )
 
 
 def append_records(
@@ -464,11 +637,19 @@ def _append(
     original = -1
     try:
         _lock(fd, fcntl.LOCK_EX, LOCK_WAIT_SECONDS)
+        if not _same_file(dir_fd, path.name, fd):
+            raise HistoryError(
+                "the history file was replaced while waiting (a redaction?); run again"
+            )
         os.fchmod(fd, 0o600)  # a pre-created file may be wider
         existing = _read_fd(fd, max_bytes)
         before, prev = _parse(existing)
         if skip_days:
-            have = {r.day_key for r in before if r.type == "record"}
+            have = {
+                r.day_key
+                for r in before
+                if isinstance(r, Tombstone) or r.type == "record"
+            }
             records = [
                 r for r in records if r.type != "record" or r.day_key not in have
             ]
@@ -511,4 +692,218 @@ def _roll_back(fd: int, size: int) -> None:
     except OSError:
         raise HistoryError(
             "the write may be partly on disk; run history-verify before trying again"
+        ) from None
+
+
+def tombstoned(history: History) -> frozenset[tuple[str, str, str, str]]:
+    """Keys (platform, metric, as-of, source) that are redacted: gaps, never zero."""
+    return frozenset(t.key for t in history.tombstones)
+
+
+def _need_hand_kept_flag() -> HistoryError:
+    return HistoryError(
+        "only api rows are redacted; hand-kept and imported rows need "
+        "--include-hand-kept"
+    )
+
+
+def plan_redaction(
+    history: History,
+    *,
+    platform: str,
+    source: str | None,
+    before: str | None,
+    metric: str | None = None,
+    include_hand_kept: bool = False,
+) -> list[Record]:
+    """Pure. The live records a redaction would blank. Never touches disk.
+
+    Rows from ``api`` only, unless ``include_hand_kept`` is true. ``before`` is a
+    UTC date (``YYYY-MM-DD``): rows on earlier days are chosen; ``None`` chooses
+    every day.
+    """
+    if type(platform) is not str or not _SLUG.match(platform):
+        raise HistoryError("platform must be a lowercase slug")
+    if metric is not None and (type(metric) is not str or not _METRIC.match(metric)):
+        raise HistoryError("metric must be lowercase letters, digits, underscores")
+    if source is not None:
+        if type(source) is not str or source not in SOURCES:
+            raise HistoryError("source must be api, hand_kept or imported")
+        if source != "api" and include_hand_kept is not True:
+            raise _need_hand_kept_flag()
+    cut = _plain_date("before", before).isoformat() if before is not None else None
+    chosen: list[Record] = []
+    for record in history.records:
+        if record.type != "record" or record.platform != platform:
+            continue
+        if metric is not None and record.metric != metric:
+            continue
+        if source is not None and record.source != source:
+            continue
+        if source is None and record.source != "api" and include_hand_kept is not True:
+            continue
+        if cut is not None and record.as_of_utc[:10] >= cut:
+            continue
+        chosen.append(record)
+    return chosen
+
+
+def redact_records(
+    path: Path,
+    plan: Sequence[Record],
+    *,
+    reason: str,
+    trigger_date: str,
+    now: datetime | None = None,
+    confirm: bool = False,
+    include_hand_kept: bool = False,
+    max_bytes: int = MAX_FILE_BYTES,
+    lock_wait: float = LOCK_WAIT_SECONDS,
+) -> int:
+    """Replace the planned records with tombstones and re-chain; return the count.
+
+    Owner-run only, never during a refresh. Refuses unless ``confirm`` is ``True``.
+    Under the exclusive lock the whole file is checked, a new file is written
+    beside the old one, fsynced and renamed into place. The corrections of a
+    redacted record are removed with it. A later line's ``prev`` is recomputed,
+    so no digest of the old bytes stays. A plan that does not match the file
+    (rows already redacted or changed) is refused; an empty plan writes nothing.
+    """
+    if confirm is not True:
+        raise HistoryError("redaction needs confirm=True; nothing was written")
+    if type(reason) is not str or reason not in REASONS:
+        raise HistoryError("reason is not on the closed list")
+    trigger = _plain_date("trigger_date", trigger_date)
+    moment = (now if now is not None else datetime.now(UTC)).astimezone(UTC)
+    if trigger > moment.date():
+        raise HistoryError("trigger_date is in the future")
+    if len(plan) > MAX_REDACT:
+        raise HistoryError(f"redact at most {MAX_REDACT} records at a time")
+    keys: set[tuple[str, str, str, str]] = set()
+    for item in plan:
+        if type(item) is not Record or item.type != "record":
+            raise HistoryError("the plan holds something that is not a record")
+        validate(item)
+        if item.source != "api" and include_hand_kept is not True:
+            raise _need_hand_kept_flag()
+        keys.add(item.key)
+    if not keys:
+        return 0
+    try:
+        dir_fd = _open_parent(path)
+    except OSError:
+        raise HistoryError("cannot open the history folder") from None
+    try:
+        return _redact(
+            dir_fd, path, keys, reason, trigger_date, moment, max_bytes, lock_wait
+        )
+    finally:
+        os.close(dir_fd)
+
+
+def _redact(
+    dir_fd: int,
+    path: Path,
+    keys: set[tuple[str, str, str, str]],
+    reason: str,
+    trigger_date: str,
+    moment: datetime,
+    max_bytes: int,
+    lock_wait: float,
+) -> int:
+    try:
+        fd = os.open(
+            path.name,
+            os.O_RDWR | os.O_NOFOLLOW | os.O_NONBLOCK,
+            dir_fd=dir_fd,
+        )
+    except OSError:
+        raise HistoryError(
+            "cannot open the history file (missing or a symlink?)"
+        ) from None
+    try:
+        _lock(fd, fcntl.LOCK_EX, lock_wait)
+        if not _same_file(dir_fd, path.name, fd):
+            raise HistoryError("the history file changed while locking; run again")
+        try:
+            existing = _read_fd(fd, max_bytes)
+        except OSError:
+            raise HistoryError("cannot read the history file") from None
+        entries, _ = _parse(existing)
+        live = {e.key for e in entries if isinstance(e, Record) and e.type == "record"}
+        if not keys <= live:
+            raise HistoryError(
+                "the plan does not match the file (rows already redacted or "
+                "changed); plan again"
+            )
+        stamp = moment.strftime("%Y-%m-%dT%H:%M:%SZ")
+        run_id = new_redact_run_id(moment)
+        raws = existing[:-1].split(b"\n")
+        first = next(
+            i for i, e in enumerate(entries) if isinstance(e, Record) and e.key in keys
+        )
+        out: list[bytes] = list(raws[:first])
+        prev = _digest(raws[first - 1]) if first else GENESIS
+        for entry in entries[first:]:
+            if isinstance(entry, Tombstone):
+                line = _tomb_line(entry, prev)
+            elif entry.key in keys:
+                if entry.type != "record":
+                    continue  # a correction goes with the record it corrected
+                tomb = Tombstone(
+                    platform=entry.platform,
+                    metric=entry.metric,
+                    as_of_utc=entry.as_of_utc,
+                    source=entry.source,
+                    reason=reason,
+                    trigger_date=trigger_date,
+                    redacted_at_utc=stamp,
+                    run_id=run_id,
+                )
+                validate_tombstone(tomb, moment)
+                line = _tomb_line(tomb, prev)
+            else:
+                line = _line_bytes(entry, prev)
+            out.append(line)
+            prev = _digest(line)
+        data = b"\n".join(out) + b"\n"
+        if len(data) > max_bytes:
+            raise HistoryError("the history file would be too large")
+        _parse(data)  # the result must verify before it replaces anything
+        _replace_file(dir_fd, path.name, data)
+        return len(keys)
+    finally:
+        os.close(fd)
+
+
+def _replace_file(dir_fd: int, name: str, data: bytes) -> None:
+    """Write ``data`` beside ``name``, fsync, rename over it, fsync the folder."""
+    temp = f".{name}.redact-{secrets.token_hex(4)}.tmp"
+    try:
+        tfd = os.open(
+            temp,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+            0o600,
+            dir_fd=dir_fd,
+        )
+    except OSError:
+        raise HistoryError("cannot write the history file") from None
+    try:
+        try:
+            _write_all(tfd, data)
+            os.fsync(tfd)
+        finally:
+            os.close(tfd)
+        os.rename(temp, name, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
+    except OSError:
+        try:
+            os.unlink(temp, dir_fd=dir_fd)
+        except OSError:
+            pass
+        raise HistoryError("cannot write the history file") from None
+    try:
+        os.fsync(dir_fd)
+    except OSError:
+        raise HistoryError(
+            "the write may not be durable; run history-verify before trying again"
         ) from None

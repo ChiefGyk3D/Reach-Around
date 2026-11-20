@@ -139,6 +139,48 @@ Appends after the restored commit start from its last line. Values fetched
 after that commit are not recoverable from the platforms (a past follower count
 cannot be re-fetched), so restore the most recent commit that verifies.
 
+## Redact stored values (tombstones)
+
+Use this when a platform's terms, a revocation or a request means a stored API
+value must go. It is the one command that rewrites the file, it is owner-run,
+and it never runs during `counts refresh` (a refresh that holds the lock makes
+it refuse, and an append that waited through it is refused too).
+
+A tombstone replaces the line of a redacted record. It keeps the key (platform,
+metric, as-of time, source), a `reason` from a closed list (`platform_expiry`,
+`platform_revocation`, `platform_request`, `user_request`, `owner_decision`),
+the `trigger_date` that started the clock, and when it was done. It holds no
+value, note or era, and no free text. The corrections of a redacted record are
+removed with it. Every later line is re-chained, so no digest of the old bytes
+stays in the file. A redacted day is a gap in the series, never a zero, and the
+same key cannot be filled again. Only `api` rows are redacted; `hand_kept` and
+`imported` rows need `--include-hand-kept` (an owner choice, not a duty).
+
+1. Record the trigger and its date (revocation, platform request, user request).
+2. Dry run (the default; prints counts only, never a value, note or hash):
+
+   ```bash
+   reach-around counts history-redact --config site.yaml --platform youtube \
+     --source api --before 2026-10-20 --reason platform_expiry \
+     --trigger-date 2026-10-20
+   ```
+
+3. Check the count, then add `--confirm`. The file is written beside the old
+   one, fsynced and renamed into place; a failure leaves the original.
+4. `reach-around counts history-verify --config site.yaml` must exit 0.
+5. Commit the file to the private instance repository in its own pull request.
+   The bundled workflow still refuses a file that is not a byte-prefix of the
+   committed one; accepting a labeled tombstone-only rewrite is separate work
+   (issue #586 follow-up), so until then commit this one by hand.
+6. A tombstone meets the deletion duty in the working tree only. Git still
+   holds the old versions. If the deadline needs true deletion (Social Blade,
+   or any case where git history would break it), the private-repository
+   history rewrite is a separate operation with its own approval, backup and
+   restore plan.
+7. Write down the date and what was redacted (counts only) in the instance log.
+
+Running it again with the same arguments redacts 0 lines and changes nothing.
+
 ## Reading it in code
 
 `reach_around.counts.history.read_history(path)` validates the whole file and
