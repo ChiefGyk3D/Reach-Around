@@ -48,6 +48,8 @@ from reach_around.counts.files import (
     write_atomic,
 )
 from reach_around.counts.history import (
+    ANALYTICS_PROVIDER,
+    MAX_BATCH,
     HistoryError,
     Record,
     append_records,
@@ -313,6 +315,19 @@ def _insights(
     return collect(list(sources), ok, environment, fetch, moment)
 
 
+def fit_batch(records: list[Record]) -> tuple[list[Record], list[str]]:
+    """The records to append, and the platforms whose analytics were left out.
+
+    Within ``MAX_BATCH`` nothing changes. Over it, every YouTube Analytics record
+    is dropped (never a subscriber or another source's record) and the platforms
+    that lost figures are named, so one too-large source fails alone."""
+    if len(records) <= MAX_BATCH:
+        return records, []
+    private = [r for r in records if r.api_provider == ANALYTICS_PROVIDER]
+    kept = [r for r in records if r.api_provider != ANALYTICS_PROVIDER]
+    return kept, sorted({r.platform for r in private})
+
+
 def _retention_notice(history: Path, stamp: datetime) -> None:
     """Tell the owner, every run, how many YouTube Analytics records are past the
     30-day rule. A count only, never a value. Removal is the history tombstone
@@ -418,6 +433,13 @@ def _cycle(
             )
             for figure in figures
         ]
+        # One append takes at most MAX_BATCH records. If the assembled batch is
+        # over it, only the analytics figures of this run are left out (they are
+        # reported as too_large); subscribers and other sources are never dropped.
+        fetched, too_big = fit_batch(fetched)
+        for platform in too_big:
+            print(f"{platform}: insights error (too_large)", file=sys.stderr)
+            insight_failures.append(InsightFailure(platform, "too_large"))
         try:
             kept = append_records(history, fetched, now=stamp, skip_days=True)
         except HistoryError as exc:

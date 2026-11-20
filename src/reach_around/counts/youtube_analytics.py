@@ -433,9 +433,11 @@ def _geography(session: _Session, first: date, last: date) -> Report:
         f"with at least {GEO_FLOOR_VIEWS} views are named, every other country read "
         f"(up to {GEO_MAX_PAGES * GEO_PAGE_SIZE}) is summed into geo_other_views"
     )
+    if folded > MAX_VALUE:  # refused, never clamped: a clamped total is wrong
+        raise YoutubeAnalyticsError("bad_aggregate")
     out = [Measure(metric, value, note) for metric, value in sorted(cells.items())]
     if folded:
-        out.append(Measure("geo_other_views", min(folded, MAX_VALUE), note))
+        out.append(Measure("geo_other_views", folded, note))
     return out, skipped
 
 

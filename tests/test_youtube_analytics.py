@@ -27,7 +27,6 @@ from reach_around.counts.history import (
     History,
     Record,
     append_records,
-    looks_like_youtube_analytics,
     read_history,
 )
 from reach_around.counts.insights import collect
@@ -731,30 +730,105 @@ def test_the_report_refuses_analytics_whatever_the_platform_slug(
     )
 
 
-def test_untagged_api_records_shaped_like_analytics_are_refused_too() -> None:
-    """Records written before the tag was reliable carry no provider."""
-
-    def api(metric: str, source: str = "api") -> Record:
-        return Record("video", metric, 987654, "2026-11-16T09:00:00Z", source, "r")
-
-    names = ["views_1d", "watch_minutes_1d", "demo_a18_24_f", "geo_us_views"]
-    block = build_social(
-        History(tuple(api(m) for m in names)), cutover=None, today=date(2026, 11, 20)
+def test_records_are_identified_only_by_the_provider_tag() -> None:
+    """One rule everywhere (report, deletion, revocation, notice): the tag. An
+    untagged API record named like an analytics figure is NOT refused and NOT
+    selected for deletion; a tagged one is both."""
+    day = "2026-10-01T09:00:00Z"
+    untagged = Record("video", "views_1d", 987654, day, "api", "r")
+    tagged = Record(
+        "video", "views_1d", 123456, day, "api", "r2", api_provider="youtube_analytics"
     )
-    assert block["platforms"] == []
-    assert {i["metric"] for i in block["refused"]} == set(names)
-    # a hand-typed number of the same name, and other collectors' figures, pass
-    block = build_social(
-        History((api("views_1d", "hand_kept"), api("video_views_28d"))),
-        cutover=None,
-        today=date(2026, 11, 20),
+    today = date(2026, 11, 20)
+    block = build_social(History((untagged,)), cutover=None, today=today)
+    assert [s["metric"] for s in block["platforms"]] == ["views_1d"]
+    assert block["refused"] == []
+    assert deletion_candidates([untagged], today) == []
+    assert deletion_candidates([untagged], today, revoked=True) == []
+    block = build_social(History((tagged,)), cutover=None, today=today)
+    assert block["platforms"] == [] and [i["metric"] for i in block["refused"]] == [
+        "views_1d"
+    ]
+    assert deletion_candidates([tagged], today) == [tagged]
+    assert deletion_candidates([tagged], today, revoked=True) == [tagged]
+
+
+# ---- limits: the whole append, and one analytics source per config ----
+
+
+def plain(i: int) -> Record:
+    return Record("other", "followers", i, "2026-11-01T00:00:00Z", "api", "r")
+
+
+def analytics_rec(i: int) -> Record:
+    return Record(
+        "youtube",
+        f"views_{i}d",
+        i,
+        "2026-11-01T00:00:00Z",
+        "api",
+        "r",
+        api_provider="youtube_analytics",
     )
-    assert {s["metric"] for s in block["platforms"]} == {"views_1d", "video_views_28d"}
 
 
-def test_every_collected_metric_name_is_recognized_by_the_shape_check() -> None:
-    measures, _ = run(ok_router())
-    assert measures and all(looks_like_youtube_analytics(m.metric) for m in measures)
+def test_a_batch_over_the_append_limit_drops_only_the_analytics() -> None:
+    others = [plain(i) for i in range(MAX_BATCH - MAX_RUN_FIGURES + 2)]
+    figures = [analytics_rec(i) for i in range(MAX_RUN_FIGURES)]
+    kept, dropped = counts_cmd.fit_batch(others + figures)
+    assert kept == others and dropped == ["youtube"]
+    assert len(others) + len(figures) == MAX_BATCH + 2
+
+
+def test_a_batch_exactly_at_the_limit_is_kept_whole() -> None:
+    others = [plain(i) for i in range(MAX_BATCH - 10)]
+    figures = [analytics_rec(i) for i in range(10)]
+    kept, dropped = counts_cmd.fit_batch(others + figures)
+    assert kept == others + figures and dropped == []
+
+
+def test_refresh_drops_analytics_and_keeps_subscribers_when_over_the_limit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(counts_cmd, "MAX_BATCH", 10)  # subscribers + 62 > 10
+    code = refresh(tmp_path, monkeypatch, with_channel(ok_router(True)))
+    assert code == counts_cmd.EXIT_SOURCE_FAILED
+    records = read_history(tmp_path / "history" / "social.jsonl").records
+    assert [r.metric for r in records] == ["subscribers"]
+    assert "youtube: insights error (too_large)" in capsys.readouterr().err
+
+
+def test_two_analytics_sources_are_refused_at_load() -> None:
+    from pydantic import ValidationError
+
+    from reach_around.config.numbers_sources import NumbersConfig
+
+    def source(slug: str, analytics: bool) -> dict[str, Any]:
+        return {
+            "platform": slug,
+            "kind": "youtube",
+            "channel_id": CHANNEL,
+            "analytics": analytics,
+        }
+
+    with pytest.raises(ValidationError, match="at most one"):
+        NumbersConfig.model_validate(
+            {"sources": [source("a-yt", True), source("b-yt", True)]}
+        )
+    ok = NumbersConfig.model_validate(
+        {"sources": [source("a-yt", True), source("b-yt", False)]}
+    )
+    assert [s.platform for s in ok.sources] == ["a-yt", "b-yt"]
+
+
+def test_geography_sum_over_the_history_maximum_is_refused_not_clamped() -> None:
+    rows = [["ZZ", 10**12], ["Zz", 10**12]]  # both fold into geo_other_views
+    geo = {"columnHeaders": [{"name": "country"}, {"name": "views"}], "rows": rows}
+    measures, words = run(
+        router(daily=fx("daily.json"), demo=fx("empty.json"), geo=geo)
+    )
+    assert words == ["bad_aggregate"]
+    assert not [m for m in measures if m.metric.startswith("geo_")]
 
 
 # ---- limits: output per report and per run ----

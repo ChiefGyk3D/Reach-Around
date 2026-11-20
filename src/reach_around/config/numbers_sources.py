@@ -335,6 +335,22 @@ class NumbersConfig(BaseModel):
         return self
 
     @model_validator(mode="after")
+    def _one_analytics_source(self) -> NumbersConfig:
+        # One run appends at most 200 history records; each analytics source can
+        # add 62, so at most one source may collect YouTube Analytics (#391).
+        count = sum(
+            1
+            for source in self.sources
+            if isinstance(source, YoutubeSource) and source.analytics is True
+        )
+        if count > 1:
+            raise ValueError(
+                "analytics: true is allowed on at most one youtube source "
+                f"(found {count})"
+            )
+        return self
+
+    @model_validator(mode="after")
     def _one_source_per_platform(self) -> NumbersConfig:
         seen: set[str] = set()
         for source in self.sources:

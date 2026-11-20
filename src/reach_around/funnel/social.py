@@ -37,7 +37,6 @@ from reach_around.counts.history import (
     Point,
     Record,
     Series,
-    looks_like_youtube_analytics,
     parse_as_of,
 )
 
@@ -67,11 +66,8 @@ NOTES = (
 
 def _refused(record: Record) -> bool:
     # YouTube Analytics is the owner's private authorized data. It is refused by
-    # its provider tag whatever the platform slug is, and an untagged API record
-    # with one of the collector's metric names is refused too (an older line).
+    # its provider tag whatever the platform slug is. The tag is the only rule.
     if record.api_provider == ANALYTICS_PROVIDER:
-        return True
-    if record.source == "api" and looks_like_youtube_analytics(record.metric):
         return True
     if record.source != "api" or not record.platform.startswith("youtube"):
         return False

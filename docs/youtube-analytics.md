@@ -31,11 +31,22 @@ history file at all. An import-graph test (static, defense in depth) fails if
 site, kit, editor, config, preview or editing code can reach the collector.
 
 `reach-around report` refuses these records (`_refused` in `funnel/social.py`,
-display policy, #424), so the owner cannot see them there yet. It refuses by the
-provider tag, and also refuses an untagged `api` record whose metric name is one
-the collector writes (`views_1d`, `watch_minutes_1d`, `demo_*`, `geo_*_views`),
-to cover a line written without the tag. A hand-kept record of the same name is
-not refused. They can be read from the history file itself.
+display policy, #424), so the owner cannot see them there yet. They can be read
+from the history file itself.
+
+**Records are identified only by the provider tag** `api_provider:
+youtube_analytics`. One rule is applied everywhere: the report refuses it, and
+deletion, revocation and the retention notice select it. There is no guessing
+from metric names, so an untagged record named `views_1d` is ordinary data. If a
+hand-written or pre-existing history file already holds analytics-shaped rows
+without the tag, tag them by hand before enabling the collector.
+
+**One analytics source per config.** `analytics: true` is allowed on at most one
+`youtube` source (the config is refused at load otherwise). One `counts refresh`
+appends at most 200 history records, and a run of this collector can add up to 62.
+If the combined batch of a run (subscribers, other sources and these figures)
+would still be over 200, only the analytics figures of that run are left out and
+reported as `too_large`; subscribers and other sources are always stored.
 
 ## What is stored
 
@@ -124,7 +135,13 @@ described in the platform terms note.
 
 ## Quota
 
-Three reports per run (one daily series, one demographics, one geography). The
-geography report takes 1 to 3 requests (pages), so a run makes 3 to 5 report
-requests, plus the token exchange. No retry loop beyond the fetch layer's bound. The
-daily quota figure was not found on the vendor pages read.
+Logical report queries: three reports per run (one daily series, one
+demographics, one geography). The geography report takes 1 to 3 queries (pages),
+so a run makes 3 to 5 report queries, plus one token exchange.
+
+HTTP attempts are more than that. Each report GET may be retried by the fetch
+layer on a 429 or a 5xx, up to three attempts, so a run can make 9 to 15 report
+attempts in a bad case. The token exchange is a POST and is never retried. There
+is no retry loop beyond the fetch layer's bound. The daily quota figure was not
+found on the vendor pages read, and whether a retried attempt counts again is not
+known.
