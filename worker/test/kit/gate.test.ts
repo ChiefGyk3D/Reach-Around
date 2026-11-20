@@ -691,12 +691,14 @@ describe("per-client limits do not spend shared budgets", () => {
 
   it("a visitor can reload the gated page: the view allowance is higher than the gate's", async () => {
     await seedLead();
-    // The documented values: 1 per 60 s per client for the gate, 10 per 60 s for the view.
+    // The documented values: 1 per 60 s per client for the gate, 4 per 60 s for the view
+    // (tests/test_deploy_limits_doc.py pins that 4 x 60 stays below ROUTE_BUDGET_VIEW).
     const gateLim = keyedLimiter(1);
-    const viewLim = keyedLimiter(10);
+    const viewLim = keyedLimiter(4);
     const e = baseEnv({ GATE_LIMITER: gateLim, KIT_VIEW_LIMITER: viewLim });
     const ck = await unlockCookieFor();
-    for (let i = 0; i < 8; i++) expect((await view({ cookie: ck }, e)).status).toBe(200); // reloads, back button, a preview HEAD
+    for (let i = 0; i < 4; i++) expect((await view({ cookie: ck }, e)).status).toBe(200); // reloads, back button, a preview HEAD
+    expect((await view({ cookie: ck }, e)).status).toBe(303); // the fifth in the same minute is refused
     expect(gateLim.hits.size).toBe(0); // viewing never touches the gate's allowance
   });
 

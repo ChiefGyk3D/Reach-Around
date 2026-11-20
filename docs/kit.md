@@ -629,12 +629,13 @@ form posts to `/k/gate`. They ship off at the cutover (`features.kit_gate`).
 - **Limits, in the order a request meets them.** (1) `GATE_LIMITER`: each client
   has its own gate allowance, 1 per 60 seconds documented, well under the hourly
   budget. The view has its own binding, `KIT_VIEW_LIMITER` (not `VIEW_LIMITER`,
-  which is the page-view beacon's), about 10 per 60 seconds per client
-  documented, so a visitor can reload, use the back button or return from the
-  inquiry form. At 10 a minute one address could still spend `ROUTE_BUDGET_VIEW`
-  (300 an hour) in half an hour of sustained requests; that is a refusal, never
-  a bill, and the remedies are a higher budget, a lower allowance or the edge
-  rule (issue #613). (2) `GATE_CHECK_LIMITER`: an
+  which is the page-view beacon's), 4 per 60 seconds per client
+  documented, so a visitor can reload several times a minute, use the back
+  button or return from the inquiry form. At 4 a minute one address is at most
+  240 an hour, below `ROUTE_BUDGET_VIEW` (300), so one client alone can never
+  spend an hour's view budget; a test pins that the allowance times 60 stays
+  below the budget. Two or more clients can spend it (a refusal, never a bill);
+  the budget and the edge rule (issue #613) cover that. (2) `GATE_CHECK_LIMITER`: an
   allowance per coarse network (a /24 for IPv4, a /48 for IPv6, hashed with a
   key and a label of its own, never stored) on requests about to reach
   Turnstile, 20 per 60 seconds per network documented, a binding with no

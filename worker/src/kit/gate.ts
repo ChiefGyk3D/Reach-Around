@@ -94,7 +94,8 @@ export interface GateEnv
   GATE_CHECK_LIMITER?: MinuteLimiter;
   /**
    * Workers Rate Limiting binding for GET /k/view, per client (keyed hash, label "view"). Its own
-   * binding, with a higher allowance than the gate's (about 10 per 60 s), so a visitor can reload.
+   * binding, with a higher allowance than the gate's (4 per 60 s documented), so a visitor can reload.
+   * Keep limit x 60 below ROUTE_BUDGET_VIEW so one client cannot spend an hour's budget alone.
    * (Not named VIEW_LIMITER: that is the page-view beacon route's binding.) Required for /k/view.
    */
   KIT_VIEW_LIMITER?: MinuteLimiter;
@@ -429,9 +430,10 @@ async function view(request: Request, env: GateEnv, deps: GateDeps): Promise<Res
   const claims = raw === null ? null : await verifyToken(cfg.keys, raw, Math.floor(now / 1000)); // CONTROL:view-token
   if (claims === null) return back("expired");
 
-  // Per-client minute limiter on its OWN binding (KIT_VIEW_LIMITER, about 10 per 60 s documented), with
+  // Per-client minute limiter on its OWN binding (KIT_VIEW_LIMITER, 4 per 60 s documented), with
   // the same keyed hash as the gate but its own purpose label. A visitor can reload, use the back button
-  // or return from the inquiry form; one client still cannot spend the view budget or another's allowance.
+  // or return from the inquiry form; one client cannot spend another's allowance, and (4 x 60 = 240, below
+  // ROUTE_BUDGET_VIEW 300) cannot spend an hour's view budget alone. Two or more clients can.
   const limiterSecret = secretBytes(env.VIEW_HASH_SECRET);
   if (limiterSecret === null || typeof env.VIEW_HASH_SECRET !== "string" || !hasLimiter(env.KIT_VIEW_LIMITER)) {
     log.log("link", "closed", "binding");

@@ -150,11 +150,11 @@ crons = ["5 * * * *"]
 # GATE_LIMITER is the gate's per-client allowance: one request per client per 60 seconds, the
 # strictest the binding allows, so one client can spend at most 60 of an hour's ROUTE_BUDGET_GATE (150).
 # KIT_VIEW_LIMITER is the view route's own per-client binding (not VIEW_LIMITER, the page-view beacon
-# route's): about 10 per 60 seconds, so a visitor can reload, use the back button or return from the
-# inquiry form. Arithmetic, stated plainly: 10 a minute is up to 600 an hour from ONE address, above
-# ROUTE_BUDGET_VIEW (300), so a single client holding the limit for half an hour could spend that
-# hour's view budget (a refusal, never a bill); raise ROUTE_BUDGET_VIEW, lower this, or add the edge
-# rate rule (issue #613) if that matters. Required for /k/view.
+# route's): 4 per 60 seconds, so a visitor can reload several times a minute, use the back button or
+# return from the inquiry form. Arithmetic: 4 a minute is at most 240 an hour from ONE address, below
+# ROUTE_BUDGET_VIEW (300), so one client alone can never spend an hour's view budget (a test pins
+# limit x 60 < the budget; keep it so if you change either). Two or more clients can; that is what the
+# budget (a refusal, never a bill) and the edge rate rule (issue #613) cover. Required for /k/view.
 # GATE_CHECK_LIMITER is an allowance PER COARSE NETWORK (a /24 or /48, keyed hash, never stored) on
 # requests about to reach Turnstile; it caps vendor calls and writes nothing to D1, and one network
 # cannot use up another's share. Required. 20 per 60 seconds per network is the documented value.
@@ -178,7 +178,7 @@ crons = ["5 * * * *"]
 # name = "KIT_VIEW_LIMITER"
 # namespace_id = "1007" # placeholder, not a real id
 #   [ratelimits.simple]
-#   limit = 10
+#   limit = 4
 #   period = 60
 # [[ratelimits]]
 # name = "GATE_CHECK_LIMITER"
