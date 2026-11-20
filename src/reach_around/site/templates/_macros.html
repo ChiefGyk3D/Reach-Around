@@ -1,6 +1,6 @@
 {# SPDX-License-Identifier: Apache-2.0 #}
 {% import "_frames.html" as frames with context %}
-{% macro link_anchor(link, track, extra_class="") -%}
+{% macro link_anchor(link, track, extra_class="", badge="") -%}
 {% set slot = "featured" if link.featured else "link" %}
 <a class="link{% if link.featured %} link-featured{% endif %}{{ extra_class }}{{ frames.cls(slot) }}"{% if link.url.startswith('tab:') %} href="{{ tab_href(link.url) }}"{% else %} href="{{ link.url }}"{% if track %} ping="/e/c/{{ link.id }}" data-link-id="{{ link.id }}"{% endif %} rel="{{ 'sponsored noopener noreferrer' if link.affiliate else 'noopener noreferrer' }}"{% endif %}>
 {% if link.image %}<img class="link-thumb" src="{{ asset_url(link.image, root) }}" alt="{{ link.image_alt }}" width="{{ thumb_px }}" height="{{ thumb_px }}" loading="lazy" decoding="async" referrerpolicy="no-referrer">
@@ -8,6 +8,7 @@
 <span class="link-text">
 <span class="link-title">{{ link.title }}</span>
 {% if link.subtitle %}<span class="link-subtitle">{{ link.subtitle }}</span>{% endif %}
+{% if badge %}<span class="smart-live-badge" data-watch-badge="{{ badge }}" hidden></span>{% endif %}
 </span>
 </a>
 {%- endmacro %}

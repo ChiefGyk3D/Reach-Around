@@ -556,6 +556,7 @@ KNOWN_FIELDS: frozenset[str] = frozenset(
         "likes",
         "link",
         "links",
+        "live_badges",
         "login",
         "logo",
         "male",

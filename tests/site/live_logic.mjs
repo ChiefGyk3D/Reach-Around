@@ -264,3 +264,51 @@ test("an unreadable body is degraded", async () => {
   const odd = fakeResponse(["text, not bytes"]);
   assert.equal(await live.readBounded(odd.response), null);
 });
+
+// ---- the Watch badges of the smart stack (issue #673) ----------------------------
+
+test("watch badges: the words are LIVE and OFFLINE, and only a known state gets one", () => {
+  const s = live.parseStatus(body({ kick: { live: true, since: NOW - 5 } }), NOW);
+  assert.deepEqual(live.watchBadges(s), { kick: "LIVE", twitch: "OFFLINE" });
+});
+
+test("watch badges: unknown is blank, never a guess", () => {
+  const t = body({ kick: { live: null, since: null }, twitch: { live: true, since: NOW - 5 } });
+  assert.deepEqual(live.watchBadges(live.parseStatus(t, NOW)), { kick: "", twitch: "LIVE" });
+  const u = body({ kick: { live: null, since: null }, twitch: { live: null, since: null } });
+  assert.deepEqual(live.watchBadges(live.parseStatus(u, NOW)), { kick: "", twitch: "" });
+});
+
+test("watch badges: degraded data (null) shows nothing on either platform", () => {
+  assert.deepEqual(live.watchBadges(null), { kick: "", twitch: "" });
+  assert.deepEqual(live.watchBadges(undefined), { kick: "", twitch: "" });
+  assert.deepEqual(live.watchBadges("live"), { kick: "", twitch: "" });
+  assert.deepEqual(live.watchBadges({ kick: "yes", twitch: 1 }), { kick: "", twitch: "" });
+});
+
+test("watch badges: stale and malformed documents show nothing", () => {
+  const stale = body({ as_of: NOW - 5000, kick: { live: true, since: NOW - 6000 } });
+  assert.deepEqual(live.watchBadges(live.parseStatus(stale, NOW)), { kick: "", twitch: "" });
+  assert.deepEqual(live.watchBadges(live.parseStatus("{", NOW)), { kick: "", twitch: "" });
+});
+
+test("watch badges: swapping the two platforms' data swaps the words and nothing else", () => {
+  for (const [a, b] of [[true, false], [false, true], [true, true], [false, false], [null, true]]) {
+    const one = live.watchBadges({ kick: a, twitch: b });
+    const two = live.watchBadges({ kick: b, twitch: a });
+    assert.deepEqual(Object.keys(one), Object.keys(two));
+    assert.equal(one.kick, two.twitch);
+    assert.equal(one.twitch, two.kick);
+  }
+});
+
+test("watch badges: every platform in the table gets an entry, in table order", () => {
+  assert.deepEqual(Object.keys(live.watchBadges(null)), live.PLATFORMS.map((p) => p.id));
+});
+
+test("watch announcement: one plain sentence for known platforms, empty otherwise", () => {
+  assert.equal(live.watchAnnouncement({ kick: "LIVE", twitch: "OFFLINE" }), "Kick: live. Twitch: offline.");
+  assert.equal(live.watchAnnouncement({ kick: "", twitch: "LIVE" }), "Twitch: live.");
+  assert.equal(live.watchAnnouncement({ kick: "", twitch: "" }), "");
+  assert.equal(live.watchAnnouncement(null), "");
+});

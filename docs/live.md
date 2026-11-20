@@ -69,6 +69,41 @@ things:
 Both platforms go through one table and one code path; the platform names appear
 nowhere else in the script (a test checks it).
 
+## Live badges on the Watch links
+
+The smart stack home page can carry the same status on its two Watch links
+(issue #673). It is off by default: set `page.live_badges: true` (see
+[config](config.md#page)). The Live tab and its Worker are separate; the badges
+only need the Worker's `GET /e/live`.
+
+- **Static state.** The HTML is complete with no script: the status and schedule
+  lines and the two equal Watch links. Each link carries one empty `hidden`
+  badge (`data-watch-badge="twitch"` or `"kick"`, same classes and attributes for
+  both), and the Watch group carries one empty status region
+  (`role="status" aria-live="polite" aria-atomic="true"`, visually hidden). No
+  link has `aria-live`.
+- **With the script.** The pinned `live.js` (linked with `defer`, no inline
+  script) makes the one same-origin request described above, with the same strict
+  checks. A platform's badge reads `LIVE` only when that platform is known live
+  and `OFFLINE` only when it is known not live. For anything else (unknown, the
+  other platform's data missing, a failed or slow request, bad, stale or
+  future-dated data, the kill switch, no endpoint at all) the badge stays empty
+  and hidden. The page never shows an error text and never guesses. A later
+  failed poll clears a badge it had shown.
+- **One announcement.** The region gets one sentence ("Kick: live. Twitch:
+  offline.") only when the words change, so a screen reader hears one polite
+  update, not one per link. A badge is plain text with an outline, in the same
+  colors as the tab bar badge (4.5:1 or better), so it never depends on color
+  alone. There is no animation, so reduced-motion settings need no special case.
+- **Equal treatment.** Both platforms go through one table and one code path.
+  The tests swap the two platforms' data and require identical markup apart from
+  the names.
+- **Privacy.** No third-party request, no cookie, no storage. The request is the
+  same one the Live tab makes: same origin, credentials omitted, no referrer.
+- **Without the Worker.** A site with no `/e/live` endpoint still builds and
+  works; the request fails or returns a non-200 and the badges stay empty. Turn
+  `live_badges` off if you run no Live Worker, to avoid the request.
+
 ## Layout
 
 The Live page uses a wide column (up to 112rem). From 56rem the two players sit

@@ -530,6 +530,7 @@ def _render_smart_stack_page(
         has_email_script=False,
         has_platforms=False,
         has_live=False,
+        has_live_script=config.page.live_badges,
         smart_stack=True,
         profile_card=_profile_card(config),
         cookie_text=intro_text(config),
@@ -914,7 +915,8 @@ def build_site(
             static.pop(rel, None)
     if not any(_has_live(blocks) for blocks in shown):
         static.pop(_LIVE_STYLE, None)
-        static.pop(_LIVE_SCRIPT, None)
+        if not config.page.live_badges:
+            static.pop(_LIVE_SCRIPT, None)
     if kit is None:
         static.pop(_KIT_STYLE, None)
         static.pop(_ZONE_SCRIPT, None)

@@ -243,6 +243,47 @@
     return anyLive(status);
   }
 
+  // The words of the Watch badges on the smart stack (#673). One word per
+  // platform, from one code path: "LIVE" only when that platform is known live,
+  // "OFFLINE" only when it is known not live, and the empty string for anything
+  // else (unknown, degraded, stale, malformed, no data). Empty means the badge
+  // stays hidden and the page stays as it shipped; there is never an error text.
+  var WORD_LIVE = "LIVE";
+  var WORD_OFFLINE = "OFFLINE";
+
+  function watchWord(status, id) {
+    if (status === null || typeof status !== "object" || !own(status, id)) {
+      return "";
+    }
+    if (status[id] === true) {
+      return WORD_LIVE;
+    }
+    return status[id] === false ? WORD_OFFLINE : "";
+  }
+
+  function watchBadges(status) {
+    var result = {};
+    PLATFORMS.forEach(function (p) {
+      result[p.id] = watchWord(status, p.id);
+    });
+    return result;
+  }
+
+  // The one sentence for the single polite region, or "" when nothing is known.
+  function watchAnnouncement(badges) {
+    if (badges === null || typeof badges !== "object") {
+      return "";
+    }
+    var parts = [];
+    PLATFORMS.forEach(function (p) {
+      var word = own(badges, p.id) ? badges[p.id] : "";
+      if (word === WORD_LIVE || word === WORD_OFFLINE) {
+        parts.push(p.name + ": " + word.toLowerCase() + ".");
+      }
+    });
+    return parts.join(" ");
+  }
+
   // The player URL for a platform and channel, or null. The origin comes from the
   // table, the channel must match the config model's pattern for that platform,
   // and the host is encoded, so nothing here can reach any other origin.
@@ -284,6 +325,8 @@
       parseStatus: parseStatus,
       viewState: viewState,
       badgeOn: badgeOn,
+      watchBadges: watchBadges,
+      watchAnnouncement: watchAnnouncement,
       playerSrc: playerSrc
     };
     return;
@@ -296,7 +339,9 @@
 
   var roots = document.querySelectorAll("[data-live]");
   var badges = document.querySelectorAll("[data-live-badge]");
-  if (roots.length === 0 && badges.length === 0) {
+  var watchBadgeEls = document.querySelectorAll("[data-watch-badge]");
+  var watchRegion = document.querySelector("[data-watch-status]");
+  if (roots.length === 0 && badges.length === 0 && watchBadgeEls.length === 0) {
     return;
   }
 
@@ -320,7 +365,26 @@
     }
   }
 
+  // Fill the Watch badges and the one polite region. Text only, never an error
+  // string: a platform with no known state gets an empty, hidden badge.
+  function applyWatch(status) {
+    var words = watchBadges(status);
+    for (var w = 0; w < watchBadgeEls.length; w += 1) {
+      var id = watchBadgeEls[w].getAttribute("data-watch-badge");
+      var word = id !== null && own(words, id) ? words[id] : "";
+      watchBadgeEls[w].textContent = word;
+      watchBadgeEls[w].hidden = word === "";
+    }
+    if (watchRegion) {
+      var said = watchAnnouncement(words);
+      if (watchRegion.textContent !== said) {
+        watchRegion.textContent = said;
+      }
+    }
+  }
+
   function apply(status) {
+    applyWatch(status);
     var state = viewState(status);
     var lit = badgeOn(status);
     for (var b = 0; b < badges.length; b += 1) {
