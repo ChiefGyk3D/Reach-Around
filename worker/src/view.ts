@@ -60,7 +60,9 @@
 //   accepted and documented; the body read has a short fixed deadline.
 //   GEO_LEVEL city, BOTS_MODE count, network class "unknown" for now.
 
+import { beaconLane, beaconSetup, type BeaconEnv } from "./beacon";
 import { BOT_REASONS, classifyBot, uaSignals, type BotClass } from "./botclass";
+import { markClickSetupInvalid, type ClickLane } from "./clickceiling";
 import { MAX_PATH_LENGTH, MAX_URL_LENGTH } from "./click";
 import type { RateLimiter } from "./click";
 import { classifyUserAgent, primaryLanguage } from "./ua";
@@ -78,7 +80,7 @@ import { killedSites, loadSites, siteForRequest } from "./sites";
 
 export { normalizeAddress } from "./address";
 
-export interface ViewEnv {
+export interface ViewEnv extends BeaconEnv {
   DB: D1Database;
   /**
    * The sites this collector serves (docs/analytics-design.md section 4): a
@@ -560,6 +562,7 @@ async function accept(
   globalLimit: number,
   accountLimit: number,
   now: number,
+  lane: ClickLane | null,
 ): Promise<void> {
   const clientCap = clientLimit(env, bot);
   if (globalLimit <= 0 || accountLimit <= 0 || clientCap <= 0) return;
@@ -620,6 +623,18 @@ async function accept(
       row.site,
     ),
   ];
+  if (lane !== null) {
+    // BEACON_MODE observe or enforce: one more row, written only when the event row was (it depends on
+    // `changes()` of the insert before it), so the lane count equals the stored views. A label, not a filter.
+    stmts.splice(
+      5,
+      0,
+      env.DB.prepare(
+        "INSERT INTO counters (key, day, count) SELECT ?1, ?2, 1 WHERE changes() = 1 " +
+          "ON CONFLICT (key, day) DO UPDATE SET count = count + 1 WHERE changes() = 1",
+      ).bind(`pvl-${lane}-${row.site}`, day), // CONTROL:pv-lane
+    );
+  }
   if (uvh !== null) {
     stmts.push(
       env.DB.prepare("INSERT OR IGNORE INTO visitor_seen (day, h) SELECT ?1, ?2 WHERE changes() = 1").bind(day, uvh),
@@ -634,9 +649,10 @@ async function accept(
  * Handle `POST /e/v/:pageId`. Check order, cheapest first, nothing writes
  * before the budget step:
  *   kill switch, method, URL/path/id caps, Sec-GPC / DNT, site from Origin
- *   (or Ping-From, 256 header cap), per-site kill, that site's page allowlist, Content-Length, rate
- *   limit, bounded body read and parse, derive, classify, bots mode,
- *   budget, visitor_seen, view_events.
+ *   (or Ping-From, 256 header cap), per-site kill, that site's page allowlist, BEACON_MODE (an unusable
+ *   value records nothing and sets the setup flag; a missing key with the mode on only sets the flag),
+ *   Content-Length, rate limit, bounded body read and parse, derive, classify, bots mode, the token's
+ *   lane (read from the URL, a label only), budget, the lane row, visitor_seen, view_events.
  * Always returns an empty 204.
  */
 export async function handleView(
@@ -669,6 +685,13 @@ export async function handleView(
     if (site === null || site.mode !== "beacon") return noContent();
     if (killedSites(env.VIEWS_KILL_SITES).has(site.id)) return noContent(); // CONTROL:pv-kill-site
     if (site.pages === "html-200" || !site.pages.has(page)) return noContent();
+    // BEACON_MODE: an unusable value records nothing (same 204) and sets the health flag; nothing is guessed.
+    const tokens = beaconSetup(env);
+    if (tokens === null) {
+      await markClickSetupInvalid(env.DB, now);
+      return noContent();
+    }
+    if (tokens.mode !== "off" && tokens.keys.length === 0) await markClickSetupInvalid(env.DB, now);
 
     const declared = request.headers.get("Content-Length");
     if (declared === null || !/^\d{1,10}$/.test(declared) || Number(declared) > MAX_BODY) {
@@ -703,6 +726,8 @@ export async function handleView(
     const accountLimit = bot
       ? positiveInt(env.ACCOUNT_BOT_VIEWS_PER_HOUR, DEFAULT_ACCOUNT_BOT_PER_HOUR, 100000)
       : positiveInt(env.ACCOUNT_VIEWS_PER_HOUR, DEFAULT_ACCOUNT_HUMAN_PER_HOUR, 100000);
+    // The lane is only a label here: observe and enforce both count the view exactly as off does.
+    const lane = tokens.mode === "off" ? null : await beaconLane(request, tokens.keys, site.id, now);
     await accept(
       env,
       id,
@@ -723,6 +748,7 @@ export async function handleView(
       globalLimit,
       accountLimit,
       now,
+      lane,
     );
   } catch {
     // A failure looks the same as success from the outside. Nothing is logged.

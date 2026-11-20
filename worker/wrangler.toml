@@ -90,6 +90,23 @@ crons = ["5 * * * *"]
 #   limit = 5
 #   period = 60
 
+# Beacon token (issue #610, docs/deploy.md "Beacon token"). Placeholders only; not deployed.
+# BEACON_MODE = "observe"          # off (default, or unset) or observe. enforce is NOT available yet: it is an
+#                                  # unusable value (clicks and views are refused, the health flag is set) until the
+#                                  # issuance gate and the per-token limit land in later slices.
+# BEACON_HMAC_KEY is a SECRET (`npx wrangler secret put BEACON_HMAC_KEY`, at least 32 random bytes), never in this
+# file or in CI. It is its own key, never the media-kit TOKEN_HMAC_KEY. Optional BEACON_HMAC_KEY_PREVIOUS (also a
+# secret) keeps tokens signed by the old key working for their 15 minute life during a rotation.
+# The mint route POST /e/t needs VIEW_HASH_SECRET and this per-client limiter: 6 tokens per client per 60 seconds.
+# Without the binding or a usable key it issues nothing. With BEACON_MODE observe the site build also needs
+# analytics.beacon_token: true (docs/config.md) or no page asks for a token.
+# [[ratelimits]]
+# name = "MINT_LIMITER"
+# namespace_id = "1004" # placeholder, not a real id
+#   [ratelimits.simple]
+#   limit = 6
+#   period = 60
+
 # Live status (GET /e/live, src/live.ts). Placeholders only; not deployed.
 # deploy-test.yml writes the real binding, handles and second cron into its
 # throwaway wrangler.deploy.toml from the repository variables LIVE_KV_ID,

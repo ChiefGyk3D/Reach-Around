@@ -521,8 +521,22 @@ jobs:
           DAILY_SEND_BUDGET: ${{ vars.DAILY_SEND_BUDGET }}
           D1_DAILY_WRITE_QUOTA: ${{ vars.D1_DAILY_WRITE_QUOTA }}
           CLICK_DAILY_WRITE_CEILING: ${{ vars.CLICK_DAILY_WRITE_CEILING }}
+          BEACON_MODE: ${{ vars.BEACON_MODE }}
+          MINT_LIMITER_NAMESPACE_ID: ${{ vars.MINT_LIMITER_NAMESPACE_ID }}
         run: |
           set -eu
+          # Beacon token (issue #610): exactly off or observe, or unset. enforce is not available yet.
+          case "${BEACON_MODE:-}" in
+            ""|off) ;;
+            observe)
+              [[ "${MINT_LIMITER_NAMESPACE_ID:-}" =~ ^[0-9]{1,12}$ ]] \
+                || { echo "::error::BEACON_MODE is observe but the repository variable MINT_LIMITER_NAMESPACE_ID is not a number (docs/deploy.md)"; exit 1; }
+              ;;
+            *)
+              echo "::error::BEACON_MODE must be exactly off or observe (or unset); enforce is not available yet"
+              exit 1
+              ;;
+          esac
           for name in CLOUDFLARE_ACCOUNT_ID PAGES_PROJECT D1_DATABASE_ID \
                       RATELIMIT_NAMESPACE_ID SITE_HOST; do
             eval "value=\${$name:-}"
@@ -707,6 +721,7 @@ jobs:
           DAILY_SEND_BUDGET: ${{ vars.DAILY_SEND_BUDGET }}
           D1_DAILY_WRITE_QUOTA: ${{ vars.D1_DAILY_WRITE_QUOTA }}
           CLICK_DAILY_WRITE_CEILING: ${{ vars.CLICK_DAILY_WRITE_CEILING }}
+          BEACON_MODE: ${{ vars.BEACON_MODE }}
         run: |
           set -eu
           npx --no-install esbuild scripts/check-budget.ts --bundle --platform=node \
@@ -766,6 +781,8 @@ jobs:
           DAILY_SEND_BUDGET: ${{ vars.DAILY_SEND_BUDGET }}
           D1_DAILY_WRITE_QUOTA: ${{ vars.D1_DAILY_WRITE_QUOTA }}
           CLICK_DAILY_WRITE_CEILING: ${{ vars.CLICK_DAILY_WRITE_CEILING }}
+          BEACON_MODE: ${{ vars.BEACON_MODE }}
+          MINT_LIMITER_NAMESPACE_ID: ${{ vars.MINT_LIMITER_NAMESPACE_ID }}
         run: |
           set -eu
           # Second lock on the derived list (the script already validated it).
@@ -904,6 +921,36 @@ jobs:
             grep -qxF "PAGE_IDS = '${PAGE_IDS}'" wrangler.deploy.toml
             grep -qxF "namespace_id = \"${VIEW_LIMITER_NAMESPACE_ID}\"" wrangler.deploy.toml
           fi
+
+          # Beacon token (issue #610). Written only for BEACON_MODE=observe: unset, empty or off writes
+          # nothing, and enforce is not available yet, so it fails the deploy like any other bad value.
+          # Adds the mode and the per-client MINT_LIMITER binding (6 tokens per client per 60 s).
+          # BEACON_HMAC_KEY is a Worker secret the owner sets once with `wrangler secret put`; it is never
+          # read here and never written to this file.
+          case "${BEACON_MODE:-}" in
+            ""|off) ;;
+            observe)
+              [[ "${MINT_LIMITER_NAMESPACE_ID:-}" =~ ^[0-9]{1,12}$ ]] \
+                || { echo "::error::BEACON_MODE is observe but MINT_LIMITER_NAMESPACE_ID is not a number"; exit 1; }
+              if [ "${MINT_LIMITER_NAMESPACE_ID}" = "1004" ]; then
+                echo "::error::MINT_LIMITER_NAMESPACE_ID is the placeholder from wrangler.toml"
+                exit 1
+              fi
+              if [ "${MINT_LIMITER_NAMESPACE_ID}" = "${RATELIMIT_NAMESPACE_ID}" ] || [ "${MINT_LIMITER_NAMESPACE_ID}" = "${VIEW_LIMITER_NAMESPACE_ID:-}" ]; then
+                echo "::error::MINT_LIMITER_NAMESPACE_ID must differ from the click and view limiter namespaces"
+                exit 1
+              fi
+              sed -i "/^\[vars\]$/a BEACON_MODE = \"observe\"" wrangler.deploy.toml
+              printf '\n[[ratelimits]]\nname = "MINT_LIMITER"\nnamespace_id = "%s"\n  [ratelimits.simple]\n  limit = 6\n  period = 60\n' \
+                "${MINT_LIMITER_NAMESPACE_ID}" >> wrangler.deploy.toml
+              grep -qxF "BEACON_MODE = \"observe\"" wrangler.deploy.toml
+              grep -qxF "namespace_id = \"${MINT_LIMITER_NAMESPACE_ID}\"" wrangler.deploy.toml
+              ;;
+            *)
+              echo "::error::BEACON_MODE must be exactly off or observe (or unset); enforce is not available yet"
+              exit 1
+              ;;
+          esac
 
       # Smoke test with no secret in the environment.
       - name: Confirm wrangler runs

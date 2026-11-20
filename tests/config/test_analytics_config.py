@@ -81,9 +81,12 @@ def test_unknown_keys_are_refused() -> None:
 
 def test_the_section_has_exactly_these_fields() -> None:
     # A new field is a new fact for the privacy text: see
-    # tests/site/test_privacy_sites.py.
+    # tests/site/test_privacy_sites.py. `beacon_token` is off by default and its
+    # privacy wording is still to be written (docs/config.md says to keep it off
+    # on a live site until then).
     assert set(Analytics.model_fields) == {
         "page_views",
+        "beacon_token",
         "route",
         "raw_keep_days",
         "other_sites",

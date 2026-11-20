@@ -444,6 +444,7 @@ KNOWN_FIELDS: frozenset[str] = frozenset(
         "background",
         "background_dim",
         "bar",
+        "beacon_token",
         "block",
         "blocks",
         "body",

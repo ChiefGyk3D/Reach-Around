@@ -117,6 +117,11 @@
       "additionalProperties": false,
       "description": "Count page views through the Worker route. Off by default.",
       "properties": {
+        "beacon_token": {
+          "default": false,
+          "title": "Beacon Token",
+          "type": "boolean"
+        },
         "other_sites": {
           "default": [],
           "items": {
@@ -3324,6 +3329,7 @@
     "analytics": {
       "$ref": "#/$defs/Analytics",
       "default": {
+        "beacon_token": false,
         "other_sites": [],
         "page_views": false,
         "raw_keep_days": 7,

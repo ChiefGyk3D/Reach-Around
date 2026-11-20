@@ -37,6 +37,28 @@ describe("pageViewDailyWrites", () => {
   });
 });
 
+describe("the beacon lane row (one more row per accepted view while BEACON_MODE is on)", () => {
+  const off = 22_700;
+  const on = Math.ceil((24 * 150 * 33) / 5) + 2_540; // 6.6 rows per view
+  it("is unchanged while the mode is off, unset or empty", () => {
+    for (const m of [undefined, "", "off"]) expect(pageViewDailyWrites({ BEACON_MODE: m }), String(m)).toBe(off);
+  });
+  it("is one row per view higher in observe and enforce, and for a value it cannot read (the worst case)", () => {
+    for (const m of ["observe", "enforce", "Observe", "junk"]) expect(pageViewDailyWrites({ BEACON_MODE: m }), m).toBe(on);
+    expect(on).toBeGreaterThan(off);
+  });
+  it("the deploy gate reads BEACON_MODE, and refuses a value the Worker cannot use", () => {
+    expect(runBudgetCheck({ BEACON_MODE: "observe" }).lines.join(" ")).toContain(`page views ${on}`);
+    expect(runBudgetCheck({ BEACON_MODE: "observe" }).code).toBe(0);
+    for (const m of ["Observe", "on", "1", "enforce"]) {
+      const r = runBudgetCheck({ BEACON_MODE: m });
+      expect(r.code, m).toBe(1);
+      expect(r.lines.join(" ")).toContain("BEACON_MODE");
+    }
+    expect(runBudgetCheck({ BEACON_MODE: "off" }).code).toBe(0);
+  });
+});
+
 describe("the page-view budget in the kit's combined check", () => {
   it("uses the configured budgets, not the fixed default", () => {
     const e = { VIEWS_PER_HOUR: "1000", BOT_VIEWS_PER_HOUR: "200" };
@@ -255,7 +277,7 @@ describe("the deploy check counts sites and ceilings", () => {
 import budgetsSrc from "../../src/kit/budgets.ts?raw";
 import pvSrc from "../../src/pvlimits.ts?raw";
 import { KIT_LIMIT_VARS } from "../../src/kit/budgets";
-import { PAGE_VIEW_VARS } from "../../src/pvlimits";
+import { PAGE_VIEW_MODE_VARS, PAGE_VIEW_VARS } from "../../src/pvlimits";
 import { BUDGET_ENV_VARS } from "../../src/kit/budgetcheck";
 
 describe("the deploy gate reads every variable the Worker's loader reads", () => {
@@ -267,10 +289,10 @@ describe("the deploy gate reads every variable the Worker's loader reads", () =>
   it("PAGE_VIEW_VARS is exactly the set pageViewDailyWrites reads", () => {
     const read = [...pvSrc.matchAll(/\be\.([A-Z_]+)/g)].map((m) => m[1]);
     expect(read.length).toBeGreaterThan(0);
-    expect([...new Set(read)].sort()).toEqual([...PAGE_VIEW_VARS].sort());
+    expect([...new Set(read)].sort()).toEqual([...PAGE_VIEW_VARS, ...PAGE_VIEW_MODE_VARS].sort());
   });
   it("the gate passes on all of them", () => {
-    for (const n of [...KIT_LIMIT_VARS, ...PAGE_VIEW_VARS, "SITES", "SITE_HOST", "PAGE_IDS", "LINK_IDS"]) {
+    for (const n of [...KIT_LIMIT_VARS, ...PAGE_VIEW_VARS, ...PAGE_VIEW_MODE_VARS, "SITES", "SITE_HOST", "PAGE_IDS", "LINK_IDS"]) {
       expect(BUDGET_ENV_VARS).toContain(n);
     }
   });

@@ -13,6 +13,7 @@ import pytest
 from pydantic import ValidationError
 
 from assetpaths import asset, has_asset, read
+from beaconscan import network_problems, strip_comments
 from reach_around.config import SiteConfig
 from reach_around.site.build import build_site
 from reach_around.site.overrides import build_csp
@@ -256,16 +257,37 @@ BANNED = (
 
 
 def violations(source: str) -> list[str]:
-    return [w for w in BANNED if re.search(re.escape(w), source, re.IGNORECASE)]
+    """Banned words in the code (comments left out).
+
+    fetch is judged by network_problems: exactly one same-origin POST to the
+    token route is allowed, nothing else.
+    """
+    code = strip_comments(source)
+    found = [
+        w
+        for w in BANNED
+        if w != "fetch" and re.search(re.escape(w), code, re.IGNORECASE)
+    ]
+    return found + network_problems(source)
 
 
 def test_scan_bites() -> None:
     bad = "localStorage.x = screen.width; fetch('/x'); document.cookie; eval(1)"
-    assert {"localStorage", "screen", "fetch", "cookie", "eval"} <= set(violations(bad))
-    assert violations("navigator.sendBeacon(u, b)") == []
+    assert {"localStorage", "screen", "cookie", "eval"} <= set(violations(bad))
+    assert network_problems(bad) != []  # a fetch that is not the one token request
+    one = 'var MINT_ROUTE = "/e/t";'
+    one += ' fetch(MINT_ROUTE, {method: "POST", credentials: "omit"}).then(1);'
+    assert network_problems(one) == []
+    assert network_problems(one + ' fetch("/x");') != []  # a second fetch
+    assert violations("navigator.sendBeacon(u, b)") == [
+        "fetch appears 0 times, exactly one is allowed",
+        "the one fetch must be fetch(MINT_ROUTE, ...)",
+        'MINT_ROUTE must be defined once as "/e/t"',
+        'the fetch must be a POST with credentials: "omit"',
+    ]
 
 
-def test_view_js_uses_no_fetch_xhr_storage_cookie_or_eval() -> None:
+def test_view_js_uses_no_xhr_storage_cookie_or_eval_and_one_token_fetch() -> None:
     src = script_text()
     assert "sendBeacon" in src and len(src) > 200  # loose: the file was read
     assert violations(src) == []

@@ -7,7 +7,8 @@
 // commands. Code 1 when the Worker would refuse the configuration (an invalid
 // value, or over the quota); a warning with code 0 above 80 percent. Values are
 // never printed, only names and totals.
-import { MAX_VIEWS_PER_HOUR, PAGE_VIEW_VARS } from "../pvlimits";
+import { parseBeaconMode } from "../beaconmode";
+import { MAX_VIEWS_PER_HOUR, PAGE_VIEW_MODE_VARS, PAGE_VIEW_VARS } from "../pvlimits";
 import { loadSites } from "../sites";
 import { KIT_LIMIT_VARS, assessDailyBudget, type KitLimitsEnv } from "./budgets";
 
@@ -16,7 +17,7 @@ import { KIT_LIMIT_VARS, assessDailyBudget, type KitLimitsEnv } from "./budgets"
  * page-view budgets and ceilings, and the site list (counted by loadSites).
  * Derived from the loader's own lists, so a new limit cannot be forgotten.
  */
-export const BUDGET_ENV_VARS: readonly string[] = [...PAGE_VIEW_VARS, "SITES", "SITE_HOST", "PAGE_IDS", "LINK_IDS", ...KIT_LIMIT_VARS];
+export const BUDGET_ENV_VARS: readonly string[] = [...PAGE_VIEW_VARS, ...PAGE_VIEW_MODE_VARS, "SITES", "SITE_HOST", "PAGE_IDS", "LINK_IDS", ...KIT_LIMIT_VARS];
 
 export function runBudgetCheck(source: Record<string, string | undefined>): { code: 0 | 1; lines: string[] } {
   const env: Record<string, string> = {};
@@ -24,12 +25,15 @@ export function runBudgetCheck(source: Record<string, string | undefined>): { co
     const v = source[n];
     if (v !== undefined && v !== "") env[n] = v;
   }
-  const badPv = PAGE_VIEW_VARS.filter((n) => {
+  const badPv: string[] = PAGE_VIEW_VARS.filter((n) => {
     const v = env[n];
     return v !== undefined && !(/^[0-9]{1,6}$/.test(v) && Number(v) <= MAX_VIEWS_PER_HOUR);
   });
   // The Worker falls back to the default for a bad page-view budget, so the
   // projection would silently be the wrong figure. Refuse here instead.
+  // BEACON_MODE is a word, not a number: off or observe exactly (enforce is not available yet); the Worker refuses anything else.
+  const mode = env.BEACON_MODE;
+  if (parseBeaconMode(mode) === null) badPv.push("BEACON_MODE");
   if (badPv.length > 0) return { code: 1, lines: [`::error::unusable budget settings: ${badPv.join(", ")}`] };
   // A site list that does not load cleanly cannot be counted: stop the deploy
   // (the projection would otherwise have to guess how many sites share the ceilings).

@@ -36,6 +36,10 @@ class Analytics(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     page_views: StrictBool = False
+    # Ask the Worker for a short-lived signed token and send it with click pings
+    # and view beacons. Off by default; use it only with the Worker's BEACON_MODE
+    # set to observe.
+    beacon_token: StrictBool = False
     route: str = DEFAULT_ROUTE
     # What the privacy page says, so it matches how the Worker is set up. The
     # build cannot read the Worker's settings: keep RAW_KEEP_DAYS in sync.

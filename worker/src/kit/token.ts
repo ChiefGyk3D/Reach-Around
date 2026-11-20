@@ -31,14 +31,14 @@ export interface TokenClaims {
 
 const textEncoder = new TextEncoder();
 
-function toB64url(bytes: Uint8Array): string {
+export function toB64url(bytes: Uint8Array): string {
   let s = "";
   for (const b of bytes) s += String.fromCharCode(b);
   return btoa(s).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 }
 
 /** Strict decode: alphabet only, no padding, canonical (re-encodes identically). */
-function fromB64url(s: string): Uint8Array | null {
+export function fromB64url(s: string): Uint8Array | null {
   if (!B64URL_RE.test(s) || s.length % 4 === 1) return null;
   try {
     const std = s.replace(/-/g, "+").replace(/_/g, "/");
@@ -51,7 +51,7 @@ function fromB64url(s: string): Uint8Array | null {
   }
 }
 
-function keyUsable(key: unknown): key is string {
+export function keyUsable(key: unknown): key is string {
   return typeof key === "string" && textEncoder.encode(key).length >= MIN_KEY_BYTES;
 }
 

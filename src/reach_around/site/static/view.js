@@ -18,6 +18,15 @@
   // three Do Not Track properties set to "1", "yes" or "true" (any case, spaces
   // ignored) is an opt-out. Checked at start and again at send time, so a
   // signal that arrives while the page is prerendering or hidden still wins.
+  // The check itself is in the shared block below.
+
+  // --- beacon token (this block is identical in click.js and view.js; a test keeps them equal) ---
+  // A short-lived signed token the Worker hands out once per page, kept in this page's memory only
+  // (never in storage or a cookie) and added to the click ping or the view beacon, so the Worker can tell a
+  // request from this page from one that was typed by hand. It is only asked for when the build turned it
+  // on (data-token-route), never for a visitor with Global Privacy Control or Do Not Track, and a failed
+  // or slow request just means the event goes without a token. Nothing waits on it except the view beacon,
+  // and only briefly.
   function dntOn(value) {
     if (typeof value === "number") {
       value = String(value);
@@ -33,10 +42,86 @@
     return (
       navigator.globalPrivacyControl === true ||
       dntOn(navigator.doNotTrack) ||
-      dntOn(window.doNotTrack) ||
+      (typeof window === "object" && window !== null && dntOn(window.doNotTrack)) ||
       dntOn(navigator.msDoNotTrack)
     );
   }
+
+  var MINT_ROUTE = "/e/t";
+  var TOKEN_RE = /^b1\.[A-Za-z0-9_-]{1,200}\.[A-Za-z0-9_-]{1,100}$/;
+  var RETRY_MS = 60000;
+  var held = { value: "", until: 0, retryAt: 0, pending: false, waiting: [] };
+  var shared =
+    typeof window === "object" && window !== null
+      ? window.__raBeacon || (window.__raBeacon = held)
+      : held;
+
+  function tokenWanted() {
+    var body = document.body;
+    return !!body && body.getAttribute("data-token-route") === MINT_ROUTE && !optedOut();
+  }
+
+  function freshToken() {
+    return shared.value && Date.now() < shared.until ? shared.value : "";
+  }
+
+  // Calls done(token) once, with "" when there is no token. Never throws, never blocks.
+  function requestToken(done) {
+    var have = freshToken();
+    if (have) {
+      done(have);
+      return;
+    }
+    if (typeof fetch !== "function" || Date.now() < shared.retryAt) {
+      done("");
+      return;
+    }
+    shared.waiting.push(done);
+    if (shared.pending) {
+      return;
+    }
+    shared.pending = true;
+    function finish(token, lifeSeconds) {
+      shared.pending = false;
+      if (token) {
+        shared.value = token;
+        shared.until = Date.now() + (lifeSeconds - 30) * 1000;
+      } else {
+        shared.value = "";
+        shared.retryAt = Date.now() + RETRY_MS;
+      }
+      var list = shared.waiting;
+      shared.waiting = [];
+      for (var i = 0; i < list.length; i++) {
+        try {
+          list[i](token);
+        } catch (ignored) {
+          // One caller's failure never stops another.
+        }
+      }
+    }
+    try {
+      fetch(MINT_ROUTE, { method: "POST", credentials: "omit", cache: "no-store" })
+        .then(function (response) {
+          return response.status === 200 ? response.json() : null;
+        })
+        .then(function (data) {
+          var token = data && typeof data.t === "string" ? data.t : "";
+          var life = data && typeof data.ttl === "number" ? data.ttl : 0;
+          if (token.length > 320 || !TOKEN_RE.test(token) || !(life > 60 && life <= 900)) {
+            finish("", 0);
+            return;
+          }
+          finish(token, life);
+        })
+        .catch(function () {
+          finish("", 0);
+        });
+    } catch (ignored) {
+      finish("", 0);
+    }
+  }
+  // --- end of the beacon token block ---
 
   if (optedOut()) {
     return;
@@ -119,11 +204,11 @@
     return "x";
   }
 
-  function send() {
-    if (done || optedOut()) {
+  // The beacon itself. The opt-out is checked again here, after any wait for a token.
+  function transmit(token) {
+    if (optedOut()) {
       return;
     }
-    done = true;
     try {
       var params = new URLSearchParams();
       var r = referrerHost();
@@ -139,10 +224,38 @@
         params.append("s", sl);
       }
       params.append("w", widthLetter());
-      navigator.sendBeacon(route + id, params);
+      navigator.sendBeacon(route + id + (token ? "?t=" + token : ""), params);
     } catch (ignored) {
       // Counting is best effort; never get in the way of the page.
     }
+  }
+
+  // The most the beacon waits for a token. After this it goes without one.
+  var TOKEN_WAIT_MS = 1500;
+
+  function send() {
+    if (done || optedOut()) {
+      return;
+    }
+    done = true;
+    if (!tokenWanted()) {
+      transmit("");
+      return;
+    }
+    var once = false;
+    var timer = null;
+    function go(token) {
+      if (once) {
+        return;
+      }
+      once = true;
+      clearTimeout(timer);
+      transmit(token);
+    }
+    timer = setTimeout(function () {
+      go("");
+    }, TOKEN_WAIT_MS);
+    requestToken(go);
   }
 
   // `done` is the only guard against a second send, so repeated events are safe.
