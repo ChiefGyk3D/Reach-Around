@@ -15,7 +15,20 @@ from developers.google.com (tool-extracted summaries, not yet reviewed by a
 human): VERIFIED-SUMMARY = stated on the vendor page; ASSUMED = not stated on
 any page this code could read; UNRESOLVED = the vendor page conflicts itself.
 
-Rules: a failed or empty report stores nothing (a gap, never a zero); the
+Folding small cells reduces noise; it does NOT stop someone from differencing
+consecutive stored 28-day windows to recover a folded cell. That is acceptable
+here because the data is owner-private and never published.
+
+The history store keeps one record per metric and UTC day (``skip_days``), so a
+later revision of a past day's views is never stored. Data trails by 48 to 72
+hours and the window ends 3 days back, so a day is read once it has settled.
+
+Retention: ``counts refresh`` prints a notice with the number of analytics
+records past 30 days. Actual removal is the history tombstone tool (#586); until
+it is merged the owner must run it by hand once the collector is enabled.
+
+Rules: a failed or empty report stores nothing (a gap, never a zero); a bad row
+is skipped and counted (word ``bad_row``) while the other rows count; the
 access token is fetched from a refresh token on every run and kept only in
 memory; errors carry fixed words and never a token, URL or response text.
 """
@@ -76,9 +89,13 @@ DAILY_WINDOW_DAYS = 7
 DEMO_WINDOW_DAYS = 28
 # ------------------------------------------------------------ end API SPECIFICS
 
-# Privacy floors. ASSUMED values (the vendor's own thresholds are unpublished).
-# A demographic cell under this share is folded into ``demo_other``; a country
-# under this many views is folded into ``geo_other_views``.
+# Noise floors, NOT a privacy guarantee. ASSUMED values (the vendor's own
+# thresholds are unpublished). A demographic cell under this share is summed
+# into ``demo_other``; a country under this many views is summed into
+# ``geo_other_views``. The demographic floor is on a share, not on a viewer
+# count, and the daily series has no floor. Because consecutive stored windows
+# overlap, the change in an "other" total across days can still reveal a folded
+# cell. That is acceptable only because the data is private and never published.
 DEMO_FLOOR_BP = 200  # 2.00 percent, in hundredths of a percent
 GEO_FLOOR_VIEWS = 100
 
@@ -89,7 +106,7 @@ API_PROVIDER = "youtube_analytics"
 
 MAX_ROWS = 1000
 MAX_TOKEN_LEN = 2048
-_DAY = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+_DAY = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")  # used with fullmatch
 _AGE = re.compile(r"^age(\d{2})-(\d{2})?$")
 _COUNTRY = re.compile(r"^[A-Z]{2}$")
 _GENDER = {"female": "f", "male": "m", "user_specified": "u"}
@@ -252,33 +269,45 @@ class _Session:
         )
 
 
-def _daily(session: _Session, first: date, last: date) -> list[Measure]:
+Report = tuple[list[Measure], int]  # figures, and how many rows were skipped
+
+
+def _daily(session: _Session, first: date, last: date) -> Report:
     names = (*DAILY_DIMENSIONS, *DAILY_METRICS)
     rows = _table(session.report(first, last, DAILY_DIMENSIONS, DAILY_METRICS), names)
     if not rows:
         raise YoutubeAnalyticsError("no_data")  # not a zero: nothing is stored
     seen: set[str] = set()
     out: list[Measure] = []
+    skipped = 0
     for day, views, minutes in rows:
-        if (
-            not isinstance(day, str)
-            or not _DAY.match(day)
-            or day in seen
-            or not first.isoformat() <= day <= last.isoformat()
-        ):
+        # A row that is not a plain ASCII day inside the window, or whose numbers
+        # are bad, is skipped and counted; the other rows still count.
+        if not isinstance(day, str) or not _DAY.fullmatch(day):
+            skipped += 1
+            continue
+        if not first.isoformat() <= day <= last.isoformat():
+            skipped += 1
+            continue
+        if day in seen:  # two answers for one day: trust neither
             raise YoutubeAnalyticsError("bad_report")
         seen.add(day)
+        try:
+            pair = (_whole(views), _whole(minutes))
+        except YoutubeAnalyticsError:
+            skipped += 1
+            continue
         stamp = f"{day}T00:00:00Z"
-        out.append(Measure("views_1d", _whole(views), f"views on UTC day {day}", stamp))
+        out.append(Measure("views_1d", pair[0], f"views on UTC day {day}", stamp))
         out.append(
             Measure(
                 "watch_minutes_1d",
-                _whole(minutes),
+                pair[1],
                 f"estimated minutes watched on UTC day {day}",
                 stamp,
             )
         )
-    return out
+    return out, skipped
 
 
 def _age_label(age: object) -> str | None:
@@ -288,18 +317,23 @@ def _age_label(age: object) -> str | None:
     return f"a{found.group(1)}_{found.group(2) or 'up'}"
 
 
-def _demographics(session: _Session, first: date, last: date) -> list[Measure]:
+def _demographics(session: _Session, first: date, last: date) -> Report:
     names = (*DEMO_DIMENSIONS, *DEMO_METRICS)
     rows = _table(session.report(first, last, DEMO_DIMENSIONS, DEMO_METRICS), names)
     cells: dict[str, int] = {}
     folded = 0
+    skipped = 0
     seen: set[tuple[object, object]] = set()
     for age, gender, percent in rows:
         key = (age, gender)
         if key in seen:
             raise YoutubeAnalyticsError("bad_report")
         seen.add(key)
-        bp = _basis_points(percent)
+        try:
+            bp = _basis_points(percent)
+        except YoutubeAnalyticsError:
+            skipped += 1
+            continue
         label_age = _age_label(age)
         label_sex = _GENDER.get(gender) if isinstance(gender, str) else None
         if bp < DEMO_FLOOR_BP or label_age is None or label_sex is None:
@@ -309,15 +343,15 @@ def _demographics(session: _Session, first: date, last: date) -> list[Measure]:
     window = f"{first.isoformat()} to {last.isoformat()}"
     note = (
         f"viewer share x100 (4025 = 40.25 percent), UTC {window}; cells under "
-        f"{DEMO_FLOOR_BP / 100:.2f} percent are folded into demo_other"
+        f"{DEMO_FLOOR_BP / 100:.2f} percent are summed into demo_other"
     )
     out = [Measure(metric, value, note) for metric, value in sorted(cells.items())]
     if folded:
         out.append(Measure("demo_other", folded, note))
-    return out
+    return out, skipped
 
 
-def _geography(session: _Session, first: date, last: date) -> list[Measure]:
+def _geography(session: _Session, first: date, last: date) -> Report:
     names = (*GEO_DIMENSIONS, *GEO_METRICS)
     rows = _table(
         session.report(
@@ -333,11 +367,16 @@ def _geography(session: _Session, first: date, last: date) -> list[Measure]:
     cells: dict[str, int] = {}
     folded = 0
     seen: set[object] = set()
+    skipped = 0
     for country, views in rows:
-        count = _whole(views)
         if country in seen:
             raise YoutubeAnalyticsError("bad_report")
         seen.add(country)
+        try:
+            count = _whole(views)
+        except YoutubeAnalyticsError:
+            skipped += 1
+            continue
         if (
             not isinstance(country, str)
             or not _COUNTRY.match(country)
@@ -350,12 +389,12 @@ def _geography(session: _Session, first: date, last: date) -> list[Measure]:
     window = f"{first.isoformat()} to {last.isoformat()}"
     note = (
         f"views by country, UTC {window}, top {GEO_MAX_RESULTS} countries only; "
-        f"countries under {GEO_FLOOR_VIEWS} views are folded into geo_other_views"
+        f"countries under {GEO_FLOOR_VIEWS} views are summed into geo_other_views"
     )
     out = [Measure(metric, value, note) for metric, value in sorted(cells.items())]
     if folded:
         out.append(Measure("geo_other_views", min(folded, MAX_VALUE), note))
-    return out
+    return out, skipped
 
 
 def _word(exc: Exception) -> str:
@@ -388,18 +427,11 @@ def collect_youtube(
     """
     if getattr(source, "analytics", False) is not True:
         raise YoutubeAnalyticsError("bad_source_setting")
-    try:
-        session = _Session(env, fetch)
-    except YoutubeAnalyticsError:
-        raise
-    except Exception:
-        failed = True
-    else:
-        failed = False
-    if failed:
-        raise YoutubeAnalyticsError("fetch_failed")
+    # Setup raises only YoutubeAnalyticsError: a missing or bad credential, or a
+    # refresh that failed (every other exception is turned into that word).
+    session = _Session(env, fetch)
     last = today - timedelta(days=DATA_LAG_DAYS)
-    reports: tuple[tuple[Callable[[_Session, date, date], list[Measure]], int], ...] = (
+    reports: tuple[tuple[Callable[[_Session, date, date], Report], int], ...] = (
         (_daily, DAILY_WINDOW_DAYS),
         (_demographics, DEMO_WINDOW_DAYS),
         (_geography, DEMO_WINDOW_DAYS),
@@ -409,7 +441,10 @@ def collect_youtube(
     for run, days in reports:
         word = ""
         try:
-            measures.extend(run(session, last - timedelta(days=days - 1), last))
+            got, skipped = run(session, last - timedelta(days=days - 1), last)
+            measures.extend(got)
+            if skipped:
+                word = "bad_row"
         except Exception as exc:
             word = _word(exc)
         if word:
@@ -427,19 +462,21 @@ def deletion_candidates(
     because git history keeps old values, a true deletion needs the owner-
     approved rewrite described in docs/research/platform-terms-retention.md.
 
-    Policy (VERIFIED-SUMMARY, tool-extracted, 2026-11-19): authorized data may be
-    kept while authorization is re-confirmed about every 30 days (a daily run
-    that still authenticates does that); deletion is due within 7 days of a user
-    request or in-client revocation and within 30 days of revocation through
-    Google's security page. ``revoked`` selects every analytics record. Without
-    it, only records older than ``RETAIN_DAYS`` are selected (the owner's
-    2026-11-19 refresh-or-delete rule). Public-data records (the Data API
-    subscriber count) are never selected here.
+    Policy, as docs/research/platform-terms-retention.md records it (YouTube
+    Developer Policies, read 2026-11-19): refresh or delete API data after 30
+    calendar days (III.E.4, III.E.4.c); delete within 7 days of a trigger
+    (III.E.4.g); delete within 30 days of user revocation (III.D.2).
+    UNVERIFIED beyond that note: any finer reading of what counts as a trigger;
+    a human must check the vendor page. ``revoked`` selects every analytics
+    record. Without it, only records older than ``RETAIN_DAYS`` are selected (the
+    owner's 2026-11-19 refresh-or-delete rule). A correction that carries an
+    analytics value is selected like the record it fixes. Public-data records
+    (the Data API subscriber count) are never selected here.
     """
     cutoff = today - timedelta(days=RETAIN_DAYS)
     out = []
     for record in records:
-        if record.api_provider != API_PROVIDER or record.type != "record":
+        if record.api_provider != API_PROVIDER:
             continue
         if revoked or record.as_of_utc[:10] < cutoff.isoformat():
             out.append(record)

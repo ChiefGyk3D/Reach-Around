@@ -164,6 +164,8 @@ class YoutubeSource(_Source):
     # Off by default. When true, also collect the owner's authorized YouTube
     # Analytics figures (views, watch time, demographics) with OAuth credentials
     # from fixed environment variables. PRIVATE: never shown publicly (#391).
+    # Removal of records past 30 days is NOT done here: it is the history
+    # tombstone tool (#586). Until that is merged the owner removes them by hand.
     analytics: Annotated[bool, Field(strict=True)] = False
 
     @field_validator("channel_id")

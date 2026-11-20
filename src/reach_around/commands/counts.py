@@ -81,6 +81,7 @@ from reach_around.counts.secret_sink import (
     TokenHolder,
     scope_lock,
 )
+from reach_around.counts.youtube_analytics import RETAIN_DAYS, deletion_candidates
 from reach_around.net.egress import Transport
 from reach_around.net.fetch import fetch_json
 
@@ -312,6 +313,23 @@ def _insights(
     return collect(list(sources), ok, environment, fetch, moment)
 
 
+def _retention_notice(history: Path, stamp: datetime) -> None:
+    """Tell the owner, every run, how many YouTube Analytics records are past the
+    30-day rule. A count only, never a value. Removal is the history tombstone
+    tool (#586); this run changes nothing."""
+    try:
+        records = read_history(history).records
+    except HistoryError:
+        return  # a missing or damaged file is reported by the history work itself
+    count = len(deletion_candidates(list(records), stamp.astimezone(UTC).date()))
+    if count:
+        print(
+            f"youtube: retention notice: {count} analytics record(s) are past "
+            f"{RETAIN_DAYS} days; remove them with the history tombstone tool (#586)",
+            file=sys.stderr,
+        )
+
+
 def _cycle(
     paths: Paths,
     sources: list[Source],
@@ -411,6 +429,8 @@ def _cycle(
             return EXIT_WRITE
         if kept < len(fetched):
             print("history: today's value was already recorded; kept as it is")
+    if history is not None:
+        _retention_notice(history, stamp)
     previous_status = load_status(paths.status)
     try:
         write_atomic(

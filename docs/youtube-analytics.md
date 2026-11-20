@@ -6,6 +6,13 @@ on the `youtube` source in `numbers.sources` (see [config](config.md#numbers)).
 It runs in `reach-around counts refresh`, only when `numbers.history_file` is
 set and only when the subscriber read of the same source succeeded in the run.
 
+**Removal is not done by this collector.** Records past the 30-day rule are
+removed by the history tombstone tool (issue #586, draft PR #607 and its
+stacked implementation). Until that tool is merged, enabling `analytics: true`
+means the owner must run the removal by hand. Every `counts refresh` prints a
+notice with the number of analytics records past 30 days (a count, never a
+value) so the owner is told each run until they are removed.
+
 ## Privacy: never public
 
 The figures are the channel owner's authorized data. The YouTube developer
@@ -17,7 +24,11 @@ private instance repository, as `source: api` records with
 tests guard it: an import-graph test fails if site, kit, editor, config, preview
 or editing code can reach the collector, and a leak test builds a public site
 beside a history file holding these figures and fails if any value or figure
-name appears in the output. The owner report refuses these records too.
+name appears in the output.
+
+`reach-around report` refuses these records today (`_refused` in
+`funnel/social.py`, display policy, #424), so the owner cannot see them there
+yet. They can be read from the history file itself.
 
 ## What is stored
 
@@ -25,15 +36,26 @@ name appears in the output. The owner report refuses these records too.
 | --- | --- |
 | `views_1d`, `watch_minutes_1d` | one record per UTC day for the last 7 processed days; the record's time is that day |
 | `demo_a18_24_f` and so on | share of viewers by age group and gender over 28 UTC days, in hundredths of a percent (4025 is 40.25 percent) |
-| `demo_other` | cells under 2.00 percent and unknown labels, folded together |
+| `demo_other` | the sum of cells under 2.00 percent and of unknown labels |
 | `geo_us_views` and so on | views by country over 28 UTC days, top 25 countries |
-| `geo_other_views` | countries under 100 views, and unknown territory, folded together |
+| `geo_other_views` | the sum of countries under 100 views, and of unknown territory |
 
-The folding floors are this project's choice (ASSUMED: YouTube does not publish
-its own thresholds). Data trails by 48 to 72 hours, so the last day asked for is
-3 days before today (UTC). An empty demographic or geography answer stores
-nothing and is not an error. An empty daily answer is the failure word
-`no_data`. A failure is never stored as a zero; the day stays a gap.
+The folding floors (2.00 percent, 100 views) are this project's choice
+(ASSUMED: YouTube does not publish its own thresholds). They reduce noise. They
+do not stop differencing: the demographic floor is on a share, not on a viewer
+count; the daily series has no floor; and because consecutive stored 28-day
+windows overlap, the change in an "other" total from one day to the next can
+recover a folded cell. That is acceptable only because the data is private and
+never published.
+
+Data trails by 48 to 72 hours, so the last day asked for is 3 days before today
+(UTC). The history store keeps one record per metric and UTC day (`skip_days`),
+so a later revision of a past day's views is never stored: the first value read
+for a day stays. An empty demographic or geography answer stores nothing and is
+not an error. An empty daily answer is the failure word `no_data`. A row with a
+bad day or bad numbers is skipped and counted (the word `bad_row`) while the
+other rows are kept; a wrong header, a duplicate, or an oversized answer fails
+that whole report. A failure is never stored as a zero; the day stays a gap.
 
 ## Credentials (names only)
 
@@ -68,18 +90,22 @@ this work). Errors carry fixed words only.
 
 ## Retention and deletion
 
-Policy (tool-extracted summary of the developer policy, read 2026-11-19, not yet
-human-reviewed): authorized data may be kept while authorization is re-confirmed
-about every 30 days (a daily run that still authenticates does that); deletion is
-due within 7 days of a user request or in-client revocation, and within 30 days
-of revocation through Google's security page. The owner decision of 2026-11-19
-applies a 30-day refresh-or-delete rule to stored authorized data.
+The rule is the one in [platform terms](research/platform-terms-retention.md)
+(YouTube Developer Policies, read 2026-11-19): refresh or delete API data after
+30 calendar days (III.E.4, III.E.4.c); delete within 7 days of a trigger
+(III.E.4.g); delete within 30 days of user revocation (III.D.2). The owner
+decision of 2026-11-19 applies the 30-day refresh-or-delete rule to stored
+authorized data. UNVERIFIED beyond that note: any finer reading of what counts as
+a trigger, and the exact wording of the clauses. A human must check them against
+the vendor page.
 
 `reach_around.counts.youtube_analytics.deletion_candidates(records, today,
 revoked=False)` selects the records that are due: older than 30 days, or all of
-them when `revoked`. It only selects. The redaction is the tombstone record of
-#586, not built yet. Git history keeps old values, so a true deletion needs the
-owner-approved rewrite described in the platform terms note.
+them when `revoked`. A correction that carries an analytics value counts like
+the record it fixes. It only selects, and `counts refresh` uses it to print the
+notice above. The redaction is the tombstone record of #586, not built here. Git
+history keeps old values, so a true deletion needs the owner-approved rewrite
+described in the platform terms note.
 
 ## Quota
 

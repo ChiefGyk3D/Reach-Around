@@ -63,7 +63,8 @@ METRICS: dict[tuple[str, str], str] = {
 OWNER_REPORT_ONLY = frozenset(name for _, name in METRICS)
 # YouTube Analytics (#391) is the owner's authorized data: private, never shown
 # publicly. Its figure names (views_1d, watch_minutes_1d, demo_*, geo_*) are
-# produced by youtube_analytics.py; its notes state each window and floor.
+# produced by youtube_analytics.py; its notes state each window and the folding
+# (which reduces noise and does not stop differencing across stored windows).
 
 
 _WORDS = frozenset(
@@ -91,6 +92,7 @@ _WORDS = frozenset(
         "bad_host",
         "no_data",
         "bad_report",
+        "bad_row",
     }
 )
 
