@@ -484,6 +484,28 @@ def test_the_run_fits_one_history_append_and_each_report_has_its_own_limit(
     assert not figures(measures, "fdemo_age_")
 
 
+def test_the_whole_run_has_its_own_figure_limit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import reach_around.counts.instagram_insights as module
+
+    # five activity figures fit; the next report would pass the run limit
+    monkeypatch.setattr(module, "MAX_RUN_FIGURES", 6)
+    measures, words = run(ok_router())
+    assert "too_large" in words and len(measures) <= 6
+    assert figures(measures, "reach_7d")
+
+
+def test_the_word_for_any_other_exception_is_fixed_and_carries_no_text() -> None:
+    from reach_around.counts.instagram_insights import _word
+
+    class Odd(Exception):
+        kind = 7  # not a string
+
+    for exc in (RuntimeError(TOKEN), Odd(TOKEN), ValueError(f"url {TOKEN}")):
+        assert _word(exc) == "fetch_failed"
+
+
 # ---- failures ----
 
 

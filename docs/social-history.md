@@ -188,7 +188,8 @@ same key cannot be filled again. Only `api` rows are redacted; `hand_kept` and
 `imported` rows need `--include-hand-kept` (an owner choice, not a duty).
 
 To redact by provider (for example the private analytics records), use
-`--provider youtube_analytics` instead of `--platform`. The tag on the record is
+`--provider youtube_analytics` or `--provider instagram_insights` instead of
+`--platform`. The tag on the record is
 the only selector; a platform name is never used to guess a provider.
 A provider selection covers only records that carry the tag. Rows written
 before the tag existed have none, so for an older file also run
