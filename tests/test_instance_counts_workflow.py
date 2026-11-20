@@ -282,7 +282,8 @@ case " $* " in
   *" tokens "*)
     printf '%s\n' "$*" >> "${FAKE_LOG:-/dev/null}"
     case " $* " in
-      *" --format github "*) printf '::warning title=Token health::instagram token expiring, 3 days left; renew it soon\n' ;;
+      *" --format github "*)
+        printf '::warning title=Token health::instagram token expiring\n' ;;
       *" --format markdown "*) printf '### Token health\n' ;;
     esac
     exit "${FAKE_TOKENS_EXIT:-0}" ;;

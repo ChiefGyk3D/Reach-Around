@@ -26,14 +26,14 @@ TODAY = date(2026, 11, 20)
 CANARY = "SENTINEL-TOKEN-VALUE-do-not-print"
 
 
-def ig(expires: str | None, within: int = 10) -> InstagramSource:
+def ig(expires: date | None, within: int = 10) -> InstagramSource:
     return InstagramSource(
         platform="instagram", kind="instagram", token_expires=expires,
         refresh_within_days=within,
     )  # fmt: skip
 
 
-def threads(expires: str | None) -> ThreadsSource:
+def threads(expires: date | None) -> ThreadsSource:
     return ThreadsSource(
         platform="threads", kind="threads", user_id="12345", token_expires=expires
     )
@@ -53,7 +53,9 @@ def tt() -> TiktokSource:
     return TiktokSource(platform="tiktok", kind="tiktok")
 
 
-def state_of(source: object, status: dict | None = None) -> th.TokenHealth:
+def state_of(
+    source: object, status: dict[str, dict[str, str]] | None = None
+) -> th.TokenHealth:
     (item,) = th.assess([source], status or {}, TODAY)
     return item
 
@@ -63,13 +65,13 @@ def state_of(source: object, status: dict | None = None) -> th.TokenHealth:
     [(11, "ok"), (10, "expiring"), (1, "expiring"), (0, "expiring"), (-1, "expired")],
 )
 def test_meta_boundary_days(delta: int, state: str) -> None:
-    expires = date.fromordinal(TODAY.toordinal() + delta).isoformat()
+    expires = date.fromordinal(TODAY.toordinal() + delta)
     item = state_of(ig(expires))
     assert (item.state, item.days_left) == (state, delta)
 
 
 def test_meta_window_follows_refresh_within_days() -> None:
-    expires = date.fromordinal(TODAY.toordinal() + 5).isoformat()
+    expires = date.fromordinal(TODAY.toordinal() + 5)
     assert state_of(ig(expires, within=4)).state == "ok"
     assert state_of(ig(expires, within=5)).state == "expiring"
 
@@ -111,7 +113,7 @@ def test_youtube_words_do_not_mark_other_platforms() -> None:
 
 
 def test_a_word_wins_over_the_date_and_only_when_the_source_errored() -> None:
-    far = date.fromordinal(TODAY.toordinal() + 40).isoformat()
+    far = date.fromordinal(TODAY.toordinal() + 40)
     bad = {"instagram": {"status": "error", "detail": "token_rejected"}}
     assert state_of(ig(far), bad).state == "rejected"
     ok = {"instagram": {"status": "ok", "detail": "token_rejected"}}
@@ -127,7 +129,9 @@ def test_sources_without_a_token_are_left_out() -> None:
 
 
 def test_exit_codes() -> None:
-    mk = lambda s: th.TokenHealth("x", "twitch", s)  # noqa: E731
+    def mk(state: str) -> th.TokenHealth:
+        return th.TokenHealth("x", "twitch", state)
+
     assert th.exit_code([mk("ok")], 3, 4) == 0
     assert th.exit_code([mk("ok"), mk("expiring")], 3, 4) == 4
     assert th.exit_code([mk("expiring"), mk("rejected")], 3, 4) == 3
@@ -197,7 +201,7 @@ def write_config(root: Path, expires: str) -> Path:
     return path
 
 
-def write_status(root: Path, sources: dict) -> None:
+def write_status(root: Path, sources: dict[str, dict[str, str]]) -> None:
     (root / "numbers.status.json").write_text(
         json.dumps({"version": 1, "committed": True, "sources": sources})
     )
