@@ -1,0 +1,14 @@
+{
+  "kind": "youtubeAnalytics#resultTable",
+  "columnHeaders": [
+    {"name": "country", "columnType": "DIMENSION", "dataType": "STRING"},
+    {"name": "views", "columnType": "METRIC", "dataType": "INTEGER"}
+  ],
+  "rows": [
+    ["US", 4001],
+    ["CA", 900],
+    ["GB", 120],
+    ["DE", 60],
+    ["ZZ", 40]
+  ]
+}

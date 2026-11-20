@@ -1,0 +1,8 @@
+{
+  "kind": "youtubeAnalytics#resultTable",
+  "columnHeaders": [
+    {"name": "ageGroup", "columnType": "DIMENSION", "dataType": "STRING"},
+    {"name": "gender", "columnType": "DIMENSION", "dataType": "STRING"},
+    {"name": "viewerPercentage", "columnType": "METRIC", "dataType": "FLOAT"}
+  ]
+}

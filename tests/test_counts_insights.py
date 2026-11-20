@@ -402,7 +402,13 @@ def test_collect_figures_carry_a_note_naming_window_and_formula() -> None:
 
 
 SRC_ROOT = Path(__file__).resolve().parents[1] / "src"
-BANNED = frozenset({"reach_around.counts.history", "reach_around.counts.insights"})
+BANNED = frozenset(
+    {
+        "reach_around.counts.history",
+        "reach_around.counts.insights",
+        "reach_around.counts.youtube_analytics",
+    }
+)
 PUBLIC_SIDE = ("site", "kit", "editor", "preview", "config", "editing")
 
 

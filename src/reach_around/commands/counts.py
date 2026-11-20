@@ -391,7 +391,7 @@ def _cycle(
                 platform=figure.platform,
                 metric=figure.metric,
                 value=figure.value,
-                as_of_utc=utc_stamp(stamp),
+                as_of_utc=figure.as_of_utc or utc_stamp(stamp),
                 source="api",
                 run_id=run_id,
                 note=figure.note,

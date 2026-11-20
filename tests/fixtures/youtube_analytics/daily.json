@@ -1,0 +1,17 @@
+{
+  "kind": "youtubeAnalytics#resultTable",
+  "columnHeaders": [
+    {"name": "day", "columnType": "DIMENSION", "dataType": "STRING"},
+    {"name": "views", "columnType": "METRIC", "dataType": "INTEGER"},
+    {"name": "estimatedMinutesWatched", "columnType": "METRIC", "dataType": "INTEGER"}
+  ],
+  "rows": [
+    ["2026-11-10", 1101, 5501],
+    ["2026-11-11", 1202, 6002],
+    ["2026-11-12", 1303, 6503],
+    ["2026-11-13", 1404, 7004],
+    ["2026-11-14", 1505, 7505],
+    ["2026-11-15", 1606, 8006],
+    ["2026-11-16", 1707, 8507]
+  ]
+}
