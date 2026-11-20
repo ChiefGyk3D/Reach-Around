@@ -133,6 +133,8 @@ the result lines (no values) in #344. Do not start the DNS steps with a box open
 - [ ] 48 hour analytics reconciliation passes with Beacons live:
       `python3 -I scripts/check-analytics.py --beacons beacons-days.csv --ours ours-days.csv --since <day1> --until <day2>`
       exits 0 ([analytics-acceptance.md](analytics-acceptance.md)).
+      `scripts/proof-export.sh` builds `ours-days.csv` and can run this check in one
+      command ("Day-2 export in one command" in that page).
 - [ ] The synthetic visit and click appear in the report (B3).
 - [ ] Security review rounds closed on the final candidate, on the cyber tier,
       bounded to three rounds (#271, #373, #605, #610). Hardening detail stays

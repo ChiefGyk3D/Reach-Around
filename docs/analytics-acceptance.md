@@ -46,6 +46,25 @@ SELECT date(ts / 1000, 'unixepoch') AS day, COUNT(*) AS clicks FROM click_events
 
 Both queries are scoped to one site (`links` here; use the site id that matches the Beacons page). Without the filter, an export that also holds another site, such as a blog, inflates the numbers and can fail the run for no real reason. Join the two results on `day` into one file. Click timestamps are stored in milliseconds; `date(..., 'unixepoch')` yields the UTC day. Views count the likely-human class only, which is the number to set against Beacons.
 
+### Day-2 export in one command
+
+`scripts/proof-export.sh` runs the two queries above for you, read-only, and writes `ours-days.csv`. It replaces the hand work for the 48 hour window.
+
+```text
+RA_D1_TOKEN=... RA_D1_ACCOUNT_ID=... RA_D1_DATABASE_ID=... \
+  scripts/proof-export.sh --out ~/private/proof --since 2026-11-01 --until 2026-11-02 \
+  --beacons beacons-days.csv
+```
+
+- **Credentials** come from the environment only (there is no token option). Use a D1 Read token made for this job ([what D1 Read can do](research/d1-read-token.md)); set the three variables from your secret manager, never in a file in the repository. Cloudflare has no call that tells what a token may do, so the script cannot prove the token is read-only. It refuses the one case it can see (the same value in `CLOUDFLARE_API_TOKEN`, the deploy token) and sends only single `SELECT` statements with bound parameters; it stops if an answer says the database changed.
+- **Window**: `--since` and `--until` are full, past UTC days (up to 31); today is refused. `--site` defaults to `links`.
+- **Output**: `DIR/ours-days-SINCE_UNTIL.csv`, mode 0600, in the shape above. `DIR` must exist, be mode 700 and sit outside any git work tree, so it cannot be committed. An existing file is never overwritten; move it first.
+- **Days with no rows** are left out, so the check reports a gap instead of a quiet day. A day with views but no clicks (or the reverse) gets 0 for the empty metric.
+- **With `--beacons FILE`** it then runs `check-analytics.py` with the same window and exits with its code (0 pass, 1 mismatch or gap). Without it, it only writes the file (exit 0).
+- **Prints** counts and exit codes only, never a value from the data. Exit codes: 0 done, 1 the check failed, 2 refused or bad usage, 3 the query failed.
+
+The report input is not part of this command. `reach-around report` never calls Cloudflare, so make that JSON with the `wrangler d1 execute` queries in [docs/report.md](report.md#making-the-export) and keep it in the same private directory.
+
 ## What it does
 
 For every UTC day in the window it compares each shared metric and prints one row:
