@@ -13,6 +13,7 @@ import {
   clickWriteCost,
 } from "../src/clickceiling";
 import { CLICK_DAILY_WRITES } from "../src/kit/budgets";
+import { HOUR_BUDGET, LH_HOUR_BUDGET } from "../src/clickfunnel";
 
 const DB = testEnv.DB;
 const SITES = JSON.stringify({
@@ -46,13 +47,87 @@ beforeEach(async () => {
 });
 
 describe("the cost of one click is the rows it writes", () => {
-  it("counts admission, raw row with its index, country, capacity and each enabled axis", () => {
-    // admission 1 + click_events 2 (row and ts index) + country 1 + capacity 1
-    expect(clickWriteCost({})).toBe(5);
-    expect(clickWriteCost({ sources: true })).toBe(6);
-    expect(clickWriteCost({ landings: true })).toBe(6);
-    expect(clickWriteCost({ hops: true })).toBe(6);
-    expect(FULL).toBe(8);
+  it("counts admission, raw row with its index, country, capacity, the hourly budget rows and each enabled axis", () => {
+    // admission 1 + click_events 2 (row and ts index) + country 1 + capacity 1 + click_budget 1
+    expect(clickWriteCost({})).toBe(6);
+    expect(clickWriteCost({ sources: true })).toBe(7);
+    // landing or hop adds its counter and the click_budget_lh row (one row, whichever of the two made a cell)
+    expect(clickWriteCost({ landings: true })).toBe(8);
+    expect(clickWriteCost({ hops: true })).toBe(8);
+    expect(clickWriteCost({ landings: true, hops: true })).toBe(9);
+    expect(FULL).toBe(10);
+  });
+
+  // The rows a new-cell click really changes, measured: every table is snapshotted before and after one
+  // click that makes a new cell on every enabled axis. Charged cost = admission row + rows changed
+  // (the raw row counts twice, its ts index is a second write) + 1 for the capacity row, which a
+  // click that folds on one axis writes while it makes a new cell on another.
+  const TABLES = ["counters", "click_events", "click_src_daily", "click_country_daily", "click_landing_daily", "click_hop_daily", "click_budget", "click_budget_lh", "click_capacity"];
+  const snapshot = async (): Promise<Set<string>> => {
+    const out = new Set<string>();
+    for (const t of TABLES) {
+      const rows = (await DB.prepare(`SELECT * FROM ${t}`).all<Record<string, unknown>>()).results;
+      for (const r of rows) out.add(`${t}|${JSON.stringify(r)}`);
+    }
+    return out;
+  };
+  const combos = [false, true].flatMap((sources) => [false, true].flatMap((landings) => [false, true].map((hops) => ({ sources, landings, hops }))));
+  it.each(combos)("charges at least the rows a new-cell click changes: sources=$sources landings=$landings hops=$hops", async (on) => {
+    const sites = JSON.stringify({
+      one: {
+        hosts: ["one.example.test"], mode: "beacon", pages: ["home"], link_ids: { twitch: "home" },
+        ...(on.sources ? { sources: ["instagram"] } : {}),
+        ...(on.landings ? { landings: ["home"] } : {}),
+        ...(on.hops ? { hops: ["blog"] } : {}),
+      },
+    });
+    const before = await snapshot();
+    await handleClick(click("one.example.test"), { ...env(), SITES: sites });
+    const after = await snapshot();
+    const changed = [...after].filter((r) => !before.has(r));
+    // a changed counters row is the admission charge itself; it is the one write counted apart below
+    const nonAdmission = changed.filter((r) => !r.startsWith("counters|"));
+    const rawRows = nonAdmission.filter((r) => r.startsWith("click_events|")).length;
+    const measured = 1 + nonAdmission.length + rawRows; // admission + rows + the raw row's index
+    const charged = clickWriteCost(on);
+    expect(rawRows).toBe(1);
+    expect(nonAdmission.some((r) => r.startsWith("click_budget|"))).toBe(true);
+    expect(nonAdmission.some((r) => r.startsWith("click_budget_lh|"))).toBe(on.landings || on.hops);
+    expect(charged).toBeGreaterThanOrEqual(measured);
+    expect(charged).toBe(measured + 1); // the capacity row, not written by a click that folds nothing
+    expect(await count("cw-one")).toBe(charged);
+  });
+
+  // The fold case, measured: one slice of the hourly new-cell budget is already spent, so that axis pair
+  // folds into its overflow row and writes the capacity row, while the other pair makes new cells. The
+  // seed is written before the snapshot, so only this click's writes count.
+  const foldCases = combos.flatMap((on) => [
+    { ...on, spent: "click_budget" as const, applies: true },
+    { ...on, spent: "click_budget_lh" as const, applies: on.landings || on.hops },
+  ]).filter((c) => c.applies);
+  it.each(foldCases)("charges at least the rows of a click that folds one axis pair: sources=$sources landings=$landings hops=$hops spent=$spent", async (c) => {
+    const sites = JSON.stringify({
+      one: {
+        hosts: ["one.example.test"], mode: "beacon", pages: ["home"], link_ids: { twitch: "home" },
+        ...(c.sources ? { sources: ["instagram"] } : {}),
+        ...(c.landings ? { landings: ["home"] } : {}),
+        ...(c.hops ? { hops: ["blog"] } : {}),
+      },
+    });
+    const budget = c.spent === "click_budget" ? HOUR_BUDGET : LH_HOUR_BUDGET;
+    await DB.prepare(`INSERT INTO ${c.spent} (site, day, hour, clicks) VALUES ('one', ?1, ?2, ?3)`).bind(day(), new Date().getUTCHours(), budget).run();
+    const before = await snapshot();
+    await handleClick(click("one.example.test"), { ...env(), SITES: sites });
+    const after = await snapshot();
+    const nonAdmission = [...after].filter((r) => !before.has(r) && !r.startsWith("counters|"));
+    const rawRows = nonAdmission.filter((r) => r.startsWith("click_events|")).length;
+    const measured = 1 + nonAdmission.length + rawRows;
+    const charged = clickWriteCost(c);
+    expect(rawRows).toBe(1);
+    expect(nonAdmission.some((r) => r.startsWith("click_capacity|"))).toBe(true); // the fold wrote it
+    expect(nonAdmission.some((r) => r.startsWith(`${c.spent}|`))).toBe(false); // the spent slice is not written again
+    expect(charged).toBeGreaterThanOrEqual(measured);
+    expect(await count("cw-one")).toBe(charged);
   });
 });
 

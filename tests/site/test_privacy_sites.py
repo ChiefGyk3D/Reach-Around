@@ -20,8 +20,9 @@ from reach_around.config.analytics import (
     AGGREGATE_KEEP_DAYS,
     DEFAULT_RAW_KEEP_DAYS,
     MAX_OTHER_SITES,
+    MAX_RAW_KEEP_DAYS,
 )
-from reach_around.site.privacy import collected_items
+from reach_around.site.privacy import RAW_HARD_CAP_FACTOR, collected_items
 
 ROOT = Path(__file__).resolve().parents[2]
 MIGRATIONS = ROOT / "worker" / "migrations"
@@ -159,19 +160,46 @@ def test_single_site_text_says_so_and_multi_site_text_names_the_others() -> None
 def test_text_says_small_totals_are_merged_and_no_per_person_deletion() -> None:
     text = views_text(make())
     assert "Small groups are combined as “other.”" in text
-    assert "Per-person deletion is not possible" in text
+    assert (
+        "Records do not identify anyone, so records for a specific person "
+        "cannot be deleted."
+    ) in text
     assert "Global Privacy Control" in text and "Do Not Track" in text
 
 
 def test_retention_numbers_come_from_config() -> None:
     default = views_text(make())
-    assert f"deleted after {DEFAULT_RAW_KEEP_DAYS} days" in default
+    assert f"normally deleted after {DEFAULT_RAW_KEEP_DAYS} days" in default
     assert f"Anonymous totals are deleted after {AGGREGATE_KEEP_DAYS} days" in default
     text = views_text(make(raw_keep_days=14))
-    assert "deleted after 14 days" in text
+    assert "normally deleted after 14 days" in text
     assert "deleted after 7 days" not in text
-    assert "deleted at day’s end" in text
+    assert "deleted at the end of each day" in text
     assert "deleted within about two hours" in text
+
+
+@pytest.mark.parametrize(
+    ("keep", "cap"), [(7, 21), (14, 42), (30, 90), (60, 90), (90, 90)]
+)
+def test_text_states_the_retention_ceiling_the_worker_enforces(
+    keep: int, cap: int
+) -> None:
+    text = views_text(make(raw_keep_days=keep))
+    assert f"After {cap} days, they are due for deletion no matter what." in text
+    assert "which can occasionally be delayed for a short time" in text
+    assert "never kept longer" not in text
+    assert "{RAW_HARD_CAP_DAYS}" not in text
+    assert "the records are kept longer so the totals are not lost" in text
+
+
+def test_ceiling_rule_matches_the_worker() -> None:
+    src = (ROOT / "worker" / "src" / "viewretention.ts").read_text()
+    m = re.search(r"HARD_CEILING_FACTOR = (\d+)", src)
+    assert m is not None
+    assert int(m.group(1)) == RAW_HARD_CAP_FACTOR
+    assert "Math.min(keep * HARD_CEILING_FACTOR, MAX_RAW_KEEP_DAYS)" in src
+    m2 = re.search(r"MAX_RAW_KEEP_DAYS = (\d+)", src)
+    assert m2 is not None and int(m2.group(1)) == MAX_RAW_KEEP_DAYS
 
 
 def test_aggregate_keep_matches_the_worker() -> None:

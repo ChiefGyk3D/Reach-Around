@@ -184,3 +184,16 @@ sends Global Privacy Control or Do Not Track (page views honor the signal,
 clicks do not yet; a follow-up issue changes that). The page is silent on the
 landing and hop counters because those tables are not collected yet; the
 sentence about them returns when they are switched on.
+
+Page view records follow the same rule of stating the ceiling. The public page
+says view records are normally deleted after the configured number of days
+(`analytics.raw_keep_days`, default 7). A day's records stay longer until the
+site has added them to its daily totals, and the page states when they are due
+for deletion no matter what: three times the keep window, never more than 90
+days (the Worker's rule in `worker/src/viewretention.ts`; the page computes the
+number from the same rule, and a test pins the two together). The purge is
+bounded and best effort, so records past that point are removed during the next
+cleanup runs, which can occasionally be delayed for a short time. The daily code goes at
+the end of each day, abuse counters within about two hours, anonymous totals
+after 90 days, and records for a specific person cannot be deleted because they
+do not identify anyone.

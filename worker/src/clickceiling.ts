@@ -34,10 +34,14 @@ export function siteShare(total: number, sites: number): number {
 /**
  * Rows one admitted click writes, worst case: the admission row (1), the raw row and its `ts` index (2),
  * the country counter (1), the capacity row (1, written whenever a click folds), plus one counter per
- * enabled axis (source, landing, hop). New-cell budget rows are modeled with the cells (funnelcaps.ts).
+ * enabled axis (source, landing, hop), and the hourly new-cell budget rows: `click_budget` (country is always on,
+ * so a new cell there writes it) and, when landing or hop is on, `click_budget_lh` (one row for both). The budget
+ * rows are charged in every combination, whether or not this click makes a new cell, so the charge is never
+ * below what a new-cell click writes (clickfunnel.ts, migration 0017).
  */
 export function clickWriteCost(on: { sources?: boolean; landings?: boolean; hops?: boolean }): number {
-  return 1 + 2 + 1 + 1 + (on.sources === true ? 1 : 0) + (on.landings === true ? 1 : 0) + (on.hops === true ? 1 : 0);
+  const lh = on.landings === true || on.hops === true;
+  return 1 + 2 + 1 + 1 + 1 + (on.sources === true ? 1 : 0) + (on.landings === true ? 1 : 0) + (on.hops === true ? 1 : 0) + (lh ? 1 : 0);
 }
 
 /**
