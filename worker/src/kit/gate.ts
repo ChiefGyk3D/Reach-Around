@@ -456,8 +456,6 @@ async function view(request: Request, env: GateEnv, deps: GateDeps): Promise<Res
   const key = address === null ? null : await limiterKey(limiterSecret, env.VIEW_HASH_SECRET, "view", address);
   if (!(await checkIpMinute(env.KIT_VIEW_LIMITER, key))) return back("ip_minute"); // CONTROL:view-ip-minute
 
-  if (!(await reserveRoute({ ...env, DB: env.DB }, "view", now))) return back("route_budget"); // CONTROL:view-route-budget
-
   // The floor is in MILLISECONDS (whoever writes it must write milliseconds). The token's iat is whole
   // seconds, so the two are compared in whole seconds and the check fails closed: only a cookie issued
   // in a second strictly after the floor's second works. Trade-off: a fresh unlock issued in the very
@@ -478,6 +476,11 @@ async function view(request: Request, env: GateEnv, deps: GateDeps): Promise<Res
     return back("other");
   }
   if (floorMs !== null && claims.iat <= Math.floor(floorMs / 1000)) return back("expired"); // CONTROL:session-floor
+
+  // The shared view budget is charged only for a cookie that can still read the page: lead existence and
+  // the applicable floor are checked first, so a revoked or orphaned cookie cannot spend it. The
+  // per-client limiter above stays early (it has no D1 write).
+  if (!(await reserveRoute({ ...env, DB: env.DB }, "view", now))) return back("route_budget"); // CONTROL:view-route-budget
 
   // A missing or failing page gets the SAME answer as every other refusal, so an outage cannot tell a
   // visitor whether a cookie was valid. The cause goes to the closed-vocabulary log only.

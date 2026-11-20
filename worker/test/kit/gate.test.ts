@@ -716,6 +716,38 @@ describe("per-client limits do not spend shared budgets", () => {
     expect((await view(hdr("203.0.113.11"), e)).status).toBe(200);
   });
 
+  const viewSpent = async () =>
+    (await testEnv.DB.prepare("SELECT count FROM counters WHERE key = 'route-view'").first<{ count: number }>())?.count ?? 0;
+
+  it("a cookie below its lead's session floor never changes the shared view counter", async () => {
+    const id = await seedLead();
+    await setSessionFloor(testEnv.DB, id, T0);
+    expect((await view({ cookie: await unlockCookieFor({ iat: NOW_SEC - 1 }) })).status).toBe(303);
+    expect(await viewSpent()).toBe(0);
+  });
+
+  it("a cookie below the unstored session floor never changes the shared view counter", async () => {
+    await seedLead();
+    const e = baseEnv({ MAX_LEADS: "1" }); // the seeded lead fills the cap, so the next unlock is unstored
+    const fresh = await post({ fields: { email: "new@example.com", "cf-turnstile-response": "ok2" } }, e);
+    await setUnstoredSessionFloor(testEnv.DB, T0);
+    expect((await view({ cookie: cookieHeader(fresh.res) }, e)).status).toBe(303);
+    expect(await viewSpent()).toBe(0);
+  });
+
+  it("a cookie whose lead was deleted never changes the shared view counter", async () => {
+    const id = await seedLead();
+    await testEnv.DB.prepare("DELETE FROM leads WHERE id = ?").bind(id).run();
+    expect((await view({ cookie: await unlockCookieFor({ iat: NOW_SEC + 1 }) })).status).toBe(303);
+    expect(await viewSpent()).toBe(0);
+  });
+
+  it("a valid cookie still spends exactly one view unit", async () => {
+    await seedLead();
+    expect((await view({ cookie: await unlockCookieFor({ iat: NOW_SEC + 1 }) })).status).toBe(200);
+    expect(await viewSpent()).toBe(1);
+  });
+
   it("a visitor can reload the gated page: the view allowance is higher than the gate's", async () => {
     await seedLead();
     // The documented values: 1 per 60 s per client for the gate, 4 per 60 s for the view
