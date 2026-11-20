@@ -72,6 +72,11 @@ const HEALTH_WORDS: Record<HealthCondition, { firing: string; ok: string; unit: 
     // The dropped counter saturates at its cap, so the figure is a floor.
     label: "dropped clicks today: at least",
   },
+  click_setup_invalid: {
+    firing: "clicks are being refused because the hashing key or a click setting is missing or unusable",
+    ok: "clicks are being counted again",
+    unit: "",
+  },
 };
 
 function formatHealth(event: Extract<AlertEvent, { kind: "analytics_health" }>): AlertMessage {

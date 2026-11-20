@@ -79,7 +79,7 @@ beforeEach(async () => {
     DB.prepare("DELETE FROM analytics_coverage"),
     DB.prepare("DELETE FROM alert_quota"),
     DB.prepare("DELETE FROM alert_dedup"),
-    DB.prepare("DELETE FROM counters WHERE key GLOB 'cw-*' OR key GLOB 'cd-*'"),
+    DB.prepare("DELETE FROM counters WHERE key GLOB 'cw-*' OR key GLOB 'cd-*' OR key GLOB 'cs-*'"),
   ]);
 });
 
@@ -327,6 +327,46 @@ describe("click ceiling (hardening, Refs #566)", () => {
     await tick(env());
     const r = await DB.prepare("SELECT count FROM counters WHERE key = 'cw-links' AND day = ?1").bind(day).first<{ count: number }>();
     expect(r?.count).toBe(CLICK_ADMIT_CEILING);
+  });
+});
+
+describe("click setup refused (hardening, Refs #610)", () => {
+  const day = "2026-11-09";
+  const flag = (n = 1) =>
+    DB.prepare("INSERT INTO counters (key, day, count) VALUES ('cs-bad', ?1, ?2) ON CONFLICT (key, day) DO UPDATE SET count = ?2").bind(day, n).run();
+
+  it("is in the closed vocabulary", () => {
+    expect(HEALTH_CONDITIONS).toContain("click_setup_invalid");
+  });
+  it("quiet when clicks are not being refused for setup", async () => {
+    await healthy();
+    expect((await tick(env())).res.active).not.toContain("click_setup_invalid");
+  });
+  it("fires once when today's flag is set, in neutral words that name no variable, and stays deduplicated", async () => {
+    await healthy();
+    await flag();
+    const d = createDispatcher();
+    const a = await tick(env(), d);
+    expect(a.res.active).toContain("click_setup_invalid");
+    const body = a.f.bodies.join("");
+    expect(body).toContain("clicks are being refused because the hashing key or a click setting is missing or unusable");
+    expect(body).not.toMatch(/VIEW_HASH_SECRET|CLICK_DAILY_WRITE_CEILING|BEACON_LANE/);
+    expect(await stateOf("click_setup_invalid")).not.toBeNull();
+    const b = await tick(env(), d, mockFetch(), NOW + HOUR_MS);
+    expect(b.f.bodies.filter((x) => x.includes("hashing key"))).toHaveLength(0);
+  });
+  it("ignores a flag from another day", async () => {
+    await healthy();
+    await DB.prepare("INSERT INTO counters (key, day, count) VALUES ('cs-bad', '2026-11-08', 1)").run();
+    expect((await tick(env())).res.active).not.toContain("click_setup_invalid");
+  });
+  it("uses the configured click ceiling for the 'no room' test", async () => {
+    await healthy();
+    await DB.prepare("INSERT INTO counters (key, day, count) VALUES ('cw-links', ?1, ?2)").bind(day, 6_000 - 5).run();
+    // default ceiling 300000: plenty of room
+    expect((await tick(env())).res.active).not.toContain("click_ceiling_reached");
+    // a 7500 ceiling: the general budget is 6000, so 5995 + 9 no longer fits
+    expect((await tick(env({ CLICK_DAILY_WRITE_CEILING: "7500" }))).res.active).toContain("click_ceiling_reached");
   });
 });
 
@@ -726,7 +766,7 @@ describe("coverage (gaps)", () => {
   });
 
   it("coverageLetter prefers the kill switch, then the budget", () => {
-    const inp = { meta: new Map(), views: new Map([[HOUR - 1, 480]]), alertToday: 0, clickDropped: 0, clickChargedMax: 0, schemaOk: true, siteViews: new Map() };
+    const inp = { meta: new Map(), views: new Map([[HOUR - 1, 480]]), alertToday: 0, clickDropped: 0, clickChargedMax: 0, clickSetupBad: false, schemaOk: true, siteViews: new Map() };
     expect(coverageLetter(inp, HOUR, { killed: true, accountLimit: 480 })).toBe("k");
     expect(coverageLetter(inp, HOUR, { killed: false, accountLimit: 480 })).toBe("q");
     expect(coverageLetter(inp, HOUR, { killed: false, accountLimit: 0 })).toBe("o");

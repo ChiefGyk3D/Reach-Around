@@ -19,6 +19,10 @@
 //   first click  CLICK_FIRST_RESERVE_PERCENT of S is held back for the first click of each link each UTC
 //                day. That click is judged against S itself and ignores the hour slice and the lane cap,
 //                so a flood on one link cannot stop another link from being counted at all.
+// The lane cap is OFF by default (BEACON_LANE_CAP_ENFORCED, parseLaneCapFlag): both lanes are recorded but the
+// unverified cap does not bind until the owner switches it on, which belongs with tokens being enforced. The
+// hour slice, the general day budget and the first-click reserve always bind. The ceiling itself is the
+// CLICK_DAILY_WRITE_CEILING variable (parseClickCeiling), default 300000.
 // The dropped-click counter and its cap are unchanged.
 //
 // STORAGE. Rows of the existing `counters` table per (site, day), no migration:
@@ -27,6 +31,7 @@
 //   cwl-<lane>-<site>    the charged writes of one lane (u: unverified, v: verified)
 //   cf-<site>-<link>     marks that the link has had its first click today (written once per link per day)
 //   cd-<site>            clicks dropped past the limits, capped at CLICK_DROP_COUNT_CAP
+//   cs-bad               set once a day while clicks are refused for an unusable setting (no content)
 // The admission is one batch: a conditional upsert on the day row, then the hour, lane and marker rows, each
 // of which writes only if the statement before it changed a row. A batch is one transaction, so concurrent
 // clicks cannot overshoot. A refused click writes no `cw-`, hour, lane or marker row and one `cd-` row only
@@ -36,8 +41,15 @@
 // TRADE. Counting stops for the rest of the hour, lane or UTC day once a limit is spent. Failing closed
 // protects the D1 write allowance (the account's, not just this feature's); see docs/deploy.md.
 
-/** Row writes the click route may be charged per UTC day, all sites together. */
+/**
+ * Row writes the click route may be charged per UTC day, all sites together: the DEFAULT. The Worker variable
+ * CLICK_DAILY_WRITE_CEILING sets it (parseClickCeiling); a Free-plan deployment sets 7500 with a
+ * D1_DAILY_WRITE_QUOTA of 100000 (docs/deploy.md).
+ */
 export const CLICK_ADMIT_CEILING = 300_000;
+/** The range CLICK_DAILY_WRITE_CEILING may take. */
+export const CLICK_CEILING_MIN = 1_000;
+export const CLICK_CEILING_MAX = 10_000_000;
 /** Most dropped clicks recorded per UTC day, all sites together (one write each; past it a refused click writes nothing). */
 export const CLICK_DROP_COUNT_CAP = 500;
 /** Worst-case click-route writes per UTC day, whatever the number of sites: what the model reserves. */
@@ -51,6 +63,34 @@ export const CLICK_HOUR_SLICES = 12;
 
 /** The lane a click is charged to: verified (v) or unverified (u). Every click is unverified until a token exists. */
 export type ClickLane = "v" | "u";
+
+/** Worst-case click-route writes per UTC day at a configured ceiling: what the budget model reserves. */
+export function clickAccountWrites(ceiling: number): number {
+  return ceiling + CLICK_DROP_COUNT_CAP;
+}
+
+/**
+ * The configured daily click ceiling: unset or "" is the default; otherwise unsigned decimal digits only (at
+ * most nine, no sign, space, exponent or other form) inside CLICK_CEILING_MIN..CLICK_CEILING_MAX. Anything
+ * else is null, and the click route then refuses (it never guesses). The budget loader applies the same rule.
+ */
+export function parseClickCeiling(v: unknown): number | null {
+  if (v === undefined || v === "") return CLICK_ADMIT_CEILING;
+  if (typeof v !== "string" || !/^[0-9]{1,9}$/.test(v)) return null;
+  const n = Number(v);
+  return n >= CLICK_CEILING_MIN && n <= CLICK_CEILING_MAX ? n : null;
+}
+
+/**
+ * BEACON_LANE_CAP_ENFORCED: whether the unverified lane cap binds. Unset, "" , "0" and "false" are off (the
+ * default: until tokens exist every click is unverified, so the cap would limit all real clicks); "1" and
+ * "true" are on. Anything else is null and the click route refuses.
+ */
+export function parseLaneCapFlag(v: unknown): boolean | null {
+  if (v === undefined || v === "" || v === "0" || v === "false") return false;
+  if (v === "1" || v === "true") return true;
+  return null;
+}
 
 /** One site's share of a total when `sites` sites are served: equal, rounded down, so the shares never add to more. */
 export function siteShare(total: number, sites: number): number {
@@ -125,11 +165,11 @@ export async function admitClick(
   nowMs: number,
   cost: number,
   sites = 1,
-  opts: { linkId?: string; lane?: ClickLane } = {},
+  opts: { linkId?: string; lane?: ClickLane; ceiling?: number; enforceLaneCap?: boolean } = {},
 ): Promise<boolean> {
   const day = new Date(nowMs).toISOString().slice(0, 10);
   const hour = String(new Date(nowMs).getUTCHours()).padStart(2, "0");
-  const lim = clickLimits(siteShare(CLICK_ADMIT_CEILING, sites));
+  const lim = clickLimits(siteShare(opts.ceiling ?? CLICK_ADMIT_CEILING, sites));
   const lane: ClickLane = opts.lane ?? "u";
   const marker = opts.linkId === undefined ? null : `cf-${site}-${opts.linkId}`;
   const hourKey = `cwh-${site}-${hour}`;
@@ -139,7 +179,7 @@ export async function admitClick(
       `INSERT INTO counters (key, day, count) SELECT ?1, ?2, ?3 WHERE ${admits("0")} ` +
         `ON CONFLICT (key, day) DO UPDATE SET count = count + ?3 WHERE ${admits("count")}`, // CONTROL:click-write-ceiling
     )
-    .bind(`cw-${site}`, day, cost, marker ?? "", marker === null ? 0 : 1, hourKey, laneKey, lim.hourSlice, lane === "u" ? lim.unverified : lim.general, lim.share, lim.general);
+    .bind(`cw-${site}`, day, cost, marker ?? "", marker === null ? 0 : 1, hourKey, laneKey, lim.hourSlice, opts.enforceLaneCap === true && lane === "u" ? lim.unverified : lim.general, lim.share, lim.general);
   const batch = [
     gate,
     db.prepare(CHARGE).bind(hourKey, day, cost),
@@ -156,4 +196,21 @@ export async function admitClick(
     .bind(`cd-${site}`, day, siteShare(CLICK_DROP_COUNT_CAP, sites))
     .run();
   return false;
+}
+
+/**
+ * Note that clicks are being refused because a setting is missing or unusable (the hashing key, the ceiling or
+ * the lane switch): one counter row for the UTC day, `cs-bad`, written once and then left alone (a repeat is a
+ * no-op), so refused traffic costs one write a day. It holds no site, link or address. The hourly health check
+ * reads it (`click_setup_invalid`). Never throws.
+ */
+export async function markClickSetupInvalid(db: D1Database, nowMs: number): Promise<void> {
+  try {
+    await db
+      .prepare("INSERT INTO counters (key, day, count) VALUES ('cs-bad', ?1, 1) ON CONFLICT (key, day) DO NOTHING")
+      .bind(new Date(nowMs).toISOString().slice(0, 10))
+      .run();
+  } catch {
+    // Nothing more can be done: the click is refused either way.
+  }
 }

@@ -25,6 +25,10 @@
 //                        re-check against Cloudflare. The free plan's daily figure is 100000:
 //                        a free-plan deployment must set it, and then the click ceiling
 //                        in clickceiling.ts no longer fits and the check refuses)
+//   CLICK_DAILY_WRITE_CEILING 1000..10000000 click row writes per UTC day, all sites together,
+//                        default 300000 (clickceiling.ts reads the same variable; the combined
+//                        figure reserves it plus the dropped-click cap). A free-plan deployment
+//                        sets 7500 together with D1_DAILY_WRITE_QUOTA 100000.
 //
 // The load REFUSES a configuration whose COMBINED worst-case daily D1 writes
 // (kit, page views, clicks, the click funnel, a margin) exceed the quota, and warns above 80
@@ -49,7 +53,7 @@ import type { KitEventKind } from "./leads";
 import { pageViewDailyWrites, type PageViewBudgetEnv } from "../pvlimits";
 import { FUNNEL_CAPS, funnelDailyWrites, type FunnelCaps } from "../funnelcaps";
 import { loadSites } from "../sites";
-import { CLICK_ACCOUNT_DAILY_WRITES } from "../clickceiling";
+import { CLICK_ACCOUNT_DAILY_WRITES, CLICK_ADMIT_CEILING, CLICK_CEILING_MAX, CLICK_CEILING_MIN, clickAccountWrites } from "../clickceiling";
 
 export type RouteName = "gate" | "view";
 
@@ -72,6 +76,7 @@ export const KIT_LIMIT_VARS = [
   "DAILY_ALERT_BUDGET",
   "DAILY_SEND_BUDGET",
   "D1_DAILY_WRITE_QUOTA",
+  "CLICK_DAILY_WRITE_CEILING",
 ] as const;
 
 export const MAX_KIT_EVENTS_CEILING = 500_000;
@@ -123,6 +128,7 @@ export interface KitLimitsEnv extends PageViewBudgetEnv {
   DAILY_ALERT_BUDGET?: string;
   DAILY_SEND_BUDGET?: string;
   D1_DAILY_WRITE_QUOTA?: string;
+  CLICK_DAILY_WRITE_CEILING?: string;
 }
 
 /** The limits are unusable. Carries variable names only, never values. */
@@ -143,6 +149,8 @@ export interface KitLimits {
   dailyAlertBudget: number;
   dailySendBudget: number;
   d1DailyWriteQuota: number;
+  /** The daily click write ceiling the combined figure reserves (default when the variable is unusable). */
+  clickCeiling: number;
   /** Non-fatal notes, e.g. worst-case writes above 80 percent of the quota. */
   warnings: readonly string[];
 }
@@ -175,11 +183,12 @@ export function worstCaseDailyWrites(
  * allowance. `pageViews` is the page-view feature's worst case (pageViewDailyWrites).
  */
 export function combinedDailyWrites(
-  c: Parameters<typeof worstCaseDailyWrites>[0],
+  c: Parameters<typeof worstCaseDailyWrites>[0] & { clickCeiling?: number },
   pageViews: number = PAGE_VIEW_DAILY_WRITES,
   funnel: number = FUNNEL_DAILY_WRITES,
 ): number {
-  return worstCaseDailyWrites(c) + pageViews + CLICK_DAILY_WRITES + funnel + COMBINED_MARGIN;
+  const clicks = c.clickCeiling === undefined ? CLICK_DAILY_WRITES : clickAccountWrites(c.clickCeiling);
+  return worstCaseDailyWrites(c) + pageViews + clicks + funnel + COMBINED_MARGIN;
 }
 
 export function worstCaseStorageBytes(c: Pick<KitLimits, "maxLeads" | "maxKitEvents">): number {
@@ -208,16 +217,23 @@ function parseKitLimits(env: KitLimitsEnv): { c: Parsed; bad: string[] } {
     dailyAlertBudget: get("DAILY_ALERT_BUDGET", 0, MAX_DAILY_BUDGET, DEFAULTS.dailyAlertBudget),
     dailySendBudget: get("DAILY_SEND_BUDGET", 0, MAX_DAILY_BUDGET, DEFAULTS.dailySendBudget),
     d1DailyWriteQuota: get("D1_DAILY_WRITE_QUOTA", MIN_QUOTA, MAX_QUOTA, DEFAULTS.d1DailyWriteQuota),
+    clickCeiling: get("CLICK_DAILY_WRITE_CEILING", CLICK_CEILING_MIN, CLICK_CEILING_MAX, CLICK_ADMIT_CEILING),
   };
   return { c, bad };
 }
+
+/** The variable the click route owns: it refuses clicks and sets a health flag for it, so it never stops the kit. */
+const CLICK_OWN_VARS: readonly string[] = ["CLICK_DAILY_WRITE_CEILING"];
 
 /** True above 80 percent of the quota (integer math, no rounding). */
 const above80 = (worst: number, quota: number): boolean => worst * 10 > quota * 8;
 
 /** Parse and validate every limit. Throws KitLimitsError (names only). Cheap: call per request. */
 export function loadKitLimits(env: KitLimitsEnv): KitLimits {
-  const { c, bad } = parseKitLimits(env);
+  const { c, bad: allBad } = parseKitLimits(env);
+  // An unusable click ceiling refuses clicks (and says so through the health flag) but must not take the
+  // kit routes and the owner alerts down with it; the deploy check (assessDailyBudget) still fails on it.
+  const bad = allBad.filter((n) => !CLICK_OWN_VARS.includes(n));
   if (bad.length > 0) throw new KitLimitsError(bad);
 
   const worst = combinedDailyWrites(c, pageViewDailyWrites(env), funnelDailyWritesFor(env));

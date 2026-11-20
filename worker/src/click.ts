@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 import { normalizeAddress } from "./address";
 import { limiterKey, secretBytes } from "./ratekey";
-import { admitClick, clickWriteCost } from "./clickceiling";
+import { admitClick, clickWriteCost, markClickSetupInvalid, parseClickCeiling, parseLaneCapFlag } from "./clickceiling";
 import { NONE, clickCounterStatements } from "./clickfunnel";
 import { killedSites, loadSites, siteForRequest } from "./sites";
 
@@ -32,6 +32,16 @@ export interface Env {
    * recorded. The raw address never reaches the limiter.
    */
   VIEW_HASH_SECRET?: string;
+  /**
+   * Optional. The daily click write ceiling, all sites together: digits only, 1000 to 10000000, default
+   * 300000 (clickceiling.ts). An unusable value refuses clicks and sets the health flag.
+   */
+  CLICK_DAILY_WRITE_CEILING?: string;
+  /**
+   * Optional. "1" or "true" makes the unverified lane cap bind; unset, "", "0" or "false" leave it off (the
+   * default, until tokens are enforced). Anything else refuses clicks and sets the health flag.
+   */
+  BEACON_LANE_CAP_ENFORCED?: string;
   /**
    * Optional kill switch. "1" or "true" (any case) turns click recording off;
    * anything else, or unset, leaves it on. Read on every request.
@@ -218,9 +228,16 @@ export async function handleClick(request: Request, env: Env): Promise<Response>
 
     // 5. Rate limit per client. The key is a keyed hash, never the address,
     // and is never stored.
-    // No usable secret, no key: the click is refused (same empty 204), like the view route.
+    // No usable secret, no key: the click is refused (same empty 204), like the view route. The same goes for
+    // an unusable ceiling or lane switch: nothing is guessed. The refusal is never silent: it sets one
+    // content-free flag for the day that the hourly health check reports (click_setup_invalid).
     const secret = secretBytes(env.VIEW_HASH_SECRET);
-    if (secret === null || typeof env.VIEW_HASH_SECRET !== "string") return noContent(); // CONTROL:click-limiter-secret
+    const ceiling = parseClickCeiling(env.CLICK_DAILY_WRITE_CEILING);
+    const laneCap = parseLaneCapFlag(env.BEACON_LANE_CAP_ENFORCED);
+    if (secret === null || typeof env.VIEW_HASH_SECRET !== "string" || ceiling === null || laneCap === null) {
+      await markClickSetupInvalid(env.DB, Date.now());
+      return noContent(); // CONTROL:click-limiter-secret
+    }
     const key = await limiterKey(
       secret,
       env.VIEW_HASH_SECRET,
@@ -247,7 +264,12 @@ export async function handleClick(request: Request, env: Env): Promise<Response>
     // the same empty 204 and only the counting stops (clickceiling.ts).
     const cost = clickWriteCost({ sources: site.sources !== undefined, landings: landing !== undefined, hops: hop !== undefined });
     // Every click is charged to the unverified lane: no token exists yet to prove a click came from the page.
-    const admitted = await admitClick(env.DB, site.id, now, cost, loadSites(env).sites.length, { linkId, lane: "u" }); // CONTROL:click-write-ceiling
+    const admitted = await admitClick(env.DB, site.id, now, cost, loadSites(env).sites.length, {
+      linkId,
+      lane: "u",
+      ceiling,
+      enforceLaneCap: laneCap,
+    }); // CONTROL:click-write-ceiling
     if (!admitted) return noContent();
     await env.DB.prepare("INSERT INTO click_events (ts, link_id, destination_kind, country, site, src) VALUES (?, ?, ?, ?, ?, ?)")
       .bind(now - (now % HOUR_MS), linkId, destinationKind, null, site.id, src) // country lives only in the aggregate counter

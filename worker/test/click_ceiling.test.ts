@@ -15,8 +15,11 @@ import {
   CLICK_UNVERIFIED_PERCENT,
   siteShare,
   admitClick,
+  clickAccountWrites,
   clickLimits,
   clickWriteCost,
+  parseClickCeiling,
+  parseLaneCapFlag,
 } from "../src/clickceiling";
 import { CLICK_DAILY_WRITES } from "../src/kit/budgets";
 import { HOUR_BUDGET, LH_HOUR_BUDGET } from "../src/clickfunnel";
@@ -339,18 +342,36 @@ describe("admitClick", () => {
   });
 
   describe("the two lanes", () => {
-    it("the unverified lane is capped at its percent of the share", async () => {
+    const ON = { enforceLaneCap: true } as const;
+    it("with the switch on, the unverified lane is capped at its percent of the share", async () => {
       await seedSeen("links", "a");
       await seed("cwl-u-links", L1.unverified - FULL, NOON);
-      expect(await admitClick(DB, "links", NOON, FULL, 1, { linkId: "a", lane: "u" })).toBe(true);
+      expect(await admitClick(DB, "links", NOON, FULL, 1, { linkId: "a", lane: "u", ...ON })).toBe(true);
       expect(await count("cwl-u-links", NOON)).toBe(L1.unverified);
-      expect(await admitClick(DB, "links", NOON, 1, 1, { linkId: "a", lane: "u" })).toBe(false);
+      expect(await admitClick(DB, "links", NOON, 1, 1, { linkId: "a", lane: "u", ...ON })).toBe(false);
       expect(await count("cd-links", NOON)).toBe(1);
+    });
+    it("with the switch off (the default) the cap does not bind, and both lanes are still recorded", async () => {
+      await seedSeen("links", "a");
+      await seed("cwl-u-links", L1.unverified, NOON);
+      expect(await admitClick(DB, "links", NOON, FULL, 1, { linkId: "a", lane: "u" })).toBe(true);
+      expect(await admitClick(DB, "links", NOON, FULL, 1, { linkId: "a", lane: "u", enforceLaneCap: false })).toBe(true);
+      expect(await count("cwl-u-links", NOON)).toBe(L1.unverified + 2 * FULL);
+      expect(await admitClick(DB, "links", NOON, FULL, 1, { linkId: "a", lane: "v" })).toBe(true);
+      expect(await count("cwl-v-links", NOON)).toBe(FULL);
+    });
+    it("with the switch off the day budget and the hour slice still bind", async () => {
+      await seedSeen("links", "a");
+      await seed("cw-links", L1.general, NOON);
+      expect(await admitClick(DB, "links", NOON, FULL, 1, { linkId: "a" })).toBe(false);
+      await seed("cw-links", 0, NOON);
+      await seed(`cwh-links-${hh(NOON)}`, L1.hourSlice, NOON);
+      expect(await admitClick(DB, "links", NOON, FULL, 1, { linkId: "a" })).toBe(false);
     });
     it("a spent unverified lane leaves the verified lane open, and each lane keeps its own count", async () => {
       await seedSeen("links", "a");
       await seed("cwl-u-links", L1.unverified, NOON);
-      expect(await admitClick(DB, "links", NOON, FULL, 1, { linkId: "a", lane: "u" })).toBe(false);
+      expect(await admitClick(DB, "links", NOON, FULL, 1, { linkId: "a", lane: "u", ...ON })).toBe(false);
       expect(await admitClick(DB, "links", NOON, FULL, 1, { linkId: "a", lane: "v" })).toBe(true);
       expect(await count("cwl-v-links", NOON)).toBe(FULL);
       expect(await count("cwl-u-links", NOON)).toBe(L1.unverified);
@@ -414,6 +435,127 @@ describe("the click route", () => {
     const r = await handleClick(click(), broken);
     expect(r.status).toBe(204);
     expect(await events()).toBe(0);
+  });
+});
+
+describe("the click route and the lane switch", () => {
+  const laneFull = async () => {
+    await handleClick(click(), env()); // makes the link's marker, so the next click is judged against the lane
+    await seed("cwl-u-links", clickLimits(SHARE2).unverified);
+  };
+  it("by default a spent unverified lane does not stop a click", async () => {
+    await laneFull();
+    const before = await events();
+    await handleClick(click(), env());
+    expect(await events() - before).toBe(1);
+  });
+  it.each(["1", "true"])("with BEACON_LANE_CAP_ENFORCED=%s a spent unverified lane stops the click (same 204)", async (v) => {
+    await laneFull();
+    const before = await events();
+    const r = await handleClick(click(), { ...env(), BEACON_LANE_CAP_ENFORCED: v });
+    expect(r.status).toBe(204);
+    expect(await events()).toBe(before);
+    expect(await count("cd-links")).toBe(1);
+  });
+  it.each(["0", "false", "", undefined])("BEACON_LANE_CAP_ENFORCED=%j leaves the cap off", async (v) => {
+    await laneFull();
+    const before = await events();
+    await handleClick(click(), { ...env(), BEACON_LANE_CAP_ENFORCED: v });
+    expect(await events() - before).toBe(1);
+  });
+});
+
+describe("the click ceiling is a validated setting", () => {
+  it.each([
+    [undefined, 300_000],
+    ["", 300_000],
+    ["300000", 300_000],
+    ["7500", 7_500],
+    ["1000", 1_000],
+    ["10000000", 10_000_000],
+    ["999", null],
+    ["10000001", null],
+    ["0", null],
+    ["-1", null],
+    ["1e5", null],
+    [" 5000", null],
+    ["5000 ", null],
+    ["+5000", null],
+    ["0x1000", null],
+    ["7500.0", null],
+    ["abc", null],
+    ["1234567890", null],
+    [7500, null],
+  ])("CLICK_DAILY_WRITE_CEILING=%j is %j", (v, want) => {
+    expect(parseClickCeiling(v)).toBe(want);
+  });
+  it.each([
+    [undefined, false],
+    ["", false],
+    ["0", false],
+    ["false", false],
+    ["1", true],
+    ["true", true],
+    ["TRUE", null],
+    ["yes", null],
+    [" 1", null],
+    ["2", null],
+    [1, null],
+  ])("BEACON_LANE_CAP_ENFORCED=%j is %j", (v, want) => {
+    expect(parseLaneCapFlag(v)).toBe(want);
+  });
+  it("the model reserves the configured ceiling plus the dropped-count cap", () => {
+    expect(clickAccountWrites(7_500)).toBe(8_000);
+    expect(clickAccountWrites(CLICK_ADMIT_CEILING)).toBe(CLICK_ACCOUNT_DAILY_WRITES);
+  });
+  it("a lower ceiling is enforced by the route: the same click is refused at a share it does not fit", async () => {
+    const small = { ...env(), CLICK_DAILY_WRITE_CEILING: "1000" }; // two sites: a share of 500, first click judged against 500
+    expect(await handleClick(click(), small)).toBeDefined();
+    expect(await events()).toBe(1);
+    await seed("cw-links", 500);
+    await handleClick(click(), small);
+    expect(await events()).toBe(1);
+    // the default ceiling would still have room
+    await handleClick(click(), env());
+    expect(await events()).toBe(2);
+  });
+  it.each(["999", "abc", "1e5"])("an unusable ceiling %j refuses the click and flags the setup", async (v) => {
+    await handleClick(click(), { ...env(), CLICK_DAILY_WRITE_CEILING: v });
+    expect(await events()).toBe(0);
+    expect(await count("cs-bad")).toBe(1);
+  });
+});
+
+describe("clicks refused for an unusable setup are never silent", () => {
+  const bad: [string, Partial<Env>][] = [
+    ["a missing hashing key", { VIEW_HASH_SECRET: undefined }],
+    ["a short hashing key", { VIEW_HASH_SECRET: btoa("a".repeat(8)) }],
+    ["an unusable lane switch", { BEACON_LANE_CAP_ENFORCED: "maybe" }],
+    ["an unusable ceiling", { CLICK_DAILY_WRITE_CEILING: "0" }],
+  ];
+  it.each(bad)("%s: same 204, nothing counted, one flag row for the day", async (_n, over) => {
+    const ok = await handleClick(click(), env());
+    await DB.prepare("DELETE FROM click_events").run();
+    await DB.prepare("DELETE FROM counters").run();
+    const r = await handleClick(click(), { ...env(), ...over });
+    expect(r.status).toBe(ok.status);
+    expect(await r.text()).toBe(await ok.text());
+    expect(await events()).toBe(0);
+    expect(await count("cs-bad")).toBe(1);
+    // many more refusals still write that one row only
+    for (let i = 0; i < 5; i++) await handleClick(click(), { ...env(), ...over });
+    expect(await count("cs-bad")).toBe(1);
+    const rows = (await DB.prepare("SELECT key FROM counters").all<{ key: string }>()).results.map((x) => x.key);
+    expect(rows).toEqual(["cs-bad"]);
+  });
+  it("a usable setup leaves no flag", async () => {
+    await handleClick(click(), env());
+    expect(await count("cs-bad")).toBe(0);
+  });
+  it("the flag carries no site, link or address", async () => {
+    await handleClick(click(), { ...env(), VIEW_HASH_SECRET: undefined });
+    const r = (await DB.prepare("SELECT key, day, count FROM counters").all<{ key: string; day: string; count: number }>()).results;
+    expect(r).toEqual([{ key: "cs-bad", day: dayOf(Date.now()), count: 1 }]);
   });
 });
 

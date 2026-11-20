@@ -15,6 +15,7 @@ import { runBudgetCheck } from "../../src/kit/budgetcheck";
 import { pageViewDailyWrites, pageViewSiteCount } from "../../src/pvlimits";
 import { MAX_SITES } from "../../src/sites";
 import { FUNNEL_CAPS, funnelDailyWrites } from "../../src/funnelcaps";
+import { parseClickCeiling } from "../../src/clickceiling";
 
 describe("pageViewDailyWrites", () => {
   it("is exactly the documented 22,700 at the default budgets (120 human + 30 bot per hour)", () => {
@@ -282,6 +283,7 @@ describe("the deploy gate reads every variable the Worker's loader reads", () =>
       DAILY_ALERT_BUDGET: "1001",
       DAILY_SEND_BUDGET: "1001",
       D1_DAILY_WRITE_QUOTA: "999",
+      CLICK_DAILY_WRITE_CEILING: "999",
     };
     for (const n of KIT_LIMIT_VARS) {
       expect(bad[n], n).toBeDefined();
@@ -297,5 +299,49 @@ describe("the deploy gate reads every variable the Worker's loader reads", () =>
     expect(runBudgetCheck({ ROUTE_BUDGET_GATE: "20000" }).code).toBe(1);
     expect(runBudgetCheck({ D1_DAILY_WRITE_QUOTA: "50000" }).code).toBe(1);
     expect(runBudgetCheck({ D1_DAILY_WRITE_QUOTA: "2000000" }).lines[0]).toMatch(/: ok$/);
+  });
+});
+
+describe("the click ceiling setting in the budget check (Free-plan deployment)", () => {
+  const free = { D1_DAILY_WRITE_QUOTA: "100000", CLICK_DAILY_WRITE_CEILING: "7500" };
+  it("the documented Free-plan pair passes, and is the old 78898 figure", () => {
+    const r = runBudgetCheck(free);
+    expect(r.code).toBe(0);
+    expect(r.lines[0]).toContain(`${78_140 + FUNNEL_DAILY_WRITES} of 100000`);
+    expect(assessDailyBudget(free).combined).toBe(78_140 + FUNNEL_DAILY_WRITES);
+  });
+  it("the Free-plan quota alone (default ceiling) is refused, and so is the ceiling alone on a too-small quota", () => {
+    expect(runBudgetCheck({ D1_DAILY_WRITE_QUOTA: "100000" }).code).toBe(1);
+    // 70140 + ceiling + 500 + funnel (758) must stay at or under 100000: 28602 is the largest ceiling
+    expect(runBudgetCheck({ D1_DAILY_WRITE_QUOTA: "100000", CLICK_DAILY_WRITE_CEILING: "28602" }).code).toBe(0);
+    expect(runBudgetCheck({ D1_DAILY_WRITE_QUOTA: "100000", CLICK_DAILY_WRITE_CEILING: "28603" }).code).toBe(1);
+  });
+  it("the verdict follows the configured ceiling exactly (the Worker and the check read one value)", () => {
+    for (const c of ["1000", "7500", "300000", "5000000"]) {
+      const a = assessDailyBudget({ CLICK_DAILY_WRITE_CEILING: c, D1_DAILY_WRITE_QUOTA: "999999999" });
+      expect(a.combined).toBe(70_140 + Number(c) + 500 + FUNNEL_DAILY_WRITES);
+      expect(combinedDailyWrites(loadKitLimits({ CLICK_DAILY_WRITE_CEILING: c, D1_DAILY_WRITE_QUOTA: "999999999" }), a.pageViews, a.funnel)).toBe(a.combined);
+    }
+  });
+  it("an unusable ceiling fails the deploy check by name, but does not take the kit's own limits down", () => {
+    for (const bad of ["999", "10000001", "1e5", "abc", "-1"]) {
+      expect(runBudgetCheck({ CLICK_DAILY_WRITE_CEILING: bad })).toEqual({ code: 1, lines: ["::error::unusable budget settings: CLICK_DAILY_WRITE_CEILING"] });
+      // the click route refuses and flags it; the kit routes and the owner alerts keep their own limits
+      expect(() => loadKitLimits({ CLICK_DAILY_WRITE_CEILING: bad })).not.toThrow();
+      expect(assessDailyBudget({ CLICK_DAILY_WRITE_CEILING: bad }).invalid).toEqual(["CLICK_DAILY_WRITE_CEILING"]);
+    }
+    // another bad variable still refuses the kit, whatever the ceiling says
+    expect(() => loadKitLimits({ CLICK_DAILY_WRITE_CEILING: "abc", MAX_LEADS: "0" })).toThrow(KitLimitsError);
+  });
+  it("the Worker's click parser and the budget loader agree on every usable value", () => {
+    for (const v of [undefined, "", "300000", "1000", "10000000", "007500"]) {
+      const worker = parseClickCeiling(v);
+      expect(worker, String(v)).not.toBeNull();
+      expect(loadKitLimits({ CLICK_DAILY_WRITE_CEILING: v, D1_DAILY_WRITE_QUOTA: "999999999" }).clickCeiling, String(v)).toBe(worker);
+    }
+    for (const v of ["999", "10000001", "12x", "-1", "0"]) {
+      expect(parseClickCeiling(v), v).toBeNull();
+      expect(assessDailyBudget({ CLICK_DAILY_WRITE_CEILING: v }).invalid, v).toEqual(["CLICK_DAILY_WRITE_CEILING"]);
+    }
   });
 });
