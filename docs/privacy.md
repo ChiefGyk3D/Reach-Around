@@ -180,10 +180,22 @@ deleted after 90 days (the Worker's fixed window in `worker/src/retention.ts`;
 `privacy.retention_days` accepts only 90 so the page cannot promise another
 number), daily counts after 90 days and monthly
 totals are kept up to 25 months; and clicks honor Global Privacy Control and
-Do Not Track: a browser sending either signal is not counted,
-nothing about the click is sent or stored, and the link still opens (`click.js`
-and the Worker's `click.ts` both check the signal, and a test fails if the page
-promises this while either one does not). The page is silent on the
+Do Not Track: a browser sending either signal is not counted or stored, the
+site's own script sends nothing, and the link still opens (`click.js` and the
+Worker's `click.ts` both check the signal, and a test fails if the page
+promises this while either one does not). The page does not say the browser
+sends nothing, because it may: the generated links keep the native `ping`
+attribute so clicks still count without JavaScript, and a visitor whose script
+is blocked or fails sends that small request; the Worker discards any request
+that carries the signal, whatever the page did. The guarantee covers the
+site's own script (it removes the `ping` attribute at load, on click, on
+middle-click and on the context menu, and treats an unreadable signal as an
+opt-out) plus that server-side discard. It does not cover other scripts on the
+page (one that runs later can put the attribute back), visitors without
+JavaScript, or links inside shadow roots or iframes. The Worker's reply to a
+discarded click has the same status, headers and body as a recorded one; its
+timing is not equalized. A header value counts as the signal when any
+comma-separated token, trimmed of spaces and tabs only, is `1`. The page is silent on the
 landing and hop counters because those tables are not collected yet; the
 sentence about them returns when they are switched on.
 

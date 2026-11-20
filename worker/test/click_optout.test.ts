@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // A click that carries Global Privacy Control (Sec-GPC: 1) or Do Not Track
 // (DNT: 1) records nothing, and answers the same empty 204 as every other
-// outcome, so the response is no oracle (issue #599).
+// outcome, so the response form (status, headers, body) is no oracle. Timing is
+// not equalized: an early refusal is faster than a recorded click (issue #599).
 import { env as testEnv } from "cloudflare:workers";
 import { beforeEach, describe, expect, it } from "vitest";
 import { handleClick, type Env } from "../src/click";
@@ -56,6 +57,7 @@ const OPTED_OUT: Array<[string, Record<string, string>]> = [
   ["proxy-joined Sec-GPC: 1, 1", { "Sec-GPC": "1, 1" }],
   ["proxy-joined DNT: 0,1", { DNT: "0,1" }],
   ["proxy-joined DNT: 1 , 0", { DNT: "1 , 0" }],
+  ["tab around 1", { "Sec-GPC": " 1\t" }],
 ];
 
 const NORMAL: Array<[string, Record<string, string>]> = [
@@ -68,6 +70,11 @@ const NORMAL: Array<[string, Record<string, string>]> = [
   ["DNT: 11", { DNT: "11" }],
   ["Sec-GPC: 0, 0", { "Sec-GPC": "0, 0" }],
   ["DNT: true", { DNT: "true" }],
+  // HTTP optional whitespace is space and tab only; anything else is not a signal.
+  ["Sec-GPC: NBSP around 1", { "Sec-GPC": " 1 " }],
+  ["DNT: ideographic space around 1", { DNT: "　1　" }],
+  ["DNT: 1 with a zero-width space", { DNT: "1​" }],
+  ["Sec-GPC: 0 then NBSP-led 1", { "Sec-GPC": "0, 1" }],
 ];
 
 describe("click opt-out signals", () => {
@@ -86,7 +93,28 @@ describe("click opt-out signals", () => {
     expect(await count()).toBe(1);
   });
 
-  it("answers an opted-out click exactly like a recorded one (no oracle)", async () => {
+  it("discards a request that carries the signal whatever the page did", async () => {
+    // The Worker cannot know what the page's script did. A request that carries
+    // the signal is thrown away even when it is otherwise a perfect click.
+    const res = await handleClick(
+      new Request("https://worker.example.test/e/c/example-one?s=bio&h=bio&l=home", {
+        method: "POST",
+        headers: {
+          "User-Agent": BROWSER_UA,
+          "Ping-From": `https://${SITE}/`,
+          "Ping-To": "https://example.test/out",
+          "CF-Connecting-IP": "198.51.100.8",
+          "Sec-GPC": "1",
+        },
+      }),
+      makeEnv(),
+    );
+    expect(res.status).toBe(204);
+    expect(await count()).toBe(0);
+    expect(await counters()).toBe(0);
+  });
+
+  it("answers an opted-out click with the same response form as a recorded one (status, headers, body; timing is not equalized)", async () => {
     const out = await handleClick(click({ "Sec-GPC": "1" }), makeEnv());
     const rec = await handleClick(click({}), makeEnv());
     expect(out.status).toBe(rec.status);

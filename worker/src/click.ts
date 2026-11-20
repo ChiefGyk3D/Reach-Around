@@ -112,7 +112,8 @@ function killed(env: Env): boolean {
 
 /** One header value is an opt-out when any comma-separated token, trimmed, is "1" (a proxy may join repeats). */
 function signalOn(value: string | null): boolean {
-  return value !== null && value.split(",").some((token) => token.trim() === "1");
+  // Trim only HTTP optional whitespace (space and tab), not Unicode spaces.
+  return value !== null && value.split(",").some((token) => token.replace(/^[ \t]+|[ \t]+$/g, "") === "1");
 }
 
 /** True when the request carries Sec-GPC: 1 or DNT: 1 (the only values either signal defines); fails toward privacy. */

@@ -162,7 +162,8 @@ def test_privacy_lists_every_derived_category_when_on() -> None:
 ALLOWED_CLICK_PHRASES = (
     # The signal sentence says "your browser" and the totals sentence says
     # "linked to a page view or person" (#599); nothing else may.
-    "if your browser sends either signal, the click is not counted.",
+    "if your browser sends either signal, the click is not counted or stored,",
+    "if scripts are blocked or fail, your browser may still send a small request",
     "never combined or linked to a page view or person.",
 )
 VIEW_NEEDLES = ("each view", "browser", "referring", "window size", "city", "page view")

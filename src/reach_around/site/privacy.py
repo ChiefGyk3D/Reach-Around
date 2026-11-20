@@ -24,8 +24,11 @@ CLICK_WHAT = (
     "address or country. Separate daily totals count clicks by source and by "
     "country. Source and country are never combined or linked to a page view or "
     "person. The site honors Global Privacy Control and Do Not Track for link "
-    "clicks. If your browser sends either signal, the click is not counted. "
-    "Nothing about it is sent or stored. The link still opens normally."
+    "clicks. If your browser sends either signal, the click is not counted or "
+    "stored, and the site's own script sends nothing. If scripts are blocked or "
+    "fail, your browser may still send a small request to the site. The server "
+    "throws it away without storing anything about it. The link still opens "
+    "normally."
 )
 CLICK_WHY = (
     "These records count link clicks and show daily totals by source or country."

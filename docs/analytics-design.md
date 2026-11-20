@@ -617,7 +617,17 @@ Requirements for the rewritten disclosure (plain words, American English):
    counted, in both collection modes. Clicks honor the signal too (`click.js` and
    `worker/src/click.ts` both check it, #599), and the click item on the page
    says so (owner copy 2026-11-19). A test fails if the page makes that promise
-   while either click path does not check the signal.
+   while either click path does not check the signal. The page does not say the
+   browser sends nothing: the links keep the native `ping` attribute so clicks
+   count without JavaScript (the unverified lane), so a visitor whose script is
+   blocked or fails still sends a small request, which the Worker discards
+   unrecorded when it carries the signal. The guarantee covers the site's own
+   script and that server-side discard only; it does not cover other scripts on
+   the page, visitors without JavaScript, or links in shadow roots or iframes.
+   The discard answers with the same status, headers and body as a recorded
+   click; timing is not equalized. Decision (2026-11-19, pending owner
+   review): keep the attribute and state this plainly, rather than render no
+   `ping` attribute (which would stop no-JavaScript click counting).
 8. Say that totals for small groups are merged into "other".
 9. State that records for a specific person cannot be deleted because the
    records do not identify anyone, and say how long raw records live (item 6).

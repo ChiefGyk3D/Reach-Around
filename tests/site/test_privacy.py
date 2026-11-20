@@ -78,9 +78,14 @@ def test_click_item_says_clicks_honor_gpc_and_dnt() -> None:
     what = collected_items(make_config())[0].what
     assert (
         "The site honors Global Privacy Control and Do Not Track for link clicks. "
-        "If your browser sends either signal, the click is not counted. Nothing "
-        "about it is sent or stored. The link still opens normally."
+        "If your browser sends either signal, the click is not counted or "
+        "stored, and the site's own script sends nothing. If scripts are blocked "
+        "or fail, your browser may still send a small request to the site. The "
+        "server throws it away without storing anything about it. The link "
+        "still opens normally."
     ) in what
+    # Truthful: the page never says the visitor's browser sends nothing.
+    assert "Nothing about it is sent" not in what
     assert "do not stop click counting" not in what
     assert "just as it does for page views" not in what
 
