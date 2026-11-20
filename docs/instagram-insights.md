@@ -63,7 +63,8 @@ reduces noise. It does not stop differencing: consecutive stored windows overlap
 so the change in an `other` total from one day to the next can reveal a folded
 cell, and an `other` made of one cell under 5 is that cell. That is acceptable only
 because the data is private and never published. Activity totals are stored
-exactly; the display work applies its own floor.
+exactly; the report's "Private platform analytics" block applies its own floor when it
+prints them ([report.md](report.md#private-platform-analytics---history-397)).
 
 **Not collected.** "Profile visits" is not in the research note's metric table, so
 nothing asks for it. Follower count over time is the follower read's own

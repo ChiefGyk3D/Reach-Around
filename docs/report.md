@@ -86,8 +86,19 @@ reach-around report --input export.json --history history/social.jsonl
 * **Definition breaks:** a change between two records with different `era` tags is withheld ("the definition changed").
 * **Cutover:** a change window that crosses the cutover day is labeled as spanning it.
 * **Imported history (Beacons):** records with source `imported` appear only in their own block, with their own label, and are never added to or compared with the collected numbers above.
-* **YouTube:** collected YouTube Analytics figures are refused (display policy, #424). Only the Data API `subscribers` count may come from the API; a value you typed is accepted. A refused metric is named in the output.
+* **YouTube:** collected YouTube Analytics figures are refused here (display policy, #424); they appear, floored, in the private analytics block below. Only the Data API `subscribers` count may come from the API; a value you typed is accepted. A refused metric is named in the output.
 * **Time:** everything is UTC. With `--display-zone` each latest instant is also printed in that zone; day buckets stay UTC days.
+
+### Private platform analytics (`--history`, #397)
+
+With `--history` the report also prints "Private platform analytics": the views, watch time and demographics that YouTube Analytics and Instagram insights returned to you ([YouTube](youtube-analytics.md), [Instagram](instagram-insights.md)). The records are picked by their `api_provider` tag and by nothing else. The block is in the text report, the `--json` output (`private_analytics`) and `--csv` (`private_analytics.csv`). It is not in the HTML owner report, the Grafana export, the kit, the site or any PDF: the display policy (#424) keeps these figures private, and the site build never reads the history file.
+
+* **Floor:** a count under the floor (5; `--floor` can raise it, never lower it) is never printed. Followers by age, gender and country and views by country use the same merge rule as the rest of this report: cells under the floor go into one remainder line together with the largest printed cell, and the figure the collector already folded into `other` counts as a remainder that is never printed alone. A group that cannot be made safe prints `withheld`. Activity figures (views, watch minutes, reach, interactions, accounts engaged, profile link taps) under the floor print `below the floor`; zero prints as `0`. In CSV the value is empty and `status` says `below_floor` or `withheld`.
+* **Shares are not counts:** YouTube viewer demographics are percentages of viewers. The collector already folds shares under 2.00 percent into `other`; the report prints them as percentages.
+* **Labels:** every figure carries its platform, its provider, its UTC time (and the display zone beside it with `--display-zone`), the era mark when `--cutover` has arrived, a definition tag if the record has one, and "collected, not hand-kept". Daily figures show the last 7 days.
+* **Never added:** no total is printed, and nothing is summed across platforms or windows (a reach is a unique count over its window).
+* **Limits:** the floor hides a small cell inside one report. It does not stop a reader who has two overlapping reports from differencing them; the figures are for you, not for sharing.
+* **Social block:** the "Social numbers" block still refuses these records; it never shows them.
 
 The time-pattern section cannot report new versus returning visitors. The
 privacy model keeps no identifier across UTC days. The raw view row's

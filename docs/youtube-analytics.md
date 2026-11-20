@@ -30,9 +30,11 @@ form such as `987.7k` is caught too). A test fails if the build opens the
 history file at all. An import-graph test (static, defense in depth) fails if
 site, kit, editor, config, preview or editing code can reach the collector.
 
-`reach-around report` refuses these records (`_refused` in `funnel/social.py`,
-display policy, #424), so the owner cannot see them there yet. They can be read
-from the history file itself.
+`reach-around report` keeps them out of its "Social numbers" block
+(`_refused` in `funnel/social.py`, display policy, #424). With `--history` they
+are shown, with the privacy floor, in the report's own "Private platform
+analytics" block (text, JSON and CSV; see [report.md](report.md#private-platform-analytics---history-397)).
+They are in no other output.
 
 **Records are identified only by the provider tag** `api_provider:
 youtube_analytics`. One rule is applied everywhere: the report refuses it, and

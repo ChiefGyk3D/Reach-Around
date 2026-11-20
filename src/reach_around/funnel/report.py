@@ -14,16 +14,19 @@ import hashlib
 import json
 from collections import defaultdict
 from collections.abc import Iterable, Mapping
-from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
 from reach_around.funnel.export import CLASSES, Export
+from reach_around.funnel.floor import FLOOR as FLOOR
+from reach_around.funnel.floor import Floored as Floored
+from reach_around.funnel.floor import _suppress as _suppress
+from reach_around.funnel.floor import floor_cells as floor_cells
 from reach_around.funnel.gaps import coverage_for_window
+from reach_around.funnel.private_analytics import private_lines
 from reach_around.funnel.social import social_lines
 
-FLOOR = 5
 # Report section -> the ``dim`` value in view_dim_daily it is built from.
 DEVICE_SECTIONS = {"devices": "device", "browsers": "browser", "systems": "os"}
 REPORT_VERSION = 1
@@ -33,57 +36,6 @@ CLASS_NAMES = {
     "a": "automated",
     "s": "suspicious",
 }
-
-
-@dataclass(frozen=True)
-class Floored:
-    shown: list[tuple[str, int]] = field(default_factory=list)
-    other: int = 0  # merged views of hidden rows; 0 unless they reach the floor
-    hidden_rows: int = 0
-    dropped: bool = False  # a remainder could not be made safe
-
-    @property
-    def withheld(self) -> bool:
-        return not self.shown and self.other == 0
-
-
-def _suppress(
-    cells: Mapping[str, int], floor: int, pinned: frozenset[str] = frozenset()
-) -> Floored:
-    """Keep rows of at least ``floor`` views, largest first; merge the rest.
-
-    The rows plus the merged line add up to a total that is printed elsewhere,
-    so the merged line must not reveal a cell. Whenever any row is under the
-    floor, the smallest shown row joins the merged line, always. That makes the
-    remainder at least the floor (subtracting the shown rows from the total
-    cannot isolate a small cell) and it removes the upper bound that a group of
-    only small cells has (a remainder of members times floor-minus-one would
-    pin every member). The rule never depends on the values, so the shape of
-    the output tells a reader nothing about them. With nothing to join, the
-    remainder is dropped and ``dropped`` is set.
-
-    Labels in ``pinned`` are printed exactly somewhere else (the funnel prints
-    the human class), so they never join the merged line.
-    """
-    items = sorted(
-        ((label, views) for label, views in cells.items() if views > 0),
-        key=lambda item: (-item[1], item[0]),
-    )
-    shown = [item for item in items if item[1] >= floor]
-    hidden = [item for item in items if item[1] < floor]
-    if not hidden:
-        return Floored(shown, 0, 0)
-    movable = [item for item in shown if item[0] not in pinned]
-    if not movable:
-        return Floored(shown, 0, len(hidden), dropped=True)
-    pick = movable[0]
-    shown.remove(pick)
-    hidden.append(pick)
-    return Floored(shown, sum(views for _, views in hidden), len(hidden))
-
-
-def floor_cells(cells: Mapping[str, int], floor: int) -> Floored:
-    return _suppress(cells, floor)
 
 
 def _floor_classes(cells: Mapping[str, int], floor: int) -> Floored:
@@ -1604,6 +1556,8 @@ def render_text(report: dict[str, Any]) -> str:
     _table("Bot reasons (not human-likely)", bots["reasons"], lines)
     if "social" in report:
         lines.extend(social_lines(report["social"]))
+    if "private_analytics" in report:
+        lines.extend(private_lines(report["private_analytics"]))
     lines.append("")
     lines.append(
         "Human-likely is an estimate; crawlers that never run the script are "

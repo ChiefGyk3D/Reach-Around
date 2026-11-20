@@ -408,6 +408,7 @@ BANNED = frozenset(
         "reach_around.counts.insights",
         "reach_around.counts.instagram_insights",
         "reach_around.counts.youtube_analytics",
+        "reach_around.funnel.private_analytics",
     }
 )
 PUBLIC_SIDE = ("site", "kit", "editor", "preview", "config", "editing")

@@ -65,6 +65,8 @@ from reach_around.kit.pdftext import PdfTextError, extract_pages
 from reach_around.kit.stage import stage_page, valid_as_of_text
 from reach_around.site.kit import (
     GUARD_MIN_LENGTH,
+    UNDER_FLOOR,
+    _analytics_rows,
     _gated_strings,
     _metric_rows,
     _public_values,
@@ -397,6 +399,15 @@ def _expected_text(
     total = _total(unified_total(resolved), resolved)
     if total is not None:
         found.append(("the metric total", total["value"]))
+    # A count under the privacy floor prints as "Under 5" (#397); the text must
+    # hold that form, so a renderer or template that printed the number fails.
+    for card in _analytics_rows(kit.analytics, None):
+        where = f"the analytics row {card['platform_name']!r}"
+        if card["followers"] == UNDER_FLOOR:
+            found.append((where, "Followers" + card["followers"]))
+        for stat in card["stats"]:
+            if stat["value"] == UNDER_FLOOR:
+                found.append((where, stat["label"] + stat["value"]))
     # The block "Before Reach Around" prints where the display policy puts it.
     if imported is not None and (not public or kit.imported_history_public):
         found.extend(expected_text(imported, live_day))

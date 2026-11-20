@@ -68,6 +68,8 @@ from reach_around.config.kit import (
 from reach_around.config.models import SiteConfig
 from reach_around.config.numbers import Numbers, stale_limit
 from reach_around.config.zones import ZONES, utc_day_start_iso
+from reach_around.funnel.floor import FLOOR, shown_count
+from reach_around.funnel.floor import UNDER_FLOOR as UNDER_FLOOR
 
 KIT_PAGE = Path("kit") / "index.html"
 RETRY_PAGE = Path("kit") / "retry" / "index.html"
@@ -735,7 +737,7 @@ def _metric_rows(
         {
             "platform": "" if m.platform == "other" else platform_name(m.platform),
             "label": m.label,
-            "value": f"{m.value:,}",
+            "value": shown_count(m.value),
             "as_of": m.as_of.isoformat() if m.as_of is not None else "",
             "era": era_text(classify_era(m.as_of, live_day)),
             "stale": (
@@ -757,7 +759,7 @@ def _total(
         return None
     dates = [m.as_of for m in metrics if m.in_total and m.value is not None and m.as_of]
     return {
-        "value": f"{total.total:,}",
+        "value": shown_count(total.total),
         "counted": total.counted,
         "oldest": min(dates).isoformat() if dates else "",
         "mixed": len({classify_era(d, live_day) for d in dates} - {"unknown"}) > 1,
@@ -820,6 +822,8 @@ def _content(
 
 
 def _compact_number(value: int) -> str:
+    if 0 < value < FLOOR:
+        return UNDER_FLOOR
     if value >= 1_000_000:
         return f"{value / 1_000_000:.1f}M"
     if value >= 1_000:
@@ -835,7 +839,12 @@ def _analytics_rows(rows: list[Any], today: date | None) -> list[dict[str, Any]]
             "synced_with": row.synced_with,
             "as_of": row.as_of.isoformat(),
             "followers": _compact_number(row.followers),
-            "delta": f"{row.followers_30_day_percent:+.1f}%",
+            # A change worked out from a count under the floor would pin it.
+            "delta": (
+                ""
+                if 0 < row.followers < FLOOR
+                else f"{row.followers_30_day_percent:+.1f}%"
+            ),
             "stats": [
                 {"label": stat.label, "value": _compact_number(stat.value)}
                 for stat in row.stats

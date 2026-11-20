@@ -47,7 +47,7 @@
 <p class="kit-sync">Synced with {{ row.synced_with }} on <time datetime="{{ row.as_of }}">{{ row.as_of }}</time></p>
 </div>
 <div class="kit-stat-grid">
-<div class="kit-stat-tile"><span>Followers</span><strong>{{ row.followers }}</strong><small>{{ row.delta }} last 30 days</small></div>
+<div class="kit-stat-tile"><span>Followers</span><strong>{{ row.followers }}</strong><small>{% if row.delta %}{{ row.delta }} last 30 days{% else %}30-day change not shown{% endif %}</small></div>
 {% for stat in row.stats %}<div class="kit-stat-tile"><span>{{ stat.label }}</span><strong>{{ stat.value }}</strong></div>{% endfor %}
 </div>
 <p class="kit-note kit-updated">Last updated <time datetime="{{ row.updated }}">{{ row.updated }}</time></p>

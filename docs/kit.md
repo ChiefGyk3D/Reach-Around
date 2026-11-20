@@ -119,6 +119,19 @@ color is never the only way to read it. The page uses inline SVG and native
 progress bars and loads no chart script. Demographics remain gated and are
 included in the private PDF; they never enter the public page or public PDF.
 
+### The privacy floor in the kit
+
+A count of 1 to 4 is never printed in the kit: a headline number, the combined
+total, the followers and stat tiles of a platform analytics tab, and the views and
+clicks of the "Before Reach Around" block print "Under 5" on the page and in both
+PDFs. Zero prints as zero, and 5 prints as 5. When the followers of a tab are under
+the floor its 30-day change is not printed either, since it would pin the count.
+Demographics are percentages the owner types, not counts, so they are not floored.
+The PDF text check expects the "Under 5" form, so a page that printed the number
+fails the build. Collected YouTube Analytics and Instagram insights figures are
+never in the kit; they are in the owner report only
+([report.md](report.md#private-platform-analytics---history-397)).
+
 ### Public page
 
 The page uses a dark press-deck layout built from the shared brand components.

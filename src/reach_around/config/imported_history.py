@@ -42,6 +42,7 @@ from pydantic import (
 from reach_around.config.era import SPANS, classify_window, era_text
 from reach_around.config.loader import ConfigError, _read
 from reach_around.counts.beacons import IMPORT_NOTE, IMPORT_PLATFORM, IMPORT_SOURCE
+from reach_around.funnel.floor import shown_count
 
 MAX_IMPORTED_BYTES = 256 * 1024
 MAX_PERIODS = 120
@@ -233,8 +234,8 @@ def display_rows(
                 and period.end.year == period.start.year
                 else f"{period.start.isoformat()} to {period.end.isoformat()}",
                 "start": period.start.isoformat(),
-                "views": f"{period.views:,}",
-                "clicks": f"{period.clicks:,}",
+                "views": shown_count(period.views),
+                "clicks": shown_count(period.clicks),
                 "partial": (
                     f"{period.days} of {period.length} days"
                     if period.days < period.length

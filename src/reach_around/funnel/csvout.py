@@ -31,6 +31,8 @@ from typing import Any
 
 from reach_around.config.zones import format_instant
 from reach_around.funnel.owner import owner_view
+from reach_around.funnel.private_analytics import CSV_HEADER as PRIVATE_HEADER
+from reach_around.funnel.private_analytics import private_csv_rows
 from reach_around.funnel.social import CSV_HEADER, social_csv_rows
 
 _DANGEROUS = ("=", "+", "-", "@", "\t", "\r", "\n")
@@ -379,6 +381,10 @@ def csv_files(
         )
     if "social" in report:
         files["social.csv"] = render_csv(CSV_HEADER, social_csv_rows(report["social"]))
+    if "private_analytics" in report:
+        files["private_analytics.csv"] = render_csv(
+            PRIVATE_HEADER, private_csv_rows(report["private_analytics"])
+        )
     files.update(owner_csv_files(owner_view(report)))
     return files
 
