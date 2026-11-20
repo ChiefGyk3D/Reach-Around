@@ -912,3 +912,98 @@ def test_the_docs_state_the_gating_and_kit_caveats_plainly() -> None:
         "cannot prove the environment exists",
     ):
         assert needle in text, needle
+
+
+# ---- the deploy job keeps its hardening (reviewer reproduction: a sed on any of
+# these used to leave every test green) ----------------------------------------
+
+
+def test_the_deploy_job_blocks_egress_installs_without_scripts_and_keeps_no_credentials() -> (
+    None
+):
+    jobs = load(CALLEE)["jobs"]
+    for name in ("validate", "deploy"):
+        first = jobs[name]["steps"][0]
+        assert first["uses"].startswith("step-security/harden-runner@"), name
+        assert first["with"]["egress-policy"] == "block", name
+        hosts = str(first["with"]["allowed-endpoints"]).split()
+        assert hosts and all(re.fullmatch(r"[a-z0-9.-]+:443", h) for h in hosts), name
+    install = step("Install Worker dependencies")
+    assert install["run"].strip() == "npm ci --ignore-scripts"
+    checkouts = [
+        s
+        for job in jobs.values()
+        for s in job["steps"]
+        if str(s.get("uses", "")).startswith("actions/checkout@")
+    ]
+    assert checkouts, "no checkout found; the rule would be vacuous"
+    for checkout in checkouts:
+        assert checkout["with"]["persist-credentials"] is False
+
+
+# ---- the second locks of the write step, reached with no check in front --------
+
+PV = {
+    "PAGE_VIEWS": "true",
+    "PAGE_IDS": '["home"]',
+    "ZONE_NAME": "example.test",
+    "VIEW_LIMITER_NAMESPACE_ID": "3002",
+}
+MINT = {"BEACON_MODE": "observe", "MINT_LIMITER_NAMESPACE_ID": "3003"}
+
+
+@pytest.mark.parametrize(
+    ("extra", "needle"),
+    [
+        ({**PV, "VIEW_LIMITER_NAMESPACE_ID": "03002"}, "VIEW_LIMITER_NAMESPACE_ID"),
+        ({**PV, "VIEW_LIMITER_NAMESPACE_ID": "01002"}, "VIEW_LIMITER_NAMESPACE_ID"),
+        ({**PV, "VIEW_LIMITER_NAMESPACE_ID": "3001"}, "VIEW_LIMITER_NAMESPACE_ID"),
+        (MINT | {"MINT_LIMITER_NAMESPACE_ID": "03003"}, "MINT_LIMITER_NAMESPACE_ID"),
+        (MINT | {"MINT_LIMITER_NAMESPACE_ID": "01004"}, "MINT_LIMITER_NAMESPACE_ID"),
+        (MINT | {"MINT_LIMITER_NAMESPACE_ID": "3001"}, "MINT_LIMITER_NAMESPACE_ID"),
+        (
+            {**PV, **MINT, "MINT_LIMITER_NAMESPACE_ID": "3002"},
+            "MINT_LIMITER_NAMESPACE_ID",
+        ),
+        ({"ZONE_NAME": "ample.test"}, "ZONE_NAME"),
+        ({"ZONE_NAME": "evil-example.test"}, "ZONE_NAME"),
+    ],
+)
+def test_the_write_step_refuses_these_on_its_own(
+    tmp_path: Path, extra: dict[str, str], needle: str
+) -> None:
+    done = render(tmp_path, {**STAGING_ENV, **extra})
+    assert done.returncode != 0
+    assert needle in done.stdout
+
+
+def test_the_write_step_second_locks_are_not_vacuous(tmp_path: Path) -> None:
+    done = render(tmp_path, {**STAGING_ENV, **PV, **MINT})
+    assert done.returncode == 0, done.stdout + done.stderr
+
+
+@pytest.mark.parametrize(
+    "sites",
+    [
+        '{"links":{"hosts":{"k":"staging.example.test"}}}',
+        '{"links":{"hosts":"staging.example.test"}}',
+        '{"links":{"hosts":[["staging.example.test"]]}}',
+    ],
+)
+def test_sites_hosts_must_be_an_array_of_the_site_host(sites: str) -> None:
+    done = _check({"SITES": sites})
+    assert done.returncode != 0
+    assert "SITE_HOST" in done.stdout
+    ok = '{"links":{"hosts":["staging.example.test"]}}'
+    assert _check({"SITES": ok}).returncode == 0
+
+
+def test_the_docs_say_how_concurrency_really_behaves() -> None:
+    text = " ".join((ROOT / "docs" / "deploy.md").read_text(encoding="utf-8").split())
+    assert "at most one pending run per group" in text
+    assert "cancels an older pending one" in text
+    assert "serialize their own calls" in text
+    forks = " ".join(
+        (ROOT / "docs" / "instance-repos.md").read_text(encoding="utf-8").split()
+    )
+    assert "calls its own copy of `deploy-worker.yml`" in forks

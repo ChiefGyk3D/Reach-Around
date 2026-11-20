@@ -754,8 +754,12 @@ way:
   reviewer (not the author). An environment that does not exist yet is created
   unprotected on first use, so create and protect it before the first call.
 - Concurrency: the called job takes the group `deploy-worker-<worker_name>`
-  with `cancel-in-progress: false`, so two calls for one Worker queue instead of
-  overlapping. A caller may add its own group (use a different name).
+  with `cancel-in-progress: false`, so two calls for one Worker do not run at
+  the same time. It is not a queue: GitHub keeps at most one pending run per
+  group and cancels an older pending one when a newer one arrives. Callers that
+  need every call to run, in order, must serialize their own calls (for example
+  one call per manual run, or a `needs` chain). A caller may add its own group
+  (use a different name).
 
 **Doppler identity pins** (one identity per tier, Viewer on one config only; a
 `dev` identity must not read `prd`). On the identity's OIDC claims, pin

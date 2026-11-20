@@ -476,7 +476,7 @@ jobs:
               || { echo "::error::SITES is not a JSON object"; exit 1; }
             # The Worker serves the hosts named here: the site host must be one.
             printf '%s' "$SITES" \
-              | jq -e --arg h "$SITE_HOST" '[.[] | objects | (.hosts // []) | .[]] | index($h) != null' > /dev/null \
+              | jq -e --arg h "$SITE_HOST" '[.[] | objects | (.hosts // []) | arrays | .[]] | index($h) != null' > /dev/null \
               || { echo "::error::SITE_HOST is not one of the hosts in SITES"; exit 1; }
           fi
           # The route pattern lands in a config file as well. It routes traffic of
