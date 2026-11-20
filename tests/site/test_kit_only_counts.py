@@ -217,3 +217,12 @@ def test_the_kit_only_hub_and_kit_pages_match_the_golden_files(
     for name, text in built.items():
         assert (GOLDEN / name).is_file(), "no golden file; run pytest --update-golden"
         assert text == (GOLDEN / name).read_text(encoding="utf-8"), name
+
+
+def test_a_kit_only_count_under_five_prints_under_5_in_the_kit_and_nothing_on_the_hub(
+    tmp_path: Path,
+) -> None:
+    hub, kit = build(tmp_path, config(hidden=True, with_item=True), numbers(count=4))
+    assert "Under 5" in kit
+    assert ">4<" not in kit and "Followers 4" not in re.sub(r"<[^>]+>", " ", kit)
+    assert "Under 5" not in hub and "platform-count" not in hub

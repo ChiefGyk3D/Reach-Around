@@ -335,6 +335,10 @@ VOCAB: dict[str, tuple[str, str]] = {
         "Add a kit metric with source: counts for the same platform, "
         "or remove show_on_hub: false.",
     ),
+    "kit_only_item_id": (
+        "a count source with show_on_hub: false is keyed by an item id",
+        "Key it by the platform name (such as twitch), the way the kit reads it.",
+    ),
     "robots": (
         "the robots setting is not allowed",
         "See robots in docs/config.md in the Reach Around repository.",

@@ -303,3 +303,38 @@ def test_a_hidden_source_may_still_match_a_platforms_item(tmp_path: Path) -> Non
         '          - {platform: twitch, handle: "@x", url: "https://example.com/t"}\n',
     )
     assert kit_only(tmp_path, head).numbers is not None
+
+
+# --- kit-only sources are keyed by platform, never by item id (#689) -----------
+
+ITEM_ID_HEAD = KIT_ONLY_HEAD.replace(
+    "blocks:\n",
+    "blocks:\n"
+    "      - id: socials\n        items:\n"
+    '          - {platform: twitch, handle: "@x", url: "https://example.com/t"}\n'
+    '          - {platform: bluesky, handle: "@x", url: "https://example.com/b"}\n',
+)
+
+
+def test_a_kit_only_source_keyed_by_an_item_id_is_refused_with_fixed_words(
+    tmp_path: Path,
+) -> None:
+    tail = KIT_ONLY_SOURCE.replace("platform: twitch", "platform: socials-twitch")
+    with pytest.raises(ConfigError) as caught:
+        kit_only(tmp_path, ITEM_ID_HEAD, tail)
+    message = str(caught.value)
+    assert "numbers.sources[0].platform" in message
+    assert "show_on_hub: false must be keyed by a platform, not an item id" in message
+    assert "socials-twitch" not in message and "example" not in message
+
+
+def test_a_visible_item_id_source_beside_a_kit_only_platform_source_loads(
+    tmp_path: Path,
+) -> None:
+    tail = (
+        "numbers:\n  sources:\n"
+        "    - {platform: twitch, kind: twitch, login: example, show_on_hub: false}\n"
+        "    - {platform: socials-bluesky, kind: bluesky, actor: a.example.com}\n"
+    )
+    config = kit_only(tmp_path, ITEM_ID_HEAD, tail)
+    assert config.numbers is not None and len(config.numbers.sources) == 2

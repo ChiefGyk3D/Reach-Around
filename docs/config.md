@@ -1274,7 +1274,13 @@ it. A kit-only source with no kit metric with `source: counts` for its
 `platform` is refused when the config loads (`numbers.sources[N].platform:
 show_on_hub: false needs a kit metric with source: counts ...`; `reach-around
 check` says "a count source with show_on_hub: false has no kit number to feed"),
-because the number would be shown nowhere. The error never repeats a value.
+because the number would be shown nowhere. A kit-only source must be keyed by
+the platform name, not by one item's id: the kit reads a count by platform, so
+an id-keyed kit-only source (for example `socials-github`) is refused with
+"show_on_hub: false must be keyed by a platform, not an item id" (`check`: "is
+keyed by an item id"). An id-keyed source that shows on the hub is unchanged. A
+kit-only count under 5 prints as "Under 5" in the kit, like every kit count.
+The errors never repeat a value.
 
 | `kind` | Keys | Asks | Needs a key |
 | --- | --- | --- | --- |
