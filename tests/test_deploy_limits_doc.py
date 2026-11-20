@@ -130,7 +130,7 @@ def test_doc_defaults_match_the_worker_source() -> None:
 
 
 def test_click_ceiling_section_states_the_enforced_numbers() -> None:
-    """The click ceiling paragraph quotes the constants the Worker enforces, and no old figure."""
+    """The click ceiling paragraph quotes the enforced constants, no old figure."""
     cc = (ROOT / "worker" / "src" / "clickceiling.ts").read_text(encoding="utf-8")
 
     def const(name: str) -> int:
@@ -148,7 +148,8 @@ def test_click_ceiling_section_states_the_enforced_numbers() -> None:
     assert f"ceiling on its write charge of {ceiling}" in para
     total = ceiling + const("CLICK_DROP_COUNT_CAP") + const("CLICK_SETUP_FLAG_WRITES")
     assert f"ceiling plus drop cap plus the setup flag, {total}" in para
-    # the charge is documented as a conservative bound, with the changed-rows range, not "the rows it writes"
+    # the charge is documented as a conservative bound, with the
+    # changed-rows range, not "the rows it writes"
     assert "deliberately conservative upper bound" in para
     assert "6 to 9 rows" in para and "9 to 13" in para
     assert "really writes" not in text
@@ -156,7 +157,8 @@ def test_click_ceiling_section_states_the_enforced_numbers() -> None:
     assert reserve == 20 and "that 20 percent is held back" in para
     assert f"at most {lane} percent of the share" in para
     assert slices == 12 and "one twelfth of the share" in para
-    # the old ceiling's arithmetic is gone from the paragraph (the old figure is named only as history)
+    # the old ceiling's arithmetic is gone from the paragraph
+    # (the old figure is named only as history)
     for stale in ("8000", "750 clicks", "7500 over 10 rows", "(6 rows)"):
         assert stale not in para
     # the docs say the same quota the Worker defaults to
@@ -164,7 +166,8 @@ def test_click_ceiling_section_states_the_enforced_numbers() -> None:
     assert quota == 1_600_000
     assert 50_000_000 // 31 >= quota
     assert "100,000-row free plan figure" not in text
-    # the click ceiling is a documented setting with the Worker's default and range, and a Free-plan value
+    # the click ceiling is a documented setting with the Worker's default
+    # and range, and a Free-plan value
     row = re.search(
         r"^\| `CLICK_DAILY_WRITE_CEILING` \| (\d+) to (\d+) \| (\d+) \|", text, re.M
     )
@@ -175,25 +178,30 @@ def test_click_ceiling_section_states_the_enforced_numbers() -> None:
         ceiling,
     )
     assert "set `D1_DAILY_WRITE_QUOTA` to `100000` and this to `7500`" in text
-    # the free-plan pair fits: kit 42440 + page views + funnel + margin + ceiling + drop cap, under 80 percent
+    # the free-plan pair fits: kit 42440 + page views + funnel + margin
+    # + ceiling + drop cap, under 80 percent
     free = 42_440 + _PAGE_VIEWS + _FUNNEL + _MARGIN + 7_500
     assert (
         free + const("CLICK_DROP_COUNT_CAP") + const("CLICK_SETUP_FLAG_WRITES")
         <= 100_000 * 0.8
     )
-    # an invalid click ceiling is documented as the exception to "every reservation refuses"
+    # an invalid click ceiling is documented as the exception to
+    # "every reservation refuses"
     assert "or any value is invalid, every reservation refuses" not in text
     assert "every limit then refuses" not in text
     assert "is the one exception: it refuses clicks and fails the deploy check" in text
     toml = (ROOT / "worker" / "wrangler.toml").read_text(encoding="utf-8")
     assert "every limit then refuses" not in toml
     assert "invalid CLICK_DAILY_WRITE_CEILING refuses clicks" in toml
-    # plain statements: the lane switch is not written by the workflow, an out-of-band ceiling is not re-checked
+    # plain statements: the lane switch is not written by the workflow,
+    # and an out-of-band ceiling is not re-checked
     assert "the deploy workflow does not write this variable" in text
     assert "is not re-checked at runtime" in text
     assert "costs one D1 call" in text
     assert "cf-<site>_<link>" in text and "cf-<site>-<link>" not in text
-    workflow = (ROOT / ".github" / "workflows" / "deploy-test.yml").read_text(encoding="utf-8")
+    workflow = (ROOT / ".github" / "workflows" / "deploy-test.yml").read_text(
+        encoding="utf-8"
+    )
     assert "BEACON_LANE_CAP_ENFORCED" not in workflow
     # the secret requirement, the health condition and the lane switch are documented
     assert "The hashing secret is required on every Worker that counts clicks" in text
