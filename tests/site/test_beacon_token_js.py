@@ -3,9 +3,13 @@
 
 ``click.js`` and ``view.js`` ask the Worker for a short-lived token once per
 page, keep it in page memory only, and add it to the click ping or the view
-beacon. They must send nothing for a visitor with Global Privacy Control or
-Do Not Track, never delay a link, and never break when the token request
-fails. The build only turns this on with ``analytics.beacon_token``.
+beacon. They must not mint or attach a token for a visitor with Global Privacy
+Control or Do Not Track, never delay a link, and never break when the token
+request fails. ``view.js`` also sends no view beacon under those signals (it
+already did not). Whether ``click.js`` sends the click itself under them is
+governed by the click opt-out change (#609), and the combined behavior is
+covered there; the click tests here only judge the token. The build only turns
+this on with ``analytics.beacon_token``.
 
 The scripts run under Node against a small stub of the page.
 """
@@ -318,18 +322,25 @@ def test_click_survives_a_failed_token_request(tmp_path: Path, mode: str) -> Non
         ("do not track true", {"dnt": "true"}),
     ],
 )
-def test_click_asks_for_nothing_under_an_opt_out(
+def test_click_does_not_mint_or_attach_a_token_under_an_opt_out(
     tmp_path: Path, label: str, over: dict[str, Any]
 ) -> None:
-    out = _run("click.js", tmp_path, **over)
-    assert out["fetches"] == [], label
-    assert "t=" not in "".join(out["sent"]), label
+    # Only the token is judged here: no mint request and no `t=` anywhere a click
+    # could carry one (the beacon URL and the native ping attribute). Whether the
+    # click itself is sent under these signals is the click opt-out change's (#609),
+    # so this test neither requires nor forbids a tokenless click.
+    for native in (False, True):
+        out = _run("click.js", tmp_path, native=native, **over)
+        assert out["fetches"] == [], label
+        assert "t=" not in "".join(out["sent"]), label
+        assert "t=" not in (out["ping"] or ""), label
 
 
-def test_click_drops_a_token_if_the_opt_out_arrives_later(tmp_path: Path) -> None:
+def test_click_attaches_no_token_if_the_opt_out_arrives_later(tmp_path: Path) -> None:
     out = _run("click.js", tmp_path, steps=["flush", "timers", "gpc", "click"])
-    assert len(out["fetches"]) == 1
+    assert len(out["fetches"]) == 1  # the signal came after the request was made
     assert "t=" not in "".join(out["sent"])
+    assert "t=" not in (out["ping"] or "")
 
 
 def test_click_does_not_send_an_expired_token(tmp_path: Path) -> None:

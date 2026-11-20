@@ -263,7 +263,7 @@ The route stores no address, user agent or referrer URL. After a deploy, one bea
 
 ## Beacon token (`POST /e/t`), observe mode only
 
-A short-lived signed token that a page asks the Worker for once per visit and sends back with its click ping (`?t=`) and its view beacon (`?t=`). The Worker checks it from the URL and charges the event to the **verified lane** (a currently valid token for this site and this network) or the **unverified lane** (anything else). The token is stateless: nothing is stored, no cookie is set, and the page keeps it in memory only. A visitor with Global Privacy Control or Do Not Track never asks for one, and a page whose token request fails still counts and navigates exactly as before.
+A short-lived signed token that a page asks the Worker for once per visit and sends back with its click ping (`?t=`) and its view beacon (`?t=`). The Worker checks it from the URL and charges the event to the **verified lane** (a currently valid token for this site and this network) or the **unverified lane** (anything else). The token is stateless: nothing is stored, no cookie is set, and the page keeps it in memory only. A visitor with Global Privacy Control or Do Not Track never asks for one or attaches one (that is all this setting covers; whether a click itself is sent under those signals is the click opt-out change's, #609), and a page whose token request fails still counts and navigates exactly as before.
 
 **Settings** (all optional; the default is off and changes nothing):
 
