@@ -30,12 +30,12 @@ script loads. It never uses a production key.
 ## Setup
 
 ```sh
-python3 -m venv ~/.local/share/reach-around-dev/venv-storage-check
-~/.local/share/reach-around-dev/venv-storage-check/bin/pip install -r requirements.txt playwright
-~/.local/share/reach-around-dev/venv-storage-check/bin/playwright install chromium firefox
+python3 -m venv .venv-storage-check
+.venv-storage-check/bin/pip install -r requirements.txt playwright
+.venv-storage-check/bin/playwright install chromium firefox
 ```
 
-Any venv location works; keep it out of `/tmp`.
+Any venv location works (use `.venv-storage-check/bin/python` in the commands below).
 
 ## Procedure
 
