@@ -1,7 +1,7 @@
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 # Twitch channel analytics (private, owner only): what the notes verify
 
-Refs #392 and #551, epic #246. Terms read: #625. **Status: no collector is built
+Refs #392 and #551, epic #246. Display terms: #625. **Status: no collector is built
 by this change.** This page is the step 1 record (what the repository's own notes
 verify) and the list of open items. The decision that blocks the collector is
 below. Nothing here has been checked against a live Twitch API, and nothing in
@@ -29,8 +29,9 @@ A collector in the pattern of [YouTube Analytics](youtube-analytics.md) and
 file, which is unbounded retention in a private git repository. That is storage
 beyond 24 hours. The YouTube and Meta collectors have an owner decision that
 allows it (30 days, or the documented-purpose rule); Twitch has the opposite one.
-So the collector waits for the owner (question 1 in the pull request and in
-[research/twitch-sampling-design.md](research/twitch-sampling-design.md)).
+The owner kept the 2026-11-19 decision (comment on #392 and #551), so the
+collector is not built and the live measures stay hand-kept; see
+[research/twitch-sampling-design.md](research/twitch-sampling-design.md).
 Hand-kept entry from the creator's own dashboard is not affected by the rule.
 
 ## Step 1: what the notes say the API provides, and what it does not
@@ -70,7 +71,7 @@ and says only that they are not found as endpoints; this page follows the notes.
 ## UNVERIFIED list (tied to the owner's live check)
 
 * The Twitch Developer Agreement was read by a person on 2026-11-19 (a row in the
-  terms note); the human read of both Twitch and Kick terms for display is #625.
+  terms note); what #625 still needs is under Owner-needed items.
 * Get Videos query parameters (`user_id`, `type`, `first`, paging), ordering,
   the `created_at` and `duration` formats, and how long VODs are kept.
 * The Get Subscriptions response shape.
@@ -81,9 +82,17 @@ and says only that they are not found as endpoints; this page follows the notes.
 
 ## Owner-needed items
 
-1. Decide whether stored Twitch API data is allowed at all (the 2026-11-19
-   decision says no); see the sampling design note.
-2. Read the Twitch and Kick developer terms for public display (#625).
+1. Answered: stored Twitch API data stays not allowed (decision kept); the open
+   choice is whether to investigate a dashboard-export import.
+2. Decide whether any future API-derived Twitch or Kick data may be shown on the
+   public kit (#625). The terms readings are recorded in
+   [platform-terms-retention.md](research/platform-terms-retention.md) (Twitch read
+   from the vendor page on 2026-11-19; Kick from text the owner pasted that day,
+   not checked against the live page), with the storage and display rules. What
+   #625 still needs is its own acceptance: one note per platform under research/,
+   same shape and dated within a day of each other, each giving the terms URL, the
+   date, the reader and a verdict on caching, storage and public display, and the
+   display policy table citing both by path.
 3. Authorize the app once if a user token with new scopes is wanted
    (`channel:read:subscriptions`), and keep the secrets in the secret manager.
 4. Run one live read of Get Videos and compare with a fixture before any

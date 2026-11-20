@@ -2,7 +2,10 @@
 # Design note: sampling live viewer numbers for Twitch and Kick
 
 Refs #551 and #392, epic #246. Docs only: no sampler is written and nothing here
-runs. Written 2026-11-20 from the repository's notes
+runs. **Decision (owner, comment on #392 and #551): the 2026-11-19 decision is
+kept. No Twitch or Kick API data is stored beyond the 24-hour cache and the live
+measures stay hand-kept, so option A is NOT being built.** Options A and B stay
+below as the record of what was compared. Written 2026-11-20 from the repository's notes
 ([twitch.md](twitch.md), [kick.md](kick.md),
 [platform-terms-retention.md](platform-terms-retention.md), the media kit v2
 spec section 6.4). Anything the notes do not state is marked UNVERIFIED.
@@ -79,12 +82,21 @@ is a derived aggregate, still subject to the legal reading above); a closed
 provider tag in the history file like the YouTube and Instagram collectors; the
 same cadence and fields for both platforms; the Kick `stream.key` dropped first.
 
+**`hours_watched` is not supported by option A.** The notes give no definition of
+the measure for either platform (Twitch's help page did not render, and the spec
+labels Twitch's definition INFERRED), and no API field carries it. A sampler could
+only estimate it by adding, for each interval between two polls, the viewer count
+times the interval length, which needs rules the notes do not settle: how a gap
+(job down, poll failed) is counted, where a stream's start and stop fall between
+polls, which UTC boundaries a period uses, and whether the platform counts
+unique or total viewer time. Those would be invented behavior, so this note does
+not specify them. Any estimate would be labeled as one, never as the platform's
+own figure (UNVERIFIED). `hours_watched` stays hand-kept (option C) or imported
+(option B).
+
 ## Questions for the owner
 
-1. Keep the 2026-11-19 decision (no stored Twitch or Kick API data), so the
-   live measures stay hand-kept and the private Twitch collector in #392 is not
-   built? Recommended: yes.
-2. If yes, should a dashboard-export import (option B) be investigated once the
+1. Answered: the 2026-11-19 decision is kept (live measures hand-kept, option A
+   not built).
+2. Open: should a dashboard-export import (option B) be investigated once the
    owner has checked whether either dashboard offers an export?
-3. If no, which retention applies to stored Twitch and Kick data (the 24-hour
-   rule cannot be met by a history file), and does it apply to both platforms?
