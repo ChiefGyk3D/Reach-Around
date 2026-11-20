@@ -716,7 +716,7 @@ def test_a_renamed_slug_is_still_selected_for_deletion_and_notice(
 def test_the_report_refuses_analytics_whatever_the_platform_slug(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    records = refresh_renamed(tmp_path, monkeypatch, with_channel(ok_router(True)))
+    refresh_renamed(tmp_path, monkeypatch, with_channel(ok_router(True)))
     block = build_social(
         read_history(tmp_path / "history" / "social.jsonl"),
         cutover=None,
