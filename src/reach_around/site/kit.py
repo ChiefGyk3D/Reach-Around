@@ -49,6 +49,13 @@ from reach_around.config.blocks import platform_name
 from reach_around.config.cutover import cutover_label, live_since, utc_today
 from reach_around.config.engagement import ACROSS_PLATFORMS_NOTE, FORMULAS, rows_for
 from reach_around.config.era import classify_era, era_text
+from reach_around.config.imported_history import (
+    IMPORTED_HEADING,
+    IMPORTED_NOTE,
+    ImportedHistory,
+    display_rows,
+    imported_strings,
+)
 from reach_around.config.kit import (
     KitConfig,
     ResolvedMetric,
@@ -218,14 +225,20 @@ def text_fields(item: Any) -> list[tuple[str, str]]:
     return found
 
 
-def _gated_strings(kit: KitConfig) -> list[tuple[str, str]]:
+def _gated_strings(
+    kit: KitConfig, imported: ImportedHistory | None = None
+) -> list[tuple[str, str]]:
     """Leak canaries for gated values.
 
     Ordinary prose must be long enough to search safely. Every engagement value
     is covered, including short numbers, through a labeled rendering that avoids
-    collisions with unrelated public numbers and dates.
+    collisions with unrelated public numbers and dates. The imported-history
+    numbers are covered the same way (``imported_strings``) unless the owner
+    made the block public.
     """
     found: list[tuple[str, str]] = []
+    if not kit.imported_history_public:
+        found.extend(imported_strings(imported))
     if kit.disclosure is not None and len(kit.disclosure) >= GUARD_MIN_LENGTH:
         found.append(("kit.disclosure", kit.disclosure))
     for name in (
@@ -430,7 +443,11 @@ def _is_whole_element(text: str, page: str) -> bool:
     return False
 
 
-def check_no_gated_text(files: Mapping[Path, bytes], kit: KitConfig | None) -> None:
+def check_no_gated_text(
+    files: Mapping[Path, bytes],
+    kit: KitConfig | None,
+    imported: ImportedHistory | None = None,
+) -> None:
     """Raise ``KitLeakError`` if a gated file name or string is in ``files``.
 
     Defense in depth: the separate output roots are the boundary. This search
@@ -446,7 +463,7 @@ def check_no_gated_text(files: Mapping[Path, bytes], kit: KitConfig | None) -> N
     contact = canonical(kit.contact) if kit.contact is not None else ""
     raw: list[tuple[str, bytes]] = []
     folded: list[tuple[str, str]] = []
-    for where, text in _gated_strings(kit):
+    for where, text in _gated_strings(kit, imported):
         if canonical(text) in allowed:
             continue
         if where == "kit.inquiry.email" and canonical(text) in contact:
@@ -747,6 +764,16 @@ def _total(
     }
 
 
+def _imported_block(
+    history: ImportedHistory | None, live_day: date | None
+) -> dict[str, Any] | None:
+    """The block "Before Reach Around": its own rows, never part of a total."""
+    rows = display_rows(history, live_day)
+    if not rows:
+        return None
+    return {"heading": IMPORTED_HEADING, "note": IMPORTED_NOTE, "rows": rows}
+
+
 def _content(
     projection: dict[str, Any],
     live_day: date | None = None,
@@ -788,6 +815,7 @@ def _content(
         "engagement_note": ACROSS_PLATFORMS_NOTE,
         "engagement_formulas": FORMULAS,
         "total": _total(projection["unified_total"], metrics, live_day),
+        "imported": _imported_block(projection.get("imported_history"), live_day),
     }
 
 
@@ -827,6 +855,12 @@ def _categories(kit: KitConfig) -> str:
             ("packages", kit.services),
             ("rates", kit.rates),
             ("audience figures", kit.engagement),
+            (
+                "link-page history from the previous provider",
+                [kit.imported_history]
+                if kit.imported_history and not kit.imported_history_public
+                else [],
+            ),
             ("testimonials", kit.testimonials),
             ("audience details", kit.demographics),
             ("a disclosure statement", [kit.disclosure] if kit.disclosure else []),
@@ -868,6 +902,7 @@ def render_kit(
     numbers: Numbers | None,
     today: date,
     base: BaseContext,
+    imported: ImportedHistory | None = None,
 ) -> KitRender:
     """Render the kit. ``base(root, tab_name, gated)`` is the context every page shares
     (navigation, titles, footer flags); the kit adds its own content."""
@@ -878,7 +913,9 @@ def render_kit(
     warnings = plan_warnings(config, numbers, today)
     # A UTC day, not ``today`` (the scheduling day in the config's time zone).
     live_day = live_since(config, utc_today())
-    public = _content(public_projection(kit, numbers), live_day, config, today)
+    public = _content(
+        public_projection(kit, numbers, imported), live_day, config, today
+    )
     form: dict[str, Any] | None = None
     if has_gate_form(kit):
         form = {
@@ -905,7 +942,7 @@ def render_kit(
         )
     gated: str | None = None
     if has_gate_form(kit) or kit.engagement:
-        data = gated_projection(kit, numbers)
+        data = gated_projection(kit, numbers, imported)
         if kit.engagement and not data["engagement"]:
             data["engagement"] = kit.engagement
         content = _content(data, live_day, config, today)

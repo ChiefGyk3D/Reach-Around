@@ -785,9 +785,9 @@ def test_the_build_runs_the_leak_search(
     calls: list[int] = []
     real = kit_module.check_no_gated_text
 
-    def spy(files: Any, kit: Any) -> None:
+    def spy(files: Any, kit: Any, imported: Any = None) -> None:
         calls.append(len(files))
-        real(files, kit)
+        real(files, kit, imported)
 
     monkeypatch.setattr(build_module, "check_no_gated_text", spy)
     build_site(

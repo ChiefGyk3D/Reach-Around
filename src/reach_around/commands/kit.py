@@ -9,7 +9,12 @@ import sys
 from datetime import UTC, date, datetime
 from pathlib import Path
 
-from reach_around.config import ConfigError, load_site_config
+from reach_around.config import ConfigError, SiteConfig, load_site_config
+from reach_around.config.imported_history import (
+    ImportedHistory,
+    imported_source,
+    load_imported,
+)
 from reach_around.config.numbers import Numbers, load_numbers
 from reach_around.kit.pdf import (
     Isolation,
@@ -62,6 +67,12 @@ def _numbers(args: argparse.Namespace) -> Numbers | None:
     return None if path is None else load_numbers(path)
 
 
+def _imported(args: argparse.Namespace, config: SiteConfig) -> ImportedHistory | None:
+    """The imported-history file the build used (``kit.imported_history``)."""
+    path = imported_source(config, args.config)
+    return None if path is None else load_imported(path)
+
+
 def _run_public(args: argparse.Namespace) -> int:
     try:
         if args.gated_out is not None:
@@ -85,6 +96,7 @@ def _run_public(args: argparse.Namespace) -> int:
             overwrite=args.overwrite,
             protect=[args.config.resolve().parent],
             numbers=_numbers(args),
+            imported=_imported(args, config),
         )
     except (ConfigError, ValueError, OSError) as exc:
         print("error: " + " ".join(str(exc).split()), file=sys.stderr)
@@ -113,6 +125,7 @@ def _run(args: argparse.Namespace) -> int:
             overwrite=args.overwrite,
             protect=[args.config.resolve().parent],
             numbers=_numbers(args),
+            imported=_imported(args, config),
         )
     except (ConfigError, ValueError, OSError) as exc:
         print("error: " + " ".join(str(exc).split()), file=sys.stderr)

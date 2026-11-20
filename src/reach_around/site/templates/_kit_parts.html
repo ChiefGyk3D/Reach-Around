@@ -82,6 +82,21 @@
 {% endif %}
 {% endmacro %}
 
+{% macro imported_history(kit, heading_id, framed=false) %}
+{% if kit.imported %}
+<section class="kit-imported" aria-labelledby="{{ heading_id }}">
+<h3 id="{{ heading_id }}"{% if framed and frame_plan %} class="{{ frames.cls("head")|trim }}"{% endif %}>{{ kit.imported.heading }}</h3>
+<p class="kit-note">{{ kit.imported.note }}</p>
+<ul class="kit-list">
+{% for row in kit.imported.rows %}
+<li><time datetime="{{ row.start }}">{{ row.label }}</time> (UTC): {{ row.views }} views, {{ row.clicks }} clicks{% if row.partial %} ({{ row.partial }}){% endif %}{% if row.era %} <span class="kit-era">{{ row.era }}</span>{% endif %}</li>
+{% endfor %}
+</ul>
+</section>
+
+{% endif %}
+{% endmacro %}
+
 {% macro gate_form(form, framed=false) %}
 <form class="kit-gate" method="post" action="{{ form.action }}">
 <p class="kit-field">

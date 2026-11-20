@@ -31,6 +31,7 @@ from reach_around.config.blocks import (
     Platforms,
 )
 from reach_around.config.footer import CREDIT_URL
+from reach_around.config.imported_history import ImportedHistory
 from reach_around.config.models import Block, Link, Section, SiteConfig, Tab
 from reach_around.config.numbers import (
     Numbers,
@@ -804,6 +805,7 @@ def build_site(
     numbers: Numbers | None = None,
     gated_out: Path | None = None,
     number_day: date | None = None,
+    imported: ImportedHistory | None = None,
 ) -> BuildManifest:
     """Write the site for ``today`` into ``out_dir`` and return the manifest.
 
@@ -828,6 +830,10 @@ def build_site(
     same relative path in ``out_dir``. It is required when the config names any.
     ``numbers`` is the loaded numbers file; its counts fill platform blocks and
     only the resulting text is published, never the file.
+    ``imported`` is the loaded imported-history file (``kit.imported_history``):
+    its numbers form the separate block "Before Reach Around" and are never
+    added to a total; they are checked against the public files like any gated
+    value unless the owner made the block public.
 
     ``gated_out`` is the directory for the gated kit page (see
     ``reach_around.site.kit``). It is a separate root from ``out_dir``, which is
@@ -945,6 +951,7 @@ def build_site(
         numbers,
         number_day or today,
         _kit_base(config, shown, custom_css is not None),
+        imported,
     )
     files.update(
         {page: html.encode("utf-8") for page, html in kit_render.public.items()}
@@ -1037,7 +1044,7 @@ def build_site(
     ).encode("utf-8")
     # The wall: nothing gated may be in the public files. Checked on the finished
     # in-memory tree, before anything on disk is touched.
-    check_no_gated_text(files, kit)
+    check_no_gated_text(files, kit, imported)
     if kit_render.gated is not None:
         check_gated_requests(kit_render.gated, files)
     out = _check_out_dir(out_dir, protect)

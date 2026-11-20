@@ -978,6 +978,8 @@ end. Text must be quoted if YAML would read it as a number.
 | `testimonials` | list of testimonial | none | at most 10; partner quotes, gated |
 | `demographics` | list of demographic | none | at most 30 |
 | `inquiry` | inquiry block | none | the business inquiry form on the gated page and the owner details beside it; see the note below. Needs `features.kit_gate` |
+| `imported_history` | relative path | none | a file beside the config with link-page views and clicks per month from the previous provider, made by `reach-around counts history-export-imported`; shown as the block "Before Reach Around", gated unless `imported_history_public` is `true`, never added to a total, never the social history file; see the [media kit guide](kit.md#link-page-history-from-before-reach-around) |
+| `imported_history_public` | true or false | `false` | `true` shows the imported-history block on the public page and public PDF as well; needs `imported_history` |
 | `disclosure` | text | none | a short statement, at most 500 characters; gated; see the note below |
 | `turnstile_site_key` | text | none | public key of the Turnstile widget on the gate form; 1 to 64 letters, digits, `-` or `_`. Without it the form has an empty widget slot and the build warns |
 | `unlock_link` | true or false | `false` | v1 has no emailed unlock link, so `true` is refused with a clear error until it exists |

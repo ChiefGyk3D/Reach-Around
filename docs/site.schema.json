@@ -1429,6 +1429,25 @@
           "title": "Engagement",
           "type": "array"
         },
+        "imported_history": {
+          "anyOf": [
+            {
+              "maxLength": 300,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Imported History"
+        },
+        "imported_history_public": {
+          "default": false,
+          "title": "Imported History Public",
+          "type": "boolean"
+        },
         "inquiry": {
           "anyOf": [
             {

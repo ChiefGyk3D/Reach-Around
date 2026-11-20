@@ -55,6 +55,24 @@ prefix in a text field, symbolic-link input, and nonempty destination. It
 checks the complete export before writing. It does not call the Worker or any
 network service.
 
+## Show it in the media kit
+
+The history file stays private and the site build never reads it. To show the
+numbers in the kit's own block, export the small aggregate file the kit reads:
+
+```text
+reach-around counts history-export-imported \
+  --file beacons-pre-cutover-history.jsonl \
+  --out imported-history.json
+```
+
+It writes views and clicks per calendar month, the days each month holds and
+the provenance words, and refuses a history file with anything but the
+importer's records. Then set `kit.imported_history: imported-history.json` (see
+[the media kit guide](kit.md#link-page-history-from-before-reach-around)). The
+block is gated unless `kit.imported_history_public` is `true`, and its numbers
+are never added to a collected number or the headline total.
+
 ## Verify before cancelling Beacons
 
 The success line records three counts: all export rows, `Daily` rows, and

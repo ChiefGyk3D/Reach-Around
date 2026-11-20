@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from reach_around.config import SiteConfig
+from reach_around.config.imported_history import ImportedHistory
 from reach_around.config.numbers import Numbers
 from reach_around.site.build import build_site
 
@@ -111,7 +112,10 @@ def make_config(kit: dict[str, Any] | None = None) -> SiteConfig:
 
 
 def build_instance(
-    root: Path, config: SiteConfig | None = None, numbers: Numbers | None = None
+    root: Path,
+    config: SiteConfig | None = None,
+    numbers: Numbers | None = None,
+    imported: ImportedHistory | None = None,
 ) -> tuple[SiteConfig, Path, Path]:
     """Build a synthetic site; return the config, the public dir, the gated dir."""
     config = config or make_config()
@@ -124,6 +128,7 @@ def build_instance(
         site,
         today=TODAY,
         numbers=numbers,
+        imported=imported,
         gated_out=gated,
         assets_dir=assets,
     )

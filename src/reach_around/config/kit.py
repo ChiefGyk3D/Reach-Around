@@ -47,6 +47,7 @@ from pydantic import (
 )
 
 from reach_around.config.blocks import MAX_COUNT, PLATFORM_SLUGS
+from reach_around.config.imported_history import ImportedHistory
 from reach_around.config.numbers import STALE_DAYS as STALE_DAYS
 from reach_around.config.numbers import Numbers
 from reach_around.site.theme import check_image_path
@@ -89,6 +90,11 @@ KIT_FIELD_POLICY: Mapping[str, FieldPolicy] = {
     "demographics": FieldPolicy("gated"),
     "inquiry": FieldPolicy("gated"),
     "disclosure": FieldPolicy("gated"),
+    # The block "Before Reach Around" (#377): gated unless the owner sets
+    # ``imported_history_public`` (see ``imported_level``). The path itself is
+    # only the name of a file and never printed; the switch is configuration.
+    "imported_history": FieldPolicy("gated"),
+    "imported_history_public": FieldPolicy("private"),
     "unlock_link": FieldPolicy("private"),
 }
 
@@ -572,8 +578,40 @@ class KitConfig(_Model):
     # Public key of the Turnstile widget on the gate form. Optional: without it
     # the form renders an empty widget slot and the build warns.
     turnstile_site_key: StrictStr | None = None
+    # A file of link-page numbers imported from the previous provider (see
+    # ``reach_around.config.imported_history``), relative to the config's folder.
+    # Shown as its own block "Before Reach Around", gated unless
+    # ``imported_history_public``; never added to any total.
+    imported_history: StrictStr | None = Field(
+        default=None, min_length=1, max_length=300
+    )
+    imported_history_public: StrictBool = False
     # v1 has no emailed unlock link, so true is refused (see the validator).
     unlock_link: StrictBool = False
+
+    @field_validator("imported_history")
+    @classmethod
+    def _imported_history_path(cls, value: str | None) -> str | None:
+        if value is None:
+            return value
+        if (
+            "\x00" in value
+            or "\n" in value
+            or "\\" in value
+            or value.startswith("/")
+            or any(part in ("", ".", "..") for part in value.split("/"))
+        ):
+            raise ValueError(
+                "imported_history must be a relative file path inside the folder "
+                "of the config, with no '..'"
+            )
+        return value
+
+    @model_validator(mode="after")
+    def _public_switch_needs_the_file(self) -> KitConfig:
+        if self.imported_history_public and self.imported_history is None:
+            raise ValueError("imported_history_public needs imported_history")
+        return self
 
     @field_validator("photo")
     @classmethod
@@ -663,8 +701,8 @@ class KitConfig(_Model):
         return any(
             getattr(self, name)
             for name, level in DISPLAY_POLICY.items()
-            if level == "gated"
-        )
+            if level == "gated" and name != "imported_history"
+        ) or (self.imported_history is not None and not self.imported_history_public)
 
 
 # --- the policy --------------------------------------------------------------
@@ -691,6 +729,11 @@ def enforce_display_policy(kit: KitConfig) -> None:
                 "Analytics values may not be used in a kit; enter the figures by "
                 "hand and set owner_supplied: true to show them in the deeper kit."
             )
+
+
+def imported_level(kit: KitConfig) -> Visibility:
+    """Who may see the imported-history block: gated unless the owner says public."""
+    return "public" if kit.imported_history_public else "gated"
 
 
 def policy_gaps(
@@ -807,15 +850,22 @@ def kit_warnings(
 
 
 def _project(
-    kit: KitConfig, numbers: Numbers | None, allowed: frozenset[str]
+    kit: KitConfig,
+    numbers: Numbers | None,
+    allowed: frozenset[str],
+    imported: ImportedHistory | None = None,
 ) -> dict[str, Any]:
     resolved = resolve_metrics(kit, numbers)
     values: dict[str, Any] = {
         "metrics": resolved,
         "unified_total": unified_total(resolved),
+        # The loaded numbers, never the path. Kept out of every total.
+        "imported_history": imported,
     }
     out: dict[str, Any] = {}
     for name, level in DISPLAY_POLICY.items():
+        if name == "imported_history":
+            level = imported_level(kit)
         rule = KIT_FIELD_POLICY.get(name)
         # An owner-report-only field is a hard audience restriction: it never
         # reaches the public projection, whatever level the table gives it.
@@ -826,14 +876,18 @@ def _project(
     return out
 
 
-def public_projection(kit: KitConfig, numbers: Numbers | None) -> dict[str, Any]:
+def public_projection(
+    kit: KitConfig, numbers: Numbers | None, imported: ImportedHistory | None = None
+) -> dict[str, Any]:
     """The fields any visitor may see: the header and the headline numbers."""
-    return _project(kit, numbers, frozenset({"public"}))
+    return _project(kit, numbers, frozenset({"public"}), imported)
 
 
-def gated_projection(kit: KitConfig, numbers: Numbers | None) -> dict[str, Any]:
+def gated_projection(
+    kit: KitConfig, numbers: Numbers | None, imported: ImportedHistory | None = None
+) -> dict[str, Any]:
     """Public plus gated fields. Private fields are in neither."""
-    return _project(kit, numbers, frozenset({"public", "gated"}))
+    return _project(kit, numbers, frozenset({"public", "gated"}), imported)
 
 
 def pdf_excluded_values(kit: KitConfig) -> dict[str, str]:
