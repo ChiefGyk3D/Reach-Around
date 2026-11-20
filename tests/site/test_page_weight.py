@@ -126,7 +126,14 @@ def sites(tmp_path_factory: pytest.TempPathFactory) -> list[Path]:
         assets_dir=assets,
     )
     assert API  # the fixture has a collected number, so an API label is measured
-    return [base / "a", base / "k", base / "r", base / "stack", base / "stack-live"]
+    # the stack pages stay at indexes 2 and 3 (the tests below name them)
+    return [
+        base / "a",
+        base / "k",
+        base / "stack",
+        base / "stack-live",
+        base / "r",
+    ]
 
 
 def all_pages(sites: list[Path]) -> list[tuple[Path, Path]]:
