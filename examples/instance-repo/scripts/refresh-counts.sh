@@ -206,10 +206,14 @@ if [ -n "$new_history" ] && ! command -v flock >/dev/null 2>&1; then
   echo "refresh-counts: flock is required to install the history file safely and was not found; nothing was overwritten." >&2
   exit 1
 fi
-# Both outputs are installed together or not at all. numbers.json is checked
-# into a scratch file now but not put in the repository folder yet: a refusal
-# after this point (the history changed, the lock is held) must leave it alone,
-# or the script would report "nothing was overwritten" over a replaced file.
+# The two outputs are installed as an ordered pair, not atomically. numbers.json
+# is checked into a scratch file now but not put in the repository folder yet:
+# every refusal before the install (a failed check, a changed history file, a
+# held lock, a failed staging copy) leaves BOTH files as they were. The install
+# is then two renames under the lock, history first. If the first fails, neither
+# file is installed; if the second fails after the first succeeded, the history
+# is new and numbers.json is old, the message says so, and the fix is to run the
+# refresh again.
 checked_numbers=""
 if [ -f "$workdir/numbers.json" ] && [ ! -L "$workdir/numbers.json" ]; then
   checked_numbers="$workdir/numbers.checked.json"
