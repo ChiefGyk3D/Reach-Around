@@ -1954,6 +1954,17 @@
       "additionalProperties": false,
       "description": "Production link-page presentation choices.",
       "properties": {
+        "featured": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PageFeatured"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
         "layout": {
           "default": "classic",
           "enum": [
@@ -1984,6 +1995,55 @@
         }
       },
       "title": "Page",
+      "type": "object"
+    },
+    "PageFeatured": {
+      "additionalProperties": false,
+      "description": "One link promoted above the groups, optionally only between two days.",
+      "properties": {
+        "kicker": {
+          "maxLength": 60,
+          "minLength": 1,
+          "title": "Kicker",
+          "type": "string"
+        },
+        "link": {
+          "pattern": "^[a-z0-9][a-z0-9-]{0,39}$",
+          "title": "Link",
+          "type": "string"
+        },
+        "show_from": {
+          "anyOf": [
+            {
+              "format": "date",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Show From"
+        },
+        "show_until": {
+          "anyOf": [
+            {
+              "format": "date",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Show Until"
+        }
+      },
+      "required": [
+        "kicker",
+        "link"
+      ],
+      "title": "PageFeatured",
       "type": "object"
     },
     "PageStatus": {
@@ -3468,6 +3528,7 @@
     "page": {
       "$ref": "#/$defs/Page",
       "default": {
+        "featured": null,
         "layout": "classic",
         "status": null,
         "watch": []

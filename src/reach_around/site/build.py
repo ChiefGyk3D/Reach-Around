@@ -479,6 +479,7 @@ def _render_smart_stack_page(
     config: SiteConfig,
     shown: list[list[Block]],
     custom_css: bool,
+    today: date,
 ) -> str:
     """Render the production one-page smart stack."""
     every = [block for blocks in shown for block in blocks]
@@ -489,7 +490,17 @@ def _render_smart_stack_page(
         if tab.intent != "watch"
     ]
     tab = config.tabs[0]
+    pick = config.page.featured
+    featured = None
+    if (
+        pick is not None
+        and pick.link in links
+        and (pick.show_from is None or today >= pick.show_from)
+        and (pick.show_until is None or today <= pick.show_until)
+    ):
+        featured = {"link": links[pick.link], "kicker": pick.kicker}
     return env.get_template("smart_stack.html").render(
+        featured=featured,
         creator=config.creator,
         tab=tab,
         blocks=every,
@@ -667,10 +678,13 @@ def _render_pages(
     config: SiteConfig,
     shown: list[list[Block]],
     custom_css: bool,
+    today: date,
 ) -> dict[Path, str]:
     if config.page.layout == "stack":
         pages = {
-            Path("index.html"): _render_smart_stack_page(env, config, shown, custom_css)
+            Path("index.html"): _render_smart_stack_page(
+                env, config, shown, custom_css, today
+            )
         }
     elif config.page_layout == "sections":
         pages = {
@@ -933,7 +947,7 @@ def build_site(
     files: dict[Path, bytes] = {
         page: html.encode("utf-8")
         for page, html in _render_pages(
-            env, config, shown, custom_css is not None
+            env, config, shown, custom_css is not None, today
         ).items()
     }
     if beacon_frame_on(config):

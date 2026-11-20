@@ -125,3 +125,62 @@ def test_stack_watch_links_cannot_be_scheduled(schedule_key: str) -> None:
 
     with pytest.raises(ValidationError, match="page.watch.*scheduled"):
         SiteConfig.model_validate(data)
+
+
+def featured(**changes: Any) -> dict[str, Any]:
+    data = raw()
+    data["page"]["featured"] = {"link": "follow-one", "kicker": "New this week"}
+    data["page"]["featured"].update(changes)
+    return data
+
+
+def test_featured_is_optional_and_validates() -> None:
+    assert SiteConfig.model_validate(raw()).page.featured is None
+    config = SiteConfig.model_validate(
+        featured(show_from="2027-03-01", show_until="2027-03-31")
+    )
+    assert config.page.featured is not None
+    assert config.page.featured.link == "follow-one"
+    assert config.page.featured.kicker == "New this week"
+
+
+def test_featured_refuses_an_unknown_link_id() -> None:
+    with pytest.raises(
+        ValidationError, match=r"page\.featured link id 'nope' is missing"
+    ):
+        SiteConfig.model_validate(featured(link="nope"))
+
+
+def test_featured_refuses_two_items() -> None:
+    data = raw()
+    data["page"]["featured"] = [
+        {"link": "follow-one", "kicker": "One"},
+        {"link": "follow-two", "kicker": "Two"},
+    ]
+    with pytest.raises(ValidationError, match=r"page\.featured accepts one link"):
+        SiteConfig.model_validate(data)
+
+
+def test_featured_refuses_a_backwards_window() -> None:
+    with pytest.raises(ValidationError, match="show_until must not be before"):
+        SiteConfig.model_validate(
+            featured(show_from="2027-03-10", show_until="2027-03-01")
+        )
+
+
+def test_featured_dates_are_plain_days() -> None:
+    with pytest.raises(ValidationError, match="YYYY-MM-DD"):
+        SiteConfig.model_validate(featured(show_from="2027-03-01T10:00:00"))
+
+
+def test_featured_needs_the_stack_layout() -> None:
+    data = featured()
+    data["page"] = {"layout": "classic", "featured": data["page"]["featured"]}
+    with pytest.raises(ValidationError, match=r"page\.featured needs page\.layout"):
+        SiteConfig.model_validate(data)
+
+
+@pytest.mark.parametrize("kicker", ["", " padded", "x" * 61, "two\nlines"])
+def test_featured_kicker_is_short_plain_text(kicker: str) -> None:
+    with pytest.raises(ValidationError):
+        SiteConfig.model_validate(featured(kicker=kicker))

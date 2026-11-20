@@ -257,6 +257,9 @@ keeps the existing tab or sections layout.
 | `status.text` | Subtitle | none | Required owner-written live or next-stream line. |
 | `status.schedule` | Subtitle | none | Optional second schedule line. |
 | `watch` | list of link ids | empty | Exactly two with `stack`, naming one Twitch-icon link and one Kick-icon link. Config order is display order and both links receive identical treatment. |
+| `featured.link` | link id | none | One link promoted above the groups. It must exist in a tab, and `page.featured` needs `layout: stack`. |
+| `featured.kicker` | text, 1 to 60 characters | none | Required with `featured`. A short plain-text label above the link, such as `New this week`. No control characters, no leading or trailing space. |
+| `featured.show_from`, `featured.show_until` | date `YYYY-MM-DD` | none | Optional, inclusive days. Like the same keys on a link, they are compared with the day of the build; `show_until` must not be before `show_from`. Outside the window the slot is not rendered. |
 
 With `layout: stack`, every tab needs a distinct `intent`, there must be exactly one `watch` tab, and the two `watch` links cannot be scheduled (`show_from`, `show_until`). The validator enforces these only for that layout. Tabs provide the group order and headings. The standard information order is
 `videos`, `follow`, `community`, `support`, `work`, `shop`, `blog`; config order
@@ -284,6 +287,27 @@ tabs:
         title: Watch two
         url: https://example.com/watch-two
         icon: kick
+```
+
+### The featured slot
+
+`page.featured` promotes one link between the Watch links and the groups. There
+is at most one: a list is refused. The link also stays in its own group, and
+clicks on either copy are counted for the same link id. Outside its dates, or
+while the link itself is hidden by its own `show_from` or `show_until`, the slot
+is not rendered at all. The validation errors use fixed wording:
+
+- `page.featured link id 'x' is missing`
+- `page.featured accepts one link, not a list`
+- `page.featured needs page.layout: stack`
+
+```yaml
+page:
+  featured:
+    link: follow-one
+    kicker: New this week
+    show_from: 2027-03-01
+    show_until: 2027-03-31
 ```
 
 Layouts B, C, and D remain prototypes and are not accepted by the production

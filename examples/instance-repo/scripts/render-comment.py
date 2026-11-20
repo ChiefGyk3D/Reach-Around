@@ -527,6 +527,7 @@ KNOWN_FIELDS: frozenset[str] = frozenset(
         "item",
         "items",
         "kick",
+        "kicker",
         "kind",
         "kit",
         "kit_gate",

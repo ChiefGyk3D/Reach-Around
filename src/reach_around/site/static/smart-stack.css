@@ -31,6 +31,9 @@
 .smart-status-schedule { color: var(--ra-color-muted); }
 .smart-watch { display: flex; min-width: 0; max-width: 100%; flex-wrap: wrap; gap: var(--ra-space-2); }
 .smart-watch-link { flex: 1 1 12rem; min-width: min(100%, 12rem); min-height: var(--ra-tap); height: 100%; }
+.smart-featured { display: flex; min-width: 0; max-width: 100%; flex-direction: column; gap: var(--ra-space-2); }
+.smart-featured p { margin: 0; }
+.smart-featured-kicker { color: var(--ra-color-muted); font-size: var(--ra-text-sm); font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; }
 .smart-groups, .smart-group, .smart-group-links { gap: var(--ra-space-2); }
 .smart-group { scroll-margin-top: calc(var(--ra-tap) + var(--ra-space-5) + env(safe-area-inset-top, 0rem)); }
 .smart-group h2 { margin: var(--ra-space-4) 0 var(--ra-space-2); font-size: var(--ra-text-lg); }
