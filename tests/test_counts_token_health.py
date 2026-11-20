@@ -4,6 +4,8 @@ state, unknown expiry, and no token value anywhere."""
 
 from __future__ import annotations
 
+import ast
+import inspect
 import json
 from datetime import UTC, date, datetime
 from pathlib import Path
@@ -20,6 +22,7 @@ from reach_around.config.numbers_sources import (
     TwitchSource,
     YoutubeSource,
 )
+from reach_around.counts import meta_user, providers, tiktok_user, twitch_user
 from reach_around.counts import token_health as th
 
 TODAY = date(2026, 11, 20)
@@ -315,3 +318,54 @@ def test_refresh_reports_a_rejected_key_and_fails_that_source_only(
     assert "token-health: source=youtube state=rejected" in text
     assert CANARY not in text
     assert code == 3
+
+
+# ---- every word a collector can end a source with ------------------------
+
+
+def collector_words() -> set[str]:
+    """The fixed words the collectors raise, read from their own source."""
+    words: set[str] = set()
+    for module in (meta_user, twitch_user, tiktok_user, providers):
+        for node in ast.walk(ast.parse(inspect.getsource(module))):
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id.endswith("Error")
+                and node.args
+                and isinstance(node.args[0], ast.Constant)
+                and isinstance(node.args[0].value, str)
+            ):
+                words.add(node.args[0].value)
+    return words
+
+
+def unmapped(words: set[str]) -> set[str]:
+    return words - set(th.WORD_STATES) - th.NOT_TOKEN_WORDS
+
+
+def test_every_collector_word_is_classified() -> None:
+    words = collector_words()
+    # the guard collected something real, and it would notice a new word
+    assert {
+        "token_expired",
+        "refresh_store_failed",
+        "refresh_response_invalid",
+    } <= words
+    assert len(words) > 20
+    assert unmapped(words | {"brand_new_failure"}) == {"brand_new_failure"}
+    assert unmapped(words) == set(), "classify the new word in token_health.py"
+    assert not set(th.WORD_STATES) & th.NOT_TOKEN_WORDS
+
+
+@pytest.mark.parametrize("word", sorted(th.WORD_STATES))
+@pytest.mark.parametrize(
+    "source",
+    [ig(None), threads(None), tw(), tt(), yt()],
+    ids=lambda s: s.platform,
+)
+def test_a_failed_source_with_a_token_word_is_never_ok(
+    word: str, source: InstagramSource | ThreadsSource | TwitchSource
+) -> None:
+    status = {source.platform: {"status": "error", "detail": word}}
+    assert state_of(source, status).state == th.WORD_STATES[word] != th.OK

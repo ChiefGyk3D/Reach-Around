@@ -28,9 +28,13 @@ One record per token-holding source: `source`, `state`, `days_left`.
 | `ok` | nothing known is wrong (an unknown expiry is `ok` with `days_left=unknown`) |
 | `expiring` | `token_expires` is at most `refresh_within_days` away (Instagram, Threads), today included |
 | `expired` | the expiry day passed, or the source ended with `token_expired` |
-| `rejected` | the platform refused the token (`token_rejected`, `refresh_failed`, `scope_missing`, or a refused YouTube key) |
+| `rejected` | the platform refused the token, or the token or its refresh could not be used: `token_rejected`, `refresh_failed`, `refresh_store_failed` (a rotated token could not be kept), `refresh_response_invalid`, `scope_missing`, `missing_credential`, `invalid_credential`, or a refused YouTube key |
 
-A word from the last run wins over the date. Only Instagram and Threads have a
+A word from the last run wins over the date. Every fixed word a collector can
+end a source with is sorted either as token related (mapped above) or as not
+about the token (a setting, a response shape, a network failure); a test reads
+the collectors' own raise statements and fails on a word in neither list, so a
+source that failed for a token reason can never be reported `ok`. Only Instagram and Threads have a
 date, so only they can be `expiring`; Twitch, TikTok and YouTube show up when
 they have already failed. It reads no secret and no environment variable.
 

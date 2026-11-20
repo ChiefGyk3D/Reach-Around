@@ -32,11 +32,46 @@ STATES = (OK, EXPIRING, EXPIRED, REJECTED)
 # Source kinds that hold a platform token or key.
 KINDS = frozenset({"instagram", "threads", "twitch", "tiktok", "youtube"})
 
-# Error words the collectors end a source with (fixed words, never a value).
-EXPIRED_WORDS = frozenset({"token_expired"})
-REJECTED_WORDS = frozenset({"token_rejected", "refresh_failed", "scope_missing"})
+# Every fixed error word a collector can put in the status file, sorted into
+# "about the token or key" (mapped to a state) or "not about the token" (a
+# setting, a response shape, a network failure). tests/test_counts_token_health.py
+# reads the collectors' own raise statements and fails on a word in neither set,
+# so a new collector word cannot appear without a decision here.
+WORD_STATES = {
+    "token_expired": EXPIRED,
+    "token_rejected": REJECTED,
+    "refresh_failed": REJECTED,  # the platform refused the refresh token
+    "refresh_store_failed": REJECTED,  # a rotated pair could not be kept
+    "refresh_response_invalid": REJECTED,  # TikTok's refresh answer was unusable
+    "scope_missing": REJECTED,
+    "missing_credential": REJECTED,  # the credential is not set or not usable
+    "invalid_credential": REJECTED,
+}
+NOT_TOKEN_WORDS = frozenset(
+    {
+        "api_error",
+        "bad_aggregate",
+        "bad_auto_refresh",
+        "bad_count",
+        "bad_credential_name",
+        "bad_env_name",
+        "bad_host",
+        "bad_source_setting",
+        "bad_well_known",
+        "fetch_failed",
+        "missing_field",
+        "refresh_needs_sink",
+        "refresh_sink_required",
+        "room_not_public",
+        "window_incomplete",
+        "window_mismatch",
+    }
+)
+EXPIRED_WORDS = frozenset(w for w, v in WORD_STATES.items() if v == EXPIRED)
+REJECTED_WORDS = frozenset(w for w, v in WORD_STATES.items() if v == REJECTED)
 # YouTube has no token words; its API refuses a bad key with these fetch words.
 # UNVERIFIED: http_403 is also what a quota stop looks like, so it is NOT counted.
+# http_400 may be a malformed request rather than a bad key (docs/token-health.md).
 YOUTUBE_REJECTED_WORDS = frozenset({"http_400", "http_401"})
 
 
@@ -57,10 +92,8 @@ class TokenHealth:
 def _word_state(kind: str, word: str | None) -> str | None:
     if word is None:
         return None
-    if word in EXPIRED_WORDS:
-        return EXPIRED
-    if word in REJECTED_WORDS:
-        return REJECTED
+    if word in WORD_STATES:
+        return WORD_STATES[word]
     if kind == "youtube" and word in YOUTUBE_REJECTED_WORDS:
         return REJECTED
     return None
