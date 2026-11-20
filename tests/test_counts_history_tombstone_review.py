@@ -9,8 +9,14 @@ import pytest
 import reach_around.counts.history as hist
 from reach_around.cli import main
 from reach_around.counts.history import HistoryError, append_records
-from test_counts_history_tombstone_final import swap_in_other_file
-from test_counts_history_tombstone_race import NOW, build, names, rec, stale_pair
+from test_counts_history_tombstone_race import (
+    NOW,
+    build,
+    names,
+    rec,
+    stale_pair,
+    swap_in_other_file,
+)
 
 
 def redact_argv(path: Path, *extra: str, trigger: str = "2026-10-20") -> list[str]:
