@@ -918,9 +918,7 @@ def test_the_docs_state_the_gating_and_kit_caveats_plainly() -> None:
 # these used to leave every test green) ----------------------------------------
 
 
-def test_the_deploy_job_blocks_egress_installs_without_scripts_and_keeps_no_credentials() -> (
-    None
-):
+def test_the_deploy_job_keeps_its_hardening() -> None:
     jobs = load(CALLEE)["jobs"]
     for name in ("validate", "deploy"):
         first = jobs[name]["steps"][0]
