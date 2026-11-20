@@ -88,7 +88,7 @@ def test_a_symlinked_ancestor_is_refused_and_nothing_outside_is_written(
     with pytest.raises(HistoryError, match="symlink"):
         remove_stale_redaction_temps(via, [".h.jsonl.redact-0a1b2c3d.tmp"])
     assert (real / "sub" / "h.jsonl").read_bytes() == before
-    assert sorted(os.listdir(real / "sub")) == ["h.jsonl"]
+    assert sorted(os.listdir(real / "sub")) == [".h.jsonl.lock", "h.jsonl"]
 
 
 def test_read_append_and_verify_still_work_through_a_symlinked_ancestor(
@@ -214,7 +214,7 @@ def test_a_folder_fsync_failure_is_reported_as_completed_but_uncertain(
         redact_records(path, plan, **KW)
     monkeypatch.undo()
     assert len(tombstoned(read_history(path))) == 2  # the new file is installed
-    assert sorted(os.listdir(tmp_path)) == ["h.jsonl"]
+    assert sorted(os.listdir(tmp_path)) == [".h.jsonl.lock", "h.jsonl"]
     assert "value" not in path.read_text(encoding="ascii").splitlines()[0]
 
 
@@ -244,6 +244,7 @@ def test_a_failure_before_the_rename_is_a_plain_error(
     def boom(*a: Any, **k: Any) -> None:
         raise OSError("no")
 
+    monkeypatch.setattr(hist, "_exchange", lambda *a: False)
     monkeypatch.setattr(os, "rename", boom)
     with pytest.raises(HistoryError) as err:
         redact_records(path, plan, **KW)
@@ -367,6 +368,7 @@ KEEP = [
     ".h.jsonl.redact-22222222.tmp",
     "target",
     "h.jsonl",
+    ".h.jsonl.lock",
 ]
 
 

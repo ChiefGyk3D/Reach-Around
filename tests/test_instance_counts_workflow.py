@@ -330,6 +330,16 @@ def test_a_refresh_that_writes_only_the_known_history_file_installs_it(
     assert '"count": 5' in (root / "numbers.json").read_text()
 
 
+def test_the_engines_history_lock_file_is_tolerated_and_not_carried(
+    tmp_path: Path,
+) -> None:
+    root, env = _refresh_fixture(tmp_path)
+    r = _run_refresh(root, env, "social.jsonl .social.jsonl.lock", tmp_path)
+    assert r.returncode == 0, r.stderr
+    assert (root / "history" / "social.jsonl").read_text() == "row\n"
+    assert not (root / "history" / ".social.jsonl.lock").exists()
+
+
 def test_any_other_file_in_the_history_folder_is_refused_before_anything_is_written(
     tmp_path: Path,
 ) -> None:

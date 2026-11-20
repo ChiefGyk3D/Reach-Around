@@ -233,7 +233,7 @@ def test_without_confirm_nothing_is_written(tmp_path: Path) -> None:
         with pytest.raises(HistoryError, match="confirm"):
             redact(path, confirm=flag)
     assert path.read_bytes() == before
-    assert sorted(os.listdir(tmp_path)) == ["h.jsonl"]
+    assert sorted(os.listdir(tmp_path)) == [".h.jsonl.lock", "h.jsonl"]
 
 
 def test_a_failed_write_leaves_the_original_and_no_temp_file(
@@ -246,12 +246,13 @@ def test_a_failed_write_leaves_the_original_and_no_temp_file(
     def boom(*args: Any, **kwargs: Any) -> None:
         raise OSError("disk full")
 
+    monkeypatch.setattr(hist, "_exchange", lambda *a: False)
     monkeypatch.setattr(os, "rename", boom)
     with pytest.raises(HistoryError, match="cannot write"):
         redact(path)
     monkeypatch.undo()
     assert path.read_bytes() == before
-    assert sorted(os.listdir(tmp_path)) == ["h.jsonl"]
+    assert sorted(os.listdir(tmp_path)) == [".h.jsonl.lock", "h.jsonl"]
     read_history(path)
 
 
@@ -263,7 +264,7 @@ def test_written_file_is_private_and_a_new_file(tmp_path: Path) -> None:
     redact(path)
     assert (path.stat().st_mode & 0o777) == 0o600
     assert path.stat().st_ino != inode
-    assert sorted(os.listdir(tmp_path)) == ["h.jsonl"]
+    assert sorted(os.listdir(tmp_path)) == [".h.jsonl.lock", "h.jsonl"]
 
 
 def test_symlink_fifo_and_symlinked_folder_are_refused(tmp_path: Path) -> None:

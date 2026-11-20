@@ -591,11 +591,24 @@ def run_history_verify(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def _safe(text: str) -> str:
+    """``text`` with every control or non-ASCII character escaped, for a terminal."""
+    return "".join(
+        c if " " <= c <= "~" else c.encode("unicode_escape").decode("ascii")
+        for c in text
+    )
+
+
+def _say(message: str, stream: TextIO | None = None) -> None:
+    """Print one control-safe line: a file name can hold an escape sequence."""
+    print(_safe(message), file=stream if stream is not None else sys.stdout)
+
+
 def run_history_redact(args: argparse.Namespace) -> int:
     try:
         target = _history_target(args)
     except (ConfigError, ValueError, OSError) as exc:
-        print(f"error: {exc}", file=sys.stderr)
+        _say(f"error: {exc}", sys.stderr)
         return EXIT_USAGE
     try:
         history = read_history(target)
@@ -616,19 +629,19 @@ def run_history_redact(args: argparse.Namespace) -> int:
                 if plan
                 else "none"
             )
-            print(
+            _say(
                 f"dry run: {len(plan)} lines would be redacted (as-of days {span}); "
                 "nothing written. Add --confirm to redact."
             )
             if stale:
-                print(
+                _say(
                     f"{len(stale)} stale redaction temporary file(s) found "
                     "(--confirm removes them): " + ", ".join(stale)
                 )
             return EXIT_OK
         removed = remove_stale_redaction_temps(target, stale)
         if removed:
-            print(f"removed {removed} stale redaction temporary file(s)")
+            _say(f"removed {removed} stale redaction temporary file(s)")
         notices: list[str] = []
         try:
             count = redact_records(
@@ -642,18 +655,19 @@ def run_history_redact(args: argparse.Namespace) -> int:
             )
         finally:
             for notice in notices:
-                print(notice)
+                _say(notice)
     except RedactDurabilityError:
-        print(
-            "error: the file WAS replaced, but the folder sync failed, so "
-            "durability is uncertain; run history-verify before anything else",
-            file=sys.stderr,
+        _say(
+            "error: the file WAS replaced, but the result could not be fully "
+            "confirmed (a folder sync or a check failed), so durability is "
+            "uncertain; run history-verify before anything else",
+            sys.stderr,
         )
         return EXIT_REPLACED_UNSURE
     except HistoryError as exc:
-        print(f"error: {exc}", file=sys.stderr)
+        _say(f"error: {exc}", sys.stderr)
         return EXIT_WRITE
-    print(f"redacted {count} lines; run history-verify, then commit the file")
+    _say(f"redacted {count} lines; run history-verify, then commit the file")
     return EXIT_OK
 
 

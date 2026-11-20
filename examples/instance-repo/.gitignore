@@ -18,3 +18,5 @@ engine/
 # Editors and OS
 .DS_Store
 *.swp
+# The history append lock (written beside history/social.jsonl by the engine)
+history/.*.lock

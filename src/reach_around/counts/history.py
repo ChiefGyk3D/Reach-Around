@@ -21,6 +21,8 @@ refresh. It does not touch git history of the file; see docs/social-history.md.
 
 from __future__ import annotations
 
+import ctypes
+import errno
 import fcntl
 import hashlib
 import json
@@ -668,7 +670,60 @@ def dump_new_history(records: Sequence[Record], *, now: datetime | None = None) 
     return data.decode("ascii")
 
 
+def _before_mutation(stage: str) -> None:
+    """Test seam: called right before the file is changed (append or redact).
+
+    Does nothing. Tests replace it to swap the file at that exact point; it is a
+    module function, never an option or environment variable, so the CLI cannot
+    reach it.
+    """
+
+
+def _open_sidecar(dir_fd: int, name: str, wait: float) -> int:
+    """Take the writers' lock: a stable ``.<name>.lock`` file in the folder.
+
+    Never replaced or renamed, so its inode does not change while the history
+    file itself is replaced by a redaction. Append, redact and stale-temporary
+    removal all hold it, so they take turns. Readers do not touch it.
+    """
+    try:
+        fd = os.open(
+            f".{name}.lock",
+            os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK,
+            0o600,
+            dir_fd=dir_fd,
+        )
+    except OSError:
+        raise HistoryError("cannot open the history lock file (a symlink?)") from None
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise HistoryError("the history lock file is not a regular file")
+        try:
+            os.fchmod(fd, 0o600)  # the umask may have narrowed it
+        except OSError:
+            raise HistoryError("cannot use the history lock file") from None
+        _lock(fd, fcntl.LOCK_EX, wait)
+    except BaseException:
+        os.close(fd)
+        raise
+    return fd
+
+
 def _append(
+    dir_fd: int,
+    path: Path,
+    records: Sequence[Record],
+    max_bytes: int,
+    skip_days: bool,
+) -> int:
+    sidecar = _open_sidecar(dir_fd, path.name, LOCK_WAIT_SECONDS)
+    try:
+        return _append_locked(dir_fd, path, records, max_bytes, skip_days)
+    finally:
+        os.close(sidecar)
+
+
+def _append_locked(
     dir_fd: int,
     path: Path,
     records: Sequence[Record],
@@ -713,11 +768,23 @@ def _append(
         _parse(existing + new)  # duplicates and corrections, before any write
         if len(existing) + len(new) > max_bytes:
             raise HistoryError("the history file would be too large")
+        if not _same_file(dir_fd, path.name, fd):
+            raise HistoryError(
+                "the history file was replaced before the write; nothing written"
+            )
+        _before_mutation("append")
         original = len(existing)
         _write_all(fd, new)
         os.fsync(fd)
         if not existing:
             os.fsync(dir_fd)
+        if not _same_file(dir_fd, path.name, fd):
+            # Replaced from outside after the last check: the lines went to a
+            # file that is no longer there. Say so; the new file is untouched.
+            raise HistoryError(
+                "the history file was replaced while writing; the new records "
+                "are not in it; run history-verify and try again"
+            )
         return len(records)
     except OSError:
         if original >= 0:
@@ -855,7 +922,7 @@ def redact_records(
     except OSError:
         raise HistoryError("cannot open the history folder") from None
     try:
-        return _redact(
+        return _redact_locked(
             dir_fd,
             path,
             planned,
@@ -868,6 +935,34 @@ def redact_records(
         )
     finally:
         os.close(dir_fd)
+
+
+def _redact_locked(
+    dir_fd: int,
+    path: Path,
+    planned: dict[tuple[str, str, str, str], bytes],
+    reason: str,
+    trigger_date: str,
+    moment: datetime,
+    max_bytes: int,
+    lock_wait: float,
+    notices: list[str] | None,
+) -> int:
+    sidecar = _open_sidecar(dir_fd, path.name, lock_wait)
+    try:
+        return _redact(
+            dir_fd,
+            path,
+            planned,
+            reason,
+            trigger_date,
+            moment,
+            max_bytes,
+            lock_wait,
+            notices,
+        )
+    finally:
+        os.close(sidecar)
 
 
 def _redact(
@@ -945,21 +1040,76 @@ def _redact(
         if len(data) > max_bytes:
             raise HistoryError("the history file would be too large")
         _parse(data)  # the result must verify before it replaces anything
-        info = os.fstat(fd)
-        _replace_file(dir_fd, path.name, data, (info.st_uid, info.st_gid), notices)
+        _replace_file(dir_fd, path.name, data, fd, notices)
         return len(keys)
     finally:
         os.close(fd)
+
+
+def _identity(info: os.stat_result) -> tuple[int, int]:
+    return (info.st_dev, info.st_ino)
+
+
+def _exchange(dir_fd: int, first: str, second: str) -> bool:
+    """Atomically swap two names in the folder (``renameat2`` RENAME_EXCHANGE).
+
+    Returns ``False`` when the system or file system cannot do it; raises
+    ``OSError`` for any other failure.
+    """
+    try:
+        libc = ctypes.CDLL(None, use_errno=True)
+        call = libc.renameat2
+    except (OSError, AttributeError):
+        return False
+    call.argtypes = [
+        ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.c_uint,
+    ]
+    call.restype = ctypes.c_int
+    if call(dir_fd, os.fsencode(first), dir_fd, os.fsencode(second), 2) == 0:
+        return True
+    code = ctypes.get_errno()
+    if code in (errno.ENOSYS, errno.EINVAL, errno.ENOTSUP, errno.EPERM):
+        return False
+    raise OSError(code, os.strerror(code))
+
+
+def _unlink_quietly(dir_fd: int, name: str) -> None:
+    try:
+        os.unlink(name, dir_fd=dir_fd)
+    except OSError:
+        pass
+
+
+def _identity_of(dir_fd: int, name: str) -> tuple[int, int] | None:
+    try:
+        return _identity(os.stat(name, dir_fd=dir_fd, follow_symlinks=False))
+    except OSError:
+        return None
 
 
 def _replace_file(
     dir_fd: int,
     name: str,
     data: bytes,
-    owner: tuple[int, int],
+    locked_fd: int,
     notices: list[str] | None,
 ) -> None:
-    """Write ``data`` beside ``name``, fsync, rename over it, fsync the folder."""
+    """Install ``data`` as ``name`` in place of the locked file.
+
+    The new file is written beside the old one (mode 0600, old owner and group
+    where permitted) and fsynced. It then replaces the old one by an atomic
+    exchange of the two names, after which the old file is checked to be the one
+    that was locked: if something else was swapped in meanwhile, the exchange is
+    undone and nothing is lost. Where the system cannot exchange, the name is
+    checked once more and the file renamed; a swap in the tiny gap between that
+    check and the rename cannot be detected there (see docs/social-history.md).
+    """
+    locked = os.fstat(locked_fd)
+    locked_id = _identity(locked)
     temp = f".{name}.redact-{secrets.token_hex(4)}.tmp"
     try:
         tfd = os.open(
@@ -974,26 +1124,128 @@ def _replace_file(
         try:
             _write_all(tfd, data)
             try:
-                os.fchown(tfd, owner[0], owner[1])
+                os.fchown(tfd, locked.st_uid, locked.st_gid)
             except PermissionError:
                 if notices is not None:
                     notices.append(NOTICE_OWNER_NOT_KEPT)
+            os.fchmod(tfd, 0o600)  # the umask and fchown must not change it
             os.fsync(tfd)
+            temp_id = _identity(os.fstat(tfd))
         finally:
             os.close(tfd)
-        os.rename(temp, name, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
     except OSError:
-        try:
-            os.unlink(temp, dir_fd=dir_fd)
-        except OSError:
-            pass
+        _unlink_quietly(dir_fd, temp)
         raise HistoryError("cannot write the history file") from None
+    try:
+        _install(dir_fd, name, temp, temp_id, locked_id)
+    except HistoryError:
+        _clean_temp(dir_fd, temp, temp_id)
+        raise
+    _confirm_installed(dir_fd, name, data, temp_id)
     try:
         os.fsync(dir_fd)
     except OSError:
         raise RedactDurabilityError(
             "the new file replaced the file, but the folder sync failed, so "
             "durability is uncertain; run history-verify"
+        ) from None
+
+
+def _clean_temp(dir_fd: int, temp: str, temp_id: tuple[int, int]) -> None:
+    """Remove the temporary name only while it still holds our own new file."""
+    if _identity_of(dir_fd, temp) == temp_id:
+        _unlink_quietly(dir_fd, temp)
+
+
+def _install(
+    dir_fd: int,
+    name: str,
+    temp: str,
+    temp_id: tuple[int, int],
+    locked_id: tuple[int, int],
+) -> None:
+    _before_mutation("redact")
+    try:
+        swapped = _exchange(dir_fd, temp, name)
+        if not swapped:
+            if _identity_of(dir_fd, name) != locked_id:
+                raise HistoryError(
+                    "the history file was replaced while redacting; nothing "
+                    "was changed; run again"
+                )
+            os.rename(temp, name, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
+    except OSError:
+        _after_failed_install(dir_fd, name, temp, temp_id, locked_id)
+        raise  # not reached
+    if swapped:
+        # `temp` now holds whatever was at `name`.
+        if _identity_of(dir_fd, temp) != locked_id:
+            try:
+                undone = _exchange(dir_fd, temp, name)
+            except OSError:
+                undone = False
+            if not undone:
+                raise RedactDurabilityError(
+                    "the history file was replaced while redacting and the "
+                    "exchange could not be undone; run history-verify"
+                ) from None
+            raise HistoryError(
+                "the history file was replaced while redacting; nothing was "
+                "changed; run again"
+            )
+        try:
+            os.unlink(temp, dir_fd=dir_fd)  # the old file, with the old values
+        except OSError:
+            raise RedactDurabilityError(
+                "the new file replaced the file, but the old copy could not be "
+                "removed; run history-redact --confirm again to remove it"
+            ) from None
+
+
+def _after_failed_install(
+    dir_fd: int,
+    name: str,
+    temp: str,
+    temp_id: tuple[int, int],
+    locked_id: tuple[int, int],
+) -> None:
+    """An exchange or rename raised: find out whether it happened anyway."""
+    named = _identity_of(dir_fd, name)
+    if named == locked_id:
+        raise HistoryError("cannot write the history file") from None
+    if named == temp_id:
+        if _identity_of(dir_fd, temp) == locked_id:
+            _unlink_quietly(dir_fd, temp)  # the old copy, left by an exchange
+        raise RedactDurabilityError(
+            "the new file replaced the file, but the system reported an error "
+            "doing it; run history-verify"
+        ) from None
+    raise RedactDurabilityError(
+        "could not tell whether the new file replaced the file; run history-verify"
+    ) from None
+
+
+def _confirm_installed(
+    dir_fd: int, name: str, data: bytes, temp_id: tuple[int, int]
+) -> None:
+    """The installed file is our new file and still reads back as written."""
+    try:
+        fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=dir_fd)
+    except OSError:
+        fd = -1
+    try:
+        ok = fd >= 0 and _identity(os.fstat(fd)) == temp_id
+        if ok:
+            ok = _read_fd(fd, len(data)) == data
+    except (OSError, HistoryError):
+        ok = False
+    finally:
+        if fd >= 0:
+            os.close(fd)
+    if not ok:
+        raise RedactDurabilityError(
+            "the new file replaced the file, but it did not check out "
+            "afterwards (it may have been replaced again); run history-verify"
         ) from None
 
 
@@ -1034,12 +1286,19 @@ def find_stale_redaction_temps(path: Path) -> list[str]:
         os.close(dir_fd)
 
 
-def remove_stale_redaction_temps(path: Path, names: Sequence[str]) -> int:
-    """Remove the named stale temporaries; anything else in ``names`` is ignored."""
+def remove_stale_redaction_temps(
+    path: Path, names: Sequence[str], *, lock_wait: float = LOCK_WAIT_SECONDS
+) -> int:
+    """Remove the named stale temporaries; anything else in ``names`` is ignored.
+
+    Holds the writers' lock, so it never runs beside an append or a redaction.
+    """
     pattern = _stale_pattern(path.name)
     dir_fd = _open_parent(path, strict=True)
     removed = 0
+    sidecar = -1
     try:
+        sidecar = _open_sidecar(dir_fd, path.name, lock_wait)
         for name in names:
             if type(name) is str and _is_stale(dir_fd, name, pattern):
                 try:
@@ -1050,5 +1309,7 @@ def remove_stale_redaction_temps(path: Path, names: Sequence[str]) -> int:
                     raise HistoryError("cannot remove a stale temporary file") from None
                 removed += 1
     finally:
+        if sidecar >= 0:
+            os.close(sidecar)
         os.close(dir_fd)
     return removed

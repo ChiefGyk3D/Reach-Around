@@ -153,8 +153,10 @@ esac
 # fresh copy to a temporary file and renames it into place.
 # Only history/social.jsonl is carried. Any other file the engine left in the
 # history folder (a config naming another file) would be dropped silently, so
-# refuse it, before anything is validated or installed.
-extra="$(find "$workdir/history" -mindepth 1 ! -name social.jsonl -printf '%f ' 2>/dev/null || true)"
+# refuse it, before anything is validated or installed. The engine's own lock
+# file for the history (.social.jsonl.lock) is the one expected extra; it is
+# not carried.
+extra="$(find "$workdir/history" -mindepth 1 ! -name social.jsonl ! -name .social.jsonl.lock -printf '%f ' 2>/dev/null || true)"
 if [ -n "$extra" ]; then
   echo "refresh-counts: the engine wrote other files in the history folder ($extra); only history/social.jsonl is carried, so set numbers.history_file to history/social.jsonl. Nothing was changed." >&2
   exit 1

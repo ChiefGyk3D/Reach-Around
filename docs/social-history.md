@@ -61,6 +61,17 @@ mark a fetched record with a correction (below).
   If the write or the `fsync` fails, only the bytes this call added are cut off
   again; if even that fails the error says to run `history-verify`.
   Two writers at once take turns; neither loses a line.
+  Writers (append, redact, removal of stale temporaries) also take turns through
+  a small lock file, `.<file>.lock` (for example `history/.social.jsonl.lock`),
+  created beside the history file with mode 0600 and never replaced or renamed,
+  so its identity stays the same while a redaction replaces the history file.
+  Reading and `history-verify` never create or need it. It holds no data; keep
+  it out of commits (the example instance repository ignores `history/.*.lock`).
+  Just before the write an append checks that the file name still refers to the
+  file it locked, and checks again after the write; if something outside (a
+  `git checkout` or `git pull` in the same folder) replaced the file in
+  between, the append reports it instead of claiming success, and the file that
+  was swapped in is left as it was.
 * It refuses a file that is already damaged, a duplicate
   (`platform`, `metric`, UTC day, `source`), a future time, and bad fields.
   A batch is all or nothing.
@@ -116,7 +127,7 @@ history folder writable for the engine only, checks the result with
 `counts history-verify` (offline, read-only), and hands it across the job
 boundary beside `numbers.json`. The publish job checks it again, refuses a file
 that does not begin with every byte of the committed one (append-only), and
-stages it in the same pull request (and skips the run, with a warning, while the open bot branch holds history rows main does not have yet, so they are never discarded; only `history/social.jsonl` is carried, and any other file the engine writes in that folder stops the run), which keeps the same bot-only and
+stages it in the same pull request (and skips the run, with a warning, while the open bot branch holds history rows main does not have yet, so they are never discarded; only `history/social.jsonl` is carried, and any other file the engine writes in that folder stops the run, except the engine's lock file `history/.social.jsonl.lock`, which is tolerated and not carried), which keeps the same bot-only and
 files-changed checks (`numbers.json` and `history/social.jsonl` only). If you
 run the refresh by hand, run `reach-around counts history-verify` before the
 commit so a damaged file is never committed over a good one, and use a plain
@@ -169,9 +180,19 @@ same key cannot be filled again. Only `api` rows are redacted; `hand_kept` and
    one, fsynced and renamed into place. A failure before the rename leaves the
    original (exit 1). If the rename worked but the folder sync failed, the new
    file IS in place and its durability is uncertain: the command says so in
-   fixed words and exits 5. Run `history-verify` before anything else.
+   fixed words and exits 5. The same exit also covers a rename that reported an
+   error but may have happened, and an installed file that did not read back as
+   written. Run `history-verify` before anything else.
+   The swap itself is atomic where the system supports it (`renameat2` with
+   `RENAME_EXCHANGE`, Linux): the new file and the old one trade names, the old
+   one is checked to be the file that was locked, and if it is not (something
+   outside replaced it meanwhile) the trade is undone and nothing is lost.
+   Where the system cannot do that, the name is checked once more and the new
+   file is renamed over it; a replacement in the very short gap between that
+   check and the rename cannot be detected there, so do not run `git pull` or
+   `git checkout` in that folder while a redaction runs.
    The new file is mode 0600 and keeps the old owner and group where the
-   system permits (a notice says when it could not). ACLs, extended attributes
+   system permits (a notice says when it could not), whatever the umask. ACLs, extended attributes
    and security labels are not copied. Redaction needs a path with no symlinks: every
    folder in the path to the file is opened without following symlinks, and a
    symlink anywhere in it (also in the dry run) is refused, so resolve the path
