@@ -17,6 +17,7 @@ function makeEnv(): Env {
     SITE_HOST: SITE,
     LINK_IDS: JSON.stringify(["example-one"]),
     CLICK_LIMITER: { async limit() { return { success: true }; } },
+    VIEW_HASH_SECRET: btoa("k".repeat(32)),
   };
 }
 
