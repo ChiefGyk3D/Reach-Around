@@ -86,10 +86,14 @@ def test_twitch_and_kick_use_the_same_layout(tmp_path: Path) -> None:
     both[1] = {**both[0], "platform": "kick"}
     html = public_html(tmp_path, kit_doc(engagement=both))
     section = html[html.index("kit-engagement") :]
-    assert section.count('<th scope="row">Twitch<') == 2
-    assert section.count('<th scope="row">Kick<') == 2
+    assert section.count('<th scope="row" role="rowheader">Twitch<') == 2
+    assert section.count('<th scope="row" role="rowheader">Kick<') == 2
     # the same cells in the same order, apart from the platform name
-    cells = re.findall(r"<tr><th scope=\"row\">(Twitch|Kick)<(.*?)</tr>", section)
+    cells = re.findall(
+        r"<tr role=\"row\"><th scope=\"row\" role=\"rowheader\">"
+        r"(Twitch|Kick)<(.*?)</tr>",
+        section,
+    )
     assert [r for n, r in cells if n == "Twitch"] == [
         r for n, r in cells if n == "Kick"
     ]

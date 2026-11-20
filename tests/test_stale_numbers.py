@@ -367,7 +367,11 @@ def test_import_writes_the_numbers_file(tmp_path: Path) -> None:
     argv = ["counts", "import", "--config", str(site), "--csv", str(csv_file)]
     assert main(argv) == 0
     doc = json.loads((tmp_path / "numbers.json").read_text())
-    assert doc["platforms"]["kick"] == {"count": 321, "as_of": f"{day}T00:00:00Z"}
+    assert doc["platforms"]["kick"] == {
+        "count": 321,
+        "as_of": f"{day}T00:00:00Z",
+        "source": "hand",
+    }
 
 
 def test_a_refused_file_writes_nothing(
