@@ -606,11 +606,13 @@ Requirements for the rewritten disclosure (plain words, American English):
 6. Say the retention in numbers taken from the config, not hard-coded: raw
    records (normally 7 days by default), the daily code (the end of each day),
    abuse counters (about two hours) and anonymous totals (90 days). Also say
-   that a day's records are kept a little longer while the site has not yet
-   added them to its daily totals, and state the ceiling: they are never kept
-   longer than min(3 x the keep window, 90) days, the same rule the Worker
-   applies (`worker/src/viewretention.ts`, `HARD_CEILING_FACTOR` and
-   `MAX_RAW_KEEP_DAYS`). A test pins the page's rule to the Worker's.
+   that a day's records are kept longer while the site has not yet added them
+   to its daily totals, and state the ceiling as a due date, not a guarantee:
+   after min(3 x the keep window, 90) days they are due for deletion no matter
+   what, the same rule the Worker applies (`worker/src/viewretention.ts`,
+   `HARD_CEILING_FACTOR` and `MAX_RAW_KEEP_DAYS`), and are removed in the next
+   cleanup runs, which can be briefly delayed (the purge is bounded and best
+   effort). A test pins the page's rule to the Worker's.
 7. Say that a browser sending Global Privacy Control or Do Not Track is not
    counted, in both collection modes. This holds for page views only. Clicks are
    counted even when the signal is sent, and the click item on the page says so

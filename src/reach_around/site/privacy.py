@@ -57,12 +57,14 @@ VIEWS_WHY = (
 # min(3 x the keep window, the 90 day ceiling) (worker/src/viewretention.ts).
 VIEWS_KEPT = (
     "View records are normally deleted after {RAW_KEEP_DAYS} days. If the site "
-    "has not yet added a day’s records to its daily totals, the records are "
-    "kept a little longer so the totals are not lost. They are never kept "
-    "longer than {RAW_HARD_CAP_DAYS} days. The daily code is deleted at the "
-    "end of each day. Abuse counters are deleted within about two hours. "
-    "Anonymous totals are deleted after {AGGREGATE_KEEP_DAYS} days. Records do "
-    "not identify anyone, so records for a specific person cannot be deleted."
+    "has not yet added a day's records to its daily totals, the records are "
+    "kept longer so the totals are not lost. After {RAW_HARD_CAP_DAYS} days, "
+    "they are due for deletion no matter what. They are removed during the "
+    "next cleanup runs, which can occasionally be delayed for a short time. "
+    "The daily code is deleted at the end of each day. Abuse counters are "
+    "deleted within about two hours. Anonymous totals are deleted after "
+    "{AGGREGATE_KEEP_DAYS} days. Records do not identify anyone, so records "
+    "for a specific person cannot be deleted."
 )
 # The Worker's multiplier for unrolled raw rows and its ceiling (kept equal by a test).
 RAW_HARD_CAP_FACTOR = 3

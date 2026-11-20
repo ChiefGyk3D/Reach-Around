@@ -183,9 +183,11 @@ def test_retention_numbers_come_from_config() -> None:
 )
 def test_text_states_the_retention_ceiling_the_worker_enforces(keep: int, cap: int) -> None:
     text = views_text(make(raw_keep_days=keep))
-    assert f"They are never kept longer than {cap} days." in text
+    assert f"After {cap} days, they are due for deletion no matter what." in text
+    assert "which can occasionally be delayed for a short time" in text
+    assert "never kept longer" not in text
     assert "{RAW_HARD_CAP_DAYS}" not in text
-    assert "kept a little longer so the totals are not lost" in text
+    assert "the records are kept longer so the totals are not lost" in text
 
 
 def test_ceiling_rule_matches_the_worker() -> None:
