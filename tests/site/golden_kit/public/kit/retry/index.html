@@ -29,7 +29,7 @@
 <section class="kit" aria-labelledby="kit-retry-title">
 <h2 id="kit-retry-title">That did not go through</h2>
 <p>Please try again. If it keeps happening, wait a moment, check that JavaScript is on for this page, or come back later.</p>
-<form class="kit-gate" method="post" action="/kit/retry/">
+<form class="kit-gate" method="post" action="/k/gate">
 <p class="kit-field">
 <label for="kit-email">Email address</label>
 <input id="kit-email" name="email" type="email" inputmode="email" autocomplete="email" maxlength="254" required>
@@ -39,6 +39,7 @@
 <input id="kit-website" name="website" type="text" tabindex="-1" autocomplete="off">
 </div>
 <div class="cf-turnstile" data-action="gate" data-sitekey="0x4AAAAAAAexampleKey"></div>
+<script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>
 <noscript><p class="kit-note">The check before the details needs JavaScript. Turn it on for this page, or ask the owner of this site for the details.</p></noscript>
 <button class="kit-submit ra-c-btn" type="submit">Show the details</button>
 </form>

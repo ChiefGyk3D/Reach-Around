@@ -207,3 +207,33 @@ def test_click_ceiling_section_states_the_enforced_numbers() -> None:
     assert "The hashing secret is required on every Worker that counts clicks" in text
     assert "click_setup_invalid" in text
     assert "BEACON_LANE_CAP_ENFORCED" in text
+
+
+def _rate_limit(name: str) -> tuple[int, int]:
+    """(limit, period) of a commented placeholder rate-limit block in wrangler.toml."""
+    text = (ROOT / "worker" / "wrangler.toml").read_text(encoding="utf-8")
+    m = re.search(
+        rf'^# name = "{name}"\n(?:#[^\n]*\n)*?#\s+limit = (\d+)\n#\s+period = (\d+)',
+        text,
+        re.M,
+    )
+    assert m is not None, name
+    return int(m.group(1)), int(m.group(2))
+
+
+def test_one_client_cannot_spend_an_hours_view_budget_alone() -> None:
+    # The per-client view allowance, taken for a whole hour, must stay below the
+    # default hourly view budget: one address can never exhaust it by itself (two
+    # or more can; the edge rule and the budget itself cover that).
+    limit, period = _rate_limit("KIT_VIEW_LIMITER")
+    per_hour = limit * (3600 // period)
+    budget = _defaults(_section())["ROUTE_BUDGET_VIEW"]
+    assert per_hour < budget, (limit, period, budget)
+    # and the gate's per-client allowance stays below its own budget
+    g_limit, g_period = _rate_limit("GATE_LIMITER")
+    assert g_limit * (3600 // g_period) < _defaults(_section())["ROUTE_BUDGET_GATE"]
+
+
+def test_the_pin_bites_on_a_too_generous_allowance() -> None:
+    # Negative case for the rule above: 10 per 60 s is 600 an hour, over 300.
+    assert 10 * (3600 // 60) >= _defaults(_section())["ROUTE_BUDGET_VIEW"]

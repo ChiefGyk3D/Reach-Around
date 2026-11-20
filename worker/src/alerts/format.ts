@@ -77,6 +77,19 @@ const HEALTH_WORDS: Record<HealthCondition, { firing: string; ok: string; unit: 
     ok: "clicks are being counted again",
     unit: "",
   },
+  // Raised by the kit gate itself (src/kit/gate.ts), at most once per UTC day. It is never "cleared":
+  // the next day's first unstored unlock raises it again, so a quiet day is a quiet owner.
+  lead_cap_reached: {
+    firing: "the media kit lead limit was reached; new visitors are unlocked but their addresses are not stored until old leads age out",
+    ok: "the media kit can store new leads again",
+    unit: "",
+  },
+  // Raised by the kit gate itself, at most once per UTC day; monitoring only, nobody is refused for it.
+  gate_busy: {
+    firing: "the media kit gate is receiving far more requests than usual",
+    ok: "the media kit gate is back to normal traffic",
+    unit: "",
+  },
 };
 
 function formatHealth(event: Extract<AlertEvent, { kind: "analytics_health" }>): AlertMessage {

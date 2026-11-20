@@ -9,6 +9,7 @@ site-wide strict policy byte for byte.
 
 from __future__ import annotations
 
+import re
 from datetime import date
 from pathlib import Path
 
@@ -132,8 +133,43 @@ def test_the_relaxed_policy_has_no_unsafe_source(tmp_path: Path) -> None:
             assert bad not in csp.replace("img-src 'self' https:", "")
 
 
-def test_the_gated_page_and_public_pages_load_no_script_yet(tmp_path: Path) -> None:
-    # The CSP is only the allowance. Loading the script is a separate change.
+def test_only_the_gate_pages_load_the_vendor_script(tmp_path: Path) -> None:
     out, gated = build(tmp_path)
-    for page in (out / "kit" / "index.html", gated / "kit.html"):
-        assert "challenges.cloudflare.com" not in page.read_text(encoding="utf-8")
+    assert "challenges.cloudflare.com" not in (gated / "kit.html").read_text("utf-8")
+    naming = sorted(
+        p.relative_to(out).as_posix()
+        for p in out.rglob("*.html")
+        if ORIGIN in p.read_text(encoding="utf-8")
+    )
+    # exactly the two pages whose _headers block allows the origin
+    assert naming == ["kit/index.html", "kit/retry/index.html"]
+    blocks = header_blocks(out)
+    for rel, path in (
+        ("kit/index.html", "/kit/"),
+        ("kit/retry/index.html", "/kit/retry/"),
+    ):
+        html = (out / rel).read_text(encoding="utf-8")
+        # every vendor URL on the page is on the origin the policy allows
+        assert html.count(ORIGIN) == 1
+        assert ORIGIN in blocks[path]["Content-Security-Policy"]
+
+
+def test_the_docs_describe_the_script_and_cite_tests_that_exist() -> None:
+    root = Path(__file__).resolve().parents[2]
+    # the module docstring no longer says the script tag is absent
+    import reach_around.site.kit as kit_module
+
+    doc = kit_module.__doc__ or ""
+    assert "Not here, on purpose" not in doc
+    assert "TURNSTILE_SCRIPT" in doc
+    # every test the threat model cites for #257 exists in the test files
+    text = (root / "docs" / "security" / "threat-model.md").read_text(encoding="utf-8")
+    (line,) = [ln for ln in text.splitlines() if ln.startswith("- exists (#257)")]
+    names = set(re.findall(r"`(test_[a-z0-9_]+)`", line))
+    assert "test_only_the_gate_pages_load_the_vendor_script" in names
+    corpus = "\n".join(
+        p.read_text(encoding="utf-8")
+        for p in (root / "tests" / "site").glob("test_kit_*.py")
+    )
+    missing = sorted(n for n in names if f"def {n}(" not in corpus)
+    assert missing == []

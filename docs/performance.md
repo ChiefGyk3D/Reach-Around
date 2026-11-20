@@ -43,7 +43,7 @@ The example site has no post pages or search page; its page types are the tab pa
 | Render-blocking CSS (`render-blocking-insight`, est. 50 to 280 ms) | 2 to 3 small stylesheets (`site`, `theme`, plus `kit` on the kit page) | The usual fix is inlining critical CSS, which needs `style-src 'unsafe-inline'` or hashes. The CSP stays `style-src 'self'`. The performance score is already 100 with it | None; revisit only with a measured regression. Merging `site.css` and `theme.css` into one file would save one request and is left out as a build change with no score gain |
 | Unminified CSS (`unminified-css`, est. 2 KiB) | `site.css` is 33 KB source, 9.5 KB transferred with gzip | The audit is informational and weightless; savings after compression are small. Minifying would add a CSS parser to the build | None |
 | Compression, HTTP version, TLS, HSTS preload | Emulated locally; not measurable here | Set by the host. `_headers` already sends HSTS, a one-year `immutable` cache for hashed files and `max-age=0, must-revalidate` for pages | Run PageSpeed Insights against the staging hostname once it exists and compare |
-| Media kit, Turnstile | The built kit page has a `cf-turnstile` container but no script tag, and its CSP allows `https://challenges.cloudflare.com` | If a Turnstile script is added later it is third-party code outside the repo, and the measured scores above do not include it | Re-measure on staging when the widget is wired in |
+| Media kit, Turnstile | The built kit page and `/kit/retry/` have a `cf-turnstile` container and one `async defer` script tag for `https://challenges.cloudflare.com/turnstile/v0/api.js` (only when `kit.turnstile_site_key` is set), and their CSP allows that origin | The script is third-party code outside the repo with no integrity hash (inferred, not verified: it is served by Cloudflare and updated in place, so a pinned hash would break the gate), and the measured scores above were taken without it | Re-measure the two gate pages on staging with the widget live |
 
 ## Sweep 2 (#363)
 
@@ -74,7 +74,7 @@ Measured 2026-11-08 with Lighthouse 13.6.0 (Chromium 156) against a local produc
 
 | Item | Link page before | Link page after | Kit page (`/kit/`) before and after |
 | --- | --- | --- | --- |
-| CSP host allowlist (`csp-xss`) | not applicable (no allowlist) | same | note shown: the page CSP pre-allows `https://challenges.cloudflare.com` for the planned Turnstile widget (no script is loaded by the current build). It cannot be removed once the widget is wired in |
+| CSP host allowlist (`csp-xss`) | not applicable (no allowlist) | same | note shown: the page CSP pre-allows `https://challenges.cloudflare.com` for the Turnstile widget (this sweep was measured before the script tag was added; the two gate pages now load it, see the media kit row above). It cannot be removed while the widget is in use |
 | HSTS (`has-hsts`) | "No `preload` directive found" | same | same |
 | COOP (`origin-isolation`) | not applicable (`same-origin` is sent) | same | same |
 | Clickjacking (`clickjacking-mitigation`) | not applicable (`frame-ancestors 'none'`) | same | same |
@@ -88,7 +88,7 @@ Every page CSP except the two gate paths (below) now carries `require-trusted-ty
 
 Checked in headless Chromium 156 with the new header: the link page and its second tab, the copy buttons of the crypto example, the email reveal example, the public kit page and the retry page. No console warnings or errors and no `securitypolicyviolation` events.
 
-Declined: the two gate paths (`/kit/`, `/kit/retry/`) do not get the directive. The build does not load the Turnstile script today (the pages hold only the widget placeholder and make no third-party request), but their CSP pre-allows its origin for the planned widget, which would be third-party code. No source was found that says whether it works under `require-trusted-types-for` (two searches, one on Turnstile and Trusted Types, one on the TrustedHTML error with `api.js`; neither found a statement), and a break would stop the kit unlock once the widget is wired in. The rule in `build_csp` is general: a path that adds a third-party origin to `script-src` does not get the directive. Re-test with the live widget on staging, then drop the exception. The repo does not build a CSP for the Worker-served gated kit page, so there is nothing to change there; the Worker sends `default-src 'none'` only on its fixed 503 page.
+Declined: the two gate paths (`/kit/`, `/kit/retry/`) do not get the directive. The build now loads the Turnstile script on these two pages (and only when a site key is set), and their CSP allows its origin; it is third-party code. No source was found that says whether it works under `require-trusted-types-for` (two searches, one on Turnstile and Trusted Types, one on the TrustedHTML error with `api.js`; neither found a statement), and a break would stop the kit unlock. The rule in `build_csp` is general: a path that adds a third-party origin to `script-src` does not get the directive. Re-test with the live widget on staging, then drop the exception. The repo does not build a CSP for the Worker-served gated kit page, so there is nothing to change there; the Worker sends `default-src 'none'` only on its fixed 503 page.
 
 ### HSTS preload (not enabled)
 

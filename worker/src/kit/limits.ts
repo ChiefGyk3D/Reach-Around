@@ -97,13 +97,22 @@ export async function checkIpMinute(limiter: MinuteLimiter, key: string | null):
   }
 }
 
+/** Most counter rows one purge run deletes (one metered query); a backlog continues on the next run. */
+export const COUNTER_PURGE_BATCH = 500;
+
 /**
- * Delete counters older than COUNTER_KEEP_DAYS UTC days (hour rows included).
- * Not wired to the scheduler here: the retention task owns that.
+ * Delete counters older than COUNTER_KEEP_DAYS UTC days (hour rows included), at most `batch` rows
+ * per call. The hourly cron calls it once (src/index.ts), as one metered query.
  */
-export async function purgeOldCounters(db: D1Database, nowMs: number): Promise<number> {
+export async function purgeOldCounters(db: D1Database, nowMs: number, batch: number = COUNTER_PURGE_BATCH): Promise<number> {
   checkTime(nowMs);
+  if (!Number.isInteger(batch) || batch < 1 || batch > COUNTER_PURGE_BATCH) throw new RangeError("batch out of range");
   const cutoff = utcDay(Math.max(0, nowMs - COUNTER_KEEP_DAYS * DAY_MS));
-  const r = await db.prepare("DELETE FROM counters WHERE substr(day, 1, 10) < ? RETURNING key").bind(cutoff).all();
+  const r = await db
+    .prepare(
+      "DELETE FROM counters WHERE (key, day) IN (SELECT key, day FROM counters WHERE substr(day, 1, 10) < ?1 LIMIT ?2) RETURNING key",
+    )
+    .bind(cutoff, batch)
+    .all();
   return r.results.length;
 }

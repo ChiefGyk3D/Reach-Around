@@ -93,6 +93,8 @@
 <input id="kit-website" name="website" type="text" tabindex="-1" autocomplete="off">
 </div>
 <div class="cf-turnstile" data-action="gate"{% if form.site_key %} data-sitekey="{{ form.site_key }}"{% endif %}></div>
+{% if form.site_key %}<script src="{{ form.script }}" async defer></script>
+{% endif %}
 <noscript><p class="kit-note">The check before the details needs JavaScript. Turn it on for this page, or ask the owner of this site for the details.</p></noscript>
 <button class="kit-submit ra-c-btn{% if framed and frame_plan %}{{ frames.cls("cta") }}{% endif %}" type="submit">Show the details</button>
 </form>

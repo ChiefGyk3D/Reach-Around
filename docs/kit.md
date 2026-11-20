@@ -183,7 +183,8 @@ storage, makes no request and adds no third-party script. It is one small
 same-origin file, `static/zone.js`, loaded with `defer` and covered by the
 existing CSP (`script-src 'self'`; no change). The menu is hidden until the
 script runs, so with JavaScript off the page is plain UTC. The gated page, the
-retry page and the PDF carry no script and stay UTC.
+retry page and the PDF carry no display-zone script and stay UTC (the kit and
+retry pages do load the Turnstile script, see below).
 There is no setting to turn it on: it is part of the public kit page.
 
 If the kit has gated content, the page explains the gate and shows the form.
@@ -197,13 +198,13 @@ The form is plain HTML that works with no script on your side. It has:
   never fills it; the Worker should treat any value as a bot;
 - an empty `div` with class `cf-turnstile` and `data-action="gate"`, the slot
   for the Turnstile widget. It carries `data-sitekey` when
-  `kit.turnstile_site_key` is set. The Turnstile response is added to the form by
-  Turnstile's own script as `cf-turnstile-response`.
+  `kit.turnstile_site_key` is set. Turnstile's own script, loaded on the kit and
+  retry pages only (below), renders the widget there and adds the response to the
+  form as `cf-turnstile-response`.
 
-There are no hidden fields. The form posts to a placeholder action
-(`/kit/retry/`) until the Worker route exists (D1, #263); a post there lands on
-the retry page, which is the fail-closed behavior. When the route ships, one
-constant (`GATE_ACTION` in `reach_around/site/kit.py`) becomes `/k/gate`.
+There are no hidden fields. The form posts to the Worker route `/k/gate`
+(`GATE_ACTION` in `reach_around/site/kit.py`); every refusal there sends the
+visitor to the retry page, which carries the same form.
 
 The page says plainly that the address is not checked and nothing is sent to it,
 and links to the privacy page, which lists what the gate collects and for how
@@ -223,9 +224,18 @@ No other path gets the Turnstile origin, and no `unsafe-*`, wildcard or `data:`
 source is added. The existing per-path exception for live-tab pages (their own
 `frame-src` for the player origins) is unchanged. The gated
 page (`kit.html`, served by the Worker) is not part of `_headers`; the Worker
-sets its headers. This change only allows the origin. The page does not load
-Turnstile's script yet, so the build still makes no third-party request and the
-widget slot stays empty until that script tag lands.
+sets its headers.
+
+**The Turnstile script.** The two gate pages carry one tag,
+`<script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer>`,
+only when `kit.turnstile_site_key` is set. It uses Turnstile's implicit rendering:
+the script finds the `cf-turnstile` container (site key and action) and adds the
+response field to the form, so the site needs no script of its own for it and no
+inline code, and the policy above is all it needs. No other page, and not the
+gated page, loads it. A test pins that the page names exactly that origin, that
+the same origin is in the page's policy, and that no other page changes.
+Turnstile is third-party code outside this repository, so the measured scores in
+[performance.md](performance.md) do not include it.
 
 ### Retry page
 
@@ -582,6 +592,117 @@ delete their address sooner, use `reach-around leads delete` (dry run by
 default, SQL only with `--yes`, applied by you with `wrangler`). The numbers,
 the steps and what is not covered are in [privacy.md](privacy.md).
 
+## The gate routes (Worker)
+
+`POST /k/gate` and `GET /k/view` live in `worker/src/kit/gate.ts`; the gate
+form posts to `/k/gate`. They ship off at the cutover (`features.kit_gate`).
+
+- **Every refusal of a real request is the same answer** (a 303 to
+  `/kit/retry/`, no body, no cookie): wrong origin, content type, size, user
+  agent, address, limiter, budget, Turnstile, a bad binding. A refused view goes
+  to `/kit/`, including when the page itself is missing or the store fails (a
+  database read error on the lead or the floor also refuses, never opens): only
+  the closed-vocabulary log says which. **Exceptions, stated plainly:** the kill
+  switch answers the fixed 503 page for every method; `GET /k/gate` and any
+  method but GET or HEAD on `/k/view` get an empty 404; any other path under
+  `/k/` never reaches the gate (see below). Nothing before a passed Turnstile
+  check writes to the database.
+- **At the lead cap the answer does not change.** Once `MAX_LEADS` leads are
+  stored, or the per-day new-lead cap (100 a day, a constant in
+  `worker/src/kit/gate.ts`) is spent, a new address is unlocked exactly like a
+  known one but is not stored, so the visitor cannot tell the two apart and
+  invented addresses cannot lock real visitors out. The cookie carries an id
+  that looks like a lead id and is marked by a keyed tag only the Worker can
+  compute (`worker/src/kit/unstored.ts`). **What you lose at the cap:** those
+  addresses are not stored (and so not counted, not purged, not in any export)
+  until old leads age out; the unlock alert still reaches your alert sink, and
+  the closed health alert `lead_cap_reached` (docs/alerts.md) tells you once a
+  day while it is happening. Existing leads behave as before.
+- **Single use.** Turnstile alone is not replay protection (a replay can briefly
+  succeed), so a passed token is also claimed once in the `counters` table, in
+  the bucket of the UTC day of the vendor's `challenge_ts`, which is the same
+  whenever the token is replayed, so the claim holds across midnight and
+  concurrent requests race on one row. A pass with no usable `challenge_ts`, or
+  one more than 10 minutes from the Worker's clock, is refused. These rows and
+  the hourly route counters are purged after two days by the hourly job (one
+  query, last in the run).
+- **Limits, in the order a request meets them.** (1) `GATE_LIMITER`: each client
+  has its own gate allowance, 1 per 60 seconds documented, well under the hourly
+  budget. The view has its own binding, `KIT_VIEW_LIMITER` (not `VIEW_LIMITER`,
+  which is the page-view beacon's), 4 per 60 seconds per client
+  documented, so a visitor can reload several times a minute, use the back
+  button or return from the inquiry form. At 4 a minute one address is at most
+  240 an hour, below `ROUTE_BUDGET_VIEW` (300), so one client alone can never
+  spend an hour's view budget; a test pins that the allowance times 60 stays
+  below the budget. Two or more clients can spend it (a refusal, never a bill);
+  the budget and the edge rule (issue #613) cover that. (2) `GATE_CHECK_LIMITER`: an
+  allowance per coarse network (a /24 for IPv4, a /48 for IPv6, hashed with a
+  key and a label of its own, never stored) on requests about to reach
+  Turnstile, 20 per 60 seconds per network documented, a binding with no
+  database write; it caps vendor calls, and one network can use up only its own
+  share, so no group of hosts can starve visitors on other networks.
+  (3) `ROUTE_BUDGET_GATE` (default 150 an hour) is charged only after the body
+  parsed and Turnstile passed, so junk posts cannot spend it. A client over its
+  allowance spends no budget. The required bindings are
+  `GATE_LIMITER` and `GATE_CHECK_LIMITER` for the gate and `KIT_VIEW_LIMITER`
+  for the view; if one is missing that route refuses.
+  A rate rule at the edge (issue #613) is another layer in front; the gate does
+  not depend on it for correctness.
+- **Per-location busy signal (a monitoring hint only).** The optional
+  `GATE_WATCH_LIMITER` binding has one shared key and a limit set far above
+  expected peak (600 per 60 seconds documented). Cloudflare counts a rate limit
+  separately in each of its locations, so this is not an account-wide total:
+  traffic spread across locations can exceed the number without raising it, and
+  a single regional spike can raise it. When it reports over its limit nothing
+  is refused: the request goes on and the owner gets the closed health alert
+  `gate_busy`, at most once a day (docs/alerts.md). A missing binding switches
+  the signal off.
+- **Daily alerts and a down sink.** `lead_cap_reached` and `gate_busy` each
+  take the day's claim before sending and give it back when no channel accepted
+  the message, so a later request tries again (after the alert dispatcher's own
+  10 minute window for identical messages).
+- **New-lead admission.** The daily new-lead unit is taken by one conditional
+  statement and given back only after a clear result that shows no row was
+  created (the cap refused, or a concurrent request for the same address
+  created it first). If the database call fails in a way that leaves it unknown
+  whether the row was written, the unit is kept. Guaranteed: the day's counter
+  is never below the rows created, so the daily cap cannot be exceeded. After
+  such a failure the counter can be above the rows (a unit lost for the day),
+  never below.
+- **Other `/k/` paths** (anything but `/k/gate`, `/k/view` and the inquiry
+  routes) never reach the gate: they keep the Worker's every-path-204 answer.
+  The plan's table said 404; this is an intentional difference. The empty 404
+  above is only for the wrong method on the two gate routes.
+- **Session floor.** `leads.session_floor_ts` is in milliseconds (plan 3 Task 15
+  says seconds; that is superseded, and migration 0009 is not edited). Only
+  `setSessionFloor` in `worker/src/kit/leads.ts` writes it (and
+  `setUnstoredSessionFloor` writes the one kit-wide floor for unlocks that stored
+  no lead). A cookie issued in a second at or before the floor's second stops
+  working; a lead that passes the gate again gets a new cookie. **Nothing in
+  this change writes either floor yet**: the revoke task that will call them is
+  not built, so until it lands a leaked cookie works for its whole lifetime,
+  24 hours by default (`TOKEN_TTL_SECONDS`).
+- **Counter growth.** Each solved challenge writes one single-use claim row,
+  after Turnstile passes and before the business budget is charged. While the
+  hour's gate budget is spent the gate reads that budget row first (a SELECT, no
+  write) and refuses without writing the claim; under budget, a request that
+  loses the race for the last unit can still leave one claim row. The claim
+  writes are bounded per network, not globally and not in the modeled worst
+  case (the `gate x 5` figure in `docs/deploy.md`): the allowance in front of
+  Turnstile (`GATE_CHECK_LIMITER`, 20 a minute per coarse network) allows at most
+  1,200 claims an hour and about 28,800 rows a day per network, about twice that
+  counting the purge deletes, multiplied by the number of networks and limited
+  by the cost of solving the challenge. The hourly purge deletes at most 500
+  counter rows a run, and is unchanged.
+- **Accepted risk: spending the new-lead cap.** A client that passes Turnstile
+  can use plus-tag or invented addresses to spend the per-day new-lead cap (100)
+  or `MAX_LEADS`. Visitors are still unlocked; the owner loses storage of later
+  addresses until the day or old leads roll over. The `lead_cap_reached` alert
+  tells the owner, and the unlock alert still carries each address.
+- **Privacy.** The unlock alert carries the visitor's address to the configured
+  alert sink. The privacy wording for the gate must be published before the
+  gate is turned on.
+
 ## Accessibility and privacy
 
 - Landmarks: one `main`, a skip link, a `nav` when there are several tabs, and
@@ -590,6 +711,7 @@ the steps and what is not covered are in [privacy.md](privacy.md).
   `th scope`, a hidden caption, and `time` elements for dates.
 - Text, borders and buttons read the same `--ra-*` color tokens as the rest of
   the site, so your theme's contrast choices apply. Targets are at least 44 px.
-- No inline script, no inline style, no event attributes, no third-party
-  request, no cookie set by the static pages. The privacy page (generated from
+- No inline script, no inline style, no event attributes, no cookie set by the
+  static pages, and no third-party request except Turnstile's script on the kit
+  and retry pages when a site key is set. The privacy page (generated from
   `features.kit_gate`) covers what the Worker collects once the gate is live.

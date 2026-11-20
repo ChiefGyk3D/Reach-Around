@@ -33,6 +33,8 @@ export interface TurnstileOptions {
   hostname?: string;
   /** Test seam. Default 3000. */
   timeoutMs?: number;
+  /** Called once, only when the check passed, with the vendor's challenge time (ms) or null. */
+  onVerified?: (r: { challengeMs: number | null }) => void;
 }
 
 /**
@@ -267,6 +269,13 @@ export async function verifyTurnstile(
     if (codes !== undefined && (!Array.isArray(codes) || codes.length > 0)) return false;
     if (r.action !== action) return false;
     if (typeof r.hostname !== "string" || r.hostname.toLowerCase() !== host) return false;
+    if (opts.onVerified !== undefined) {
+      // `challenge_ts` is the time the visitor solved the challenge (an ISO 8601 text per the vendor's
+      // response shape). It is the same on every siteverify answer for one token, so a caller can key a
+      // one-time claim on it. Null when absent or not a parsable time.
+      const ts = typeof r.challenge_ts === "string" ? Date.parse(r.challenge_ts) : Number.NaN;
+      opts.onVerified({ challengeMs: Number.isFinite(ts) ? ts : null });
+    }
     return true;
   } catch {
     return false;

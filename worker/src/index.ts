@@ -4,8 +4,10 @@ import { QueryMeter, meteredDb, queryBudget } from "./d1budget";
 import { handleClick, MAX_URL_LENGTH, type Env as ClickEnv } from "./click";
 import { HEALTH_MIN_BUDGET, HEALTH_QUERIES, runHealth, type HealthEnv } from "./health";
 import { handleLive, LIVE_CRON, LIVE_ROUTE, runLivePoller, type LiveEnv } from "./live";
+import { handleGate, isGateRoute, type GateEnv } from "./kit/gate";
 import { handleInquiry, isInquiryRoute, type InquiryEnv } from "./kit/inquiry";
 import { LEAD_PURGE_QUERIES, purgeExpiredLeads } from "./kit/leadretention";
+import { purgeOldCounters } from "./kit/limits";
 import { logEvent } from "./kit/log";
 import { rollupClickFunnel } from "./clickfunnel";
 import { loadSites } from "./sites";
@@ -21,7 +23,11 @@ export type { ViewEnv } from "./view";
 type WorkerEnv = ClickEnv &
   Omit<ViewEnv, "DB" | "SITES" | "SITE_HOST" | "PAGE_IDS" | "LINK_IDS"> &
   LiveEnv &
-  Partial<Pick<InquiryEnv, "INQUIRY_LIMITER" | "TOKEN_HMAC_KEY" | "TOKEN_HMAC_KEY_PREVIOUS" | "KIT_KILL" | "ALERTS_CONFIG">>;
+  Partial<Pick<InquiryEnv, "INQUIRY_LIMITER" | "TOKEN_HMAC_KEY" | "TOKEN_HMAC_KEY_PREVIOUS" | "KIT_KILL" | "ALERTS_CONFIG">> &
+  Partial<Pick<GateEnv, "KIT" | "GATE_LIMITER" | "TURNSTILE_SECRET" | "TOKEN_TTL_SECONDS">>;
+
+/** D1 queries the kit counter purge takes from the invocation's meter. */
+const COUNTER_PURGE_QUERIES = 1;
 
 /** The smallest QUERY_BUDGET that guarantees the lead purge its query (see scheduled()). */
 export const LEAD_FIRST_MIN_BUDGET = 9;
@@ -56,6 +62,16 @@ function isKitInquiryRoute(request: Request): boolean {
   }
 }
 
+function isKitGateRoute(request: Request): boolean {
+  // No analytics URL cap here: the gate ignores the query, and an oversize URL must still reach its
+  // origin and cookie checks and get its fixed redirect, not fall through to the click route's 204.
+  try {
+    return isGateRoute(new URL(request.url).pathname);
+  } catch {
+    return false;
+  }
+}
+
 function isLiveRoute(request: Request): boolean {
   // Exact path only (no trailing slash, no prefix). The query string is
   // ignored by the handler. Oversize URLs are never parsed here.
@@ -75,13 +91,16 @@ export default {
    * exception (plus the token route below, which returns a signed token it stores nowhere, and only while
    * BEACON_MODE is observe or enforce; any other outcome there is the same empty 204): `GET /e/live` (src/live.ts), which returns only booleans and
    * timestamps about whether two channels are live. Any other method on
-   * /e/live is the same empty 204. The business inquiry form (src/kit/inquiry.ts) owns
+   * /e/live is the same empty 204. The media kit gate (src/kit/gate.ts) owns `POST /k/gate`, which
+   * stores a lead and sets the unlock cookie, and `GET /k/view`, which serves the gated page from KV
+   * only with that cookie. The business inquiry form (src/kit/inquiry.ts) owns
    * `POST /k/inquiry` and two fixed GET result pages; it stores nothing.
    */
-  async fetch(request: Request, env: WorkerEnv): Promise<Response> {
+  async fetch(request: Request, env: WorkerEnv, ctx?: ExecutionContext): Promise<Response> {
     if (isLiveRoute(request)) return handleLive(request, env);
     if (isViewRoute(request)) return handleView(request, env);
     if (isMintRoute(request)) return handleMint(request, env as unknown as MintEnv);
+    if (isKitGateRoute(request)) return handleGate(request, env as unknown as GateEnv, ctx === undefined ? {} : { ctx });
     if (isKitInquiryRoute(request)) return handleInquiry(request, env as unknown as InquiryEnv);
     return handleClick(request, env);
   },
@@ -177,6 +196,15 @@ export default {
           // Next run retries; every step is a predicate on age.
         }
         if (!leadsFirst) await purgeLeads();
+        // Kit counters (route budgets and the single-use token claims): rows older than two UTC days,
+        // at most COUNTER_PURGE_BATCH per run, one metered query. It runs last, on what the meter has
+        // left, so it can never take a query from the rollup or the lead purge; a backlog continues
+        // on the next hourly run.
+        try {
+          await purgeOldCounters(meteredDb(env.DB, meter.slice(COUNTER_PURGE_QUERIES)), now);
+        } catch {
+          logEvent("purge", "failed", "other");
+        }
       })(),
     );
   },

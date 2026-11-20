@@ -22,8 +22,10 @@ The CSP exception for the Turnstile widget lives here too (``gate_path_extras``,
 #257): ``_headers`` gives ``https://challenges.cloudflare.com`` to ``script-src``
 and ``frame-src`` on the two exact widget paths (``GATE_PATHS``), and only when
 the kit has a gate form and a ``turnstile_site_key``. No other path gets it.
-Not here, on purpose: the Turnstile script tag. The widget slot is markup only,
-so the pages still make no third-party request.
+The same two pages, and only when a site key is set, carry the Turnstile script
+tag (``TURNSTILE_SCRIPT``, implicit rendering, ``async defer``, no inline code):
+it is their one third-party request. No other page and not the gated page loads
+it (``tests/site/test_kit_csp.py::test_only_the_gate_pages_load_the_vendor_script``).
 """
 
 from __future__ import annotations
@@ -65,10 +67,9 @@ RETRY_PAGE = Path("kit") / "retry" / "index.html"
 # The gated page's name inside the gated directory. No public file may use it.
 GATED_FILE = Path("kit.html")
 
-# Placeholder until the Worker route exists (D1, #263); then this becomes
-# "/k/gate" in the change that adds the route. Until then a post lands on the
-# static retry page, which fails closed.
-GATE_ACTION = "/kit/retry/"
+# The gate form posts to the Worker route (worker/src/kit/gate.ts, GATE_ROUTE, #263).
+# Every refusal there redirects to the retry page, which carries the same form.
+GATE_ACTION = "/k/gate"
 # The business inquiry form posts to the Worker route (worker/src/kit/inquiry.ts).
 # It is on the gated page only, which the Worker serves to an unlocked visitor.
 INQUIRY_ACTION = "/k/inquiry"
@@ -84,6 +85,12 @@ GUARD_MIN_LENGTH = 6
 # origin and nothing for ``connect-src`` (verified). ``connect-src`` stays
 # ``'self'``: add the origin there only if a browser run names a violation.
 TURNSTILE_ORIGIN = "https://challenges.cloudflare.com"
+# The client script, loaded with implicit rendering: it finds the ``cf-turnstile``
+# container (with its site key and action) and adds the ``cf-turnstile-response``
+# field to the enclosing form. Implicit rendering needs no script of our own and no
+# inline code, so the policy needs nothing beyond the origin above. Only the gate
+# pages carry the tag, and only when a site key is set.
+TURNSTILE_SCRIPT = f"{TURNSTILE_ORIGIN}/turnstile/v0/api.js"
 # The pages that render the widget, as ``_headers`` paths. Exact paths, no
 # splat: nothing else under /kit/ and no other page is relaxed.
 GATE_PATHS = ("/kit/", "/kit/retry/")
@@ -877,6 +884,7 @@ def render_kit(
         form = {
             "action": GATE_ACTION,
             "site_key": kit.turnstile_site_key,
+            "script": TURNSTILE_SCRIPT,
             "categories": _categories(kit),
         }
     pages: dict[Path, str] = {}

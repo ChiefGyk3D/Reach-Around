@@ -141,6 +141,58 @@ crons = ["5 * * * *"]
 # LEAD_RETENTION_DAYS = "30"       # days a lead is kept (1 to 365); invalid falls back to 30.
 #                                  # The deploy writes this from privacy.lead_retention_days in site.yaml
 
+# Media kit gate (POST /k/gate and GET /k/view, src/kit/gate.ts). Placeholders only; not deployed.
+# It needs: the KV binding KIT holding the gated page at key kit/v1, the limiter GATE_LIMITER, the
+# secrets TOKEN_HMAC_KEY (32+ bytes), TURNSTILE_SECRET and VIEW_HASH_SECRET, the Worker route
+# pattern covering /k/* on the site host, and `kit_unlocked` in the alerts events for the owner
+# alert. A missing or malformed piece makes every gate request answer the usual retry redirect and
+# stores nothing. The kit gate ships OFF at the cutover (features.kit_gate).
+# GATE_LIMITER is the gate's per-client allowance: one request per client per 60 seconds, the
+# strictest the binding allows, so one client can spend at most 60 of an hour's ROUTE_BUDGET_GATE (150).
+# KIT_VIEW_LIMITER is the view route's own per-client binding (not VIEW_LIMITER, the page-view beacon
+# route's): 4 per 60 seconds, so a visitor can reload several times a minute, use the back button or
+# return from the inquiry form. Arithmetic: 4 a minute is at most 240 an hour from ONE address, below
+# ROUTE_BUDGET_VIEW (300), so one client alone can never spend an hour's view budget (a test pins
+# limit x 60 < the budget; keep it so if you change either). Two or more clients can; that is what the
+# budget (a refusal, never a bill) and the edge rate rule (issue #613) cover. Required for /k/view.
+# GATE_CHECK_LIMITER is an allowance PER COARSE NETWORK (a /24 or /48, keyed hash, never stored) on
+# requests about to reach Turnstile; it caps vendor calls and writes nothing to D1, and one network
+# cannot use up another's share. Required. 20 per 60 seconds per network is the documented value.
+# ROUTE_BUDGET_GATE is charged only after a request has parsed and passed Turnstile. An edge rate rule
+# (issue #613) is another layer in front, not needed for correctness.
+# GATE_WATCH_LIMITER is OPTIONAL and a per-location busy signal, a monitoring hint only: one shared key,
+# counted separately in each Cloudflare location (not an account-wide total), set far above expected
+# peak. Traffic spread across locations can exceed the number without raising it, and one regional
+# spike can raise it. Over its limit nothing is refused; the owner gets the closed health alert
+# `gate_busy` once a day.
+# [[kv_namespaces]]
+# binding = "KIT"
+# id = "00000000000000000000000000000000" # placeholder, not a real id
+# [[ratelimits]]
+# name = "GATE_LIMITER"
+# namespace_id = "1004" # placeholder, not a real id
+#   [ratelimits.simple]
+#   limit = 1
+#   period = 60
+# [[ratelimits]]
+# name = "KIT_VIEW_LIMITER"
+# namespace_id = "1007" # placeholder, not a real id
+#   [ratelimits.simple]
+#   limit = 4
+#   period = 60
+# [[ratelimits]]
+# name = "GATE_CHECK_LIMITER"
+# namespace_id = "1005" # placeholder, not a real id
+#   [ratelimits.simple]
+#   limit = 20
+#   period = 60
+# [[ratelimits]]
+# name = "GATE_WATCH_LIMITER"
+# namespace_id = "1006" # placeholder, not a real id
+#   [ratelimits.simple]
+#   limit = 600
+#   period = 60
+
 # Business inquiry form behind the media kit (POST /k/inquiry, src/kit/inquiry.ts). It needs
 # TOKEN_HMAC_KEY (the gate's signing secret, so only an unlocked visitor can post), the alert
 # channels with the event `inquiry_received` enabled (the inquiry is delivered as an owner alert and
