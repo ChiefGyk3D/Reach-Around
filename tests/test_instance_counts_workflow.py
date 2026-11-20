@@ -618,3 +618,38 @@ def test_without_flock_the_history_is_not_installed(tmp_path: Path) -> None:
     assert "nothing was overwritten" in r.stderr
     assert target.read_text() == "old\n"
     assert (numbers.read_bytes() if numbers.exists() else None) == numbers_before
+
+
+def test_numbers_json_is_not_installed_when_the_history_changes_before_the_lock(
+    tmp_path: Path,
+) -> None:
+    """A redaction between the first history check and the lock leaves both
+    outputs alone: numbers.json is installed only together with the history."""
+    real_flock = shutil.which("flock")
+    if real_flock is None:
+        pytest.skip("flock is not installed")
+    root, env = _refresh_fixture(tmp_path)
+    (root / "history").mkdir(exist_ok=True)
+    target = root / "history" / "social.jsonl"
+    target.write_text("old\n")
+    numbers = root / "numbers.json"
+    numbers.write_text('{"version": 1, "platforms": {}}\n')
+    numbers_before = numbers.read_bytes()
+    # The shim runs when the script reaches the lock, which is after the first
+    # history check: it redacts (replaces the file), then takes the real lock.
+    shim = tmp_path / "bin" / "flock"
+    shim.write_text(
+        "#!/bin/bash\n"
+        f'printf "redacted\\n" > "{target}.new"\n'
+        f'mv -f "{target}.new" "{target}"\n'
+        f'exec "{real_flock}" "$@"\n',
+        encoding="utf-8",
+    )
+    shim.chmod(0o755)
+    r = _run_refresh(root, env, "social.jsonl", tmp_path)
+    assert r.returncode != 0
+    assert "history file changed while the refresh ran" in r.stderr
+    assert "nothing was overwritten" in r.stderr
+    assert target.read_text() == "redacted\n"
+    assert numbers.read_bytes() == numbers_before  # the message is true
+    assert list(root.glob(".numbers.*")) == []  # no staged leftover

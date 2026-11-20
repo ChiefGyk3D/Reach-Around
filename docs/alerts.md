@@ -204,7 +204,7 @@ Worker.
 The same hourly step writes one row per UTC day into `analytics_coverage`
 (migration `0014_health.sql`): 24 letters, one per hour, for the hour that just
 ended. `o` collecting, `k` the view kill switch was on when sampled, `q` the
-account view budget had been reached, `p` some sites (not all) were switched off by `VIEWS_KILL_SITES`, `-` no sample (the Worker did not run). `k` means `VIEWS_KILL` or every configured site named. Coverage is **account-wide, not per site**: the row cannot say which site `p` was, so a report for one site shows a `p` day as partial with the reason `site_kill_switch` and says coverage is account-wide. An exported table with no rows is "not monitored", never "complete".
+account view budget had been reached, `p` some sites (not all) were switched off by `VIEWS_KILL_SITES`, `-` no sample (the Worker did not run, or `SCHEDULED_KILL` was on). `k` means `VIEWS_KILL` or every configured site named. Coverage is **account-wide, not per site**: the row cannot say which site `p` was, so a report for one site shows a `p` day as partial with the reason `site_kill_switch` and says coverage is account-wide. An exported table with no rows is "not monitored", never "complete".
 The row holds no count and no visitor data and is written whether or not alerts
 are on. The migration is a plain `CREATE TABLE`: a pre-existing table of that
 name makes it fail instead of being accepted. The health step also checks the

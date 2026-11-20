@@ -12,7 +12,7 @@ import { logEvent } from "./kit/log";
 import { rollupClickFunnel } from "./clickfunnel";
 import { loadSites } from "./sites";
 import { purgeOldEvents } from "./retention";
-import { handleView, type ViewEnv } from "./view";
+import { flagOn, handleView, type ViewEnv } from "./view";
 import { purgeViews } from "./viewretention";
 import { rollupClosedDays } from "./viewrollup";
 
@@ -129,9 +129,15 @@ export default {
       ROLLUP_MAX_ROWS_PER_DAY?: string;
       UTM_ALLOWLIST?: string;
       LEAD_RETENTION_DAYS?: string;
+      SCHEDULED_KILL?: string;
     },
     ctx: ExecutionContext,
   ): Promise<void> {
+    // Maintenance switch (SCHEDULED_KILL): "1" or "true" (any case) makes every scheduled run return at
+    // once, before any D1 read or write and before the Live poller. Read on every run, never cached, so a
+    // deploy takes effect for the next trigger. Anything else, or unset, leaves the jobs on. docs/cutover-runbook.md
+    // sets it with the other two switches while migrations run.
+    if (flagOn(env.SCHEDULED_KILL)) return; // CONTROL:scheduled-kill
     if (controller.cron === LIVE_CRON) {
       ctx.waitUntil(runLivePoller(env, Date.now()));
       return;
