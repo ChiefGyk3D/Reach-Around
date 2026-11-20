@@ -353,7 +353,7 @@ real isolation. That is an owner decision, tracked in issue #206.
 **Service-token fallback.** The `DOPPLER_TOKEN` secret is emergency-only. It is
 a long-lived credential stored in GitHub; do not leave it set while OIDC works.
 
-**CI config.** The test deploy reads the `dev` config. It needs only the
+**Test deploy credentials (the `dev` config).** The test deploy reads the `dev` config, not `ci`. It needs only the
 rotating key value (`CLOUDFLARE_KEY_VALUE`), and the workflow requests that
 name alone. Runtime secrets such as the Mailgun key stay in `stg` and `prd`.
 The optional `CLOUDFLARE_PURGE_TOKEN` is not in `dev` either: it stays a GitHub
