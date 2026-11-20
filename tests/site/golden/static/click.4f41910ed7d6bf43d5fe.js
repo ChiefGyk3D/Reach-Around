@@ -149,6 +149,18 @@
     }
   }
 
+  // Global Privacy Control and Do Not Track are judged by dntOn/optedOut in the shared block above,
+  // the same way view.js does. Read at click time, so a signal that changes while the page is open still wins.
+  // Fails toward privacy: if the signals cannot be read (a getter that throws),
+  // the visitor counts as opted out and nothing is sent.
+  function optedOutSafe() {
+    try {
+      return optedOut();
+    } catch (ignored) {
+      return true;
+    }
+  }
+
   var parts = [];
   var source = paramLabel("s");
   var hop = paramLabel("h");
@@ -214,16 +226,75 @@
     // Counting is best effort; never get in the way of the page.
   }
 
-  document.addEventListener("click", function (event) {
+  function stripPing(link) {
+    try {
+      if (link.hasAttribute("ping")) {
+        link.removeAttribute("ping");
+      }
+    } catch (ignored) {
+      // Nothing more can be done for this link.
+    }
+  }
+
+  // Which of our links (if any) an event came from.
+  function linkOf(event) {
     var node = event.target;
     while (node && node.nodeType === 1 && !(node.hasAttribute && node.hasAttribute("data-link-id"))) {
       node = node.parentNode;
     }
-    if (!node || node.nodeType !== 1) {
+    return node && node.nodeType === 1 ? node : null;
+  }
+
+  // A visitor who opted out must not carry a ping on any link: not only when
+  // clicked, but also when it is opened without a click (context menu, middle
+  // button). Strip at load, and again on those other gestures in case the
+  // signal changed while the page was open. These never send anything.
+  // A ping removed here is deliberately not put back if the signal is cleared
+  // later in the same page view: that fails toward privacy, and a reload reads
+  // the signal again.
+  function stripAllIfOptedOut() {
+    if (!native || !optedOutSafe()) {
+      return;
+    }
+    try {
+      var links = document.querySelectorAll("[data-link-id][ping]");
+      for (var i = 0; i < links.length; i++) {
+        stripPing(links[i]);
+      }
+    } catch (ignored) {
+      // Best effort; the click-time strip still applies.
+    }
+  }
+  stripAllIfOptedOut();
+
+  function otherGesture(event) {
+    if (!native || !optedOutSafe()) {
+      return;
+    }
+    var link = linkOf(event);
+    if (link) {
+      stripPing(link);
+    }
+  }
+  document.addEventListener("auxclick", otherGesture);
+  document.addEventListener("contextmenu", otherGesture);
+
+  document.addEventListener("click", function (event) {
+    var node = linkOf(event);
+    if (!node) {
       return;
     }
     var id = node.getAttribute("data-link-id");
     if (!id || !ID.test(id)) {
+      return;
+    }
+    if (optedOutSafe()) {
+      // Send nothing. A browser that pings on its own does so from the
+      // `ping` attribute, so take that off; the link itself is untouched and
+      // navigation goes ahead as before.
+      if (native) {
+        stripPing(node);
+      }
       return;
     }
     try {
