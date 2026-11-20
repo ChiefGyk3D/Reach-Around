@@ -614,10 +614,10 @@ Requirements for the rewritten disclosure (plain words, American English):
    cleanup runs, which can be briefly delayed (the purge is bounded and best
    effort). A test pins the page's rule to the Worker's.
 7. Say that a browser sending Global Privacy Control or Do Not Track is not
-   counted, in both collection modes. This holds for page views only. Clicks are
-   counted even when the signal is sent, and the click item on the page says so
-   (owner decision 2026-11-19, #598); a follow-up makes clicks honor the signal
-   and then the page drops the exception.
+   counted, in both collection modes. Clicks honor the signal too (`click.js` and
+   `worker/src/click.ts` both check it, #599), and the click item on the page
+   says so (owner copy 2026-11-19). A test fails if the page makes that promise
+   while either click path does not check the signal.
 8. Say that totals for small groups are merged into "other".
 9. State that records for a specific person cannot be deleted because the
    records do not identify anyone, and say how long raw records live (item 6).

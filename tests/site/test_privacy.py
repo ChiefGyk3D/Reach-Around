@@ -74,9 +74,41 @@ def test_default_disclosure_lists_click_counts_and_says_no_ip_address() -> None:
     assert "Hourly records are deleted after 90 days" in text
 
 
-def test_click_item_says_clicks_are_counted_with_gpc_or_dnt() -> None:
+def test_click_item_says_clicks_honor_gpc_and_dnt() -> None:
     what = collected_items(make_config())[0].what
-    assert "Global Privacy Control and Do Not Track do not stop click counting" in what
+    assert (
+        "The site honors Global Privacy Control and Do Not Track for link clicks, "
+        "just as it does for page views. If your browser sends either signal, the "
+        "click is not counted. Nothing about it is sent or stored. The link still "
+        "opens normally."
+    ) in what
+    assert "do not stop click counting" not in what
+
+
+def test_page_promise_matches_click_code_in_both_places() -> None:
+    """The page says clicks honor the signal only if both click paths check it."""
+    what = collected_items(make_config())[0].what
+    promised = "honors Global Privacy Control and Do Not Track for link clicks" in what
+    click_js = (STATIC / "click.js").read_text(encoding="utf-8")
+    click_ts = (WORKER / "click.ts").read_text(encoding="utf-8")
+    assert click_js and click_ts  # the guard collected something
+    assert promised == (checks_signal_js(click_js) and checks_signal_ts(click_ts))
+    assert promised
+
+
+def checks_signal_js(source: str) -> bool:
+    return "globalPrivacyControl" in source and "doNotTrack" in source
+
+
+def checks_signal_ts(source: str) -> bool:
+    return "Sec-GPC" in source and '"DNT"' in source
+
+
+def test_the_signal_guard_bites() -> None:
+    assert not checks_signal_js("navigator.sendBeacon(u)")
+    assert not checks_signal_js("navigator.globalPrivacyControl")
+    assert not checks_signal_ts('request.headers.get("Sec-GPC")')
+    assert checks_signal_ts('get("Sec-GPC") === "1" || get("DNT") === "1"')
 
 
 def test_click_disclosure_says_none_vs_other_and_keeps_totals_apart() -> None:
@@ -87,6 +119,7 @@ def test_click_disclosure_says_none_vs_other_and_keeps_totals_apart() -> None:
 
 
 WORKER = Path(__file__).resolve().parents[2] / "worker" / "src"
+STATIC = Path(__file__).resolve().parents[2] / "src" / "reach_around" / "site" / "static"
 
 
 def purge_call_arguments(source: str) -> list[int]:

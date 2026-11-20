@@ -42,6 +42,30 @@
     }
   }
 
+  // Global Privacy Control and Do Not Track, judged the same way view.js does:
+  // any of the three Do Not Track properties set to "1", "yes" or "true" (any
+  // case, spaces ignored) is an opt-out. Read at click time, so a signal that
+  // changes while the page is open still wins.
+  function dntOn(value) {
+    if (typeof value === "number") {
+      value = String(value);
+    }
+    if (typeof value !== "string") {
+      return false;
+    }
+    value = value.trim().toLowerCase();
+    return value === "1" || value === "yes" || value === "true";
+  }
+
+  function optedOut() {
+    return (
+      navigator.globalPrivacyControl === true ||
+      dntOn(navigator.doNotTrack) ||
+      (typeof window !== "undefined" && dntOn(window.doNotTrack)) ||
+      dntOn(navigator.msDoNotTrack)
+    );
+  }
+
   var parts = [];
   var source = paramLabel("s");
   var hop = paramLabel("h");
@@ -75,6 +99,15 @@
       return;
     }
     try {
+      if (optedOut()) {
+        // Send nothing. A browser that pings on its own does so from the
+        // `ping` attribute, so take that off; the link itself is untouched and
+        // navigation goes ahead as before.
+        if (native && node.hasAttribute("ping")) {
+          node.removeAttribute("ping");
+        }
+        return;
+      }
       if (native) {
         // The browser sends the ping itself; set it just before it does.
         if (query && node.hasAttribute("ping")) {

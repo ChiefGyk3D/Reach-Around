@@ -179,9 +179,11 @@ never together and never linked to a page view or a person; hourly records are
 deleted after 90 days (the Worker's fixed window in `worker/src/retention.ts`;
 `privacy.retention_days` accepts only 90 so the page cannot promise another
 number), daily counts after 90 days and monthly
-totals are kept up to 25 months; and clicks are counted even when the browser
-sends Global Privacy Control or Do Not Track (page views honor the signal,
-clicks do not yet; a follow-up issue changes that). The page is silent on the
+totals are kept up to 25 months; and clicks honor Global Privacy Control and
+Do Not Track as page views do: a browser sending either signal is not counted,
+nothing about the click is sent or stored, and the link still opens (`click.js`
+and the Worker's `click.ts` both check the signal, and a test fails if the page
+promises this while either one does not). The page is silent on the
 landing and hop counters because those tables are not collected yet; the
 sentence about them returns when they are switched on.
 

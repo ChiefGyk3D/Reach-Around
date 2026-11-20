@@ -162,6 +162,11 @@ def test_privacy_lists_every_derived_category_when_on() -> None:
 def test_privacy_says_nothing_about_page_views_when_off() -> None:
     off = collected_items(make_config())
     text = " ".join(f"{i.what} {i.why} {i.kept}" for i in off).lower()
+    # The click item's own signal sentence says "your browser" (#599); only that
+    # exact sentence is allowed, every other mention is still a failure.
+    signal = "if your browser sends either signal, the click is not counted."
+    assert signal in text
+    text = text.replace(signal, "")
     for needle in ("each view", "browser", "referring", "window size", "city"):
         assert needle not in text
 
