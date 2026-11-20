@@ -556,3 +556,39 @@ def test_a_printed_activity_count_is_also_a_base() -> None:
     assert group(block(recs), SHARE)["state"] == "withheld"
     recs[2] = rec("views_1d", 100_000, platform="youtube", provider=YT)
     assert group(block(recs), SHARE)["state"] == "ok"
+
+
+# --- a stored remainder alone ---------------------------------------------------
+
+
+@pytest.mark.parametrize("value", [1, 4, 5, 20])
+def test_a_group_whose_only_positive_cell_is_the_stored_other_is_withheld(
+    value: int,
+) -> None:
+    """A remainder made of one cell is that cell, and the stored value cannot
+    tell which; with no named cell beside it the group prints nothing."""
+    b = block([rec("fdemo_age_other", value)])
+    g = group(b, AGE)
+    assert g["state"] == "withheld" and g["rows"] == [] and g["other"] is None
+    assert "other" not in "\n".join(private_lines(b)).replace("(other", "")
+    assert [
+        r for r in private_csv_rows(b) if r[CSV_HEADER.index("status")] == "ok"
+    ] == []
+
+
+def test_zero_named_cells_beside_the_stored_other_are_still_alone() -> None:
+    recs = ages(("18_24", 0)) + [rec("fdemo_age_other", 20)]
+    assert group(block(recs), AGE)["state"] == "withheld"
+
+
+@pytest.mark.parametrize("value", [1, 4, 5, 20])
+def test_the_stored_other_beside_a_named_cell_follows_the_floor_rule(
+    value: int,
+) -> None:
+    recs = ages(("18_24", 40)) + [rec("fdemo_age_other", value)]
+    g = group(block(recs), AGE)
+    if value < 5:
+        # the small remainder and the named cell are merged into one line
+        assert g["rows"] == [] and g["other"] == 40 + value
+    else:
+        assert rows_of(g) == {"18-24": 40} and g["other"] == value

@@ -118,6 +118,10 @@ def _count_group(
     cells: dict[str, int], stored_other: int, floor: int
 ) -> tuple[str, list[dict[str, Any]], int | None]:
     """(state, printed rows, remainder) for a group of count cells."""
+    if stored_other > 0 and not any(v > 0 for v in cells.values()):
+        # A remainder made of one cell is that cell, and the stored value cannot
+        # say whether it is: with no named cell beside it nothing prints.
+        return "withheld", [], None
     pool = dict(cells)
     if stored_other > 0:
         pool[OTHER] = stored_other

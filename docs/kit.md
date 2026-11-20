@@ -134,7 +134,8 @@ Three derived figures follow from that:
   member, so the combined total is not printed while any number that counts toward
   it is 1 to 4.
 - **30-day change.** A tab's change is not printed when its followers are under the
-  floor, or when any whole earlier count under the floor would print exactly this
+  floor (zero included: "-100.0%" fits every earlier count, so nothing is lost by
+  holding it back), or when any whole earlier count under the floor would print exactly this
   change (the check uses the text a reader sees, one decimal, not the typed value).
 - **Demographic shares.** A whole-number share printed beside a count of the same
   platform tells a reader how many people the cell holds. The counts a share is

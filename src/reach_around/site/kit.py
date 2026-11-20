@@ -941,7 +941,10 @@ def _change_text(followers: int, percent: float) -> str:
     count. Every whole earlier count whose own change prints as this very text
     is checked, so a typed 66.72 (printed +66.7%) is tested as 66.7.
     """
-    if 0 < followers < FLOOR:
+    # Zero is withheld with the small counts: the text "-100.0%" fits every
+    # earlier count, so it tells a reader nothing, and the safe side costs
+    # nothing.
+    if followers < FLOOR:
         return ""
     text = f"{percent:+.1f}%"
     shown = float(text[:-1])

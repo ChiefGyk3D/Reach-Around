@@ -98,7 +98,7 @@ def test_analytics_followers_and_stats_follow_the_floor() -> None:
         (2, 300.0, False),
         (50, 1150.0, False),  # before: about 4
         (50, 900.0, True),  # before: 5
-        (0, -100.0, True),
+        (0, -100.0, False),
     ],
 )
 def test_the_change_never_pins_a_count_under_the_floor(
