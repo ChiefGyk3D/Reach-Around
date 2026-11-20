@@ -4,6 +4,7 @@ import { beaconLane, beaconSetup, type BeaconEnv } from "./beacon";
 import { limiterKey, secretBytes } from "./ratekey";
 import { admitClick, clickWriteCost, markClickSetupInvalid, parseClickCeiling, parseLaneCapFlag } from "./clickceiling";
 import { NONE, clickCounterStatements } from "./clickfunnel";
+import { optedOut } from "./optout";
 import { killedSites, loadSites, siteForRequest } from "./sites";
 
 /** Workers Rate Limiting binding (the subset we use). */
@@ -114,17 +115,6 @@ function killed(env: Env): boolean {
   if (typeof v !== "string") return false;
   const lower = v.toLowerCase();
   return lower === "1" || lower === "true";
-}
-
-/** One header value is an opt-out when any comma-separated token, trimmed, is "1" (a proxy may join repeats). */
-function signalOn(value: string | null): boolean {
-  // Trim only HTTP optional whitespace (space and tab), not Unicode spaces.
-  return value !== null && value.split(",").some((token) => token.replace(/^[ \t]+|[ \t]+$/g, "") === "1");
-}
-
-/** True when the request carries Sec-GPC: 1 or DNT: 1 (the only values either signal defines); fails toward privacy. */
-export function optedOut(request: Request): boolean {
-  return signalOn(request.headers.get("Sec-GPC")) || signalOn(request.headers.get("DNT"));
 }
 
 /**
