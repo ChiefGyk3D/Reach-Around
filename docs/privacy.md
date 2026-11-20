@@ -68,8 +68,8 @@ The Worker reads the variable `LEAD_RETENTION_DAYS`:
   and at most 20 expired leads. A lead is deleted only once its events are gone,
   so a lead with many events takes several runs, and a big backlog continues on
   the next hourly runs: deletion can lag by hours or, with very many events,
-  days. This keeps the purge inside the free D1 write allowance (docs/deploy.md,
-  "Kit limits and the free-plan budget"). The same run records `last_purge_ts` in
+  days. This keeps the purge inside the D1 write allowance (docs/deploy.md,
+  "Kit limits and the daily write budget"). The same run records `last_purge_ts` in
   `kit_meta`; a stale value means the job is not running.
 - The job runs on the hourly cron only. The 2-minute live-poller cron never
   touches leads.

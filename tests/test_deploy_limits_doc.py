@@ -7,12 +7,12 @@ import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-_START = "## Kit limits and the free-plan budget"
+_START = "## Kit limits and the daily write budget"
 _END = "## Secrets and Doppler"
 _WRITES = {"gate": 5, "view": 2, "alert": 1, "send": 7, "inquiry": 1}
 _RESERVE = 10_000
 _PAGE_VIEWS = 22_700
-_CLICKS = 8_000
+_CLICKS = 300_500
 _FUNNEL = 758  # Free profile, one site, no link ids (worker/src/funnelcaps.ts)
 _MARGIN = 5_000
 
@@ -122,3 +122,34 @@ def test_doc_defaults_match_the_worker_source() -> None:
         "CLICK_ACCOUNT_DAILY_WRITES = CLICK_ADMIT_CEILING + CLICK_DROP_COUNT_CAP" in cc
     )
     assert f"COMBINED_MARGIN = {_MARGIN:_}" in src
+
+
+def test_click_ceiling_section_states_the_enforced_numbers() -> None:
+    """The click ceiling paragraph quotes the constants the Worker enforces, and no old figure."""
+    cc = (ROOT / "worker" / "src" / "clickceiling.ts").read_text(encoding="utf-8")
+
+    def const(name: str) -> int:
+        m = re.search(rf"{name} = ([0-9_]+);", cc)
+        assert m is not None, name
+        return int(m.group(1).replace("_", ""))
+
+    ceiling = const("CLICK_ADMIT_CEILING")
+    reserve = const("CLICK_FIRST_RESERVE_PERCENT")
+    lane = const("CLICK_UNVERIFIED_PERCENT")
+    slices = const("CLICK_HOUR_SLICES")
+    text = (ROOT / "docs" / "deploy.md").read_text(encoding="utf-8")
+    start = text.index("**Click write ceiling")
+    para = text[start : text.index("**Click funnel in the check", start)]
+    assert f"ceiling of {ceiling} row writes" in para
+    assert f"ceiling plus drop cap, {ceiling + const('CLICK_DROP_COUNT_CAP')}" in para
+    assert reserve == 20 and "that 20 percent is held back" in para
+    assert f"at most {lane} percent of the share" in para
+    assert slices == 12 and "one twelfth of the share" in para
+    # the old ceiling's arithmetic is gone from the paragraph (the old figure is named only as history)
+    for stale in ("8000", "750 clicks", "7500 over 10 rows", "(6 rows)"):
+        assert stale not in para
+    # the docs say the same quota the Worker defaults to
+    quota = _defaults(_section())["D1_DAILY_WRITE_QUOTA"]
+    assert quota == 1_600_000
+    assert 50_000_000 // 31 >= quota
+    assert "100,000-row free plan figure" not in text

@@ -41,11 +41,15 @@ describe("the page-view budget in the kit's combined check", () => {
     const e = { VIEWS_PER_HOUR: "1000", BOT_VIEWS_PER_HOUR: "200" };
     const c = loadKitLimits({ ...e, D1_DAILY_WRITE_QUOTA: "999999999" });
     expect(combinedDailyWrites(c, pageViewDailyWrites(e))).toBeGreaterThan(combinedDailyWrites(c));
-    // 1000+200 per hour: 24*1200*5.6 = 161,280 rows a day alone: over the default free quota
-    expect(() => loadKitLimits(e)).toThrow(KitLimitsError);
+    // 1000+200 per hour: one site is held to the account ceilings (480 and 120), so this still fits
+    expect(() => loadKitLimits(e)).not.toThrow();
+    // 10000+2000 per hour with ceilings raised to match: 24*12000*5.6 = 1,612,800 rows a day alone, over the default quota
+    const big = { VIEWS_PER_HOUR: "10000", BOT_VIEWS_PER_HOUR: "2000", ACCOUNT_VIEWS_PER_HOUR: "10000", ACCOUNT_BOT_VIEWS_PER_HOUR: "2000" };
+    expect(() => loadKitLimits(big)).toThrow(KitLimitsError);
+    expect(() => loadKitLimits({ ...big, D1_DAILY_WRITE_QUOTA: "999999999" })).not.toThrow();
     expect(() => loadKitLimits({})).not.toThrow();
   });
-  it("matches the arithmetic exactly at the 100,000 boundary", () => {
+  it("matches the arithmetic exactly at the quota boundary", () => {
     const kit = worstCaseDailyWrites(loadKitLimits({}));
     // choose the quota to equal the combined figure at pv=500, pvbot=100
     const e = { VIEWS_PER_HOUR: "500", BOT_VIEWS_PER_HOUR: "100" };
@@ -55,6 +59,9 @@ describe("the page-view budget in the kit's combined check", () => {
   });
 });
 
+/** The default figure without the funnel: kit 42440 + page views 22700 + clicks 300500 + margin 5000. */
+const BASE = 70_140 + CLICK_DAILY_WRITES;
+
 describe("assessDailyBudget agrees with loadKitLimits", () => {
   const cases: Record<string, string>[] = [
     {},
@@ -63,8 +70,10 @@ describe("assessDailyBudget agrees with loadKitLimits", () => {
     { VIEWS_PER_HOUR: "700" },
     { ROUTE_BUDGET_GATE: "200" },
     { D1_DAILY_WRITE_QUOTA: "abc" },
-    { D1_DAILY_WRITE_QUOTA: String(78_140 + FUNNEL_DAILY_WRITES) },
-    { D1_DAILY_WRITE_QUOTA: String(78_119 + FUNNEL_DAILY_WRITES) },
+    { D1_DAILY_WRITE_QUOTA: String(BASE + FUNNEL_DAILY_WRITES) },
+    { D1_DAILY_WRITE_QUOTA: String(BASE - 21 + FUNNEL_DAILY_WRITES) },
+    { ROUTE_BUDGET_GATE: "8000" },
+    { ROUTE_BUDGET_GATE: "20000" },
   ];
   for (const e of cases) {
     it(`verdict for ${JSON.stringify(e)}`, () => {
@@ -86,25 +95,30 @@ describe("runBudgetCheck (the deploy-time gate)", () => {
   it("passes quietly at the defaults and says ok", () => {
     const r = runBudgetCheck({});
     expect(r.code).toBe(0);
-    const total = 78_140 + FUNNEL_DAILY_WRITES;
-    expect(r.lines).toEqual([`combined worst-case daily D1 writes ${total} of 100000 (${(total / 1000).toFixed(1)} percent; page views 22700; funnel ${FUNNEL_DAILY_WRITES}): ok`]);
+    const total = BASE + FUNNEL_DAILY_WRITES;
+    expect(r.lines).toEqual([`combined worst-case daily D1 writes ${total} of 1600000 (${((100 * total) / 1_600_000).toFixed(1)} percent; page views 22700; funnel ${FUNNEL_DAILY_WRITES}): ok`]);
   });
   it("warns, exit 0, above 80 percent, and not at exactly 80", () => {
-    // pv 200: page views 24*230*5.6=30912+2540=33452; combined = 42420+33452+8000+5000 = 88872
-    const r = runBudgetCheck({ VIEWS_PER_HOUR: "200" });
+    // gate 8000/h: kit 24*(8000*5+600)+10040 = 1,000,000+ ; combined = 1,313,398 on the default funnel, 82 percent of 1600000
+    const r = runBudgetCheck({ ROUTE_BUDGET_GATE: "8000" });
     expect(r.code).toBe(0);
     expect(r.lines[0]).toMatch(/^::warning::.*above 80 percent$/);
-    const total = 78_140 + FUNNEL_DAILY_WRITES;
+    const total = BASE + FUNNEL_DAILY_WRITES;
     const at80 = Math.ceil((total * 10) / 8); // the smallest quota at which total is still at most 80 percent
     expect(runBudgetCheck({ D1_DAILY_WRITE_QUOTA: String(at80) }).lines[0]).toMatch(/^combined .*: ok$/);
     expect(runBudgetCheck({ D1_DAILY_WRITE_QUOTA: String(at80 - 1) }).lines[0]).toMatch(/^::warning::/);
   });
   it("fails, exit 1, over the quota and names no value", () => {
-    const r = runBudgetCheck({ VIEWS_PER_HOUR: "900" });
+    const r = runBudgetCheck({ ROUTE_BUDGET_GATE: "20000" });
     expect(r.code).toBe(1);
     expect(r.lines[0]).toMatch(/^::error::.*is over the quota$/);
-    expect(runBudgetCheck({ D1_DAILY_WRITE_QUOTA: String(78_119 + FUNNEL_DAILY_WRITES) }).code).toBe(1);
-    expect(runBudgetCheck({ D1_DAILY_WRITE_QUOTA: String(78_140 + FUNNEL_DAILY_WRITES) }).code).toBe(0);
+    expect(runBudgetCheck({ D1_DAILY_WRITE_QUOTA: String(BASE - 21 + FUNNEL_DAILY_WRITES) }).code).toBe(1);
+    expect(runBudgetCheck({ D1_DAILY_WRITE_QUOTA: String(BASE + FUNNEL_DAILY_WRITES) }).code).toBe(0);
+  });
+  it("a free-plan quota (100000 rows a day) no longer fits the click ceiling, so the check refuses it", () => {
+    const r = runBudgetCheck({ D1_DAILY_WRITE_QUOTA: "100000" });
+    expect(r.code).toBe(1);
+    expect(r.lines[0]).toMatch(/is over the quota$/);
   });
   it("fails on an unusable value, by name only", () => {
     for (const bad of ["abc", "1e3", "-5", "100001", "1.5", "007x", "9999999"]) {
@@ -182,12 +196,22 @@ describe("pageViewDailyWrites uses the binding ceiling per class", () => {
     // old projection: one site only = rows(250). Real worst case with 8 sites: ceilings 480 + 120.
     expect(pageViewDailyWrites(e, 8)).toBe(rows(600));
     expect(pageViewDailyWrites(e, 8)).toBeGreaterThan(rows(250));
-    // and the total is refused through the kit's own function
+    // the eight-site total is the larger one, through the kit's own function (the refusal at a quota
+    // between the two is the next test)
     const sites = siteList(8);
-    expect(() => loadKitLimits({ ...e, SITES: sites })).toThrow(KitLimitsError);
-    expect(assessDailyBudget({ ...e, SITES: sites }).level).toBe("fail");
-    // one site at the same budgets is still within the quota
+    expect(assessDailyBudget({ ...e, SITES: sites }).combined).toBeGreaterThan(assessDailyBudget(e).combined);
+    // one site at the same budgets is within the quota
     expect(assessDailyBudget(e).level).not.toBe("fail");
+  });
+  it("the same refusal holds at a quota between one site and eight sites", () => {
+    const e = { VIEWS_PER_HOUR: "200", BOT_VIEWS_PER_HOUR: "50" };
+    const eight = assessDailyBudget({ ...e, SITES: siteList(8) }).combined;
+    const one = assessDailyBudget(e).combined;
+    expect(eight).toBeGreaterThan(one);
+    const quota = String(eight - 1);
+    expect(() => loadKitLimits({ ...e, SITES: siteList(8), D1_DAILY_WRITE_QUOTA: quota })).toThrow(KitLimitsError);
+    expect(assessDailyBudget({ ...e, SITES: siteList(8), D1_DAILY_WRITE_QUOTA: quota }).level).toBe("fail");
+    expect(assessDailyBudget({ ...e, D1_DAILY_WRITE_QUOTA: quota }).level).not.toBe("fail");
   });
 });
 
@@ -199,9 +223,11 @@ describe("the deploy check counts sites and ceilings", () => {
     expect(assessDailyBudget(one).funnel).toBe(funnelDailyWrites(FUNNEL_CAPS, [{ links: 1 }]));
   });
   it("refuses a SITES text that makes the total pass the quota", () => {
-    const r = runBudgetCheck({ SITES: siteList(8) });
+    const eight = assessDailyBudget({ SITES: siteList(8) }).combined;
+    const r = runBudgetCheck({ SITES: siteList(8), D1_DAILY_WRITE_QUOTA: String(eight - 1) });
     expect(r.code).toBe(1);
     expect(r.lines[0]).toMatch(/is over the quota$/);
+    expect(runBudgetCheck({ SITES: siteList(8), D1_DAILY_WRITE_QUOTA: String(eight) }).code).toBe(0);
   });
   it("fails closed when the site list does not load", () => {
     for (const bad of [{ SITES: "{not json" }, { SITE_HOST: "NOT A HOST", PAGE_IDS: '["home"]' }, { SITE_HOST: "links.example.test", PAGE_IDS: "x" }]) {
@@ -266,10 +292,10 @@ describe("the deploy gate reads every variable the Worker's loader reads", () =>
   });
   it("a kit limit override changes the verdict, not just the validation", () => {
     expect(runBudgetCheck({}).code).toBe(0);
-    const warn = runBudgetCheck({ ROUTE_BUDGET_GATE: "200" });
+    const warn = runBudgetCheck({ ROUTE_BUDGET_GATE: "8000" });
     expect(warn.lines[0]).toMatch(/^::warning::/);
-    expect(runBudgetCheck({ ROUTE_BUDGET_GATE: "400" }).code).toBe(1);
+    expect(runBudgetCheck({ ROUTE_BUDGET_GATE: "20000" }).code).toBe(1);
     expect(runBudgetCheck({ D1_DAILY_WRITE_QUOTA: "50000" }).code).toBe(1);
-    expect(runBudgetCheck({ D1_DAILY_WRITE_QUOTA: "200000" }).lines[0]).toMatch(/: ok$/);
+    expect(runBudgetCheck({ D1_DAILY_WRITE_QUOTA: "2000000" }).lines[0]).toMatch(/: ok$/);
   });
 });

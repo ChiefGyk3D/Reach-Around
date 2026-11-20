@@ -11,10 +11,9 @@
 // daily unique-visitor key ("RA-UV1|<date>"), so a limiter key never equals a
 // stored value (the visitor hash, the per-client cap hash).
 //
-// Without a secret (the click route only) the key is an HMAC under a random
-// per-isolate key. It is stable inside one isolate and unknowable outside it,
-// so a client is still limited per isolate and the raw address is still never
-// sent. The cost: the allowance is not shared across isolates or restarts.
+// There is no key without a usable secret: both routes refuse the request
+// instead (a random per-isolate key would make the allowance per isolate,
+// not per client).
 
 export const MIN_SECRET_BYTES = 32;
 
@@ -32,7 +31,6 @@ export function secretBytes(secret: string | undefined): Uint8Array | null {
 const HMAC = { name: "HMAC", hash: "SHA-256" } as const;
 
 let stable: { secret: string; key: CryptoKey } | null = null;
-let isolate: Promise<CryptoKey> | null = null;
 
 async function stableKey(secret: Uint8Array, secretText: string): Promise<CryptoKey> {
   if (stable && stable.secret === secretText) return stable.key;
@@ -41,17 +39,6 @@ async function stableKey(secret: Uint8Array, secretText: string): Promise<Crypto
   const key = await crypto.subtle.importKey("raw", derived, HMAC, false, ["sign"]);
   stable = { secret: secretText, key };
   return key;
-}
-
-function isolateKey(): Promise<CryptoKey> {
-  isolate ??= crypto.subtle.importKey(
-    "raw",
-    crypto.getRandomValues(new Uint8Array(32)),
-    HMAC,
-    false,
-    ["sign"],
-  );
-  return isolate;
 }
 
 async function tag(key: CryptoKey, purpose: string, address: string): Promise<string> {
@@ -71,17 +58,4 @@ export async function limiterKey(
   address: string,
 ): Promise<string> {
   return tag(await stableKey(secret, secretText), purpose, address);
-}
-
-/** The same, for callers that may have no secret: falls back to a per-isolate random key. */
-export async function limiterKeyOrIsolate(
-  secretText: string | undefined,
-  purpose: string,
-  address: string,
-): Promise<string> {
-  const secret = secretBytes(secretText);
-  if (secret !== null && typeof secretText === "string") {
-    return limiterKey(secret, secretText, purpose, address);
-  }
-  return tag(await isolateKey(), purpose, address);
 }

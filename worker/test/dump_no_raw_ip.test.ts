@@ -292,6 +292,7 @@ async function drive(
     SITE_HOST: "links.example.test",
     LINK_IDS: JSON.stringify(["example-one"]),
     CLICK_LIMITER: fakeLimiter(),
+    VIEW_HASH_SECRET: btoa("k".repeat(32)),
   };
   const who = [
     { ip: PROBE_V4, ua: PROBE_UA },

@@ -14,8 +14,11 @@ import {
 } from "../src/health";
 import { padHour } from "../src/viewretention";
 import { QueryMeter, meteredDb } from "../src/d1budget";
+import { CLICK_ADMIT_CEILING, clickLimits, clickWriteCost } from "../src/clickceiling";
 
 const DB = testEnv.DB;
+/** One site's general daily click budget (the share less the first-click reserve). */
+const GENERAL = clickLimits(CLICK_ADMIT_CEILING).general;
 const NOW = Date.UTC(2026, 10, 9, 14, 5, 0); // 2026-11-09 14:05 UTC
 const HOUR = Math.floor(NOW / HOUR_MS);
 const DISCORD = "https://discord.com/api/webhooks/123456789012345678/AbCdEfGhIjKlMnOpQrStUvWxYz0123456789";
@@ -222,9 +225,19 @@ describe("click ceiling (hardening, Refs #566)", () => {
     expect(a.res.active).not.toContain("click_ceiling_reached");
   });
 
+  it.each([
+    ["one write short of room for the cheapest click", GENERAL - clickWriteCost({}) + 1, true],
+    ["exactly room for the cheapest click", GENERAL - clickWriteCost({}), false],
+  ])("the general budget of the day: %s", async (_d, charged, fires) => {
+    await healthy();
+    await counter("cw-links", day, charged);
+    const a = await tick(env());
+    expect(a.res.active.includes("click_ceiling_reached")).toBe(fires);
+  });
+
   it("fires when the charge leaves no room for a click, and says dropped clicks are at least N", async () => {
     await healthy();
-    await counter("cw-links", day, 7_498);
+    await counter("cw-links", day, GENERAL - 2);
     await counter("cd-links", day, 500);
     const a = await tick(env());
     expect(a.res.active).toContain("click_ceiling_reached");
@@ -295,7 +308,7 @@ describe("click ceiling (hardening, Refs #566)", () => {
 
   it("yesterday's saturation does not fire today, and it clears the next UTC day", async () => {
     await healthy();
-    await counter("cw-links", "2026-11-08", 7_500);
+    await counter("cw-links", "2026-11-08", CLICK_ADMIT_CEILING);
     await counter("cd-links", "2026-11-08", 500);
     expect((await tick(env())).res.active).not.toContain("click_ceiling_reached");
     await counter("cd-links", day, 1);
@@ -310,10 +323,10 @@ describe("click ceiling (hardening, Refs #566)", () => {
 
   it("reads only: the counters are unchanged by the health step", async () => {
     await healthy();
-    await counter("cw-links", day, 7_500);
+    await counter("cw-links", day, CLICK_ADMIT_CEILING);
     await tick(env());
     const r = await DB.prepare("SELECT count FROM counters WHERE key = 'cw-links' AND day = ?1").bind(day).first<{ count: number }>();
-    expect(r?.count).toBe(7_500);
+    expect(r?.count).toBe(CLICK_ADMIT_CEILING);
   });
 });
 

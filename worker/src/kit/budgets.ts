@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 //
 // Route budgets, the daily send and alert budgets, and storage caps for the
-// media kit, sized to the Cloudflare FREE plan.
+// media kit, sized to the Cloudflare PAID plan (approved 2026-11-19; it was the Free plan before).
 //
 // RULING (cutover slice, hosting plan): an outage when a limit is hit is
 // accepted over any bill. Everything here fails CLOSED. A reservation is false
@@ -20,8 +20,11 @@
 //   MAX_KIT_EVENTS       1..500000, default 50000 (cap on stored kit_events)
 //   DAILY_ALERT_BUDGET   0..1000 per UTC day, default 20 (owner alerts)
 //   DAILY_SEND_BUDGET    0..1000 per UTC day, default 0 (no send route in v1)
-//   D1_DAILY_WRITE_QUOTA 1000..999999999, default 100000 (the free D1 plan's
-//                        daily rows-written figure; re-check against Cloudflare)
+//   D1_DAILY_WRITE_QUOTA 1000..999999999, default 1600000 (the paid D1 plan's 50 million
+//                        included rows written a month over a 31 day month, rounded down;
+//                        re-check against Cloudflare. The free plan's daily figure is 100000:
+//                        a free-plan deployment must set it, and then the click ceiling
+//                        in clickceiling.ts no longer fits and the check refuses)
 //
 // The load REFUSES a configuration whose COMBINED worst-case daily D1 writes
 // (kit, page views, clicks, the click funnel, a margin) exceed the quota, and warns above 80
@@ -57,7 +60,7 @@ export const DEFAULTS = {
   maxKitEvents: 50_000,
   dailyAlertBudget: 20,
   dailySendBudget: 0,
-  d1DailyWriteQuota: 100_000,
+  d1DailyWriteQuota: 1_600_000,
 } as const;
 
 /** Every variable parseKitLimits reads. A test keeps this equal to the names parseKitLimits asks for below. */

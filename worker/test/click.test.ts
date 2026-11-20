@@ -34,6 +34,7 @@ function makeEnv(over: Partial<Env> = {}): Env {
     SITE_HOST: SITE,
     LINK_IDS: JSON.stringify(["example-one", "example-two"]),
     CLICK_LIMITER: fakeLimiter(),
+    VIEW_HASH_SECRET: btoa("k".repeat(32)),
     ...over,
   };
 }

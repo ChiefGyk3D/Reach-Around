@@ -49,7 +49,7 @@ import { DEFAULT_ACCOUNT_HUMAN_PER_HOUR, MAX_VIEWS_PER_HOUR, positiveInt } from 
 import { loadKitLimits } from "./kit/budgets";
 import { CHANNEL_IDS, HEALTH_CONDITIONS, type ChannelId, type HealthCondition } from "./alerts/types";
 import { padHour } from "./viewretention";
-import { CLICK_ADMIT_CEILING, clickWriteCost, siteShare } from "./clickceiling";
+import { CLICK_ADMIT_CEILING, clickLimits, clickWriteCost, siteShare } from "./clickceiling";
 import { killedSites, loadSites } from "./sites";
 import { flagOn } from "./view";
 
@@ -274,9 +274,10 @@ export function evaluate(
     });
   }
 
-  // click_ceiling_reached: a refused click, or no room left under a site's share for even the cheapest click.
-  const share = siteShare(CLICK_ADMIT_CEILING, opts.clickSites ?? 1);
-  const full = inp.clickChargedMax + clickWriteCost({}) > share;
+  // click_ceiling_reached: a refused click, or no room left under a site's general daily budget (its share
+  // less the first-click reserve) for even the cheapest click.
+  const general = clickLimits(siteShare(CLICK_ADMIT_CEILING, opts.clickSites ?? 1)).general;
+  const full = inp.clickChargedMax + clickWriteCost({}) > general;
   out.set("click_ceiling_reached", { active: inp.clickDropped > 0 || full, count: inp.clickDropped });
   return out;
 }

@@ -260,7 +260,7 @@ its life (insert, the new-cell budget upsert, the retention delete). Per site ad
 2 (seal and capacity), 24 (hourly click rows) and the month roll-up (monthly
 caps plus overflow rows, written once and deleted once). The model counts worst
 case, so each figure is an upper bound on cell creation, not on click volume;
-counts on an existing cell stay inside the click reserve (8000).
+counts on an existing cell stay inside the click reserve (8000 when this section was written; 300500 since 2026-11-19, see 10.1).
 
 I extended the same arithmetic with the proposed caps (landing 24 and hop 16
 general, reserved 1, monthly 40 and 30, hour budget 16, eight overflow rows
@@ -274,7 +274,11 @@ because there are four tables and two kinds). One site, writes per UTC day:
 
 Total against the 100000 writes a day constant in `docs/deploy.md`
 (`D1_DAILY_WRITE_QUOTA`; that file says to re-check it against Cloudflare
-before relying on it, so this is unverified):
+before relying on it, so this is unverified). This table was computed on the
+Free plan with a click reserve of 8000. Since 2026-11-19 the click reserve is
+300500 and the default quota is 1600000 (paid plan); the funnel figures
+(758 to 1998) are unchanged, and the combined total for one site with no link
+ids is now 371398, 23.2 percent of the default quota:
 
 | Case | Combined worst case | Share of 100000 |
 |---|---|---|
@@ -317,7 +321,7 @@ week of measurement, and it is why Owner decision 3 exists (decided 2026-11-19:
 reserved 1, trimmed to 0 if a site passes about 15 link ids).
 Other sites add their own rows to the check; nothing here sets a site count.
 
-Free-plan rollout (owner decision, 2026-11-19): only ONE site (the links page) turns on `landings` and `hops` on the Free plan for now. Two sites that both list both tables model at about 100,400 writes a day (the independent review reproduced 100,472 at 1 link id each and 100,376 at 0), over the 100,000 quota, and the kit routes fail closed (`loadKitLimits` throws `KitLimitsError` when worst exceeds quota). Even two sites with no new tables already model at 99,888 (99.9 percent), because page views cost about 20,000 a day per site, so the new tables only tip a full budget. A second site turns the tables on only after a paid plan or trimmed page-view caps. No cap number changes.
+Free-plan rollout (owner decision, 2026-11-19; superseded the same day by the paid plan, so two sites may now list both tables at the default quota): only ONE site (the links page) turns on `landings` and `hops` on the Free plan for now. Two sites that both list both tables model at about 100,400 writes a day (the independent review reproduced 100,472 at 1 link id each and 100,376 at 0), over the 100,000 quota, and the kit routes fail closed (`loadKitLimits` throws `KitLimitsError` when worst exceeds quota). Even two sites with no new tables already model at 99,888 (99.9 percent), because page views cost about 20,000 a day per site, so the new tables only tip a full budget. A second site turns the tables on only after a paid plan or trimmed page-view caps. No cap number changes.
 
 Rows read, INFERRED and not modeled by the existing check: each click runs
 several `count(*)` subqueries over that site and day's cells to decide whether
@@ -332,7 +336,7 @@ a row, about 140 to 460 cells a day). INFERRED and not a constraint.
 
 ### 10.1 Click write ceiling (supersedes "counting never stops" for volume)
 
-Added after a security review: a per-client limit does not bound click-route writes across clients, and each accepted click mutates up to ten rows. The click route now charges every click, before any write, to an atomic per-UTC-day ceiling of 7500 row writes, split equally over the configured sites (6 rows for a site with no optional lists, up to 10 with source, landing and hop; the charge counts both hourly budget rows), plus a dropped-count cap of 500. The model's click figure is that sum (8000, whatever the number of sites) and is derived from the enforced constants. Past the ceiling a click gets the same empty 204 and only the counting stops. This changes the earlier rule "counting never stops": it still holds across the fold (existing cells and the overflow row keep adding) but no longer holds for volume once the day's write ceiling is spent. It fails closed on purpose, because exhausting the account's D1 write allowance would stop every other feature. Only the HTTP representation of a refused click is identical to an admitted one (an empty 204); timing differs and the design makes no constant-time claim. Any valid-looking traffic can spend the ceiling; this is accepted on the Free plan because a signed per-click token does not fit a static no-cookie site, and the owner notices through the health condition `click_ceiling_reached` (reads `cw-`/`cd-` for today, read only, content-free, "dropped clicks today: at least N"). Owner decision needed if a higher ceiling or a front-of-D1 aggregation is wanted; see docs/deploy.md, Click write ceiling.
+Added after a security review: a per-client limit does not bound click-route writes across clients, and each accepted click mutates up to ten rows. The click route now charges every click, before any write, to an atomic per-UTC-day ceiling of 300000 row writes (raised from 7500 on 2026-11-19, with the move to the paid plan), split equally over the configured sites (9 rows for a site with no optional lists, up to 13 with source, landing and hop; the charge counts the four admission rows and both hourly budget rows), plus a dropped-count cap of 500. The model's click figure is that sum (300500, whatever the number of sites) and is derived from the enforced constants. A site's share is spent through an hour slice (one twelfth of the share), two lanes (verified and unverified, the unverified lane capped at 15 percent of the share; every click is unverified until a token exists), a general day budget and a first-click reserve of 20 percent of the share (the first click of each link each UTC day is judged against the whole share). See docs/deploy.md, Click write ceiling, for the keys and the arithmetic. Past the ceiling a click gets the same empty 204 and only the counting stops. This changes the earlier rule "counting never stops": it still holds across the fold (existing cells and the overflow row keep adding) but no longer holds for volume once the day's write ceiling is spent. It fails closed on purpose, because exhausting the account's D1 write allowance would stop every other feature. Only the HTTP representation of a refused click is identical to an admitted one (an empty 204); timing differs and the design makes no constant-time claim. Any valid-looking traffic can spend the ceiling; this was accepted on the Free plan because a signed per-click token does not fit a static no-cookie site (the lanes and the hour slice now limit how much of the day any one stretch of unproven traffic can use), and the owner notices through the health condition `click_ceiling_reached` (reads `cw-`/`cd-` for today, read only, content-free, "dropped clicks today: at least N"). Owner decision needed if a higher ceiling or a front-of-D1 aggregation is wanted; see docs/deploy.md, Click write ceiling.
 
 ## 11. How #334's report consumes the tables
 
@@ -461,7 +465,7 @@ All eight were decided by the owner on 2026-11-19. Each chose option A, the reco
    - B: forward `s` along with `h`. Source survives a hop, but it makes the source count mean "first outside source", changing what the existing table means.
 
 3. **Which caps for the Free profile?** (section 10: at 20 link ids the total is 80.1 percent untrimmed and 79.7 percent with the chosen trim) **DECIDED 2026-11-19: option A.**
-   - Decided 2026-11-19: only ONE site (the links page) turns on `landings` and `hops` on the Free plan for now. Two sites that both list both tables model at about 100,400 writes a day (the independent review reproduced 100,472 at 1 link id each and 100,376 at 0), over the 100,000 quota, and the kit routes fail closed (`loadKitLimits` throws `KitLimitsError` when worst exceeds quota). Even two sites with no new tables already model at 99,888 (99.9 percent), because page views cost about 20,000 a day per site, so the new tables only tip a full budget. A second site turns the tables on only after a paid plan or trimmed page-view caps. No cap number changes.
+   - Decided 2026-11-19 (superseded the same day by the paid plan; see 10.1 and docs/deploy.md): only ONE site (the links page) turns on `landings` and `hops` on the Free plan for now. Two sites that both list both tables model at about 100,400 writes a day (the independent review reproduced 100,472 at 1 link id each and 100,376 at 0), over the 100,000 quota, and the kit routes fail closed (`loadKitLimits` throws `KitLimitsError` when worst exceeds quota). Even two sites with no new tables already model at 99,888 (99.9 percent), because page views cost about 20,000 a day per site, so the new tables only tip a full budget. A second site turns the tables on only after a paid plan or trimmed page-view caps. No cap number changes.
    - A (recommended, CHOSEN): landing 24, hop 16, reserved 1, monthly 40 and 30, hour budget 16, as proposed, then trim reserved to 0 if a site passes about 15 link ids.
    - B: smaller still (landing 12, hop 8, reserved 0): fits any link count, but folds earlier.
    - C: wait for the measurement week to set any number, and ship the tables with the existing caps only. Safest on budget; delays the build.

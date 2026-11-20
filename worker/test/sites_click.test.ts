@@ -23,7 +23,7 @@ function limiter(limit = 20) {
     },
   };
 }
-const env = (over: Partial<Env> = {}): Env => ({ DB: testEnv.DB, SITES, CLICK_LIMITER: limiter(), ...over });
+const env = (over: Partial<Env> = {}): Env => ({ DB: testEnv.DB, SITES, CLICK_LIMITER: limiter(), VIEW_HASH_SECRET: btoa("k".repeat(32)), ...over });
 const click = (id: string, host: string | null, extra: Record<string, string> = {}, path = `/e/c/${id}`) =>
   new Request(`https://worker.example.test${path}`, {
     method: "POST",

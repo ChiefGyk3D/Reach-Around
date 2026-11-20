@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 import { normalizeAddress } from "./address";
-import { limiterKeyOrIsolate } from "./ratekey";
+import { limiterKey, secretBytes } from "./ratekey";
 import { admitClick, clickWriteCost } from "./clickceiling";
 import { NONE, clickCounterStatements } from "./clickfunnel";
 import { killedSites, loadSites, siteForRequest } from "./sites";
@@ -27,9 +27,9 @@ export interface Env {
   CLICKS_KILL_SITES?: string;
   CLICK_LIMITER: RateLimiter;
   /**
-   * Optional. When set, the limiter key is a stable keyed hash of the client
-   * address under it; when absent, a keyed hash under a random per-isolate key.
-   * The raw address never reaches the limiter, either way.
+   * Required for counting clicks. The limiter key is a stable keyed hash of the client address under
+   * it; when it is missing or unusable the click is refused (the same empty 204) and nothing is
+   * recorded. The raw address never reaches the limiter.
    */
   VIEW_HASH_SECRET?: string;
   /**
@@ -218,7 +218,11 @@ export async function handleClick(request: Request, env: Env): Promise<Response>
 
     // 5. Rate limit per client. The key is a keyed hash, never the address,
     // and is never stored.
-    const key = await limiterKeyOrIsolate(
+    // No usable secret, no key: the click is refused (same empty 204), like the view route.
+    const secret = secretBytes(env.VIEW_HASH_SECRET);
+    if (secret === null || typeof env.VIEW_HASH_SECRET !== "string") return noContent(); // CONTROL:click-limiter-secret
+    const key = await limiterKey(
+      secret,
       env.VIEW_HASH_SECRET,
       "clk",
       // Canonical form, so equivalent spellings share one allowance. An absent
@@ -242,7 +246,9 @@ export async function handleClick(request: Request, env: Env): Promise<Response>
     // Write ceiling: charged at the rows this click writes, before ANY click write. Past it the answer is
     // the same empty 204 and only the counting stops (clickceiling.ts).
     const cost = clickWriteCost({ sources: site.sources !== undefined, landings: landing !== undefined, hops: hop !== undefined });
-    if (!(await admitClick(env.DB, site.id, now, cost, loadSites(env).sites.length))) return noContent(); // CONTROL:click-write-ceiling
+    // Every click is charged to the unverified lane: no token exists yet to prove a click came from the page.
+    const admitted = await admitClick(env.DB, site.id, now, cost, loadSites(env).sites.length, { linkId, lane: "u" }); // CONTROL:click-write-ceiling
+    if (!admitted) return noContent();
     await env.DB.prepare("INSERT INTO click_events (ts, link_id, destination_kind, country, site, src) VALUES (?, ?, ?, ?, ?, ?)")
       .bind(now - (now % HOUR_MS), linkId, destinationKind, null, site.id, src) // country lives only in the aggregate counter
       .run();
