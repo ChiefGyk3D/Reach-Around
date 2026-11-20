@@ -365,6 +365,8 @@ _VALUE_ERRORS: tuple[tuple[re.Pattern[str], str], ...] = tuple(
         (r"^a typed count needs an as_of", "count_needs_date"),
         (r"^as_of must be 2000-01-01", "as_of_early"),
         (r"^a profile card needs", "profile_card_empty"),
+        (r"^site_nav: only one item", "site_nav_current"),
+        (r"^site_nav needs header or footer", "site_nav_off"),
         (r"^(dsn_env|a postgres store)", "db_setting"),
         (r"^address must be 20 to 128", "crypto_address"),
         (r"^address must be one plain", "email_address"),

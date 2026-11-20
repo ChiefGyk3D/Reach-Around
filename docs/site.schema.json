@@ -2843,6 +2843,63 @@
       "title": "ServicePackage",
       "type": "object"
     },
+    "SiteNav": {
+      "additionalProperties": false,
+      "description": "The property bar: the creator's own sites, in the header and the footer.",
+      "properties": {
+        "footer": {
+          "default": true,
+          "title": "Footer",
+          "type": "boolean"
+        },
+        "header": {
+          "default": true,
+          "title": "Header",
+          "type": "boolean"
+        },
+        "items": {
+          "items": {
+            "$ref": "#/$defs/SiteNavItem"
+          },
+          "maxItems": 6,
+          "minItems": 1,
+          "title": "Items",
+          "type": "array"
+        }
+      },
+      "required": [
+        "items"
+      ],
+      "title": "SiteNav",
+      "type": "object"
+    },
+    "SiteNavItem": {
+      "additionalProperties": false,
+      "properties": {
+        "current": {
+          "default": false,
+          "title": "Current",
+          "type": "boolean"
+        },
+        "title": {
+          "maxLength": 24,
+          "minLength": 1,
+          "title": "Title",
+          "type": "string"
+        },
+        "url": {
+          "maxLength": 2048,
+          "title": "Url",
+          "type": "string"
+        }
+      },
+      "required": [
+        "title",
+        "url"
+      ],
+      "title": "SiteNavItem",
+      "type": "object"
+    },
     "Social": {
       "additionalProperties": false,
       "properties": {
@@ -3633,6 +3690,17 @@
       "anyOf": [
         {
           "$ref": "#/$defs/Robots"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "site_nav": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/SiteNav"
         },
         {
           "type": "null"

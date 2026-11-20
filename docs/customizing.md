@@ -592,7 +592,8 @@ a.link { letter-spacing: 0.02em; }
 **Templates.** A file at `my-overrides/templates/NAME.html` replaces the
 packaged template of the same name; everything else falls back. The packaged
 names are `base.html`, `tab.html`, `privacy.html`, `404.html`, `_header.html`,
-`_header_variants.html`, `_nav.html`, `_profile_card.html`, `_footer.html`,
+`_header_variants.html`, `_nav.html`, `_site_nav.html`, `_profile_card.html`,
+`_footer.html`,
 `_cookie_banner.html`,
 `_macros.html` and `blocks/{link,section,text,image,divider}.html`. A
 subfolder such as `templates/blocks/divider.html` works. This footer

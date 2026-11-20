@@ -96,6 +96,7 @@ escapes it when it renders.
 | `analytics` | Analytics | page views off | optional page-view counting; see [`analytics`](#analytics) |
 | `store` | StoreConfig | SQLite at `data/reach-around.db` | where the snapshot store lives; see [`store`](#store) |
 | `profile_card` | ProfileCard | none | name, topic chips and a media-kit button after the content of every page; see [`profile_card`](#profile_card) |
+| `site_nav` | SiteNav | none | the creator's own sites as a bar above the page and a family line in the footer; see [`site_nav`](#site_nav) |
 | `numbers` | NumbersConfig | none | where each platform's follower count comes from, for `reach-around counts refresh`; see [`numbers`](#numbers) |
 | `kit` | KitConfig | absent | optional media kit content and its display policy; see [`kit`](#kit) |
 
@@ -980,6 +981,57 @@ build adds `profile-media-kit` to the build manifest (the `links` map the
 click Worker is configured from), so the Worker counts it like any link. With click tracking off it carries neither. The card adds no
 JavaScript and no inline style; it is styled from the same tokens as the rest of
 the page (see [design](design.md)), so a theme's colors and `mode` apply.
+
+## `site_nav`
+
+An optional property bar: a short list of your own sites (the link page, the
+media kit, your main site) shown as a row of links above the tab bar and as a
+family line in the footer, so the sites cross-link the same way everywhere.
+Leave the key out and the output is byte-for-byte what it was without the
+feature. Unknown keys are refused.
+
+| Key | Type | Default | Constraints |
+| --- | --- | --- | --- |
+| `items` | list of items | required | 1 to 6 items, in the order they are shown and tabbed through. |
+| `items[].title` | text, 1-24 characters | required | Plain text: no control, newline, bidirectional or zero-width characters, no leading or trailing space. Escaped on the page. |
+| `items[].url` | HTTPS URL | required | Same rules as a link URL: `https` only, no user name or password, at most 2048 characters. No `javascript:`, no `tab:` and no relative address. |
+| `items[].current` | boolean | `false` | Marks the site this page belongs to. At most one item is current. |
+| `header` | boolean | `true` | Show the bar above the tab bar. |
+| `footer` | boolean | `true` | Show the family line in the footer, before the privacy link. |
+
+Turn `header` and `footer` off together and the build refuses the config: there
+would be nowhere to show the items.
+
+```yaml
+site_nav:
+  items:
+    - title: Links
+      url: https://links.example.com/
+      current: true
+    - title: Media kit
+      url: https://links.example.com/kit/
+    - title: Main site
+      url: https://www.example.com/
+```
+
+Each site sets its own copy. The engine only renders the bar, so which sites
+show it is configuration: the link page, the kit and the main site use both
+the bar and the line; a consulting site that wants only the family line sets
+`header: false`.
+
+Every item is a real link with `rel="noopener noreferrer"`, no `target` and no
+script. The bar is a `nav` landmark labeled `Sites` and the footer line one
+labeled `More from this creator`; the current item has `aria-current="page"`
+and is bold and underlined, so it does not depend on color. Targets are at
+least the `--ra-tap` size (2.75rem), the links keep source order for the
+keyboard and take the same focus ring as every link, and the row wraps at
+narrow widths and at 200 percent zoom instead of scrolling or clipping. Print
+hides the bar and keeps the footer line.
+
+The items are not counted as clicks: they carry no id, no `ping` and no
+`data-link-id`, they are not in the build manifest, and the click Worker never
+sees them. They are navigation between your own sites, like the footer credit,
+not outbound offers. The link parity check does not compare them.
 
 ## `cutover_date`
 
