@@ -41,6 +41,13 @@ from metric names, so an untagged record named `views_1d` is ordinary data. If a
 hand-written or pre-existing history file already holds analytics-shaped rows
 without the tag, tag them by hand before enabling the collector.
 
+**A correction keeps the tag of the record it fixes.** The history validator
+refuses a correction whose `api_provider` differs from its original, and
+`counts history-add --correction` copies the original's tag automatically, so a
+corrected value is still found by deletion, revocation and the notice. A
+correction goes with its original in the report: refused when the original is,
+and ignored (never an error) when it has no original.
+
 **One analytics source per config.** `analytics: true` is allowed on at most one
 `youtube` source (the config is refused at load otherwise). One `counts refresh`
 appends at most 200 history records, and a run of this collector can add up to 62.
@@ -82,6 +89,13 @@ not an error. An empty daily answer is the failure word `no_data`. A row with a
 bad day or bad numbers is skipped and counted (the word `bad_row`) while the
 other rows are kept; a wrong header, a duplicate, or an oversized answer fails
 that whole report. A failure is never stored as a zero; the day stays a gap.
+
+Demographic shares are checked as a whole: the recognized cells, kept and folded
+together, must not add up to more than 100 percent. A total above 100.25 percent
+is refused as `bad_aggregate` and that report stores nothing. The 0.25 percent
+slack is for rounding of each cell to a hundredth of a percent (ASSUMED; the
+vendor's rounding is not documented on a page read). Likewise a geography
+"other" total over the history maximum is refused, not clamped.
 
 ## Credentials (names only)
 

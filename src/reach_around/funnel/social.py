@@ -193,8 +193,19 @@ def build_social(
     """The report's social block from a validated history."""
     refused: dict[tuple[str, str], None] = {}
     groups: dict[tuple[bool, str, str], list[Record]] = {}
+    # An original and its corrections stand or fall together: a correction goes
+    # with its original (refused if the original is), and a correction with no
+    # original is dropped, so a series is never built from a correction alone.
+    originals = {r.key: r for r in history.records if r.type == "record"}
     for record in history.records:
-        if _refused(record):
+        if record.type != "record":
+            original = originals.get(record.key)
+            if original is None:
+                continue
+            if _refused(original):
+                refused[(record.platform, record.metric)] = None
+                continue
+        elif _refused(record):
             refused[(record.platform, record.metric)] = None
             continue
         collected = record.source != "imported"

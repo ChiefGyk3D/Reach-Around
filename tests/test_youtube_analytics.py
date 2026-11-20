@@ -753,6 +753,181 @@ def test_records_are_identified_only_by_the_provider_tag() -> None:
     assert deletion_candidates([tagged], today, revoked=True) == [tagged]
 
 
+# ---- corrections keep the provenance of the record they fix ----
+
+DAY0 = "2026-10-01T00:00:00Z"
+
+
+def tagged_original(platform: str = SLUG) -> Record:
+    return Record(
+        platform, "views_1d", 111, DAY0, "api", "r1", api_provider="youtube_analytics"
+    )
+
+
+def correction(provider: str | None, platform: str = SLUG) -> Record:
+    return Record(
+        platform,
+        "views_1d",
+        222,
+        DAY0,
+        "api",
+        "r2",
+        note="fixed",
+        type="correction",
+        api_provider=provider,
+    )
+
+
+def test_the_history_validator_refuses_a_correction_with_another_provider(
+    tmp_path: Path,
+) -> None:
+    from reach_around.counts.history import HistoryError
+
+    path = tmp_path / "h.jsonl"
+    append_records(path, [tagged_original()], now=NOW)
+    for provider in (None, "youtube_data_api"):
+        with pytest.raises(HistoryError, match="provider"):
+            append_records(path, [correction(provider)], now=NOW)
+    append_records(path, [correction("youtube_analytics")], now=NOW)  # matches
+    # the other way round: an untagged original and a tagged correction
+    other = tmp_path / "o.jsonl"
+    untagged = Record(SLUG, "views_1d", 1, DAY0, "api", "r")
+    append_records(other, [untagged], now=NOW)
+    with pytest.raises(HistoryError, match="provider"):
+        append_records(other, [correction("youtube_analytics")], now=NOW)
+
+
+def test_history_add_copies_the_provider_of_the_original(tmp_path: Path) -> None:
+    path = tmp_path / "h.jsonl"
+    append_records(path, [tagged_original()], now=NOW)
+    args = [
+        "counts",
+        "history-add",
+        "--file",
+        str(path),
+        "--platform",
+        SLUG,
+        "--metric",
+        "views_1d",
+        "--value",
+        "222",
+        "--as-of",
+        "2026-10-01",
+        "--source",
+        "api",
+        "--correction",
+        "--note",
+        "misread",
+    ]
+    assert main(args) == 0
+    records = read_history(path).records
+    assert [r.type for r in records] == ["record", "correction"]
+    assert records[1].api_provider == "youtube_analytics"
+    # a correction of an untagged api record stays untagged
+    plain_path = tmp_path / "p.jsonl"
+    append_records(plain_path, [Record(SLUG, "views_1d", 1, DAY0, "api", "r")], now=NOW)
+    args[3] = str(plain_path)
+    assert main(args) == 0
+    assert read_history(plain_path).records[1].api_provider is None
+    # a correction with no original is refused, not written untagged
+    empty = tmp_path / "e.jsonl"
+    append_records(empty, [Record("other", "followers", 1, DAY0, "api", "r")], now=NOW)
+    args[3] = str(empty)
+    assert main(args) != 0
+
+
+def test_a_legacy_tagged_original_with_untagged_correction_is_still_handled() -> None:
+    """Such a file cannot be written any more, but a reader must not trust that:
+    selection and the report treat the correction like its original."""
+    orig, fix = tagged_original(), correction(None)
+    later = date(2026, 12, 31)
+    assert deletion_candidates([orig, fix], later) == [orig, fix]
+    assert deletion_candidates([orig, fix], later, revoked=True) == [orig, fix]
+    block = build_social(History((orig, fix)), cutover=None, today=later)
+    assert block["platforms"] == [] and [i["metric"] for i in block["refused"]] == [
+        "views_1d"
+    ]
+
+
+def test_the_retention_notice_counts_a_tagged_correction_with_its_original(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # the notice counts what deletion_candidates selects (tested above for a
+    # legacy untagged correction); here the real file path, original plus fix
+    path = tmp_path / "h.jsonl"
+    append_records(path, [tagged_original(), correction("youtube_analytics")], now=NOW)
+    counts_cmd._retention_notice(path, datetime(2026, 12, 31, tzinfo=UTC))
+    assert "retention notice: 2 analytics record(s)" in capsys.readouterr().err
+
+
+def test_the_report_never_raises_on_a_correction_without_its_original() -> None:
+    orphan = correction(None, platform="video")
+    block = build_social(History((orphan,)), cutover=None, today=date(2026, 12, 31))
+    assert block["platforms"] == [] and block["refused"] == []
+    # a hand-kept series with an orphaned correction beside a good one still shows
+    good = Record("video", "followers", 5, DAY0, "hand_kept", "r")
+    block = build_social(
+        History((orphan, good)), cutover=None, today=date(2026, 12, 31)
+    )
+    assert [s["metric"] for s in block["platforms"]] == ["followers"]
+
+
+# ---- demographic shares cannot add up to more than 100 percent ----
+
+
+def demo_answer(*cells: tuple[str, str, float]) -> dict[str, Any]:
+    out = fx("demographics.json")
+    out["rows"] = [list(c) for c in cells]
+    return out
+
+
+def demo_run(*cells: tuple[str, str, float]) -> tuple[Any, list[str]]:
+    return run(
+        router(
+            daily=fx("daily.json"),
+            demo=demo_answer(*cells),
+            geo=fx("empty_geo.json"),
+        )
+    )
+
+
+def test_exactly_100_percent_is_accepted() -> None:
+    measures, words = demo_run(("age18-24", "male", 50.0), ("age25-34", "female", 50.0))
+    total = sum(m.value for m in measures if m.metric.startswith("demo_"))
+    assert words == [] and total == 10000
+
+
+@pytest.mark.parametrize(
+    "cells",
+    [
+        (("age18-24", "male", 100.0), ("age25-34", "male", 100.0)),
+        (("age18-24", "male", 99.0), ("age13-17", "female", 1.5)),  # folded counts
+        (("age18-24", "male", 50.0), ("age25-34", "female", 50.26)),  # 10026
+    ],
+    ids=["two-100s", "folded-cells-count", "just-over-tolerance"],
+)
+def test_a_share_total_over_100_percent_is_bad_aggregate(
+    cells: tuple[tuple[str, str, float], ...],
+) -> None:
+    measures, words = demo_run(*cells)
+    assert words == ["bad_aggregate"]
+    assert not [m for m in measures if m.metric.startswith("demo_")]
+
+
+def test_the_rounding_tolerance_boundary_is_accepted() -> None:
+    from reach_around.counts.youtube_analytics import DEMO_SUM_TOLERANCE_BP
+
+    assert DEMO_SUM_TOLERANCE_BP == 25
+    measures, words = demo_run(
+        ("age18-24", "male", 50.0),
+        ("age25-34", "female", 50.25),  # 10025, the edge
+    )
+    assert words == [] and measures
+    # folded cells are inside the total: 99.0 + 1.0 folded is exactly 100
+    measures, words = demo_run(("age18-24", "male", 99.0), ("age13-17", "female", 1.0))
+    assert words == [] and "demo_other" in {m.metric for m in measures}
+
+
 # ---- limits: the whole append, and one analytics source per config ----
 
 

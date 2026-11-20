@@ -533,6 +533,21 @@ def run_history_add(args: argparse.Namespace) -> int:
     except (ConfigError, ValueError, OSError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return EXIT_USAGE
+    provider: str | None = None
+    if args.correction:
+        # A correction keeps the provenance of the record it fixes (the history
+        # validator refuses any other). No original: left untagged, and the
+        # append then refuses it for having no earlier record.
+        try:
+            earlier = read_history(target).records
+        except HistoryError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return EXIT_WRITE
+        key = (args.platform, args.metric, _as_of(args.as_of), args.source)
+        provider = next(
+            (r.api_provider for r in earlier if r.type == "record" and r.key == key),
+            None,
+        )
     record = Record(
         platform=args.platform,
         metric=args.metric,
@@ -543,6 +558,7 @@ def run_history_add(args: argparse.Namespace) -> int:
         note=args.note,
         era=args.era,
         type="correction" if args.correction else "record",
+        api_provider=provider,
     )
     try:
         append_records(target, [record])

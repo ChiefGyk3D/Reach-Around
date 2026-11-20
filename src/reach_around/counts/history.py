@@ -243,7 +243,7 @@ def _parse(data: bytes, now: datetime | None = None) -> tuple[tuple[Record, ...]
     if not data.endswith(b"\n"):
         raise HistoryError("the last line is truncated (no newline); not repaired")
     records: list[Record] = []
-    seen: set[tuple[str, str, str, str]] = set()
+    seen: dict[tuple[str, str, str, str], str | None] = {}  # key -> its provider
     days: set[tuple[str, str, str, str]] = set()
     expect = GENESIS
     for number, raw in enumerate(data[:-1].split(b"\n"), start=1):
@@ -255,10 +255,16 @@ def _parse(data: bytes, now: datetime | None = None) -> tuple[tuple[Record, ...]
                 raise HistoryError(f"line {number}: duplicate record")
             if record.day_key in days:
                 raise HistoryError(f"line {number}: a second record for that UTC day")
-            seen.add(record.key)
+            seen[record.key] = record.api_provider
             days.add(record.day_key)
         elif record.key not in seen:
             raise HistoryError(f"line {number}: a correction with no earlier record")
+        elif seen[record.key] != record.api_provider:
+            # A correction keeps the provenance of the record it fixes, so
+            # deletion, revocation and the notice still find its value.
+            raise HistoryError(
+                f"line {number}: a correction's api_provider must match its original"
+            )
         records.append(record)
         expect = _digest(raw)
     return tuple(records), expect

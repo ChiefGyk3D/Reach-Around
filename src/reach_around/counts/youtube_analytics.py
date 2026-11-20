@@ -112,6 +112,11 @@ DEMO_WINDOW_DAYS = 28
 # overlap, the change in an "other" total across days can still reveal a folded
 # cell. That is acceptable only because the data is private and never published.
 DEMO_FLOOR_BP = 200  # 2.00 percent, in hundredths of a percent
+# The recognized cells of one demographic answer must not add up to more than 100
+# percent. Each cell is rounded to a hundredth of a percent, so the sum of up to 21
+# cells can drift a few hundredths over; 0.25 percent of slack is allowed. ASSUMED:
+# the vendor's own rounding is not documented on a page this code could read.
+DEMO_SUM_TOLERANCE_BP = 25
 GEO_FLOOR_VIEWS = 100
 
 # Policy (docs/research/platform-terms-retention.md, owner decision 2026-11-19):
@@ -339,6 +344,7 @@ def _demographics(session: _Session, first: date, last: date) -> Report:
     cells: dict[str, int] = {}
     folded = 0
     skipped = 0
+    total_bp = 0  # every recognized cell, kept or folded
     seen: set[tuple[object, object]] = set()
     for age, gender, percent in rows:
         key = (age, gender)
@@ -357,10 +363,13 @@ def _demographics(session: _Session, first: date, last: date) -> Report:
         except YoutubeAnalyticsError:
             skipped += 1
             continue
+        total_bp += bp
         if bp < DEMO_FLOOR_BP:
             folded += bp
         else:
             cells[f"demo_{label_age}_{label_sex}"] = bp
+    if total_bp > 10000 + DEMO_SUM_TOLERANCE_BP:
+        raise YoutubeAnalyticsError("bad_aggregate")  # shares cannot exceed 100%
     window = f"{first.isoformat()} to {last.isoformat()}"
     note = (
         f"viewer share x100 (4025 = 40.25 percent), UTC {window}; cells under "
@@ -522,9 +531,15 @@ def deletion_candidates(
     (the Data API subscriber count) are never selected here.
     """
     cutoff = today - timedelta(days=RETAIN_DAYS)
+    # A correction is selected with the record it fixes, even if it was written
+    # without the tag (the history validator no longer allows that; this guards a
+    # file written by older code).
+    tagged_keys = {r.key for r in records if r.api_provider == API_PROVIDER}
     out = []
     for record in records:
-        if record.api_provider != API_PROVIDER:
+        if record.api_provider != API_PROVIDER and not (
+            record.type == "correction" and record.key in tagged_keys
+        ):
             continue
         if revoked or record.as_of_utc[:10] < cutoff.isoformat():
             out.append(record)
