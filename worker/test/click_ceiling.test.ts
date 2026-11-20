@@ -13,6 +13,7 @@ import {
   clickWriteCost,
 } from "../src/clickceiling";
 import { CLICK_DAILY_WRITES } from "../src/kit/budgets";
+import { HOUR_BUDGET, LH_HOUR_BUDGET } from "../src/clickfunnel";
 
 const DB = testEnv.DB;
 const SITES = JSON.stringify({
@@ -94,6 +95,38 @@ describe("the cost of one click is the rows it writes", () => {
     expect(nonAdmission.some((r) => r.startsWith("click_budget_lh|"))).toBe(on.landings || on.hops);
     expect(charged).toBeGreaterThanOrEqual(measured);
     expect(charged).toBe(measured + 1); // the capacity row, not written by a click that folds nothing
+    expect(await count("cw-one")).toBe(charged);
+  });
+
+  // The fold case, measured: one slice of the hourly new-cell budget is already spent, so that axis pair
+  // folds into its overflow row and writes the capacity row, while the other pair makes new cells. The
+  // seed is written before the snapshot, so only this click's writes count.
+  const foldCases = combos.flatMap((on) => [
+    { ...on, spent: "click_budget" as const, applies: true },
+    { ...on, spent: "click_budget_lh" as const, applies: on.landings || on.hops },
+  ]).filter((c) => c.applies);
+  it.each(foldCases)("charges at least the rows of a click that folds one axis pair: sources=$sources landings=$landings hops=$hops spent=$spent", async (c) => {
+    const sites = JSON.stringify({
+      one: {
+        hosts: ["one.example.test"], mode: "beacon", pages: ["home"], link_ids: { twitch: "home" },
+        ...(c.sources ? { sources: ["instagram"] } : {}),
+        ...(c.landings ? { landings: ["home"] } : {}),
+        ...(c.hops ? { hops: ["blog"] } : {}),
+      },
+    });
+    const budget = c.spent === "click_budget" ? HOUR_BUDGET : LH_HOUR_BUDGET;
+    await DB.prepare(`INSERT INTO ${c.spent} (site, day, hour, clicks) VALUES ('one', ?1, ?2, ?3)`).bind(day(), new Date().getUTCHours(), budget).run();
+    const before = await snapshot();
+    await handleClick(click("one.example.test"), { ...env(), SITES: sites });
+    const after = await snapshot();
+    const nonAdmission = [...after].filter((r) => !before.has(r) && !r.startsWith("counters|"));
+    const rawRows = nonAdmission.filter((r) => r.startsWith("click_events|")).length;
+    const measured = 1 + nonAdmission.length + rawRows;
+    const charged = clickWriteCost(c);
+    expect(rawRows).toBe(1);
+    expect(nonAdmission.some((r) => r.startsWith("click_capacity|"))).toBe(true); // the fold wrote it
+    expect(nonAdmission.some((r) => r.startsWith(`${c.spent}|`))).toBe(false); // the spent slice is not written again
+    expect(charged).toBeGreaterThanOrEqual(measured);
     expect(await count("cw-one")).toBe(charged);
   });
 });
