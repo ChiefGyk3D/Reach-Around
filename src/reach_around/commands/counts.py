@@ -33,6 +33,10 @@ from reach_around.config.loader import _read
 from reach_around.config.numbers import load_numbers
 from reach_around.config.stale import REMIND_DAYS, due_numbers
 from reach_around.counts.beacons import (
+    IMPORT_NOTE,
+    IMPORT_PLATFORM,
+    IMPORT_RUN_ID,
+    IMPORT_SOURCE,
     MAX_BEACONS_BYTES,
     BeaconsImportError,
     parse_beacons_csv,
@@ -885,13 +889,13 @@ def run_beacons_import(
             raise BeaconsImportError("destination must be a regular file path")
         records = [
             Record(
-                platform="link-page",
+                platform=IMPORT_PLATFORM,
                 metric=metric,
                 value=value,
                 as_of_utc=f"{day.day.isoformat()}T00:00:00Z",
-                source="imported",
-                run_id="beacons-import",
-                note="Beacons",
+                source=IMPORT_SOURCE,
+                run_id=IMPORT_RUN_ID,
+                note=IMPORT_NOTE,
             )
             for day in export.days
             for metric, value in (("views", day.views), ("clicks", day.clicks))

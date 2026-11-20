@@ -13,6 +13,13 @@ from decimal import Decimal, InvalidOperation
 MAX_BEACONS_BYTES = 5 * 1024 * 1024
 MAX_BEACONS_ROWS = 100_000
 
+# What ``history-import-beacons`` writes into every record. The kit's imported-
+# history file and the export step accept nothing else, so these words live here.
+IMPORT_PLATFORM = "link-page"
+IMPORT_SOURCE = "imported"
+IMPORT_RUN_ID = "beacons-import"
+IMPORT_NOTE = "Beacons"
+
 _HEADER = ("Section", "Item", "Detail", "Views", "Clicks", "CTR (%)")
 _SECTIONS = frozenset(
     {"Total", "Daily", "Links", "Social icons", "Sources", "Devices", "Countries"}

@@ -20,6 +20,7 @@ from datetime import date
 
 from reach_around.config.imported_history import PLATFORM, SOURCE, parse_imported
 from reach_around.config.loader import ConfigError
+from reach_around.counts.beacons import IMPORT_NOTE, IMPORT_RUN_ID
 from reach_around.counts.history import History
 
 _METRICS = ("views", "clicks")
@@ -32,7 +33,6 @@ def export_imported(history: History) -> str:
         raise ConfigError("history", None, "the history file holds redacted records")
     if not history.records:
         raise ConfigError("history", None, "the history file has no records")
-    notes: set[str | None] = set()
     days: dict[tuple[int, int], dict[str, dict[date, int]]] = defaultdict(
         lambda: {m: {} for m in _METRICS}
     )
@@ -49,15 +49,22 @@ def export_imported(history: History) -> str:
                 "the history file holds records that are not imported link-page "
                 "views and clicks; export only the file the importer wrote",
             )
-        notes.add(record.note)
+        if (
+            record.run_id != IMPORT_RUN_ID
+            or record.note != IMPORT_NOTE
+            or record.era is not None
+            or record.api_provider is not None
+        ):
+            raise ConfigError(
+                "history",
+                None,
+                "the history file was not written by history-import-beacons",
+            )
         day = date.fromisoformat(record.as_of_utc[:10])
         slot = days[(day.year, day.month)][record.metric]
         if day in slot:
             raise ConfigError("history", None, "a day is recorded twice")
         slot[day] = record.value
-    if len(notes) != 1 or None in notes:
-        raise ConfigError("history", None, "the records do not share one note")
-    (note,) = notes
     periods = []
     for (year, month), metrics in sorted(days.items()):
         if set(metrics["views"]) != set(metrics["clicks"]):
@@ -75,7 +82,7 @@ def export_imported(history: History) -> str:
     doc = {
         "version": 1,
         "source": SOURCE,
-        "note": note,
+        "note": IMPORT_NOTE,
         "platform": PLATFORM,
         "periods": periods,
     }

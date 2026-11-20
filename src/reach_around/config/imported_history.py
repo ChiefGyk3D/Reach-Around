@@ -10,11 +10,12 @@ per link, per referrer or per day can reach a page.
 
 Shape::
 
-    {"version": 1, "source": "imported", "note": "Beacons", "platform": "link-page",
+    {"version": 1, "source": "imported", "note": NOTE, "platform": PLATFORM,
      "periods": [{"start": "2026-01-01", "end": "2026-01-31", "days": 31,
                   "views": 1234, "clicks": 56}]}
 
 ``source`` and ``note`` repeat the provenance vocabulary of the importer
+(NOTE, PLATFORM and the others are its constants in counts/beacons.py)
 (``source: imported``, ``note: Beacons``); neither is printed. ``days`` is how
 many days of the period the export holds, so a partial period says so. The
 numbers are never added to a collected number or to the headline total.
@@ -23,7 +24,6 @@ numbers are never added to a collected number or to the headline total.
 from __future__ import annotations
 
 import json
-import re
 from datetime import date
 from pathlib import Path
 from typing import Any
@@ -41,12 +41,13 @@ from pydantic import (
 
 from reach_around.config.era import SPANS, classify_window, era_text
 from reach_around.config.loader import ConfigError, _read
+from reach_around.counts.beacons import IMPORT_NOTE, IMPORT_PLATFORM, IMPORT_SOURCE
 
 MAX_IMPORTED_BYTES = 256 * 1024
 MAX_PERIODS = 120
 MAX_VALUE = 10**12
-PLATFORM = "link-page"
-SOURCE = "imported"
+PLATFORM = IMPORT_PLATFORM
+SOURCE = IMPORT_SOURCE
 
 IMPORTED_HEADING = "Before Reach Around"
 # One neutral sentence; the owner approves the wording (see the pull request).
@@ -54,8 +55,6 @@ IMPORTED_NOTE = (
     "Link-page views and clicks imported from the previous provider; they are not "
     "comparable to numbers collected by Reach Around and are not added to any total."
 )
-
-_NOTE = re.compile(r"[A-Za-z0-9 ._-]{1,40}")
 
 
 class _Model(BaseModel):
@@ -113,8 +112,8 @@ class ImportedHistory(_Model):
     @field_validator("note")
     @classmethod
     def _note(cls, value: str) -> str:
-        if not _NOTE.fullmatch(value):
-            raise ValueError("note must be 1 to 40 plain characters")
+        if value != IMPORT_NOTE:
+            raise ValueError("note is not the importer's")
         return value
 
     @model_validator(mode="after")

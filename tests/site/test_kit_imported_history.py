@@ -165,6 +165,8 @@ def test_the_file_parses_to_aggregate_periods_only() -> None:
         lambda d: d.update(periods=[]),
         lambda d: d.update(periods=d["periods"] * 100),
         lambda d: d.update(note="<b>x</b>"),
+        lambda d: d.update(note="Other"),
+        lambda d: d.update(note="beacons"),
     ],
 )
 def test_the_parser_refuses_a_file_that_is_not_the_aggregate_shape(
@@ -680,6 +682,8 @@ def test_export_accepts_the_good_baseline() -> None:
     assert parse_imported(export_imported(History(tuple(good_records()))).encode())
 
 
+PROVENANCE = "not written by history-import-beacons"
+
 TOMB = Tombstone(
     "link-page",
     "views",
@@ -705,8 +709,26 @@ TOMB = Tombstone(
             "not imported link-page",
         ),
         (History((*good_records(), imported_record("2026-01-01"))), "twice"),
-        (History(both("2026-01-02", note="Other")), "one note"),
-        (History(both("2026-01-02", note=None)), "one note"),
+        (History(both("2026-01-02", note="Other")), PROVENANCE),
+        (History(both("2026-01-02", note=None)), PROVENANCE),
+        (History(both("2026-01-02", run_id="other-run")), PROVENANCE),
+        (History(both("2026-01-02", era="vendor rule")), PROVENANCE),
+        (History(both("2026-01-02", api_provider="youtube_data_api")), PROVENANCE),
+        (
+            History(
+                (
+                    *both("2026-01-02", note="Sentinel9Note"),
+                    *both("2026-01-03"),
+                )
+            ),
+            PROVENANCE,
+        ),
+        (
+            History(
+                tuple(imported_record(f"2026-01-0{d}", note="Other") for d in (2,))
+            ),
+            PROVENANCE,
+        ),
         (History((*good_records(), imported_record("2026-01-02"))), "different days"),
     ],
     ids=[
@@ -717,14 +739,38 @@ TOMB = Tombstone(
         "correction",
         "other-metric",
         "duplicate-day",
-        "differing-notes",
+        "different-note",
         "missing-note",
+        "different-run-id",
+        "extra-era",
+        "extra-provider",
+        "mixed-file",
+        "one-sided-other-note",
         "views-and-clicks-differ",
     ],
 )
 def test_export_refuses_each_unsafe_history(history: History, message: str) -> None:
     with pytest.raises(ConfigError, match=message):
         export_imported(history)
+
+
+def test_export_refusal_echoes_nothing_from_the_file() -> None:
+    sentinel = "Sentinel4417Value"
+    for kw in ({"note": sentinel}, {"run_id": sentinel}, {"era": sentinel}):
+        with pytest.raises(ConfigError) as err:
+            export_imported(History(both("2026-01-02", **kw)))
+        assert sentinel not in str(err.value)
+
+
+def test_the_provenance_words_have_one_home() -> None:
+    root = Path(__file__).parents[2] / "src" / "reach_around"
+    for literal in ('"Beacons"', '"beacons-import"', '"link-page"'):
+        homes = [
+            p.relative_to(root).as_posix()
+            for p in root.rglob("*.py")
+            if literal in p.read_text(encoding="utf-8")
+        ]
+        assert homes == ["counts/beacons.py"], (literal, homes)
 
 
 def test_export_never_overwrites_a_file_created_in_the_race(
