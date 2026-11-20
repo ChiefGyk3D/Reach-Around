@@ -955,6 +955,39 @@ def test_a_batch_over_the_append_limit_drops_only_the_analytics() -> None:
     assert len(others) + len(figures) == MAX_BATCH + 2
 
 
+def test_one_record_over_the_append_limit_drops_only_the_analytics_record() -> None:
+    others = [plain(i) for i in range(MAX_BATCH)]
+    figure = analytics_rec(1)
+    batch = others + [figure]
+    assert len(batch) == MAX_BATCH + 1
+    kept, dropped = counts_cmd.fit_batch(batch)
+    assert kept == others and dropped == ["youtube"]
+
+
+def test_near_miss_tags_are_not_analytics() -> None:
+    def tagged(platform: str, tag: str | None, i: int) -> Record:
+        return Record(
+            platform,
+            f"views_{i}d",
+            i,
+            "2026-11-01T00:00:00Z",
+            "api",
+            "r",
+            api_provider=tag,
+        )
+
+    near = [
+        tagged("youtube", "youtube_analytics ", 1),  # trailing space
+        tagged("youtube", "YouTube_Analytics", 2),  # case differs
+        tagged("youtube_analytics", None, 3),  # right name, but a platform, no tag
+    ]
+    others = [plain(i) for i in range(MAX_BATCH - len(near) + 1)]
+    batch = others + near + [analytics_rec(9)]
+    assert len(batch) > MAX_BATCH
+    kept, dropped = counts_cmd.fit_batch(batch)
+    assert kept == others + near and dropped == ["youtube"]
+
+
 def test_a_batch_exactly_at_the_limit_is_kept_whole() -> None:
     others = [plain(i) for i in range(MAX_BATCH - 10)]
     figures = [analytics_rec(i) for i in range(10)]
