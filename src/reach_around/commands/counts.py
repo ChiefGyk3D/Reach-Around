@@ -52,6 +52,7 @@ from reach_around.counts.history import (
     MAX_BATCH,
     REASONS,
     HistoryError,
+    OldCopyRemainsError,
     Record,
     RedactDurabilityError,
     append_records,
@@ -656,13 +657,17 @@ def run_history_redact(args: argparse.Namespace) -> int:
         finally:
             for notice in notices:
                 _say(notice)
-    except RedactDurabilityError:
+    except OldCopyRemainsError as exc:
+        _say(f"error: {exc}; the file is {exc.temp_name}", sys.stderr)
         _say(
-            "error: the file WAS replaced, but the result could not be fully "
-            "confirmed (a folder sync or a check failed), so durability is "
-            "uncertain; run history-verify before anything else",
+            "if the retry fails too, remove that file by hand: the old values "
+            "stay on disk until it is gone",
             sys.stderr,
         )
+        return EXIT_REPLACED_UNSURE
+    except RedactDurabilityError as exc:
+        # Fixed words, never content. Exit 5: the state needs checking.
+        _say(f"error: {exc}", sys.stderr)
         return EXIT_REPLACED_UNSURE
     except HistoryError as exc:
         _say(f"error: {exc}", sys.stderr)

@@ -98,7 +98,29 @@ class HistoryError(Exception):
 
 
 class RedactDurabilityError(HistoryError):
-    """The new file replaced the old one, but the folder sync failed afterward."""
+    """A redaction ended in a state that needs checking (exit 5), not a clean failure.
+
+    The new file may have replaced the old one without a confirmed folder sync, a
+    rename reported an error, or the files were left as they are after a
+    concurrent replacement. The message is fixed words and never quotes content.
+    """
+
+
+class OldCopyRemainsError(RedactDurabilityError):
+    """The new file is installed, but the old copy, with the old values, is not gone.
+
+    ``temp_name`` is the file to remove; rerunning ``history-redact --confirm``
+    removes it because its marker proves what it is.
+    """
+
+    def __init__(self, temp_name: str) -> None:
+        super().__init__(
+            "the new file replaced the file, but the old copy, which still holds "
+            "the redacted values, could not be removed; the old values remain "
+            "on disk until it is removed; run the same command with --confirm "
+            "again"
+        )
+        self.temp_name = temp_name
 
 
 @dataclass(frozen=True)
@@ -1040,7 +1062,14 @@ def _redact(
         if len(data) > max_bytes:
             raise HistoryError("the history file would be too large")
         _parse(data)  # the result must verify before it replaces anything
-        _replace_file(dir_fd, path.name, data, fd, notices)
+        _replace_file(
+            dir_fd,
+            path.name,
+            data,
+            fd,
+            notices,
+            hashlib.sha256(existing).hexdigest(),
+        )
         return len(keys)
     finally:
         os.close(fd)
@@ -1097,8 +1126,13 @@ def _replace_file(
     data: bytes,
     locked_fd: int,
     notices: list[str] | None,
+    old_sha: str,
 ) -> None:
     """Install ``data`` as ``name`` in place of the locked file.
+
+    Before the exchange a small provenance marker (``.<name>.redact-<hex>.mark``)
+    records the inode and SHA-256 of the new file and of the file it replaces, so
+    stale cleanup can prove what a leftover is instead of trusting its name.
 
     The new file is written beside the old one (mode 0600, old owner and group
     where permitted) and fsynced. It then replaces the old one by an atomic
@@ -1136,11 +1170,29 @@ def _replace_file(
     except OSError:
         _unlink_quietly(dir_fd, temp)
         raise HistoryError("cannot write the history file") from None
+    marker = _marker_name(temp)
+    try:
+        _write_marker(
+            dir_fd,
+            marker,
+            _marker_text(
+                (temp_id[0], temp_id[1], hashlib.sha256(data).hexdigest()),
+                (locked_id[0], locked_id[1], old_sha),
+            ),
+        )
+    except OSError:
+        _unlink_quietly(dir_fd, temp)
+        _unlink_quietly(dir_fd, marker)
+        raise HistoryError("cannot write the history file") from None
     try:
         _install(dir_fd, name, temp, temp_id, locked_id)
+    except RedactDurabilityError:
+        raise  # leave every file and the marker exactly as they are
     except HistoryError:
         _clean_temp(dir_fd, temp, temp_id)
+        _unlink_quietly(dir_fd, marker)
         raise
+    _unlink_quietly(dir_fd, marker)
     _confirm_installed(dir_fd, name, data, temp_id)
     try:
         os.fsync(dir_fd)
@@ -1179,27 +1231,38 @@ def _install(
         raise  # not reached
     if swapped:
         # `temp` now holds whatever was at `name`.
-        if _identity_of(dir_fd, temp) != locked_id:
+        displaced = _identity_of(dir_fd, temp)
+        if displaced != locked_id:
+            _before_mutation("redact-undo")
             try:
                 undone = _exchange(dir_fd, temp, name)
             except OSError:
                 undone = False
-            if not undone:
-                raise RedactDurabilityError(
-                    "the history file was replaced while redacting and the "
-                    "exchange could not be undone; run history-verify"
-                ) from None
-            raise HistoryError(
-                "the history file was replaced while redacting; nothing was "
-                "changed; run again"
-            )
-        try:
-            os.unlink(temp, dir_fd=dir_fd)  # the old file, with the old values
-        except OSError:
+            # Trust the undo only if both names hold exactly what they should:
+            # the name the file that was displaced, the temporary name our output.
+            if (
+                undone
+                and displaced is not None
+                and _identity_of(dir_fd, name) == displaced
+                and _identity_of(dir_fd, temp) == temp_id
+            ):
+                raise HistoryError(
+                    "the history file was replaced while redacting; the "
+                    "redaction was undone and nothing was lost; run again"
+                )
             raise RedactDurabilityError(
-                "the new file replaced the file, but the old copy could not be "
-                "removed; run history-redact --confirm again to remove it"
+                "the history file was replaced while redacting and the undo could "
+                "not be confirmed; the files were left exactly as they are, so a "
+                "newer file may sit under a temporary name; run history-verify "
+                "and look at the folder before anything else"
             ) from None
+        for _attempt in range(2):
+            try:
+                os.unlink(temp, dir_fd=dir_fd)  # the old file, with the old values
+                return
+            except OSError:
+                continue
+        raise OldCopyRemainsError(temp)
 
 
 def _after_failed_install(
@@ -1216,6 +1279,8 @@ def _after_failed_install(
     if named == temp_id:
         if _identity_of(dir_fd, temp) == locked_id:
             _unlink_quietly(dir_fd, temp)  # the old copy, left by an exchange
+        if _identity_of(dir_fd, temp) is None:
+            _unlink_quietly(dir_fd, _marker_name(temp))  # nothing left to prove
         raise RedactDurabilityError(
             "the new file replaced the file, but the system reported an error "
             "doing it; run history-verify"
@@ -1249,37 +1314,150 @@ def _confirm_installed(
         ) from None
 
 
-def _stale_pattern(name: str) -> re.Pattern[str]:
-    return re.compile(r"^\." + re.escape(name) + r"\.redact-[0-9a-f]{8}\.tmp$")
+_MARKER = re.compile(
+    r"^reach-around redaction marker 1\n"
+    r"out (\d+) (\d+) ([0-9a-f]{64})\n"
+    r"old (\d+) (\d+) ([0-9a-f]{64})\n$"
+)
+_Proof = tuple[int, int, str]
 
 
-def _is_stale(dir_fd: int, name: str, pattern: re.Pattern[str]) -> bool:
-    if not pattern.match(name):
-        return False
+def _marker_text(out: _Proof, old: _Proof) -> str:
+    """The marker body: inode and SHA-256 of the new file and of the old one."""
+    return (
+        "reach-around redaction marker 1\n"
+        f"out {out[0]} {out[1]} {out[2]}\n"
+        f"old {old[0]} {old[1]} {old[2]}\n"
+    )
+
+
+def _marker_name(temp: str) -> str:
+    return temp[: -len(".tmp")] + ".mark"
+
+
+def _write_marker(dir_fd: int, marker: str, text: str) -> None:
+    fd = os.open(
+        marker,
+        os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+        0o600,
+        dir_fd=dir_fd,
+    )
+    try:
+        os.fchmod(fd, 0o600)
+        _write_all(fd, text.encode("ascii"))
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def _open_own_regular(dir_fd: int, name: str) -> int | None:
+    """``name`` opened read-only without following links, if it is our own file."""
+    try:
+        fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=dir_fd)
+    except OSError:
+        return None
+    info = os.fstat(fd)
+    if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid():
+        os.close(fd)
+        return None
+    return fd
+
+
+def _read_marker(dir_fd: int, marker: str) -> tuple[_Proof, _Proof] | None:
+    fd = _open_own_regular(dir_fd, marker)
+    if fd is None:
+        return None
+    try:
+        raw = _read_fd(fd, 512)
+    except (OSError, HistoryError):
+        return None
+    finally:
+        os.close(fd)
+    try:
+        found = _MARKER.match(raw.decode("ascii"))
+    except UnicodeDecodeError:
+        return None
+    if found is None:
+        return None
+    g = found.groups()
+    return (int(g[0]), int(g[1]), g[2]), (int(g[3]), int(g[4]), g[5])
+
+
+def _provenance(dir_fd: int, temp: str, proof: tuple[_Proof, _Proof]) -> str | None:
+    """``"output"`` or ``"old"`` when the file is exactly what the marker records."""
+    fd = _open_own_regular(dir_fd, temp)
+    if fd is None:
+        return None
+    try:
+        identity = _identity(os.fstat(fd))
+        digest = hashlib.sha256(_read_fd(fd, MAX_FILE_BYTES)).hexdigest()
+    except (OSError, HistoryError):
+        return None
+    finally:
+        os.close(fd)
+    for kind, (dev, ino, sha) in zip(("output", "old"), proof, strict=True):
+        if identity == (dev, ino) and digest == sha:
+            return kind
+    return None
+
+
+def _stale_patterns(name: str) -> tuple[re.Pattern[str], re.Pattern[str]]:
+    base = r"^\." + re.escape(name) + r"\.redact-[0-9a-f]{8}\."
+    return re.compile(base + r"tmp$"), re.compile(base + r"mark$")
+
+
+def _is_stale(
+    dir_fd: int,
+    name: str,
+    patterns: tuple[re.Pattern[str], re.Pattern[str]],
+) -> bool:
+    """True for a leftover this tool can prove it made and may remove.
+
+    A name alone proves nothing. A temporary needs its marker, and its inode and
+    SHA-256 must match what the marker recorded: the new output (removed once it
+    is an hour old) or the displaced old copy (removed at once, it holds the
+    redacted values). A marker with no temporary is removed once it is an hour
+    old. Every file must be a regular file owned by the invoking user.
+    """
+    temp_re, mark_re = patterns
+    old_enough = time.time() - _STALE_AFTER_SECONDS
     try:
         info = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
     except OSError:
         return False
-    return (
-        stat.S_ISREG(info.st_mode)
-        and info.st_uid == os.getuid()
-        and info.st_mtime < time.time() - _STALE_AFTER_SECONDS
-    )
+    if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid():
+        return False
+    if mark_re.match(name):
+        temp = name[: -len(".mark")] + ".tmp"
+        return _identity_of(dir_fd, temp) is None and info.st_mtime < old_enough
+    if not temp_re.match(name):
+        return False
+    proof = _read_marker(dir_fd, _marker_name(name))
+    if proof is None:
+        return False
+    kind = _provenance(dir_fd, name, proof)
+    return kind == "old" or (kind == "output" and info.st_mtime < old_enough)
 
 
 def find_stale_redaction_temps(path: Path) -> list[str]:
-    """Names of leftover ``.<file>.redact-*.tmp`` files a crashed redaction left.
+    """Names of leftover ``.<file>.redact-*`` files a redaction left behind.
 
     Only regular files in the history folder, owned by the invoking user, of
-    exactly that name pattern and older than an hour. They hold the proposed
-    redacted output, so they are private history and should not linger.
+    exactly that name pattern, that a provenance marker proves are redaction
+    output (older than an hour) or the displaced old copy (any age); see
+    ``_is_stale``. They hold private history and should not linger. The lock
+    file and every other name are never listed.
     """
-    pattern = _stale_pattern(path.name)
+    patterns = _stale_patterns(path.name)
     dir_fd = _open_parent(path, strict=True)
     try:
         with os.scandir(dir_fd) as entries:
-            names = [e.name for e in entries if pattern.match(e.name)]
-        return sorted(n for n in names if _is_stale(dir_fd, n, pattern))
+            names = [
+                e.name
+                for e in entries
+                if patterns[0].match(e.name) or patterns[1].match(e.name)
+            ]
+        return sorted(n for n in names if _is_stale(dir_fd, n, patterns))
     except OSError:
         raise HistoryError("cannot list the history folder") from None
     finally:
@@ -1293,14 +1471,14 @@ def remove_stale_redaction_temps(
 
     Holds the writers' lock, so it never runs beside an append or a redaction.
     """
-    pattern = _stale_pattern(path.name)
+    patterns = _stale_patterns(path.name)
     dir_fd = _open_parent(path, strict=True)
     removed = 0
     sidecar = -1
     try:
         sidecar = _open_sidecar(dir_fd, path.name, lock_wait)
         for name in names:
-            if type(name) is str and _is_stale(dir_fd, name, pattern):
+            if type(name) is str and _is_stale(dir_fd, name, patterns):
                 try:
                     os.unlink(name, dir_fd=dir_fd)
                 except FileNotFoundError:
@@ -1308,6 +1486,8 @@ def remove_stale_redaction_temps(
                 except OSError:
                     raise HistoryError("cannot remove a stale temporary file") from None
                 removed += 1
+                if patterns[0].match(name):
+                    _unlink_quietly(dir_fd, _marker_name(name))
     finally:
         if sidecar >= 0:
             os.close(sidecar)

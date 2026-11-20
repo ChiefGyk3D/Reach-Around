@@ -186,7 +186,19 @@ same key cannot be filled again. Only `api` rows are redacted; `hand_kept` and
    The swap itself is atomic where the system supports it (`renameat2` with
    `RENAME_EXCHANGE`, Linux): the new file and the old one trade names, the old
    one is checked to be the file that was locked, and if it is not (something
-   outside replaced it meanwhile) the trade is undone and nothing is lost.
+   outside replaced it meanwhile) the trade is undone and nothing is lost. The
+   undo is trusted only after both names are checked: the history name must hold
+   the file that was swapped out and the temporary name the new output. If a
+   second replacement lands during the undo, nothing more is touched: the command
+   says so in fixed words and exits 5, and a newer file may then sit under a
+   `.<file>.redact-*.tmp` name. Look at the folder and run `history-verify`
+   before anything else. Cleanup never removes such a file (see below).
+   If the swap worked but the old copy, which still holds the redacted values,
+   cannot be removed, the command retries once, then exits 5 and names the file
+   and says plainly that the old values remain on disk until it is removed.
+   Run the same command with `--confirm` again: it removes that old copy at once,
+   whatever its age, because its marker proves what it is. If that fails too,
+   remove the named file by hand.
    Where the system cannot do that, the name is checked once more and the new
    file is renamed over it; a replacement in the very short gap between that
    check and the rename cannot be detected there, so do not run `git pull` or
@@ -202,9 +214,15 @@ same key cannot be filled again. Only `api` rows are redacted; `hand_kept` and
    file, as before. A plan that no longer matches the file in every
    field, or that lists a record twice, is refused.
    A crash can leave a `.<file>.redact-<8 hex>.tmp` beside the history file. It
-   holds the proposed redacted output, so treat it as private. The dry run lists
-   such files (regular, yours, older than an hour, exact name pattern) by count
-   and name; `--confirm` removes only those.
+   holds the proposed redacted output, so treat it as private. Before the swap a
+   small marker file `.<file>.redact-<8 hex>.mark` records the inode and SHA-256
+   of the new file and of the file it replaces. The dry run lists leftovers by
+   count and name (names are printed escaped); `--confirm` removes only a file
+   that is regular, yours, of the exact name pattern, and that its marker proves
+   byte for byte is the redaction output (and an hour old) or the displaced old
+   copy (any age). A name alone proves nothing: a file with no marker, a changed
+   file, or a file under a temporary name that is not the recorded one is never
+   removed. A marker whose temporary is gone is removed once it is an hour old.
 4. `reach-around counts history-verify --config site.yaml` must exit 0.
 5. Commit the file to the private instance repository in its own pull request.
    The bundled workflow still refuses a file that is not a byte-prefix of the

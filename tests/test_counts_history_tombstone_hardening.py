@@ -24,6 +24,7 @@ from reach_around.counts.history import (
     remove_stale_redaction_temps,
     tombstoned,
 )
+from test_counts_history_tombstone_race import stale_pair
 
 NOW = datetime(2026, 12, 31, 12, 0, 0, tzinfo=UTC)
 REDACT_AT = datetime(2026, 11, 19, 12, 0, 0, tzinfo=UTC)
@@ -230,7 +231,7 @@ def test_cli_prints_fixed_words_and_a_distinct_exit_code_for_it(
     monkeypatch.undo()
     err = capsys.readouterr().err
     assert code == 5
-    assert "the file WAS replaced" in err and "history-verify" in err
+    assert "replaced the file" in err and "history-verify" in err
     assert len(tombstoned(read_history(path))) == 2
 
 
@@ -338,9 +339,13 @@ def make_temps(tmp_path: Path) -> dict[str, str]:
         p.write_text("private", encoding="ascii")
         os.utime(p, (time.time() - age, time.time() - age))
 
-    file(".h.jsonl.redact-0a1b2c3d.tmp")  # stale: removed
-    made["stale"] = ".h.jsonl.redact-0a1b2c3d.tmp"
-    file(".h.jsonl.redact-ffffffff.tmp", age=5)  # young: may be running now
+    made["stale"] = stale_pair(tmp_path)  # provable and old: removed
+    stale_pair(tmp_path, code="ffffffff", age=5)  # young: may be running now
+    # Old and well named, but the content no longer matches its marker: kept.
+    changed = tmp_path / stale_pair(tmp_path, code="33333333")
+    changed.write_bytes(b"other bytes")
+    os.utime(changed, (old, old))  # the write made it young again
+    file(".h.jsonl.redact-55555555.tmp")  # no marker: a name alone proves nothing
     file(".other.jsonl.redact-0a1b2c3d.tmp")  # another file's pattern
     file(".h.jsonl.redact-0a1b2c3d.tmp.bak")
     file(".h.jsonl.redact-XYZ.tmp")
@@ -360,6 +365,10 @@ def make_temps(tmp_path: Path) -> dict[str, str]:
 
 KEEP = [
     ".h.jsonl.redact-ffffffff.tmp",
+    ".h.jsonl.redact-ffffffff.mark",
+    ".h.jsonl.redact-33333333.tmp",
+    ".h.jsonl.redact-33333333.mark",
+    ".h.jsonl.redact-55555555.tmp",
     ".other.jsonl.redact-0a1b2c3d.tmp",
     ".h.jsonl.redact-0a1b2c3d.tmp.bak",
     ".h.jsonl.redact-XYZ.tmp",

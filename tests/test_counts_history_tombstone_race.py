@@ -2,6 +2,7 @@
 """Races, ambiguous renames, umask and printed names (issue #586, review round 2)."""
 
 import fcntl
+import hashlib
 import os
 import stat
 import time
@@ -68,10 +69,10 @@ def plan_for(path: Path) -> list[Record]:
     )
 
 
-def swap_in_other_file(path: Path) -> bytes:
+def swap_in_other_file(path: Path, value: int = 999) -> bytes:
     """Replace ``path`` by a different valid file, as a git checkout would."""
     other = path.parent / "swapped-in"
-    build(other, value=999)
+    build(other, value=value)
     data = other.read_bytes()
     os.replace(other, path)
     (path.parent / ".swapped-in.lock").unlink()
@@ -90,6 +91,34 @@ def swap_once(monkeypatch: pytest.MonkeyPatch, path: Path, stage: str) -> list[b
 
     monkeypatch.setattr(hist, "_before_mutation", hook)
     return result
+
+
+def stale_pair(
+    folder: Path,
+    file_name: str = "h.jsonl",
+    code: str = "0a1b2c3d",
+    *,
+    content: bytes = b"private",
+    age: float = 7200,
+    kind: str = "output",
+) -> str:
+    """A leftover temporary with its provenance marker, as a crash would leave it.
+
+    ``kind`` says what the marker proves the file is: the redaction ``output`` or
+    the displaced ``old`` copy.
+    """
+    temp = folder / f".{file_name}.redact-{code}.tmp"
+    temp.write_bytes(content)
+    info = temp.stat()
+    mine = (info.st_dev, info.st_ino, hashlib.sha256(content).hexdigest())
+    other = (0, 0, "0" * 64)
+    out, old = (mine, other) if kind == "output" else (other, mine)
+    mark = folder / f".{file_name}.redact-{code}.mark"
+    mark.write_text(hist._marker_text(out, old), encoding="ascii")
+    when = time.time() - age
+    for item in (temp, mark):
+        os.utime(item, (when, when))
+    return temp.name
 
 
 def names(folder: Path) -> list[str]:
@@ -364,10 +393,7 @@ def test_stale_names_with_escape_sequences_are_printed_escaped(
 ) -> None:
     path = tmp_path / "h\x1b[2Jx.jsonl"
     build(path)
-    temp = tmp_path / ".h\x1b[2Jx.jsonl.redact-0a1b2c3d.tmp"
-    temp.write_text("private", encoding="ascii")
-    old = time.time() - 7200
-    os.utime(temp, (old, old))
+    temp = tmp_path / stale_pair(tmp_path, path.name)
     code = main(
         [
             "counts",
