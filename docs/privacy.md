@@ -191,7 +191,9 @@ hyperlink auditing turned off or unsupported); the Worker discards any request
 that carries the signal, whatever the page did. The guarantee covers the
 site's own script (it removes the `ping` attribute at load, on click, on
 middle-click and on the context menu, and treats an unreadable signal as an
-opt-out) plus that server-side discard. It does not cover other scripts on the
+opt-out) plus that server-side discard. A `ping` attribute removed at load
+is deliberately not restored if the signal is cleared later in the same page
+view (it fails toward privacy; a page reload re-reads the signal). It does not cover other scripts on the
 page (one that runs later can put the attribute back), visitors without
 JavaScript, or links inside shadow roots or iframes. The Worker's reply to a
 discarded click has the same status, headers and body as a recorded one; its

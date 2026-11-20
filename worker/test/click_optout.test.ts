@@ -43,6 +43,38 @@ async function counters(): Promise<number> {
   return r?.n ?? 0;
 }
 
+// Every table's rows, so "nothing was recorded" covers the counters, the
+// admission and capacity rows, and anything added later, not one chosen table.
+async function snapshot(): Promise<Record<string, unknown[]>> {
+  const names = (
+    await testEnv.DB.prepare(
+      "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE '_cf_%' AND name != 'd1_migrations' ORDER BY name",
+    ).all<{ name: string }>()
+  ).results.map((r) => r.name);
+  const out: Record<string, unknown[]> = {};
+  for (const name of names) {
+    out[name] = (await testEnv.DB.prepare(`SELECT * FROM "${name}"`).all()).results;
+  }
+  return out;
+}
+
+// A site with a source list, so click_src_daily is written for a normal click.
+function sourceEnv(): Env {
+  const e = makeEnv();
+  delete e.SITE_HOST;
+  delete e.LINK_IDS;
+  e.SITES = JSON.stringify({
+    links: {
+      hosts: [SITE],
+      mode: "beacon",
+      pages: ["home"],
+      link_ids: { "example-one": "home" },
+      sources: ["bio"],
+    },
+  });
+  return e;
+}
+
 beforeEach(async () => {
   await testEnv.DB.prepare("DELETE FROM click_events").run();
   await testEnv.DB.prepare("DELETE FROM click_src_daily").run();
@@ -113,6 +145,28 @@ describe("click opt-out signals", () => {
     expect(res.status).toBe(204);
     expect(await count()).toBe(0);
     expect(await counters()).toBe(0);
+  });
+
+  it("changes no table for an opted-out click, while a normal click changes them", async () => {
+    const before = await snapshot();
+    const url = "https://worker.example.test/e/c/example-one?s=bio";
+    const make = (extra: Record<string, string>) =>
+      new Request(url, {
+        method: "POST",
+        headers: { "User-Agent": BROWSER_UA, "Ping-From": `https://${SITE}/`, "CF-Connecting-IP": "198.51.100.9", ...extra },
+      });
+    await handleClick(make({ "Sec-GPC": "1" }), sourceEnv());
+    await handleClick(make({ DNT: "1" }), sourceEnv());
+    expect(await snapshot()).toEqual(before);
+
+    // The pair: the same request without the signal does change the tables,
+    // including the source counter and the country counter.
+    await handleClick(make({}), sourceEnv());
+    const after = await snapshot();
+    expect(after).not.toEqual(before);
+    expect(after.click_src_daily.length).toBeGreaterThan(0);
+    expect(after.click_country_daily.length).toBeGreaterThan(0);
+    expect(after.click_events.length).toBe(1);
   });
 
   it("answers an opted-out click with the same response form as a recorded one (status, headers, body; timing is not equalized)", async () => {

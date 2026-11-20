@@ -119,6 +119,9 @@
   // clicked, but also when it is opened without a click (context menu, middle
   // button). Strip at load, and again on those other gestures in case the
   // signal changed while the page was open. These never send anything.
+  // A ping removed here is deliberately not put back if the signal is cleared
+  // later in the same page view: that fails toward privacy, and a reload reads
+  // the signal again.
   function stripAllIfOptedOut() {
     if (!native || !optedOutSafe()) {
       return;
