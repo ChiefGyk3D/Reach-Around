@@ -63,7 +63,8 @@ function isKitInquiryRoute(request: Request): boolean {
 }
 
 function isKitGateRoute(request: Request): boolean {
-  if (request.url.length > MAX_URL_LENGTH) return false;
+  // No analytics URL cap here: the gate ignores the query, and an oversize URL must still reach its
+  // origin and cookie checks and get its fixed redirect, not fall through to the click route's 204.
   try {
     return isGateRoute(new URL(request.url).pathname);
   } catch {

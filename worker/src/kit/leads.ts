@@ -179,12 +179,12 @@ export const UNSTORED_FLOOR_KEY = "unstored_floor_ts";
 /**
  * The same floor for unlocks that stored no lead (src/kit/unstored.ts): they have no lead row to hold
  * one, so it is one kit-wide value in `kit_meta`, in MILLISECONDS, with the same rule as the lead floor.
- * This is the ONE writer of it.
+ * This is the ONE writer of it. A revocation only moves forward: an older value never lowers the floor.
  */
 export async function setUnstoredSessionFloor(db: D1Database, nowMs: number): Promise<void> {
   checkTs(nowMs, "nowMs");
   await db
-    .prepare("INSERT INTO kit_meta (key, value) VALUES (?1, ?2) ON CONFLICT (key) DO UPDATE SET value = excluded.value")
+    .prepare("INSERT INTO kit_meta (key, value) VALUES (?1, ?2) ON CONFLICT (key) DO UPDATE SET value = MAX(value, excluded.value)")
     .bind(UNSTORED_FLOOR_KEY, Math.floor(nowMs))
     .run();
 }
@@ -199,11 +199,12 @@ export async function getUnstoredSessionFloor(db: D1Database): Promise<number | 
  * The ONE writer of `leads.session_floor_ts`. The unit is MILLISECONDS since 1970, like every other
  * timestamp column here. (Plan 3 Task 15 says "nowSec"; that is superseded: /k/view in gate.ts reads
  * the column in milliseconds, and migration 0009 is already applied and is not edited.)
- * Cookies issued in a second at or before the floor's second stop working.
+ * Cookies issued in a second at or before the floor's second stop working. The floor only moves
+ * forward: an older value never lowers it.
  */
 export async function setSessionFloor(db: D1Database, id: string, nowMs: number): Promise<void> {
   checkTs(nowMs, "nowMs");
-  await db.prepare("UPDATE leads SET session_floor_ts = ? WHERE id = ?").bind(Math.floor(nowMs), id).run();
+  await db.prepare("UPDATE leads SET session_floor_ts = MAX(COALESCE(session_floor_ts, 0), ?1) WHERE id = ?2").bind(Math.floor(nowMs), id).run();
 }
 
 export async function markVerified(db: D1Database, id: string, nowMs: number): Promise<void> {

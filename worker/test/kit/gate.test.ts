@@ -3,7 +3,7 @@ import { env as testEnv } from "cloudflare:workers";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createDispatcher } from "../../src/alerts/dispatcher";
 import { GATED_KV_KEY, GATE_ROUTE, VIEW_ROUTE, handleGate, type GateEnv } from "../../src/kit/gate";
-import { setSessionFloor, setUnstoredSessionFloor } from "../../src/kit/leads";
+import { getUnstoredSessionFloor, setSessionFloor, setUnstoredSessionFloor } from "../../src/kit/leads";
 import { mintUnstoredId } from "../../src/kit/unstored";
 import { COOKIE_NAME, signToken } from "../../src/kit/token";
 import { resetEventCapCache } from "../../src/kit/budgets";
@@ -987,6 +987,23 @@ describe("session floor writer", () => {
     const id = await seedLead();
     await expect(setSessionFloor(testEnv.DB, id, Number.NaN)).rejects.toThrow(RangeError);
   });
+  it("setSessionFloor only moves forward: an older value never lowers the floor", async () => {
+    const id = await seedLead();
+    await setSessionFloor(testEnv.DB, id, T0);
+    await setSessionFloor(testEnv.DB, id, T0 - 60_000);
+    const row = await testEnv.DB.prepare("SELECT session_floor_ts AS f FROM leads WHERE id = ?").bind(id).first<{ f: number }>();
+    expect(row!.f).toBe(T0);
+    await setSessionFloor(testEnv.DB, id, T0 + 5_000); // a newer one still raises it (the guard is not a freeze)
+    const up = await testEnv.DB.prepare("SELECT session_floor_ts AS f FROM leads WHERE id = ?").bind(id).first<{ f: number }>();
+    expect(up!.f).toBe(T0 + 5_000);
+  });
+  it("setUnstoredSessionFloor only moves forward: an older value never lowers the floor", async () => {
+    await setUnstoredSessionFloor(testEnv.DB, T0);
+    await setUnstoredSessionFloor(testEnv.DB, T0 - 60_000);
+    expect(await getUnstoredSessionFloor(testEnv.DB)).toBe(T0);
+    await setUnstoredSessionFloor(testEnv.DB, T0 + 5_000);
+    expect(await getUnstoredSessionFloor(testEnv.DB)).toBe(T0 + 5_000);
+  });
 });
 
 /** A D1 whose statements matching `bad` throw when run: a read error on one table. */
@@ -1107,6 +1124,22 @@ describe("worker.fetch wiring", () => {
     const v = await worker.fetch(req({ method: "GET", path: VIEW_ROUTE }), baseEnv() as never, undefined);
     expect(v.headers.get("location")).toBe("/kit/");
     const other = await worker.fetch(req({ method: "GET", path: "/k/other" }), baseEnv() as never, undefined);
+    expect(other.status).toBe(204);
+  });
+  it("routes /k/gate and /k/view to the gate whatever the query length", async () => {
+    const q = `?${"a=1&".repeat(600)}`; // the whole URL is well over the analytics URL cap
+    const gate = await worker.fetch(
+      req({ headers: { origin: "https://evil.example" }, path: `${GATE_ROUTE}${q}` }),
+      baseEnv() as never,
+      undefined,
+    );
+    expect(gate.status).toBe(303);
+    expect(gate.headers.get("location")).toBe("/kit/retry/");
+    const v = await worker.fetch(req({ method: "GET", path: `${VIEW_ROUTE}${q}` }), baseEnv() as never, undefined);
+    expect(v.status).toBe(303);
+    expect(v.headers.get("location")).toBe("/kit/");
+    // an oversize URL on any other /k/ path still gets the click route's empty 204
+    const other = await worker.fetch(req({ method: "GET", path: `/k/other${q}` }), baseEnv() as never, undefined);
     expect(other.status).toBe(204);
   });
 });
