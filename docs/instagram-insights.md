@@ -87,7 +87,7 @@ day keeps the first value.
 ## Credentials (names only)
 
 `INSTAGRAM_ACCESS_TOKEN`, the same fixed variable the follower read uses. The
-collector never refreshes or stores a token (the follower read owns that). The
+collector never refreshes or stores a token (the follower read owns that). Because the follower read may rotate the token through the Meta sink (`auto_refresh: true`, expiry within `refresh_within_days`), this collector skips the run's insights with the fixed word `refresh_pending` in that window, so the replaced token is never sent; insights resume once the new token is in the environment. The source's `kind` must be `instagram`: any other kind is refused (`bad_source_setting`) before the environment is read. The
 vendor pages show the token only as the `access_token` query value (see
 `meta_user.py`), so the token is in the request URL; nothing the fetch layer raises
 may travel upward, errors carry fixed words only, no redirect is followed, and

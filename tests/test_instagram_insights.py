@@ -1119,3 +1119,128 @@ def test_a_rejected_credential_stops_the_run_after_one_request(
     other = FakeTransport({INSIGHTS_URL: reply({}, status=500)})
     run(other)
     assert len(other.calls) > 4
+
+
+# ---- forged kinds and token rotation (review findings) ----
+
+
+class SpyEnv(dict[str, str]):
+    """An environment that records every name read."""
+
+    def __init__(self, data: dict[str, str]) -> None:
+        super().__init__(data)
+        self.reads: list[str] = []
+
+    def get(self, key: str, default: Any = None) -> Any:
+        self.reads.append(key)
+        return super().get(key, default)
+
+    def __getitem__(self, key: str) -> str:
+        self.reads.append(key)
+        return super().__getitem__(key)
+
+
+OTHER_TOKENS = {
+    "THREADS_ACCESS_TOKEN": "SENTINEL-THREADS-TOKEN",
+    "TWITCH_USER_ACCESS_TOKEN": "SENTINEL-TWITCH-TOKEN",
+    "YOUTUBE_API_KEY": "SENTINEL-YT-KEY",
+}
+
+
+@pytest.mark.parametrize("kind", ["threads", "twitch", "youtube", "tiktok", "x", ""])
+def test_a_forged_kind_never_sends_another_providers_credential(kind: str) -> None:
+    transport = ok_router()
+    env = SpyEnv({**ENV, **OTHER_TOKENS})
+    forged = SRC.model_copy(update={"kind": kind})
+    with pytest.raises(InstagramInsightsError) as err:
+        collect_instagram(forged, env, fetch_for(transport), TODAY)
+    assert err.value.kind == "bad_source_setting"
+    assert not transport.calls and env.reads == []  # no request, no env read
+    # the same through collect(): a fixed word, nothing sent
+    found, failures = collect(
+        [forged], frozenset({"instagram"}), env, fetch_for(transport), NOW
+    )
+    assert not transport.calls and env.reads == []
+    assert found == [] and [f.word for f in failures] == ["bad_source_setting"]
+
+
+def rotating_transport() -> FakeTransport:
+    transport = ok_router()
+    transport.routes["https://graph.instagram.com/refresh_access_token"] = reply(
+        {
+            "access_token": "SENTINEL-IG-NEW",
+            "token_type": "bearer",
+            "expires_in": 5184000,
+        }
+    )
+    transport.routes[ME] = reply({"followers_count": 321})
+    return transport
+
+
+def test_insights_never_send_the_old_token_after_a_rotation() -> None:
+    from reach_around.counts.meta_user import follower_total
+
+    stored: list[str] = []
+
+    class Sink:
+        def store(self, token: Any, name: str, source: str, expires_on: Any) -> None:
+            stored.append(token.value)
+
+        def alert(self, alert: Any) -> None:
+            pass
+
+    source = SRC.model_copy(
+        update={
+            "auto_refresh": True,
+            "token_expires": date(2026, 11, 25),  # inside the refresh window
+            "refresh_within_days": 10,
+        }
+    )
+    transport = rotating_transport()
+    fetch = fetch_for(transport)
+    # the follower read rotates the token (the old one is sent to refresh it)
+    assert follower_total(source, ENV, fetch, Sink(), TODAY) == 321
+    assert stored == ["SENTINEL-IG-NEW"]
+    rotated_at = len(transport.calls)
+    # the insights step of the same run must not use the replaced token
+    found, failures = collect([source], frozenset({"instagram"}), ENV, fetch, NOW)
+    assert found == [] and [f.word for f in failures] == ["refresh_pending"]
+    assert len(transport.calls) == rotated_at  # nothing was sent at all
+    assert not any(TOKEN in c.path for c in transport.calls[rotated_at:])
+
+
+def test_a_source_outside_the_refresh_window_still_collects() -> None:
+    far = SRC.model_copy(
+        update={
+            "auto_refresh": True,
+            "token_expires": date(2027, 1, 20),
+            "refresh_within_days": 10,
+        }
+    )
+    measures, words = run_source(far)
+    assert words == [] and measures
+    # no expiry known: the follower read never refreshes, so insights collect
+    unknown = SRC.model_copy(update={"auto_refresh": True, "token_expires": None})
+    assert run_source(unknown)[1] == []
+    # auto_refresh off: a due token is only reported, never rotated
+    due = SRC.model_copy(update={"token_expires": date(2026, 11, 25)})
+    assert run_source(due)[1] == []
+
+
+def run_source(source: InstagramSource) -> tuple[Any, list[str]]:
+    return collect_instagram(source, ENV, fetch_for(ok_router()), TODAY)
+
+
+def test_the_refresh_window_edge_matches_the_follower_read() -> None:
+    def source(day: date) -> InstagramSource:
+        return SRC.model_copy(
+            update={
+                "auto_refresh": True,
+                "token_expires": day,
+                "refresh_within_days": 10,
+            }
+        )
+
+    with pytest.raises(InstagramInsightsError, match="refresh_pending"):
+        run_source(source(date(2026, 11, 29)))  # exactly 10 days left
+    assert run_source(source(date(2026, 11, 30)))[1] == []  # 11 days left

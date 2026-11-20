@@ -104,6 +104,7 @@ _WORDS = frozenset(
         "no_data",
         "bad_report",
         "bad_row",
+        "refresh_pending",
     }
 )
 

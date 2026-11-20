@@ -359,10 +359,32 @@ def _word(exc: Exception) -> str:
     return "fetch_failed"
 
 
-def _check(source: InstagramSource) -> None:
+def _rotation_possible(source: InstagramSource, today: date) -> bool:
+    """True when the follower read may refresh the token in this run (the same
+    window ``meta_user`` uses: expiry known and within ``refresh_within_days``)."""
+    expires = getattr(source, "token_expires", None)
+    within = getattr(source, "refresh_within_days", None)
+    if type(expires) is not date or type(within) is not int:
+        return False
+    return (expires - today).days <= within
+
+
+def _check(source: InstagramSource, today: date) -> None:
     """Use-time re-check; ``model_copy`` and ``model_construct`` skip validation."""
+    # The kind picks the credential (credential_name), so it is checked before any
+    # environment read: a forged source of another kind must never send another
+    # provider's token to the Instagram host.
+    if getattr(source, "kind", None) != "instagram":
+        raise InstagramInsightsError("bad_source_setting")
     if getattr(source, "analytics", False) is not True:
         raise InstagramInsightsError("bad_source_setting")
+    if getattr(source, "auto_refresh", False) is True and _rotation_possible(
+        source, today
+    ):
+        # The follower read of this run may rotate the token through the Meta
+        # sink; this collector reads the original environment and would send a
+        # token that was just replaced. Skip this run's insights instead.
+        raise InstagramInsightsError("refresh_pending")
     uid = getattr(source, "user_id", None)
     if type(uid) is not str or not _USER_ID.fullmatch(uid):
         raise InstagramInsightsError("bad_source_setting")
@@ -384,7 +406,7 @@ def collect_instagram(
     Raises ``InstagramInsightsError`` when nothing could be attempted (setting or
     credential problem). One failed report never discards another.
     """
-    _check(source)
+    _check(source, today)
     try:
         reader = _Reader(source, env, fetch)
     except MetaError as exc:
