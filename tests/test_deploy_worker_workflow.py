@@ -77,6 +77,13 @@ def load(path: Path) -> dict[str, Any]:
     return data
 
 
+def call_spec() -> dict[str, Any]:
+    """The `on.workflow_call` block. YAML 1.1 reads the key `on` as True."""
+    data: dict[Any, Any] = yaml.safe_load(CALLEE.read_text(encoding="utf-8"))
+    spec: dict[str, Any] = data[True]["workflow_call"]
+    return spec
+
+
 def callee_steps() -> list[dict[str, Any]]:
     result: list[dict[str, Any]] = load(CALLEE)["jobs"]["deploy"]["steps"]
     return result
@@ -217,7 +224,7 @@ def test_the_worker_is_always_deployed_under_the_name_input() -> None:
     assert deploy["env"]["WORKER_NAME"] == "${{ inputs.worker_name }}"
     assert '--name "$WORKER_NAME"' in deploy["run"]
     assert "--config wrangler.deploy.toml" in deploy["run"]
-    spec = load(CALLEE)[True]["workflow_call"]["inputs"]["worker_name"]
+    spec = call_spec()["inputs"]["worker_name"]
     # required, with no default: omitting it can never fall back to the test Worker
     assert spec.get("required") is True and "default" not in spec
 
@@ -445,7 +452,7 @@ def test_the_callee_reads_no_github_secret_and_takes_none() -> None:
     assert text.count("outputs.secrets") == 3, "the three token mappings"
     assert "secrets:" not in text
     assert "inherit" not in text
-    spec = load(CALLEE)[True]["workflow_call"]
+    spec = call_spec()
     assert "secrets" not in spec and "outputs" not in spec
     for name in spec["inputs"]:
         assert not re.search(r"token|secret|key|password", name), name
@@ -517,7 +524,7 @@ def test_the_caller_grants_what_the_callee_declares_and_passes_known_inputs() ->
     assert job["permissions"] == callee_job["permissions"]
     assert job["if"] == "github.ref == 'refs/heads/main'"
     assert "secrets" not in job  # nothing is handed over, not even `inherit`
-    spec = load(CALLEE)[True]["workflow_call"]["inputs"]
+    spec = call_spec()["inputs"]
     passed = job["with"]
     assert set(passed) <= set(spec), sorted(set(passed) - set(spec))
     required = {k for k, v in spec.items() if v.get("required")}
