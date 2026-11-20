@@ -22,6 +22,7 @@ from pageweight import (
     measure,
     over_budget,
     page_type,
+    resources,
     third_party,
 )
 from test_kit_build import gated_doc, make_config
@@ -150,3 +151,102 @@ def test_budget_headroom_is_bounded(
     for kind in PAGE_TYPES:
         for f in FIELDS:
             assert BUDGET[kind][f] <= biggest[kind][f] * 1.5, (kind, f)
+
+
+def _copy_with_head(sites: list[Path], tmp_path: Path, head: str) -> tuple[Path, Path]:
+    root = tmp_path / "copy"
+    shutil.copytree(sites[0], root)
+    page = root / "index.html"
+    page.write_text(page.read_text().replace("</head>", head + "</head>"))
+    return root, page
+
+
+def test_every_supported_font_extension_counts_as_fonts(
+    sites: list[Path], tmp_path: Path
+) -> None:
+    root = tmp_path / "copy"
+    shutil.copytree(sites[0], root)
+    before = measure(root, root / "index.html")
+    links = ""
+    for name, size in (("a.woff2", 11), ("b.woff", 22), ("c.otf", 33), ("d.ttf", 44)):
+        (root / "static" / name).write_bytes(b"f" * size)
+        links += f'<link rel="preload" href="static/{name}" as="font" crossorigin>'
+    page = root / "index.html"
+    page.write_text(page.read_text().replace("</head>", links + "</head>"))
+    after = measure(root, page)
+    assert after["fonts"] - before["fonts"] == 11 + 22 + 33 + 44
+    assert after["images"] == before["images"]
+
+
+def test_unknown_extension_fails_loudly(sites: list[Path], tmp_path: Path) -> None:
+    root, page = _copy_with_head(
+        sites, tmp_path, '<link rel="preload" href="static/x.xyz" as="fetch">'
+    )
+    (root / "static" / "x.xyz").write_bytes(b"x")
+    with pytest.raises(ValueError, match=r"\.xyz"):
+        measure(root, page)
+
+
+def _css_site(sites: list[Path], tmp_path: Path, files: dict[str, str]) -> Path:
+    root, page = _copy_with_head(
+        sites, tmp_path, '<link rel="stylesheet" href="static/entry.css">'
+    )
+    for name, text in files.items():
+        (root / "static" / name).write_text(text)
+    return page
+
+
+def test_third_party_in_an_imported_stylesheet_is_found(
+    sites: list[Path], tmp_path: Path
+) -> None:
+    for inner in (
+        "a{background:url(https://cdn.example.net/a.png)}",
+        '@import "https://cdn.example.net/a.css";',
+    ):
+        page = _css_site(
+            sites,
+            tmp_path / str(abs(hash(inner))),
+            {"entry.css": '@import "inner.css";', "inner.css": inner},
+        )
+        assert third_party(page.parent, page), inner
+    # a url() to a same-origin stylesheet is followed too, two levels deep
+    page = _css_site(
+        sites,
+        tmp_path / "deep",
+        {
+            "entry.css": "a{background:url(mid.css)}",
+            "mid.css": "@import url(inner.css);",
+            "inner.css": "b{background:url(//cdn.example.net/x.png)}",
+        },
+    )
+    assert third_party(page.parent, page)
+
+
+def test_stylesheet_import_cycle_terminates(sites: list[Path], tmp_path: Path) -> None:
+    page = _css_site(
+        sites,
+        tmp_path,
+        {"entry.css": '@import "other.css";', "other.css": '@import "entry.css";'},
+    )
+    assert third_party(page.parent, page) == []
+    names = {f.name for f in resources(page.parent, page)}
+    assert {"entry.css", "other.css"} <= names
+
+
+def test_clean_import_chain_passes_and_is_counted(
+    sites: list[Path], tmp_path: Path
+) -> None:
+    root = tmp_path / "base"
+    shutil.copytree(sites[0], root)
+    before = measure(root, root / "index.html")
+    page = _css_site(
+        sites,
+        tmp_path / "chain",
+        {"entry.css": '@import "inner.css";', "inner.css": "a{color:red}"},
+    )
+    assert third_party(page.parent, page) == []
+    base = measure(page.parent, page.parent / "index.html")
+    inner = (page.parent / "static" / "inner.css").stat().st_size
+    entry = (page.parent / "static" / "entry.css").stat().st_size
+    assert base["css"] - before["css"] == inner + entry
+    assert base["requests"] - before["requests"] == 2

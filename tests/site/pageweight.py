@@ -72,7 +72,7 @@ BUDGET: dict[str, dict[str, int]] = {
 # pages and only when ``kit.turnstile_site_key`` is set.
 GATE_ORIGINS = frozenset({"challenges.cloudflare.com"})
 
-_TEXT = {".html", ".css", ".js", ".svg", ".ttf", ".txt"}
+_TEXT = {".html", ".css", ".js", ".mjs", ".svg", ".ttf", ".otf", ".txt"}
 _LINK_ATTRS = {
     "link": ("href",),
     "script": ("src",),
@@ -160,12 +160,63 @@ def _file(root: Path, page: Path, ref: str) -> Path:
     return (page.parent / ref).resolve()
 
 
+def _css_refs(text: str) -> list[str]:
+    return [m.group(1) or m.group(2) for m in _CSS_URL.finditer(text)]
+
+
+def _is_remote(ref: str) -> bool:
+    return ref.startswith("//") or urlsplit(ref).scheme in ("http", "https")
+
+
+def _css_closure(root: Path, seeds: list[tuple[Path, str]]) -> list[Path]:
+    """Same-origin stylesheets reached by ``@import`` or ``url()`` from CSS.
+
+    ``seeds`` are (directory, CSS text) pairs; each stylesheet found is read
+    in turn. A visited set ends import cycles.
+    """
+    found: dict[Path, None] = {}
+    queue = list(seeds)
+    while queue:
+        where, text = queue.pop(0)
+        for ref in _css_refs(text):
+            if _is_remote(ref) or ref.startswith("data:"):
+                continue
+            clean = ref.split("#")[0].split("?")[0]
+            if not clean.endswith(".css"):
+                continue
+            f = _file(root, where / "x", clean)
+            if f not in found:
+                found[f] = None
+                queue.append((f.parent, f.read_text(encoding="utf-8")))
+    return list(found)
+
+
 def resources(root: Path, page: Path) -> list[Path]:
-    """The distinct same-origin files the page's HTML links, in order."""
+    """The distinct same-origin files the page loads, in order.
+
+    Files its HTML links, then stylesheets those (and inline styles) import.
+    """
+    refs = _parse(page)
     seen: dict[Path, None] = {}
-    for ref in _parse(page).local:
+    for ref in refs.local:
         seen[_file(root, page, ref)] = None
+    seeds = [(page.parent, t) for t in refs.stylesheets_inline]
+    seeds += [
+        (f.parent, f.read_text(encoding="utf-8")) for f in seen if f.suffix == ".css"
+    ]
+    for f in _css_closure(root, seeds):
+        seen[f] = None
     return list(seen)
+
+
+_KINDS = {
+    **dict.fromkeys((".css",), "css"),
+    **dict.fromkeys((".js", ".mjs"), "js"),
+    **dict.fromkeys((".woff2", ".woff", ".ttf", ".otf"), "fonts"),
+    **dict.fromkeys(
+        (".png", ".jpg", ".jpeg", ".webp", ".avif", ".gif", ".svg", ".ico"), "images"
+    ),
+}
 
 
 def measure(root: Path, page: Path) -> dict[str, int]:
@@ -177,9 +228,9 @@ def measure(root: Path, page: Path) -> dict[str, int]:
     files = resources(root, page)
     for f in files:
         data = f.read_bytes()
-        kind = {".css": "css", ".js": "js", ".woff2": "fonts", ".ttf": "fonts"}.get(
-            f.suffix, "images"
-        )
+        kind = _KINDS.get(f.suffix.lower())
+        if kind is None:
+            raise ValueError(f"unclassified file type {f.suffix!r}: {f.name}")
         out[kind] += len(data)
         out["compressed"] += (
             len(gzip.compress(data, 9)) if f.suffix in _TEXT else len(data)
@@ -201,10 +252,7 @@ def third_party(root: Path, page: Path) -> list[str]:
         if f.suffix == ".css":
             css_texts.append(f.read_text(encoding="utf-8"))
     for text in css_texts:
-        for m in _CSS_URL.finditer(text):
-            ref = m.group(1) or m.group(2)
-            if ref.startswith("//") or urlsplit(ref).scheme in ("http", "https"):
-                found.append(ref)
+        found += [r for r in _css_refs(text) if _is_remote(r)]
     return found
 
 
