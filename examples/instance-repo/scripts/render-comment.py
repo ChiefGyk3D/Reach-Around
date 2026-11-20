@@ -330,6 +330,11 @@ VOCAB: dict[str, tuple[str, str]] = {
         "Use a platform name from the platforms block; see "
         "docs/config.md in the Reach Around repository.",
     ),
+    "kit_only_source": (
+        "a count source with show_on_hub: false has no kit number to feed",
+        "Add a kit metric with source: counts for the same platform, "
+        "or remove show_on_hub: false.",
+    ),
     "robots": (
         "the robots setting is not allowed",
         "See robots in docs/config.md in the Reach Around repository.",
@@ -596,6 +601,7 @@ KNOWN_FIELDS: frozenset[str] = frozenset(
         "services",
         "show",
         "show_from",
+        "show_on_hub",
         "show_until",
         "sitemap",
         "socials",

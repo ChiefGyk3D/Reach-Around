@@ -356,6 +356,7 @@ _VALUE_ERRORS: tuple[tuple[re.Pattern[str], str], ...] = tuple(
         (r"^unlock_link: true is not available", "kit_unlock_link"),
         (r"^the metric .* is listed more than once", "kit_metric_twice"),
         (r"^platform must be a platform name", "kit_platform"),
+        (r"show_on_hub: false needs a kit metric", "kit_only_source"),
         (r"^(must be at most|must not contain|background)", "style_value"),
         (r"^unknown color", "color_name"),
         (r"^(name is required when|name is only used when)", "name_for_kind"),

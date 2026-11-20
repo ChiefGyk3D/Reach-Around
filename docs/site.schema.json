@@ -206,6 +206,11 @@
           "pattern": "^[a-z0-9][a-z0-9-]{0,39}$",
           "title": "Platform",
           "type": "string"
+        },
+        "show_on_hub": {
+          "default": true,
+          "title": "Show On Hub",
+          "type": "boolean"
         }
       },
       "required": [
@@ -589,6 +594,11 @@
           "pattern": "^[a-z0-9][a-z0-9-]{0,39}$",
           "title": "Platform",
           "type": "string"
+        },
+        "show_on_hub": {
+          "default": true,
+          "title": "Show On Hub",
+          "type": "boolean"
         }
       },
       "required": [
@@ -1215,6 +1225,11 @@
           "title": "Platform",
           "type": "string"
         },
+        "show_on_hub": {
+          "default": true,
+          "title": "Show On Hub",
+          "type": "boolean"
+        },
         "user": {
           "title": "User",
           "type": "string"
@@ -1326,6 +1341,11 @@
           "minimum": 1,
           "title": "Refresh Within Days",
           "type": "integer"
+        },
+        "show_on_hub": {
+          "default": true,
+          "title": "Show On Hub",
+          "type": "boolean"
         },
         "token_expires": {
           "anyOf": [
@@ -1826,6 +1846,11 @@
           "pattern": "^[a-z0-9][a-z0-9-]{0,39}$",
           "title": "Platform",
           "type": "string"
+        },
+        "show_on_hub": {
+          "default": true,
+          "title": "Show On Hub",
+          "type": "boolean"
         }
       },
       "required": [
@@ -1853,6 +1878,11 @@
         "room": {
           "title": "Room",
           "type": "string"
+        },
+        "show_on_hub": {
+          "default": true,
+          "title": "Show On Hub",
+          "type": "boolean"
         }
       },
       "required": [
@@ -3277,6 +3307,11 @@
           "title": "Refresh Within Days",
           "type": "integer"
         },
+        "show_on_hub": {
+          "default": true,
+          "title": "Show On Hub",
+          "type": "boolean"
+        },
         "token_expires": {
           "anyOf": [
             {
@@ -3344,6 +3379,11 @@
           "pattern": "^[a-z0-9][a-z0-9-]{0,39}$",
           "title": "Platform",
           "type": "string"
+        },
+        "show_on_hub": {
+          "default": true,
+          "title": "Show On Hub",
+          "type": "boolean"
         }
       },
       "required": [
@@ -3386,6 +3426,11 @@
           "pattern": "^[a-z0-9][a-z0-9-]{0,39}$",
           "title": "Platform",
           "type": "string"
+        },
+        "show_on_hub": {
+          "default": true,
+          "title": "Show On Hub",
+          "type": "boolean"
         }
       },
       "required": [
@@ -3423,6 +3468,11 @@
           "pattern": "^[a-z0-9][a-z0-9-]{0,39}$",
           "title": "Platform",
           "type": "string"
+        },
+        "show_on_hub": {
+          "default": true,
+          "title": "Show On Hub",
+          "type": "boolean"
         }
       },
       "required": [
