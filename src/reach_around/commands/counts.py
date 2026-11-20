@@ -48,9 +48,9 @@ from reach_around.counts.files import (
     write_atomic,
 )
 from reach_around.counts.history import (
-    ANALYTICS_PROVIDER,
     API_PROVIDERS,
     MAX_BATCH,
+    PRIVATE_PROVIDERS,
     REASONS,
     HistoryError,
     OldCopyRemainsError,
@@ -74,6 +74,12 @@ from reach_around.counts.importer import (
     parse_import,
 )
 from reach_around.counts.insights import Figure, InsightFailure, collect
+from reach_around.counts.instagram_insights import (
+    RETAIN_DAYS as INSTAGRAM_RETAIN_DAYS,
+)
+from reach_around.counts.instagram_insights import (
+    deletion_candidates as instagram_deletion_candidates,
+)
 from reach_around.counts.refresh import (
     SUSPECT_KINDS,
     Outcome,
@@ -329,29 +335,40 @@ def _insights(
 def fit_batch(records: list[Record]) -> tuple[list[Record], list[str]]:
     """The records to append, and the platforms whose analytics were left out.
 
-    Within ``MAX_BATCH`` nothing changes. Over it, every YouTube Analytics record
-    is dropped (never a subscriber or another source's record) and the platforms
+    Within ``MAX_BATCH`` nothing changes. Over it, every private analytics record
+    (YouTube Analytics, Instagram insights; the ``PRIVATE_PROVIDERS`` tags) is
+    dropped (never a subscriber or another source's record) and the platforms
     that lost figures are named, so one too-large source fails alone."""
     if len(records) <= MAX_BATCH:
         return records, []
-    private = [r for r in records if r.api_provider == ANALYTICS_PROVIDER]
-    kept = [r for r in records if r.api_provider != ANALYTICS_PROVIDER]
+    private = [r for r in records if r.api_provider in PRIVATE_PROVIDERS]
+    kept = [r for r in records if r.api_provider not in PRIVATE_PROVIDERS]
     return kept, sorted({r.platform for r in private})
 
 
 def _retention_notice(history: Path, stamp: datetime) -> None:
-    """Tell the owner, every run, how many YouTube Analytics records are past the
-    30-day rule. A count only, never a value. Removal is the history tombstone
+    """Tell the owner, every run, how many private analytics records are past the
+    30-day rule: YouTube Analytics (#391) and Instagram insights (#393), each on
+    its own line. A count only, never a value. Removal is the history tombstone
     tool (#586); this run changes nothing."""
     try:
-        records = read_history(history).records
+        records = list(read_history(history).records)
     except HistoryError:
         return  # a missing or damaged file is reported by the history work itself
-    count = len(deletion_candidates(list(records), stamp.astimezone(UTC).date()))
+    today = stamp.astimezone(UTC).date()
+    count = len(deletion_candidates(records, today))
     if count:
         print(
             f"youtube: retention notice: {count} analytics record(s) are past "
             f"{RETAIN_DAYS} days; remove them with the history tombstone tool (#586)",
+            file=sys.stderr,
+        )
+    count = len(instagram_deletion_candidates(records, today))
+    if count:
+        print(
+            f"instagram: retention notice: {count} insights record(s) are past "
+            f"{INSTAGRAM_RETAIN_DAYS} days; remove them with the history tombstone "
+            "tool (#586)",
             file=sys.stderr,
         )
 

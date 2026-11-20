@@ -21,11 +21,20 @@ from datetime import UTC, datetime
 from typing import Any
 
 from reach_around.config.numbers_sources import (
+    InstagramSource,
     ThreadsSource,
     TiktokSource,
     YoutubeSource,
 )
-from reach_around.counts.history import ANALYTICS_PROVIDER, MAX_VALUE
+from reach_around.counts.history import (
+    ANALYTICS_PROVIDER,
+    INSTAGRAM_INSIGHTS_PROVIDER,
+    MAX_VALUE,
+)
+from reach_around.counts.instagram_insights import (
+    InstagramInsightsError,
+    collect_instagram,
+)
 from reach_around.counts.meta_user import MetaError, threads_insights
 from reach_around.counts.tiktok_user import TiktokError, video_stats
 from reach_around.counts.youtube_analytics import (
@@ -65,6 +74,8 @@ OWNER_REPORT_ONLY = frozenset(name for _, name in METRICS)
 # publicly. Its figure names (views_1d, watch_minutes_1d, demo_*, geo_*) are
 # produced by youtube_analytics.py; its notes state each window and the folding
 # (which reduces noise and does not stop differencing across stored windows).
+# Instagram insights (#393) are private in the same way: figures from
+# instagram_insights.py carry the provider tag ``instagram_insights``.
 
 
 _WORDS = frozenset(
@@ -159,6 +170,40 @@ def _youtube(
     )
 
 
+def _instagram(
+    source: InstagramSource,
+    ok_platforms: frozenset[str],
+    env: Mapping[str, str],
+    fetch: Fetch,
+    stamp: datetime,
+    figures: list[Figure],
+    failures: list[InsightFailure],
+) -> None:
+    """Private Instagram insights; opt-in by ``analytics: true`` (#393)."""
+    if source.analytics is not True or source.platform not in ok_platforms:
+        return
+    try:
+        measures, words = collect_instagram(source, env, fetch, stamp.date())
+    except InstagramInsightsError as exc:
+        failures.append(InsightFailure(source.platform, _word(exc)))
+        return
+    except Exception:
+        failures.append(InsightFailure(source.platform, "fetch_failed"))
+        return
+    failures.extend(InsightFailure(source.platform, word) for word in words)
+    figures.extend(
+        Figure(
+            source.platform,
+            m.metric,
+            m.value,
+            m.note,
+            m.as_of_utc,
+            INSTAGRAM_INSIGHTS_PROVIDER,  # always, whatever the platform slug is
+        )
+        for m in measures
+    )
+
+
 def collect(
     sources: list[Any],
     ok_platforms: frozenset[str],
@@ -173,6 +218,9 @@ def collect(
     for source in sources:
         if isinstance(source, YoutubeSource):
             _youtube(source, ok_platforms, env, fetch, stamp, figures, failures)
+            continue
+        if isinstance(source, InstagramSource):
+            _instagram(source, ok_platforms, env, fetch, stamp, figures, failures)
             continue
         if not isinstance(source, TiktokSource | ThreadsSource):
             continue

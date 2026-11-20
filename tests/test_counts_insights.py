@@ -406,6 +406,7 @@ BANNED = frozenset(
     {
         "reach_around.counts.history",
         "reach_around.counts.insights",
+        "reach_around.counts.instagram_insights",
         "reach_around.counts.youtube_analytics",
     }
 )

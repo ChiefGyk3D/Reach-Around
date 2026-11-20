@@ -48,11 +48,15 @@ _LOCK_POLL = 0.02
 
 SOURCES = ("api", "hand_kept", "imported")
 TYPES = ("record", "correction")
-API_PROVIDERS = ("youtube_analytics", "youtube_data_api")
-# YouTube Analytics records (#391) are identified ONLY by this provider tag. One
-# rule everywhere: the report refuses it, and deletion, revocation and the
-# retention notice select it. No metric-name guessing.
+API_PROVIDERS = ("youtube_analytics", "youtube_data_api", "instagram_insights")
+# YouTube Analytics (#391) and Instagram insights (#393) records are the owner's
+# private authorized data. They are identified ONLY by their provider tag. One
+# rule everywhere: the report refuses a tag in PRIVATE_PROVIDERS, and deletion,
+# revocation, the retention notice and the append-limit fit select it. No
+# metric-name guessing.
 ANALYTICS_PROVIDER = "youtube_analytics"
+INSTAGRAM_INSIGHTS_PROVIDER = "instagram_insights"
+PRIVATE_PROVIDERS = (ANALYTICS_PROVIDER, INSTAGRAM_INSIGHTS_PROVIDER)
 REASONS = (
     "platform_expiry",
     "platform_revocation",
