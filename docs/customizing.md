@@ -653,6 +653,13 @@ reach-around counts refresh --config site.yaml --out numbers.json
 | `--accept-drop PLATFORM [PLATFORM ...]` | accept a zero, or a fall of more than 90 percent from a previous value of 1000 or more, for these platforms on purpose |
 | `--dry-run` | print which hosts and kinds would be fetched; fetch nothing, write nothing |
 
+To keep a count out of the link hub and in the media kit only, set
+`show_on_hub: false` on its source and list a kit metric with `source: counts`
+for the same platform (see [`numbers`](config.md#numbers)). The refresh runs the
+source exactly as before; only the hub stops printing the number. The instance
+template's `refresh-counts.sh` and `reach-around check` accept such a config, so
+removing the hub chips no longer means commenting out `numbers.sources`.
+
 Exit codes: `0` every source succeeded or was skipped on purpose; `3` at least
 one source failed; `2` a usage or config problem (including a numbers file that
 does not validate); `1` the result files could not be written. A failed source

@@ -1261,6 +1261,21 @@ platforms item uses is refused when the config loads, with the key path, because
 the number would never be shown. (`kind` is separate: `kind: mastodon` with
 `platform: pixelfed` is how a Pixelfed server is read.)
 
+`show_on_hub` (optional, a real `true` or `false`, default `true`) is on every
+source. Left out or `true`, nothing changes. With `show_on_hub: false` the source
+is **kit-only**: `counts refresh` fetches it and writes it to the numbers file
+like any other, and the [media kit](kit.md) prints it through a kit metric with
+`source: counts` and the same `platform`, with the same dates, old-number
+warnings and era marks, but the link hub never prints it. A kit-only source does
+not need a platforms item, so the chips can leave the hub while the daily
+refresh keeps running. If a platforms item does match its key, the link stays and
+its count (typed or fetched) is not shown, and no old-number warning is raised for
+it. A kit-only source with no kit metric with `source: counts` for its
+`platform` is refused when the config loads (`numbers.sources[N].platform:
+show_on_hub: false needs a kit metric with source: counts ...`; `reach-around
+check` says "a count source with show_on_hub: false has no kit number to feed"),
+because the number would be shown nowhere. The error never repeats a value.
+
 | `kind` | Keys | Asks | Needs a key |
 | --- | --- | --- | --- |
 | `bluesky` | `actor`: a handle such as `name.bsky.social`, or a DID | `public.api.bsky.app` `getProfile`, field `followersCount` | no |
@@ -1285,7 +1300,7 @@ a URL), and never printed, logged, written or put in an error. Supply them
 with `doppler run -- reach-around counts refresh ...` or the CI secret store.
 A key written inline (`api_key: ...`) is refused as an unknown key.
 
-Each `platform` below must have an item in a platforms block (or be an item id):
+Each `platform` below must have an item in a platforms block (or be an item id), unless the source sets `show_on_hub: false` (then it needs a kit `counts` metric instead):
 
 ```yaml
 numbers:
