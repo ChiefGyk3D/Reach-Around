@@ -84,6 +84,45 @@
 }
 .smart-collapse[open] > summary::after { transform: rotate(-135deg) translate(-0.125rem, -0.125rem); }
 .smart-collapse .smart-group-links { padding-block-end: var(--ra-space-2); }
+/* Group styles (#672). buttons is the default and has no rule of its own.
+   rows: one compact single-column row per link, title and subtitle side by
+   side and wrapping when they do not fit; the same accent fill and the same
+   token pairs as the buttons, so contrast is unchanged. The row is a flex line,
+   so a link with no icon needs no special case. */
+.smart-group-links.smart-style-rows a.link {
+  display: flex;
+  align-items: center;
+  gap: var(--ra-space-2);
+  min-height: var(--ra-tap);
+  height: auto;
+  padding: var(--ra-space-1) var(--ra-space-3);
+  border-radius: min(var(--ra-button-radius), var(--ra-card-radius));
+  text-align: start;
+}
+.smart-style-rows a.link::after { display: none; }
+.smart-style-rows .link-chip,
+.smart-style-rows .link-thumb { flex: none; width: 2rem; height: 2rem; }
+.smart-style-rows .link-text {
+  display: flex;
+  flex: 1 1 auto;
+  flex-wrap: wrap;
+  align-items: baseline;
+  column-gap: var(--ra-space-2);
+  min-width: 0;
+}
+.smart-style-rows .link-title { font-size: var(--ra-text-md); text-wrap: wrap; }
+.smart-style-rows .link-subtitle { margin-top: 0; text-wrap: wrap; }
+/* icons: the Follow group as an icon-only row. Each icon is the site's own
+   social link (a full-size tap target with a name for assistive technology). */
+.smart-icons {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-start;
+  gap: var(--ra-space-1);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
 @media (prefers-reduced-motion: no-preference) {
   .smart-collapse > summary::after { transition: transform var(--ra-duration) var(--ra-ease); }
 }
@@ -93,9 +132,17 @@
 @media (min-width: 48rem) {
   .smart-stack { width: min(100%, var(--ra-column-tablet)); align-self: center; }
   .smart-group-links { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .smart-group-links.smart-style-rows { grid-template-columns: minmax(0, 1fr); }
 }
 /* Print opens every collapsed group, so no link is lost on paper. */
 @media print {
   .smart-collapse::details-content { block-size: auto; opacity: 1; content-visibility: visible; }
   .smart-collapse > summary::after { display: none; }
+  .smart-group-links.smart-style-rows a.link { display: block; }
+  .smart-style-rows .link-text { display: block; }
+  .smart-style-rows a.link::after { display: block; }
+  .smart-icons .sr-only,
+  .smart-icons .social-label { position: static; width: auto; height: auto; margin: 0; clip-path: none; overflow: visible; }
+  .smart-icons .icon { display: none; }
+  .smart-icons a.social::after { content: " (" attr(href) ")"; }
 }

@@ -341,6 +341,56 @@ browsers that support the `::details-content` selector). Links in a collapsed
 group are still counted by click tracking when click tracking is on. The
 group's links still count toward the 2 to 6 links rule.
 
+### Group styles
+
+`style` on a tab chooses how the smart stack draws that group's links:
+`buttons` (the default, today's tiles), `rows` or `icons`. It is read only with
+`page.layout: stack`; any other word is refused (the error names the three
+words and never prints the value you wrote). The Watch group has no style, so
+the Twitch and Kick pair is always drawn the same way.
+
+| Style | What it draws |
+| --- | --- |
+| `buttons` | The tiles of a stack with no `style`. Output is unchanged. |
+| `rows` | A compact single-column row per link: icon, title and subtitle on one line (they wrap on a narrow screen), at least 44 px tall. Same links, same click counting and attributes; the group still holds 2 to 6 links. |
+| `icons` | An icon-only row for the Follow group, fed from `creator.socials` in that order. Each icon is a link with the platform name as its accessible name and a 44 px target. A social with no drawn icon shows its name instead. |
+
+`icons` is for the `follow` intent only, needs at least one entry in
+`creator.socials`, and the tab lists no links of its own (`blocks: []`), so no
+link is written twice. It is exempt from the 2 to 6 links rule, and social
+links are not click counted (the header's are not either).
+
+```yaml
+creator:
+  name: Example Creator
+  socials:
+    - { name: Twitch, url: "https://twitch.example.com/example", icon: twitch }
+    - { name: Kick, url: "https://kick.example.com/example", icon: kick }
+tabs:
+  - id: follow
+    title: Follow
+    intent: follow
+    style: icons
+    blocks: []
+  - id: shop
+    title: Shop
+    intent: shop
+    style: rows
+    blocks:
+      - id: example-stand
+        title: Example Boom Stand
+        subtitle: The one on my desk
+        url: https://shop.example.com/stand
+      - id: example-mug
+        title: Example Mug
+        url: https://shop.example.com/mug
+```
+
+All three styles use the same dark-theme color pairs (AA contrast 4.5:1 or
+better), the site focus ring, document order for the keyboard, a layout that
+reflows at 320 px, and print styles that show each link's address. No style
+adds a script or a request.
+
 Layouts B, C, and D remain prototypes and are not accepted by the production
 configuration.
 
