@@ -193,8 +193,11 @@ never on the platform. The site build does not read the social history file. It 
 three places only: the kit config, each numbers-file entry's `source` (with the
 configured collectors, `numbers.sources`) and the imported-history file. The
 numbers file is your own file, so the label is only as honest as the file: a
-hand-edited `source: api` can say something untrue, and the daily refresh
-overwrites it. Until the next refresh writes `source`, an older numbers file shows
+hand-edited `source: api` can say something untrue. The daily refresh overwrites
+a hand-edited `source` only when its fetch succeeds: a failed or skipped collector
+keeps the previous entry, a forged `api` included. Instagram, Threads and TikTok
+collectors count only while their token is present, so a build without the token
+prints those numbers as Hand-kept. Until the next refresh writes `source`, an older numbers file shows
 collected counts as Hand-kept, which is correct.
 
 A number older than its age limit (30 days, or the platform's `numbers.stale_days`
@@ -205,7 +208,10 @@ check runs, and compares label words with their case. The closed past periods of
 carry no such mark.
 
 A legend, "How to read these numbers", prints once on the public page, the gated
-page and both PDFs (what API, Hand-kept and Estimate mean, and the age rule).
+page and both PDFs (what API, Hand-kept and Estimate mean, and which numbers carry
+the out-of-date mark: headline numbers, the total, analytics, engagement and
+demographics; case studies, recent posts and imported history print with their own
+date or period instead).
 Under 40rem (a phone) the headline and engagement tables stack: each row becomes a
 block, the headers stay for assistive technology, and the label, its line and the
 date are readable without scrolling sideways. The wording is a neutral draft until the owner approves it. The PDF text

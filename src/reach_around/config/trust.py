@@ -41,7 +41,9 @@ LEGEND_SENTENCES: tuple[str, ...] = (
     "Hand-kept means the owner typed the number in or imported it from a "
     "platform export, and the line beside it says which.",
     "Estimate means the owner worked the number out and names the method.",
-    "Any number older than its age limit is marked out of date.",
+    "Headline numbers, the total, analytics, engagement and demographics are marked "
+    "out of date past their age limit; case studies, recent posts and imported "
+    "history print with their own date or period.",
 )
 
 

@@ -705,6 +705,10 @@ def test_label_text_never_prints_a_count_under_the_floor(tmp_path: Path) -> None
 
 
 GATED_FIELDS: dict[str, Callable[[str], dict[str, Any]]] = {
+    "inquiry": lambda c: {
+        "inquiry": {"email": f"{c.lower()}@example.com", "pgp_fingerprint": None}
+    },
+    "imported_history": lambda c: {"imported_history": "imported-history.json"},
     "partners": lambda c: {"partners": [{"name": f"Acme {c}", "note": f"Note {c}"}]},
     "rates": lambda c: {"rates": [{"item": f"Item {c}", "price_text": f"Ask {c}"}]},
     "services": lambda c: {
@@ -754,6 +758,10 @@ GATED_FIELDS: dict[str, Callable[[str], dict[str, Any]]] = {
 }
 
 
+# the imported-history sentinels of tests/site/test_kit_imported_history.py
+LEAK_SECRETS = ("9,171,823", "9171823", "4,242,017", "4242017")
+
+
 @pytest.mark.parametrize("field", sorted(GATED_FIELDS))
 def test_a_gated_value_never_reaches_the_public_page(
     tmp_path: Path, field: str
@@ -773,9 +781,12 @@ def test_a_gated_value_never_reaches_the_public_page(
         "turnstile_site_key": "0x4AAAAAAAexampleKey",
         **GATED_FIELDS[field](canary),
     }
-    public, gated = built(tmp_path, doc, config=make_config(doc))
+    extra = {"imported": imported_history()} if field == "imported_history" else {}
+    public, gated = built(tmp_path, doc, config=make_config(doc), **extra)
     for secret in (
+        *LEAK_SECRETS,
         canary,
+        canary.lower(),
         "7,777,771",
         "7777771",
         "6,666,661",
@@ -785,7 +796,8 @@ def test_a_gated_value_never_reaches_the_public_page(
     ):
         assert secret not in public, secret
     assert "kit-legend" in public  # the label text did not trip the wall
-    assert canary in gated or field in {"engagement", "case_studies"}
+    if field == "imported_history":
+        assert "9,171,823" in gated  # the block is in the gated page, not the public
 
 
 def test_the_label_text_is_not_a_leak_canary_collision() -> None:
@@ -1024,10 +1036,13 @@ def test_a_gated_value_never_reaches_the_public_pdf(tmp_path: Path, field: str) 
     doc.update(GATED_FIELDS[field](canary))
     for case in doc.get("case_studies", []):
         case["thumbnails"] = ["media/campaign.png"]
-    config, site, _ = pdfs(tmp_path, doc)
-    text = public_pdf(config, site, tmp_path)
+    extra = {"imported": imported_history()} if field == "imported_history" else {}
+    config, site, _ = pdfs(tmp_path, doc, **extra)
+    text = public_pdf(config, site, tmp_path, **extra)
     for secret in (
+        *LEAK_SECRETS,
         canary,
+        canary.lower(),
         "7,777,771",
         "6,666,661",
         "8,888,881",
@@ -1158,3 +1173,23 @@ def test_an_estimate_line_accepts_plain_words_and_a_year(text: str) -> None:
             ]
         )
     )
+
+
+def test_the_closed_entry_sources_are_pinned_in_the_engine_and_the_validator() -> None:
+    import importlib.util
+
+    from reach_around.config.numbers import ENTRY_SOURCES
+
+    path = (
+        SRC.parents[1]
+        / "examples"
+        / "instance-repo"
+        / "scripts"
+        / "validate-numbers.py"
+    )
+    spec = importlib.util.spec_from_file_location("validate_numbers", path)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    assert set(ENTRY_SOURCES) == {"api", "hand"}
+    assert set(module.SOURCES) == {"api", "hand"}
