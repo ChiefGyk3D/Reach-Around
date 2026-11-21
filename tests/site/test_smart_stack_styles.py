@@ -19,7 +19,7 @@ TODAY = date(2027, 3, 10)
 HERE = Path(__file__).parent
 GOLDEN_ROWS = HERE / "golden_smart_stack_rows" / "index.html"
 GOLDEN_ICONS = HERE / "golden_smart_stack_icons" / "index.html"
-SOCIALS = [
+SOCIALS: list[dict[str, Any]] = [
     {"name": "Twitch", "url": "https://example.com/t", "icon": "twitch"},
     {
         "name": "Mastodon",
@@ -238,7 +238,8 @@ def test_icons_css_keeps_a_44px_target_and_wraps_at_320(tmp_path: Path) -> None:
     social = rule(site, ".social")
     assert "min-width: var(--ra-tap)" in social
     assert "min-height: var(--ra-tap)" in social
-    assert "smart-icons" in css[css.index("@media print") :]
+    printed = css[css.index("@media print") :]
+    assert ".smart-icons a.social::after" in printed and "attr(href)" in printed
 
 
 def test_the_tap_token_is_44px() -> None:
