@@ -104,7 +104,36 @@ def sites(tmp_path_factory: pytest.TempPathFactory) -> list[Path]:
             today=TODAY,
             assets_dir=EXAMPLE.parent,
         )
-    return [base / "a", base / "k", base / "stack", base / "stack-live"]
+    # A realistic kit: four headline numbers with labels, analytics, engagement,
+    # a case study and the legend (#626), still with no Turnstile key.
+    from test_kit_trust import NUMS, trust_config, trust_doc
+
+    from reach_around.config.trust import API
+
+    real = trust_doc()
+    real.pop("turnstile_site_key", None)
+    assets = base / "assets"
+    (assets / "media").mkdir(parents=True)
+    from test_kit_recent_posts import PNG
+
+    (assets / "media" / "missing.png").write_bytes(PNG)
+    build_site(
+        trust_config(real),
+        base / "r",
+        today=TODAY,
+        numbers=NUMS,
+        gated_out=base / "rg",
+        assets_dir=assets,
+    )
+    assert API  # the fixture has a collected number, so an API label is measured
+    # the stack pages stay at indexes 2 and 3 (the tests below name them)
+    return [
+        base / "a",
+        base / "k",
+        base / "stack",
+        base / "stack-live",
+        base / "r",
+    ]
 
 
 def all_pages(sites: list[Path]) -> list[tuple[Path, Path]]:

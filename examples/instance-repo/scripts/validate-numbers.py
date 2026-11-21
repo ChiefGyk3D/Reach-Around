@@ -11,13 +11,18 @@ trusts the file; this script is the whole check.
 
 The shape is the one the engine writes (see the engine's numbers file format):
 
-    {"version": 1, "platforms": {"<id>": {"count": N, "as_of": "<UTC stamp>"}}}
+    {"version": 1, "platforms": {"<id>": {"count": N, "as_of": "<UTC stamp>",
+                                          "source": "api"}}}
 
-Only that. Exactly those keys; ids are lowercase letters, digits, hyphens and
-underscores (at most 40 characters); counts are whole numbers from 0 to
-10**10; the stamp is a real UTC time written like 2026-10-24T12:00:00Z, from
-2000 up to one day ahead; at most 1000 entries; at most 64 KiB; no duplicate
-keys, no NaN. The input must be a regular file, not a link.
+Only that. Exactly those keys, plus one optional key, ``source``, whose only
+values are "api" (written by the engine's counts refresh) and "hand"; any other
+key or value is refused. The media kit prints the label API only for an entry
+that carries source api. A file with no ``source`` stays valid; ids are
+lowercase letters, digits, hyphens and underscores (at most 40 characters);
+counts are whole numbers from 0 to 10**10; the stamp is a real UTC time written
+like 2026-10-24T12:00:00Z, from 2000 up to one day ahead; at most 1000 entries;
+at most 64 KiB; no duplicate keys, no NaN. The input must be a regular file,
+not a link.
 
 An entry whose stamp is more than 30 days old prints a `::warning::` line naming
 the id and the age (never the count) and does not fail the check.
@@ -42,6 +47,7 @@ from typing import Any
 MAX_BYTES = 64 * 1024
 MAX_ENTRIES = 1000
 MAX_COUNT = 10**10
+SOURCES = ("api", "hand")
 STALE_DAYS = 30
 ID = re.compile(r"[a-z0-9][a-z0-9_-]{0,39}")
 STAMP = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z")
@@ -86,7 +92,7 @@ def refuse_constant(_name: str) -> Any:
     raise Bad("NaN and Infinity are not allowed")
 
 
-def parse(data: bytes, now: datetime) -> dict[str, tuple[int, str]]:
+def parse(data: bytes, now: datetime) -> dict[str, tuple[int, str, str | None]]:
     try:
         doc = json.loads(
             data.decode("utf-8"),
@@ -112,12 +118,19 @@ def parse(data: bytes, now: datetime) -> dict[str, tuple[int, str]]:
         raise Bad("platforms must be an object")
     if len(platforms) > MAX_ENTRIES:
         raise Bad(f"more than {MAX_ENTRIES} entries")
-    out: dict[str, tuple[int, str]] = {}
+    out: dict[str, tuple[int, str, str | None]] = {}
     for key, raw in platforms.items():
         if ID.fullmatch(key) is None:
             raise Bad("an id is not lowercase letters, digits, - or _ (max 40)")
-        if not isinstance(raw, dict) or set(raw) != {"count", "as_of"}:
-            raise Bad("an entry must have exactly count and as_of")
+        if (
+            not isinstance(raw, dict)
+            or not {"count", "as_of"} <= set(raw)
+            or set(raw) - {"count", "as_of", "source"}
+        ):
+            raise Bad("an entry must have count and as_of, and at most source")
+        source = raw.get("source")
+        if "source" in raw and (type(source) is not str or source not in SOURCES):
+            raise Bad("a source is not one of: api, hand")
         count, stamp = raw["count"], raw["as_of"]
         if type(count) is not int or not 0 <= count <= MAX_COUNT:
             raise Bad(f"a count is not a whole number from 0 to {MAX_COUNT}")
@@ -129,11 +142,13 @@ def parse(data: bytes, now: datetime) -> dict[str, tuple[int, str]]:
             raise Bad("an as_of is not a real date and time") from None
         if moment < EARLIEST or moment > now + timedelta(days=1):
             raise Bad("an as_of is outside the allowed range")
-        out[key] = (count, stamp)
+        out[key] = (count, stamp, source)
     return out
 
 
-def stale_warnings(entries: dict[str, tuple[int, str]], now: datetime) -> list[str]:
+def stale_warnings(
+    entries: dict[str, tuple[int, str, str | None]], now: datetime
+) -> list[str]:
     """One annotation per entry older than STALE_DAYS: the id and the age only.
     The id already passed the ID pattern, so it is safe to print."""
     lines = []
@@ -177,10 +192,11 @@ def main() -> int:
     try:
         now = datetime.now(UTC)
         entries = parse(read_regular(args.source), now)
-        platforms = {
-            key: {"count": entries[key][0], "as_of": entries[key][1]}
-            for key in sorted(entries)
-        }
+        platforms: dict[str, dict[str, object]] = {}
+        for key in sorted(entries):
+            platforms[key] = {"count": entries[key][0], "as_of": entries[key][1]}
+            if entries[key][2] is not None:
+                platforms[key]["source"] = entries[key][2]
         text = json.dumps({"version": 1, "platforms": platforms}, indent=2) + "\n"
         write_atomic(args.dest, text)
         for line in stale_warnings(entries, now):

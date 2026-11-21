@@ -169,3 +169,73 @@ def test_a_remote_stylesheet_url_is_refused_and_a_local_one_loads_nothing_outsid
     finally:
         server.shutdown()
         server.server_close()
+
+
+@pytest.mark.parametrize("width", [320, 390])
+def test_the_number_tables_stack_so_label_method_and_date_are_readable(
+    browser: Browser, tmp_path: Path, width: int
+) -> None:
+    """Headline and engagement rows are blocks under 40rem: nothing scrolls
+    sideways and every cell, with its label and date, is inside the screen."""
+    from test_kit_trust import NUMS, TABS, trust_config
+
+    from reach_around.config.trust import API
+
+    out, gated = tmp_path / "out", tmp_path / "gated"
+    assets = tmp_path / "assets" / "media"
+    assets.mkdir(parents=True)
+    from test_kit_recent_posts import PNG
+
+    (assets / "missing.png").write_bytes(PNG)
+    build_site(
+        trust_config(),
+        out,
+        today=TODAY,
+        numbers=NUMS,
+        gated_out=gated,
+        assets_dir=assets.parent,
+    )
+    root = tmp_path / "served"
+    shutil.copytree(out, root)
+    shutil.copy(gated / "kit.html", root / "kit.html")
+    server = ThreadingHTTPServer(
+        ("127.0.0.1", 0), functools.partial(_Quiet, directory=str(root))
+    )
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        base = f"http://127.0.0.1:{server.server_address[1]}"
+        for path in ("/kit/", "/kit.html"):
+            context = browser.new_context(
+                viewport={"width": width, "height": 900}, reduced_motion="reduce"
+            )
+            page = context.new_page()
+            page.goto(base + path)
+            assert TABS and API
+            tables = page.locator(".kit-table")
+            assert tables.count() >= 1
+            problems = page.evaluate(
+                """(width) => {
+                    const bad = [];
+                    for (const t of document.querySelectorAll('.kit-table')) {
+                        if (t.scrollWidth > t.clientWidth) bad.push('table scrolls');
+                        for (const c of t.querySelectorAll('th, td')) {
+                            const r = c.getBoundingClientRect();
+                            if (r.width === 0) continue;
+                            const off = r.left < 0 || r.right > width;
+                            if (off) bad.push(c.textContent.slice(0, 30));
+                        }
+                    }
+                    if (document.documentElement.scrollWidth > width) bad.push('page');
+                    return bad;
+                }""",
+                width,
+            )
+            assert problems == [], problems
+            first = page.locator(".kit-table").first
+            assert first.get_by_text("2027-03-09").first.is_visible()
+            assert first.locator(".kit-trust").first.is_visible()
+            assert first.locator(".kit-method").first.is_visible()
+            context.close()
+    finally:
+        server.shutdown()
+        server.server_close()

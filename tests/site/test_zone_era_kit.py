@@ -155,7 +155,9 @@ def test_kit_marks_before_and_after_with_cutover_day_after(tmp_path: Path) -> No
     )
     out, _ = build(tmp_path, config)
     html = (out / "kit" / "index.html").read_text(encoding="utf-8")
-    rows = re.findall(r"<tr><th scope=\"row\">.*?</tr>", html, re.S)
+    rows = re.findall(
+        r"<tr role=\"row\"><th scope=\"row\" role=\"rowheader\">.*?</tr>", html, re.S
+    )
     assert (
         "before Reach Around" in rows[0] and "after" not in rows[0].split("</time>")[1]
     )

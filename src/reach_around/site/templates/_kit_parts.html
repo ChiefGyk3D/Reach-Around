@@ -1,5 +1,14 @@
 {# SPDX-License-Identifier: Apache-2.0 #}
 {% import "_frames.html" as frames with context %}
+{% macro trust(t, stale=false) %}<span class="kit-trust kit-trust-{{ t.label }}">{{ t.text }}</span> <span class="kit-note kit-method">{{ t.method }}</span>{% if stale %} (out of date){% endif %}{% endmacro %}
+{% macro legend(kit) %}
+{% if kit.legend %}
+<section class="kit-legend" aria-labelledby="kit-legend-title">
+<h3 id="kit-legend-title">{{ kit.legend.heading }}</h3>
+<p class="kit-note">{% for sentence in kit.legend.sentences %}{{ sentence }} {% endfor %}</p>
+</section>
+{% endif %}
+{% endmacro %}
 {% macro numbers(kit, heading_id, framed=false, zones=none) %}
 {% if kit.metrics %}
 <section class="kit-numbers" aria-labelledby="{{ heading_id }}">
@@ -17,15 +26,16 @@
 <p class="kit-headline-number"><strong>{{ kit.total.value }}</strong> <span>Figures dated <time datetime="{{ kit.total.oldest }}">{{ kit.total.oldest }}</time> UTC</span></p>
 </div>
 <p class="kit-note">Added up from {{ kit.total.counted }} {{ "number" if kit.total.counted == 1 else "numbers" }}{% if kit.total.oldest %}; the oldest is dated {{ kit.total.oldest }} (UTC){% endif %}.{% if kit.total.mixed %} These include numbers from before Reach Around and numbers from after it.{% endif %} People who follow on more than one platform are counted more than once.</p>
+{% if kit.total.trust %}<p class="kit-note">{{ trust(kit.total.trust, kit.total.stale) }}</p>{% endif %}
 {% endif %}
-<table class="kit-table{% if framed and frame_plan %}{{ frames.cls("card") }}{% endif %}">
-<caption class="sr-only">Audience numbers by platform, each with the date it was read</caption>
+<table class="kit-table{% if framed and frame_plan %}{{ frames.cls("card") }}{% endif %}" role="table">
+<caption class="sr-only">Audience numbers by platform, each with its source and the date it was read</caption>
 <thead>
-<tr><th scope="col">Platform</th><th scope="col">Measure</th><th scope="col">Number</th><th scope="col">As of</th></tr>
+<tr><th scope="col">Platform</th><th scope="col">Measure</th><th scope="col">Number</th><th scope="col">Source</th><th scope="col">As of</th></tr>
 </thead>
 <tbody>
 {% for row in kit.metrics %}
-<tr><th scope="row">{{ row.platform or row.label }}</th><td>{{ row.label if row.platform else "" }}</td><td class="kit-figure">{{ row.value }}</td><td><time datetime="{{ row.as_of }}">{{ row.as_of }}</time> UTC{% if row.era %} <span class="kit-era">{{ row.era }}</span>{% endif %}{% if row.stale %} (out of date){% endif %}{% if zones and row.as_of %}<span class="kit-note kit-zone-note" data-zone-start="{{ row.as_of }}T00:00:00Z"></span>{% endif %}</td></tr>
+<tr role="row"><th scope="row" role="rowheader">{{ row.platform or row.label }}</th><td role="cell" data-label="Measure">{{ row.label if row.platform else "" }}</td><td class="kit-figure" role="cell" data-label="Number">{{ row.value }}</td><td role="cell" data-label="Source">{% if row.trust %}{{ trust(row.trust) }}{% endif %}</td><td role="cell" data-label="As of"><time datetime="{{ row.as_of }}">{{ row.as_of }}</time> UTC{% if row.stale %} (out of date){% endif %}{% if row.era %} <span class="kit-era">{{ row.era }}</span>{% endif %}{% if zones and row.as_of %}<span class="kit-note kit-zone-note" data-zone-start="{{ row.as_of }}T00:00:00Z"></span>{% endif %}</td></tr>
 {% endfor %}
 </tbody>
 </table>
@@ -50,6 +60,7 @@
 <div class="kit-stat-tile"><span>Followers</span><strong>{{ row.followers }}</strong><small>{% if row.delta %}{{ row.delta }} last 30 days{% else %}30-day change not shown{% endif %}</small></div>
 {% for stat in row.stats %}<div class="kit-stat-tile"><span>{{ stat.label }}</span><strong>{{ stat.value }}</strong></div>{% endfor %}
 </div>
+<p class="kit-note kit-trust-line">{{ trust(row.trust, row.stale) }}</p>
 <p class="kit-note kit-updated">Last updated <time datetime="{{ row.updated }}">{{ row.updated }}</time></p>
 </article>
 {% endfor %}
@@ -67,14 +78,14 @@
 <li><strong>{{ item.measure }}:</strong> {{ item.formula }}</li>
 {% endfor %}
 </ul>
-<table class="kit-table{% if framed and frame_plan %}{{ frames.cls("card") }}{% endif %}">
+<table class="kit-table{% if framed and frame_plan %}{{ frames.cls("card") }}{% endif %}" role="table">
 <caption class="sr-only">Engagement by platform, each with its period and the date it was read</caption>
 <thead>
-<tr><th scope="col">Platform and measure</th><th scope="col">Value</th><th scope="col">Period (UTC) and as-of date</th></tr>
+<tr><th scope="col">Platform and measure</th><th scope="col">Value</th><th scope="col">Period (UTC) and as-of date</th><th scope="col">Source</th></tr>
 </thead>
 <tbody>
 {% for row in kit.engagement %}
-<tr><th scope="row">{{ row.platform }}<span class="kit-formula kit-measure">{{ row.measure }}</span>{% if row.provenance %}<span class="kit-note kit-formula">{{ row.provenance }}.</span>{% endif %}{% if row.note %}<span class="kit-note kit-formula">{{ row.note }}.</span>{% endif %}</th><td class="kit-figure">{{ row.value }}</td><td>{% if row.as_of %}<span class="kit-nowrap">{{ row.start }}</span> to <span class="kit-nowrap">{{ row.end }}</span><span class="kit-note kit-formula">As of <time datetime="{{ row.as_of }}">{{ row.as_of }}</time> UTC</span>{% endif %}</td></tr>
+<tr role="row"><th scope="row" role="rowheader">{{ row.platform }}<span class="kit-formula kit-measure">{{ row.measure }}</span>{% if row.provenance %}<span class="kit-note kit-formula">{{ row.provenance }}.</span>{% endif %}{% if row.note %}<span class="kit-note kit-formula">{{ row.note }}.</span>{% endif %}</th><td class="kit-figure" role="cell" data-label="Value">{{ row.value }}</td><td role="cell" data-label="Period">{% if row.as_of %}<span class="kit-nowrap">{{ row.start }}</span> to <span class="kit-nowrap">{{ row.end }}</span><span class="kit-note kit-formula">As of <time datetime="{{ row.as_of }}">{{ row.as_of }}</time> UTC</span>{% endif %}</td><td role="cell" data-label="Source">{% if row.trust %}{{ trust(row.trust, row.stale) }}{% endif %}</td></tr>
 {% endfor %}
 </tbody>
 </table>
@@ -87,6 +98,7 @@
 <section class="kit-imported" aria-labelledby="{{ heading_id }}">
 <h3 id="{{ heading_id }}"{% if framed and frame_plan %} class="{{ frames.cls("head")|trim }}"{% endif %}>{{ kit.imported.heading }}</h3>
 <p class="kit-note">{{ kit.imported.note }}</p>
+<p class="kit-note">{{ trust(kit.imported.trust) }}</p>
 <ul class="kit-list">
 {% for row in kit.imported.rows %}
 <li><time datetime="{{ row.start }}">{{ row.label }}</time> (UTC): {{ row.views }} views, {{ row.clicks }} clicks{% if row.partial %} ({{ row.partial }}){% endif %}{% if row.era %} <span class="kit-era">{{ row.era }}</span>{% endif %}</li>

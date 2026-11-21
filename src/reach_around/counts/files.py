@@ -39,10 +39,14 @@ def dump_numbers(entries: Mapping[str, NumbersEntry]) -> str:
     The text is parsed again with the build's own parser before it is returned,
     so what refresh writes is exactly what ``build --numbers`` accepts.
     """
-    platforms = {
-        key: {"count": entries[key].count, "as_of": utc_stamp(entries[key].as_of)}
-        for key in sorted(entries)
-    }
+    platforms: dict[str, dict[str, object]] = {}
+    for key in sorted(entries):
+        platforms[key] = {
+            "count": entries[key].count,
+            "as_of": utc_stamp(entries[key].as_of),
+        }
+        if entries[key].source is not None:
+            platforms[key]["source"] = entries[key].source
     text = json.dumps({"version": 1, "platforms": platforms}, indent=2) + "\n"
     parse_numbers(text.encode("utf-8"), source="the numbers to write")
     return text

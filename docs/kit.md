@@ -169,6 +169,59 @@ fails the build. Collected YouTube Analytics and Instagram insights figures are
 never in the kit; they are in the owner report only
 ([report.md](report.md#private-platform-analytics---history-397)).
 
+### Trust labels
+
+Every number the kit prints carries one of exactly three labels, a short line
+that says where it came from, and its date. The label is decided in code when the
+page is built, from what is recorded about the number (below); a template never
+picks it, and a fourth label cannot be made (a test fails if one appears in code
+or output).
+
+| Label | Printed as | Set when |
+| --- | --- | --- |
+| API | "API", "Read from the platform's API on 2026-11-19" | a `source: counts` metric whose numbers-file entry carries `"source": "api"` (written by `counts refresh`) and whose platform still has a collector in `numbers.sources`. A stale API entry keeps the label, with the date in its line and the out-of-date mark |
+| Hand-kept | "Hand-kept", with a line that says who typed it | a typed `value`, a `counts` entry with no `source` or `source: hand` (including every entry in a file written before this key existed), an `api` entry whose collector is no longer configured, analytics tiles, engagement inputs, case studies, recent posts and demographics (all typed by the owner), and imported data |
+| Estimate | "Estimate", then your own line | a metric with `estimate` set; there is no other way to get this label |
+
+Imported link-page history prints as Hand-kept, with the export named in the line
+("Imported from the Beacons export, last period ending 2026-02-28"); there is no
+fourth label for it. A derived figure takes the weakest label of what it adds: the
+combined total prints the weakest label of its members, and an engagement figure
+(worked out from typed inputs) is Hand-kept. Twitch and Kick use the same label
+logic and print the same markup; the label depends only on the number's source,
+never on the platform. The site build does not read the social history file. It reads provenance from
+three places only: the kit config, each numbers-file entry's `source` (with the
+configured collectors, `numbers.sources`) and the imported-history file. The
+numbers file is your own file, so the label is only as honest as the file: a
+hand-edited `source: api` can say something untrue. The daily refresh overwrites
+a hand-edited `source` only when its fetch succeeds: a failed or skipped collector
+keeps the previous entry, a forged `api` included. Instagram, Threads and TikTok
+collectors count only while their token is present, so a build without the token
+prints those numbers as Hand-kept. Until the next refresh writes `source`, an older numbers file shows
+collected counts as Hand-kept, which is correct.
+
+A number older than its age limit (30 days, or the platform's `numbers.stale_days`
+entry) prints "(out of date)" beside its label or date, the same rule as the
+build warning; the age rule applies to all three labels. The PDF text check expects
+the mark wherever the number is old on the day the PDF is made and on the day the
+check runs, and compares label words with their case. The closed past periods of the imported block are history, so they
+carry no such mark.
+
+A legend, "How to read these numbers", prints once on the public page, the gated
+page and both PDFs (what API, Hand-kept and Estimate mean, and which numbers carry
+the out-of-date mark). The gated page and the owner PDF name every number that
+carries it: headline numbers, the total, analytics, engagement and demographics;
+case studies and imported history print their own period, and recent posts
+carry a label and method line but no date (the kit has no date for them). The public page and public PDF use shorter wording that names no
+gated section.
+Under 40rem (a phone) the headline and engagement tables stack: each row becomes a
+block, the headers stay for assistive technology, and the label, its line and the
+date are readable without scrolling sideways. The wording is a neutral draft until the owner approves it. The PDF text
+check expects every label, its line and the legend, so a PDF that lost one fails
+the build. The labels print no count, so they cannot reopen the privacy floor, and
+they sit on the public page only beside numbers the display policy already makes
+public.
+
 ### Public page
 
 The page uses a dark press-deck layout built from the shared brand components.

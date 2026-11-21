@@ -504,6 +504,7 @@ KNOWN_FIELDS: frozenset[str] = frozenset(
         "dsn_env",
         "email",
         "engagement",
+        "estimate",
         "events",
         "favicon",
         "featured",
