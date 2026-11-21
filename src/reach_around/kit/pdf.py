@@ -62,6 +62,7 @@ from reach_around.config.numbers import Numbers
 from reach_around.config.trust import (
     LEGEND_HEADING,
     LEGEND_SENTENCES,
+    LEGEND_SENTENCES_GATED,
     demographic_trust,
 )
 from reach_around.funnel.floor import shown_count
@@ -505,7 +506,7 @@ def _expected_text(
             labeled = True
             put("the imported history label", _trust_text(block["trust"]))
     if public:
-        return _with_legend(found, labeled, exact)
+        return _with_legend(found, labeled, exact, True)
     if kit.disclosure is not None:
         found.append(("kit.disclosure", kit.disclosure))
     for name in (
@@ -576,11 +577,13 @@ def _with_legend(
     found: list[tuple[str, str]],
     labeled: bool,
     exact: list[tuple[str, str]] | None,
+    public: bool = False,
 ) -> list[tuple[str, str]]:
     """The legend is expected once any labeled number is (#626)."""
     if labeled:
+        sentences = LEGEND_SENTENCES if public else LEGEND_SENTENCES_GATED
         lines = [("the trust legend heading", LEGEND_HEADING)]
-        lines += [("the trust legend", sentence) for sentence in LEGEND_SENTENCES]
+        lines += [("the trust legend", sentence) for sentence in sentences]
         found.extend(lines)
         if exact is not None:
             exact.extend(lines)

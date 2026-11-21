@@ -35,12 +35,23 @@ LABEL_TEXT: dict[str, str] = {API: "API", HAND_KEPT: "Hand-kept", ESTIMATE: "Est
 
 LEGEND_HEADING = "How to read these numbers"
 # Neutral draft wording. The owner approves it (see the pull request).
-LEGEND_SENTENCES: tuple[str, ...] = (
+_LEGEND_BASE: tuple[str, ...] = (
     "API means a collector read the number from the platform's own interface "
     "on the date shown; no outside party audited it.",
     "Hand-kept means the owner typed the number in or imported it from a "
     "platform export, and the line beside it says which.",
     "Estimate means the owner worked the number out and names the method.",
+)
+# The last sentence names what carries the out-of-date mark. The public page may
+# not name the gated sections, so it has its own wording.
+LEGEND_SENTENCES: tuple[str, ...] = (
+    *_LEGEND_BASE,
+    "Headline numbers, the total and analytics are marked out of date past their "
+    "age limit; recent posts and imported history print with their own date or "
+    "period.",
+)
+LEGEND_SENTENCES_GATED: tuple[str, ...] = (
+    *_LEGEND_BASE,
     "Headline numbers, the total, analytics, engagement and demographics are marked "
     "out of date past their age limit; case studies, recent posts and imported "
     "history print with their own date or period.",

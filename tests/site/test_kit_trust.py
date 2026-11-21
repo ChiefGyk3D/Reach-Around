@@ -39,6 +39,7 @@ from reach_around.config.trust import (
     LABELS,
     LEGEND_HEADING,
     LEGEND_SENTENCES,
+    LEGEND_SENTENCES_GATED,
     Trust,
     metric_trust,
     weakest,
@@ -493,13 +494,21 @@ def test_an_estimate_needs_a_typed_number() -> None:
 def test_the_legend_prints_on_the_public_and_the_gated_page(
     pages: tuple[str, str],
 ) -> None:
-    for page in pages:
+    for page, sentences in zip(
+        pages, (LEGEND_SENTENCES, LEGEND_SENTENCES_GATED), strict=True
+    ):
         assert page.count('class="kit-legend"') == 1
         assert f'<h3 id="kit-legend-title">{LEGEND_HEADING}</h3>' in page
         flat = text_of(page).replace("&#39;", "'")
-        for sentence in LEGEND_SENTENCES:
+        for sentence in sentences:
             assert sentence in flat
     assert 3 <= len(LEGEND_SENTENCES) <= 4
+    # the public wording names no gated section
+    public_legend = " ".join(LEGEND_SENTENCES).lower()
+    for word in ("engagement", "demographic", "case stud"):
+        assert word not in public_legend
+    # the last sentence says what the mark covers, and only that
+    assert "case studies" in LEGEND_SENTENCES_GATED[-1]
 
 
 def test_a_kit_with_no_numbers_has_no_legend(tmp_path: Path) -> None:
@@ -807,7 +816,14 @@ def test_the_label_text_is_not_a_leak_canary_collision() -> None:
 
     config = trust_config()
     gated = {text for _, text in _gated_strings(config.kit)}
-    for line in (*LEGEND_SENTENCES, LEGEND_HEADING, "Hand-kept", "API", "Estimate"):
+    for line in (
+        *LEGEND_SENTENCES,
+        *LEGEND_SENTENCES_GATED,
+        LEGEND_HEADING,
+        "Hand-kept",
+        "API",
+        "Estimate",
+    ):
         assert line not in gated
 
 
@@ -913,8 +929,11 @@ def test_both_pdfs_print_the_labels_and_the_legend(tmp_path: Path) -> None:
     config, site, gated = pdfs(tmp_path, pdf_kit())
     public = public_pdf(config, site, tmp_path)
     owner = owner_pdf(config, site, gated, tmp_path)
-    for text in (public, owner):
-        for sentence in LEGEND_SENTENCES:
+    for text, sentences in (
+        (public, LEGEND_SENTENCES),
+        (owner, LEGEND_SENTENCES_GATED),
+    ):
+        for sentence in sentences:
             assert squash(sentence.replace("&#39;", "'")) in text
         assert squash(LEGEND_HEADING) in text
         assert (

@@ -209,9 +209,11 @@ carry no such mark.
 
 A legend, "How to read these numbers", prints once on the public page, the gated
 page and both PDFs (what API, Hand-kept and Estimate mean, and which numbers carry
-the out-of-date mark: headline numbers, the total, analytics, engagement and
-demographics; case studies, recent posts and imported history print with their own
-date or period instead).
+the out-of-date mark). The gated page and the owner PDF name every number that
+carries it: headline numbers, the total, analytics, engagement and demographics;
+case studies, recent posts and imported history print with their own date or
+period instead. The public page and public PDF use shorter wording that names no
+gated section.
 Under 40rem (a phone) the headline and engagement tables stack: each row becomes a
 block, the headers stay for assistive technology, and the label, its line and the
 date are readable without scrolling sideways. The wording is a neutral draft until the owner approves it. The PDF text

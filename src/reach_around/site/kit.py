@@ -81,6 +81,7 @@ from reach_around.config.numbers import (
 from reach_around.config.trust import (
     LEGEND_HEADING,
     LEGEND_SENTENCES,
+    LEGEND_SENTENCES_GATED,
     Trust,
     analytics_trust,
     case_trust,
@@ -991,7 +992,7 @@ def _engagement_rows(
     return out
 
 
-def _legend(content: dict[str, Any]) -> dict[str, Any] | None:
+def _legend(content: dict[str, Any], gated: bool = False) -> dict[str, Any] | None:
     """The legend, printed once on every page that prints a labeled number."""
     labeled = (
         any(row["trust"] for row in content["metrics"])
@@ -1004,7 +1005,8 @@ def _legend(content: dict[str, Any]) -> dict[str, Any] | None:
     )
     if not labeled:
         return None
-    return {"heading": LEGEND_HEADING, "sentences": list(LEGEND_SENTENCES)}
+    sentences = LEGEND_SENTENCES_GATED if gated else LEGEND_SENTENCES
+    return {"heading": LEGEND_HEADING, "sentences": list(sentences)}
 
 
 def _content(
@@ -1230,7 +1232,7 @@ def render_kit(
                 for d in data["demographics"]
             ],
         )
-        content["legend"] = _legend(content)
+        content["legend"] = _legend(content, gated=True)
         inquiry: dict[str, Any] | None = None
         if data["inquiry"] is not None:
             inquiry = {
