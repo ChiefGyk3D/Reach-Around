@@ -3102,6 +3102,16 @@
           "default": null,
           "title": "Page Title"
         },
+        "style": {
+          "default": "buttons",
+          "enum": [
+            "buttons",
+            "rows",
+            "icons"
+          ],
+          "title": "Style",
+          "type": "string"
+        },
         "title": {
           "maxLength": 200,
           "minLength": 1,

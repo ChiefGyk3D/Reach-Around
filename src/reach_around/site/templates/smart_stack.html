@@ -2,6 +2,19 @@
 {% extends "base.html" %}
 {% from "_macros.html" import link_anchor with context %}
 {% import "_frames.html" as frames with context %}
+{% macro group_links(item) -%}
+{% if item.tab.style == "icons" -%}
+<ul class="socials smart-icons">
+{% for social in creator.socials %}
+<li><a class="social{{ frames.cls("ctl") }}"{% if social.url.startswith('tab:') %} href="{{ tab_href(social.url) }}"{% else %} href="{{ social.url }}" rel="{% if social.rel_me %}me {% endif %}noopener noreferrer"{% endif %}>{% if social.icon in icon_slugs %}<span class="icon icon-{{ social.icon }}" aria-hidden="true"></span><span class="sr-only">{{ social.name }}</span>{% else %}<span class="social-label">{{ social.name }}</span>{% endif %}</a></li>
+{% endfor %}
+</ul>
+{%- else -%}
+<div class="smart-group-links{% if item.tab.style == "rows" %} smart-style-rows{% endif %}">
+{% for link in item.links %}{{ link_anchor(link, click_tracking) }}{% endfor %}
+</div>
+{%- endif %}
+{%- endmacro %}
 {% block content %}
 <div class="smart-stack">
 <section class="smart-status{{ frames.cls("hero") }}" aria-labelledby="smart-status-title">
@@ -25,15 +38,11 @@
 {% if item.tab.collapsed %}
 <details class="smart-collapse">
 <summary><h2 id="group-{{ item.tab.intent }}-title">{{ item.tab.title }}</h2></summary>
-<div class="smart-group-links">
-{% for link in item.links %}{{ link_anchor(link, click_tracking) }}{% endfor %}
-</div>
+{{ group_links(item) }}
 </details>
 {% else %}
 <h2 id="group-{{ item.tab.intent }}-title">{{ item.tab.title }}</h2>
-<div class="smart-group-links">
-{% for link in item.links %}{{ link_anchor(link, click_tracking) }}{% endfor %}
-</div>
+{{ group_links(item) }}
 {% endif %}
 </section>
 {% endfor %}
