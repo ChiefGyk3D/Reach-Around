@@ -47,14 +47,14 @@ _LEGEND_BASE: tuple[str, ...] = (
 LEGEND_SENTENCES: tuple[str, ...] = (
     *_LEGEND_BASE,
     "Headline numbers, the total and analytics are marked out of date past their "
-    "age limit; recent posts and imported history print with their own date or "
-    "period.",
+    "age limit; imported history prints its own period, and recent posts carry no "
+    "date.",
 )
 LEGEND_SENTENCES_GATED: tuple[str, ...] = (
     *_LEGEND_BASE,
     "Headline numbers, the total, analytics, engagement and demographics are marked "
-    "out of date past their age limit; case studies, recent posts and imported "
-    "history print with their own date or period.",
+    "out of date past their age limit; case studies and imported history print "
+    "their own period, and recent posts carry no date.",
 )
 
 

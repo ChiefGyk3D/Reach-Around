@@ -123,6 +123,7 @@ def build_instance(
     assets = root / "assets"
     (assets / "media").mkdir(parents=True)
     (assets / "media" / "campaign.png").write_bytes(CAMPAIGN_PNG)
+    (assets / "media" / "clip.png").write_bytes(CAMPAIGN_PNG)
     build_site(
         config,
         site,

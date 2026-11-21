@@ -509,6 +509,7 @@ def test_the_legend_prints_on_the_public_and_the_gated_page(
         assert word not in public_legend
     # the last sentence says what the mark covers, and only that
     assert "case studies" in LEGEND_SENTENCES_GATED[-1]
+    assert "carry no date" in LEGEND_SENTENCES[-1]
 
 
 def test_a_kit_with_no_numbers_has_no_legend(tmp_path: Path) -> None:
@@ -1212,3 +1213,93 @@ def test_the_closed_entry_sources_are_pinned_in_the_engine_and_the_validator() -
     spec.loader.exec_module(module)
     assert set(ENTRY_SOURCES) == {"api", "hand"}
     assert set(module.SOURCES) == {"api", "hand"}
+
+
+# --- review round: recent posts in the owner PDF, demographic stale limits -----
+
+
+def recent_post_doc() -> dict[str, Any]:
+    doc = pdf_kit()
+    doc["recent_posts"] = [
+        {
+            "platform": "tiktok",
+            "thumbnail": "media/clip.png",
+            "views": 1234,
+            "likes": 56,
+            "comments": 7,
+        }
+    ]
+    return doc
+
+
+def test_the_owner_pdf_does_not_expect_a_section_the_gated_page_lacks(
+    tmp_path: Path,
+) -> None:
+    config, site, gated = pdfs(tmp_path, recent_post_doc())
+    assert "kit-recent" in (site / "kit" / "index.html").read_text(encoding="utf-8")
+    assert "kit-recent" not in (gated / GATED_FILE).read_text(encoding="utf-8")
+    owner = owner_pdf(config, site, gated, tmp_path)  # must not be refused
+    assert squash("Counts typed by the owner") not in owner
+    public = public_pdf(config, site, tmp_path)
+    assert squash("TikTok Hand-kept Counts typed by the owner") in public
+
+
+def test_the_public_pdf_still_requires_the_recent_post_label(tmp_path: Path) -> None:
+    config, site, _ = pdfs(tmp_path, recent_post_doc())
+    strip_label(
+        site / "kit" / "index.html",
+        '<span class="kit-trust kit-trust-hand-kept">Hand-kept</span> '
+        '<span class="kit-note kit-method">Counts typed by the owner</span>',
+        "",
+    )
+    with pytest.raises(PdfError, match="recent posts"):
+        public_pdf(config, site, tmp_path)
+
+
+def demo_doc(platform_days: int) -> dict[str, Any]:
+    doc = pdf_kit()
+    doc["demographics"][0]["as_of"] = "2027-02-20"  # 18 days before the PDF day
+    del platform_days
+    return doc
+
+
+def demo_config(doc: dict[str, Any], days: int | None) -> Any:
+    cfg = pdf_config(doc).model_dump(mode="json", exclude_none=True)
+    if days is not None:
+        cfg["numbers"] = {"stale_days": {"instagram": days}}
+    return SiteConfig.model_validate(cfg)
+
+
+def test_a_platforms_shorter_limit_marks_its_demographics(
+    tmp_path: Path, pdf_today: None
+) -> None:
+    doc = demo_doc(0)
+    config, site, gated = build_instance(tmp_path / "a", demo_config(doc, None))
+    plain = re.search(
+        r"Shares typed.*?</p>", (gated / GATED_FILE).read_text(encoding="utf-8")
+    )
+    assert plain and "(out of date)" not in plain.group(0)
+    config, site, gated = build_instance(tmp_path / "b", demo_config(doc, 10))
+    page = (gated / GATED_FILE).read_text(encoding="utf-8")
+    demo = re.search(r"Shares typed.*?</p>", page)
+    assert demo and "(out of date)" in demo.group(0)
+    assert "(outofdate)" in owner_pdf(config, site, gated, tmp_path)
+    # the check requires it: a page without the mark is refused
+    (gated / GATED_FILE).write_text(
+        page.replace(demo.group(0), demo.group(0).replace(" (out of date)", "")),
+        encoding="utf-8",
+    )
+    with pytest.raises(PdfError, match="demographic|kit.demographics"):
+        owner_pdf(config, site, gated, tmp_path)
+
+
+def test_a_demographic_warning_uses_the_platforms_own_limit() -> None:
+    from reach_around.config.kit import kit_warnings
+
+    doc = demo_doc(0)
+    kit = demo_config(doc, 10).kit
+    assert kit is not None
+    today = date(2027, 3, 10)
+    assert not [w for w in kit_warnings(kit, None, today) if "demographic" in w]
+    limited = kit_warnings(kit, None, today, {"instagram": 10})
+    assert any("demographic" in w for w in limited)

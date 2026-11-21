@@ -868,7 +868,12 @@ def kit_warnings(
             )
     for demo in kit.demographics:
         found.append(
-            _age_warning(f"kit demographic {demo.platform!r}", demo.as_of, today)
+            _age_warning(
+                f"kit demographic {demo.platform!r}",
+                demo.as_of,
+                today,
+                (limits or {}).get(demo.platform, STALE_DAYS),
+            )
         )
     return [w for w in found if w is not None]
 

@@ -494,7 +494,8 @@ def _expected_text(
                 else ""
             )
             put(where, tile + _trust_text(card["trust"]) + old)
-    if config is not None:
+    # Only the public page prints recent posts; the gated page has no such section.
+    if config is not None and public:
         for platform, trust in _post_trust(kit.recent_posts).items():
             labeled = True
             put(f"the recent posts of {platform!r}", platform + _trust_text(trust))
@@ -542,7 +543,7 @@ def _expected_text(
                 put(f"kit.{name}[{index}].trust", _trust_text(case["trust"]))
             if name == "demographics" and config is not None:
                 labeled = True
-                old = OUT_OF_DATE if is_old(item.as_of, None) else ""
+                old = OUT_OF_DATE if is_old(item.as_of, item.platform) else ""
                 put(
                     f"kit.{name}[{index}].trust",
                     f"As of {item.as_of.isoformat()} UTC"

@@ -997,7 +997,7 @@ def _legend(content: dict[str, Any], gated: bool = False) -> dict[str, Any] | No
     labeled = (
         any(row["trust"] for row in content["metrics"])
         or content["analytics"]
-        or content["recent_posts"]
+        or (content["recent_posts"] and not gated)
         or any(row["trust"] for row in content["engagement"])
         or content["imported"]
         or content.get("case_studies")
@@ -1216,7 +1216,7 @@ def render_kit(
                     "platform_name": platform_name(d.platform),
                     "as_of": d.as_of.isoformat(),
                     "trust": demographic_trust(d.as_of).view(),
-                    "stale": _is_stale(d.as_of, today, config, None),
+                    "stale": _is_stale(d.as_of, today, config, d.platform),
                     "withheld": sorted(
                         demographic_withheld(
                             d,
