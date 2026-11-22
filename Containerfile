@@ -38,9 +38,15 @@ ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 \
 # the image scanner flags (CVE-2026-76844, CVE-2026-85091, CVE-2026-27171). Debian
 # fixed them in trixie-security; take that build until the base image has it, then
 # remove this step.
+# The base image (checked 2026-11-21, index digest above) still ships libc6 and
+# libc-bin 2.41-12+deb13u4; the scanner flags them and Debian fixed them in
+# 2.41-12+deb13u5. Take that build until the base image has it, then remove
+# libc6 and libc-bin from this step.
 RUN apt-get update \
  && apt-get install -y --no-install-recommends --only-upgrade \
         zlib1g=1:1.3.dfsg+really1.3.1-1+deb13u1 \
+        libc6=2.41-12+deb13u5 \
+        libc-bin=2.41-12+deb13u5 \
  && rm -rf /var/lib/apt/lists/*
 RUN groupadd --gid 10001 reach \
  && useradd --uid 10001 --gid 10001 --no-create-home --home-dir /nonexistent \
