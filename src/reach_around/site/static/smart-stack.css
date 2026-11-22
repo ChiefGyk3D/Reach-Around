@@ -144,5 +144,8 @@
   .smart-icons .sr-only,
   .smart-icons .social-label { position: static; width: auto; height: auto; margin: 0; clip-path: none; overflow: visible; }
   .smart-icons .icon { display: none; }
-  .smart-icons a.social::after { content: " (" attr(href) ")"; }
+  .smart-icons { display: block; }
+  .smart-icons li { display: block; margin: 0 0 var(--ra-space-1); break-inside: avoid; }
+  .smart-icons a.social { display: inline; min-width: 0; min-height: 0; }
+  .smart-icons a.social::after { content: "\00a0(" attr(href) ")"; }
 }

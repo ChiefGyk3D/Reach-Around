@@ -240,6 +240,11 @@ def test_icons_css_keeps_a_44px_target_and_wraps_at_320(tmp_path: Path) -> None:
     assert "min-height: var(--ra-tap)" in social
     printed = css[css.index("@media print") :]
     assert ".smart-icons a.social::after" in printed and "attr(href)" in printed
+    # Inline link (a flex item would swallow the space), a no-break space before
+    # the address, and one item per line so icons do not run together.
+    assert 'content: "\\00a0("' in printed
+    assert re.search(r"\.smart-icons a\.social \{[^}]*display: inline;", printed)
+    assert re.search(r"\.smart-icons li \{[^}]*display: block", printed)
 
 
 def test_the_tap_token_is_44px() -> None:

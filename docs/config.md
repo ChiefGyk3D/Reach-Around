@@ -353,11 +353,12 @@ the Twitch and Kick pair is always drawn the same way.
 | --- | --- |
 | `buttons` | The tiles of a stack with no `style`. Output is unchanged. |
 | `rows` | A compact single-column row per link: icon, title and subtitle on one line (they wrap on a narrow screen), at least 44 px tall. Same links, same click counting and attributes; the group still holds 2 to 6 links. |
-| `icons` | An icon-only row for the Follow group, fed from `creator.socials` in that order. Each icon is a link with the platform name as its accessible name and a 44 px target. A social with no drawn icon shows its name instead. |
+| `icons` | An icon-only row for the Follow group, fed from `creator.socials` in that order. Each icon is a link whose accessible name is the `name` you wrote for that social, with a 44 px target. A social with no drawn icon shows its name instead. |
 
 `icons` is for the `follow` intent only, needs at least one entry in
 `creator.socials`, and the tab lists no links of its own (`blocks: []`), so no
-link is written twice. It is exempt from the 2 to 6 links rule, and social
+link is written twice in the config. (The page still shows the socials twice,
+in the header and in the Follow group.) It is exempt from the 2 to 6 links rule, and social
 links are not click counted (the header's are not either).
 
 ```yaml
