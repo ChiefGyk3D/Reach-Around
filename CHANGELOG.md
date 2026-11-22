@@ -6,6 +6,8 @@ while the project is alpha, every release is `0.x` and anything can change betwe
 
 ## [Unreleased]
 
+- Container image: upgrade libc6 and libc-bin to the Debian build 2.41-12+deb13u5 in the runtime stage; the `v0.3.0-rc.5` release scan failed on 28 findings in the base image's `2.41-12+deb13u4` and nothing was published (#702). The scan gate is unchanged. The upgrade comes out once the base image carries the fix.
+
 ## [0.3.0-rc.5] - 2026-11-21
 
 - Preview release candidate for 0.3.0 (#595, epic #246). It is a pre-release image for instance draft previews and the staging proof, cut from `main`. It is not the frozen soak candidate: the frozen candidate is a later, separate tag. Contents are the entries that follow, which were unreleased since `0.3.0-rc.4`.
