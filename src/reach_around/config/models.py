@@ -169,6 +169,7 @@ Layout = Literal["list", "grid", "cards"]
 HeaderStyle = Literal["compact", "centered", "hero"]
 PageLayout = Literal["tabs", "sections"]
 PageVariant = Literal["classic", "stack"]
+GroupStyle = Literal["buttons", "rows", "icons"]
 Intent = Literal[
     "watch", "videos", "follow", "community", "support", "work", "shop", "blog"
 ]
@@ -312,6 +313,9 @@ class Tab(_Model):
     open: bool | None = None
     # Only read by ``page.layout: stack``: show the group as a closed details.
     collapsed: bool = False
+    # Only read by ``page.layout: stack``: how the group's links are drawn.
+    # ``icons`` is an icon-only row fed from creator.socials (Follow only).
+    style: GroupStyle = "buttons"
     blocks: list[Block]
 
 
@@ -516,6 +520,8 @@ class SiteConfig(_Model):
                     raise ValueError(
                         f"tab {tab.id!r}: collapsed needs page.layout: stack"
                     )
+                if tab.style != "buttons":
+                    raise ValueError(f"tab {tab.id!r}: style needs page.layout: stack")
             return self
         if page.status is None:
             raise ValueError("page.status is required for page.layout: stack")
@@ -538,6 +544,15 @@ class SiteConfig(_Model):
             intents.add(tab.intent)
             if tab.collapsed and tab.intent == "watch":
                 raise ValueError("the Watch group cannot be collapsed")
+            if tab.intent == "watch" and tab.style != "buttons":
+                raise ValueError("the Watch group has no style")
+            if tab.style == "icons":
+                if tab.intent != "follow":
+                    raise ValueError("icons are only for the Follow group")
+                if not self.creator.socials:
+                    raise ValueError("icons need creator.socials")
+                if tab.blocks:
+                    raise ValueError("an icons group lists no links of its own")
             group_links: list[Link] = []
             for block in tab.blocks:
                 if isinstance(block, Link):
@@ -552,7 +567,11 @@ class SiteConfig(_Model):
                     )
             if tab.intent == "watch":
                 watch_links.update((link.id, link) for link in group_links)
-            if tab.intent != "watch" and not 2 <= len(group_links) <= 6:
+            if (
+                tab.intent != "watch"
+                and tab.style != "icons"
+                and not 2 <= len(group_links) <= 6
+            ):
                 raise ValueError(
                     f"tab {tab.id!r} must contain 2 to 6 links for page.layout: stack"
                 )

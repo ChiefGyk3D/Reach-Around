@@ -630,6 +630,7 @@ KNOWN_FIELDS: frozenset[str] = frozenset(
         "stats",
         "status",
         "store",
+        "style",
         "subtitle",
         "synced_with",
         "tab",
