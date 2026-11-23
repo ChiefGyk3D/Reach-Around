@@ -899,13 +899,13 @@ form posts to `/k/gate`. They ship off at the cutover through the Worker `KIT_KI
   `ROUTE_BUDGET_GATE`) and inserts the claim only if the unit was taken. Claim
   rows therefore cannot outnumber the hour's gate budget, however many requests
   arrive at once; at the default 150 an hour that is at most 3,600 claim rows a
-  day. A token already claimed is found by one read first and spends no unit.
+  day, for all networks together (so one network can write at most 150 an hour). A token already claimed is found by one read first and spends no unit.
   Two concurrent first uses of one token both take a unit; the second claim
   insert loses the key and its unit is given back at once (if the give-back
   fails the unit stays spent, which only makes the hour stricter). While the
   budget is spent nothing is written. The claim rows are one counters row each
-  on top of the figure in `docs/deploy.md` (`gate x 5` counts the budgeted
-  operation itself and is unchanged), now bounded by the gate budget instead of
+  counted in the write model (`docs/deploy.md`, issue #650: the gate is 5 rows
+  for the budgeted operation plus 1 claim row, 3,600 a day at the default), now bounded by the gate budget instead of
   by the allowance in front of Turnstile (`GATE_CHECK_LIMITER`, 20 a minute per
   coarse network), which still limits vendor calls per network. The hourly purge
   deletes at most 500 counter rows a run, and is unchanged.

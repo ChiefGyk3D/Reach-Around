@@ -19,7 +19,13 @@
 <code class="crypto-address" id="{{ addr_id }}" dir="ltr">{{ entry.address }}</code>
 <button class="copy-button" type="button" data-copy-target="{{ addr_id }}" aria-label="Copy {{ entry.display }} address">Copy</button>
 </div>
-{% if entry.qr %}
+{% if support_qr is defined and support_qr.get(addr_id) %}
+{% set qr = support_qr[addr_id] %}
+<details class="crypto-qr">
+<summary>Show QR code</summary>
+<img class="crypto-qr-image" src="{{ qr.name }}" alt="QR code for {{ entry.display }} address" width="{{ qr.size }}" height="{{ qr.size }}">
+</details>
+{% elif entry.qr %}
 <details class="crypto-qr">
 <summary>Show QR code</summary>
 <img class="crypto-qr-image" src="{{ asset_url(entry.qr, root) }}" alt="QR code for {{ entry.display }} address" loading="lazy" referrerpolicy="no-referrer">

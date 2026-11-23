@@ -1137,6 +1137,7 @@ it was without the feature. Unknown keys are refused.
 | --- | --- | --- | --- |
 | `title` | text | required | The page heading and its title, like a tab's `page_title` (see [Page titles](#page-titles)). |
 | `intro` | text, 1-500 characters | none | One plain paragraph under the heading, with the plain-text rules below. |
+| `qr` | true or false | false | On, the build draws a QR code for each coin from its address and puts it in a closed "Show QR code" drawer on the card. See [QR codes](#support-qr-codes). |
 | `blocks` | list of blocks | required | At least one. Crypto, text and divider blocks only: no link, image or email block. At most one crypto block (list every coin in it). Block ids are unique across the whole site. |
 
 ```yaml
@@ -1152,9 +1153,11 @@ support:
 
 What is not on this page, on purpose:
 
-* No QR image (a file cannot be tied to its address) and no image block (a
-  picture could be mistaken for a payment method). Each address is text with a
-  copy button, in an isolated left-to-right element.
+* No supplied QR image (a file cannot be tied to its address; a coin's own
+  `qr:` path is refused here) and no image block (a picture could be mistaken
+  for a payment method). Each address is text with a copy button, in an
+  isolated left-to-right element. A QR code is drawn by the build itself when
+  `support.qr` is on (next section).
 * No email block: the page is payment instructions, and an address shaped like
   a handle is one. Contact belongs on the other pages.
 * No Markdown. A text block is escaped plain text: blank lines start a new
@@ -1221,6 +1224,41 @@ site-wide default-src and connect-src are already `'self'`. A creator avatar
 loaded from another host therefore does not show on this page; use a local
 file. Redirecting an old support address to this page is a host setting, not
 part of the build.
+
+### Support QR codes
+
+With `support.qr: true` the build draws one QR code per coin, from the
+validated address string and nothing else. It runs no network call and uses no
+third-party service or package: a small encoder ships in the engine
+(`reach_around/site/qr.py`). The page never creates a QR in the browser.
+
+* The code holds the address exactly as printed, byte for byte: no URL, no
+  `bitcoin:` style wrapper, no shortener. (A coin URI form is not used; wallets
+  read a bare address.)
+* Byte mode, error correction level Q, a quiet zone of 4 modules. An address
+  of up to 151 characters fits.
+* Each code is one small file next to the page, `/support/qr-1-<digest>.svg`,
+  `/support/qr-2-<digest>.svg` and so on, in coin order, where `<digest>` is the
+  first 32 hex characters of the SHA-256 of that file's bytes. It is drawn as dark modules on a
+  soft gray tile (not white), because a scanner needs the contrast. The card
+  shows it inside a closed "Show QR code" drawer. The Content-Security-Policy
+  for `/support/` stays `img-src 'self'`.
+* Caching: because the name is a digest of the file's own bytes, a cached file can
+  never be shown for different bytes (a new address, drawing or color is a new
+  name). The build lists each QR file as immutable in
+  `_headers` (`Cache-Control: public, max-age=31536000, immutable`), while
+  `/support/` and `/support/index.html` stay `must-revalidate`, so the page
+  always names the current files. A rebuild empties the output folder, so a
+  file for an old address is not left behind.
+* Fail closed: the build compares each file with what the encoder makes from
+  its address and refuses any difference. The strict page check allows exactly
+  one drawer per card (one `summary` with the fixed text and one `img` whose
+  `src` is that card's own file) and nothing else; any other image, a changed
+  `src`, an extra attribute or an unexpected drawer fails the build. No custom
+  CSS is read from the config.
+* Page weight: each file is a few kilobytes and adds one request. The
+  `support-page` budget row is measured without QR codes; turning them on adds
+  the size of one file per coin.
 
 ## `cutover_date`
 
