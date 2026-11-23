@@ -578,6 +578,7 @@ def _render_smart_stack_page(
         featured=featured,
         creator=config.creator,
         tab=tab,
+        watch_title=next(t.title for t in config.tabs if t.intent == "watch"),
         blocks=every,
         groups=groups,
         watch=[links[ident] for ident in config.page.watch],

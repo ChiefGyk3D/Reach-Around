@@ -6,6 +6,8 @@ while the project is alpha, every release is `0.x` and anything can change betwe
 
 ## [Unreleased]
 
+- Link page: deck arrangement for the smart stack (L9, #677, epic #667, owner decision D1 Control Deck). The `page.layout: stack` home page is now a deck of tiles with small mono amber kickers: a Watch tile (status text, the two identical Watch links), the featured card, and one tile per group; only the Support tile uses the brand plate. Phones get one column and a row of jump chips (in-page links, no script, 44 px); 48 rem and up is two columns; 64 rem and up is twelve columns up to 90 rem wide, with Follow and Community paired. It fits 1440 x 900 and 1878 x 930 (including the 112.5% root scale) and reflows at 320 px and 200% zoom. New markup: the status and Watch links sit in one `smart-onair` wrapper, each group section carries `smart-group-<intent>`, the home page's `main` has `main-deck`, and a stack with two or more groups has a `smart-jump` nav; goldens regenerated. New optional site tokens `--ra-deck-gap` and `--ra-tile-radius`. No config change and no new page-weight budget: the stack page stays inside the `hub-stack` and `hub-live` rows (CSS about 3.9 KB larger). Spoke pages, the kit and the support page are unchanged. Docs: `docs/config.md`, `docs/design.md`, `docs/performance.md`.
+
 ## [0.3.0-rc.6] - 2026-11-23
 
 - Preview release candidate for 0.3.0 (#595, epic #246). It is a pre-release image for instance draft previews and the staging proof, cut from `main`. It is not the frozen soak candidate: the frozen candidate is a later, separate tag. Contents are the entries that follow, which were unreleased since `0.3.0-rc.5`.

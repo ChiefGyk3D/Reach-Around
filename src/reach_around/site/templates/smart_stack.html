@@ -20,7 +20,9 @@
 {%- endif %}
 {%- endmacro %}
 {% block content %}
-<div class="smart-stack">
+<div class="smart-stack{% if featured %} smart-has-featured{% endif %}">
+<div class="smart-onair">
+<p class="smart-kicker" aria-hidden="true">{{ watch_title }}</p>
 <section class="smart-status{{ frames.cls("hero") }}" aria-labelledby="smart-status-title">
 <h2 id="smart-status-title" class="sr-only">Status</h2>
 <p class="smart-status-text">{{ page.status.text }}</p>
@@ -30,15 +32,25 @@
 {% for link in watch %}{{ link_anchor(link, click_tracking, " smart-watch-link", link.icon if page.live_badges else "") }}{% endfor %}
 {% if page.live_badges %}<p class="sr-only" data-watch-status role="status" aria-live="polite" aria-atomic="true"></p>{% endif %}
 </div>
+</div>
 {% if featured %}
 <section class="smart-featured" aria-labelledby="smart-featured-kicker">
 <p id="smart-featured-kicker" class="smart-featured-kicker">{{ featured.kicker }}</p>
 {{ link_anchor(featured.link, click_tracking) }}
 </section>
 {% endif %}
+{% if groups|length > 1 %}
+<nav class="smart-jump" aria-label="Jump to a section">
+<ul>
+{% for item in groups %}
+<li><a href="#group-{{ item.tab.intent }}">{{ item.tab.title }}</a></li>
+{% endfor %}
+</ul>
+</nav>
+{% endif %}
 <div class="smart-groups">
 {% for item in groups %}
-<section class="smart-group" id="group-{{ item.tab.intent }}" aria-labelledby="group-{{ item.tab.intent }}-title">
+<section class="smart-group smart-group-{{ item.tab.intent }}" id="group-{{ item.tab.intent }}" aria-labelledby="group-{{ item.tab.intent }}-title">
 {% if item.tab.collapsed %}
 <details class="smart-collapse">
 <summary><h2 id="group-{{ item.tab.intent }}-title">{{ item.tab.title }}</h2></summary>
