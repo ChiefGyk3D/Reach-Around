@@ -237,13 +237,15 @@ def test_pr_without_a_fragment_fails() -> None:
         ca.check_pull_request(["src/x.py"], "body", [])
 
 
-def test_pr_with_two_fragments_fails_even_when_exempt() -> None:
+def test_pr_with_two_fragments_fails() -> None:
     with pytest.raises(ca.ChangelogError, match="adds one fragment"):
-        ca.check_pull_request(
-            ["changelog.d/1-a.md", "changelog.d/2-b.md"],
-            "no-changelog: x",
-            ["no-changelog"],
-        )
+        ca.check_pull_request(["changelog.d/1-a.md", "changelog.d/2-b.md"], "x", [])
+
+
+def test_exempt_pr_may_add_any_number_of_fragments() -> None:
+    ca.check_pull_request(
+        ["changelog.d/1-a.md", "changelog.d/2-b.md"], "no-changelog: migration", []
+    )
 
 
 def test_readme_and_other_dirs_do_not_count_as_fragments() -> None:

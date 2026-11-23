@@ -186,18 +186,20 @@ def exempt(body: str | None, labels: Iterable[str]) -> bool:
 def check_pull_request(
     added: Iterable[str], body: str | None, labels: Iterable[str]
 ) -> None:
-    """Raise unless the PR added exactly one fragment (or is exempt and added none)."""
+    """Raise unless the PR added exactly one fragment (or says it is exempt)."""
     prefix = f"{FRAGMENT_DIR}/"
     paths = [
         p
         for p in added
         if p.startswith(prefix) and p != f"{prefix}README.md" and p.endswith(".md")
     ]
+    if exempt(body, labels):
+        return
     if len(paths) > 1:
         raise ChangelogError(
             "a pull request adds one fragment, found " + ", ".join(sorted(paths))
         )
-    if not paths and not exempt(body, labels):
+    if not paths:
         raise ChangelogError(
             f"add one fragment {prefix}<issue-number>-<slug>.md, or put a line "
             "'no-changelog: <reason>' in the PR body (or use the "
