@@ -1,34 +1,19 @@
 // SPDX-License-Identifier: Apache-2.0
-// The Live tab's script (issue #297, slice 3). It does two things and nothing
-// else:
-//   1. Asks this site, and only this site, whether the channels are live
-//      (GET /e/live, no parameters) on load and every minute while the tab is
-//      visible, then lights the nav badge and picks the panel to show.
-//   2. On a press of a player facade, builds the player iframe from a fixed
-//      table of two allowlisted origins.
-// Anything it cannot verify is "degraded": it never shows live on a guess. It
-// reads no page content from any platform and keeps nothing in storage.
-//
-// The same code path serves every platform. The table below is the only place
-// that names one; layout, order and wording never branch on it.
+// Live badges and the Live tab (#297, #673). It asks this site only (GET /e/live)
+// on load and each minute while visible, lights badges and picks the panel, and
+// builds a player iframe from two allowlisted origins on a press. Anything it
+// cannot verify is degraded and never shows live. It keeps nothing in storage.
 (function () {
   "use strict";
-
   var ROUTE = "/e/live";
   var POLL_MS = 60000;
   var TIMEOUT_MS = 5000;
   var MAX_BODY_CHARS = 2048;
-  // The read is cut off at this many bytes (a real document is ASCII and well
-  // under 200), whatever the headers claim.
   var MAX_BODY_BYTES = 2048;
-  // The Worker serves a document older than three heartbeats (3 x 600 s) as
-  // unknown; the page applies the same rule on its own clock, so a stale
-  // document or a stuck cache can never show live.
   var STALE_AFTER_SECONDS = 1800;
   var FUTURE_SKEW_SECONDS = 300;
   var MAX_TTL_SECONDS = 3600;
   var MAX_UNIX_SECONDS = 4102444800;
-
   // BEGIN PLATFORM TABLE
   var PLATFORMS = Object.freeze([
     Object.freeze({
@@ -51,11 +36,9 @@
     })
   ]);
   // END PLATFORM TABLE
-
   function own(object, key) {
     return Object.prototype.hasOwnProperty.call(object, key);
   }
-
   function isPlain(value) {
     return (
       value !== null &&
@@ -64,7 +47,6 @@
       Object.getPrototypeOf(value) === Object.prototype
     );
   }
-
   function hasExactKeys(object, keys) {
     var found = Object.keys(object).sort();
     var want = keys.slice().sort();
@@ -78,7 +60,6 @@
     }
     return true;
   }
-
   function isUnix(value) {
     return (
       typeof value === "number" &&
@@ -87,13 +68,6 @@
       value <= MAX_UNIX_SECONDS
     );
   }
-
-  // One platform entry: {live: true|false|null, since: unix seconds or null},
-  // plus an optional `code` (a failure code for operators reading the JSON).
-  // The code is never read, kept or shown: whether it is missing, known,
-  // unknown or the wrong type, it changes nothing. Any other extra key is still
-  // a malformed entry. `since` is only allowed while live. Returns true, false
-  // or null (unknown), or undefined when the entry is malformed.
   function platformState(entry) {
     if (!isPlain(entry)) {
       return undefined;
@@ -118,10 +92,6 @@
     }
     return live;
   }
-
-  // Strictly parse the status document. Returns {<platform id>: true|false|null}
-  // or null (degraded) for anything malformed, oversize, unknown-wholesale
-  // (as_of null), too old or from the future.
   function parseStatus(text, nowSeconds) {
     if (typeof text !== "string" || text.length === 0 || text.length > MAX_BODY_CHARS) {
       return null;
@@ -164,11 +134,6 @@
     }
     return result;
   }
-
-  // Read a response body as UTF-8 text, a chunk at a time, and give up (cancel
-  // the stream, resolve null) the moment more than MAX_BODY_BYTES have arrived.
-  // No header is trusted and the body is never buffered whole. An unreadable
-  // body, a stream error or bytes that are not UTF-8 also give null.
   function readBounded(response) {
     var body = response ? response.body : null;
     if (!body || typeof body.getReader !== "function") {
@@ -188,7 +153,6 @@
       try {
         Promise.resolve(reader.cancel()).catch(function () {});
       } catch (ignored) {
-        // Nothing more to release.
       }
       return null;
     }
@@ -211,7 +175,6 @@
     }
     return step().catch(stop);
   }
-
   function anyLive(status) {
     if (status === null || typeof status !== "object") {
       return false;
@@ -220,7 +183,6 @@
       return own(status, p.id) && status[p.id] === true;
     });
   }
-
   function allNotLive(status) {
     if (status === null || typeof status !== "object") {
       return false;
@@ -229,28 +191,17 @@
       return own(status, p.id) && status[p.id] === false;
     });
   }
-
-  // "live" when at least one platform is live, "offline" when every platform is
-  // known not to be, "degraded" otherwise (including no data at all).
   function viewState(status) {
     if (anyLive(status)) {
       return "live";
     }
     return allNotLive(status) ? "offline" : "degraded";
   }
-
   function badgeOn(status) {
     return anyLive(status);
   }
-
-  // The words of the Watch badges on the smart stack (#673). One word per
-  // platform, from one code path: "LIVE" only when that platform is known live,
-  // "OFFLINE" only when it is known not live, and the empty string for anything
-  // else (unknown, degraded, stale, malformed, no data). Empty means the badge
-  // stays hidden and the page stays as it shipped; there is never an error text.
   var WORD_LIVE = "LIVE";
   var WORD_OFFLINE = "OFFLINE";
-
   function watchWord(status, id) {
     if (status === null || typeof status !== "object" || !own(status, id)) {
       return "";
@@ -260,7 +211,6 @@
     }
     return status[id] === false ? WORD_OFFLINE : "";
   }
-
   function watchBadges(status) {
     var result = {};
     PLATFORMS.forEach(function (p) {
@@ -268,8 +218,6 @@
     });
     return result;
   }
-
-  // The one sentence for the single polite region, or "" when nothing is known.
   function watchAnnouncement(badges) {
     if (badges === null || typeof badges !== "object") {
       return "";
@@ -283,10 +231,6 @@
     });
     return parts.join(" ");
   }
-
-  // The player URL for a platform and channel, or null. The origin comes from the
-  // table, the channel must match the config model's pattern for that platform,
-  // and the host is encoded, so nothing here can reach any other origin.
   function playerSrc(platform, channel, host) {
     if (typeof platform !== "string" || typeof channel !== "string") {
       return null;
@@ -305,7 +249,6 @@
     }
     return null;
   }
-
   function playerName(platform) {
     for (var i = 0; i < PLATFORMS.length; i += 1) {
       if (PLATFORMS[i].id === platform) {
@@ -314,7 +257,6 @@
     }
     return "";
   }
-
   if (typeof module === "object" && module !== null && module.exports) {
     module.exports = {
       PLATFORMS: PLATFORMS,
@@ -334,9 +276,6 @@
   if (typeof document === "undefined") {
     return;
   }
-
-  // ---- the page -------------------------------------------------------------
-
   var roots = document.querySelectorAll("[data-live]");
   var badges = document.querySelectorAll("[data-live-badge]");
   var watchBadgeEls = document.querySelectorAll("[data-watch-badge]");
@@ -344,19 +283,14 @@
   if (roots.length === 0 && badges.length === 0 && watchBadgeEls.length === 0) {
     return;
   }
-
-  // Which panels each state shows. Degraded is the page as it ships with no
-  // script: the watch links, and the past streams if there are any.
   var PANELS = {
     live: ["live"],
     offline: ["offline"],
     degraded: ["degraded", "offline"]
   };
-
   function hasPlayer(root) {
     return root.querySelector("iframe") !== null;
   }
-
   function setSlots(card, live) {
     var slots = card.querySelectorAll("[data-live-slot]");
     for (var i = 0; i < slots.length; i += 1) {
@@ -364,9 +298,6 @@
       slots[i].hidden = isPlayer ? !live : live;
     }
   }
-
-  // Fill the Watch badges and the one polite region. Text only, never an error
-  // string: a platform with no known state gets an empty, hidden badge.
   function applyWatch(status) {
     var words = watchBadges(status);
     for (var w = 0; w < watchBadgeEls.length; w += 1) {
@@ -382,7 +313,6 @@
       }
     }
   }
-
   function apply(status) {
     applyWatch(status);
     var state = viewState(status);
@@ -392,8 +322,6 @@
     }
     for (var r = 0; r < roots.length; r += 1) {
       var root = roots[r];
-      // A player the visitor started stays put: tearing it down mid-stream
-      // would be worse than a stale panel.
       if (hasPlayer(root)) {
         continue;
       }
@@ -413,7 +341,6 @@
       }
     }
   }
-
   function load(button) {
     var platform = button.getAttribute("data-platform");
     var src = playerSrc(
@@ -437,7 +364,6 @@
     button.parentNode.replaceChild(box, button);
     frame.focus();
   }
-
   function onClick(event) {
     var target = event.target;
     var button = target && target.closest ? target.closest("button.live-facade") : null;
@@ -448,13 +374,9 @@
   for (var r = 0; r < roots.length; r += 1) {
     roots[r].addEventListener("click", onClick);
   }
-
-  // ---- polling ----------------------------------------------------------------
-
   var timer = null;
   var inflight = false;
   var checks = 0;
-
   function request() {
     return new Promise(function (resolve) {
       var finished = false;
@@ -493,7 +415,6 @@
       });
     });
   }
-
   function schedule() {
     clearTimeout(timer);
     timer = null;
@@ -501,7 +422,6 @@
       timer = setTimeout(check, POLL_MS);
     }
   }
-
   function check() {
     clearTimeout(timer);
     timer = null;
@@ -517,7 +437,6 @@
       schedule();
     });
   }
-
   document.addEventListener("visibilitychange", function () {
     if (document.hidden) {
       clearTimeout(timer);
@@ -526,6 +445,5 @@
       check();
     }
   });
-
   check();
 })();

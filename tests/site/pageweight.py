@@ -63,11 +63,11 @@ BUDGET: dict[str, dict[str, int]] = {
     "hub-live": {
         "html": 11700,
         "css": 65300,
-        "js": 33100,
+        "js": 29000,
         "images": 1300,
         "fonts": 81500,
-        "total": 192700,
-        "compressed": 90300,
+        "total": 191300,
+        "compressed": 89300,
         "requests": 14,
     },
     # A spoke page (#676): a stack tab drawn as its own page. Measured on a
