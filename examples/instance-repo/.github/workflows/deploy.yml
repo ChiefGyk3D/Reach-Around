@@ -7,7 +7,12 @@
 #
 # Two tiers, each its own GitHub environment and its own secret-manager
 # identity:
-#   staging     runs on every push to main, and by hand with target staging.
+#   staging     runs on every push to main, and by hand with target staging,
+#               but only while the repository variable ALLOW_STAGING_DEPLOY is
+#               exactly `true`. Set it LAST, after both environments exist and
+#               are protected: GitHub creates a missing environment with no
+#               protection on first use, and this variable is what keeps a first
+#               push from being that first use (README.md, "One-time setup").
 #   production  runs only by hand, with target production, on main, and only
 #               while the repository variable ALLOW_PRODUCTION_DEPLOY is exactly
 #               `true` (it is not set by default, so production is off).
@@ -27,8 +32,10 @@
 #                       ever runs with it present.
 #
 # The environment's protection rules (a required reviewer, deployments limited
-# to main) are the real gate on the ref. The `if` lines below are a second
-# check that fails closed; they are not the access control.
+# to main) are the real gate on the ref. The `if` lines below, and the two
+# ALLOW_ variables, are operational switches that fail closed; they are not an
+# approval control, and this file cannot check that an environment is protected
+# (that needs an administrator token, which no job here holds).
 name: Deploy
 
 on:
@@ -89,16 +96,34 @@ jobs:
             echo "engine_ref=$(scripts/read-lock.sh ENGINE_REF)"
           } >> "$GITHUB_OUTPUT"
 
-      # Plain values only; no secret. The two tiers must not share a Worker, and
-      # neither may be the engine's own test Worker, or one deploy would replace
-      # another's. The called workflow checks the name again.
-      - name: Check the Worker names and the secret manager project
+      # Plain values only; no secret. The two tiers must not share a Worker or a
+      # Pages project, and neither Worker may be the engine's own test Worker, or
+      # one deploy would replace another's (a Pages project has one production
+      # branch, so a shared project would let staging publish to production).
+      # The called workflow checks the Worker name again. Pages names are
+      # compared after lowercasing, and [[ =~ ]] tests the whole value, so a
+      # second line cannot hide behind a valid first one.
+      - name: Check the plain configuration values
         env:
           STAGING_WORKER_NAME: ${{ vars.STAGING_WORKER_NAME }}
           PRODUCTION_WORKER_NAME: ${{ vars.PRODUCTION_WORKER_NAME }}
+          STAGING_PAGES_PROJECT: ${{ vars.STAGING_PAGES_PROJECT }}
+          PRODUCTION_PAGES_PROJECT: ${{ vars.PRODUCTION_PAGES_PROJECT }}
           DOPPLER_PROJECT: ${{ vars.DOPPLER_PROJECT }}
         run: |
           set -eu
+          pages_re='^[a-z0-9][a-z0-9-]{0,57}$'
+          staging_pages="${STAGING_PAGES_PROJECT:-}"
+          staging_pages="${staging_pages,,}"
+          [[ "$staging_pages" =~ $pages_re ]] \
+            || { echo "::error::STAGING_PAGES_PROJECT is not set to a plain Pages project name (README.md)"; exit 1; }
+          if [ -n "${PRODUCTION_PAGES_PROJECT:-}" ]; then
+            production_pages="${PRODUCTION_PAGES_PROJECT,,}"
+            [[ "$production_pages" =~ $pages_re ]] \
+              || { echo "::error::PRODUCTION_PAGES_PROJECT is not a plain Pages project name"; exit 1; }
+            [ "$staging_pages" != "$production_pages" ] \
+              || { echo "::error::STAGING_PAGES_PROJECT and PRODUCTION_PAGES_PROJECT must be different Pages projects"; exit 1; }
+          fi
           name_re='^[a-z0-9][a-z0-9-]{0,62}$'
           [[ "${STAGING_WORKER_NAME:-}" =~ $name_re ]] \
             || { echo "::error::STAGING_WORKER_NAME is not set to a plain Worker name (README.md)"; exit 1; }
@@ -146,8 +171,8 @@ jobs:
     name: Deploy the staging Worker
     needs: validate
     if: >-
-      github.ref == 'refs/heads/main' && github.event_name == 'push'
-      || github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && inputs.target == 'staging'
+      github.ref == 'refs/heads/main' && vars.ALLOW_STAGING_DEPLOY == 'true' && github.event_name == 'push'
+      || github.ref == 'refs/heads/main' && vars.ALLOW_STAGING_DEPLOY == 'true' && github.event_name == 'workflow_dispatch' && inputs.target == 'staging'
     # The permissions are checked when this file is parsed, so the call needs
     # what the called workflow asks for even when the job is skipped.
     permissions:
@@ -177,8 +202,8 @@ jobs:
     name: Publish the staging site
     needs: [validate, worker-staging]
     if: >-
-      github.ref == 'refs/heads/main' && github.event_name == 'push'
-      || github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && inputs.target == 'staging'
+      github.ref == 'refs/heads/main' && vars.ALLOW_STAGING_DEPLOY == 'true' && github.event_name == 'push'
+      || github.ref == 'refs/heads/main' && vars.ALLOW_STAGING_DEPLOY == 'true' && github.event_name == 'workflow_dispatch' && inputs.target == 'staging'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     environment: staging
@@ -214,12 +239,20 @@ jobs:
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           PAGES_PROJECT: ${{ vars.STAGING_PAGES_PROJECT }}
+          # Only to refuse it: staging must never publish into this project.
+          PRODUCTION_PAGES_PROJECT: ${{ vars.PRODUCTION_PAGES_PROJECT }}
         run: |
           set -eu
           [[ "${CLOUDFLARE_ACCOUNT_ID:-}" =~ ^[0-9a-f]{32}$ ]] \
             || { echo "::error::CLOUDFLARE_ACCOUNT_ID is not a 32-character id (README.md)"; exit 1; }
-          [[ "${PAGES_PROJECT:-}" =~ ^[a-z0-9-]{1,58}$ ]] \
+          project="${PAGES_PROJECT:-}"
+          project="${project,,}"
+          [[ "$project" =~ ^[a-z0-9-]{1,58}$ ]] \
             || { echo "::error::STAGING_PAGES_PROJECT is not a valid project name (README.md)"; exit 1; }
+          other="${PRODUCTION_PAGES_PROJECT:-}"
+          other="${other,,}"
+          [ "$project" != "$other" ] \
+            || { echo "::error::STAGING_PAGES_PROJECT equals PRODUCTION_PAGES_PROJECT; staging must publish to its own Pages project"; exit 1; }
 
       # --ignore-scripts: wrangler runs without its dependencies' install
       # scripts, so none run. This step has no secret in its environment.

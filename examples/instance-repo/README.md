@@ -59,9 +59,14 @@ engine repository for the reasoning.
    documents this, and an optional cache purge, in `docs/deploy.md` under
    "Caching and stale files". This template does not run the purge step.
 
-4. Commit and push to `main`. The staging jobs will fail the plain-value checks
-   (or wait at the `staging` environment) until you finish the setup below,
-   which is expected. Production does not run on a push.
+4. Do not push to `main` yet. Finish the one-time setup below first, in its
+   order: create and protect both environments, then add the variables, and set
+   the variable that switches staging on last. GitHub creates a missing
+   environment with no protection the first time a job names it, so the
+   environments must exist, with their reviewers and the `main`-only branch
+   rule, before any run can start. Until the staging switch is set, a push runs
+   only the `validate` job (which holds no environment and no secret). Then
+   commit and push. Production never runs on a push.
 
 ## One-time setup
 
@@ -70,26 +75,43 @@ scopes, production branch) is described step by step in the engine's
 `docs/deploy.md`. Follow its sections 1 and "Token type", using your own
 names. Every name here is a placeholder.
 
-On GitHub: **Settings > Environments > New environment**, twice: `staging` and
+**Step 1: the environments, before anything else.** On GitHub:
+**Settings > Environments > New environment**, twice: `staging` and
 `production`. For each one:
 
-- Add yourself (or a second person) under **Required reviewers**. Every deploy
-  then waits for a click before the job runs.
-- Under **Deployment branches**, allow only `main`.
+- Turn on **Required reviewers** and name at least one reviewer who is not the
+  person who will start deployments. Then turn on **Prevent self-review** (the
+  setting is under the required reviewers). Every deploy then waits for that
+  reviewer's approval before the job runs.
+- Under **Deployment branches and tags**, allow only `main`.
 - Add no secret. The token comes only from the secret manager, over OIDC.
 
-**Environment protection is the real gate on the branch.** The workflow also
-refuses any ref but `main` and every production job needs `ALLOW_PRODUCTION_DEPLOY`,
-but those are second locks that fail closed; the reviewer and the deployment
-branch rule on each environment are what GitHub enforces. Create and protect both
-environments before the first run: GitHub creates a missing one on first use,
-with no protection.
+**What environment protection can and cannot guarantee.** It is the real gate
+on the branch and on who approves: GitHub enforces the reviewer and the
+deployment branch rule, and a workflow file cannot override them. It cannot
+guarantee that the approver is a different human from the author unless
+**Prevent self-review** is on AND a second person exists to approve. If you are
+the sole owner, you have two honest choices. Either add a second account you
+control as the reviewer and turn **Prevent self-review** on (an approval is then
+a real second step, not a click on your own run), or leave self-review allowed
+and treat the approval as a pause to confirm, not as an independent control.
+Do not describe the second as separation of duties. Also check what your GitHub
+plan offers for environments on a private repository, and whether an
+administrator can bypass the rules there (look at each environment's settings;
+this README does not assume either). The workflow's own `main` checks, and the
+variables `ALLOW_STAGING_DEPLOY` and `ALLOW_PRODUCTION_DEPLOY`, are operational
+switches that fail closed: they are not an approval control, and anyone who can
+edit repository variables can flip them. The workflow cannot check that an
+environment is protected, because that needs an administrator token that no job
+here holds.
 
-Add these **repository variables** (**Settings > Secrets and variables >
-Actions > Variables**). They are not secret, but keep real values out of commits
-and issues. They are repository level, not environment level, because the Worker
-call is made by a job that holds no environment and so cannot read an
-environment's own variables.
+**Step 2: the repository variables.** Add these **repository variables**
+(**Settings > Secrets and variables > Actions > Variables**) only after both
+environments are protected. They are not secret, but keep real values out of
+commits and issues. They are repository level, not environment level, because
+the Worker call is made by a job that holds no environment and so cannot read an
+environment's own variables. Set `ALLOW_STAGING_DEPLOY` last: it is what lets a
+push start the first run.
 
 | Variable | Used by | Example (placeholder) |
 |---|---|---|
@@ -102,6 +124,7 @@ environment's own variables.
 | `STAGING_SITE_HOST` | staging | `staging.links.example.invalid` |
 | `STAGING_ZONE_NAME` (optional) | staging | `example.invalid` |
 | `DOPPLER_IDENTITY_ID_STAGING` | staging | an identity id (not a secret) |
+| `ALLOW_STAGING_DEPLOY` | staging | absent by default; exactly `true` lets a push (or a manual run) deploy staging; set it last |
 | `PRODUCTION_WORKER_NAME` | production | `my-links-clicks` |
 | `PRODUCTION_PAGES_PROJECT` | production | `my-links` |
 | `PRODUCTION_D1_DATABASE_ID` | production | `00000000-0000-0000-0000-000000000000` |
@@ -113,7 +136,14 @@ environment's own variables.
 
   The two tiers must use different Worker names, and neither may be the
   engine's own test Worker (`reach-around-clicks`); the `validate` job fails the
-  run otherwise. The placeholder ids (`1001`, the all-zero database id) are
+  run otherwise. They must also use different Pages projects (the names are
+  compared after lowercasing, and `validate` fails when they are equal), and the
+  staging Pages job refuses to publish into the production project. Do not rely
+  on the branch name: `--branch staging` makes a preview deployment only when
+  the project's production branch is something else, and a project has one
+  production branch, so give staging its own Pages project and check the
+  production branch of each project in Cloudflare (the engine's `docs/deploy.md`,
+  "Production branch"). The placeholder ids (`1001`, the all-zero database id) are
   refused by the called workflow, so each tier needs its own real D1 database and
   rate limit namespace.
 
@@ -121,11 +151,12 @@ environment's own variables.
   workflow reads the link ids from the build manifest, so the Worker and the page
   cannot disagree.
 
-**To deploy.** A push to `main` deploys staging. To run it by hand, open
-**Actions > Deploy > Run workflow** on `main` and pick the target. Production
-runs only from a manual run on `main` with target `production` while
-`ALLOW_PRODUCTION_DEPLOY` is exactly `true`; set it when you are ready and remove
-it again to turn production off. Moving `engine.lock` moves the two reusable
+**To deploy.** With `ALLOW_STAGING_DEPLOY` set to `true`, a push to `main`
+deploys staging. To run it by hand, open **Actions > Deploy > Run workflow** on
+`main` and pick the target. Production runs only from a manual run on `main` with
+target `production` while `ALLOW_PRODUCTION_DEPLOY` is exactly `true`; set it
+when you are ready and remove it again to turn production off. Remove
+`ALLOW_STAGING_DEPLOY` to stop staging. Moving `engine.lock` moves the two reusable
 `uses:` pins in `deploy.yml` with it (Renovate does both in one pull request, and
 a test fails if they differ).
 

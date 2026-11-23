@@ -158,7 +158,7 @@ Doppler config:
 
 | Tier | Environment | Doppler config | Runs |
 |---|---|---|---|
-| staging | `staging` | `dev` | every push to `main`, and a manual run with target `staging` |
+| staging | `staging` | `dev` | every push to `main`, and a manual run with target `staging`, only while the repository variable `ALLOW_STAGING_DEPLOY` is exactly `true` |
 | production | `production` | `prd` | only a manual run on `main` with target `production`, and only while the repository variable `ALLOW_PRODUCTION_DEPLOY` is exactly `true` |
 
 Production is off until you turn it on: the variable is not set by default, so a
@@ -166,13 +166,27 @@ production job is skipped even if someone picks the target. Use `prd` only after
 the project is live and you have approved it as its own step.
 
 **Environment protection is the real gate on the branch.** Give each
-environment a required reviewer (not the author) and limit its deployment
-branches to `main`. The `if: github.ref == 'refs/heads/main'` lines in the
-workflow, and the reusable workflow's own check, are a second lock that fails
-closed; they are not the access control, because the called workflow sees the
-caller's ref and the environment is what GitHub enforces. An environment that
-does not exist yet is created unprotected on first use, so create and protect
-both before the first run.
+environment a required reviewer who is not the person starting deployments,
+turn on **Prevent self-review**, and limit its deployment branches to `main`.
+GitHub cannot guarantee a different human approves unless that setting is on and
+a second person exists; a sole owner either adds a second account as reviewer or
+treats the approval as a confirmation pause, not an independent control (the
+template's README says the same). The `if: github.ref == 'refs/heads/main'`
+lines in the workflow, the reusable workflow's own check, and the two `ALLOW_`
+variables are operational switches that fail closed; they are not an approval
+control, because the called workflow sees the caller's ref and the environment is
+what GitHub enforces.
+
+**Order matters.** An environment that does not exist yet is created
+unprotected on first use, so create and protect both environments before the
+first push to `main`, and set `ALLOW_STAGING_DEPLOY` last. Until it is set, a
+push runs only the `validate` job, which holds no environment and no secret. The
+workflow cannot check that an environment is protected (that needs an
+administrator token that no job holds), so the order and that variable are the
+safeguard. The two tiers also use different Worker names and different Pages
+projects; `validate` fails when either pair is equal, and the staging Pages job
+refuses the production Pages project, so a staging run cannot publish into
+production whatever a project's production branch is.
 
 The Worker half is the engine's reusable workflow
 (`.github/workflows/deploy-worker.yml`, see `docs/deploy.md`, "Deploying the
