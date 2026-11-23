@@ -1,15 +1,17 @@
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 # Labeled tombstone-only rewrite of the counts history: design
 
-Status: DRAFT for owner decision, 2026-11-23. Spec only: no code and no workflow
-change come with this document. Issue: #619. Epic: #364. Follows #586 (the
-tombstone, decision 4 of `docs/research/history-tombstone-design.md`) and #621 (the
-runbook for rewriting git history of the private instance repository).
+Status: DRAFT for owner decision, 2026-11-23, revised after Daybreak round 1
+(table in section 16; the next round is the last allowed). Spec only: no code and
+no workflow change come with this document. Issue: #619. Epic: #364. Follows #586
+(the tombstone, decision 4 of `docs/research/history-tombstone-design.md`) and #621
+(the runbook for rewriting git history of the private instance repository).
 
 Claims are marked **[V]** verified (file and line read in this checkout, base
 `2f26e21`) or **[I]** inferred (not run, or a GitHub behavior not exercised here).
-Every **[I]** that a design choice leans on is repeated in "Open owner decisions"
-or "Tests" so it gets proved before it is trusted.
+Every **[I]** a design choice leans on is a named design gate (section 12) that must
+be proved on a scratch repository before implementation starts, not a test to add
+afterwards.
 
 ## 1. Summary
 
@@ -23,432 +25,651 @@ of it:
   It only ever sees files the refresh job produced from `main`. A hand-made pull
   request that rewrites `history/social.jsonl` never passes through it. The only
   workflow that runs on a pull request is `preview.yml`, and it has no history step
-  at all (grep for "history" in `preview.yml` and `deploy.yml`: no hit) **[V]**.
+  (no "history" in `preview.yml` or `deploy.yml`) **[V]**.
 * So today a human pull request can rewrite or delete any history line and merge,
-  with no check that says it is not append-only. The "rejects any in-place
-  rewrite" in the issue text is true only of the bot's own path. After such a
-  rewrite merges, the next refresh builds on the rewritten `main` and the publish
-  check passes against it **[V]**.
+  with no check that says it is not append-only. After such a rewrite merges, the
+  next refresh builds on the rewritten `main` and the publish check passes against
+  it **[V]**.
 * What the existing check really blocks is the stale-bot-branch case: with a
   tombstone rewrite on `main`, an open `counts/refresh` pull request built on the
   old history is no longer a byte prefix of `main`, and `scripts/unmerged-history.sh`
-  exits 3, which makes the publish job skip with a warning on every run until the
-  owner closes that pull request (`refresh-counts.yml` lines 181-191,
-  `unmerged-history.sh` lines 25-30) **[V]**.
+  exits 3, so every later publish run skips with a warning until the owner closes
+  that pull request (`refresh-counts.yml` lines 181-191, `unmerged-history.sh`
+  lines 25-30) **[V]**.
 
 So the real task is two-sided: **add the missing pull-request check that makes
-append-only enforceable for people**, and give it **one labeled exception**
+append-only enforceable for people**, and give it **one labeled, bounded exception**
 for a tombstone-only rewrite. Adding only the exception would add a bypass to a
-control that does not exist yet. Recommendation in section 12.
+control that does not exist yet. Recommendation in section 13.
 
-## 2. Assets and actors
+## 2. Assets, actors and the limit of this design
 
 Assets: the integrity of the published counts history (it feeds the media kit and
 sponsor quotes, so a quiet edit is a misrepresentation to a third party); the
 redaction duty (a tombstone that is claimed but did not remove the value is a
 compliance failure); availability of the daily refresh.
 
-Actors and what they can do **[V]** unless marked:
-
 | Actor | Can |
 | --- | --- |
-| Owner (admin) | everything, including bypassing branch protection if the rule allows it |
-| Collaborator with write | push branches, open pull requests, edit workflow files in their own pull request (the `pull_request` trigger runs the workflow file from the pull request: `preview.yml` lines 27-31) |
-| Collaborator with triage | apply and remove labels **[I]** (GitHub's documented role table; not re-read this session) |
-| Fork contributor | open a pull request; the token is read-only and secrets are absent; cannot label **[I]** |
-| Actions bot (`github-actions`) | the publish job holds `pull-requests: write` (`refresh-counts.yml` lines 98-100) **[V]**, which can add a label to its own pull request **[I]** |
-| Engine image | pinned by `engine.lock`; the preview job already reads the BASE copy of the lock |
+| Owner (admin) | everything, including editing rulesets and workflows, unless a ruleset says otherwise and admin bypass is off **[I]** |
+| Collaborator with write | push branches, open pull requests, edit workflow files in their own pull request (the `pull_request` trigger runs the workflow file from the pull request: `preview.yml` lines 27-31) **[V]** |
+| Collaborator with triage | apply and remove labels **[I]** |
+| Fork contributor | open a pull request; the token is read-only, secrets are absent; cannot label **[I]** |
+| Actions bot | the publish job holds `pull-requests: write` (`refresh-counts.yml` lines 98-100) **[V]**, which can label its own pull request **[I]** |
+| Engine image | pinned by `engine.lock`; the preview job already reads the BASE copy of the lock **[V]** |
+
+**What this design cannot do (stated plainly).** It does not protect against a
+malicious or compromised `admin` or `maintain` account, and it cannot judge whether a
+redaction reason is true: `reason`, `trigger_date` and the run id are assertions. For
+a **sole owner** every gate here is passed by the same account that could also edit
+the guard, edit the ruleset, or force-push around them. For that owner the design
+gives: a mistake-proof exact compare (no changed value slips through a rewrite), a
+bounded blast radius per rewrite (section 6.3, rules 12-14), an audit trail the
+account can delete only by rewriting `main`, and a notification channel (section 11).
+It does not give separation of duties. Only a second person (section 4) does.
 
 ## 3. Threat model
 
 Goal of the control: no pull request changes the value, time, source or order of a
-history line except by turning an existing `api` record into a valid tombstone
-(and dropping that record's corrections), with the hash chain re-linked and
-verifying.
+history line except by turning an existing `api` record into a valid tombstone (and
+dropping that record's corrections), with the hash chain re-linked, no more than a
+bounded number of records, and the redaction described in the pull request.
 
 A label is a bypass of an append-only integrity control. Each way to abuse it:
 
-1. **Who can add the label.** GitHub lets anyone with triage or higher label a
-   pull request **[I]**. That is wider than the people who should authorize a
-   history rewrite. Mitigation: the label is a signal only. The check reads who
-   applied it (section 5) and requires repository admin or maintain, read live.
-2. **The pull request author labels their own pull request.** With one owner this
-   cannot be separated. The label is then a speed bump and an audit record, not a
-   second person. The content check in section 6 is the real control and does not
-   depend on who applied the label. Stated plainly in the instance README.
-3. **Forks.** The check runs only when the head repository is the base repository
-   (the same guard `preview.yml` line 58 uses) **[V]**, and refuses the label on a
-   fork pull request. Fork authors cannot label anyway **[I]**.
-4. **The Actions bot labels its own refresh pull request.** The publish job's token
-   can label **[I]**. Mitigation: refuse when the label's applier is a Bot account
-   (`type == "Bot"` or a login ending `[bot]`), refuse when the head branch is
-   `counts/refresh`, and require the head branch to match `redact/*`. Two
-   independent refusals, so one mistake does not open it.
+1. **Who can add the label.** Triage and above can label **[I]**; that is wider than
+   who should authorize a rewrite. Mitigation: the label is a signal only. The check
+   evaluates the applier's identity at verification time against an allow-list
+   (section 4).
+2. **The author labels their own pull request.** With one owner this cannot be
+   separated; see section 2. The content check does not depend on who labeled.
+3. **Forks.** The check runs the rewrite path only when the head repository is the
+   base repository (the guard `preview.yml` line 58 uses) **[V]**; a fork pull
+   request that touches the history file fails.
+4. **The Actions bot labels its own refresh pull request.** Refused three ways: the
+   applier is not in the allow-list, the head branch is `counts/refresh`, and the head
+   branch must match `redact/*`.
 5. **Label timing and TOCTOU.**
-   * Label applied after the check passed green: the check does not need the label
-     for an append-only pull request, so nothing changes; for a rewrite the label
-     was needed at check time. Re-run on `labeled` and `unlabeled` so the result
-     always reflects the live label set.
-   * Label removed after a green run: the old green run stays on the head SHA. A
-     removed label should withdraw the approval. The `unlabeled` run must write a
-     failing result under the same required check name; which run GitHub shows as
-     current for a required name is **[I]** and must be proved on a scratch
-     repository before the design is trusted (test T14). If it cannot be proved,
-     fall back to making the check re-read the label at merge time through a merge
-     queue or a required-status re-run, or accept that the content check, which is
-     bound to the head SHA, is what protects the history and removal only
-     revokes intent.
-   * Push after the label: a new head means a new `synchronize` run that
-     recomputes everything from the new head's bytes. The label authorizes "a
-     tombstone-only rewrite", and the content check re-proves that on every head,
-     so a pushed change cannot ride an old approval.
-   * The label read must be live (API call in the job), not
-     `github.event.pull_request.labels`, which is the snapshot at trigger time.
-   * Applier identity is taken from the issue events list (the last `labeled`
-     event for that exact name), not from `github.event.sender`, which is the
-     pusher on a `synchronize` run **[I]**.
-6. **Look-alike label.** Compare the label name as exact bytes against one
-   constant. A label named with a homoglyph or trailing space must not match.
-7. **`pull_request_target`.** Never used. It would run base-branch workflow code
-   with a write token against attacker-controlled files. `preview.yml` already
-   states the same rule (lines 4-6) **[V]**.
-8. **The pull request edits the guard.** With `pull_request`, a pull request that
-   changes `history-guard.yml` or its scripts runs its own version. Mitigations:
-   scripts and the engine pin come from the BASE commit (the pattern in
-   `preview.yml`, lines 69-80) **[V]**; the workflow file itself is covered by
-   CODEOWNERS and required review, which the instance README already tells owners
-   to set for `.github/`, `scripts/` and `engine.lock` (README lines 122-132
-   **[V]**). This is a residual risk that no workflow design removes; it is
-   stated, not hidden. A detective control that does not depend on the pull
-   request is in section 11.
+   * Label removed after a green run: see design gate G2. An `unlabeled` run must
+     turn the required result red; if GitHub cannot be shown to honor that, the
+     design falls back to a merge queue (G2 fallback) or the label is documented as
+     an irrevocable record once a head SHA has passed.
+   * Push after the label: a new head runs `synchronize` and everything is
+     recomputed from the new head's bytes.
+   * **Base moves after the check** (F1): the old green result is on the head SHA,
+     not on the base that will actually merge. See section 5.4; this is the most
+     important timing risk and has its own gate (G1).
+   * The label read is live from the API in the job, never from
+     `github.event.pull_request.labels`, which is a trigger-time snapshot **[I]**.
+6. **Look-alike label.** Compare the name as exact bytes against one constant.
+7. **`pull_request_target`.** Never used (same rule as `preview.yml` lines 4-6) **[V]**.
+8. **The pull request edits the guard.** `pull_request` runs the workflow file from
+   the pull request. Scripts and the engine pin come from the BASE commit
+   (`preview.yml` lines 69-80) **[V]**, but the workflow file itself, and the base
+   scripts and `engine.lock` for every later run, are only as safe as the rule that
+   decides who may change them. Section 11 states exactly what protects them and what
+   does not.
 9. **Hostile file content.** Duplicate JSON keys, floats, huge lines, a symlink in
-   place of the file, a file bigger than the cap, a line that parses but is not
-   the engine's canonical bytes. The engine already refuses the first four
-   (`history.py` `_parse_line`, `_pairs`, `MAX_LINE_BYTES`, `MAX_FILE_BYTES`) **[V]**;
-   the new compare must also refuse a new line whose raw bytes differ from the
-   canonical serialization (section 6, rule 6), because `_parse_line` accepts any
-   spacing and key order **[V]** and the chain digest is over raw bytes.
-10. **Path tricks.** The rewrite pull request may change only
-    `history/social.jsonl`. Anything else, including `numbers.json`, fails.
+   place of the file, a file bigger than the cap, a mode change, a submodule entry,
+   a line that parses but is not canonical bytes. The engine already refuses the
+   first four (`history.py` `_pairs`, `_no_float`, `MAX_LINE_BYTES`,
+   `MAX_FILE_BYTES`) **[V]**; the rest are the compare's job (section 6).
+10. **Path tricks.** Only the paths in section 8 may change.
+11. **A compromised or mistaken maintainer destroys eligible history** (F4):
+    bounded and made visible by section 6.3 rules 12-14 and section 11; not
+    prevented for a sole owner (section 2).
 
 ### What an attacker gains if the check is wrong
 
 * Edit counts silently (inflate followers or views), then re-chain so
-  `history-verify` still passes: a false number reaches the media kit and the
-  sponsor quote. This is the central harm, and the reason the compare must be
-  exact and not a heuristic.
-* Delete unfavorable rows with no trace (a "tombstone" that is really a removal,
-  or a tombstone that hides a changed neighbour).
-* A tombstone that still carries the value (extra field, value in `run_id`):
-  looks redacted, is not. The compliance claim is false and Git keeps the proof.
-* Resurrection: merging a stale pull request over a rewrite and restoring
-  redacted values.
-* Denial of service: a label-gated path that wedges the refresh (section 9).
+  `history-verify` still passes: a false number reaches the media kit and the sponsor
+  quote. The central harm, and why the compare must be exact.
+* Delete unfavorable rows with no trace (a "tombstone" that is really a removal, or
+  one that hides a changed neighbour).
+* A tombstone that still carries the value (extra field, value in `run_id`), or a
+  value that survives in `numbers.json`: looks redacted, is not. Git keeps the proof.
+* Resurrection: merging a stale pull request over a rewrite and restoring redacted
+  values (F1).
+* Denial of service: a label-gated path that wedges the refresh (section 9), or a
+  compare with no resource bound used as a CI exhaustion attack (rule 13).
 
-An attacker who can forge the label but not pass the content compare can only
-tombstone real `api` rows. That is bounded: data is lost but no value is invented.
-That bound is the reason content verification, not the label, is the design's
-core.
+An attacker who can forge the label but not pass the compare can only tombstone real
+`api` rows, up to the cap, with a manifest that names them. That is bounded: data is
+lost, no value is invented. The content compare, not the label, is the core.
 
 ## 4. The label and who may apply it
 
-* Name: `history-tombstone` (exact, lowercase, one constant in the script). Rejected
-  alternatives: `redaction` (too general), `approved` (meaningless out of context).
-* Applier: the **last `labeled` event for that name** must come from an account
-  that is not a Bot and whose repository permission is `admin` or `maintain`,
-  read through `GET /repos/{r}/collaborators/{login}/permission` **[I]** and the
-  issue events API **[I]**. Both need only `pull-requests: read` (plus `contents:
-  read`) on the job token.
-* Where a stronger gate is wanted (two-person instances): put the check job under
-  a protected environment `history-redaction` with required reviewers and "prevent
-  self-review" **[I]**. This gives a real second human. It is optional, because a
-  solo owner cannot satisfy self-review and the deployment-branch rules apply to
-  `refs/pull/N/merge` rather than `main`, so the environment must have no branch
-  restriction **[I]**. It is an alternative in section 10, not the default.
-* CODEOWNERS on `/history/` is a complementary control for multi-person instances
-  (code-owner review is required by branch protection, and the pull request author
-  cannot approve their own pull request). It is not a replacement for the check,
-  because it controls who approves, not what changed. Added to the README text.
+* Name: `history-tombstone` (exact, lowercase, one constant in the script).
+* **Allow-list, not a role mapping** (F5). A file in the repository,
+  `.github/history-approvers` (one GitHub login per line, comments allowed,
+  CODEOWNERS-governed), names who may authorize a rewrite. For a sole owner it holds
+  one login. The check reads this file **from the BASE commit**, never from the pull
+  request. The role of the account (admin, maintain, custom role) is not consulted:
+  the GitHub permission API's fields, the legacy `permission` value versus the role
+  name, and custom roles are not trusted to map to "maintain" **[I]**. A machine user
+  or an organization bot typed `User` is refused simply because it is not listed.
+* **Evaluated at verification time**, not at label time: the applier of the last
+  effective `labeled` event must be in the allow-list as read now. Promotion or
+  demotion after labeling therefore changes nothing that matters.
+* **How the applier is found.** `GET /repos/{r}/issues/{n}/events` with `per_page=100`,
+  following every `Link: rel="next"` page until the end (never stop at the first
+  page), keep events named `labeled` or `unlabeled` with exactly the label name,
+  take the chronologically last; it must be `labeled`. In parallel read
+  `GET /repos/{r}/issues/{n}/labels` (also paginated) and require the label to be
+  present now. A label deleted and recreated with the same name has no current
+  membership until someone applies it again, and that application is a new
+  `labeled` event, so the rule holds **[I]**. Any mismatch, error, or truncated
+  pagination is a failure. The token permission these calls need (`pull-requests:
+  read`, possibly `issues: read`) is **[I]**; gate G5 proves the minimum, and the job
+  declares exactly that and no write.
+* **Strong default for two-person instances** (recommended, not merely offered): a
+  ruleset requiring an independent code-owner approval for `/history/`, with
+  "dismiss stale approvals" and no bypass, or a protected environment
+  `history-redaction` with required reviewers and prevent-self-review **[I]**. These
+  are the only ways to get a second human. The environment has no deployment-branch
+  restriction (its ref is `refs/pull/N/merge`) **[I]**.
+* **Single owner:** the allow-list plus the cap, manifest and cooling period are
+  guard rails against mistakes and a stolen low-privilege token, not against the
+  owner's own account.
 
-## 5. Which workflow reads it
+## 5. Which workflow reads it, and what it is bound to
 
-A new workflow in the instance template, `.github/workflows/history-guard.yml`:
+### 5.1 Workflow
 
-* Trigger: `pull_request`, `branches: [main]`, `types: [opened, synchronize,
-  reopened, labeled, unlabeled]`. Never `pull_request_target`.
-* Permissions: workflow level `contents: read`; job level `contents: read`,
-  `pull-requests: read`. No `write`. No secrets. No environment (by default).
-* One job, `history-guard`, plus a tiny `ci-green`-style aggregate named
-  `History guard` to require in branch protection. No `paths:` filter: a required
-  check whose workflow is skipped by a path filter sits pending forever **[I]**,
-  so the job always runs and exits 0 at once when
-  `git diff --name-only BASE HEAD` does not list `history/social.jsonl`.
-* Not placed in `preview.yml`, so label events do not rebuild the preview and
-  repost its comment, and so a history-guard failure has its own name.
-* Not placed in the refresh job or the publish job. Those run on `main`, on a
-  schedule, over their own artifact; they cannot see a human pull request.
-* Scripts come from the BASE commit in a separate checkout, made read-only before
-  the pull request's files are read, exactly as `preview.yml` does **[V]**. The
-  pull request's `history/social.jsonl` is read as data only.
-* Skipped (and required to fail, not pass) for fork pull requests that touch the
-  history file.
-* The refresh workflow is unchanged, except that `unmerged-history.sh`'s message
-  gains one sentence pointing at the runbook step in section 9.
+A new workflow `.github/workflows/history-guard.yml` in the instance template:
+
+* Triggers: `pull_request` (`branches: [main]`, `types: [opened, synchronize,
+  reopened, edited, labeled, unlabeled]`) and `merge_group` (`checks_requested`).
+  `edited` is included because the manifest (rule 12) lives in the PR body.
+  Never `pull_request_target`.
+* Permissions: workflow level `contents: read`; job level `contents: read` plus the
+  read scopes proved by G5. No write. No secrets. No environment by default.
+* **One job**, named `History guard`, and nothing else in the workflow. No aggregate
+  job: a single job gives a single check identity (F6). Branch protection or the
+  ruleset requires that exact context, pinned to the GitHub Actions app
+  (`integration_id`), so another app cannot post the same name **[I]**. A test scans
+  every workflow in the repository and fails if another job could emit the same
+  context (T28).
+* No `paths:` filter, because a skipped required workflow sits pending **[I]**. The
+  job always runs and exits 0 at once when the diff does not list
+  `history/social.jsonl`.
+* Scripts and `engine.lock` come from the BASE commit in a separate checkout, made
+  read-only before the pull request's files are read, as `preview.yml` does **[V]**.
+* The refresh workflow is unchanged, except the message of `unmerged-history.sh`
+  gains a sentence pointing at the runbook step in section 9.
+
+### 5.2 What is compared
+
+OLD = `git show <base>:history/social.jsonl`; NEW = the file at head (or, in a merge
+group, at the queued commit). Absent counts as empty. Both must be regular files
+(mode 100644, not a symlink, not a submodule entry, no mode-only change) and within
+the size cap.
+
+### 5.3 Pin to the exact commits (F1)
+
+The job computes and records three SHAs: `head` = `github.event.pull_request.head.sha`,
+`base` = the **current tip of `main` read from the API at job time**, and the
+merge-base of the two. It fails closed unless `base` equals the merge-base (the head
+contains the current `main`). The check summary prints the three SHAs (no content).
+
+### 5.4 Why that is still not enough, and what is required
+
+A green result belongs to a head SHA. If `main` moves afterward (an incompatible
+rewrite lands, `B1` becomes `B2`) and the pull request's head did not change, no
+`synchronize` fires **[I]**, and GitHub can build a new merge commit from `B2` and
+the old head. Requirement, one of these, proved by gate G1 and test T20 before
+implementation:
+
+* **(a) Merge queue** with `merge_group` support: the guard compares the exact
+  queued merge result against its first parent. Strongest; the queued commit is
+  what merges. **[I]** whether a queue is available for the repository's plan and
+  visibility.
+* **(b) Strict required status ("branch must be up to date")** in the ruleset, with
+  proof that a base update makes the pull request unmergeable on the old result.
+  The author then updates the branch, which creates a new head and a new run.
+* **(c) A head-pinned merge watcher**: merge only with `gh pr merge
+  --match-head-commit <verified head>` and only after re-running the guard against
+  the then-current `main` (the owner's existing watcher already pins the head SHA).
+  Weaker (a person or script can bypass it); the fallback only for instances that
+  cannot use (a) or (b).
+
+The recommendation is (b) plus (c); (a) where available. Without one of them, the
+design must not be built: the rest of the controls assume the compare ran against
+the base that merges.
 
 ## 6. The exact verification
 
-Run by a new script, `scripts/verify-history-rewrite.sh OLD NEW`, which runs a new
-engine subcommand, `reach-around counts history-compare --old OLD --new NEW
---allow-tombstones`, in the pinned engine image from the BASE `engine.lock`. The
-container uses the same flags as `verify-history.sh`: no network, read-only root,
-no capabilities, caller's uid, `--pids-limit`, `--memory`; OLD and NEW are mounted
-read-only in separate directories. Doing it in the engine, not in shell and jq,
-keeps one parser (strict JSON, duplicate keys, canonical form) as the source of
-truth. A shell prefix compare is not enough: the re-chain changes every line after
-the first tombstone.
+Run by a new script `scripts/verify-history-rewrite.sh OLD NEW`, which runs a new
+engine subcommand `reach-around counts history-compare --old OLD --new NEW
+[--allow-tombstones --manifest FILE --numbers-old FILE --numbers-new FILE]` in the
+pinned engine image from the BASE `engine.lock`, with the same flags as
+`verify-history.sh` (no network, read-only root, no capabilities, caller's uid,
+`--pids-limit`, `--memory`) and a wall-clock timeout; the inputs are mounted
+read-only in separate directories. One parser (strict JSON, duplicate keys,
+canonical form) is the source of truth; a shell prefix compare is not enough because
+a re-chain changes every line after the first tombstone.
 
-Old file = `git show BASE:history/social.jsonl` (absent counts as empty). New file =
-the pull request head's copy. Both are regular files, not links, within the size
-cap.
+### 6.1 Exit-code contract and wrapper control flow (F8)
 
-Exit codes: 0 = identical or a pure byte-prefix extension (append-only); 10 = a
-valid tombstone-only rewrite; anything else = refuse. The workflow reads the code:
+The engine's `history-compare` exits: 0 = identical or pure append; 10 = a valid
+tombstone-only rewrite; every other number (1, 2, the existing 3-5 range,
+`counts.py` lines 133-142 **[V]**, and any other) = refuse. 10 is reserved to this
+command and documented in the CLI contract. The wrapper:
 
-* 0: pass, label not needed (label present: warn, the label is unused).
-* 10: pass only if the label rules of section 4 hold at this moment.
-* otherwise: fail.
+```bash
+rc=0
+timeout 120 "$runtime" run ... history-compare ... || rc=$?
+case "$rc" in
+  0)  mode=append ;;
+  10) mode=rewrite ;;
+  *)  echo "history compare failed (status $rc)" >&2; exit 1 ;;
+esac
+```
 
-Compare rules (all must hold; otherwise exit nonzero):
+No `!` inversion and no bare command under `set -e` (either would lose or kill the
+status before it is read). Only 0 and 10 are accepted; 124 (timeout), 125-127 (the
+container runtime), 137 and 143 (signals) are failures, never normalized. The mode is
+passed to the workflow through a step output. Test T29 runs a stub engine returning
+0, 1, 2, 10, 125, 126, 127, 137, 143 and a timeout and asserts the mapping.
 
-1. Both files pass the engine's full `read_history` check, including the chain
-   (`_parse`, `history.py` line 434) **[V]**.
-2. Walk the old entries in order with a cursor `j` over the new entries.
-   Row matching is by key (platform, metric, as_of_utc, source), by position, never
-   by line number, because corrections vanish and the line count shrinks:
-   * Old entry kept: `new[j]` must equal it in every field except `prev`
-     (the parsed fields, not just a few of them); advance both.
-   * Old `record` replaced: `new[j]` must be a tombstone with the same key and the
-     same `api_provider`; then every following old `correction` with that key is
-     skipped; advance.
-   * Old `tombstone`: must carry over unchanged except `prev`.
-   * Anything else (different value, reordered, deleted with no tombstone, a
-     correction kept after its record was tombstoned, a tombstone with no old
-     record): refuse.
-3. After the old entries are exhausted the new file must have no entries left. A
-   rewrite pull request does not also append rows (appending is the refresh job's
-   business, and mixing both makes the compare weaker).
-4. At least one old record was replaced. Zero replacements with a label: refuse
-   (nothing to authorize).
-5. Every new tombstone passes `validate_tombstone` (closed reason list, plain
-   `trigger_date`, `redacted_at_utc` not in the future and not before
-   `trigger_date`, `redact-` run id, no `note`, `era`, `value`) **[V]**
-   (`history.py` line 248). The set of fields is exactly `_TOMB_FIELDS` plus
-   optional `api_provider` **[V]**.
-6. Every new line's raw bytes equal the engine's canonical serialization of its
-   parsed object with its `prev` (`_line_bytes` / `_tomb_line`) **[V]**. This is
-   stricter than `read_history` and stops a rewrite smuggling bytes in whitespace
-   or key order that the chain digest would still cover.
-7. Lines before the first replaced record must be byte-identical (this falls out of
-   rule 2 plus chain equality, and is asserted separately as a cheap early check).
-8. Only `history/social.jsonl` changed in the pull request: `git diff --name-only
-   BASE...HEAD` is exactly that path (a rename, mode change or symlink in the
-   diff refuses). `numbers.json` is **not** changed by a rewrite pull request; it
-   holds the latest published numbers, not history rows **[I]** (not traced into
-   the engine this session; see decision D5). A redaction that must also touch
-   `numbers.json` is done as a second, ordinary pull request.
-9. Counts only: output and the job summary state the number of replaced records
-   and the number of corrections dropped. No values, notes or digests.
-10. Source policy: a tombstone over a `hand_kept` or `imported` record is allowed
-    by the compare; whether the CLI path allowed it is not re-checked (the CLI's
-    `--include-hand-kept` is an owner choice, not an integrity property). Open
-    decision D4.
-11. Size and count caps: at most `MAX_REDACT` (100000) replacements **[V]** and the
-    existing file cap.
+### 6.2 The history grammar the compare relies on (F7) [V]
 
-After a pass for exit 10, the job also confirms that the PR head's chain verifies
-with `verify-history.sh` (already rule 1; run as its own step so the failure text
-is the familiar one).
+From `_parse` (`history.py` line 434) **[V]**:
+
+* A record is unique by key `(platform, metric, as_of_utc, source)`; a second record
+  with that key is refused ("duplicate record").
+* One entry per `(platform, metric, UTC day, source)` across records and tombstones.
+* A `correction` needs an earlier record with the same key and the same
+  `api_provider`. Several corrections for one key are allowed and they need **not**
+  be contiguous with the record.
+* A tombstone is refused if a live record with its key is in the file before it,
+  or a second tombstone for that key; a record or correction after a tombstone for
+  its key is refused.
+
+So a "group" is: the one record for a key plus every correction for exactly that
+key anywhere after it. The compare does not assume contiguity. On both files it
+relies on these invariants (they hold when `read_history` passes), builds `replaced`
+= the set of keys that are records in OLD and tombstones in NEW, and drops from OLD
+every correction whose key is in `replaced`, wherever it sits. A file the engine
+cannot read fails rule 1, so no ambiguous old file reaches the matching. Fixtures for
+duplicate keys, non-contiguous corrections and two groups sharing a key are in T26.
+
+### 6.3 Compare rules (all must hold)
+
+1. Both files pass the engine's full `read_history` check, chain included (line 434).
+2. Rewrite matching, by key and in order, never by line number:
+   * Old entry unchanged: `new[j]` equals it in every parsed field except `prev`.
+   * Old `record` whose key is in `replaced`: `new[j]` is a tombstone with the same
+     key and the same `api_provider`. Every old correction with a key in `replaced`
+     is skipped.
+   * Old `tombstone`: carries over unchanged except `prev`.
+   * Anything else (changed value, reorder, deletion without a tombstone, a tombstone
+     with no old record, a correction kept after its record was tombstoned): refuse.
+3. After OLD is exhausted, NEW has no entries left (a rewrite does not also append).
+4. At least one record was replaced. Zero with the label: refuse.
+5. Every new tombstone passes `validate_tombstone` (`history.py` line 248) **[V]** and
+   has exactly `_TOMB_FIELDS` plus optional `api_provider`.
+6. **Canonical bytes, defined per mode** (F9):
+   * Append mode (exit 0): the first `len(OLD)` bytes of NEW are byte-identical to OLD
+     (legacy non-canonical bytes survive only here); every appended line must equal
+     the engine's canonical serialization of its parsed object (`_line_bytes`).
+   * Rewrite mode (exit 10): bytes before the first replaced line are identical; every
+     line from there on is reconstructed and must equal the canonical serialization
+     (`_line_bytes` / `_tomb_line`) **[V]**. This matches `_redact`, which re-emits
+     later lines through those functions **[V]**.
+7. Early cheap check: the lines before the first replaced record are byte-identical.
+8. Changed paths: exactly the set in section 8, nothing else.
+9. Output is counts only: replaced records, dropped corrections, manifest size.
+   Never a value, note, digest or row, in stdout, stderr or the summary.
+10. **Source policy** (F4, D4 reversed): a tombstone over a `hand_kept` or `imported`
+    record is **refused** by this mechanism. Redacting those is a rare owner choice
+    (`--include-hand-kept`) and goes through the manual reviewed route (alternative
+    A). Only `api` rows may be replaced.
+11. Every new line is at most 2048 bytes and NEW is within the file cap.
+12. **Manifest.** The pull request body must contain one fenced block headed
+    `history-tombstone manifest`, one line per redacted record: `platform metric
+    as_of_utc source`, followed by `count=N`, `reason=...`, `trigger_date=...`. The
+    guard reads the body live from the API and the compare requires **set equality**
+    between the manifest keys and the replaced keys, `count` equal to both, and the
+    reason and trigger date equal to those in every new tombstone. The body is
+    author-editable; this does not prove honesty, it forces an explicit, reviewable
+    enumeration and an edit after verification reruns the check (`edited`).
+13. **Caps.** At most `HISTORY_REWRITE_MAX` records per rewrite (default 500, a
+    constant in the BASE script, far below `MAX_REDACT` = 100000 **[V]**) and at most
+    10 percent of OLD's records; and hard limits on input size and compare time, so
+    the compare cannot exhaust CI (T32). A larger rewrite is split into several
+    pull requests (each one visible) or done by the manual route.
+14. **Cooling period.** The last effective `labeled` event must be at least 24 hours
+    old; before that the job fails with the time remaining. After the period the owner
+    re-runs the job by hand (no scheduled trigger can attach to a pull request)
+    **[I]**. Its value is time to notice through GitHub's notifications and the
+    section 11 notice; it does not help against an attacker who controls the owner's
+    notifications.
+
+After exit 10 the job also runs `verify-history.sh` on NEW as its own step so the
+failure text is the familiar one.
 
 ## 7. Fail-closed behavior
 
-* Any unexpected condition (API error reading the label or the permission, missing
-  event, malformed JSON from the API, container failure, an unknown exit code, a
-  timeout) is a red run, never a skip and never a pass. A rate limit is a red run
-  that a re-run fixes.
-* No label, or a label from an ineligible account, or an ineligible branch: the
-  file must be exit 0 (append-only). A rewrite without the label fails with a
-  message that names the rule and the runbook, not the data.
-* The job has no `continue-on-error`. Its aggregate result is what branch
-  protection requires.
+* Any unexpected condition (API error or truncated pagination, missing event,
+  malformed API JSON, missing allow-list file, container failure, unknown exit code,
+  timeout, SHA mismatch) is a red run, never a skip and never a pass. A rate limit
+  is a red run a re-run fixes.
+* No label, an ineligible applier, or an ineligible branch: the file must be exit 0
+  (append-only). A rewrite without the label fails with a message naming the rule and
+  the runbook, not the data.
+* No `continue-on-error`. The one job is what branch protection requires.
 * Failure messages never print values, notes, digests or rows.
 
-## 8. numbers.json
+## 8. numbers.json and every other file that can retain a redacted value (F2)
 
-A tombstone-only pull request changes `history/social.jsonl` and nothing else.
-`numbers.json` is validated by `validate-numbers.py` in the refresh path only
-**[V]** (`refresh-counts.yml` line 129) and is not touched by the guard. If the
-redacted value is also the current published number, the owner handles that as a
-separate ordinary pull request or the next refresh. See D5.
+Traced this session:
+
+* `numbers.json` holds `{"version": 1, "platforms": {"<id>": {"count": N, "as_of":
+  "...", "source": ...}}}`, one current number per platform (`validate-numbers.py`
+  docstring) **[V]**. `counts refresh` writes it and, in the same run, appends the
+  fetched values to the history file (`counts.py` lines 466-513) **[V]**; the history
+  metric for each platform is `youtube: subscribers`, `discord: members`, `matrix:
+  members` (`counts.py` line 134) **[V]**. So the most recent `api` history row for
+  those platforms carries **the same number that `numbers.json` currently publishes**.
+  The opt-in analytics and Instagram insight rows are stored only in the history file
+  (`counts.py` line 351) **[V]** and are not in `numbers.json`.
+* The built site and kit are produced in CI and deployed (the repository tracks the
+  inputs, not the output), and the kit has an imported-history path
+  (`tests/site/test_kit_imported_history.py`, `imported_history.py` exist **[V]**; that
+  a deployed page can show a history value is **[I]**). Deployed copies, Actions
+  artifacts (`retention-days: 1`, `refresh-counts.yml` line 91) **[V]**, pull request
+  diffs and previews, and git history all keep the old value outside the working
+  tree. A tombstone meets the duty in the working tree only (tombstone design,
+  decision 6); the claim is not widened here.
+
+**Allowed paths for a rewrite pull request.** Exactly two, and no others:
+
+1. `history/social.jsonl` (the rewrite), and
+2. `numbers.json` (optional, atomic with the rewrite).
+
+**The numbers rule.** The compare takes `--numbers-old` and `--numbers-new` (base and
+head copies, parsed with `validate-numbers.py` semantics) and requires:
+
+* NEW numbers equal OLD numbers with zero or more `platforms` entries **removed**
+  (never added, never a changed count, never a changed `as_of`, never another key);
+* an entry may be removed only when it corresponds to a replaced record (platform id
+  equals the record's platform, `count` equals the record's `value`, and the entry's
+  `as_of` day equals the record's day);
+* **no entry may remain** in NEW whose platform and `count` equal a replaced record's
+  platform and value, or whose platform and `as_of` day equal a replaced record's
+  (a surviving copy of the redacted number fails the compare).
+
+So redacting the latest `api` row of a platform forces the same pull request to remove
+that platform's entry from `numbers.json`, which takes the number off the published
+page at the next deploy. The next refresh adds a fresh value with a later `as_of`; the
+day's key stays blocked in the history file (tombstone design). Redacting an older row
+leaves `numbers.json` unchanged. The compare has the old values in OLD and prints none.
+
+The claim is therefore: **history tombstoning plus atomic removal of the matching
+`numbers.json` entry** in the working tree. The deployed site is cleaned by the next
+deploy; Actions artifacts expire after a day; git history is #621. If the owner
+declines the `numbers.json` rule (D5), the claim narrows to "history tombstoning" only,
+the guard refuses (fails) any pull request whose redacted value is still in
+`numbers.json`, and the runbook makes removing or refreshing the published number a
+prerequisite pull request merged first.
 
 ## 9. Interaction with the bot pull request and the refresh
 
 * Before merging a rewrite pull request, close any open `counts/refresh` pull
-  request. If it is left open, `unmerged-history.sh` makes every later publish run
-  skip with a warning until it is closed **[V]**. If someone merges the stale bot
-  pull request after the rewrite, the guard sees a file that is neither an
-  extension of the new `main` nor a labeled tombstone-only rewrite and fails it,
-  so redacted values cannot be restored by that path. Runbook step to add to
-  `docs/social-history.md`.
-* Optional follow-up (not in the first change): the publish job could close its
-  own stale `counts/refresh` pull request when `main`'s history changed
-  incompatibly. Rejected for the first change: it adds write behavior to the job
-  that holds the token, for a convenience.
-* Merge conflicts: the rewrite changes every line after the first tombstone, so
-  any concurrent append conflicts. That is the safe failure; the author rebases
-  by redoing the redaction.
+  request, or `unmerged-history.sh` makes every later publish run skip with a warning
+  until it is closed **[V]**.
+* A stale bot pull request merged after the rewrite is not protected by "the guard
+  sees it": a base move fires no `synchronize` **[I]**. It is protected by section 5.4
+  (merge queue, strict up-to-date, or the head-pinned watcher re-running the guard
+  against current `main`), under which the stale file is neither an extension of the
+  new `main` nor a valid labeled rewrite and fails. Test T20.
+* The rewrite changes every line after the first tombstone, so a concurrent append
+  conflicts. That is the safe failure; the author redoes the redaction on the new base.
+* Optional follow-up, not in the first change: the publish job closes its own stale
+  `counts/refresh` pull request. Rejected for now: write behavior in the job that holds
+  the token, for convenience.
 
 ## 10. Alternatives considered
 
 | Alternative | For | Against |
 | --- | --- | --- |
-| A. Defer: keep manual, reviewed rewrites (today's runbook) | zero new code; the human reads the diff | There is no machine check at all today (section 1), so this "keeps" nothing: an unreviewed or mistaken rewrite merges. Review of a re-chained file is unreadable by eye: every later line changes. |
-| B. A CLI tool run by the owner locally (`counts history-compare` with no workflow) | smaller change; no label mechanism; no CI trust issue | The check runs where the attacker or a mistake is, on a laptop, and nothing stops merging without having run it. Useful as the same engine command the workflow calls. Adopted as a part, not as the whole. |
-| C. Require signed commits on rewrite pull requests | proves who authored the commit | Does not say what the commit changes. A signed malicious rewrite still merges. A bot commit is signed by GitHub. Complements, does not replace, content verification. Open decision D6. |
-| D. Protected environment with required reviewers as the gate | a real second human **[I]** | Cannot be satisfied by a solo owner with self-review blocked; ties the check to deployment-branch rules. Offered as optional hardening for multi-person instances. |
-| E. Make the guard part of the refresh workflow's publish job and have it open the rewrite pull request | one place | The refresh job cannot see human pull requests; the rewrite is owner-run and uses a different branch; and it gives the bot write access to a destructive path. Rejected. |
-| F. Label only, no content compare | simplest | A label on an unchecked rewrite is a free bypass of the control (section 3). Rejected. |
-| G. Disallow rewrites in CI altogether; owner force-pushes after local verification | no bypass in CI | The owner already owns the rewrite via #621; this just removes the review artifact, and branch protection would have to be bypassed. Rejected. |
+| A. Defer: keep manual, reviewed rewrites (today's runbook) | zero new code | There is no machine check today (section 1); an unreviewed or mistaken rewrite merges. Review of a re-chained file is unreadable by eye. Remains the route for `hand_kept` and `imported` rows. |
+| B. A CLI compare run by the owner locally | smaller; no label mechanism | The check runs where the mistake is; nothing forces it before merge. Adopted as part: the same `history-compare` command. |
+| C. Require signed commits on rewrite branches | proves who authored | Says nothing about what changed; a signed malicious rewrite merges; the bot's commits are signed by GitHub. Complement only (D6). |
+| D. Protected environment with required reviewers | a real second human **[I]** | Unusable for a sole owner with self-review blocked. Recommended for multi-person instances (section 4). |
+| E. Guard in the refresh publish job | one place | It cannot see human pull requests and gives the bot a destructive path. Rejected. |
+| F. Label only, no content compare | simplest | A free bypass of a control that does not exist yet. Rejected. |
+| G. No CI path; owner force-pushes after local verification | no CI bypass | Removes the review artifact and needs a protection bypass. Rejected. |
+| H. The guard as a GYST reusable workflow pinned by commit | one reviewed implementation for all instances (the owner's consolidation rule); the instance caller is small | The caller file is still editable by a pull request in the instance; does not remove the section 11 limits. Recommended as the home of the generic logic once built. |
 
-## 11. Defense in depth (optional, recommended)
+## 11. What protects the guard itself, and the detective control (F3)
 
-* A detective job on `push` to `main` (in `deploy.yml` or its own file) re-runs the
-  same compare between `github.event.before` and `github.sha` for the history file
-  and fails loudly if it neither extends nor is a valid tombstone-only rewrite.
-  This still works if a pull request edited the guard (item 8, section 3), because
-  it runs from `main`'s workflow files.
-* Branch protection: require `History guard`, require code-owner review for
-  `/.github/`, `/scripts/`, `/engine.lock` (already advised), and do not allow
-  administrators to bypass for this check **[I]** (ruleset behavior to confirm).
-* The README gets a short "History rewrites" section: the label, who may apply it,
-  the single-owner honesty note (item 2), the close-the-bot-PR step.
+Plain statement: **nothing in a workflow can protect the guard workflow from a pull
+request that is allowed to merge a change to it.** A change that weakens
+`history-guard.yml`, the push detective job, `scripts/verify-history-rewrite.sh`, the
+action pins and `engine.lock` together, once merged, is the new rule for every later
+run, including the detective run on `push`, because that run executes the workflow as
+it now exists on `main`. Only repository governance prevents the merge:
 
-## 12. Recommendation
+* A ruleset on `main` that requires an independent code-owner approval for
+  `/.github/`, `/scripts/`, `/engine.lock` and `/history/`, dismisses stale approvals,
+  forbids force-push and deletion, and has **no administrator bypass** (that admin
+  bypass can be turned off for this repository is **[I]**, gate G6). The author of a
+  pull request cannot approve their own, so this is a real control only when a second
+  account exists.
+* **Sole owner: this ruleset can only be satisfied by a bypass or a second account.**
+  A sole owner cannot be protected from their own account (section 2). The honest
+  options: accept the risk and rely on notification and recoverability (below), or add
+  a second account (a deliberate, low-privilege co-owner whose only role is to approve
+  changes to those paths).
 
-1. **Build it, with the content compare as the control and the label as a gate on
-   it.** Do alternative F never. Take A as the fallback only if the owner does not
-   want a new engine subcommand.
-2. Ship a new `history-guard.yml` (separate workflow, `pull_request`, read-only
-   token, scripts and pin from BASE) and an engine `counts history-compare`
-   subcommand, with exit codes 0 / 10 as in section 6. Make append-only enforced
-   on every pull request, not only the rewrite (this closes the gap in section 1).
-3. Label `history-tombstone`; applier must be a non-Bot with `admin` or `maintain`;
-   head branch `redact/*`, same repository, never `counts/refresh`.
-4. Add the detective push check and the README text. Do not use an environment by
-   default; document it as hardening.
-5. Build order: engine compare and its tests (red first) -> script -> workflow ->
-   template tests -> README and runbook text. One pull request per layer so each
-   can be reviewed and revert-proved.
+Controls that reduce the dependence on repository content:
 
-## 13. Tests the implementation would need
+* The generic compare logic lives in GYST as a reusable workflow pinned by commit
+  (alternative H) and in the engine image pinned by digest; the instance holds only a
+  thin caller. A change to the pin in the caller is a reviewed, CODEOWNERS-governed
+  change like any other, and follows the dependency cooldown rule.
+* **Detective job on `push` to `main`:** re-runs the compare between
+  `github.event.before` and `github.sha` for the history file and `numbers.json`,
+  using the reusable workflow and engine digest **as pinned in the commit before the
+  push** (the pin in `github.event.before`, not the one just merged). A push that
+  changes the pin and the history together is judged by the old pin. This is
+  **post-merge detection**: it shows the change, it does not stop it, and it depends
+  on the governance above. It is not described as independent of guard edits.
+* **Audit record.** On a successful rewrite the detective job writes counts and SHAs
+  (base, head, merge) to the job summary and sends them to the instance's existing
+  notification path (the mechanism of `docs/token-health.md`: Pushover, Discord or
+  Matrix) so a record exists off GitHub. GitHub offers no record that a repository
+  admin cannot edit or delete: job logs expire, issue comments and tags are editable.
+  What survives is the tombstone lines themselves (`reason`, `trigger_date`,
+  `redacted_at_utc`) and git history of `main` once force-push and deletion are blocked
+  by the ruleset. Both are stated as such.
+
+## 12. Design gates (prove on a scratch repository before implementation starts)
+
+These were tests in the first draft. They are prerequisites: if one fails, the design
+changes, not the test.
+
+* **G1 (F1):** Obtain green on head `H` against base `B1`; change `main` to an
+  incompatible `B2` without changing `H`; prove the pull request cannot merge on the
+  old result under option (a) or (b) of section 5.4. Also prove whether any base
+  update fires a `pull_request` event.
+* **G2 (F6):** Prove which result branch protection reads for one head SHA after
+  `labeled`, `unlabeled`, a manual rerun of the older run, and a rerun of the newer
+  run. If an `unlabeled` failure cannot reliably revoke approval, adopt the merge queue
+  (the `merge_group` run re-reads the label) or state that the label is an irrevocable
+  intent record once a head has passed.
+* **G3:** `merge_group` behavior (T21): the guard receives the queued commit and its
+  first parent; the pull request number is recoverable from the queue ref.
+* **G4:** One pull request that changes the guard, the detective workflow, the compare
+  script and the engine pin together: prove an unauthorized actor cannot merge it.
+  This tests the ruleset, not the presence of a CODEOWNERS file (T23).
+* **G5:** The minimum token permissions for the issue-events and label calls, and the
+  exact response fields used (event name, actor login, created_at) (T24, T25).
+* **G6:** Whether administrator bypass can be disabled for this repository
+  configuration.
+
+## 13. Recommendation
+
+1. **Build it only after G1 and G2 pass.** The exact content compare is the control;
+   the label is a gate on it. Never a label alone (alternative F).
+2. New `history-guard.yml` (separate workflow, `pull_request` and `merge_group`,
+   read-only token, one job, scripts and pin from BASE) and an engine subcommand
+   `counts history-compare` with exit 0 / 10, enforcing append-only on every pull
+   request (closes the gap in section 1) with the one labeled exception.
+3. Label `history-tombstone`; applier on the BASE-committed allow-list; head branch
+   `redact/*` in the same repository, never `counts/refresh`; `api` rows only;
+   manifest equals the replaced set; cap of 500 and 10 percent; 24 hour cooling;
+   changed paths `history/social.jsonl` and, atomically, `numbers.json` (removal only).
+4. Strict up-to-date plus a head-pinned watcher (or a merge queue); the detective push
+   job and off-GitHub notice; the generic logic in GYST.
+5. For any instance with a second person: require independent approval of `/history/`
+   and the guard paths by ruleset. **For a sole owner the design cannot defend against
+   their own account;** it prevents mistakes and bounds and records the damage, and
+   says so in the README.
+6. Build order: engine compare and tests (red first) -> script -> workflow -> template
+   tests -> README and runbook. One pull request per layer, each revert-proved.
+
+## 14. Tests the implementation would need
 
 Red before green. Engine tests in `tests/test_counts_history_compare.py`; template
-tests beside `tests/test_instance_counts_workflow.py`. Each guard test collects
-loosely and asserts strictly, including that rows were collected, with a negative
-case proving the guard bites. Fixtures are synthetic (N0CALL-style, no real
-counts).
+tests beside `tests/test_instance_counts_workflow.py`. Guard tests collect loosely and
+assert strictly (including that rows were collected) with a negative case proving the
+guard bites. Fixtures are synthetic.
 
 Compare, positive:
 
-* T1: a rewrite made by the real `redact_records` over a fixture (several
-  platforms, a record with corrections, an older tombstone, the first, a middle and
-  the last record) returns 10, and the compare agrees with `read_history` on both
-  files.
+* T1: a rewrite made by the real `redact_records` (several platforms, a record with
+  non-contiguous corrections, an older tombstone, the first, a middle and the last
+  record) returns 10 and the compare agrees with `read_history` on both files.
 * T2: identical files and a pure append return 0.
 * T3: an existing tombstone carries over unchanged except `prev`.
+* T33: a rewrite that redacts the latest row of a platform and removes that platform's
+  `numbers.json` entry returns 10.
 
-Compare, hostile (each must fail, and each fixture is revert-proved by changing
-the compare to accept it and seeing the test go red):
+Compare, hostile (each must fail; each fixture is revert-proved by making the compare
+accept it and seeing the test go red):
 
-* T4: one kept line's value changed by 1, chain re-linked correctly.
-* T5: one kept line's `as_of_utc`, `source` or `api_provider` changed.
+* T4: a kept line's value changed by 1, chain re-linked correctly.
+* T5: a kept line's `as_of_utc`, `source` or `api_provider` changed.
 * T6: two kept lines swapped, chain re-linked.
 * T7: a line deleted with no tombstone; a tombstone with no old record; a tombstone
-  whose key does not match the old record; a tombstone with a different
-  `api_provider`.
-* T8: a tombstone with an extra field (`value`, `note`, `era`, `replaces`), a
-  reason off the list, a missing `trigger_date`, a future `redacted_at_utc`, a
-  `run_id` not starting `redact-`.
-* T9: a record that is still present after its tombstone; a correction kept after
-  its record was tombstoned; a record appended after the rewrite (rule 3).
-* T10: non-canonical bytes: extra spaces, reordered keys, `A` escapes,
-  duplicate keys, a float, a trailing blank line, a missing final newline, a line
-  over 2048 bytes, a file over the cap, an invalid chain, a zero-replacement
-  "rewrite".
-* T11: OLD or NEW is a symlink, a FIFO, a directory; paths with spaces and
-  leading dashes.
-* T12: an old file that is empty with a non-empty new file that is not append-only.
+  with a mismatched key or `api_provider`.
+* T8: a tombstone with an extra field (`value`, `note`, `era`, `replaces`), a reason
+  off the list, a missing `trigger_date`, a future `redacted_at_utc`, a `run_id` not
+  starting `redact-`.
+* T9: a record still present after its tombstone; a correction kept after its record
+  was tombstoned; a record appended after the rewrite.
+* T10: non-canonical bytes in a rewrite (spaces, key order, `A` escapes,
+  duplicate keys, a float, a blank line, a missing final newline, a line over 2048
+  bytes, a file over the cap, a broken chain, a zero-replacement rewrite).
+* T11: OLD or NEW a symlink, a FIFO, a directory; paths with spaces or a leading dash.
+* T12: empty OLD with a non-empty NEW that is not append-only.
+* T22 (F2): the tombstoned value survives in `numbers.json` (same platform and count);
+  survives with a different `as_of` but the same count; the entry changed rather than
+  removed; an entry added; another key; another published file holding the value.
+* T26 (F7): two record groups sharing a logical key (refused by the engine; the
+  compare refuses too); corrections not contiguous; a correction before its record; a
+  correction of a replaced key that sits far later; a legitimate later correction of a
+  different key that must survive.
+* T27 (F4): every eligible `api` row tombstoned by the PR author, expected **fail**
+  (cap and 10 percent); the same under the cap, expected pass, documented as the
+  residual risk for a compromised maintainer; `hand_kept` and `imported` rows
+  tombstoned, expected **fail**.
+* T30 (F9): a pure append containing a non-canonical appended line fails; an unchanged
+  legacy non-canonical prefix with a canonical append passes; a rewrite reconstructs a
+  legacy non-canonical later line canonically and passes.
+* T31: base history path absent, deleted, changed into a submodule entry, or a
+  mode-only change: all fail.
+* T32: exactly `HISTORY_REWRITE_MAX` and one more; a file at the size cap; wall-clock
+  and memory limits prove the compare cannot be a CI exhaustion attack.
+* T34 (F4): manifest missing, extra key, missing key, wrong count, wrong reason, edited
+  after verification (rerun on `edited`).
 
-Workflow (the template tests parse the YAML):
+Workflow and gates:
 
-* T13: trigger is `pull_request` with the five types, never `pull_request_target`;
-  no `write` permission; no secret; no `continue-on-error`; actions pinned by SHA;
-  scripts come from a BASE checkout; label name is the one constant.
-* T14: **proved on a scratch repository, not by unit test:** label removed after a
-  green run turns the required check red; label added after the push; label added
-  by a Bot; by a triage-only user; by the pull request author with admin; label
-  with a look-alike name; a fork pull request; the head branch `counts/refresh`;
-  a head branch not matching `redact/*`; a pull request that edits the guard
-  workflow (confirm CODEOWNERS blocks it).
-* T15: guard behavior as a pure function over fake API responses (a small script
-  with the label and permission logic separated from the HTTP): API error, empty
-  events, two `labeled` events by different people (the last one counts),
-  `unlabeled` after `labeled`, a permission value that is not `admin` or
-  `maintain`.
-* T16: a rewrite pull request that also touches `numbers.json`, a workflow file,
-  or adds another path fails.
-* T17: the stale bot case: a `counts/refresh` pull request built on the old
-  history is rejected by the guard after a rewrite lands, and
-  `unmerged-history.sh` still returns 3.
-* T18: output holds counts only (assert no value, note or 64-hex digest appears in
-  stdout, stderr or the summary).
-* T19: the existing refresh tests still pass unchanged (publish check still
-  `cmp`).
+* T13: triggers are exactly `pull_request` with the six types and `merge_group`, never
+  `pull_request_target`; no `write`; no secret; no `continue-on-error`; actions pinned
+  by SHA; scripts and `engine.lock` from a BASE checkout; one job; one label constant.
+* T14: the label scenarios on the scratch repository: removed after green, added after
+  push, applied by a Bot, by a triage-only user, by a listed user, a look-alike label
+  name, a fork pull request, head branch `counts/refresh`, head branch not `redact/*`,
+  a pull request that edits the guard.
+* T15: label and allow-list logic as a pure function over fake API responses: API
+  error, empty events, two `labeled` events by different people (last counts),
+  `unlabeled` after `labeled`, a listed user demoted, an unlisted user promoted.
+* T16: a rewrite pull request touching any path other than the two in section 8.
+* T17: the stale bot case: a `counts/refresh` pull request built on the old history is
+  refused after a rewrite lands; `unmerged-history.sh` still returns 3.
+* T18: output holds counts only (no value, note or 64-hex digest in stdout, stderr or
+  the summary).
+* T19: the existing refresh tests pass unchanged (publish check still `cmp`).
+* T20 (F1): the G1 scenario, as a repeatable script.
+* T21 (F1): the G3 merge-queue scenario.
+* T23 (F3): the G4 scenario.
+* T24 (F5): issue events spanning more than one page; the last matching event on the
+  last page; a truncated page chain fails.
+* T25 (F5): label deleted and recreated; actor promoted or demoted after labeling; a
+  custom role; a machine account typed `User` and not on the allow-list.
+* T28 (F6): manual rerun ordering and duplicate check-context names on one head SHA;
+  no other workflow can emit the required context.
+* T29 (F8): the wrapper's exit-status mapping (section 6.1).
 
-## 14. Open owner decisions
+## 15. Open owner decisions
 
-Recommended answer first. Answer yes or no, or pick.
+Recommended answer first. Yes or no, or pick. MOVED marks a decision that changed since
+round 1; NEW is added by round 1.
 
 * **D1.** Enforce append-only on every pull request that touches
-  `history/social.jsonl` (this closes the gap in section 1), with the labeled
-  tombstone-only rewrite as the only exception. Recommended: **yes**. Cost: an
-  unlabeled hand edit of the history file now fails; that is the point.
-* **D2.** Label name `history-tombstone`; applier must be admin or maintain and not
-  a Bot; head branch `redact/*`. Recommended: **yes**. Alternative: a protected
-  environment with required reviewers (two-person instances only).
-* **D3.** Put the check in a new `history-guard.yml` rather than in `preview.yml`.
-  Recommended: **yes** (no preview rebuild on label events).
-* **D4.** Allow a tombstone over `hand_kept` and `imported` rows in the compare.
-  Recommended: **yes**, because the harm the compare prevents is invented or
-  changed values, and the CLI already guards the choice. The alternative is to
-  require a second label for non-`api` rows.
-* **D5.** A rewrite pull request changes only `history/social.jsonl`, never
-  `numbers.json`. Recommended: **yes**. Needs one check first: trace whether
-  `numbers.json` can hold a value that is also a history row (inferred no).
-* **D6.** Require signed commits on `redact/*` branches as an extra. Recommended:
-  **no for now** (does not check content; adds friction); revisit if a second
-  maintainer joins.
-* **D7.** Add the detective push-to-`main` check (section 11). Recommended: **yes**,
-  as part of the same change.
-* **D8.** Ship through an `engine.lock` bump: an instance whose pinned engine lacks
-  `history-compare` fails the guard closed until it bumps. Recommended: **yes**
-  (fail closed beats silent pass); the README says so.
-* **D9.** Accept the single-owner limit: with one admin, the label is not a second
-  person, and the content compare is the protection. Recommended: **accept**, and
-  say it in the README rather than imply separation of duties.
+  `history/social.jsonl`, with the labeled tombstone-only rewrite the only exception.
+  Recommended: **yes**, conditional on G1.
+* **D2. (MOVED)** Authorization is a BASE-committed allow-list of GitHub logins, not a
+  role mapping; label `history-tombstone`; head branch `redact/*`. For any instance with
+  a second person, also require independent approval by ruleset or protected
+  environment. Recommended: **yes**.
+* **D3.** A new `history-guard.yml`, not `preview.yml`, one job. Recommended: **yes**.
+* **D4. (MOVED, reversed)** Allow a tombstone over `hand_kept` and `imported` rows in
+  this mechanism. Recommended: **no**; those redactions use the manual reviewed route.
+  (Round 1 of the draft proposed yes; reversed because a self-authorizing maintainer
+  could erase manual evidence.)
+* **D5. (MOVED)** A rewrite may change `numbers.json` atomically, by removing the
+  matching entry (section 8), and must when the redacted value is the published one.
+  Recommended: **yes**. If no, the claim narrows to "history tombstoning" and the
+  published number is dealt with first by an ordinary pull request.
+* **D6.** Signed commits on `redact/*`. Recommended: **no for now**.
+* **D7. (MOVED)** The detective push job, described as post-merge detection that depends
+  on repository governance, with an off-GitHub notice. Recommended: **yes**.
+* **D8.** Roll out through an `engine.lock` bump; an instance whose engine lacks
+  `history-compare` fails closed. Order it so every protected pull request can still
+  obtain a check: bump the engine first, add the workflow in a second pull request.
+  Recommended: **yes**.
+* **D9. (MOVED)** Accept that a sole owner is not protected from their own account.
+  Recommended: **accept and say so in the README**; the alternative is a second,
+  low-privilege approver account.
+* **D10. (NEW)** Per-rewrite cap: 500 records and 10 percent. Recommended: **yes**.
+* **D11. (NEW)** A 24 hour cooling period from the label. Recommended: **yes** (the
+  cost is a day per redaction; urgent legal removals use the manual route).
+* **D12. (NEW)** Merge protection (section 5.4): option (a), (b) plus (c), or (c) alone.
+  Recommended: **(b) plus (c)**; (a) where a queue exists. No option means do not build.
 
-## 15. Not covered
+## 16. Review round 1 (Daybreak)
 
-* Rewriting git history of the instance repository (#621; a tombstone meets the
-  duty in the working tree only).
+| Finding | Severity | What changed, or why not |
+| --- | --- | --- |
+| F1 verification not bound to the merged base | Critical | Section 5.3 pins head, current `main` tip and merge-base and fails unless the head contains current `main`. Section 5.4 requires a merge queue with a `merge_group` guard, or strict up-to-date plus proof, or a head-pinned watcher re-running the guard (`--match-head-commit`); D12. Gate G1 and tests T20, T21 prove an unchanged head cannot merge on an old result. The first draft's claim that the guard sees a stale bot pull request was wrong (no event on a base move) and is withdrawn in section 9. |
+| F2 `numbers.json` can retain the value | High | Traced (section 8, [V]): the latest `api` row and `numbers.json` carry the same number. Allowed paths are exactly `history/social.jsonl` and `numbers.json`; the compare requires removal-only changes to `numbers.json` that match a replaced row and fails if the value survives. Generated and deployed copies are listed and the claim is limited to the working tree. Fallback claim "history tombstoning" if D5 is declined. T22, T33. |
+| F3 detective control trusts editable code | High | Section 11 no longer calls the push job independent. It uses the pinned reusable workflow and engine of the commit before the push, is classed as post-merge detection, and states that only a ruleset with independent approval and no bypass protects the guard; G4 and T23 test the ruleset, not CODEOWNERS presence. A sole owner cannot satisfy that ruleset and is told so. |
+| F4 compromised maintainer destroys history | High | Sections 2 and 3.11 state the limit. Added: cap 500 and 10 percent (rule 13), manifest set-equality (12), 24 hour cooling (14), off-GitHub audit notice and tombstone lines as the record (11), `api` rows only (D4 reversed), independent approval recommended for multi-person instances. T27, T34. Not solvable for a sole owner (D9). |
+| F5 label authorization underspecified | Medium | A BASE-committed allow-list replaces role mapping; evaluated at verification time; paginated events algorithm and current-label membership defined (section 4); machine users excluded by not being listed; token permissions are gate G5. T24, T25. |
+| F6 required-check identity and unlabel revocation | Medium | One job and one context, pinned to the Actions app, collision scan (5.1); the unlabel question became design gate G2 with the merge-queue fallback; `merge_group` added (G3, T21); T28. |
+| F7 ambiguous comparison identity | Medium | Grammar stated from `_parse` [V] (section 6.2): unique record key, one entry per day key, corrections anywhere after and not necessarily contiguous; the compare drops corrections by key set, not by position. T26. |
+| F8 exit-code handling | Medium | Section 6.1: `rc=0; ... \|\| rc=$?` then a `case` accepting only 0 and 10; 10 reserved in the CLI contract; 124-127, 137, 143 are failures. T29. |
+| F9 canonicality conflated | Low | Section 6.3 rule 6 split by mode: unchanged prefix byte-identical, appended lines canonical, reconstructed rewrite lines canonical, legacy bytes only in an identical prefix. T30. |
+
+## 17. Not covered
+
+* Rewriting git history of the instance repository (#621; a tombstone meets the duty
+  in the working tree only).
 * Automatic redaction timers (decision 8 of the tombstone design).
 * Anything about the public engine repository's own CI.
