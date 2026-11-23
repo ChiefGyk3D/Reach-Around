@@ -179,6 +179,51 @@
 }
 .smart-style-rows .link-title { font-size: var(--ra-text-md); text-wrap: wrap; }
 .smart-style-rows .link-subtitle { margin-top: 0; text-wrap: wrap; }
+/* Dark link cards (owner decision 2026-11-23, "dark rows like the mock"): a
+   mark, the label with a short description under it, and a chevron. Amber fills
+   stay on the primary buttons only (the Watch links and the Support buttons).
+   Cards take no frame art and use the theme tokens. */
+.smart-stack a.link.smart-card {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  column-gap: var(--ra-space-3);
+  min-height: var(--ra-tap);
+  height: auto;
+  padding: var(--ra-space-2) var(--ra-space-3);
+  border: var(--ra-rule-width) solid var(--ra-color-border);
+  border-radius: min(var(--ra-button-radius), var(--ra-card-radius));
+  background-color: var(--ra-color-raised);
+  box-shadow: none;
+  color: var(--ra-color-text);
+  text-align: start;
+}
+.smart-stack a.link.smart-card:not(:has(.link-chip, .link-thumb)) { grid-template-columns: minmax(0, 1fr) auto; }
+.smart-stack a.link.smart-card:not(:has(.link-chip, .link-thumb)) .link-text { grid-column: 1; }
+.smart-stack a.link.smart-card::after {
+  display: block;
+  grid-column: -2 / -1;
+  grid-row: 1;
+  width: 0.5rem;
+  height: 0.5rem;
+  margin-inline-end: var(--ra-space-1);
+  border-top: var(--ra-rule-accent-width) solid var(--ra-color-muted);
+  border-right: var(--ra-rule-accent-width) solid var(--ra-color-muted);
+  background: none;
+  transform: rotate(45deg);
+}
+.smart-stack .smart-card .link-chip,
+.smart-stack .smart-card .link-thumb {
+  width: 2rem;
+  height: 2rem;
+  border: var(--ra-rule-width) solid var(--ra-color-border);
+  border-radius: 0.4rem;
+  background-color: var(--ra-color-bg);
+}
+.smart-stack .smart-card .link-text { display: block; }
+.smart-stack .smart-card .link-title { font-size: var(--ra-text-base); font-weight: 600; text-wrap: wrap; }
+.smart-stack .smart-card .link-subtitle { margin-top: 0; color: var(--ra-color-muted); text-wrap: wrap; }
+.smart-stack a.link.smart-card:is(:hover, :focus-visible) { border-color: var(--ra-color-accent); filter: none; transform: none; box-shadow: none; }
+.smart-stack .smart-featured a.link.smart-card { min-height: var(--ra-tap); }
 /* icons: the Follow group as an icon-only row. Each icon is the site's own
    social link (a full-size tap target with a name for assistive technology). */
 .smart-icons {

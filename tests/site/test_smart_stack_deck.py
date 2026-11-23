@@ -148,3 +148,32 @@ def test_deck_html_matches_golden(tmp_path: Path, update_golden: bool) -> None:
         GOLDEN.write_text(html, encoding="utf-8")
     assert GOLDEN.is_file(), "no golden file; run pytest --update-golden"
     assert html == GOLDEN.read_text(encoding="utf-8")
+
+
+def test_group_links_are_dark_cards_without_frames_but_buttons_keep_theirs(
+    tmp_path: Path,
+) -> None:
+    data = raw(featured=True)
+    data["theme"] = {"frame": "faithful"}
+    _out, html = build(tmp_path, data)
+
+    def anchors(intent: str) -> list[str]:
+        start = html.index(f'id="group-{intent}"')
+        return re.findall(
+            r'<a class="([^"]+)"', html[start : html.index("</section>", start)]
+        )
+
+    for intent in ("videos", "follow", "community", "work", "shop", "blog"):
+        found = anchors(intent)
+        assert found, intent
+        for cls in found:
+            assert "smart-card" in cls and "ra-bx" not in cls, (intent, cls)
+    for cls in anchors("support"):
+        assert "smart-card" not in cls and "ra-bx" in cls, cls
+    watch = re.findall(r'<a class="(link[^"]*smart-watch-link[^"]*)"', html)
+    assert len(watch) == 2 and all(
+        "ra-bx" in c and "smart-card" not in c for c in watch
+    )
+    featured = html[html.index('class="smart-featured"') :]
+    assert "smart-card" in featured[: featured.index("</section>")]
+    assert "ra-bx" not in featured[: featured.index("</section>")]

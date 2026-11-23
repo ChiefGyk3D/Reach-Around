@@ -315,3 +315,46 @@ def test_keyboard_reaches_chips_then_watch_before_groups(
     assert seen.index("#group-follow") < seen.index("#group-blog")
     assert foreign == []
     page.context.close()
+
+
+AMBER_CHECK = (
+    "(sel) => [...document.querySelectorAll(sel)].map(e => {"
+    " const c = getComputedStyle(e).backgroundColor.match(/[0-9.]+/g).map(Number);"
+    " return [e.getAttribute('href'), c[0], c[1], c[2], c.length > 3 ? c[3] : 1]; })"
+)
+
+
+def is_amber(rgba: list[float]) -> bool:
+    _href, r, g, b, a = rgba
+    return a > 0.5 and r > 200 and g > 140 and b < 120
+
+
+@pytest.mark.parametrize("size", [(1440, 900), (820, 1180), (390, 844)], ids=str)
+def test_only_the_buttons_are_amber_and_link_rows_are_dark_cards(
+    browser: Browser, base_url: str, size: tuple[int, int]
+) -> None:
+    page, foreign = open_page(browser, base_url, size)
+    rows = page.evaluate(
+        AMBER_CHECK,
+        ".smart-featured a.link, .smart-group:not(.smart-group-support) a.link",
+    )
+    assert len(rows) == 7, rows  # the featured card plus six group links
+    for row in rows:
+        assert not is_amber(row), row
+        assert max(row[1:4]) < 0x50, row  # dark, never a light or cream fill
+    # The guard bites: the same predicate does flag the buttons.
+    buttons = page.evaluate(
+        AMBER_CHECK, ".smart-watch-link, .smart-group-support a.link"
+    )
+    assert len(buttons) == 6
+    assert all(is_amber(b) for b in buttons), buttons
+    # Twitch and Kick stay identical, and rows keep 44 px targets.
+    twitch, kick = box(page, ".smart-watch-link", 0), box(page, ".smart-watch-link", 1)
+    assert abs(twitch["width"] - kick["width"]) < 0.5
+    assert abs(twitch["height"] - kick["height"]) < 0.5
+    cards = page.locator(".smart-card")
+    assert cards.count() == 7
+    for i in range(cards.count()):
+        assert box(page, ".smart-card", i)["height"] >= 44
+    assert foreign == []
+    page.context.close()

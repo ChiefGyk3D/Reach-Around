@@ -11,11 +11,11 @@
 </ul>
 {%- elif item.tab.spoke -%}
 <div class="smart-group-links smart-spoke">
-{{ link_anchor({"url": "tab:" ~ item.tab.id, "id": item.tab.id, "title": item.tab.title, "icon": "", "image": none, "subtitle": none, "featured": false, "affiliate": false}, click_tracking, " smart-spoke-card") }}
+{{ link_anchor({"url": "tab:" ~ item.tab.id, "id": item.tab.id, "title": item.tab.title, "icon": "", "image": none, "subtitle": none, "featured": false, "affiliate": false}, click_tracking, " smart-spoke-card smart-card", "", true) }}
 </div>
 {%- else -%}
 <div class="smart-group-links{% if item.tab.style == "rows" %} smart-style-rows{% endif %}">
-{% for link in item.links %}{{ link_anchor(link, click_tracking) }}{% endfor %}
+{% if item.tab.intent == "support" %}{% for link in item.links %}{{ link_anchor(link, click_tracking) }}{% endfor %}{% else %}{% for link in item.links %}{{ link_anchor(link, click_tracking, " smart-card", "", true) }}{% endfor %}{% endif %}
 </div>
 {%- endif %}
 {%- endmacro %}
@@ -36,7 +36,7 @@
 {% if featured %}
 <section class="smart-featured" aria-labelledby="smart-featured-kicker">
 <p id="smart-featured-kicker" class="smart-featured-kicker">{{ featured.kicker }}</p>
-{{ link_anchor(featured.link, click_tracking) }}
+{{ link_anchor(featured.link, click_tracking, " smart-card", "", true) }}
 </section>
 {% endif %}
 {% if groups|length > 1 %}
