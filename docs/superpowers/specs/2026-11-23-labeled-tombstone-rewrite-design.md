@@ -1,8 +1,10 @@
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 # Labeled tombstone-only rewrite of the counts history: design
 
-Status: DRAFT for owner decision, 2026-11-23, revised after Daybreak rounds 1 and 2
-(tables in sections 16 and 17; the next round is the last allowed). Spec only: no code and
+Status: DRAFT for owner decision, 2026-11-23. **Daybreak rounds 1 to 3 are complete
+(tables in sections 16, 17 and 18); no further round is allowed without the owner.
+Build only if G1 to G8 have been run and pass.** For G2 "pass" means the experiment was
+run and its result recorded: both of its outcomes are defined designs (section 12). Spec only: no code and
 no workflow change come with this document. Issue: #619. Epic: #364. Follows #586
 (the tombstone, decision 4 of `docs/research/history-tombstone-design.md`) and #621
 (the runbook for rewriting git history of the private instance repository).
@@ -116,6 +118,9 @@ A label is a bypass of an append-only integrity control. Each way to abuse it:
    a line that parses but is not canonical bytes. The engine already refuses the
    first four (`history.py` `_pairs`, `_no_float`, `MAX_LINE_BYTES`,
    `MAX_FILE_BYTES`) **[V]**; the rest are the compare's job (section 6).
+   **Metadata that encodes the value** (round 3): a `run_id`, `reason`, date, stamp,
+   manifest line or manifest file name that spells or encodes the redacted number. The
+   compare closes this by making every permitted metadata field derivable (rule 16).
 10. **Path tricks.** Only the paths in section 8 may change.
 11. **A compromised or mistaken maintainer destroys eligible history** (F4):
     bounded and made visible by section 6.3 rules 12-14 and section 11; not
@@ -276,11 +281,19 @@ Controls, none of which is assumed to be sufficient alone:
    refuses unless it equals the digest of the check run it is about to rely on, and
    the check run is for the exact head. This is the only binding between a success
    and the live metadata, and it is a procedure, not branch protection.
-6. If G2 shows GitHub does not reliably make the newest run authoritative, the label
-   is described in the README as an **intent record that is verified at merge by the
-   watcher**, not as something a green check revokes. Content safety does not depend
-   on it: a rewrite that reaches the history file has already passed the exact
-   compare, the cap, the manifest and the source policy.
+6. **G2 selects one of two defined designs** (section 12). If branch protection
+   treats the live failure as authoritative, current label presence is a required
+   property and the README says so. If it does not, **label authorization is
+   irrevocable for the exact tuple `(head SHA, base tip, manifest blob)` after the
+   cooling period**, the README and this spec claim no current-label requirement at
+   merge, and revocation means closing the pull request or pushing a change (a new
+   head). `cancel-in-progress` only cancels overlapping runs of one group; it does
+   not revoke a completed success and a later manual rerun evaluates on its own, so it
+   is not counted as revocation. The merge watcher then checks consistency of the
+   tuple; it is not an enforcement that someone merging in the web UI cannot bypass.
+   Content safety does not depend on either branch: a rewrite that reaches the history
+   file has already passed the exact compare, the cap, the manifest and the source
+   policy.
 
 A pull request body edit is not an input to any check: the manifest is a file in the
 head (rule 12).
@@ -355,8 +368,10 @@ duplicate keys, non-contiguous corrections and two groups sharing a key are in T
      with no old record, a correction kept after its record was tombstoned): refuse.
 3. After OLD is exhausted, NEW has no entries left (a rewrite does not also append).
 4. At least one record was replaced. Zero with the label: refuse.
-5. Every new tombstone passes `validate_tombstone` (`history.py` line 248) **[V]** and
-   has exactly `_TOMB_FIELDS` plus optional `api_provider`.
+5. Every new tombstone passes `validate_tombstone` (`history.py` line 248) **[V]**, has
+   exactly `_TOMB_FIELDS` plus optional `api_provider`, **and passes rule 16**, which
+   is stricter than `validate_tombstone` (that function accepts any `run_id` after
+   `redact-` and any plain `trigger_date` **[V]**, so it alone is not enough).
 6. **Canonical bytes, defined per mode** (F9):
    * Append mode (exit 0): the first `len(OLD)` bytes of NEW are byte-identical to OLD
      (legacy non-canonical bytes survive only here); every appended line must equal
@@ -374,17 +389,21 @@ duplicate keys, non-contiguous corrections and two groups sharing a key are in T
     (`--include-hand-kept`) and goes through the manual reviewed route (alternative
     A). Only `api` rows may be replaced.
 11. Every new line is at most 2048 bytes and NEW is within the file cap.
-12. **Manifest, committed in the head** (round 2, finding 2). A rewrite pull request
-    adds exactly one new file, `history/redactions/<run-id>.manifest`, where
-    `<run-id>` is the `redact-...` id its tombstones carry. Its content, plain text:
-    one line per redacted record `platform metric as_of_utc source`, then `count=N`,
-    `reason=...`, `trigger_date=...`. It holds no value. The compare requires **set
-    equality** between its keys and the replaced keys, `count` equal to both, and
-    reason and trigger date equal to those in every new tombstone. Because it is in
-    the head, a green check is bound to a particular manifest; the pull request body
-    is not read. Existing manifests may not change or be removed; more than one new
-    manifest, or one outside `history/redactions/`, fails. The manifest stays in the
-    tree as a readable audit trail (keys and reason only).
+12. **Manifest, committed in the head, byte-derived** (round 2 finding 2, round 3).
+    A rewrite pull request adds exactly one new file,
+    `history/redactions/<run-id>.manifest`, where `<run-id>` is the derived id of
+    rule 16. The compare **reconstructs the expected manifest bytes** from the replaced
+    keys, the reason, the trigger date and the redaction day, and requires byte
+    equality with the file: US-ASCII, `\n` line ends, final newline, no comment, blank
+    line, trailing space or other line. Format: a first line
+    `history-tombstone-manifest 1`; then `reason=<code>`, `trigger_date=<date>`,
+    `redacted_day=<date>`, `count=<N>`; then one line `platform metric as_of_utc
+    source` per replaced record, sorted bytewise. It holds no value. Because it is in
+    the head a green check is bound to a particular manifest; the pull request body is
+    not read. Existing manifests may not change or be removed; more than one new
+    manifest, or one outside `history/redactions/`, fails. The file name must equal
+    the derived run id exactly. The manifest stays in the tree as an audit trail (keys
+    and the three codes only).
 13. **Caps.** At most `HISTORY_REWRITE_MAX` records per rewrite (default 500, a
     constant in the BASE script, far below `MAX_REDACT` = 100000 **[V]**) and at most
     10 percent of OLD's records; and hard limits on input size and compare time, so
@@ -399,11 +418,74 @@ duplicate keys, non-contiguous corrections and two groups sharing a key are in T
     pull requests can still remove all eligible history one cap at a time (section 2).
     It also lengthens the window in which a refresh pull request can appear, which rule
     15 handles.
-15. **No open refresh pull request** (round 2, finding 4). In rewrite mode the job
-    lists open pull requests with head `counts/refresh` (`gh pr list --head
-    counts/refresh --state open`, paginated) and **fails if any exist**, so the stale
-    bot pull request is a required pre-merge condition, not a runbook line. The merge
-    procedure (c) repeats the check immediately before merging.
+15. **No open bot refresh pull request** (round 2 finding 4, round 3). Best-effort
+    availability protection, **not** an atomic pre-merge condition and not a safety
+    control (the safety against a stale bot pull request is strict up-to-date plus the
+    guard, section 9).
+    * **The object.** A pull request blocks only if all hold: it is open; its base ref
+      is exactly `main`; its head repository equals the base repository (`head.repo.
+      full_name == base.repo.full_name`, so a fork pull request that merely uses the
+      branch name never matches); its head ref is exactly `counts/refresh`; and its
+      author login is `github-actions[bot]` (REST `user.login`; the `gh` JSON name
+      `app/github-actions` is not used) **[I]** that REST exposes exactly this.
+    * **How it is read.** The REST list `GET /repos/{r}/pulls?state=open&base=main&
+      per_page=100`, following every `Link: rel="next"` page to the last page, filtered
+      client side by the predicate above. Never `gh pr list --head`, which matches the
+      head name across forks. A truncated or failed traversal is a failure. A pull
+      request that uses the branch name but fails the predicate (a fork, another
+      author) does not block a rewrite; the existing publish job already stops with an
+      error on such a pull request (`refresh-counts.yml` lines 169-177) **[V]**, which
+      is the existing, separate handling.
+    * **Check and merge.** The guard fails while a matching pull request is open. The
+      merge procedure (c) re-reads it immediately before merging; if one is open it
+      **closes the verified bot pull request** (the same predicate, with a fixed
+      comment) and then performs the head-pinned merge.
+    * **The race.** A refresh pull request that opens after that last read and before
+      the merge is possible, because opening a pull request does not move `main`. The
+      consequence is bounded and accepted: it cannot restore redacted values (it is no
+      longer an extension of the new `main`, so the guard fails it under strict
+      up-to-date), and the refresh publish step skips until it is closed, which the
+      optional closer workflow (D13) does after the merge, applying the same full
+      predicate, and the owner can do by hand. Availability, not integrity.
+16. **Tombstone metadata is non-expressive** (round 3, High). The redacted value must
+    not survive in any field the compare permits. Every field of every **new**
+    tombstone (one that replaces a record in this rewrite; an older tombstone carries
+    over unchanged and is exempt) and the manifest must be either equal to a field of
+    the old record it replaces, or drawn from a closed vocabulary, or derived by a
+    fixed function from public inputs. The compare rejects anything it cannot derive:
+    * `platform`, `metric`, `as_of_utc`, `source`, `api_provider`: equal to the old
+      record's (rule 2); no choice.
+    * `reason`: one of `REASONS` (five codes, `history.py` **[V]**). There is no free
+      text anywhere.
+    * `trigger_date`: a real calendar date `YYYY-MM-DD`, exactly 10 ASCII characters,
+      not after `redacted_day` and not more than 366 days before it.
+    * `redacted_at_utc`: exactly `<redacted_day>T00:00:00Z`, day granularity. The
+      `redacted_day` is the UTC day of the pull request's creation or the day before
+      it, read from the API by the guard and passed to the compare as `--pr-day`.
+    * `run_id`: exactly `redact-<redacted_day as YYYYMMDD>-<h>` where `<h>` is the
+      first 6 hex digits of SHA-256 over the manifest lines after the first line
+      (reason, trigger date, redacted day, count, sorted keys). It is derived from the
+      replaced keys, not generated randomly and not chosen. One run id for the whole
+      rewrite, equal to the manifest file name stem.
+    * All new tombstones in one rewrite carry the **same** `reason`, `trigger_date`,
+      `redacted_at_utc` and `run_id`.
+    * Every permitted line has a fixed key order and canonical bytes (rule 6), so no
+      whitespace, key order, escape or case choice carries information.
+    What remains: the free choices are `reason` (5 values), `trigger_date` (up to 367
+    values), `redacted_day` (2 values) and which keys are redacted. That is about 12
+    bits per rewrite, **shared by all records and not per record**, and the keys are
+    public timestamps. It cannot carry a value of 4096 or more, nor one number per
+    record. This residual is stated, not claimed away. The compare also scans every
+    added line and the manifest for the decimal digits of each replaced value as a
+    token and fails on a hit (a belt, with false positives for tiny values; the
+    derivation above is the control).
+    **What is lost:** the exact redaction time of day, a random run id, and any free
+    text reason. A human explanation goes in the pull request description and in the
+    issue, outside the working tree, and the spec's claim that a tombstone holds no
+    free text now has a rule behind it. The tombstone writer (`redact_records`,
+    #586) must emit these forms for new tombstones, so building this includes a change
+    to that code (D15); the compare accepts nothing else, so today's writer output (a
+    real time of day and a random suffix) would be rejected until it is changed.
 
 After exit 10 the job also runs `verify-history.sh` on NEW as its own step so the
 failure text is the familiar one.
@@ -487,16 +569,18 @@ request merged first.
 
 ## 9. Interaction with the bot pull request and the refresh
 
-* A rewrite cannot pass the guard while a `counts/refresh` pull request is open
-  (rule 15), and the merge procedure re-checks it. Otherwise `unmerged-history.sh`
+* A rewrite cannot pass the guard while a matching bot `counts/refresh` pull request
+  is open (rule 15, best effort, with the exact predicate), and the merge procedure
+  re-checks it and closes the verified bot pull request. Otherwise `unmerged-history.sh`
   makes every later publish run skip with a warning until that pull request is closed
   **[V]**. That skip is fail-safe for the data but an availability failure: a
   collaborator who can reopen the bot branch or pull request can hold the refresh
   down until the owner closes it. After a rewrite lands, an optional, separate,
   narrowly scoped workflow (D13) closes a stale bot pull request: trigger `push` to
   `main` when the history file changed, `pull-requests: write` only, no keys, no
-  checkout of pull request code, closes only an open pull request from
-  `counts/refresh` authored by the Actions bot, with a fixed comment.
+  checkout of pull request code, closes only a pull request that satisfies the full
+  rule 15 predicate (open, base `main`, same repository, head ref exactly
+  `counts/refresh`, author the Actions bot), with a fixed comment.
 * A stale bot pull request merged after the rewrite is not protected by "the guard
   sees it": a base move fires no `synchronize` **[I]**. It is protected by section 5.4
   (strict up-to-date, with the head-pinned watcher as defense in depth), under which the stale file is neither an extension of the
@@ -578,15 +662,32 @@ changes, not the test.
   incompatible `B2` without changing `H`; prove the pull request cannot merge on the
   old result under option (b) of section 5.4. Also prove whether any base
   update fires a `pull_request` event.
-* **G2 (F6, round 2 finding 2):** Prove which result branch protection reads for one
-  head SHA when runs overlap or are rerun, for every mutable input: `labeled`,
-  `unlabeled`, a label applied and removed while a run is in progress, an older run
-  finishing after a newer one, a manual rerun of an older run, a change of the
-  allow-list on `main`. Prove that `cancel-in-progress` leaves no success from a
-  cancelled run, that the double read fails on a change, and that the authorization
-  digest differs when any input differs. If the newest metadata evaluation is not
-  reliably authoritative, the label is documented as an intent record verified by the
-  merge procedure (section 5.5 item 6); there is no merge-queue fallback.
+* **G2 (F6, round 2 finding 2, round 3: binary).** Experiment, on a scratch
+  repository whose ruleset requires the single context `History guard` (Actions app)
+  plus strict up-to-date, with an allow-listed applier:
+  1. Open a valid rewrite pull request, apply the label, wait out a shortened cooling
+     period (a test constant), and let the guard succeed on head `H`.
+  2. Remove the label. Wait for the `unlabeled` run to finish red.
+  3. Without pushing: query `mergeStateStatus` and `mergeable`, then attempt the merge
+     through the REST endpoint (`PUT /repos/{r}/pulls/{n}/merge`) as an admin and as a
+     write user, recording the HTTP status.
+  4. Repeat after each of: a manual rerun of the older green run (so it finishes last);
+     a rerun of the newer red run; the label re-applied then removed while a run is in
+     progress; a change of `.github/history-approvers` on `main`.
+  **PASS (branch A):** in every case of steps 3 and 4 the merge is refused (status 405
+  or `BLOCKED`) while the label is absent or the applier is not listed, and allowed
+  again only after the label is re-applied and a new green run completes. **Design on
+  PASS:** current label presence is a branch-protection-enforced requirement; the
+  watcher digest is defense in depth.
+  **FAIL (branch B):** in any case a merge succeeds, or the displayed required result
+  is green, while the label is absent or the applier unlisted. **Design on FAIL:** the
+  label is irrevocable for the tuple `(head, base tip, manifest blob)` after the
+  cooling period (section 5.5 item 6); no text anywhere claims current-label presence
+  at merge; revocation is closing the pull request or pushing a change.
+  Either outcome is buildable. The gate is not run until the result is written into
+  the README choice; a result of "not run" blocks the build. Also record: that the
+  double read fails on a change, that the authorization digest differs for each
+  differing input, and that a run cancelled by `cancel-in-progress` leaves no success.
 * **G3 (replaced):** a merge queue is not supported. Prove that the workflow does not
   run under `merge_group` and document that a repository enabling a queue on `main`
   loses this protection (T21).
@@ -603,10 +704,19 @@ changes, not the test.
   build), the instance's tracked data and fixtures, caches and preview artifacts.
   Output: a table of copies and whether the guard's path set covers them. Absence of a
   copy is not claimed unless the inventory shows it.
+* **G8 (round 3, metadata non-retention).** Using the real tombstone writer changed per
+  D15, a synthetic distinctive 9-digit value is attempted in every permitted field of a
+  tombstone and of the manifest, one at a time and combined: `run_id` suffix and date
+  part, `reason`, `trigger_date`, `redacted_at_utc` (every field of it), the manifest
+  file name, a manifest line, comment, blank line and trailing space, every optional
+  field, and key order and whitespace. **PASS:** the compare returns a refusal for
+  every attempt, and for the one valid rewrite no added byte contains the digits.
+  **FAIL:** any attempt is accepted: the design is not built until the derivation of
+  rule 16 is fixed.
 
 ## 13. Recommendation
 
-1. **Build it only after G1 and G2 pass.** The exact content compare is the control;
+1. **Build it only after G1 to G8 have been run and pass (G2: its result recorded, either branch).** The exact content compare is the control;
    the label is a gate on it. Never a label alone (alternative F).
 2. New `history-guard.yml` (separate workflow, `pull_request` only, read-only token,
    one job, scripts and pin from BASE) and an engine subcommand
@@ -656,6 +766,17 @@ accept it and seeing the test go red):
 * T8: a tombstone with an extra field (`value`, `note`, `era`, `replaces`), a reason
   off the list, a missing `trigger_date`, a future `redacted_at_utc`, a `run_id` not
   starting `redact-`.
+* T39 (round 3, High): a synthetic distinctive value (9 digits) encoded in each of:
+  the `run_id` date part and suffix, the `reason` (off-list and on-list lookalike),
+  `trigger_date` (a valid date spelling the digits, a date outside the 366 day window),
+  `redacted_at_utc` (non-midnight seconds, a different day), the manifest file name, a
+  manifest comment, blank line, trailing space or extra line, the `count` line, a key
+  line out of order, the optional fields, and differing values between tombstones of
+  one rewrite; all must fail. The `run_id` of a valid rewrite equals the derived value;
+  a random suffix fails. The digit-token scan fails a hit, and the test shows the scan
+  alone is not relied on (a hit-free encoding by arithmetic is still refused by the
+  derivation). The writer-output test asserts `redact_records` emits the derived forms
+  after D15.
 * T9: a record still present after its tombstone; a correction kept after its record
   was tombstoned; a record appended after the rewrite.
 * T10: non-canonical bytes in a rewrite (spaces, key order, `A` escapes,
@@ -723,12 +844,20 @@ Workflow and gates:
   and an older row `count=1000, as_of=2026-01-10` redacted: `numbers.json` unchanged
   passes; removing the current entry fails; and the same-count same-day entry must be
   removed and fails if it stays.
-* T37 (round 2, finding 4): a rewrite fails while an open `counts/refresh` pull request
+* T37 (round 2, finding 4): a rewrite fails while a matching open bot pull request
   exists (including one beyond the first API page); passes when none exists; the
-  merge procedure re-checks.
+  merge procedure re-checks (see T40).
 * T38 (round 2, finding 1): the manifest file rules: a second manifest, one outside
   `history/redactions/`, an existing manifest changed or removed, a manifest with a
-  value, a manifest not equal to the replaced set.
+  value, a manifest not byte-equal to the reconstructed expectation.
+* T40 (round 3, finding 3): the refresh-PR predicate: a fork pull request using the
+  head name `counts/refresh` does not block; another author does not block; a pull
+  request with base other than `main` does not block; a matching bot pull request on
+  the last page of more than one page blocks; a failed or truncated traversal fails;
+  one opening between the guard and the merge procedure is closed by the procedure
+  and, if it opens after, is left to the closer (D13) without restoring any value.
+* T41 (round 3, finding 2): the G2 experiment as a repeatable script that prints PASS
+  or FAIL for branch A or B.
 * T29 (F8): the wrapper's exit-status mapping (section 6.1).
 
 ## 15. Open owner decisions
@@ -775,6 +904,11 @@ round 1; NEW is added by round 1.
 * **D14. (NEW, round 2)** The manifest is a committed file, kept in the tree as an
   audit trail (keys, reason, trigger date, no value), not text in the pull request body.
   Recommended: **yes**.
+* **D15. (NEW, round 3)** Tombstones written for a rewrite use the derived forms of
+  rule 16 (day-granular `redacted_at_utc`, derived `run_id`, closed vocabulary, no free
+  text), which changes the #586 writer for new tombstones and gives up exact time of
+  day, random run ids and free-text reasons. Recommended: **yes**; without it the
+  compare cannot certify that a tombstone holds no value.
 * **D5 (further MOVED).** Matching published entry means the same platform, count and
   `as_of` day for both mandatory and permitted removal; a same-count older row leaves
   `numbers.json` unchanged. Recommended: **yes**; the alternative is to refuse such
@@ -810,7 +944,15 @@ Rows F1 and F6 mention a merge queue; round 2 (section 17, finding 1) removed it
 Round 1 assessment items taken: D11 is a notice, not authorization (rule 14, D11); D12
 no longer offers a merge queue or the watcher alone; D5's predicate is corrected.
 
-## 18. Not covered
+## 18. Review round 3 (Daybreak, the last allowed round)
+
+| Finding | Severity | What changed, or why not |
+| --- | --- | --- |
+| Redacted value encoded in permitted metadata (`run_id`, `reason`, manifest) | High | Applies; confirmed against `validate_tombstone`, which accepts any `redact-` run id and any plain date **[V]**, and against the old rule that the manifest only had to repeat the tombstone's reason. New rule 16: every field of a new tombstone is equal to the old record's, drawn from a closed vocabulary, or derived (reason from the five codes; `trigger_date` in a 366 day window; `redacted_at_utc` at day granularity on the pull request's creation day or the day before; `run_id` derived from the manifest keys, not random; one run id and one set of metadata for the whole rewrite, equal to the manifest file name stem). The manifest is reconstructed byte for byte, so it has no free line, comment or whitespace (rule 12). Residual channel stated: about 12 bits per rewrite, shared by all records, public keys, not a value of 4096 or more. Lost: time of day, random run ids, free-text reasons (they go to the PR description). New gate G8 and tests T39, T38; the writer change is D15. |
+| G2 has no binary pass condition | Medium | Applies. G2 is now an exact experiment (steps, observables `mergeStateStatus` and the merge endpoint status) with PASS (branch A: current label presence is enforced by branch protection) and FAIL (branch B: label authorization is irrevocable for `(head, base tip, manifest blob)` after the cooling period, with no claim of current-label presence at merge). Either result is a defined, buildable design; "not run" blocks the build. `cancel-in-progress` is no longer credited with revocation (5.5 item 6). T41. |
+| Rule 15 raceable, PR identity too broad | Medium | Applies. Rule 15 now defines the object (open, base `main`, same repository, head ref exactly `counts/refresh`, author `github-actions[bot]`), reads it by explicit REST pagination and not `gh pr list --head`, and is described as best-effort availability protection. The merge procedure closes the verified bot pull request immediately before the head-pinned merge; a pull request that opens after that cannot restore values (strict up-to-date plus the guard) and is cleared by the closer (D13) under the same predicate. A fork pull request with that branch name does not block a rewrite. T40. |
+
+## 19. Not covered
 
 * Rewriting git history of the instance repository (#621; a tombstone meets the duty
   in the working tree only).
