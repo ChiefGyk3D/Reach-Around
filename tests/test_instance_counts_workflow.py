@@ -29,7 +29,12 @@ ALLOWED_PERMISSIONS = {
     "refresh": {"contents": "read"},
     "publish": {"contents": "write", "pull-requests": "write"},
 }
-KEY_NAMES = {"YOUTUBE_API_KEY", "TWITCH_CLIENT_ID", "TWITCH_CLIENT_SECRET"}
+KEY_NAMES = {
+    "YOUTUBE_API_KEY",
+    "YOUTUBE_USERNAME",
+    "TWITCH_CLIENT_ID",
+    "TWITCH_CLIENT_SECRET",
+}
 
 
 def problems(text: str, script: str = "") -> list[str]:
@@ -290,6 +295,7 @@ case " $* " in
     exit "${FAKE_TOKENS_EXIT:-0}" ;;
   *" history-verify "*) exit 0 ;;
   *" refresh "*)
+    printf '%s\n' "$*" >> "${FAKE_REFRESH_LOG:-/dev/null}"
     printf '%s' "$FAKE_NUMBERS" > "$data/numbers.json"
     for f in $FAKE_HISTORY_FILES; do printf 'row\n' >> "$hist/$f"; done
     # A redaction or an edit of the repository's file while the engine runs.
@@ -825,3 +831,25 @@ def test_the_report_container_is_cut_after_sixty_seconds(tmp_path: Path) -> None
     )
     assert done.returncode == 0, done.stderr
     assert log.read_text(encoding="utf-8").split() == ["60", "60"]
+
+
+def test_the_refresh_script_passes_the_youtube_handle_variable(tmp_path: Path) -> None:
+    root, env = _refresh_fixture(tmp_path)
+    log = tmp_path / "docker.log"
+    log.write_text("", encoding="utf-8")
+    done = _run_refresh(
+        root,
+        env,
+        "",
+        tmp_path / "w",
+        {
+            "FAKE_REFRESH_LOG": str(log),
+            "YOUTUBE_API_KEY": "canary-key-1",
+            "YOUTUBE_USERNAME": "ExampleHandle",
+        },
+    )
+    assert done.returncode == 0, done.stderr
+    calls = log.read_text(encoding="utf-8")
+    assert "-e YOUTUBE_USERNAME" in calls
+    assert "ExampleHandle" not in calls  # by name, never the value
+    assert "-e YOUTUBE_API_KEY" in calls

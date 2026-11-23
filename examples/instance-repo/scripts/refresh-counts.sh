@@ -25,11 +25,11 @@
 # --network none. Only site.yaml, media/ and overrides/ are mounted read-only,
 # plus the scratch folder it writes into.
 #
-# Keys come from the environment only. Of the three names below, only those
+# Keys come from the environment only. Of the names below, only those
 # that are set and not empty are passed to the engine (by name; the value is
 # never on a command line or printed). A source whose key is missing is
-# skipped by the engine, not failed. These are the canonical names the engine reads (YOUTUBE_API_KEY, TWITCH_CLIENT_ID,
-# TWITCH_CLIENT_SECRET). The config cannot name another variable.
+# skipped by the engine, not failed. These are the canonical names the engine reads (YOUTUBE_API_KEY, YOUTUBE_USERNAME,
+# TWITCH_CLIENT_ID, TWITCH_CLIENT_SECRET). The config cannot name another variable.
 #
 # The engine keeps a suspect value out (a zero, or a fall of more than 90
 # percent from 1000 or more) and records it as a failed source. This script
@@ -162,7 +162,7 @@ mounts+=(-v "$workdir/history":/config/history)
 # "-e NAME" with no value copies the variable from this process; nothing is
 # written to the command line or the log.
 keys=()
-for name in YOUTUBE_API_KEY TWITCH_CLIENT_ID TWITCH_CLIENT_SECRET; do
+for name in YOUTUBE_API_KEY YOUTUBE_USERNAME TWITCH_CLIENT_ID TWITCH_CLIENT_SECRET; do
   if [ -n "${!name:-}" ]; then keys+=(-e "$name"); fi
 done
 

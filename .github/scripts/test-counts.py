@@ -65,6 +65,7 @@ ENV_KEYS = (
 # reach_around.config.numbers_sources (a test checks it).
 CANONICAL_ENV = (
     "YOUTUBE_API_KEY",
+    "YOUTUBE_USERNAME",
     "TWITCH_CLIENT_ID",
     "TWITCH_CLIENT_SECRET",
     "TWITCH_USER_ACCESS_TOKEN",

@@ -192,7 +192,7 @@ jobs:
           config: ${{ vars.DOPPLER_COUNTS_CONFIG }}
           identity-id: ${{ vars.DOPPLER_COUNTS_IDENTITY_ID }}
           export: outputs
-          names: ${{ vars.COUNTS_SECRET_NAMES || 'YOUTUBE_API_KEY,TWITCH_CLIENT_ID,TWITCH_CLIENT_SECRET' }}
+          names: ${{ vars.COUNTS_SECRET_NAMES || 'YOUTUBE_API_KEY,YOUTUBE_USERNAME,TWITCH_CLIENT_ID,TWITCH_CLIENT_SECRET' }}
 
       # The only step with the keys. Each comes from Doppler when that step
       # ran, else from the GitHub Actions secret of the same name; a key that
@@ -202,6 +202,7 @@ jobs:
       - name: Refresh the counts
         env:
           YOUTUBE_API_KEY: ${{ fromJSON(steps.doppler.outputs.secrets || '{}').YOUTUBE_API_KEY || secrets.YOUTUBE_API_KEY }}
+          YOUTUBE_USERNAME: ${{ fromJSON(steps.doppler.outputs.secrets || '{}').YOUTUBE_USERNAME || secrets.YOUTUBE_USERNAME }}
           TWITCH_CLIENT_ID: ${{ fromJSON(steps.doppler.outputs.secrets || '{}').TWITCH_CLIENT_ID || secrets.TWITCH_CLIENT_ID }}
           TWITCH_CLIENT_SECRET: ${{ fromJSON(steps.doppler.outputs.secrets || '{}').TWITCH_CLIENT_SECRET || secrets.TWITCH_CLIENT_SECRET }}
         run: python3 -I .github/scripts/test-counts.py --config examples/instance/site.yaml --out "$RUNNER_TEMP/counts"

@@ -135,8 +135,12 @@ def test_errors_never_echo_the_handle_or_key() -> None:
     text = error_of(YTH, transport, ENV)
     assert text == "redirect"
     assert "ExampleHandle" not in text and KEY not in text
+    # an unknown handle: the API answers with no items
     transport = FakeTransport({URL: reply({"items": []})})
-    assert "ExampleHandle" not in error_of(YTH, transport, ENV)
+    text = error_of(YTH, transport, ENV)
+    assert text == "missing_field"
+    assert len(transport.calls) == 1
+    assert "ExampleHandle" not in text
 
 
 def test_config_cannot_name_another_variable() -> None:

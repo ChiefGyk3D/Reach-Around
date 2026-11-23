@@ -23,6 +23,7 @@ WORKFLOW = ROOT / ".github" / "workflows" / "deploy-test.yml"
 SCRIPT = ROOT / ".github" / "scripts" / "test-counts.py"
 KEYS = {
     "YOUTUBE_API_KEY",
+    "YOUTUBE_USERNAME",
     "TWITCH_CLIENT_ID",
     "TWITCH_CLIENT_SECRET",
 }
@@ -876,7 +877,7 @@ def test_the_wrapper_canonical_names_match_the_engine() -> None:
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     expected = {
-        "youtube": {ns.YOUTUBE_KEY_ENV},
+        "youtube": {ns.YOUTUBE_KEY_ENV, ns.YOUTUBE_HANDLE_ENV},
         "twitch": {
             ns.CLIENT_ID_ENV,
             ns.CLIENT_SECRET_ENV,
@@ -998,6 +999,7 @@ HOSTILE_CONFIGS = {
 }
 CANONICAL = {
     "YOUTUBE_API_KEY",
+    "YOUTUBE_USERNAME",
     "TWITCH_CLIENT_ID",
     "TWITCH_CLIENT_SECRET",
     "TWITCH_USER_ACCESS_TOKEN",
@@ -1029,6 +1031,17 @@ def test_a_hostile_config_forwards_the_same_fixed_set_and_the_engine_decides(
     got = set(engine_env(tmp_path))
     assert got - BASE <= CANONICAL
     assert "UNRELATED_SECRET" not in got
+
+
+def test_the_engine_gets_the_youtube_handle_variable(tmp_path: Path) -> None:
+    proc = run(
+        tmp_path,
+        YT_CONFIG,
+        fake_engine(tmp_path, 0, {}),
+        extra_env={"YOUTUBE_API_KEY": "k", "YOUTUBE_USERNAME": "ExampleHandle"},
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert "YOUTUBE_USERNAME" in set(engine_env(tmp_path))
 
 
 def test_the_engine_never_sees_a_non_canonical_name(tmp_path: Path) -> None:
