@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+import errno
 import fcntl
 import json
 import os
@@ -224,6 +225,10 @@ def _identity(info: os.stat_result) -> tuple[int, int]:
     return (info.st_dev, info.st_ino)
 
 
+# link() errors that mean "this file system cannot make hard links".
+_NO_HARD_LINKS = frozenset({errno.EPERM, errno.ENOTSUP, errno.EOPNOTSUPP, errno.ENOSYS})
+
+
 def write_new_atomic(
     path: Path,
     text: str,
@@ -256,7 +261,21 @@ def write_new_atomic(
                 os.fsync(handle.fileno())
             if before_link is not None:
                 before_link()
-            os.link(tmp_name, path.name, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
+            try:
+                os.link(tmp_name, path.name, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
+            except FileExistsError:
+                # No names: the operating-system text would print the temp file.
+                raise FileExistsError(
+                    errno.EEXIST, "a file appeared at the path"
+                ) from None
+            except OSError as exc:
+                if exc.errno in _NO_HARD_LINKS:
+                    raise OSError(
+                        exc.errno,
+                        "this file system has no hard links, which the export "
+                        "needs; write to one that does",
+                    ) from None
+                raise OSError(exc.errno, os.strerror(exc.errno or 0)) from None
         finally:
             try:
                 os.unlink(tmp_name, dir_fd=dir_fd)
