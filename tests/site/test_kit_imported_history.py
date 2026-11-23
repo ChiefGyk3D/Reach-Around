@@ -8,7 +8,9 @@ file, is gated unless the owner sets it public, and never touches a total.
 
 from __future__ import annotations
 
+import errno
 import json
+import os
 import re
 import shutil
 from datetime import date
@@ -903,3 +905,83 @@ def test_the_absent_case_is_the_existing_kit_golden(tmp_path: Path) -> None:
     ).read_bytes()
     assert (gated / GATED_FILE).read_bytes() == (golden / "gated/kit.html").read_bytes()
     assert TODAY is not None
+
+
+# --- hard-link failures (#659) ---
+
+
+def _no_hard_links(*args: Any, **kwargs: Any) -> None:
+    """What a file system without hard links (FAT, some FUSE mounts) does."""
+    raise PermissionError(errno.EPERM, "Operation not permitted", args[0], args[1])
+
+
+def test_export_on_a_file_system_without_hard_links_says_so_and_hides_the_temp(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    history = beacons_history(tmp_path)
+    out = tmp_path / "imported-history.json"
+    monkeypatch.setattr(os, "link", _no_hard_links)
+    code = main(
+        ["counts", "history-export-imported", "--file", str(history), "--out", str(out)]
+    )
+    err = capsys.readouterr().err
+    assert code == 2 and not out.exists()
+    assert "hard links" in err
+    assert ".tmp" not in err and "imported-history.json" not in err
+    assert [p.name for p in tmp_path.iterdir() if p.name.endswith(".tmp")] == []
+
+
+def test_export_race_error_does_not_print_the_temp_file_name(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    history = beacons_history(tmp_path)
+    out = tmp_path / "imported-history.json"
+    real = write_new_atomic
+
+    def racing(path: Path, text: str) -> None:
+        def theirs() -> None:
+            path.write_text("theirs")
+
+        real(path, text, before_link=theirs)
+
+    monkeypatch.setattr(counts_cmd, "write_new_atomic", racing)
+    code = main(
+        ["counts", "history-export-imported", "--file", str(history), "--out", str(out)]
+    )
+    err = capsys.readouterr().err
+    assert code == 2 and "not exported" in err
+    assert ".tmp" not in err
+
+
+def test_write_new_atomic_other_link_errors_keep_their_type_without_names(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def too_many(*args: Any, **kwargs: Any) -> None:
+        raise OSError(errno.ENOSPC, "No space left on device", args[0], args[1])
+
+    monkeypatch.setattr(os, "link", too_many)
+    with pytest.raises(OSError) as info:
+        write_new_atomic(tmp_path / "out.json", "x")
+    assert info.value.errno == errno.ENOSPC
+    assert ".tmp" not in str(info.value) and "hard links" not in str(info.value)
+
+
+def test_write_new_atomic_keeps_the_exception_subclass_of_a_link_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    for code, kind in (
+        (errno.EACCES, PermissionError),
+        (errno.ENOENT, FileNotFoundError),
+    ):
+
+        def failing(*args: Any, _code: int = code, **kwargs: Any) -> None:
+            raise OSError(_code, "failed", args[0], args[1])
+
+        monkeypatch.setattr(os, "link", failing)
+        with pytest.raises(kind) as info:
+            write_new_atomic(tmp_path / "out.json", "x")
+        assert ".tmp" not in str(info.value)
