@@ -103,6 +103,7 @@ from reach_around.counts.refresh import (
     render_status,
     select,
 )
+from reach_around.counts.retention import RetentionPolicy, retention_warnings
 from reach_around.counts.secret_sink import (
     DopplerSink,
     MetaStyleSink,
@@ -280,6 +281,7 @@ def run_refresh(
                 now,
                 history,
                 sinks,
+                _retention_policy(config),
             )
     except LockBusy:
         print(
@@ -401,6 +403,21 @@ def _retention_notice(history: Path, stamp: datetime) -> None:
         )
 
 
+def _retention_warnings(
+    history: Path, stamp: datetime, policy: RetentionPolicy
+) -> None:
+    """Per platform with ``numbers.retain_days``: a count of stored api rows near
+    or past the window (#620). Read-only; a count, never a value."""
+    if not policy.retain_days:
+        return
+    try:
+        records = list(read_history(history).records)
+    except HistoryError:
+        return  # reported by the history work itself
+    for warning in retention_warnings(records, policy, stamp.astimezone(UTC).date()):
+        print(warning.line(), file=sys.stderr)
+
+
 def _print_token_health(
     sources: list[Source], outcomes: list[Outcome], stamp: datetime
 ) -> None:
@@ -422,6 +439,7 @@ def _cycle(
     now: Callable[[], datetime],
     history: Path | None = None,
     sinks: Sinks | None = None,
+    retention: RetentionPolicy | None = None,
 ) -> int:
     try:
         previous = (
@@ -521,6 +539,8 @@ def _cycle(
             print("history: today's value was already recorded; kept as it is")
     if history is not None:
         _retention_notice(history, stamp)
+        if retention is not None:
+            _retention_warnings(history, stamp, retention)
     previous_status = load_status(paths.status)
     try:
         write_atomic(
@@ -546,6 +566,15 @@ def _cycle(
         insight_failures
     )
     return EXIT_SOURCE_FAILED if failed else EXIT_OK
+
+
+def _retention_policy(config: SiteConfig) -> RetentionPolicy:
+    if config.numbers is None:
+        return RetentionPolicy()
+    return RetentionPolicy(
+        retain_days=dict(config.numbers.retain_days),
+        warn_days=config.numbers.retain_warn_days,
+    )
 
 
 def history_path(
