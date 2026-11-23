@@ -1,8 +1,11 @@
 # SPDX-License-Identifier: Apache-2.0
 """Browser checks for the media kit pages. Run with ``pytest --run-visual``.
 
-Headless only, on loopback. The gate form is never submitted, and every request
-the page makes must go to the loopback server (no third-party request).
+Headless only, on loopback. The gate form is never submitted. The contract for
+the page tests: every request goes to the loopback server, plus the one Turnstile
+host (``challenges.cloudflare.com``), which the gated page loads by design and
+which the test answers locally with an empty stub so nothing leaves the machine.
+Any other host fails the test.
 """
 
 from __future__ import annotations
@@ -23,6 +26,10 @@ from test_kit_build import TODAY, gated_doc, make_config
 from reach_around.site.build import build_site
 
 pytestmark = pytest.mark.visual
+
+# The gated page loads the Turnstile script by design (#706). The test answers it
+# locally so nothing leaves the machine, and still fails on any other host.
+TURNSTILE_HOST = "challenges.cloudflare.com"
 
 
 class _Quiet(SimpleHTTPRequestHandler):
@@ -66,8 +73,14 @@ def test_kit_pages_fit_the_screen_and_make_no_outside_request(
     page = context.new_page()
     hosts: set[str] = set()
     page.on("request", lambda r: hosts.add(r.url.split("/")[2]))
+    page.route(
+        f"https://{TURNSTILE_HOST}/**",
+        lambda route: route.fulfill(
+            status=200, content_type="text/javascript", body=""
+        ),
+    )
     page.goto(site + path)
-    assert hosts == {site.split("/")[2]}
+    assert hosts == {site.split("/")[2], TURNSTILE_HOST}
     assert page.evaluate(
         "document.documentElement.scrollWidth <= document.documentElement.clientWidth"
     )
