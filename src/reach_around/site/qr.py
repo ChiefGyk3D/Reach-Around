@@ -305,12 +305,13 @@ def qr_svg(text: str) -> str:
     )
 
 
-def qr_file_name(position: int, address: str) -> str:
-    """The file name for a QR code: its position and a digest of its address.
+def qr_file_name(position: int, svg: str) -> str:
+    """The file name for a QR code: its position and a digest of its SVG bytes.
 
-    A name that follows the payload means a cached file can never be served
-    for a different address: a changed address is a new name, so the files can
-    be cached forever while the page itself revalidates.
+    The digest covers the finished file, so any change to the payload, the
+    drawing or the colors is a new name. A cached copy can then never be
+    served for different bytes: the files can be cached forever while the page
+    itself revalidates.
     """
-    digest = hashlib.sha256(address.encode("ascii")).hexdigest()[:16]
+    digest = hashlib.sha256(svg.encode("ascii")).hexdigest()[:32]
     return f"qr-{position}-{digest}.svg"

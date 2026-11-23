@@ -206,3 +206,8 @@ def decode(m: Matrix) -> tuple[bytes, int, int]:
     n = int(stream[4 : 4 + cbits], 2)
     body = stream[4 + cbits : 4 + cbits + 8 * n]
     return bytes(int(body[i : i + 8], 2) for i in range(0, 8 * n, 8)), level, version
+
+
+def read_format(m: Matrix) -> tuple[int, int]:
+    """(level bits, mask) from the format information of a matrix."""
+    return _format_decode(_format_bits(m))

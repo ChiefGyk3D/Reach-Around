@@ -1239,12 +1239,13 @@ third-party service or package: a small encoder ships in the engine
   of up to 151 characters fits.
 * Each code is one small file next to the page, `/support/qr-1-<digest>.svg`,
   `/support/qr-2-<digest>.svg` and so on, in coin order, where `<digest>` is the
-  first 16 hex characters of the SHA-256 of that coin's address. It is drawn as dark modules on a
+  first 32 hex characters of the SHA-256 of that file's bytes. It is drawn as dark modules on a
   soft gray tile (not white), because a scanner needs the contrast. The card
   shows it inside a closed "Show QR code" drawer. The Content-Security-Policy
   for `/support/` stays `img-src 'self'`.
-* Caching: because the name follows the address, a cached file can never be
-  shown for a different address. The build lists each QR file as immutable in
+* Caching: because the name is a digest of the file's own bytes, a cached file can
+  never be shown for different bytes (a new address, drawing or color is a new
+  name). The build lists each QR file as immutable in
   `_headers` (`Cache-Control: public, max-age=31536000, immutable`), while
   `/support/` and `/support/index.html` stay `must-revalidate`, so the page
   always names the current files. A rebuild empties the output folder, so a

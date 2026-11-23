@@ -698,7 +698,7 @@ def _support_qr(config: SiteConfig, blocks: Sequence[Block]) -> dict[str, _QrFil
             check_qr_svg(svg, coin.address)
             modules = len(qr_matrix(coin.address)) + 2 * QR_BORDER
             found[f"{block.id}-addr-{i}"] = _QrFile(
-                qr_file_name(n, coin.address), modules * _QR_PIXELS, svg
+                qr_file_name(n, svg), modules * _QR_PIXELS, svg
             )
     return found
 
