@@ -1,0 +1,15 @@
+# SPDX-License-Identifier: Apache-2.0
+# One read-only SQLite data source: the file `reach-around grafana-export` writes.
+# No secret, no host, no token. The file is mounted at /data by the run recipe.
+apiVersion: 1
+datasources:
+  - name: Reach Around
+    uid: reach-around-sqlite
+    type: frser-sqlite-datasource
+    access: proxy
+    isDefault: true
+    editable: false
+    jsonData:
+      path: /data/grafana.sqlite3
+      pathPrefix: "file:"
+      pathOptions: "mode=ro"

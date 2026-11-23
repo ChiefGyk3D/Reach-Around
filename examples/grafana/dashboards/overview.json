@@ -1,0 +1,667 @@
+{
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": {
+          "type": "grafana",
+          "uid": "-- Grafana --"
+        },
+        "enable": false,
+        "hide": true,
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      },
+      {
+        "datasource": {
+          "type": "frser-sqlite-datasource",
+          "uid": "reach-around-sqlite"
+        },
+        "enable": true,
+        "iconColor": "#b39ddb",
+        "name": "Cutover",
+        "target": {
+          "datasource": {
+            "type": "frser-sqlite-datasource",
+            "uid": "reach-around-sqlite"
+          },
+          "queryText": "SELECT CAST(strftime('%s', day) AS INTEGER) AS time, text FROM grafana_annotations WHERE day BETWEEN date($__from / 1000, 'unixepoch') AND date($__to / 1000, 'unixepoch')",
+          "rawQueryText": "SELECT CAST(strftime('%s', day) AS INTEGER) AS time, text FROM grafana_annotations WHERE day BETWEEN date($__from / 1000, 'unixepoch') AND date($__to / 1000, 'unixepoch')",
+          "refId": "A",
+          "timeColumns": [
+            "time"
+          ]
+        }
+      },
+      {
+        "datasource": {
+          "type": "frser-sqlite-datasource",
+          "uid": "reach-around-sqlite"
+        },
+        "enable": true,
+        "iconColor": "#ef9a9a",
+        "name": "Collection gaps",
+        "target": {
+          "datasource": {
+            "type": "frser-sqlite-datasource",
+            "uid": "reach-around-sqlite"
+          },
+          "queryText": "SELECT CAST(strftime('%s', day) AS INTEGER) AS time, status || ' (' || reason || '): no data is not zero' AS text FROM grafana_gaps_daily WHERE day BETWEEN date($__from / 1000, 'unixepoch') AND date($__to / 1000, 'unixepoch')",
+          "rawQueryText": "SELECT CAST(strftime('%s', day) AS INTEGER) AS time, status || ' (' || reason || '): no data is not zero' AS text FROM grafana_gaps_daily WHERE day BETWEEN date($__from / 1000, 'unixepoch') AND date($__to / 1000, 'unixepoch')",
+          "refId": "A",
+          "timeColumns": [
+            "time"
+          ]
+        }
+      }
+    ]
+  },
+  "editable": false,
+  "graphTooltip": 1,
+  "links": [
+    {
+      "asDropdown": false,
+      "includeVars": false,
+      "keepTime": true,
+      "tags": [
+        "reach-around"
+      ],
+      "title": "Reach Around dashboards",
+      "type": "dashboards"
+    }
+  ],
+  "panels": [
+    {
+      "datasource": {
+        "type": "frser-sqlite-datasource",
+        "uid": "reach-around-sqlite"
+      },
+      "description": "",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "fixedColor": "#8ab4f8",
+            "mode": "fixed"
+          },
+          "decimals": 0,
+          "mappings": [
+            {
+              "options": {
+                "from": 0.0001,
+                "result": {
+                  "index": 0,
+                  "text": "Under 5"
+                },
+                "to": 4.9999
+              },
+              "type": "range"
+            }
+          ],
+          "noValue": "No data",
+          "unit": "none"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 0,
+        "y": 0
+      },
+      "id": 1,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "frser-sqlite-datasource",
+            "uid": "reach-around-sqlite"
+          },
+          "queryText": "SELECT SUM(views) FROM grafana_views_daily WHERE bot_class = 'h' AND day BETWEEN date($__from / 1000, 'unixepoch') AND date($__to / 1000, 'unixepoch')",
+          "rawQueryText": "SELECT SUM(views) FROM grafana_views_daily WHERE bot_class = 'h' AND day BETWEEN date($__from / 1000, 'unixepoch') AND date($__to / 1000, 'unixepoch')",
+          "refId": "A",
+          "timeColumns": []
+        }
+      ],
+      "title": "Likely-human views",
+      "transformations": [],
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "frser-sqlite-datasource",
+        "uid": "reach-around-sqlite"
+      },
+      "description": "",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "fixedColor": "#8ab4f8",
+            "mode": "fixed"
+          },
+          "decimals": 0,
+          "mappings": [
+            {
+              "options": {
+                "from": 0.0001,
+                "result": {
+                  "index": 0,
+                  "text": "Under 5"
+                },
+                "to": 4.9999
+              },
+              "type": "range"
+            }
+          ],
+          "noValue": "No data",
+          "unit": "none"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 6,
+        "y": 0
+      },
+      "id": 2,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "frser-sqlite-datasource",
+            "uid": "reach-around-sqlite"
+          },
+          "queryText": "SELECT SUM(clicks) FROM grafana_clicks_daily WHERE day BETWEEN date($__from / 1000, 'unixepoch') AND date($__to / 1000, 'unixepoch')",
+          "rawQueryText": "SELECT SUM(clicks) FROM grafana_clicks_daily WHERE day BETWEEN date($__from / 1000, 'unixepoch') AND date($__to / 1000, 'unixepoch')",
+          "refId": "A",
+          "timeColumns": []
+        }
+      ],
+      "title": "Link clicks",
+      "transformations": [],
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "frser-sqlite-datasource",
+        "uid": "reach-around-sqlite"
+      },
+      "description": "Clicks over likely-human views, not a conversion rate.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "fixedColor": "#8ab4f8",
+            "mode": "fixed"
+          },
+          "decimals": 1,
+          "mappings": [],
+          "noValue": "No data",
+          "unit": "none"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 12,
+        "y": 0
+      },
+      "id": 3,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "frser-sqlite-datasource",
+            "uid": "reach-around-sqlite"
+          },
+          "queryText": "SELECT (SELECT SUM(clicks) FROM grafana_clicks_daily WHERE day BETWEEN date($__from / 1000, 'unixepoch') AND date($__to / 1000, 'unixepoch')) * 100.0 / NULLIF((SELECT SUM(views) FROM grafana_views_daily WHERE bot_class = 'h' AND day BETWEEN date($__from / 1000, 'unixepoch') AND date($__to / 1000, 'unixepoch')), 0)",
+          "rawQueryText": "SELECT (SELECT SUM(clicks) FROM grafana_clicks_daily WHERE day BETWEEN date($__from / 1000, 'unixepoch') AND date($__to / 1000, 'unixepoch')) * 100.0 / NULLIF((SELECT SUM(views) FROM grafana_views_daily WHERE bot_class = 'h' AND day BETWEEN date($__from / 1000, 'unixepoch') AND date($__to / 1000, 'unixepoch')), 0)",
+          "refId": "A",
+          "timeColumns": []
+        }
+      ],
+      "title": "Clicks per 100 views",
+      "transformations": [],
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "frser-sqlite-datasource",
+        "uid": "reach-around-sqlite"
+      },
+      "description": "",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "fixedColor": "#8ab4f8",
+            "mode": "fixed"
+          },
+          "decimals": 0,
+          "mappings": [],
+          "noValue": "No data",
+          "unit": "none"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 18,
+        "y": 0
+      },
+      "id": 4,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "frser-sqlite-datasource",
+            "uid": "reach-around-sqlite"
+          },
+          "queryText": "SELECT CAST(value AS INTEGER) FROM grafana_meta WHERE key = 'floor'",
+          "rawQueryText": "SELECT CAST(value AS INTEGER) FROM grafana_meta WHERE key = 'floor'",
+          "refId": "A",
+          "timeColumns": []
+        }
+      ],
+      "title": "Privacy floor",
+      "transformations": [],
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "frser-sqlite-datasource",
+        "uid": "reach-around-sqlite"
+      },
+      "description": "",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "lineWidth": 2,
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            }
+          },
+          "decimals": 0,
+          "min": 0,
+          "noValue": "No data"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 4
+      },
+      "id": 5,
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "frser-sqlite-datasource",
+            "uid": "reach-around-sqlite"
+          },
+          "queryText": "SELECT CAST(strftime('%s', day) AS INTEGER) AS time, views FROM grafana_views_daily WHERE bot_class = 'h' AND day BETWEEN date($__from / 1000, 'unixepoch') AND date($__to / 1000, 'unixepoch') ORDER BY day",
+          "rawQueryText": "SELECT CAST(strftime('%s', day) AS INTEGER) AS time, views FROM grafana_views_daily WHERE bot_class = 'h' AND day BETWEEN date($__from / 1000, 'unixepoch') AND date($__to / 1000, 'unixepoch') ORDER BY day",
+          "refId": "A",
+          "timeColumns": [
+            "time"
+          ]
+        }
+      ],
+      "title": "Likely-human views per day",
+      "transformations": [],
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "frser-sqlite-datasource",
+        "uid": "reach-around-sqlite"
+      },
+      "description": "",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "lineWidth": 2,
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            }
+          },
+          "decimals": 0,
+          "min": 0,
+          "noValue": "No data"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 4
+      },
+      "id": 6,
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "frser-sqlite-datasource",
+            "uid": "reach-around-sqlite"
+          },
+          "queryText": "SELECT CAST(strftime('%s', day) AS INTEGER) AS time, SUM(clicks) AS clicks FROM grafana_clicks_daily WHERE day BETWEEN date($__from / 1000, 'unixepoch') AND date($__to / 1000, 'unixepoch') GROUP BY day ORDER BY day",
+          "rawQueryText": "SELECT CAST(strftime('%s', day) AS INTEGER) AS time, SUM(clicks) AS clicks FROM grafana_clicks_daily WHERE day BETWEEN date($__from / 1000, 'unixepoch') AND date($__to / 1000, 'unixepoch') GROUP BY day ORDER BY day",
+          "refId": "A",
+          "timeColumns": [
+            "time"
+          ]
+        }
+      ],
+      "title": "Link clicks per day",
+      "transformations": [],
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "frser-sqlite-datasource",
+        "uid": "reach-around-sqlite"
+      },
+      "description": "",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 40,
+            "lineWidth": 2,
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "normal"
+            }
+          },
+          "decimals": 0,
+          "min": 0,
+          "noValue": "No data"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 12
+      },
+      "id": 7,
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "frser-sqlite-datasource",
+            "uid": "reach-around-sqlite"
+          },
+          "queryText": "SELECT CAST(strftime('%s', day) AS INTEGER) AS time, CASE bot_class WHEN 'h' THEN 'Likely human' WHEN 'v' THEN 'Verified crawler' WHEN 'a' THEN 'Automated' WHEN 's' THEN 'Suspicious' ELSE 'Other (below the floor)' END AS class, views FROM grafana_views_daily WHERE day BETWEEN date($__from / 1000, 'unixepoch') AND date($__to / 1000, 'unixepoch') ORDER BY day",
+          "rawQueryText": "SELECT CAST(strftime('%s', day) AS INTEGER) AS time, CASE bot_class WHEN 'h' THEN 'Likely human' WHEN 'v' THEN 'Verified crawler' WHEN 'a' THEN 'Automated' WHEN 's' THEN 'Suspicious' ELSE 'Other (below the floor)' END AS class, views FROM grafana_views_daily WHERE day BETWEEN date($__from / 1000, 'unixepoch') AND date($__to / 1000, 'unixepoch') ORDER BY day",
+          "refId": "A",
+          "timeColumns": [
+            "time"
+          ]
+        }
+      ],
+      "title": "Views per day by traffic class",
+      "transformations": [
+        {
+          "id": "partitionByValues",
+          "options": {
+            "fields": [
+              "class"
+            ],
+            "naming": {
+              "asLabels": false
+            }
+          }
+        }
+      ],
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "frser-sqlite-datasource",
+        "uid": "reach-around-sqlite"
+      },
+      "description": "",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "fixedColor": "#8ab4f8",
+            "mode": "fixed"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "lineWidth": 2,
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            }
+          },
+          "decimals": 0,
+          "min": 0,
+          "noValue": "No data"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 12
+      },
+      "id": 8,
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "frser-sqlite-datasource",
+            "uid": "reach-around-sqlite"
+          },
+          "queryText": "SELECT CAST(strftime('%s', c.day) AS INTEGER) AS time, c.clicks * 100.0 / v.views AS clicks_per_100_views FROM (SELECT day, SUM(clicks) AS clicks FROM grafana_clicks_daily GROUP BY day) AS c JOIN grafana_views_daily AS v ON v.day = c.day AND v.bot_class = 'h' WHERE c.day BETWEEN date($__from / 1000, 'unixepoch') AND date($__to / 1000, 'unixepoch') ORDER BY c.day",
+          "rawQueryText": "SELECT CAST(strftime('%s', c.day) AS INTEGER) AS time, c.clicks * 100.0 / v.views AS clicks_per_100_views FROM (SELECT day, SUM(clicks) AS clicks FROM grafana_clicks_daily GROUP BY day) AS c JOIN grafana_views_daily AS v ON v.day = c.day AND v.bot_class = 'h' WHERE c.day BETWEEN date($__from / 1000, 'unixepoch') AND date($__to / 1000, 'unixepoch') ORDER BY c.day",
+          "refId": "A",
+          "timeColumns": [
+            "time"
+          ]
+        }
+      ],
+      "title": "Clicks per 100 likely-human views",
+      "transformations": [],
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "frser-sqlite-datasource",
+        "uid": "reach-around-sqlite"
+      },
+      "description": "A gap is a day with no collection; a partial day has some hours missing.",
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto"
+          },
+          "mappings": []
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 0,
+        "y": 20
+      },
+      "id": 9,
+      "options": {
+        "cellHeight": "sm",
+        "showHeader": true
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "frser-sqlite-datasource",
+            "uid": "reach-around-sqlite"
+          },
+          "queryText": "SELECT day, status, reason FROM grafana_gaps_daily WHERE day BETWEEN date($__from / 1000, 'unixepoch') AND date($__to / 1000, 'unixepoch') ORDER BY day",
+          "rawQueryText": "SELECT day, status, reason FROM grafana_gaps_daily WHERE day BETWEEN date($__from / 1000, 'unixepoch') AND date($__to / 1000, 'unixepoch') ORDER BY day",
+          "refId": "A",
+          "timeColumns": []
+        }
+      ],
+      "title": "Collection gaps in this range",
+      "transformations": [],
+      "type": "table"
+    },
+    {
+      "description": "",
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 12,
+        "y": 20
+      },
+      "id": 10,
+      "options": {
+        "content": "Every count comes from a Reach Around export that already applied the privacy floor of 5. A row under the floor is never stored alone: small rows are merged into one line named `(below the floor)`. On a day with any small row, the largest row joins that line too, so a link can be missing on such a day. Any count between 1 and 4 shows as **Under 5**. A day marked red had no or partial data collection, and a missing point is not a zero: it is a gap or a count under the floor. Sample data is synthetic.",
+        "mode": "markdown"
+      },
+      "title": "About these numbers",
+      "transformations": [],
+      "type": "text"
+    }
+  ],
+  "refresh": "",
+  "schemaVersion": 39,
+  "tags": [
+    "reach-around"
+  ],
+  "templating": {
+    "list": []
+  },
+  "time": {
+    "from": "now-30d",
+    "to": "now"
+  },
+  "timepicker": {
+    "hidden": false,
+    "refresh_intervals": []
+  },
+  "timezone": "utc",
+  "title": "Reach Around: counts over time",
+  "uid": "ra-overview",
+  "version": 1
+}

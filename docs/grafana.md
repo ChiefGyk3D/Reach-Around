@@ -145,8 +145,10 @@ category: filter it out of pie charts, or label it.
 
 ## Not covered
 
-- The Grafana side (installing the SQLite data source plugin, dashboards,
-  push or scrape sinks) is not part of this job.
+- The Grafana side is not part of the export job. Example provisioning, three
+  dashboards, a synthetic sample and a rootless Podman recipe live in
+  [`examples/grafana/`](../examples/grafana/README.md). Push or scrape sinks are
+  not covered.
 - The store is as fresh as the export. A stale export gives a stale chart.
 - A funnel with sources joined to clicks is not offered: clicks carry no
   source.

@@ -1,0 +1,52 @@
+# SPDX-License-Identifier: Apache-2.0
+# A SEPARATE Grafana for the Reach Around dashboards. Rootless Podman, no Docker
+# socket, its own network, its own named volume, its own port on loopback only.
+# It does not join or reuse any other Grafana.
+#
+# Setup is in examples/grafana/README.md. The image is pinned by tag and digest.
+# Grafana 12.4.15 was published 2026-11-10 (Docker Hub, read 2026-11-23).
+[Unit]
+Description=Reach Around Grafana (separate instance)
+After=network-online.target
+Wants=network-online.target
+
+[Container]
+ContainerName=reach-around-grafana
+Image=docker.io/grafana/grafana:12.4.15@sha256:2894082f6cf7081aefdc1389265c04000812309208c190d75e8c65f7a30e4b7e
+Network=reach-around-grafana.network
+Volume=reach-around-grafana.volume:/var/lib/grafana
+# Read-only host files: the store, the provisioning files, the dashboards.
+Volume=%h/reach-around-grafana/data:/data:ro,Z
+Volume=%h/reach-around-grafana/provisioning:/etc/grafana/provisioning:ro,Z
+Volume=%h/reach-around-grafana/dashboards:/var/lib/grafana-dashboards:ro,Z
+# Loopback only, port 3737 (Grafana's usual 3000 stays free for any other instance).
+PublishPort=127.0.0.1:3737:3000
+
+# The admin password is a Podman secret (see the README), never a file in this repo.
+Secret=reach-around-grafana-admin,type=env,target=GF_SECURITY_ADMIN_PASSWORD
+
+# Dark is the default theme.
+Environment=GF_USERS_DEFAULT_THEME=dark
+Environment=GF_USERS_ALLOW_SIGN_UP=false
+Environment=GF_AUTH_ANONYMOUS_ENABLED=false
+Environment=GF_SECURITY_DISABLE_GRAVATAR=true
+Environment=GF_SECURITY_COOKIE_SECURE=false
+Environment=GF_ANALYTICS_REPORTING_ENABLED=false
+Environment=GF_ANALYTICS_CHECK_FOR_UPDATES=false
+Environment=GF_ANALYTICS_CHECK_FOR_PLUGIN_UPDATES=false
+Environment=GF_NEWS_NEWS_FEED_ENABLED=false
+# The SQLite data source plugin, installed into the named volume at first start
+# (needs outbound access to grafana.com once). Pinned by version.
+Environment=GF_PLUGINS_PREINSTALL_SYNC=frser-sqlite-datasource@4.0.6
+
+ReadOnly=true
+Tmpfs=/tmp
+DropCapability=ALL
+NoNewPrivileges=true
+
+[Service]
+Restart=on-failure
+TimeoutStartSec=300
+
+[Install]
+WantedBy=default.target
