@@ -1,0 +1,17 @@
+{# SPDX-License-Identifier: Apache-2.0 #}
+{# A stack tab drawn as its own page (page.layout: stack, tab.spoke): the same
+   blocks as a tab page, a back link to the home page, click counting as usual. #}
+{% extends "base.html" %}
+{% block content %}
+<h2 class="spoke-title">{{ tab.title }}</h2>
+{% if blocks %}
+<ul class="blocks layout-{{ tab.layout }}">
+{% for block in blocks %}
+{% include "blocks/" ~ block_kind(block) ~ ".html" %}
+{% endfor %}
+</ul>
+{% else %}
+<p class="empty">Nothing here right now.</p>
+{% endif %}
+<p class="spoke-back"><a href="{{ root }}">Back to the links</a></p>
+{% endblock %}

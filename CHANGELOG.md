@@ -6,6 +6,7 @@ while the project is alpha, every release is `0.x` and anything can change betwe
 
 ## [Unreleased]
 
+- Spoke pages (#676, epic #667): new `spoke: true` on a stack tab renders the group as its own page at `/<id>/` (for example `/gear/`), with a single card on the home page linking to it. The page has its own title, canonical link, privacy link, footer, affiliate disclosure and back link, and its links are click counted as before. New `page.url` (bare https origin) gives the home page and every spoke its canonical link. A config with no spoke renders as before. Strict validation: needs `page.layout: stack` and `page.url`, no Watch spoke, no `collapsed` or `style`, reserved ids refused. Schema and the renderer vocabulary regenerated. Docs: `docs/config.md`.
 - Container image: upgrade libc6 and libc-bin to the Debian build 2.41-12+deb13u5 in the runtime stage; the `v0.3.0-rc.5` release scan failed on 28 findings in the base image's `2.41-12+deb13u4` and nothing was published (#702). The scan gate is unchanged. The upgrade comes out once the base image carries the fix.
 
 ## [0.3.0-rc.5] - 2026-11-21

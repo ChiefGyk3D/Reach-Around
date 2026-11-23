@@ -190,7 +190,10 @@ def _page_path(tab_index: int, tab: Tab) -> Path:
 
 def _page_paths(config: SiteConfig, with_kit: bool = True) -> set[Path]:
     """Every HTML file the build writes (``with_kit`` adds the kit's pages)."""
-    if config.page.layout == "stack" or config.page_layout == "sections":
+    if config.page.layout == "stack":
+        pages = {Path("index.html")}
+        pages |= {Path(tab.id) / "index.html" for tab in config.tabs if tab.spoke}
+    elif config.page_layout == "sections":
         pages = {Path("index.html")}
     else:
         pages = {_page_path(i, tab) for i, tab in enumerate(config.tabs)}
@@ -267,19 +270,27 @@ def _internal_href(
     id is known.
     """
     if config.page.layout == "stack":
+        base = "" if root == "./" else root
+        spokes = {tab.id for tab in config.tabs if tab.spoke}
         homes = {
             tab.id: (
-                root
+                f"{base}{tab.id}/"
+                if tab.spoke
+                else root
                 if tab.intent == "watch"
-                else f"{'' if root == './' else root}#group-{tab.intent}"
+                else f"{base}#group-{tab.intent}"
             )
             for tab in config.tabs
         }
 
         def stack_href(url: str) -> str:
             tab_id, fragment = parse_tab_ref(url)
+            if tab_id in spokes:
+                return (
+                    homes[tab_id] if fragment is None else f"{homes[tab_id]}#{fragment}"
+                )
             if fragment is not None:
-                return f"{'' if root == './' else root}#{fragment}"
+                return f"{base}#{fragment}"
             return homes[tab_id]
 
         return stack_href
@@ -474,6 +485,57 @@ def _render_sections_page(
     )
 
 
+def _canonical(config: SiteConfig, path: str) -> str | None:
+    """The canonical URL of a stack page (``path`` is "" or "<id>/"), if set."""
+    if config.page.layout != "stack" or config.page.url is None:
+        return None
+    return f"{config.page.url}/{path}"
+
+
+def _render_spoke_page(
+    env: Environment,
+    config: SiteConfig,
+    index: int,
+    blocks: Sequence[Block],
+    custom_css: bool,
+) -> str:
+    """A stack tab drawn as its own page at ``/<id>/``."""
+    tab = config.tabs[index]
+    has_affiliate = any(link.affiliate for link in _links_in(blocks))
+    return env.get_template("spoke.html").render(
+        creator=config.creator,
+        tab=tab,
+        blocks=blocks,
+        nav=[],
+        tab_href=_internal_href(config, "../"),
+        root="../",
+        page_title=page_title(config, tab.title, home=False, own=tab.page_title),
+        canonical=_canonical(config, f"{tab.id}/"),
+        disclosure=_disclosure_line(config),
+        show_disclosure=_show_disclosure(config, has_affiliate),
+        show_cookie_banner=sets_cookies(config),
+        click_tracking=config.features.click_tracking,
+        footer_credit=config.footer.credit,
+        footer_credit_text=config.footer.text,
+        footer_credit_url=CREDIT_URL,
+        page_views=config.analytics.page_views,
+        beacon_frame=beacon_frame_on(config),
+        page_id=tab.id,
+        view_route=config.analytics.route,
+        beacon_token=config.analytics.beacon_token,
+        has_crypto=False,
+        has_email=False,
+        has_email_script=False,
+        has_platforms=False,
+        has_live=False,
+        has_live_script=False,
+        profile_card=_profile_card(config),
+        cookie_text=intro_text(config),
+        custom_css=custom_css,
+        page_frames=_page_has_frames(config, blocks),
+    )
+
+
 def _render_smart_stack_page(
     env: Environment,
     config: SiteConfig,
@@ -482,10 +544,17 @@ def _render_smart_stack_page(
     today: date,
 ) -> str:
     """Render the production one-page smart stack."""
-    every = [block for blocks in shown for block in blocks]
-    links = {link.id: link for link in _links_in(every)}
+    # Every link, spoke pages included, may be featured; the home page itself
+    # draws only the groups that are not spokes (those get one card each).
+    links = {link.id: link for blocks in shown for link in _links_in(blocks)}
+    every = [
+        block
+        for tab, blocks in zip(config.tabs, shown, strict=True)
+        if not tab.spoke
+        for block in blocks
+    ]
     groups = [
-        {"tab": tab, "links": _links_in(blocks)}
+        {"tab": tab, "links": [] if tab.spoke else _links_in(blocks)}
         for tab, blocks in zip(config.tabs, shown, strict=True)
         if tab.intent != "watch"
     ]
@@ -531,6 +600,7 @@ def _render_smart_stack_page(
         has_platforms=False,
         has_live=False,
         has_live_script=config.page.live_badges,
+        canonical=_canonical(config, ""),
         smart_stack=True,
         profile_card=_profile_card(config),
         cookie_text=intro_text(config),
@@ -687,6 +757,11 @@ def _render_pages(
                 env, config, shown, custom_css, today
             )
         }
+        for i, tab in enumerate(config.tabs):
+            if tab.spoke:
+                pages[Path(tab.id) / "index.html"] = _render_spoke_page(
+                    env, config, i, shown[i], custom_css
+                )
     elif config.page_layout == "sections":
         pages = {
             Path("index.html"): _render_sections_page(env, config, shown, custom_css)

@@ -2020,6 +2020,19 @@
           ],
           "default": null
         },
+        "url": {
+          "anyOf": [
+            {
+              "maxLength": 2048,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Url"
+        },
         "watch": {
           "items": {
             "pattern": "^[a-z0-9][a-z0-9-]{0,39}$",
@@ -3116,6 +3129,11 @@
           "default": null,
           "title": "Page Title"
         },
+        "spoke": {
+          "default": false,
+          "title": "Spoke",
+          "type": "boolean"
+        },
         "style": {
           "default": "buttons",
           "enum": [
@@ -3673,6 +3691,7 @@
         "layout": "classic",
         "live_badges": false,
         "status": null,
+        "url": null,
         "watch": []
       }
     },

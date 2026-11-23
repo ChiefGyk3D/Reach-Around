@@ -624,6 +624,7 @@ KNOWN_FIELDS: frozenset[str] = frozenset(
         "source",
         "sources",
         "spell",
+        "spoke",
         "src",
         "stale_days",
         "stat",
