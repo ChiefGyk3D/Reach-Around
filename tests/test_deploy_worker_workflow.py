@@ -1028,7 +1028,8 @@ def _template_uploads() -> dict[str, str]:
     return {
         str(s["with"]["name"]): str(s["with"]["path"])
         for job in jobs.values()
-        for s in job["steps"]
+        # a job that calls a reusable workflow has no steps
+        for s in job.get("steps", [])
         if str(s.get("uses", "")).startswith("actions/upload-artifact@")
     }
 
@@ -1048,7 +1049,19 @@ def test_the_docs_example_uses_the_names_the_template_uploads() -> None:
     assert set(example) <= set(call_spec()["inputs"])
 
 
-def test_the_docs_say_the_template_is_not_migrated_yet() -> None:
+def test_the_docs_say_the_template_calls_the_reusable_deploy() -> None:
     text = " ".join((ROOT / "docs" / "deploy.md").read_text(encoding="utf-8").split())
+    assert "The instance template calls it" in text
     assert "#694" in text
-    assert "does NOT get the OIDC-only reusable deploy" in text
+    # the old "not migrated yet" wording is gone
+    assert "does NOT get the OIDC-only reusable deploy" not in text
+    assert "does not call it yet" not in text
+    # and the template really does call it, twice, pinned
+    calls = [
+        job
+        for job in load(TEMPLATE)["jobs"].values()
+        if str(job.get("uses", "")).startswith(
+            "ChiefGyk3D/Reach-Around/.github/workflows/deploy-worker.yml@"
+        )
+    ]
+    assert len(calls) == 2

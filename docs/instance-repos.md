@@ -147,37 +147,56 @@ production assets.
 A private repository is not a safe place for a token. It limits who can read
 the file, not who can read a clone, a log or a fork of the repository.
 
-## Secrets: environment secret now, Doppler later
+## Secrets: the secret manager over OIDC, no GitHub secret
 
-Today the deploy token is a secret on the GitHub environment `production`. The
-environment has a required reviewer and a `main`-only deployment branch rule, so
-the secret is released to the deploy job only after a person approves. The token
-reaches the three wrangler steps and nothing else, which is also what the
-engine's own `deploy-test.yml` does and what threat model T-02 asks for (the
-build job has no secret, the deploy job runs fixed commands).
+The template holds no Cloudflare token as a GitHub secret (issue #694). Each
+deploy job reads it from the secret manager (Doppler) with a short-lived GitHub
+OIDC identity, so there is no long-lived token in GitHub to leak, and the owner
+revokes and rotates in one place (threat model T-19). The template has two
+tiers, each its own GitHub environment, its own Doppler identity and its own
+Doppler config:
 
-The intended end state is Doppler. Project secrets live in a Doppler project,
-and CI reads them with a short-lived OIDC identity instead of a stored token,
-which removes the long-lived token from GitHub and lets the owner revoke and
-rotate in one place (T-19). Issue #98 tracks the workflow. Until it lands the
-template keeps the option documented in comments and **disabled**; it needs
-`id-token: write` on the deploy job and a Doppler identity scoped to the
-repository and environment, neither of which is set up here. For deploys from
-your own machine, `scripts/deploy-local.sh` already reads the token from Doppler
-per command, as [`docs/examples/deploy-private.sh`](examples/deploy-private.sh)
-does.
+| Tier | Environment | Doppler config | Runs |
+|---|---|---|---|
+| staging | `staging` | `dev` | every push to `main`, and a manual run with target `staging` |
+| production | `production` | `prd` | only a manual run on `main` with target `production`, and only while the repository variable `ALLOW_PRODUCTION_DEPLOY` is exactly `true` |
+
+Production is off until you turn it on: the variable is not set by default, so a
+production job is skipped even if someone picks the target. Use `prd` only after
+the project is live and you have approved it as its own step.
+
+**Environment protection is the real gate on the branch.** Give each
+environment a required reviewer (not the author) and limit its deployment
+branches to `main`. The `if: github.ref == 'refs/heads/main'` lines in the
+workflow, and the reusable workflow's own check, are a second lock that fails
+closed; they are not the access control, because the called workflow sees the
+caller's ref and the environment is what GitHub enforces. An environment that
+does not exist yet is created unprotected on first use, so create and protect
+both before the first run.
+
+The Worker half is the engine's reusable workflow
+(`.github/workflows/deploy-worker.yml`, see `docs/deploy.md`, "Deploying the
+Worker from an instance repo"). The template calls it pinned by the commit in
+`engine.lock`; Renovate moves the image, the Worker source and both calls in one
+pull request, and a test fails if they differ. Pre-release pins such as
+`# v0.3.0-rc.6` are accepted in the version comment; a bad suffix is not. The
+token reaches one wrangler step in each Pages job and nothing else, and a
+Doppler identity pinned to one repository and environment is what makes the
+approval step meaningful. For deploys from your own machine,
+`scripts/deploy-local.sh` reads the token from Doppler per command, as
+[`docs/examples/deploy-private.sh`](examples/deploy-private.sh) does.
 
 ## What the template's workflows do
 
 | | `preview.yml` (pull request) | `deploy.yml` (push to `main`, manual) |
 |---|---|---|
 | Trigger | `pull_request` only, never `pull_request_target` | `push` to `main`, `workflow_dispatch` |
-| Permissions | `contents: read`; only the `comment` job also has `pull-requests: write` (and reads one script from the base commit) | `contents: read` |
-| Secrets, environment | none | `production`, reviewer required |
+| Permissions | `contents: read`; only the `comment` job also has `pull-requests: write` (and reads one script from the base commit) | `contents: read`; the four deploy jobs also `id-token: write` (OIDC to the secret manager), nothing else has it |
+| Secrets, environment | none | no GitHub secret; `staging` and `production`, reviewer required |
 | Runs | `reach-around check`, then the build, in the engine image named by the **base** branch's `engine.lock`, no network, only `site.yaml`, `media/` (and `overrides/`, `numbers.json`) mounted read-only; GYST `bash-ci` over the scripts and workflows | `reach-around check`, then the build, with the pinned image and no network |
-| Output | a `preview` artifact (the built site) and a pull request comment | site artifact, then Pages and Worker deploy |
-| Token | only the run's own token, only in the `comment` job | wrangler steps only |
-| Gate | `CI green` (needs every other job) | the `production` approval |
+| Output | a `preview` artifact (the built site) and a pull request comment | site artifact, then the Worker (reusable workflow) and Pages deploy, staging then, by hand only, production |
+| Token | only the run's own token, only in the `comment` job | the one Pages publish step of each deploy job, from the secret manager; the Worker call reads it inside the reusable workflow |
+| Gate | `CI green` (needs every other job) | each environment's approval, and `ALLOW_PRODUCTION_DEPLOY` for production |
 | Concurrency | one preview per pull request; a new push cancels the old | one deploy at a time, never cancelled |
 
 ### What the pull request sees

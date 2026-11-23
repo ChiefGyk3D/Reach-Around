@@ -637,15 +637,17 @@ to call the workflow pinned by commit
 the same way an instance repo calls it. Tests keep the two copies' deploy
 config equal until then.
 
-**The instance template does not call it yet.** An instance repository can call
-this workflow, but the shipped template
-(`examples/instance-repo/.github/workflows/deploy.yml`) still does the older
-inline Worker deploy, with a `secrets.CLOUDFLARE_API_TOKEN` token. Moving the
-template to the reusable workflow is deliberately deferred and tracked in issue
-#694 ("Instance template: call the reusable Worker deploy workflow instead of
-the inline Worker deploy"). Until #694 lands, a repository copied from the
-current template does NOT get the OIDC-only reusable deploy; it has to add the
-call below itself.
+**The instance template calls it.** The shipped template
+(`examples/instance-repo/.github/workflows/deploy.yml`, issue #694) has a
+`worker-staging` job and a `worker-production` job that call this workflow, each
+pinned to the commit in the template's `engine.lock` (a test keeps the two
+equal), and a `pages-staging` and a `pages-production` job that publish the
+site. A repository copied from the template therefore deploys with the OIDC-only
+reusable deploy and holds no Cloudflare token as a GitHub secret. Staging runs
+on every push to `main`. Production runs only by hand on `main` with target
+`production`, and only while the repository variable `ALLOW_PRODUCTION_DEPLOY` is
+exactly `true` (it is absent by default). The variables and the one-time setup
+are in the template's `README.md` and in `docs/instance-repos.md`.
 
 The reusable workflow does not publish the site; the caller does that with its own
 Pages step. It reads no GitHub secret: the Cloudflare token comes from Doppler
@@ -678,7 +680,8 @@ gate it, and it refuses any ref other than `main`.
       site_artifact: site-out
       manifest_artifact: site-manifest
       manifest_file: manifest.json
-      doppler_identity_id: ${{ vars.DOPPLER_IDENTITY_ID }}
+      doppler_identity_id: ${{ vars.DOPPLER_IDENTITY_ID_STAGING }}
+      doppler_project: ${{ vars.DOPPLER_PROJECT }}
       doppler_config: dev
       cloudflare_account_id: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
       d1_database_id: ${{ vars.D1_DATABASE_ID }}
