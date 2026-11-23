@@ -9,6 +9,7 @@ Every model refuses unknown keys and is frozen. Later phases extend
 from __future__ import annotations
 
 import re
+from collections.abc import Iterator
 from datetime import date
 from pathlib import Path
 from typing import Annotated, Any, Literal
@@ -58,6 +59,7 @@ from reach_around.config.redirects import Redirects
 from reach_around.config.robots import Robots
 from reach_around.config.site_nav import MAX_ITEMS as MAX_NAV_ITEMS
 from reach_around.config.site_nav import NavTitle
+from reach_around.config.support import check_no_address, check_no_markup, check_plain
 from reach_around.config.tablinks import is_tab_ref, parse_tab_ref
 from reach_around.config.theme import Theme
 from reach_around.site.theme import check_image_path
@@ -175,7 +177,7 @@ _ORIGIN_HOST = re.compile(
 PageVariant = Literal["classic", "stack"]
 # Paths the build already writes (or that the host serves) at the site root.
 RESERVED_SPOKE_IDS = frozenset(
-    {"privacy", "static", "e", "e-frame", "kit", "404", "socials"}
+    {"privacy", "static", "e", "e-frame", "kit", "404", "socials", "support"}
 )
 GroupStyle = Literal["buttons", "rows", "icons"]
 Intent = Literal[
@@ -474,6 +476,84 @@ class SiteNav(_Model):
         return self
 
 
+SUPPORT_PAGE_ID = "support"
+_SUPPORT_KINDS = (Crypto, Text, Divider)
+
+
+def _def_name(ref: str) -> str:
+    """The model name in a pydantic ``$defs`` reference, in either schema mode.
+
+    ``#/$defs/pkg__mod__Text-Input__1`` (validation) and the ``-Output`` or
+    plain forms (serialization) all give ``Text``.
+    """
+    tail = ref.rsplit("/", 1)[-1]
+    tail = re.sub(r"__\d+$", "", tail)
+    tail = re.sub(r"-(?:Input|Output)$", "", tail)
+    return tail.rsplit("__", 1)[-1]
+
+
+def _narrow_support_blocks(schema: dict[str, Any]) -> None:
+    """Keep only the support block kinds in the generated schema's item list."""
+    names = {kind.__name__ for kind in _SUPPORT_KINDS}
+    items = schema.get("items", {})
+    items["oneOf"] = [
+        ref for ref in items.get("oneOf", []) if _def_name(ref["$ref"]) in names
+    ]
+
+
+# Every string the support page shows, with its kind: ``text`` is plain text
+# and ``markdown`` is a text block (shown as escaped plain text, blank lines
+# between paragraphs allowed). A coin's address is the one thing not listed.
+def _displayed_text(page: SupportPage) -> Iterator[tuple[str, str]]:
+    """Every string the support page shows, except a coin's address."""
+    yield page.title, "text"
+    if page.intro is not None:
+        yield page.intro, "text"
+    for block in page.blocks:
+        if isinstance(block, Text):
+            yield block.markdown, "markdown"
+        elif isinstance(block, Crypto):
+            yield block.title or "", "text"
+            yield block.shown_note, "text"
+            for coin in block.coins:
+                for value in (coin.label, coin.name, coin.network):
+                    if value is not None:
+                        yield value, "text"
+
+
+class SupportPage(_Model):
+    """The support page (#683): the one place the crypto addresses live.
+
+    It renders at ``/support/`` as the heading, the optional intro, the one
+    crypto block, then any other blocks (crypto, text, divider only).
+    Text is plain: no links, images or HTML, and nothing address-like outside
+    a coin's address. The hub keeps its own direct support links.
+    """
+
+    title: PageTitle
+    intro: Subtitle | None = None
+    # The validator below refuses the other kinds; the schema says so too.
+    blocks: list[Block] = Field(
+        min_length=1, json_schema_extra=lambda schema: _narrow_support_blocks(schema)
+    )
+
+    @model_validator(mode="after")
+    def _only_support_blocks(self) -> SupportPage:
+        if not all(isinstance(block, _SUPPORT_KINDS) for block in self.blocks):
+            raise ValueError("support blocks can be crypto, text or divider")
+        if sum(isinstance(block, Crypto) for block in self.blocks) > 1:
+            raise ValueError("the support page takes at most one crypto block")
+        for block in self.blocks:
+            if isinstance(block, Crypto) and any(c.qr is not None for c in block.coins):
+                raise ValueError("support coins take no QR image")
+        for value, kind in _displayed_text(self):
+            check_plain(value, allow_newline=kind == "markdown")
+            if kind == "markdown":
+                check_no_markup(value)
+            check_no_address(value)
+        return self
+
+
 class SiteConfig(_Model):
     version: Literal[1]
     creator: Creator
@@ -492,6 +572,7 @@ class SiteConfig(_Model):
     store: StoreConfig = StoreConfig()
     profile_card: ProfileCard | None = None
     site_nav: SiteNav | None = None
+    support: SupportPage | None = None
     numbers: NumbersConfig | None = None
     analytics: Analytics = Analytics()
     kit: KitConfig | None = None
@@ -534,6 +615,11 @@ class SiteConfig(_Model):
                 if ident in seen:
                     raise ValueError(f"duplicate id {ident!r}: ids must be unique")
                 seen.add(ident)
+        if self.support is not None:
+            for block in self.support.blocks:
+                if block.id in seen:
+                    raise ValueError(f"duplicate id {block.id!r}: ids must be unique")
+                seen.add(block.id)
         if (
             self.profile_card is not None
             and self.profile_card.button is not None
@@ -541,6 +627,22 @@ class SiteConfig(_Model):
         ):
             raise ValueError(
                 f"id {MEDIA_KIT_ID!r} is reserved for the profile card button"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _crypto_lives_on_the_support_page(self) -> SiteConfig:
+        if self.support is None:
+            return self
+        if any(isinstance(b, Crypto) for tab in self.tabs for b in tab.blocks):
+            raise ValueError(
+                "crypto addresses live on the support page only: remove the "
+                "crypto block from the tabs"
+            )
+        if any(tab.id == SUPPORT_PAGE_ID for tab in self.tabs):
+            raise ValueError(
+                "a tab uses the id 'support', which the support page takes for "
+                "its path /support/; rename the tab"
             )
         return self
 

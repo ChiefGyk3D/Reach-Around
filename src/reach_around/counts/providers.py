@@ -17,6 +17,7 @@ from urllib.parse import quote, urlencode, urlsplit
 
 from reach_around.config.blocks import MAX_COUNT
 from reach_around.config.numbers_sources import (
+    YOUTUBE_HANDLE_ENV,
     YOUTUBE_KEY_ENV,
     BlueskySource,
     DiscordSource,
@@ -284,15 +285,45 @@ def matrix(source: MatrixSource, ctx: Context) -> int:
     return _count(summary, "num_joined_members")
 
 
+# YouTube handle: 3 to 30 ASCII letters, digits, underscore, hyphen or period; no
+# separator at either end. Non-Latin handles are not supported (refused, not
+# guessed at). An optional single leading @ is accepted.
+_YT_HANDLE = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9._-]{1,28}[A-Za-z0-9])", re.ASCII)
+
+
+def _youtube_handle(env: Mapping[str, str]) -> str:
+    value = env.get(YOUTUBE_HANDLE_ENV, "")
+    if not value:
+        raise SourceError("missing_handle")
+    bare = value[1:] if value.startswith("@") else value
+    if not _YT_HANDLE.fullmatch(bare):
+        raise SourceError("invalid_handle")
+    return "@" + bare
+
+
 def youtube(source: YoutubeSource, ctx: Context) -> int:
     # use-time name and type check, before the environment is read
     name = source.api_key_env
     if type(name) is not str or name != YOUTUBE_KEY_ENV:
         raise SourceError("bad_credential_name")
+    # exactly one lookup, again at use time (a forged object skips load checks)
+    channel_id = source.channel_id
+    handle_name = source.handle_env
+    if (channel_id is None) == (handle_name is None):
+        raise SourceError("bad_source_setting")
+    if channel_id is not None and type(channel_id) is not str:
+        raise SourceError("bad_source_setting")
+    if handle_name is not None and (
+        type(handle_name) is not str or handle_name != YOUTUBE_HANDLE_ENV
+    ):
+        raise SourceError("bad_source_setting")
     key = _secret(ctx.env, YOUTUBE_KEY_ENV)
-    url = "https://www.googleapis.com/youtube/v3/channels?" + urlencode(
-        {"part": "statistics", "id": source.channel_id}
-    )
+    query = {"part": "statistics"}
+    if channel_id is not None:
+        query["id"] = channel_id
+    else:
+        query["forHandle"] = _youtube_handle(ctx.env)
+    url = "https://www.googleapis.com/youtube/v3/channels?" + urlencode(query)
     # the key travels in a header, never in the URL
     payload = _guarded_fetch(ctx, url, _YOUTUBE_HOSTS, headers={"x-goog-api-key": key})
     stats = _object(_first(payload, "items"), "statistics")

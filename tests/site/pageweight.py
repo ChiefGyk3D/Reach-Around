@@ -20,7 +20,16 @@ from html.parser import HTMLParser
 from pathlib import Path
 from urllib.parse import urlsplit
 
-PAGE_TYPES = ("hub", "hub-stack", "hub-live", "spoke", "tab", "kit", "support")
+PAGE_TYPES = (
+    "hub",
+    "hub-stack",
+    "hub-live",
+    "spoke",
+    "tab",
+    "kit",
+    "support",
+    "support-page",
+)
 FIELDS = ("html", "css", "js", "images", "fonts", "total", "compressed", "requests")
 
 # Bytes, except ``requests``. Measured on the example instance and a kit with
@@ -104,6 +113,19 @@ BUDGET: dict[str, dict[str, int]] = {
         "compressed": 78000,
         "requests": 10,
     },
+    # The support page (#683): a crypto block with two coins and the copy
+    # script. Measured 2026-11-23 on the example instance's creator and theme,
+    # then raised by about a quarter. A QR image, if set, adds its own size.
+    "support-page": {
+        "html": 5100,
+        "css": 65300,
+        "js": 16700,
+        "images": 1300,
+        "fonts": 81500,
+        "total": 169700,
+        "compressed": 84800,
+        "requests": 14,
+    },
 }
 
 # The one third-party origin a build may reference, and only on the two gate
@@ -137,6 +159,9 @@ _FETCHED_RELS = {
 _CSS_URL = re.compile(r"url\(\s*['\"]?\s*([^'\")\s]+)|@import\s+['\"]([^'\"]+)")
 
 
+# The fixture root that carries the support page (#683); only that page is measured.
+SUPPORT_SITE = "supportpage"
+
 # Stack fixture roots: only their home page is measured, as these types.
 STACK_SITES = {"stack": "hub-stack", "stack-live": "hub-live"}
 # The spoke fixture root: only its spoke page is measured, as the "spoke" type.
@@ -158,6 +183,8 @@ def page_type(rel: str, site: str = "") -> str:
         return "hub"
     if rel == "kit/index.html":
         return "kit"
+    if rel == "support/index.html":
+        return "support-page"
     if rel in ("privacy/index.html", "kit/retry/index.html", "404.html"):
         return "support"
     return "tab"

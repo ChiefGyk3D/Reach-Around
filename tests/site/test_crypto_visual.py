@@ -254,3 +254,32 @@ def test_text_passes_aa_on_the_orange_and_the_card(
         bg = page.evaluate(_TO_RGB, style[1] if has_own else card_bg)
         assert _ratio(fg, bg) >= 4.5, (selector, scheme, _ratio(fg, bg))
     context.close()
+
+
+def test_a_second_element_with_the_same_id_does_not_change_what_is_copied(
+    browser: Browser, base_url: str
+) -> None:
+    """The button copies the address in its own card, not a lookup by id."""
+    context = _context(browser, 390)
+    context.grant_permissions(
+        ["clipboard-read", "clipboard-write"], origin=base_url.rstrip("/")
+    )
+    page = context.new_page()
+    page.goto(base_url)
+    button = page.locator("button.copy-button").first
+    target = button.get_attribute("data-copy-target")
+    page.evaluate(
+        """(id) => {
+            const fake = document.createElement('code');
+            fake.id = id;
+            fake.textContent = 'FAKE-ADDRESS-PLACEHOLDER';
+            document.body.prepend(fake);
+        }""",
+        target,
+    )
+    button.click()
+    page.wait_for_function(
+        "document.querySelector('[data-copy-status]').textContent === 'Copied'"
+    )
+    assert page.evaluate("navigator.clipboard.readText()") == BTC
+    context.close()

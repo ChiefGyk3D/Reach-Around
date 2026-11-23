@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import base64
 import json
+import re
 import shutil
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
@@ -29,6 +30,7 @@ from reach_around.config.blocks import (
     Email,
     Live,
     Platforms,
+    Text,
 )
 from reach_around.config.footer import CREDIT_URL
 from reach_around.config.imported_history import ImportedHistory
@@ -84,6 +86,7 @@ from reach_around.site.platforms import platform_rows
 from reach_around.site.privacy import collected_items, intro_text, sets_cookies
 from reach_around.site.redirects import render_redirects
 from reach_around.site.robots import render_robots
+from reach_around.site.supportcheck import check_support_html
 from reach_around.site.theme import preload_fonts, theme_css
 from reach_around.site.visibility import visible_blocks
 
@@ -180,6 +183,9 @@ _ZONE_SCRIPT = Path("static") / "zone.js"
 # Published only for a site with an email block; the script only if one uses it.
 _EMAIL_STYLE = Path("static") / "email.css"
 _EMAIL_SCRIPT = Path("static") / "email.js"
+
+
+_SUPPORT_PATH = Path("support") / "index.html"
 
 
 def _page_path(tab_index: int, tab: Tab) -> Path:
@@ -609,6 +615,120 @@ def _render_smart_stack_page(
     )
 
 
+def _paragraphs(text: str) -> list[list[str]]:
+    """Support text as paragraphs of lines: split on blank lines, nothing else read.
+
+    The page escapes every line; no emphasis, link, code or list is interpreted.
+    """
+    return [
+        [line for line in para.split("\n")]
+        for para in re.split(r"\n[ ]*\n", text.strip("\n"))
+        if para.strip()
+    ]
+
+
+def _support_path_extras(config: SiteConfig) -> dict[str, dict[str, list[str]]]:
+    """A narrow policy for ``/support/``: images from this site only."""
+    if config.support is None:
+        return {}
+    # The directory, its index file and everything under it, so no alias of the
+    # page falls back to the site-wide image rule.
+    policy = {"replace:img-src": ["'self'"]}
+    return {
+        path: dict(policy)
+        for path in ("/support/", "/support/index.html", "/support/*")
+    }
+
+
+def _chrome_urls(config: SiteConfig) -> set[str]:
+    """The outside URLs the page chrome may show, taken from the config."""
+    urls = {social.url for social in config.creator.socials}
+    for own in (config.creator.avatar, config.creator.favicon):
+        if own:
+            urls.add(own)
+    if config.site_nav is not None:
+        urls.update(item.url for item in config.site_nav.items)
+    if config.profile_card is not None and config.profile_card.button is not None:
+        urls.add(config.profile_card.button.url)
+    urls.add(CREDIT_URL)
+    return urls
+
+
+def _support_environment(env: Environment) -> Environment:
+    """A template environment for the support page that loads packaged templates only.
+
+    Owner template overrides are not read for this page or for anything it
+    includes (the base page, header, footer and blocks): the page shows payment
+    instructions, so what renders it is the engine's own code. The build
+    globals (asset names, frames and so on) are carried over.
+    """
+    packaged = make_environment(None)
+    packaged.globals.update(env.globals)
+    return packaged
+
+
+def _render_support(
+    env: Environment,
+    config: SiteConfig,
+    shown: list[list[Block]],
+    blocks: Sequence[Block],
+    custom_css: bool,
+) -> str:
+    """The support page: the config's heading, intro and blocks at ``/support/``."""
+    support = config.support
+    # Fixed order whatever the config order: the one crypto block first, then
+    # the other blocks, so no prose can come before the payment instruction.
+    blocks = sorted(blocks, key=lambda block: not isinstance(block, Crypto))
+    if support is None:
+        raise ValueError("the config has no support page")
+    html = env.get_template("support.html").render(
+        creator=config.creator,
+        support=support,
+        blocks=blocks,
+        support_text={
+            block.id: _paragraphs(block.markdown)
+            for block in blocks
+            if isinstance(block, Text)
+        },
+        nav=_nav(config, -1, "../"),
+        tab_href=_internal_href(config, "../", shown),
+        root="../",
+        page_title=page_title(config, support.title, home=False, own=None),
+        disclosure=_disclosure_line(config),
+        show_disclosure=_show_disclosure(config, False),
+        show_cookie_banner=sets_cookies(config),
+        click_tracking=config.features.click_tracking,
+        footer_credit=config.footer.credit,
+        footer_credit_text=config.footer.text,
+        footer_credit_url=CREDIT_URL,
+        page_views=False,
+        has_crypto=_has_crypto(blocks),
+        has_email=False,
+        has_email_script=False,
+        has_platforms=False,
+        profile_card=_profile_card(config),
+        single_page=config.page_layout == "sections" or config.page.layout == "stack",
+        cookie_text=intro_text(config),
+        # The owner's custom stylesheet is not loaded here: it could restyle
+        # what the page shows as an address.
+        custom_css=False,
+        has_live=False,
+        has_live_script=False,
+        page_frames=_page_has_frames(config, blocks),
+    )
+    check_support_html(
+        html,
+        [
+            coin.address
+            for block in blocks
+            if isinstance(block, Crypto)
+            for coin in block.coins
+        ],
+        _chrome_urls(config),
+    )
+    return html
+
+
 def _render_privacy(
     env: Environment,
     config: SiteConfig,
@@ -748,6 +868,7 @@ def _render_pages(
     env: Environment,
     config: SiteConfig,
     shown: list[list[Block]],
+    support_blocks: Sequence[Block],
     custom_css: bool,
     today: date,
 ) -> dict[Path, str]:
@@ -774,6 +895,10 @@ def _render_pages(
     pages[Path("privacy") / "index.html"] = _render_privacy(
         env, config, shown, custom_css
     )
+    if config.support is not None:
+        pages[_SUPPORT_PATH] = _render_support(
+            _support_environment(env), config, shown, support_blocks, custom_css
+        )
     pages[Path("404.html")] = _render_not_found(env, config, shown, custom_css)
     return pages
 
@@ -949,6 +1074,10 @@ def build_site(
             f"as_of is in the future (more than one day after {today}) for: {names}"
         )
     shown = [list(visible_blocks(tab.blocks, today)) for tab in config.tabs]
+    support_blocks = config.support.blocks if config.support is not None else []
+    # Blocks that bring files (crypto script and style, email) count the
+    # support page's too.
+    every_shown = [*shown, list(support_blocks)]
     manifest = _manifest(config, shown)
     custom_css = load_custom_css(overrides)
     warn_about_javascript(overrides)
@@ -978,17 +1107,17 @@ def build_site(
         static.pop(Path("static") / "beacon-frame.js", None)
     if config.page.layout != "stack":
         static.pop(_SMART_STACK_STYLE, None)
-    if not any(_has_crypto(blocks) for blocks in shown):
+    if not any(_has_crypto(blocks) for blocks in every_shown):
         for rel in _CRYPTO_FILES:
             static.pop(rel, None)
-    if not any(_has_email(blocks) for blocks in shown):
+    if not any(_has_email(blocks) for blocks in every_shown):
         static.pop(_EMAIL_STYLE, None)
-    if not any(_has_email_script(blocks) for blocks in shown):
+    if not any(_has_email_script(blocks) for blocks in every_shown):
         static.pop(_EMAIL_SCRIPT, None)
-    if not any(_has_platforms(blocks) for blocks in shown):
+    if not any(_has_platforms(blocks) for blocks in every_shown):
         for rel in _PLATFORMS_FILES:
             static.pop(rel, None)
-    if not any(_has_live(blocks) for blocks in shown):
+    if not any(_has_live(blocks) for blocks in every_shown):
         static.pop(_LIVE_STYLE, None)
         if not config.page.live_badges:
             static.pop(_LIVE_SCRIPT, None)
@@ -1025,7 +1154,7 @@ def build_site(
     files: dict[Path, bytes] = {
         page: html.encode("utf-8")
         for page, html in _render_pages(
-            env, config, shown, custom_css is not None, today
+            env, config, shown, support_blocks, custom_css is not None, today
         ).items()
     }
     if beacon_frame_on(config):
@@ -1132,6 +1261,7 @@ def build_site(
             **_live_path_extras(config, shown),
             **gate_path_extras(config),
             **frame_path_extras(config),
+            **_support_path_extras(config),
         },
         noindex_paths=(
             *(robots.noindex_paths if robots else ()),

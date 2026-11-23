@@ -175,7 +175,9 @@ def test_page_url_is_a_bare_https_origin(url: str) -> None:
     assert "page.url" in bad(lambda d: d["page"].update(url=url))
 
 
-@pytest.mark.parametrize("ident", ["privacy", "static", "e", "e-frame", "kit", "404"])
+@pytest.mark.parametrize(
+    "ident", ["privacy", "static", "e", "e-frame", "kit", "404", "support"]
+)
 def test_spoke_id_cannot_take_a_reserved_path(ident: str) -> None:
     data = raw(spoke_id=ident)
     with pytest.raises(ValueError, match="reserved"):

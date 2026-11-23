@@ -167,6 +167,7 @@ you use; a source whose secret is not set is skipped, not failed.
 | Secret | Source | Where it comes from |
 |---|---|---|
 | `YOUTUBE_API_KEY` | `youtube` | A YouTube Data API v3 key (Google Cloud console), restricted to that API. |
+| `YOUTUBE_USERNAME` | `youtube` | Optional. The channel handle (with or without `@`), read only when the source sets `handle_env: YOUTUBE_USERNAME` instead of `channel_id`. |
 | `TWITCH_CLIENT_ID` | `twitch` | The client id of an app in the Twitch developer console. |
 | `TWITCH_CLIENT_SECRET` | `twitch` | The client secret of the same app. |
 

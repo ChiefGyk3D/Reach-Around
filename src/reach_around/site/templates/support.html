@@ -1,0 +1,30 @@
+{# SPDX-License-Identifier: Apache-2.0 #}
+{# The support page (#683): heading and intro from the config, then its blocks.
+   Text blocks are escaped plain text; nothing here may hold a link or image. #}
+{% extends "base.html" %}
+{% block content %}
+<section class="support">
+<h2>{{ support.title }}</h2>
+{% if support.intro %}
+<p class="support-intro">{{ support.intro }}</p>
+{% endif %}
+<ul class="blocks layout-list">
+{% for block in blocks %}
+{% if block_kind(block) == "text" %}
+<li class="block block-text">
+<div class="text">
+{% for para in support_text[block.id] %}
+<p>{% for line in para %}{{ line }}{% if not loop.last %}<br>{% endif %}{% endfor %}</p>
+{% endfor %}
+</div>
+</li>
+{% else %}
+{% include "blocks/" ~ block_kind(block) ~ ".html" %}
+{% endif %}
+{% endfor %}
+</ul>
+</section>
+{% if single_page %}
+<p><a href="{{ root }}">Back to the links</a></p>
+{% endif %}
+{% endblock %}
