@@ -63,9 +63,12 @@ from reach_around.config.imported_history import (
     imported_strings,
 )
 from reach_around.config.kit import (
+    COMMUNITY_PLATFORMS,
+    AudienceSummary,
     KitConfig,
     ResolvedMetric,
     UnifiedTotal,
+    counts_in_summary,
     enforce_display_policy,
     gated_projection,
     kit_warnings,
@@ -451,6 +454,9 @@ def _public_values(kit: KitConfig) -> set[str]:
         values.add(metric.label)
         if metric.as_of is not None:
             values.add(metric.as_of.isoformat())
+    if kit.audience_summary is not None and kit.audience_summary.poll is not None:
+        # Printed only with ``show_estimate``, but public by policy either way.
+        values.add(kit.audience_summary.poll.as_of.isoformat())
     for analytics in kit.analytics:
         values.add(analytics.synced_with)
         values.add(analytics.as_of.isoformat())
@@ -801,27 +807,99 @@ def _is_stale(
     return (today - as_of).days > limit
 
 
-# The first-screen range line (spec 6.5, decision 4). Both bounds are plain
-# arithmetic on the numbers the total already adds up; never one deduplicated
-# figure.
+# The audience summary (spec 6.5, decisions 4, 5 and 7). Both bounds are plain
+# arithmetic on the follower-style numbers the total adds up: the largest single
+# audience is the lower bound and the sum is the upper. Never one deduplicated
+# figure, and community members (Discord, Matrix) are in neither bound.
 RANGE_SENTENCE = (
     "Unique audience is between {low} and {high}, depending on platform overlap."
 )
+OVERLAP_SENTENCE = (
+    "People who follow on more than one platform are counted more than once."
+)
+BOUNDS_SENTENCE = "Unique people are somewhere between {low} and {high}."
+CAVEAT_SENTENCE = (
+    "Follower counts include inactive and automated accounts, because platforms "
+    "do not remove them from the counts."
+)
+COMMUNITY_NOTE = (
+    "Chat members, not followers: they are not added into the range above."
+    " A person can be a member and a follower."
+)
+ESTIMATE_SENTENCE = (
+    "Estimate from a poll of {people} people on {day}: roughly {value} unique people."
+)
+ESTIMATE_METHOD = (
+    "Estimate: the sum of follows divided by one plus the average number of other "
+    "platforms each respondent follows on. The poll figures are hand-kept, typed "
+    "by the owner."
+)
+
+
+def _counted(metrics: list[ResolvedMetric]) -> list[ResolvedMetric]:
+    """The numbers the range is made of: valued, counted, not community."""
+    return [m for m in metrics if counts_in_summary(m) and m.value is not None]
 
 
 def range_text(metrics: list[ResolvedMetric], total: UnifiedTotal) -> str | None:
-    """The range line, or None when fewer than two numbers above zero are added
-    up (one number has no range, and a zero would repeat the total). A set
-    cannot be smaller than its largest member, so the largest counted number is
-    the lower bound and the total the upper."""
+    """The first-screen range line, or None when fewer than two numbers above
+    zero are added up (one number has no range, and a zero would repeat the
+    total). A set cannot be smaller than its largest member, so the largest
+    counted number is the lower bound and the total the upper."""
     if total.total is None or total.counted < 2:
         return None
-    counted = [m.value for m in metrics if m.in_total and m.value]
+    counted = [m.value for m in _counted(metrics) if m.value]
     if len(counted) < 2:
         return None
     return RANGE_SENTENCE.format(
         low=shown_count(max(counted)), high=shown_count(total.total)
     )
+
+
+def _names(names: list[str]) -> str:
+    if len(names) <= 2:
+        return " and ".join(names)
+    return ", ".join(names[:-1]) + " and " + names[-1]
+
+
+def _two_figures(value: float) -> int:
+    """Rounded to two significant figures: a poll estimate is not exact."""
+    whole = round(value)
+    if whole < 100:
+        return whole
+    return round(whole, -(len(str(whole)) - 2))
+
+
+def _estimate_text(summary: AudienceSummary | None, total: int, low: int) -> str | None:
+    """The labeled poll estimate, or None when it is off, has no poll, or does
+    not fall between the bounds (a poll that contradicts the arithmetic is
+    left out rather than printed)."""
+    if summary is None or not summary.show_estimate or summary.poll is None:
+        return None
+    poll = summary.poll
+    value = _two_figures(total / (1 + float(poll.avg_other_platforms)))
+    if not low <= value <= total:
+        return None
+    return ESTIMATE_SENTENCE.format(
+        people=f"{poll.respondents:,}",
+        day=poll.as_of.isoformat(),
+        value=f"{value:,}",
+    )
+
+
+def _community(metrics: list[ResolvedMetric]) -> dict[str, str] | None:
+    """Community members (Discord, Matrix) on their own line."""
+    rows = [
+        f"{platform_name(m.platform)} {shown_count(m.value)}"
+        for m in metrics
+        if m.platform in COMMUNITY_PLATFORMS and m.value is not None
+    ]
+    if not rows:
+        return None
+    return {
+        "text": "Community members: " + ", ".join(rows) + ".",
+        "note": COMMUNITY_NOTE,
+    }
 
 
 def _total(
@@ -830,27 +908,61 @@ def _total(
     live_day: date | None = None,
     config: Any = None,
     today: date | None = None,
+    summary: AudienceSummary | None = None,
 ) -> dict[str, Any] | None:
     if total.total is None:
         return None
     # A printed total minus the printed members would isolate a member under
     # the floor, so one such member hides the total.
-    if any(m.in_total and m.value is not None and 0 < m.value < FLOOR for m in metrics):
+    counted = _counted(metrics)
+    if any(0 < m.value < FLOOR for m in counted if m.value is not None):
         return None
-    dates = [m.as_of for m in metrics if m.in_total and m.value is not None and m.as_of]
+    dates = [m.as_of for m in counted if m.as_of]
     trust: dict[str, str] | None = None
     stale = False
     if config is not None:
         api = source_platforms(config)
-        counted = [m for m in metrics if m.in_total and m.value is not None]
         weak = weakest(_metric_trust(m, api) for m in counted)
         trust = None if weak is None else weak.view()
         stale = any(_is_stale(m.as_of, today, config, m.platform) for m in counted)
+    values = [m.value for m in counted if m.value]
+    low = max(values) if len(values) >= 2 and total.counted >= 2 else None
+    shown_sum = shown_count(total.total)
+    largest = ""
+    if low is not None:
+        names = dict.fromkeys(
+            m.label if m.platform == "other" else platform_name(m.platform)
+            for m in counted
+            if m.value == low
+        )
+        largest = (
+            f"Largest single audience: {shown_count(low)} ({_names(list(names))})."
+        )
+    platforms = len({m.platform for m in counted})
     return {
         "trust": trust,
         "stale": stale,
-        "value": shown_count(total.total),
+        # What the plate prints: the range, or the one number when there is no
+        # range. Never a deduplicated figure.
+        "headline": (
+            f"{shown_count(low)} to {shown_sum}" if low is not None else shown_sum
+        ),
+        "value": shown_sum,
         "range_text": range_text(metrics, total),
+        "sum": shown_sum,
+        "platforms": platforms,
+        "bounds_text": (
+            BOUNDS_SENTENCE.format(low=shown_count(low), high=shown_sum)
+            if low is not None
+            else ""
+        ),
+        "largest": largest,
+        "overlap": OVERLAP_SENTENCE if platforms > 1 else "",
+        "caveat": CAVEAT_SENTENCE,
+        "estimate": (
+            _estimate_text(summary, total.total, low) if low is not None else None
+        ),
+        "estimate_method": ESTIMATE_METHOD,
         "counted": total.counted,
         "oldest": min(dates).isoformat() if dates else "",
         "mixed": len({classify_era(d, live_day) for d in dates} - {"unknown"}) > 1,
@@ -1064,7 +1176,15 @@ def _content(
         "engagement": _engagement_rows(projection.get("engagement", []), config, today),
         "engagement_note": ACROSS_PLATFORMS_NOTE,
         "engagement_formulas": FORMULAS,
-        "total": _total(projection["unified_total"], metrics, live_day, config, today),
+        "total": _total(
+            projection["unified_total"],
+            metrics,
+            live_day,
+            config,
+            today,
+            projection.get("audience_summary"),
+        ),
+        "community": _community(metrics),
         "imported": _imported_block(projection.get("imported_history"), live_day),
     }
     content["legend"] = _legend(content)
