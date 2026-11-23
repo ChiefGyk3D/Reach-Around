@@ -180,6 +180,9 @@ def test_page_url_is_a_bare_https_origin(url: str) -> None:
 )
 def test_spoke_id_cannot_take_a_reserved_path(ident: str) -> None:
     data = raw(spoke_id=ident)
+    for tab in data["tabs"]:
+        if tab["id"] == ident and not tab.get("spoke"):
+            tab["id"] = "support-links"  # free the id the fixture already uses
     with pytest.raises(ValueError, match="reserved"):
         SiteConfig.model_validate(data)
 
@@ -302,3 +305,26 @@ def test_a_tab_redirect_to_a_spoke_goes_to_its_page(tmp_path: Path) -> None:
     lines = text(out, "_redirects").splitlines()
     assert "/old-gear /gear/ 301" in lines
     assert "/old-gear/ /gear/ 301" in lines
+
+
+def test_a_spoke_page_and_the_support_page_build_together(tmp_path: Path) -> None:
+    data = raw()
+    for tab in data["tabs"]:
+        if tab["id"] == "support":
+            tab["id"] = "support-links"
+    data["support"] = {
+        "title": "Support",
+        "blocks": [
+            {
+                "id": "support-crypto",
+                "coins": [
+                    {"coin": "btc", "address": "bc1qexampleexampleexampleexample"}
+                ],
+            }
+        ],
+    }
+    out = build(tmp_path, data)
+    assert (out / "support" / "index.html").is_file()
+    assert "Pick 3" in text(out, "gear/index.html")
+    assert "bc1qexample" not in text(out, "gear/index.html")
+    assert (out / "_headers").is_file()
