@@ -18,11 +18,32 @@ The only credential is the run's `GITHUB_TOKEN`. The workflow sets no Doppler or
 Hub input and passes no secret. The image is an OCI image, so Docker and Podman both
 run it.
 
+## Changelog fragments
+
+A pull request does not edit `CHANGELOG.md`. It adds one file,
+`changelog.d/<issue-number>-<slug>.md`, holding one entry (see
+[changelog.d/README.md](../changelog.d/README.md)), so parallel pull requests never
+conflict. The CI lint step runs `scripts/changelog-assemble.py verify` (every fragment is
+valid, no duplicate issue number, no hand-written entry in `[Unreleased]`) and
+`check-pr` (the pull request adds exactly one fragment, unless its body has a line
+`no-changelog: <reason>` or it has the `no-changelog` label). The release step below
+assembles them.
+
 ## Cut a release
 
 1. Set `__version__` in `src/reach_around/__init__.py`. It is the only place the version
-   lives; `pyproject.toml` reads it. Add the matching `## [x.y.z]` section at the top of
-   `CHANGELOG.md`. `tests/test_version.py` fails if they disagree. A release candidate is written
+   lives; `pyproject.toml` reads it. Create the matching `## [x.y.z]` section by folding
+   the pull requests' fragments in `changelog.d/` into `CHANGELOG.md`:
+
+   ```sh
+   python3 -I scripts/changelog-assemble.py release 0.3.0-rc.7 --date 2026-11-24
+   ```
+
+   It moves the entries under a new `## [x.y.z] - date` heading (highest issue number
+   first, byte-stable), leaves `## [Unreleased]` with only its pointer comment, and
+   deletes the fragments. Commit the result with the version bump, and put a line
+   `no-changelog: release` in that pull request's body (it adds no fragment).
+   `tests/test_version.py` fails if the version and the top heading disagree. A release candidate is written
    `x.y.z-rc.N` (for example `0.3.0-rc.6`), so the tag `v0.3.0-rc.6` equals `v` plus
    `__version__`; a failed candidate is never retagged, the next number is used.
 2. Merge to `main` and wait for `ci / CI green`.
