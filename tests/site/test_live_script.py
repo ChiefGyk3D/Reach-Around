@@ -229,3 +229,24 @@ def test_staleness_matches_the_worker_when_the_worker_is_present() -> None:
     heartbeat = int(found.group(1))
     assert f"var STALE_AFTER_SECONDS = {3 * heartbeat};" in source()
     assert 'ROUTE = "/e/live"' in ts or '"/e/live"' in ts
+
+
+# --- the size budget (#699) ------------------------------------------------------
+
+LIVE_JS_MAX_BYTES = 16000
+
+
+def check_size(text: str) -> None:
+    assert len(text.encode("utf-8")) <= LIVE_JS_MAX_BYTES
+
+
+def test_live_js_fits_its_size_budget() -> None:
+    text = source()
+    assert len(text) > 2000  # something was collected
+    check_size(text)
+
+
+def test_the_size_guard_bites() -> None:
+    padded = source() + "// " + "x" * LIVE_JS_MAX_BYTES + "\n"
+    with pytest.raises(AssertionError):
+        check_size(padded)
