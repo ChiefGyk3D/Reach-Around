@@ -50,6 +50,9 @@ EnvName = Annotated[str, StringConstraints(pattern=_ENV_NAME)]
 # Fixed credential variable names for Twitch. Names are not configurable: a
 # config can never point the collector at another variable.
 YOUTUBE_KEY_ENV = "YOUTUBE_API_KEY"  # noqa: S105 (a variable NAME)
+# The YouTube channel handle (not a secret, but kept in the secret store so it can
+# be changed without editing the config). Only the NAME is configurable-looking.
+YOUTUBE_HANDLE_ENV = "YOUTUBE_USERNAME"
 CLIENT_ID_ENV = "TWITCH_CLIENT_ID"
 CLIENT_SECRET_ENV = "TWITCH_CLIENT_SECRET"  # noqa: S105 (a variable NAME)
 USER_TOKEN_ENV = "TWITCH_USER_ACCESS_TOKEN"  # noqa: S105 (a variable NAME)
@@ -162,7 +165,11 @@ class MatrixSource(_Source):
 
 class YoutubeSource(_Source):
     kind: Literal["youtube"]
-    channel_id: str
+    # Exactly one of ``channel_id`` or ``handle_env`` is set. ``handle_env`` only
+    # repeats the fixed name YOUTUBE_USERNAME; the handle itself is read from that
+    # variable at fetch time and validated there (#709).
+    channel_id: str | None = None
+    handle_env: Literal["YOUTUBE_USERNAME"] | None = None
     # Only the canonical name is accepted (the key may be left out).
     api_key_env: Literal["YOUTUBE_API_KEY"] = "YOUTUBE_API_KEY"  # noqa: S105
     # Off by default. When true, also collect the owner's authorized YouTube
@@ -174,10 +181,19 @@ class YoutubeSource(_Source):
 
     @field_validator("channel_id")
     @classmethod
-    def _channel(cls, value: str) -> str:
-        if not _CHANNEL_ID.match(value):
+    def _channel(cls, value: str | None) -> str | None:
+        if value is not None and not _CHANNEL_ID.match(value):
             raise ValueError("channel_id must be the UC... channel id")
         return value
+
+    @model_validator(mode="after")
+    def _one_lookup(self) -> YoutubeSource:
+        if (self.channel_id is None) == (self.handle_env is None):
+            raise ValueError(
+                "set exactly one of channel_id (the UC... id) or "
+                "handle_env: YOUTUBE_USERNAME"
+            )
+        return self
 
 
 class TwitchSource(_Source):

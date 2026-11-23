@@ -3605,8 +3605,29 @@
           "type": "string"
         },
         "channel_id": {
-          "title": "Channel Id",
-          "type": "string"
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Channel Id"
+        },
+        "handle_env": {
+          "anyOf": [
+            {
+              "const": "YOUTUBE_USERNAME",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Handle Env"
         },
         "kind": {
           "const": "youtube",
@@ -3625,7 +3646,6 @@
         }
       },
       "required": [
-        "channel_id",
         "kind",
         "platform"
       ],
