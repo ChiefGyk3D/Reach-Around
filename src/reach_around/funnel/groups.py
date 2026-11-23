@@ -6,27 +6,30 @@ Worker stored with the click (``link`` or ``social_icon``). The rollup reads the
 per-link click counts the report already holds; it adds no collection, no
 column and no person-level data.
 
-Privacy rule. A group total beside the link table would let a reader subtract
-the printed link rows and recover the sum of the hidden ones. So a row prints
-only the sum of the link rows the report prints itself, never a figure the link
-tables withhold. A group whose whole total is under the floor prints
-"Under 5" (the same words as the kit), and a group that holds the floor or more
-but prints no link row of its own is ``withheld``. It is label suppression like
-the rest of the report, not k-anonymity.
+Privacy rule. The rollup is derived ONLY from the link rows the report prints
+itself. A figure computed from a hidden total (a group "under the floor", a
+group "withheld") would be an oracle: run the report under two configs that
+group the same hidden ids differently and the changed statuses pin each hidden
+cell. So a row is the sum of the printed link rows of that group, a group with
+no printed row is left out whatever its hidden total, and the whole section is
+left out when either link table is withheld. It is label suppression like the
+rest of the report, not k-anonymity.
 """
 
 from __future__ import annotations
 
+import hashlib
+import json
 from collections.abc import Iterable, Mapping
 from typing import Any
 
 from reach_around.config.blocks import Platforms
 from reach_around.config.models import Link, Section, SiteConfig
 from reach_around.config.profile_card import MEDIA_KIT_ID
-from reach_around.funnel.floor import UNDER_FLOOR
 
 UNGROUPED = "(no group)"
 ROUTE_CLASSES = ("link", "social_icon")
+ROLLUP_DIGEST_VERSION = 1
 
 
 def group_map(config: SiteConfig) -> dict[str, str]:
@@ -48,49 +51,57 @@ def group_map(config: SiteConfig) -> dict[str, str]:
 
 def rollup(
     groups: Mapping[str, str],
-    totals: Mapping[str, Mapping[str, int]],
     printed: Mapping[str, Iterable[Mapping[str, Any]]],
-    floor: int,
-    present: bool,
+    unavailable: str | None,
 ) -> dict[str, Any]:
-    """Rows per (group, route class). ``totals`` holds every click count by
-    route class and link id; ``printed`` the link rows the report prints."""
-    if not present:
-        return {"state": "not_in_export", "rows": []}
+    """Rows per (group, route class), sums of printed link rows only.
+
+    ``unavailable`` is a state of the link tables ("not_in_export" or
+    "withheld") that already shows in the report; the section then has no rows.
+    """
+    if unavailable is not None:
+        return {"state": unavailable, "rows": []}
     rows: list[dict[str, Any]] = []
     for route_class in ROUTE_CLASSES:
-        total: dict[str, int] = {}
         shown: dict[str, int] = {}
-        for ident, n in totals.get(route_class, {}).items():
-            group = groups.get(ident, UNGROUPED)
-            total[group] = total.get(group, 0) + n
         for row in printed.get(route_class, ()):
             group = groups.get(row["label"], UNGROUPED)
             shown[group] = shown.get(group, 0) + int(row["views"])
-        for group, count in total.items():
-            if count <= 0:
-                continue
-            if count < floor:
-                rows.append(_row(group, route_class, None, "under_floor"))
-            elif shown.get(group):
-                rows.append(_row(group, route_class, shown[group], "ok"))
-            else:
-                rows.append(_row(group, route_class, None, "withheld"))
-    rows.sort(
-        key=lambda r: (-(r["clicks"] or 0), r["group"], r["route_class"]),
-    )
+        rows += [_row(g, route_class, n) for g, n in shown.items() if n > 0]
+    rows.sort(key=lambda r: (-r["clicks"], r["group"], r["route_class"]))
     return {"state": "ok", "rows": rows}
 
 
-def _row(
-    group: str, route_class: str, clicks: int | None, status: str
-) -> dict[str, Any]:
+def _row(group: str, route_class: str, clicks: int) -> dict[str, Any]:
     return {
         "group": group,
         "route_class": route_class,
         "clicks": clicks,
-        "status": status,
+        "status": "ok",
     }
+
+
+def rollup_digest(
+    core_digest: str,
+    groups: Mapping[str, str],
+    section: Mapping[str, Any],
+    params: Mapping[str, Any],
+) -> str:
+    """Version 1 digest of the rollup: the core (legacy) digest, the canonical
+    id to group mapping, the group output and the parameters it was cut with."""
+    blob = json.dumps(
+        {
+            "version": ROLLUP_DIGEST_VERSION,
+            "core": core_digest,
+            "mapping": sorted(groups.items()),
+            "rows": section["rows"],
+            "state": section["state"],
+            "params": dict(params),
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()
 
 
 def text_lines(section: Mapping[str, Any]) -> list[str]:
@@ -98,18 +109,21 @@ def text_lines(section: Mapping[str, Any]) -> list[str]:
     if section["state"] == "not_in_export":
         lines.append("  not in this export")
         return lines
-    if not section["rows"]:
-        lines.append("  no data in this period")
+    if section["state"] == "withheld":
+        lines.append("  a link table is below the privacy floor; nothing shown")
         return lines
-    width = max(len(r["group"]) for r in section["rows"])
-    for r in section["rows"]:
-        if r["status"] == "under_floor":
-            shown = UNDER_FLOOR
-        elif r["status"] == "withheld":
-            shown = "withheld"
-        else:
-            shown = str(r["clicks"])
-        lines.append(f"  {r['group']:<{width}}  {r['route_class']:<11} {shown:>8}")
+    if not section["rows"]:
+        lines.append("  no printed link rows")
+    else:
+        width = max(len(r["group"]) for r in section["rows"])
+        for r in section["rows"]:
+            lines.append(
+                f"  {r['group']:<{width}}  {r['route_class']:<11} {r['clicks']:>8}"
+            )
+    if "rollup_digest" in section:
+        lines.append(
+            f"  rollup digest (v{ROLLUP_DIGEST_VERSION}): {section['rollup_digest']}"
+        )
     return lines
 
 
@@ -117,11 +131,6 @@ def csv_rows(section: Mapping[str, Any]) -> list[list[Any]]:
     if section["state"] != "ok":
         return [["", "", "", section["state"]]]
     return [
-        [
-            r["group"],
-            r["route_class"],
-            "" if r["clicks"] is None else r["clicks"],
-            r["status"],
-        ]
+        [r["group"], r["route_class"], r["clicks"], r["status"]]
         for r in section["rows"]
     ]

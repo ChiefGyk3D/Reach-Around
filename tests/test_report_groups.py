@@ -1,15 +1,18 @@
 # SPDX-License-Identifier: Apache-2.0
 """Group rollup of the click data in ``reach-around report`` (#678).
 
-Synthetic exports only. The privacy property under test: the rollup prints no
-number that is not a sum of rows the link tables already print, and a group
-under the floor prints "Under 5", never its count."""
+Synthetic exports only. The privacy property under test: the rollup is a pure
+function of the link rows the report prints. It never classifies a group from a
+hidden total, so two configs that group the same hidden ids differently cannot
+tell a reader anything (the threshold oracle)."""
 
 from __future__ import annotations
 
 import csv
 import io
+import itertools
 import json
+from collections.abc import Mapping
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -21,15 +24,19 @@ from reach_around.config import load_site_config
 from reach_around.funnel.csvout import csv_files
 from reach_around.funnel.export import load_exports
 from reach_around.funnel.groups import UNGROUPED, group_map
-from reach_around.funnel.report import build_report, render_text
+from reach_around.funnel.report import _build_report, build_report, render_text
 
 TS = 1_793_491_200_000  # 2026-11-01 00:00 UTC
+TS2 = TS + 86_400_000  # 2026-11-02
 EXAMPLE = Path(__file__).parent.parent / "examples" / "instance" / "site.yaml"
+NOW = datetime(2026, 11, 3, tzinfo=UTC)
 
 
-def clicks(spec: dict[str, int], kind: str = "link") -> list[dict[str, Any]]:
+def clicks(
+    spec: Mapping[str, int], kind: str = "link", ts: int = TS
+) -> list[dict[str, Any]]:
     return [
-        {"ts": TS, "link_id": link, "destination_kind": kind}
+        {"ts": ts, "link_id": link, "destination_kind": kind}
         for link, n in spec.items()
         for _ in range(n)
     ]
@@ -50,6 +57,10 @@ GROUPS = {
     "mixed-tiny": "gamma",
     "icon-a": "alpha",
 }
+CONFIG_A = {f"one-{n}": f"solo-{n}" for n in range(1, 5)}  # four groups
+CONFIG_B = {f"one-{n}": "together" for n in range(1, 5)}  # one group
+for _cfg in (CONFIG_A, CONFIG_B):
+    _cfg.update({"big-1": "alpha", "big-2": "alpha", "icon-a": "alpha"})
 
 
 def rollup(
@@ -67,7 +78,8 @@ def test_group_map_reads_tabs_sections_and_platforms() -> None:
     assert UNGROUPED not in mapping.values()
 
 
-def test_rollup_sums_by_group_and_route_class(tmp_path: Path) -> None:
+def test_rollup_sums_printed_rows_by_group_and_route_class(tmp_path: Path) -> None:
+    # No row is hidden here, so every link prints and the sums are complete.
     rows = (
         clicks({"big-1": 30, "big-2": 12})
         + clicks({"icon-a": 9}, "social_icon")
@@ -77,44 +89,7 @@ def test_rollup_sums_by_group_and_route_class(tmp_path: Path) -> None:
     assert got[("alpha", "link")]["clicks"] == 42
     assert got[("alpha", "social_icon")]["clicks"] == 9
     assert got[(UNGROUPED, "link")]["clicks"] == 7
-    assert got[("alpha", "link")]["status"] == "ok"
-
-
-def test_group_under_the_floor_is_never_a_number(tmp_path: Path) -> None:
-    rows = clicks({"big-1": 40, "tiny-1": 2, "tiny-2": 1})
-    got = rollup(tmp_path, rows)
-    beta = got[("beta", "link")]
-    assert beta["clicks"] is None and beta["status"] == "under_floor"
-    report = build_report(export_of(tmp_path, rows), groups=GROUPS)
-    text = render_text(report)
-    assert "Under 5" in text
-    section = text.split("Link clicks by group")[1].split("\n\n")[0]
-    assert "  3" not in section and " 2 " not in section
-
-
-def test_rollup_prints_only_sums_of_printed_link_rows(tmp_path: Path) -> None:
-    """A group with a hidden member must not expose that member by subtraction."""
-    rows = clicks({"mixed-big": 20, "mixed-tiny": 2, "big-1": 15, "tiny-1": 1})
-    report = build_report(export_of(tmp_path, rows), groups=GROUPS)
-    printed = {r["label"]: r["views"] for r in report["links"]["rows"]}
-    got = {(r["group"], r["route_class"]): r for r in report["groups"]["rows"]}
-    for (group, _), row in got.items():
-        if row["clicks"] is None:
-            continue
-        members = [i for i, g in GROUPS.items() if g == group]
-        assert row["clicks"] == sum(printed.get(m, 0) for m in members)
-    # The 22 total of the gamma group is never printed beside the link rows.
-    assert all(r["clicks"] != 22 for r in got.values())
-
-
-def test_group_with_no_printed_row_over_the_floor_is_withheld(
-    tmp_path: Path,
-) -> None:
-    # Two members of 3 each: the group holds 6, no member prints.
-    rows = clicks({"tiny-1": 3, "tiny-2": 3, "big-1": 50})
-    got = rollup(tmp_path, rows)
-    assert got[("beta", "link")]["status"] == "withheld"
-    assert got[("beta", "link")]["clicks"] is None
+    assert {r["status"] for r in got.values()} == {"ok"}
 
 
 def test_no_groups_given_means_no_section(tmp_path: Path) -> None:
@@ -123,27 +98,211 @@ def test_no_groups_given_means_no_section(tmp_path: Path) -> None:
     assert "Link clicks by group" not in render_text(report)
 
 
-def test_groups_do_not_change_the_other_sections(tmp_path: Path) -> None:
-    rows = clicks({"big-1": 30, "tiny-1": 2, "icon-a": 8}, "link")
-    export = export_of(tmp_path, rows)
-    plain = build_report(export)
-    grouped = build_report(export, groups=GROUPS)
-    grouped.pop("groups")
+def test_groups_do_not_change_the_other_sections_or_the_core_digest(
+    tmp_path: Path,
+) -> None:
+    export = export_of(tmp_path, clicks({"big-1": 30, "tiny-1": 2, "icon-a": 8}))
+    plain, plain_digest = _build_report(export)
+    grouped, grouped_digest = _build_report(export, groups=GROUPS)
+    assert grouped.pop("groups")
     assert plain == grouped
+    assert plain_digest == grouped_digest  # the legacy ledger digest is unchanged
 
 
-def test_csv_has_a_groups_file_with_no_small_number(tmp_path: Path) -> None:
-    rows = clicks({"big-1": 30, "big-2": 12, "tiny-1": 2})
+def test_rollup_digest_differs_between_configs_and_binds_the_parameters(
+    tmp_path: Path,
+) -> None:
+    export = export_of(tmp_path, clicks({"one-1": 1, "big-1": 30, "big-2": 12}))
+    a = build_report(export, groups=CONFIG_A)["groups"]["rollup_digest"]
+    b = build_report(export, groups=CONFIG_B)["groups"]["rollup_digest"]
+    assert a != b
+    assert a == build_report(export, groups=CONFIG_A)["groups"]["rollup_digest"]
+    assert a != build_report(export, groups=CONFIG_A, top=3)["groups"]["rollup_digest"]
+    assert (
+        a
+        != build_report(
+            export, groups=CONFIG_A, since="2026-11-01", until="2026-11-01"
+        )["groups"]["rollup_digest"]
+    )
+    plain_text = render_text(build_report(export))
+    assert "rollup digest" not in plain_text
+    assert "rollup digest (v1)" in render_text(build_report(export, groups=CONFIG_A))
+
+
+def test_section_is_skipped_when_a_link_table_is_withheld(tmp_path: Path) -> None:
+    # Links: every row under the floor, so that table is withheld.
+    rows = clicks({"big-1": 40}, "social_icon") + clicks({"tiny-1": 2, "tiny-2": 1})
     report = build_report(export_of(tmp_path, rows), groups=GROUPS)
-    files = csv_files(report, generated_at=datetime(2026, 11, 2, tzinfo=UTC))
+    assert report["links"]["state"] == "withheld"
+    assert report["groups"]["state"] == "withheld"
+    assert report["groups"]["rows"] == []
+
+
+# ---- the oracle -------------------------------------------------------------
+
+
+def render_all(report: dict[str, Any]) -> dict[str, str]:
+    """Everything a reader sees of the rollup: text, JSON and parsed CSV."""
+    text = render_text(report)
+    text = text.split("Link clicks by group")[1].split("\n\n")[0]
+    section = {k: v for k, v in report["groups"].items() if k != "rollup_digest"}
+    table = list(
+        csv.reader(
+            io.StringIO(
+                csv_files(report, generated_at=NOW)["groups.csv"].decode("utf-8")
+            )
+        )
+    )
+    return {
+        "text": "\n".join(
+            line for line in text.splitlines() if "rollup digest" not in line
+        ),
+        "json": json.dumps(section, sort_keys=True),
+        "csv": json.dumps(table),
+    }
+
+
+def expected_rows(report: dict[str, Any], groups: Mapping[str, str]) -> set[Any]:
+    sums: dict[tuple[str, str], int] = {}
+    for key, route_class in (("links", "link"), ("social_icons", "social_icon")):
+        for row in report[key]["rows"]:
+            cell = (groups.get(row["label"], UNGROUPED), route_class)
+            sums[cell] = sums.get(cell, 0) + row["views"]
+    return {(g, c, n) for (g, c), n in sums.items()}
+
+
+def leaks(report: dict[str, Any], groups: Mapping[str, str]) -> bool:
+    """True if the rollup is anything but the sums of the printed link rows:
+    a row from a hidden total, a missing or extra row, or a status other than
+    ok (rows present or absent are part of what a reader sees)."""
+    section = report["groups"]
+    if section["state"] != "ok":
+        return bool(section["rows"])
+    if any(r["status"] != "ok" or r["clicks"] is None for r in section["rows"]):
+        return True
+    got = {(r["group"], r["route_class"], r["clicks"]) for r in section["rows"]}
+    return got != expected_rows(report, groups)
+
+
+def old_classification(
+    groups: Mapping[str, str], totals: Mapping[str, int], floor: int = 5
+) -> dict[str, str]:
+    """The first version: a status from the TRUE group total (the oracle)."""
+    sums: dict[str, int] = {}
+    for ident, n in totals.items():
+        group = groups.get(ident, UNGROUPED)
+        sums[group] = sums.get(group, 0) + n
+    return {g: ("under_floor" if n < floor else "withheld") for g, n in sums.items()}
+
+
+def test_threshold_oracle_four_one_click_ids_under_two_configs(
+    tmp_path: Path,
+) -> None:
+    spec = {"one-1": 1, "one-2": 1, "one-3": 1, "one-4": 1}
+    rows = clicks({**spec, "big-1": 30, "big-2": 12}) + clicks(
+        {"icon-a": 9}, "social_icon"
+    )
+    shown = {}
+    for name, config in (("a", CONFIG_A), ("b", CONFIG_B)):
+        report = build_report(export_of(tmp_path, rows), groups=config)
+        assert not leaks(report, config)
+        shown[name] = render_all(report)
+    # Identical output under both configs, in every rendering: the hidden ids
+    # contribute nothing, so nothing pins any of them to exactly 1.
+    assert shown["a"] == shown["b"]
+    assert "solo-" not in json.dumps(shown) and "together" not in json.dumps(shown)
+
+
+def test_hidden_totals_do_not_change_the_output(tmp_path: Path) -> None:
+    """A group with no printed row looks the same at 1, 4 or many hidden clicks."""
+    seen = set()
+    for hidden in (1, 4):
+        for count in (1, 2, 4):
+            spec = {f"one-{n}": hidden for n in range(1, count + 1)}
+            rows = clicks({**spec, "big-1": 30, "big-2": 12})
+            report = build_report(export_of(tmp_path, rows), groups=CONFIG_A)
+            assert not leaks(report, CONFIG_A)
+            seen.add(json.dumps(render_all(report), sort_keys=True))
+    assert len(seen) == 1
+
+
+@pytest.mark.parametrize("top", [1, 2, 10])
+@pytest.mark.parametrize("window", [(None, None), ("2026-11-02", "2026-11-02")])
+def test_leak_check_across_configs_tops_and_windows(
+    tmp_path: Path, top: int, window: tuple[str | None, str | None]
+) -> None:
+    names = ["big-1", "big-2", "tiny-1", "ghost"]
+    checked = 0
+    for values in itertools.product((0, 1, 5, 9), repeat=len(names)):
+        spec = dict(zip(names, values, strict=True))
+        rows = (
+            clicks(spec)
+            + clicks({"icon-a": values[0], "ghost": values[2]}, "social_icon", TS2)
+            + clicks({"big-2": values[1]}, "link", TS2)
+        )
+        for config in (GROUPS, CONFIG_A, {}):
+            report = build_report(
+                export_of(tmp_path, rows),
+                groups=config,
+                top=top,
+                since=window[0],
+                until=window[1],
+            )
+            assert not leaks(report, config), (spec, top, window)
+            renders = render_all(report)
+            assert json.loads(renders["json"])["rows"] == report["groups"]["rows"]
+            checked += 1
+    assert checked > 500
+
+
+def test_negative_old_classification_is_an_oracle_and_the_check_bites(
+    tmp_path: Path,
+) -> None:
+    totals = {"one-1": 1, "one-2": 1, "one-3": 1, "one-4": 1}
+    # The old rule: A shows four "Under 5" groups, B shows one: a reader
+    # learns each id is at least 1 (A) and the sum at most 4 (B), so each is 1.
+    assert old_classification(CONFIG_A, totals) != old_classification(CONFIG_B, totals)
+    # The current rule gives one answer under both configs.
+    rows = clicks({**totals, "big-1": 30, "big-2": 12})
+    outs = [
+        render_all(build_report(export_of(tmp_path, rows), groups=c))
+        for c in (CONFIG_A, CONFIG_B)
+    ]
+    assert outs[0] == outs[1]
+    # leaks() goes red when a row comes from a hidden total (old behavior).
+    report = build_report(export_of(tmp_path, rows), groups=CONFIG_A)
+    assert not leaks(report, CONFIG_A)
+    report["groups"]["rows"].append(
+        {
+            "group": "solo-1",
+            "route_class": "link",
+            "clicks": None,
+            "status": "under_floor",
+        }
+    )
+    assert leaks(report, CONFIG_A)
+    report["groups"]["rows"].pop()
+    report["groups"]["rows"][0]["clicks"] += 30  # a total with a hidden row
+    assert leaks(report, CONFIG_A)
+
+
+# ---- CLI and CSV ------------------------------------------------------------
+
+
+def test_csv_has_a_groups_file_and_the_digest_only_with_groups(tmp_path: Path) -> None:
+    rows = clicks({"big-1": 30, "big-2": 12, "tiny-1": 2})
+    export = export_of(tmp_path, rows)
+    report = build_report(export, groups=GROUPS)
+    files = csv_files(report, generated_at=NOW)
     table = list(csv.reader(io.StringIO(files["groups.csv"].decode())))
     assert table[0] == ["group", "route_class", "clicks", "status"]
-    by = {(r[0], r[1]): r for r in table[1:]}
-    assert by[("alpha", "link")][2:] == ["12", "ok"]  # 30 joined the remainder
-    assert by[("beta", "link")][2:] == ["", "under_floor"]
-    plain = build_report(export_of(tmp_path, rows))
-    assert "groups.csv" not in csv_files(
-        plain, generated_at=datetime(2026, 11, 2, tzinfo=UTC)
+    assert {tuple(r) for r in table[1:]} == {("alpha", "link", "12", "ok")}
+    meta = files["metadata.csv"].decode()
+    assert "rollup_digest_v1" in meta
+    plain = csv_files(build_report(export), generated_at=NOW)
+    assert (
+        "groups.csv" not in plain
+        and "rollup_digest" not in plain["metadata.csv"].decode()
     )
 
 
@@ -155,13 +314,17 @@ def test_cli_config_flag_adds_the_section(
         {"home-page": 30, "example-mic": 12, "example-stand": 9, "spring-meetup": 2}
     )
     path.write_text(json.dumps({"tables": {"click_events": rows}}), encoding="utf-8")
+    assert main(["report", "--input", str(path)]) == 0
+    plain = capsys.readouterr().out
+    assert "Link clicks by group" not in plain
     assert main(["report", "--input", str(path), "--config", str(EXAMPLE)]) == 0
     out = capsys.readouterr().out
-    section = out.split("Link clicks by group")[1]
-    # the largest printed link row joins the link tables' remainder line, so
-    # the rollup (a sum of printed rows only) holds 12 + 9, never the hidden 30
+    section = out.split("Link clicks by group")[1].split("\n\n")[0]
+    section = "\n".join(x for x in section.splitlines() if "digest" not in x)
+    # the largest printed row joins the remainder line; the hidden 30 and the
+    # 2 never show, and nothing prints "Under 5"
     assert "start-here" in section and "21" in section and "30" not in section
-    assert "Under 5" in section  # the events group holds 2 clicks
+    assert "events" not in section and "Under 5" not in section
 
 
 def test_cli_bad_config_is_a_usage_error(
@@ -173,46 +336,3 @@ def test_cli_bad_config_is_a_usage_error(
     bad.write_text("version: 1\nnot: a config\n", encoding="utf-8")
     assert main(["report", "--input", str(path), "--config", str(bad)]) == 2
     assert "config" in capsys.readouterr().err.lower()
-
-
-def leaks(report: dict[str, Any]) -> bool:
-    """True if a group row prints a figure the link tables do not account for."""
-    printed = {r["label"]: r["views"] for r in report["links"]["rows"]}
-    for row in report["groups"]["rows"]:
-        members = [i for i, g in GROUPS.items() if g == row["group"]]
-        if row["status"] != "ok":
-            if row["clicks"] is not None:
-                return True
-        elif row["clicks"] != sum(printed.get(m, 0) for m in members):
-            return True
-    return False
-
-
-def test_enumerated_small_datasets_print_no_figure_beyond_printed_rows(
-    tmp_path: Path,
-) -> None:
-    import itertools
-
-    names = ["big-1", "big-2", "tiny-1", "mixed-tiny"]
-    checked = 0
-    for values in itertools.product((0, 1, 4, 5, 9), repeat=len(names)):
-        spec = dict(zip(names, values, strict=True))
-        report = build_report(export_of(tmp_path, clicks(spec)), groups=GROUPS)
-        assert not leaks(report), spec
-        checked += len(report["groups"]["rows"])
-    assert checked > 100
-
-
-def test_guard_negative_case_the_leak_check_bites(tmp_path: Path) -> None:
-    report = build_report(
-        export_of(tmp_path, clicks({"big-1": 30, "big-2": 12, "tiny-1": 2})),
-        groups=GROUPS,
-    )
-    assert not leaks(report)
-    beta = next(r for r in report["groups"]["rows"] if r["group"] == "beta")
-    beta["clicks"] = 2  # a regression that prints the small count
-    assert leaks(report)
-    beta["clicks"] = None
-    alpha = next(r for r in report["groups"]["rows"] if r["group"] == "alpha")
-    alpha["clicks"] += 30  # a total that includes a row the tables hide
-    assert leaks(report)

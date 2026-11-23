@@ -25,6 +25,7 @@ from reach_around.funnel.floor import _suppress as _suppress
 from reach_around.funnel.floor import floor_cells as floor_cells
 from reach_around.funnel.gaps import coverage_for_window
 from reach_around.funnel.groups import rollup as group_rollup
+from reach_around.funnel.groups import rollup_digest as group_rollup_digest
 from reach_around.funnel.groups import text_lines as group_text_lines
 from reach_around.funnel.private_analytics import private_lines
 from reach_around.funnel.social import social_lines
@@ -1168,18 +1169,23 @@ def _build_report(
         top,
         "click_events" in export.present,
     )
+    group_unavailable = (
+        "not_in_export"
+        if "click_events" not in export.present
+        else "withheld"
+        if "withheld" in (links_section["state"], social_icons_section["state"])
+        else None
+    )
     group_section = (
         None
         if groups is None
         else group_rollup(
             groups,
-            {"link": links, "social_icon": social_icons},
             {
                 "link": links_section["rows"],
                 "social_icon": social_icons_section["rows"],
             },
-            floor,
-            "click_events" in export.present,
+            group_unavailable,
         )
     )
     unsafe = any(
@@ -1198,7 +1204,20 @@ def _build_report(
     )
     digest = hashlib.sha256(blob.encode("utf-8")).hexdigest()
     if group_section is not None:
-        # After the digest: a release recorded without groups stays repeatable.
+        # After the core digest, which stays the legacy value: a release recorded
+        # without groups stays repeatable. The rollup has its own digest.
+        group_section["rollup_digest"] = group_rollup_digest(
+            digest,
+            groups or {},
+            group_section,
+            {
+                "floor": floor,
+                "top": top,
+                "period": report["period"],
+                "offset": offset,
+                "kind": period,
+            },
+        )
         report["groups"] = group_section
     return report, digest
 

@@ -146,22 +146,33 @@ unchanged. Without `--config` nothing changes. CSV adds `groups.csv` (`group`,
 `route_class`, `clicks`, `status`); JSON adds a `groups` object. The owner HTML
 page and the Grafana export do not carry it yet.
 
-A row has one of three states:
+A row is the sum of the link rows of that group that the report prints in
+"Link clicks by link" or "Social icon clicks by icon". Nothing else goes into
+it, and a group with no printed link row is left out whatever it holds. When
+either link table is withheld, or the export has no click table, the section
+has no rows (state `withheld` or `not_in_export`).
 
-* `ok`: the sum of the link rows of that group that the report prints in "Link
-  clicks by link" or "Social icon clicks by icon".
-* `under_floor`: the group holds fewer than 5 clicks in total. It prints
-  "Under 5" (the same words as the kit), and the CSV leaves the count empty.
-* `withheld`: the group holds 5 or more but none of its links prints a row.
+There is no "Under 5" row for a group. A first design printed one for a group
+whose true total was under 5 and `withheld` for a larger group with no printed
+row. That is an oracle: run the report under two configs that group the same
+hidden ids differently (four ids in four groups, then in one) and the changed
+statuses pin each hidden cell to exactly 1. A status computed from a hidden
+total cannot be made safe, so none is printed. Counts under 5 still never
+print: the link tables they come from already fold them.
 
-A group total beside the link tables would let a reader subtract the printed
-rows and recover the hidden ones, so a row is only ever a sum of rows already
-printed. The cost: the largest link row joins the link tables' remainder line
-whenever any row is under the floor, so that link is not in its group's figure,
-and the figure grows with `--top`. Read a group row as "at least this many
-clicks", never as a total. The rule never depends on the values. It is label
-suppression, as the rest of this report, not k-anonymity; share the report, not
-the export.
+Read a row as "at least this many clicks", never as a total. The largest link
+row joins the link tables' remainder line whenever any row is under the floor,
+so that link is not in its group's figure, and the figure grows with `--top`.
+It is label suppression, as the rest of this report, not k-anonymity; share the
+report, not the export.
+
+Digests. The release ledger digest is unchanged and is called the core digest
+here; older releases stay repeatable. With `--config` the section also prints a
+separately versioned rollup digest (`rollup digest (v1)`, JSON
+`groups.rollup_digest`, CSV `rollup_digest_v1` in `metadata.csv`). It hashes the
+core digest, the full click id to group mapping, the group rows and the floor,
+`--top` and period, so two configs give different rollup digests. The ledger
+does not record it.
 
 ## CSV output
 

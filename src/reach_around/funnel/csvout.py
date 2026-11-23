@@ -344,10 +344,11 @@ def csv_files(
     requested: dict[str, Any] | None = None,
 ) -> dict[str, bytes]:
     """File name to bytes, in a fixed order."""
+    meta = _meta_rows(report, generated_at, requested or {})
+    if "groups" in report:
+        meta.append(["rollup_digest_v1", report["groups"]["rollup_digest"]])
     files: dict[str, bytes] = {
-        "metadata.csv": render_csv(
-            ["key", "value"], _meta_rows(report, generated_at, requested or {})
-        ),
+        "metadata.csv": render_csv(["key", "value"], meta),
         "funnel.csv": render_csv(
             ["step", "value", "status", "coverage"], _funnel_rows(report)
         ),
