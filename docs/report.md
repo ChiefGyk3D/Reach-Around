@@ -174,10 +174,11 @@ versioned rollup digest (`rollup digest (v1)`, JSON `groups.rollup_digest`, CSV
 only: it hashes the printed (link id, group, route class) assignments, the group
 rows and state, and the floor, `--top`, period, offset and kind, and nothing
 else. It does not bind the ledger entry, and it never covers a hidden total or
-where an id with no printed row sits in the config. So two exports that print
-the same rows give the same value (a reader cannot brute-force hidden counts
-against it), and two configs that differ only in a hidden id's group give the
-same value. Moving a printed id or changing any bound input changes it.
+where an id with no printed row sits in the config. So two exports with
+identical printed assignments, rows, state and bound parameters (floor, `--top`,
+period, offset, kind) give the same digest, and a reader cannot brute-force
+hidden counts against it; two configs that differ only in a hidden id's group
+give the same value. Moving a printed id or changing any bound input changes it.
 
 ## CSV output
 

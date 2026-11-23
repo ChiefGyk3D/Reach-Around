@@ -144,54 +144,78 @@ def test_hidden_id_group_does_not_change_the_digest(tmp_path: Path) -> None:
         assert render_all(report) == render_all(base)
 
 
+BRUTE_BASE = {"big-1": 30, "big-2": 12}
+
+
+def candidate_attack(tmp_path: Path) -> list[int]:
+    """The reviewer's attack: take the printed digest of the true export (one
+    hidden id holding 1 click), rebuild the report for each candidate hidden
+    count and keep the candidates whose digest matches."""
+    true = build_report(
+        export_of(tmp_path, clicks({**BRUTE_BASE, "one-1": 1})), groups=CONFIG_A
+    )
+    target = true["groups"]["rollup_digest"]
+    return [
+        guess
+        for guess in range(0, 5)
+        if build_report(
+            export_of(tmp_path, clicks({**BRUTE_BASE, "one-1": guess})),
+            groups=CONFIG_A,
+        )["groups"]["rollup_digest"]
+        == target
+    ]
+
+
 def test_digest_ignores_hidden_cells_and_cannot_be_brute_forced(
     tmp_path: Path,
 ) -> None:
-    """Two exports with the same printed rows and different hidden cells give
-    the SAME rollup digest, so testing candidate hidden counts against the
-    printed digest cannot tell them apart (the reviewer's attack)."""
-    base = {"big-1": 30, "big-2": 12}
-    true = build_report(
-        export_of(tmp_path, clicks({**base, "one-1": 1})), groups=CONFIG_A
-    )
-    target = true["groups"]["rollup_digest"]
-    matching = []
-    for guess in range(0, 5):
-        rows = clicks({**base, "one-1": guess})
-        got = build_report(export_of(tmp_path, rows), groups=CONFIG_A)
-        if got["groups"]["rollup_digest"] == target:
-            matching.append(guess)
+    """Exports with identical printed assignments, rows, state and bound
+    parameters give the SAME rollup digest whatever the hidden cells hold."""
     # 0 hidden changes what prints (nothing is hidden, so 30 prints); every
-    # guess that hides the id gives the same digest: no candidate is pinned.
-    assert matching == [1, 2, 3, 4]
-    # Different hidden ids and totals, same printed rows: same digest too.
+    # guess that hides the id gives the same digest: none is pinned.
+    assert candidate_attack(tmp_path) == [1, 2, 3, 4]
+    true = build_report(
+        export_of(tmp_path, clicks({**BRUTE_BASE, "one-1": 1})), groups=CONFIG_A
+    )
     other = build_report(
-        export_of(tmp_path, clicks({**base, "one-2": 3, "one-3": 4})),
+        export_of(tmp_path, clicks({**BRUTE_BASE, "one-2": 3, "one-3": 4})),
         groups=CONFIG_A,
     )
-    assert other["groups"]["rollup_digest"] == target
+    assert other["groups"]["rollup_digest"] == true["groups"]["rollup_digest"]
     assert render_all(other) == render_all(true)
 
 
-def test_negative_a_digest_over_private_cells_is_caught(
+def test_negative_a_private_derived_digest_input_is_caught(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A digest that also hashes a hidden cell (as the core digest did) makes
-    every guess distinguishable, so the brute force above would work."""
+    """A realistic regression: the digest input builder reads a figure derived
+    from the private click rows (the hidden cells' total) out of the export the
+    report is built from. The same candidate attack then matches exactly one
+    candidate, which pins the hidden count."""
+    import hashlib as hl
+
     from reach_around.funnel import report as report_mod
     from reach_around.funnel.groups import rollup_digest as real
 
-    base = {"big-1": 30, "big-2": 12}
-    seen = set()
-    for guess in (1, 2, 3, 4):
-        monkeypatch.setattr(
-            report_mod,
-            "group_rollup_digest",
-            lambda e, sec, p, g=guess: real(e, sec, {**p, "hidden": g}),
-        )
-        export = export_of(tmp_path, clicks({**base, "one-1": guess}))
-        seen.add(build_report(export, groups=CONFIG_A)["groups"]["rollup_digest"])
-    assert len(seen) == 4  # each guess is distinguishable: the oracle
+    holder: dict[str, Any] = {}
+    original = report_mod._build_report
+
+    def capture(export: Any, **kw: Any) -> Any:
+        holder["export"] = export  # internals the regression reaches into
+        return original(export, **kw)
+
+    def leaky(effective: Any, section: Any, params: Any) -> str:
+        counts: dict[str, int] = {}
+        for row in holder["export"].click_events:
+            counts[row["link_id"]] = counts.get(row["link_id"], 0) + 1
+        hidden = sorted(n for n in counts.values() if n < 5)
+        private = hl.sha256(json.dumps(hidden).encode()).hexdigest()
+        return real(effective, section, {**params, "private": private})
+
+    assert candidate_attack(tmp_path) == [1, 2, 3, 4]  # green: the real digest
+    monkeypatch.setattr(report_mod, "_build_report", capture)
+    monkeypatch.setattr(report_mod, "group_rollup_digest", leaky)
+    assert candidate_attack(tmp_path) == [1]  # red: one candidate, pinned
 
 
 BASE_PARAMS = {"floor": 5, "top": 10, "period": {"a": 1}, "offset": 0, "kind": None}
@@ -343,33 +367,59 @@ def test_hidden_totals_do_not_change_the_output(tmp_path: Path) -> None:
     assert len(seen) == 1
 
 
+PAIR_GROUPS = {
+    "big-1": "alpha",
+    "big-2": "alpha",
+    "h1": "beta",
+    "h2": "gamma",
+    "icon-big": "alpha",
+    "icon-med": "delta",
+    "s1": "delta",
+    "s2": "epsilon",
+}  # "ghost" and "s3" are not in the config: they land in (no group)
+
+
+def pair_rows(hidden: Mapping[str, int], social: Mapping[str, int]) -> list[Any]:
+    return (
+        clicks({"big-1": 30, "big-2": 12, **hidden})
+        + clicks({"big-1": 3}, "link", TS2)
+        + clicks({"icon-big": 20, "icon-med": 9, **social}, "social_icon")
+    )
+
+
 @pytest.mark.parametrize("top", [1, 2, 10])
-@pytest.mark.parametrize("window", [(None, None), ("2026-11-02", "2026-11-02")])
-def test_leak_check_across_configs_tops_and_windows(
-    tmp_path: Path, top: int, window: tuple[str | None, str | None]
+@pytest.mark.parametrize("window", [(None, None), ("2026-11-01", "2026-11-01")])
+@pytest.mark.parametrize("config", [PAIR_GROUPS, CONFIG_A, {}])
+def test_exports_differing_only_in_suppressed_cells_render_identically(
+    tmp_path: Path,
+    top: int,
+    window: tuple[str | None, str | None],
+    config: dict[str, str],
 ) -> None:
-    names = ["big-1", "big-2", "tiny-1", "ghost"]
-    checked = 0
-    for values in itertools.product((0, 1, 5, 9), repeat=len(names)):
-        spec = dict(zip(names, values, strict=True))
-        rows = (
-            clicks(spec)
-            + clicks({"icon-a": values[0], "ghost": values[2]}, "social_icon", TS2)
-            + clicks({"big-2": values[1]}, "link", TS2)
+    buckets: dict[str, list[tuple[str, dict[str, int]]]] = {}
+    for h1, h2, ghost, s1, s2, s3 in itertools.product(
+        (0, 1, 3), (0, 2), (0, 1, 3), (0, 1, 2), (0, 2), (0, 1)
+    ):
+        hidden = {"h1": h1, "h2": h2, "ghost": ghost}
+        social = {"s1": s1, "s2": s2, "s3": s3}
+        export = export_of(tmp_path, pair_rows(hidden, social))
+        report = build_report(
+            export, groups=config, top=top, since=window[0], until=window[1]
         )
-        for config in (GROUPS, CONFIG_A, {}):
-            report = build_report(
-                export_of(tmp_path, rows),
-                groups=config,
-                top=top,
-                since=window[0],
-                until=window[1],
-            )
-            assert not leaks(report, config), (spec, top, window)
-            renders = render_all(report)
-            assert json.loads(renders["json"])["rows"] == report["groups"]["rows"]
-            checked += 1
-    assert checked > 500
+        assert not leaks(report, config)
+        public = {k: v for k, v in report.items() if k != "groups"}
+        key = json.dumps(public, sort_keys=True)
+        buckets.setdefault(key, []).append(
+            (json.dumps(render_all(report), sort_keys=True), {**hidden, **social})
+        )
+    paired = 0
+    for members in buckets.values():
+        # Same public report before the rollup (hidden cells differ only in
+        # what the report folds), so the whole rollup output must be the same.
+        assert len({rendered for rendered, _ in members}) == 1, members[:2]
+        paired += len(members) > 1
+    assert paired >= 1
+    assert sum(len(m) for m in buckets.values()) == 3 * 2 * 3 * 3 * 2 * 2
 
 
 def test_negative_old_classification_is_an_oracle_and_the_check_bites(
