@@ -168,6 +168,10 @@ class Link(_Model):
 Layout = Literal["list", "grid", "cards"]
 HeaderStyle = Literal["compact", "centered", "hero"]
 PageLayout = Literal["tabs", "sections"]
+_ORIGIN_HOST = re.compile(
+    r"(?=.{1,253}\Z)[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?"
+    r"(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*"
+)
 PageVariant = Literal["classic", "stack"]
 # Paths the build already writes (or that the host serves) at the site root.
 RESERVED_SPOKE_IDS = frozenset(
@@ -242,22 +246,24 @@ class Page(_Model):
     def _url_is_an_origin(cls, value: str | None) -> str | None:
         if value is None:
             return value
-        parts = urlsplit(value)
+        message = "page.url must be a bare https origin such as https://example.com"
+        try:
+            check_https_url(value)
+            parts = urlsplit(value)
+            port = parts.port
+        except ValueError:
+            raise ValueError(message) from None
+        host = parts.hostname or ""
         if (
-            parts.scheme != "https"
-            or not parts.hostname
-            or parts.username is not None
-            or parts.password is not None
-            or parts.path not in ("", "/")
-            or parts.query
-            or parts.fragment
-            or not value.isprintable()
-            or value != value.strip()
+            parts.path not in ("", "/")
+            or "?" in value
+            or "#" in value
+            or _ORIGIN_HOST.fullmatch(host) is None
+            or (port is not None and not 1 <= port <= 65535)
         ):
-            raise ValueError(
-                "page.url must be a bare https origin such as https://example.com"
-            )
-        return f"{parts.scheme}://{parts.netloc}"
+            raise ValueError(message)
+        suffix = "" if port in (None, 443) else f":{port}"
+        return f"https://{host}{suffix}"
 
     @field_validator("featured", mode="before")
     @classmethod
@@ -593,6 +599,11 @@ class SiteConfig(_Model):
                 if page.url is None:
                     raise ValueError(
                         "a spoke page needs page.url for its canonical link"
+                    )
+                if tab.id == self.analytics.route.strip("/").split("/")[0]:
+                    raise ValueError(
+                        f"tab {tab.id!r}: a spoke page cannot take the path of "
+                        "analytics.route; rename the tab or the route"
                     )
             if tab.collapsed and tab.intent == "watch":
                 raise ValueError("the Watch group cannot be collapsed")

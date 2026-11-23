@@ -77,11 +77,12 @@ Measured 2026-11-20 on the built example instance (`examples/instance`) and a me
 | hub | 5200 | 59000 | 13000 | 1300 | 82000 | 160000 | 82000 | 11 | 0 |
 | hub-stack | 11300 | 65300 | 13000 | 1300 | 81500 | 172200 | 83700 | 13 | 0 |
 | hub-live | 11700 | 65300 | 33100 | 1300 | 81500 | 192700 | 90300 | 14 | 0 |
+| spoke | 7400 | 60000 | 13000 | 1300 | 81500 | 163000 | 81500 | 11 | 0 |
 | tab | 3600 | 59000 | 13000 | 1300 | 82000 | 158000 | 81000 | 11 | 0 |
 | kit | 11800 | 72000 | 3300 | 500 | 33300 | 123000 | 57000 | 11 | 0 |
 | support | 4600 | 72000 | 13000 | 1300 | 82000 | 148000 | 78000 | 10 | 0 |
 
-Bytes, except Requests and Third party. Page types: `hub` is the first-tab page (`index.html`), `hub-stack` the smart-stack home page (`page.layout: stack`), `hub-live` the same page with `page.live_badges: true`, `tab` any other tab page, `kit` the public media kit page, `support` the pages around them (privacy, `/kit/retry/` and 404; this repository has no other support-style page). Total is HTML, CSS, JS, images and fonts before compression. Compressed is the estimate described below. Requests counts the page and each distinct file it links. Third party is zero requests to any other origin.
+Bytes, except Requests and Third party. Page types: `hub` is the first-tab page (`index.html`), `hub-stack` the smart-stack home page (`page.layout: stack`), `hub-live` the same page with `page.live_badges: true`, `spoke` a stack tab drawn as its own page (`spoke: true`, #676), `tab` any other tab page, `kit` the public media kit page, `support` the pages around them (privacy, `/kit/retry/` and 404; this repository has no other support-style page). Total is HTML, CSS, JS, images and fonts before compression. Compressed is the estimate described below. Requests counts the page and each distinct file it links. Third party is zero requests to any other origin.
 
 ### Measured, before headroom
 
@@ -90,6 +91,7 @@ Bytes, except Requests and Third party. Page types: `hub` is the first-tab page 
 | hub | `index.html` | 4086 | 46705 | 10332 | 997 | 65152 | 127272 | 64895 | 9 |
 | hub-stack | `index.html` (stack) | 9014 | 54164 | 10332 | 997 | 65152 | 139659 | 67470 | 10 |
 | hub-live | `index.html` (stack, `live_badges`) | 9313 | 54164 | 26421 | 997 | 65152 | 156047 | 72748 | 11 |
+| spoke | `gear/index.html` (stack, one Gear spoke: three sections, twelve links) | 5845 | 47964 | 10332 | 997 | 65152 | 130290 | 65132 | 9 |
 | tab | `events/index.html` | 2875 | 46705 | 10332 | 997 | 65152 | 126061 | 64615 | 9 |
 | kit | `kit/index.html` (realistic kit: four labeled numbers, analytics, engagement, a case study, the legend) | 9370 | 59197 | 2596 | 384 | 26576 | 98123 | 45575 | 9 |
 | support | `privacy/index.html` | 3620 | 37890 | 10332 | 997 | 65152 | 117991 | 62313 | 8 |

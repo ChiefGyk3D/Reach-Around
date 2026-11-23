@@ -582,7 +582,9 @@ def _render_smart_stack_page(
         page_title=page_title(config, tab.title, home=True, own=tab.page_title),
         disclosure=_disclosure_line(config),
         show_disclosure=_show_disclosure(
-            config, any(link.affiliate for link in _links_in(every))
+            config,
+            any(link.affiliate for link in _links_in(every))
+            or (featured is not None and featured["link"].affiliate),
         ),
         show_cookie_banner=sets_cookies(config),
         click_tracking=config.features.click_tracking,
@@ -1097,7 +1099,13 @@ def build_site(
                 "redirects.tabs old slug 'socials' conflicts with redirects.socials"
             )
         current_routes = {
-            tab.id: ("/" if tab.intent == "watch" else f"/#group-{tab.intent}")
+            tab.id: (
+                f"/{tab.id}/"
+                if tab.spoke
+                else "/"
+                if tab.intent == "watch"
+                else f"/#group-{tab.intent}"
+            )
             if config.page.layout == "stack"
             else (
                 "/"
