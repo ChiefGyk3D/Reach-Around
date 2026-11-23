@@ -1,0 +1,36 @@
+{
+  "schema": 1,
+  "provider": "registry.opentofu.org/cloudflare/cloudflare",
+  "provider_version": "5.29.0",
+  "resource": "cloudflare_bot_management",
+  "command": "tofu providers schema -json | python3 -I scripts/gen-provider-fields.py 5.29.0 > deploy/edge/provider-fields.json",
+  "sendable_fields": [
+    "ai_agents",
+    "ai_bots_migration_opt_out",
+    "ai_bots_protection",
+    "ai_search",
+    "ai_training",
+    "ai_user",
+    "auto_update_model",
+    "bm_cookie_enabled",
+    "bot_preference_sync_enabled",
+    "cf_robots_variant",
+    "content_bots_protection",
+    "crawler_protection",
+    "enable_js",
+    "fight_mode",
+    "is_robots_txt_managed",
+    "jsd_api_results_enabled",
+    "optimize_wordpress",
+    "sbfm_definitely_automated",
+    "sbfm_likely_automated",
+    "sbfm_static_resource_protection",
+    "sbfm_verified_bots",
+    "suppress_session_score"
+  ],
+  "computed_only": [
+    "id",
+    "stale_zone_configuration",
+    "using_latest_model"
+  ]
+}

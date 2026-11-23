@@ -46,17 +46,30 @@ Managed fields, each with a desired value:
 | `content_bots_protection` | `disabled` | No extra content-bot rule. |
 | `fight_mode` | `false` | Bot Fight Mode stays off. On a Free zone it cannot be skipped or exempted by a rule, so it may challenge browser beacons. Revisit only after real beacon traffic is measured on the test host. |
 
-Unmanaged fields. The provider's `cloudflare_bot_management` resource (5.29.0,
-read from `tofu providers schema -json`) can send 22 fields. The 13 below are
-listed in `desired-state.json` as `{"unmanaged": true}`: `main.tf` never sets
-them, and the drift check does not compare them. The offline check fails when
-the provider's list and the file disagree, so no field can be forgotten:
+Unmanaged fields. The provider's `cloudflare_bot_management` resource (5.29.0)
+can send 22 fields. The 13 below are listed in `desired-state.json` as
+`{"unmanaged": true}`. That means only that this repository does not configure
+them (`main.tf` never sets them) and does not drift-check them. **Whether an
+apply would still send them, as an omitted optional attribute, a default or a
+refreshed value, is unverified.** That is the reason the apply path stays
+prohibited. The offline check fails if any text here, in `main.tf` or in
+`desired-state.json` promises that such fields are safe from an apply.
 
 `ai_agents`, `ai_bots_migration_opt_out`, `auto_update_model`,
 `bm_cookie_enabled`, `cf_robots_variant`, `enable_js`,
 `jsd_api_results_enabled`, `optimize_wordpress`, `sbfm_definitely_automated`,
 `sbfm_likely_automated`, `sbfm_static_resource_protection`,
 `sbfm_verified_bots`, `suppress_session_score`.
+
+The list of 22 is checked against a reviewed manifest,
+[`deploy/edge/provider-fields.json`](../deploy/edge/provider-fields.json),
+generated from the provider's own schema (`tofu providers schema -json`, piped
+through `scripts/gen-provider-fields.py`; the command is recorded in the file).
+The offline check requires the manifest, the field list in `check-edge.py` and
+`desired-state.json` to agree with each other independently, and the manifest's
+provider version to equal the pin. A field cannot be dropped from two of the
+three unnoticed. The manifest itself is only as current as its last
+regeneration: regenerate and review the diff on every provider bump.
 
 AI Crawl Control is on for every plan with no setting to change. Pay Per Crawl
 is a closed beta and is not used. Per-crawler Block actions in that dashboard
@@ -142,8 +155,17 @@ applied from here" is structural:
 - CI has no Cloudflare credentials, so no CI job can reach the zone.
 - Write tokens exist only in the secret manager and are not issued for this work.
 - No workflow is given a Cloudflare token of any kind.
-- `plan.sh` passes only `CLOUDFLARE_API_TOKEN` to the tool and drops every other
-  `CLOUDFLARE_*` and `TF_CLI_ARGS*` variable.
+- `plan.sh` starts the tool under `env -i` with an allow-list: a fixed `PATH`, a
+  fresh scratch `HOME`, `TMPDIR` and data directory (removed again), `TF_VAR_zone_id`,
+  `CLOUDFLARE_API_TOKEN` (read from a file descriptor, never on a command line) and
+  `TF_CLI_CONFIG_FILE` pointing at the reviewed `deploy/edge/tofu.rc`, which allows
+  only a direct install of the locked provider (no `dev_overrides`, mirrors or
+  plugin cache). Nothing else reaches it: no proxy or CA variable, no other
+  `TF_VAR_*`, no `TF_PLUGIN_CACHE_DIR`. The tool is found at a fixed absolute path
+  (`/usr/local/bin`, `/usr/bin` or `~/.local/bin`, or `TOFU_BIN`), never through
+  `PATH`, and refused unless it and its parent directories belong to root or you
+  and others cannot write to them. The script's own helper commands run with the
+  same cleaned environment. Exit 65 means no trusted binary.
 - The module has no rules resource, so even a mistaken run cannot touch other
   sites' rate rules.
 
@@ -168,7 +190,11 @@ desired state breaks an owner decision, when a provider field is missing from
 `desired-state.json`, when `main.tf` sets an unmanaged field or defines a rules
 resource, or when `main.tf`, the provider pin and the lock file stop matching.
 `--live` compares the real zone and exits 1 on any difference, 2 when it could
-not read (never read as green). `--site-host` takes a plain public hostname
+not read (never read as green). Before any authenticated call it refuses to run,
+with exit 2, if a proxy or trust-store override variable is set (`HTTPS_PROXY`,
+`HTTP_PROXY`, `ALL_PROXY` in either case, `SSL_CERT_FILE`, `SSL_CERT_DIR`,
+`REQUESTS_CA_BUNDLE`, `CURL_CA_BUNDLE`), and its API connection ignores
+environment proxies entirely, so a proxy with its own CA cannot read the token. `--site-host` takes a plain public hostname
 only: no IP, port, path or credentials. It resolves the name, refuses if any
 address is loopback, private, link-local, multicast, reserved or unspecified,
 connects to that address with the hostname as the certificate name, and follows

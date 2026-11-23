@@ -63,5 +63,5 @@
     "requests_per_period": 30,
     "mitigation_timeout": 10
   },
-  "_comment": "rate_limit is a MANUAL step on a shared zone: add it to the existing http_ratelimit rules, never replace the phase (docs/edge.md). {\"unmanaged\": true} fields are never sent by an apply."
+  "_comment": "rate_limit is a MANUAL step on a shared zone: add it to the existing http_ratelimit rules, never replace the phase (docs/edge.md). Fields marked {\"unmanaged\": true} are not configured or drift-checked by this repository; whether an apply sends them is unverified, so the apply path stays prohibited."
 }

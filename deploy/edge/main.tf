@@ -13,9 +13,11 @@
 # Nothing here runs an apply, and no workflow does either.
 #
 # desired-state.json is the single source that scripts/check-edge.py and the
-# tests also read. Every field the provider can send is listed there, either with
-# a desired value or as {"unmanaged": true}. An unmanaged field is never set in
-# this file, and the drift check does not compare it.
+# tests also read. Every field the provider can send is listed there (and in the
+# reviewed provider-fields.json manifest), either with a desired value or as
+# {"unmanaged": true}. An unmanaged field is not configured in this file and is
+# not drift-checked. Whether an apply would still send it is unverified, which is
+# why the apply path stays prohibited.
 #
 # The rate rule on /e/ is deliberately NOT a resource here. A cloudflare_ruleset
 # resource owns the whole http_ratelimit phase, and on a shared zone applying it

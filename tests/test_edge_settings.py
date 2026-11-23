@@ -32,7 +32,25 @@ import pytest
 
 REPO = Path(__file__).resolve().parent.parent
 EDGE = Path("deploy/edge")
-FILES = ("desired-state.json", "main.tf", "versions.tf", ".terraform.lock.hcl")
+FILES = (
+    "desired-state.json",
+    "main.tf",
+    "versions.tf",
+    ".terraform.lock.hcl",
+    "provider-fields.json",
+)
+OVERRIDE_VARS = (
+    "HTTPS_PROXY",
+    "https_proxy",
+    "HTTP_PROXY",
+    "http_proxy",
+    "ALL_PROXY",
+    "all_proxy",
+    "SSL_CERT_FILE",
+    "SSL_CERT_DIR",
+    "REQUESTS_CA_BUNDLE",
+    "CURL_CA_BUNDLE",
+)
 
 
 def load(path: Path, name: str) -> ModuleType:
@@ -43,8 +61,14 @@ def load(path: Path, name: str) -> ModuleType:
     return module
 
 
-check = load(REPO / "scripts" / "check-edge.py", "check_edge")
+check: Any = load(REPO / "scripts" / "check-edge.py", "check_edge")
 SENTINEL = "sentinel-token-value-123456"
+
+
+@pytest.fixture(autouse=True)
+def clean_ambient_overrides(monkeypatch: pytest.MonkeyPatch) -> None:
+    for name in OVERRIDE_VARS:
+        monkeypatch.delenv(name, raising=False)
 
 
 def desired() -> dict[str, Any]:
@@ -289,6 +313,120 @@ def test_no_zone_or_account_id_is_committed() -> None:
         assert not check.zone_like_ids(text), name
 
 
+def test_unmanaged_wording_never_claims_a_field_is_not_sent(root: Path) -> None:
+    for claim in ("never sent", "are never sent by an apply", "not sent"):
+        data = copy.deepcopy(desired())
+        data["_comment"] = f"unmanaged fields are {claim}"
+        write_desired(root, data)
+        assert any("sent" in p for p in check.offline_problems(root)), claim
+    write_desired(root, desired())
+    main_tf = root / EDGE / "main.tf"
+    original = main_tf.read_text()
+    main_tf.write_text(original + "\n# An unmanaged field is never sent.\n")
+    assert any("sent" in p for p in check.offline_problems(root))
+    main_tf.write_text(original)
+    (root / "docs").mkdir()
+    shutil.copy(REPO / "docs" / "edge.md", root / "docs" / "edge.md")
+    assert check.offline_problems(root) == []
+    doc = root / "docs" / "edge.md"
+    doc.write_text(doc.read_text() + "\nThose fields would never send.\n")
+    assert any("sent" in p or "send" in p for p in check.offline_problems(root))
+
+
+def test_the_real_files_state_that_sending_is_unverified() -> None:
+    for path in (
+        REPO / EDGE / "desired-state.json",
+        REPO / EDGE / "main.tf",
+        REPO / "docs" / "edge.md",
+    ):
+        assert "unverified" in path.read_text(), path.name
+
+
+def manifest() -> dict[str, Any]:
+    data: dict[str, Any] = json.loads(
+        (REPO / EDGE / "provider-fields.json").read_text()
+    )
+    return data
+
+
+def test_the_manifest_matches_the_checker_and_the_desired_state_independently(
+    root: Path,
+) -> None:
+    m = manifest()
+    assert m["provider_version"] == "5.29.0"
+    assert "providers schema -json" in m["command"]
+    assert set(m["sendable_fields"]) == set(check.PROVIDER_FIELDS)
+    assert set(m["sendable_fields"]) == set(desired()["bot_management"])
+    # drop a field from the checker's list AND the desired state only: the
+    # manifest, generated from the provider schema, still notices
+    data = copy.deepcopy(desired())
+    del data["bot_management"]["suppress_session_score"]
+    write_desired(root, data)
+    reduced = tuple(f for f in check.PROVIDER_FIELDS if f != "suppress_session_score")
+    saved = check.PROVIDER_FIELDS
+    check.PROVIDER_FIELDS = reduced
+    try:
+        assert any("manifest" in p for p in check.offline_problems(root))
+    finally:
+        check.PROVIDER_FIELDS = saved
+
+
+def test_the_manifest_version_must_match_the_pin(root: Path) -> None:
+    path = root / EDGE / "provider-fields.json"
+    data = json.loads(path.read_text())
+    data["provider_version"] = "5.30.0"
+    path.write_text(json.dumps(data))
+    assert any("manifest" in p and "version" in p for p in check.offline_problems(root))
+
+
+def test_a_missing_or_garbled_manifest_fails_the_offline_check(root: Path) -> None:
+    path = root / EDGE / "provider-fields.json"
+    path.write_text("{garbled")
+    assert check.offline_problems(root)
+    path.unlink()
+    assert check.offline_problems(root)
+
+
+gen: Any = load(REPO / "scripts" / "gen-provider-fields.py", "gen_provider_fields")
+
+
+def schema(attributes: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "provider_schemas": {
+            "registry.opentofu.org/cloudflare/cloudflare": {
+                "resource_schemas": {
+                    "cloudflare_bot_management": {"block": {"attributes": attributes}}
+                }
+            }
+        }
+    }
+
+
+def test_the_generator_reads_sendable_fields_from_a_schema() -> None:
+    attrs = {
+        "zone_id": {"type": "string", "required": True},
+        "id": {"type": "string", "computed": True},
+        "using_latest_model": {"type": "bool", "computed": True},
+        "aisearch": {"type": "string", "optional": True, "computed": True},
+        "enable_js": {"type": "bool", "optional": True, "computed": True},
+        "bot_preference_sync_enabled": {"type": "bool", "optional": True},
+    }
+    result = gen.build_manifest(schema(attrs), "5.29.0", "cmd")
+    assert result["sendable_fields"] == [
+        "ai_search",
+        "bot_preference_sync_enabled",
+        "enable_js",
+    ]
+    assert result["computed_only"] == ["id", "using_latest_model"]
+    assert result["provider_version"] == "5.29.0"
+    assert result["command"] == "cmd"
+
+
+def test_the_generator_refuses_a_schema_without_the_resource() -> None:
+    with pytest.raises(ValueError):
+        gen.build_manifest({"provider_schemas": {}}, "5.29.0", "cmd")
+
+
 def test_ci_runs_the_offline_check() -> None:
     ci = (REPO / ".github" / "workflows" / "ci.yml").read_text()
     assert "python3 -I scripts/check-edge.py --offline" in ci
@@ -421,7 +559,9 @@ def test_get_refuses_plain_http_and_a_token_for_another_host() -> None:
         check.get("https://example.invalid/robots.txt", SENTINEL)
 
 
-def test_get_never_follows_a_redirect(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_get_never_follows_a_redirect_and_ignores_proxies(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     seen: list[Any] = []
 
     def fake_build_opener(*handlers: Any) -> Any:
@@ -436,11 +576,61 @@ def test_get_never_follows_a_redirect(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(urllib.request, "build_opener", fake_build_opener)
     with pytest.raises(check.Unreadable):
         check.get(check.API + "/zones/x", SENTINEL)
-    assert len(seen) == 1
+    redirect = [h for h in seen if isinstance(h, type) and h.__name__ == "NoRedirect"]
+    assert len(redirect) == 1
     assert (
-        seen[0]().redirect_request(None, None, 302, "", {}, "https://x.invalid/")
+        redirect[0]().redirect_request(None, None, 302, "", {}, "https://x.invalid/")
         is None
     )
+    proxies = [h for h in seen if isinstance(h, urllib.request.ProxyHandler)]
+    assert (
+        len(proxies) == 1 and vars(proxies[0])["proxies"] == {}
+    )  # no environment proxy
+    https = [h for h in seen if isinstance(h, urllib.request.HTTPSHandler)]
+    assert len(https) == 1  # an explicit TLS handler, not the implicit default
+
+
+def test_the_real_opener_has_no_proxy_handler_from_the_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("HTTPS_PROXY", "http://proxy.invalid:3128")
+    opener = urllib.request.build_opener(
+        urllib.request.ProxyHandler({}),
+        urllib.request.HTTPSHandler(context=check.ssl.create_default_context()),
+    )
+    # an empty ProxyHandler installs no *_open methods, so it is left out, and the
+    # default environment-reading one is not added beside it
+    assert not [
+        h
+        for h in vars(opener)["handlers"]
+        if isinstance(h, urllib.request.ProxyHandler)
+    ]
+
+
+@pytest.mark.parametrize("name", OVERRIDE_VARS)
+def test_a_proxy_or_ca_override_refuses_before_any_socket(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], name: str
+) -> None:
+    def no_socket(*args: Any, **kwargs: Any) -> Any:
+        raise AssertionError("a socket was opened")
+
+    for target in ("create_connection", "getaddrinfo", "socket"):
+        monkeypatch.setattr(check.socket, target, no_socket)
+    monkeypatch.setattr(urllib.request, "build_opener", no_socket)
+    monkeypatch.setenv(check.TOKEN_ENV, SENTINEL)
+    monkeypatch.setenv(name, "/somewhere/else")
+    code = check.main(["--live", "--zone-id", "0" * 32])
+    out = capsys.readouterr()
+    assert code == 2
+    assert out.err.strip() == "REFUSED proxy or CA override variable is set"
+    assert SENTINEL not in out.out + out.err
+    with pytest.raises(check.Unreadable):  # the same guard inside get()
+        check.get(check.API + "/zones/x", SENTINEL)
+
+
+def test_the_public_robots_fetch_is_not_blocked_by_the_override_guard() -> None:
+    assert check.override_variables_set({}) == []
+    assert check.override_variables_set({"HTTPS_PROXY": "x"}) == ["HTTPS_PROXY"]
 
 
 def test_a_failed_read_is_exit_2_and_never_prints_the_token(
@@ -532,11 +722,7 @@ def test_saving_over_an_existing_file_is_exit_2_not_a_crash(
 
 
 def test_plan_usage_error_is_not_the_changes_planned_exit_code() -> None:
-    import os
-    import subprocess
-
-    env = {k: v for k, v in os.environ.items() if k not in ("CLOUDFLARE_API_TOKEN",)}
-    env.pop("TF_VAR_zone_id", None)
+    env = {"PATH": "/usr/bin:/bin"}
     run = subprocess.run(  # noqa: S603 (fixed repo script, no token set)
         [str(REPO / EDGE / "plan.sh")],
         env=env,
@@ -559,56 +745,177 @@ def test_plan_script_is_executable() -> None:
     assert (REPO / EDGE / "plan.sh").stat().st_mode & 0o111
 
 
-def run_plan_with_fake_tofu(tmp_path: Path, extra: dict[str, str]) -> dict[str, Any]:
-    bindir = tmp_path / "bin"
-    bindir.mkdir()
-    dump = tmp_path / "env.json"
+ALLOWED_TOFU_ENV = {
+    "PATH",
+    "HOME",
+    "TMPDIR",
+    "TF_DATA_DIR",
+    "TF_VAR_zone_id",
+    "TF_CLI_CONFIG_FILE",
+    "CLOUDFLARE_API_TOKEN",
+    "_",  # set by bash itself for the program it starts
+    "SHLVL",  # added by bash itself, no secret
+    "LC_CTYPE",  # added by bash itself, no secret
+}
+
+
+def make_fake_tofu(home: Path, dump: Path, mode: int = 0o755) -> Path:
+    bindir = home / ".local" / "bin"
+    bindir.mkdir(parents=True)
     fake = bindir / "tofu"
     fake.write_text(
         "#!" + sys.executable + "\n"
         "import json, os, sys\n"
         f"with open({str(dump)!r}, 'a') as h:\n"
-        "    h.write(json.dumps([sys.argv[1:], dict(os.environ)]) + chr(10))\n"
+        "    row = [sys.argv[1:], dict(os.environ), os.getcwd()]\n"
+        "    h.write(json.dumps(row) + chr(10))\n"
     )
-    fake.chmod(0o755)
-    env = {
-        "PATH": f"{bindir}:/usr/bin:/bin",
+    fake.chmod(mode)
+    return fake
+
+
+def plan_env(home: Path, extra: dict[str, str]) -> dict[str, str]:
+    # TOFU_BIN pins the fake: a real tofu must never run from these tests.
+    return {
+        "PATH": "/usr/bin:/bin",
+        "HOME": str(home),
+        "TOFU_BIN": str(home / ".local" / "bin" / "tofu"),
         "TF_VAR_zone_id": "1" * 32,
         "CLOUDFLARE_API_TOKEN": SENTINEL,
         **extra,
     }
+
+
+def run_plan(
+    tmp_path: Path, extra: dict[str, str], mode: int = 0o755
+) -> tuple[subprocess.CompletedProcess[str], list[Any]]:
+    home = tmp_path / "home"
+    dump = tmp_path / "env.json"
+    make_fake_tofu(home, dump, mode)
     run = subprocess.run(  # noqa: S603 (fixed repo script; fake tofu, no network)
         [str(REPO / EDGE / "plan.sh")],
-        env=env,
+        env=plan_env(home, extra),
         capture_output=True,
         text=True,
         check=False,
     )
-    assert run.returncode == 0, run.stderr
-    calls = [json.loads(line) for line in dump.read_text().splitlines()]
-    return {"calls": calls, "stdout": run.stdout, "stderr": run.stderr}
+    calls = (
+        [json.loads(x) for x in dump.read_text().splitlines()] if dump.exists() else []
+    )
+    return run, calls
 
 
-def test_plan_passes_only_the_documented_token_to_tofu(tmp_path: Path) -> None:
+def test_plan_gives_tofu_only_the_allow_listed_environment(tmp_path: Path) -> None:
     hostile = {
+        "TF_CLI_CONFIG_FILE": "/nonexistent/evil.tfrc",
+        "TF_PLUGIN_CACHE_DIR": "/nonexistent/evil-cache",
+        "TF_DATA_DIR": "/nonexistent/evil-data",
+        "TF_VAR_other": "x",
+        "TF_LOG": "TRACE",
+        "TF_LOG_PATH": "/nonexistent/leak.log",
+        "HTTPS_PROXY": "http://proxy.invalid:3128",
+        "https_proxy": "http://proxy.invalid:3128",
+        "ALL_PROXY": "http://proxy.invalid:3128",
+        "SSL_CERT_FILE": "/nonexistent/evil-ca.pem",
+        "SSL_CERT_DIR": "/nonexistent/evil-cas",
         "CLOUDFLARE_API_KEY": "k",
         "CLOUDFLARE_EMAIL": "e",
         "CLOUDFLARE_API_USER_SERVICE_KEY": "u",
         "CLOUDFLARE_API_BASE_URL": "https://attacker.invalid",
-        "CLOUDFLARE_ANYTHING_ELSE": "x",
         "TF_CLI_ARGS": "-lock=false",
         "TF_CLI_ARGS_plan": "-destroy",
+        "LD_PRELOAD": "/nonexistent/evil.so",
+        "BASH_ENV": "/nonexistent/evil.sh",
+        "ENV": "/nonexistent/evil.sh",
+        "OPENTOFU_THING": "x",
     }
-    out = run_plan_with_fake_tofu(tmp_path, hostile)
-    assert [c[0][0] for c in out["calls"]] == ["init", "plan"]
-    for _argv, env in out["calls"]:
+    run, calls = run_plan(tmp_path, hostile)
+    assert run.returncode == 0, run.stderr
+    assert [c[0][0] for c in calls] == ["init", "plan"]
+    for _argv, env, cwd in calls:
+        assert set(env) <= ALLOWED_TOFU_ENV, sorted(set(env) - ALLOWED_TOFU_ENV)
         assert env["CLOUDFLARE_API_TOKEN"] == SENTINEL
         assert env["TF_VAR_zone_id"] == "1" * 32
-        extra = [k for k in env if k.startswith("CLOUDFLARE_")]
-        assert extra == ["CLOUDFLARE_API_TOKEN"]
-        assert not [k for k in env if k.startswith("TF_CLI_ARGS")]
-    assert SENTINEL not in out["stdout"] + out["stderr"]
-    assert not any("apply" in c[0] or "destroy" in c[0] for c in out["calls"])
+        assert env["PATH"] == "/usr/bin:/bin"
+        assert env["HOME"] != str(tmp_path / "home")  # a fresh scratch home
+        assert env["TF_CLI_CONFIG_FILE"] == str(REPO / EDGE / "tofu.rc")
+        scratch = Path(env["HOME"]).parent
+        assert Path(env["TF_DATA_DIR"]).parent == scratch == Path(env["TMPDIR"]).parent
+        assert Path(cwd) == REPO / EDGE
+    assert not Path(calls[0][1]["HOME"]).parent.exists()  # removed again
+    assert SENTINEL not in run.stdout + run.stderr
+    assert not any(a in ("apply", "destroy", "import") for c in calls for a in c[0])
+
+
+def test_plan_refuses_a_relative_tofu_bin(tmp_path: Path) -> None:
+    run, calls = run_plan(tmp_path, {"TOFU_BIN": "tofu"})
+    assert run.returncode == 65 and calls == []
+
+
+def test_plan_ignores_a_tofu_earlier_on_path(tmp_path: Path) -> None:
+    evil = tmp_path / "evil"
+    evil.mkdir()
+    marker = tmp_path / "evil-ran"
+    (evil / "tofu").write_text(f"#!/bin/sh\ntouch {marker}\n")
+    (evil / "tofu").chmod(0o755)
+    run, calls = run_plan(tmp_path, {"PATH": f"{evil}:/usr/bin:/bin"})
+    assert run.returncode == 0, run.stderr
+    assert not marker.exists()
+    assert len(calls) == 2
+
+
+@pytest.mark.parametrize("mode", [0o777, 0o757])
+def test_plan_refuses_a_binary_writable_by_others(tmp_path: Path, mode: int) -> None:
+    run, calls = run_plan(tmp_path, {}, mode)
+    assert run.returncode == 65
+    assert calls == []
+    assert "no trusted tofu" in run.stderr
+    assert SENTINEL not in run.stdout + run.stderr
+
+
+def test_plan_refuses_a_binary_in_a_directory_writable_by_others(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    make_fake_tofu(home, tmp_path / "env.json")
+    (home / ".local" / "bin").chmod(0o777)  # no sticky bit
+    run = subprocess.run(  # noqa: S603 (fixed repo script; fake tofu, no network)
+        [str(REPO / EDGE / "plan.sh")],
+        env=plan_env(home, {}),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert run.returncode == 65
+    assert not (tmp_path / "env.json").exists()
+
+
+def test_plan_refuses_a_malformed_zone_id(tmp_path: Path) -> None:
+    run, calls = run_plan(tmp_path, {"TF_VAR_zone_id": "not-a-zone"})
+    assert run.returncode == 64
+    assert calls == []
+
+
+def test_plan_usage_and_exit_codes_pass_through(tmp_path: Path) -> None:
+    run, calls = run_plan(tmp_path, {})
+    assert run.returncode == 0 and len(calls) == 2
+
+
+def test_the_reviewed_cli_config_installs_only_the_locked_provider() -> None:
+    text = (REPO / EDGE / "tofu.rc").read_text()
+    code = "\n".join(x for x in text.splitlines() if not x.lstrip().startswith("#"))
+    assert "dev_overrides" not in code
+    assert "filesystem_mirror" not in code and "network_mirror" not in code
+    assert "plugin_cache_dir" not in code
+    assert 'include = ["registry.opentofu.org/cloudflare/cloudflare"]' in code
+    assert "direct" in code
+    assert code.count("{") == code.count("}") > 0
+
+
+def test_the_doc_does_not_overclaim_the_plan_environment() -> None:
+    doc = (REPO / "docs" / "edge.md").read_text()
+    assert "passes only `CLOUDFLARE_API_TOKEN` to the tool" not in doc
+    assert "allow-list" in doc and "tofu.rc" in doc
 
 
 # --- --site-host: no SSRF -----------------------------------------------------

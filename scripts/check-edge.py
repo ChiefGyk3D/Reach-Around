@@ -112,6 +112,26 @@ class Unreadable(Exception):
     """The live zone could not be read; the caller must not treat it as green."""
 
 
+OVERRIDE_VARS = (
+    "HTTPS_PROXY",
+    "https_proxy",
+    "HTTP_PROXY",
+    "http_proxy",
+    "ALL_PROXY",
+    "all_proxy",
+    "SSL_CERT_FILE",
+    "SSL_CERT_DIR",
+    "REQUESTS_CA_BUNDLE",
+    "CURL_CA_BUNDLE",
+)
+OVERRIDE_MESSAGE = "REFUSED proxy or CA override variable is set"
+
+
+def override_variables_set(environ: Any) -> list[str]:
+    """Names of proxy or trust-store override variables present in environ."""
+    return [name for name in OVERRIDE_VARS if name in environ]
+
+
 class NotFound(Unreadable):
     """HTTP 404 from the API."""
 
@@ -124,6 +144,7 @@ def offline_problems(root: Path) -> list[str]:
         main_tf = (edge / "main.tf").read_text("utf-8")
         versions = (edge / "versions.tf").read_text("utf-8")
         lock = (edge / ".terraform.lock.hcl").read_text("utf-8")
+        manifest = json.loads((edge / "provider-fields.json").read_text("utf-8"))
     except (OSError, ValueError) as exc:
         return [f"cannot read deploy/edge files ({type(exc).__name__})"]
     if not isinstance(desired, dict) or desired.get("schema") != 1:
@@ -173,6 +194,9 @@ def offline_problems(root: Path) -> list[str]:
     if "desired-state.json" not in main_tf:
         problems.append("main.tf does not read desired-state.json")
 
+    problems += manifest_problems(manifest, set(bot), PIN.search(versions))
+    problems += wording_problems(root, desired)
+
     pin = PIN.search(versions)
     locked = re.search(r'version\s*=\s*"(\d+\.\d+\.\d+)"', lock)
     if pin is None:
@@ -180,6 +204,50 @@ def offline_problems(root: Path) -> list[str]:
     elif locked is None or locked.group(1) != pin.group(1):
         problems.append("lock file version differs from the provider pin")
     return problems
+
+
+def manifest_problems(manifest: Any, desired_keys: set[str], pin: Any) -> list[str]:
+    """The reviewed provider-schema manifest must agree with the other two lists."""
+    if not isinstance(manifest, dict) or not isinstance(
+        manifest.get("sendable_fields"), list
+    ):
+        return ["provider-fields.json: not a provider manifest"]
+    fields = set(manifest["sendable_fields"])
+    problems: list[str] = []
+    if fields != set(PROVIDER_FIELDS):
+        problems.append(
+            "provider-fields.json (manifest) and PROVIDER_FIELDS differ: "
+            f"{sorted(fields ^ set(PROVIDER_FIELDS))}"
+        )
+    if fields != desired_keys:
+        problems.append(
+            "provider-fields.json (manifest) and desired-state.json differ: "
+            f"{sorted(fields ^ desired_keys)}"
+        )
+    if pin is not None and manifest.get("provider_version") != pin.group(1):
+        problems.append("provider-fields.json (manifest) version differs from the pin")
+    return problems
+
+
+_NEVER_SENT = re.compile(r"\b(?:never|not)\s+(?:be\s+)?sen[dt]\b", re.I)
+
+
+def wording_problems(root: Path, desired: Any) -> list[str]:
+    """No text may claim an unmanaged field is never sent: that is unverified."""
+    texts = {"desired-state.json": json.dumps(desired), "main.tf": ""}
+    for name, path in (
+        ("main.tf", root / EDGE / "main.tf"),
+        ("docs/edge.md", root / "docs" / "edge.md"),
+    ):
+        try:
+            texts[name] = path.read_text("utf-8")
+        except OSError:
+            texts.setdefault(name, "")
+    return [
+        f"{name}: claims fields are never sent by an apply; that is unverified"
+        for name, text in texts.items()
+        if _NEVER_SENT.search(text)
+    ]
 
 
 def rate_limit_problems(rl: dict[str, Any]) -> list[str]:
@@ -219,6 +287,9 @@ def get(url: str, token: str | None) -> bytes:
         raise Unreadable("refusing a non-https URL")
     if token is not None and not url.startswith(API + "/"):
         raise Unreadable("refusing to send the token anywhere but the API")
+    if token is not None and override_variables_set(os.environ):
+        # A proxy or a replaced trust store could read the token in transit.
+        raise Unreadable(OVERRIDE_MESSAGE)
 
     class NoRedirect(urllib.request.HTTPRedirectHandler):
         def redirect_request(self, *args: Any, **kwargs: Any) -> None:
@@ -228,7 +299,11 @@ def get(url: str, token: str | None) -> bytes:
         request = urllib.request.Request(url, method="GET")  # noqa: S310 (https checked)
         if token is not None:
             request.add_header("Authorization", f"Bearer {token}")
-        opener = urllib.request.build_opener(NoRedirect)
+        opener = urllib.request.build_opener(
+            NoRedirect,
+            urllib.request.ProxyHandler({}),  # never an environment proxy
+            urllib.request.HTTPSHandler(context=ssl.create_default_context()),
+        )
         with opener.open(request, timeout=TIMEOUT) as response:  # noqa: S310
             body: bytes = response.read(MAX_BYTES + 1)
     except urllib.error.HTTPError as exc:
@@ -465,6 +540,9 @@ def live(args: argparse.Namespace) -> int:
     zone = args.zone_id or ""
     if not token or not re.fullmatch(r"[0-9a-f]{32}", zone):
         print(f"usage: need {TOKEN_ENV} and --zone-id (32 hex)", file=sys.stderr)
+        return 2
+    if override_variables_set(os.environ):
+        print(OVERRIDE_MESSAGE, file=sys.stderr)
         return 2
     site = None
     if args.site_host is not None:
