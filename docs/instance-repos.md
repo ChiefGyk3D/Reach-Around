@@ -166,12 +166,16 @@ production job is skipped even if someone picks the target. Use `prd` only after
 the project is live and you have approved it as its own step.
 
 **Environment protection is the real gate on the branch.** Give each
-environment a required reviewer who is not the person starting deployments,
-turn on **Prevent self-review**, and limit its deployment branches to `main`.
-GitHub cannot guarantee a different human approves unless that setting is on and
-a second person exists; a sole owner either adds a second account as reviewer or
-treats the approval as a confirmation pause, not an independent control (the
-template's README says the same). The `if: github.ref == 'refs/heads/main'`
+environment a required reviewer who is a different human from the person
+starting deployments, turn on **Prevent self-review**, and limit its deployment
+branches to `main`. These settings do not establish that the approver did not
+author the commit being deployed: **Prevent self-review** only stops the person
+who started a deployment from approving it, and a login is not a person.
+Independent approval needs a second human. A sole owner has no independent
+approval to configure; the approval is a confirmation pause, not separation of
+duties. If "not the author" is required, enforce it with protected-branch
+pull-request review on `main` or an external policy, in addition to the
+environment approval (the template's README says the same). The `if: github.ref == 'refs/heads/main'`
 lines in the workflow, the reusable workflow's own check, and the two `ALLOW_`
 variables are operational switches that fail closed; they are not an approval
 control, because the called workflow sees the caller's ref and the environment is

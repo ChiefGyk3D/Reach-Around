@@ -79,23 +79,29 @@ names. Every name here is a placeholder.
 **Settings > Environments > New environment**, twice: `staging` and
 `production`. For each one:
 
-- Turn on **Required reviewers** and name at least one reviewer who is not the
-  person who will start deployments. Then turn on **Prevent self-review** (the
-  setting is under the required reviewers). Every deploy then waits for that
-  reviewer's approval before the job runs.
+- Turn on **Required reviewers** and name at least one reviewer who is a
+  different human from the person who will start deployments. Then turn on
+  **Prevent self-review** (the setting is under the required reviewers). Every
+  deploy then waits for that reviewer's approval before the job runs.
 - Under **Deployment branches and tags**, allow only `main`.
 - Add no secret. The token comes only from the secret manager, over OIDC.
 
 **What environment protection can and cannot guarantee.** It is the real gate
 on the branch and on who approves: GitHub enforces the reviewer and the
-deployment branch rule, and a workflow file cannot override them. It cannot
-guarantee that the approver is a different human from the author unless
-**Prevent self-review** is on AND a second person exists to approve. If you are
-the sole owner, you have two honest choices. Either add a second account you
-control as the reviewer and turn **Prevent self-review** on (an approval is then
-a real second step, not a click on your own run), or leave self-review allowed
-and treat the approval as a pause to confirm, not as an independent control.
-Do not describe the second as separation of duties. Also check what your GitHub
+deployment branch rule, and a workflow file cannot override them. **Prevent
+self-review** only stops the person who started a deployment from approving that
+same deployment. Environment protection and **Prevent self-review** do not
+establish that the approver did not author the commit being deployed: one person
+can write and push the code, a different login can start the deployment, and the
+first login can approve it. A login is not a person, so a second login you
+control is not independent control either. Independent approval needs a
+second human. If you are the sole owner, there is no independent approval to
+configure: treat the approval as a confirmation pause (a moment to look before
+the job runs), never as separation of duties, and do not describe it as one. If
+you must be able to say "the approver did not author the change", enforce it
+outside the environment: protected-branch pull-request review on `main` (a
+required approving review from someone other than the author) or an external
+policy, in addition to the environment approval. Also check what your GitHub
 plan offers for environments on a private repository, and whether an
 administrator can bypass the rules there (look at each environment's settings;
 this README does not assume either). The workflow's own `main` checks, and the

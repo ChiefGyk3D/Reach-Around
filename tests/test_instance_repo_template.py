@@ -11,6 +11,7 @@ import shutil
 import stat
 import subprocess
 import sys
+from collections.abc import Mapping
 from datetime import date
 from pathlib import Path
 from typing import Any
@@ -468,17 +469,62 @@ def permission_blocks(workflow: dict[Any, Any]) -> list[dict[str, str]]:
     return blocks
 
 
-def callee_needs() -> dict[str, int]:
-    """The most each permission is asked for anywhere in the called workflow
-    (its top level and every job), as recorded for the commit the template pins.
-    The working-tree copy of deploy-worker.yml is not the file GitHub runs for
-    the template, which calls it at that commit."""
+def needs_of(workflow_text: str) -> dict[str, int]:
+    """The most each permission is asked for anywhere in a workflow (its top level
+    and every job)."""
     needs: dict[str, int] = {}
-    blocks = recorded_callee()["permissions"]
-    for block in blocks:
+    for block in permission_blocks(yaml.safe_load(workflow_text)):
         for scope, level in block.items():
             needs[scope] = max(needs.get(scope, 0), LEVEL[level])
     return needs
+
+
+def _git(*args: str, timeout: int = 120) -> subprocess.CompletedProcess[str]:
+    git = shutil.which("git")
+    assert git, "git is needed to read the pinned workflow"
+    return subprocess.run(  # noqa: S603 - fixed argv, read-only except one fetch
+        [git, *args],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=timeout,
+    )
+
+
+def pinned_callee_text(
+    ref: str | None = None,
+    env: Mapping[str, str] | None = None,
+    fetch: bool = True,
+) -> str:
+    """The called workflow exactly as GitHub runs it for the template: the file at
+    the commit in engine.lock, read from git (never the working-tree copy, never a
+    recorded copy). If the commit is not in this clone, try to fetch it. If it is
+    still missing, fail under CI (the check must not pass unchecked) and skip with
+    a message elsewhere."""
+    env = os.environ if env is None else env
+    ref = ref or lock_pin(lock_text())[0]
+    present = _git("cat-file", "-e", f"{ref}^{{commit}}").returncode == 0
+    if not present and fetch:
+        _git("fetch", "--depth=1", "origin", ref)
+        present = _git("cat-file", "-e", f"{ref}^{{commit}}").returncode == 0
+    if present:
+        shown = _git("show", f"{ref}:.github/workflows/deploy-worker.yml")
+        assert shown.returncode == 0, shown.stderr
+        return shown.stdout
+    message = (
+        f"the engine commit {ref} from engine.lock is not in this checkout and "
+        f"`git fetch --depth=1 origin {ref}` did not get it; fetch it (or use "
+        "fetch-depth: 0) so the callee's permissions can be read from it"
+    )
+    if env.get("CI"):
+        pytest.fail(message)
+    pytest.skip(message)
+
+
+def callee_needs() -> dict[str, int]:
+    """What the called workflow, at the pinned commit, asks of its caller."""
+    return needs_of(pinned_callee_text())
 
 
 def permission_problems(text: str, needs: dict[str, int]) -> list[str]:
@@ -940,100 +986,125 @@ def test_the_setup_order_guard_bites() -> None:
     assert setup_order_problems(early)
 
 
+PROTECTION_PHRASES = (
+    "Prevent self-review",
+    "sole owner",
+    "second human",
+    "do not establish that the approver did not author",
+    "protected-branch pull-request review",
+    "confirmation pause",
+    "not an approval control",
+)
+# A second account is not a second person: never offered as independent control.
+PROTECTION_FORBIDDEN = (
+    "second account",
+    "another account",
+    "(not the author)",
+    "Add yourself (or a second person)",
+)
+
+
 def protection_problems(text: str) -> list[str]:
-    """What the README says about environment protection and the sole owner."""
+    """What a document says about environment protection and the sole owner."""
     flat = " ".join(text.split())
-    needed = (
-        "Prevent self-review",
-        "sole owner",
-        "cannot guarantee",
-        "not an approval control",
-    )
-    return [f"missing: {n}" for n in needed if n not in flat]
+    found = [f"missing: {n}" for n in PROTECTION_PHRASES if n not in flat]
+    found += [f"must not say: {n}" for n in PROTECTION_FORBIDDEN if n in flat]
+    return found
 
 
 def test_the_readme_does_not_promise_more_than_environment_protection_gives() -> None:
-    text = readme_text()
-    assert protection_problems(text) == []
-    flat = " ".join(text.split())
-    # it never offers "yourself" as the independent reviewer
-    assert "Add yourself (or a second person)" not in flat
-    docs = " ".join(
-        (ROOT / "docs" / "instance-repos.md").read_text(encoding="utf-8").split()
-    )
-    assert "(not the author)" not in docs
-    assert "Prevent self-review" in docs
+    assert protection_problems(readme_text()) == []
+    docs = (ROOT / "docs" / "instance-repos.md").read_text(encoding="utf-8")
+    flat = " ".join(docs.split())
+    # the docs page carries the same limits, in its own words
+    for needed in (
+        "Prevent self-review",
+        "second human",
+        "do not establish that the approver did not author",
+        "protected-branch pull-request review",
+    ):
+        assert needed in flat, needed
+    for banned in PROTECTION_FORBIDDEN:
+        assert banned not in flat, banned
 
 
 def test_the_protection_guard_bites() -> None:
     # the phrases may wrap across lines in the file, so mutate the flat text
     good = " ".join(readme_text().split())
     assert protection_problems(good) == []
-    for phrase in (
-        "Prevent self-review",
-        "sole owner",
-        "cannot guarantee",
-        "not an approval control",
-    ):
+    for phrase in PROTECTION_PHRASES:
         assert phrase in good
         assert protection_problems(good.replace(phrase, "x")), phrase
+    for banned in PROTECTION_FORBIDDEN:
+        assert protection_problems(good + " " + banned), banned
 
 
-def pinned_permissions_problems(
-    recorded: dict[str, Any], lock: str, callee: str | None
-) -> list[str]:
-    """The recorded callee permissions belong to the pinned commit, and (when the
-    commit's file is at hand) say what that file says."""
+def review_aid_problems(recorded: dict[str, Any], lock: str, callee: str) -> list[str]:
+    """The committed fixture is a review aid only: it must name the pinned commit
+    and say what the pinned workflow says. It is never what the tests trust."""
     found: list[str] = []
     ref, _ = lock_pin(lock)
     if recorded["engine_ref"] != ref:
-        found.append("the recorded permissions are for another commit than engine.lock")
-    if callee is not None:
-        actual = permission_blocks(yaml.safe_load(callee))
-        if actual != recorded["permissions"]:
-            found.append("the recorded permissions differ from the pinned workflow")
+        found.append("the review aid is for another commit than engine.lock")
+    if permission_blocks(yaml.safe_load(callee)) != recorded["permissions"]:
+        found.append("the review aid differs from the pinned workflow")
     return found
 
 
-def _pinned_callee() -> str | None:
-    ref, _ = lock_pin(lock_text())
-    git = shutil.which("git")
-    assert git, "git is needed to read the pinned workflow"
-    shown = subprocess.run(  # noqa: S603 - fixed argv, a read of one git object
-        [git, "show", f"{ref}:.github/workflows/deploy-worker.yml"],
-        cwd=ROOT,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    return shown.stdout if shown.returncode == 0 else None
-
-
-def test_the_recorded_callee_permissions_are_the_ones_of_the_pinned_commit() -> None:
+def test_the_review_aid_equals_the_permissions_of_the_pinned_workflow() -> None:
     recorded = recorded_callee()
     assert recorded["permissions"], "nothing recorded; the check would be vacuous"
-    # always: the record is for the commit in engine.lock, so a bump must refresh it
-    assert pinned_permissions_problems(recorded, lock_text(), None) == []
-    # when the pinned commit is in this clone, the record is checked against it
-    callee = _pinned_callee()
-    if callee is None:
-        pytest.skip(
-            "the pinned engine commit is not in this clone; "
-            "`git fetch origin <ENGINE_REF>` to check the record against it"
-        )
-    assert pinned_permissions_problems(recorded, lock_text(), callee) == []
+    assert review_aid_problems(recorded, lock_text(), pinned_callee_text()) == []
 
 
-def test_the_recorded_permissions_guard_bites() -> None:
-    recorded, lock = recorded_callee(), lock_text()
+def test_the_review_aid_guard_bites() -> None:
+    recorded, lock, callee = recorded_callee(), lock_text(), pinned_callee_text()
     ref, _ = lock_pin(lock)
-    assert pinned_permissions_problems({**recorded, "engine_ref": "0" * 40}, lock, None)
-    assert pinned_permissions_problems(recorded, lock.replace(ref, "1" * 40), None)
-    widened = (
-        "permissions:\n  contents: read\n  packages: write\n"
-        "jobs:\n  a:\n    permissions:\n      contents: read\n"
+    assert review_aid_problems({**recorded, "engine_ref": "0" * 40}, lock, callee)
+    assert review_aid_problems(recorded, lock.replace(ref, "1" * 40), callee)
+    fewer = {**recorded, "permissions": recorded["permissions"][:-1]}
+    assert review_aid_problems(fewer, lock, callee)
+    widened = callee.replace(
+        "permissions:\n  contents: read\n",
+        "permissions:\n  contents: read\n  packages: read\n",
+        1,
     )
-    assert pinned_permissions_problems(recorded, lock, widened)
+    assert widened != callee
+    assert review_aid_problems(recorded, lock, widened)
+
+
+SYNTHETIC_CALLEE = (
+    "permissions:\n  contents: read\n"
+    "jobs:\n  deploy:\n    permissions:\n      contents: read\n"
+    "      id-token: write\n      packages: read\n"
+)
+
+
+def test_a_newly_required_callee_permission_fails_the_compatibility_check() -> None:
+    # a callee that starts to ask for packages: read, which the caller does not give
+    needs = needs_of(SYNTHETIC_CALLEE)
+    assert needs["packages"] == LEVEL["read"]
+    problems = permission_problems(deploy_text(), needs)
+    assert any("packages" in p for p in problems)
+    # and the real pinned callee asks for nothing the caller lacks
+    assert permission_problems(deploy_text(), callee_needs()) == []
+    # a caller that grants it passes
+    granted = deploy_text().replace(
+        "      id-token: write", "      packages: read\n      id-token: write"
+    )
+    assert permission_problems(granted, needs) == []
+
+
+def test_a_missing_pinned_commit_fails_under_ci_and_skips_elsewhere() -> None:
+    absent = "0" * 40
+    with pytest.raises(pytest.fail.Exception, match="not in this checkout"):
+        pinned_callee_text(absent, {"CI": "true"}, fetch=False)
+    with pytest.raises(pytest.skip.Exception, match="fetch"):
+        pinned_callee_text(absent, {}, fetch=False)
+    # present: read from git, not from the working tree
+    ref, _ = lock_pin(lock_text())
+    text = pinned_callee_text(ref, {"CI": "true"}, fetch=False)
+    assert yaml.safe_load(text)["name"] == "Deploy Worker"
 
 
 def test_the_version_comment_accepts_a_pre_release_and_refuses_a_bad_suffix() -> None:
