@@ -30,6 +30,7 @@ from pathlib import Path
 from typing import Any
 
 from reach_around.config.zones import format_instant
+from reach_around.funnel.groups import csv_rows as group_csv_rows
 from reach_around.funnel.owner import owner_view
 from reach_around.funnel.private_analytics import CSV_HEADER as PRIVATE_HEADER
 from reach_around.funnel.private_analytics import private_csv_rows
@@ -343,10 +344,11 @@ def csv_files(
     requested: dict[str, Any] | None = None,
 ) -> dict[str, bytes]:
     """File name to bytes, in a fixed order."""
+    meta = _meta_rows(report, generated_at, requested or {})
+    if "groups" in report:
+        meta.append(["rollup_digest_v1", report["groups"]["rollup_digest"]])
     files: dict[str, bytes] = {
-        "metadata.csv": render_csv(
-            ["key", "value"], _meta_rows(report, generated_at, requested or {})
-        ),
+        "metadata.csv": render_csv(["key", "value"], meta),
         "funnel.csv": render_csv(
             ["step", "value", "status", "coverage"], _funnel_rows(report)
         ),
@@ -371,6 +373,11 @@ def csv_files(
     files["bot_reasons.csv"] = render_csv(
         _TABLE_HEADER, _table_rows(report["bots"]["reasons"])
     )
+    if "groups" in report:
+        files["groups.csv"] = render_csv(
+            ["group", "route_class", "clicks", "status"],
+            group_csv_rows(report["groups"]),
+        )
     cov = report["coverage"]
     if cov["gaps"] or cov["partial"]:
         # Days with no collection are rows here, never zero rows in another file.
