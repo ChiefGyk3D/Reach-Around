@@ -86,7 +86,7 @@ authorized with that helper is not seen by the engine.
 the same scope (VERIFIED 2026-11-23), but the numbers model carries one follower
 count per source and the provider returns a single whole number. Carrying more
 needs: new private metric names in the insights table (`METRICS` in
-`reach_around/counts/insights.py`, owner-report-only), a collector that reads
+`src/reach_around/counts/insights.py`, owner-report-only), a collector that reads
 them from the same answer (no second request; asking for a field the token's
 scope does not cover can make the whole call fail, so a longer `fields` list
 must be tested against a real account first), history and kit rules for what may
