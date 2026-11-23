@@ -1,24 +1,67 @@
 {
   "schema": 1,
   "bot_management": {
-    "ai_training": "disallow",
-    "ai_search": "disabled",
-    "ai_user": "disabled",
+    "ai_agents": {
+      "unmanaged": true
+    },
+    "ai_bots_migration_opt_out": {
+      "unmanaged": true
+    },
     "ai_bots_protection": "disabled",
+    "ai_search": "disabled",
+    "ai_training": "disallow",
+    "ai_user": "disabled",
+    "auto_update_model": {
+      "unmanaged": true
+    },
+    "bm_cookie_enabled": {
+      "unmanaged": true
+    },
     "bot_preference_sync_enabled": true,
-    "is_robots_txt_managed": true,
-    "crawler_protection": "disabled",
+    "cf_robots_variant": {
+      "unmanaged": true
+    },
     "content_bots_protection": "disabled",
-    "fight_mode": false
+    "crawler_protection": "disabled",
+    "enable_js": {
+      "unmanaged": true
+    },
+    "fight_mode": false,
+    "is_robots_txt_managed": true,
+    "jsd_api_results_enabled": {
+      "unmanaged": true
+    },
+    "optimize_wordpress": {
+      "unmanaged": true
+    },
+    "sbfm_definitely_automated": {
+      "unmanaged": true
+    },
+    "sbfm_likely_automated": {
+      "unmanaged": true
+    },
+    "sbfm_static_resource_protection": {
+      "unmanaged": true
+    },
+    "sbfm_verified_bots": {
+      "unmanaged": true
+    },
+    "suppress_session_score": {
+      "unmanaged": true
+    }
   },
   "rate_limit": {
     "ref": "reach_around_beacon_flood_cap",
     "description": "Reach Around: edge flood cap on the /e/ analytics routes",
     "expression": "starts_with(http.request.uri.path, \"/e/\")",
     "action": "block",
-    "characteristics": ["cf.colo.id", "ip.src"],
+    "characteristics": [
+      "cf.colo.id",
+      "ip.src"
+    ],
     "period": 10,
     "requests_per_period": 30,
     "mitigation_timeout": 10
-  }
+  },
+  "_comment": "rate_limit is a MANUAL step on a shared zone: add it to the existing http_ratelimit rules, never replace the phase (docs/edge.md). {\"unmanaged\": true} fields are never sent by an apply."
 }
