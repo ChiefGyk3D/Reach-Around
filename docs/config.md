@@ -393,6 +393,41 @@ better), the site focus ring, document order for the keyboard, a layout that
 reflows at 320 px, and print styles that show each link's address. No style
 adds a script or a request.
 
+### Spoke pages
+
+`spoke: true` on a stack tab draws that group as its own page at `/<id>/`
+(for example `/gear/`) instead of on the home page. The home page keeps one
+card in the group's place that links to the page. The spoke page has its own
+`<title>` (`page_title`, else the title template), a canonical link, the privacy
+link, the footer, the affiliate disclosure when one of its links is an affiliate
+link, and a link back to the home page. Its links are click counted like any
+other and carry the page's id (the tab id) as their landing label. A `tab:<id>`
+link anywhere resolves to the page. It needs `page.url`, the site's own bare
+https origin, which also gives the home page its canonical link. A spoke's links cannot be
+featured (`page.featured` naming one is refused). A spoke tab
+may hold links and link sections (any number of links, at least one), but not
+`collapsed` or `style`; the Watch group cannot be a spoke, and its id may not
+be `privacy`, `static`, `e`, `e-frame`, `kit`, `404`, `socials` or `support`. A section
+opens or closes with its own `collapsed` setting. A tab with no visible link
+shows "Nothing here right now." There is no script and no new request.
+
+```yaml
+page:
+  layout: stack
+  url: https://links.example.com
+tabs:
+  - id: gear
+    title: Gear
+    intent: shop
+    spoke: true
+    blocks:
+      - id: desk
+        title: Desk
+        collapsed: false
+        links:
+          - { id: stand, title: Example Boom Stand, url: "https://shop.example.com/stand" }
+```
+
 Layouts B, C, and D remain prototypes and are not accepted by the production
 configuration.
 

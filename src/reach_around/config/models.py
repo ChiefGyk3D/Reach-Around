@@ -170,7 +170,15 @@ class Link(_Model):
 Layout = Literal["list", "grid", "cards"]
 HeaderStyle = Literal["compact", "centered", "hero"]
 PageLayout = Literal["tabs", "sections"]
+_ORIGIN_HOST = re.compile(
+    r"(?=.{1,253}\Z)[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?"
+    r"(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*"
+)
 PageVariant = Literal["classic", "stack"]
+# Paths the build already writes (or that the host serves) at the site root.
+RESERVED_SPOKE_IDS = frozenset(
+    {"privacy", "static", "e", "e-frame", "kit", "404", "socials", "support"}
+)
 GroupStyle = Literal["buttons", "rows", "icons"]
 Intent = Literal[
     "watch", "videos", "follow", "community", "support", "work", "shop", "blog"
@@ -231,6 +239,33 @@ class Page(_Model):
     watch: list[Slug] = Field(default_factory=list)
     featured: PageFeatured | None = None
     live_badges: StrictBool = False
+    # The site's own https origin, with no path. Only read by ``page.layout:
+    # stack``: it makes the canonical link of the home page and every spoke page.
+    url: HttpsUrl | None = None
+
+    @field_validator("url")
+    @classmethod
+    def _url_is_an_origin(cls, value: str | None) -> str | None:
+        if value is None:
+            return value
+        message = "page.url must be a bare https origin such as https://example.com"
+        try:
+            check_https_url(value)
+            parts = urlsplit(value)
+            port = parts.port
+        except ValueError:
+            raise ValueError(message) from None
+        host = parts.hostname or ""
+        if (
+            parts.path not in ("", "/")
+            or "?" in value
+            or "#" in value
+            or _ORIGIN_HOST.fullmatch(host) is None
+            or (port is not None and not 1 <= port <= 65535)
+        ):
+            raise ValueError(message)
+        suffix = "" if port in (None, 443) else f":{port}"
+        return f"https://{host}{suffix}"
 
     @field_validator("featured", mode="before")
     @classmethod
@@ -318,6 +353,9 @@ class Tab(_Model):
     # Only read by ``page.layout: stack``: how the group's links are drawn.
     # ``icons`` is an icon-only row fed from creator.socials (Follow only).
     style: GroupStyle = "buttons"
+    # Only read by ``page.layout: stack``: render the group as its own page at
+    # ``/<id>/`` with a single card on the home page that links to it.
+    spoke: bool = False
     blocks: list[Block]
 
 
@@ -617,7 +655,11 @@ class SiteConfig(_Model):
                 raise ValueError("page.featured needs page.layout: stack")
             if page.live_badges:
                 raise ValueError("page.live_badges needs page.layout: stack")
+            if page.url is not None:
+                raise ValueError("page.url needs page.layout: stack")
             for tab in self.tabs:
+                if tab.spoke:
+                    raise ValueError(f"tab {tab.id!r}: spoke needs page.layout: stack")
                 if tab.collapsed:
                     raise ValueError(
                         f"tab {tab.id!r}: collapsed needs page.layout: stack"
@@ -637,6 +679,7 @@ class SiteConfig(_Model):
 
         links: dict[str, Link] = {}
         watch_links: dict[str, Link] = {}
+        spoke_ids: set[str] = set()
         intents: set[str] = set()
         for tab in self.tabs:
             if tab.intent is None:
@@ -644,6 +687,27 @@ class SiteConfig(_Model):
             if tab.intent in intents:
                 raise ValueError(f"tab intent {tab.intent!r} may appear only once")
             intents.add(tab.intent)
+            if tab.spoke:
+                if tab.intent == "watch":
+                    raise ValueError("the Watch group cannot be a spoke page")
+                if tab.collapsed or tab.style != "buttons":
+                    raise ValueError(
+                        f"tab {tab.id!r}: a spoke page has no collapsed or style"
+                    )
+                if tab.id in RESERVED_SPOKE_IDS:
+                    raise ValueError(
+                        f"tab {tab.id!r}: that path is reserved; rename the spoke "
+                        "tab (its id is its address)"
+                    )
+                if page.url is None:
+                    raise ValueError(
+                        "a spoke page needs page.url for its canonical link"
+                    )
+                if tab.id == self.analytics.route.strip("/").split("/")[0]:
+                    raise ValueError(
+                        f"tab {tab.id!r}: a spoke page cannot take the path of "
+                        "analytics.route; rename the tab or the route"
+                    )
             if tab.collapsed and tab.intent == "watch":
                 raise ValueError("the Watch group cannot be collapsed")
             if tab.intent == "watch" and tab.style != "buttons":
@@ -667,11 +731,18 @@ class SiteConfig(_Model):
                     raise ValueError(
                         "page.layout: stack groups support only links and link sections"
                     )
+            if tab.spoke:
+                spoke_ids.update(link.id for link in group_links)
             if tab.intent == "watch":
                 watch_links.update((link.id, link) for link in group_links)
+            if tab.spoke and not group_links:
+                raise ValueError(
+                    f"tab {tab.id!r}: a spoke page needs at least one link"
+                )
             if (
                 tab.intent != "watch"
                 and tab.style != "icons"
+                and not tab.spoke
                 and not 2 <= len(group_links) <= 6
             ):
                 raise ValueError(
@@ -692,6 +763,11 @@ class SiteConfig(_Model):
             raise ValueError("page.watch links cannot be scheduled")
         if page.featured is not None and page.featured.link not in links:
             raise ValueError(f"page.featured link id {page.featured.link!r} is missing")
+        if page.featured is not None and page.featured.link in spoke_ids:
+            raise ValueError(
+                f"page.featured link id {page.featured.link!r} is on a spoke page; "
+                "a spoke page's links cannot be featured"
+            )
         icons = {link.icon for link in selected}
         if icons != {"twitch", "kick"}:
             raise ValueError("page.watch must name one Twitch and one Kick link")

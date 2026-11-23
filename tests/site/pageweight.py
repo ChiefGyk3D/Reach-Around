@@ -24,6 +24,7 @@ PAGE_TYPES = (
     "hub",
     "hub-stack",
     "hub-live",
+    "spoke",
     "tab",
     "kit",
     "support",
@@ -68,6 +69,19 @@ BUDGET: dict[str, dict[str, int]] = {
         "total": 192700,
         "compressed": 90300,
         "requests": 14,
+    },
+    # A spoke page (#676): a stack tab drawn as its own page. Measured on a
+    # stack built from the example instance's creator and theme with one Gear
+    # spoke of three sections and twelve links; about a quarter of headroom.
+    "spoke": {
+        "html": 7400,
+        "css": 60000,
+        "js": 13000,
+        "images": 1300,
+        "fonts": 81500,
+        "total": 163000,
+        "compressed": 81500,
+        "requests": 11,
     },
     "tab": {
         "html": 3600,
@@ -150,6 +164,9 @@ SUPPORT_SITE = "supportpage"
 
 # Stack fixture roots: only their home page is measured, as these types.
 STACK_SITES = {"stack": "hub-stack", "stack-live": "hub-live"}
+# The spoke fixture root: only its spoke page is measured, as the "spoke" type.
+SPOKE_SITE = "spoke"
+SPOKE_PAGE = "gear/index.html"
 
 
 def page_type(rel: str, site: str = "") -> str:
@@ -158,6 +175,8 @@ def page_type(rel: str, site: str = "") -> str:
     ``site`` is the name of the output root; the two stack fixtures (see
     ``STACK_SITES``) classify their home page as their own type.
     """
+    if site == SPOKE_SITE and rel == SPOKE_PAGE:
+        return "spoke"
     if site in STACK_SITES and rel == "index.html":
         return STACK_SITES[site]
     if rel == "index.html":

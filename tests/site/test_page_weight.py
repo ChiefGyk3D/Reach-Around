@@ -9,6 +9,7 @@ import re
 import shutil
 from datetime import date
 from pathlib import Path
+from typing import Any
 from urllib.parse import urlsplit
 
 import pytest
@@ -19,6 +20,8 @@ from pageweight import (
     FIELDS,
     GATE_ORIGINS,
     PAGE_TYPES,
+    SPOKE_PAGE,
+    SPOKE_SITE,
     STACK_SITES,
     SUPPORT_SITE,
     docs_differences,
@@ -105,6 +108,36 @@ def sites(tmp_path_factory: pytest.TempPathFactory) -> list[Path]:
             today=TODAY,
             assets_dir=EXAMPLE.parent,
         )
+    spoke: dict[str, Any] = stack_doc(False)
+    shop = next(t for t in spoke["tabs"] if t["intent"] == "shop")
+    shop.update(
+        id="gear",
+        title="Gear",
+        spoke=True,
+        blocks=[
+            {
+                "id": name,
+                "title": name.title(),
+                "collapsed": False,
+                "links": [
+                    {
+                        "id": f"{name}-{n}",
+                        "title": f"{name.title()} pick {n}",
+                        "url": f"https://example.com/{name}/{n}",
+                    }
+                    for n in range(1, 5)
+                ],
+            }
+            for name in ("desk", "audio", "camera")
+        ],
+    )
+    spoke["page"]["url"] = "https://links.example.com"
+    build_site(
+        SiteConfig.model_validate(spoke),
+        base / SPOKE_SITE,
+        today=TODAY,
+        assets_dir=EXAMPLE.parent,
+    )
     # The support page (#683): the example instance's creator and theme, a text
     # intro and one crypto block with two coins (no QR image).
     doc = yaml.safe_load(EXAMPLE.read_text(encoding="utf-8"))
@@ -156,6 +189,7 @@ def sites(tmp_path_factory: pytest.TempPathFactory) -> list[Path]:
         base / "stack",
         base / "stack-live",
         base / "r",
+        base / SPOKE_SITE,
         base / SUPPORT_SITE,
     ]
 
@@ -165,7 +199,11 @@ def all_pages(sites: list[Path]) -> list[tuple[Path, Path]]:
         (root, p)
         for root in sites
         for p in sorted(root.rglob("*.html"))
-        if (root.name not in STACK_SITES or p == root / "index.html")
+        if (
+            (root.name not in STACK_SITES and root.name != SPOKE_SITE)
+            or (root.name in STACK_SITES and p == root / "index.html")
+            or (root.name == SPOKE_SITE and p == root / SPOKE_PAGE)
+        )
         and (root.name != SUPPORT_SITE or p == root / "support" / "index.html")
     ]
     assert len(pairs) >= 8, "the golden example pages were not all built"

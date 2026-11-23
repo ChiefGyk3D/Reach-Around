@@ -9,6 +9,9 @@
 {% for font in font_preloads(root) %}
 <link rel="preload" href="{{ font.href }}" as="font" type="{{ font.type }}" crossorigin>
 {% endfor %}
+{% if canonical is defined and canonical %}
+<link rel="canonical" href="{{ canonical }}">
+{% endif %}
 {% if noindex is defined and noindex %}
 <meta name="robots" content="noindex">
 {% endif %}
