@@ -110,3 +110,29 @@ def test_a_file_created_during_the_wait_is_appended_to_not_refused(
     history = read_history(path)
     assert len(history.records) == 4  # the three it found plus its own
     assert path.read_bytes().count(b"\n") == 4
+
+
+def test_a_symlink_replaced_during_the_wait_is_not_appended_through(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Only an absent name may be skipped; a symlink there must abort."""
+    path = tmp_path / "h.jsonl"
+    target = tmp_path / "target.jsonl"
+    build(target)
+    path.symlink_to(target.name)
+    real = hist._open_sidecar
+    armed = [True]
+
+    def replace_while_waiting(*args: Any, **kwargs: Any) -> int:
+        if armed[0]:
+            armed[0] = False
+            path.unlink()
+            build(path)  # a regular history file now sits at the name
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(hist, "_open_sidecar", replace_while_waiting)
+    before = target.read_bytes()
+    with pytest.raises(HistoryError):
+        append_records(path, [rec(as_of_utc="2026-10-09T09:00:00Z")], now=NOW)
+    assert b"2026-10-09" not in path.read_bytes()
+    assert target.read_bytes() == before

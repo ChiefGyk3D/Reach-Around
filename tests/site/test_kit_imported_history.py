@@ -943,7 +943,10 @@ def test_export_race_error_does_not_print_the_temp_file_name(
     real = write_new_atomic
 
     def racing(path: Path, text: str) -> None:
-        real(path, text, before_link=lambda: path.write_text("theirs"))
+        def theirs() -> None:
+            path.write_text("theirs")
+
+        real(path, text, before_link=theirs)
 
     monkeypatch.setattr(counts_cmd, "write_new_atomic", racing)
     code = main(
@@ -965,3 +968,20 @@ def test_write_new_atomic_other_link_errors_keep_their_type_without_names(
         write_new_atomic(tmp_path / "out.json", "x")
     assert info.value.errno == errno.ENOSPC
     assert ".tmp" not in str(info.value) and "hard links" not in str(info.value)
+
+
+def test_write_new_atomic_keeps_the_exception_subclass_of_a_link_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    for code, kind in (
+        (errno.EACCES, PermissionError),
+        (errno.ENOENT, FileNotFoundError),
+    ):
+
+        def failing(*args: Any, _code: int = code, **kwargs: Any) -> None:
+            raise OSError(_code, "failed", args[0], args[1])
+
+        monkeypatch.setattr(os, "link", failing)
+        with pytest.raises(kind) as info:
+            write_new_atomic(tmp_path / "out.json", "x")
+        assert ".tmp" not in str(info.value)

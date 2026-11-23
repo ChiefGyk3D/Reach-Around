@@ -781,13 +781,15 @@ def _append(
 def _hold_existing(dir_fd: int, name: str) -> int:
     """A read-only descriptor for ``name`` if it exists, else -1.
 
-    No symlink is followed and nothing blocks (a FIFO opens at once). Any other
-    failure also gives -1: the locked step opens the file again and refuses it.
+    Only a missing file counts as absent. No symlink is followed and nothing
+    blocks (a FIFO opens at once); any other failure aborts the append.
     """
     try:
         return os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=dir_fd)
-    except OSError:
+    except FileNotFoundError:
         return -1
+    except OSError:
+        raise HistoryError("cannot open the history file (a symlink?)") from None
 
 
 def _append_locked(
