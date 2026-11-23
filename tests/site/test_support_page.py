@@ -4,6 +4,7 @@
 Every address here is synthetic.
 """
 
+# ruff: noqa: E501
 from __future__ import annotations
 
 import re
@@ -702,7 +703,7 @@ def test_copy_script_reads_the_address_in_its_own_card_not_by_id() -> None:
     )
     assert "getElementById" not in source
     assert 'closest(".crypto-card")' in source
-    assert 'querySelector(".crypto-address")' in source
+    assert 'querySelector("code.crypto-address")' in source
 
 
 # a fuzz of generated, often malformed, nesting
@@ -857,3 +858,162 @@ def test_the_stock_page_passes_the_check_with_every_piece_of_chrome(
     doc["features"] = {"click_tracking": True}
     out = build(doc, tmp_path / "b", ASSETS)
     assert "support/index.html" in out
+
+
+# --- the address element is read the way the copy script reads it ----------
+
+
+def test_an_address_element_takes_no_child_element() -> None:
+    child = ADDRESS_ELEMENT.replace("ADDR</code>", "ADDR<span>x</span></code>")
+    with pytest.raises(SupportPageError, match="inside an address element"):
+        check_support_html(page(address=child), [ADDR])
+    comment = ADDRESS_ELEMENT.replace("ADDR</code>", "ADDR<b></b></code>")
+    with pytest.raises(SupportPageError, match="inside an address element"):
+        check_support_html(page(address=comment), [ADDR])
+
+
+def test_the_full_decoded_text_is_compared_with_the_address() -> None:
+    # "&#65;" is "A": the text a browser reads is what is compared
+    entity = ADDRESS_ELEMENT.replace("ADDR", "&#65;a1")
+    check_support_html(page(address=entity), ["Aa1"])
+    with pytest.raises(SupportPageError, match="does not match"):
+        check_support_html(page(address=entity), ["&#65;a1"])
+    split = ADDRESS_ELEMENT.replace("ADDR", "Aa<!-- c -->1")
+    with pytest.raises(SupportPageError, match="comment"):
+        check_support_html(page(address=split), ["Aa1"])
+
+
+def test_the_address_class_is_only_for_code_and_one_per_card() -> None:
+    span_first = ADDRESS_ELEMENT.replace(
+        '<code class="crypto-address"',
+        '<span class="crypto-address">decoy</span><code class="crypto-address"',
+    )
+    with pytest.raises(SupportPageError, match="other than <code>"):
+        check_support_html(page(address=span_first), [ADDR])
+    two_codes = ADDRESS_ELEMENT.replace(
+        "</code>", '</code><code class="crypto-address" id="a-2">ADDR</code>'
+    )
+    with pytest.raises(SupportPageError, match="one address element"):
+        check_support_html(page(address=two_codes), [ADDR, ADDR])
+    for outside in (
+        '<nav><span class="crypto-address">x</span></nav>',
+        '<nav class="crypto-address"></nav>',
+    ):
+        with pytest.raises(SupportPageError):
+            check_support_html(page(main=outside), [ADDR])
+
+
+# --- the chrome outside the support section is held to an allowlist --------
+
+COOKIE = (
+    '<section class="cookie-banner" aria-label="Cookie notice"><p>Notice</p>'
+    '<form method="get" action="../privacy/#cookies">'
+    '<button type="submit" name="cookies" value="accept">Accept</button>'
+    "</form></section>"
+)
+
+
+def test_the_stock_chrome_shapes_are_allowed() -> None:
+    avatar = '<img class="avatar" alt="" src="../media/a.png" width="56" height="56">'
+    chrome_nav = (
+        '<nav aria-label="Pages" class="tabs"><ul><li>'
+        '<a href="../more/" aria-current="page">More</a>'
+        "<span data-live-badge hidden>LIVE</span></li></ul></nav>"
+        '<nav><a href="https://e.com/k" rel="noopener noreferrer">K</a></nav>'
+    )
+    profile = (
+        '<section class="profile-card" aria-labelledby="t"><h2 id="t">Name</h2>'
+        '<ul class="profile-tags"><li class="profile-tag">one</li></ul>'
+        '<a class="profile-button" id="m" href="https://e.com/kit/" '
+        'ping="/e/c/m" data-link-id="m">Kit</a></section>'
+    )
+    check_support_html(
+        page(
+            main=chrome_nav + profile + COOKIE,
+            body="",
+        ).replace(
+            '<header><a href="/">Home</a></header>',
+            f'<header class="site-header">{avatar}<h1>Name</h1></header>',
+        ),
+        [ADDR],
+        {"https://e.com/k", "https://e.com/kit/"},
+    )
+    in_footer = page().replace(
+        '<footer><a href="/privacy/">Privacy</a></footer>',
+        f'<footer><p><a href="../privacy/">Privacy</a></p>{COOKIE}</footer>',
+    )
+    check_support_html(in_footer, [ADDR])
+
+
+@pytest.mark.parametrize(
+    "main",
+    [
+        '<nav><a href="https://e.com/x">x</a></nav>',  # not a configured URL
+        '<nav><a href="javascript:alert(1)">x</a></nav>',
+        '<nav><a href="//e.com/x">x</a></nav>',
+        '<nav><a href="data:text/html,x">x</a></nav>',
+        '<nav><a href="/x" target="_blank">x</a></nav>',
+        '<nav><a href="/x" ping="https://e.com/p">x</a></nav>',
+        "<nav><a>no href</a></nav>",
+        '<nav><img src="/a.png"><img src="/b.png"></nav>',
+        '<nav><img src="https://e.com/a.png"></nav>',
+        '<nav><img src="/a.png" onerror="x()"></nav>',
+        "<nav><picture></picture></nav>",
+        "<nav><source src='x'></nav>",
+        "<nav><input></nav>",
+        "<nav><button type='button'>b</button></nav>",
+        '<nav><form method="post" action="/x"></form></nav>',
+        '<section class="cookie-banner"><form method="post" action="/x"></form></section>',
+        '<section class="cookie-banner"><form method="get" action="https://e.com/"></form></section>',
+        '<section class="cookie-banner"><form method="get" action="/x"><button type="button">b</button></form></section>',
+        '<section class="cookie-banner"><button type="submit">b</button></section>',
+        "<nav><meta charset='x'></nav>",
+        "<nav><link rel='stylesheet' href='x'></nav>",
+        "<nav><base href='x'></nav>",
+        '<nav data-x="1"></nav>',
+        "<nav hidden></nav>",
+        "<nav><table></table></nav>",
+        "<nav><font></font></nav>",
+        "<nav><span hidden data-other></span></nav>",
+        '<section class="support" id="x"></section>',
+        '<nav><section class="support"></section></nav>',
+        '<nav><form method="get" action="/x"></form></nav>',
+    ],
+)
+def test_the_chrome_allowlist_refuses_anything_else(main: str) -> None:
+    with pytest.raises(SupportPageError):
+        check_support_html(page(main=main), [ADDR])
+
+
+def test_the_chrome_allowlist_applies_in_the_footer_and_header_too() -> None:
+    bad = '<img src="https://e.com/x.png">'
+    for where in ("footer", "header"):
+        html = page().replace(f"<{where}>", f"<{where}>{bad}", 1)
+        with pytest.raises(SupportPageError):
+            check_support_html(html, [ADDR])
+
+
+def test_the_skip_link_is_one_in_page_link_with_only_text() -> None:
+    ok = page()
+    check_support_html(ok, [ADDR])
+    for bad in (
+        ok.replace("Skip</a>", "<span>Skip</span></a>"),
+        ok.replace('href="#content"', 'href="/other"'),
+        ok.replace(
+            "</a><main",
+            '</a><a class="skip-link" href="#content">Skip</a><main',
+        ),
+        ok.replace('class="skip-link"', 'class="skip-link" ping="/x"'),
+    ):
+        with pytest.raises(SupportPageError):
+            check_support_html(bad, [ADDR])
+
+
+def test_the_build_passes_urls_taken_from_the_config(tmp_path: Path) -> None:
+    doc = _instance_doc()
+    doc["site_nav"] = {"items": [{"title": "Links", "url": "https://links.test/"}]}
+    doc["profile_card"] = {
+        "tags": ["one"],
+        "button": {"label": "Kit", "url": "https://kit.test/"},
+    }
+    build(doc, tmp_path, ASSETS)

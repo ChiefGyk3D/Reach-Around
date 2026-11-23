@@ -52,8 +52,34 @@ _SECTION_ATTRS = frozenset(
     {"class", "id", "dir", "lang", "data-copy-target", "type", "aria-label", "title"}
     | {"aria-hidden", "aria-live", "role", "data-copy-status"}
 )
+# The fixed chrome (everything in <body> outside the support section) is held to
+# its own allowlist, built from what the stock templates render.
+_CHROME_TAGS = frozenset(
+    {"a", "nav", "header", "footer", "section", "h1", "h2", "ul", "li", "p"}
+    | {"span", "div", "img", "form", "button", "br"}
+)
+_CHROME_ATTRS = frozenset(
+    {"class", "id", "aria-label", "aria-labelledby", "aria-current", "aria-hidden"}
+    | {"role", "lang", "dir", "title"}
+)
+_CHROME_TAG_ATTRS = {
+    "a": frozenset({"href", "rel", "data-link-id", "ping"}),
+    "img": frozenset(
+        {"src", "alt", "width", "height", "referrerpolicy", "loading", "decoding"}
+    ),
+    "span": frozenset({"hidden", "data-live-badge"}),
+    "form": frozenset({"method", "action"}),
+    "button": frozenset({"type", "name", "value"}),
+}
 # The fixed chrome directly in <main>, and how many of each may appear.
-_MAIN_LIMITS = {"nav": 2, "header": 1, "footer": 1, "profile-card": 1, "p": 1}
+_MAIN_LIMITS = {
+    "nav": 2,
+    "header": 1,
+    "footer": 1,
+    "profile-card": 1,
+    "cookie-banner": 1,
+    "p": 1,
+}
 _HEAD_TAGS = frozenset({"meta", "title", "link", "script"})
 _META_NAMES = frozenset({"viewport", "description", "robots"})
 _LINK_RELS = frozenset({"stylesheet", "icon", "preload"})
@@ -62,6 +88,9 @@ _LINK_RELS = frozenset({"stylesheet", "icon", "preload"})
 _STYLES = frozenset({"tokens", "site", "theme", "crypto", "frame"})
 _SCRIPTS = frozenset({"click", "copy"})
 _ASSET = re.compile(r"(?:\.\./)?static/([a-z-]+)\.[0-9a-f]+\.(css|js)")
+# A path inside the site: no scheme, no host, no backslash.
+_INTERNAL = re.compile(r"(?:\.{0,2}/|#)?[A-Za-z0-9._~/#?=&%+-]*")
+_PING = re.compile(r"/e/c/[A-Za-z0-9_-]+")
 _BACK_TEXT = "Back to the links"
 
 
@@ -99,14 +128,21 @@ def _card(node: _Node | None) -> _Node | None:
     return None
 
 
+_BODY_ATTRS = frozenset(
+    {"data-page-id", "data-view-route", "data-landing", "data-token-route"}
+)
+
+
 class _Check(HTMLParser):
-    def __init__(self) -> None:
+    def __init__(self, urls: frozenset[str]) -> None:
         super().__init__(convert_charrefs=True)
+        self.urls = urls
         self.root = _Node("#root", {}, None)
         self.cur = self.root
         self.ids: dict[str, int] = {}
         self.sections = 0
         self.mains = 0
+        self.images = 0
         self.main_counts: dict[str, int] = {}
         self.buttons: list[tuple[str, _Node]] = []
         self.codes: list[_Node] = []
@@ -124,6 +160,12 @@ class _Check(HTMLParser):
         node = _Node(tag, values, parent, frozenset(values.get("class", "").split()))
         if "id" in values:
             self.ids[values["id"]] = self.ids.get(values["id"], 0) + 1
+        if "crypto-address" in node.classes and tag != "code":
+            _fail("the address class on an element other than <code>")
+        if "crypto-address" in parent.classes and parent.tag == "code":
+            _fail("an element inside an address element")
+        if parent.tag == "a" and "skip-link" in parent.classes:
+            _fail("an element inside the skip link")
         self._place(parent, node)
         if tag not in _VOID:
             self.cur = node
@@ -134,18 +176,26 @@ class _Check(HTMLParser):
             if tag != "html" or parent.seen:
                 _fail("content outside <html>")
             parent.seen.add(tag)
+            self._only(node, {"lang"})
         elif parent.tag == "html":
             if tag not in ("head", "body") or tag in parent.seen:
                 _fail(f"<{tag}> directly in <html>")
             parent.seen.add(tag)
+            self._only(node, _BODY_ATTRS if tag == "body" else set())
         elif parent.tag == "head":
             self._head(node)
         elif parent.tag == "body":
             if tag == "a" and "skip-link" in node.classes:
+                if "skip" in parent.seen or not node.attrs.get("href", "").startswith(
+                    "#"
+                ):
+                    _fail("the skip link is not one in-page link")
                 parent.seen.add("skip")
+                self._only(node, {"class", "href"})
             elif tag == "main" and "main" not in parent.seen:
                 parent.seen.add("main")
                 self.mains += 1
+                self._only(node, {"id", "class"})
             else:
                 _fail(f"<{tag}> directly in <body>")
         elif parent.tag == "main":
@@ -156,27 +206,81 @@ class _Check(HTMLParser):
             parent.seen.add(tag)
         if tag in ("title", "script") and parent.tag != "head":
             _fail(f"<{tag}> outside <head>")
+        if parent.tag in ("#root", "html", "head"):
+            return
         if _inside_support(parent):
-            if tag not in _SECTION_TAGS:
-                _fail(f"<{tag}> inside the support content")
-            for name in node.attrs:
-                if name not in _SECTION_ATTRS:
-                    _fail(f"the attribute {name!r} inside the support content")
-            if tag == "button":
-                self.buttons.append((node.attrs.get("data-copy-target", ""), node))
-            if tag == "code" and "crypto-address" in node.classes:
-                self.codes.append(node)
+            self._support_element(parent, node)
+        elif parent.tag != "body" or tag != "main":
+            if not (parent.tag == "body" and tag == "a"):
+                self._chrome(parent, node)
+
+    def _only(self, node: _Node, allowed: set[str] | frozenset[str]) -> None:
+        for name in node.attrs:
+            if name not in allowed:
+                _fail(f"the attribute {name!r} on <{node.tag}>")
+
+    def _support_element(self, parent: _Node, node: _Node) -> None:
+        tag = node.tag
+        if tag not in _SECTION_TAGS:
+            _fail(f"<{tag}> inside the support content")
+        self._only(node, _SECTION_ATTRS)
+        if tag == "button":
+            self.buttons.append((node.attrs.get("data-copy-target", ""), node))
+        if tag == "code" and "crypto-address" in node.classes:
+            self.codes.append(node)
+
+    def _internal(self, value: str) -> bool:
+        return (
+            bool(_INTERNAL.fullmatch(value))
+            and ":" not in value
+            and (not value.startswith("//"))
+        )
+
+    def _chrome(self, parent: _Node, node: _Node) -> None:
+        tag = node.tag
+        if tag not in _CHROME_TAGS:
+            _fail(f"<{tag}> in the page chrome")
+        self._only(node, _CHROME_ATTRS | _CHROME_TAG_ATTRS.get(tag, frozenset()))
+        attrs = node.attrs
+        if tag == "a":
+            href = attrs.get("href", "")
+            if not href or not (self._internal(href) or href in self.urls):
+                _fail("a chrome link that is neither internal nor a configured URL")
+            if "ping" in attrs and not _PING.fullmatch(attrs["ping"]):
+                _fail("a chrome link ping that is not a click-count path")
+        elif tag == "img":
+            self.images += 1
+            src = attrs.get("src", "")
+            if self.images > 1 or not (self._internal(src) or src in self.urls):
+                _fail("a chrome image that is not the one configured avatar")
+        elif tag == "section":
+            if "support" in node.classes:
+                if parent.tag != "main":
+                    _fail("a support section anywhere but directly in <main>")
+            elif not ({"profile-card", "cookie-banner"} & node.classes):
+                _fail("an unknown <section> in the page chrome")
+        elif tag == "form":
+            if "cookie-banner" not in parent.classes or parent.tag != "section":
+                _fail("a form outside the cookie notice")
+            if attrs.get("method") != "get" or not self._internal(
+                attrs.get("action", "")
+            ):
+                _fail("a cookie form that is not a same-site GET")
+        elif tag == "button":
+            if parent.tag != "form" or attrs.get("type") != "submit":
+                _fail("a chrome button outside the cookie form")
 
     def _main_child(self, node: _Node) -> None:
         tag = node.tag
         if tag == "section" and "support" in node.classes:
             self.sections += 1
             return
-        kind = (
-            "profile-card"
-            if tag == "section" and ("profile-card" in node.classes)
-            else tag
-        )
+        kind = tag
+        if tag == "section":
+            kind = next(
+                (k for k in ("profile-card", "cookie-banner") if k in node.classes),
+                tag,
+            )
         limit = _MAIN_LIMITS.get(kind)
         if limit is None:
             _fail(f"<{tag}> directly in <main>")
@@ -250,14 +354,22 @@ class _Check(HTMLParser):
         _fail("a marked section")
 
 
-def check_support_html(html: str, addresses: list[str] | None = None) -> None:
+def check_support_html(
+    html: str,
+    addresses: list[str] | None = None,
+    urls: frozenset[str] | set[str] = frozenset(),
+) -> None:
     """Refuse a support page that is not exactly the allowed shape.
 
     ``addresses`` are the coin addresses from the config, in order: the page's
-    ``code.crypto-address`` elements must hold exactly these. Left out, only
-    the structure and the button-to-address pairing are checked.
+    ``code.crypto-address`` elements must hold exactly these (an address
+    element has no child elements, so its text is all of what is copied).
+    Left out, only the structure and the button-to-address pairing are checked.
+    ``urls`` are the outside URLs the fixed chrome may link to or show (the
+    site navigation, profile button, socials, credit link and avatar); any
+    other chrome link must be a path inside the site.
     """
-    scan = _Check()
+    scan = _Check(frozenset(urls))
     scan.feed(html)
     scan.close()
     if scan.cur is not scan.root:

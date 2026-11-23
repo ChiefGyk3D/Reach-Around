@@ -570,6 +570,19 @@ def _support_path_extras(config: SiteConfig) -> dict[str, dict[str, list[str]]]:
     }
 
 
+def _chrome_urls(config: SiteConfig) -> set[str]:
+    """The outside URLs the page chrome may show, taken from the config."""
+    urls = {social.url for social in config.creator.socials}
+    if config.creator.avatar:
+        urls.add(config.creator.avatar)
+    if config.site_nav is not None:
+        urls.update(item.url for item in config.site_nav.items)
+    if config.profile_card is not None and config.profile_card.button is not None:
+        urls.add(config.profile_card.button.url)
+    urls.add(CREDIT_URL)
+    return urls
+
+
 def _render_support(
     env: Environment,
     config: SiteConfig,
@@ -627,6 +640,7 @@ def _render_support(
             if isinstance(block, Crypto)
             for coin in block.coins
         ],
+        _chrome_urls(config),
     )
     return html
 

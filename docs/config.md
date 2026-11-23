@@ -1134,7 +1134,14 @@ What is not on this page, on purpose:
   section (no link, image, frame, embed, form, `meta`, `svg`, `style`, event or
   namespaced attribute, or comment), only engine stylesheets and scripts in the
   head, element ids unique, and each copy button pointing at the one address
-  element in its own card, whose text is exactly the configured address. A
+  element in its own card, whose text is exactly the configured address. An
+  address element holds text only (no child element), the address class is
+  allowed on `code` only, and a card holds exactly one. The fixed chrome outside
+  the support section is held to an allowlist too: only the tags and attributes
+  the stock header, tab bar, site bar, profile card, footer and cookie notice
+  use; chrome links must be paths inside the site or a URL from your config
+  (site bar, profile button, socials, credit, avatar); one avatar image; one
+  skip link holding only text; a form and buttons only as the cookie notice. A
   template override that breaks any of this fails the build.
 * No owner custom stylesheet. `overrides/custom.css` is not loaded on this
   page, because a stylesheet can change what an address looks like. The page
