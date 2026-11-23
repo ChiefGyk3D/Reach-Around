@@ -755,19 +755,39 @@ def _append(
     max_bytes: int,
     skip_days: bool,
 ) -> int:
-    # The file as it was before any wait for the writers' lock. If a redaction
-    # replaced it meanwhile, this append is refused instead of continuing on the
-    # new file (a file that did not exist yet is not a replacement).
-    before = _identity_of(dir_fd, path.name)
-    sidecar = _open_sidecar(dir_fd, path.name, LOCK_WAIT_SECONDS)
+    # Hold the file as it is before any wait for the writers' lock, and compare
+    # this very descriptor with the name afterwards. If a redaction replaced the
+    # file meanwhile, this append is refused instead of continuing on the new
+    # file (a file that did not exist yet is not a replacement). Holding the
+    # descriptor also means the old inode cannot be freed and reused by the
+    # replacement, which a number read by name could not rule out.
+    held = _hold_existing(dir_fd, path.name)
     try:
-        if before is not None and _identity_of(dir_fd, path.name) != before:
-            raise HistoryError(
-                "the history file was replaced while waiting (a redaction?); run again"
-            )
-        return _append_locked(dir_fd, path, records, max_bytes, skip_days)
+        sidecar = _open_sidecar(dir_fd, path.name, LOCK_WAIT_SECONDS)
+        try:
+            if held >= 0 and not _same_file(dir_fd, path.name, held):
+                raise HistoryError(
+                    "the history file was replaced while waiting (a redaction?); "
+                    "run again"
+                )
+            return _append_locked(dir_fd, path, records, max_bytes, skip_days)
+        finally:
+            os.close(sidecar)
     finally:
-        os.close(sidecar)
+        if held >= 0:
+            os.close(held)
+
+
+def _hold_existing(dir_fd: int, name: str) -> int:
+    """A read-only descriptor for ``name`` if it exists, else -1.
+
+    No symlink is followed and nothing blocks (a FIFO opens at once). Any other
+    failure also gives -1: the locked step opens the file again and refuses it.
+    """
+    try:
+        return os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=dir_fd)
+    except OSError:
+        return -1
 
 
 def _append_locked(
