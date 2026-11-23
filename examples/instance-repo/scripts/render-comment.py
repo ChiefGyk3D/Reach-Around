@@ -254,6 +254,38 @@ VOCAB: dict[str, tuple[str, str]] = {
         "the site_nav bar and footer line are both turned off",
         "Turn header or footer back on, or delete site_nav.",
     ),
+    "support_crypto_in_tab": (
+        "a crypto block sits in a tab while the support page is set",
+        "Move the crypto block to support.blocks; the addresses live in one place.",
+    ),
+    "support_crypto_twice": (
+        "the support page has more than one crypto block",
+        "Keep one crypto block and list every coin in it.",
+    ),
+    "support_blocks": (
+        "the support page has a block type it does not take",
+        "Use crypto, text or divider blocks; no links, images or email here.",
+    ),
+    "support_qr": (
+        "a support coin names a QR image",
+        "Remove qr; the page shows the address with a copy button.",
+    ),
+    "support_plain": (
+        "support text has a control, hidden or bidirectional character",
+        "Retype the text with plain characters.",
+    ),
+    "support_address_like": (
+        "support text has something that looks like an address, or a non-ASCII letter",
+        "Addresses go in a crypto coin only; use plain ASCII words in the text.",
+    ),
+    "support_markup": (
+        "support text has a link, image, HTML or URI scheme",
+        "Use plain words; the support page takes no links in its text.",
+    ),
+    "support_tab_id": (
+        "a tab uses the id support, which the support page needs for /support/",
+        "Rename the tab, or delete the support section.",
+    ),
     "db_setting": (
         "the database setting is not right",
         "Set dsn_env to REACH_AROUND_DSN. Never put the password itself there.",
@@ -634,6 +666,7 @@ KNOWN_FIELDS: frozenset[str] = frozenset(
         "store",
         "style",
         "subtitle",
+        "support",
         "synced_with",
         "tab",
         "tabs",

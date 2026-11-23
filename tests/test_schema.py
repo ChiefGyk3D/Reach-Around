@@ -68,3 +68,26 @@ def test_mascot_opacity_range_is_in_the_schema() -> None:
     )
     assert number["minimum"] == 0.0
     assert number["maximum"] == MAX_MASCOT_OPACITY
+
+
+def test_support_blocks_schema_lists_only_the_three_allowed_kinds() -> None:
+    import json
+
+    schema = json.loads(SCHEMA_FILE.read_text(encoding="utf-8"))
+    refs = schema["$defs"]["SupportPage"]["properties"]["blocks"]["items"]["oneOf"]
+    assert sorted(r["$ref"].rsplit("/", 1)[1] for r in refs) == [
+        "Crypto",
+        "Divider",
+        "Text",
+    ]
+
+
+def test_support_blocks_narrowing_also_works_in_serialization_mode() -> None:
+    from reach_around.config import SiteConfig
+
+    schema = SiteConfig.model_json_schema(mode="serialization")
+    node = schema["$defs"]
+    support = next(v for k, v in node.items() if k.endswith("SupportPage"))
+    refs = support["properties"]["blocks"]["items"]["oneOf"]
+    names = sorted(r["$ref"].rsplit("/", 1)[1].rsplit("__", 1)[-1] for r in refs)
+    assert [n.split("-")[0] for n in names] == ["Crypto", "Divider", "Text"]

@@ -20,6 +20,7 @@ from pageweight import (
     GATE_ORIGINS,
     PAGE_TYPES,
     STACK_SITES,
+    SUPPORT_SITE,
     docs_differences,
     docs_table,
     measure,
@@ -104,6 +105,28 @@ def sites(tmp_path_factory: pytest.TempPathFactory) -> list[Path]:
             today=TODAY,
             assets_dir=EXAMPLE.parent,
         )
+    # The support page (#683): the example instance's creator and theme, a text
+    # intro and one crypto block with two coins (no QR image).
+    doc = yaml.safe_load(EXAMPLE.read_text(encoding="utf-8"))
+    doc["support"] = {
+        "title": "Support",
+        "intro": "Synthetic intro text for the page-weight fixture.",
+        "blocks": [
+            {
+                "id": "support-crypto",
+                "coins": [
+                    {"coin": "btc", "address": "bc1qexampleexampleexampleexample"},
+                    {"coin": "eth", "address": "0xExampleExampleExampleExampleExample"},
+                ],
+            }
+        ],
+    }
+    build_site(
+        SiteConfig.model_validate(doc),
+        base / SUPPORT_SITE,
+        today=TODAY,
+        assets_dir=EXAMPLE.parent,
+    )
     # A realistic kit: four headline numbers with labels, analytics, engagement,
     # a case study and the legend (#626), still with no Turnstile key.
     from test_kit_trust import NUMS, trust_config, trust_doc
@@ -133,6 +156,7 @@ def sites(tmp_path_factory: pytest.TempPathFactory) -> list[Path]:
         base / "stack",
         base / "stack-live",
         base / "r",
+        base / SUPPORT_SITE,
     ]
 
 
@@ -141,7 +165,8 @@ def all_pages(sites: list[Path]) -> list[tuple[Path, Path]]:
         (root, p)
         for root in sites
         for p in sorted(root.rglob("*.html"))
-        if root.name not in STACK_SITES or p == root / "index.html"
+        if (root.name not in STACK_SITES or p == root / "index.html")
+        and (root.name != SUPPORT_SITE or p == root / "support" / "index.html")
     ]
     assert len(pairs) >= 8, "the golden example pages were not all built"
     kinds = {page_type(str(p.relative_to(root)), root.name) for root, p in pairs}

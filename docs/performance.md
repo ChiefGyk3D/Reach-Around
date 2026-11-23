@@ -80,8 +80,9 @@ Measured 2026-11-20 on the built example instance (`examples/instance`) and a me
 | tab | 3600 | 59000 | 13000 | 1300 | 82000 | 158000 | 81000 | 11 | 0 |
 | kit | 11800 | 72000 | 3300 | 500 | 33300 | 123000 | 57000 | 11 | 0 |
 | support | 4600 | 72000 | 13000 | 1300 | 82000 | 148000 | 78000 | 10 | 0 |
+| support-page | 5100 | 65300 | 16700 | 1300 | 81500 | 169700 | 84800 | 14 | 0 |
 
-Bytes, except Requests and Third party. Page types: `hub` is the first-tab page (`index.html`), `hub-stack` the smart-stack home page (`page.layout: stack`), `hub-live` the same page with `page.live_badges: true`, `tab` any other tab page, `kit` the public media kit page, `support` the pages around them (privacy, `/kit/retry/` and 404; this repository has no other support-style page). Total is HTML, CSS, JS, images and fonts before compression. Compressed is the estimate described below. Requests counts the page and each distinct file it links. Third party is zero requests to any other origin.
+Bytes, except Requests and Third party. Page types: `hub` is the first-tab page (`index.html`), `hub-stack` the smart-stack home page (`page.layout: stack`), `hub-live` the same page with `page.live_badges: true`, `tab` any other tab page, `kit` the public media kit page, `support` the pages around them (privacy, `/kit/retry/` and 404), `support-page` the configured support page (`support:` in the site config, built at `/support/`; #683). Total is HTML, CSS, JS, images and fonts before compression. Compressed is the estimate described below. Requests counts the page and each distinct file it links. Third party is zero requests to any other origin.
 
 ### Measured, before headroom
 
@@ -93,6 +94,7 @@ Bytes, except Requests and Third party. Page types: `hub` is the first-tab page 
 | tab | `events/index.html` | 2875 | 46705 | 10332 | 997 | 65152 | 126061 | 64615 | 9 |
 | kit | `kit/index.html` (realistic kit: four labeled numbers, analytics, engagement, a case study, the legend) | 9370 | 59197 | 2596 | 384 | 26576 | 98123 | 45575 | 9 |
 | support | `privacy/index.html` | 3620 | 37890 | 10332 | 997 | 65152 | 117991 | 62313 | 8 |
+| support-page | `support/index.html` (a crypto block with two coins, no QR image) | 4074 | 52184 | 13328 | 997 | 65152 | 135735 | 67794 | 11 |
 | support | `kit/retry/index.html` | 2892 | 57126 | 0 | 384 | 26576 | 86978 | 42352 | 8 |
 
 The stack rows are built by the test from the example instance's creator and theme, with eight two-link groups and the Watch pair (`stack_doc` in `tests/site/test_page_weight.py`). A stack home page lists every group on one page, so its HTML is larger than the example hub's, and it is its own type; the `hub` budget is unchanged. `hub-live` adds `live.js` (about 16 KB) to the page's script, which is why its JS budget is about two and a half times the hub's. `live.js` is an optional enhancement: it is deferred, it is only on a page that turns badges on, and the page is complete without it. The budget for pages without badges did not move. Slimming `live.js` is tracked separately. Each of these two rows is the measurement raised by a quarter, rounded up (bytes to the next hundred, requests to the next whole number). The group styles (#672) added about 1.9 KB of CSS to the stack stylesheet (the two stack rows above were re-measured with it) and stay inside both budgets without raising them.

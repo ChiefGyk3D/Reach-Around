@@ -99,6 +99,8 @@ def bad(mutate: Any) -> dict[str, Any]:
     return data
 
 
+SUPPORT_COIN = {"coin": "btc", "address": "bc1qexampleexampleexample"}
+
 CASES: list[tuple[str, Any, list[str]]] = [
     (
         "url without https",
@@ -131,6 +133,120 @@ CASES: list[tuple[str, Any, list[str]]] = [
             }
         ),
         ["the site_nav bar and footer line are both turned off", "Fix: "],
+    ),
+    (
+        "crypto in a tab while support is set",
+        lambda d: (
+            d["tabs"][0]["blocks"].append(
+                {
+                    "id": "tabpay",
+                    "coins": [{"coin": "btc", "address": "bc1qexampleexampleexample"}],
+                }
+            ),
+            d.update(
+                support={
+                    "title": "Support",
+                    "blocks": [
+                        {
+                            "id": "pay",
+                            "coins": [
+                                {"coin": "btc", "address": "bc1qexampleexampleexample"}
+                            ],
+                        }
+                    ],
+                }
+            ),
+        ),
+        ["rypto block sits in a tab while the support page is set", "Fix: "],
+    ),
+    (
+        "two crypto blocks on support",
+        lambda d: d.update(
+            support={
+                "title": "Support",
+                "blocks": [
+                    {"id": "p1", "coins": [dict(SUPPORT_COIN)]},
+                    {"id": "p2", "coins": [dict(SUPPORT_COIN)]},
+                ],
+            }
+        ),
+        ["he support page has more than one crypto block", "Fix: "],
+    ),
+    (
+        "qr on a support coin",
+        lambda d: d.update(
+            support={
+                "title": "Support",
+                "blocks": [
+                    {"id": "p", "coins": [{**SUPPORT_COIN, "qr": "media/q.png"}]}
+                ],
+            }
+        ),
+        ["support coin names a QR image", "Fix: "],
+    ),
+    (
+        "hidden character in support text",
+        lambda d: d.update(
+            support={
+                "title": "Support",
+                "intro": "a" + chr(0x202E) + "b",
+                "blocks": [{"id": "p", "coins": [dict(SUPPORT_COIN)]}],
+            }
+        ),
+        ["support text has a control, hidden or bidirectional", "Fix: "],
+    ),
+    (
+        "address-like token in support text",
+        lambda d: d.update(
+            support={
+                "title": "Support",
+                "intro": "A" * 30,
+                "blocks": [{"id": "p", "coins": [dict(SUPPORT_COIN)]}],
+            }
+        ),
+        ["support text has something that looks like an address", "Fix: "],
+    ),
+    (
+        "link in support text",
+        lambda d: d.update(
+            support={
+                "title": "Support",
+                "blocks": [
+                    {"id": "p", "coins": [dict(SUPPORT_COIN)]},
+                    {"id": "t", "markdown": "[x](https://e.com/)"},
+                ],
+            }
+        ),
+        ["support text has a link, image, HTML or URI scheme", "Fix: "],
+    ),
+    (
+        "link block on support",
+        lambda d: d.update(
+            support={
+                "title": "Support",
+                "blocks": [{"id": "l", "title": "L", "url": "https://e.com/l"}],
+            }
+        ),
+        ["he support page has a block type it does not take", "Fix: "],
+    ),
+    (
+        "tab id support",
+        lambda d: (
+            d["tabs"].append(
+                {
+                    "id": "support",
+                    "title": "S",
+                    "blocks": [{"id": "sx", "title": "S", "url": "https://e.com/s"}],
+                }
+            ),
+            d.update(
+                support={
+                    "title": "Support",
+                    "blocks": [{"id": "t", "markdown": "Thanks"}],
+                }
+            ),
+        ),
+        ["tab uses the id support", "Fix: "],
     ),
     (
         "missing title",

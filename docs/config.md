@@ -97,6 +97,7 @@ escapes it when it renders.
 | `store` | StoreConfig | SQLite at `data/reach-around.db` | where the snapshot store lives; see [`store`](#store) |
 | `profile_card` | ProfileCard | none | name, topic chips and a media-kit button after the content of every page; see [`profile_card`](#profile_card) |
 | `site_nav` | SiteNav | none | the creator's own sites as a bar above the page and a family line in the footer; see [`site_nav`](#site_nav) |
+| `support` | SupportPage | none | the support page at `/support/`, where the crypto addresses live; see [`support`](#support) |
 | `numbers` | NumbersConfig | none | where each platform's follower count comes from, for `reach-around counts refresh`; see [`numbers`](#numbers) |
 | `kit` | KitConfig | absent | optional media kit content and its display policy; see [`kit`](#kit) |
 
@@ -1085,6 +1086,106 @@ The items are not counted as clicks: they carry no id, no `ping` and no
 `data-link-id`, they are not in the build manifest, and the click Worker never
 sees them. They are navigation between your own sites, like the footer credit,
 not outbound offers. The link parity check does not compare them.
+
+## `support`
+
+An optional support page, built at `/support/`. It carries payment
+instructions and nothing else. It is the one place crypto blocks may live: with
+`support` set, the build refuses a crypto block in any tab and refuses a second
+crypto block on the support page. The page always renders in a fixed order,
+whatever the config order: the heading, the intro, the one crypto block, then
+any other blocks. The hub keeps its direct support buttons as ordinary links
+(one of them can point to this page). Leave the key out and the output is what
+it was without the feature. Unknown keys are refused.
+
+| Key | Type | Default | Constraints |
+| --- | --- | --- | --- |
+| `title` | text | required | The page heading and its title, like a tab's `page_title` (see [Page titles](#page-titles)). |
+| `intro` | text, 1-500 characters | none | One plain paragraph under the heading, with the plain-text rules below. |
+| `blocks` | list of blocks | required | At least one. Crypto, text and divider blocks only: no link, image or email block. At most one crypto block (list every coin in it). Block ids are unique across the whole site. |
+
+```yaml
+support:
+  title: Support the show
+  intro: Written by you; the engine adds no wording of its own.
+  blocks:
+    - id: crypto
+      coins:
+        - coin: btc
+          address: bc1qexampleexampleexampleexampleexample
+```
+
+What is not on this page, on purpose:
+
+* No QR image (a file cannot be tied to its address) and no image block (a
+  picture could be mistaken for a payment method). Each address is text with a
+  copy button, in an isolated left-to-right element.
+* No email block: the page is payment instructions, and an address shaped like
+  a handle is one. Contact belongs on the other pages.
+* No Markdown. A text block is escaped plain text: blank lines start a new
+  paragraph, a line break stays a line break, and nothing else is interpreted
+  (asterisks, backticks, brackets and the like show as typed).
+* No link, anywhere in the page's content. After the page is built, the HTML
+  is read again with a strict structural check, and the build fails if the page
+  is not exactly the expected shape: every tag balanced (a stray, mismatched or
+  unclosed tag is a failure, not something skipped), one `main` with exactly one
+  support section plus only the fixed chrome (tab bar, header, profile card,
+  footer, the back link), a short allowlist of tags and attributes inside the
+  section (no link, image, frame, embed, form, `meta`, `svg`, `style`, event or
+  namespaced attribute, or comment), only engine stylesheets and scripts in the
+  head, element ids unique, and each copy button pointing at the one address
+  element in its own card, whose text is exactly the configured address. An
+  address element holds text only (no child element), the address class is
+  allowed on `code` only, and a card holds exactly one. The fixed chrome outside
+  the support section is held to an allowlist too: only the tags and attributes
+  the stock header, tab bar, site bar, profile card, footer and cookie notice
+  use; chrome links must be paths inside the site or a URL from your config
+  (site bar, profile button, socials, credit, avatar); one avatar image; one
+  skip link holding only text; a form and buttons only as the cookie notice. A
+  template override that breaks any of this fails the build.
+* No owner template overrides. The support page and everything it includes
+  (the base page, header, tab bar, footer and the blocks) are rendered from the
+  engine's own packaged templates only; a file in `overrides/templates/` with
+  the same name is ignored for this page (it still applies to your other
+  pages). The payment page is what the engine's code renders, not what an
+  override renders.
+* No comment, declaration or stray `<` in the built page, and a standard
+  `<!DOCTYPE html>` first. Parsers read these differently, so the build refuses
+  them instead of guessing.
+* A last check over the built page: every text node and attribute value inside
+  the support section goes through the same address detector the config uses,
+  and the fixed chrome's text and shown attributes (`alt`, `title`,
+  `aria-label`, `value`) through its address-shape part (long tokens and
+  address prefixes; the chrome may show a domain or an accented name). Text
+  joins across inline tags the way a reader sees it. Only the one address
+  element is exempt, and it must equal the configured address.
+* No owner custom stylesheet. `overrides/custom.css` is not loaded on this
+  page, because a stylesheet can change what an address looks like. The page
+  uses the engine's own styles only.
+
+Every displayed field (title, intro, text blocks, crypto title and note, coin
+label, name and network) is checked at load. No control, hidden, bidirectional,
+line-separator or noncharacter marks (a text block may use blank lines). Text is
+folded to its NFKC form, and any letter that is still not ASCII is refused, so
+a lookalike letter cannot pass for an ASCII one. Nothing address-like: a run of
+26 or more letters and digits, `0x` followed by hex, a `bc1`, `tb1`, `ltc1` or
+`lnbc` prefix, a domain-like token (letters or digits, a dot, two or more
+letters, which covers name-service names such as `name.eth`), any `@`, and `$`
+followed by a word. A text block also takes no `<`, `://`, `www.` or URI scheme.
+
+**These checks catch mistakes. They are not a guarantee.** An address that is
+spaced out or split across words can pass them. The design relies on the page
+carrying plain text only and on a person reviewing every change to its text.
+
+The page loads `copy.js` and `crypto.css` only here. A tab whose id is
+`support` is refused, because the page takes the path `/support/`. The page is
+not part of the click counts. Its page weight has its own row, `support-page`,
+in `docs/performance.md`. The `_headers` file gives `/support/`, `/support/index.html` and `/support/*`
+each their own Content-Security-Policy with images from this site only (`img-src 'self'`); the
+site-wide default-src and connect-src are already `'self'`. A creator avatar
+loaded from another host therefore does not show on this page; use a local
+file. Redirecting an old support address to this page is a host setting, not
+part of the build.
 
 ## `cutover_date`
 
