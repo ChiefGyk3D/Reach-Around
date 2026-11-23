@@ -58,7 +58,9 @@ def test_worst_case_table_adds_up_and_is_under_the_warning_line() -> None:
     rows = {
         m.group(1): int(m.group(2))
         for m in re.finditer(
-            r"^\| (gate|gate claim rows|view|alert|send|inquiry) \|.*\| (\d+) \|$", section, re.M
+            r"^\| (gate|gate claim rows|view|alert|send|inquiry) \|.*\| (\d+) \|$",
+            section,
+            re.M,
         )
     }
     assert rows == expected
@@ -71,7 +73,9 @@ def test_worst_case_table_adds_up_and_is_under_the_warning_line() -> None:
     assert f"{funnel_row} |" in section
     assert f"| margin | | | {_MARGIN} |" in section
     assert f"| kit purge reserve | | | {_RESERVE} |" in section
-    assert "solved challenge" in section and "3,600" in section  # #650: the per-network figure
+    assert (
+        "solved challenge" in section and "3,600" in section
+    )  # #650: the per-network figure
     assert combined <= d["D1_DAILY_WRITE_QUOTA"] * 0.8
     assert f"{round(100 * combined / d['D1_DAILY_WRITE_QUOTA'], 1)} percent" in section
 
