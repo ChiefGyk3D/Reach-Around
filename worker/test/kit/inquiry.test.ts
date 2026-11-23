@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 import { env as testEnv } from "cloudflare:workers";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDispatcher } from "../../src/alerts/dispatcher";
 import { formatAlert } from "../../src/alerts/format";
 import {
@@ -12,6 +12,7 @@ import {
   type InquiryEnv,
 } from "../../src/kit/inquiry";
 import { COOKIE_NAME, signToken } from "../../src/kit/token";
+import { MAX_URL_LENGTH } from "../../src/click";
 import worker from "../../src/index";
 
 const HOST = "links.example.test";
@@ -497,25 +498,120 @@ describe("dispatcher dedup identity", () => {
   });
 });
 
-describe("worker.fetch wiring", () => {
-  it("routes the inquiry paths to the inquiry handler whatever the query length", async () => {
-    const q = `?${"a=1&".repeat(600)}`; // the whole URL is well over the analytics URL cap
-    const sent = await worker.fetch(await req({ method: "GET", path: `${INQUIRY_SENT_ROUTE}${q}`, cookie: null }), baseEnv() as never, undefined);
-    expect(sent.status).toBe(200);
-    expect(await sent.text()).toContain("Message Sent");
-    const err = await worker.fetch(await req({ method: "GET", path: `${INQUIRY_ERROR_ROUTE}${q}`, cookie: null }), baseEnv() as never, undefined);
-    expect(err.status).toBe(200);
-    expect(await err.text()).toContain("Message Not Sent");
-    // a POST with no unlock cookie reaches the handler's gate redirect, not the click route's 204
-    const post = await worker.fetch(await req({ path: `${INQUIRY_ROUTE}${q}`, cookie: null }), baseEnv() as never, undefined);
-    expect(post.status).toBe(303);
-    expect(post.headers.get("location")).toBe("/kit/retry/");
+/** A query so the full request URL for `path` is exactly `total` characters. */
+function queryFor(path: string, total: number): string {
+  const prefix = `${ORIGIN}${path}?q=`;
+  return `?q=${"a".repeat(total - prefix.length)}`;
+}
+
+describe("worker.fetch wiring (inquiry routes ignore the analytics URL cap, #649)", () => {
+  const OVER = MAX_URL_LENGTH + 1;
+  // worker.fetch takes no clock, so pin Date to the instant the test cookie is valid at.
+  beforeEach(() => void vi.useFakeTimers({ toFake: ["Date"], now: T0 }));
+  afterEach(() => void vi.useRealTimers());
+
+  it("builds a fixture URL of exactly MAX_URL_LENGTH + 1 characters", async () => {
+    const r = await req({ path: `${INQUIRY_ROUTE}${queryFor(INQUIRY_ROUTE, OVER)}` });
+    expect(r.url.length).toBe(OVER);
+    expect(r.url.length).toBeGreaterThan(MAX_URL_LENGTH);
   });
-  it("keeps the analytics URL cap on every other path", async () => {
-    const q = `?${"a=1&".repeat(600)}`;
-    const other = await worker.fetch(await req({ method: "GET", path: `/k/other${q}`, cookie: null }), baseEnv() as never, undefined);
-    expect(other.status).toBe(204);
-    const near = await worker.fetch(await req({ method: "GET", path: `${INQUIRY_SENT_ROUTE}x${q}`, cookie: null }), baseEnv() as never, undefined);
-    expect(near.status).toBe(204);
+
+  it("a valid-cookie POST over the cap is parsed and dispatched normally, and nothing keeps the URL", async () => {
+    const q = queryFor(INQUIRY_ROUTE, OVER);
+    const r = await req({ path: `${INQUIRY_ROUTE}${q}` });
+    expect(r.url.length).toBeGreaterThan(MAX_URL_LENGTH);
+    const lim = limiter();
+    const sent: Call[] = [];
+    const spyFetch = vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
+      sent.push({ url: String(url), body: String(init?.body ?? "") });
+      return new Response(null, { status: 204 });
+    });
+    const logs: string[] = [];
+    const spies = (["log", "info", "warn", "error", "debug"] as const).map((m) =>
+      vi.spyOn(console, m).mockImplementation((...a: unknown[]) => void logs.push(a.map(String).join(" "))),
+    );
+    try {
+      const res = await worker.fetch(r, baseEnv({ INQUIRY_LIMITER: lim }) as never, undefined);
+      expect(res.status).toBe(303);
+      expect(res.headers.get("location")).toBe(INQUIRY_SENT_ROUTE);
+      expect(sent).toHaveLength(1);
+      const content = (JSON.parse(sent[0]!.body) as { content: string }).content;
+      expect(content).toContain("Pat Example");
+      expect(content).toContain("Example Brand");
+      expect(lim.keys).toHaveLength(1);
+    } finally {
+      spyFetch.mockRestore();
+      for (const sp of spies) sp.mockRestore();
+    }
+    const rows = JSON.stringify([
+      (await testEnv.DB.prepare("SELECT * FROM alert_quota").all()).results,
+      (await testEnv.DB.prepare("SELECT * FROM alert_dedup").all()).results,
+      (await testEnv.DB.prepare("SELECT * FROM counters").all()).results,
+    ]);
+    const captured = JSON.stringify([sent, lim.keys, logs, rows]);
+    const needle = q.slice(1, 40); // a long run of the query text
+    expect(captured).not.toContain(needle);
+    expect(captured).not.toContain(r.url);
+    expect(captured).not.toContain("?q=");
+    expect(logs.length).toBeGreaterThan(0); // the logger was exercised, so the checks above bite
+  });
+
+  it("still rejects a hostile Origin with an oversize query", async () => {
+    const f: Call[] = [];
+    const spyFetch = vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
+      f.push({ url: String(url), body: String(init?.body ?? "") });
+      return new Response(null, { status: 204 });
+    });
+    try {
+      const r = await req({ path: `${INQUIRY_ROUTE}${queryFor(INQUIRY_ROUTE, OVER)}`, headers: { origin: "https://evil.example" } });
+      const res = await worker.fetch(r, baseEnv() as never, undefined);
+      expect(res.status).toBe(403);
+      expect(f).toHaveLength(0);
+    } finally {
+      spyFetch.mockRestore();
+    }
+  });
+
+  it("still rejects an oversize body on an oversize URL", async () => {
+    const big = `name=a&details=${"x".repeat(INQUIRY_LIMITS.maxBodyBytes + 1)}`;
+    const r = await req({ path: `${INQUIRY_ROUTE}${queryFor(INQUIRY_ROUTE, OVER)}`, fields: big });
+    const res = await worker.fetch(r, baseEnv() as never, undefined);
+    expect(res.status).toBe(413);
+  });
+
+  it("still rejects HEAD and OPTIONS on the form route with an oversize URL", async () => {
+    for (const method of ["HEAD", "OPTIONS"]) {
+      const r = await req({ method, path: `${INQUIRY_ROUTE}${queryFor(INQUIRY_ROUTE, OVER)}` });
+      const res = await worker.fetch(r, baseEnv() as never, undefined);
+      expect(res.status).toBe(405);
+    }
+  });
+
+  it("routes the two result pages over the cap to the inquiry handler", async () => {
+    for (const [path, title] of [
+      [INQUIRY_SENT_ROUTE, "Message Sent"],
+      [INQUIRY_ERROR_ROUTE, "Message Not Sent"],
+    ] as const) {
+      const r = await req({ method: "GET", path: `${path}${queryFor(path, OVER)}`, cookie: null });
+      expect(r.url.length).toBeGreaterThan(MAX_URL_LENGTH);
+      const res = await worker.fetch(r, baseEnv() as never, undefined);
+      expect(res.status).toBe(200);
+      expect(await res.text()).toContain(title);
+    }
+  });
+
+  // CONTROL, not regression evidence: these pass with or without the #649 change.
+  it("control: the same result page at exactly the cap is served", async () => {
+    const r = await req({ method: "GET", path: `${INQUIRY_SENT_ROUTE}${queryFor(INQUIRY_SENT_ROUTE, MAX_URL_LENGTH)}`, cookie: null });
+    expect(r.url.length).toBe(MAX_URL_LENGTH);
+    const res = await worker.fetch(r, baseEnv() as never, undefined);
+    expect(res.status).toBe(200);
+  });
+  it("control: other paths keep the analytics cap (empty 204)", async () => {
+    for (const path of ["/k/other", `${INQUIRY_SENT_ROUTE}x`]) {
+      const r = await req({ method: "GET", path: `${path}${queryFor(path, OVER)}`, cookie: null });
+      const res = await worker.fetch(r, baseEnv() as never, undefined);
+      expect(res.status).toBe(204);
+    }
   });
 });
