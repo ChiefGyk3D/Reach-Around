@@ -274,13 +274,13 @@ def test_a_refresh_reads_the_history_once_for_both_retention_checks(
 ) -> None:
     append_records(setup / "history" / "social.jsonl", [record("bluesky", 26)], now=NOW)
     reads: list[Path] = []
-    real = counts_cmd.read_history
+    real = read_history
 
     def counted(path: Path, **kw: Any) -> Any:
         reads.append(path)
         return real(path, **kw)
 
-    monkeypatch.setattr(counts_cmd, "read_history", counted)
+    monkeypatch.setattr("reach_around.commands.counts.read_history", counted)
     assert run(setup) == 0
     assert "retention warning" in capsys.readouterr().err
     assert len(reads) == 1
