@@ -39,6 +39,7 @@ from reach_around.config.blocks import (
     Live,
     Platforms,
     Text,
+    _plain_text,
 )
 from reach_around.config.cutover import check_cutover_day
 from reach_around.config.disclosure import DisclosureField
@@ -440,6 +441,17 @@ SUPPORT_PAGE_ID = "support"
 _SUPPORT_KINDS = (Crypto, Text, Image, Email, Divider)
 
 
+def _narrow_support_blocks(schema: dict[str, Any]) -> None:
+    """Keep only the support block kinds in the generated schema's item list."""
+    names = {kind.__name__ for kind in _SUPPORT_KINDS}
+    items = schema.get("items", {})
+    items["oneOf"] = [
+        ref
+        for ref in items.get("oneOf", [])
+        if (m := re.search(r"([A-Za-z]+)-Input", ref["$ref"])) and m.group(1) in names
+    ]
+
+
 class SupportPage(_Model):
     """The support page (#683): the one place the crypto addresses live.
 
@@ -450,7 +462,15 @@ class SupportPage(_Model):
 
     title: PageTitle
     intro: Subtitle | None = None
-    blocks: list[Block] = Field(min_length=1)
+    # The validator below refuses the other kinds; the schema says so too.
+    blocks: list[Block] = Field(
+        min_length=1, json_schema_extra=lambda schema: _narrow_support_blocks(schema)
+    )
+
+    @field_validator("intro")
+    @classmethod
+    def _intro_is_plain(cls, value: str | None) -> str | None:
+        return _plain_text(value)
 
     @model_validator(mode="after")
     def _only_support_blocks(self) -> SupportPage:
@@ -460,6 +480,12 @@ class SupportPage(_Model):
             )
         if sum(isinstance(block, Crypto) for block in self.blocks) > 1:
             raise ValueError("the support page takes at most one crypto block")
+        for block in self.blocks:
+            if isinstance(block, Image):
+                # A payment page shows nothing fetched from another origin.
+                check_image_path(block.src)
+                if block.link is not None:
+                    raise ValueError("a support image takes no link")
         return self
 
 

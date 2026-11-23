@@ -68,3 +68,17 @@ def test_mascot_opacity_range_is_in_the_schema() -> None:
     )
     assert number["minimum"] == 0.0
     assert number["maximum"] == MAX_MASCOT_OPACITY
+
+
+def test_support_blocks_schema_lists_only_the_five_allowed_kinds() -> None:
+    import json
+
+    schema = json.loads(SCHEMA_FILE.read_text(encoding="utf-8"))
+    refs = schema["$defs"]["SupportPage"]["properties"]["blocks"]["items"]["oneOf"]
+    assert sorted(r["$ref"].rsplit("/", 1)[1] for r in refs) == [
+        "Crypto",
+        "Divider",
+        "Email",
+        "Image",
+        "Text",
+    ]

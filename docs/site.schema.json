@@ -3018,12 +3018,6 @@
           "items": {
             "oneOf": [
               {
-                "$ref": "#/$defs/Link"
-              },
-              {
-                "$ref": "#/$defs/Section"
-              },
-              {
                 "$ref": "#/$defs/Text"
               },
               {
@@ -3034,12 +3028,6 @@
               },
               {
                 "$ref": "#/$defs/Email"
-              },
-              {
-                "$ref": "#/$defs/Platforms"
-              },
-              {
-                "$ref": "#/$defs/Live"
               },
               {
                 "$ref": "#/$defs/Divider"

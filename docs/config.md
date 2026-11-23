@@ -1089,18 +1089,21 @@ not outbound offers. The link parity check does not compare them.
 
 ## `support`
 
-An optional support page, built at `/support/`. It is the one place the crypto
-addresses live: set `support` and a crypto block in any tab is refused, so an
-address is written once and shown once. The hub keeps its direct support
-buttons as ordinary links (one of them can point to this page). Leave the key
-out and the output is what it was without the feature. Unknown keys are
-refused.
+An optional support page, built at `/support/`. It is the one place crypto
+blocks may live: with `support` set, the build refuses a crypto block in any
+tab and refuses a second crypto block on the support page. This covers crypto
+blocks only. An address typed as plain text (in a text block, a link title,
+subtitle or URL, or a second text block on `/support/`) is not detected, so
+review every config diff for addresses written that way. The hub keeps its
+direct support buttons as ordinary links (one of them can point to this page).
+Leave the key out and the output is what it was without the feature. Unknown
+keys are refused.
 
 | Key | Type | Default | Constraints |
 | --- | --- | --- | --- |
 | `title` | text | required | The page heading and its title, like a tab's `page_title` (see [Page titles](#page-titles)). |
-| `intro` | text, 1-500 characters | none | One plain paragraph under the heading. |
-| `blocks` | list of blocks | required | At least one. Crypto, text, image, email and divider blocks only; links stay on the hub. At most one crypto block (list every coin in it). Block ids are unique across the whole site. |
+| `intro` | text, 1-500 characters | none | One plain paragraph under the heading. No control, newline, bidirectional or zero-width characters. |
+| `blocks` | list of blocks | required | At least one. Crypto, text, image, email and divider blocks only; links stay on the hub. At most one crypto block (list every coin in it). An image block takes a local path only (no URL, no `link`), so the page loads nothing from another origin. Block ids are unique across the whole site. |
 
 ```yaml
 support:

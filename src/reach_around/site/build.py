@@ -198,8 +198,6 @@ def _page_paths(config: SiteConfig, with_kit: bool = True) -> set[Path]:
     else:
         pages = {_page_path(i, tab) for i, tab in enumerate(config.tabs)}
     pages |= {Path("privacy") / "index.html", Path("404.html")}
-    if config.support is not None:
-        pages.add(_SUPPORT_PATH)
     helper = frame_paths(config)
     if pages & helper:
         raise ValueError(

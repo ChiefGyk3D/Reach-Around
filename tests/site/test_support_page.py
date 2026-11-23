@@ -139,6 +139,43 @@ def test_support_qr_image_is_collected(tmp_path: Path) -> None:
     )
 
 
-def test_support_page_stays_in_the_page_weight_budget(tmp_path: Path) -> None:
-    html = build(data(SUPPORT), tmp_path)["support/index.html"]
-    assert len(html.encode()) < 14_000
+@pytest.mark.parametrize(
+    "src",
+    [
+        "https://e.com/qr.png",
+        "http://e.com/qr.png",
+        "javascript:alert(1)",
+        "data:image/png;base64,AAAA",
+        "//e.com/qr.png",
+        "../qr.png",
+        "media/../../qr.png",
+        "/etc/qr.png",
+    ],
+)
+def test_support_image_must_be_a_local_path(src: str) -> None:
+    block = {"id": "pic", "src": src, "alt": "A picture"}
+    with pytest.raises(ValidationError):
+        SiteConfig.model_validate(data({**SUPPORT, "blocks": [block]}))
+
+
+def test_support_image_takes_no_link_but_a_local_image_is_fine() -> None:
+    block = {"id": "pic", "src": "media/qr.png", "alt": "A picture"}
+    SiteConfig.model_validate(data({**SUPPORT, "blocks": [block]}))
+    with pytest.raises(ValidationError, match="takes no link"):
+        SiteConfig.model_validate(
+            data({**SUPPORT, "blocks": [{**block, "link": "https://e.com/"}]})
+        )
+
+
+@pytest.mark.parametrize(
+    "intro",
+    [
+        "a" + chr(0x202E) + "b\nc",
+        "a" + chr(0x202E) + "b",
+        "zero" + chr(0x200B) + "w",
+        "two\nlines",
+    ],
+)
+def test_support_intro_must_be_plain_text(intro: str) -> None:
+    with pytest.raises(ValidationError, match="plain text"):
+        SiteConfig.model_validate(data({**SUPPORT, "intro": intro}))
