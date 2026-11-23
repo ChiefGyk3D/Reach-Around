@@ -1923,6 +1923,25 @@
           "default": null,
           "title": "History File"
         },
+        "retain_days": {
+          "maxProperties": 50,
+          "patternProperties": {
+            "^[a-z0-9][a-z0-9-]{0,39}$": {
+              "maximum": 3650,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          "title": "Retain Days",
+          "type": "object"
+        },
+        "retain_warn_days": {
+          "default": 7,
+          "maximum": 365,
+          "minimum": 1,
+          "title": "Retain Warn Days",
+          "type": "integer"
+        },
         "sources": {
           "items": {
             "discriminator": {

@@ -1698,6 +1698,23 @@ parser. A manual or item-id entry in the file that no source touches is kept.
 (1 to 365) after which a hand-kept number for it counts as stale; platforms not
 listed use 30. Example: `stale_days: {kick: 14}`.
 
+`numbers.retain_days` (optional) maps a platform name to a retention window in
+days (1 to 3650, whole numbers only) for the `api` rows of that platform in the
+history file. `numbers.retain_warn_days` (optional, 1 to 365, default 7) is the
+margin. When `counts refresh` has a history file, it prints one warning per
+listed platform that has `api` rows within the margin of the window, or past it:
+`bluesky: retention warning: 2 api record(s) expire within 7 days of the 30 day
+window, 1 are past it; ...`. The line is a count, never a value. It is a warning
+only: nothing is stored differently and nothing is deleted. The remedy is to
+redact the old rows with the history tombstone tool (see
+[Social-stats history](social-history.md)). A refresh only appends a new current
+row; it does not replace or remove the old one, so the warning stays until the
+old rows are redacted. Hand-kept and imported rows are not counted. Every `retain_days`
+value must be more than the margin, and a quoted number or a boolean is refused.
+Example: `retain_days: {youtube: 30}`. The windows come from the platform terms
+you read (see [platform terms](research/platform-terms-retention.md)); nothing
+here sets one for you.
+
 ### Hand-kept numbers
 
 A number is **hand-kept** when a person maintains it: a `count` typed on a
