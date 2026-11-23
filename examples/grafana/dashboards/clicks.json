@@ -1,0 +1,278 @@
+{
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": {
+          "type": "grafana",
+          "uid": "-- Grafana --"
+        },
+        "enable": false,
+        "hide": true,
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      },
+      {
+        "datasource": {
+          "type": "frser-sqlite-datasource",
+          "uid": "reach-around-sqlite"
+        },
+        "enable": true,
+        "iconColor": "#b39ddb",
+        "name": "Cutover",
+        "target": {
+          "datasource": {
+            "type": "frser-sqlite-datasource",
+            "uid": "reach-around-sqlite"
+          },
+          "queryText": "SELECT CAST(strftime('%s', day) AS INTEGER) AS time, text FROM grafana_annotations WHERE day BETWEEN date($__from / 1000, 'unixepoch') AND date($__to / 1000, 'unixepoch')",
+          "rawQueryText": "SELECT CAST(strftime('%s', day) AS INTEGER) AS time, text FROM grafana_annotations WHERE day BETWEEN date($__from / 1000, 'unixepoch') AND date($__to / 1000, 'unixepoch')",
+          "refId": "A",
+          "timeColumns": [
+            "time"
+          ]
+        }
+      },
+      {
+        "datasource": {
+          "type": "frser-sqlite-datasource",
+          "uid": "reach-around-sqlite"
+        },
+        "enable": true,
+        "iconColor": "#ef9a9a",
+        "name": "Collection gaps",
+        "target": {
+          "datasource": {
+            "type": "frser-sqlite-datasource",
+            "uid": "reach-around-sqlite"
+          },
+          "queryText": "SELECT CAST(strftime('%s', day) AS INTEGER) AS time, status || ' (' || reason || '): no data is not zero' AS text FROM grafana_gaps_daily WHERE day BETWEEN date($__from / 1000, 'unixepoch') AND date($__to / 1000, 'unixepoch')",
+          "rawQueryText": "SELECT CAST(strftime('%s', day) AS INTEGER) AS time, status || ' (' || reason || '): no data is not zero' AS text FROM grafana_gaps_daily WHERE day BETWEEN date($__from / 1000, 'unixepoch') AND date($__to / 1000, 'unixepoch')",
+          "refId": "A",
+          "timeColumns": [
+            "time"
+          ]
+        }
+      }
+    ]
+  },
+  "editable": false,
+  "graphTooltip": 1,
+  "links": [
+    {
+      "asDropdown": false,
+      "includeVars": false,
+      "keepTime": true,
+      "tags": [
+        "reach-around"
+      ],
+      "title": "Reach Around dashboards",
+      "type": "dashboards"
+    }
+  ],
+  "panels": [
+    {
+      "datasource": {
+        "type": "frser-sqlite-datasource",
+        "uid": "reach-around-sqlite"
+      },
+      "description": "",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 10,
+        "w": 12,
+        "x": 0,
+        "y": 0
+      },
+      "id": 1,
+      "options": {
+        "legend": {
+          "showLegend": false
+        },
+        "orientation": "horizontal",
+        "xField": "link"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "frser-sqlite-datasource",
+            "uid": "reach-around-sqlite"
+          },
+          "queryText": "SELECT CASE link_id WHEN '(below the floor)' THEN 'Small links, merged' ELSE link_id END AS link, SUM(clicks) AS clicks FROM grafana_clicks_daily WHERE day BETWEEN date($__from / 1000, 'unixepoch') AND date($__to / 1000, 'unixepoch') GROUP BY link_id ORDER BY clicks DESC",
+          "rawQueryText": "SELECT CASE link_id WHEN '(below the floor)' THEN 'Small links, merged' ELSE link_id END AS link, SUM(clicks) AS clicks FROM grafana_clicks_daily WHERE day BETWEEN date($__from / 1000, 'unixepoch') AND date($__to / 1000, 'unixepoch') GROUP BY link_id ORDER BY clicks DESC",
+          "refId": "A",
+          "timeColumns": []
+        }
+      ],
+      "title": "Link clicks by link",
+      "transformations": [],
+      "type": "barchart"
+    },
+    {
+      "datasource": {
+        "type": "frser-sqlite-datasource",
+        "uid": "reach-around-sqlite"
+      },
+      "description": "",
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto"
+          },
+          "mappings": []
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 10,
+        "w": 12,
+        "x": 12,
+        "y": 0
+      },
+      "id": 2,
+      "options": {
+        "cellHeight": "sm",
+        "showHeader": true
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "frser-sqlite-datasource",
+            "uid": "reach-around-sqlite"
+          },
+          "queryText": "SELECT CASE link_id WHEN '(below the floor)' THEN 'Small links, merged' ELSE link_id END AS link, ROUND(SUM(clicks) * 100.0 / (SELECT SUM(clicks) FROM grafana_clicks_daily WHERE day BETWEEN date($__from / 1000, 'unixepoch') AND date($__to / 1000, 'unixepoch')), 1) AS share_percent, SUM(clicks) AS clicks FROM grafana_clicks_daily WHERE day BETWEEN date($__from / 1000, 'unixepoch') AND date($__to / 1000, 'unixepoch') GROUP BY link_id ORDER BY clicks DESC",
+          "rawQueryText": "SELECT CASE link_id WHEN '(below the floor)' THEN 'Small links, merged' ELSE link_id END AS link, ROUND(SUM(clicks) * 100.0 / (SELECT SUM(clicks) FROM grafana_clicks_daily WHERE day BETWEEN date($__from / 1000, 'unixepoch') AND date($__to / 1000, 'unixepoch')), 1) AS share_percent, SUM(clicks) AS clicks FROM grafana_clicks_daily WHERE day BETWEEN date($__from / 1000, 'unixepoch') AND date($__to / 1000, 'unixepoch') GROUP BY link_id ORDER BY clicks DESC",
+          "refId": "A",
+          "timeColumns": []
+        }
+      ],
+      "title": "Share of link clicks",
+      "transformations": [],
+      "type": "table"
+    },
+    {
+      "datasource": {
+        "type": "frser-sqlite-datasource",
+        "uid": "reach-around-sqlite"
+      },
+      "description": "",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "bars",
+            "fillOpacity": 40,
+            "lineWidth": 2,
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "normal"
+            }
+          },
+          "decimals": 0,
+          "min": 0,
+          "noValue": "No data"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 18,
+        "x": 0,
+        "y": 10
+      },
+      "id": 3,
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "frser-sqlite-datasource",
+            "uid": "reach-around-sqlite"
+          },
+          "queryText": "SELECT CAST(strftime('%s', day) AS INTEGER) AS time, CASE link_id WHEN '(below the floor)' THEN 'Small links, merged' ELSE link_id END AS link, clicks FROM grafana_clicks_daily WHERE day BETWEEN date($__from / 1000, 'unixepoch') AND date($__to / 1000, 'unixepoch') ORDER BY day",
+          "rawQueryText": "SELECT CAST(strftime('%s', day) AS INTEGER) AS time, CASE link_id WHEN '(below the floor)' THEN 'Small links, merged' ELSE link_id END AS link, clicks FROM grafana_clicks_daily WHERE day BETWEEN date($__from / 1000, 'unixepoch') AND date($__to / 1000, 'unixepoch') ORDER BY day",
+          "refId": "A",
+          "timeColumns": [
+            "time"
+          ]
+        }
+      ],
+      "title": "Link clicks per day, by link",
+      "transformations": [
+        {
+          "id": "partitionByValues",
+          "options": {
+            "fields": [
+              "link"
+            ],
+            "naming": {
+              "asLabels": false
+            }
+          }
+        }
+      ],
+      "type": "timeseries"
+    },
+    {
+      "description": "",
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 6,
+        "x": 18,
+        "y": 10
+      },
+      "id": 4,
+      "options": {
+        "content": "Clicks **by group** are not in the export yet. `grafana_clicks_daily` is per link id, and the group rollup with its Under 5 rule (#678) is not built. When it ships as a table, add a panel here that reads only its printed rows. Until then this page shows printed rows per link.",
+        "mode": "markdown"
+      },
+      "title": "Groups",
+      "transformations": [],
+      "type": "text"
+    }
+  ],
+  "refresh": "",
+  "schemaVersion": 39,
+  "tags": [
+    "reach-around"
+  ],
+  "templating": {
+    "list": []
+  },
+  "time": {
+    "from": "now-30d",
+    "to": "now"
+  },
+  "timepicker": {
+    "hidden": false,
+    "refresh_intervals": []
+  },
+  "timezone": "utc",
+  "title": "Reach Around: link clicks",
+  "uid": "ra-clicks",
+  "version": 1
+}
