@@ -1,15 +1,17 @@
 {# SPDX-License-Identifier: Apache-2.0 #}
 {% extends "base.html" %}
 {% set page_frames = false %}{% set frame_plan = {} %}
-{% from "_kit_parts.html" import analytics, legend, numbers, engagement, imported_history, trust %}
+{% from "_kit_parts.html" import analytics, legend, numbers, engagement, imported_history, trust, range_line %}
 {% block content %}
 <section class="kit" aria-labelledby="kit-title">
 <div class="kit-deck-intro">
-<div class="kit-head">
+<div class="kit-head{% if kit.photo %} kit-head--photo{% endif %}">
 {% if kit.photo %}
 <img class="kit-photo" src="{{ asset_url(kit.photo, root) }}" alt="" width="1200" height="675">
 {% endif %}
+<div class="kit-first">
 <h2 id="kit-title">{{ kit.title }}</h2>
+<p class="kit-about">{{ kit.about }}</p>
 {% if kit.tags %}
 <ul class="profile-tags kit-tags">
 {% for tag in kit.tags %}
@@ -17,10 +19,11 @@
 {% endfor %}
 </ul>
 {% endif %}
-<p class="kit-about">{{ kit.about }}</p>
+{{ range_line(kit) }}
 {% if kit.contact %}
 <p class="kit-about kit-contact">{{ kit.contact }}</p>
 {% endif %}
+</div>
 </div>
 {{ numbers(kit, "kit-numbers-title") }}
 </div>

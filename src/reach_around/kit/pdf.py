@@ -450,7 +450,16 @@ def _expected_text(
             put(where, row["as_of"] + "UTC" + text + old)
     total = _total(unified_total(resolved), resolved, None, config)
     if total is not None:
-        found.append(("the metric total", total["value"]))
+        # Anchored on the date line printed under the number, so the range
+        # sentence (which also prints the total) cannot satisfy it.
+        found.append(
+            (
+                "the metric total",
+                total["value"] + "Figures dated" + total["oldest"] + "UTC",
+            )
+        )
+        if total["range_text"]:
+            found.append(("the audience range", total["range_text"]))
         text = _trust_text(total["trust"])
         if text:
             labeled = True
