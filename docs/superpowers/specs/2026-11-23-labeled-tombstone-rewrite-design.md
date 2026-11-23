@@ -1,8 +1,8 @@
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 # Labeled tombstone-only rewrite of the counts history: design
 
-Status: DRAFT for owner decision, 2026-11-23, revised after Daybreak round 1
-(table in section 16; the next round is the last allowed). Spec only: no code and
+Status: DRAFT for owner decision, 2026-11-23, revised after Daybreak rounds 1 and 2
+(tables in sections 16 and 17; the next round is the last allowed). Spec only: no code and
 no workflow change come with this document. Issue: #619. Epic: #364. Follows #586
 (the tombstone, decision 4 of `docs/research/history-tombstone-design.md`) and #621
 (the runbook for rewriting git history of the private instance repository).
@@ -92,8 +92,10 @@ A label is a bypass of an append-only integrity control. Each way to abuse it:
 5. **Label timing and TOCTOU.**
    * Label removed after a green run: see design gate G2. An `unlabeled` run must
      turn the required result red; if GitHub cannot be shown to honor that, the
-     design falls back to a merge queue (G2 fallback) or the label is documented as
-     an irrevocable record once a head SHA has passed.
+     design relies on the merge-time re-check of section 5.5, or the label is
+     documented as an irrevocable record once a head SHA has passed. The same applies
+     to every mutable input of the check (label state, label age, applier, allow-list),
+     not only the label.
    * Push after the label: a new head runs `synchronize` and everything is
      recomputed from the new head's bytes.
    * **Base moves after the check** (F1): the old green result is on the head SHA,
@@ -179,9 +181,13 @@ lost, no value is invented. The content compare, not the label, is the core.
 A new workflow `.github/workflows/history-guard.yml` in the instance template:
 
 * Triggers: `pull_request` (`branches: [main]`, `types: [opened, synchronize,
-  reopened, edited, labeled, unlabeled]`) and `merge_group` (`checks_requested`).
-  `edited` is included because the manifest (rule 12) lives in the PR body.
-  Never `pull_request_target`.
+  reopened, labeled, unlabeled]`) only. No `merge_group` (a merge queue is not
+  supported by this design, section 5.4) and never `pull_request_target`. The manifest
+  is a committed file (rule 12), so no `edited` trigger is needed and the pull request
+  body is not read at all.
+* `concurrency: group: history-guard-${{ github.event.pull_request.number }}` with
+  `cancel-in-progress: true`, so a run started by a later label or push cancels the
+  earlier one rather than racing it (section 5.5).
 * Permissions: workflow level `contents: read`; job level `contents: read` plus the
   read scopes proved by G5. No write. No secrets. No environment by default.
 * **One job**, named `History guard`, and nothing else in the workflow. No aggregate
@@ -217,25 +223,67 @@ contains the current `main`). The check summary prints the three SHAs (no conten
 A green result belongs to a head SHA. If `main` moves afterward (an incompatible
 rewrite lands, `B1` becomes `B2`) and the pull request's head did not change, no
 `synchronize` fires **[I]**, and GitHub can build a new merge commit from `B2` and
-the old head. Requirement, one of these, proved by gate G1 and test T20 before
-implementation:
+the old head. Requirement, proved by gate G1 and test T20 before implementation:
 
-* **(a) Merge queue** with `merge_group` support: the guard compares the exact
-  queued merge result against its first parent. Strongest; the queued commit is
-  what merges. **[I]** whether a queue is available for the repository's plan and
-  visibility.
 * **(b) Strict required status ("branch must be up to date")** in the ruleset, with
-  proof that a base update makes the pull request unmergeable on the old result.
-  The author then updates the branch, which creates a new head and a new run.
-* **(c) A head-pinned merge watcher**: merge only with `gh pr merge
-  --match-head-commit <verified head>` and only after re-running the guard against
-  the then-current `main` (the owner's existing watcher already pins the head SHA).
-  Weaker (a person or script can bypass it); the fallback only for instances that
-  cannot use (a) or (b).
+  proof that a base update makes the pull request unmergeable on the old result. The
+  author then updates the branch, which creates a new head and a new run. **This is
+  the only supported protection and the only one the recommendation depends on.** If
+  G1 fails, the design is not built; there is no fallback.
+* **(c) A head-pinned merge watcher** is kept as defense in depth, not as protection:
+  merge only with `gh pr merge --match-head-commit <verified head>`, after
+  recomputing the authorization digest (section 5.5) against current `main`. It is a
+  procedure; a person or script can bypass it, so it never substitutes for (b).
+* **(a) A merge queue is removed from the design** (round 2, finding 1). A merge
+  group may contain several pull requests **[I]**, while this guard reads one label,
+  one applier, one branch, one cooling period and one manifest. Aggregate comparison
+  of the queued commit against its first parent cannot say which pull request
+  introduced a history change, and requiring the aggregate diff to be exactly the
+  rewrite paths would deny unrelated queued pull requests. Making a queue safe
+  needs either proof that a group holding a rewrite always has one entry, or a guard
+  that enumerates every pull request in the group, reconstructs and verifies each
+  transition in queue order and applies every per-pull-request rule to the one that
+  introduced it. Neither is designed or proved here, so `merge_group` is not
+  a trigger, and a repository that enables a merge queue on `main` must not rely on
+  this guard (T21 asserts the workflow refuses to run under `merge_group`).
 
-The recommendation is (b) plus (c); (a) where available. Without one of them, the
-design must not be built: the rest of the controls assume the compare ran against
-the base that merges.
+### 5.5 What a green check is bound to (round 2, finding 2)
+
+A required check attached to a head SHA cannot prove which mutable pull request
+metadata it saw: the label set, the label's age and applier, the base allow-list. Two
+runs with the same context can finish in either order and a manual rerun of an older
+run is possible; which one branch protection treats as current is **[I]** (gate G2).
+So the design claims only this:
+
+* **Bound to the head SHA and the base:** the content compare, the committed manifest
+  (rule 12), the committed `numbers.json` change and the allowed paths. These are in
+  the head, so a green result for that head is a result for those bytes.
+* **Not bound, enforced at check time and re-enforced at merge time:** label
+  presence, applier, label age and the allow-list.
+
+Controls, none of which is assumed to be sufficient alone:
+
+1. The job reads all of them live from the API (never from the event payload), so a
+   rerun re-evaluates current state.
+2. Concurrency with `cancel-in-progress` (5.1) cancels an overlapping older run.
+3. The job reads the mutable state **twice**, at the start and just before it
+   reports, and fails if the two reads differ (label event id, applier, label
+   present, base tip).
+4. The job writes an **authorization digest** to its summary and check output:
+   `sha256(head, base tip, label event id, applier, label age bucket, allow-list
+   blob id, manifest blob id)`. Nothing in it is a value.
+5. The merge procedure (c) recomputes the digest immediately before merging and
+   refuses unless it equals the digest of the check run it is about to rely on, and
+   the check run is for the exact head. This is the only binding between a success
+   and the live metadata, and it is a procedure, not branch protection.
+6. If G2 shows GitHub does not reliably make the newest run authoritative, the label
+   is described in the README as an **intent record that is verified at merge by the
+   watcher**, not as something a green check revokes. Content safety does not depend
+   on it: a rewrite that reaches the history file has already passed the exact
+   compare, the cap, the manifest and the source policy.
+
+A pull request body edit is not an input to any check: the manifest is a file in the
+head (rule 12).
 
 ## 6. The exact verification
 
@@ -326,25 +374,36 @@ duplicate keys, non-contiguous corrections and two groups sharing a key are in T
     (`--include-hand-kept`) and goes through the manual reviewed route (alternative
     A). Only `api` rows may be replaced.
 11. Every new line is at most 2048 bytes and NEW is within the file cap.
-12. **Manifest.** The pull request body must contain one fenced block headed
-    `history-tombstone manifest`, one line per redacted record: `platform metric
-    as_of_utc source`, followed by `count=N`, `reason=...`, `trigger_date=...`. The
-    guard reads the body live from the API and the compare requires **set equality**
-    between the manifest keys and the replaced keys, `count` equal to both, and the
-    reason and trigger date equal to those in every new tombstone. The body is
-    author-editable; this does not prove honesty, it forces an explicit, reviewable
-    enumeration and an edit after verification reruns the check (`edited`).
+12. **Manifest, committed in the head** (round 2, finding 2). A rewrite pull request
+    adds exactly one new file, `history/redactions/<run-id>.manifest`, where
+    `<run-id>` is the `redact-...` id its tombstones carry. Its content, plain text:
+    one line per redacted record `platform metric as_of_utc source`, then `count=N`,
+    `reason=...`, `trigger_date=...`. It holds no value. The compare requires **set
+    equality** between its keys and the replaced keys, `count` equal to both, and
+    reason and trigger date equal to those in every new tombstone. Because it is in
+    the head, a green check is bound to a particular manifest; the pull request body
+    is not read. Existing manifests may not change or be removed; more than one new
+    manifest, or one outside `history/redactions/`, fails. The manifest stays in the
+    tree as a readable audit trail (keys and reason only).
 13. **Caps.** At most `HISTORY_REWRITE_MAX` records per rewrite (default 500, a
     constant in the BASE script, far below `MAX_REDACT` = 100000 **[V]**) and at most
     10 percent of OLD's records; and hard limits on input size and compare time, so
     the compare cannot exhaust CI (T32). A larger rewrite is split into several
     pull requests (each one visible) or done by the manual route.
-14. **Cooling period.** The last effective `labeled` event must be at least 24 hours
-    old; before that the job fails with the time remaining. After the period the owner
-    re-runs the job by hand (no scheduled trigger can attach to a pull request)
-    **[I]**. Its value is time to notice through GitHub's notifications and the
-    section 11 notice; it does not help against an attacker who controls the owner's
-    notifications.
+14. **Cooling period (a notice, not an authorization).** The last effective `labeled`
+    event must be at least 24 hours old; before that the job fails with the time
+    remaining. After the period the owner re-runs the job by hand (no scheduled trigger
+    can attach to a pull request) **[I]**. It gives time to notice through GitHub's
+    notifications and the section 11 notice. It is not credited as protection against
+    an authorized or compromised account, which can wait 24 hours, and repeated cooled
+    pull requests can still remove all eligible history one cap at a time (section 2).
+    It also lengthens the window in which a refresh pull request can appear, which rule
+    15 handles.
+15. **No open refresh pull request** (round 2, finding 4). In rewrite mode the job
+    lists open pull requests with head `counts/refresh` (`gh pr list --head
+    counts/refresh --state open`, paginated) and **fails if any exist**, so the stale
+    bot pull request is a required pre-merge condition, not a runbook line. The merge
+    procedure (c) repeats the check immediately before merging.
 
 After exit 10 the job also runs `verify-history.sh` on NEW as its own step so the
 failure text is the familiar one.
@@ -361,7 +420,9 @@ failure text is the familiar one.
 * No `continue-on-error`. The one job is what branch protection requires.
 * Failure messages never print values, notes, digests or rows.
 
-## 8. numbers.json and every other file that can retain a redacted value (F2)
+## 8. Known working-tree and deployment copies of a redacted value (F2, round 2 finding 6)
+
+This section lists the copies found, not a proof that there are no others (see G7).
 
 Traced this session:
 
@@ -382,53 +443,69 @@ Traced this session:
   diffs and previews, and git history all keep the old value outside the working
   tree. A tombstone meets the duty in the working tree only (tombstone design,
   decision 6); the claim is not widened here.
+* **Not established:** that no other tracked file (a template, fixture, imported-history
+  input, cache) holds the value. The two-path limit below can therefore stop a
+  rewrite that needs to clean such a copy; that case uses the manual route.
 
-**Allowed paths for a rewrite pull request.** Exactly two, and no others:
+**Allowed changes in a rewrite pull request.** Exactly:
 
-1. `history/social.jsonl` (the rewrite), and
-2. `numbers.json` (optional, atomic with the rewrite).
+1. `history/social.jsonl` (the rewrite),
+2. `numbers.json` (optional, removal only, atomic with the rewrite), and
+3. one new `history/redactions/<run-id>.manifest` (rule 12).
 
-**The numbers rule.** The compare takes `--numbers-old` and `--numbers-new` (base and
-head copies, parsed with `validate-numbers.py` semantics) and requires:
+**One predicate.** A published entry **matches** a replaced record when it has the
+same platform id, the same `count` as the record's `value`, **and** the same `as_of`
+day. The same predicate decides both what must go and what may go:
 
-* NEW numbers equal OLD numbers with zero or more `platforms` entries **removed**
-  (never added, never a changed count, never a changed `as_of`, never another key);
-* an entry may be removed only when it corresponds to a replaced record (platform id
-  equals the record's platform, `count` equals the record's `value`, and the entry's
-  `as_of` day equals the record's day);
-* **no entry may remain** in NEW whose platform and `count` equal a replaced record's
-  platform and value, or whose platform and `as_of` day equal a replaced record's
-  (a surviving copy of the redacted number fails the compare).
+* every matching entry **must** be removed in the same pull request (a surviving
+  matching entry fails the compare);
+* an entry may be removed **only** if it matches a replaced record;
+* NEW `numbers.json` equals OLD with exactly those entries removed: no entry added,
+  no count or `as_of` changed, no other key (parsed with `validate-numbers.py`
+  semantics).
+
+**Repeated counts (round 2, finding 3).** An entry with the same platform and count
+but a different `as_of` day does **not** match: it is the current published fact for
+its own day, not a copy of the redacted record, so it stays. So redacting an older row
+whose count equals the current published count leaves `numbers.json` unchanged, and
+there is no case where an entry can neither stay nor go. (If the owner instead treats
+a coinciding count as retained information, such redactions are refused and use the
+manual route; that is D5's alternative, not the default.)
 
 So redacting the latest `api` row of a platform forces the same pull request to remove
-that platform's entry from `numbers.json`, which takes the number off the published
-page at the next deploy. The next refresh adds a fresh value with a later `as_of`; the
-day's key stays blocked in the history file (tombstone design). Redacting an older row
-leaves `numbers.json` unchanged. The compare has the old values in OLD and prints none.
+that platform's entry, which takes the number off the published page at the next
+deploy. The next refresh adds a fresh value with a later `as_of`; the day's key stays
+blocked in the history file. The compare has the old values in OLD and prints none.
 
 The claim is therefore: **history tombstoning plus atomic removal of the matching
 `numbers.json` entry** in the working tree. The deployed site is cleaned by the next
 deploy; Actions artifacts expire after a day; git history is #621. If the owner
 declines the `numbers.json` rule (D5), the claim narrows to "history tombstoning" only,
-the guard refuses (fails) any pull request whose redacted value is still in
-`numbers.json`, and the runbook makes removing or refreshing the published number a
-prerequisite pull request merged first.
+the guard fails any pull request whose matching entry is still in `numbers.json`, and
+the runbook makes removing or refreshing the published number a prerequisite pull
+request merged first.
 
 ## 9. Interaction with the bot pull request and the refresh
 
-* Before merging a rewrite pull request, close any open `counts/refresh` pull
-  request, or `unmerged-history.sh` makes every later publish run skip with a warning
-  until it is closed **[V]**.
+* A rewrite cannot pass the guard while a `counts/refresh` pull request is open
+  (rule 15), and the merge procedure re-checks it. Otherwise `unmerged-history.sh`
+  makes every later publish run skip with a warning until that pull request is closed
+  **[V]**. That skip is fail-safe for the data but an availability failure: a
+  collaborator who can reopen the bot branch or pull request can hold the refresh
+  down until the owner closes it. After a rewrite lands, an optional, separate,
+  narrowly scoped workflow (D13) closes a stale bot pull request: trigger `push` to
+  `main` when the history file changed, `pull-requests: write` only, no keys, no
+  checkout of pull request code, closes only an open pull request from
+  `counts/refresh` authored by the Actions bot, with a fixed comment.
 * A stale bot pull request merged after the rewrite is not protected by "the guard
   sees it": a base move fires no `synchronize` **[I]**. It is protected by section 5.4
-  (merge queue, strict up-to-date, or the head-pinned watcher re-running the guard
-  against current `main`), under which the stale file is neither an extension of the
+  (strict up-to-date, with the head-pinned watcher as defense in depth), under which the stale file is neither an extension of the
   new `main` nor a valid labeled rewrite and fails. Test T20.
 * The rewrite changes every line after the first tombstone, so a concurrent append
   conflicts. That is the safe failure; the author redoes the redaction on the new base.
-* Optional follow-up, not in the first change: the publish job closes its own stale
-  `counts/refresh` pull request. Rejected for now: write behavior in the job that holds
-  the token, for convenience.
+* Not chosen: the publish job closing its own stale pull request (write behavior in the
+  job that holds the token, for convenience); and teaching the refresh to open a fresh
+  branch on divergence (a larger change to the refresh path).
 
 ## 10. Alternatives considered
 
@@ -472,11 +549,17 @@ Controls that reduce the dependence on repository content:
   change like any other, and follows the dependency cooldown rule.
 * **Detective job on `push` to `main`:** re-runs the compare between
   `github.event.before` and `github.sha` for the history file and `numbers.json`,
-  using the reusable workflow and engine digest **as pinned in the commit before the
-  push** (the pin in `github.event.before`, not the one just merged). A push that
-  changes the pin and the history together is judged by the old pin. This is
-  **post-merge detection**: it shows the change, it does not stop it, and it depends
-  on the governance above. It is not described as independent of guard edits.
+  selecting the reusable workflow and engine digest **recorded in the commit before
+  the push** (the pin in `github.event.before`, not the one just merged). The
+  guarantee is only this: **when the newly merged detective workflow executes
+  honestly, it selects the pin recorded by the pre-push commit.** GitHub runs the
+  workflow definition from the new `main`, so a merged change to that definition can
+  skip the old pin entirely; the old pin is data available to code the new commit
+  controls. This is **post-merge detection** that depends on the governance above and
+  is not independent of guard edits. Independence would need a workflow or dispatch
+  controlled outside the pushed commit (a separate repository, called on a schedule
+  or by `repository_dispatch` with its own credentials), which this design does not
+  add (D7).
 * **Audit record.** On a successful rewrite the detective job writes counts and SHAs
   (base, head, merge) to the job summary and sends them to the instance's existing
   notification path (the mechanism of `docs/token-health.md`: Pushover, Discord or
@@ -493,15 +576,20 @@ changes, not the test.
 
 * **G1 (F1):** Obtain green on head `H` against base `B1`; change `main` to an
   incompatible `B2` without changing `H`; prove the pull request cannot merge on the
-  old result under option (a) or (b) of section 5.4. Also prove whether any base
+  old result under option (b) of section 5.4. Also prove whether any base
   update fires a `pull_request` event.
-* **G2 (F6):** Prove which result branch protection reads for one head SHA after
-  `labeled`, `unlabeled`, a manual rerun of the older run, and a rerun of the newer
-  run. If an `unlabeled` failure cannot reliably revoke approval, adopt the merge queue
-  (the `merge_group` run re-reads the label) or state that the label is an irrevocable
-  intent record once a head has passed.
-* **G3:** `merge_group` behavior (T21): the guard receives the queued commit and its
-  first parent; the pull request number is recoverable from the queue ref.
+* **G2 (F6, round 2 finding 2):** Prove which result branch protection reads for one
+  head SHA when runs overlap or are rerun, for every mutable input: `labeled`,
+  `unlabeled`, a label applied and removed while a run is in progress, an older run
+  finishing after a newer one, a manual rerun of an older run, a change of the
+  allow-list on `main`. Prove that `cancel-in-progress` leaves no success from a
+  cancelled run, that the double read fails on a change, and that the authorization
+  digest differs when any input differs. If the newest metadata evaluation is not
+  reliably authoritative, the label is documented as an intent record verified by the
+  merge procedure (section 5.5 item 6); there is no merge-queue fallback.
+* **G3 (replaced):** a merge queue is not supported. Prove that the workflow does not
+  run under `merge_group` and document that a repository enabling a queue on `main`
+  loses this protection (T21).
 * **G4:** One pull request that changes the guard, the detective workflow, the compare
   script and the engine pin together: prove an unauthorized actor cannot merge it.
   This tests the ruleset, not the presence of a CODEOWNERS file (T23).
@@ -509,21 +597,30 @@ changes, not the test.
   exact response fields used (event name, actor login, created_at) (T24, T25).
 * **G6:** Whether administrator bypass can be disabled for this repository
   configuration.
+* **G7 (round 2, finding 6):** Inventory every tracked consumer and generated input of
+  a history value: `git grep` the engine and instance template for readers of the
+  history file and `numbers.json` (`report.py`, `imported_export.py`, the kit and site
+  build), the instance's tracked data and fixtures, caches and preview artifacts.
+  Output: a table of copies and whether the guard's path set covers them. Absence of a
+  copy is not claimed unless the inventory shows it.
 
 ## 13. Recommendation
 
 1. **Build it only after G1 and G2 pass.** The exact content compare is the control;
    the label is a gate on it. Never a label alone (alternative F).
-2. New `history-guard.yml` (separate workflow, `pull_request` and `merge_group`,
-   read-only token, one job, scripts and pin from BASE) and an engine subcommand
+2. New `history-guard.yml` (separate workflow, `pull_request` only, read-only token,
+   one job, scripts and pin from BASE) and an engine subcommand
    `counts history-compare` with exit 0 / 10, enforcing append-only on every pull
    request (closes the gap in section 1) with the one labeled exception.
 3. Label `history-tombstone`; applier on the BASE-committed allow-list; head branch
    `redact/*` in the same repository, never `counts/refresh`; `api` rows only;
-   manifest equals the replaced set; cap of 500 and 10 percent; 24 hour cooling;
-   changed paths `history/social.jsonl` and, atomically, `numbers.json` (removal only).
-4. Strict up-to-date plus a head-pinned watcher (or a merge queue); the detective push
-   job and off-GitHub notice; the generic logic in GYST.
+   a committed manifest equal to the replaced set; cap of 500 and 10 percent; no open
+   `counts/refresh` pull request; 24 hour cooling as a notice only; changed paths
+   `history/social.jsonl`, one new manifest and, atomically, `numbers.json` (removal
+   of the matching entry only).
+4. **Strict up-to-date is the protection; a merge queue is not used.** The head-pinned
+   watcher recomputes the authorization digest as defense in depth. The detective push
+   job (post-merge detection) and off-GitHub notice; the generic logic in GYST.
 5. For any instance with a second person: require independent approval of `/history/`
    and the guard paths by ruleset. **For a sole owner the design cannot defend against
    their own account;** it prevents mistakes and bounds and records the damage, and
@@ -584,13 +681,13 @@ accept it and seeing the test go red):
   mode-only change: all fail.
 * T32: exactly `HISTORY_REWRITE_MAX` and one more; a file at the size cap; wall-clock
   and memory limits prove the compare cannot be a CI exhaustion attack.
-* T34 (F4): manifest missing, extra key, missing key, wrong count, wrong reason, edited
-  after verification (rerun on `edited`).
+* T34 (F4): manifest file missing, extra key, missing key, wrong count, wrong reason.
 
 Workflow and gates:
 
-* T13: triggers are exactly `pull_request` with the six types and `merge_group`, never
-  `pull_request_target`; no `write`; no secret; no `continue-on-error`; actions pinned
+* T13: triggers are exactly `pull_request` with the five types, never
+  `merge_group` or `pull_request_target`; concurrency is per pull request with
+  `cancel-in-progress`; no `write`; no secret; no `continue-on-error`; actions pinned
   by SHA; scripts and `engine.lock` from a BASE checkout; one job; one label constant.
 * T14: the label scenarios on the scratch repository: removed after green, added after
   push, applied by a Bot, by a triage-only user, by a listed user, a look-alike label
@@ -606,7 +703,10 @@ Workflow and gates:
   the summary).
 * T19: the existing refresh tests pass unchanged (publish check still `cmp`).
 * T20 (F1): the G1 scenario, as a repeatable script.
-* T21 (F1): the G3 merge-queue scenario.
+* T21 (F1, round 2): the workflow has no `merge_group` trigger and refuses to run if
+  invoked under one; a two-pull-request group where both touch an allowed file, and a
+  group where an unrelated pull request changes another path, are recorded as the
+  reason the queue is unsupported (proved on the scratch repository, not built).
 * T23 (F3): the G4 scenario.
 * T24 (F5): issue events spanning more than one page; the last matching event on the
   last page; a truncated page chain fails.
@@ -614,6 +714,21 @@ Workflow and gates:
   custom role; a machine account typed `User` and not on the allow-list.
 * T28 (F6): manual rerun ordering and duplicate check-context names on one head SHA;
   no other workflow can emit the required context.
+* T35 (round 2, finding 2): overlapping runs and metadata changes: label removed or
+  applied during a run, an older run finishing last, a manual rerun of an older run;
+  the double read fails on a change; the authorization digest differs for each changed
+  input; the manifest is read from the head, and a pull request body edit changes
+  nothing.
+* T36 (round 2, finding 3): a platform with `count=1000, as_of=2026-11-23` published
+  and an older row `count=1000, as_of=2026-01-10` redacted: `numbers.json` unchanged
+  passes; removing the current entry fails; and the same-count same-day entry must be
+  removed and fails if it stays.
+* T37 (round 2, finding 4): a rewrite fails while an open `counts/refresh` pull request
+  exists (including one beyond the first API page); passes when none exists; the
+  merge procedure re-checks.
+* T38 (round 2, finding 1): the manifest file rules: a second manifest, one outside
+  `history/redactions/`, an existing manifest changed or removed, a manifest with a
+  value, a manifest not equal to the replaced set.
 * T29 (F8): the wrapper's exit-status mapping (section 6.1).
 
 ## 15. Open owner decisions
@@ -648,12 +763,26 @@ round 1; NEW is added by round 1.
   Recommended: **accept and say so in the README**; the alternative is a second,
   low-privilege approver account.
 * **D10. (NEW)** Per-rewrite cap: 500 records and 10 percent. Recommended: **yes**.
-* **D11. (NEW)** A 24 hour cooling period from the label. Recommended: **yes** (the
-  cost is a day per redaction; urgent legal removals use the manual route).
-* **D12. (NEW)** Merge protection (section 5.4): option (a), (b) plus (c), or (c) alone.
-  Recommended: **(b) plus (c)**; (a) where a queue exists. No option means do not build.
+* **D11. (NEW, MOVED in round 2)** A 24 hour cooling period from the label, described
+  as a **notice only**, not as protection. Recommended: **yes** (the cost is a day per
+  redaction; urgent legal removals use the manual route).
+* **D12. (NEW, MOVED in round 2)** Merge protection is strict up-to-date (b), with the
+  head-pinned watcher (c) as defense in depth. **Merge queue (a) is removed** (multi-PR
+  merge groups, section 5.4). Recommended: **(b) plus (c)**. If G1 fails, do not build.
+* **D13. (NEW, round 2)** The optional separate stale-refresh closer workflow
+  (section 9). Recommended: **yes**, as a follow-up change after the guard. The guard
+  already blocks a rewrite while a refresh pull request is open.
+* **D14. (NEW, round 2)** The manifest is a committed file, kept in the tree as an
+  audit trail (keys, reason, trigger date, no value), not text in the pull request body.
+  Recommended: **yes**.
+* **D5 (further MOVED).** Matching published entry means the same platform, count and
+  `as_of` day for both mandatory and permitted removal; a same-count older row leaves
+  `numbers.json` unchanged. Recommended: **yes**; the alternative is to refuse such
+  redactions.
 
 ## 16. Review round 1 (Daybreak)
+
+Rows F1 and F6 mention a merge queue; round 2 (section 17, finding 1) removed it.
 
 | Finding | Severity | What changed, or why not |
 | --- | --- | --- |
@@ -667,7 +796,21 @@ round 1; NEW is added by round 1.
 | F8 exit-code handling | Medium | Section 6.1: `rc=0; ... \|\| rc=$?` then a `case` accepting only 0 and 10; 10 reserved in the CLI contract; 124-127, 137, 143 are failures. T29. |
 | F9 canonicality conflated | Low | Section 6.3 rule 6 split by mode: unchanged prefix byte-identical, appended lines canonical, reconstructed rewrite lines canonical, legacy bytes only in an identical prefix. T30. |
 
-## 17. Not covered
+## 17. Review round 2 (Daybreak)
+
+| Finding | Severity | What changed, or why not |
+| --- | --- | --- |
+| 1. A merge group can contain several pull requests | Critical | Applies. The merge queue is **removed** from the design and the recommendation (5.4, D12): the guard reads one label, applier, branch, cooling period and manifest and cannot attribute an aggregate diff to one pull request, and an exact-paths rule on the aggregate would deny unrelated queued pull requests. `merge_group` is no longer a trigger (T13), the workflow refuses to run under it (T21), and G3 now proves that and documents that enabling a queue on `main` loses this protection. Strict up-to-date (b) is the only protection, with the watcher (c) as defense in depth; if G1 fails nothing is built. |
+| 2. A green check is not bound to the body or current label state | High | Applies. The manifest moved out of the pull request body into a committed file in the head (rule 12), so a green result is bound to a particular manifest; the body is read by nothing and `edited` is no longer a trigger. The label, its age, the applier and the allow-list cannot be bound to a head SHA, so section 5.5 states what the check is and is not bound to, adds per-pull-request concurrency with `cancel-in-progress`, a double read of the mutable state, and an authorization digest that the merge procedure recomputes before merging. G2 now covers overlapping runs, manual reruns and every mutable input; if GitHub does not make the newest evaluation authoritative the label is documented as an intent record verified at merge. T35. This is a procedure, not branch protection, and the spec says so. |
+| 3. `numbers.json` rules can make an older-row redaction impossible | Medium | Applies. One predicate (same platform, count and `as_of` day) now decides both mandatory and permitted removal (section 8). A same-count older row leaves `numbers.json` unchanged because the current entry is the published fact for its own day; the alternative (refuse such redactions) is D5's other answer. T36. |
+| 4. An open stale bot pull request can hold the refresh down | Medium | Applies. Rule 15 makes "no open `counts/refresh` pull request" a required condition of the guard in rewrite mode, repeated by the merge procedure. An optional separate closer workflow with `pull-requests: write` only handles the post-merge case (D13, section 9). T37. The hold by someone who can reopen the branch is stated as an availability limit. |
+| 5. The detective workflow cannot enforce use of the pre-push pin | Medium | Applies. Section 11 now states only: when the newly merged detective workflow executes honestly, it selects the pin recorded by the pre-push commit. Independence would need an externally controlled workflow or dispatch, which is not added (D7). |
+| 6. "Every other file" is not established | Low | Applies. Section 8 is renamed "Known working-tree and deployment copies"; it says absence of other copies is not established and that the two-path limit can stop a rewrite that must clean another copy (manual route). New gate G7 inventories tracked consumers and generated inputs. |
+
+Round 1 assessment items taken: D11 is a notice, not authorization (rule 14, D11); D12
+no longer offers a merge queue or the watcher alone; D5's predicate is corrected.
+
+## 18. Not covered
 
 * Rewriting git history of the instance repository (#621; a tombstone meets the duty
   in the working tree only).
