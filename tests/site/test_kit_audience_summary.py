@@ -15,12 +15,15 @@ from typing import Any
 
 import pytest
 from pydantic import ValidationError
-from test_kit_build import GATED_FILE, build, gated_doc, make_config
+from test_kit_build import build, gated_doc, make_config
 
 from reach_around.config.kit import KitConfig
+from reach_around.site.kit import GATED_FILE
 
 
-def metric(platform: str, value: int, as_of: str = "2027-03-05", **kw: Any) -> dict:
+def metric(
+    platform: str, value: int, as_of: str = "2027-03-05", **kw: Any
+) -> dict[str, Any]:
     return {
         "platform": platform,
         "label": "Followers",
@@ -30,7 +33,7 @@ def metric(platform: str, value: int, as_of: str = "2027-03-05", **kw: Any) -> d
     }
 
 
-def doc(metrics: list[dict], **kw: Any) -> dict[str, Any]:
+def doc(metrics: list[dict[str, Any]], **kw: Any) -> dict[str, Any]:
     return gated_doc(metrics=metrics, **kw)
 
 
