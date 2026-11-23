@@ -1,8 +1,11 @@
 # SPDX-License-Identifier: Apache-2.0
 """Browser checks for the media kit pages. Run with ``pytest --run-visual``.
 
-Headless only, on loopback. The gate form is never submitted, and every request
-the page makes must go to the loopback server (no third-party request).
+Headless only, on loopback. The gate form is never submitted. The contract for
+the page tests: every request goes to the loopback server, plus the one Turnstile
+host (``challenges.cloudflare.com``), which the gated page loads by design and
+which the test answers locally with an empty stub so nothing leaves the machine.
+Any other host fails the test.
 """
 
 from __future__ import annotations
