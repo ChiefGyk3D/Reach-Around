@@ -24,6 +24,10 @@ from reach_around.funnel.floor import Floored as Floored
 from reach_around.funnel.floor import _suppress as _suppress
 from reach_around.funnel.floor import floor_cells as floor_cells
 from reach_around.funnel.gaps import coverage_for_window
+from reach_around.funnel.groups import assignments as group_assignments
+from reach_around.funnel.groups import rollup as group_rollup
+from reach_around.funnel.groups import rollup_digest as group_rollup_digest
+from reach_around.funnel.groups import text_lines as group_text_lines
 from reach_around.funnel.private_analytics import private_lines
 from reach_around.funnel.social import social_lines
 
@@ -724,6 +728,7 @@ def _build_report(
     as_of: date | None = None,
     diagnostics: dict[str, Any] | None = None,
     display_zone: str | None = None,
+    groups: Mapping[str, str] | None = None,
 ) -> tuple[dict[str, Any], str]:
     """The report and the digest of the exact inputs behind its cell tables."""
     if floor < FLOOR:
@@ -1165,6 +1170,22 @@ def _build_report(
         top,
         "click_events" in export.present,
     )
+    group_unavailable = (
+        "not_in_export"
+        if "click_events" not in export.present
+        else "withheld"
+        if "withheld" in (links_section["state"], social_icons_section["state"])
+        else None
+    )
+    group_printed = {
+        "link": links_section["rows"],
+        "social_icon": social_icons_section["rows"],
+    }
+    group_section = (
+        None
+        if groups is None
+        else group_rollup(groups, group_printed, group_unavailable)
+    )
     unsafe = any(
         _suppress(cells, floor).dropped
         for cells in (pages, sources, places, *cuts.values())
@@ -1179,7 +1200,24 @@ def _build_report(
     blob = json.dumps(
         {"inputs": inputs, "public": report}, sort_keys=True, separators=(",", ":")
     )
-    return report, hashlib.sha256(blob.encode("utf-8")).hexdigest()
+    digest = hashlib.sha256(blob.encode("utf-8")).hexdigest()
+    if group_section is not None:
+        # After the core digest, which stays the legacy value: a release recorded
+        # without groups stays repeatable. The rollup digest is derived from
+        # printed material only and never touches the private core digest.
+        group_section["rollup_digest"] = group_rollup_digest(
+            group_assignments(groups or {}, group_printed),
+            group_section,
+            {
+                "floor": floor,
+                "top": top,
+                "period": report["period"],
+                "offset": offset,
+                "kind": period,
+            },
+        )
+        report["groups"] = group_section
+    return report, digest
 
 
 # ---- text -----------------------------------------------------------------
@@ -1528,6 +1566,8 @@ def render_text(report: dict[str, Any]) -> str:
     _table("Link clicks by link", report["links"], lines)
     _table("Social icon clicks by icon", report["social_icons"], lines)
     _table("Link clicks by source -> link", report["click_sources"], lines)
+    if "groups" in report:
+        lines.extend(group_text_lines(report["groups"]))
     if report["click_sources"].get("links_withheld"):
         lines.append(
             "  A link's breakdown is shown only when every part is at or above the "
