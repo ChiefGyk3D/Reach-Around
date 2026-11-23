@@ -641,6 +641,8 @@ KNOWN_FIELDS: frozenset[str] = frozenset(
         "refresh_within_days",
         "rel_me",
         "reposts",
+        "retain_days",
+        "retain_warn_days",
         "retention_days",
         "reveal",
         "robots",
