@@ -24,6 +24,10 @@ from reach_around.site.build import build_site
 
 pytestmark = pytest.mark.visual
 
+# The gated page loads the Turnstile script by design (#706). The test answers it
+# locally so nothing leaves the machine, and still fails on any other host.
+TURNSTILE_HOST = "challenges.cloudflare.com"
+
 
 class _Quiet(SimpleHTTPRequestHandler):
     def log_message(self, format: str, *args: object) -> None:
@@ -66,8 +70,14 @@ def test_kit_pages_fit_the_screen_and_make_no_outside_request(
     page = context.new_page()
     hosts: set[str] = set()
     page.on("request", lambda r: hosts.add(r.url.split("/")[2]))
+    page.route(
+        f"https://{TURNSTILE_HOST}/**",
+        lambda route: route.fulfill(
+            status=200, content_type="text/javascript", body=""
+        ),
+    )
     page.goto(site + path)
-    assert hosts == {site.split("/")[2]}
+    assert hosts == {site.split("/")[2], TURNSTILE_HOST}
     assert page.evaluate(
         "document.documentElement.scrollWidth <= document.documentElement.clientWidth"
     )

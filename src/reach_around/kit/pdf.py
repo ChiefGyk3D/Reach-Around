@@ -226,6 +226,8 @@ def chromium_renderer(
             "--proxy-bypass-list=<-loopback>",
             f"--user-data-dir={work / 'profile'}",
             "--no-pdf-header-footer",
+            # recent Chromium tags PDFs by default; the scrub refuses tagged output
+            "--disable-pdf-tagging",
             f"--print-to-pdf={out}",
             page.as_uri(),
         ]
