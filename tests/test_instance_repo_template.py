@@ -967,11 +967,167 @@ def _fake_docker(tmp_path: Path, body: str) -> str:
     docker = bin_dir / "docker"
     docker.write_text(
         '#!/bin/bash\nif [ "$1" = "--version" ]; then'
-        ' echo "Docker version 1"; exit 0; fi\n' + body,
+        ' echo "Docker version 1"; exit 0; fi\n'
+        # The image is already present: these tests are about the check run.
+        'if [ "$1" = "image" ] && [ "$2" = "inspect" ]; then exit 0; fi\n' + body,
         encoding="utf-8",
     )
     docker.chmod(0o755)
     return f"{bin_dir}:/usr/bin:/bin"
+
+
+def _fake_runtime(
+    tmp_path: Path, name: str, run_body: str, *, cached: bool, pull_ok: bool = True
+) -> tuple[str, Path]:
+    """A `docker` or `podman` that models an image cache.
+
+    `image inspect` succeeds only when ``cached`` or after a pull. `pull`
+    writes progress to stderr (as a fresh runner does) and records itself.
+    Any other call is the check run and executes ``run_body``; it fails
+    with status 125 if the image was never pulled.
+    """
+    bin_dir = tmp_path / "fakebin"
+    bin_dir.mkdir(exist_ok=True)
+    state = tmp_path / "pulled"
+    calls = tmp_path / "calls.txt"
+    if cached:
+        state.write_text("", encoding="utf-8")
+    pull = (
+        f'echo "Trying to pull image..." >&2\ntouch {state}\nexit 0\n'
+        if pull_ok
+        else 'echo "pull failed: denied" >&2\nexit 1\n'
+    )
+    script = (
+        "#!/bin/bash\n"
+        f'echo "$1" >> {calls}\n'
+        'if [ "$1" = "--version" ]; then'
+        f' echo "{name} version 1"; exit 0; fi\n'
+        f'if [ "$1" = "image" ] && [ "$2" = "inspect" ]; then\n'
+        f"  [ -e {state} ]; exit\n"
+        "fi\n"
+        f'if [ "$1" = "pull" ]; then {pull}fi\n'
+        f'[ -e {state} ] || {{ echo "image not present" >&2; exit 125; }}\n' + run_body
+    )
+    exe = bin_dir / name
+    exe.write_text(script, encoding="utf-8")
+    exe.chmod(0o755)
+    # Only this runtime may be found: link the system tools except any real
+    # docker or podman, so the test is the same on a host that has either.
+    tools = tmp_path / "tools"
+    tools.mkdir(exist_ok=True)
+    for tool in (
+        "bash",
+        "env",
+        "mktemp",
+        "id",
+        "dirname",
+        "basename",
+        "grep",
+        "cat",
+        "rm",
+        "sed",
+        "tr",
+        "printf",
+        "touch",
+        "echo",
+        "head",
+    ):
+        found = shutil.which(tool, path="/usr/bin:/bin")
+        if found and not (tools / tool).exists():
+            (tools / tool).symlink_to(found)
+    return f"{bin_dir}:{tools}", calls
+
+
+@pytest.mark.parametrize("runtime", ["docker", "podman"])
+def test_check_config_pulls_a_missing_image_and_ignores_pull_progress(
+    tmp_path: Path, runtime: str
+) -> None:
+    root = _copy_template(tmp_path)
+    path, calls = _fake_runtime(
+        tmp_path, runtime, 'echo "site.yaml is valid."\n', cached=False
+    )
+    result = _run(root, "check-config.sh", path=path)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "site.yaml is valid.\n"
+    assert result.stderr == ""
+    assert "pull" in calls.read_text(encoding="utf-8").split()
+
+
+@pytest.mark.parametrize("runtime", ["docker", "podman"])
+def test_check_config_skips_the_pull_when_the_image_is_present(
+    tmp_path: Path, runtime: str
+) -> None:
+    root = _copy_template(tmp_path)
+    path, calls = _fake_runtime(tmp_path, runtime, 'echo "ok"\n', cached=True)
+    assert _run(root, "check-config.sh", path=path).returncode == 0
+    assert "pull" not in calls.read_text(encoding="utf-8").split()
+
+
+@pytest.mark.parametrize("runtime", ["docker", "podman"])
+def test_check_config_invalid_config_on_a_fresh_runner_exits_2(
+    tmp_path: Path, runtime: str
+) -> None:
+    root = _copy_template(tmp_path)
+    path, _ = _fake_runtime(
+        tmp_path, runtime, 'echo "site.yaml has 1 problem."\nexit 2\n', cached=False
+    )
+    result = _run(root, "check-config.sh", path=path)
+    assert result.returncode == 2
+    assert result.stdout == "site.yaml has 1 problem.\n"
+
+
+@pytest.mark.parametrize("runtime", ["docker", "podman"])
+def test_check_config_engine_crash_on_a_fresh_runner_still_fails_closed(
+    tmp_path: Path, runtime: str
+) -> None:
+    root = _copy_template(tmp_path)
+    path, _ = _fake_runtime(tmp_path, runtime, "echo boom >&2\nexit 1\n", cached=False)
+    result = _run(root, "check-config.sh", path=path)
+    assert result.returncode == 3
+    assert "could not run the check" in result.stderr
+    assert result.stdout == ""
+
+
+@pytest.mark.parametrize("runtime", ["docker", "podman"])
+def test_check_config_stderr_from_the_run_itself_still_fails_closed(
+    tmp_path: Path, runtime: str
+) -> None:
+    root = _copy_template(tmp_path)
+    path, _ = _fake_runtime(
+        tmp_path,
+        runtime,
+        'echo "warning" >&2\necho "site.yaml is valid."\n',
+        cached=True,
+    )
+    result = _run(root, "check-config.sh", path=path)
+    assert result.returncode == 3
+    assert "could not run the check" in result.stderr
+
+
+@pytest.mark.parametrize("runtime", ["docker", "podman"])
+def test_check_config_fails_clearly_when_the_pull_fails(
+    tmp_path: Path, runtime: str
+) -> None:
+    root = _copy_template(tmp_path)
+    path, _ = _fake_runtime(
+        tmp_path, runtime, 'echo "valid"\n', cached=False, pull_ok=False
+    )
+    result = _run(root, "check-config.sh", path=path)
+    assert result.returncode == 3
+    assert "could not pull the pinned engine image" in result.stderr
+    assert result.stdout == ""
+
+
+def test_check_config_pull_and_run_use_the_same_pinned_digest(tmp_path: Path) -> None:
+    root = _copy_template(tmp_path)
+    log = tmp_path / "argv.txt"
+    path, _ = _fake_runtime(
+        tmp_path, "podman", f'printf "%s\\n" "$@" > {log}\necho ok\n', cached=False
+    )
+    assert _run(root, "check-config.sh", path=path).returncode == 0
+    digest = re.search(r"@sha256:[0-9a-f]{64}", (root / "engine.lock").read_text())
+    assert digest is not None
+    assert digest.group(0) in " ".join(_argv(log))
 
 
 def _recording_docker(tmp_path: Path, reply: str = "ok") -> tuple[str, Path]:
