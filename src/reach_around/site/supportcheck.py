@@ -60,7 +60,7 @@ _QR_TAG_ATTRS = {
     "summary": frozenset(),
     "img": frozenset({"class", "src", "alt", "width", "height"}),
 }
-_QR_SRC = re.compile(r"qr-[1-9][0-9]?\.svg")
+_QR_SRC = re.compile(r"qr-[1-9][0-9]?-[0-9a-f]{16}\.svg")
 _QR_SUMMARY = "Show QR code"
 # The one SVG the build writes for a QR code: a fixed shape and nothing else.
 _QR_SVG = re.compile(

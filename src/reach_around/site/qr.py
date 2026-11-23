@@ -11,6 +11,8 @@ independent reader, so a wrong table fails there.
 
 from __future__ import annotations
 
+import hashlib
+
 # version -> (first group blocks, data codewords each, second group blocks,
 # data codewords each, error codewords per block)
 _BLOCKS: dict[int, tuple[int, int, int, int, int]] = {
@@ -301,3 +303,14 @@ def qr_svg(text: str) -> str:
         f'shape-rendering="crispEdges"><rect width="{full}" height="{full}" '
         f'fill="{TILE}"/><path fill="{INK}" d="{"".join(parts)}"/></svg>\n'
     )
+
+
+def qr_file_name(position: int, address: str) -> str:
+    """The file name for a QR code: its position and a digest of its address.
+
+    A name that follows the payload means a cached file can never be served
+    for a different address: a changed address is a new name, so the files can
+    be cached forever while the page itself revalidates.
+    """
+    digest = hashlib.sha256(address.encode("ascii")).hexdigest()[:16]
+    return f"qr-{position}-{digest}.svg"

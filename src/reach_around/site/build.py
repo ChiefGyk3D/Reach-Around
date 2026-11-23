@@ -85,7 +85,7 @@ from reach_around.site.overrides import (
 from reach_around.site.platforms import platform_rows
 from reach_around.site.privacy import collected_items, intro_text, sets_cookies
 from reach_around.site.qr import BORDER as QR_BORDER
-from reach_around.site.qr import qr_matrix, qr_svg
+from reach_around.site.qr import qr_file_name, qr_matrix, qr_svg
 from reach_around.site.redirects import render_redirects
 from reach_around.site.robots import render_robots
 from reach_around.site.supportcheck import check_qr_svg, check_support_html
@@ -698,7 +698,7 @@ def _support_qr(config: SiteConfig, blocks: Sequence[Block]) -> dict[str, _QrFil
             check_qr_svg(svg, coin.address)
             modules = len(qr_matrix(coin.address)) + 2 * QR_BORDER
             found[f"{block.id}-addr-{i}"] = _QrFile(
-                f"qr-{n}.svg", modules * _QR_PIXELS, svg
+                qr_file_name(n, coin.address), modules * _QR_PIXELS, svg
             )
     return found
 
@@ -1299,8 +1299,14 @@ def build_site(
         routes = {}
     if socials is not None or routes:
         files[Path("_redirects")] = render_redirects(socials, routes).encode("ascii")
+    # A QR file's name carries a digest of its address, so it is as safe to
+    # cache forever as a fingerprinted asset; the support page revalidates.
+    qr_published = {
+        (Path("support") / f.name).as_posix()
+        for f in _support_qr(config, support_blocks).values()
+    }
     immutable, revalidate = cache_patterns(
-        published, {path.as_posix() for path in named.hashed}
+        published, {path.as_posix() for path in named.hashed} | qr_published
     )
     files[Path("_headers")] = render_headers(
         path_extras={
