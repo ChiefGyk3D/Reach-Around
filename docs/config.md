@@ -1140,6 +1140,7 @@ end. Text must be quoted if YAML would read it as a number.
 | `imported_history_public` | true or false | `false` | `true` shows the imported-history block on the public page and public PDF as well; needs `imported_history` |
 | `disclosure` | text | none | a short statement, at most 500 characters; gated; see the note below |
 | `turnstile_site_key` | text | none | public key of the Turnstile widget on the gate form; 1 to 64 letters, digits, `-` or `_`. Without it the form has an empty widget slot and the build warns |
+| `public_pdf` | https URL | none | where you published the public PDF (`kit pdf --public`); adds a "Download the PDF" button to the first screen of the public kit page. The page, the gated page and both PDFs never print the URL itself, and the PDFs drop the buttons. Without it there is no button |
 | `unlock_link` | true or false | `false` | v1 has no emailed unlock link, so `true` is refused with a clear error until it exists |
 
 A **metric** is one headline number: `platform` (a platform name such as
@@ -1226,6 +1227,7 @@ nothing is printed.
 | `title`, `about`, `photo`, `contact`, `tags`, `metrics`, the unified total | public |
 | `partners`, `case_studies`, `services`, `rates`, `engagement`, `demographics`, `disclosure`, `inquiry`, `testimonials` | gated (only after the gate) |
 | `turnstile_site_key` | public (it ships in the gate form; the key is public by design) |
+| `public_pdf` | public (it is a link on the first screen of the public page) |
 | `unlock_link` | private (configuration, never shown) |
 
 The public half therefore shows the header and the headline numbers and nothing

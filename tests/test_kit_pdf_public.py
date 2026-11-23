@@ -81,6 +81,7 @@ def test_the_public_pdf_has_the_public_text_and_the_valid_as_of_line(
         "Followers",
         "Subscribers",
         "4,600",
+        "Unique people are somewhere between 3,400 and 4,600.",
         "2027-03-01",
         "Valid as of 2027-03-10 (UTC)",
     ):
@@ -291,6 +292,7 @@ def test_a_gated_value_equal_to_public_analytics_is_allowed(
         "Twitch Followers 1,200 2027-03-01 YouTube Subscribers 3,400 2027-03-05 "
         "Twitch analytics Synced with Example Social API on 2027-03-08 "
         "Followers 12.5k +4.3% last 30 days Example views 1.3M "
+        "Unique people are somewhere between 3,400 and 4,600. "
         f"4,600 {public_value}"
     )
 
@@ -314,6 +316,7 @@ def test_a_demographic_platform_name_is_public_vocabulary_in_the_pdf_guard() -> 
         "Example Creator media kit A fake creator used in tests. "
         "Streams games & talks. "
         "Twitch Followers 1,200 2027-03-01 YouTube Subscribers 3,400 2027-03-05 "
+        "Unique people are somewhere between 3,400 and 4,600. "
         "4,600 Kick Followers 12,460 Twitch analytics "
         "Synced with Example Social API on 2027-03-08 "
         "Followers 12.5k +4.3% last 30 days"
@@ -438,6 +441,7 @@ def test_a_renderer_that_drops_the_valid_as_of_line_fails(tmp_path: Path) -> Non
                     "Twitch Followers 1,200 Hand-kept Typed by the owner 2027-03-01",
                     "YouTube Subscribers 3,400 Hand-kept Typed by the owner 2027-03-05",
                     "4,600",
+                    "Unique people are somewhere between 3,400 and 4,600.",
                     "Hand-kept Weakest label among the numbers added",
                     LEGEND_HEADING,
                     *LEGEND_SENTENCES,

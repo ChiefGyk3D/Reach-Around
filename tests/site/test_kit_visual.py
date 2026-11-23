@@ -239,3 +239,67 @@ def test_the_number_tables_stack_so_label_method_and_date_are_readable(
     finally:
         server.shutdown()
         server.server_close()
+
+
+def _numbers_page(browser: Browser, site: str, width: int) -> object:
+    context = browser.new_context(
+        viewport={"width": width, "height": 900}, reduced_motion="reduce"
+    )
+    page = context.new_page()
+    # the gate script is third-party and not under test here
+    page.route(
+        "**/*",
+        lambda route: (
+            route.continue_() if route.request.url.startswith(site) else route.abort()
+        ),
+    )
+    page.goto(site + "/kit/")
+    return page
+
+
+def test_numbers_section_uses_the_full_content_width_at_1440(
+    browser: Browser, site: str
+) -> None:
+    """#704: the numbers table sat in a narrow right column and wrapped the
+    Source pill, the method line and the date word by word."""
+    page = _numbers_page(browser, site, 1440)
+    kit = page.locator(".kit-deck-intro").bounding_box()  # type: ignore[attr-defined]
+    numbers = page.locator(".kit-numbers").bounding_box()  # type: ignore[attr-defined]
+    assert kit and numbers
+    assert numbers["width"] >= kit["width"] - 1
+    # the first screen sits above the numbers, not beside them
+    first = page.locator(".kit-first").bounding_box()  # type: ignore[attr-defined]
+    assert first and first["y"] + first["height"] <= numbers["y"] + 1
+    lines = page.evaluate(  # type: ignore[attr-defined]
+        """() => {
+          const count = (el) => el.getClientRects().length;
+          const rect = (el) => el.getBoundingClientRect();
+          const rows = [...document.querySelectorAll('.kit-numbers tbody tr')];
+          return rows.map((tr) => ({
+            pill: count(tr.querySelector('.kit-trust')),
+            pillHeight: rect(tr.querySelector('.kit-trust')).height,
+            lineHeight: parseFloat(
+              getComputedStyle(tr.querySelector('.kit-trust')).lineHeight) || 20,
+            asOfHeight: rect(tr.querySelector('td[data-label="As of"] time')).height,
+            methodWidth: rect(tr.querySelector('.kit-method')).width,
+          }));
+        }"""
+    )
+    assert lines
+    for row in lines:
+        assert row["pill"] == 1
+        assert row["pillHeight"] < row["lineHeight"] * 2
+        # one line of date: well under two text lines
+        assert row["asOfHeight"] < 30
+        assert row["methodWidth"] >= 160
+
+
+def test_numbers_stay_stacked_cards_on_a_phone(browser: Browser, site: str) -> None:
+    for width in (320, 390):
+        page = _numbers_page(browser, site, width)
+        row = page.locator(".kit-numbers tbody tr").first  # type: ignore[attr-defined]
+        assert row.evaluate("e => getComputedStyle(e).display") == "block"
+        assert page.evaluate(  # type: ignore[attr-defined]
+            "document.documentElement.scrollWidth"
+            " <= document.documentElement.clientWidth"
+        )

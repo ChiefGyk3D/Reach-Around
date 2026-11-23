@@ -801,6 +801,24 @@ def _is_stale(
     return (today - as_of).days > limit
 
 
+# The first-screen range line (spec 6.5, decision 4). Both bounds are plain
+# arithmetic on the numbers the total already adds up; never one deduplicated
+# figure. NEW PUBLIC STRING: marked in the PR for Codex authoring.
+RANGE_SENTENCE = "Unique people are somewhere between {low} and {high}."
+
+
+def range_text(metrics: list[ResolvedMetric], total: UnifiedTotal) -> str | None:
+    """The range line, or None when fewer than two numbers are added up (one
+    number has no range). A set cannot be smaller than its largest member, so
+    the largest counted number is the lower bound and the total the upper."""
+    if total.total is None or total.counted < 2:
+        return None
+    counted = [m.value for m in metrics if m.in_total and m.value is not None]
+    return RANGE_SENTENCE.format(
+        low=shown_count(max(counted)), high=shown_count(total.total)
+    )
+
+
 def _total(
     total: UnifiedTotal,
     metrics: list[ResolvedMetric],
@@ -827,6 +845,7 @@ def _total(
         "trust": trust,
         "stale": stale,
         "value": shown_count(total.total),
+        "range_text": range_text(metrics, total),
         "counted": total.counted,
         "oldest": min(dates).isoformat() if dates else "",
         "mixed": len({classify_era(d, live_day) for d in dates} - {"unknown"}) > 1,
@@ -1032,6 +1051,7 @@ def _content(
         "photo": projection["photo"],
         "contact": projection["contact"],
         "tags": projection["tags"],
+        "public_pdf": projection["public_pdf"],
         "metrics": _metric_rows(metrics, config, today, live_day),
         "analytics": _analytics_rows(projection["analytics"], today, config),
         "recent_posts": posts,

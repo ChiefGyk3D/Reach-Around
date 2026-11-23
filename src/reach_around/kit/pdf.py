@@ -451,6 +451,8 @@ def _expected_text(
     total = _total(unified_total(resolved), resolved, None, config)
     if total is not None:
         found.append(("the metric total", total["value"]))
+        if total["range_text"]:
+            found.append(("the audience range", total["range_text"]))
         text = _trust_text(total["trust"])
         if text:
             labeled = True
