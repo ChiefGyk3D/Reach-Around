@@ -158,6 +158,19 @@ trap 'rm -rf "$work"' EXIT
 stdout_file="$work/stdout"
 stderr_file="$work/stderr"
 
+# Make sure the pinned image is present before the check runs. A fresh runner
+# pulls it, and the runtime writes pull progress to stderr, which must not be
+# mistaken for a failed check below. The pin is a digest, so a copy already
+# on the machine is the same image. A failed pull stops here with its own
+# message and status 3 (the check could not run).
+if ! "$runtime" image inspect "$image" >/dev/null 2>&1; then
+  if ! "$runtime" pull --quiet "$image" >/dev/null 2>"$work/pull-stderr"; then
+    cat "$work/pull-stderr" >&2
+    echo "check-config: could not pull the pinned engine image" >&2
+    exit 3
+  fi
+fi
+
 set +e
 "$runtime" run --rm --network none --read-only --cap-drop ALL \
   --security-opt no-new-privileges:true --pids-limit 128 --memory 512m \
@@ -167,7 +180,7 @@ set +e
 status=$?
 set -e
 
-# A real answer never writes to stderr. Anything there means the engine did
+# A real answer never writes to stderr (the image pull above is done by now). Anything there means the engine did
 # not run the check (a bad option, or an image without `check`).
 if [ -s "$stderr_file" ] || { [ "$status" -ne 0 ] && [ "$status" -ne 2 ]; }; then
   cat "$stderr_file" >&2

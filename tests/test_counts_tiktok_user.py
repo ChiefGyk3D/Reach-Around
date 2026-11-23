@@ -730,3 +730,34 @@ def test_error_body_text_never_reaches_the_error() -> None:
     with pytest.raises(SourceError) as caught:
         run(t)
     no_leak(chain_text(caught.value))
+
+
+# ---- Sandbox may omit the stats fields (#714) ----
+
+SANDBOX_NO_STATS = reply(
+    {
+        "data": {"user": {"open_id": "abc", "display_name": "Example"}},
+        "error": {"code": "ok", "message": "", "log_id": "x"},
+    }
+)
+
+
+def test_sandbox_answer_without_follower_count_is_exactly_missing_field() -> None:
+    # A Sandbox may answer 200 with the basic fields only. That is a clean
+    # failure of this source, with the fixed word the docs name, no refresh.
+    t = FakeTransport(routes(**{INFO: SANDBOX_NO_STATS}))
+    with pytest.raises(SourceError) as caught:
+        run(t)
+    assert str(caught.value) == "missing_field"
+    assert t.urls == [INFO]
+    no_leak(chain_text(caught.value))
+
+
+def test_sandbox_missing_field_is_documented_by_its_exact_word() -> None:
+    doc = (Path(__file__).parent.parent / "docs" / "tiktok-source.md").read_text(
+        encoding="utf-8"
+    )
+    assert "## Sandbox answers without stats" in doc
+    section = doc.split("## Sandbox answers without stats", 1)[1].split("\n## ", 1)[0]
+    assert "`missing_field`" in section
+    assert "`scope_missing`" in section
