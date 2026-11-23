@@ -771,6 +771,7 @@ jobs:
             --security-opt no-new-privileges:true --tmpfs /tmp \
             --user "$(id -u):$(id -g)" \
             -e YOUTUBE_API_KEY \
+            -e YOUTUBE_USERNAME \
             -v "$PWD":/config:ro -v "$PWD/numbers":/config/numbers \
             "$image" counts refresh --config /config/site.yaml \
             --out /config/numbers/numbers.json
@@ -801,7 +802,8 @@ jobs:
 Things to check before you rely on it:
 
 - The container is run with network access here (the build job runs with none).
-  Only `YOUTUBE_API_KEY` is passed in; list the other environment variables your
+  Only `YOUTUBE_API_KEY` and `YOUTUBE_USERNAME` (the handle, used only when a source
+  sets `handle_env`) are passed in; list the other environment variables your
   `numbers` sources name, nothing else.
 - `git diff --quiet` ignores a file that is not tracked yet; commit an initial
   `numbers/numbers.json` by hand first.
