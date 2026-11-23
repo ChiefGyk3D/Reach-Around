@@ -264,7 +264,23 @@ VOCAB: dict[str, tuple[str, str]] = {
     ),
     "support_blocks": (
         "the support page has a block type it does not take",
-        "Use crypto, text, image, email or divider blocks; links stay on the hub.",
+        "Use crypto, text, email or divider blocks; links stay on the hub.",
+    ),
+    "support_qr": (
+        "a support coin names a QR image",
+        "Remove qr; the page shows the address with a copy button.",
+    ),
+    "support_plain": (
+        "support text has a control, hidden or bidirectional character",
+        "Retype the text with plain characters.",
+    ),
+    "support_address_like": (
+        "support text has something that looks like an address",
+        "Addresses go in a crypto coin only; remove it from the text.",
+    ),
+    "support_markup": (
+        "support text has a link, image, HTML or URI scheme",
+        "Use plain words; the support page takes no links in its text.",
     ),
     "support_tab_id": (
         "a tab uses the id support, which the support page needs for /support/",

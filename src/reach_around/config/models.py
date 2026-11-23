@@ -9,6 +9,7 @@ Every model refuses unknown keys and is frozen. Later phases extend
 from __future__ import annotations
 
 import re
+from collections.abc import Iterator
 from datetime import date
 from pathlib import Path
 from typing import Annotated, Any, Literal
@@ -39,7 +40,6 @@ from reach_around.config.blocks import (
     Live,
     Platforms,
     Text,
-    _plain_text,
 )
 from reach_around.config.cutover import check_cutover_day
 from reach_around.config.disclosure import DisclosureField
@@ -59,6 +59,7 @@ from reach_around.config.redirects import Redirects
 from reach_around.config.robots import Robots
 from reach_around.config.site_nav import MAX_ITEMS as MAX_NAV_ITEMS
 from reach_around.config.site_nav import NavTitle
+from reach_around.config.support import check_no_address, check_no_markup, check_plain
 from reach_around.config.tablinks import is_tab_ref, parse_tab_ref
 from reach_around.config.theme import Theme
 from reach_around.site.theme import check_image_path
@@ -438,7 +439,7 @@ class SiteNav(_Model):
 
 
 SUPPORT_PAGE_ID = "support"
-_SUPPORT_KINDS = (Crypto, Text, Image, Email, Divider)
+_SUPPORT_KINDS = (Crypto, Text, Email, Divider)
 
 
 def _narrow_support_blocks(schema: dict[str, Any]) -> None:
@@ -452,12 +453,35 @@ def _narrow_support_blocks(schema: dict[str, Any]) -> None:
     ]
 
 
+def _displayed_text(page: SupportPage) -> Iterator[tuple[str, bool]]:
+    """Every text the support page shows except a coin's address."""
+    yield page.title, False
+    if page.intro is not None:
+        yield page.intro, False
+    for block in page.blocks:
+        if isinstance(block, Text):
+            yield block.markdown, True
+        elif isinstance(block, Crypto):
+            for value in (block.title, block.note):
+                if value is not None:
+                    yield value, False
+            for coin in block.coins:
+                for value in (coin.label, coin.name, coin.network):
+                    if value is not None:
+                        yield value, False
+        elif isinstance(block, Email):
+            for value in (block.title, block.note):
+                if value is not None:
+                    yield value, False
+
+
 class SupportPage(_Model):
     """The support page (#683): the one place the crypto addresses live.
 
-    It renders at ``/support/`` and holds a heading, an optional intro and
-    blocks (crypto, text, image, email, divider). The hub keeps its own direct
-    support links as ordinary links.
+    It renders at ``/support/`` as the heading, the optional intro, the one
+    crypto block, then any other blocks (crypto, text, email, divider only).
+    Text is plain: no links, images or HTML, and nothing address-like outside
+    a coin's address. The hub keeps its own direct support links.
     """
 
     title: PageTitle
@@ -467,25 +491,20 @@ class SupportPage(_Model):
         min_length=1, json_schema_extra=lambda schema: _narrow_support_blocks(schema)
     )
 
-    @field_validator("intro")
-    @classmethod
-    def _intro_is_plain(cls, value: str | None) -> str | None:
-        return _plain_text(value)
-
     @model_validator(mode="after")
     def _only_support_blocks(self) -> SupportPage:
         if not all(isinstance(block, _SUPPORT_KINDS) for block in self.blocks):
-            raise ValueError(
-                "support blocks can be crypto, text, image, email or divider"
-            )
+            raise ValueError("support blocks can be crypto, text, email or divider")
         if sum(isinstance(block, Crypto) for block in self.blocks) > 1:
             raise ValueError("the support page takes at most one crypto block")
         for block in self.blocks:
-            if isinstance(block, Image):
-                # A payment page shows nothing fetched from another origin.
-                check_image_path(block.src)
-                if block.link is not None:
-                    raise ValueError("a support image takes no link")
+            if isinstance(block, Crypto) and any(c.qr is not None for c in block.coins):
+                raise ValueError("support coins take no QR image")
+        for value, is_markdown in _displayed_text(self):
+            check_plain(value, allow_newline=is_markdown)
+            check_no_address(value)
+            if is_markdown:
+                check_no_markup(value)
         return self
 
 

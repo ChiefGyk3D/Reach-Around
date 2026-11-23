@@ -70,7 +70,7 @@ def test_mascot_opacity_range_is_in_the_schema() -> None:
     assert number["maximum"] == MAX_MASCOT_OPACITY
 
 
-def test_support_blocks_schema_lists_only_the_five_allowed_kinds() -> None:
+def test_support_blocks_schema_lists_only_the_four_allowed_kinds() -> None:
     import json
 
     schema = json.loads(SCHEMA_FILE.read_text(encoding="utf-8"))
@@ -79,6 +79,5 @@ def test_support_blocks_schema_lists_only_the_five_allowed_kinds() -> None:
         "Crypto",
         "Divider",
         "Email",
-        "Image",
         "Text",
     ]

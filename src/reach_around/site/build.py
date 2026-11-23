@@ -551,6 +551,9 @@ def _render_support(
 ) -> str:
     """The support page: the config's heading, intro and blocks at ``/support/``."""
     support = config.support
+    # Fixed order whatever the config order: the one crypto block first, then
+    # the other blocks, so no prose can come before the payment instruction.
+    blocks = sorted(blocks, key=lambda block: not isinstance(block, Crypto))
     if support is None:
         raise ValueError("the config has no support page")
     return env.get_template("support.html").render(

@@ -20,7 +20,6 @@ from reach_around.site.build import build_site
 TODAY = date(2027, 3, 10)
 ROOT = Path(__file__).resolve().parents[2]
 ASSETS = ROOT / "examples" / "instance"
-CRYPTO_ASSETS = ROOT / "examples" / "crypto"
 ADDR = "bc1qexampleexampleexampleexampleexample"
 
 
@@ -129,53 +128,126 @@ def test_a_tab_cannot_take_the_support_path(tmp_path: Path) -> None:
         build(data(SUPPORT, tabs), tmp_path)
 
 
-def test_support_qr_image_is_collected(tmp_path: Path) -> None:
-    coin = {"coin": "btc", "address": ADDR, "qr": "media/qr-example.png"}
+def test_support_coin_qr_is_refused() -> None:
+    coin = {"coin": "btc", "address": ADDR, "qr": "media/qr.png"}
     support = {**SUPPORT, "blocks": [{"id": "pay", "coins": [coin]}]}
-    html = build(data(support), tmp_path, CRYPTO_ASSETS)["support/index.html"]
-    assert re.search(
-        r'<img class="crypto-qr-image" src="\.\./media/qr-example\.[0-9a-f]{20}\.png"',
-        html,
-    )
+    with pytest.raises(ValidationError, match="no QR image"):
+        SiteConfig.model_validate(data(support))
 
 
-@pytest.mark.parametrize(
-    "src",
-    [
-        "https://e.com/qr.png",
-        "http://e.com/qr.png",
-        "javascript:alert(1)",
-        "data:image/png;base64,AAAA",
-        "//e.com/qr.png",
-        "../qr.png",
-        "media/../../qr.png",
-        "/etc/qr.png",
-    ],
-)
-def test_support_image_must_be_a_local_path(src: str) -> None:
-    block = {"id": "pic", "src": src, "alt": "A picture"}
-    with pytest.raises(ValidationError):
+def test_image_blocks_are_not_support_blocks() -> None:
+    block = {"id": "pic", "src": "media/qr.png", "alt": "A picture"}
+    with pytest.raises(ValidationError, match="support blocks"):
         SiteConfig.model_validate(data({**SUPPORT, "blocks": [block]}))
 
 
-def test_support_image_takes_no_link_but_a_local_image_is_fine() -> None:
-    block = {"id": "pic", "src": "media/qr.png", "alt": "A picture"}
-    SiteConfig.model_validate(data({**SUPPORT, "blocks": [block]}))
-    with pytest.raises(ValidationError, match="takes no link"):
-        SiteConfig.model_validate(
-            data({**SUPPORT, "blocks": [{**block, "link": "https://e.com/"}]})
-        )
+def test_the_page_renders_intro_then_crypto_then_other_blocks(tmp_path: Path) -> None:
+    text = {"id": "words", "markdown": "Plain words after."}
+    support = {**SUPPORT, "blocks": [text, crypto_block()]}
+    html = build(data(support), tmp_path)["support/index.html"]
+    assert (
+        html.index("Every bit helps.")
+        < html.index('class="block block-crypto"')
+        < html.index("Plain words after.")
+    )
+
+
+def test_the_address_is_an_isolated_ltr_element(tmp_path: Path) -> None:
+    html = build(data(SUPPORT), tmp_path)["support/index.html"]
+    assert f'dir="ltr">{ADDR}</code>' in html
+
+
+BIDI = chr(0x202E)
+ZERO = chr(0x200B)
+NONCHAR = chr(0xFFFE)
+LINESEP = chr(0x2028)
+HEX40 = "0x" + "a1" * 20
+HEX_SHORT = "0xa1a1a1a1a1a1"
+LONG = "A" * 26
+
+
+def _with(block: dict[str, Any]) -> dict[str, Any]:
+    return {**SUPPORT, "blocks": [crypto_block("pay"), block]}
+
+
+def _field_cases() -> list[tuple[str, Any]]:
+    """Each displayed field, as a function from a bad value to a config."""
+
+    def crypto_field(name: str) -> Any:
+        return lambda v: {**SUPPORT, "blocks": [{**crypto_block(), name: v}]}
+
+    def coin_field(name: str) -> Any:
+        def make(v: str) -> dict[str, Any]:
+            coin = {"coin": "btc", "address": ADDR, name: v}
+            if name == "name":
+                coin["coin"] = "other"
+            return {**SUPPORT, "blocks": [{"id": "pay", "coins": [coin]}]}
+
+        return make
+
+    return [
+        ("title", lambda v: {**SUPPORT, "title": v}),
+        ("intro", lambda v: {**SUPPORT, "intro": v}),
+        ("text", lambda v: _with({"id": "t", "markdown": v})),
+        ("email title", lambda v: _with({"id": "e", "address": "a@e.com", "title": v})),
+        ("email note", lambda v: _with({"id": "e", "address": "a@e.com", "note": v})),
+        ("crypto title", crypto_field("title")),
+        ("crypto note", crypto_field("note")),
+        ("coin label", coin_field("label")),
+        ("coin name", coin_field("name")),
+        ("coin network", coin_field("network")),
+    ]
+
+
+@pytest.mark.parametrize("bad", [BIDI, ZERO, NONCHAR, LINESEP])
+@pytest.mark.parametrize(
+    ("field", "make"), _field_cases(), ids=[n for n, _ in _field_cases()]
+)
+def test_every_displayed_field_is_plain_text(field: str, make: Any, bad: str) -> None:
+    with pytest.raises(ValidationError, match="plain text|plain"):
+        SiteConfig.model_validate(data(make("a" + bad + "b")))
 
 
 @pytest.mark.parametrize(
-    "intro",
+    "bad", [HEX_SHORT, LONG, "bc1qabcdefgh", "lnbc1abcdef", "send " + LONG]
+)
+@pytest.mark.parametrize(
+    ("field", "make"), _field_cases(), ids=[n for n, _ in _field_cases()]
+)
+def test_no_displayed_field_holds_an_address_like_token(
+    field: str, make: Any, bad: str
+) -> None:
+    with pytest.raises(ValidationError, match="address-like"):
+        SiteConfig.model_validate(data(make(bad)))
+
+
+def test_the_coin_address_itself_is_still_allowed() -> None:
+    SiteConfig.model_validate(data(SUPPORT))
+
+
+def test_text_blocks_allow_paragraph_breaks_but_no_other_control() -> None:
+    SiteConfig.model_validate(data(_with({"id": "t", "markdown": "One.\n\nTwo."})))
+    with pytest.raises(ValidationError, match="plain text"):
+        SiteConfig.model_validate(data(_with({"id": "t", "markdown": "a\rb"})))
+
+
+@pytest.mark.parametrize(
+    "md",
     [
-        "a" + chr(0x202E) + "b\nc",
-        "a" + chr(0x202E) + "b",
-        "zero" + chr(0x200B) + "w",
-        "two\nlines",
+        "[x](https://e.com/)",
+        "![x](media/a.png)",
+        "<b>x</b>",
+        "see https://e.com/x",
+        "bitcoin:abc",
+        "mailto:a@e.com",
+        "www.e.com",
     ],
 )
-def test_support_intro_must_be_plain_text(intro: str) -> None:
-    with pytest.raises(ValidationError, match="plain text"):
-        SiteConfig.model_validate(data({**SUPPORT, "intro": intro}))
+def test_text_blocks_take_no_links_images_html_or_schemes(md: str) -> None:
+    with pytest.raises(ValidationError, match="no links"):
+        SiteConfig.model_validate(data(_with({"id": "t", "markdown": md})))
+
+
+def test_a_full_hex_address_in_text_is_refused() -> None:
+    with pytest.raises(ValidationError, match="address-like"):
+        SiteConfig.model_validate(data(_with({"id": "t", "markdown": HEX40})))

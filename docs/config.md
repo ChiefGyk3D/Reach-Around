@@ -1091,19 +1091,33 @@ not outbound offers. The link parity check does not compare them.
 
 An optional support page, built at `/support/`. It is the one place crypto
 blocks may live: with `support` set, the build refuses a crypto block in any
-tab and refuses a second crypto block on the support page. This covers crypto
-blocks only. An address typed as plain text (in a text block, a link title,
-subtitle or URL, or a second text block on `/support/`) is not detected, so
-review every config diff for addresses written that way. The hub keeps its
-direct support buttons as ordinary links (one of them can point to this page).
-Leave the key out and the output is what it was without the feature. Unknown
-keys are refused.
+tab and refuses a second crypto block on the support page. The page always
+renders in a fixed order, whatever the config order: the heading, the intro,
+the one crypto block, then any other blocks. The hub keeps its direct support
+buttons as ordinary links (one of them can point to this page). Leave the key
+out and the output is what it was without the feature. Unknown keys are
+refused.
+
+The page shows each address as text with a copy button. There is no QR image
+(a file cannot be tied to its address) and no image block (a picture could be
+mistaken for a payment method). The address sits in an isolated left-to-right
+element.
+
+Text on the page is plain. Every displayed field (title, intro, text blocks,
+email and crypto titles and notes, coin label, name and network) is checked: no
+control, hidden, bidirectional, line-separator or noncharacter marks (a text
+block may use blank lines between paragraphs), and nothing address-like, that
+is a run of 26 or more letters and digits, `0x` followed by hex, or a `bc1`,
+`tb1`, `ltc1` or `lnbc` prefix. A text block also takes no markdown link or
+image, no raw HTML (`<`), no `://` and no URI scheme such as `bitcoin:`. These
+checks catch mistakes. They are not a guarantee: an address can be written
+around a pattern, so review every change to the page's text.
 
 | Key | Type | Default | Constraints |
 | --- | --- | --- | --- |
 | `title` | text | required | The page heading and its title, like a tab's `page_title` (see [Page titles](#page-titles)). |
-| `intro` | text, 1-500 characters | none | One plain paragraph under the heading. No control, newline, bidirectional or zero-width characters. |
-| `blocks` | list of blocks | required | At least one. Crypto, text, image, email and divider blocks only; links stay on the hub. At most one crypto block (list every coin in it). An image block takes a local path only (no URL, no `link`), so the page loads nothing from another origin. Block ids are unique across the whole site. |
+| `intro` | text, 1-500 characters | none | One plain paragraph under the heading, with the plain-text rules above. |
+| `blocks` | list of blocks | required | At least one. Crypto, text, email and divider blocks only; links and images stay off the page. At most one crypto block (list every coin in it). Block ids are unique across the whole site. |
 
 ```yaml
 support:
@@ -1114,13 +1128,11 @@ support:
       coins:
         - coin: btc
           address: bc1qexampleexampleexampleexampleexample
-          qr: media/qr-example.png
 ```
 
 The page carries the same header, tab bar, profile card and footer as the
 privacy page, with the crypto script and style (`copy.js`, `crypto.css`) only
-here. QR images named in a coin are collected and fingerprinted like any other
-local image. A tab whose id is `support` is refused, because the page takes
+here. A tab whose id is `support` is refused, because the page takes
 the path `/support/`. The page is not part of the click counts. Its page
 weight has its own row, `support-page`, in `docs/performance.md`.
 

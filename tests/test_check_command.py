@@ -173,6 +173,53 @@ CASES: list[tuple[str, Any, list[str]]] = [
         ["he support page has more than one crypto block", "Fix: "],
     ),
     (
+        "qr on a support coin",
+        lambda d: d.update(
+            support={
+                "title": "Support",
+                "blocks": [
+                    {"id": "p", "coins": [{**SUPPORT_COIN, "qr": "media/q.png"}]}
+                ],
+            }
+        ),
+        ["support coin names a QR image", "Fix: "],
+    ),
+    (
+        "hidden character in support text",
+        lambda d: d.update(
+            support={
+                "title": "Support",
+                "intro": "a" + chr(0x202E) + "b",
+                "blocks": [{"id": "p", "coins": [dict(SUPPORT_COIN)]}],
+            }
+        ),
+        ["support text has a control, hidden or bidirectional", "Fix: "],
+    ),
+    (
+        "address-like token in support text",
+        lambda d: d.update(
+            support={
+                "title": "Support",
+                "intro": "A" * 30,
+                "blocks": [{"id": "p", "coins": [dict(SUPPORT_COIN)]}],
+            }
+        ),
+        ["support text has something that looks like an address", "Fix: "],
+    ),
+    (
+        "link in support text",
+        lambda d: d.update(
+            support={
+                "title": "Support",
+                "blocks": [
+                    {"id": "p", "coins": [dict(SUPPORT_COIN)]},
+                    {"id": "t", "markdown": "[x](https://e.com/)"},
+                ],
+            }
+        ),
+        ["support text has a link, image, HTML or URI scheme", "Fix: "],
+    ),
+    (
         "link block on support",
         lambda d: d.update(
             support={

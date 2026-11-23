@@ -80,14 +80,6 @@ def _slots(config: SiteConfig) -> Iterator[tuple[str, str, str]]:
                 post.thumbnail,
                 "recent_thumbnail",
             )
-    if config.support is not None:
-        for b, block in enumerate(config.support.blocks):
-            src = getattr(block, "src", None)
-            if isinstance(src, str) and _is_local(src):
-                yield f"support.blocks[{b}].src", src, "image"
-            for c, entry in enumerate(getattr(block, "coins", ())):
-                if entry.qr is not None:
-                    yield f"support.blocks[{b}].coins[{c}].qr", entry.qr, "image"
     for t, tab in enumerate(config.tabs):
         for b, block in enumerate(tab.blocks):
             src = getattr(block, "src", None)
