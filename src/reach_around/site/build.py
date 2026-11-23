@@ -560,7 +560,7 @@ def _render_smart_stack_page(
     ]
     tab = config.tabs[0]
     pick = config.page.featured
-    featured = None
+    featured: dict[str, Any] | None = None
     if (
         pick is not None
         and pick.link in links
