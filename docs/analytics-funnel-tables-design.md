@@ -278,9 +278,12 @@ before relying on it, so this is unverified). This table was computed on the
 Free plan with a click reserve of 8000. Since 2026-11-19 the click reserve is
 300501 and the default quota is 1600000 (paid plan); the funnel figures
 (758 to 1998) are unchanged, and the combined total for one site with no link
-ids is now 371399, 23.2 percent of the default quota:
+ids is now 374999 (the gate claim rows, 3600 a day, were added in #650; kit part
+46040), 23.4 percent of the default quota. The table below is HISTORICAL: it
+is the Free-plan model as written on 2026-11-19, before the claim rows were
+counted and with the click reserve at 8000. The current figures follow it.
 
-| Case | Combined worst case | Share of 100000 |
+| Case (historical, Free plan, pre-#650) | Combined worst case | Share of 100000 |
 |---|---|---|
 | Today, one site, no link ids | 78898 | 78.9 percent |
 | Proposed, one site, no link ids | 79178 | 79.2 percent |
@@ -288,8 +291,22 @@ ids is now 371399, 23.2 percent of the default quota:
 | Proposed, one site, 20 link ids, reserved 1 (untrimmed worst case) | 80138 | 80.1 percent |
 | Proposed, one site, 20 link ids, reserved 0 (chosen trim applied) | 79658 | 79.7 percent |
 
-Arithmetic, with the per-site formula of `funnelcaps.ts`. The other writes
-(everything except this site's funnel rows) are 78898 - 758 = 78140. Per site:
+Current default model (paid quota 1600000, click reserve 300501, claim rows
+counted, #650). The other writes (everything except this site's funnel rows)
+are 374999 - 758 = 374241 (kit 46040 + page views 22700 + clicks 300501 +
+margin 5000); the funnel rows are the same as above:
+
+| Case (current) | Combined worst case | Share of 1600000 |
+|---|---|---|
+| One site, no link ids, no landing or hop lists | 374999 | 23.4 percent |
+| Proposed, one site, no link ids | 375279 | 23.5 percent |
+| Proposed, one site, 5 link ids | 375519 | 23.5 percent |
+| Proposed, one site, 20 link ids, reserved 1 (untrimmed) | 376239 | 23.5 percent |
+| Proposed, one site, 20 link ids, reserved 0 (trim applied) | 375759 | 23.5 percent |
+
+Arithmetic, with the per-site formula of `funnelcaps.ts`. The derivation below
+is HISTORICAL (the Free-plan model, pre-#650): the other writes were
+78898 - 758 = 78140. For the current model use 374241 in their place. Per site:
 cells = min(general caps + links x 2 kinds x 4 tables x (reserved + 1), hour
 slices 24 x (16 + 1) = 408) + 8 overflow rows; writes = 3 x cells + 2 + 24 +
 month, with month = 2 x (100 + 120 + 40 + 30 + 8 + 1) = 598 (so 624 fixed). The
