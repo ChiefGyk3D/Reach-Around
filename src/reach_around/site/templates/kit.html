@@ -1,16 +1,18 @@
 {# SPDX-License-Identifier: Apache-2.0 #}
 {% extends "base.html" %}
-{% from "_kit_parts.html" import analytics, legend, numbers, gate_form, imported_history, trust %}
+{% from "_kit_parts.html" import analytics, legend, numbers, gate_form, imported_history, trust, range_line, actions %}
 {% import "_frames.html" as frames with context %}
 {% set page_frames = frame_plan|length > 0 %}
 {% block content %}
 <section class="kit" aria-labelledby="kit-title">
 <div class="kit-deck-intro">
-<div class="kit-head{% if "hero" in frame_plan %}{{ frames.cls("hero") }}{% endif %}">
+<div class="kit-head{% if "hero" in frame_plan %}{{ frames.cls("hero") }}{% endif %}{% if kit.photo %} kit-head--photo{% endif %}">
 {% if kit.photo %}
 <img class="kit-photo" src="{{ asset_url(kit.photo, root) }}" alt="" width="1200" height="675">
 {% endif %}
+<div class="kit-first">
 <h2 id="kit-title">{{ kit.title }}</h2>
+<p class="kit-about">{{ kit.about }}</p>
 {% if kit.tags %}
 <ul class="profile-tags kit-tags">
 {% for tag in kit.tags %}
@@ -18,10 +20,12 @@
 {% endfor %}
 </ul>
 {% endif %}
-<p class="kit-about">{{ kit.about }}</p>
+{{ range_line(kit) }}
+{{ actions(kit, form) }}
 {% if kit.contact %}
 <p class="kit-about kit-contact">{{ kit.contact }}</p>
 {% endif %}
+</div>
 </div>
 {{ numbers(kit, "kit-numbers-title", true, zone_choices) }}
 </div>
@@ -53,7 +57,7 @@
 </section>
 {% endif %}
 {% if form %}
-<section class="kit-gate-box ra-c-plate ra-c-plate--carbon" aria-labelledby="kit-gate-title">
+<section class="kit-gate-box ra-c-plate ra-c-plate--carbon" id="kit-request" aria-labelledby="kit-gate-title">
 <h3 id="kit-gate-title"{% if frame_plan %} class="{{ frames.cls("head")|trim }}"{% endif %}>More details</h3>
 <p>{{ form.categories | capitalize }} are shown after a short check. Enter an email address and pass the check to see them.</p>
 <p class="kit-note">The address is not checked, and nothing is sent to it. It is kept for a limited time so the owner can follow up; see the <a href="{{ root }}privacy/">privacy page</a> for what is kept and for how long.</p>

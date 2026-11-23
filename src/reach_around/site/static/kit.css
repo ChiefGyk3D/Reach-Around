@@ -300,8 +300,21 @@
   .kit-inquiry-form .kit-submit { justify-self: start; }
 }
 
+/* First screen (#684): the photo beside the niche line, chips, range line and
+   the two actions. The numbers below it take the full content width (#704), so
+   the Source pill, the method line and the date are not squeezed into a narrow
+   column. */
+.kit-first { display: grid; gap: var(--ra-space-3); min-width: 0; align-content: start; }
+.kit-range { color: var(--ra-brand-muted); font-size: var(--ra-text-md); }
+.kit-actions { display: flex; flex-wrap: wrap; gap: var(--ra-space-3); }
+.kit-actions .ra-c-btn { min-height: var(--ra-tap); text-align: center; }
+.kit-trust, .kit-numbers time { white-space: nowrap; }
+.kit-numbers .kit-method { display: block; min-width: 10rem; }
+@media (min-width: 48rem) {
+  .kit-table { display: table; width: 100%; }
+}
 @media (min-width: 51.25rem) {
-  .kit-deck-intro { grid-template-columns: minmax(0, 4fr) minmax(20rem, 5fr); }
+  .kit-head--photo { grid-template-columns: minmax(0, 4fr) minmax(0, 5fr); align-items: start; column-gap: var(--ra-space-5); }
 }
 
 @media print {
