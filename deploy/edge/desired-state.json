@@ -1,0 +1,24 @@
+{
+  "schema": 1,
+  "bot_management": {
+    "ai_training": "disallow",
+    "ai_search": "disabled",
+    "ai_user": "disabled",
+    "ai_bots_protection": "disabled",
+    "bot_preference_sync_enabled": true,
+    "is_robots_txt_managed": true,
+    "crawler_protection": "disabled",
+    "content_bots_protection": "disabled",
+    "fight_mode": false
+  },
+  "rate_limit": {
+    "ref": "reach_around_beacon_flood_cap",
+    "description": "Reach Around: edge flood cap on the /e/ analytics routes",
+    "expression": "starts_with(http.request.uri.path, \"/e/\")",
+    "action": "block",
+    "characteristics": ["cf.colo.id", "ip.src"],
+    "period": 10,
+    "requests_per_period": 30,
+    "mitigation_timeout": 10
+  }
+}
