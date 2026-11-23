@@ -130,6 +130,39 @@ joins different tables of the same report (a country table and a page table
 cut the same views two ways). Publish one fixed-window report, not a series,
 and share the report, never the export.
 
+## Rollup by group (`--config`)
+
+```text
+reach-around report --input export.json --config site.yaml
+```
+
+With `--config` (your site config) the report adds "Link clicks by group": one
+row per group and route class. A group is a tab of the config (its `id`); the
+route class is the destination kind the Worker stored with the click, `link` or
+`social_icon`. A click id the config does not list (for example an old link)
+goes to `(no group)`. The rollup reads the click counts the report already
+holds: no new collection, no service, no person-level data, and the beacon is
+unchanged. Without `--config` nothing changes. CSV adds `groups.csv` (`group`,
+`route_class`, `clicks`, `status`); JSON adds a `groups` object. The owner HTML
+page and the Grafana export do not carry it yet.
+
+A row has one of three states:
+
+* `ok`: the sum of the link rows of that group that the report prints in "Link
+  clicks by link" or "Social icon clicks by icon".
+* `under_floor`: the group holds fewer than 5 clicks in total. It prints
+  "Under 5" (the same words as the kit), and the CSV leaves the count empty.
+* `withheld`: the group holds 5 or more but none of its links prints a row.
+
+A group total beside the link tables would let a reader subtract the printed
+rows and recover the hidden ones, so a row is only ever a sum of rows already
+printed. The cost: the largest link row joins the link tables' remainder line
+whenever any row is under the floor, so that link is not in its group's figure,
+and the figure grows with `--top`. Read a group row as "at least this many
+clicks", never as a total. The rule never depends on the values. It is label
+suppression, as the rest of this report, not k-anonymity; share the report, not
+the export.
+
 ## CSV output
 
 `--csv DIR` writes one file per section into `DIR` instead of printing, and

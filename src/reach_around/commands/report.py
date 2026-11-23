@@ -17,12 +17,14 @@ import sys
 from datetime import date
 from pathlib import Path
 
+from reach_around.config import ConfigError, load_site_config
 from reach_around.config.cutover import utc_today
 from reach_around.config.zones import ZONES, check_zone
 from reach_around.counts.history import HistoryError, read_history
 from reach_around.funnel.csvout import csv_files, utc_now, write_csv_dir
 from reach_around.funnel.display import annotate
 from reach_around.funnel.export import ExportError, load_exports
+from reach_around.funnel.groups import group_map
 from reach_around.funnel.htmlout import render_html
 from reach_around.funnel.ledger import LedgerError, init_ledger, reanchor_ledger
 from reach_around.funnel.owner import owner_view
@@ -115,6 +117,7 @@ def run_report(args: argparse.Namespace) -> int:
         cutover_text = _day(args.cutover, "--cutover")
         cutover = date.fromisoformat(cutover_text) if cutover_text else None
         export = load_exports(list(args.input))
+        groups = group_map(load_site_config(args.config)) if args.config else None
         history = read_history(args.history) if args.history is not None else None
         diagnostics: dict[str, object] | None = {} if args.diagnostics else None
         options = dict(
@@ -124,6 +127,7 @@ def run_report(args: argparse.Namespace) -> int:
             top=args.top,
             floor=args.floor,
             display_zone=zone,
+            groups=groups,
         )
         if args.period is not None:
             # Recorded in the ledger BEFORE anything is shown: no record, no cells.
@@ -163,6 +167,7 @@ def run_report(args: argparse.Namespace) -> int:
             )
     except (
         ExportError,
+        ConfigError,
         ValueError,
         LedgerError,
         HistoryError,
@@ -254,6 +259,13 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
         help="export file, JSON or CSV (repeatable; one file per table for CSV)",
     )
     parser.add_argument("--site", default="links", help="site id (default links)")
+    parser.add_argument(
+        "--config",
+        type=Path,
+        metavar="PATH",
+        help="your site config: adds a click rollup by group (tab) and route "
+        "class; a group under the floor prints 'Under 5'",
+    )
     parser.add_argument("--since", help="first UTC day to count, YYYY-MM-DD")
     parser.add_argument("--until", help="last UTC day to count, YYYY-MM-DD")
     parser.add_argument(

@@ -30,6 +30,7 @@ from pathlib import Path
 from typing import Any
 
 from reach_around.config.zones import format_instant
+from reach_around.funnel.groups import csv_rows as group_csv_rows
 from reach_around.funnel.owner import owner_view
 from reach_around.funnel.private_analytics import CSV_HEADER as PRIVATE_HEADER
 from reach_around.funnel.private_analytics import private_csv_rows
@@ -371,6 +372,11 @@ def csv_files(
     files["bot_reasons.csv"] = render_csv(
         _TABLE_HEADER, _table_rows(report["bots"]["reasons"])
     )
+    if "groups" in report:
+        files["groups.csv"] = render_csv(
+            ["group", "route_class", "clicks", "status"],
+            group_csv_rows(report["groups"]),
+        )
     cov = report["coverage"]
     if cov["gaps"] or cov["partial"]:
         # Days with no collection are rows here, never zero rows in another file.

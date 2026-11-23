@@ -6,6 +6,7 @@ while the project is alpha, every release is `0.x` and anything can change betwe
 
 ## [Unreleased]
 
+- Group-level analytics rollup (#678, epic #667): new `reach-around report --config site.yaml` adds "Link clicks by group" to the text, JSON and CSV (`groups.csv`) reports, one row per group (tab) and route class (`link` or `social_icon`). A group under 5 clicks prints "Under 5"; a row is only ever a sum of link rows the report already prints (so it reads as at least that many, and a group with 5 or more but no printed row is `withheld`), so no figure beyond the link tables is added. Read from the existing click counts: no new collection, service or personal data, and the beacon and the Worker are unchanged. Without `--config` the report is byte for byte as before; the ledger digest does not include the rollup. Not part of this change: the owner HTML page and the Grafana export. Docs: `docs/report.md`.
 - Slimmer `live.js` (#699): the live badge script drops from 16089 to 12857 bytes (comment lines removed; behavior, CSP and every check unchanged), so the stack home page with badges loads 23189 bytes of JS instead of 26421. The `hub-live` page-weight row is lowered (JS 33100 to 29000, total 192700 to 191300, compressed 90300 to 89300), and a new test fails if `live.js` grows past 16000 bytes. The engine does not minify shipped scripts; a build-time minifier (about 6 KB minified) is left for later. Docs: `docs/performance.md`.
 
 ## [0.3.0-rc.6] - 2026-11-23
