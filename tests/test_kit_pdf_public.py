@@ -80,7 +80,8 @@ def test_the_public_pdf_has_the_public_text_and_the_valid_as_of_line(
         "A fake creator used in tests.",
         "Followers",
         "Subscribers",
-        "4,600",
+        "4,600 Figures dated 2027-03-01 UTC",
+        "Unique audience is between 3,400 and 4,600, depending on platform overlap.",
         "2027-03-01",
         "Valid as of 2027-03-10 (UTC)",
     ):
@@ -259,7 +260,8 @@ def test_a_gated_value_equal_to_resolved_public_numbers_is_allowed() -> None:
     )
     public_text = (
         "Example Creator media kit A fake creator used in tests. "
-        "Streams games & talks. Twitch Followers 12,345 2027-03-09 12,345"
+        "Streams games & talks. Twitch Followers 12,345 2027-03-09 12,345 "
+        "Figures dated 2027-03-09 UTC"
     )
 
     check_text(config.kit, public_text, numbers, public=True)  # type: ignore[arg-type]
@@ -291,7 +293,8 @@ def test_a_gated_value_equal_to_public_analytics_is_allowed(
         "Twitch Followers 1,200 2027-03-01 YouTube Subscribers 3,400 2027-03-05 "
         "Twitch analytics Synced with Example Social API on 2027-03-08 "
         "Followers 12.5k +4.3% last 30 days Example views 1.3M "
-        f"4,600 {public_value}"
+        "Unique audience is between 3,400 and 4,600, depending on platform overlap. "
+        f"4,600 Figures dated 2027-03-01 UTC {public_value}"
     )
 
     check_text(config.kit, public_text, public=True)  # type: ignore[arg-type]
@@ -314,7 +317,8 @@ def test_a_demographic_platform_name_is_public_vocabulary_in_the_pdf_guard() -> 
         "Example Creator media kit A fake creator used in tests. "
         "Streams games & talks. "
         "Twitch Followers 1,200 2027-03-01 YouTube Subscribers 3,400 2027-03-05 "
-        "4,600 Kick Followers 12,460 Twitch analytics "
+        "Unique audience is between 3,400 and 4,600, depending on platform overlap. "
+        "4,600 Figures dated 2027-03-01 UTC Kick Followers 12,460 Twitch analytics "
         "Synced with Example Social API on 2027-03-08 "
         "Followers 12.5k +4.3% last 30 days"
     )
@@ -437,7 +441,9 @@ def test_a_renderer_that_drops_the_valid_as_of_line_fails(tmp_path: Path) -> Non
                     "A fake creator used in tests. Streams games & talks.",
                     "Twitch Followers 1,200 Hand-kept Typed by the owner 2027-03-01",
                     "YouTube Subscribers 3,400 Hand-kept Typed by the owner 2027-03-05",
-                    "4,600",
+                    "4,600 Figures dated 2027-03-01 UTC",
+                    "Unique audience is between 3,400 and 4,600, "
+                    "depending on platform overlap.",
                     "Hand-kept Weakest label among the numbers added",
                     LEGEND_HEADING,
                     *LEGEND_SENTENCES,

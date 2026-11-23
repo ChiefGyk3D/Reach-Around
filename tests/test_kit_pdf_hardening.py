@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import zlib
 from datetime import UTC, date, datetime
@@ -232,6 +233,42 @@ def test_a_metric_row_that_differs_from_the_resolved_values_fails(
 ) -> None:
     with pytest.raises(PdfError, match="metric|total"):
         _run_with_html_edit(tmp_path, old, new)
+
+
+def test_a_changed_range_line_fails_the_guard(tmp_path: Path) -> None:
+    with pytest.raises(PdfError, match="audience range"):
+        _run_with_html_edit(
+            tmp_path, "between 3,400 and 4,600", "between 3,400 and 4,601"
+        )
+
+
+def test_a_page_missing_the_range_line_fails_the_guard(tmp_path: Path) -> None:
+    config, site, gated = build_instance(tmp_path)
+
+    def renderer(html: str, work: Path) -> bytes:
+        line = re.search(r'<p class="kit-range">.*?</p>', html, re.S)
+        assert line
+        return fake_renderer(html.replace(line.group(0), ""), work)
+
+    with pytest.raises(PdfError, match="audience range"):
+        build_kit_pdf(
+            config,
+            gated_dir=gated,
+            site_dir=site,
+            out_dir=tmp_path / "private",
+            name="kit.pdf",
+            created=CREATED,
+            renderer=renderer,
+        )
+
+
+def test_the_range_sentence_cannot_stand_in_for_the_total_cell(
+    tmp_path: Path,
+) -> None:
+    # the total is printed in the range sentence too; changing only the cell
+    # beside its date line must still fail
+    with pytest.raises(PdfError, match="total"):
+        _run_with_html_edit(tmp_path, ">4,600</strong>", ">4,601</strong>")
 
 
 def test_counts_metrics_are_checked_against_the_numbers_file(tmp_path: Path) -> None:

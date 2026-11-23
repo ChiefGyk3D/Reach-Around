@@ -1,6 +1,15 @@
 {# SPDX-License-Identifier: Apache-2.0 #}
 {% import "_frames.html" as frames with context %}
 {% macro trust(t, stale=false) %}<span class="kit-trust kit-trust-{{ t.label }}">{{ t.text }}</span> <span class="kit-note kit-method">{{ t.method }}</span>{% if stale %} (out of date){% endif %}{% endmacro %}
+{% macro range_line(kit) %}{% if kit.total and kit.total.range_text %}<p class="kit-range">{{ kit.total.range_text }}</p>{% endif %}{% endmacro %}
+{% macro actions(kit, form) %}
+{% if form or kit.public_pdf %}
+<p class="kit-actions">
+{% if form %}<a class="ra-c-btn" href="#kit-request">Request Full Kit</a>{% endif %}
+{% if kit.public_pdf %}<a class="ra-c-btn ra-c-btn--secondary" href="{{ kit.public_pdf }}" rel="noopener noreferrer">Download Public PDF</a>{% endif %}
+</p>
+{% endif %}
+{% endmacro %}
 {% macro legend(kit) %}
 {% if kit.legend %}
 <section class="kit-legend" aria-labelledby="kit-legend-title">

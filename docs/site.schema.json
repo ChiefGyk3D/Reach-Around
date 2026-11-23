@@ -1507,6 +1507,19 @@
           "default": null,
           "title": "Photo"
         },
+        "public_pdf": {
+          "anyOf": [
+            {
+              "maxLength": 2048,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Public Pdf"
+        },
         "rates": {
           "items": {
             "$ref": "#/$defs/Rate"
