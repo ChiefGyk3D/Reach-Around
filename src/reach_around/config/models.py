@@ -577,6 +577,7 @@ class SiteConfig(_Model):
 
         links: dict[str, Link] = {}
         watch_links: dict[str, Link] = {}
+        spoke_ids: set[str] = set()
         intents: set[str] = set()
         for tab in self.tabs:
             if tab.intent is None:
@@ -628,6 +629,8 @@ class SiteConfig(_Model):
                     raise ValueError(
                         "page.layout: stack groups support only links and link sections"
                     )
+            if tab.spoke:
+                spoke_ids.update(link.id for link in group_links)
             if tab.intent == "watch":
                 watch_links.update((link.id, link) for link in group_links)
             if tab.spoke and not group_links:
@@ -658,6 +661,11 @@ class SiteConfig(_Model):
             raise ValueError("page.watch links cannot be scheduled")
         if page.featured is not None and page.featured.link not in links:
             raise ValueError(f"page.featured link id {page.featured.link!r} is missing")
+        if page.featured is not None and page.featured.link in spoke_ids:
+            raise ValueError(
+                f"page.featured link id {page.featured.link!r} is on a spoke page; "
+                "a spoke page's links cannot be featured"
+            )
         icons = {link.icon for link in selected}
         if icons != {"twitch", "kick"}:
             raise ValueError("page.watch must name one Twitch and one Kick link")

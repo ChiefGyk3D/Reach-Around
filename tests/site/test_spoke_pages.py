@@ -202,22 +202,25 @@ def test_a_spoke_has_no_link_count_limit_but_needs_one() -> None:
 # --- review fixes -------------------------------------------------------------
 
 
-def test_hub_discloses_a_featured_affiliate_link_from_a_spoke(tmp_path: Path) -> None:
+def test_a_spoke_link_cannot_be_featured() -> None:
     data = raw()
     data["page"]["featured"] = {"link": "gear-1", "kicker": "New"}
+    with pytest.raises(ValueError, match="cannot be featured"):
+        SiteConfig.model_validate(data)
+
+
+def test_a_featured_affiliate_link_on_the_hub_still_discloses(
+    tmp_path: Path,
+) -> None:
+    data = raw()
+    data["page"]["featured"] = {"link": "videos-1", "kicker": "New"}
+    next(t for t in data["tabs"] if t["intent"] == "videos")["blocks"][0][
+        "affiliate"
+    ] = True
     out = build(tmp_path, data)
     hub = text(out, "index.html")
     assert "sponsored" in hub
     assert "Some links earn me a commission." in hub
-
-
-def test_hub_with_a_featured_plain_spoke_link_has_no_disclosure(
-    tmp_path: Path,
-) -> None:
-    data = raw()
-    data["page"]["featured"] = {"link": "gear-2", "kicker": "New"}
-    out = build(tmp_path, data)
-    assert "commission" not in text(out, "index.html")
 
 
 @pytest.mark.parametrize(

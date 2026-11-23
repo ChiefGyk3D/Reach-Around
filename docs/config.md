@@ -402,7 +402,8 @@ link, the footer, the affiliate disclosure when one of its links is an affiliate
 link, and a link back to the home page. Its links are click counted like any
 other and carry the page's id (the tab id) as their landing label. A `tab:<id>`
 link anywhere resolves to the page. It needs `page.url`, the site's own bare
-https origin, which also gives the home page its canonical link. A spoke tab
+https origin, which also gives the home page its canonical link. A spoke's links cannot be
+featured (`page.featured` naming one is refused). A spoke tab
 may hold links and link sections (any number of links, at least one), but not
 `collapsed` or `style`; the Watch group cannot be a spoke, and its id may not
 be `privacy`, `static`, `e`, `e-frame`, `kit`, `404` or `socials`. A section

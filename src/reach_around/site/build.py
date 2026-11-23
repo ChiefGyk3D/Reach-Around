@@ -544,15 +544,15 @@ def _render_smart_stack_page(
     today: date,
 ) -> str:
     """Render the production one-page smart stack."""
-    # Every link, spoke pages included, may be featured; the home page itself
-    # draws only the groups that are not spokes (those get one card each).
-    links = {link.id: link for blocks in shown for link in _links_in(blocks)}
+    # The home page draws only the groups that are not spokes (those get one
+    # card each), and a spoke's links cannot be featured (checked at load).
     every = [
         block
         for tab, blocks in zip(config.tabs, shown, strict=True)
         if not tab.spoke
         for block in blocks
     ]
+    links = {link.id: link for link in _links_in(every)}
     groups = [
         {"tab": tab, "links": [] if tab.spoke else _links_in(blocks)}
         for tab, blocks in zip(config.tabs, shown, strict=True)
@@ -560,7 +560,7 @@ def _render_smart_stack_page(
     ]
     tab = config.tabs[0]
     pick = config.page.featured
-    featured: dict[str, Any] | None = None
+    featured = None
     if (
         pick is not None
         and pick.link in links
@@ -582,9 +582,7 @@ def _render_smart_stack_page(
         page_title=page_title(config, tab.title, home=True, own=tab.page_title),
         disclosure=_disclosure_line(config),
         show_disclosure=_show_disclosure(
-            config,
-            any(link.affiliate for link in _links_in(every))
-            or (featured is not None and featured["link"].affiliate),
+            config, any(link.affiliate for link in _links_in(every))
         ),
         show_cookie_banner=sets_cookies(config),
         click_tracking=config.features.click_tracking,
