@@ -113,6 +113,12 @@ describe("loadKitLimits", () => {
     expect(Math.floor(50_000_000 / 31)).toBeGreaterThanOrEqual(DEFAULTS.d1DailyWriteQuota);
     expect(L().d1DailyWriteQuota).toBe(1_600_000);
   });
+  it("the claim rows grow with the gate budget: one more row per unit, 24 hours", () => {
+    const a = worstCaseDailyWrites(L({ ROUTE_BUDGET_GATE: "150" }));
+    const b = worstCaseDailyWrites(L({ ROUTE_BUDGET_GATE: "151" }));
+    expect(b - a).toBe(24 * (WRITES_PER_OP.gate + WRITES_PER_OP.claim));
+    expect(worstCaseDailyWrites(L({ ROUTE_BUDGET_GATE: "0" }))).toBe(46_040 - 24 * 150 * (WRITES_PER_OP.gate + WRITES_PER_OP.claim));
+  });
   it("the kit alone fits, but kit plus page views, clicks and margin does not: refused", () => {
     // gate 13000/h: kit = 24*(65000+600)+20+20+10000 = 1584440 (under 1600000), but the click
     // ceiling, page views, funnel and margin on top of it pass the quota
@@ -132,9 +138,9 @@ describe("loadKitLimits", () => {
     expect(src).not.toContain("above 70 percent");
   });
   it("warns above 80 percent of the quota", () => {
-    // gate 8000/h adds 24 x (8000 - 150) x 5 = 942000 to the default figure: between 80 and 100 percent of 1600000
+    // gate 8000/h adds 24 x (8000 - 150) x (5 + 1 claim row) = 1130400 to the default figure: between 80 and 100 percent of 1600000
     const c = L({ ROUTE_BUDGET_GATE: "8000" });
-    expect(combinedDailyWrites(c)).toBe(370_641 + 942_000 + FUNNEL_DAILY_WRITES);
+    expect(combinedDailyWrites(c)).toBe(374_241 + 24 * 7850 * (WRITES_PER_OP.gate + WRITES_PER_OP.claim) + FUNNEL_DAILY_WRITES);
     expect(c.warnings).toEqual(["combined worst-case daily D1 writes are above 80 percent of D1_DAILY_WRITE_QUOTA"]);
     expect(L().warnings).toEqual([]);
   });
@@ -143,18 +149,21 @@ describe("loadKitLimits", () => {
 describe("worstCaseDailyWrites", () => {
   it("spells out the default arithmetic", () => {
     const c = L();
-    const expected = 24 * (150 * WRITES_PER_OP.gate + 300 * WRITES_PER_OP.view) + 20 * 1 + 20 * WRITES_PER_OP.inquiry + 0 * 7 + PURGE_RESERVE;
+    // Each solved challenge also writes one single-use claim row (#650), at most one per gate unit.
+    const expected =
+      24 * (150 * WRITES_PER_OP.gate + 300 * WRITES_PER_OP.view) + 24 * 150 * WRITES_PER_OP.claim + 20 * 1 + 20 * WRITES_PER_OP.inquiry + 0 * 7 + PURGE_RESERVE;
     expect(worstCaseDailyWrites(c)).toBe(expected);
-    expect(expected).toBe(42_440);
+    expect(WRITES_PER_OP.claim).toBe(1);
+    expect(expected).toBe(46_040);
     expect(expected).toBeLessThan(c.d1DailyWriteQuota);
   });
   it("combines kit, page views, clicks and a margin into one figure under the quota", () => {
     const c = L();
     expect(PAGE_VIEW_DAILY_WRITES).toBe(22_700);
     expect(combinedDailyWrites(c)).toBe(worstCaseDailyWrites(c) + 22_700 + CLICK_DAILY_WRITES + FUNNEL_DAILY_WRITES + COMBINED_MARGIN);
-    // 42440 kit + 22700 page views + 300501 clicks (ceiling, dropped-count cap, setup flag) + 5000 margin
+    // 46040 kit (with 3600 claim rows) + 22700 page views + 300501 clicks (ceiling, dropped-count cap, setup flag) + 5000 margin
     expect(CLICK_DAILY_WRITES).toBe(300_501);
-    expect(combinedDailyWrites(c)).toBe(370_641 + FUNNEL_DAILY_WRITES);
+    expect(combinedDailyWrites(c)).toBe(374_241 + FUNNEL_DAILY_WRITES);
     expect(combinedDailyWrites(c)).toBeLessThan(c.d1DailyWriteQuota * 0.8);
   });
   it("storage worst case is far under the 500 MB database limit at the defaults", () => {

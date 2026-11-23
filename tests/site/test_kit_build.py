@@ -187,7 +187,7 @@ def test_press_deck_headline_total_always_carries_its_source_date(
         html = page.read_text(encoding="utf-8")
         match = re.search(
             r'<p class="kit-headline-number[^>]*>.*?'
-            r"<strong[^>]*>4,600</strong>.*?"
+            r"<strong[^>]*>3,400 to 4,600</strong>.*?"
             r'<time datetime="2027-03-01">2027-03-01</time> UTC.*?</p>',
             html,
             re.S,

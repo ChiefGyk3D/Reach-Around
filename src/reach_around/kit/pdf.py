@@ -52,6 +52,7 @@ from reach_around.config.cutover import cutover_label, live_since, utc_today
 from reach_around.config.imported_history import ImportedHistory, expected_text
 from reach_around.config.kit import (
     KitConfig,
+    counts_in_summary,
     enforce_display_policy,
     pdf_excluded_values,
     resolve_metrics,
@@ -73,6 +74,7 @@ from reach_around.site.kit import (
     GUARD_MIN_LENGTH,
     _analytics_rows,
     _case_rows,
+    _community,
     _engagement_rows,
     _gated_strings,
     _imported_block,
@@ -450,24 +452,46 @@ def _expected_text(
             labeled = True
             old = OUT_OF_DATE if is_old(entry.as_of, entry.platform) else ""
             put(where, row["as_of"] + "UTC" + text + old)
-    total = _total(unified_total(resolved), resolved, None, config)
+    total = _total(
+        unified_total(resolved), resolved, None, config, None, kit.audience_summary
+    )
+    community = _community(resolved)
+    if community is not None:
+        found.append(
+            ("the community members line", community["text"] + " " + community["note"])
+        )
     if total is not None:
         # Anchored on the date line printed under the number, so the range
         # sentence (which also prints the total) cannot satisfy it.
         found.append(
             (
                 "the metric total",
-                total["value"] + "Figures dated" + total["oldest"] + "UTC",
+                total["headline"] + "Figures dated" + total["oldest"] + "UTC",
             )
         )
         if total["range_text"]:
             found.append(("the audience range", total["range_text"]))
+        # The summary block's own sentences (#627): the bounds, the largest
+        # audience, the overlap sentence and the labeled estimate.
+        for where, key in (
+            ("the audience summary bounds", "bounds_text"),
+            ("the largest single audience", "largest"),
+            ("the overlap sentence", "overlap"),
+            ("the audience summary caveat", "caveat"),
+            ("the audience estimate", "estimate"),
+        ):
+            if total[key]:
+                put(where, total[key])
+        if total["estimate"]:
+            put("the audience estimate method", total["estimate_method"])
         text = _trust_text(total["trust"])
         if text:
             labeled = True
             old = (
                 OUT_OF_DATE
-                if any(is_old(m.as_of, m.platform) for m in shown if m.in_total)
+                if any(
+                    is_old(m.as_of, m.platform) for m in shown if counts_in_summary(m)
+                )
                 else ""
             )
             put("the metric total label", text + old)
@@ -669,6 +693,7 @@ def _public_pdf_values(kit: KitConfig, numbers: Numbers | None) -> set[str]:
     total = _total(unified_total(resolved), resolved)
     if total is not None:
         allowed.add(canonical(total["value"]))
+        allowed.add(canonical(total["sum"]))
     return allowed
 
 

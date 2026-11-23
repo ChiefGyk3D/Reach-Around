@@ -66,6 +66,7 @@ REASONS = (
 )
 MAX_REDACT = 100_000
 
+# Always use fullmatch: ``$`` also matches before a final newline (#624).
 _SLUG = re.compile(r"^[a-z0-9][a-z0-9-]{0,39}$")
 _METRIC = re.compile(r"^[a-z][a-z0-9_]{0,39}$")
 _RUN_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
@@ -185,7 +186,7 @@ class Point:
 
 
 def parse_as_of(text: str) -> datetime:
-    if not isinstance(text, str) or not _AS_OF.match(text):
+    if not isinstance(text, str) or not _AS_OF.fullmatch(text):
         raise HistoryError("as_of_utc must look like 2026-11-08T09:00:00Z")
     try:
         return datetime.strptime(text, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=UTC)
@@ -205,9 +206,9 @@ def validate(record: Record, now: datetime | None = None) -> None:
 
     With ``now`` the as-of time must not be after it.
     """
-    if not isinstance(record.platform, str) or not _SLUG.match(record.platform):
+    if not isinstance(record.platform, str) or not _SLUG.fullmatch(record.platform):
         raise HistoryError("platform must be a lowercase slug")
-    if not isinstance(record.metric, str) or not _METRIC.match(record.metric):
+    if not isinstance(record.metric, str) or not _METRIC.fullmatch(record.metric):
         raise HistoryError("metric must be lowercase letters, digits, underscores")
     value = record.value
     if isinstance(value, bool) or not isinstance(value, int):
@@ -224,7 +225,7 @@ def validate(record: Record, now: datetime | None = None) -> None:
             raise HistoryError("api_provider is allowed only for API records")
         if record.api_provider not in API_PROVIDERS:
             raise HistoryError("api_provider is not recognized")
-    if not isinstance(record.run_id, str) or not _RUN_ID.match(record.run_id):
+    if not isinstance(record.run_id, str) or not _RUN_ID.fullmatch(record.run_id):
         raise HistoryError("run_id must be 1 to 64 letters, digits, . _ -")
     if record.type not in TYPES:
         raise HistoryError("type must be record or correction")
@@ -384,7 +385,7 @@ def _parse_line(
     if not set(_REQUIRED) <= keys or keys - set(_REQUIRED) - set(_OPTIONAL):
         raise HistoryError(f"{where}: wrong set of fields")
     prev = obj["prev"]
-    if not isinstance(prev, str) or not _HASH.match(prev):
+    if not isinstance(prev, str) or not _HASH.fullmatch(prev):
         raise HistoryError(f"{where}: prev is not a SHA-256 hex digest")
     record = Record(
         platform=obj["platform"],
@@ -754,19 +755,41 @@ def _append(
     max_bytes: int,
     skip_days: bool,
 ) -> int:
-    # The file as it was before any wait for the writers' lock. If a redaction
-    # replaced it meanwhile, this append is refused instead of continuing on the
-    # new file (a file that did not exist yet is not a replacement).
-    before = _identity_of(dir_fd, path.name)
-    sidecar = _open_sidecar(dir_fd, path.name, LOCK_WAIT_SECONDS)
+    # Hold the file as it is before any wait for the writers' lock, and compare
+    # this very descriptor with the name afterwards. If a redaction replaced the
+    # file meanwhile, this append is refused instead of continuing on the new
+    # file (a file that did not exist yet is not a replacement). Holding the
+    # descriptor also means the old inode cannot be freed and reused by the
+    # replacement, which a number read by name could not rule out.
+    held = _hold_existing(dir_fd, path.name)
     try:
-        if before is not None and _identity_of(dir_fd, path.name) != before:
-            raise HistoryError(
-                "the history file was replaced while waiting (a redaction?); run again"
-            )
-        return _append_locked(dir_fd, path, records, max_bytes, skip_days)
+        sidecar = _open_sidecar(dir_fd, path.name, LOCK_WAIT_SECONDS)
+        try:
+            if held >= 0 and not _same_file(dir_fd, path.name, held):
+                raise HistoryError(
+                    "the history file was replaced while waiting (a redaction?); "
+                    "run again"
+                )
+            return _append_locked(dir_fd, path, records, max_bytes, skip_days)
+        finally:
+            os.close(sidecar)
     finally:
-        os.close(sidecar)
+        if held >= 0:
+            os.close(held)
+
+
+def _hold_existing(dir_fd: int, name: str) -> int:
+    """A read-only descriptor for ``name`` if it exists, else -1.
+
+    Only a missing file counts as absent. No symlink is followed and nothing
+    blocks (a FIFO opens at once); any other failure aborts the append.
+    """
+    try:
+        return os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=dir_fd)
+    except FileNotFoundError:
+        return -1
+    except OSError:
+        raise HistoryError("cannot open the history file (a symlink?)") from None
 
 
 def _append_locked(

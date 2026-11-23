@@ -18,6 +18,7 @@ from kitpdfharness import (
     kit_doc,
     make_config,
 )
+from reach_around.config import SiteConfig
 from reach_around.config.numbers import Numbers, NumbersEntry
 from reach_around.kit.pdf import PdfError, build_kit_pdf
 from reach_around.kit.pdftext import PdfTextError, _Budget, _CMap, _show
@@ -224,7 +225,7 @@ def _run_with_html_edit(tmp_path: Path, old: str, new: str) -> None:
     [
         (">1,200<", ">9,999<"),  # a changed number
         ("2027-03-05", "2027-03-06"),  # a changed date
-        (">4,600<", ">4,601<"),  # a changed total
+        ("to 4,600<", "to 4,601<"),  # a changed total
         (">YouTube<", ">Twitch<"),  # a changed platform on that row
     ],
 )
@@ -238,7 +239,9 @@ def test_a_metric_row_that_differs_from_the_resolved_values_fails(
 def test_a_changed_range_line_fails_the_guard(tmp_path: Path) -> None:
     with pytest.raises(PdfError, match="audience range"):
         _run_with_html_edit(
-            tmp_path, "between 3,400 and 4,600", "between 3,400 and 4,601"
+            tmp_path,
+            "between 3,400 and 4,600, depending",
+            "between 3,400 and 4,601, depending",
         )
 
 
@@ -268,7 +271,7 @@ def test_the_range_sentence_cannot_stand_in_for_the_total_cell(
     # the total is printed in the range sentence too; changing only the cell
     # beside its date line must still fail
     with pytest.raises(PdfError, match="total"):
-        _run_with_html_edit(tmp_path, ">4,600</strong>", ">4,601</strong>")
+        _run_with_html_edit(tmp_path, "to 4,600</strong>", "to 4,601</strong>")
 
 
 def test_counts_metrics_are_checked_against_the_numbers_file(tmp_path: Path) -> None:
@@ -299,3 +302,76 @@ def test_counts_metrics_are_checked_against_the_numbers_file(tmp_path: Path) -> 
     run(None, "ok")
     with pytest.raises(PdfError, match="metric|total"):
         run((">777<", ">778<"), "bad")
+
+
+@pytest.mark.parametrize(
+    ("gone", "name"),
+    [
+        (
+            "People who follow on more than one platform are counted more than once.",
+            "overlap sentence",
+        ),
+        ("Largest single audience: 3,400 (YouTube).", "largest single audience"),
+        ("Unique people are somewhere between 3,400 and 4,600.", "summary bounds"),
+        ("inactive and automated accounts", "summary caveat"),
+    ],
+)
+def test_a_pdf_page_that_lost_an_audience_summary_sentence_fails(
+    tmp_path: Path, gone: str, name: str
+) -> None:
+    with pytest.raises(PdfError, match=name):
+        _run_with_html_edit(tmp_path, gone, "")
+
+
+def _summary_config() -> SiteConfig:
+    doc = kit_doc()
+    doc["metrics"] = [
+        *doc["metrics"],
+        {
+            "platform": "discord",
+            "label": "Members",
+            "value": 800,
+            "as_of": "2027-03-02",
+        },
+    ]
+    doc["audience_summary"] = {
+        "show_estimate": True,
+        "poll": {"respondents": 200, "as_of": "2027-03-01", "avg_other_platforms": 0.1},
+    }
+    return make_config(doc)
+
+
+def _run_summary_edit(tmp_path: Path, old: str, new: str) -> None:
+    config, site, gated = build_instance(tmp_path, _summary_config())
+
+    def renderer(html: str, work: Path) -> bytes:
+        assert old in html
+        return fake_renderer(html.replace(old, new), work)
+
+    build_kit_pdf(
+        config,
+        gated_dir=gated,
+        site_dir=site,
+        out_dir=tmp_path / "private",
+        name="kit.pdf",
+        created=CREATED,
+        renderer=renderer,
+    )
+
+
+def test_the_summary_fixture_passes_unedited(tmp_path: Path) -> None:
+    _run_summary_edit(tmp_path, "Community members:", "Community members:")
+
+
+@pytest.mark.parametrize(
+    ("gone", "name"),
+    [
+        ("Chat members, not followers", "community"),
+        ("Estimate: the sum of follows divided by one plus", "estimate"),
+    ],
+)
+def test_a_pdf_page_that_lost_the_community_note_or_estimate_method_fails(
+    tmp_path: Path, gone: str, name: str
+) -> None:
+    with pytest.raises(PdfError, match=name):
+        _run_summary_edit(tmp_path, gone, "")

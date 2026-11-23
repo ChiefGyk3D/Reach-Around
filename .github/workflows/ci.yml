@@ -49,6 +49,8 @@ jobs:
         python3 -I scripts/check-token-drift
         python3 -I scripts/check-public-assets.py
         python3 -I scripts/check-edge.py --offline
+        python3 -I scripts/changelog-assemble.py verify
+        python3 -I scripts/changelog-assemble.py check-pr
       typecheck-install-command: |
         pip install --require-hashes -r requirements-dev.txt
         pip install --no-deps -e .

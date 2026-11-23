@@ -442,6 +442,7 @@ def test_policy_classifies_every_field() -> None:
         "unified_total",
         "turnstile_site_key",
         "public_pdf",
+        "audience_summary",
     }
     for name in ("partners", "case_studies", "rates", "demographics"):
         assert visibility(name) == "gated"
@@ -495,6 +496,7 @@ def test_public_projection_has_only_header_and_headline_numbers() -> None:
         "unified_total",
         "turnstile_site_key",
         "public_pdf",
+        "audience_summary",
     }
     assert CANARY not in json.dumps(out, default=str)
 
@@ -596,6 +598,22 @@ def test_unified_total_is_the_sum_of_valued_metrics() -> None:
     assert total.total == 157
     assert total.counted == 3
     assert total.ignored == 2
+
+
+def test_community_platforms_are_never_added_to_the_total() -> None:
+    kit = KitConfig.model_validate(
+        kit_doc(
+            metrics=[
+                manual("twitch", 100),
+                manual("kick", 50),
+                manual("discord", 900),
+                manual("matrix", 70),
+            ]
+        )
+    )
+    total = unified_total(resolve_metrics(kit, None))
+    assert total.total == 150
+    assert total.counted == 2
 
 
 def test_unified_total_is_none_when_nothing_has_a_value() -> None:

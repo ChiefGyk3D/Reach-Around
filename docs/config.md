@@ -1315,6 +1315,7 @@ end. Text must be quoted if YAML would read it as a number.
 | `disclosure` | text | none | a short statement, at most 500 characters; gated; see the note below |
 | `turnstile_site_key` | text | none | public key of the Turnstile widget on the gate form; 1 to 64 letters, digits, `-` or `_`. Without it the form has an empty widget slot and the build warns |
 | `public_pdf` | https URL | none | where you published the public PDF (`kit pdf --public`); adds a "Download Public PDF" button to the first screen of the public kit page. The page, the gated page and both PDFs never print the URL itself, and the PDFs drop the buttons. Without it there is no button |
+| `audience_summary` | block | none | options for the audience summary ([guide](kit.md#the-audience-summary)): `poll` (`respondents` at least 5, `as_of` date, `avg_other_platforms` 0 to 100, all typed by you) and `show_estimate` (`false` by default; `true` needs `poll` and adds one labeled "Estimate from a poll" line beside the range). The range itself needs no setting |
 | `unlock_link` | true or false | `false` | v1 has no emailed unlock link, so `true` is refused with a clear error until it exists |
 
 A **metric** is one headline number: `platform` (a platform name such as
@@ -1402,6 +1403,7 @@ nothing is printed.
 | `partners`, `case_studies`, `services`, `rates`, `engagement`, `demographics`, `disclosure`, `inquiry`, `testimonials` | gated (only after the gate) |
 | `turnstile_site_key` | public (it ships in the gate form; the key is public by design) |
 | `public_pdf` | public (it is a link on the first screen of the public page) |
+| `audience_summary` | public (the poll estimate line is printed on every page and both PDFs) |
 | `unlock_link` | private (configuration, never shown) |
 
 The public half therefore shows the header and the headline numbers and nothing
@@ -1697,6 +1699,23 @@ parser. A manual or item-id entry in the file that no source touches is kept.
 `numbers.stale_days` (optional) maps a platform name to the number of days
 (1 to 365) after which a hand-kept number for it counts as stale; platforms not
 listed use 30. Example: `stale_days: {kick: 14}`.
+
+`numbers.retain_days` (optional) maps a platform name to a retention window in
+days (1 to 3650, whole numbers only) for the `api` rows of that platform in the
+history file. `numbers.retain_warn_days` (optional, 1 to 365, default 7) is the
+margin. When `counts refresh` has a history file, it prints one warning per
+listed platform that has `api` rows within the margin of the window, or past it:
+`bluesky: retention warning: 2 api record(s) expire within 7 days of the 30 day
+window, 1 are past it; ...`. The line is a count, never a value. It is a warning
+only: nothing is stored differently and nothing is deleted. The remedy is to
+redact the old rows with the history tombstone tool (see
+[Social-stats history](social-history.md)). A refresh only appends a new current
+row; it does not replace or remove the old one, so the warning stays until the
+old rows are redacted. Hand-kept and imported rows are not counted. Every `retain_days`
+value must be more than the margin, and a quoted number or a boolean is refused.
+Example: `retain_days: {youtube: 30}`. The windows come from the platform terms
+you read (see [platform terms](research/platform-terms-retention.md)); nothing
+here sets one for you.
 
 ### Hand-kept numbers
 
