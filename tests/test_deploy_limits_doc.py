@@ -9,7 +9,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 _START = "## Kit limits and the daily write budget"
 _END = "## Secrets and Doppler"
-_WRITES = {"gate": 5, "view": 2, "alert": 1, "send": 7, "inquiry": 1}
+_WRITES = {"gate": 5, "view": 2, "alert": 1, "send": 7, "inquiry": 1, "claim": 1}
 _RESERVE = 10_000
 _PAGE_VIEWS = 22_700
 _CLICKS = 300_501
@@ -47,6 +47,8 @@ def test_worst_case_table_adds_up_and_is_under_the_warning_line() -> None:
     d = _defaults(section)
     expected = {
         "gate": 24 * d["ROUTE_BUDGET_GATE"] * _WRITES["gate"],
+        # the single-use claim row each solved gate challenge adds (#650)
+        "gate claim rows": 24 * d["ROUTE_BUDGET_GATE"] * _WRITES["claim"],
         "view": 24 * d["ROUTE_BUDGET_VIEW"] * _WRITES["view"],
         "alert": d["DAILY_ALERT_BUDGET"] * _WRITES["alert"],
         "send": d["DAILY_SEND_BUDGET"] * _WRITES["send"],
@@ -56,7 +58,7 @@ def test_worst_case_table_adds_up_and_is_under_the_warning_line() -> None:
     rows = {
         m.group(1): int(m.group(2))
         for m in re.finditer(
-            r"^\| (gate|view|alert|send|inquiry) \|.*\| (\d+) \|$", section, re.M
+            r"^\| (gate|gate claim rows|view|alert|send|inquiry) \|.*\| (\d+) \|$", section, re.M
         )
     }
     assert rows == expected
@@ -69,6 +71,7 @@ def test_worst_case_table_adds_up_and_is_under_the_warning_line() -> None:
     assert f"{funnel_row} |" in section
     assert f"| margin | | | {_MARGIN} |" in section
     assert f"| kit purge reserve | | | {_RESERVE} |" in section
+    assert "solved challenge" in section and "3,600" in section  # #650: the per-network figure
     assert combined <= d["D1_DAILY_WRITE_QUOTA"] * 0.8
     assert f"{round(100 * combined / d['D1_DAILY_WRITE_QUOTA'], 1)} percent" in section
 
@@ -178,13 +181,13 @@ def test_click_ceiling_section_states_the_enforced_numbers() -> None:
         ceiling,
     )
     assert "set `D1_DAILY_WRITE_QUOTA` to `100000` and this to `7500`" in text
-    # the free-plan pair fits: kit 42440 + page views + funnel + margin
-    # + ceiling + drop cap, under 80 percent
-    free = 42_440 + _PAGE_VIEWS + _FUNNEL + _MARGIN + 7_500
-    assert (
-        free + const("CLICK_DROP_COUNT_CAP") + const("CLICK_SETUP_FLAG_WRITES")
-        <= 100_000 * 0.8
-    )
+    # the free-plan pair fits: kit 46040 (claim rows counted, #650) + page views
+    # + funnel + margin + ceiling + drop cap. It is under the quota but above
+    # 80 percent since the claim rows, so the check warns; the docs say so.
+    free = 46_040 + _PAGE_VIEWS + _FUNNEL + _MARGIN + 7_500
+    free += const("CLICK_DROP_COUNT_CAP") + const("CLICK_SETUP_FLAG_WRITES")
+    assert 100_000 * 0.8 < free <= 100_000
+    assert "82.5 percent of the quota" in text
     # an invalid click ceiling is documented as the exception to
     # "every reservation refuses"
     assert "or any value is invalid, every reservation refuses" not in text

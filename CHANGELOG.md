@@ -6,6 +6,7 @@ while the project is alpha, every release is `0.x` and anything can change betwe
 
 ## [Unreleased]
 
+- D1 write quota model counts the media kit gate claim rows (#650, epic #244): each solved challenge writes one single-use claim row besides the gate unit, and the model now charges the gate 6 rows an operation instead of 5 (new `WRITES_PER_OP.claim`). The kit part of the default worst case goes from 42440 to 46040 and the combined figure from 371399 to 374999 (23.4 percent of the default quota; no limit was raised). Claim rows are bounded by the shared hourly gate budget, so one network writes at most 150 an hour (3,600 a day) at the default; the 1,200 an hour per network allowance in front of Turnstile limits vendor calls only. On the Free plan the documented pair (quota 100000, ceiling 7500) is now 82.5 percent, so the deploy check warns (it still passes); 5000 or less stays under 80 percent. `docs/deploy.md`, `docs/kit.md` and the tests are updated. Nothing is deployed.
 - Slimmer `live.js` (#699): the live badge script drops from 16089 to 12857 bytes (comment lines removed; behavior, CSP and every check unchanged), so the stack home page with badges loads 23189 bytes of JS instead of 26421. The `hub-live` page-weight row is lowered (JS 33100 to 29000, total 192700 to 191300, compressed 90300 to 89300), and a new test fails if `live.js` grows past 16000 bytes. The engine does not minify shipped scripts; a build-time minifier (about 6 KB minified) is left for later. Docs: `docs/performance.md`.
 
 ## [0.3.0-rc.6] - 2026-11-23

@@ -278,7 +278,7 @@ before relying on it, so this is unverified). This table was computed on the
 Free plan with a click reserve of 8000. Since 2026-11-19 the click reserve is
 300501 and the default quota is 1600000 (paid plan); the funnel figures
 (758 to 1998) are unchanged, and the combined total for one site with no link
-ids is now 371399, 23.2 percent of the default quota:
+ids is now 374999 (the gate claim rows, 3600 a day, were added in #650), 23.4 percent of the default quota:
 
 | Case | Combined worst case | Share of 100000 |
 |---|---|---|
