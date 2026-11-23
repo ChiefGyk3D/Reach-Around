@@ -306,7 +306,7 @@ SAMPLES: dict[str, dict[str, Any]] = {
     "crypto": {"id": "pay", "coins": [{"coin": "other", "address": ADDR}]},
     "text": {"id": "words", "markdown": "x"},
 }
-MODELS = {"crypto": Crypto, "text": Text}
+MODELS: dict[str, type[BaseModel]] = {"crypto": Crypto, "text": Text}
 
 
 def _set(block: dict[str, Any], path: tuple[str, ...], value: str) -> None:
@@ -348,6 +348,7 @@ def test_every_rendered_string_is_in_the_checked_set(kind: str, tmp_path: Path) 
     }
     cfg = SiteConfig.model_validate(data(support))
     html = build(data(support), tmp_path)["support/index.html"]
+    assert cfg.support is not None
     walked = [value for value, _kind in _displayed_text(cfg.support)]
     rendered = [m for m in marks if m in html]
     for mark in marks:
@@ -751,51 +752,6 @@ def test_a_fuzz_of_malformed_nesting_passes_only_when_wholly_balanced() -> None:
     assert agreed_ok > 5 and agreed_bad > 100
 
 
-def test_the_build_refuses_a_template_override_that_injects_an_image(
-    tmp_path: Path,
-) -> None:
-    overrides = tmp_path / "overrides"
-    (overrides / "templates" / "blocks").mkdir(parents=True)
-    (overrides / "templates" / "blocks" / "crypto.html").write_text(
-        '<li class="block"><img src="https://e.com/q.png" alt=""></li>',
-        encoding="utf-8",
-    )
-    with pytest.raises(SupportPageError):
-        build_site(
-            SiteConfig.model_validate(data(SUPPORT)),
-            tmp_path / "out",
-            today=TODAY,
-            assets_dir=ASSETS,
-            overrides=overrides,
-        )
-
-
-def test_the_build_refuses_a_template_override_that_duplicates_the_address_id(
-    tmp_path: Path,
-) -> None:
-    overrides = tmp_path / "overrides"
-    (overrides / "templates" / "blocks").mkdir(parents=True)
-    stock = (
-        ROOT / "src" / "reach_around" / "site" / "templates" / "blocks" / "crypto.html"
-    ).read_text("utf-8")
-    (overrides / "templates" / "blocks" / "crypto.html").write_text(
-        stock.replace(
-            '</ul>\n<p class="crypto-note"',
-            '</ul>\n<p id="pay-addr-1"></p><p class="crypto-note"',
-            1,
-        ),
-        encoding="utf-8",
-    )
-    with pytest.raises(SupportPageError, match="more than once"):
-        build_site(
-            SiteConfig.model_validate(data(SUPPORT)),
-            tmp_path / "out",
-            today=TODAY,
-            assets_dir=ASSETS,
-            overrides=overrides,
-        )
-
-
 def test_owner_custom_css_is_not_loaded_on_the_support_page(tmp_path: Path) -> None:
     overrides = tmp_path / "overrides"
     overrides.mkdir()
@@ -836,7 +792,9 @@ def test_no_support_policy_without_a_support_page(tmp_path: Path) -> None:
 def _instance_doc() -> dict[str, Any]:
     import yaml
 
-    doc = yaml.safe_load((ASSETS / "site.yaml").read_text(encoding="utf-8"))
+    doc: dict[str, Any] = yaml.safe_load(
+        (ASSETS / "site.yaml").read_text(encoding="utf-8")
+    )
     doc["support"] = SUPPORT
     doc["tabs"] = [t for t in doc["tabs"] if t["id"] != "support"]
     return doc
@@ -891,7 +849,7 @@ def test_the_address_class_is_only_for_code_and_one_per_card() -> None:
     with pytest.raises(SupportPageError, match="other than <code>"):
         check_support_html(page(address=span_first), [ADDR])
     two_codes = ADDRESS_ELEMENT.replace(
-        "</code>", '</code><code class="crypto-address" id="a-2">ADDR</code>'
+        "</code>", '</code><code class="crypto-address" id="a-2" dir="ltr">ADDR</code>'
     )
     with pytest.raises(SupportPageError, match="one address element"):
         check_support_html(page(address=two_codes), [ADDR, ADDR])
@@ -1017,3 +975,321 @@ def test_the_build_passes_urls_taken_from_the_config(tmp_path: Path) -> None:
         "button": {"label": "Kit", "url": "https://kit.test/"},
     }
     build(doc, tmp_path, ASSETS)
+
+
+# --- the page is rendered from packaged templates only ----------------------
+
+TOKEN = "Zq" * 14  # an obviously fake 28-character token
+
+
+def _overrides(tmp_path: Path, files: dict[str, str]) -> Path:
+    root = tmp_path / "overrides"
+    for name, text in files.items():
+        target = root / "templates" / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(text, encoding="utf-8")
+    return root
+
+
+def _build_with(overrides: Path, out: Path, raw: dict[str, Any]) -> dict[str, str]:
+    build_site(
+        SiteConfig.model_validate(raw),
+        out,
+        today=TODAY,
+        assets_dir=ASSETS,
+        overrides=overrides,
+    )
+    return {
+        p.relative_to(out).as_posix(): p.read_text(encoding="utf-8")
+        for p in out.rglob("*.html")
+    }
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "support.html",
+        "blocks/crypto.html",
+        "blocks/text.html",
+        "base.html",
+        "_header.html",
+        "_footer.html",
+        "_nav.html",
+    ],
+)
+def test_owner_template_overrides_are_not_read_for_the_support_page(
+    tmp_path: Path, name: str
+) -> None:
+    raw = data({**SUPPORT, "blocks": [crypto_block(), {"id": "t", "markdown": "Hi."}]})
+    base = build(raw, tmp_path / "plain")["support/index.html"]
+    root = _overrides(
+        tmp_path, {name: "OVERRIDE-MARKER {% block content %}{% endblock %}"}
+    )
+    pages = _build_with(root, tmp_path / "over", raw)
+    assert pages["support/index.html"] == base
+    assert "OVERRIDE-MARKER" not in pages["support/index.html"]
+
+
+def _packaged_env_with(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, files: dict[str, str]
+) -> None:
+    """Make the support page load the given templates, as if the engine's own
+    template had a defect (the owner path is closed; this proves the final
+    check on the built page)."""
+    from reach_around.site import build as build_module
+    from reach_around.site.overrides import make_environment
+
+    root = _overrides(tmp_path, files)
+
+    def patched(env: Any) -> Any:
+        made = make_environment(root)
+        made.globals.update(env.globals)
+        return made
+
+    monkeypatch.setattr(build_module, "_support_environment", patched)
+
+
+STOCK_SUPPORT = (
+    ROOT / "src" / "reach_around" / "site" / "templates" / "support.html"
+).read_text("utf-8")
+STOCK_CRYPTO = (
+    ROOT / "src" / "reach_around" / "site" / "templates" / "blocks" / "crypto.html"
+).read_text("utf-8")
+STOCK_HEADER = (
+    ROOT / "src" / "reach_around" / "site" / "templates" / "_header_variants.html"
+).read_text("utf-8")
+
+
+def _refused(tmp_path: Path, raw: dict[str, Any], match: str) -> None:
+    with pytest.raises(SupportPageError, match=match):
+        build(raw, tmp_path / "out")
+
+
+@pytest.mark.parametrize(
+    ("file", "edit"),
+    [
+        (
+            "support.html",
+            lambda t: t.replace("</section>", f"<p>{TOKEN}</p></section>", 1),
+        ),
+        ("support.html", lambda t: t.replace("<h2>", f'<h2 title="{TOKEN}">', 1)),
+        ("support.html", lambda t: t.replace("<h2>", f'<h2 aria-label="{TOKEN}">', 1)),
+        (
+            "blocks/crypto.html",
+            lambda t: t.replace(
+                '<p class="crypto-note">', f'<p class="crypto-note">{TOKEN} ', 1
+            ),
+        ),
+        (
+            "blocks/crypto.html",
+            lambda t: t.replace(
+                '<p class="crypto-note">', f'<p class="crypto-note" title="{TOKEN}">', 1
+            ),
+        ),
+    ],
+)
+def test_the_final_text_check_refuses_an_address_like_token_in_the_support_section(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, file: str, edit: Any
+) -> None:
+    stock = STOCK_SUPPORT if file == "support.html" else STOCK_CRYPTO
+    new = edit(stock)
+    assert new != stock
+    _packaged_env_with(monkeypatch, tmp_path, {file: new})
+    _refused(tmp_path, data(SUPPORT), "looks like an address")
+
+
+@pytest.mark.parametrize(
+    ("file", "text"),
+    [
+        ("_footer.html", f"<footer><p>{TOKEN}</p></footer>"),
+        ("_footer.html", f'<footer><p title="{TOKEN}">x</p></footer>'),
+        ("_nav.html", f'<nav aria-label="{TOKEN}"></nav>'),
+        ("_nav.html", f"<nav><ul><li>{TOKEN}</li></ul></nav>"),
+        ("_header.html", f"<header><h1>{TOKEN}</h1></header>"),
+        (
+            "_header.html",
+            f'<header><img class="avatar" src="/a.png" alt="{TOKEN}"></header>',
+        ),
+    ],
+)
+def test_the_final_text_check_refuses_an_address_like_token_in_the_chrome(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, file: str, text: str
+) -> None:
+    _packaged_env_with(monkeypatch, tmp_path, {file: text})
+    _refused(tmp_path, data(SUPPORT), "looks like an address|not allowed")
+
+
+def test_the_skip_link_and_page_title_text_are_read_too() -> None:
+    with pytest.raises(SupportPageError, match="looks like an address"):
+        check_support_html(page().replace("Skip</a>", f"{TOKEN}</a>"), [ADDR])
+    with pytest.raises(SupportPageError, match="looks like an address"):
+        check_support_html(
+            page().replace("<title>T</title>", f"<title>{TOKEN}</title>"), [ADDR]
+        )
+    for attr in ("alt", "title", "aria-label", "value"):
+        html = page().replace("<header>", f'<header><span {attr}="{TOKEN}"></span>', 1)
+        with pytest.raises(SupportPageError):
+            check_support_html(html, [ADDR])
+
+
+def test_text_is_read_joined_across_inline_tags_and_split_at_block_tags() -> None:
+    half = "Zq" * 7
+    joined = page(inner=f"<p>{half}<span>{half}</span></p>")
+    with pytest.raises(SupportPageError, match="looks like an address"):
+        check_support_html(joined, [ADDR])
+    split = page(inner=f"<p>{half}</p><p>{half}</p>")
+    check_support_html(split, [ADDR])
+
+
+def test_an_entity_split_address_in_a_text_block_is_shown_literally(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # runs of at most ten characters, so the config accepts it; the page must
+    # show the entities as typed (escaped), never as the address they spell
+    sneaky = "&#98;c1qexamp&#108;eexamp&#108;eexamp&#108;eexamp&#108;eexam"
+    raw = data({**SUPPORT, "blocks": [crypto_block(), {"id": "t", "markdown": sneaky}]})
+    html = build(raw, tmp_path / "stock")["support/index.html"]
+    assert "&amp;#98;c1qexamp" in html
+    unsafe = STOCK_SUPPORT.replace("{{ line }}", "{{ line|safe }}")
+    assert unsafe != STOCK_SUPPORT
+    _packaged_env_with(monkeypatch, tmp_path, {"support.html": unsafe})
+    _refused(tmp_path, raw, "looks like an address")
+
+
+def test_the_build_passes_the_configured_addresses_to_the_check(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    changed = STOCK_CRYPTO.replace("{{ entry.address }}", "{{ entry.address }}x")
+    assert changed != STOCK_CRYPTO
+    _packaged_env_with(monkeypatch, tmp_path, {"blocks/crypto.html": changed})
+    _refused(tmp_path, data(SUPPORT), "does not match")
+
+
+# --- parser differences: no comment, declaration or bare "<" anywhere -------
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        "<!-->",
+        "<!--->",
+        "<!-- c -->",
+        "<!---->",
+        "<![CDATA[x]]>",
+        "<!ELEMENT x>",
+        "<?php x ?>",
+        "<?x>",
+        "</ x>",
+        "</>",
+        "<1>",
+        "< p>",
+    ],
+)
+@pytest.mark.parametrize("where", ["head", "body", "main", "inner"])
+def test_markup_that_parsers_read_differently_is_refused_everywhere(
+    where: str, bad: str
+) -> None:
+    html = page(**{where: bad})
+    with pytest.raises(SupportPageError):
+        check_support_html(html, [ADDR])
+
+
+@pytest.mark.parametrize(
+    "html",
+    [
+        page().replace("<!DOCTYPE html>", "<!doctype html>"),
+        page().replace("<!DOCTYPE html>", ""),
+        page().replace("<!DOCTYPE html>", "<!DOCTYPE HTML PUBLIC 'x'>"),
+        " " + page(),
+    ],
+)
+def test_a_missing_or_non_standard_doctype_is_refused(html: str) -> None:
+    with pytest.raises(SupportPageError):
+        check_support_html(html, [ADDR])
+
+
+# --- each remaining guard on its own ----------------------------------------
+
+
+@pytest.mark.parametrize(
+    "html",
+    [
+        page().replace("<html ", '<html data-x="1" '),
+        page().replace("<body>", '<body data-x="1">'),
+        page().replace('<main id="content">', '<main id="content" data-x="1">'),
+        page().replace(
+            "<footer>", '<footer><nav><section class="other"></section></nav>', 1
+        ),
+        page().replace(
+            "<footer>", f"<footer>{COOKIE}{COOKIE.replace('Notice', 'Again')}", 1
+        ),
+        page().replace("</html>", ""),
+        page().replace("</body></html>", "</body>"),
+    ],
+)
+def test_page_level_guards_each_have_their_own_test(html: str) -> None:
+    with pytest.raises(SupportPageError):
+        check_support_html(html, [ADDR])
+
+
+def test_the_stock_page_has_no_comment_and_no_odd_markup(tmp_path: Path) -> None:
+    pages = build(_instance_doc(), tmp_path, ASSETS)
+    assert "<!--" not in pages["support/index.html"]
+
+
+# --- the head -----------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "head",
+    [
+        '<meta charset="utf-8">',
+        '<meta name="viewport" content="a"><meta name="viewport" content="b">',
+        '<meta name="robots" content="a"><meta name="robots" content="b">',
+        '<meta charset="utf-8" name="viewport" content="x">',
+        '<meta name="viewport">',
+        '<link rel="icon" href="https://e.com/i.png">',
+        '<link rel="icon" href="//e.com/i.png">',
+        '<link rel="preload" href="https://e.com/f.woff2" as="font">',
+        '<link rel="preload" href="/f.woff2" as="image">',
+        '<link rel="stylesheet" href="../static/site.0123456789abcdef0123.css" media="print">',
+        '<link rel="stylesheet" href="../static/site.0123456789abcdef012.css">',
+        '<link rel="stylesheet" href="../static/site.0123456789abcdef0123.css" crossorigin>',
+        '<script src="../static/copy.0123456789abcdef0123.js" type="module"></script>',
+        '<script src="../static/copy.0123456789abcdef0123.js" async></script>',
+        '<script src="../static/copy.0123456789abcdef0123.js" integrity="x"></script>',
+        "<title>second</title>",
+    ],
+)
+def test_head_guards(head: str) -> None:
+    with pytest.raises(SupportPageError):
+        check_support_html(page(head=head), [ADDR])
+
+
+def test_a_site_path_icon_and_a_configured_favicon_are_allowed() -> None:
+    check_support_html(
+        page(
+            head='<link rel="icon" href="../static/favicon.0123456789abcdef0123.svg" type="image/svg+xml">'
+        ),
+        [ADDR],
+    )
+    check_support_html(
+        page(head='<link rel="icon" href="https://e.com/i.png">'),
+        [ADDR],
+        {"https://e.com/i.png"},
+    )
+
+
+@pytest.mark.parametrize(
+    "edit",
+    [
+        lambda h: h.replace('dir="ltr"', 'dir="rtl"'),
+        lambda h: h.replace(' dir="ltr"', ""),
+        lambda h: h.replace('class="crypto-address"', 'class="crypto-address extra"'),
+        lambda h: h.replace('id="a-1" dir', 'id="a-1" title="x" dir'),
+        lambda h: h.replace('id="a-1" dir', 'id="a-1" aria-hidden="true" dir'),
+    ],
+)
+def test_the_address_element_is_exactly_the_stock_shape(edit: Any) -> None:
+    with pytest.raises(SupportPageError):
+        check_support_html(page(address=edit(ADDRESS_ELEMENT)), [ADDR])

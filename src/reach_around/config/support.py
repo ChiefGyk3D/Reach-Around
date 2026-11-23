@@ -20,10 +20,9 @@ _ADDRESS_PREFIX = re.compile(
     r"(?<![A-Za-z0-9])(?:bc1|tb1|ltc1|lnbc|lntb|0x)[A-Za-z0-9]{6,}", re.I
 )
 # Payment handles that are not an address format: a domain-like token (an inner
-# dot then two or more letters, which also covers name.eth and the like), a
-# name-service suffix, an "@" token and a $cashtag.
+# dot then two or more letters, which also covers name.eth and the like), an
+# "@" token and a $cashtag.
 _DOMAIN_LIKE = re.compile(r"[A-Za-z0-9][A-Za-z0-9-]*\.[A-Za-z]{2,}")
-_NAME_SERVICE = re.compile(r"\.(?:eth|crypto|sol|bnb|xyz)(?![A-Za-z])", re.I)
 _HANDLE = re.compile(r"@|\$\w")
 # Links, images, raw HTML and URI schemes (``bitcoin:``, ``https://``, ``www.``).
 _MARKUP = re.compile(
@@ -44,6 +43,17 @@ def check_plain(value: str, *, allow_newline: bool = False) -> None:
             )
 
 
+def check_no_address_shape(value: str) -> None:
+    """Refuse a long address-shaped token (the subset safe for fixed page text).
+
+    This is the part of ``check_no_address`` that does not mind domains, names
+    with accents or an ``@``: the fixed chrome of a page may show those.
+    """
+    text = unicodedata.normalize("NFKC", value)
+    if _LONG_TOKEN.search(text) or _ADDRESS_PREFIX.search(text):
+        raise ValueError("an address-like token")
+
+
 def check_no_address(value: str) -> None:
     """Refuse a token that looks like a payment address or handle.
 
@@ -60,7 +70,6 @@ def check_no_address(value: str) -> None:
         _LONG_TOKEN,
         _ADDRESS_PREFIX,
         _DOMAIN_LIKE,
-        _NAME_SERVICE,
         _HANDLE,
     ):
         if pattern.search(text):

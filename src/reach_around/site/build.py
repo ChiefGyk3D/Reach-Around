@@ -573,14 +573,28 @@ def _support_path_extras(config: SiteConfig) -> dict[str, dict[str, list[str]]]:
 def _chrome_urls(config: SiteConfig) -> set[str]:
     """The outside URLs the page chrome may show, taken from the config."""
     urls = {social.url for social in config.creator.socials}
-    if config.creator.avatar:
-        urls.add(config.creator.avatar)
+    for own in (config.creator.avatar, config.creator.favicon):
+        if own:
+            urls.add(own)
     if config.site_nav is not None:
         urls.update(item.url for item in config.site_nav.items)
     if config.profile_card is not None and config.profile_card.button is not None:
         urls.add(config.profile_card.button.url)
     urls.add(CREDIT_URL)
     return urls
+
+
+def _support_environment(env: Environment) -> Environment:
+    """A template environment for the support page that loads packaged templates only.
+
+    Owner template overrides are not read for this page or for anything it
+    includes (the base page, header, footer and blocks): the page shows payment
+    instructions, so what renders it is the engine's own code. The build
+    globals (asset names, frames and so on) are carried over.
+    """
+    packaged = make_environment(None)
+    packaged.globals.update(env.globals)
+    return packaged
 
 
 def _render_support(
@@ -808,7 +822,7 @@ def _render_pages(
     )
     if config.support is not None:
         pages[_SUPPORT_PATH] = _render_support(
-            env, config, shown, support_blocks, custom_css
+            _support_environment(env), config, shown, support_blocks, custom_css
         )
     pages[Path("404.html")] = _render_not_found(env, config, shown, custom_css)
     return pages

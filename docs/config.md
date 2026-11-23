@@ -1143,6 +1143,22 @@ What is not on this page, on purpose:
   (site bar, profile button, socials, credit, avatar); one avatar image; one
   skip link holding only text; a form and buttons only as the cookie notice. A
   template override that breaks any of this fails the build.
+* No owner template overrides. The support page and everything it includes
+  (the base page, header, tab bar, footer and the blocks) are rendered from the
+  engine's own packaged templates only; a file in `overrides/templates/` with
+  the same name is ignored for this page (it still applies to your other
+  pages). The payment page is what the engine's code renders, not what an
+  override renders.
+* No comment, declaration or stray `<` in the built page, and a standard
+  `<!DOCTYPE html>` first. Parsers read these differently, so the build refuses
+  them instead of guessing.
+* A last check over the built page: every text node and attribute value inside
+  the support section goes through the same address detector the config uses,
+  and the fixed chrome's text and shown attributes (`alt`, `title`,
+  `aria-label`, `value`) through its address-shape part (long tokens and
+  address prefixes; the chrome may show a domain or an accented name). Text
+  joins across inline tags the way a reader sees it. Only the one address
+  element is exempt, and it must equal the configured address.
 * No owner custom stylesheet. `overrides/custom.css` is not loaded on this
   page, because a stylesheet can change what an address looks like. The page
   uses the engine's own styles only.
