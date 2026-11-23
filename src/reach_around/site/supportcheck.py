@@ -246,7 +246,11 @@ class _Check(HTMLParser):
         if tag not in _SECTION_TAGS:
             _fail(f"<{tag}> inside the support content")
         self._only(node, _SECTION_ATTRS)
-        self.support_attrs.extend(node.attrs.values())
+        # An id is a name, not shown text (ids are checked for uniqueness); the
+        # copy target is an id reference.
+        self.support_attrs.extend(
+            v for k, v in node.attrs.items() if k not in ("id", "data-copy-target")
+        )
         if tag == "button":
             self.buttons.append((node.attrs.get("data-copy-target", ""), node))
         if tag == "code" and "crypto-address" in node.classes:

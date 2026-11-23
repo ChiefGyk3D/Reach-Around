@@ -1133,12 +1133,26 @@ def test_the_skip_link_and_page_title_text_are_read_too() -> None:
 
 
 def test_text_is_read_joined_across_inline_tags_and_split_at_block_tags() -> None:
-    half = "Zq" * 7
-    joined = page(inner=f"<p>{half}<span>{half}</span></p>")
+    # five pairs each: any two pieces are 20 characters (under the 26 limit), all
+    # three are 30. Only joining through the inline close tag reaches the token,
+    # so this fails if the text after an inline close tag is read on its own.
+    third = "Zq" * 5
+    support = page(inner=f"<p>{third}<span>{third}</span>{third}</p>")
     with pytest.raises(SupportPageError, match="looks like an address"):
-        check_support_html(joined, [ADDR])
-    split = page(inner=f"<p>{half}</p><p>{half}</p>")
-    check_support_html(split, [ADDR])
+        check_support_html(support, [ADDR])
+    footer = page().replace(
+        "<footer>", f"<footer><p>{third}<span>{third}</span>{third}</p>", 1
+    )
+    with pytest.raises(SupportPageError, match="looks like an address"):
+        check_support_html(footer, [ADDR])
+    # block tags do not join: the same three pieces in three paragraphs pass
+    check_support_html(
+        page(inner=f"<p>{third}</p><p>{third}</p><p>{third}</p>"), [ADDR]
+    )
+    check_support_html(
+        page(inner=f"<div>{third}</div><ul><li>{third}</li></ul><p>{third}</p>"),
+        [ADDR],
+    )
 
 
 def test_an_entity_split_address_in_a_text_block_is_shown_literally(
@@ -1293,3 +1307,52 @@ def test_a_site_path_icon_and_a_configured_favicon_are_allowed() -> None:
 def test_the_address_element_is_exactly_the_stock_shape(edit: Any) -> None:
     with pytest.raises(SupportPageError):
         check_support_html(page(address=edit(ADDRESS_ELEMENT)), [ADDR])
+
+
+# --- the support section gets the full detector, not just the shape check ----
+
+CYRILLIC_O = chr(0x043E)
+
+
+@pytest.mark.parametrize(
+    "token",
+    ["pay.eth", "@payhandle", "$payhandle", "b" + CYRILLIC_O + "ok"],
+)
+@pytest.mark.parametrize("where", ["paragraph", "attribute"])
+def test_the_support_section_gets_the_full_detector_on_the_built_page(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, token: str, where: str
+) -> None:
+    edit = f"<p>{token}</p></section>" if where == "paragraph" else None
+    if edit is not None:
+        new = STOCK_SUPPORT.replace("</section>", edit, 1)
+    else:
+        new = STOCK_SUPPORT.replace("<h2>", f'<h2 title="{token}">', 1)
+    assert new != STOCK_SUPPORT
+    _packaged_env_with(monkeypatch, tmp_path, {"support.html": new})
+    _refused(tmp_path, data(SUPPORT), "looks like an address")
+
+
+# --- small guards ---------------------------------------------------------------
+
+
+def test_head_and_meta_attribute_guards_each_stand_alone() -> None:
+    with pytest.raises(SupportPageError, match="head"):
+        check_support_html(page().replace("<head>", '<head data-x="1">'), [ADDR])
+    with pytest.raises(SupportPageError, match="charset"):
+        check_support_html(
+            page().replace(
+                '<meta charset="utf-8">',
+                '<meta charset="utf-8" name="viewport" content="x">',
+            ),
+            [ADDR],
+        )
+
+
+def test_a_long_block_id_is_not_shown_text(tmp_path: Path) -> None:
+    long_id = "a" * 30
+    support = {**SUPPORT, "blocks": [crypto_block(long_id)]}
+    html = build(data(support), tmp_path)["support/index.html"]
+    assert f'id="{long_id}-addr-1"' in html
+    # but a long value in a shown attribute is still refused
+    with pytest.raises(SupportPageError, match="looks like an address"):
+        check_support_html(page(inner=f'<p aria-label="{"a" * 30}">x</p>'), [ADDR])
