@@ -264,7 +264,8 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
         type=Path,
         metavar="PATH",
         help="your site config: adds a click rollup by group (tab) and route "
-        "class; a group under the floor prints 'Under 5'",
+        "class: sums of the link rows the report prints, never a figure from "
+        "a hidden total; with a rollup digest of the printed rollup only",
     )
     parser.add_argument("--since", help="first UTC day to count, YYYY-MM-DD")
     parser.add_argument("--until", help="last UTC day to count, YYYY-MM-DD")

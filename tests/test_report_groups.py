@@ -13,7 +13,6 @@ import hashlib
 import io
 import itertools
 import json
-import re
 from collections.abc import Mapping
 from datetime import UTC, datetime
 from pathlib import Path
@@ -119,10 +118,8 @@ def test_rollup_digest_matches_the_reference_and_binds_printed_inputs(
 ) -> None:
     export = export_of(tmp_path, clicks({"one-1": 1, "big-1": 30, "big-2": 12}))
     for config in (CONFIG_A, GROUPS, {}):
-        report, core = _build_report(export, groups=config)
-        want = reference_digest(
-            core, report, config, {**PARAMS, "period": report["period"]}
-        )
+        report, _ = _build_report(export, groups=config)
+        want = reference_digest(report, config, {**PARAMS, "period": report["period"]})
         assert report["groups"]["rollup_digest"] == want
     # It differs when a PRINTED id moves group, and with top and window.
     moved = {**CONFIG_A, "big-2": "elsewhere"}
@@ -131,10 +128,8 @@ def test_rollup_digest_matches_the_reference_and_binds_printed_inputs(
     assert (
         base != build_report(export, groups=CONFIG_A, top=3)["groups"]["rollup_digest"]
     )
-    windowed = build_report(
-        export, groups=CONFIG_A, since="2026-11-01", until="2026-11-01"
-    )
-    assert base != windowed["groups"]["rollup_digest"]
+    raised = build_report(export, groups=CONFIG_A, floor=6)
+    assert base != raised["groups"]["rollup_digest"]
     assert "rollup digest" not in render_text(build_report(export))
     assert "rollup digest (v1)" in render_text(build_report(export, groups=CONFIG_A))
 
@@ -149,43 +144,89 @@ def test_hidden_id_group_does_not_change_the_digest(tmp_path: Path) -> None:
         assert render_all(report) == render_all(base)
 
 
-def test_negative_a_digest_that_binds_hidden_structure_fails(
+def test_digest_ignores_hidden_cells_and_cannot_be_brute_forced(
+    tmp_path: Path,
+) -> None:
+    """Two exports with the same printed rows and different hidden cells give
+    the SAME rollup digest, so testing candidate hidden counts against the
+    printed digest cannot tell them apart (the reviewer's attack)."""
+    base = {"big-1": 30, "big-2": 12}
+    true = build_report(
+        export_of(tmp_path, clicks({**base, "one-1": 1})), groups=CONFIG_A
+    )
+    target = true["groups"]["rollup_digest"]
+    matching = []
+    for guess in range(0, 5):
+        rows = clicks({**base, "one-1": guess})
+        got = build_report(export_of(tmp_path, rows), groups=CONFIG_A)
+        if got["groups"]["rollup_digest"] == target:
+            matching.append(guess)
+    # 0 hidden changes what prints (nothing is hidden, so 30 prints); every
+    # guess that hides the id gives the same digest: no candidate is pinned.
+    assert matching == [1, 2, 3, 4]
+    # Different hidden ids and totals, same printed rows: same digest too.
+    other = build_report(
+        export_of(tmp_path, clicks({**base, "one-2": 3, "one-3": 4})),
+        groups=CONFIG_A,
+    )
+    assert other["groups"]["rollup_digest"] == target
+    assert render_all(other) == render_all(true)
+
+
+def test_negative_a_digest_over_private_cells_is_caught(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """A digest that also hashes a hidden cell (as the core digest did) makes
+    every guess distinguishable, so the brute force above would work."""
     from reach_around.funnel import report as report_mod
     from reach_around.funnel.groups import rollup_digest as real
 
-    rows = clicks({"one-1": 1, "big-1": 30, "big-2": 12})
-    export = export_of(tmp_path, rows)
-    a = {**CONFIG_A, "one-1": "x"}
-    b = {**CONFIG_A, "one-1": "y"}
-    assert render_all(build_report(export, groups=a)) == render_all(
-        build_report(export, groups=b)
-    )
-
-    def binds_hidden(core: str, effective: Any, section: Any, params: Any) -> str:
-        return real(
-            core + json.dumps(sorted(CURRENT.items())), effective, section, params
+    base = {"big-1": 30, "big-2": 12}
+    seen = set()
+    for guess in (1, 2, 3, 4):
+        monkeypatch.setattr(
+            report_mod,
+            "group_rollup_digest",
+            lambda e, sec, p, g=guess: real(e, sec, {**p, "hidden": g}),
         )
+        export = export_of(tmp_path, clicks({**base, "one-1": guess}))
+        seen.add(build_report(export, groups=CONFIG_A)["groups"]["rollup_digest"])
+    assert len(seen) == 4  # each guess is distinguishable: the oracle
 
-    CURRENT: dict[str, str] = {}
-    monkeypatch.setattr(report_mod, "group_rollup_digest", binds_hidden)
-    CURRENT.update(a)
-    one = render_all(build_report(export, groups=a))
-    CURRENT.clear()
-    CURRENT.update(b)
-    two = render_all(build_report(export, groups=b))
-    assert one != two  # the equivalence check bites on such a digest
-    # And a digest that appends a hidden total no longer matches the reference.
-    monkeypatch.setattr(
-        report_mod,
-        "group_rollup_digest",
-        lambda core, eff, sec, par: real(core + "hidden-total:1", eff, sec, par),
-    )
-    report, core = _build_report(export, groups=a)
-    assert report["groups"]["rollup_digest"] != reference_digest(
-        core, report, a, {**PARAMS, "period": report["period"]}
-    )
+
+BASE_PARAMS = {"floor": 5, "top": 10, "period": {"a": 1}, "offset": 0, "kind": None}
+BASE_ROWS = {
+    "state": "ok",
+    "rows": [{"group": "g", "route_class": "link", "clicks": 12, "status": "ok"}],
+}
+BASE_ASSIGN = [["x", "g", "link"]]
+
+
+def digest_of(**changes: Any) -> str:
+    from reach_around.funnel.groups import rollup_digest
+
+    params = {**BASE_PARAMS, **{k: v for k, v in changes.items() if k in BASE_PARAMS}}
+    section = changes.get("section", BASE_ROWS)
+    return rollup_digest(changes.get("assign", BASE_ASSIGN), section, params)
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"floor": 6},
+        {"top": 3},
+        {"period": {"a": 2}},
+        {"offset": 1},
+        {"kind": "week"},
+        {"section": {**BASE_ROWS, "state": "withheld"}},
+        {"section": {"state": "ok", "rows": []}},
+        {"assign": [["x", "h", "link"]]},
+        {"assign": [["x", "g", "social_icon"]]},
+    ],
+)
+def test_every_bound_input_changes_the_digest(change: dict[str, Any]) -> None:
+    assert digest_of(**change) != digest_of()
+    assert digest_of() == digest_of()
 
 
 def test_section_is_skipped_when_a_link_table_is_withheld(tmp_path: Path) -> None:
@@ -214,11 +255,11 @@ def render_all(report: dict[str, Any]) -> dict[str, str]:
 
 
 def reference_digest(
-    core: str, report: dict[str, Any], groups: Mapping[str, str], params: dict[str, Any]
+    report: dict[str, Any], groups: Mapping[str, str], params: dict[str, Any]
 ) -> str:
-    """Independent reference. It binds exactly: the core digest, the printed
-    (id, group, route class) triples, the group rows and state, and the
-    parameters. No other config mapping."""
+    """Independent reference. It binds exactly: the printed (id, group, route
+    class) triples, the group rows and state, and the parameters. Nothing
+    private: no core digest, no hidden total, no hidden id's group."""
     triples = sorted(
         [r["label"], groups.get(r["label"], UNGROUPED), kind]
         for key, kind in (("links", "link"), ("social_icons", "social_icon"))
@@ -227,7 +268,6 @@ def reference_digest(
     blob = json.dumps(
         {
             "version": 1,
-            "core": core,
             "assignments": triples,
             "rows": report["groups"]["rows"],
             "state": report["groups"]["state"],
@@ -299,10 +339,7 @@ def test_hidden_totals_do_not_change_the_output(tmp_path: Path) -> None:
             rows = clicks({**spec, "big-1": 30, "big-2": 12})
             report = build_report(export_of(tmp_path, rows), groups=CONFIG_A)
             assert not leaks(report, CONFIG_A)
-            # Every public field except the commitment value, which binds the
-            # core digest (a hash of the private cells) and so moves with data.
-            shown = json.dumps(render_all(report), sort_keys=True)
-            seen.add(re.sub(r"[0-9a-f]{64}", "DIGEST", shown))
+            seen.add(json.dumps(render_all(report), sort_keys=True))
     assert len(seen) == 1
 
 

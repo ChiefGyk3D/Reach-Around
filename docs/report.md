@@ -167,16 +167,17 @@ It is label suppression, as the rest of this report, not k-anonymity; share the
 report, not the export.
 
 Digests. The release ledger digest is unchanged and is called the core digest
-here; older releases stay repeatable. With `--config` the section also prints a
-separately versioned rollup digest (`rollup digest (v1)`, JSON
-`groups.rollup_digest`, CSV `rollup_digest_v1` in `metadata.csv`). It is a
-commitment to the printed rollup only. It hashes the core digest, the printed
-(link id, group, route class) assignments, the group rows and state, and the
-floor, `--top`, period and offset. It never covers where an id with no printed
-row sits in the config, so two configs that differ only in a hidden id's group
-give the same value, and two that move a printed id give different values. The
-core digest is a hash of private counts, so the rollup digest is too: like the
-ledger, keep it private. The ledger does not record the rollup digest.
+here; it hashes the private input cells and goes only into the private ledger,
+never into a report. With `--config` the section also prints a separately
+versioned rollup digest (`rollup digest (v1)`, JSON `groups.rollup_digest`, CSV
+`rollup_digest_v1` in `metadata.csv`). It is a commitment to the printed rollup
+only: it hashes the printed (link id, group, route class) assignments, the group
+rows and state, and the floor, `--top`, period, offset and kind, and nothing
+else. It does not bind the ledger entry, and it never covers a hidden total or
+where an id with no printed row sits in the config. So two exports that print
+the same rows give the same value (a reader cannot brute-force hidden counts
+against it), and two configs that differ only in a hidden id's group give the
+same value. Moving a printed id or changing any bound input changes it.
 
 ## CSV output
 

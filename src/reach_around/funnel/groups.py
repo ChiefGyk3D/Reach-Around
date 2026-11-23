@@ -95,20 +95,22 @@ def assignments(
 
 
 def rollup_digest(
-    core_digest: str,
     effective: list[list[str]],
     section: Mapping[str, Any],
     params: Mapping[str, Any],
 ) -> str:
-    """Version 1 digest: a commitment to the PRINTED rollup only. It hashes the
-    core (legacy) digest, the effective printed assignments, the rows and the
-    parameters. It never covers the config mapping of an id the report does not
-    print, so a candidate config that differs only in a hidden id's group gives
-    the same value."""
+    """Version 1 digest: a commitment to the PRINTED rollup only.
+
+    It hashes the printed (id, group, route class) assignments, the group rows
+    and state, and the floor, top, period, offset and kind. Nothing private
+    goes in: not the ledger's core digest (a hash of the private input cells,
+    which a reader could brute-force against this value), not a hidden total,
+    not the group of an id with no printed row. So it does not bind the ledger
+    entry; two exports that print the same rows give the same value.
+    """
     blob = json.dumps(
         {
             "version": ROLLUP_DIGEST_VERSION,
-            "core": core_digest,
             "assignments": effective,
             "rows": section["rows"],
             "state": section["state"],

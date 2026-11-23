@@ -1203,9 +1203,9 @@ def _build_report(
     digest = hashlib.sha256(blob.encode("utf-8")).hexdigest()
     if group_section is not None:
         # After the core digest, which stays the legacy value: a release recorded
-        # without groups stays repeatable. The rollup has its own digest.
+        # without groups stays repeatable. The rollup digest is derived from
+        # printed material only and never touches the private core digest.
         group_section["rollup_digest"] = group_rollup_digest(
-            digest,
             group_assignments(groups or {}, group_printed),
             group_section,
             {
