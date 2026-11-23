@@ -19,7 +19,7 @@ from dataclasses import dataclass, field, replace
 from datetime import date
 from importlib import resources
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, NamedTuple
 
 from jinja2 import Environment
 
@@ -84,9 +84,11 @@ from reach_around.site.overrides import (
 )
 from reach_around.site.platforms import platform_rows
 from reach_around.site.privacy import collected_items, intro_text, sets_cookies
+from reach_around.site.qr import BORDER as QR_BORDER
+from reach_around.site.qr import qr_file_name, qr_matrix, qr_svg
 from reach_around.site.redirects import render_redirects
 from reach_around.site.robots import render_robots
-from reach_around.site.supportcheck import check_support_html
+from reach_around.site.supportcheck import check_qr_svg, check_support_html
 from reach_around.site.theme import preload_fonts, theme_css
 from reach_around.site.visibility import visible_blocks
 
@@ -667,6 +669,40 @@ def _support_environment(env: Environment) -> Environment:
     return packaged
 
 
+_QR_PIXELS = 4  # drawn pixels per module; the page CSS scales it to fit
+
+
+class _QrFile(NamedTuple):
+    name: str
+    size: int
+    svg: str
+
+
+def _support_qr(config: SiteConfig, blocks: Sequence[Block]) -> dict[str, _QrFile]:
+    """For each support coin: element id -> its QR file.
+
+    Empty unless ``support.qr`` is on. The SVG is made from the validated
+    address string alone, then checked against it, so a file can never carry
+    a different payload than the address printed beside it.
+    """
+    if config.support is None or not config.support.qr:
+        return {}
+    found: dict[str, _QrFile] = {}
+    n = 0
+    for block in blocks:
+        if not isinstance(block, Crypto):
+            continue
+        for i, coin in enumerate(block.coins, start=1):
+            n += 1
+            svg = qr_svg(coin.address)
+            check_qr_svg(svg, coin.address)
+            modules = len(qr_matrix(coin.address)) + 2 * QR_BORDER
+            found[f"{block.id}-addr-{i}"] = _QrFile(
+                qr_file_name(n, svg), modules * _QR_PIXELS, svg
+            )
+    return found
+
+
 def _render_support(
     env: Environment,
     config: SiteConfig,
@@ -681,10 +717,12 @@ def _render_support(
     blocks = sorted(blocks, key=lambda block: not isinstance(block, Crypto))
     if support is None:
         raise ValueError("the config has no support page")
+    qr = _support_qr(config, blocks)
     html = env.get_template("support.html").render(
         creator=config.creator,
         support=support,
         blocks=blocks,
+        support_qr={ident: {"name": f.name, "size": f.size} for ident, f in qr.items()},
         support_text={
             block.id: _paragraphs(block.markdown)
             for block in blocks
@@ -725,6 +763,12 @@ def _render_support(
             for coin in block.coins
         ],
         _chrome_urls(config),
+        [
+            qr[f"{block.id}-addr-{i}"].name if qr else None
+            for block in blocks
+            if isinstance(block, Crypto)
+            for i, _ in enumerate(block.coins, start=1)
+        ],
     )
     return html
 
@@ -1157,6 +1201,8 @@ def build_site(
             env, config, shown, support_blocks, custom_css is not None, today
         ).items()
     }
+    for qr_file in _support_qr(config, support_blocks).values():
+        files[Path("support") / qr_file.name] = qr_file.svg.encode("ascii")
     if beacon_frame_on(config):
         files[FRAME_PAGE_PATH] = (
             env.get_template("beacon_frame.html")
@@ -1253,8 +1299,14 @@ def build_site(
         routes = {}
     if socials is not None or routes:
         files[Path("_redirects")] = render_redirects(socials, routes).encode("ascii")
+    # A QR file's name carries a digest of its address, so it is as safe to
+    # cache forever as a fingerprinted asset; the support page revalidates.
+    qr_published = {
+        (Path("support") / f.name).as_posix()
+        for f in _support_qr(config, support_blocks).values()
+    }
     immutable, revalidate = cache_patterns(
-        published, {path.as_posix() for path in named.hashed}
+        published, {path.as_posix() for path in named.hashed} | qr_published
     )
     files[Path("_headers")] = render_headers(
         path_extras={
