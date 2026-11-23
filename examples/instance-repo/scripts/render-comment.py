@@ -627,6 +627,7 @@ KNOWN_FIELDS: frozenset[str] = frozenset(
         "price_text",
         "privacy",
         "profile_card",
+        "public_pdf",
         "qr",
         "quote",
         "quotes",

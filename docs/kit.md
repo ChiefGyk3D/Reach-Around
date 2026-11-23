@@ -112,6 +112,24 @@ gated content); anything else in that directory is left alone. Upload the
 gated file with the Worker deploy, never with the Pages deploy: the deploy
 publishes only `--out`.
 
+### The first screen
+
+The top of the public page is built to be read in 30 seconds: the title, the
+`about` line (your niche in a sentence), the `tags` chips, one range line, and
+two buttons. The numbers table sits below it at the full content width.
+
+- **Range line.** "Unique audience is between X and Y, depending on platform overlap." X is the
+  largest single number the total adds up and Y is the total. It needs two or
+  more counted numbers, and it is hidden whenever the total is hidden (a counted
+  number under the privacy floor). It is never one deduplicated figure.
+- **Request Full Kit.** Jumps to the gate form. It appears only when the kit has
+  a gate form.
+- **Download Public PDF.** Appears only when `kit.public_pdf` is set to the https
+  URL where you published the public PDF.
+
+The gated page shows the range line too. Both PDFs print the range line and drop
+the buttons.
+
 ### Structured demographics
 
 Each demographics entry is for one configured platform and one UTC `as_of`

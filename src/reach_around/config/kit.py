@@ -81,6 +81,7 @@ KIT_FIELD_POLICY: Mapping[str, FieldPolicy] = {
     "recent_posts": FieldPolicy("public"),
     "unified_total": FieldPolicy("public"),
     "turnstile_site_key": FieldPolicy("public"),
+    "public_pdf": FieldPolicy("public"),
     "partners": FieldPolicy("gated"),
     "case_studies": FieldPolicy("gated"),
     "services": FieldPolicy("gated"),
@@ -598,6 +599,10 @@ class KitConfig(_Model):
     # Public key of the Turnstile widget on the gate form. Optional: without it
     # the form renders an empty widget slot and the build warns.
     turnstile_site_key: StrictStr | None = None
+    # Where the owner published the public PDF (an https URL). Public: it is a
+    # link on the first screen of the public page, so the "Download Public PDF"
+    # button appears only when this is set. The PDFs themselves never print it.
+    public_pdf: Annotated[str, Field(max_length=2048)] | None = None
     # A file of link-page numbers imported from the previous provider (see
     # ``reach_around.config.imported_history``), relative to the config's folder.
     # Shown as its own block "Before Reach Around", gated unless
@@ -649,6 +654,11 @@ class KitConfig(_Model):
                 "across its photo, partner logos and case-study thumbnails"
             )
         return self
+
+    @field_validator("public_pdf")
+    @classmethod
+    def _public_pdf_is_https(cls, value: str | None) -> str | None:
+        return None if value is None else _https(value)
 
     @field_validator("turnstile_site_key")
     @classmethod
