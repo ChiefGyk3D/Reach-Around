@@ -7,6 +7,7 @@ the page makes must go to the loopback server (no third-party request).
 
 from __future__ import annotations
 
+import base64
 import functools
 import os
 import shutil
@@ -17,7 +18,7 @@ from pathlib import Path
 
 import pytest
 from playwright.sync_api import Browser, sync_playwright
-from test_kit_build import TODAY, make_config
+from test_kit_build import TODAY, gated_doc, make_config
 
 from reach_around.site.build import build_site
 
@@ -303,3 +304,70 @@ def test_numbers_stay_stacked_cards_on_a_phone(browser: Browser, site: str) -> N
             "document.documentElement.scrollWidth"
             " <= document.documentElement.clientWidth"
         )
+
+
+def test_table_layout_and_no_wrap_at_the_narrowest_table_width(
+    browser: Browser, site: str
+) -> None:
+    """From 48rem the numbers are a real table at full width; at that narrow
+    width the pill and the date stay on one line only because of nowrap."""
+    page = _numbers_page(browser, site, 768)
+    table = page.locator(".kit-numbers .kit-table")  # type: ignore[attr-defined]
+    assert table.evaluate("e => getComputedStyle(e).display") == "table"
+    box = table.bounding_box()
+    intro = page.locator(".kit-deck-intro").bounding_box()  # type: ignore[attr-defined]
+    assert box and intro
+    assert box["width"] >= intro["width"] - 1
+    # squeeze the section the way a long method line or a big font would
+    page.evaluate(  # type: ignore[attr-defined]
+        "document.querySelector('.kit-numbers').style.width = '26rem'"
+    )
+    wrapped = page.evaluate(  # type: ignore[attr-defined]
+        """() => [...document.querySelectorAll(
+          '.kit-numbers .kit-trust, .kit-numbers td[data-label="As of"] time'
+        )].filter((el) => el.getBoundingClientRect().height > 30).length"""
+    )
+    assert wrapped == 0
+
+
+@pytest.fixture(scope="module")
+def photo_site(tmp_path_factory: pytest.TempPathFactory) -> Iterator[str]:
+    base = tmp_path_factory.mktemp("kit-photo")
+    (base / "inst" / "media").mkdir(parents=True)
+    (base / "inst" / "media" / "kit-photo.png").write_bytes(
+        base64.b64decode(
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR4nGNgYAAAAAMA"
+            "ASsJTYQAAAAASUVORK5CYII="
+        )
+    )
+    out = base / "out"
+    build_site(
+        make_config(gated_doc(photo="media/kit-photo.png", tags=["Linux"])),
+        out,
+        today=TODAY,
+        gated_out=base / "gated",
+        assets_dir=base / "inst",
+    )
+    server = ThreadingHTTPServer(
+        ("127.0.0.1", 0), functools.partial(_Quiet, directory=str(out))
+    )
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    yield f"http://127.0.0.1:{server.server_address[1]}"
+    server.shutdown()
+    server.server_close()
+
+
+def test_photo_sits_beside_the_first_screen_from_51_25rem_and_stacks_below(
+    browser: Browser, photo_site: str
+) -> None:
+    wide = _numbers_page(browser, photo_site, 1440)
+    photo = wide.locator(".kit-photo").bounding_box()  # type: ignore[attr-defined]
+    first = wide.locator(".kit-first").bounding_box()  # type: ignore[attr-defined]
+    assert photo and first
+    assert photo["x"] + photo["width"] <= first["x"] + 1
+    assert abs(photo["y"] - first["y"]) < 40
+    narrow = _numbers_page(browser, photo_site, 800)
+    photo = narrow.locator(".kit-photo").bounding_box()  # type: ignore[attr-defined]
+    first = narrow.locator(".kit-first").bounding_box()  # type: ignore[attr-defined]
+    assert photo and first
+    assert first["y"] >= photo["y"] + photo["height"] - 1

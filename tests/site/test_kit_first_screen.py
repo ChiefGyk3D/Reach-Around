@@ -104,6 +104,11 @@ def test_request_the_kit_goes_to_the_gate_only_when_there_is_a_gate(
     plain = _html(tmp_path / "plain", kit_doc())
     assert "Request the kit" not in plain
     assert "kit-request" not in plain
+    # a PDF link and no gate form: the PDF button alone, never a dead jump link
+    only_pdf = _html(tmp_path / "pdf-only", kit_doc(public_pdf=PDF_URL))
+    assert "Download the PDF" in only_pdf
+    assert "Request the kit" not in only_pdf
+    assert "#kit-request" not in only_pdf
 
 
 def test_download_pdf_needs_a_configured_https_url(tmp_path: Path) -> None:
@@ -142,3 +147,25 @@ def test_gated_page_shows_the_range_but_no_actions(tmp_path: Path) -> None:
     html = (gated / "kit.html").read_text(encoding="utf-8")
     assert "somewhere between 3,400 and 4,600" in re.sub(r"<[^>]+>", "", html)
     assert 'class="kit-actions"' not in html
+
+
+def _metrics(*values: int) -> list[dict]:  # type: ignore[type-arg]
+    return [
+        {
+            "platform": platform,
+            "label": "Followers",
+            "value": value,
+            "as_of": "2027-03-01",
+        }
+        for platform, value in zip(("twitch", "youtube", "kick"), values, strict=False)
+    ]
+
+
+def test_a_counted_zero_does_not_make_a_range_that_repeats_the_total(
+    tmp_path: Path,
+) -> None:
+    html = _html(tmp_path, kit_doc(metrics=_metrics(3400, 0)))
+    assert "somewhere between" not in html
+    # two numbers above zero still make one
+    again = _html(tmp_path / "two", kit_doc(metrics=_metrics(3400, 0, 100)))
+    assert "somewhere between 3,400 and 3,500." in again

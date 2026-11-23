@@ -808,12 +808,15 @@ RANGE_SENTENCE = "Unique people are somewhere between {low} and {high}."
 
 
 def range_text(metrics: list[ResolvedMetric], total: UnifiedTotal) -> str | None:
-    """The range line, or None when fewer than two numbers are added up (one
-    number has no range). A set cannot be smaller than its largest member, so
-    the largest counted number is the lower bound and the total the upper."""
+    """The range line, or None when fewer than two numbers above zero are added
+    up (one number has no range, and a zero would repeat the total). A set
+    cannot be smaller than its largest member, so the largest counted number is
+    the lower bound and the total the upper."""
     if total.total is None or total.counted < 2:
         return None
-    counted = [m.value for m in metrics if m.in_total and m.value is not None]
+    counted = [m.value for m in metrics if m.in_total and m.value]
+    if len(counted) < 2:
+        return None
     return RANGE_SENTENCE.format(
         low=shown_count(max(counted)), high=shown_count(total.total)
     )
