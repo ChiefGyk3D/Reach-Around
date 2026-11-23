@@ -103,6 +103,7 @@ from reach_around.counts.refresh import (
     render_status,
     select,
 )
+from reach_around.counts.retention import RetentionPolicy, retention_warnings
 from reach_around.counts.secret_sink import (
     DopplerSink,
     MetaStyleSink,
@@ -280,6 +281,7 @@ def run_refresh(
                 now,
                 history,
                 sinks,
+                _retention_policy(config),
             )
     except LockBusy:
         print(
@@ -383,6 +385,10 @@ def _retention_notice(history: Path, stamp: datetime) -> None:
         records = list(read_history(history).records)
     except HistoryError:
         return  # a missing or damaged file is reported by the history work itself
+    _retention_notice_for(records, stamp)
+
+
+def _retention_notice_for(records: list[Record], stamp: datetime) -> None:
     today = stamp.astimezone(UTC).date()
     count = len(deletion_candidates(records, today))
     if count:
@@ -399,6 +405,23 @@ def _retention_notice(history: Path, stamp: datetime) -> None:
             "tool (#586)",
             file=sys.stderr,
         )
+
+
+def _retention_checks(
+    history: Path, stamp: datetime, policy: RetentionPolicy | None
+) -> None:
+    """Both retention checks of a refresh from ONE read of the history file (the
+    refresh lock is held, and a file can be large). Read-only (#620)."""
+    try:
+        records = list(read_history(history).records)
+    except HistoryError:
+        return  # a missing or damaged file is reported by the history work itself
+    _retention_notice_for(records, stamp)
+    if policy is not None and policy.retain_days:
+        for warning in retention_warnings(
+            records, policy, stamp.astimezone(UTC).date()
+        ):
+            print(warning.line(), file=sys.stderr)
 
 
 def _print_token_health(
@@ -422,6 +445,7 @@ def _cycle(
     now: Callable[[], datetime],
     history: Path | None = None,
     sinks: Sinks | None = None,
+    retention: RetentionPolicy | None = None,
 ) -> int:
     try:
         previous = (
@@ -520,7 +544,7 @@ def _cycle(
         if kept < len(fetched):
             print("history: today's value was already recorded; kept as it is")
     if history is not None:
-        _retention_notice(history, stamp)
+        _retention_checks(history, stamp, retention)
     previous_status = load_status(paths.status)
     try:
         write_atomic(
@@ -546,6 +570,15 @@ def _cycle(
         insight_failures
     )
     return EXIT_SOURCE_FAILED if failed else EXIT_OK
+
+
+def _retention_policy(config: SiteConfig) -> RetentionPolicy:
+    if config.numbers is None:
+        return RetentionPolicy()
+    return RetentionPolicy(
+        retain_days=dict(config.numbers.retain_days),
+        warn_days=config.numbers.retain_warn_days,
+    )
 
 
 def history_path(
