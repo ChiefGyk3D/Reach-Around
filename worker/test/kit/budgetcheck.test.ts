@@ -82,8 +82,8 @@ describe("the page-view budget in the kit's combined check", () => {
   });
 });
 
-/** The default figure without the funnel: kit 42440 + page views 22700 + clicks 300501 + margin 5000. */
-const BASE = 70_140 + CLICK_DAILY_WRITES;
+/** The default figure without the funnel: kit 46040 + page views 22700 + clicks 300501 + margin 5000. */
+const BASE = 73_740 + CLICK_DAILY_WRITES;
 
 describe("assessDailyBudget agrees with loadKitLimits", () => {
   const cases: Record<string, string>[] = [
@@ -390,22 +390,23 @@ describe("a click-only deployment (page views off) is checked with the same func
 
 describe("the click ceiling setting in the budget check (Free-plan deployment)", () => {
   const free = { D1_DAILY_WRITE_QUOTA: "100000", CLICK_DAILY_WRITE_CEILING: "7500" };
-  it("the documented Free-plan pair passes, and is the old figure plus the setup-flag write", () => {
+  it("the documented Free-plan pair passes with a warning (82.5 percent since the claim rows are counted, #650)", () => {
     const r = runBudgetCheck(free);
     expect(r.code).toBe(0);
-    expect(r.lines[0]).toContain(`${78_141 + FUNNEL_DAILY_WRITES} of 100000`);
-    expect(assessDailyBudget(free).combined).toBe(78_141 + FUNNEL_DAILY_WRITES);
+    expect(r.lines[0]).toMatch(/^::warning::.*above 80 percent$/);
+    expect(r.lines[0]).toContain(`${81_741 + FUNNEL_DAILY_WRITES} of 100000`);
+    expect(assessDailyBudget(free).combined).toBe(81_741 + FUNNEL_DAILY_WRITES);
   });
   it("the Free-plan quota alone (default ceiling) is refused, and so is the ceiling alone on a too-small quota", () => {
     expect(runBudgetCheck({ D1_DAILY_WRITE_QUOTA: "100000" }).code).toBe(1);
-    // 70140 + ceiling + 501 + funnel (758) must stay at or under 100000: 28601 is the largest ceiling
-    expect(runBudgetCheck({ D1_DAILY_WRITE_QUOTA: "100000", CLICK_DAILY_WRITE_CEILING: "28601" }).code).toBe(0);
-    expect(runBudgetCheck({ D1_DAILY_WRITE_QUOTA: "100000", CLICK_DAILY_WRITE_CEILING: "28602" }).code).toBe(1);
+    // 73740 + ceiling + 501 + funnel (758) must stay at or under 100000: 25001 is the largest ceiling
+    expect(runBudgetCheck({ D1_DAILY_WRITE_QUOTA: "100000", CLICK_DAILY_WRITE_CEILING: "25001" }).code).toBe(0);
+    expect(runBudgetCheck({ D1_DAILY_WRITE_QUOTA: "100000", CLICK_DAILY_WRITE_CEILING: "25002" }).code).toBe(1);
   });
   it("the verdict follows the configured ceiling exactly (the Worker and the check read one value)", () => {
     for (const c of ["1000", "7500", "300000", "5000000"]) {
       const a = assessDailyBudget({ CLICK_DAILY_WRITE_CEILING: c, D1_DAILY_WRITE_QUOTA: "999999999" });
-      expect(a.combined).toBe(70_140 + Number(c) + 501 + FUNNEL_DAILY_WRITES);
+      expect(a.combined).toBe(73_740 + Number(c) + 501 + FUNNEL_DAILY_WRITES);
       expect(combinedDailyWrites(loadKitLimits({ CLICK_DAILY_WRITE_CEILING: c, D1_DAILY_WRITE_QUOTA: "999999999" }), a.pageViews, a.funnel)).toBe(a.combined);
     }
   });

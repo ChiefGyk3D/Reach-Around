@@ -130,6 +130,56 @@ joins different tables of the same report (a country table and a page table
 cut the same views two ways). Publish one fixed-window report, not a series,
 and share the report, never the export.
 
+## Rollup by group (`--config`)
+
+```text
+reach-around report --input export.json --config site.yaml
+```
+
+With `--config` (your site config) the report adds "Link clicks by group": one
+row per group and route class. A group is a tab of the config (its `id`); the
+route class is the destination kind the Worker stored with the click, `link` or
+`social_icon`. A click id the config does not list (for example an old link)
+goes to `(no group)`. The rollup reads the click counts the report already
+holds: no new collection, no service, no person-level data, and the beacon is
+unchanged. Without `--config` nothing changes. CSV adds `groups.csv` (`group`,
+`route_class`, `clicks`, `status`); JSON adds a `groups` object. The owner HTML
+page and the Grafana export do not carry it yet.
+
+A row is the sum of the link rows of that group that the report prints in
+"Link clicks by link" or "Social icon clicks by icon". Nothing else goes into
+it, and a group with no printed link row is left out whatever it holds. When
+either link table is withheld, or the export has no click table, the section
+has no rows (state `withheld` or `not_in_export`).
+
+There is no "Under 5" row for a group. A first design printed one for a group
+whose true total was under 5 and `withheld` for a larger group with no printed
+row. That is an oracle: run the report under two configs that group the same
+hidden ids differently (four ids in four groups, then in one) and the changed
+statuses pin each hidden cell to exactly 1. A status computed from a hidden
+total cannot be made safe, so none is printed. Counts under 5 still never
+print: the link tables they come from already fold them.
+
+Read a row as "at least this many clicks", never as a total. The largest link
+row joins the link tables' remainder line whenever any row is under the floor,
+so that link is not in its group's figure, and the figure grows with `--top`.
+It is label suppression, as the rest of this report, not k-anonymity; share the
+report, not the export.
+
+Digests. The release ledger digest is unchanged and is called the core digest
+here; it hashes the private input cells and goes only into the private ledger,
+never into a report. With `--config` the section also prints a separately
+versioned rollup digest (`rollup digest (v1)`, JSON `groups.rollup_digest`, CSV
+`rollup_digest_v1` in `metadata.csv`). It is a commitment to the printed rollup
+only: it hashes the printed (link id, group, route class) assignments, the group
+rows and state, and the floor, `--top`, period, offset and kind, and nothing
+else. It does not bind the ledger entry, and it never covers a hidden total or
+where an id with no printed row sits in the config. So two exports with
+identical printed assignments, rows, state and bound parameters (floor, `--top`,
+period, offset, kind) give the same digest, and a reader cannot brute-force
+hidden counts against it; two configs that differ only in a hidden id's group
+give the same value. Moving a printed id or changing any bound input changes it.
+
 ## CSV output
 
 `--csv DIR` writes one file per section into `DIR` instead of printing, and
