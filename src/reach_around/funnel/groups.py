@@ -81,19 +81,35 @@ def _row(group: str, route_class: str, clicks: int) -> dict[str, Any]:
     }
 
 
+def assignments(
+    groups: Mapping[str, str], printed: Mapping[str, Iterable[Mapping[str, Any]]]
+) -> list[list[str]]:
+    """The effective (printed id, group, route class) triples, sorted. Ids with
+    no printed row are not in it, so nothing about where a hidden id sits is
+    bound by the digest."""
+    return sorted(
+        [row["label"], groups.get(row["label"], UNGROUPED), route_class]
+        for route_class in ROUTE_CLASSES
+        for row in printed.get(route_class, ())
+    )
+
+
 def rollup_digest(
     core_digest: str,
-    groups: Mapping[str, str],
+    effective: list[list[str]],
     section: Mapping[str, Any],
     params: Mapping[str, Any],
 ) -> str:
-    """Version 1 digest of the rollup: the core (legacy) digest, the canonical
-    id to group mapping, the group output and the parameters it was cut with."""
+    """Version 1 digest: a commitment to the PRINTED rollup only. It hashes the
+    core (legacy) digest, the effective printed assignments, the rows and the
+    parameters. It never covers the config mapping of an id the report does not
+    print, so a candidate config that differs only in a hidden id's group gives
+    the same value."""
     blob = json.dumps(
         {
             "version": ROLLUP_DIGEST_VERSION,
             "core": core_digest,
-            "mapping": sorted(groups.items()),
+            "assignments": effective,
             "rows": section["rows"],
             "state": section["state"],
             "params": dict(params),

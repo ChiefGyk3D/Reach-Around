@@ -9,9 +9,11 @@ tell a reader anything (the threshold oracle)."""
 from __future__ import annotations
 
 import csv
+import hashlib
 import io
 import itertools
 import json
+import re
 from collections.abc import Mapping
 from datetime import UTC, datetime
 from pathlib import Path
@@ -109,24 +111,81 @@ def test_groups_do_not_change_the_other_sections_or_the_core_digest(
     assert plain_digest == grouped_digest  # the legacy ledger digest is unchanged
 
 
-def test_rollup_digest_differs_between_configs_and_binds_the_parameters(
+PARAMS = {"floor": 5, "top": 10, "period": None, "offset": 0, "kind": None}
+
+
+def test_rollup_digest_matches_the_reference_and_binds_printed_inputs(
     tmp_path: Path,
 ) -> None:
     export = export_of(tmp_path, clicks({"one-1": 1, "big-1": 30, "big-2": 12}))
-    a = build_report(export, groups=CONFIG_A)["groups"]["rollup_digest"]
-    b = build_report(export, groups=CONFIG_B)["groups"]["rollup_digest"]
-    assert a != b
-    assert a == build_report(export, groups=CONFIG_A)["groups"]["rollup_digest"]
-    assert a != build_report(export, groups=CONFIG_A, top=3)["groups"]["rollup_digest"]
+    for config in (CONFIG_A, GROUPS, {}):
+        report, core = _build_report(export, groups=config)
+        want = reference_digest(
+            core, report, config, {**PARAMS, "period": report["period"]}
+        )
+        assert report["groups"]["rollup_digest"] == want
+    # It differs when a PRINTED id moves group, and with top and window.
+    moved = {**CONFIG_A, "big-2": "elsewhere"}
+    base = build_report(export, groups=CONFIG_A)["groups"]["rollup_digest"]
+    assert base != build_report(export, groups=moved)["groups"]["rollup_digest"]
     assert (
-        a
-        != build_report(
-            export, groups=CONFIG_A, since="2026-11-01", until="2026-11-01"
-        )["groups"]["rollup_digest"]
+        base != build_report(export, groups=CONFIG_A, top=3)["groups"]["rollup_digest"]
     )
-    plain_text = render_text(build_report(export))
-    assert "rollup digest" not in plain_text
+    windowed = build_report(
+        export, groups=CONFIG_A, since="2026-11-01", until="2026-11-01"
+    )
+    assert base != windowed["groups"]["rollup_digest"]
+    assert "rollup digest" not in render_text(build_report(export))
     assert "rollup digest (v1)" in render_text(build_report(export, groups=CONFIG_A))
+
+
+def test_hidden_id_group_does_not_change_the_digest(tmp_path: Path) -> None:
+    rows = clicks({"one-1": 1, "big-1": 30, "big-2": 12})
+    export = export_of(tmp_path, rows)
+    base = build_report(export, groups=CONFIG_A)
+    for other in ("solo-9", "alpha", "together"):
+        report = build_report(export, groups={**CONFIG_A, "one-1": other})
+        assert report["groups"]["rollup_digest"] == base["groups"]["rollup_digest"]
+        assert render_all(report) == render_all(base)
+
+
+def test_negative_a_digest_that_binds_hidden_structure_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from reach_around.funnel import report as report_mod
+    from reach_around.funnel.groups import rollup_digest as real
+
+    rows = clicks({"one-1": 1, "big-1": 30, "big-2": 12})
+    export = export_of(tmp_path, rows)
+    a = {**CONFIG_A, "one-1": "x"}
+    b = {**CONFIG_A, "one-1": "y"}
+    assert render_all(build_report(export, groups=a)) == render_all(
+        build_report(export, groups=b)
+    )
+
+    def binds_hidden(core: str, effective: Any, section: Any, params: Any) -> str:
+        return real(
+            core + json.dumps(sorted(CURRENT.items())), effective, section, params
+        )
+
+    CURRENT: dict[str, str] = {}
+    monkeypatch.setattr(report_mod, "group_rollup_digest", binds_hidden)
+    CURRENT.update(a)
+    one = render_all(build_report(export, groups=a))
+    CURRENT.clear()
+    CURRENT.update(b)
+    two = render_all(build_report(export, groups=b))
+    assert one != two  # the equivalence check bites on such a digest
+    # And a digest that appends a hidden total no longer matches the reference.
+    monkeypatch.setattr(
+        report_mod,
+        "group_rollup_digest",
+        lambda core, eff, sec, par: real(core + "hidden-total:1", eff, sec, par),
+    )
+    report, core = _build_report(export, groups=a)
+    assert report["groups"]["rollup_digest"] != reference_digest(
+        core, report, a, {**PARAMS, "period": report["period"]}
+    )
 
 
 def test_section_is_skipped_when_a_link_table_is_withheld(tmp_path: Path) -> None:
@@ -142,24 +201,42 @@ def test_section_is_skipped_when_a_link_table_is_withheld(tmp_path: Path) -> Non
 
 
 def render_all(report: dict[str, Any]) -> dict[str, str]:
-    """Everything a reader sees of the rollup: text, JSON and parsed CSV."""
-    text = render_text(report)
-    text = text.split("Link clicks by group")[1].split("\n\n")[0]
-    section = {k: v for k, v in report["groups"].items() if k != "rollup_digest"}
-    table = list(
-        csv.reader(
-            io.StringIO(
-                csv_files(report, generated_at=NOW)["groups.csv"].decode("utf-8")
-            )
-        )
-    )
+    """Everything a reader sees of the rollup, digest included: the text
+    section, the JSON object, groups.csv and metadata.csv."""
+    text = render_text(report).split("Link clicks by group")[1].split("\n\n")[0]
+    files = csv_files(report, generated_at=NOW)
     return {
-        "text": "\n".join(
-            line for line in text.splitlines() if "rollup digest" not in line
-        ),
-        "json": json.dumps(section, sort_keys=True),
-        "csv": json.dumps(table),
+        "text": text.split("\n  A link's breakdown")[0],
+        "json": json.dumps(report["groups"], sort_keys=True),
+        "groups_csv": files["groups.csv"].decode("utf-8"),
+        "metadata_csv": files["metadata.csv"].decode("utf-8"),
     }
+
+
+def reference_digest(
+    core: str, report: dict[str, Any], groups: Mapping[str, str], params: dict[str, Any]
+) -> str:
+    """Independent reference. It binds exactly: the core digest, the printed
+    (id, group, route class) triples, the group rows and state, and the
+    parameters. No other config mapping."""
+    triples = sorted(
+        [r["label"], groups.get(r["label"], UNGROUPED), kind]
+        for key, kind in (("links", "link"), ("social_icons", "social_icon"))
+        for r in report[key]["rows"]
+    )
+    blob = json.dumps(
+        {
+            "version": 1,
+            "core": core,
+            "assignments": triples,
+            "rows": report["groups"]["rows"],
+            "state": report["groups"]["state"],
+            "params": params,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(blob.encode()).hexdigest()
 
 
 def expected_rows(report: dict[str, Any], groups: Mapping[str, str]) -> set[Any]:
@@ -222,7 +299,10 @@ def test_hidden_totals_do_not_change_the_output(tmp_path: Path) -> None:
             rows = clicks({**spec, "big-1": 30, "big-2": 12})
             report = build_report(export_of(tmp_path, rows), groups=CONFIG_A)
             assert not leaks(report, CONFIG_A)
-            seen.add(json.dumps(render_all(report), sort_keys=True))
+            # Every public field except the commitment value, which binds the
+            # core digest (a hash of the private cells) and so moves with data.
+            shown = json.dumps(render_all(report), sort_keys=True)
+            seen.add(re.sub(r"[0-9a-f]{64}", "DIGEST", shown))
     assert len(seen) == 1
 
 
@@ -336,3 +416,39 @@ def test_cli_bad_config_is_a_usage_error(
     bad.write_text("version: 1\nnot: a config\n", encoding="utf-8")
     assert main(["report", "--input", str(path), "--config", str(bad)]) == 2
     assert "config" in capsys.readouterr().err.lower()
+
+
+DANGEROUS = ["=1+1", "+1", "-1", "@SUM(A1)", "\t=1", "\r=1"]
+
+
+@pytest.mark.parametrize("name", DANGEROUS)
+def test_csv_neutralizes_a_formula_leading_group_name_end_to_end(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    name: str,
+) -> None:
+    """Tab ids are slugs and cannot start this way, but the CSV writer must not
+    rely on that: a name that reaches groups.csv is neutralized by the report
+    command's own encoder."""
+    from reach_around.commands import report as report_cmd
+
+    monkeypatch.setattr(
+        report_cmd, "group_map", lambda _config: {"big-1": name, "big-2": name}
+    )
+    export = tmp_path / "export.json"
+    export.write_text(
+        json.dumps({"tables": {"click_events": clicks({"big-1": 30, "big-2": 12})}}),
+        encoding="utf-8",
+    )
+    out = tmp_path / "csv"
+    code = main(
+        ["report", "--input", str(export), "--config", str(EXAMPLE), "--csv", str(out)]
+    )
+    capsys.readouterr()
+    assert code == 0
+    with (out / "groups.csv").open(newline="", encoding="utf-8") as handle:
+        rows = list(csv.reader(handle))
+    cells = [row[0] for row in rows[1:]]
+    assert cells == ["'" + name]
+    assert not any(cell.startswith(("=", "+", "-", "@", "\t", "\r")) for cell in cells)

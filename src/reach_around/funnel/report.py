@@ -24,6 +24,7 @@ from reach_around.funnel.floor import Floored as Floored
 from reach_around.funnel.floor import _suppress as _suppress
 from reach_around.funnel.floor import floor_cells as floor_cells
 from reach_around.funnel.gaps import coverage_for_window
+from reach_around.funnel.groups import assignments as group_assignments
 from reach_around.funnel.groups import rollup as group_rollup
 from reach_around.funnel.groups import rollup_digest as group_rollup_digest
 from reach_around.funnel.groups import text_lines as group_text_lines
@@ -1176,17 +1177,14 @@ def _build_report(
         if "withheld" in (links_section["state"], social_icons_section["state"])
         else None
     )
+    group_printed = {
+        "link": links_section["rows"],
+        "social_icon": social_icons_section["rows"],
+    }
     group_section = (
         None
         if groups is None
-        else group_rollup(
-            groups,
-            {
-                "link": links_section["rows"],
-                "social_icon": social_icons_section["rows"],
-            },
-            group_unavailable,
-        )
+        else group_rollup(groups, group_printed, group_unavailable)
     )
     unsafe = any(
         _suppress(cells, floor).dropped
@@ -1208,7 +1206,7 @@ def _build_report(
         # without groups stays repeatable. The rollup has its own digest.
         group_section["rollup_digest"] = group_rollup_digest(
             digest,
-            groups or {},
+            group_assignments(groups or {}, group_printed),
             group_section,
             {
                 "floor": floor,

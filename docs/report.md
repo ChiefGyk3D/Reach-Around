@@ -169,10 +169,14 @@ report, not the export.
 Digests. The release ledger digest is unchanged and is called the core digest
 here; older releases stay repeatable. With `--config` the section also prints a
 separately versioned rollup digest (`rollup digest (v1)`, JSON
-`groups.rollup_digest`, CSV `rollup_digest_v1` in `metadata.csv`). It hashes the
-core digest, the full click id to group mapping, the group rows and the floor,
-`--top` and period, so two configs give different rollup digests. The ledger
-does not record it.
+`groups.rollup_digest`, CSV `rollup_digest_v1` in `metadata.csv`). It is a
+commitment to the printed rollup only. It hashes the core digest, the printed
+(link id, group, route class) assignments, the group rows and state, and the
+floor, `--top`, period and offset. It never covers where an id with no printed
+row sits in the config, so two configs that differ only in a hidden id's group
+give the same value, and two that move a printed id give different values. The
+core digest is a hash of private counts, so the rollup digest is too: like the
+ledger, keep it private. The ledger does not record the rollup digest.
 
 ## CSV output
 
