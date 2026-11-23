@@ -3012,7 +3012,7 @@
     },
     "SupportPage": {
       "additionalProperties": false,
-      "description": "The support page (#683): the one place the crypto addresses live.\n\nIt renders at ``/support/`` as the heading, the optional intro, the one\ncrypto block, then any other blocks (crypto, text, email, divider only).\nText is plain: no links, images or HTML, and nothing address-like outside\na coin's address. The hub keeps its own direct support links.",
+      "description": "The support page (#683): the one place the crypto addresses live.\n\nIt renders at ``/support/`` as the heading, the optional intro, the one\ncrypto block, then any other blocks (crypto, text, divider only).\nText is plain: no links, images or HTML, and nothing address-like outside\na coin's address. The hub keeps its own direct support links.",
       "properties": {
         "blocks": {
           "items": {
@@ -3022,9 +3022,6 @@
               },
               {
                 "$ref": "#/$defs/Crypto"
-              },
-              {
-                "$ref": "#/$defs/Email"
               },
               {
                 "$ref": "#/$defs/Divider"

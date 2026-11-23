@@ -218,7 +218,7 @@ VOCAB: dict[str, tuple[str, str]] = {
     ),
     "support_blocks": (
         "the support page has a block type it does not take",
-        "Use crypto, text, email or divider blocks; links stay on the hub.",
+        "Use crypto, text or divider blocks; no links, images or email here.",
     ),
     "support_qr": (
         "a support coin names a QR image",
@@ -229,8 +229,8 @@ VOCAB: dict[str, tuple[str, str]] = {
         "Retype the text with plain characters.",
     ),
     "support_address_like": (
-        "support text has something that looks like an address",
-        "Addresses go in a crypto coin only; remove it from the text.",
+        "support text has something that looks like an address, or a non-ASCII letter",
+        "Addresses go in a crypto coin only; use plain ASCII words in the text.",
     ),
     "support_markup": (
         "support text has a link, image, HTML or URI scheme",

@@ -19,6 +19,12 @@ _LONG_TOKEN = re.compile(r"[A-Za-z0-9]{26,}")
 _ADDRESS_PREFIX = re.compile(
     r"(?<![A-Za-z0-9])(?:bc1|tb1|ltc1|lnbc|lntb|0x)[A-Za-z0-9]{6,}", re.I
 )
+# Payment handles that are not an address format: a domain-like token (an inner
+# dot then two or more letters, which also covers name.eth and the like), a
+# name-service suffix, an "@" token and a $cashtag.
+_DOMAIN_LIKE = re.compile(r"[A-Za-z0-9][A-Za-z0-9-]*\.[A-Za-z]{2,}")
+_NAME_SERVICE = re.compile(r"\.(?:eth|crypto|sol|bnb|xyz)(?![A-Za-z])", re.I)
+_HANDLE = re.compile(r"@|\$\w")
 # Links, images, raw HTML and URI schemes (``bitcoin:``, ``https://``, ``www.``).
 _MARKUP = re.compile(
     r"\]\(|<|>|://|(?<![A-Za-z0-9])www\.|[A-Za-z][A-Za-z0-9+.-]{1,30}:\S", re.I
@@ -39,12 +45,29 @@ def check_plain(value: str, *, allow_newline: bool = False) -> None:
 
 
 def check_no_address(value: str) -> None:
-    """Refuse a token that looks like a payment address."""
-    if _LONG_TOKEN.search(value) or _ADDRESS_PREFIX.search(value):
+    """Refuse a token that looks like a payment address or handle.
+
+    The text is NFKC-normalized first (full-width and compatibility forms fold
+    to ASCII), and any letter that is still not ASCII is refused, so a lookalike
+    letter cannot slip past the ASCII patterns.
+    """
+    text = unicodedata.normalize("NFKC", value)
+    if any(unicodedata.category(ch)[0] == "L" and ord(ch) > 127 for ch in text):
         raise ValueError(
-            "support text must not contain an address-like token; addresses "
-            "go in a crypto coin only"
+            "support text must not contain an address-like token or a non-ASCII letter"
         )
+    for pattern in (
+        _LONG_TOKEN,
+        _ADDRESS_PREFIX,
+        _DOMAIN_LIKE,
+        _NAME_SERVICE,
+        _HANDLE,
+    ):
+        if pattern.search(text):
+            raise ValueError(
+                "support text must not contain an address-like token or a "
+                "non-ASCII letter; addresses go in a crypto coin only"
+            )
 
 
 def check_no_markup(value: str) -> None:

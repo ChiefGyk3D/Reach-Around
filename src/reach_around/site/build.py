@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import base64
 import json
+import re
 import shutil
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
@@ -29,6 +30,7 @@ from reach_around.config.blocks import (
     Email,
     Live,
     Platforms,
+    Text,
 )
 from reach_around.config.footer import CREDIT_URL
 from reach_around.config.imported_history import ImportedHistory
@@ -84,6 +86,7 @@ from reach_around.site.platforms import platform_rows
 from reach_around.site.privacy import collected_items, intro_text, sets_cookies
 from reach_around.site.redirects import render_redirects
 from reach_around.site.robots import render_robots
+from reach_around.site.supportcheck import check_support_html
 from reach_around.site.theme import preload_fonts, theme_css
 from reach_around.site.visibility import visible_blocks
 
@@ -542,6 +545,25 @@ def _render_smart_stack_page(
     )
 
 
+def _paragraphs(text: str) -> list[list[str]]:
+    """Support text as paragraphs of lines: split on blank lines, nothing else read.
+
+    The page escapes every line; no emphasis, link, code or list is interpreted.
+    """
+    return [
+        [line for line in para.split("\n")]
+        for para in re.split(r"\n[ ]*\n", text.strip("\n"))
+        if para.strip()
+    ]
+
+
+def _support_path_extras(config: SiteConfig) -> dict[str, dict[str, list[str]]]:
+    """A narrow policy for ``/support/``: images from this site only."""
+    if config.support is None:
+        return {}
+    return {"/support/": {"replace:img-src": ["'self'"]}}
+
+
 def _render_support(
     env: Environment,
     config: SiteConfig,
@@ -556,10 +578,15 @@ def _render_support(
     blocks = sorted(blocks, key=lambda block: not isinstance(block, Crypto))
     if support is None:
         raise ValueError("the config has no support page")
-    return env.get_template("support.html").render(
+    html = env.get_template("support.html").render(
         creator=config.creator,
         support=support,
         blocks=blocks,
+        support_text={
+            block.id: _paragraphs(block.markdown)
+            for block in blocks
+            if isinstance(block, Text)
+        },
         nav=_nav(config, -1, "../"),
         tab_href=_internal_href(config, "../", shown),
         root="../",
@@ -573,8 +600,8 @@ def _render_support(
         footer_credit_url=CREDIT_URL,
         page_views=False,
         has_crypto=_has_crypto(blocks),
-        has_email=_has_email(blocks),
-        has_email_script=_has_email_script(blocks),
+        has_email=False,
+        has_email_script=False,
         has_platforms=False,
         profile_card=_profile_card(config),
         single_page=config.page_layout == "sections" or config.page.layout == "stack",
@@ -582,6 +609,8 @@ def _render_support(
         custom_css=custom_css,
         page_frames=_page_has_frames(config, blocks),
     )
+    check_support_html(html)
+    return html
 
 
 def _render_privacy(
@@ -1105,6 +1134,7 @@ def build_site(
             **_live_path_extras(config, shown),
             **gate_path_extras(config),
             **frame_path_extras(config),
+            **_support_path_extras(config),
         },
         noindex_paths=(
             *(robots.noindex_paths if robots else ()),

@@ -8,10 +8,11 @@ while the project is alpha, every release is `0.x` and anything can change betwe
 
 - Support page rendered by Reach Around (#683, epic #667, owner decision D3): new optional `support` config (`title`, `intro`, `blocks`) built at `/support/`.
   - With `support` set, a crypto block in a tab is refused and the page takes at most one crypto block. The page renders in a fixed order: heading, intro, the crypto block, then other blocks.
-  - Blocks are crypto, text, email and divider only. There are no image blocks and no QR images on this page; each address is text with a copy button, in an isolated left-to-right element (`dir="ltr"`, also on crypto blocks elsewhere).
-  - Every displayed field is plain text (no control, hidden or bidirectional characters) with nothing address-like outside a coin's address. Text blocks take no links, images, HTML or URI schemes. These are mistake-catchers, not a guarantee; review changes to the page's text.
-  - `copy.js` and `crypto.css` load only on this page. A tab with the id `support` is refused. A config without `support` builds as before. New page-weight row `support-page` (total 169700 bytes). Redirects from old support addresses are host settings (L13, owner).
-  - Schema (blocks narrowed to four kinds), check vocabulary and the instance renderer vocabulary regenerated. Docs: `docs/config.md`, `docs/performance.md`.
+  - Blocks are crypto, text and divider only: no image, QR, email or link. Each address is text with a copy button in an isolated left-to-right element (`dir="ltr"`, also on crypto blocks elsewhere). Text blocks are escaped plain text, not Markdown.
+  - Every displayed field is plain ASCII text (NFKC-folded, no control, hidden or bidirectional characters) with nothing address-like, domain-like or handle-like outside a coin's address. These are mistake-catchers, not a guarantee: the design relies on plain text only and a person reviewing changes to the page's text.
+  - After rendering, the build reads the page content again and fails on any link, image, frame, embed, form or URL attribute. `/support/` gets its own Content-Security-Policy with images from this site only.
+  - A tab with the id `support` is refused. `copy.js` and `crypto.css` load only on this page. A config without `support` builds as before. New page-weight row `support-page` (total 169700 bytes). Redirects from old support addresses are host settings (L13, owner).
+  - Schema (blocks narrowed to three kinds, also in serialization mode), check vocabulary and the instance renderer vocabulary regenerated. Docs: `docs/config.md`, `docs/performance.md`.
 - Container image: upgrade libc6 and libc-bin to the Debian build 2.41-12+deb13u5 in the runtime stage; the `v0.3.0-rc.5` release scan failed on 28 findings in the base image's `2.41-12+deb13u4` and nothing was published (#702). The scan gate is unchanged. The upgrade comes out once the base image carries the fix.
 
 ## [0.3.0-rc.5] - 2026-11-21

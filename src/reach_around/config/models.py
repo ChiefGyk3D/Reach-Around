@@ -439,7 +439,19 @@ class SiteNav(_Model):
 
 
 SUPPORT_PAGE_ID = "support"
-_SUPPORT_KINDS = (Crypto, Text, Email, Divider)
+_SUPPORT_KINDS = (Crypto, Text, Divider)
+
+
+def _def_name(ref: str) -> str:
+    """The model name in a pydantic ``$defs`` reference, in either schema mode.
+
+    ``#/$defs/pkg__mod__Text-Input__1`` (validation) and the ``-Output`` or
+    plain forms (serialization) all give ``Text``.
+    """
+    tail = ref.rsplit("/", 1)[-1]
+    tail = re.sub(r"__\d+$", "", tail)
+    tail = re.sub(r"-(?:Input|Output)$", "", tail)
+    return tail.rsplit("__", 1)[-1]
 
 
 def _narrow_support_blocks(schema: dict[str, Any]) -> None:
@@ -447,39 +459,35 @@ def _narrow_support_blocks(schema: dict[str, Any]) -> None:
     names = {kind.__name__ for kind in _SUPPORT_KINDS}
     items = schema.get("items", {})
     items["oneOf"] = [
-        ref
-        for ref in items.get("oneOf", [])
-        if (m := re.search(r"([A-Za-z]+)-Input", ref["$ref"])) and m.group(1) in names
+        ref for ref in items.get("oneOf", []) if _def_name(ref["$ref"]) in names
     ]
 
 
-def _displayed_text(page: SupportPage) -> Iterator[tuple[str, bool]]:
-    """Every text the support page shows except a coin's address."""
-    yield page.title, False
+# Every string the support page shows, with its kind: ``text`` is plain text
+# and ``markdown`` is a text block (shown as escaped plain text, blank lines
+# between paragraphs allowed). A coin's address is the one thing not listed.
+def _displayed_text(page: SupportPage) -> Iterator[tuple[str, str]]:
+    """Every string the support page shows, except a coin's address."""
+    yield page.title, "text"
     if page.intro is not None:
-        yield page.intro, False
+        yield page.intro, "text"
     for block in page.blocks:
         if isinstance(block, Text):
-            yield block.markdown, True
+            yield block.markdown, "markdown"
         elif isinstance(block, Crypto):
-            for value in (block.title, block.note):
-                if value is not None:
-                    yield value, False
+            yield block.title or "", "text"
+            yield block.shown_note, "text"
             for coin in block.coins:
                 for value in (coin.label, coin.name, coin.network):
                     if value is not None:
-                        yield value, False
-        elif isinstance(block, Email):
-            for value in (block.title, block.note):
-                if value is not None:
-                    yield value, False
+                        yield value, "text"
 
 
 class SupportPage(_Model):
     """The support page (#683): the one place the crypto addresses live.
 
     It renders at ``/support/`` as the heading, the optional intro, the one
-    crypto block, then any other blocks (crypto, text, email, divider only).
+    crypto block, then any other blocks (crypto, text, divider only).
     Text is plain: no links, images or HTML, and nothing address-like outside
     a coin's address. The hub keeps its own direct support links.
     """
@@ -494,17 +502,17 @@ class SupportPage(_Model):
     @model_validator(mode="after")
     def _only_support_blocks(self) -> SupportPage:
         if not all(isinstance(block, _SUPPORT_KINDS) for block in self.blocks):
-            raise ValueError("support blocks can be crypto, text, email or divider")
+            raise ValueError("support blocks can be crypto, text or divider")
         if sum(isinstance(block, Crypto) for block in self.blocks) > 1:
             raise ValueError("the support page takes at most one crypto block")
         for block in self.blocks:
             if isinstance(block, Crypto) and any(c.qr is not None for c in block.coins):
                 raise ValueError("support coins take no QR image")
-        for value, is_markdown in _displayed_text(self):
-            check_plain(value, allow_newline=is_markdown)
-            check_no_address(value)
-            if is_markdown:
+        for value, kind in _displayed_text(self):
+            check_plain(value, allow_newline=kind == "markdown")
+            if kind == "markdown":
                 check_no_markup(value)
+            check_no_address(value)
         return self
 
 
