@@ -66,6 +66,7 @@ REASONS = (
 )
 MAX_REDACT = 100_000
 
+# Always use fullmatch: ``$`` also matches before a final newline (#624).
 _SLUG = re.compile(r"^[a-z0-9][a-z0-9-]{0,39}$")
 _METRIC = re.compile(r"^[a-z][a-z0-9_]{0,39}$")
 _RUN_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
@@ -185,7 +186,7 @@ class Point:
 
 
 def parse_as_of(text: str) -> datetime:
-    if not isinstance(text, str) or not _AS_OF.match(text):
+    if not isinstance(text, str) or not _AS_OF.fullmatch(text):
         raise HistoryError("as_of_utc must look like 2026-11-08T09:00:00Z")
     try:
         return datetime.strptime(text, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=UTC)
@@ -205,9 +206,9 @@ def validate(record: Record, now: datetime | None = None) -> None:
 
     With ``now`` the as-of time must not be after it.
     """
-    if not isinstance(record.platform, str) or not _SLUG.match(record.platform):
+    if not isinstance(record.platform, str) or not _SLUG.fullmatch(record.platform):
         raise HistoryError("platform must be a lowercase slug")
-    if not isinstance(record.metric, str) or not _METRIC.match(record.metric):
+    if not isinstance(record.metric, str) or not _METRIC.fullmatch(record.metric):
         raise HistoryError("metric must be lowercase letters, digits, underscores")
     value = record.value
     if isinstance(value, bool) or not isinstance(value, int):
@@ -224,7 +225,7 @@ def validate(record: Record, now: datetime | None = None) -> None:
             raise HistoryError("api_provider is allowed only for API records")
         if record.api_provider not in API_PROVIDERS:
             raise HistoryError("api_provider is not recognized")
-    if not isinstance(record.run_id, str) or not _RUN_ID.match(record.run_id):
+    if not isinstance(record.run_id, str) or not _RUN_ID.fullmatch(record.run_id):
         raise HistoryError("run_id must be 1 to 64 letters, digits, . _ -")
     if record.type not in TYPES:
         raise HistoryError("type must be record or correction")
@@ -384,7 +385,7 @@ def _parse_line(
     if not set(_REQUIRED) <= keys or keys - set(_REQUIRED) - set(_OPTIONAL):
         raise HistoryError(f"{where}: wrong set of fields")
     prev = obj["prev"]
-    if not isinstance(prev, str) or not _HASH.match(prev):
+    if not isinstance(prev, str) or not _HASH.fullmatch(prev):
         raise HistoryError(f"{where}: prev is not a SHA-256 hex digest")
     record = Record(
         platform=obj["platform"],
