@@ -90,7 +90,10 @@ def test_kit_pages_fit_the_screen_and_make_no_outside_request(
         columns = page.locator(".kit-deck-intro").evaluate(
             "element => getComputedStyle(element).gridTemplateColumns"
         )
-        assert (len(columns.split()) > 1) is (width >= 820)
+        # one column at every width: the numbers take the full content width
+        # (#704). The photo beside the text is the head's own grid, covered by
+        # the photo layout test.
+        assert len(columns.split()) == 1
     context.close()
 
 
