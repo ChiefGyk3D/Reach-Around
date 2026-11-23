@@ -6,6 +6,10 @@ while the project is alpha, every release is `0.x` and anything can change betwe
 
 ## [Unreleased]
 
+## [0.3.0-rc.6] - 2026-11-23
+
+- Preview release candidate for 0.3.0 (#595, epic #246). It is a pre-release image for instance draft previews and the staging proof, cut from `main`. It is not the frozen soak candidate: the frozen candidate is a later, separate tag. Contents are the entries that follow, which were unreleased since `0.3.0-rc.5`.
+
 - Spoke pages (#676, epic #667): new `spoke: true` on a stack tab renders the group as its own page at `/<id>/` (for example `/gear/`), with a single card on the home page linking to it. The page has its own title, canonical link, privacy link, footer, affiliate disclosure and back link, and its links are click counted as before. New `page.url` (bare https origin) gives the home page and every spoke its canonical link. A config with no spoke renders as before. Strict validation: needs `page.layout: stack` and `page.url`, no Watch spoke, no `collapsed` or `style`, reserved ids refused. `page.url` is checked like every link URL, lower-cased, and a default port 443 is dropped. A tab redirect to a spoke goes to its page, a spoke id may not equal the first segment of `analytics.route`, and a spoke's links cannot be featured (`page.featured` naming one is refused). New `spoke` page-weight budget. Schema and the renderer vocabulary regenerated. Docs: `docs/config.md`, `docs/performance.md`.
 - Support page rendered by Reach Around (#683, epic #667, owner decision D3): new optional `support` config (`title`, `intro`, `blocks`) built at `/support/`.
   - With `support` set, a crypto block in a tab is refused and the page takes at most one crypto block. The page renders in a fixed order: heading, intro, the crypto block, then other blocks.
