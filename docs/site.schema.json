@@ -190,6 +190,67 @@
       "title": "AnalyticsStat",
       "type": "object"
     },
+    "AudiencePoll": {
+      "additionalProperties": false,
+      "description": "The owner's one-question poll (\"where else do you follow me?\"), typed by\nhand. Only used for the labeled estimate line, and only when\n``show_estimate`` is true.",
+      "properties": {
+        "as_of": {
+          "format": "date",
+          "title": "As Of",
+          "type": "string"
+        },
+        "avg_other_platforms": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "ge": 0,
+          "le": 100,
+          "title": "Avg Other Platforms"
+        },
+        "respondents": {
+          "maximum": 1000000,
+          "minimum": 5,
+          "title": "Respondents",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "as_of",
+        "avg_other_platforms",
+        "respondents"
+      ],
+      "title": "AudiencePoll",
+      "type": "object"
+    },
+    "AudienceSummary": {
+      "additionalProperties": false,
+      "description": "Options for the audience summary block. The range itself needs no\nsetting: it is computed from the headline numbers.",
+      "properties": {
+        "poll": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AudiencePoll"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "show_estimate": {
+          "default": false,
+          "title": "Show Estimate",
+          "type": "boolean"
+        }
+      },
+      "title": "AudienceSummary",
+      "type": "object"
+    },
     "BlueskySource": {
       "additionalProperties": false,
       "properties": {
@@ -1396,6 +1457,17 @@
           "maxItems": 4,
           "title": "Analytics",
           "type": "array"
+        },
+        "audience_summary": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AudienceSummary"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         },
         "case_studies": {
           "items": {

@@ -29,13 +29,27 @@
 <p class="kit-note kit-zone-fixed">Dates here are UTC days.</p>
 <p class="kit-zone" data-zone-control hidden><label for="kit-zone">Also show when each UTC day begins in</label> <select id="kit-zone" data-zone-select>{% for zone in zones %}<option value="{{ zone }}">{{ zone }}</option>{% endfor %}</select></p>
 {% endif %}
+{% if kit.total or kit.community %}
+<section class="kit-summary" aria-labelledby="{{ heading_id }}-summary">
 {% if kit.total %}
 <div class="kit-headline ra-c-plate ra-c-plate--amber ra-c-ticks">
-<p class="kit-headline-label">Combined audience</p>
-<p class="kit-headline-number"><strong>{{ kit.total.value }}</strong> <span>Figures dated <time datetime="{{ kit.total.oldest }}">{{ kit.total.oldest }}</time> UTC</span></p>
+<p class="kit-headline-label" id="{{ heading_id }}-summary">Audience across platforms</p>
+<p class="kit-headline-number"><strong>{{ kit.total.headline }}</strong> <span>Figures dated <time datetime="{{ kit.total.oldest }}">{{ kit.total.oldest }}</time> UTC</span></p>
 </div>
-<p class="kit-note">Added up from {{ kit.total.counted }} {{ "number" if kit.total.counted == 1 else "numbers" }}{% if kit.total.oldest %}; the oldest is dated {{ kit.total.oldest }} (UTC){% endif %}.{% if kit.total.mixed %} These include numbers from before Reach Around and numbers from after it.{% endif %} People who follow on more than one platform are counted more than once.</p>
+<p class="kit-note">{{ kit.total.platforms }} {{ "platform" if kit.total.platforms == 1 else "platforms" }}, {{ kit.total.sum }} follows. Added up from {{ kit.total.counted }} {{ "number" if kit.total.counted == 1 else "numbers" }}{% if kit.total.oldest %}; the oldest is dated {{ kit.total.oldest }} (UTC){% endif %}.{% if kit.total.mixed %} These include numbers from before Reach Around and numbers from after it.{% endif %}</p>
+{% if kit.total.largest %}<p class="kit-note">{{ kit.total.largest }}</p>{% endif %}
+{% if kit.total.overlap %}<p class="kit-note">{{ kit.total.overlap }}{% if kit.total.bounds_text %} {{ kit.total.bounds_text }}{% endif %}</p>
+{% elif kit.total.bounds_text %}<p class="kit-note">{{ kit.total.bounds_text }}</p>{% endif %}
+<p class="kit-note">{{ kit.total.caveat }}</p>
 {% if kit.total.trust %}<p class="kit-note">{{ trust(kit.total.trust, kit.total.stale) }}</p>{% endif %}
+{% endif %}
+{% if kit.community %}
+<p class="kit-note kit-community">{{ kit.community.text }} {{ kit.community.note }}</p>
+{% endif %}
+{% if kit.total and kit.total.estimate %}
+<p class="kit-note kit-estimate"><strong>{{ kit.total.estimate }}</strong> {{ kit.total.estimate_method }}</p>
+{% endif %}
+</section>
 {% endif %}
 <table class="kit-table{% if framed and frame_plan %}{{ frames.cls("card") }}{% endif %}" role="table">
 <caption class="sr-only">Audience numbers by platform, each with its source and the date it was read</caption>

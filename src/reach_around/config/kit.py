@@ -23,6 +23,9 @@ Unified total. ``unified_total`` adds up the headline metrics that have a value
 and are not marked ``in_total: false``. A metric with no value (a manual metric
 left empty, or a counts metric the numbers file does not hold) is ignored and
 counted in ``ignored``. With nothing to add the total is ``None``, never 0.
+Community platforms (Discord, Matrix) are members of a room, not followers, so
+they are never added (``COMMUNITY_PLATFORMS``); the kit prints them on their
+own line (#627).
 """
 
 from __future__ import annotations
@@ -40,6 +43,7 @@ from pydantic import (
     ConfigDict,
     Field,
     StrictBool,
+    StrictFloat,
     StrictInt,
     StrictStr,
     field_validator,
@@ -82,6 +86,7 @@ KIT_FIELD_POLICY: Mapping[str, FieldPolicy] = {
     "unified_total": FieldPolicy("public"),
     "turnstile_site_key": FieldPolicy("public"),
     "public_pdf": FieldPolicy("public"),
+    "audience_summary": FieldPolicy("public"),
     "partners": FieldPolicy("gated"),
     "case_studies": FieldPolicy("gated"),
     "services": FieldPolicy("gated"),
@@ -565,6 +570,42 @@ class RecentPost(_Model):
         return self
 
 
+# Community chat platforms: their count is members of a room, not followers, so
+# it enters neither bound of the audience summary (spec 6.5, decision 7).
+COMMUNITY_PLATFORMS: frozenset[str] = frozenset({"discord", "matrix"})
+
+
+class AudiencePoll(_Model):
+    """The owner's one-question poll ("where else do you follow me?"), typed by
+    hand. Only used for the labeled estimate line, and only when
+    ``show_estimate`` is true."""
+
+    # At least the privacy floor: the page prints the number of respondents.
+    respondents: Annotated[StrictInt, Field(ge=5, le=1_000_000)]
+    as_of: date
+    # Average number of OTHER platforms a respondent follows on.
+    avg_other_platforms: Annotated[StrictInt | StrictFloat, Field(ge=0, le=100)]
+
+    @field_validator("as_of", mode="before")
+    @classmethod
+    def _as_of_is_a_date(cls, value: object) -> object:
+        return _iso_date(value)
+
+
+class AudienceSummary(_Model):
+    """Options for the audience summary block. The range itself needs no
+    setting: it is computed from the headline numbers."""
+
+    poll: AudiencePoll | None = None
+    show_estimate: StrictBool = False
+
+    @model_validator(mode="after")
+    def _estimate_needs_a_poll(self) -> AudienceSummary:
+        if self.show_estimate and self.poll is None:
+            raise ValueError("show_estimate needs a poll block (audience_summary.poll)")
+        return self
+
+
 class KitConfig(_Model):
     title: Text120
     about: Text1000
@@ -603,6 +644,8 @@ class KitConfig(_Model):
     # link on the first screen of the public page, so the "Download Public PDF"
     # button appears only when this is set. The PDFs themselves never print it.
     public_pdf: Annotated[str, Field(max_length=2048)] | None = None
+    # Options for the audience summary (#627): the optional poll estimate line.
+    audience_summary: AudienceSummary | None = None
     # A file of link-page numbers imported from the previous provider (see
     # ``reach_around.config.imported_history``), relative to the config's folder.
     # Shown as its own block "Before Reach Around", gated unless
@@ -828,9 +871,15 @@ def resolve_metrics(kit: KitConfig, numbers: Numbers | None) -> list[ResolvedMet
     return out
 
 
+def counts_in_summary(metric: ResolvedMetric) -> bool:
+    """Whether a headline number enters the audience range: counted, and a
+    follower-style number (a community member count never is)."""
+    return metric.in_total and metric.platform not in COMMUNITY_PLATFORMS
+
+
 def unified_total(resolved: Sequence[ResolvedMetric]) -> UnifiedTotal:
     """Sum of the values that exist and count toward the total (see module doc)."""
-    counting = [m for m in resolved if m.in_total]
+    counting = [m for m in resolved if counts_in_summary(m)]
     valued = [m.value for m in counting if m.value is not None]
     return UnifiedTotal(
         total=sum(valued) if valued else None,
@@ -901,6 +950,7 @@ def _project(
     values: dict[str, Any] = {
         "metrics": resolved,
         "unified_total": unified_total(resolved),
+        "audience_summary": kit.audience_summary,
         # The loaded numbers, never the path. Kept out of every total.
         "imported_history": imported,
     }

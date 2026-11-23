@@ -130,6 +130,54 @@ two buttons. The numbers table sits below it at the full content width.
 The gated page shows the range line too. Both PDFs print the range line and drop
 the buttons.
 
+### The audience summary
+
+One block, always the same shape, always stating its assumption (#627):
+
+```
+Audience across platforms           3,400 to 4,600   Figures dated 2027-03-01 UTC
+2 platforms, 4,600 follows. Added up from 2 numbers; the oldest is dated 2027-03-01 (UTC).
+Largest single audience: 3,400 (YouTube).
+People who follow on more than one platform are counted more than once.
+Unique people are somewhere between 3,400 and 4,600.
+```
+
+- **Lower bound** is the largest single follows number (a set cannot be smaller
+  than its largest member). **Upper bound** is the sum of the follows numbers,
+  which assumes no overlap. Both are plain arithmetic on your own numbers; the
+  kit never prints one deduplicated "unique people" figure.
+- The overlap sentence appears whenever more than one platform contributes. The
+  block also prints the oldest date, the number of inputs, the weakest source
+  label among them (a hand-kept or estimated number shows as such), an
+  "(out of date)" mark when a counted number is old, the before-and-after
+  Reach Around note when the dates span the cutover, and a plain caveat that
+  follower counts include inactive and automated accounts.
+- **Community members** (Discord and Matrix) are never added into either bound.
+  They print on their own line, "Community members: Discord 800, Matrix 130.",
+  with a note that they are chat members and not followers. The line shows even
+  when no follows block does.
+- A number marked `in_total: false` is left out of both bounds.
+- A counted number under the privacy floor (Under 5) hides the whole block, as
+  it hides the range line.
+- **Optional estimate.** Off by default. With a hand-kept poll and
+  `show_estimate: true` the block adds one labeled line beside the range:
+  "Estimate from a poll of N people on DATE: roughly X unique people."
+  X is the sum of follows divided by one plus the average number of other
+  platforms each respondent follows on, rounded to two significant figures. The
+  method is printed under it. It never replaces the range, and it is left out
+  when it falls outside the range (a poll that contradicts the arithmetic is not
+  printed).
+
+```yaml
+kit:
+  audience_summary:
+    show_estimate: true
+    poll:
+      respondents: 200          # at least 5
+      as_of: 2027-03-01
+      avg_other_platforms: 0.5  # 0 to 100, typed by you
+```
+
 ### Structured demographics
 
 Each demographics entry is for one configured platform and one UTC `as_of`
@@ -251,9 +299,10 @@ table. The optional wide photo, kit title, content tags and description remain
 in the introduction.
 
 The total adds up the numbers that are not
-marked `in_total: false`; it says how many numbers it adds up and the date of
-the oldest one, and notes that people who follow on several platforms are
-counted more than once. A number with no value is left out. With nothing to add
+marked `in_total: false` and are not Discord or Matrix members (see
+[the audience summary](#the-audience-summary)); it says how many numbers it adds
+up and the date of the oldest one, and notes that people who follow on several
+platforms are counted more than once. A number with no value is left out. With nothing to add
 there is no headline total.
 
 Optional `analytics` rows render a platform tab row and one stat-tile grid for
