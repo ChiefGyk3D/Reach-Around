@@ -561,7 +561,13 @@ def _support_path_extras(config: SiteConfig) -> dict[str, dict[str, list[str]]]:
     """A narrow policy for ``/support/``: images from this site only."""
     if config.support is None:
         return {}
-    return {"/support/": {"replace:img-src": ["'self'"]}}
+    # The directory, its index file and everything under it, so no alias of the
+    # page falls back to the site-wide image rule.
+    policy = {"replace:img-src": ["'self'"]}
+    return {
+        path: dict(policy)
+        for path in ("/support/", "/support/index.html", "/support/*")
+    }
 
 
 def _render_support(
@@ -606,10 +612,22 @@ def _render_support(
         profile_card=_profile_card(config),
         single_page=config.page_layout == "sections" or config.page.layout == "stack",
         cookie_text=intro_text(config),
-        custom_css=custom_css,
+        # The owner's custom stylesheet is not loaded here: it could restyle
+        # what the page shows as an address.
+        custom_css=False,
+        has_live=False,
+        has_live_script=False,
         page_frames=_page_has_frames(config, blocks),
     )
-    check_support_html(html)
+    check_support_html(
+        html,
+        [
+            coin.address
+            for block in blocks
+            if isinstance(block, Crypto)
+            for coin in block.coins
+        ],
+    )
     return html
 
 

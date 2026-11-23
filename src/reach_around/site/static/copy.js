@@ -52,7 +52,10 @@
   }
 
   function copyFrom(button) {
-    var target = document.getElementById(button.getAttribute("data-copy-target"));
+    // The address in the same card as the button, never a lookup by id across
+    // the page: a second element with the same id cannot be copied instead.
+    var card = button.closest ? button.closest(".crypto-card") : null;
+    var target = card ? card.querySelector(".crypto-address") : null;
     if (!target) {
       return;
     }

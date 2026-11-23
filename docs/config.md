@@ -1125,10 +1125,20 @@ What is not on this page, on purpose:
 * No Markdown. A text block is escaped plain text: blank lines start a new
   paragraph, a line break stays a line break, and nothing else is interpreted
   (asterisks, backticks, brackets and the like show as typed).
-* No link, anywhere in the page's content. After the page is built the HTML is
-  read again, and the build fails if the content holds a link, image, frame,
-  embed, form or an attribute that carries a URL. The header, tab bar and footer
-  are outside that check.
+* No link, anywhere in the page's content. After the page is built, the HTML
+  is read again with a strict structural check, and the build fails if the page
+  is not exactly the expected shape: every tag balanced (a stray, mismatched or
+  unclosed tag is a failure, not something skipped), one `main` with exactly one
+  support section plus only the fixed chrome (tab bar, header, profile card,
+  footer, the back link), a short allowlist of tags and attributes inside the
+  section (no link, image, frame, embed, form, `meta`, `svg`, `style`, event or
+  namespaced attribute, or comment), only engine stylesheets and scripts in the
+  head, element ids unique, and each copy button pointing at the one address
+  element in its own card, whose text is exactly the configured address. A
+  template override that breaks any of this fails the build.
+* No owner custom stylesheet. `overrides/custom.css` is not loaded on this
+  page, because a stylesheet can change what an address looks like. The page
+  uses the engine's own styles only.
 
 Every displayed field (title, intro, text blocks, crypto title and note, coin
 label, name and network) is checked at load. No control, hidden, bidirectional,
@@ -1140,15 +1150,15 @@ a lookalike letter cannot pass for an ASCII one. Nothing address-like: a run of
 letters, which covers name-service names such as `name.eth`), any `@`, and `$`
 followed by a word. A text block also takes no `<`, `://`, `www.` or URI scheme.
 
-These checks catch mistakes. They are not a guarantee: an address can be
-written around a pattern. The design relies on the page carrying plain text
-only and on a person reviewing every change to its text.
+**These checks catch mistakes. They are not a guarantee.** An address that is
+spaced out or split across words can pass them. The design relies on the page
+carrying plain text only and on a person reviewing every change to its text.
 
 The page loads `copy.js` and `crypto.css` only here. A tab whose id is
 `support` is refused, because the page takes the path `/support/`. The page is
 not part of the click counts. Its page weight has its own row, `support-page`,
-in `docs/performance.md`. The `_headers` file gives `/support/` its own
-Content-Security-Policy with images from this site only (`img-src 'self'`); the
+in `docs/performance.md`. The `_headers` file gives `/support/`, `/support/index.html` and `/support/*`
+each their own Content-Security-Policy with images from this site only (`img-src 'self'`); the
 site-wide default-src and connect-src are already `'self'`. A creator avatar
 loaded from another host therefore does not show on this page; use a local
 file. Redirecting an old support address to this page is a host setting, not

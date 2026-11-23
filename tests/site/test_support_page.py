@@ -20,7 +20,7 @@ from reach_around.config import SiteConfig
 from reach_around.config.blocks import Crypto, Text
 from reach_around.config.models import _displayed_text
 from reach_around.site.build import build_site
-from reach_around.site.supportcheck import check_support_html
+from reach_around.site.supportcheck import SupportPageError, check_support_html
 
 TODAY = date(2027, 3, 10)
 ROOT = Path(__file__).resolve().parents[2]
@@ -502,9 +502,44 @@ def test_text_lines_and_paragraphs(tmp_path: Path) -> None:
     assert "<p>Three</p>" in html
 
 
-# the final check over the built HTML
+# the final structural check over the built HTML
+ADDRESS_ELEMENT = (
+    '<ul class="crypto-list"><li class="crypto-card"><div class="crypto-body">'
+    '<code class="crypto-address" id="a-1" dir="ltr">ADDR</code>'
+    '<button class="copy-button" type="button" data-copy-target="a-1" '
+    'aria-label="Copy">Copy</button></div></li></ul>'
+)
+
+
+def page(
+    inner: str = "",
+    *,
+    head: str = "",
+    body: str = "",
+    main: str = "",
+    address: str = ADDRESS_ELEMENT,
+) -> str:
+    """A well-formed page shaped like the stock output, with places to inject."""
+    return (
+        '<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">'
+        "<title>T</title>"
+        '<link rel="stylesheet" href="../static/site.0123456789abcdef0123.css">'
+        '<script src="../static/copy.0123456789abcdef0123.js" defer></script>'
+        f"{head}</head><body>"
+        '<a class="skip-link" href="#content">Skip</a>'
+        f'<main id="content"><header><a href="/">Home</a></header>'
+        f'<section class="support"><h2>T</h2>{address}{inner}</section>'
+        f'{main}<footer><a href="/privacy/">Privacy</a></footer></main>{body}'
+        "</body></html>"
+    ).replace("ADDR", ADDR)
+
+
+def test_the_stock_shape_passes_the_structural_check() -> None:
+    check_support_html(page(), [ADDR])
+
+
 @pytest.mark.parametrize(
-    "injected",
+    "inner",
     [
         '<a href="https://e.com/">x</a>',
         '<img src="https://e.com/x.png" alt="x">',
@@ -516,28 +551,203 @@ def test_text_lines_and_paragraphs(tmp_path: Path) -> None:
         '<p ping="https://e.com/">x</p>',
         '<div data="x"></div>',
         '<span poster="x"></span>',
+        '<meta http-equiv="refresh" content="0;url=https://e.com/">',
+        "<svg><use xlink:href='#a'></use></svg>",
+        "<svg></svg>",
+        "<image href='x'>",
+        "<style>p{color:red}</style>",
+        '<p style="color:red">x</p>',
+        '<p onclick="x()">x</p>',
+        '<p onmouseover="x()">x</p>',
+        '<p xlink:href="x">x</p>',
+        '<p xml:lang="en">x</p>',
+        '<p><animate attributeName="x"></animate></p>',
+        '<p data-x="1">x</p>',
+        "<textarea></p></textarea>",
+        "<xmp><p></xmp>",
+        "<plaintext>",
+        "<template><p></p></template>",
+        "<noscript><p></p></noscript>",
+        "<!-- a comment -->",
+        "<h3>heading</h3>",
+        "<table></table>",
+        '<section class="support"></section>',
     ],
 )
-def test_the_final_html_check_refuses_links_images_and_url_attributes(
-    injected: str,
+def test_the_structural_check_refuses_anything_unknown_in_the_support_content(
+    inner: str,
 ) -> None:
-    page = (
-        '<main><header><a href="/">chrome</a><img src="a.png"></header>'
-        f'<section class="support"><p>x</p>{injected}</section>'
-        '<footer><a href="/privacy/">Privacy</a></footer></main>'
-    )
-    with pytest.raises(ValueError, match="must not have"):
-        check_support_html(page)
+    with pytest.raises(SupportPageError):
+        check_support_html(page(inner), [ADDR])
 
 
-def test_the_final_html_check_allows_chrome_and_the_copy_button() -> None:
-    page = (
-        '<main><header><a href="/">chrome</a><img src="a.png"></header>'
-        '<section class="support"><ul><li><code dir="ltr">x</code>'
-        '<button type="button" data-copy-target="a">Copy</button></li></ul>'
-        '</section><footer><a href="/privacy/">Privacy</a></footer></main>'
+@pytest.mark.parametrize(
+    ("where", "text"),
+    [
+        ("head", '<meta http-equiv="refresh" content="0;url=https://e.com/">'),
+        ("head", '<meta name="other" content="x">'),
+        ("head", "<style>p{}</style>"),
+        (
+            "head",
+            '<link rel="stylesheet" href="../static/custom.0123456789abcdef0123.css">',
+        ),
+        ("head", '<link rel="stylesheet" href="https://e.com/x.css">'),
+        ("head", '<link rel="stylesheet" href="../static/site.css">'),
+        ("head", '<script src="https://e.com/x.js"></script>'),
+        ("head", '<script src="../static/live.0123456789abcdef0123.js"></script>'),
+        ("head", "<script>alert(1)</script>"),
+        ("head", "<base href='https://e.com/'>"),
+        ("head", '<link rel="alternate" href="x">'),
+        ("body", "<p>text after main</p>"),
+        ("body", "loose text"),
+        ("body", "<div></div>"),
+        ("body", "<main></main>"),
+        ("main", "<p>an extra paragraph</p>"),
+        ("main", "<div>content</div>"),
+        ("main", "loose text"),
+        ("main", "<section>other</section>"),
+        ("main", '<section class="support"></section>'),
+        ("main", "<nav></nav><nav></nav><nav></nav>"),
+        ("main", "<img src='x'>"),
+        ("main", "<footer></footer>"),
+        ("main", "<script>x</script>"),
+        ("main", "<nav><textarea></textarea></nav>"),
+        ("main", "<nav><xmp></xmp></nav>"),
+        ("main", "<nav><svg></svg></nav>"),
+        ("main", "<nav><style></style></nav>"),
+        ("main", "<nav><noscript></noscript></nav>"),
+        ("main", "<nav><iframe></iframe></nav>"),
+        ("main", '<nav onclick="x()"></nav>'),
+        ("main", '<nav style="display:none"></nav>'),
+        ("main", '<nav xlink:href="x"></nav>'),
+        ("head", '<meta name="viewport" http-equiv="refresh" content="0;url=x">'),
+    ],
+)
+def test_the_structural_check_refuses_content_outside_the_chrome(
+    where: str, text: str
+) -> None:
+    with pytest.raises(SupportPageError):
+        check_support_html(page(**{where: text}), [ADDR])
+
+
+@pytest.mark.parametrize(
+    "broken",
+    [
+        # a stray end tag right after the section opens
+        page().replace("<h2>T</h2>", "</p><h2>T</h2>"),
+        # the section closed early, content after it
+        page().replace("</section>", "</section><p>x</p></section>"),
+        page().replace("<h2>T</h2>", "<h2>T</h2></section><div>escaped</div><section>"),
+        # an unclosed element
+        page().replace("</code>", ""),
+        page().replace("</section>", "<div></section>"),
+        # mismatched nesting
+        page().replace("<h2>T</h2>", "<p><div></p></div>"),
+        # a missing end for the section
+        page().replace("</section>", ""),
+        # no section at all
+        page().replace('<section class="support">', "<section>"),
+        # an end tag for a void element
+        page().replace("<h2>", "</br><h2>"),
+        # a processing instruction and a marked section
+        page().replace("<h2>", "<?php x ?><h2>"),
+        page().replace("<h2>", "<![CDATA[x]]><h2>"),
+        # a duplicate id anywhere
+        page(main='<footer id="a-1"></footer>'),
+        page().replace("<h2>", '<h2 id="x"></h2><h2 id="x">'),
+        # a repeated attribute
+        page().replace("<h2>", '<h2 class="a" class="b">'),
+    ],
+)
+def test_malformed_or_unclosed_markup_fails_the_build_never_skips(
+    broken: str,
+) -> None:
+    with pytest.raises(SupportPageError):
+        check_support_html(broken, [ADDR])
+
+
+def test_a_copy_button_must_point_at_the_one_address_in_its_own_card() -> None:
+    other = ADDRESS_ELEMENT.replace("a-1", "a-2")
+    two_cards = ADDRESS_ELEMENT + other.replace(
+        'data-copy-target="a-2"', 'data-copy-target="a-1"'
     )
-    check_support_html(page)
+    with pytest.raises(SupportPageError, match="another card"):
+        check_support_html(page(address=two_cards), [ADDR, ADDR])
+    with pytest.raises(SupportPageError, match="does not point"):
+        check_support_html(
+            page(address=ADDRESS_ELEMENT.replace('target="a-1"', 'target="zz"')),
+            [ADDR],
+        )
+    with pytest.raises(SupportPageError, match="does not match"):
+        check_support_html(page(address=ADDRESS_ELEMENT), ["other-address"])
+    with pytest.raises(SupportPageError, match="does not match"):
+        check_support_html(
+            page(address=ADDRESS_ELEMENT.replace("ADDR", "ADDR ")), [ADDR]
+        )
+    with pytest.raises(SupportPageError, match="more than once"):
+        check_support_html(page(main='<nav id="a-1"></nav>'), [ADDR])
+
+
+def test_a_duplicate_id_in_the_stock_page_cannot_redirect_the_copy_button() -> None:
+    dupe = ADDRESS_ELEMENT.replace(
+        "</div></li></ul>", '<span id="a-1"></span></div></li></ul>'
+    )
+    with pytest.raises(SupportPageError, match="more than once"):
+        check_support_html(page(address=dupe), [ADDR])
+
+
+def test_copy_script_reads_the_address_in_its_own_card_not_by_id() -> None:
+    source = (ROOT / "src" / "reach_around" / "site" / "static" / "copy.js").read_text(
+        "utf-8"
+    )
+    assert "getElementById" not in source
+    assert 'closest(".crypto-card")' in source
+    assert 'querySelector(".crypto-address")' in source
+
+
+# a fuzz of generated, often malformed, nesting
+_TOKENS = [
+    "<p>", "</p>", "<div>", "</div>", "<span>", "</span>", "<ul>", "</ul>",
+    "<li>", "</li>", "<br>", "<hr>", "text", "<section>", "</section>",
+    '<section class="support">', "<a href=\"x\">", "</a>", "<img src=\"x\">",
+    "<h2>", "</h2>", "<code>", "</code>", "<b>", "</b>", "<!-- c -->",
+]  # fmt: skip
+_ALLOWED_INSIDE = {"p", "div", "span", "ul", "li", "br", "hr", "h2", "code"}
+
+
+def test_a_fuzz_of_malformed_nesting_passes_only_when_wholly_balanced() -> None:
+    import random
+
+    rng = random.Random(683)  # noqa: S311 - a fixed seed, not security
+    agreed_ok = agreed_bad = 0
+    for _ in range(400):
+        tokens = [rng.choice(_TOKENS) for _ in range(rng.randint(1, 9))]
+        mid = "".join(tokens)
+        html = (
+            '<!DOCTYPE html><html><head><meta charset="utf-8"></head><body>'
+            f'<main><section class="support">{mid}</section></main></body></html>'
+        )
+        try:
+            check_support_html(html)
+            ok = True
+        except SupportPageError:
+            ok = False
+        if ok:
+            # whatever passed is balanced and holds only allowed content
+            stack: list[str] = []
+            for tok in tokens:
+                if tok.startswith("</"):
+                    assert stack and stack.pop() == tok[2:-1], tokens
+                elif tok.startswith("<") and not tok.startswith("<!--"):
+                    name = tok[1:].split(" ", 1)[0].rstrip(">")
+                    assert name in _ALLOWED_INSIDE, tokens
+                    if name not in ("br", "hr"):
+                        stack.append(name)
+            assert not stack, tokens
+            agreed_ok += 1
+        else:
+            agreed_bad += 1
+    assert agreed_ok > 5 and agreed_bad > 100
 
 
 def test_the_build_refuses_a_template_override_that_injects_an_image(
@@ -549,7 +759,7 @@ def test_the_build_refuses_a_template_override_that_injects_an_image(
         '<li class="block"><img src="https://e.com/q.png" alt=""></li>',
         encoding="utf-8",
     )
-    with pytest.raises(ValueError, match="must not have"):
+    with pytest.raises(SupportPageError):
         build_site(
             SiteConfig.model_validate(data(SUPPORT)),
             tmp_path / "out",
@@ -559,16 +769,60 @@ def test_the_build_refuses_a_template_override_that_injects_an_image(
         )
 
 
-def test_the_support_path_gets_an_image_policy_for_this_site_only(
+def test_the_build_refuses_a_template_override_that_duplicates_the_address_id(
     tmp_path: Path,
+) -> None:
+    overrides = tmp_path / "overrides"
+    (overrides / "templates" / "blocks").mkdir(parents=True)
+    stock = (
+        ROOT / "src" / "reach_around" / "site" / "templates" / "blocks" / "crypto.html"
+    ).read_text("utf-8")
+    (overrides / "templates" / "blocks" / "crypto.html").write_text(
+        stock.replace(
+            '</ul>\n<p class="crypto-note"',
+            '</ul>\n<p id="pay-addr-1"></p><p class="crypto-note"',
+            1,
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(SupportPageError, match="more than once"):
+        build_site(
+            SiteConfig.model_validate(data(SUPPORT)),
+            tmp_path / "out",
+            today=TODAY,
+            assets_dir=ASSETS,
+            overrides=overrides,
+        )
+
+
+def test_owner_custom_css_is_not_loaded_on_the_support_page(tmp_path: Path) -> None:
+    overrides = tmp_path / "overrides"
+    overrides.mkdir()
+    (overrides / "custom.css").write_text("body{color:red}\n", encoding="utf-8")
+    out = tmp_path / "out"
+    build_site(
+        SiteConfig.model_validate(data(SUPPORT)),
+        out,
+        today=TODAY,
+        assets_dir=ASSETS,
+        overrides=overrides,
+    )
+    assert "custom." in (out / "index.html").read_text(encoding="utf-8")
+    assert "custom." not in (out / "support" / "index.html").read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("path", ["/support/", "/support/index.html", "/support/*"])
+def test_every_support_path_gets_the_image_policy_for_this_site_only(
+    tmp_path: Path, path: str
 ) -> None:
     build(data(SUPPORT), tmp_path)
     headers = (tmp_path / "_headers").read_text(encoding="utf-8")
-    block = headers[headers.index("\n/support/\n") :].split("\n\n", 1)[0]
-    assert "img-src 'self';" in block
-    assert "https:" not in block.split("img-src", 1)[1].split(";", 1)[0]
-    assert "default-src 'self'" in block
-    assert "connect-src 'self'" in block
+    block = headers[headers.index(f"\n{path}\n") :].split("\n\n", 1)[0]
+    csp = block.split("Content-Security-Policy: ", 1)[1].split("\n", 1)[0]
+    assert "img-src 'self';" in csp
+    assert "https:" not in csp.split("img-src", 1)[1].split(";", 1)[0]
+    assert "default-src 'self'" in csp
+    assert "connect-src 'self'" in csp
     site_wide = headers.split("\n\n", 1)[0]
     assert "img-src 'self' https:" in site_wide
 
@@ -576,3 +830,30 @@ def test_the_support_path_gets_an_image_policy_for_this_site_only(
 def test_no_support_policy_without_a_support_page(tmp_path: Path) -> None:
     build(data(None), tmp_path)
     assert "/support/" not in (tmp_path / "_headers").read_text(encoding="utf-8")
+
+
+def _instance_doc() -> dict[str, Any]:
+    import yaml
+
+    doc = yaml.safe_load((ASSETS / "site.yaml").read_text(encoding="utf-8"))
+    doc["support"] = SUPPORT
+    doc["tabs"] = [t for t in doc["tabs"] if t["id"] != "support"]
+    return doc
+
+
+def test_the_stock_page_passes_the_check_with_every_piece_of_chrome(
+    tmp_path: Path,
+) -> None:
+    doc = _instance_doc()
+    doc["profile_card"] = {
+        "tags": ["one"],
+        "button": {"label": "Kit", "url": "https://e.com/"},
+    }
+    doc["site_nav"] = {"items": [{"title": "Links", "url": "https://e.com/"}]}
+    doc["analytics"] = {"page_views": True}
+    doc["page_layout"] = "sections"
+    build(doc, tmp_path / "a", ASSETS)
+    doc["page_layout"] = "tabs"
+    doc["features"] = {"click_tracking": True}
+    out = build(doc, tmp_path / "b", ASSETS)
+    assert "support/index.html" in out
