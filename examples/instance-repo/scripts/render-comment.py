@@ -523,6 +523,7 @@ KNOWN_FIELDS: frozenset[str] = frozenset(
         "frame_motion",
         "gender",
         "handle",
+        "handle_env",
         "head",
         "header",
         "heading",
