@@ -39,6 +39,11 @@ Environment=GF_NEWS_NEWS_FEED_ENABLED=false
 # (needs outbound access to grafana.com once). Pinned by version.
 Environment=GF_PLUGINS_PREINSTALL_SYNC=frser-sqlite-datasource@4.0.6
 
+# Rootless user namespace: map the host user (who owns the store and the other
+# bind-mounted files) to uid/gid 472, the user Grafana runs as in the image.
+# Without this, uid 472 is a different host subuid and cannot read a 0640 file.
+# `UserNS=keep-id:uid=,gid=` is in the Podman 4.9.3 quadlet table.
+UserNS=keep-id:uid=472,gid=472
 ReadOnly=true
 Tmpfs=/tmp
 DropCapability=ALL

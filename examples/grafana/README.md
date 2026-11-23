@@ -83,11 +83,24 @@ shares no volume and never touches another Grafana.
 | Image | `grafana/grafana` 12.4.15, pinned by tag and digest |
 | Plugin | `frser-sqlite-datasource` 4.0.6, installed into the named volume at first start (needs outbound access to grafana.com once) |
 | Hardening | read-only root file system, all capabilities dropped, no new privileges, own tmpfs |
+| User mapping | `UserNS=keep-id:uid=472,gid=472`: you (the user who runs Podman) appear inside the container as uid/gid 472, the user Grafana runs as, so Grafana reads the files you own |
 | Host files | `~/reach-around-grafana/{data,provisioning,dashboards}`, all mounted read-only |
 
+Host files: create them as the same user that runs Podman, and keep them owned
+by that user. With the user mapping above, Grafana sees them as its own, so any
+mode that lets you read them works (directories `0700` or `0750`, files `0600`
+or `0640`). Without the mapping, rootless Podman shows your files as owned by
+root inside the container and Grafana (uid 472) cannot read a `0600` file or a
+`0700` directory; the data source then fails to load and no dashboard appears.
+
 ```sh
-# 1. the admin password, as a Podman secret (never in a file in this repo)
-head -c 24 /dev/urandom | base64 | podman secret create reach-around-grafana-admin - > /dev/null
+# 1. the admin password, as a Podman secret (never in a file in this repo).
+#    Type one (no echo, nothing in your shell history, no trailing newline):
+read -rs -p 'Grafana admin password: ' RA_PW; echo
+printf '%s' "$RA_PW" | podman secret create reach-around-grafana-admin - > /dev/null
+unset RA_PW
+#    Or let the machine make one (base64 -w0 writes no trailing newline):
+#    head -c 24 /dev/urandom | base64 -w0 | podman secret create reach-around-grafana-admin - > /dev/null
 
 # 2. install the units for your user and start
 mkdir -p ~/.config/containers/systemd
@@ -96,11 +109,23 @@ systemctl --user daemon-reload
 systemctl --user start reach-around-grafana.service
 
 # 3. open http://127.0.0.1:3737 and sign in as admin
-podman secret inspect --showsecret reach-around-grafana-admin --format '{{.SecretData}}'
 ```
 
-Step 3 prints the password to your terminal once; keep it in your password
-manager. To stop it: `systemctl --user stop reach-around-grafana.service`.
+The stored value must have no trailing newline, because Grafana takes the whole
+value as the password. Plain `base64` ends its output with a newline; do not pipe
+it to `podman secret create` without `-w0`.
+
+If you typed the password, you already have it: put it in your password manager
+and sign in with it. If the machine made it, print it once to your terminal (it
+does not go into shell history; do not paste it into a ticket or a log), copy it
+into your password manager, then clear the screen:
+
+```sh
+podman secret inspect --showsecret reach-around-grafana-admin --format '{{.SecretData}}'
+clear
+```
+
+To stop it: `systemctl --user stop reach-around-grafana.service`.
 To remove everything it made:
 `podman volume rm reach-around-grafana`, `podman network rm reach-around-grafana`,
 `podman secret rm reach-around-grafana-admin`, and delete the unit files.

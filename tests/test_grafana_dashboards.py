@@ -443,3 +443,69 @@ def test_sample_is_deterministic_and_synthetic() -> None:
     tables: dict[str, list[dict[str, Any]]] = sample.build(END)["tables"]
     assert {"view_daily", "click_events", "analytics_coverage"} == set(tables)
     assert all(r["site"] == "links" for r in tables["view_daily"])
+
+
+# ---- the two deploy fixes (PR review): secret newline, rootless user mapping ----
+
+
+def _readme() -> str:
+    return (GRAFANA / "README.md").read_text("utf-8")
+
+
+def secret_commands(text: str) -> list[str]:
+    """Every shell line that creates the Podman secret."""
+    return [ln for ln in text.splitlines() if "| podman secret create" in ln]
+
+
+def secret_is_newline_safe(line: str) -> bool:
+    """True when the piped value cannot end in a newline."""
+    body = line.lstrip("# ").strip()
+    if "base64" in body:
+        return "base64 -w0" in body
+    return body.startswith("printf '%s'")
+
+
+def test_readme_secret_commands_store_no_trailing_newline() -> None:
+    lines = secret_commands(_readme())
+    assert len(lines) >= 2, "the README must show the secret command"
+    assert all(secret_is_newline_safe(ln) for ln in lines), lines
+
+
+def test_secret_newline_guard_bites() -> None:
+    """Negative cases: the documented-before forms must be refused."""
+    bad = [
+        "head -c 24 /dev/urandom | base64 | podman secret create x - > /dev/null",
+        'echo "$PW" | podman secret create x - > /dev/null',
+        "printf '%s\\n' \"$PW\" | podman secret create x -",
+    ]
+    for ln in bad:
+        assert not secret_is_newline_safe(ln), ln
+    assert secret_is_newline_safe(
+        "head -c 24 /dev/urandom | base64 -w0 | podman secret create x -"
+    )
+    assert secret_is_newline_safe("printf '%s' \"$RA_PW\" | podman secret create x -")
+
+
+def test_readme_says_how_to_read_the_password_without_history() -> None:
+    text = _readme()
+    assert "read -rs" in text  # typed with no echo, so not in shell history
+    assert "--showsecret" in text and "password manager" in text
+
+
+def test_quadlet_maps_the_host_user_to_grafana_uid_and_gid() -> None:
+    unit = _unit()
+    assert unit["UserNS"] == ["keep-id:uid=472,gid=472"]
+    # the image runs Grafana as uid 472; the mapping must name that user
+    assert "User" not in unit
+
+
+def test_userns_guard_bites() -> None:
+    """Negative case: a unit without the key, or with another uid, is refused."""
+
+    def ok(lines: list[str]) -> bool:
+        return "UserNS=keep-id:uid=472,gid=472" in lines
+
+    assert ok(["UserNS=keep-id:uid=472,gid=472"])
+    assert not ok(["ReadOnly=true"])
+    assert not ok(["UserNS=keep-id"])
+    assert not ok(["UserNS=keep-id:uid=1000,gid=1000"])
