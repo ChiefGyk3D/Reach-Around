@@ -6,6 +6,8 @@ while the project is alpha, every release is `0.x` and anything can change betwe
 
 ## [Unreleased]
 
+- Support page: QR codes made at build time from the validated address (#713, epic #509). New `support.qr` (default off). On, the build writes `support/qr-N.svg` for each coin using a small encoder in the engine (`reach_around/site/qr.py`, no new dependency, no network, no third-party service) and shows it in a closed "Show QR code" drawer. The code holds the bare address (byte mode, level Q, 4 module quiet zone), is drawn dark on a soft gray tile, and is compared with the encoder's output for that address at build time. The strict support page check now allows exactly that drawer and still refuses every other image, link or attribute; the `/support/` policy stays `img-src 'self'`. A coin's own `qr:` image path is still refused on this page. Tests in `tests/site/test_support_qr.py` decode every code with an independent reader and check the round trip.
+
 ## [0.3.0-rc.6] - 2026-11-23
 
 - Preview release candidate for 0.3.0 (#595, epic #246). It is a pre-release image for instance draft previews and the staging proof, cut from `main`. It is not the frozen soak candidate: the frozen candidate is a later, separate tag. Contents are the entries that follow, which were unreleased since `0.3.0-rc.5`.

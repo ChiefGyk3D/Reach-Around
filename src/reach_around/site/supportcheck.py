@@ -29,11 +29,13 @@ are not looked into.
 from __future__ import annotations
 
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from html.parser import HTMLParser
 from typing import NoReturn
 
 from reach_around.config.support import check_no_address, check_no_address_shape
+from reach_around.site.qr import qr_svg
 
 _VOID = frozenset(
     {"area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta"}
@@ -49,6 +51,23 @@ _NEVER = frozenset(
 # Inside the support section: the tags the stock templates use, and no others.
 _SECTION_TAGS = frozenset(
     {"h1", "h2", "p", "br", "hr", "div", "span", "code", "button", "ul", "li"}
+    | {"details", "summary", "img"}
+)
+# The QR drawer (#713): the only place the support section may hold an image.
+# These tags take their own, smaller attribute sets.
+_QR_TAG_ATTRS = {
+    "details": frozenset({"class"}),
+    "summary": frozenset(),
+    "img": frozenset({"class", "src", "alt", "width", "height"}),
+}
+_QR_SRC = re.compile(r"qr-[1-9][0-9]?\.svg")
+_QR_SUMMARY = "Show QR code"
+# The one SVG the build writes for a QR code: a fixed shape and nothing else.
+_QR_SVG = re.compile(
+    r'<svg xmlns="http://www\.w3\.org/2000/svg" viewBox="0 0 (\d+) \1" '
+    r'shape-rendering="crispEdges"><rect width="\1" height="\1" '
+    r'fill="#[0-9a-f]{6}"/><path fill="#[0-9a-f]{6}" '
+    r'd="(?:M\d+ \d+h\d+v1h-\d+z)+"/></svg>\n'
 )
 _SECTION_ATTRS = frozenset(
     {"class", "id", "dir", "lang", "data-copy-target", "type", "aria-label", "title"}
@@ -125,6 +144,7 @@ class _Node:
     parent: _Node | None
     classes: frozenset[str] = frozenset()
     text: list[str] = field(default_factory=list)
+    kids: list[str] = field(default_factory=list)
     seen: set[str] = field(default_factory=set)
 
 
@@ -162,6 +182,9 @@ class _Check(HTMLParser):
         self.main_counts: dict[str, int] = {}
         self.buttons: list[tuple[str, _Node]] = []
         self.codes: list[_Node] = []
+        self.qr_details: list[_Node] = []
+        self.qr_summaries: list[_Node] = []
+        self.qr_imgs: list[_Node] = []
         self.metas: dict[str, int] = {}
         self.cookie_notes = 0
         self.support_text: list[str] = []
@@ -188,6 +211,7 @@ class _Check(HTMLParser):
             _fail("an element inside an address element")
         if parent.tag == "a" and "skip-link" in parent.classes:
             _fail("an element inside the skip link")
+        parent.kids.append(tag)
         self._place(parent, node)
         if tag not in _VOID:
             self.cur = node
@@ -245,11 +269,15 @@ class _Check(HTMLParser):
         tag = node.tag
         if tag not in _SECTION_TAGS:
             _fail(f"<{tag}> inside the support content")
-        self._only(node, _SECTION_ATTRS)
+        self._only(node, _QR_TAG_ATTRS.get(tag, _SECTION_ATTRS))
+        if tag in _QR_TAG_ATTRS:
+            self._qr_element(parent, node)
         # An id is a name, not shown text (ids are checked for uniqueness); the
         # copy target is an id reference.
         self.support_attrs.extend(
-            v for k, v in node.attrs.items() if k not in ("id", "data-copy-target")
+            v
+            for k, v in node.attrs.items()
+            if k not in ("id", "data-copy-target", "src")
         )
         if tag == "button":
             self.buttons.append((node.attrs.get("data-copy-target", ""), node))
@@ -263,6 +291,39 @@ class _Check(HTMLParser):
             if node.attrs.get("dir") != "ltr":
                 _fail("an address element that is not left-to-right")
             self.codes.append(node)
+
+    def _qr_element(self, parent: _Node, node: _Node) -> None:
+        """The QR drawer is exactly details > summary + img, inside a coin card."""
+        tag = node.tag
+        if tag == "details":
+            if "crypto-card" not in parent.classes or node.classes != {"crypto-qr"}:
+                _fail("a <details> that is not the QR drawer of a coin card")
+            self.qr_details.append(node)
+        elif tag == "summary":
+            if parent.tag != "details" or "crypto-qr" not in parent.classes:
+                _fail("a <summary> outside the QR drawer")
+            self.qr_summaries.append(node)
+        else:
+            attrs = node.attrs
+            if parent.tag != "details" or "crypto-qr" not in parent.classes:
+                _fail("an image outside the QR drawer")
+            if node.classes != {"crypto-qr-image"} or set(attrs) != {
+                "class",
+                "src",
+                "alt",
+                "width",
+                "height",
+            }:
+                _fail("a QR image with other classes or attributes")
+            if not _QR_SRC.fullmatch(attrs["src"]):
+                _fail("a QR image that is not a QR file of this page")
+            if not (
+                attrs["width"].isdigit()
+                and attrs["width"] == attrs["height"]
+                and 0 < int(attrs["width"]) <= 800
+            ):
+                _fail("a QR image with a bad size")
+            self.qr_imgs.append(node)
 
     def _internal(self, value: str) -> bool:
         return (
@@ -412,6 +473,7 @@ def check_support_html(
     html: str,
     addresses: list[str] | None = None,
     urls: frozenset[str] | set[str] = frozenset(),
+    qr_names: Sequence[str | None] | None = None,
 ) -> None:
     """Refuse a support page that is not exactly the allowed shape.
 
@@ -422,6 +484,9 @@ def check_support_html(
     ``urls`` are the outside URLs the fixed chrome may link to or show (the
     site navigation, profile button, socials, credit link and avatar); any
     other chrome link must be a path inside the site.
+    ``qr_names`` holds, for each address in order, the name of the QR file the
+    build wrote for it (or None). Each card then holds exactly its one QR
+    drawer with that file name; left out, no drawer is allowed at all.
     """
     if not html.startswith(_DOCTYPE):
         _fail("a missing or non-standard doctype")
@@ -458,7 +523,50 @@ def check_support_html(
             _fail("a copy button does not point at an address element")
         elif _card(code) is not _card(button):
             _fail("a copy button points at an address in another card")
+    _check_qr_drawers(scan, qr_names, len(scan.codes))
     _check_shown_text(scan)
+
+
+def _check_qr_drawers(
+    scan: _Check, qr_names: Sequence[str | None] | None, count: int
+) -> None:
+    if qr_names is not None and len(qr_names) != count:
+        _fail("the QR files do not pair with the address elements")
+    expected = list(qr_names) if qr_names is not None else [None] * count
+    if any(node.kids != ["summary", "img"] for node in scan.qr_details) or any(
+        node.kids for node in scan.qr_summaries
+    ):
+        _fail("a QR drawer that is not one summary and one image")
+    if any("".join(node.text).strip() for node in scan.qr_details):
+        _fail("text directly inside a QR drawer")
+    if any("".join(node.text) != _QR_SUMMARY for node in scan.qr_summaries):
+        _fail("a QR drawer summary that is not the fixed text")
+    if len(scan.qr_details) != len(scan.qr_imgs):
+        _fail("a QR drawer without exactly one image")
+    seen = 0
+    for code, name in zip(scan.codes, expected, strict=True):
+        card = _card(code)
+        imgs = [img for img in scan.qr_imgs if _card(img) is card]
+        if name is None:
+            if imgs:
+                _fail("a QR image that the build did not write")
+            continue
+        if len(imgs) != 1 or imgs[0].attrs["src"] != name:
+            _fail("a card whose QR image is not its own QR file")
+        seen += 1
+    if seen != len(scan.qr_imgs):
+        _fail("a QR image outside a coin card")
+
+
+def check_qr_svg(svg: str, address: str) -> None:
+    """Refuse a QR file that is not exactly the QR code of ``address``.
+
+    The file must match the one fixed shape (a rect and one path, no script,
+    style, link or text) and equal what the encoder makes from the address
+    alone, so it cannot carry any other payload or markup.
+    """
+    if not _QR_SVG.fullmatch(svg) or svg != qr_svg(address):
+        _fail("a QR file that is not the QR code of its address")
 
 
 def _check_shown_text(scan: _Check) -> None:
