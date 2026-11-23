@@ -999,7 +999,7 @@ def _fake_runtime(
     )
     script = (
         "#!/bin/bash\n"
-        f'echo "$1" >> {calls}\n'
+        f'echo "$*" >> {calls}\n'
         'if [ "$1" = "--version" ]; then'
         f' echo "{name} version 1"; exit 0; fi\n'
         f'if [ "$1" = "image" ] && [ "$2" = "inspect" ]; then\n'
@@ -1050,7 +1050,7 @@ def test_check_config_pulls_a_missing_image_and_ignores_pull_progress(
     assert result.returncode == 0, result.stderr
     assert result.stdout == "site.yaml is valid.\n"
     assert result.stderr == ""
-    assert "pull" in calls.read_text(encoding="utf-8").split()
+    assert any(c.startswith("pull ") for c in _calls(calls))
 
 
 @pytest.mark.parametrize("runtime", ["docker", "podman"])
@@ -1060,7 +1060,7 @@ def test_check_config_skips_the_pull_when_the_image_is_present(
     root = _copy_template(tmp_path)
     path, calls = _fake_runtime(tmp_path, runtime, 'echo "ok"\n', cached=True)
     assert _run(root, "check-config.sh", path=path).returncode == 0
-    assert "pull" not in calls.read_text(encoding="utf-8").split()
+    assert not any(c.startswith("pull ") for c in _calls(calls))
 
 
 @pytest.mark.parametrize("runtime", ["docker", "podman"])
@@ -1118,16 +1118,33 @@ def test_check_config_fails_clearly_when_the_pull_fails(
     assert result.stdout == ""
 
 
+def _calls(calls: Path) -> list[str]:
+    """Each runtime call as one line: its full argv, space-joined."""
+    return calls.read_text(encoding="utf-8").splitlines()
+
+
 def test_check_config_pull_and_run_use_the_same_pinned_digest(tmp_path: Path) -> None:
     root = _copy_template(tmp_path)
     log = tmp_path / "argv.txt"
-    path, _ = _fake_runtime(
+    path, calls = _fake_runtime(
         tmp_path, "podman", f'printf "%s\\n" "$@" > {log}\necho ok\n', cached=False
     )
     assert _run(root, "check-config.sh", path=path).returncode == 0
-    digest = re.search(r"@sha256:[0-9a-f]{64}", (root / "engine.lock").read_text())
-    assert digest is not None
-    assert digest.group(0) in " ".join(_argv(log))
+    pin = re.search(
+        r"^ENGINE_IMAGE=(\S+@sha256:[0-9a-f]{64})$",
+        (root / "engine.lock").read_text(encoding="utf-8"),
+        re.MULTILINE,
+    )
+    assert pin is not None
+    image = pin.group(1)
+    seen = _calls(calls)
+    pulls = [c.split() for c in seen if c.startswith("pull ")]
+    inspects = [c.split() for c in seen if c.startswith("image inspect ")]
+    assert len(pulls) == 1
+    assert len(inspects) == 1
+    assert pulls[0][-1] == image
+    assert inspects[0][-1] == image
+    assert image in _argv(log)  # the check run uses the exact same reference
 
 
 def _recording_docker(tmp_path: Path, reply: str = "ok") -> tuple[str, Path]:
