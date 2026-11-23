@@ -76,7 +76,7 @@ Measured 2026-11-20 on the built example instance (`examples/instance`) and a me
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | hub | 5200 | 59000 | 13000 | 1300 | 82000 | 160000 | 82000 | 11 | 0 |
 | hub-stack | 11300 | 65300 | 13000 | 1300 | 81500 | 172200 | 83700 | 13 | 0 |
-| hub-live | 11700 | 65300 | 33100 | 1300 | 81500 | 192700 | 90300 | 14 | 0 |
+| hub-live | 11700 | 65300 | 29000 | 1300 | 81500 | 191300 | 89300 | 14 | 0 |
 | spoke | 7400 | 60000 | 13000 | 1300 | 81500 | 163000 | 81500 | 11 | 0 |
 | tab | 3600 | 59000 | 13000 | 1300 | 82000 | 158000 | 81000 | 11 | 0 |
 | kit | 11800 | 72000 | 3300 | 500 | 33300 | 123000 | 57000 | 11 | 0 |
@@ -91,7 +91,7 @@ Bytes, except Requests and Third party. Page types: `hub` is the first-tab page 
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | hub | `index.html` | 4086 | 46705 | 10332 | 997 | 65152 | 127272 | 64895 | 9 |
 | hub-stack | `index.html` (stack) | 9014 | 54164 | 10332 | 997 | 65152 | 139659 | 67470 | 10 |
-| hub-live | `index.html` (stack, `live_badges`) | 9313 | 54164 | 26421 | 997 | 65152 | 156047 | 72748 | 11 |
+| hub-live | `index.html` (stack, `live_badges`) | 9313 | 54367 | 23189 | 997 | 65152 | 153018 | 71390 | 11 |
 | spoke | `gear/index.html` (stack, one Gear spoke: three sections, twelve links) | 5845 | 47964 | 10332 | 997 | 65152 | 130290 | 65132 | 9 |
 | tab | `events/index.html` | 2875 | 46705 | 10332 | 997 | 65152 | 126061 | 64615 | 9 |
 | kit | `kit/index.html` (realistic kit: four labeled numbers, analytics, engagement, a case study, the legend) | 9370 | 59197 | 2596 | 384 | 26576 | 98123 | 45575 | 9 |
@@ -99,7 +99,7 @@ Bytes, except Requests and Third party. Page types: `hub` is the first-tab page 
 | support-page | `support/index.html` (a crypto block with two coins, no QR image) | 4074 | 52184 | 13328 | 997 | 65152 | 135735 | 67794 | 11 |
 | support | `kit/retry/index.html` | 2892 | 57126 | 0 | 384 | 26576 | 86978 | 42352 | 8 |
 
-The stack rows are built by the test from the example instance's creator and theme, with eight two-link groups and the Watch pair (`stack_doc` in `tests/site/test_page_weight.py`). A stack home page lists every group on one page, so its HTML is larger than the example hub's, and it is its own type; the `hub` budget is unchanged. `hub-live` adds `live.js` (about 16 KB) to the page's script, which is why its JS budget is about two and a half times the hub's. `live.js` is an optional enhancement: it is deferred, it is only on a page that turns badges on, and the page is complete without it. The budget for pages without badges did not move. Slimming `live.js` is tracked separately. Each of these two rows is the measurement raised by a quarter, rounded up (bytes to the next hundred, requests to the next whole number). The group styles (#672) added about 1.9 KB of CSS to the stack stylesheet (the two stack rows above were re-measured with it) and stay inside both budgets without raising them.
+The stack rows are built by the test from the example instance's creator and theme, with eight two-link groups and the Watch pair (`stack_doc` in `tests/site/test_page_weight.py`). A stack home page lists every group on one page, so its HTML is larger than the example hub's, and it is its own type; the `hub` budget is unchanged. `hub-live` adds `live.js` (12857 bytes, down from 16089 after #699) to the page's script, which is why its JS budget is about two and a quarter times the hub's. A source test caps `live.js` at 16000 bytes. `live.js` is an optional enhancement: it is deferred, it is only on a page that turns badges on, and the page is complete without it. The budget for pages without badges did not move. The engine ships scripts as written (no minifier), so #699 cut the comment lines from the source; a minified copy would be about 6 KB (about 2.6 KB gzipped), a build step left for later. Each of these two rows is the measurement raised by a quarter, rounded up (bytes to the next hundred, requests to the next whole number). The group styles (#672) added about 1.9 KB of CSS to the stack stylesheet (the two stack rows above were re-measured with it) and stay inside both budgets without raising them.
 
 The deck arrangement (#677) added about 3.9 KB of CSS and 0.6 KB of HTML to the stack page (jump chips, the Watch tile wrapper and a class per group), measured 2026-11-23 on the same builds: `hub-stack` 58082 bytes of CSS and 9642 of HTML, `hub-live` the same, inside both rows without raising them. Fit is tested separately in `tests/site/test_smart_stack_deck_visual.py` at 1440 x 900 and 1878 x 930 (with the 112.5% root scale), at 820, 390 and 320 wide and at the viewports that 200% zoom gives.
 
