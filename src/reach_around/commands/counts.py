@@ -385,6 +385,10 @@ def _retention_notice(history: Path, stamp: datetime) -> None:
         records = list(read_history(history).records)
     except HistoryError:
         return  # a missing or damaged file is reported by the history work itself
+    _retention_notice_for(records, stamp)
+
+
+def _retention_notice_for(records: list[Record], stamp: datetime) -> None:
     today = stamp.astimezone(UTC).date()
     count = len(deletion_candidates(records, today))
     if count:
@@ -403,19 +407,21 @@ def _retention_notice(history: Path, stamp: datetime) -> None:
         )
 
 
-def _retention_warnings(
-    history: Path, stamp: datetime, policy: RetentionPolicy
+def _retention_checks(
+    history: Path, stamp: datetime, policy: RetentionPolicy | None
 ) -> None:
-    """Per platform with ``numbers.retain_days``: a count of stored api rows near
-    or past the window (#620). Read-only; a count, never a value."""
-    if not policy.retain_days:
-        return
+    """Both retention checks of a refresh from ONE read of the history file (the
+    refresh lock is held, and a file can be large). Read-only (#620)."""
     try:
         records = list(read_history(history).records)
     except HistoryError:
-        return  # reported by the history work itself
-    for warning in retention_warnings(records, policy, stamp.astimezone(UTC).date()):
-        print(warning.line(), file=sys.stderr)
+        return  # a missing or damaged file is reported by the history work itself
+    _retention_notice_for(records, stamp)
+    if policy is not None and policy.retain_days:
+        for warning in retention_warnings(
+            records, policy, stamp.astimezone(UTC).date()
+        ):
+            print(warning.line(), file=sys.stderr)
 
 
 def _print_token_health(
@@ -538,9 +544,7 @@ def _cycle(
         if kept < len(fetched):
             print("history: today's value was already recorded; kept as it is")
     if history is not None:
-        _retention_notice(history, stamp)
-        if retention is not None:
-            _retention_warnings(history, stamp, retention)
+        _retention_checks(history, stamp, retention)
     previous_status = load_status(paths.status)
     try:
         write_atomic(

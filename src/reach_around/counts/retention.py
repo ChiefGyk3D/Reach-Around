@@ -48,7 +48,7 @@ class RetentionWarning:
         else:
             body = f"{self.past} api record(s) are past the {window}"
         return (
-            f"{self.platform}: retention warning: {body}; refresh or remove them "
+            f"{self.platform}: retention warning: {body}; redact them "
             "with the history tombstone tool (#586)"
         )
 

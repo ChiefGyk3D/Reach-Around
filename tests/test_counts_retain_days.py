@@ -102,6 +102,9 @@ def test_the_line_is_a_count_and_never_a_value() -> None:
     assert line.startswith("twitch: retention warning: 1 api record(s)")
     assert "30 day" in line and "7 days" in line
     assert "987654" not in line
+    # a fresh row does not replace the old one: only a tombstone removes it
+    assert "refresh" not in line
+    assert line.endswith("redact them with the history tombstone tool (#586)")
 
 
 # --- the config ---------------------------------------------------------------
@@ -264,3 +267,20 @@ def test_the_cli_refuses_a_bad_retain_days(
     )
     code = main(["counts", "refresh", "--config", str(setup / "site.yaml")])
     assert code == 2
+
+
+def test_a_refresh_reads_the_history_once_for_both_retention_checks(
+    setup: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    append_records(setup / "history" / "social.jsonl", [record("bluesky", 26)], now=NOW)
+    reads: list[Path] = []
+    real = counts_cmd.read_history
+
+    def counted(path: Path, **kw: Any) -> Any:
+        reads.append(path)
+        return real(path, **kw)
+
+    monkeypatch.setattr(counts_cmd, "read_history", counted)
+    assert run(setup) == 0
+    assert "retention warning" in capsys.readouterr().err
+    assert len(reads) == 1
