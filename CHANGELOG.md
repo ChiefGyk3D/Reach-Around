@@ -6,6 +6,7 @@ while the project is alpha, every release is `0.x` and anything can change betwe
 
 ## [Unreleased]
 
+- Support page rendered by Reach Around (#683, epic #667, owner decision D3): new optional `support` config (`title`, `intro`, `blocks`) built at `/support/`. It is the one place the crypto addresses live: with `support` set, a crypto block in a tab is refused, the support page takes at most one crypto block, and only crypto, text, image, email and divider blocks. A tab with the id `support` is refused. The page loads `copy.js` and `crypto.css` only here, collects QR images like any other local image, and carries no engine-written wording beyond the existing crypto note and "Back to the links". A config without `support` builds as before. New page-weight row `support-page` (total 169700 bytes). Redirects from the old support addresses are host settings (L13, owner). Schema, check vocabulary and the instance template's renderer vocabulary regenerated. Docs: `docs/config.md`, `docs/performance.md`.
 - Container image: upgrade libc6 and libc-bin to the Debian build 2.41-12+deb13u5 in the runtime stage; the `v0.3.0-rc.5` release scan failed on 28 findings in the base image's `2.41-12+deb13u4` and nothing was published (#702). The scan gate is unchanged. The upgrade comes out once the base image carries the fix.
 
 ## [0.3.0-rc.5] - 2026-11-21

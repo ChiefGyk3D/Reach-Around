@@ -3010,6 +3010,74 @@
       "title": "StoreConfig",
       "type": "object"
     },
+    "SupportPage": {
+      "additionalProperties": false,
+      "description": "The support page (#683): the one place the crypto addresses live.\n\nIt renders at ``/support/`` and holds a heading, an optional intro and\nblocks (crypto, text, image, email, divider). The hub keeps its own direct\nsupport links as ordinary links.",
+      "properties": {
+        "blocks": {
+          "items": {
+            "oneOf": [
+              {
+                "$ref": "#/$defs/Link"
+              },
+              {
+                "$ref": "#/$defs/Section"
+              },
+              {
+                "$ref": "#/$defs/Text"
+              },
+              {
+                "$ref": "#/$defs/Image"
+              },
+              {
+                "$ref": "#/$defs/Crypto"
+              },
+              {
+                "$ref": "#/$defs/Email"
+              },
+              {
+                "$ref": "#/$defs/Platforms"
+              },
+              {
+                "$ref": "#/$defs/Live"
+              },
+              {
+                "$ref": "#/$defs/Divider"
+              }
+            ]
+          },
+          "minItems": 1,
+          "title": "Blocks",
+          "type": "array"
+        },
+        "intro": {
+          "anyOf": [
+            {
+              "maxLength": 500,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Intro"
+        },
+        "title": {
+          "maxLength": 80,
+          "minLength": 1,
+          "title": "Title",
+          "type": "string"
+        }
+      },
+      "required": [
+        "blocks",
+        "title"
+      ],
+      "title": "SupportPage",
+      "type": "object"
+    },
     "Tab": {
       "additionalProperties": false,
       "properties": {
@@ -3745,6 +3813,17 @@
         "kind": "sqlite",
         "path": "data/reach-around.db"
       }
+    },
+    "support": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/SupportPage"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
     },
     "tabs": {
       "items": {

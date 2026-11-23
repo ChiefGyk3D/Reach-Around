@@ -97,6 +97,7 @@ escapes it when it renders.
 | `store` | StoreConfig | SQLite at `data/reach-around.db` | where the snapshot store lives; see [`store`](#store) |
 | `profile_card` | ProfileCard | none | name, topic chips and a media-kit button after the content of every page; see [`profile_card`](#profile_card) |
 | `site_nav` | SiteNav | none | the creator's own sites as a bar above the page and a family line in the footer; see [`site_nav`](#site_nav) |
+| `support` | SupportPage | none | the support page at `/support/`, where the crypto addresses live; see [`support`](#support) |
 | `numbers` | NumbersConfig | none | where each platform's follower count comes from, for `reach-around counts refresh`; see [`numbers`](#numbers) |
 | `kit` | KitConfig | absent | optional media kit content and its display policy; see [`kit`](#kit) |
 
@@ -1085,6 +1086,43 @@ The items are not counted as clicks: they carry no id, no `ping` and no
 `data-link-id`, they are not in the build manifest, and the click Worker never
 sees them. They are navigation between your own sites, like the footer credit,
 not outbound offers. The link parity check does not compare them.
+
+## `support`
+
+An optional support page, built at `/support/`. It is the one place the crypto
+addresses live: set `support` and a crypto block in any tab is refused, so an
+address is written once and shown once. The hub keeps its direct support
+buttons as ordinary links (one of them can point to this page). Leave the key
+out and the output is what it was without the feature. Unknown keys are
+refused.
+
+| Key | Type | Default | Constraints |
+| --- | --- | --- | --- |
+| `title` | text | required | The page heading and its title, like a tab's `page_title` (see [Page titles](#page-titles)). |
+| `intro` | text, 1-500 characters | none | One plain paragraph under the heading. |
+| `blocks` | list of blocks | required | At least one. Crypto, text, image, email and divider blocks only; links stay on the hub. At most one crypto block (list every coin in it). Block ids are unique across the whole site. |
+
+```yaml
+support:
+  title: Support the show
+  intro: Written by you; the engine adds no wording of its own.
+  blocks:
+    - id: crypto
+      coins:
+        - coin: btc
+          address: bc1qexampleexampleexampleexampleexample
+          qr: media/qr-example.png
+```
+
+The page carries the same header, tab bar, profile card and footer as the
+privacy page, with the crypto script and style (`copy.js`, `crypto.css`) only
+here. QR images named in a coin are collected and fingerprinted like any other
+local image. A tab whose id is `support` is refused, because the page takes
+the path `/support/`. The page is not part of the click counts. Its page
+weight has its own row, `support-page`, in `docs/performance.md`.
+
+Redirecting an old support address (for example the main site's `/support/` or
+a `support.` host) to this page is a host setting, not part of the build.
 
 ## `cutover_date`
 

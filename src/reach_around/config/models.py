@@ -436,6 +436,33 @@ class SiteNav(_Model):
         return self
 
 
+SUPPORT_PAGE_ID = "support"
+_SUPPORT_KINDS = (Crypto, Text, Image, Email, Divider)
+
+
+class SupportPage(_Model):
+    """The support page (#683): the one place the crypto addresses live.
+
+    It renders at ``/support/`` and holds a heading, an optional intro and
+    blocks (crypto, text, image, email, divider). The hub keeps its own direct
+    support links as ordinary links.
+    """
+
+    title: PageTitle
+    intro: Subtitle | None = None
+    blocks: list[Block] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def _only_support_blocks(self) -> SupportPage:
+        if not all(isinstance(block, _SUPPORT_KINDS) for block in self.blocks):
+            raise ValueError(
+                "support blocks can be crypto, text, image, email or divider"
+            )
+        if sum(isinstance(block, Crypto) for block in self.blocks) > 1:
+            raise ValueError("the support page takes at most one crypto block")
+        return self
+
+
 class SiteConfig(_Model):
     version: Literal[1]
     creator: Creator
@@ -454,6 +481,7 @@ class SiteConfig(_Model):
     store: StoreConfig = StoreConfig()
     profile_card: ProfileCard | None = None
     site_nav: SiteNav | None = None
+    support: SupportPage | None = None
     numbers: NumbersConfig | None = None
     analytics: Analytics = Analytics()
     kit: KitConfig | None = None
@@ -496,6 +524,11 @@ class SiteConfig(_Model):
                 if ident in seen:
                     raise ValueError(f"duplicate id {ident!r}: ids must be unique")
                 seen.add(ident)
+        if self.support is not None:
+            for block in self.support.blocks:
+                if block.id in seen:
+                    raise ValueError(f"duplicate id {block.id!r}: ids must be unique")
+                seen.add(block.id)
         if (
             self.profile_card is not None
             and self.profile_card.button is not None
@@ -503,6 +536,22 @@ class SiteConfig(_Model):
         ):
             raise ValueError(
                 f"id {MEDIA_KIT_ID!r} is reserved for the profile card button"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _crypto_lives_on_the_support_page(self) -> SiteConfig:
+        if self.support is None:
+            return self
+        if any(isinstance(b, Crypto) for tab in self.tabs for b in tab.blocks):
+            raise ValueError(
+                "crypto addresses live on the support page only: remove the "
+                "crypto block from the tabs"
+            )
+        if any(tab.id == SUPPORT_PAGE_ID for tab in self.tabs):
+            raise ValueError(
+                "a tab uses the id 'support', which the support page takes for "
+                "its path /support/; rename the tab"
             )
         return self
 

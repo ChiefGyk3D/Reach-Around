@@ -133,6 +133,31 @@ CASES: list[tuple[str, Any, list[str]]] = [
         ["the site_nav bar and footer line are both turned off", "Fix: "],
     ),
     (
+        "crypto in a tab while support is set",
+        lambda d: (
+            d["tabs"][0]["blocks"].append(
+                {
+                    "id": "tabpay",
+                    "coins": [{"coin": "btc", "address": "bc1qexampleexampleexample"}],
+                }
+            ),
+            d.update(
+                support={
+                    "title": "Support",
+                    "blocks": [
+                        {
+                            "id": "pay",
+                            "coins": [
+                                {"coin": "btc", "address": "bc1qexampleexampleexample"}
+                            ],
+                        }
+                    ],
+                }
+            ),
+        ),
+        ["rypto block sits in a tab while the support page is set", "Fix: "],
+    ),
+    (
         "missing title",
         lambda d: d["tabs"][1]["blocks"][0].pop("title"),
         ['Tab "More", block "extra", field "title": ', "is missing"],

@@ -182,6 +182,9 @@ _EMAIL_STYLE = Path("static") / "email.css"
 _EMAIL_SCRIPT = Path("static") / "email.js"
 
 
+_SUPPORT_PATH = Path("support") / "index.html"
+
+
 def _page_path(tab_index: int, tab: Tab) -> Path:
     if tab_index == 0:
         return Path("index.html")
@@ -195,6 +198,8 @@ def _page_paths(config: SiteConfig, with_kit: bool = True) -> set[Path]:
     else:
         pages = {_page_path(i, tab) for i, tab in enumerate(config.tabs)}
     pages |= {Path("privacy") / "index.html", Path("404.html")}
+    if config.support is not None:
+        pages.add(_SUPPORT_PATH)
     helper = frame_paths(config)
     if pages & helper:
         raise ValueError(
@@ -539,6 +544,45 @@ def _render_smart_stack_page(
     )
 
 
+def _render_support(
+    env: Environment,
+    config: SiteConfig,
+    shown: list[list[Block]],
+    blocks: Sequence[Block],
+    custom_css: bool,
+) -> str:
+    """The support page: the config's heading, intro and blocks at ``/support/``."""
+    support = config.support
+    if support is None:
+        raise ValueError("the config has no support page")
+    return env.get_template("support.html").render(
+        creator=config.creator,
+        support=support,
+        blocks=blocks,
+        nav=_nav(config, -1, "../"),
+        tab_href=_internal_href(config, "../", shown),
+        root="../",
+        page_title=page_title(config, support.title, home=False, own=None),
+        disclosure=_disclosure_line(config),
+        show_disclosure=_show_disclosure(config, False),
+        show_cookie_banner=sets_cookies(config),
+        click_tracking=config.features.click_tracking,
+        footer_credit=config.footer.credit,
+        footer_credit_text=config.footer.text,
+        footer_credit_url=CREDIT_URL,
+        page_views=False,
+        has_crypto=_has_crypto(blocks),
+        has_email=_has_email(blocks),
+        has_email_script=_has_email_script(blocks),
+        has_platforms=False,
+        profile_card=_profile_card(config),
+        single_page=config.page_layout == "sections" or config.page.layout == "stack",
+        cookie_text=intro_text(config),
+        custom_css=custom_css,
+        page_frames=_page_has_frames(config, blocks),
+    )
+
+
 def _render_privacy(
     env: Environment,
     config: SiteConfig,
@@ -678,6 +722,7 @@ def _render_pages(
     env: Environment,
     config: SiteConfig,
     shown: list[list[Block]],
+    support_blocks: Sequence[Block],
     custom_css: bool,
     today: date,
 ) -> dict[Path, str]:
@@ -699,6 +744,10 @@ def _render_pages(
     pages[Path("privacy") / "index.html"] = _render_privacy(
         env, config, shown, custom_css
     )
+    if config.support is not None:
+        pages[_SUPPORT_PATH] = _render_support(
+            env, config, shown, support_blocks, custom_css
+        )
     pages[Path("404.html")] = _render_not_found(env, config, shown, custom_css)
     return pages
 
@@ -874,6 +923,10 @@ def build_site(
             f"as_of is in the future (more than one day after {today}) for: {names}"
         )
     shown = [list(visible_blocks(tab.blocks, today)) for tab in config.tabs]
+    support_blocks = config.support.blocks if config.support is not None else []
+    # Blocks that bring files (crypto script and style, email) count the
+    # support page's too.
+    every_shown = [*shown, list(support_blocks)]
     manifest = _manifest(config, shown)
     custom_css = load_custom_css(overrides)
     warn_about_javascript(overrides)
@@ -903,17 +956,17 @@ def build_site(
         static.pop(Path("static") / "beacon-frame.js", None)
     if config.page.layout != "stack":
         static.pop(_SMART_STACK_STYLE, None)
-    if not any(_has_crypto(blocks) for blocks in shown):
+    if not any(_has_crypto(blocks) for blocks in every_shown):
         for rel in _CRYPTO_FILES:
             static.pop(rel, None)
-    if not any(_has_email(blocks) for blocks in shown):
+    if not any(_has_email(blocks) for blocks in every_shown):
         static.pop(_EMAIL_STYLE, None)
-    if not any(_has_email_script(blocks) for blocks in shown):
+    if not any(_has_email_script(blocks) for blocks in every_shown):
         static.pop(_EMAIL_SCRIPT, None)
-    if not any(_has_platforms(blocks) for blocks in shown):
+    if not any(_has_platforms(blocks) for blocks in every_shown):
         for rel in _PLATFORMS_FILES:
             static.pop(rel, None)
-    if not any(_has_live(blocks) for blocks in shown):
+    if not any(_has_live(blocks) for blocks in every_shown):
         static.pop(_LIVE_STYLE, None)
         if not config.page.live_badges:
             static.pop(_LIVE_SCRIPT, None)
@@ -950,7 +1003,7 @@ def build_site(
     files: dict[Path, bytes] = {
         page: html.encode("utf-8")
         for page, html in _render_pages(
-            env, config, shown, custom_css is not None, today
+            env, config, shown, support_blocks, custom_css is not None, today
         ).items()
     }
     if beacon_frame_on(config):
