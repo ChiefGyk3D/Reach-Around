@@ -3072,6 +3072,11 @@
           "default": null,
           "title": "Intro"
         },
+        "qr": {
+          "default": false,
+          "title": "Qr",
+          "type": "boolean"
+        },
         "title": {
           "maxLength": 80,
           "minLength": 1,
