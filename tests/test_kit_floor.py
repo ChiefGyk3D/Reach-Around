@@ -640,6 +640,52 @@ def test_the_analytics_followers_are_a_base(tmp_path: Path) -> None:
     assert not countries_shown(tmp_path, doc, platform_config(doc, None), None)
 
 
+def test_the_pdf_text_check_follows_a_numbers_file_only_link_page_base(
+    tmp_path: Path,
+) -> None:
+    """The count exists only in the numbers file (none typed on the platform
+    item), so the PDF check gets it from the numbers alone. The group the page
+    withheld must not be reported missing (#668)."""
+    from reach_around.kit.pdf import build_kit_pdf
+
+    doc = place_doc()
+    config = platform_config(doc, None)
+    numbers = numbers_for(100)
+    _, site, gated = build_instance(tmp_path, config, numbers)
+    out = build_kit_pdf(
+        config,
+        gated_dir=gated,
+        site_dir=site,
+        out_dir=tmp_path / "o",
+        name="k.pdf",
+        created=CREATED,
+        numbers=numbers,
+        renderer=fake_renderer,
+    ).path
+    assert "Exampleland" not in flat(out)
+    text = "\n".join(extract_pages(out.read_bytes()))
+    # no base known: the same text is missing the withheld group (the check bites)
+    with pytest.raises(PdfError, match="countries"):
+        check_text(config.kit, text, None, None, platform_counts={})
+
+
+def test_a_kit_metric_under_the_floor_is_no_audience_base() -> None:
+    """A headline value of 4 prints as "Under 5", so it is not a count a reader
+    can see; it must not withhold a group (it would only withhold more, so this
+    pins the filter itself). 5 is printed, so it is a base (#668)."""
+    from reach_around.site.kit import audience_bases, demographic_withheld
+
+    def metric_of(value: int) -> ResolvedMetric:
+        return ResolvedMetric("instagram", "Followers", "manual", value, TODAY, True)
+
+    demo = _demo(97, 97, 97)  # a 3 percent cell is pinned by base 100 only
+    assert audience_bases("instagram", [metric_of(4)], []) == []
+    assert audience_bases("instagram", [metric_of(5)], []) == [5]
+    small = audience_bases("instagram", [metric_of(4)], [])
+    assert demographic_withheld(demo, small) == frozenset()
+    assert demographic_withheld(demo, [100]) == {"ages"}  # the demo does bite
+
+
 def test_a_rounded_form_is_read_at_its_true_value() -> None:
     """A tile prints 1,004 followers as 1.0k, so a reader holds the range 950 to
     1,049. The rule uses the true count, which is never below the reader's upper
@@ -721,3 +767,43 @@ def test_the_screen_reader_count_follows_the_floor_too() -> None:
     rows = platform_rows(block, None, TODAY)
     assert [r.exact for r in rows] == [UNDER_FLOOR, "5", "1,234"]
     assert [r.short for r in rows] == [UNDER_FLOOR, "5", "1.2k"]
+
+
+def test_a_small_case_study_value_is_floored_in_the_private_pdf_text(
+    tmp_path: Path,
+) -> None:
+    """A case study with 3 views prints "Under 5" in the private PDF, and the
+    text check expects that form, not the raw count (#668)."""
+    from reach_around.kit.pdf import build_kit_pdf
+
+    doc = kit_doc()
+    doc["case_studies"][0]["views"] = 3
+    config = make_config(doc)
+    _, site, gated = build_instance(tmp_path, config)
+    out = build_kit_pdf(
+        config,
+        gated_dir=gated,
+        site_dir=site,
+        out_dir=tmp_path / "o",
+        name="k.pdf",
+        created=CREATED,
+        renderer=fake_renderer,
+    ).path
+    assert f"Views{UNDER_FLOOR}".replace(" ", "") in flat(out)
+    assert "Views3" not in flat(out)
+
+    # a renderer that prints the raw count instead: the check refuses it
+    def raw_renderer(html: str, work: Path) -> bytes:
+        assert UNDER_FLOOR in html
+        return fake_renderer(html.replace(UNDER_FLOOR, "3"), work)
+
+    with pytest.raises(PdfError, match="case_studies"):
+        build_kit_pdf(
+            config,
+            gated_dir=gated,
+            site_dir=site,
+            out_dir=tmp_path / "o2",
+            name="k.pdf",
+            created=CREATED,
+            renderer=raw_renderer,
+        )

@@ -532,6 +532,9 @@ class SupportPage(_Model):
 
     title: PageTitle
     intro: Subtitle | None = None
+    # A QR code beside each coin's address, made by the build from the address
+    # itself (#713). Off by default: it adds one small image per coin.
+    qr: StrictBool = False
     # The validator below refuses the other kinds; the schema says so too.
     blocks: list[Block] = Field(
         min_length=1, json_schema_extra=lambda schema: _narrow_support_blocks(schema)
