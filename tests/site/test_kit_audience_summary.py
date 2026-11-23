@@ -18,7 +18,7 @@ from pydantic import ValidationError
 from test_kit_build import build, gated_doc, make_config
 
 from reach_around.config.kit import KitConfig
-from reach_around.site.kit import GATED_FILE
+from reach_around.site.kit import GATED_FILE, _two_figures
 
 
 def metric(
@@ -271,6 +271,39 @@ def test_twitch_and_kick_are_treated_alike(tmp_path: Path) -> None:
     one = block(pages(tmp_path / "a", a)[0]).replace("Twitch", "X")
     two = block(pages(tmp_path / "b", b)[0]).replace("Kick", "X")
     assert one == two
+
+
+def test_summary_section_never_points_at_a_missing_id(tmp_path: Path) -> None:
+    only_community = doc(COMMUNITY)
+    # a follows number under the floor hides the total but not the community line
+    floor_hidden = doc([metric("twitch", 3), metric("youtube", 9100), *COMMUNITY])
+    for i, kit in enumerate((only_community, floor_hidden, doc(SPREAD + COMMUNITY))):
+        for html in pages(tmp_path / str(i), kit):
+            section = block_html(html)
+            ids = set(re.findall(r'\bid="([^"]+)"', html))
+            head = re.match(r"<section[^>]*>", section)
+            assert head
+            refs = re.findall(r'aria-labelledby="([^"]+)"', head.group(0))
+            assert refs or "aria-label=" in head.group(0)
+            for ref in refs:
+                assert ref in ids, (i, ref)
+
+
+@pytest.mark.parametrize(
+    ("value", "shown"),
+    [
+        (99.9, 100),
+        (9.95, 10),
+        (999.5, 1000),
+        (1049.9, 1000),
+        (10933.3, 11000),
+        (12345.0, 12000),
+        (99.4, 99),
+        (0.4, 0),
+    ],
+)
+def test_two_figure_rounding_rounds_before_it_reduces(value: float, shown: int) -> None:
+    assert _two_figures(value) == shown
 
 
 # --- config -------------------------------------------------------------------

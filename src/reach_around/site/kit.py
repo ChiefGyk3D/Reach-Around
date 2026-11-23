@@ -864,7 +864,7 @@ def _names(names: list[str]) -> str:
 
 def _two_figures(value: float) -> int:
     """Rounded to two significant figures: a poll estimate is not exact."""
-    whole = int(value)
+    whole = round(value)
     if whole < 100:
         return whole
     return round(whole, -(len(str(whole)) - 2))

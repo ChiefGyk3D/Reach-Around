@@ -30,7 +30,7 @@
 <p class="kit-zone" data-zone-control hidden><label for="kit-zone">Also show when each UTC day begins in</label> <select id="kit-zone" data-zone-select>{% for zone in zones %}<option value="{{ zone }}">{{ zone }}</option>{% endfor %}</select></p>
 {% endif %}
 {% if kit.total or kit.community %}
-<section class="kit-summary" aria-labelledby="{{ heading_id }}-summary">
+<section class="kit-summary"{% if kit.total %} aria-labelledby="{{ heading_id }}-summary"{% else %} aria-label="Audience across platforms"{% endif %}>
 {% if kit.total %}
 <div class="kit-headline ra-c-plate ra-c-plate--amber ra-c-ticks">
 <p class="kit-headline-label" id="{{ heading_id }}-summary">Audience across platforms</p>

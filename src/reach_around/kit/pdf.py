@@ -457,7 +457,9 @@ def _expected_text(
     )
     community = _community(resolved)
     if community is not None:
-        found.append(("the community members line", community["text"]))
+        found.append(
+            ("the community members line", community["text"] + " " + community["note"])
+        )
     if total is not None:
         # Anchored on the date line printed under the number, so the range
         # sentence (which also prints the total) cannot satisfy it.
@@ -480,6 +482,8 @@ def _expected_text(
         ):
             if total[key]:
                 put(where, total[key])
+        if total["estimate"]:
+            put("the audience estimate method", total["estimate_method"])
         text = _trust_text(total["trust"])
         if text:
             labeled = True

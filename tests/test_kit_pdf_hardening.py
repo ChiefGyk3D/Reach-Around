@@ -18,6 +18,7 @@ from kitpdfharness import (
     kit_doc,
     make_config,
 )
+from reach_around.config import SiteConfig
 from reach_around.config.numbers import Numbers, NumbersEntry
 from reach_around.kit.pdf import PdfError, build_kit_pdf
 from reach_around.kit.pdftext import PdfTextError, _Budget, _CMap, _show
@@ -320,3 +321,57 @@ def test_a_pdf_page_that_lost_an_audience_summary_sentence_fails(
 ) -> None:
     with pytest.raises(PdfError, match=name):
         _run_with_html_edit(tmp_path, gone, "")
+
+
+def _summary_config() -> SiteConfig:
+    doc = kit_doc()
+    doc["metrics"] = [
+        *doc["metrics"],
+        {
+            "platform": "discord",
+            "label": "Members",
+            "value": 800,
+            "as_of": "2027-03-02",
+        },
+    ]
+    doc["audience_summary"] = {
+        "show_estimate": True,
+        "poll": {"respondents": 200, "as_of": "2027-03-01", "avg_other_platforms": 0.1},
+    }
+    return make_config(doc)
+
+
+def _run_summary_edit(tmp_path: Path, old: str, new: str) -> None:
+    config, site, gated = build_instance(tmp_path, _summary_config())
+
+    def renderer(html: str, work: Path) -> bytes:
+        assert old in html
+        return fake_renderer(html.replace(old, new), work)
+
+    build_kit_pdf(
+        config,
+        gated_dir=gated,
+        site_dir=site,
+        out_dir=tmp_path / "private",
+        name="kit.pdf",
+        created=CREATED,
+        renderer=renderer,
+    )
+
+
+def test_the_summary_fixture_passes_unedited(tmp_path: Path) -> None:
+    _run_summary_edit(tmp_path, "Community members:", "Community members:")
+
+
+@pytest.mark.parametrize(
+    ("gone", "name"),
+    [
+        ("Chat members, not followers", "community"),
+        ("Estimate: the sum of follows divided by one plus", "estimate"),
+    ],
+)
+def test_a_pdf_page_that_lost_the_community_note_or_estimate_method_fails(
+    tmp_path: Path, gone: str, name: str
+) -> None:
+    with pytest.raises(PdfError, match=name):
+        _run_summary_edit(tmp_path, gone, "")
