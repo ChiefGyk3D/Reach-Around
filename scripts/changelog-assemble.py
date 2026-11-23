@@ -7,7 +7,9 @@ the CHANGELOG entry style, so parallel PRs never edit the same lines.
 
   changelog-assemble.py verify               fragments are valid and [Unreleased]
                                              holds no hand-written entry
-  changelog-assemble.py assemble             write the fragments into [Unreleased]
+  changelog-assemble.py assemble             preview: print CHANGELOG.md as it would
+                                             read with the fragments in [Unreleased];
+                                             writes and deletes nothing
   changelog-assemble.py release VERSION --date YYYY-MM-DD
                                              move them into a new [VERSION] section,
                                              restore the empty [Unreleased], delete them
@@ -266,7 +268,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             check_unreleased_empty(split_unreleased(text)[1])
             print(f"verify: {len(fragments)} fragment(s) ok")
         elif args.command == "assemble":
-            changelog_path.write_text(assemble(text, fragments), encoding="utf-8")
+            sys.stdout.write(assemble(text, fragments))
         else:
             changelog_path.write_text(
                 release(text, fragments, args.version, args.date), encoding="utf-8"

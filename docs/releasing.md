@@ -26,8 +26,8 @@ A pull request does not edit `CHANGELOG.md`. It adds one file,
 conflict. The CI lint step runs `scripts/changelog-assemble.py verify` (every fragment is
 valid, no duplicate issue number, no hand-written entry in `[Unreleased]`) and
 `check-pr` (the pull request adds exactly one fragment, unless its body has a line
-`no-changelog: <reason>` or it has the `no-changelog` label). The release step below
-assembles them.
+`no-changelog: <reason>` or it has the `no-changelog` label). `assemble` is a preview: it prints the changelog with the
+fragments folded into `[Unreleased]` and writes nothing. Only `release` (below) writes.
 
 ## Cut a release
 

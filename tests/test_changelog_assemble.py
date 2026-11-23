@@ -356,3 +356,34 @@ def test_check_pr_skips_a_push_event(tmp_path: Path) -> None:
     )
     assert run.returncode == 0
     assert "skipped" in run.stdout
+
+
+def snapshot(root: Path) -> dict[str, bytes]:
+    return {
+        str(p.relative_to(root)): p.read_bytes()
+        for p in sorted(root.rglob("*"))
+        if p.is_file()
+    }
+
+
+def test_assemble_is_a_preview_that_touches_nothing(tmp_path: Path) -> None:
+    root = project(tmp_path, {"2-b.md": "- B (#2).\n", "1-a.md": "- A (#1).\n"})
+    before = snapshot(root)
+    first = cli(root, "assemble")
+    second = cli(root, "assemble")
+    assert first.returncode == 0, first.stderr
+    assert second.returncode == 0, second.stderr
+    assert first.stdout == second.stdout
+    assert "- B (#2).\n- A (#1).\n" in first.stdout
+    assert snapshot(root) == before
+    verify = cli(root, "verify")
+    assert verify.returncode == 0, verify.stderr
+
+
+def test_release_still_works_after_a_preview(tmp_path: Path) -> None:
+    root = project(tmp_path, {"1-a.md": "- A (#1).\n"})
+    cli(root, "assemble")
+    run = cli(root, "release", "1.0.0", "--date", "2026-11-24")
+    assert run.returncode == 0, run.stderr
+    assert not (root / "changelog.d" / "1-a.md").exists()
+    assert cli(root, "verify").returncode == 0
