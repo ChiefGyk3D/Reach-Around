@@ -56,6 +56,7 @@ ENV_NAME = re.compile(r"^[A-Z][A-Z0-9_]{1,63}$")
 FORBIDDEN_PREFIXES = ("ACTIONS_", "GITHUB_", "RUNNER_")
 ENV_KEYS = (
     "api_key_env",
+    "handle_env",
     "client_id_env",
     "client_secret_env",
     "access_token_env",

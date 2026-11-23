@@ -417,6 +417,14 @@ def test_the_github_secrets_path_needs_no_doppler_setup() -> None:
     assert "if" not in step  # the refresh runs with or without keys
 
 
+def test_the_default_doppler_names_are_exactly_the_keys() -> None:
+    steps = jobs()["counts"]["steps"]
+    doppler = next(s for s in steps if s.get("name") == DOPPLER_STEP)
+    found = re.search(r"\|\| '([^']*)' \}\}", str(doppler["with"]["names"]))
+    assert found, "the default names list is missing"
+    assert set(found.group(1).split(",")) == KEYS
+
+
 def test_the_doppler_path_is_oidc_outputs_only_and_has_no_default_project() -> None:
     steps = jobs()["counts"]["steps"]
     doppler = next(s for s in steps if s.get("name") == DOPPLER_STEP)
@@ -819,6 +827,24 @@ def test_env_names_that_could_expose_runner_credentials_are_refused(
     tmp_path: Path, name: str
 ) -> None:
     config = YT_CONFIG.replace("api_key_env: YOUTUBE_API_KEY", f"api_key_env: {name}")
+    proc = run(
+        tmp_path,
+        config,
+        fake_engine(tmp_path, 0, {}),
+        extra_env={name: "secret-value-123"},
+    )
+    assert proc.returncode != 0
+    assert "::error" in proc.stdout
+    assert "secret-value-123" not in proc.stdout + proc.stderr
+    assert not (tmp_path / "engine-env.json").exists()  # the engine never ran
+
+
+@pytest.mark.parametrize("name", ["RUNNER_TEMP", "GITHUB_TOKEN", "lowercase", "A"])
+def test_a_hostile_handle_env_gets_the_same_refusal(tmp_path: Path, name: str) -> None:
+    config = (
+        "version: 1\nnumbers:\n  sources:\n"
+        f"    - {{platform: youtube, kind: youtube, handle_env: {name}}}\n"
+    )
     proc = run(
         tmp_path,
         config,

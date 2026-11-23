@@ -499,8 +499,9 @@ invites, Matrix) need nothing.
 
 **Keyed sources** read `YOUTUBE_API_KEY`, `TWITCH_CLIENT_ID` and
 `TWITCH_CLIENT_SECRET`; a YouTube source that looks the channel up by handle
-(`handle_env: YOUTUBE_USERNAME`) also reads `YOUTUBE_USERNAME` (a plain value,
-handled like the keys). Pick where they come from:
+(`handle_env: YOUTUBE_USERNAME`) also reads `YOUTUBE_USERNAME`. The handle is
+not a secret, but storing it as a secret of that name is the supported path for
+the template, the same as the keys. Pick where they come from:
 
 1. **GitHub Actions secrets (default).** Add the secrets of those names under
    Settings > Secrets and variables > Actions. Nothing else to set. A name you
