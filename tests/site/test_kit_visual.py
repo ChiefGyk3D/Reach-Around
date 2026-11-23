@@ -360,14 +360,19 @@ def photo_site(tmp_path_factory: pytest.TempPathFactory) -> Iterator[str]:
 def test_photo_sits_beside_the_first_screen_from_51_25rem_and_stacks_below(
     browser: Browser, photo_site: str
 ) -> None:
-    wide = _numbers_page(browser, photo_site, 1440)
-    photo = wide.locator(".kit-photo").bounding_box()  # type: ignore[attr-defined]
-    first = wide.locator(".kit-first").bounding_box()  # type: ignore[attr-defined]
-    assert photo and first
-    assert photo["x"] + photo["width"] <= first["x"] + 1
-    assert abs(photo["y"] - first["y"]) < 40
-    narrow = _numbers_page(browser, photo_site, 800)
-    photo = narrow.locator(".kit-photo").bounding_box()  # type: ignore[attr-defined]
-    first = narrow.locator(".kit-first").bounding_box()  # type: ignore[attr-defined]
-    assert photo and first
-    assert first["y"] >= photo["y"] + photo["height"] - 1
+    """The breakpoint is 51.25rem = 820 px: stacked at 819, beside at 820."""
+
+    def boxes(width: int) -> tuple[dict[str, float], dict[str, float]]:
+        page = _numbers_page(browser, photo_site, width)
+        photo = page.locator(".kit-photo").bounding_box()  # type: ignore[attr-defined]
+        first = page.locator(".kit-first").bounding_box()  # type: ignore[attr-defined]
+        assert photo and first
+        return photo, first
+
+    for width in (820, 1440):
+        photo, first = boxes(width)
+        assert photo["x"] + photo["width"] <= first["x"] + 1, width
+        assert abs(photo["y"] - first["y"]) < 40, width
+    for width in (800, 819):
+        photo, first = boxes(width)
+        assert first["y"] >= photo["y"] + photo["height"] - 1, width

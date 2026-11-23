@@ -118,13 +118,13 @@ The top of the public page is built to be read in 30 seconds: the title, the
 `about` line (your niche in a sentence), the `tags` chips, one range line, and
 two buttons. The numbers table sits below it at the full content width.
 
-- **Range line.** "Unique people are somewhere between X and Y." X is the
+- **Range line.** "Unique audience is between X and Y, depending on platform overlap." X is the
   largest single number the total adds up and Y is the total. It needs two or
   more counted numbers, and it is hidden whenever the total is hidden (a counted
   number under the privacy floor). It is never one deduplicated figure.
-- **Request the kit.** Jumps to the gate form. It appears only when the kit has
+- **Request Full Kit.** Jumps to the gate form. It appears only when the kit has
   a gate form.
-- **Download the PDF.** Appears only when `kit.public_pdf` is set to the https
+- **Download Public PDF.** Appears only when `kit.public_pdf` is set to the https
   URL where you published the public PDF.
 
 The gated page shows the range line too. Both PDFs print the range line and drop

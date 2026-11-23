@@ -600,7 +600,7 @@ class KitConfig(_Model):
     # the form renders an empty widget slot and the build warns.
     turnstile_site_key: StrictStr | None = None
     # Where the owner published the public PDF (an https URL). Public: it is a
-    # link on the first screen of the public page, so the "Download the PDF"
+    # link on the first screen of the public page, so the "Download Public PDF"
     # button appears only when this is set. The PDFs themselves never print it.
     public_pdf: Annotated[str, Field(max_length=2048)] | None = None
     # A file of link-page numbers imported from the previous provider (see

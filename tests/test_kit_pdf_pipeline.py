@@ -104,7 +104,7 @@ def test_the_pdf_has_every_gated_and_public_text(tmp_path: Path) -> None:
         "Example Creator media kit",
         "Followers",
         "4,600",
-        "Unique people are somewhere between 3,400 and 4,600.",
+        "Unique audience is between 3,400 and 4,600, depending on platform overlap.",
     ):
         assert "".join(needle.split()) in flat, needle
 

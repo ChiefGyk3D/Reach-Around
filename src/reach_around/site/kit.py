@@ -803,8 +803,10 @@ def _is_stale(
 
 # The first-screen range line (spec 6.5, decision 4). Both bounds are plain
 # arithmetic on the numbers the total already adds up; never one deduplicated
-# figure. NEW PUBLIC STRING: marked in the PR for Codex authoring.
-RANGE_SENTENCE = "Unique people are somewhere between {low} and {high}."
+# figure.
+RANGE_SENTENCE = (
+    "Unique audience is between {low} and {high}, depending on platform overlap."
+)
 
 
 def range_text(metrics: list[ResolvedMetric], total: UnifiedTotal) -> str | None:

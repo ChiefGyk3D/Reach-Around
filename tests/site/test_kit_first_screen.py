@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Kit first screen (#684): niche line, chips, range line, Request the kit and
-Download the PDF, in that order and before the numbers. Everything is synthetic.
+"""Kit first screen (#684): niche line, chips, range line, Request Full Kit and
+Download Public PDF, in that order and before the numbers. Everything is synthetic.
 """
 
 from __future__ import annotations
@@ -53,7 +53,10 @@ def test_range_line_is_the_largest_audience_to_the_sum_never_one_number(
     match = re.search(r'<p class="kit-range">(.*?)</p>', html, re.S)
     assert match
     text = re.sub(r"<[^>]+>", "", match.group(1))
-    assert text == "Unique people are somewhere between 3,400 and 4,600."
+    assert (
+        text
+        == "Unique audience is between 3,400 and 4,600, depending on platform overlap."
+    )
 
 
 @pytest.mark.parametrize(
@@ -91,7 +94,7 @@ def test_no_range_line_without_a_printable_total(
 ) -> None:
     html = _html(tmp_path, kit_doc(metrics=metrics))
     assert 'class="kit-range"' not in html
-    assert "somewhere between" not in html
+    assert "Unique audience is between" not in html
 
 
 def test_request_the_kit_goes_to_the_gate_only_when_there_is_a_gate(
@@ -99,24 +102,24 @@ def test_request_the_kit_goes_to_the_gate_only_when_there_is_a_gate(
 ) -> None:
     html = _html(tmp_path)
     assert 'id="kit-request"' in html
-    assert re.search(r'<a [^>]*href="#kit-request"[^>]*>Request the kit</a>', html)
+    assert re.search(r'<a [^>]*href="#kit-request"[^>]*>Request Full Kit</a>', html)
     # no gated content: no gate box, so no dead link
     plain = _html(tmp_path / "plain", kit_doc())
-    assert "Request the kit" not in plain
+    assert "Request Full Kit" not in plain
     assert "kit-request" not in plain
     # a PDF link and no gate form: the PDF button alone, never a dead jump link
     only_pdf = _html(tmp_path / "pdf-only", kit_doc(public_pdf=PDF_URL))
-    assert "Download the PDF" in only_pdf
-    assert "Request the kit" not in only_pdf
+    assert "Download Public PDF" in only_pdf
+    assert "Request Full Kit" not in only_pdf
     assert "#kit-request" not in only_pdf
 
 
 def test_download_pdf_needs_a_configured_https_url(tmp_path: Path) -> None:
     html = _html(tmp_path, gated_doc(public_pdf=PDF_URL))
     assert re.search(
-        rf'<a [^>]*href="{re.escape(PDF_URL)}"[^>]*>Download the PDF</a>', html
+        rf'<a [^>]*href="{re.escape(PDF_URL)}"[^>]*>Download Public PDF</a>', html
     )
-    assert "Download the PDF" not in _html(tmp_path / "none")
+    assert "Download Public PDF" not in _html(tmp_path / "none")
     for bad in ("http://example.com/a.pdf", "javascript:alert(1)", "/kit.pdf", " "):
         with pytest.raises(ValueError):
             KitConfig.model_validate(kit_doc(public_pdf=bad))
@@ -136,16 +139,16 @@ def test_the_actions_are_dropped_from_the_public_pdf_but_the_range_stays(
     out, _ = build(tmp_path, make_config(gated_doc(public_pdf=PDF_URL)))
     staged = stage_page(out, out, public=True).html
     assert 'class="kit-actions"' not in staged
-    assert "Request the kit" not in staged
-    assert "Download the PDF" not in staged
+    assert "Request Full Kit" not in staged
+    assert "Download Public PDF" not in staged
     assert PDF_URL not in staged
-    assert "somewhere between" in staged
+    assert "Unique audience is between" in staged
 
 
 def test_gated_page_shows_the_range_but_no_actions(tmp_path: Path) -> None:
     _, gated = build(tmp_path, make_config(gated_doc(public_pdf=PDF_URL)))
     html = (gated / "kit.html").read_text(encoding="utf-8")
-    assert "somewhere between 3,400 and 4,600" in re.sub(r"<[^>]+>", "", html)
+    assert "Unique audience is between 3,400 and 4,600" in re.sub(r"<[^>]+>", "", html)
     assert 'class="kit-actions"' not in html
 
 
@@ -165,7 +168,7 @@ def test_a_counted_zero_does_not_make_a_range_that_repeats_the_total(
     tmp_path: Path,
 ) -> None:
     html = _html(tmp_path, kit_doc(metrics=_metrics(3400, 0)))
-    assert "somewhere between" not in html
+    assert "Unique audience is between" not in html
     # two numbers above zero still make one
     again = _html(tmp_path / "two", kit_doc(metrics=_metrics(3400, 0, 100)))
-    assert "somewhere between 3,400 and 3,500." in again
+    assert "is between 3,400 and 3,500, depending on platform overlap." in again

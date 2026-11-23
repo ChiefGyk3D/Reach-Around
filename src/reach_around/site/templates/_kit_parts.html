@@ -5,8 +5,8 @@
 {% macro actions(kit, form) %}
 {% if form or kit.public_pdf %}
 <p class="kit-actions">
-{% if form %}<a class="ra-c-btn" href="#kit-request">Request the kit</a>{% endif %}
-{% if kit.public_pdf %}<a class="ra-c-btn ra-c-btn--secondary" href="{{ kit.public_pdf }}" rel="noopener noreferrer">Download the PDF</a>{% endif %}
+{% if form %}<a class="ra-c-btn" href="#kit-request">Request Full Kit</a>{% endif %}
+{% if kit.public_pdf %}<a class="ra-c-btn ra-c-btn--secondary" href="{{ kit.public_pdf }}" rel="noopener noreferrer">Download Public PDF</a>{% endif %}
 </p>
 {% endif %}
 {% endmacro %}
