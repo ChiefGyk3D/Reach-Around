@@ -6,6 +6,7 @@ while the project is alpha, every release is `0.x` and anything can change betwe
 
 ## [Unreleased]
 
+- Kit inquiry route ahead of the analytics URL cap (#649, epic #244, related #612): `POST /k/inquiry` and its two result pages now bypass the analytics URL length cap, like the gate routes, so an oversize query reaches the inquiry handler (origin, cookie and method checks) instead of falling through to the click route's empty 204. No check, cap or limit changed; every other path keeps the cap. New wiring tests in `worker/test/kit/inquiry.test.ts`.
 - Slimmer `live.js` (#699): the live badge script drops from 16089 to 12857 bytes (comment lines removed; behavior, CSP and every check unchanged), so the stack home page with badges loads 23189 bytes of JS instead of 26421. The `hub-live` page-weight row is lowered (JS 33100 to 29000, total 192700 to 191300, compressed 90300 to 89300), and a new test fails if `live.js` grows past 16000 bytes. The engine does not minify shipped scripts; a build-time minifier (about 6 KB minified) is left for later. Docs: `docs/performance.md`.
 
 ## [0.3.0-rc.6] - 2026-11-23

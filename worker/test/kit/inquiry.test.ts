@@ -12,6 +12,7 @@ import {
   type InquiryEnv,
 } from "../../src/kit/inquiry";
 import { COOKIE_NAME, signToken } from "../../src/kit/token";
+import worker from "../../src/index";
 
 const HOST = "links.example.test";
 const ORIGIN = `https://${HOST}`;
@@ -493,5 +494,28 @@ describe("dispatcher dedup identity", () => {
     await d.notify(e, ev, { fetchFn: f.fn, nowMs: T0 });
     await d.notify(e, ev, { fetchFn: f.fn, nowMs: T0 + 1000 });
     expect(f.calls).toHaveLength(1);
+  });
+});
+
+describe("worker.fetch wiring", () => {
+  it("routes the inquiry paths to the inquiry handler whatever the query length", async () => {
+    const q = `?${"a=1&".repeat(600)}`; // the whole URL is well over the analytics URL cap
+    const sent = await worker.fetch(await req({ method: "GET", path: `${INQUIRY_SENT_ROUTE}${q}`, cookie: null }), baseEnv() as never, undefined);
+    expect(sent.status).toBe(200);
+    expect(await sent.text()).toContain("Message Sent");
+    const err = await worker.fetch(await req({ method: "GET", path: `${INQUIRY_ERROR_ROUTE}${q}`, cookie: null }), baseEnv() as never, undefined);
+    expect(err.status).toBe(200);
+    expect(await err.text()).toContain("Message Not Sent");
+    // a POST with no unlock cookie reaches the handler's gate redirect, not the click route's 204
+    const post = await worker.fetch(await req({ path: `${INQUIRY_ROUTE}${q}`, cookie: null }), baseEnv() as never, undefined);
+    expect(post.status).toBe(303);
+    expect(post.headers.get("location")).toBe("/kit/retry/");
+  });
+  it("keeps the analytics URL cap on every other path", async () => {
+    const q = `?${"a=1&".repeat(600)}`;
+    const other = await worker.fetch(await req({ method: "GET", path: `/k/other${q}`, cookie: null }), baseEnv() as never, undefined);
+    expect(other.status).toBe(204);
+    const near = await worker.fetch(await req({ method: "GET", path: `${INQUIRY_SENT_ROUTE}x${q}`, cookie: null }), baseEnv() as never, undefined);
+    expect(near.status).toBe(204);
   });
 });
