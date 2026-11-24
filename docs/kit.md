@@ -880,6 +880,12 @@ Chromium or Chrome binary (the one the visual tests already use): pass
 `--chromium PATH`, set `RA_CHROMIUM`, or have `chromium` on `PATH`. It adds no
 Python dependency.
 
+Both PDFs print dark, like the screen (decision D9): the page background, text,
+link and table-rule colors are the site's own design tokens, so nothing is
+invented for print, and the text stays selectable. The browser command line is
+unchanged; the print sheet sets `print-color-adjust: exact`, which is what makes
+Chromium paint the dark background in the PDF.
+
 | Option | Meaning |
 | --- | --- |
 | `--config` | the site config (for the kit text the PDF is checked against) |
