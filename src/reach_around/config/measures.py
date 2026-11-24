@@ -293,6 +293,15 @@ def narrow(registry: MeasureVisibility, source: MeasureVisibility) -> MeasureVis
     return registry if _RANK[registry] >= _RANK[source] else source
 
 
+def source_level(field: str) -> MeasureVisibility:
+    """Who may see the numbers of one config field: the narrower of the rich
+    policy table and the visibility-only table, so changing either one narrows
+    the measures (the two tables are one rule and may never disagree upward)."""
+    from reach_around.config import kit
+
+    return narrow(kit.KIT_FIELD_POLICY[field].visibility, kit.DISPLAY_POLICY[field])
+
+
 def _entry(key: str) -> MeasureDef:
     return REGISTRY[key]
 
@@ -304,11 +313,10 @@ def numbers_measures(
     ``None`` compiles them without a trust label (see ``Measure``)."""
     from reach_around.config.kit import (
         COMMUNITY_PLATFORMS,
-        KIT_FIELD_POLICY,
         counts_in_summary,
     )
 
-    source = KIT_FIELD_POLICY["metrics"].visibility
+    source = source_level("metrics")
     out: list[Measure] = []
     for m in resolved:
         key = "members" if m.platform in COMMUNITY_PLATFORMS else "followers"
@@ -337,9 +345,7 @@ def numbers_measures(
 
 def analytics_measures(rows: Iterable[PlatformAnalytics]) -> list[Measure]:
     """Each analytics row: followers, the typed 30-day change and each tile."""
-    from reach_around.config.kit import KIT_FIELD_POLICY
-
-    source = KIT_FIELD_POLICY["analytics"].visibility
+    source = source_level("analytics")
     out: list[Measure] = []
     for row in rows:
         trust = analytics_trust(row.synced_with)
@@ -376,9 +382,7 @@ def analytics_measures(rows: Iterable[PlatformAnalytics]) -> list[Measure]:
 def engagement_measures(entries: Iterable[EngagementRow]) -> list[Measure]:
     """Each engagement row: average views and the engagement rate, two measures
     whose value is ``None`` when an input is missing."""
-    from reach_around.config.kit import KIT_FIELD_POLICY
-
-    source = KIT_FIELD_POLICY["engagement"].visibility
+    source = source_level("engagement")
     out: list[Measure] = []
     for entry in entries:
         has_figures = any(

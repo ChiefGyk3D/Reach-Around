@@ -72,6 +72,7 @@ from reach_around.config.kit import (
     enforce_display_policy,
     gated_projection,
     kit_warnings,
+    policy_fingerprint,
     public_projection,
     summary_total,
 )
@@ -103,6 +104,11 @@ KIT_PAGE = Path("kit") / "index.html"
 RETRY_PAGE = Path("kit") / "retry" / "index.html"
 # The gated page's name inside the gated directory. No public file may use it.
 GATED_FILE = Path("kit.html")
+# The policy fingerprint (``policy_fingerprint``) each build records beside its
+# kit pages: ``kit/policy.txt`` in the public output and ``kit-policy.txt`` in the
+# gated directory. A PDF build refuses a page whose record is missing or differs.
+POLICY_FILE = Path("kit") / "policy.txt"
+GATED_POLICY_FILE = Path("kit-policy.txt")
 
 # The gate form posts to the Worker route (worker/src/kit/gate.ts, GATE_ROUTE, #263).
 # Every refusal there redirects to the retry page, which carries the same form.
@@ -142,6 +148,8 @@ class KitRender:
     public: dict[Path, str]
     gated: str | None
     warnings: list[str]
+    # ``policy_fingerprint()`` at build time; "" when the build has no kit.
+    policy: str = ""
 
 
 def has_gate_form(kit: KitConfig) -> bool:
@@ -568,12 +576,15 @@ class StagedGated:
 
     root: Path
     temp: Path | None
+    policy: str | None = None
 
     def commit(self) -> None:
         target = self.root / GATED_FILE
+        record = self.root / GATED_POLICY_FILE
         if self.temp is None:
-            if os.path.lexists(target):
-                target.unlink()
+            for path in (target, record):
+                if os.path.lexists(path):
+                    path.unlink()
             return
         try:
             os.replace(self.temp, target)
@@ -581,11 +592,32 @@ class StagedGated:
             self.discard()
             raise
         self.temp = None
+        if self.policy is not None:
+            _write_private_file(record, self.policy)
 
     def discard(self) -> None:
         if self.temp is not None:
             self.temp.unlink(missing_ok=True)
             self.temp = None
+
+
+def _write_private_file(target: Path, text: str) -> None:
+    """Write a small owner-only file through a new temp name, never following a
+    link, and rename it into place."""
+    if target.is_symlink():
+        raise ValueError(f"{target} is a symbolic link; it is never written through")
+    temp = target.parent / f".{target.name}.{secrets.token_hex(8)}.tmp"
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+    fd = os.open(temp, flags, 0o600)
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(text.encode("utf-8"))
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temp, target)
+    except BaseException:
+        temp.unlink(missing_ok=True)
+        raise
 
 
 def check_private_root(gated_out: Path) -> None:
@@ -722,7 +754,9 @@ def check_gated_requests(page: str, files: Mapping[Path, bytes]) -> None:
             )
 
 
-def stage_gated(gated_out: Path, page: str | None) -> StagedGated:
+def stage_gated(
+    gated_out: Path, page: str | None, policy: str | None = None
+) -> StagedGated:
     """Prepare the gated page without touching the destination name.
 
     A symbolic link at the destination is refused. The page is written to a new
@@ -752,7 +786,7 @@ def stage_gated(gated_out: Path, page: str | None) -> StagedGated:
     except BaseException:
         temp.unlink(missing_ok=True)
         raise
-    return StagedGated(gated_out, temp)
+    return StagedGated(gated_out, temp, policy)
 
 
 # --- content -----------------------------------------------------------------
@@ -1552,4 +1586,4 @@ def render_kit(
         gated = env.get_template("kit_gated.html").render(
             **{**ctx, "root": "/", "kit": content, "inquiry": inquiry, "noindex": True}
         )
-    return KitRender(pages, gated, warnings)
+    return KitRender(pages, gated, warnings, policy_fingerprint())

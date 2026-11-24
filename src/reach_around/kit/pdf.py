@@ -57,6 +57,7 @@ from reach_around.config.kit import (
     KitConfig,
     enforce_display_policy,
     pdf_excluded_values,
+    policy_fingerprint,
     summary_total,
 )
 from reach_around.config.measures import (
@@ -78,7 +79,9 @@ from reach_around.kit.output import check_name, confine_out_dir, write_private
 from reach_around.kit.pdftext import PdfTextError, extract_pages
 from reach_around.kit.stage import stage_page, valid_as_of_text
 from reach_around.site.kit import (
+    GATED_POLICY_FILE,
     GUARD_MIN_LENGTH,
+    POLICY_FILE,
     _analytics_rows,
     _case_rows,
     _change_text,
@@ -430,6 +433,11 @@ def private_measure_strings(kit: KitConfig, numbers: Numbers | None) -> dict[str
                 )
                 found[f"{key} (row)"] = m.label + text
                 found[f"{key} (platform row)"] = name + m.label + text
+                # the row exactly as printed: the owner-supplied mark and the
+                # interactions note sit between the measure name and the value
+                lead = f"{m.provenance}." if m.provenance else ""
+                note = f"{m.note}." if m.note else ""
+                found[f"{key} (printed row)"] = name + m.label + lead + note + text
             elif m.block == "tile" and m.key == "followers_change_30d":
                 change = _change_text(followers.get(m.platform, 0), m.value)
                 if change:
@@ -458,6 +466,26 @@ def private_measure_strings(kit: KitConfig, numbers: Numbers | None) -> dict[str
         ):
             found[f"{key} (label)"] = m.label
     return found
+
+
+def check_policy_record(record: Path, what: str) -> None:
+    """Refuse a staged page whose policy record is missing or differs from the
+    current policy: the page was built before the display policy changed, so it
+    may still hold figures the policy now keeps out. Rebuild, then print."""
+    try:
+        if record.is_symlink() or not record.is_file():
+            recorded = None
+        else:
+            recorded = record.read_bytes()[:256].decode("ascii", errors="replace")
+    except OSError:
+        recorded = None
+    if recorded is None or recorded.strip() != policy_fingerprint():
+        raise PdfError(
+            f"the {what} was built under a different display policy, or has no "
+            "policy record; nothing was written. Rebuild the site first "
+            f"(reach-around build{' --gated-out' if what == 'gated page' else ''}), "
+            "then print the PDF"
+        )
 
 
 def _measures(
@@ -927,6 +955,7 @@ def build_kit_pdf(
             "disclosure statement); there is nothing private to print"
         )
     enforce_display_policy(kit)
+    check_policy_record(gated_dir / GATED_POLICY_FILE, "gated page")
     check_name(name)
     target_dir = confine_out_dir(out_dir, [gated_dir, site_dir, *protect])
     staged = stage_page(gated_dir, site_dir)
@@ -967,6 +996,7 @@ def build_public_kit_pdf(
     if kit is None:
         raise PdfError("the config has no media kit; there is nothing to print")
     enforce_display_policy(kit)
+    check_policy_record(site_dir / POLICY_FILE, "public page")
     check_name(name)
     target_dir = confine_out_dir(out_dir, [site_dir, *protect])
     staged = stage_page(site_dir, site_dir, public=True, valid_as_of=created)

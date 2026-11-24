@@ -252,6 +252,13 @@ kit:
 | community | `members` |
 | other | `followers`, `followers_change_30d`, `analytics_stat`, `avg_views_per_item`, `engagement_rate` |
 
+**Policy record.** Every build writes a hash of the display policy beside the
+kit pages: `kit/policy.txt` in the public output and `kit-policy.txt` in the gated
+directory. `kit pdf` and `kit pdf --public` refuse a page whose record is missing
+or differs from the current policy ("rebuild the site first"), so a page built
+before a field moved to a narrower audience can never be printed. The hash holds
+no figure and no setting of yours.
+
 ### Structured demographics
 
 Each demographics entry is for one configured platform and one UTC `as_of`

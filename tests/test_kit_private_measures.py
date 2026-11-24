@@ -16,6 +16,7 @@ from reach_around.config import kit as kit_module
 from reach_around.config.kit import (
     KitConfig,
     gated_projection,
+    policy_fingerprint,
     public_projection,
 )
 from reach_around.config.measures import REGISTRY, registry_problems
@@ -27,6 +28,7 @@ from reach_around.kit.pdf import (
     private_measure_strings,
 )
 from reach_around.kit.pdftext import extract_pages
+from reach_around.site.kit import GATED_POLICY_FILE, POLICY_FILE
 
 SECRET_FOLLOWERS = 481516234
 SECRET_TILE = 9162534
@@ -76,13 +78,25 @@ FIGURES = {
 }
 
 
-def make_private(monkeypatch: pytest.MonkeyPatch, field: str) -> None:
+def set_level(monkeypatch: pytest.MonkeyPatch, field: str, level: Any) -> None:
+    """Change one field's level in both policy tables, as a config edit would."""
     policy = kit_module.KIT_FIELD_POLICY
-    moved = {**policy, field: replace(policy[field], visibility="private")}
+    moved = {**policy, field: replace(policy[field], visibility=level)}
     monkeypatch.setattr(kit_module, "KIT_FIELD_POLICY", moved)
     table = {name: rule.visibility for name, rule in moved.items()}
     monkeypatch.setattr(kit_module, "DISPLAY_POLICY", table)
     monkeypatch.setattr(pdf_module, "DISPLAY_POLICY", table)
+
+
+def make_private(monkeypatch: pytest.MonkeyPatch, field: str) -> None:
+    set_level(monkeypatch, field, "private")
+
+
+def bless(site: Path, gated: Path) -> None:
+    """Record the CURRENT policy on a page built under an older one: the case the
+    fingerprint cannot see, left to the text checks (defense in depth)."""
+    (site / POLICY_FILE).write_text(policy_fingerprint(), encoding="ascii")
+    (gated / GATED_POLICY_FILE).write_text(policy_fingerprint(), encoding="ascii")
 
 
 @pytest.mark.parametrize("field", ["metrics", "analytics", "engagement"])
@@ -150,6 +164,7 @@ def test_a_stale_gated_page_with_now_private_figures_is_refused(
     assert "765,432" in "".join(" ".join(extract_pages(out.read_bytes())).split())
     out.unlink()
     make_private(monkeypatch, "engagement")
+    bless(site, gated)
     # the staged page is not rebuilt: it still holds the engagement figures
     with pytest.raises(PdfError, match="private"):
         make_pdf(tmp_path, config, site, gated)
@@ -227,6 +242,7 @@ def test_a_stale_full_pdf_with_now_private_analytics_is_refused(
     assert "Followers1.2k" in flat and "+12.3%" in flat
     out.unlink()
     make_private(monkeypatch, "analytics")
+    bless(site, gated)
     with pytest.raises(PdfError, match="private"):
         make_pdf(tmp_path, config, site, gated)
 
@@ -234,7 +250,7 @@ def test_a_stale_full_pdf_with_now_private_analytics_is_refused(
 def test_a_stale_public_pdf_with_now_private_analytics_is_refused(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    config, site, _ = build_instance(tmp_path, make_config(analytics_kit()))
+    config, site, gated = build_instance(tmp_path, make_config(analytics_kit()))
 
     def make_public() -> Path:
         return build_public_kit_pdf(
@@ -251,5 +267,117 @@ def test_a_stale_public_pdf_with_now_private_analytics_is_refused(
     assert "Followers1.2k" in flat
     out.unlink()
     make_private(monkeypatch, "analytics")
+    bless(site, gated)
     with pytest.raises(PdfError, match="private"):
         make_public()
+
+
+# --- the policy fingerprint (stale pages refused outright) -------------------
+
+
+def owner_supplied_kit() -> dict[str, Any]:
+    doc = kit_doc()
+    doc["engagement"] = [
+        {
+            "platform": "twitch",
+            "period_start": "2027-01-05",
+            "period_end": "2027-01-30",
+            "as_of": "2027-01-31",
+            "views": 12340,
+            "posts": 10,
+            "interactions": 617,
+            "owner_supplied": True,
+        }
+    ]
+    return doc
+
+
+def test_a_page_built_under_the_current_policy_builds_both_pdfs(
+    tmp_path: Path,
+) -> None:
+    config, site, gated = build_instance(tmp_path, make_config(analytics_kit()))
+    assert (site / POLICY_FILE).read_text() == policy_fingerprint()
+    assert (gated / GATED_POLICY_FILE).read_text() == policy_fingerprint()
+    make_pdf(tmp_path, config, site, gated)
+    build_public_kit_pdf(
+        config,
+        site_dir=site,
+        out_dir=tmp_path / "private",
+        name="kit-public.pdf",
+        created=date(2027, 3, 10),
+        renderer=fake_renderer,
+    )
+
+
+@pytest.mark.parametrize("which", ["full", "public"])
+def test_a_page_with_no_policy_record_is_refused(tmp_path: Path, which: str) -> None:
+    config, site, gated = build_instance(tmp_path, make_config(analytics_kit()))
+    (site / POLICY_FILE).unlink()
+    (gated / GATED_POLICY_FILE).unlink()
+    with pytest.raises(PdfError, match="Rebuild the site first"):
+        if which == "full":
+            make_pdf(tmp_path, config, site, gated)
+        else:
+            build_public_kit_pdf(
+                config,
+                site_dir=site,
+                out_dir=tmp_path / "private",
+                name="p.pdf",
+                created=date(2027, 3, 10),
+                renderer=fake_renderer,
+            )
+
+
+def test_a_stale_full_pdf_with_owner_supplied_private_engagement_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Adversarial reproduction 1: the row prints the owner-supplied mark between
+    the measure name and the value, and "1,234" is short."""
+    config, site, gated = build_instance(tmp_path, make_config(owner_supplied_kit()))
+    make_private(monkeypatch, "engagement")
+    with pytest.raises(PdfError, match="Rebuild the site first"):
+        make_pdf(tmp_path, config, site, gated)
+    # even a page that claims the current policy fails the text check
+    bless(site, gated)
+    with pytest.raises(PdfError, match="private"):
+        make_pdf(tmp_path, config, site, gated)
+
+
+@pytest.mark.parametrize("field", ["metrics", "analytics"])
+def test_a_stale_public_page_after_a_field_moves_to_gated_is_refused(
+    field: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Adversarial reproduction 2: public to gated leaves figures on the public
+    page; only the fingerprint can see that."""
+    config, site, _ = build_instance(tmp_path, make_config(analytics_kit()))
+    set_level(monkeypatch, field, "gated")
+    with pytest.raises(PdfError, match="Rebuild the site first"):
+        build_public_kit_pdf(
+            config,
+            site_dir=site,
+            out_dir=tmp_path / "private",
+            name="p.pdf",
+            created=date(2027, 3, 10),
+            renderer=fake_renderer,
+        )
+
+
+def test_changing_only_the_visibility_table_narrows_measures_and_the_fingerprint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Adversarial reproduction 3: one rule, two tables; either one binds."""
+    kit = KitConfig.model_validate(KIT)
+    before = policy_fingerprint()
+    table = dict(kit_module.DISPLAY_POLICY)
+    table["metrics"] = "private"
+    table["analytics"] = "private"
+    monkeypatch.setattr(kit_module, "DISPLAY_POLICY", table)
+    assert policy_fingerprint() != before
+    for projection in (public_projection(kit, None), gated_projection(kit, None)):
+        assert not [m for m in projection["measures"] if m.block != "derived"]
+        assert projection["unified_total"].total is None
+
+
+def test_the_two_policy_tables_agree_at_import() -> None:
+    table = {n: r.visibility for n, r in kit_module.KIT_FIELD_POLICY.items()}
+    assert table == dict(kit_module.DISPLAY_POLICY)

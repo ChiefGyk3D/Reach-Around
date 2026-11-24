@@ -885,6 +885,29 @@ def enforce_display_policy(kit: KitConfig) -> None:
             )
 
 
+def policy_fingerprint() -> str:
+    """A stable hash of everything that decides who may see a number: both policy
+    tables (the rich one and the visibility-only view) and the registry's default
+    audiences. A page records it when it is built; a PDF build refuses a page
+    built under a different value (the policy changed after the page was made)."""
+    import hashlib
+    import json
+
+    from reach_around.config import measures
+
+    table = {
+        "fields": {
+            name: [rule.visibility, rule.owner_report_only]
+            for name, rule in sorted(KIT_FIELD_POLICY.items())
+        },
+        "display": dict(sorted(DISPLAY_POLICY.items())),
+        "registry": {k: e.visibility for k, e in sorted(measures.REGISTRY.items())},
+    }
+    return hashlib.sha256(
+        json.dumps(table, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+
+
 def imported_level(kit: KitConfig) -> Visibility:
     """Who may see the imported-history block: gated unless the owner says public."""
     return "public" if kit.imported_history_public else "gated"
