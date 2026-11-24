@@ -100,7 +100,7 @@ because the number would be shown nowhere.
 | `kit.html` | `--gated-out` (never published) | a visitor who passed the gate, served by the Worker |
 | `kit.pdf` | `kit pdf --out-dir` (private, never published) | you, the owner (see [The private PDF](#the-private-pdf)) |
 | `kit-binding.json` | `--gated-out` (never published) | the tools; digests that tie a measures file to this build (see [The measures file](#the-measures-file)) |
-| `kit-measures.json` | `kit measures --out-dir` (private, never published, never in `--out` or `--gated-out`) | you, and the sponsor page work (see [The measures file](#the-measures-file)) |
+| `kit-measures.json` | `kit private-measures --out-dir` (private, never published, never in `--out` or `--gated-out`) | you, and the sponsor page work (see [The measures file](#the-measures-file)) |
 | `kit-public-YYYY-MM-DD.pdf` | `kit pdf --public --out-dir` (the public half; you decide where it goes) | anyone you give it to (see [The public PDF](#the-public-pdf)) |
 
 ```sh
@@ -201,6 +201,8 @@ known one. Each key has a unit, a definition, and a default audience.
 | `members` | follows | The number of members of a chat room or server, as the platform reports it. A member is not a follower, so it never enters the audience range. | everyone |
 | `followers_change_30d` | percent | The change in followers over the last 30 days, in percent, as the owner typed it from the platform's own analytics. It can be negative. | everyone |
 | `analytics_stat` | count | A count the owner typed from a platform's analytics, named by its own label; the label says what is counted. | everyone |
+| `views` | views | The number of times the platform counted a video as viewed in the period, as the platform's own analytics export shows it. Added up by the importer from the daily rows of the export. | everyone |
+| `watch_hours` | hours | The total time viewers spent watching in the period, in whole hours, as the platform's own analytics export shows it. Added up by the importer from the daily rows and rounded half up. | everyone |
 | `avg_ccv` | viewers | The average number of people watching at the same moment while the channel was live in the period, as the platform's own dashboard shows it. Typed by the owner. | everyone |
 | `peak_ccv` | viewers | The highest number of people watching at the same moment while the channel was live in the period, as the platform's own dashboard shows it. Typed by the owner. | everyone |
 | `hours_watched` | hours | The total time viewers spent watching the channel in the period, in whole hours, as the platform's own dashboard shows it. Typed by the owner. | everyone |
@@ -961,14 +963,16 @@ error), 2 for a usage error.
 
 ## The measures file
 
-`reach-around kit measures` writes `kit-measures.json`: the measures the gated
-kit shows, each with its trust label and date. The sponsor page and the quote
+`reach-around kit private-measures` writes the OWNER-ONLY private file
+`kit-measures.json`: the measures the gated kit shows, each with its trust label
+and date. (`kit measure` is a different command: it writes hand-kept public
+entries.) The sponsor page and the quote
 read this file, and nothing else, for a measure value, so a quoted number is the
 number the kit shows, with the same label and date. The kit computes no price.
 
 ```sh
 reach-around build --config site.yaml --out site-out --gated-out gated-out
-reach-around kit measures --config site.yaml --site-out site-out \
+reach-around kit private-measures --config site.yaml --site-out site-out \
   --gated-out gated-out --out-dir ~/private/kit-measures
 ```
 
@@ -992,7 +996,7 @@ Where it may go, and what it holds:
   is written; a hit names the field, never the value, and writes nothing.
 - **Tied to one build.** `build --gated-out` writes `kit-binding.json` beside
   `kit.html` (never in the public output): digests of the display policy, of the
-  resolved measures, of the gated page and of the public kit page. `kit measures`
+  resolved measures, of the gated page and of the public kit page. `kit private-measures`
   recomputes each one from the config and numbers you pass and from the two
   directories, and writes nothing when any differs: a changed config or numbers
   file, a `--site-out` and `--gated-out` from different builds, an edited page or
@@ -1157,6 +1161,50 @@ is escaped text, never a `mailto:` or `tel:` link. The owner decides what goes
 there; an email address as plain text is acceptable, and no postal address or
 phone number is required or checked (the Beacons kit publishes a postal address;
 Reach Around does not need one). Left out, nothing is printed.
+
+## Hand-kept entries and imports
+
+A number with no collector is kept by hand. Each one is an entry in
+`hand-kept.json`, beside your config: a registry key (see
+[the registry](#platform-cards-and-the-measure-registry)), a whole-number value, a
+UTC day (`as_of`), optionally the period it covers and a short note. The unit, the
+definition and the default audience come from the registry; you never restate them.
+An entry is labeled hand-kept. One made by an importer says which export in its
+method line ("Imported from the YouTube analytics export"); there is no fourth
+label.
+
+```
+reach-around kit measure add --file hand-kept.json --platform bluesky \
+  --key followers --value 120 --as-of 2027-02-20
+reach-around kit measure import-youtube --file hand-kept.json \
+  --export "Chart data.csv"
+```
+
+`measure add` refuses an unknown key, a unit that is not the key's unit (`--unit`,
+optional), a measure the build works out itself, a negative value for a key that
+cannot fall, a day in the future and a repeat of the same platform, key, day and
+period. Its output is a count, never a value. A percent is typed in tenths.
+
+**The wall.** A measure is never visible more widely than the display policy of
+the field it came from. An entry names that field (`analytics` unless you say
+otherwise) and takes the narrower of it and the registry default. An import adds a
+floor that the file cannot change: the figures of a YouTube analytics export stay
+private (owner decision of 2026-11-19, see [YouTube analytics](youtube-analytics.md)),
+so no page or PDF shows them.
+
+**The YouTube analytics export.** The CSV from YouTube Studio's analytics ("Chart
+data"): a header naming exactly `Date`, `Views` and `Watch time (hours)`, then one
+row per UTC day. A `Total` row is skipped. The importer adds the days up (`views`
+and `watch_hours`, hours rounded half up), sets the period to the first and last
+day, and writes nothing if any row is bad. It reads one regular file of at most
+256 KiB and 1,100 rows, opens no network connection, and never prints a cell. The
+column names are assumed from a sample export, not read from a vendor page.
+
+**Stale reminders.** The instance repository example has a scheduled workflow,
+`Check hand-kept freshness`, that opens one issue when a hand-kept measure is older
+than its limit (30 days) and closes it when everything is fresh again. It reads
+only `hand-kept.json`, uses no secret and sends nothing anywhere else. See
+[the instance repository README](../examples/instance-repo/README.md).
 
 ## Old numbers
 

@@ -441,6 +441,7 @@ jobs:
             registry.npmjs.org:443
             release-assets.githubusercontent.com:443
             results-receiver.actions.githubusercontent.com:443
+            ${{vars.SITE_HOST}}:443
 
       # Egress canary, as in git-your-ship-together (EX-0001): a runner with
       # broken DNS makes block mode fail confusingly, so say which it is first.
@@ -997,6 +998,90 @@ jobs:
             exit 1
           fi
 
+      # Issue #768 (F-10, F-48). The Worker, the site and the migrations are
+      # separate changes. Two rules keep a failure from leaving them out of step:
+      #   - Two-phase link ids (F-48): the new LINK_IDS reach the Worker BEFORE
+      #     Pages, so a failed Pages deploy would leave the old site pinging ids
+      #     the new Worker drops. Phase 1 deploys the UNION of the live Worker's
+      #     ids and the new ones; Pages follows; phase 2 deploys the new ids only
+      #     (and is skipped when the union equals them).
+      #   - The live Worker version is recorded first, a probe follows the deploy,
+      #     and a failed probe rolls the Worker back (migrations stay additive:
+      #     .github/scripts/check-migrations.py).
+      # VERIFIED (https://developers.cloudflare.com/workers/wrangler/commands/workers/
+      # read 2026-11-24): `wrangler deployments status --json`, `wrangler versions
+      # view <id> --json`, `wrangler rollback <id> --message`. INFERRED: the JSON
+      # field names (version_id; a binding object {name: LINK_IDS, text}); when a
+      # read comes back empty the union step says so and deploys the new ids only.
+      - name: Read the live Worker version
+        timeout-minutes: 3
+        working-directory: worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ fromJSON(steps.cf_doppler.outputs.secrets).CLOUDFLARE_KEY_VALUE || secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          WRANGLER_SEND_METRICS: "false"
+        run: |
+          set -u
+          npx --no-install wrangler deployments status --config wrangler.deploy.toml --json \
+            > "$RUNNER_TEMP/deploy-status.json" 2>/dev/null || : > "$RUNNER_TEMP/deploy-status.json"
+
+      - name: Record the previous version
+        id: prev
+        timeout-minutes: 2
+        run: |
+          set -eu
+          version="$(python3 -I .github/scripts/deploy-guard.py active-version "$RUNNER_TEMP/deploy-status.json")"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          if [ -n "$version" ]; then
+            echo "previous Worker version recorded: ${version}"
+          else
+            echo "::warning::no previous Worker version could be read; no automatic rollback and no link id union for this run"
+          fi
+
+      - name: Read the live Worker link ids
+        if: ${{ steps.prev.outputs.version != '' }}
+        timeout-minutes: 3
+        working-directory: worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ fromJSON(steps.cf_doppler.outputs.secrets).CLOUDFLARE_KEY_VALUE || secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          PREVIOUS_VERSION: ${{ steps.prev.outputs.version }}
+          WRANGLER_SEND_METRICS: "false"
+        run: |
+          set -u
+          npx --no-install wrangler versions view "$PREVIOUS_VERSION" --config wrangler.deploy.toml --json \
+            > "$RUNNER_TEMP/live-version.json" 2>/dev/null || : > "$RUNNER_TEMP/live-version.json"
+
+      # Phase 1: wrangler.deploy.toml gets the union; the new-ids-only copy is
+      # kept for phase 2. No secret in this step.
+      - name: Widen the Worker's link ids to the union (phase 1)
+        id: union
+        timeout-minutes: 2
+        working-directory: worker
+        env:
+          NEW_IDS: ${{ steps.manifest.outputs.link_ids }}
+        run: |
+          set -eu
+          cp wrangler.deploy.toml wrangler.deploy.final.toml
+          echo "widened=false" >> "$GITHUB_OUTPUT"
+          [ -f "$RUNNER_TEMP/live-version.json" ] || { echo "no live link ids were read; deploying the new ids only"; exit 0; }
+          old="$(python3 -I ../.github/scripts/deploy-guard.py link-ids "$RUNNER_TEMP/live-version.json")"
+          if [ -z "$old" ]; then
+            echo "::warning::the live Worker's link ids could not be read; deploying the new ids only"
+            exit 0
+          fi
+          merged="$(python3 -I ../.github/scripts/deploy-guard.py union "$old" "$NEW_IDS")" || { echo "no union (see above); deploying the new ids only"; exit 0; }
+          if [ "$merged" = "$NEW_IDS" ]; then
+            echo "the live ids are all in the new list; no second phase needed"
+            exit 0
+          fi
+          [[ "$merged" =~ ^\[\"[a-z0-9-]{1,40}\"(,\"[a-z0-9-]{1,40}\"){0,199}\]$ ]] \
+            || { echo "::error::the union is not a valid link id list"; exit 1; }
+          sed -i "s|^LINK_IDS = '[^']*'|LINK_IDS = '${merged}'|" wrangler.deploy.toml
+          grep -qxF "LINK_IDS = '${merged}'" wrangler.deploy.toml
+          echo "widened=true" >> "$GITHUB_OUTPUT"
+          echo "phase 1 deploys the union of the live and new link ids; phase 2 narrows it after Pages"
+
       # The wrangler steps carry the Cloudflare token.
       - name: Apply D1 migrations
         working-directory: worker
@@ -1007,12 +1092,56 @@ jobs:
         run: npx --no-install wrangler d1 migrations apply DB --remote --config wrangler.deploy.toml
 
       - name: Deploy the Worker
+        id: deploy
         working-directory: worker
         env:
           CLOUDFLARE_API_TOKEN: ${{ fromJSON(steps.cf_doppler.outputs.secrets).CLOUDFLARE_KEY_VALUE || secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           WRANGLER_SEND_METRICS: "false"
         run: npx --no-install wrangler deploy --config wrangler.deploy.toml
+
+      # Post-deploy probe (issue #768): a GET to the click route answers 204
+      # with no D1 access (the Worker only counts a POST), so it proves the
+      # Worker serves on its route. Needs ZONE_NAME (the /e/* route). Up to 6
+      # tries, 10 seconds apart. No secret in this step.
+      - name: Probe the deployed Worker
+        id: probe
+        if: ${{ vars.ZONE_NAME != '' }}
+        timeout-minutes: 3
+        env:
+          SITE_HOST: ${{ vars.SITE_HOST }}
+        run: |
+          set -u
+          code=""
+          for attempt in 1 2 3 4 5 6; do
+            code="$(curl --silent --show-error --output /dev/null --max-time 10 \
+              --write-out '%{http_code}' "https://${SITE_HOST}/e/deploy-probe" 2>/dev/null || true)"
+            if [ "$code" = "204" ]; then
+              echo "probe: the Worker answered 204 (attempt ${attempt})"
+              exit 0
+            fi
+            echo "probe attempt ${attempt}: answered '${code}', expected 204"
+            sleep 10
+          done
+          echo "::error::the deployed Worker did not answer 204 on https://${SITE_HOST}/e/ after 6 tries"
+          exit 1
+
+      - name: Roll back the Worker after a failed probe
+        if: ${{ failure() && steps.deploy.outcome == 'success' && steps.probe.outcome == 'failure' && steps.prev.outputs.version != '' }}
+        timeout-minutes: 3
+        working-directory: worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ fromJSON(steps.cf_doppler.outputs.secrets).CLOUDFLARE_KEY_VALUE || secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          PREVIOUS_VERSION: ${{ steps.prev.outputs.version }}
+          ROLLBACK_MESSAGE: automatic rollback after a failed probe, run ${{ github.run_id }}
+          WRANGLER_SEND_METRICS: "false"
+        run: |
+          set -eu
+          printf '%s' "$PREVIOUS_VERSION" | grep -Eq '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+          npx --no-install wrangler rollback "$PREVIOUS_VERSION" --config wrangler.deploy.toml --message "$ROLLBACK_MESSAGE"
+          echo "::error::the Worker was rolled back to ${PREVIOUS_VERSION}; the D1 schema was not (migrations are additive)"
+          exit 1
 
       - name: Publish the site to Pages
         working-directory: worker
@@ -1026,6 +1155,20 @@ jobs:
           --project-name "$PAGES_PROJECT"
           --branch main
           --commit-dirty=true
+
+      # Phase 2 (F-48): the site is live, so the Worker can drop the ids that
+      # only the old site used. Skipped when phase 1 deployed the new ids only.
+      # A failure here leaves the union Worker in place, which still serves both
+      # the old and the new site; rerun the workflow to narrow it.
+      - name: Narrow the Worker's link ids to the new list (phase 2)
+        if: ${{ steps.union.outputs.widened == 'true' }}
+        timeout-minutes: 5
+        working-directory: worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ fromJSON(steps.cf_doppler.outputs.secrets).CLOUDFLARE_KEY_VALUE || secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          WRANGLER_SEND_METRICS: "false"
+        run: npx --no-install wrangler deploy --config wrangler.deploy.final.toml
 
       # Optional backstop. Skipped with a notice unless the repository secret
       # CLOUDFLARE_PURGE_TOKEN (scope: Zone > Cache Purge, one zone only) and the

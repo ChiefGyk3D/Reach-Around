@@ -369,7 +369,7 @@ def run_command(
     return main(
         [
             "kit",
-            "measures",
+            "private-measures",
             "--config",
             str(cfg),
             "--site-out",

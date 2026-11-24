@@ -9,6 +9,7 @@ import sys
 from datetime import UTC, date, datetime
 from pathlib import Path
 
+from reach_around.commands import kit_measure
 from reach_around.config import ConfigError, SiteConfig, load_site_config
 from reach_around.config.imported_history import (
     ImportedHistory,
@@ -106,7 +107,7 @@ def _run_public(args: argparse.Namespace) -> int:
     return 0
 
 
-def _run_measures(args: argparse.Namespace) -> int:
+def _run_private_measures(args: argparse.Namespace) -> int:
     try:
         config = load_site_config(args.config)
         path = build_measures_file(
@@ -129,8 +130,6 @@ def _run_measures(args: argparse.Namespace) -> int:
 
 
 def _run(args: argparse.Namespace) -> int:
-    if args.kit_command == "measures":
-        return _run_measures(args)
     if args.public:
         return _run_public(args)
     try:
@@ -161,7 +160,7 @@ def _run(args: argparse.Namespace) -> int:
 
 
 def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
-    kit = subparsers.add_parser("kit", help="media kit tools (PDF, measures file)")
+    kit = subparsers.add_parser("kit", help="media kit tools (PDF, hand-kept measures)")
     actions = kit.add_subparsers(dest="kit_command", required=True)
     pdf = actions.add_parser(
         "pdf",
@@ -233,48 +232,53 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
         "(the browser sandbox is off in netns mode)",
     )
     pdf.add_argument("--overwrite", action="store_true", help="replace an existing PDF")
-    measures = actions.add_parser(
-        "measures",
-        help="write the owner-only measures file for the sponsor page",
-        description="Write kit-measures.json: the measures the gated kit shows, "
-        "each with its trust label and date, for the sponsor page and quote to "
-        "read. It is private: it goes to an owner-only directory outside the "
+    pdf.set_defaults(func=_run)
+    kit_measure.register(actions)
+    private_measures = actions.add_parser(
+        "private-measures",
+        help="write the OWNER-ONLY private measures file for the sponsor page",
+        description="Write the OWNER-ONLY private file kit-measures.json: the "
+        "measures the gated kit shows, each with its trust label and date, for the sponsor page and quote to "
+        "read. This is not `kit measure`, which writes hand-kept public "
+        "entries. The private file: it goes to an owner-only directory outside the "
         "site output, the gated directory, the config directory and any git "
         "work tree, and is never published. Refused when the gated page was "
         "built under another display policy. Prints the path on success.",
     )
-    measures.add_argument("--config", type=Path, required=True, help="site config file")
-    measures.add_argument(
+    private_measures.set_defaults(func=_run_private_measures)
+    private_measures.add_argument(
+        "--config", type=Path, required=True, help="site config file"
+    )
+    private_measures.add_argument(
         "--gated-out",
         type=Path,
         required=True,
         help="the gated directory the build wrote",
     )
-    measures.add_argument(
+    private_measures.add_argument(
         "--site-out",
         type=Path,
         required=True,
         help="the public output directory of the same build",
     )
-    measures.add_argument(
+    private_measures.add_argument(
         "--out-dir",
         type=Path,
         required=True,
         help="private directory for the file (created owner-only if missing)",
     )
-    measures.add_argument(
+    private_measures.add_argument(
         "--numbers",
         type=Path,
         help="the numbers file the build used (default: numbers.json beside "
         "the config)",
     )
-    measures.add_argument(
+    private_measures.add_argument(
         "--date",
         type=_iso_date,
         help="the 'generated' day, YYYY-MM-DD (default: SOURCE_DATE_EPOCH, else "
         "the day the gated page was built)",
     )
-    measures.add_argument(
+    private_measures.add_argument(
         "--overwrite", action="store_true", help="replace an existing file"
     )
-    kit.set_defaults(func=_run)

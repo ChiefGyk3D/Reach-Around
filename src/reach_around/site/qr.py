@@ -41,9 +41,11 @@ _ALIGN: dict[int, tuple[int, ...]] = {
 }
 _LEVEL_Q = 3  # the two format bits for level Q
 BORDER = 4  # quiet zone, in modules
-# Dark modules on a soft gray tile: a scanner needs the contrast, the page
-# does not need a white block.
-TILE = "#c8ccd4"
+# Dark modules on an amber tile (owner decision D10, #688): a scanner needs the
+# contrast, the page does not need a white block. The tile is the brand amber
+# (--ra-brand-amber in tokens.css; a test keeps the two equal) and stays one
+# small image, never a page-wide fill.
+TILE = "#fbb03b"
 INK = "#0b0e14"
 
 _EXP = [0] * 512

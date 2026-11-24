@@ -177,7 +177,7 @@ Run these steps in order:
    into its own owner-only directory (never the site or gated output):
 
    ```bash
-   reach-around kit measures --config site.yaml --site-out site-out \
+   reach-around kit private-measures --config site.yaml --site-out site-out \
      --gated-out gated-out --out-dir ~/private/kit-measures --overwrite
    ```
 

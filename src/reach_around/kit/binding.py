@@ -3,7 +3,7 @@
 
 At build time the gated directory gets ``kit-binding.json`` beside the policy
 record. It holds digests of the display policy, of the resolved measures the
-build compiled, of the gated page and of the public kit page. ``kit measures``
+build compiled, of the gated page and of the public kit page. ``kit private-measures``
 recomputes each one from the inputs it was given and the directories it was
 pointed at, and refuses when any differs, so a measures file is always the
 numbers of the pages it names, from one build. The file records the same

@@ -567,6 +567,7 @@ KNOWN_FIELDS: frozenset[str] = frozenset(
         "frame_l3_max",
         "frame_motion",
         "gender",
+        "geo_level",
         "handle",
         "handle_env",
         "head",
