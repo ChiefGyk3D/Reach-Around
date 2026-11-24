@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Kit v2 slice 4 (#629): the live block, Twitch and Kick side by side.
+"""Kit v2 slice 4 (#629): the live block, Twitch and Kick as stacked, equal cards.
 Everything is synthetic."""
 
 from __future__ import annotations
@@ -176,3 +176,15 @@ def test_no_live_block_without_rows(tmp_path: Path) -> None:
     for html in pages(tmp_path):
         assert live_cards(html) == []
         assert "kit-live" not in html
+
+
+def test_live_cards_are_spaced_like_the_platform_cards() -> None:
+    """The cards sit in a grid with a gap, so the page never shows through as a
+    thin strip at the seam; the live block and Platforms share one rule."""
+    css = (
+        Path(__file__).parents[2] / "src/reach_around/site/static/kit.css"
+    ).read_text(encoding="utf-8")
+    rule = re.search(r"([^{}]*\.kit-live\b[^{}]*)\{([^}]*)\}", css)
+    assert rule is not None, "no spacing rule for the live block"
+    assert ".kit-sections" in rule.group(1)
+    assert re.search(r"gap:\s*var\(--ra-space-[3-6]\)", rule.group(2))

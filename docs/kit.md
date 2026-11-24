@@ -267,7 +267,8 @@ no figure and no setting of yours.
 
 ### The live block
 
-`kit.live` prints Twitch and Kick side by side in one block (kit v2, #629). It
+`kit.live` prints Twitch and Kick in one block of stacked, equal cards in config
+order (kit v2, #629). It
 holds the seven live measures: `followers` (the platform's headline number) and
 the six typed from the platform's own dashboard, `avg_ccv`, `peak_ccv`,
 `hours_watched`, `unique_chatters`, `followers_gained` and
