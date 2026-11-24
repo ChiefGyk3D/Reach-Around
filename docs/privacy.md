@@ -104,6 +104,11 @@ privacy wording. With alerts off (the default) nothing leaves the Worker.
 There is no web route that deletes a lead, on purpose: anyone could call it.
 You run a local command, and then apply the SQL it prints with `wrangler`.
 
+Installations that collected leads before the leads database existed: until the one-time move in
+[deploy.md](deploy.md) ("The one-time move of existing leads") has emptied the analytics database,
+the same lead can also be in its `leads` table. Run the export and the delete below against the
+analytics database too (name it in the `wrangler d1 execute` lines), or run the move first.
+
 1. Export the `leads` table to a private local file. Use a directory only you
    can read, and delete the file when you are done (it holds every address):
 

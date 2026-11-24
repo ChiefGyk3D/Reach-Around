@@ -325,19 +325,36 @@ The test deploy (`deploy-test.yml`) writes `BEACON_MODE = "observe"` and the `MI
 Issue #772. Leads and kit events live in a SECOND D1 database, bound to the Worker as `LEADS_DB`, so
 that leads have their own access, backup and erasure and no read credential for the analytics
 database (`DB`) reaches an address. The analytics database keeps the counters (`counters`,
-`kit_meta` with the unstored session floor) and everything else; its old `leads` and `kit_events`
-tables stay where they are, unused (dropping them is a later, annotated contract migration), and the
-migration baseline reset means there is no data to carry over.
+`kit_meta` with the unstored session floor) and everything else. Its old `leads` and `kit_events`
+tables stay in place and are emptied by the one-time move below (dropping the empty tables is a later,
+annotated contract migration). An installation that ever collected a lead holds those rows in the
+analytics database today, readable by anything with an analytics-only credential, so the separation
+is not true for it until the move has run.
 
 What the Worker does without it. The binding is not in the committed `worker/wrangler.toml` (a
 commented block only), the same way the other bindings the owner has not created yet are held back,
-so no deploy copy creates or demands the database early. A missing `LEADS_DB`, one that is not a D1
-binding, or one that is the same object as `DB` is refused by the kit's environment check: the gate
-(`POST /k/gate`) answers its usual retry redirect and stores nothing, `GET /k/view` refuses with its
-usual redirect, and the hourly job skips the lead purge and logs one closed line (`purge`, `closed`,
-`binding`). There is no fallback to the analytics database, ever. The kit gate ships OFF at the
-cutover (`features.kit_gate`), so a deployment that has not created the second database loses nothing
-it was using.
+so no deploy copy creates or demands the database early. The Worker serves a lead path (the gate, the
+view route, the lead purge) only when `src/kit/separation.ts` has proven three things, and refuses
+otherwise: the gate (`POST /k/gate`) answers its usual retry redirect and stores nothing,
+`GET /k/view` refuses with its usual redirect, and the hourly job skips the lead purge and logs one
+closed line (`purge`, `closed`, `binding`). There is no fallback to the analytics database, ever.
+
+1. Both bindings are D1 databases (shape), and they are not the same object.
+2. They are different databases, by what each one states it is. A D1 binding exposes no database id to
+   the Worker (read 2026-11-24, developers.cloudflare.com D1 "Workers Binding API" and Wrangler
+   configuration: `prepare`, `batch`, `exec`, `dump`, `withSession`; the `database_id` exists only in the
+   Wrangler configuration), and a second binding name for one database is a different JavaScript object,
+   so object identity proves nothing. Each database therefore carries a `db_identity` row written by its
+   own migrations: `analytics` (`worker/migrations/0020_db_identity.sql`) or `leads`
+   (`worker/leads-migrations/0002_db_identity.sql`). `LEADS_DB` must answer exactly `leads` and `DB`
+   exactly `analytics`; one database under two names answers the same thing twice, so one side fails.
+3. The analytics database holds no lead rows (`leads` and `kit_events` empty or gone).
+
+The proof is shared by every path (the gate, the view route, the exported `purgeExpiredLeads`), is
+remembered for 60 seconds per isolate (10 seconds for a refusal), and costs at most 3 D1 queries when not
+remembered; the hourly job counts them against `QUERY_BUDGET`, which is why the lead-purge guarantee now
+starts at `QUERY_BUDGET` 12. The kit gate ships OFF at the cutover (`features.kit_gate`), so a
+deployment that has not created the second database loses nothing it was using.
 
 Create it, once (owner step, secrets in the secret manager (development environment before
 production); the database id is not a secret but stays out of the repository):
@@ -347,8 +364,8 @@ npx wrangler d1 create reach-around-leads
 ```
 
 Add the block to the deploy copy of the wrangler config, with the id the command printed. The name
-`reach-around-leads` is a convention that `scripts/backup-d1.sh` relies on (it refuses a database name
-containing "leads"):
+`reach-around-leads` is only a convention for people: `scripts/backup-d1.sh` and the Worker decide by the
+`db_identity` row the database states, never by its name or id:
 
 ```toml
 [[d1_databases]]
@@ -365,8 +382,37 @@ migrations (`worker/migrations`, binding `DB`) are never applied to this databas
 npx wrangler d1 migrations apply LEADS_DB --remote
 ```
 
-Order. Create and migrate the database before enabling the kit gate. Because the migrations are
-additive and the Worker fails closed, the Worker may be deployed before or after.
+The analytics database needs its own identity row too, so apply the analytics migrations
+(`worker/migrations`, which now include `0020_db_identity.sql`) to `DB` as usual before the Worker that
+checks it is deployed; until then the Worker refuses the lead paths (closed, not broken).
+
+### The one-time move of existing leads
+
+Skip this only when you are sure no lead was ever collected (an empty `leads` in the analytics database,
+checked below). Otherwise run it once, after creating and migrating the leads database and before
+enabling the kit gate. It copies every lead and kit event to the leads database, reads them back, and
+only then deletes the analytics copies. Run it from the folder whose wrangler config names both
+databases, with a private directory outside any git work tree (mode 700) for its one temporary file:
+
+```bash
+mkdir -m 700 ~/lead-move-work
+# 1. Dry run: counts only, identity of both databases checked, nothing written or deleted.
+python3 -I scripts/move-legacy-leads.py --source <ANALYTICS DATABASE> --dest reach-around-leads --workdir ~/lead-move-work
+# 2. Copy and verify (still deletes nothing). Read the "not in dest" line: it must say 0 and 0.
+python3 -I scripts/move-legacy-leads.py --source <ANALYTICS DATABASE> --dest reach-around-leads --workdir ~/lead-move-work --copy
+# 3. Delete the analytics copies. This repeats the copy and the read-back first, in the same run,
+#    and deletes only if every source row is in the leads database exactly as it was.
+python3 -I scripts/move-legacy-leads.py --source <ANALYTICS DATABASE> --dest reach-around-leads --workdir ~/lead-move-work --purge
+```
+
+It prints counts and fixed messages only. It refuses (exit 3) unless the source answers `analytics` and
+the destination answers `leads`, so swapped or aliased names stop it before anything happens. If a
+lead's address is already in the leads database under a different id, the read-back fails and nothing is
+deleted: resolve that lead by hand, then run it again (the copy never overwrites). Take a Time Travel
+bookmark of both databases first (`npx wrangler d1 time-travel info <DATABASE>`). Until the analytics
+tables are empty, the Worker serves no lead path, and erasure and export requests in
+[privacy.md](privacy.md) must cover both databases. After a successful move the old empty tables can go
+in a later, annotated contract migration.
 
 Which database each tool acts on:
 
@@ -374,7 +420,8 @@ Which database each tool acts on:
 |---|---|---|
 | The Worker: gate, view route, lead purge | `LEADS_DB` | leads, kit events, purge heartbeat (`kit_meta last_purge_ts`) |
 | The Worker: everything else | `DB` | clicks, views, rollups, counters, health, alert dedup |
-| `scripts/backup-d1.sh DATABASE DEST` | the analytics database | prints the database name it acts on; refuses a name containing "leads"; never exports lead tables |
+| `scripts/backup-d1.sh DATABASE DEST` | the analytics database | with `--apply` reads the database's own `db_identity` and refuses unless it says `analytics` (name and id do not matter); never exports lead tables |
+| `scripts/move-legacy-leads.py` | both, once | moves lead rows from analytics to the leads database, verifies, then deletes the analytics copies |
 | The lead export and erasure steps in [privacy.md](privacy.md) | `reach-around-leads` | name it in every `wrangler d1 execute` |
 
 Not done here: the deploy workflows (`deploy-worker.yml`, `deploy-test.yml`) do not write the binding or
@@ -437,7 +484,7 @@ That is 23.4 percent of the default quota of 1600000. Raising a budget raises th
 
 **Analytics health and coverage (issues #401, #402).** Migration `0014_health.sql` adds `analytics_coverage` (one row per UTC day, 24 letters; apply it before or with the Worker, nothing breaks if it is missing: the step logs a failure and the cron goes on). Each hourly run (in degraded mode, when the table definition is wrong, it writes nothing and sends nothing) does, before the purges and the rollup, one read batch and one write batch (coverage plus a prune of rows older than 400 days) and, only when the `analytics_health` alert is on and a condition changed, a few more queries for the message; it is set aside at most 8 of the run's `QUERY_BUDGET` and skipped below 12, so keep `QUERY_BUDGET` at 12 or more. About 24 rows written a day. Details: [alerts.md](alerts.md#analytics-health-alerts). Failure modes: [failure-modes.md](failure-modes.md).
 
-**Lead retention.** One source of truth: `privacy.lead_retention_days` in `site.yaml` (1 to 365, default 30). The build records it in the build manifest, `verify-manifest.py` checks it, "Write deploy config" writes it to the Worker as `LEAD_RETENTION_DAYS` (always, so the deployed value is never the Worker's silent default by accident), and the generated privacy page prints the same number. The repository variable `LEAD_RETENTION_DAYS` is optional and only compared: when it is set and differs from the config the deploy stops with an error naming both numbers (an invalid variable stops it too); unset, it changes nothing. The Worker variable `LEAD_RETENTION_DAYS` (1 to 365, default 30; digits only, an invalid value falls back to 30 and is logged as a fixed line, it is not part of the table above because it never closes the gate) sets how long a lead is kept. Each hourly run is ONE metered D1 query (a batch) that deletes at most 80 `kit_events` of expired leads, then at most 20 expired leads that have no events left (a lead goes only after its events, so the cascade never deletes events in bulk and a lead with many events is purged over several runs), and writes the heartbeat. Estimated writes per run: 20 x 4 + 80 x 3 + 1 = 321 (a lead row and its three indexes, an event row and its two indexes; an estimate, not measured on D1), so 24 runs are 7704 a day, within 80 percent of the 10000 kit purge reserve above; the rest is left for the counter purge. **Budget guarantee:** at `QUERY_BUDGET` 9 or more the lead purge runs first and always gets its one query, and the rest of the jobs share the remainder (the rollup gets the budget minus one). Below 9 the rollup wins (8 is the smallest budget in which one rollup day completes, `rollup_budget.test.ts`), the lead purge runs last on whatever is left with no guarantee, and logs `purge` / `over_budget` when it gets none; keep `QUERY_BUDGET` at 9 or more (default 40). It never runs on the 2-minute live cron. Details and the owner deletion command: [privacy.md](privacy.md).
+**Lead retention.** One source of truth: `privacy.lead_retention_days` in `site.yaml` (1 to 365, default 30). The build records it in the build manifest, `verify-manifest.py` checks it, "Write deploy config" writes it to the Worker as `LEAD_RETENTION_DAYS` (always, so the deployed value is never the Worker's silent default by accident), and the generated privacy page prints the same number. The repository variable `LEAD_RETENTION_DAYS` is optional and only compared: when it is set and differs from the config the deploy stops with an error naming both numbers (an invalid variable stops it too); unset, it changes nothing. The Worker variable `LEAD_RETENTION_DAYS` (1 to 365, default 30; digits only, an invalid value falls back to 30 and is logged as a fixed line, it is not part of the table above because it never closes the gate) sets how long a lead is kept. Each hourly run is ONE metered D1 query (a batch) that deletes at most 80 `kit_events` of expired leads, then at most 20 expired leads that have no events left (a lead goes only after its events, so the cascade never deletes events in bulk and a lead with many events is purged over several runs), and writes the heartbeat. Estimated writes per run: 20 x 4 + 80 x 3 + 1 = 321 (a lead row and its three indexes, an event row and its two indexes; an estimate, not measured on D1), so 24 runs are 7704 a day, within 80 percent of the 10000 kit purge reserve above; the rest is left for the counter purge. **Budget guarantee:** at `QUERY_BUDGET` 12 or more the lead purge runs first and always gets its one query plus the (at most 3) queries of the separation proof, and the rest of the jobs share the remainder. Below 12 the rollup wins (8 is the smallest budget in which one rollup day completes, `rollup_budget.test.ts`), the lead purge runs last on whatever is left with no guarantee, and logs `purge` / `over_budget` when it gets none; keep `QUERY_BUDGET` at 12 or more (default 40). (It was 9 before the separation proof, issue #772.) It never runs on the 2-minute live cron. Details and the owner deletion command: [privacy.md](privacy.md).
 
 **For the route code that uses these limits:** run the per-client throttle (`checkIpMinute`) before taking from a global route counter, so one client cannot spend the shared budget. A request refused by the throttle must not touch a counter.
 

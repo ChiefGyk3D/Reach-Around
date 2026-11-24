@@ -33,6 +33,7 @@ import sys
 from pathlib import Path
 
 LEGACY_THROUGH = 17
+NO_LEGACY = -1  # below every migration number, 0000 included
 ANNOTATION = re.compile(r"^\s*--\s*migration-phase:\s*contract\s*$", re.MULTILINE)
 NAME = re.compile(r"^(\d{4})_[A-Za-z0-9_]+\.sql$")
 BREAKING = (
@@ -77,7 +78,8 @@ def main(argv: list[str]) -> int:
     # `check-migrations.py [DIR] [--no-legacy]`. --no-legacy applies the rule to every
     # file, for a folder that never had a pre-rule history (worker/leads-migrations).
     args = [a for a in argv[1:] if a != "--no-legacy"]
-    legacy_through = 0 if "--no-legacy" in argv[1:] else LEGACY_THROUGH
+    # -1, not 0: migration number 0000 matches the name pattern and must be checked too.
+    legacy_through = NO_LEGACY if "--no-legacy" in argv[1:] else LEGACY_THROUGH
     directory = Path(args[0]) if args else Path("worker/migrations")
     if not directory.is_dir():
         print(f"error: {directory} is not a directory", file=sys.stderr)

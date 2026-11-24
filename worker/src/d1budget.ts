@@ -86,6 +86,19 @@ function wrapStatement(st: D1PreparedStatement, meter: QueryMeter): D1PreparedSt
   return proxy;
 }
 
+const raws = new WeakMap<object, D1Database>();
+
+/** The database under any number of metering wrappers (the argument itself when it is not one). */
+export function rawDb(db: D1Database): D1Database {
+  let cur = db;
+  for (let i = 0; i < 8; i++) {
+    const inner = raws.get(cur);
+    if (inner === undefined) return cur;
+    cur = inner;
+  }
+  return cur;
+}
+
 export function meteredDb(db: D1Database, meter: QueryMeter): D1Database {
   const proxy: D1Database = new Proxy(db, {
     get(t, prop) {
@@ -107,5 +120,6 @@ export function meteredDb(db: D1Database, meter: QueryMeter): D1Database {
     },
   });
   meters.set(proxy, meter);
+  raws.set(proxy, db);
   return proxy;
 }

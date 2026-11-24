@@ -34,9 +34,10 @@ export interface KitEnv extends Env {
 }
 
 /**
- * True when `v` looks like a usable D1 binding AND is not the analytics database `analytics`. Shape only:
- * a database that exists but was never migrated fails at its first statement, and the gate then refuses.
- * Never a fallback: the same object as DB is not a leads database.
+ * True when `v` looks like a usable D1 binding AND is not the same JavaScript object as `analytics`.
+ * SHAPE AND OBJECT IDENTITY ONLY: it does not detect a second binding or a wrapper over the same
+ * database. The proof that the two are different databases is `assertLeadsSeparated` (separation.ts),
+ * which every lead path calls; this is the cheap first screen. Never a fallback.
  */
 export function isLeadsDb(v: unknown, analytics?: unknown): v is D1Database {
   if (v === undefined || v === null || typeof v !== "object") return false;

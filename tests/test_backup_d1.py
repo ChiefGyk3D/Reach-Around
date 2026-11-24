@@ -169,6 +169,45 @@ def test_a_leads_database_name_is_refused_before_anything_is_written(
     assert list(d.iterdir()) == []
 
 
+def set_identity(env: dict[str, str], role: str | None) -> None:
+    """Make the stub database say what it is (None: the table is not there)."""
+    with closing(sqlite3.connect(env["STUB_DB"])) as db:
+        if role is None:
+            db.execute("DROP TABLE db_identity")
+        else:
+            db.execute("UPDATE db_identity SET role = ?", (role,))
+        db.commit()
+
+
+@pytest.mark.parametrize(
+    "name", ["contacts", "reach-db", "0123abcd-4567-89ab-cdef-0123456789ab"]
+)
+def test_a_leads_database_is_refused_by_what_it_is_not_by_what_it_is_called(
+    tmp_path: Path, name: str
+) -> None:
+    # Issue #772 review: the refusal was a substring check on the name. The
+    # database now answers for itself.
+    env = make(tmp_path)
+    set_identity(env, "leads")
+    d = dest(tmp_path)
+    r = run(env, name, str(d), "--apply")
+    assert r.returncode == 3, r.stdout
+    assert "did not identify itself as the analytics database" in r.stderr
+    assert "leads" in r.stderr  # what it answered, never a row
+    assert list(d.iterdir()) == []
+
+
+def test_a_database_that_cannot_say_what_it_is_is_refused(tmp_path: Path) -> None:
+    env = make(tmp_path)
+    set_identity(env, None)
+    d = dest(tmp_path)
+    r = run(env, "reach-db", str(d), "--apply")
+    # A step failed (like any unreadable database), and nothing is written.
+    assert r.returncode == 1, r.stdout
+    assert "could not read the database identity" in r.stderr
+    assert list(d.iterdir()) == []
+
+
 def test_apply_writes_private_files_without_lead_tables(tmp_path: Path) -> None:
     env = make(tmp_path)
     d = dest(tmp_path)

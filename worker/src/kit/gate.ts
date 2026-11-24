@@ -44,6 +44,7 @@ import { limiterKey, secretBytes } from "../ratekey";
 import { claimGateUnit, loadKitLimits, recordKitEventCapped, reserveRoute, type KitLimitsEnv } from "./budgets";
 import { isKitKilled, loadKitEnv, type KitEnv } from "./env";
 import { killedResponse, originAllowList } from "./guard";
+import { assertLeadsSeparated } from "./separation";
 import { MAX_FORM_BYTES, readForm } from "./input";
 import { isBotUserAgent } from "../click";
 import { getLead, getLeadByEmail, getUnstoredSessionFloor, upsertLead } from "./leads";
@@ -274,6 +275,9 @@ async function gate(request: Request, env: GateEnv, deps: GateDeps): Promise<Res
   let cfg: ReturnType<typeof loadKitEnv>;
   try {
     cfg = loadKitEnv(env as unknown as KitEnv);
+    // The shape check above is cheap; this proves the two databases are different by what each states
+    // it is, and that analytics holds no lead rows (separation.ts). Before anything is spent.
+    await assertLeadsSeparated(env);
   } catch {
     log.log("gate", "closed", "binding");
     return redirect(GATE_FAIL_PAGE);
@@ -426,6 +430,7 @@ async function view(request: Request, env: GateEnv, deps: GateDeps): Promise<Res
   let cfg: ReturnType<typeof loadKitEnv>;
   try {
     cfg = loadKitEnv(env as unknown as KitEnv);
+    await assertLeadsSeparated(env); // same proof as the gate (separation.ts)
   } catch {
     log.log("link", "closed", "binding");
     return redirect(VIEW_FAIL_PAGE);

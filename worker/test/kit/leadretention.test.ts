@@ -18,13 +18,14 @@ import {
 } from "../../src/kit/leadretention";
 import { DEFAULT_MAX_LEADS, countLeads, recordKitEvent, upsertLead } from "../../src/kit/leads";
 import retentionSource from "../../src/kit/leadretention.ts?raw";
+import { resetSeparationCache } from "../../src/kit/separation";
 
 // In this file `DB` is the LEADS database (issue #772). The analytics database is ANALYTICS.
 const DB = testEnv.LEADS_DB;
 const ANALYTICS = testEnv.DB;
 const DAY = 86_400_000;
 const NOW = Date.UTC(2027, 0, 1, 12, 0, 0, 0);
-const env = (extra: Record<string, string> = {}) => ({ LEADS_DB: DB, ...extra });
+const env = (extra: Record<string, string> = {}) => ({ DB: ANALYTICS, LEADS_DB: DB, ...extra });
 
 async function seed(i: number | string, createdTs: number): Promise<string> {
   const r = await upsertLead(DB, `lead${i}@example.test`, "gate", "US", createdTs, DEFAULT_MAX_LEADS);
@@ -49,6 +50,7 @@ async function ids(): Promise<string[]> {
 }
 
 beforeEach(async () => {
+  resetSeparationCache();
   await DB.prepare("DELETE FROM kit_events").run();
   await DB.prepare("DELETE FROM leads").run();
   await DB.prepare("DELETE FROM kit_meta").run();
@@ -141,16 +143,16 @@ describe("purgeExpiredLeads", () => {
     await seedMany(LEAD_PURGE_BATCH * 2, NOW - 60 * DAY);
     expect(LEAD_PURGE_QUERIES).toBe(1);
     const one = new QueryMeter(1);
-    expect(await purgeExpiredLeads({ LEADS_DB: meteredDb(DB, one) }, NOW)).toBe(LEAD_PURGE_BATCH);
+    expect(await purgeExpiredLeads({ DB: ANALYTICS, LEADS_DB: meteredDb(DB, one) }, NOW)).toBe(LEAD_PURGE_BATCH);
     expect(one.used).toBe(1);
     const none = new QueryMeter(0);
-    expect(await purgeExpiredLeads({ LEADS_DB: meteredDb(DB, none) }, NOW)).toBe(0);
+    expect(await purgeExpiredLeads({ DB: ANALYTICS, LEADS_DB: meteredDb(DB, none) }, NOW)).toBe(0);
     expect(none.used).toBe(0);
     expect(await countLeads(DB)).toBe(LEAD_PURGE_BATCH);
     // A nearly spent parent also stops it.
     const parent = new QueryMeter(1);
     parent.take();
-    expect(await purgeExpiredLeads({ LEADS_DB: meteredDb(DB, parent.slice(5)) }, NOW)).toBe(0);
+    expect(await purgeExpiredLeads({ DB: ANALYTICS, LEADS_DB: meteredDb(DB, parent.slice(5)) }, NOW)).toBe(0);
   });
 
   async function addEvents(leadId: string, n: number): Promise<void> {
@@ -305,7 +307,10 @@ describe("scheduled wiring", () => {
     const texts = new WeakMap<object, string>();
     const hit = (q: string) => {
       stats.queries++;
-      if (stats.first === "") stats.first = q;
+      // The separation proof (issue #772) reads db_identity and the legacy lead tables first; `first` is
+      // the first query that is part of a job, so the ordering assertions still say what they said.
+      const proof = /db_identity|sqlite_master|FROM \(SELECT 1 FROM (leads|kit_events) LIMIT 1\)/.test(q);
+      if (stats.first === "" && !proof) stats.first = q;
     };
     const wrapDb = (base: D1Database): D1Database => new Proxy(base, {
       get(t, p) {
@@ -348,9 +353,10 @@ describe("scheduled wiring", () => {
   });
 
   it("at QUERY_BUDGET 9 or more the lead purge gets its query even when the other jobs have plenty to do", async () => {
-    expect(LEAD_FIRST_MIN_BUDGET).toBe(9);
+    // 8 (one rollup day) + 1 (the purge) + 3 (the separation proof, issue #772). Was 9 before the proof.
+    expect(LEAD_FIRST_MIN_BUDGET).toBe(12);
     const now = Date.now();
-    for (const budget of ["9", "10", "20", "40", "900"]) {
+    for (const budget of ["12", "13", "20", "40", "900"]) {
       await DB.prepare("DELETE FROM leads").run();
       await ANALYTICS.prepare("DELETE FROM click_events").run();
       await ANALYTICS.prepare("DELETE FROM view_events").run();
@@ -374,15 +380,16 @@ describe("scheduled wiring", () => {
     }
   });
 
-  it("below 9 the rollup wins its queries and the lead purge runs last on what is left (no guarantee)", async () => {
+  it("below 12 the rollup wins its queries and the lead purge runs last on what is left (no guarantee)", async () => {
+    // Budget 8 before the separation proof (issue #772) took 3 more queries; 11 is the same case now.
     await seed("old", Date.now() - 40 * DAY);
     const c = counted();
     const { c: cx, waits } = ctx();
-    await worker.scheduled({} as ScheduledController, full({ DB: c.db, LEADS_DB: c.leads, QUERY_BUDGET: "8" }), cx);
+    await worker.scheduled({} as ScheduledController, full({ DB: c.db, LEADS_DB: c.leads, QUERY_BUDGET: "11" }), cx);
     await Promise.all(waits);
     expect(c.stats.first).not.toContain("DELETE FROM leads");
-    expect(c.stats.queries).toBeLessThanOrEqual(8);
-    expect(await countLeads(DB)).toBe(0); // idle system: the leftover query is enough
+    expect(c.stats.queries).toBeLessThanOrEqual(11);
+    expect(await countLeads(DB)).toBe(0); // idle system: the leftover queries are enough
   });
 
   it("the lead purge runs before every other job and takes one query", async () => {
@@ -420,17 +427,21 @@ describe("the leads database is separate (issue #772)", () => {
     await expect(purgeExpiredLeads({ DB: ANALYTICS } as never, NOW)).rejects.toThrow(TypeError);
   });
 
-  it("the hourly job purges the leads database and leaves a legacy leads table in the analytics database alone", async () => {
+  it("while the analytics database still holds a legacy lead the hourly job purges nothing, closed, and leaves that table alone", async () => {
+    // Changed for the separation proof (issue #772): this test used to expect the purge to run beside a
+    // legacy row. A legacy row now means the lead data is still readable from analytics, so the Worker
+    // serves no lead path at all until the one-time move has emptied it (separation.ts).
     const now = Date.now();
     await seed("old", now - 40 * DAY);
     await ANALYTICS.prepare("DELETE FROM leads").run();
     await ANALYTICS.prepare("INSERT INTO leads (id, email, created_ts, last_seen_ts, source) VALUES (?, ?, 1, 1, 'gate')")
       .bind("a".repeat(32), "legacy@example.test")
       .run();
+    resetSeparationCache();
     const { c, waits } = ctx();
     await worker.scheduled({ cron: "5 * * * *" } as ScheduledController, full(), c);
     await Promise.all(waits);
-    expect(await countLeads(DB)).toBe(0);
+    expect(await countLeads(DB)).toBe(1);
     expect((await ANALYTICS.prepare("SELECT COUNT(*) AS n FROM leads").first<{ n: number }>())!.n).toBe(1);
     expect((await ANALYTICS.prepare("SELECT COUNT(*) AS n FROM kit_meta WHERE key = 'last_purge_ts'").first<{ n: number }>())!.n).toBe(0);
     await ANALYTICS.prepare("DELETE FROM leads").run();

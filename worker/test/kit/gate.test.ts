@@ -7,6 +7,7 @@ import { getUnstoredSessionFloor, setSessionFloor, setUnstoredSessionFloor } fro
 import { mintUnstoredId } from "../../src/kit/unstored";
 import { COOKIE_NAME, signToken } from "../../src/kit/token";
 import { resetEventCapCache } from "../../src/kit/budgets";
+import { resetSeparationCache } from "../../src/kit/separation";
 import worker from "../../src/index";
 
 const HOST = "links.example.test";
@@ -143,6 +144,7 @@ function cookieHeader(res: Response): string {
 
 beforeEach(async () => {
   resetEventCapCache();
+  resetSeparationCache();
   await testEnv.LEADS_DB.batch([
     testEnv.LEADS_DB.prepare("DELETE FROM kit_events"),
     testEnv.LEADS_DB.prepare("DELETE FROM leads"),
@@ -308,11 +310,33 @@ describe("the leads database is separate (issue #772)", () => {
     const v = await handleGate(req({ path: VIEW_ROUTE, method: "GET", cookie: ck }), baseEnv({ LEADS_DB: undefined }), { nowMs: T0 + 1000 });
     expect(v.status).toBe(303);
     expect(v.headers.get("location")).toBe("/kit/");
+    // A legacy row left in analytics now closes the route on its own (separation.ts), so the row is
+    // removed before the cookie is expected to work again (this line and the reset were added with that check).
+    await testEnv.DB.prepare("DELETE FROM leads").run();
+    resetSeparationCache();
     const ok = await handleGate(req({ path: VIEW_ROUTE, method: "GET", cookie: ck }), baseEnv(), { nowMs: T0 + 1000 });
     expect(ok.status).toBe(200);
     await testEnv.DB.prepare("DELETE FROM leads").run();
   });
 
+  it("a lead row left in the analytics database closes the view route for a cookie that was working", async () => {
+    const { res } = await post();
+    const ck = cookieHeader(res);
+    expect((await view({ cookie: ck })).status).toBe(200);
+    await testEnv.DB.prepare("INSERT INTO leads (id, email, created_ts, last_seen_ts, source) VALUES (?, 'legacy@example.com', 1, 1, 'gate')")
+      .bind("e".repeat(32))
+      .run();
+    resetSeparationCache();
+    const closed = await view({ cookie: ck });
+    expect(closed.status).toBe(303);
+    expect(await closed.text()).not.toContain(CANARY);
+    await testEnv.DB.prepare("DELETE FROM leads").run();
+    resetSeparationCache();
+    expect((await view({ cookie: ck })).status).toBe(200);
+  });
+
+  // Since the separation proof, a lead row in analytics refuses the route before any lookup; the answer
+  // (303) is the same as when the lead is simply not found in LEADS_DB.
   it("a lead that exists only in the analytics database does not unlock the view route", async () => {
     const id = "d".repeat(32);
     await testEnv.DB.prepare("INSERT INTO leads (id, email, created_ts, last_seen_ts, source) VALUES (?, 'legacy@example.com', 1, 1, 'gate')")

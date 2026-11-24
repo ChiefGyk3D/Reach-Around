@@ -58,8 +58,10 @@ retention, see [deploy.md](deploy.md) ("Lead retention").
 Which database. This script acts on the ANALYTICS database (binding `DB`) and
 prints the name it was given. Leads and kit events live in the separate leads
 database (`LEADS_DB`, [deploy.md](deploy.md) "The leads database"), which this
-script never exports: it refuses a database name containing "leads" (exit 3)
-before anything is written. The leads database has no export script on purpose;
+script never exports: with `--apply` it first reads the database's own
+`db_identity` row and refuses (exit 3) unless it says `analytics`, whatever the
+database is called or how it was reached; a name containing "leads" is also
+refused up front. Nothing is written before that. The leads database has no export script on purpose;
 Time Travel on that database is its recovery path, with its own bookmark
 (`npx wrangler d1 time-travel info <LEADS DATABASE>`).
 

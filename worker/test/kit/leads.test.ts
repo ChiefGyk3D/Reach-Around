@@ -464,7 +464,7 @@ describe("schema", () => {
 
   it("the leads database holds only lead tables, and the analytics tables are not in it (issue #772)", async () => {
     const names = (await DB.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE '_cf_%' AND name <> 'd1_migrations'").all<{ name: string }>()).results.map((r) => r.name).sort();
-    expect(names).toEqual(["kit_events", "kit_meta", "leads"]);
+    expect(names).toEqual(["db_identity", "kit_events", "kit_meta", "leads"]); // db_identity added for the separation proof
     // and a lead stored through the leads database is invisible to the analytics database
     await run(LEAD, ID, "x@y.com", 1, 1, "gate", null);
     const other = await ANALYTICS.prepare("SELECT COUNT(*) AS n FROM leads WHERE id = ?").bind(ID).first<{ n: number }>();

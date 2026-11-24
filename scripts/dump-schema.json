@@ -143,6 +143,9 @@
       "name",
       "applied_at"
     ],
+    "db_identity": [
+      "role"
+    ],
     "kit_events": [
       "id",
       "ts",

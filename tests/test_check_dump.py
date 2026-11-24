@@ -93,7 +93,11 @@ def test_the_schema_loader_never_hands_sqlite_deeply_nested_sql() -> None:
 
 
 def schema_dump() -> str:
-    return "\n".join(real_db().iterdump()) + "\n"
+    # The schema only: the one identity row a migration seeds (issue #772) is data,
+    # and these tests build their own rows (a dump with no rows must still fail).
+    seeded = 'INSERT INTO "db_identity"'
+    lines = [ln for ln in real_db().iterdump() if not ln.startswith(seeded)]
+    return "\n".join(lines) + "\n"
 
 
 SCHEMA_DUMP = schema_dump()

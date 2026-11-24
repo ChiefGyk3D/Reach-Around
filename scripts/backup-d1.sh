@@ -5,9 +5,12 @@
 #
 # WHICH DATABASE. Two D1 databases exist (issue #772): the analytics database this script exports, and
 # the leads database (binding LEADS_DB, holding leads and kit events) that it never exports. DATABASE
-# must be the analytics one; every run prints the name it acts on. A DATABASE name containing "leads"
-# is refused (exit 3): name the leads database accordingly (docs/deploy.md) and back it up by its own
-# procedure (docs/backup-restore.md), never through this allowlist.
+# must be the analytics one; every run prints the name it acts on. IDENTITY is checked on the live
+# database, not by name: with --apply the script reads the db_identity row and refuses (exit 3) unless
+# it is exactly 'analytics', whatever the database is called or how it was reached (a name, an alias).
+# A DATABASE name containing "leads" is also refused up front (exit 3, a convenience, not the
+# safeguard). The leads database has its own backup procedure (docs/backup-restore.md), never this
+# allowlist.
 #
 # Usage: scripts/backup-d1.sh DATABASE DEST_DIR            # dry run: prints the plan
 #        scripts/backup-d1.sh DATABASE DEST_DIR --apply    # writes the export
@@ -138,6 +141,28 @@ fi
   echo "error: scripts/check-dump.py not found next to this script" >&2
   exit 1
 }
+
+# WHICH DATABASE, BY WHAT IT SAYS IT IS. A name proves nothing (a database can be renamed, or reached
+# through an id or an alias), so ask the database itself: each one holds a db_identity row written by its
+# own migrations, 'analytics' or 'leads'. Only a database that answers exactly 'analytics' is exported;
+# one that answers 'leads', answers nothing, or cannot be read is refused before anything is written.
+identity=$(timeout "$limit" "${wrangler[@]}" d1 execute "$db" --remote --json \
+  --command "SELECT role FROM db_identity ORDER BY role" 2>/dev/null) || {
+  echo "error: could not read the database identity (wrong name, not signed in, timed out, or the analytics migrations are not applied); nothing was exported" >&2
+  exit 1
+}
+roles=$(printf '%s' "$identity" | python3 -I -c '
+import json, sys
+try:
+    data = json.load(sys.stdin)
+    rows = data[0]["results"] if isinstance(data, list) else data["results"]
+    print(",".join(str(r["role"]) for r in rows))
+except Exception:
+    print("unreadable")
+') || roles="unreadable"
+if [ "$roles" != "analytics" ]; then
+  refuse "the database did not identify itself as the analytics database (it answered: ${roles:-nothing}). Apply the analytics migrations (worker/migrations) first, and never point this script at the leads database."
+fi
 
 umask 077
 mkdir "$out"

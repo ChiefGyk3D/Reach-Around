@@ -8,6 +8,7 @@ import { isLeadsDb } from "./kit/env";
 import { handleGate, isGateRoute, type GateEnv } from "./kit/gate";
 import { handleInquiry, isInquiryRoute, type InquiryEnv } from "./kit/inquiry";
 import { LEAD_PURGE_QUERIES, purgeExpiredLeads } from "./kit/leadretention";
+import { LeadsSeparationError, SEPARATION_QUERIES } from "./kit/separation";
 import { purgeOldCounters } from "./kit/limits";
 import { logEvent } from "./kit/log";
 import { rollupClickFunnel } from "./clickfunnel";
@@ -30,8 +31,11 @@ type WorkerEnv = ClickEnv &
 /** D1 queries the kit counter purge takes from the invocation's meter. */
 const COUNTER_PURGE_QUERIES = 1;
 
-/** The smallest QUERY_BUDGET that guarantees the lead purge its query (see scheduled()). */
-export const LEAD_FIRST_MIN_BUDGET = 9;
+/**
+ * The smallest QUERY_BUDGET that guarantees the lead purge its query (see scheduled()): the 8 queries one
+ * rollup day needs, the purge's own query, and the separation proof's worst case (issue #772).
+ */
+export const LEAD_FIRST_MIN_BUDGET = 8 + LEAD_PURGE_QUERIES + SEPARATION_QUERIES;
 
 const VIEW_PREFIX = "/e/v/";
 
@@ -111,8 +115,8 @@ export default {
    * The 2-minute live cron (LIVE_CRON) runs ONLY the live poller. Any other
    * trigger runs the hourly jobs below exactly as before.
    *
-   * Hourly cron, in this order: lead purge (one guaranteed query at QUERY_BUDGET 9
-   * or more; last under 9), click purge, page-view purge, page-view rollup. The purges come BEFORE the rollup so a rollup that fails, runs out
+   * Hourly cron, in this order: lead purge (its query and the separation proof guaranteed at QUERY_BUDGET 12
+   * or more; last under 12), click purge, page-view purge, page-view rollup. The purges come BEFORE the rollup so a rollup that fails, runs out
    * of CPU or is cut off can never block retention (the purge only deletes
    * days that are already rolled, plus rows past the hard ceiling). Each step
    * is isolated: one failing never stops the others, and nothing here throws.
@@ -156,14 +160,15 @@ export default {
         const meter = new QueryMeter(budget);
         const whole = meteredDb(env.DB, meter);
         const purgeDb = meteredDb(env.DB, meter.slice(Math.floor(budget / 2)));
-        // Lead retention (issue #265). GUARANTEE: at QUERY_BUDGET 9 or more it
+        // Lead retention (issue #265). GUARANTEE: at QUERY_BUDGET 12 (LEAD_FIRST_MIN_BUDGET) or more it
         // runs FIRST and takes exactly one bounded, metered D1 query
         // (LEAD_PURGE_QUERIES) before any other job can spend the meter, so a
         // busy purge or rollup can never starve it; the rollup gets the budget
         // minus one. WHICH ONE WINS BELOW 9: the smallest budget in which one
         // rollup day still completes is 8 (worker/test/views/rollup_budget.test.ts),
-        // so under 9 the rollup keeps its queries and the lead purge runs last,
-        // on whatever is left, with no guarantee. Keep QUERY_BUDGET at 9 or more
+        // so under 12 the rollup keeps its queries and the lead purge runs last,
+        // on whatever is left, with no guarantee (it also needs SEPARATION_QUERIES for the proof in
+        // separation.ts, uncached; short of them it logs over_budget and purges nothing). Keep QUERY_BUDGET at 12 or more
         // (default 40); docs/deploy.md says so.
         const leadsFirst = budget >= LEAD_FIRST_MIN_BUDGET;
         const purgeLeads = async (): Promise<void> => {
@@ -175,9 +180,13 @@ export default {
           }
           try {
             const leadDb = meteredDb(env.LEADS_DB, meter.slice(LEAD_PURGE_QUERIES));
-            await purgeExpiredLeads({ LEADS_DB: leadDb, LEAD_RETENTION_DAYS: env.LEAD_RETENTION_DAYS }, now);
-          } catch {
-            logEvent("purge", "failed", "other");
+            await purgeExpiredLeads({ DB: env.DB, LEADS_DB: leadDb, LEAD_RETENTION_DAYS: env.LEAD_RETENTION_DAYS }, now, {
+              separationMeter: meter.slice(SEPARATION_QUERIES),
+            });
+          } catch (e) {
+            // Separation not proven (same database, wrong identity, lead rows left in analytics): closed.
+            if (e instanceof LeadsSeparationError) logEvent("purge", "closed", "binding");
+            else logEvent("purge", "failed", "other");
           }
         };
         if (leadsFirst) await purgeLeads();
