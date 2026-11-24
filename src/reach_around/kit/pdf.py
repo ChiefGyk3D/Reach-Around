@@ -658,17 +658,29 @@ def _expected_text(
             put(where, tile + _trust_text(card["trust"]) + old)
     # The platform cards (#628): each card's name, its "No numbers yet" line or
     # its numbers with their labels, from the same measures the page was built from.
-    for card in section_cards(kit.sections, measures, config, None, live_day):
+    for card in section_cards(
+        kit.sections, measures, config, None, live_day, kit.fediverse
+    ):
         where = f"the platform card {card['name']!r}"
         found.append((where, card["name"] + (card["account"] or "")))
         if card["empty"]:
             found.append((where, card["no_numbers"]))
-            continue
-        labeled = labeled or config is not None
-        lead = card["headline"]
-        found.append((where, lead["value"] + lead["label"]))
-        for row in card["rows"]:
-            found.append((where, row["label"] + row["value"]))
+        else:
+            labeled = labeled or config is not None
+            lead = card["headline"]
+            found.append((where, lead["value"] + lead["label"]))
+            for row in card["rows"]:
+                found.append((where, row["label"] + row["value"]))
+        # The fediverse lines (#630): the server note, the re-check link as a
+        # plain URL (a PDF is read on paper) and each "not provided" line.
+        if card["server_note"]:
+            found.append((where, card["server_note"]))
+        for url in {r["recheck"] for r in card["rows"] if r["recheck"]} | (
+            {card["recheck"]} if card["recheck"] else set()
+        ):
+            found.append((where, url))
+        for line in card["not_provided"]:
+            found.append((where, line))
     # The live block (#629): each platform's seven fields, or its empty line.
     live = live_block(kit.live, measures, config, None, live_day)
     for card in live["cards"] if live else []:
