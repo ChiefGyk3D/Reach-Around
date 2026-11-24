@@ -199,6 +199,8 @@ known one. Each key has a unit, a definition, and a default audience.
 | `members` | follows | The number of members of a chat room or server, as the platform reports it. A member is not a follower, so it never enters the audience range. | everyone |
 | `followers_change_30d` | percent | The change in followers over the last 30 days, in percent, as the owner typed it from the platform's own analytics. It can be negative. | everyone |
 | `analytics_stat` | count | A count the owner typed from a platform's analytics, named by its own label; the label says what is counted. | everyone |
+| `views` | views | The number of times the platform counted a video as viewed in the period, as the platform's own analytics export shows it. Added up by the importer from the daily rows of the export. | everyone |
+| `watch_hours` | hours | The total time viewers spent watching in the period, in whole hours, as the platform's own analytics export shows it. Added up by the importer from the daily rows and rounded half up. | everyone |
 | `avg_ccv` | viewers | The average number of people watching at the same moment while the channel was live in the period, as the platform's own dashboard shows it. Typed by the owner. | everyone |
 | `peak_ccv` | viewers | The highest number of people watching at the same moment while the channel was live in the period, as the platform's own dashboard shows it. Typed by the owner. | everyone |
 | `hours_watched` | hours | The total time viewers spent watching the channel in the period, in whole hours, as the platform's own dashboard shows it. Typed by the owner. | everyone |
@@ -212,6 +214,15 @@ known one. Each key has a unit, a definition, and a default audience.
 | `mean_boosts_30d` | interactions | The average count of boosts across the public posts of the last 30 days, shown only beside the median and only when the owner turns it on; one viral post can pull it far above the median. | everyone |
 | `mean_favorites_30d` | interactions | The average count of favorites across the public posts of the last 30 days, shown only beside the median and only when the owner turns it on; one viral post can pull it far above the median. | everyone |
 | `mean_replies_30d` | interactions | The average count of replies across the public posts of the last 30 days, shown only beside the median and only when the owner turns it on; one viral post can pull it far above the median. | everyone |
+| `subscribers` | follows | The number of accounts subscribed to a PeerTube channel, a Lemmy community or a newsletter, as the instance or the sending service reports it and the owner typed it. A subscriber is not a follower, so it never enters the audience range. | everyone |
+| `lemmy_active_users_month` | count | The number of active users the Lemmy community reports for the last month, as the instance reports it and the owner typed it. | everyone |
+| `peertube_watch_time_30d` | hours | The hours watched across the channel's videos in the last 30 days, in whole hours, as the instance's video statistics report it and the owner typed it. | everyone |
+| `peertube_avg_watch_time` | seconds | The average time one view of the channel's videos lasted, in whole seconds, as the instance's video statistics report it and the owner typed it. | everyone |
+| `peertube_unique_viewers_30d` | viewers | The number of different viewers of the channel's videos in the last 30 days, as the instance's video statistics report it and the owner typed it. | everyone |
+| `downloads_30d` | downloads | The number of downloads of the podcast's episodes in the last 30 days, as the podcast host counts them and the owner typed it. | everyone |
+| `newsletter_delivered` | emails | The number of newsletter emails delivered in the last 30 days, as the sending service reports it and the owner typed it. | everyone |
+| `newsletter_clicks` | clicks | The number of clicks on links in the newsletter in the last 30 days, as the sending service reports it and the owner typed it. Clicks are shown instead of opens, which are unreliable. | everyone |
+| `blog_views_30d` | views | The number of page views of the blog in the last 30 days, as the site's own analytics report them and the owner typed it. | everyone |
 | `avg_views_per_item` | views | Views divided by posts in the period, worked out by the build from figures the owner typed. | after the gate |
 | `engagement_rate` | percent | Interactions divided by views in the period, as a percent, worked out by the build from figures the owner typed. | after the gate |
 
@@ -253,7 +264,8 @@ kit:
 | --- | --- |
 | live | twitch, kick |
 | video | youtube, tiktok, instagram, threads |
-| open | mastodon, bluesky, pixelfed |
+| open | mastodon, bluesky, pixelfed, peertube, lemmy |
+| audio | podcast, newsletter, blog |
 | community | discord, matrix |
 | other | every other platform |
 
@@ -261,7 +273,8 @@ kit:
 | --- | --- |
 | live | `followers`, `followers_change_30d`, `analytics_stat`, `avg_views_per_item`, `engagement_rate` |
 | video | `followers`, `followers_change_30d`, `analytics_stat`, `avg_views_per_item`, `engagement_rate` |
-| open | `followers`, `posts_total`, `followers_change_30d`, `median_boosts_30d`, `median_favorites_30d`, `median_replies_30d`, `mean_boosts_30d`, `mean_favorites_30d`, `mean_replies_30d`, `analytics_stat`, `avg_views_per_item`, `engagement_rate` |
+| open | `followers`, `subscribers`, `posts_total`, `followers_change_30d`, `median_boosts_30d`, `median_favorites_30d`, `median_replies_30d`, `mean_boosts_30d`, `mean_favorites_30d`, `mean_replies_30d`, `peertube_watch_time_30d`, `peertube_avg_watch_time`, `peertube_unique_viewers_30d`, `lemmy_active_users_month`, `analytics_stat`, `avg_views_per_item`, `engagement_rate` |
+| audio | `subscribers`, `downloads_30d`, `newsletter_delivered`, `newsletter_clicks`, `blog_views_30d` |
 | community | `members` |
 | other | `followers`, `followers_change_30d`, `analytics_stat`, `avg_views_per_item`, `engagement_rate` |
 
@@ -349,6 +362,58 @@ kit:
   those and any insights on Pixelfed.
 - A card shows these only when its platform has an entry. All of it is public
   (spec decision 6) and prints on the public page, the gated page and both PDFs.
+
+### The channel block
+
+PeerTube, Lemmy, a podcast, a newsletter and a blog each publish figures somewhere
+other than a platform API this kit reads. `kit.channels` holds what that place
+shows, typed by you on a date, one entry per platform (#633). It is hand-kept:
+nothing is fetched, and a collector for any of them has its own design issue (and a
+recorded terms read where a platform's terms apply) before any collector code.
+
+```yaml
+kit:
+  channels:
+    - platform: peertube
+      url: https://video.example/c/example
+      as_of: 2027-03-08
+      subscribers: 340
+      watch_time_hours: 1250
+      avg_watch_seconds: 95
+      unique_viewers: 8200
+    - platform: lemmy
+      url: https://lemmy.example/c/example
+      as_of: 2027-03-08
+      subscribers: 77
+      active_users_month: 21
+    - {platform: podcast, as_of: 2027-03-08, downloads: 5400}
+    - {platform: newsletter, as_of: 2027-03-08, subscribers: 2400, delivered: 2300, clicks: 190}
+    - {platform: blog, url: "https://blog.example/", as_of: 2027-03-08, views: 12345}
+```
+
+- **Each platform takes its own fields.** PeerTube: `subscribers`, `watch_time_hours`,
+  `avg_watch_seconds`, `unique_viewers`. Lemmy: `subscribers`, `active_users_month`
+  (community fields only; post-level fields are not read). Podcast: `downloads`.
+  Newsletter: `subscribers`, `delivered`, `clicks`. Blog: `views`. A field a
+  platform does not take is refused, and an entry needs at least one figure.
+- **Who reported it.** A card with an entry says so: "as reported by the instance"
+  (PeerTube, Lemmy), "as reported by the podcast host", "as reported by the sending
+  service" or "as reported by the site's own analytics". PeerTube's federated-view
+  completeness is not verified, so the card never claims it.
+- **Clicks, not opens.** The newsletter shows delivered emails and clicks. Opens
+  are unreliable since Apple Mail Privacy Protection, so the card says it does not
+  provide them.
+- **Re-check link.** `url` (https) is required for PeerTube and Lemmy, which have a
+  public page, and optional for the rest. It prints beside every count as a plain
+  URL. A podcast or newsletter with no public page has no link.
+- **Not provided, never zero.** A figure you did not type prints in one "Not
+  provided" line. A real 0 is typed. The 30-day figures cover the 30 days ending on
+  `as_of` and print that period.
+- A count of people (`subscribers`, Lemmy active users, PeerTube unique viewers)
+  keeps the privacy floor. `subscribers` is not a follower count and never enters
+  the audience range.
+- A card shows these only when its platform has an entry and a `sections` item. All
+  of it is public and prints on the public page, the gated page and both PDFs.
 
 ### Structured demographics
 
@@ -954,6 +1019,50 @@ is escaped text, never a `mailto:` or `tel:` link. The owner decides what goes
 there; an email address as plain text is acceptable, and no postal address or
 phone number is required or checked (the Beacons kit publishes a postal address;
 Reach Around does not need one). Left out, nothing is printed.
+
+## Hand-kept entries and imports
+
+A number with no collector is kept by hand. Each one is an entry in
+`hand-kept.json`, beside your config: a registry key (see
+[the registry](#platform-cards-and-the-measure-registry)), a whole-number value, a
+UTC day (`as_of`), optionally the period it covers and a short note. The unit, the
+definition and the default audience come from the registry; you never restate them.
+An entry is labeled hand-kept. One made by an importer says which export in its
+method line ("Imported from the YouTube analytics export"); there is no fourth
+label.
+
+```
+reach-around kit measure add --file hand-kept.json --platform bluesky \
+  --key followers --value 120 --as-of 2027-02-20
+reach-around kit measure import-youtube --file hand-kept.json \
+  --export "Chart data.csv"
+```
+
+`measure add` refuses an unknown key, a unit that is not the key's unit (`--unit`,
+optional), a measure the build works out itself, a negative value for a key that
+cannot fall, a day in the future and a repeat of the same platform, key, day and
+period. Its output is a count, never a value. A percent is typed in tenths.
+
+**The wall.** A measure is never visible more widely than the display policy of
+the field it came from. An entry names that field (`analytics` unless you say
+otherwise) and takes the narrower of it and the registry default. An import adds a
+floor that the file cannot change: the figures of a YouTube analytics export stay
+private (owner decision of 2026-11-19, see [YouTube analytics](youtube-analytics.md)),
+so no page or PDF shows them.
+
+**The YouTube analytics export.** The CSV from YouTube Studio's analytics ("Chart
+data"): a header naming exactly `Date`, `Views` and `Watch time (hours)`, then one
+row per UTC day. A `Total` row is skipped. The importer adds the days up (`views`
+and `watch_hours`, hours rounded half up), sets the period to the first and last
+day, and writes nothing if any row is bad. It reads one regular file of at most
+256 KiB and 1,100 rows, opens no network connection, and never prints a cell. The
+column names are assumed from a sample export, not read from a vendor page.
+
+**Stale reminders.** The instance repository example has a scheduled workflow,
+`Check hand-kept freshness`, that opens one issue when a hand-kept measure is older
+than its limit (30 days) and closes it when everything is fresh again. It reads
+only `hand-kept.json`, uses no secret and sends nothing anywhere else. See
+[the instance repository README](../examples/instance-repo/README.md).
 
 ## Old numbers
 

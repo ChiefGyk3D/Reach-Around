@@ -10,7 +10,8 @@
 //     database call. They are never stored, logged, thrown or echoed.
 //   - The only things taken from the request: referrer host, utm label and a
 //     window-size letter from a tiny form body; Cloudflare's country, region
-//     and city (never coordinates, postal code, organization or ASN); derived
+//     and, at GEO_LEVEL city only, city (the city goes to a daily counter, never
+//     to a raw row; never coordinates, postal code, organization or ASN); derived
 //     UA classes; a bot class; and a daily keyed hash of the address.
 //   - The hash is HMAC-SHA-256 under a key derived from a secret and the UTC
 //     date, cut to UV_BITS bits (default 32). It lives only in visitor_seen,
@@ -58,7 +59,7 @@
 //   Every response is byte-identical, but latency depends on how far a
 //   request got (an early refusal is faster than an accepted view). That is
 //   accepted and documented; the body read has a short fixed deadline.
-//   GEO_LEVEL city, BOTS_MODE count, network class "unknown" for now.
+//   GEO_LEVEL region, BOTS_MODE count, network class "unknown" for now.
 
 import { beaconLane, beaconSetup, type BeaconEnv } from "./beacon";
 import { BOT_REASONS, classifyBot, uaSignals, type BotClass } from "./botclass";
@@ -539,6 +540,8 @@ interface AcceptRow {
   kind: SrcKind;
   src: string;
   geo: Geo;
+  /** The city, only at level city: counted in view_city_daily, never written to the raw row. */
+  city: string;
   d: Derived;
   vp: Viewport;
 }
@@ -624,11 +627,25 @@ async function accept(
       row.site,
     ),
   ];
+  if (row.city !== "") {
+    // Level city: one more row, written only when the event row was. It reads `first` back from that row, so the
+    // counter holds views and uniques and no other fact about the view. The raw row has no city (#778).
+    stmts.splice(
+      5,
+      0,
+      env.DB.prepare(
+        "INSERT INTO view_city_daily (site, day, country, region, city, bot_class, views, uniques) " +
+          "SELECT ?1, ?2, ?3, ?4, ?5, ?6, 1, e.first FROM view_events e WHERE e.id = last_insert_rowid() AND changes() = 1 " +
+          "ON CONFLICT (site, day, country, region, city, bot_class) DO UPDATE SET views = views + 1, " +
+          "uniques = uniques + excluded.uniques WHERE changes() = 1",
+      ).bind(row.site, day, row.geo.country, row.geo.region, row.city, row.d.cls), // CONTROL:pv-city-counter
+    );
+  }
   if (lane !== null) {
     // BEACON_MODE observe or enforce: one more row, written only when the event row was (it depends on
     // `changes()` of the insert before it), so the lane count equals the stored views. A label, not a filter.
     stmts.splice(
-      5,
+      row.city !== "" ? 6 : 5,
       0,
       env.DB.prepare(
         "INSERT INTO counters (key, day, count) SELECT ?1, ?2, 1 WHERE changes() = 1 " +
@@ -713,8 +730,12 @@ export async function handleView(
     const beacon = parseBeacon(text, site.hosts, site.sources);
     if (beacon === null) return noContent();
 
-    const level = oneOf(site.geo ?? env.GEO_LEVEL ?? "", ["country", "region", "city"], "city") as GeoLevel;
-    const geo = geoOf(request, level);
+    // Default region (#778). A raw row holds at most the region; the city, only at level city, goes to the
+    // daily city counter and nowhere else.
+    const level = oneOf(site.geo ?? env.GEO_LEVEL ?? "", ["country", "region", "city"], "region") as GeoLevel;
+    const full = geoOf(request, level);
+    const geo: Geo = { country: full.country, region: full.region, city: "" };
+    const city = full.city;
     const d = await derive(request, env, id.sus);
 
     const bot = d.cls !== "h";
@@ -741,6 +762,7 @@ export async function handleView(
         kind: beacon.kind,
         src: beacon.src,
         geo,
+        city,
         d,
         vp: beacon.vp,
       },

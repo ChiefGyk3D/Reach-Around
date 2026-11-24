@@ -53,12 +53,13 @@ if TYPE_CHECKING:
     from reach_around.config.numbers import Numbers
 
 MeasureVisibility = Literal["public", "gated", "private"]
-Block = Literal["headline", "tile", "derived", "live", "fediverse"]
+Block = Literal["headline", "tile", "derived", "live", "fediverse", "channels"]
 
 UNITS: tuple[str, ...] = (
     "follows",
     "viewers",
     "hours",
+    "seconds",
     "views",
     "interactions",
     "downloads",
@@ -69,9 +70,11 @@ UNITS: tuple[str, ...] = (
 )
 
 _SLICE = "Added in kit v2 slice 3 (#628)"
+_SLICE6 = "Added in kit v2 slice 6 (#631)"
 _LIVE = "Added in kit v2 slice 4 (#629)"
 
 _SLICE5 = "Added in kit v2 slice 5 (#630)"
+_SLICE8 = "Added in kit v2 slice 8 (#633)"
 
 # The formulas of the fediverse block's computed measures (spec 6.3).
 MEDIAN_FORMULA = (
@@ -148,6 +151,30 @@ REGISTRY: Mapping[str, MeasureDef] = {
                 "own label; the label says what is counted."
             ),
             changelog=f"{_SLICE}: analytics_stat, a typed analytics tile.",
+            visibility="public",
+        ),
+        MeasureDef(
+            key="views",
+            label="Views",
+            unit="views",
+            definition=(
+                "The number of times the platform counted a video as viewed in "
+                "the period, as the platform's own analytics export shows it. "
+                "Added up by the importer from the daily rows of the export."
+            ),
+            changelog=f"{_SLICE6}: views, from a platform analytics export.",
+            visibility="public",
+        ),
+        MeasureDef(
+            key="watch_hours",
+            label="Watch time, hours",
+            unit="hours",
+            definition=(
+                "The total time viewers spent watching in the period, in whole "
+                "hours, as the platform's own analytics export shows it. Added "
+                "up by the importer from the daily rows and rounded half up."
+            ),
+            changelog=f"{_SLICE6}: watch_hours, from a platform analytics export.",
             visibility="public",
         ),
         MeasureDef(
@@ -323,6 +350,111 @@ REGISTRY: Mapping[str, MeasureDef] = {
             formula=MEAN_FORMULA,
         ),
         MeasureDef(
+            key="subscribers",
+            label="Subscribers",
+            unit="follows",
+            definition=(
+                "The number of accounts subscribed to a PeerTube channel, a Lemmy "
+                "community or a newsletter, as the instance or the sending service "
+                "reports it and the owner typed it. A subscriber is not a follower, so "
+                "it never enters the audience range."
+            ),
+            changelog=f"{_SLICE8}: subscribers, the typed figure.",
+            visibility="public",
+        ),
+        MeasureDef(
+            key="lemmy_active_users_month",
+            label="Active users per month",
+            unit="count",
+            definition=(
+                "The number of active users the Lemmy community reports for the last "
+                "month, as the instance reports it and the owner typed it."
+            ),
+            changelog=f"{_SLICE8}: lemmy_active_users_month, the typed figure.",
+            visibility="public",
+        ),
+        MeasureDef(
+            key="peertube_watch_time_30d",
+            label="Watch time, hours (30 days)",
+            unit="hours",
+            definition=(
+                "The hours watched across the channel's videos in the last 30 days, in "
+                "whole hours, as the instance's video statistics report it and the "
+                "owner typed it."
+            ),
+            changelog=f"{_SLICE8}: peertube_watch_time_30d, the typed figure.",
+            visibility="public",
+        ),
+        MeasureDef(
+            key="peertube_avg_watch_time",
+            label="Average watch time (seconds)",
+            unit="seconds",
+            definition=(
+                "The average time one view of the channel's videos lasted, in whole "
+                "seconds, as the instance's video statistics report it and the owner "
+                "typed it."
+            ),
+            changelog=f"{_SLICE8}: peertube_avg_watch_time, the typed figure.",
+            visibility="public",
+        ),
+        MeasureDef(
+            key="peertube_unique_viewers_30d",
+            label="Unique viewers (30 days)",
+            unit="viewers",
+            definition=(
+                "The number of different viewers of the channel's videos in the last "
+                "30 days, as the instance's video statistics report it and the owner "
+                "typed it."
+            ),
+            changelog=f"{_SLICE8}: peertube_unique_viewers_30d, the typed figure.",
+            visibility="public",
+        ),
+        MeasureDef(
+            key="downloads_30d",
+            label="Downloads (30 days)",
+            unit="downloads",
+            definition=(
+                "The number of downloads of the podcast's episodes in the last 30 "
+                "days, as the podcast host counts them and the owner typed it."
+            ),
+            changelog=f"{_SLICE8}: downloads_30d, the typed figure.",
+            visibility="public",
+        ),
+        MeasureDef(
+            key="newsletter_delivered",
+            label="Emails delivered (30 days)",
+            unit="emails",
+            definition=(
+                "The number of newsletter emails delivered in the last 30 days, as the "
+                "sending service reports it and the owner typed it."
+            ),
+            changelog=f"{_SLICE8}: newsletter_delivered, the typed figure.",
+            visibility="public",
+        ),
+        MeasureDef(
+            key="newsletter_clicks",
+            label="Email clicks (30 days)",
+            unit="clicks",
+            definition=(
+                "The number of clicks on links in the newsletter in the last 30 days, "
+                "as the sending service reports it and the owner typed it. Clicks are "
+                "shown instead of opens, which are unreliable."
+            ),
+            changelog=f"{_SLICE8}: newsletter_clicks, the typed figure.",
+            visibility="public",
+        ),
+        MeasureDef(
+            key="blog_views_30d",
+            label="Blog views (30 days)",
+            unit="views",
+            definition=(
+                "The number of page views of the blog in the last 30 days, as the "
+                "site's own analytics report them and the owner typed it."
+            ),
+            changelog=f"{_SLICE8}: blog_views_30d, the typed figure.",
+            visibility="public",
+        ),
+        MeasureDef(
             key="avg_views_per_item",
             label="Average views per post",
             unit="views",
@@ -396,7 +528,8 @@ LIVE_KEYS: tuple[str, ...] = (
 GROUPS: Mapping[str, tuple[str, ...]] = {
     "live": ("twitch", "kick"),
     "video": ("youtube", "tiktok", "instagram", "threads"),
-    "open": ("mastodon", "bluesky", "pixelfed"),
+    "open": ("mastodon", "bluesky", "pixelfed", "peertube", "lemmy"),
+    "audio": ("podcast", "newsletter", "blog"),
     "community": ("discord", "matrix"),
 }
 
@@ -420,6 +553,7 @@ DEFAULT_SETS: Mapping[str, tuple[str, ...]] = {
     ),
     "open": (
         "followers",
+        "subscribers",
         "posts_total",
         "followers_change_30d",
         "median_boosts_30d",
@@ -428,9 +562,20 @@ DEFAULT_SETS: Mapping[str, tuple[str, ...]] = {
         "mean_boosts_30d",
         "mean_favorites_30d",
         "mean_replies_30d",
+        "peertube_watch_time_30d",
+        "peertube_avg_watch_time",
+        "peertube_unique_viewers_30d",
+        "lemmy_active_users_month",
         "analytics_stat",
         "avg_views_per_item",
         "engagement_rate",
+    ),
+    "audio": (
+        "subscribers",
+        "downloads_30d",
+        "newsletter_delivered",
+        "newsletter_clicks",
+        "blog_views_30d",
     ),
     "community": ("members",),
     "other": (
@@ -673,8 +818,9 @@ def compile_measures(
     kit: KitConfig, numbers: Numbers | None, api: frozenset[str] | None = None
 ) -> list[Measure]:
     """Every measure the kit config holds, in page order: headline numbers,
-    analytics, engagement, the fediverse block. The one place the old fields
-    are read."""
+    analytics, engagement, the fediverse and channel blocks. The one place the
+    old fields are read."""
+    from reach_around.config.channels import channel_measures
     from reach_around.config.fediverse import fediverse_measures
     from reach_around.config.kit import resolve_metrics
 
@@ -684,6 +830,7 @@ def compile_measures(
         *live_measures(kit.live),
         *engagement_measures(kit.engagement),
         *fediverse_measures(kit.fediverse),
+        *channel_measures(kit.channels),
     ]
 
 

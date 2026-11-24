@@ -208,9 +208,13 @@ def test_rotating_key_value_is_the_token_and_never_enters_the_environment() -> N
     ]
     assert mapped == [
         "Require the Cloudflare token",
+        "Read the live Worker version",
+        "Read the live Worker link ids",
         "Apply D1 migrations",
         "Deploy the Worker",
+        "Roll back the Worker after a failed probe",
         "Publish the site to Pages",
+        "Narrow the Worker's link ids to the new list (phase 2)",
     ]
     # no step reads the token from the job environment, and none relies on it
     assert "env.CLOUDFLARE_API_TOKEN" not in WORKFLOW.read_text(encoding="utf-8")

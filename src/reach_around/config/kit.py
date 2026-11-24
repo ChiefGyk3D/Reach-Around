@@ -55,7 +55,9 @@ from pydantic import (
     model_validator,
 )
 
-from reach_around.config.blocks import MAX_COUNT, PLATFORM_SLUGS
+from reach_around.config.blocks import KIT_PLATFORM_SLUGS, MAX_COUNT
+from reach_around.config.channels import ChannelEntry
+from reach_around.config.channels import entries_problem as channels_problem
 from reach_around.config.fediverse import FediverseEntry, entries_problem
 from reach_around.config.imported_history import ImportedHistory
 from reach_around.config.measures import (
@@ -111,6 +113,9 @@ KIT_FIELD_POLICY: Mapping[str, FieldPolicy] = {
     # The fediverse block (#630): public counts typed from a public profile, each
     # with its re-check link. Public by nature (spec 14.2, decision 6).
     "fediverse": FieldPolicy("public"),
+    # The channel block (#633): PeerTube, Lemmy, podcast, newsletter and blog
+    # figures typed by the owner. Public, each with its source named.
+    "channels": FieldPolicy("public"),
     # The computed measure list the renderer reads. Not a config field.
     "measures": FieldPolicy("public"),
     "partners": FieldPolicy("gated"),
@@ -335,7 +340,7 @@ class Demographic(_Model):
                 "YouTube Analytics demographics stay in the internal dashboard "
                 "and are refused in the media kit"
             )
-        if value not in PLATFORM_SLUGS:
+        if value not in KIT_PLATFORM_SLUGS:
             raise ValueError(
                 "platform must be a platform name from the platforms block"
             )
@@ -444,7 +449,7 @@ class PlatformMetric(_Model):
     @field_validator("platform")
     @classmethod
     def _known_platform(cls, value: str) -> str:
-        if value not in PLATFORM_SLUGS:
+        if value not in KIT_PLATFORM_SLUGS:
             raise ValueError(
                 "platform must be a platform name from the platforms block"
             )
@@ -527,7 +532,7 @@ class EngagementRow(_Model):
     @field_validator("platform")
     @classmethod
     def _known_platform(cls, value: str) -> str:
-        if value not in PLATFORM_SLUGS:
+        if value not in KIT_PLATFORM_SLUGS:
             raise ValueError(
                 "platform must be a platform name from the platforms block"
             )
@@ -643,7 +648,7 @@ class RecentPost(_Model):
     @field_validator("platform")
     @classmethod
     def _known_non_youtube_platform(cls, value: str) -> str:
-        if value not in PLATFORM_SLUGS:
+        if value not in KIT_PLATFORM_SLUGS:
             raise ValueError(
                 "platform must be a platform name from the platforms block"
             )
@@ -730,7 +735,7 @@ class KitSection(_Model):
     @field_validator("platform")
     @classmethod
     def _known_platform(cls, value: str) -> str:
-        if value not in PLATFORM_SLUGS:
+        if value not in KIT_PLATFORM_SLUGS:
             raise ValueError(
                 "platform must be a platform name from the platforms block"
             )
@@ -796,6 +801,9 @@ class KitConfig(_Model):
     # The fediverse block (#630): Mastodon, Bluesky and Pixelfed counts typed from
     # the public profile, with its link and the per-post counts the medians use.
     fediverse: list[FediverseEntry] = Field(default_factory=list, max_length=3)
+    # The channel block (#633): PeerTube, Lemmy, podcast, newsletter and blog
+    # figures typed by the owner, one entry per platform.
+    channels: list[ChannelEntry] = Field(default_factory=list, max_length=5)
     # Options for the audience summary (#627): the optional poll estimate line.
     audience_summary: AudienceSummary | None = None
     # A file of link-page numbers imported from the previous provider (see
@@ -914,6 +922,13 @@ class KitConfig(_Model):
     @model_validator(mode="after")
     def _fediverse_is_unique(self) -> KitConfig:
         problem = entries_problem(self.fediverse)
+        if problem:
+            raise ValueError(problem)
+        return self
+
+    @model_validator(mode="after")
+    def _channels_are_unique(self) -> KitConfig:
+        problem = channels_problem(self.channels)
         if problem:
             raise ValueError(problem)
         return self
