@@ -106,6 +106,7 @@ def test_the_template_files_exist() -> None:
         "README.md",
         "site.yaml",
         "engine.lock",
+        "engine.release.json",
         "renovate.json",
         ".gitignore",
         "media/.gitkeep",
@@ -421,6 +422,7 @@ TRUSTED_FILES = {
     "scripts/validate.sh",
     "scripts/write-result.py",
     "engine.lock",
+    "engine.release.json",
     "site.yaml",
 }
 FORK_GUARD = "head.repo.full_name == github.repository"
@@ -1872,7 +1874,7 @@ class _Run:
         for tool in (
             "bash", "cp", "chmod", "mktemp", "git", "find", "sed", "cat", "grep",
             "dirname", "basename", "wc", "head", "tr", "id", "rm", "mkdir", "touch",
-            "readlink", "cut", "sort", "uname", "tee",
+            "readlink", "cut", "sort", "uname", "tee", "jq",
         ):  # fmt: skip
             for folder in ("/usr/bin", "/bin"):
                 if (Path(folder) / tool).exists():

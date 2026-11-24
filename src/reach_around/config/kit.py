@@ -26,6 +26,11 @@ counted in ``ignored``. With nothing to add the total is ``None``, never 0.
 Community platforms (Discord, Matrix) are members of a room, not followers, so
 they are never added (``COMMUNITY_PLATFORMS``); the kit prints them on their
 own line (#627).
+
+Measures. The renderer reads ``measures`` only (``reach_around.config.measures``):
+``metrics``, ``analytics`` and ``engagement`` are compiled into them once, in the
+projection, so the old fields are never read by a page. ``sections`` says which
+platforms get a card and which registry keys the card shows (#628).
 """
 
 from __future__ import annotations
@@ -52,6 +57,13 @@ from pydantic import (
 
 from reach_around.config.blocks import MAX_COUNT, PLATFORM_SLUGS
 from reach_around.config.imported_history import ImportedHistory
+from reach_around.config.measures import (
+    REGISTRY,
+    Measure,
+    compile_measures,
+    default_keys,
+    visible,
+)
 from reach_around.config.numbers import STALE_DAYS as STALE_DAYS
 from reach_around.config.numbers import Numbers
 from reach_around.site.theme import check_image_path
@@ -87,6 +99,13 @@ KIT_FIELD_POLICY: Mapping[str, FieldPolicy] = {
     "turnstile_site_key": FieldPolicy("public"),
     "public_pdf": FieldPolicy("public"),
     "audience_summary": FieldPolicy("public"),
+    # Platform sections (#628): which platforms get a card, in what order, with
+    # which registry keys. Only presentation; the numbers in a card come from the
+    # measures, each of which carries its own visibility (never wider than the
+    # field it was compiled from).
+    "sections": FieldPolicy("public"),
+    # The computed measure list the renderer reads. Not a config field.
+    "measures": FieldPolicy("public"),
     "partners": FieldPolicy("gated"),
     "case_studies": FieldPolicy("gated"),
     "services": FieldPolicy("gated"),
@@ -606,6 +625,53 @@ class AudienceSummary(_Model):
         return self
 
 
+MAX_SECTIONS = 20
+MAX_SECTION_KEYS = 12
+
+
+class KitSection(_Model):
+    """One platform card (kit v2 slice 3, #628).
+
+    ``show`` is ``default`` (the default set of the platform's group, see
+    ``reach_around.config.measures.DEFAULT_SETS``) or a list of registry keys, in
+    print order. A card holds no numbers: they come from the measures. A
+    configured platform with no number to show prints "No numbers yet", or
+    nothing when ``hide_if_empty`` is true.
+    """
+
+    platform: str
+    account: Text80 | None = None
+    show: (
+        Literal["default"]
+        | Annotated[list[StrictStr], Field(min_length=1, max_length=MAX_SECTION_KEYS)]
+    ) = "default"
+    headline: StrictStr | None = None
+    hide_if_empty: StrictBool = False
+
+    @field_validator("platform")
+    @classmethod
+    def _known_platform(cls, value: str) -> str:
+        if value not in PLATFORM_SLUGS:
+            raise ValueError(
+                "platform must be a platform name from the platforms block"
+            )
+        return value
+
+    @model_validator(mode="after")
+    def _keys_are_in_the_registry(self) -> KitSection:
+        if self.show != "default":
+            unknown = [key for key in self.show if key not in REGISTRY]
+            if unknown or len(set(self.show)) != len(self.show):
+                raise ValueError(
+                    "show must list each registry key once; the registry keys are "
+                    + ", ".join(sorted(REGISTRY))
+                )
+        shown = default_keys(self.platform) if self.show == "default" else self.show
+        if self.headline is not None and self.headline not in shown:
+            raise ValueError("headline must be one of the keys the section shows")
+        return self
+
+
 class KitConfig(_Model):
     title: Text120
     about: Text1000
@@ -644,6 +710,8 @@ class KitConfig(_Model):
     # link on the first screen of the public page, so the "Download Public PDF"
     # button appears only when this is set. The PDFs themselves never print it.
     public_pdf: Annotated[str, Field(max_length=2048)] | None = None
+    # Platform cards (#628); empty means the page has none.
+    sections: list[KitSection] = Field(default_factory=list, max_length=MAX_SECTIONS)
     # Options for the audience summary (#627): the optional poll estimate line.
     audience_summary: AudienceSummary | None = None
     # A file of link-page numbers imported from the previous provider (see
@@ -736,6 +804,19 @@ class KitConfig(_Model):
         return self
 
     @model_validator(mode="after")
+    def _sections_are_unique(self) -> KitConfig:
+        seen: set[tuple[str, str | None]] = set()
+        for section in self.sections:
+            key = (section.platform, section.account)
+            if key in seen:
+                raise ValueError(
+                    f"the section for {section.platform!r} is listed more than "
+                    "once (give each an account to tell them apart)"
+                )
+            seen.add(key)
+        return self
+
+    @model_validator(mode="after")
     def _tags_are_unique(self) -> KitConfig:
         seen: set[str] = set()
         for tag in self.tags:
@@ -802,6 +883,29 @@ def enforce_display_policy(kit: KitConfig) -> None:
                 "Analytics values may not be used in a kit; enter the figures by "
                 "hand and set owner_supplied: true to show them in the deeper kit."
             )
+
+
+def policy_fingerprint() -> str:
+    """A stable hash of everything that decides who may see a number: both policy
+    tables (the rich one and the visibility-only view) and the registry's default
+    audiences. A page records it when it is built; a PDF build refuses a page
+    built under a different value (the policy changed after the page was made)."""
+    import hashlib
+    import json
+
+    from reach_around.config import measures
+
+    table = {
+        "fields": {
+            name: [rule.visibility, rule.owner_report_only]
+            for name, rule in sorted(KIT_FIELD_POLICY.items())
+        },
+        "display": dict(sorted(DISPLAY_POLICY.items())),
+        "registry": {k: e.visibility for k, e in sorted(measures.REGISTRY.items())},
+    }
+    return hashlib.sha256(
+        json.dumps(table, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
 
 
 def imported_level(kit: KitConfig) -> Visibility:
@@ -888,6 +992,18 @@ def unified_total(resolved: Sequence[ResolvedMetric]) -> UnifiedTotal:
     )
 
 
+def summary_total(measures: Sequence[Measure]) -> UnifiedTotal:
+    """``unified_total`` over measures: the headline numbers that count toward the
+    audience range (the same rule, read from the measure, not the config)."""
+    counting = [m for m in measures if m.block == "headline" and m.in_summary]
+    valued = [m.value for m in counting if m.value is not None]
+    return UnifiedTotal(
+        total=sum(valued) if valued else None,
+        counted=len(valued),
+        ignored=len(counting) - len(valued),
+    )
+
+
 def _age_warning(
     what: str, as_of: date, today: date, limit: int = STALE_DAYS
 ) -> str | None:
@@ -945,11 +1061,17 @@ def _project(
     numbers: Numbers | None,
     allowed: frozenset[str],
     imported: ImportedHistory | None = None,
+    api: frozenset[str] | None = None,
 ) -> dict[str, Any]:
     resolved = resolve_metrics(kit, numbers)
+    shown = visible(compile_measures(kit, numbers, api), allowed)
     values: dict[str, Any] = {
+        # What the renderer reads: only the measures this audience may see.
+        "measures": shown,
         "metrics": resolved,
-        "unified_total": unified_total(resolved),
+        # An aggregate is derived from the visible measures only, never from the
+        # unfiltered metrics, so a private or gated source adds nothing to it.
+        "unified_total": summary_total(shown),
         "audience_summary": kit.audience_summary,
         # The loaded numbers, never the path. Kept out of every total.
         "imported_history": imported,
@@ -969,17 +1091,25 @@ def _project(
 
 
 def public_projection(
-    kit: KitConfig, numbers: Numbers | None, imported: ImportedHistory | None = None
+    kit: KitConfig,
+    numbers: Numbers | None,
+    imported: ImportedHistory | None = None,
+    api: frozenset[str] | None = None,
 ) -> dict[str, Any]:
-    """The fields any visitor may see: the header and the headline numbers."""
-    return _project(kit, numbers, frozenset({"public"}), imported)
+    """The fields any visitor may see: the header and the headline numbers.
+    ``api`` is the set of platforms with a collector (it sets each measure's
+    trust label); without it the measures carry no label."""
+    return _project(kit, numbers, frozenset({"public"}), imported, api)
 
 
 def gated_projection(
-    kit: KitConfig, numbers: Numbers | None, imported: ImportedHistory | None = None
+    kit: KitConfig,
+    numbers: Numbers | None,
+    imported: ImportedHistory | None = None,
+    api: frozenset[str] | None = None,
 ) -> dict[str, Any]:
     """Public plus gated fields. Private fields are in neither."""
-    return _project(kit, numbers, frozenset({"public", "gated"}), imported)
+    return _project(kit, numbers, frozenset({"public", "gated"}), imported, api)
 
 
 def pdf_excluded_values(kit: KitConfig) -> dict[str, str]:
