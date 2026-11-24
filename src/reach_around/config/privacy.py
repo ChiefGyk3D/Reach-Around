@@ -32,8 +32,8 @@ RAW_CLICK_KEEP_DAYS = 90
 MONTHLY_KEEP_MONTHS = 25
 # The Worker's own default when GEO_LEVEL is unset (worker/src/view.ts). The
 # privacy notice reads ``analytics.geo_level`` when the config has one and falls
-# back to this; PR #793 changes the Worker default to region.
-DEFAULT_GEO_LEVEL = "city"
+# back to this (region since PR #793; a test reads the Worker source).
+DEFAULT_GEO_LEVEL = "region"
 
 
 class _Model(BaseModel):

@@ -601,8 +601,8 @@ describe("fail closed and deadlines", () => {
     expect(dump).not.toContain("Zzyzxville");
     expect(dump).not.toContain("ZQ");
     expect((await rows())[0]).toMatchObject({ country: "US", region: "", city: "" });
-    // The default stores them, so the assertions above are not vacuous.
-    await handleView(beacon({ cf }), makeEnv(), NOW + 1000);
+    // Level city stores the city, so the assertions above are not vacuous.
+    await handleView(beacon({ cf }), makeEnv({ GEO_LEVEL: "city" }), NOW + 1000);
     expect(await dumpDatabase()).toContain("Zzyzxville");
   });
 });
@@ -640,9 +640,11 @@ describe("accepted view", () => {
     expect(spy.calls.rowsWritten).toBeGreaterThan(0);
   });
 
-  it("cloudflare_region_and_city_are_stored_at_the_default_level", async () => {
+  it("the_default_level_is_region_and_no_city_is_stored_anywhere", async () => {
     await handleView(beacon({ cf: { regionCode: "EX", city: "Exampleton" } }), makeEnv(), NOW);
-    expect((await rows())[0]).toMatchObject({ country: "US", region: "EX", city: "Exampleton" });
+    expect((await rows())[0]).toMatchObject({ country: "US", region: "EX", city: "" });
+    expect(await dumpDatabase()).not.toContain("Exampleton");
+    expect(await DB.prepare("SELECT COUNT(*) AS n FROM view_city_daily").first("n")).toBe(0);
   });
 
   it("geo_level_limits_what_is_stored", async () => {
@@ -651,6 +653,28 @@ describe("accepted view", () => {
     const r = await rows();
     expect(r[0]).toMatchObject({ region: "EX", city: "" });
     expect(r[1]).toMatchObject({ region: "", city: "" });
+  });
+
+  it("level_city_counts_the_city_in_the_daily_counter_and_never_in_the_raw_row", async () => {
+    const env = makeEnv({ GEO_LEVEL: "city" });
+    const cf = { regionCode: "EX", city: "Exampleton" };
+    await handleView(beacon({ cf }), env, NOW);
+    await handleView(beacon({ cf, headers: { "CF-Connecting-IP": "203.0.113.9" } }), env, NOW + 1000);
+    const raw = await rows();
+    expect(raw.length).toBe(2);
+    // CONTROL:pv-city-counter. Revert-proof: if the city leaks into the raw row, this fails.
+    for (const r of raw) expect(r).toMatchObject({ region: "EX", city: "" });
+    const c = await DB.prepare("SELECT site, day, country, region, city, bot_class, views, uniques FROM view_city_daily").all();
+    expect(c.results).toEqual([
+      { site: "links", day: new Date(NOW).toISOString().slice(0, 10), country: "US", region: "EX", city: "Exampleton", bot_class: "h", views: 2, uniques: 2 },
+    ]);
+  });
+
+  it("a_refused_view_adds_nothing_to_the_city_counter", async () => {
+    const env = makeEnv({ GEO_LEVEL: "city", VIEWS_PER_HOUR: "0" });
+    await handleView(beacon({ cf: { regionCode: "EX", city: "Exampleton" } }), env, NOW);
+    expect(await rows()).toEqual([]);
+    expect(await DB.prepare("SELECT COUNT(*) AS n FROM view_city_daily").first("n")).toBe(0);
   });
 
   it("an_internal_referrer_is_kind_i_and_a_direct_view_is_kind_d", async () => {

@@ -50,13 +50,24 @@ def average_views(views: int | None, posts: int | None) -> int | None:
     return (2 * views + posts) // (2 * posts)
 
 
+def engagement_tenths(interactions: int | None, views: int | None) -> int | None:
+    """``interactions / views * 100`` rounded half up to one decimal place, as an
+    integer in tenths; ``None`` with no inputs or no views."""
+    if interactions is None or views is None or views <= 0:
+        return None
+    return (2000 * interactions + views) // (2 * views)
+
+
+def percent_text(tenths: int) -> str:
+    """Tenths of a percent as text, such as ``3.1%``."""
+    return f"{tenths // 10}.{tenths % 10}%"
+
+
 def engagement_percent(interactions: int | None, views: int | None) -> str | None:
     """``interactions / views * 100`` rounded half up to one decimal, as text
     such as ``3.1%``; ``None`` with no inputs or no views."""
-    if interactions is None or views is None or views <= 0:
-        return None
-    tenths = (2000 * interactions + views) // (2 * views)
-    return f"{tenths // 10}.{tenths % 10}%"
+    tenths = engagement_tenths(interactions, views)
+    return None if tenths is None else percent_text(tenths)
 
 
 FORMULAS = [

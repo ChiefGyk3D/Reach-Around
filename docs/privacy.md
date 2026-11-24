@@ -27,8 +27,7 @@ filled:
   `AGGREGATE_KEEP_DAYS`, `monthly_totals_months` is `MONTHLY_KEEP_MONTHS` (25,
   `MONTHS_KEPT` in `worker/src/clickfunnel.ts`; a test reads the Worker source).
 - `geo_level` is `analytics.geo_level` when the config has that field, else the
-  Worker's default (`city` today; PR #793 changes the Worker default to region, and
-  this code reads the config first so it follows once that lands).
+  Worker's default (`region`, set by PR #793; a test reads the Worker source).
 - `alert_providers` is the list of configured `alerts.channels`, names only. The
   one sentence that uses it is dropped when alerts are off.
 - `dpa_note` and `turnstile_storage_note` are optional text, empty by default.
@@ -230,6 +229,15 @@ timing is not equalized. A header value counts as the signal when any
 comma-separated token, trimmed of spaces and tabs only, is `1`. The page is silent on the
 landing and hop counters because those tables are not collected yet; the
 sentence about them returns when they are switched on.
+
+Location follows `analytics.geo_level` (default `region`, the Worker's default
+`GEO_LEVEL`). A stored view record holds the country and at most the region; it never
+holds a city. At `city` the Worker also adds the view to a daily city total
+(`view_city_daily`, no page, source, device kind or time of day with it). The daily
+rollup combines a city with fewer than five views (or `MIN_CELL`, if larger) into its
+region before anything is exported or reported, and the city total is deleted on
+the same schedule as the view records. The page states which of the three applies.
+TODO-copy: the visitor-facing location sentences are authored separately.
 
 Page view records follow the same rule of stating the ceiling. The public page
 says view records are normally deleted after the configured number of days

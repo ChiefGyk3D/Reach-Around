@@ -285,7 +285,7 @@ def test_the_pipeline_makes_no_socket_call(
 
 
 def test_policy_names_every_field_for_the_pdf() -> None:
-    fields = set(KitConfig.model_fields) | {"unified_total"}
+    fields = set(KitConfig.model_fields) | {"unified_total", "measures"}
     in_pdf = {n for n, v in DISPLAY_POLICY.items() if v in ("public", "gated")}
     private = {n for n, v in DISPLAY_POLICY.items() if v == "private"}
     assert fields == set(DISPLAY_POLICY)

@@ -181,6 +181,87 @@ kit:
       avg_other_platforms: 0.5  # 0 to 100, typed by you
 ```
 
+### Platform cards and the measure registry
+
+Every number the kit prints is a **measure**: one value, one unit, one date and one
+trust label (kit v2, #628). The headline numbers (`metrics`), the analytics tiles
+(`analytics`) and the engagement inputs (`engagement`) keep working exactly as
+before; the build compiles them into measures once, and the pages read the
+measures only. A config that built before builds the same pages.
+
+A measure is never visible to a wider audience than the field it came from: the
+registry can only narrow, so an engagement figure stays on the gated page and in
+the owner PDF whatever a card asks for.
+
+**The registry.** A config picks keys; it does not rewrite the definition of a
+known one. Each key has a unit, a definition, and a default audience.
+
+| Key | Unit | Definition | Shown to |
+| --- | --- | --- | --- |
+| `followers` | follows | The number of accounts that follow the platform account, as the platform reports it. | everyone |
+| `members` | follows | The number of members of a chat room or server, as the platform reports it. A member is not a follower, so it never enters the audience range. | everyone |
+| `followers_change_30d` | percent | The change in followers over the last 30 days, in percent, as the owner typed it from the platform's own analytics. It can be negative. | everyone |
+| `analytics_stat` | count | A count the owner typed from a platform's analytics, named by its own label; the label says what is counted. | everyone |
+| `avg_views_per_item` | views | Views divided by posts in the period, worked out by the build from figures the owner typed. | after the gate |
+| `engagement_rate` | percent | Interactions divided by views in the period, as a percent, worked out by the build from figures the owner typed. | after the gate |
+
+A percent value is kept in tenths of a percent. The unit `count` is for the
+owner-named analytics tiles, whose unit the old config never recorded; the label
+says what is counted. A typed 30-day change that rounds to zero prints `+0.0%`.
+
+**Cards.** `kit.sections` lists the platforms that get a card, in the order you
+write them. Nothing about a card is typed except its presentation:
+
+```yaml
+kit:
+  sections:
+    - {platform: twitch, account: example_twitch}
+    - {platform: kick, account: example_kick}
+    - {platform: instagram, show: [followers, followers_change_30d], headline: followers}
+    - {platform: mastodon, hide_if_empty: true}
+```
+
+- `show: default` prints the default set of the platform's group, in this order.
+  Twitch and Kick are one group, so they always show the same fields in the same
+  order.
+- A key the platform has no number for is left out of the card. Nothing is zeroed,
+  guessed or filled in.
+- When one key has two numbers with the same label for one platform (the same
+  follower count typed in two places), the newest date wins, then the stronger
+  source, then the first listed.
+- The card leads with `headline`, else the platform's own count (followers or
+  members), else its first number. Every printed number carries its source label,
+  its date in UTC and the out-of-date mark; a computed number prints its formula.
+- A configured platform with no number to show prints "No numbers yet", the same
+  way for every platform. With `hide_if_empty: true` it prints nothing. "No number
+  to show" is judged for the page being built: a platform whose only numbers are
+  gated prints "No numbers yet" on the public page and its numbers on the gated page.
+- Cards print on the public page, the gated page and both PDFs (the PDF text check
+  expects each card's name, its line and its numbers).
+
+| Group | Platforms |
+| --- | --- |
+| live | twitch, kick |
+| video | youtube, tiktok, instagram, threads |
+| open | mastodon, bluesky, pixelfed |
+| community | discord, matrix |
+| other | every other platform |
+
+| Group | Default set (`show: default`) |
+| --- | --- |
+| live | `followers`, `followers_change_30d`, `analytics_stat`, `avg_views_per_item`, `engagement_rate` |
+| video | `followers`, `followers_change_30d`, `analytics_stat`, `avg_views_per_item`, `engagement_rate` |
+| open | `followers`, `followers_change_30d`, `analytics_stat`, `avg_views_per_item`, `engagement_rate` |
+| community | `members` |
+| other | `followers`, `followers_change_30d`, `analytics_stat`, `avg_views_per_item`, `engagement_rate` |
+
+**Policy record.** Every build writes a hash of the display policy beside the
+kit pages: `kit/policy.txt` in the public output and `kit-policy.txt` in the gated
+directory. `kit pdf` and `kit pdf --public` refuse a page whose record is missing
+or differs from the current policy ("rebuild the site first"), so a page built
+before a field moved to a narrower audience can never be printed. The hash holds
+no figure and no setting of yours.
+
 ### Structured demographics
 
 Each demographics entry is for one configured platform and one UTC `as_of`
