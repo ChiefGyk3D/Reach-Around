@@ -350,10 +350,17 @@ closed line (`purge`, `closed`, `binding`). There is no fallback to the analytic
    exactly `analytics`; one database under two names answers the same thing twice, so one side fails.
 3. The analytics database holds no lead rows (`leads` and `kit_events` empty or gone).
 
-The proof is shared by every path (the gate, the view route, the exported `purgeExpiredLeads`), is
-remembered for 60 seconds per isolate (10 seconds for a refusal), and costs at most 3 D1 queries when not
-remembered; the hourly job counts them against `QUERY_BUDGET`, which is why the lead-purge guarantee now
-starts at `QUERY_BUDGET` 12. The kit gate ships OFF at the cutover (`features.kit_gate`), so a
+The proof is shared by every path (the gate, the view route, the exported `purgeExpiredLeads`). An
+approval is NEVER remembered: each lead operation proves it again right before it reads or writes (the
+gate proves it before the vendor call, again before its first lead query and again before the unlock
+event write; the view route before its lead lookup; the purge before its batch). Only a refusal is
+remembered, for 10 seconds per isolate (fail closed, so a refused deployment does not pay the probes on
+every request; after the move, allow 10 seconds). Each proof costs at most 3 D1 queries (1 on `LEADS_DB`,
+1 batch and 1 row look on `DB`; 2 once the legacy tables are gone), all counted; the hourly job counts
+them against `QUERY_BUDGET`, which is why the lead-purge guarantee now starts at `QUERY_BUDGET` 12.
+The window that remains is the few milliseconds between the proof's last query and the operation's own
+query, which a check through a separate query cannot close: stop every older Worker that writes the
+analytics database before the move, and run the move before enabling the kit gate. The kit gate ships OFF at the cutover (`features.kit_gate`), so a
 deployment that has not created the second database loses nothing it was using.
 
 Create it, once (owner step, secrets in the secret manager (development environment before
@@ -392,7 +399,9 @@ Skip this only when you are sure no lead was ever collected (an empty `leads` in
 checked below). Otherwise run it once, after creating and migrating the leads database and before
 enabling the kit gate. It copies every lead and kit event to the leads database, reads them back, and
 only then deletes the analytics copies. Run it from the folder whose wrangler config names both
-databases, with a private directory outside any git work tree (mode 700) for its one temporary file:
+databases, with a private directory outside any git work tree (mode 700); the script makes a fresh
+directory inside it for its one temporary file (created exclusively, never through a symlink, removed
+at the end):
 
 ```bash
 mkdir -m 700 ~/lead-move-work
@@ -401,7 +410,9 @@ python3 -I scripts/move-legacy-leads.py --source <ANALYTICS DATABASE> --dest rea
 # 2. Copy and verify (still deletes nothing). Read the "not in dest" line: it must say 0 and 0.
 python3 -I scripts/move-legacy-leads.py --source <ANALYTICS DATABASE> --dest reach-around-leads --workdir ~/lead-move-work --copy
 # 3. Delete the analytics copies. This repeats the copy and the read-back first, in the same run,
-#    and deletes only if every source row is in the leads database exactly as it was.
+#    and deletes only the rows it just read back from the leads database, each by id and every
+#    column (a lead only once it has no event left), never the whole table. A row an older Worker
+#    added or changed after the copy survives; the script then exits 1 and says to run it again.
 python3 -I scripts/move-legacy-leads.py --source <ANALYTICS DATABASE> --dest reach-around-leads --workdir ~/lead-move-work --purge
 ```
 

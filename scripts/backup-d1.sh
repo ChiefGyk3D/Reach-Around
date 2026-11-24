@@ -156,12 +156,23 @@ import json, sys
 try:
     data = json.load(sys.stdin)
     rows = data[0]["results"] if isinstance(data, list) else data["results"]
-    print(",".join(str(r["role"]) for r in rows))
+    # A fixed class only: what the database returned is never printed.
+    found = [r.get("role") for r in rows]
+    if not found:
+        print("none")
+    elif len(found) > 1:
+        print("multiple")
+    elif found[0] == "analytics":
+        print("analytics")
+    elif found[0] == "leads":
+        print("leads")
+    else:
+        print("unexpected")
 except Exception:
     print("unreadable")
 ') || roles="unreadable"
 if [ "$roles" != "analytics" ]; then
-  refuse "the database did not identify itself as the analytics database (it answered: ${roles:-nothing}). Apply the analytics migrations (worker/migrations) first, and never point this script at the leads database."
+  refuse "the database did not identify itself as the analytics database (class: ${roles:-unreadable}). Apply the analytics migrations (worker/migrations) first, and never point this script at the leads database."
 fi
 
 umask 077

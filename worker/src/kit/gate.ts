@@ -353,6 +353,9 @@ async function gate(request: Request, env: GateEnv, deps: GateDeps): Promise<Res
     limits = loadKitLimits(env);
     // Leads and kit events are in their own database (issue #772). loadKitEnv has already refused a
     // missing LEADS_DB or one that is the analytics database; the counters stay in DB.
+    // Proved again here, right before the first lead read or write: the early proof ran before the vendor
+    // call, and an approval is never trusted for later (separation.ts).
+    await assertLeadsSeparated(env);
     const known = await getLeadByEmail(env.LEADS_DB, form.email);
     let lead: { id: string } | null = null;
     if (known !== null) {
@@ -384,6 +387,7 @@ async function gate(request: Request, env: GateEnv, deps: GateDeps): Promise<Res
 
   if (stored) {
     try {
+      await assertLeadsSeparated(env); // a fresh proof for this write too
       await recordKitEventCapped(env.LEADS_DB, leadId, "unlock", now, limits.maxKitEvents);
     } catch {
       // The unlock event is a convenience for the owner; a full or failing table never blocks the visitor.
@@ -466,6 +470,7 @@ async function view(request: Request, env: GateEnv, deps: GateDeps): Promise<Res
       floorMs = await getUnstoredSessionFloor(env.DB); // CONTROL:unstored-floor
     } else {
       // The lead must still exist (a deleted lead's cookie is dead).
+      await assertLeadsSeparated(env); // a fresh proof right before the lead read
       const lead = await getLead(env.LEADS_DB, claims.lid); // CONTROL:lead-exists
       if (lead === null) return back("expired");
       floorMs = lead.session_floor_ts;

@@ -33,7 +33,7 @@ async function addLegacyLead(): Promise<void> {
   await ANALYTICS.prepare("INSERT INTO leads (id, email, created_ts, last_seen_ts, source) VALUES (?, 'legacy@example.test', 1, 1, 'gate')")
     .bind(LEGACY_ID)
     .run();
-  resetSeparationCache();
+  // No cache reset here on purpose: an approval must never be served from memory.
 }
 async function clearLegacy(): Promise<void> {
   await ANALYTICS.batch([ANALYTICS.prepare("DELETE FROM kit_events"), ANALYTICS.prepare("DELETE FROM leads")]);
@@ -116,10 +116,108 @@ describe("the separation proof", () => {
     await expect(assertLeadsSeparated({ DB: ANALYTICS, LEADS_DB: LEADS })).resolves.toBeUndefined();
   });
 
-  it("remembers a verdict briefly, and a refusal is not served from a stale approval", async () => {
-    await assertLeadsSeparated({ DB: ANALYTICS, LEADS_DB: LEADS }, { nowMs: 1_000 });
-    await addLegacyLead(); // the reset inside forgets the approval: the next check sees the row
+  // Round 2, HIGH: an approval was remembered for 60 seconds, so a row inserted after it was not seen.
+  it("never serves an approval from memory: a lead row inserted right after one is seen at once", async () => {
+    await assertLeadsSeparated({ DB: ANALYTICS, LEADS_DB: LEADS });
+    await addLegacyLead(); // no reset: the same binding objects, a moment later
     expect(await rejects({ DB: ANALYTICS, LEADS_DB: LEADS })).toBeInstanceOf(LeadsSeparationError);
+  });
+
+  it("a binding retargeted after an approval is caught by the next proof, and the purge deletes nothing in analytics", async () => {
+    await ANALYTICS.prepare("INSERT INTO leads (id, email, created_ts, last_seen_ts, source) VALUES (?, 'old@example.test', 1, 1, 'gate')")
+      .bind("d".repeat(32))
+      .run();
+    // Approve while the mutable binding points at the leads database, then point it at analytics.
+    let target: D1Database = LEADS;
+    const mutable = new Proxy(LEADS, {
+      get(_t, key) {
+        const value = Reflect.get(target, key, target);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+    // Analytics holds a row, so the pair is refused whatever the target; clear it to get an approval first.
+    await ANALYTICS.prepare("DELETE FROM leads").run();
+    await assertLeadsSeparated({ DB: ANALYTICS, LEADS_DB: mutable });
+    await ANALYTICS.prepare("INSERT INTO leads (id, email, created_ts, last_seen_ts, source) VALUES (?, 'old@example.test', 1, 1, 'gate')")
+      .bind("d".repeat(32))
+      .run();
+    target = ANALYTICS;
+    await expect(purgeExpiredLeads({ DB: ANALYTICS, LEADS_DB: mutable }, Date.now() + 40 * DAY)).rejects.toBeInstanceOf(LeadsSeparationError);
+    expect((await ANALYTICS.prepare("SELECT COUNT(*) AS n FROM leads").first<{ n: number }>())!.n).toBe(1);
+  });
+
+  it("a refusal is remembered for a short time only, and forgotten by the reset", async () => {
+    await addLegacyLead();
+    expect(await rejects({ DB: ANALYTICS, LEADS_DB: LEADS })).toBeInstanceOf(LeadsSeparationError);
+    await ANALYTICS.prepare("DELETE FROM leads").run();
+    expect(await rejects({ DB: ANALYTICS, LEADS_DB: LEADS })).toBeInstanceOf(LeadsSeparationError); // still remembered
+    resetSeparationCache();
+    await expect(assertLeadsSeparated({ DB: ANALYTICS, LEADS_DB: LEADS })).resolves.toBeUndefined();
+  });
+
+  // Round 2, MEDIUM: the missing-table fallback made a fourth, unmetered query.
+  it("uses exactly the queries it counts: real calls equal the meter, within SEPARATION_QUERIES, in every path", async () => {
+    const calls = { n: 0 };
+    const counted = (db: D1Database): D1Database =>
+      new Proxy(db, {
+        get(t, key) {
+          if (key === "prepare") {
+            return (q: string) => {
+              const st = t.prepare(q);
+              return new Proxy(st, {
+                get(s, k) {
+                  if (k === "bind") return (...a: unknown[]) => s.bind(...a);
+                  if (k === "run" || k === "all" || k === "first" || k === "raw") {
+                    return (...a: unknown[]) => {
+                      calls.n++;
+                      return (s as never as Record<string, (...b: unknown[]) => unknown>)[k as string]!(...a);
+                    };
+                  }
+                  const v = Reflect.get(s, k, s);
+                  return typeof v === "function" ? v.bind(s) : v;
+                },
+              });
+            };
+          }
+          if (key === "batch") {
+            return (s: D1PreparedStatement[]) => {
+              calls.n++;
+              return t.batch(s);
+            };
+          }
+          const v = Reflect.get(t, key, t);
+          return typeof v === "function" ? v.bind(t) : v;
+        },
+      });
+    // Path 1: both lead tables exist (the real analytics database).
+    const m1 = new QueryMeter(10);
+    await assertLeadsSeparated({ DB: counted(ANALYTICS), LEADS_DB: counted(LEADS) }, { meter: m1 });
+    expect(calls.n).toBe(m1.used);
+    expect(calls.n).toBeLessThanOrEqual(SEPARATION_QUERIES);
+    // Path 2: the lead tables are gone from analytics (the later contract migration): a copy with them dropped.
+    calls.n = 0;
+    const gone = {
+      prepare: (q: string) => {
+        calls.n++;
+        return {
+          all: async () => ({ results: /db_identity/.test(q) ? [{ role: "analytics" }] : [] }),
+          first: async () => ({ n: 0 }),
+          bind() { return this; },
+        };
+      },
+      batch: async () => {
+        calls.n++;
+        return [{ results: [{ role: "analytics" }] }, { results: [] }];
+      },
+    };
+    resetSeparationCache();
+    const m2 = new QueryMeter(10);
+    await assertLeadsSeparated({ DB: gone, LEADS_DB: counted(LEADS) }, { meter: m2 });
+    expect(m2.used).toBeLessThanOrEqual(SEPARATION_QUERIES);
+    // The stub counts prepare() once per statement of the batch; count the batch call itself, not its statements.
+    const batchCalls = 1;
+    const leadsCalls = 1;
+    expect(m2.used).toBe(batchCalls + leadsCalls);
   });
 });
 
@@ -134,20 +232,18 @@ describe("lead rows left in the analytics database", () => {
 
   it("are not assumed gone: a database with no lead tables passes only when sqlite_master proves it", async () => {
     // Stand-in for analytics after the later contract migration: no lead tables, identity says analytics.
-    const gone = {
-      prepare: (q: string) => ({
-        all: async () => ({ results: /db_identity/.test(q) ? [{ role: "analytics" }] : [] }),
-        first: async () => ({ n: 0 }),
-        bind() { return this; },
-      }),
-      batch: async () => {
-        throw new Error("no such table: leads");
-      },
-    };
-    await expect(assertLeadsSeparated({ DB: gone, LEADS_DB: LEADS })).resolves.toBeUndefined();
+    const stub = (tables: string[], rows: number) => ({
+      prepare: () => ({ all: async () => ({ results: [] }), first: async () => ({ n: rows }), bind() { return this; } }),
+      batch: async () => [{ results: [{ role: "analytics" }] }, { results: tables.map((name) => ({ name })) }],
+    });
+    await expect(assertLeadsSeparated({ DB: stub([], 0), LEADS_DB: LEADS })).resolves.toBeUndefined();
     resetSeparationCache();
-    const lying = { ...gone, prepare: (q: string) => ({ ...gone.prepare(q), first: async () => ({ n: 1 }) }) };
-    expect(await rejects({ DB: lying, LEADS_DB: LEADS })).toBeInstanceOf(LeadsSeparationError);
+    // A table is there and holds a row: refused. A table is there and is empty: passes.
+    expect(await rejects({ DB: stub(["leads"], 1), LEADS_DB: LEADS })).toBeInstanceOf(LeadsSeparationError);
+    resetSeparationCache();
+    expect(await rejects({ DB: stub(["kit_events", "leads"], 1), LEADS_DB: LEADS })).toBeInstanceOf(LeadsSeparationError);
+    resetSeparationCache();
+    await expect(assertLeadsSeparated({ DB: stub(["kit_events", "leads"], 0), LEADS_DB: LEADS })).resolves.toBeUndefined();
   });
 
   it("close the gate: nothing is stored and the vendor is never called", async () => {

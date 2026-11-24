@@ -23,13 +23,20 @@ INSERT OR IGNORE, so a DEST row is never overwritten, then read DEST back and re
 every SOURCE row to be there with every column equal. A lead that DEST already holds
 under another id (same address) does not match, so the check fails and nothing is
 deleted: decide that one by hand. 4 (--purge, and only after step 3 passed in this
-same run) delete kit_events then leads from SOURCE and require both to be empty.
+same run) delete from SOURCE exactly the rows that were read back from DEST in this
+run: each kit event by id and every column, then each lead by id and every column, and
+only a lead that has no event left. Never "delete everything": a row inserted or
+changed in SOURCE after the copy (an older Worker is still writing there) does not
+match, survives, and is counted; the script then exits 1 and says to run it again.
+Stop every older Worker that writes the analytics database first.
 
 No data is lost: the delete is reachable only after the read-back check, in the same
 run, and the script stops at the first error. Re-running after a failure is safe.
 
-Privacy. Rows are held in memory and in one private file in WORKDIR (an existing
-directory you own, mode 700, outside any git work tree), removed when the script ends.
+Privacy. Rows are held in memory and in one file inside a fresh private directory made
+under WORKDIR (an existing directory you own, mode 700, outside any git work tree);
+the file is created exclusively, never through a symlink, and removed with its
+directory when the script ends.
 It prints counts and fixed messages only, never a row or wrangler's own output. Every
 wrangler call is bounded by MOVE_TIMEOUT seconds (default 120, 1 to 900). WRANGLER
 names another command (a test stub); the default is `npx wrangler`. Run it from the
@@ -46,9 +53,11 @@ import json
 import os
 import re
 import shlex
+import shutil
 import stat
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
@@ -163,6 +172,39 @@ def insert_sql(leads: list[dict], events: list[dict]) -> str:
     return "\n".join(out) + "\n"
 
 
+def where(columns: tuple[str, ...], row: dict) -> str:
+    """Match a row by id and every column (IS, so a NULL column matches NULL)."""
+    return " AND ".join(f"{c} IS {literal(row.get(c))}" for c in columns)
+
+
+def delete_sql(leads: list[dict], events: list[dict]) -> str:
+    """Delete exactly the verified rows; a lead goes only with no event left."""
+    out = [
+        "DELETE FROM kit_events WHERE " + where(EVENT_COLUMNS, r) + ";" for r in events
+    ]
+    out += [
+        "DELETE FROM leads WHERE "
+        + where(LEAD_COLUMNS, r)
+        + " AND NOT EXISTS (SELECT 1 FROM kit_events e WHERE e.lead_id = leads.id);"
+        for r in leads
+    ]
+    return "\n".join(out) + "\n"
+
+
+def run_file(w: Wrangler, db: str, work: Path, sql: str) -> None:
+    """Run `sql` through a file made exclusively in a fresh private directory."""
+    scratch = Path(tempfile.mkdtemp(prefix="move-", dir=work))  # mode 0700, new
+    path = scratch / "statements.sql"
+    try:
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
+        fd = os.open(path, flags, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(sql)
+        w.execute(db, file=path)
+    finally:
+        shutil.rmtree(scratch, ignore_errors=True)
+
+
 def missing_from(
     dest_rows: list[dict], source_rows: list[dict], columns: tuple[str, ...]
 ) -> int:
@@ -218,14 +260,7 @@ def run(args: argparse.Namespace) -> int:
         print("run again with --copy, or --purge to also delete the analytics rows.")
         return 0
 
-    path = work / "move-legacy-leads.sql"
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            fh.write(insert_sql(leads, events))
-        w.execute(args.dest, file=path)
-    finally:
-        path.unlink(missing_ok=True)
+    run_file(w, args.dest, work, insert_sql(leads, events))
 
     dest_leads, dest_events = read_all(w, args.dest)
     short_leads = missing_from(dest_leads, leads, LEAD_COLUMNS)
@@ -241,12 +276,15 @@ def run(args: argparse.Namespace) -> int:
         print("copied and verified. Nothing was deleted; --purge deletes the copies.")
         return 0
 
-    w.execute(args.source, command="DELETE FROM kit_events")
-    w.execute(args.source, command="DELETE FROM leads")
+    # Only the rows verified above, by id and every column: never the whole table.
+    run_file(w, args.source, work, delete_sql(leads, events))
     left_leads, left_events = read_all(w, args.source)
     print(f"source now holds {len(left_leads)} leads and {len(left_events)} kit events")
     if left_leads or left_events:
-        raise Failed("rows are still in the analytics database after the delete")
+        raise Failed(
+            "rows remain in the analytics database (added or changed after the "
+            "copy, so never verified); stop older Workers and run again"
+        )
     print("done: the lead rows live only in the leads database now.")
     return 0
 

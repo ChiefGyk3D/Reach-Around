@@ -34,6 +34,25 @@ if os.environ.get("STUB_FAIL_FILE") and any(a.startswith("--file=") for a in arg
     sys.exit(1)
 if any(a.startswith("--file=") for a in args):
     sql = open([a for a in args if a.startswith("--file=")][0].split("=", 1)[1]).read()
+    inject = os.environ.get("STUB_INJECT")
+    if inject and name == "analytics-db" and "DELETE FROM" in sql:
+        # An older Worker writes analytics between the copy and the delete.
+        db.execute(
+            "INSERT INTO leads (id, email, created_ts, last_seen_ts, source) "
+            "VALUES ('" + "f" * 32 + "', 'late@example.test', 1, 1, 'gate')"
+        )
+        db.execute(
+            "INSERT INTO kit_events (ts, lead_id, kind) VALUES (7200000, '"
+            + format(1, "032x")
+            + "', 'view')"
+        )
+        if inject == "edit":
+            db.execute(
+                "UPDATE leads SET last_seen_ts = 99999 WHERE id = '"
+                + format(2, "032x")
+                + "'"
+            )
+        db.commit()
     db.executescript(sql)
     db.commit()
     rows = []
@@ -199,6 +218,74 @@ def test_an_address_dest_already_holds_under_another_id_stops_before_any_delete(
     assert "nothing was deleted" in r.stderr
     assert count(env["STUB_SRC"], "leads") == 3
     assert count(env["STUB_SRC"], "kit_events") == 3
+
+
+@pytest.mark.parametrize("inject", ["insert", "edit"])
+def test_rows_added_or_changed_after_the_copy_survive_and_are_reported(
+    tmp_path: Path, inject: str
+) -> None:
+    # Round 2: an unconditional delete removed rows that were never copied.
+    env = make(tmp_path)
+    env["STUB_INJECT"] = inject
+    r = run(env, workdir(tmp_path), "--purge")
+    assert r.returncode == 1
+    assert "stop older Workers and run again" in r.stderr
+    late = "f" * 32
+    with closing(sqlite3.connect(env["STUB_SRC"])) as db:
+        ids = {row[0] for row in db.execute("SELECT id FROM leads")}
+        events = db.execute("SELECT lead_id, kind FROM kit_events").fetchall()
+    # The lead added after the copy is still there, and so is its (never copied) event
+    # on lead 1, which keeps lead 1 too.
+    assert late in ids
+    one, two, three = (format(n, "032x") for n in (1, 2, 3))
+    assert (one, "view") in events
+    assert one in ids
+    if inject == "edit":
+        assert two in ids  # changed after the copy: not the verified row
+    else:
+        assert two not in ids and three not in ids  # verified and moved
+    # Every verified row is in the leads database exactly as it was.
+    assert count(env["STUB_DEST"], "leads") == 3
+    assert "example.test" not in r.stdout + r.stderr
+
+
+def test_a_second_run_moves_what_the_first_left(tmp_path: Path) -> None:
+    env = make(tmp_path)
+    env["STUB_INJECT"] = "insert"
+    assert run(env, workdir(tmp_path), "--purge").returncode == 1
+    del env["STUB_INJECT"]
+    again = run(env, tmp_path / "work", "--purge")
+    assert again.returncode == 0, again.stderr
+    assert count(env["STUB_SRC"], "leads") == 0
+    assert count(env["STUB_DEST"], "leads") == 4
+
+
+def test_the_temporary_file_is_never_a_fixed_name_a_symlink_can_hijack(
+    tmp_path: Path,
+) -> None:
+    env = make(tmp_path)
+    work = workdir(tmp_path)
+    victim = tmp_path / "victim.txt"
+    victim.write_text("keep me")
+    (work / "move-legacy-leads.sql").symlink_to(victim)
+    (work / "statements.sql").symlink_to(victim)
+    r = run(env, work, "--purge")
+    assert r.returncode == 0, r.stderr
+    assert victim.read_text() == "keep me"
+    assert sorted(p.name for p in work.iterdir()) == [
+        "move-legacy-leads.sql",
+        "statements.sql",
+    ]  # only the planted links remain: the script's own directory is gone
+
+
+def test_the_statement_file_is_private_and_removed_when_a_step_fails(
+    tmp_path: Path,
+) -> None:
+    env = make(tmp_path)
+    env["STUB_FAIL_FILE"] = "1"
+    work = workdir(tmp_path)
+    assert run(env, work, "--purge").returncode == 1
+    assert list(work.iterdir()) == []
 
 
 def test_a_failed_copy_deletes_nothing(tmp_path: Path) -> None:

@@ -197,6 +197,35 @@ def test_a_leads_database_is_refused_by_what_it_is_not_by_what_it_is_called(
     assert list(d.iterdir()) == []
 
 
+@pytest.mark.parametrize(
+    ("rows", "klass"),
+    [
+        (["SECRET-example.test"], "unexpected"),
+        (["line one\nSECRET-two"], "unexpected"),
+        (["analytics", "SECRET-other"], "multiple"),
+        ([], "none"),
+    ],
+)
+def test_the_refusal_never_echoes_what_the_database_returned(
+    tmp_path: Path, rows: list[str], klass: str
+) -> None:
+    # Round 2: the role text came from the database and was printed back.
+    env = make(tmp_path)
+    with closing(sqlite3.connect(env["STUB_DB"])) as db:
+        db.execute("DROP TABLE db_identity")
+        db.execute("CREATE TABLE db_identity (role TEXT)")
+        db.executemany(
+            "INSERT INTO db_identity (role) VALUES (?)", [(x,) for x in rows]
+        )
+        db.commit()
+    d = dest(tmp_path)
+    r = run(env, "reach-db", str(d), "--apply")
+    assert r.returncode == 3, r.stdout
+    assert "SECRET" not in r.stderr + r.stdout
+    assert f"class: {klass}" in r.stderr
+    assert list(d.iterdir()) == []
+
+
 def test_a_database_that_cannot_say_what_it_is_is_refused(tmp_path: Path) -> None:
     env = make(tmp_path)
     set_identity(env, None)
