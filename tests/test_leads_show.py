@@ -183,13 +183,19 @@ def test_show_unreadable_address_file_does_not_leak_path_or_content(
 
 
 def test_show_email_on_argv_is_refused_without_echo(
-    capsys: pytest.CaptureFixture[str], export: Path
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    export: Path,
 ) -> None:
-    code = main(["leads", "show", "--input", str(export), "--email", ADDR])
+    # A valid address on argv must not be used even when stdin also has one.
+    monkeypatch.setattr("sys.stdin", io.StringIO(ADDR + "\n"))
+    code = main(
+        ["leads", "show", "--input", str(export), "--email-file", "-", "--email", ADDR]
+    )
     captured = capsys.readouterr()
     assert code == 2
-    assert ADDR not in captured.out + captured.err
-    assert "--email-file" in captured.err
+    assert captured.out == ""
+    assert ADDR not in captured.err
 
 
 def test_show_abbreviated_flag_reads_the_value_as_a_path_not_an_address(
