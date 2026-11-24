@@ -111,6 +111,7 @@ jobs:
           TAG: ${{ github.ref_name }}
           REPO_URL: ${{ github.server_url }}/${{ github.repository }}
           IMAGE: ${{ needs.release.outputs.image }}
+          REPOSITORY: ${{ github.repository }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           ACTOR: ${{ github.actor }}
         run: bash .github/scripts/promote-release-tags.sh

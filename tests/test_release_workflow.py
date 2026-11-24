@@ -63,9 +63,46 @@ while IFS=$'\t' read -r sha ref; do
 done < "$STUB_REMOTE"
 """
 
+# A stand-in `docker` with a tiny registry: one file per tag holds its digest.
+# `imagetools create --tag R:T ... SRC` writes the digest of SRC (the part after
+# @) to each tag; STUB_FAIL_TAG names a tag whose write fails (nothing written);
+# STUB_MOVE_REMOTE_ON_CREATE appends a newer release tag to the git fixture on
+# the first write, as if someone pushed it mid-promotion. `inspect R:T` prints the
+# tag's digest or fails when it has none.
 DOCKER_STUB = r"""#!/usr/bin/env bash
 printf '%s\n' "$*" >> "$STUB_DOCKER_LOG"
-if [ "$1" = login ]; then cat > "$STUB_DOCKER_LOGIN_STDIN"; fi
+state="$STUB_DOCKER_STATE"
+mkdir -p "$state"
+if [ "$1" = login ]; then cat > "$STUB_DOCKER_LOGIN_STDIN"; exit 0; fi
+[ "$1" = buildx ] && [ "$2" = imagetools ] || exit 99
+sub="$3"
+shift 3
+if [ "$sub" = inspect ]; then
+  ref="$1"
+  f="$state/${ref##*:}"
+  [ -f "$f" ] || exit 1
+  cat "$f"
+  exit 0
+fi
+[ "$sub" = create ] || exit 98
+tags=(); src=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --tag) tags+=("${2##*:}"); shift 2 ;;
+    *) src="$1"; shift ;;
+  esac
+done
+for t in "${tags[@]}"; do
+  if [ "${STUB_FAIL_TAG:-}" = "$t" ]; then exit 1; fi
+done
+for t in "${tags[@]}"; do
+  [ "${STUB_NOOP_TAG:-}" = "$t" ] && continue
+  printf '%s' "${src##*@}" > "$state/$t"
+done
+if [ -n "${STUB_MOVE_REMOTE_ON_CREATE:-}" ] && [ ! -e "$state/.moved" ]; then
+  : > "$state/.moved"
+  printf '%s\trefs/tags/v9.9.9\n' "$STUB_MOVE_REMOTE_ON_CREATE" >> "$STUB_REMOTE"
+fi
 """
 
 
@@ -103,6 +140,8 @@ def _env(
         "STUB_DOCKER_LOG": str(tmp_path / "docker.log"),
         "STUB_DOCKER_LOGIN_STDIN": str(tmp_path / "login.stdin"),
         "IMAGE": IMAGE,
+        "REPOSITORY": "Example/App",
+        "STUB_DOCKER_STATE": str(tmp_path / "registry"),
         "GH_TOKEN": "synthetic-token-value",
         "ACTOR": "someone",
     }
@@ -293,10 +332,95 @@ def test_promotion_retags_the_digest_after_a_passing_check(tmp_path: Path) -> No
     assert any(c.startswith("login ghcr.io") and "--password-stdin" in c for c in calls)
     assert "synthetic-token-value" not in "\n".join(calls)
     create = [c for c in calls if c.startswith("buildx imagetools create")]
+    # One write per tag, MAJOR.MINOR first and latest last.
     assert create == [
-        "buildx imagetools create --tag ghcr.io/example/app:latest "
-        f"--tag ghcr.io/example/app:1.2 {IMAGE}"
+        f"buildx imagetools create --tag ghcr.io/example/app:1.2 {IMAGE}",
+        f"buildx imagetools create --tag ghcr.io/example/app:latest {IMAGE}",
     ]
+    reg = tmp_path / "registry"
+    assert (reg / "latest").read_text() == DIGEST
+    assert (reg / "1.2").read_text() == DIGEST
+
+
+def _seed(tmp_path: Path, **tags: str) -> None:
+    reg = tmp_path / "registry"
+    reg.mkdir(exist_ok=True)
+    for name, digest in tags.items():
+        (reg / name.replace("_", ".")).write_text(digest)
+
+
+OLD = "sha256:" + "b" * 64
+
+
+def _promote_with(
+    tmp_path: Path, extra: dict[str, str], tag: str = "v1.2.3"
+) -> subprocess.CompletedProcess[str]:
+    env = _env(tmp_path, tag, [tag])
+    env.update(extra)
+    return subprocess.run(  # noqa: S603 - fixed argv, stub git and docker
+        ["/bin/bash", str(PROMOTE)],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+def test_a_failed_second_write_rolls_the_first_tag_back(tmp_path: Path) -> None:
+    _seed(tmp_path, latest=OLD, **{"1_2": OLD})
+    done = _promote_with(tmp_path, {"STUB_FAIL_TAG": "latest"})
+    assert done.returncode == 1, done.stdout + done.stderr
+    reg = tmp_path / "registry"
+    assert (reg / "1.2").read_text() == OLD
+    assert (reg / "latest").read_text() == OLD
+    assert "rolled ghcr.io/example/app:1.2 back" in done.stderr
+
+
+def test_a_partial_promotion_with_no_previous_digest_is_named_for_cleanup(
+    tmp_path: Path,
+) -> None:
+    done = _promote_with(tmp_path, {"STUB_FAIL_TAG": "latest"})
+    assert done.returncode == 1
+    assert "had no previous digest" in done.stderr
+    assert "ghcr.io/example/app:1.2" in done.stderr
+
+
+def test_a_tag_moved_during_the_writes_is_detected_and_undone(tmp_path: Path) -> None:
+    _seed(tmp_path, latest=OLD, **{"1_2": OLD})
+    done = _promote_with(tmp_path, {"STUB_MOVE_REMOTE_ON_CREATE": OTHER_SHA})
+    assert done.returncode == 1, done.stdout + done.stderr
+    assert "changed while the moving tags were written" in done.stderr
+    reg = tmp_path / "registry"
+    assert (reg / "1.2").read_text() == OLD
+    assert (reg / "latest").read_text() == OLD
+
+
+def test_a_tag_that_does_not_read_back_is_reported_and_undone(tmp_path: Path) -> None:
+    # latest stays on OLD because its write is a no-op in this stub mode.
+    _seed(tmp_path, latest=OLD, **{"1_2": OLD})
+    done = _promote_with(tmp_path, {"STUB_NOOP_TAG": "latest"})
+    assert done.returncode == 1, done.stdout + done.stderr
+    assert "reads back as" in done.stderr
+    assert (tmp_path / "registry" / "1.2").read_text() == OLD
+
+
+def test_an_image_from_another_ghcr_package_is_refused(tmp_path: Path) -> None:
+    other = f"ghcr.io/example/other@{DIGEST}"
+    done = _promote_with(tmp_path, {"IMAGE": other})
+    assert done.returncode == 1
+    assert "not this repository's package" in done.stderr
+    assert _docker_calls(tmp_path) == []
+
+
+def test_an_image_from_another_owner_is_refused(tmp_path: Path) -> None:
+    done = _promote_with(tmp_path, {"IMAGE": f"ghcr.io/someone/app@{DIGEST}"})
+    assert done.returncode == 1
+    assert _docker_calls(tmp_path) == []
+
+
+def test_the_expected_package_comes_from_the_workflow_context() -> None:
+    step = load()["jobs"]["promote"]["steps"][-1]
+    assert step["env"]["REPOSITORY"] == "${{ github.repository }}"
 
 
 def test_promotion_is_refused_when_a_newer_tag_appeared_after_the_first_check(
