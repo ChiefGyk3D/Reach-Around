@@ -19,6 +19,15 @@ rendered and the write is careful:
   name is never replaced;
 * the bytes go to a new owner-only temporary file in the same directory and are
   renamed into place, so a failure leaves no partial target.
+
+What this cannot do: every check of the path is a sample taken at one moment. A
+process of the same user that renames the held directory into a published tree
+and back between two samples (or after the last one) is not seen, because the
+directory is where it should be at every sample. No number of extra samples
+closes that; only a folder that no other process can rename closes it. So the
+output must go to a folder only the owner can write, whose parent directory
+no one else can write either; ``write_private`` warns (``OutputWarning``) when
+the parent can be written by the group or by others.
 """
 
 from __future__ import annotations
@@ -29,6 +38,7 @@ import os
 import re
 import secrets
 import stat
+import warnings
 from collections.abc import Iterable, Sequence
 from pathlib import Path
 
@@ -37,6 +47,10 @@ NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,99}\.pdf")
 
 class OutputError(ValueError):
     """The PDF may not be written there."""
+
+
+class OutputWarning(UserWarning):
+    """The file was written, but where it went is weaker than it should be."""
 
 
 JSON_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,99}\.json")
@@ -222,6 +236,23 @@ def _has_entry(fd: int, name: str) -> bool:
     return True
 
 
+def _warn_if_parent_is_open(dir_fd: int) -> None:
+    """Warn when the group or others can write to the parent of the held
+    directory: they could rename the folder (see the module doc)."""
+    try:
+        parent = os.stat("..", dir_fd=dir_fd)
+    except OSError:
+        return
+    if parent.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
+        warnings.warn(
+            "the parent of the output directory can be written by the group or by "
+            "others, so the folder could be moved; keep private output in a "
+            "folder whose parent only you can write to",
+            OutputWarning,
+            stacklevel=3,
+        )
+
+
 def verify_unchanged(
     directory: Path, dir_fd: int, forbidden: Iterable[Path] = ()
 ) -> None:
@@ -267,6 +298,7 @@ def write_private(
     check_name(name, pattern)
     directory = Path(os.path.abspath(out_dir))
     dir_fd = open_private_dir(directory, forbidden, create=False)
+    _warn_if_parent_is_open(dir_fd)
     temp = f".{name}.{secrets.token_hex(8)}.tmp"
     try:
         try:
@@ -298,10 +330,11 @@ def write_private(
             os.fsync(dir_fd)
             try:
                 # The target is installed through the held descriptor; what
-                # follows only confirms where that directory now is. Two checks
-                # in a row, so a move that lands between the first and the last
-                # is seen by the last. A move after the last one cannot be seen
-                # by any path check (see docs/kit.md).
+                # follows only samples where that directory is. A sample sees a
+                # directory that is elsewhere at that moment; it cannot see one
+                # that was moved into a published tree and back between two
+                # samples, or moved after the last. More samples do not close
+                # that (see the module doc and docs/kit.md).
                 for _ in range(INSTALLED_CHECKS):
                     verify_unchanged(directory, dir_fd, forbidden)
             except OutputError:

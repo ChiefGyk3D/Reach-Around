@@ -782,12 +782,102 @@ def test_a_short_private_number_is_found_only_with_a_unit(
         check_no_private_values(a_note(text), inventory)
 
 
-def test_a_short_private_number_as_a_bare_output_value_is_not_a_hit(
-    monkeypatch: pytest.MonkeyPatch,
+def row(**fields: Any) -> dict[str, Any]:
+    return {"measures": [{"label": "Views", **fields}]}
+
+
+@pytest.mark.parametrize(
+    ("fields", "found"),
+    [
+        ({"value": 40, "unit": "views"}, True),
+        ({"value": 40, "unit": "follows"}, True),
+        ({"value": 40, "unit": "count"}, True),
+        ({"value": 40, "unit": "hours"}, True),
+        # a percent is stored in tenths: 400 is 40.0 percent
+        ({"value": 400, "unit": "percent"}, True),
+        ({"value": 40, "unit": "parsecs"}, False),
+        ({"value": 40}, False),
+        ({"value": 41, "unit": "views"}, False),
+        ({"value": 4000, "unit": "views"}, False),
+        ({"value": None, "unit": "views"}, False),
+        ({"value": True, "unit": "views"}, False),
+        ({"unit": "views", "note": "40 platforms"}, False),
+    ],
+)
+def test_a_short_private_number_is_found_as_a_row_value_with_a_unit(
+    fields: dict[str, Any], found: bool, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     kit = short_kit(40)
     make_private(monkeypatch, "analytics")
-    check_no_private_values({"measures": [{"value": 40}]}, private_scalars(kit, None))
+    inventory = private_scalars(kit, None)
+    if found:
+        with pytest.raises(MeasuresFileError, match="kit.analytics"):
+            check_no_private_values(row(**fields), inventory)
+    else:
+        check_no_private_values(row(**fields), inventory)
+
+
+def test_the_unit_words_cover_every_registry_unit() -> None:
+    from reach_around.config.measures import UNITS
+    from reach_around.kit.measures_file import UNIT_WORDS
+
+    assert {u for u in UNITS if u != "count"} - {"percent"} <= set(UNIT_WORDS)
+    assert "percent" in UNIT_WORDS
+
+
+@pytest.mark.parametrize(
+    ("private", "text", "found"),
+    [
+        (1234, "Reached 1,234 followers", True),
+        (1234, "Reached 1 234 followers", True),
+        (1234, "Reached 1 234 views", True),
+        (1234, "Reached 1'234 views", True),
+        (1234, "Reached 1234 followers", True),
+        (234, "Reached 1,234 followers", False),
+        (234, "Reached 1 234 followers", False),
+        (3, "Reached 3 follows", True),
+        (3, "Reached 3 follow", True),
+        (-3, "Revenue was $-3", True),
+        (-3, "Revenue was $ -3", True),
+        (3, "Revenue was €−3", True),
+        (3, "Revenue was USD -3", True),
+        (3, "Revenue was -3", False),
+        (3, "Revenue was 13", False),
+    ],
+)
+def test_a_short_private_number_is_read_like_any_other_number(
+    private: int, text: str, found: bool
+) -> None:
+    inventory: list[tuple[str, Any]] = [("kit.private.value", private)]
+    if found:
+        with pytest.raises(MeasuresFileError, match="kit.private"):
+            check_no_private_values(a_note(text), inventory)
+    else:
+        check_no_private_values(a_note(text), inventory)
+
+
+@pytest.mark.parametrize("mark", ["'", "‘", "’", "‛", "ʻ", "ʼ", "′", "`"])
+def test_every_apostrophe_like_mark_separates_thousands(mark: str) -> None:
+    text = f"Reached 1{mark}234{mark}567 views"
+    with pytest.raises(MeasuresFileError, match="kit.private"):
+        check_no_private_values(a_note(text), [("kit.private.value", 1234567)])
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "The two results were 123, 456 respectively",
+        "The two results were 123,\n456 respectively",
+        "The two results were 123\n\n456",
+        "The two results were 123  456",
+        "ids 123 and 456",
+    ],
+)
+def test_neighboring_numbers_are_not_joined(text: str) -> None:
+    check_no_private_values(a_note(text), [("kit.private.value", 123456)])
+    # a number with one separator is still read as one
+    with pytest.raises(MeasuresFileError):
+        check_no_private_values(a_note("it was 123 456"), [("k.p", 123456)])
 
 
 WRITTEN_1234567 = {

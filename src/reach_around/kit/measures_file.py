@@ -289,55 +289,100 @@ def _fold_text(text: str) -> str:
 # punctuation is removed from the text.
 _SEPARATORS = ",   "
 # Any Unicode space, a comma or an apostrophe also separates thousands.
-_SEPARATOR = rf"[{_SEPARATORS}'’ʼ\s]"
+_SEPARATOR = rf"[{_SEPARATORS}‘‛ʻ′`´'’ʼ\s]"
 _GROUPED = re.compile(
     rf"(?<![0-9.,])[0-9]{{1,3}}(?:{_SEPARATOR}[0-9]{{3}})+(?:\.[0-9]+)?(?![0-9])"
 )
 _PLAIN = re.compile(r"[0-9]+(?:\.[0-9]+)?")
 
 
+# Digit groups joined by exactly ONE separator that is not a line break ("1234
+# 567"): read as one number as well. "123, 456" (two characters between) and
+# "123" newline-newline "456" are two numbers, never joined.
+_JOIN_SEPARATOR = (
+    r"(?:[,'‘’‛ʻʼ′`´]"
+    r"|[^\S\n\r\v\f\x85  ])"
+)
+_JOINED = re.compile(
+    rf"(?<![0-9.,])[0-9]+(?:{_JOIN_SEPARATOR}[0-9]+)+(?:\.[0-9]+)?(?![0-9])"
+)
+
+
+def _spans(folded: str) -> list[tuple[int, int, Decimal, bool]]:
+    """Every number in a folded text as (start, end, value, whole), where whole
+    is true for a grouped or joined number and false for a plain digit run. The
+    one place a text is read as numbers, so the long-figure match and the
+    short-figure match see the same spans."""
+    spans: list[tuple[int, int, Decimal, bool]] = []
+    for pattern in (_GROUPED, _JOINED):
+        for match in pattern.finditer(folded):
+            value = Decimal(re.sub(_SEPARATOR, "", match.group()))
+            spans.append((match.start(), match.end(), value, True))
+    for match in _PLAIN.finditer(folded):
+        spans.append((match.start(), match.end(), Decimal(match.group()), False))
+    return spans
+
+
 def number_tokens(text: str) -> set[Decimal]:
     """The magnitudes of the numbers a text holds, each read every way a reader
-    could: as one grouped number ("1,234" is 1234), as separate plain numbers (1
-    and 234) and as the digit runs left when every separator is removed ("1234
-    567" is 1234567). The text is folded first (NFKC, invisible characters
-    dropped). A sign is not part of a magnitude, so -12.30 and 12.3 are the same
-    number."""
-    folded = _fold_text(text)
-    found: set[Decimal] = set()
-    for match in _GROUPED.finditer(folded):
-        found.add(Decimal(re.sub(_SEPARATOR, "", match.group())))
-    for source in (folded, re.sub(_SEPARATOR, "", folded)):
-        for match in _PLAIN.finditer(source):
-            found.add(Decimal(match.group()))
-    return found
+    could: as one grouped number ("1,234" is 1234), as digit groups joined by a
+    single separator ("1234 567" is 1234567) and as separate plain numbers (1 and
+    234). The text is folded first (NFKC, invisible characters dropped). A sign
+    is not part of a magnitude, so -12.30 and 12.3 are the same number."""
+    return {value for _s, _e, value, _w in _spans(_fold_text(text))}
 
 
 # What makes a short number a figure: a percent sign, a currency sign or code
 # before or after it, or a word that counts an audience or an amount.
 _CURRENCY = r"(?:[$€£¥₹]|\b(?:usd|eur|gbp|cad|aud|jpy)\b)"
 UNIT_WORDS = (
-    "followers follower subscribers subscriber views view viewers viewer "
+    "follows follow percent followers follower subscribers subscriber "
+    "views view viewers viewer "
     "hours hour minutes minute seconds second posts post episodes episode "
     "downloads download clicks click members member likes like comments comment "
     "shares share plays play videos video impressions impression interactions "
     "interaction emails email listeners listener fans fan users user"
 ).split()
 _UNITS = "|".join(UNIT_WORDS)
-_FIGURE = r"(?<![0-9.,])([0-9]+(?:\.[0-9]+)?)(?![0-9])"
-_AFTER = re.compile(rf"{_FIGURE}\s*(?:%|{_CURRENCY}|\b(?:{_UNITS})\b)", re.IGNORECASE)
-_BEFORE = re.compile(rf"{_CURRENCY}\s*{_FIGURE}", re.IGNORECASE)
+_AFTER = re.compile(rf"\s*(?:%|{_CURRENCY}|\b(?:{_UNITS})\b)", re.IGNORECASE)
+# a currency, then an optional sign: "$3", "$-3", "USD -3"
+_BEFORE = re.compile(rf"{_CURRENCY}\s*[-+−]?\s*$", re.IGNORECASE)
 
 
 def unit_tokens(text: str) -> set[Decimal]:
     """The magnitudes of the numbers a text writes with a unit (see
-    ``is_short``), after the same folding as ``number_tokens``. "3 platforms" is
-    not one; "3%", "$3", "3 USD" and "3 followers" are."""
+    ``is_short``). Numbers are read by the same spans as ``number_tokens`` (so
+    "1,234 followers" and "1 234 followers" are 1234, and the 234 inside them is
+    not a number of its own). "3 platforms" is not one; "3%", "$3", "$-3", "3 USD"
+    and "3 followers" are."""
     folded = _fold_text(text)
+    spans = _spans(folded)
+    inside = [(s, e) for s, e, _v, whole in spans if whole]
     found: set[Decimal] = set()
-    for pattern in (_AFTER, _BEFORE):
-        for match in pattern.finditer(folded):
-            found.add(Decimal(match.group(1)))
+    for start, end, value, whole in spans:
+        if not whole and any(s <= start and end <= e for s, e in inside):
+            continue
+        if _AFTER.match(folded, end) or _BEFORE.search(folded[:start]):
+            found.add(value)
+    return found
+
+
+def row_figures(document: Any) -> set[Decimal]:
+    """The magnitudes of the numeric ``value`` of every measure row that has a
+    recognized unit (a percent is stored in tenths). A bare number elsewhere has
+    no unit; a row's value always has one."""
+    found: set[Decimal] = set()
+    if isinstance(document, Mapping):
+        value = document.get("value")
+        unit = document.get("unit")
+        if type(value) is int and unit in UNITS:
+            magnitude = abs(Decimal(value))
+            found.add(magnitude / 10 if unit == "percent" else magnitude)
+        for item in document.values():
+            found |= row_figures(item)
+    elif isinstance(document, (list, tuple)):
+        for item in document:
+            found |= row_figures(item)
     return found
 
 
@@ -351,7 +396,7 @@ def check_no_private_values(
     values = list(_output_scalars(document))
     strings = [_norm(v) for v in values if isinstance(v, str)]
     numbers = {Decimal(abs(v)) for v in values if isinstance(v, int)}
-    figures: set[Decimal] = set()
+    figures: set[Decimal] = row_figures(document)
     for text in values:
         if isinstance(text, str):
             numbers |= number_tokens(text)

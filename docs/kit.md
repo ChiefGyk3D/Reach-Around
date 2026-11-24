@@ -1008,29 +1008,46 @@ Where it may go, and what it holds:
   "12.3%", and a private 1234567 matches "1,234,567", "1 234 567", "1'234'567"
   and "1234 567" written in a text. Before numbers are read, the text is folded
   (Unicode NFKC, so fullwidth digits count; invisible characters such as zero
-  width joiners are dropped), and any Unicode space, a comma or an apostrophe
-  separates thousands. Unrelated numbers and punctuation are left alone.
+  width joiners are dropped). Thousands may be separated by a comma, any Unicode
+  space, or one of these apostrophe-like marks: `'` (U+0027), U+2018, U+2019,
+  U+201B, U+02BB, U+02BC, U+2032 and the grave accent `` ` ``. Digit groups
+  joined by exactly one separator that is not a line break are also read as one
+  number ("1234 567"); two characters between them ("123, 456") or a blank line
+  keep them two numbers. Unrelated numbers and punctuation are left alone.
   **Short figures:** a private whole number of fewer than 6 digits (3, 40) is in
   the inventory, but is matched in a text only when it is written with a unit: a
-  percent sign, a currency sign or code (`$3`, `3 USD`), or a unit word such as
-  followers, subscribers, views, hours, minutes, posts or episodes. "3%" and "40
-  subscribers" are refused; "3 platforms", "40 days" and a bare "40" are not,
-  because those say nothing alone. The encoding of the file is never part of the
-  comparison.
+  percent sign, a currency sign or code before or after it (`$3`, `$-3`, `3
+  USD`), or a unit word (the registry units such as follows, views, viewers,
+  hours, seconds, clicks, downloads, emails and interactions, and words such as
+  followers, subscribers, minutes, posts or episodes). "3%" and "40 subscribers"
+  are refused; "3 platforms", "40 days" and a bare "40" in a sentence are not,
+  because those say nothing alone. The numbers are read by the same rules as the
+  long ones, so "1,234 followers" is 1234 (and the 234 inside it is not a number
+  of its own). **Rows:** a measure row's numeric `value` always has a unit, so a
+  row whose `unit` is a registry unit is compared with the short private figures
+  as it is (a `percent` row is stored in tenths: 400 is 40). The encoding of the
+  file is never part of the comparison.
 - **The directory stays put.** The output directory is held open from the walk
   to the write, and the temporary file is made and installed only through that
   descriptor (`openat` and `renameat`, never by path). Just before the install,
   and twice in a row after it, the path is resolved again and must be the same
   directory (same device and inode, still linked) and still outside the
   forbidden directories; otherwise the installed file and the temporary file are
-  removed through the held descriptor and nothing is kept. **Residual:** no
-  check of a path can see a rename that happens after the last check returns, so
-  a process of the same user that moves the folder in that instant, into a
-  published tree, leaves the file there. Closing that needs the kernel to refuse
-  the move, which a user-space tool cannot ask for. Mount tricks (bind mounts,
-  mount namespaces) are out of scope as well. This is an owner-local tool with a
-  same-user threat model: such a process can already read the file and the
-  private data it was made from.
+  removed through the held descriptor and nothing is kept. **Residual:** each
+  check is a sample of where the folder is at one moment. A process that can
+  rename the folder (or an ancestor) can move it into a published tree and back
+  between any two samples, or after the last one, and the file is then visible
+  there for that time; every sample afterwards sees the folder where it belongs.
+  More samples only narrow the gaps; none closes them. Closing it needs the
+  kernel to refuse the move, which a user-space tool cannot ask for. So the rule
+  is on the owner's side: **write private output to a folder only you can write
+  to, and whose parent directory (and every directory above it) no other user can
+  write**, so that nobody else can rename it. The tool warns (`OutputWarning`,
+  printed on standard error) when the parent of the output folder is writable by
+  the group or by others. Mount tricks (bind mounts, mount namespaces) are out of
+  scope as well. This is an owner-local tool with a same-user threat model: a
+  process running as you can already read the file and the private data it was
+  made from.
 - **Reproducible.** The same inputs and `--date` give the same bytes.
 
 ### Schema

@@ -10,7 +10,12 @@ from pathlib import Path
 
 import pytest
 
-from reach_around.kit.output import OutputError, confine_out_dir, write_private
+from reach_around.kit.output import (
+    OutputError,
+    OutputWarning,
+    confine_out_dir,
+    write_private,
+)
 
 
 def out_dir(tmp_path: Path) -> Path:
@@ -235,6 +240,36 @@ def test_a_move_right_after_the_first_check_of_the_installed_file_is_caught(
     monkeypatch.undo()
     assert len(calls) >= 3
     assert list((site / "uploaded").iterdir()) == []
+
+
+@pytest.mark.parametrize("mode", [0o770, 0o707, 0o777])
+def test_a_parent_others_can_write_to_is_warned_about(
+    tmp_path: Path, mode: int
+) -> None:
+    parent = tmp_path / "parent"
+    parent.mkdir(mode=0o700)
+    private = parent / "private"
+    private.mkdir(mode=0o700)
+    parent.chmod(mode)
+    try:
+        with pytest.warns(OutputWarning, match="parent") as caught:
+            write_private(private, "kit.pdf", b"%PDF-1", overwrite=False)
+    finally:
+        parent.chmod(0o700)
+    assert (private / "kit.pdf").read_bytes() == b"%PDF-1"
+    assert str(parent) not in str(caught[0].message)
+
+
+def test_an_owner_only_parent_gives_no_warning(tmp_path: Path) -> None:
+    import warnings
+
+    parent = tmp_path / "parent"
+    parent.mkdir(mode=0o700)
+    private = parent / "private"
+    private.mkdir(mode=0o700)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        write_private(private, "kit.pdf", b"%PDF-1", overwrite=False)
 
 
 def test_a_directory_replaced_by_another_at_the_same_name_is_refused(
