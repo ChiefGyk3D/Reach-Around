@@ -56,6 +56,14 @@ from reach_around.config.engagement import (
     rows_for,
 )
 from reach_around.config.era import SPANS, classify_era, classify_window, era_text
+from reach_around.config.fediverse import (
+    MEAN_KEYS,
+    SERVER_NOTE,
+    STATED_KEYS,
+    FediverseEntry,
+    label_of,
+    not_provided_text,
+)
 from reach_around.config.imported_history import (
     IMPORTED_HEADING,
     IMPORTED_NOTE,
@@ -68,6 +76,7 @@ from reach_around.config.kit import (
     AudienceSummary,
     KitConfig,
     KitSection,
+    LiveRow,
     UnifiedTotal,
     enforce_display_policy,
     gated_projection,
@@ -76,7 +85,7 @@ from reach_around.config.kit import (
     public_projection,
     summary_total,
 )
-from reach_around.config.measures import Measure, default_keys
+from reach_around.config.measures import LIVE_KEYS, REGISTRY, Measure, default_keys
 from reach_around.config.models import SiteConfig
 from reach_around.config.numbers import (
     STALE_DAYS,
@@ -1181,6 +1190,7 @@ def _legend(content: dict[str, Any], gated: bool = False) -> dict[str, Any] | No
         or (content["recent_posts"] and not gated)
         or any(row["trust"] for row in content["engagement_rows"])
         or any(not card["empty"] for card in content["sections"])
+        or (content["live"] and any(not c["empty"] for c in content["live"]["cards"]))
         or content["imported"]
         or content.get("case_studies")
         or content.get("demographics")
@@ -1233,7 +1243,15 @@ def _content(
         ),
         "community": _community(measures),
         "sections": section_cards(
-            projection.get("sections", []), measures, config, today, live_day
+            projection.get("sections", []),
+            measures,
+            config,
+            today,
+            live_day,
+            projection.get("fediverse", []),
+        ),
+        "live": live_block(
+            projection.get("live", []), measures, config, today, live_day
         ),
         "imported": _imported_block(projection.get("imported_history"), live_day),
     }
@@ -1365,9 +1383,35 @@ def _card_value(m: Measure, followers: Mapping[str, int]) -> str:
         return _change_text(followers.get(m.platform, 0), m.value)
     if m.unit == "percent":
         return percent_text(m.value)
+    # The fediverse block: a follower count keeps the floor; a post count or a
+    # per-post figure is not a count of people, so it prints as it is.
+    if m.block == "fediverse" and m.key != "followers":
+        return f"{m.value:,}"
     if m.block == "tile":
         return _compact_number(m.value)
     return shown_count(m.value)
+
+
+def _not_provided(
+    entry: FediverseEntry | None, keys: Sequence[str], rows: list[dict[str, Any]]
+) -> list[str]:
+    """The "not provided" lines of a fediverse card: the values this card would
+    show but the owner did not type, then what the platform never exposes."""
+    if entry is None:
+        return []
+    present = {row["key"] for row in rows}
+    missing = [
+        label_of(entry.platform, key)
+        for key in STATED_KEYS
+        if key in keys
+        and key not in present
+        and (entry.show_mean or key not in MEAN_KEYS)
+    ]
+    lines = []
+    if missing:
+        lines.append("Not provided: " + ", ".join(missing) + ".")
+    lines.append(not_provided_text(entry.platform))
+    return lines
 
 
 def section_cards(
@@ -1376,6 +1420,7 @@ def section_cards(
     config: Any = None,
     today: date | None = None,
     live_day: date | None = None,
+    fediverse: Sequence[FediverseEntry] = (),
 ) -> list[dict[str, Any]]:
     """The platform cards, and the one place the degrade rules (spec 7.4) apply.
 
@@ -1385,7 +1430,11 @@ def section_cards(
     * A configured platform with no value to show prints "No numbers yet", the same
       way for every platform; with ``hide_if_empty`` it prints nothing.
     * Every printed number carries its own label, date and source line.
+    * A platform with a fediverse entry (#630) says its counts are as reported by
+      the server, links every count to the public profile, states what it did not
+      get as "not provided" and what the platform never exposes.
     """
+    entries: dict[str, FediverseEntry] = {item.platform: item for item in fediverse}
     followers = {
         m.platform: m.value
         for m in _of(measures, "tile")
@@ -1399,6 +1448,8 @@ def section_cards(
             else tuple(section.show)
         )
         rows: list[dict[str, Any]] = []
+        entry = entries.get(section.platform)
+        recheck = entry.profile_url if entry is not None else ""
         for key in keys:
             found = [
                 m
@@ -1427,6 +1478,7 @@ def section_cards(
                         "trust": None if m.trust is None else m.trust.view(),
                         "formula": m.formula,
                         "note": m.note,
+                        "recheck": recheck if m.key in STATED_KEYS else "",
                     }
                 )
         if not rows and section.hide_if_empty:
@@ -1439,6 +1491,9 @@ def section_cards(
             "no_numbers": NO_NUMBERS,
             "headline": None,
             "rows": rows,
+            "server_note": SERVER_NOTE if entry is not None else "",
+            "recheck": recheck if not rows else "",
+            "not_provided": _not_provided(entry, keys, rows),
         }
         if rows:
             lead = _headline_first(rows, section)
@@ -1446,6 +1501,74 @@ def section_cards(
             card["rows"] = [row for i, row in enumerate(rows) if i != lead]
         cards.append(card)
     return cards
+
+
+# --- the live block (spec 13 item 4, decisions 3 and 11) ----------------------------
+
+NO_LIVE_NUMBERS = "No live numbers yet"
+NOT_ENTERED = "Not entered"
+
+
+def _live_row(
+    key: str,
+    found: Sequence[Measure],
+    config: Any,
+    today: date | None,
+    live_day: date | None,
+) -> dict[str, Any]:
+    """One of the seven fields of a live card. The same keys, labels and markup
+    for every platform; a figure that is not entered says so."""
+    label = REGISTRY[key].label
+    best: Measure | None = None
+    for m in found:
+        if m.key == key and m.value is not None and (best is None or _prefer(m, best)):
+            best = m
+    if best is None:
+        return {"key": key, "label": label, "value": NOT_ENTERED, "entered": False}
+    return {
+        "key": key,
+        "label": label,
+        "value": shown_count(best.value) if best.value is not None else NOT_ENTERED,
+        "entered": True,
+        "as_of": best.as_of.isoformat() if best.as_of is not None else "",
+        "period": (
+            f"{best.period[0].isoformat()} to {best.period[1].isoformat()}"
+            if best.period is not None
+            else ""
+        ),
+        "era": era_text(classify_era(best.as_of, live_day)),
+        "stale": _is_stale(best.as_of, today, config, best.platform),
+        "trust": None if best.trust is None else best.trust.view(),
+    }
+
+
+def live_block(
+    rows: Sequence[LiveRow],
+    measures: Sequence[Measure],
+    config: Any = None,
+    today: date | None = None,
+    live_day: date | None = None,
+) -> dict[str, Any] | None:
+    """The live block: one card per platform in ``rows``, in config order and
+    never sorted by size, each with the seven fields in the same order. A platform
+    with no figure at all prints "No live numbers yet" in the same style."""
+    if not rows:
+        return None
+    cards: list[dict[str, Any]] = []
+    for row in rows:
+        found = [m for m in measures if m.platform == row.platform]
+        fields = [_live_row(key, found, config, today, live_day) for key in LIVE_KEYS]
+        empty = not any(f["entered"] for f in fields)
+        cards.append(
+            {
+                "platform": row.platform,
+                "name": platform_name(row.platform),
+                "empty": empty,
+                "no_numbers": NO_LIVE_NUMBERS,
+                "rows": [] if empty else fields,
+            }
+        )
+    return {"heading": "Live", "cards": cards}
 
 
 def _categories(kit: KitConfig, measures: Sequence[Measure]) -> str:

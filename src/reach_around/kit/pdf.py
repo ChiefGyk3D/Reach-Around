@@ -98,6 +98,7 @@ from reach_around.site.kit import (
     audience_bases,
     canonical,
     demographic_withheld,
+    live_block,
     platform_counts,
     section_cards,
     text_fields,
@@ -393,7 +394,13 @@ def scrub_pdf(data: bytes, *, title: str, created: date) -> bytes:
 # --- the checks on the text -------------------------------------------------------
 
 
-_FIELD_OF_BLOCK = {"headline": "metrics", "tile": "analytics", "derived": "engagement"}
+_FIELD_OF_BLOCK = {
+    "headline": "metrics",
+    "tile": "analytics",
+    "derived": "engagement",
+    "live": "live",
+    "fediverse": "fediverse",
+}
 
 
 def private_measure_strings(kit: KitConfig, numbers: Numbers | None) -> dict[str, str]:
@@ -403,10 +410,11 @@ def private_measure_strings(kit: KitConfig, numbers: Numbers | None) -> dict[str
 
     The forms are the ones the templates render: a headline row (platform, label,
     value), an analytics panel (the sync line, "Followers" with its compact value
-    and the real 30-day text, each tile's label with its compact value) and an
-    engagement row (measure name and value). A labeled form is specific enough to
-    search for whatever its length; a bare number is searched for only from
-    ``GUARD_MIN_LENGTH`` characters. Owner-defined labels are searched for alone
+    and the real 30-day text, each tile's label with its compact value), an
+    engagement row (measure name and value), a live card row (label and
+    value) and a fediverse card row (label and figure). A labeled form is specific
+    enough to search for whatever its length; a bare number is searched for only
+    from ``GUARD_MIN_LENGTH`` characters. Owner-defined labels are searched for alone
     unless a visible measure prints the same word."""
     measures = compile_measures(kit, numbers, None)
     shown_labels = {m.label.casefold() for m in measures if m.visibility != "private"}
@@ -438,6 +446,16 @@ def private_measure_strings(kit: KitConfig, numbers: Numbers | None) -> dict[str
                 lead = f"{m.provenance}." if m.provenance else ""
                 note = f"{m.note}." if m.note else ""
                 found[f"{key} (printed row)"] = name + m.label + lead + note + text
+            elif m.block == "live":
+                # a live card row prints the label and the shown count
+                text = shown_count(m.value)
+                found[f"{key} (live row)"] = m.label + text
+            elif m.block == "fediverse":
+                # a fediverse card row prints the label and the figure: the
+                # follower count keeps the floor, a post count or per-post
+                # median/mean prints as it is
+                text = shown_count(m.value) if m.key == "followers" else f"{m.value:,}"
+                found[f"{key} (fediverse row)"] = m.label + text
             elif m.block == "tile" and m.key == "followers_change_30d":
                 change = _change_text(followers.get(m.platform, 0), m.value)
                 if change:
@@ -647,15 +665,38 @@ def _expected_text(
             put(where, tile + _trust_text(card["trust"]) + old)
     # The platform cards (#628): each card's name, its "No numbers yet" line or
     # its numbers with their labels, from the same measures the page was built from.
-    for card in section_cards(kit.sections, measures, config, None, live_day):
+    for card in section_cards(
+        kit.sections, measures, config, None, live_day, kit.fediverse
+    ):
         where = f"the platform card {card['name']!r}"
         found.append((where, card["name"] + (card["account"] or "")))
         if card["empty"]:
             found.append((where, card["no_numbers"]))
+        else:
+            labeled = labeled or config is not None
+            lead = card["headline"]
+            found.append((where, lead["value"] + lead["label"]))
+            for row in card["rows"]:
+                found.append((where, row["label"] + row["value"]))
+        # The fediverse lines (#630): the server note, the re-check link as a
+        # plain URL (a PDF is read on paper) and each "not provided" line.
+        if card["server_note"]:
+            found.append((where, card["server_note"]))
+        for url in {r["recheck"] for r in card["rows"] if r["recheck"]} | (
+            {card["recheck"]} if card["recheck"] else set()
+        ):
+            found.append((where, url))
+        for line in card["not_provided"]:
+            found.append((where, line))
+    # The live block (#629): each platform's seven fields, or its empty line.
+    live = live_block(kit.live, measures, config, None, live_day)
+    for card in live["cards"] if live else []:
+        where = f"the live block {card['name']!r}"
+        found.append((where, card["name"]))
+        if card["empty"]:
+            found.append((where, card["no_numbers"]))
             continue
         labeled = labeled or config is not None
-        lead = card["headline"]
-        found.append((where, lead["value"] + lead["label"]))
         for row in card["rows"]:
             found.append((where, row["label"] + row["value"]))
     # Only the public page prints recent posts; the gated page has no such section.

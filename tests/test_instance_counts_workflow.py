@@ -815,7 +815,8 @@ def test_the_report_container_is_cut_after_sixty_seconds(tmp_path: Path) -> None
     log = tmp_path / "timeout.log"
     fake = tmp_path / "bin" / "timeout"
     fake.write_text(
-        '#!/bin/bash\nprintf \'%s\\n\' "$1" >> "$FAKE_TIMEOUT_LOG"\nshift\nexec "$@"\n',
+        '#!/bin/bash\ncase "$1" in --kill-after=*) shift ;; esac\n'
+        'printf \'%s\\n\' "$1" >> "$FAKE_TIMEOUT_LOG"\nshift\nexec "$@"\n',
         encoding="utf-8",
     )
     fake.chmod(0o755)
@@ -830,7 +831,7 @@ def test_the_report_container_is_cut_after_sixty_seconds(tmp_path: Path) -> None
         },
     )
     assert done.returncode == 0, done.stderr
-    assert log.read_text(encoding="utf-8").split() == ["60", "60"]
+    assert log.read_text(encoding="utf-8").split() == ["480", "60", "60"]
 
 
 def test_the_refresh_script_passes_the_youtube_handle_variable(tmp_path: Path) -> None:
