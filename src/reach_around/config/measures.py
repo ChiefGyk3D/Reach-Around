@@ -50,7 +50,7 @@ if TYPE_CHECKING:
     )
     from reach_around.config.numbers import Numbers
 
-MeasureVisibility = Literal["public", "gated"]
+MeasureVisibility = Literal["public", "gated", "private"]
 Block = Literal["headline", "tile", "derived"]
 
 UNITS: tuple[str, ...] = (
@@ -284,14 +284,13 @@ def change_tenths(percent: float) -> int:
     return int(Decimal(percent).quantize(Decimal("0.1"), ROUND_HALF_EVEN) * 10)
 
 
-def _narrow(
-    registry: MeasureVisibility, source: Literal["public", "gated", "private"]
-) -> MeasureVisibility:
-    """The narrower of the registry default and the source field's policy; a
-    private source is never rendered, so it is gated here."""
-    if registry == "gated" or source != "public":
-        return "gated"
-    return "public"
+_RANK = {"public": 0, "gated": 1, "private": 2}
+
+
+def narrow(registry: MeasureVisibility, source: MeasureVisibility) -> MeasureVisibility:
+    """The narrower of the registry default and the source field's policy. A
+    private source stays private: a measure is never wider than its source."""
+    return registry if _RANK[registry] >= _RANK[source] else source
 
 
 def _entry(key: str) -> MeasureDef:
@@ -327,7 +326,7 @@ def numbers_measures(
                 unit=entry.unit,
                 value=m.value,
                 as_of=m.as_of,
-                visibility=_narrow(entry.visibility, source),
+                visibility=narrow(entry.visibility, source),
                 block="headline",
                 in_summary=counts_in_summary(m),
                 trust=trust,
@@ -356,7 +355,7 @@ def analytics_measures(rows: Iterable[PlatformAnalytics]) -> list[Measure]:
                 unit=entry.unit,
                 value=value,
                 as_of=row.as_of,
-                visibility=_narrow(entry.visibility, source),
+                visibility=narrow(entry.visibility, source),
                 block="tile",
                 trust=trust,
                 source_note=row.synced_with,
@@ -409,7 +408,7 @@ def engagement_measures(entries: Iterable[EngagementRow]) -> list[Measure]:
                     unit=reg.unit,
                     value=value,
                     as_of=as_of,
-                    visibility=_narrow(reg.visibility, source),
+                    visibility=narrow(reg.visibility, source),
                     block="derived",
                     trust=engagement_trust(),
                     period=period,
@@ -436,5 +435,8 @@ def compile_measures(
 
 
 def visible(measures: Sequence[Measure], allowed: frozenset[str]) -> list[Measure]:
-    """The measures an audience may see (``allowed`` is its set of levels)."""
-    return [m for m in measures if m.visibility in allowed]
+    """The measures an audience may see (``allowed`` is its set of levels). A
+    private measure is never returned, whatever ``allowed`` holds."""
+    return [
+        m for m in measures if m.visibility != "private" and m.visibility in allowed
+    ]

@@ -30,7 +30,9 @@ from reach_around.config.measures import (
     compile_measures,
     default_keys,
     group_of,
+    narrow,
     registry_problems,
+    visible,
 )
 from reach_around.config.trust import API, HAND_KEPT
 
@@ -312,3 +314,63 @@ def test_the_projection_guard_bites_when_a_measure_is_marked_wider_than_its_sour
     public = public_projection(kit, None)
     assert "gated" not in {m.visibility for m in public["measures"]}
     assert "avg_views_per_item" not in {m.key for m in public["measures"]}
+
+
+# --- a measure is never wider than its source (Daybreak round 1) ---------------
+
+LEVELS = ("public", "gated", "private")
+
+
+@pytest.mark.parametrize("registry", LEVELS)
+@pytest.mark.parametrize("source", LEVELS)
+def test_narrow_is_never_wider_than_either_input(registry: Any, source: Any) -> None:
+    rank = {"public": 0, "gated": 1, "private": 2}
+    got = narrow(registry, source)
+    assert rank[got] == max(rank[registry], rank[source])
+    if "private" in (registry, source):
+        assert got == "private"
+
+
+def test_a_private_measure_is_returned_for_no_audience() -> None:
+    secret = Measure(
+        platform="other",
+        key="future_private_measure",
+        label="Secret",
+        unit="count",
+        value=4815162342,
+        as_of=None,
+        visibility="private",
+        block="tile",
+    )
+    for allowed in (
+        frozenset({"public"}),
+        frozenset({"public", "gated"}),
+        frozenset({"public", "gated", "private"}),
+        frozenset({"private"}),
+    ):
+        assert visible([secret], allowed) == []
+
+
+@pytest.mark.parametrize("field", ["metrics", "analytics", "engagement"])
+def test_a_private_source_field_reaches_neither_projection(
+    field: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The reviewer's reproduction: a source policy of private must not be
+    widened to gated by the compile shim."""
+    from dataclasses import replace
+
+    from reach_around.config import kit as kit_module
+
+    policy = kit_module.KIT_FIELD_POLICY
+    monkeypatch.setattr(
+        kit_module,
+        "KIT_FIELD_POLICY",
+        {**policy, field: replace(policy[field], visibility="private")},
+    )
+    kit = KitConfig.model_validate(kit_doc())
+    compiled = compile_measures(kit, None)
+    blocks = {"metrics": "headline", "analytics": "tile", "engagement": "derived"}
+    mine = [m for m in compiled if m.block == blocks[field]]
+    assert mine and {m.visibility for m in mine} == {"private"}
+    for projection in (public_projection(kit, None), gated_projection(kit, None)):
+        assert not [m for m in projection["measures"] if m.block == blocks[field]]
