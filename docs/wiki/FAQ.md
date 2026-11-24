@@ -22,7 +22,7 @@ Neither model is better for everyone. If you want a page in ten minutes with no 
 
 ## Who is it for?
 
-[OWNER INPUT NEEDED] The repository describes what it does, not who it is for. The maintainer's own words on the intended audience, and on who it is not for, go here.
+Reach Around was built mainly for the maintainer's own cutover away from a link-in-bio service. It is open sourced as a springboard, so other creators can use it as a starting point to build their own tools.
 
 ## Is there a hosted version I can pay for?
 
