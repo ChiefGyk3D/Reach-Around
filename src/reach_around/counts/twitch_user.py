@@ -161,6 +161,26 @@ def _token(value: object) -> str:
     return value
 
 
+REQUIRED_SCOPE = "moderator:read:followers"
+MAX_EXPIRES_IN = 31_536_000  # one year, far above any real Twitch lifetime
+
+
+def _reply_is_usable(reply: Mapping[str, object]) -> bool:
+    """token_type bearer, a plausible lifetime and the scope the route needs."""
+    token_type = reply.get("token_type")
+    if not isinstance(token_type, str) or token_type.lower() != "bearer":
+        return False
+    expires_in = reply.get("expires_in")
+    if type(expires_in) is not int or not 0 < expires_in <= MAX_EXPIRES_IN:
+        return False
+    scope = reply.get("scope")
+    return (
+        isinstance(scope, list)
+        and all(isinstance(item, str) for item in scope)
+        and REQUIRED_SCOPE in scope
+    )
+
+
 def check_names(source: TwitchSource) -> None:
     """The credential names must be the canonical ones (defense in depth: the
     config model already enforces it; this holds if a source was built another
@@ -213,7 +233,12 @@ class _Session:
             _env_secret(env, CLIENT_SECRET_ENV) if self.can_refresh else ""
         )
         self.access = _env_secret(env, USER_TOKEN_ENV)
-        self.refresh_value = env.get(REFRESH_TOKEN_ENV, "") if self.can_refresh else ""
+        # empty stays allowed (the owner refreshes by hand); a value is bounded
+        self.refresh_value = (
+            _env_secret(env, REFRESH_TOKEN_ENV)
+            if self.can_refresh and env.get(REFRESH_TOKEN_ENV)
+            else ""
+        )
         self.refreshed = False
 
     def _alert(self, kind: str) -> None:
@@ -256,6 +281,10 @@ class _Session:
             pair = TokenPair(
                 _token(reply.get("access_token")), _token(reply.get("refresh_token"))
             )
+            if not _reply_is_usable(reply):
+                # Quarantine: a pair whose metadata does not check out is never
+                # promoted, stored or used; the run fails with the fixed word.
+                pair = None
         except (FetchError, TwitchUserError):
             pair = None
         if pair is None:

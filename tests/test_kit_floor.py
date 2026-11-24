@@ -18,7 +18,13 @@ from kitpdfharness import (
     make_config,
 )
 from reach_around.config.imported_history import ImportedHistory, display_rows
-from reach_around.config.kit import ResolvedMetric, UnifiedTotal
+from reach_around.config.kit import (
+    AnalyticsStat,
+    PlatformAnalytics,
+    ResolvedMetric,
+    UnifiedTotal,
+)
+from reach_around.config.measures import analytics_measures, numbers_measures
 from reach_around.funnel.floor import UNDER_FLOOR, shown_count
 from reach_around.kit.pdf import PdfError, build_public_kit_pdf, check_text
 from reach_around.kit.pdftext import extract_pages
@@ -41,14 +47,16 @@ def metric(value: int | None) -> ResolvedMetric:
 
 @pytest.mark.parametrize(("value", "text"), [(4, UNDER_FLOOR), (5, "5"), (0, "0")])
 def test_a_headline_metric_follows_the_floor(value: int, text: str) -> None:
-    rows = _metric_rows([metric(value)])
+    rows = _metric_rows(numbers_measures([metric(value)]))
     assert rows[0]["value"] == text
 
 
 def total_of(*values: int | None) -> dict[str, Any] | None:
     members = [metric(v) for v in values]
     counted = [v for v in values if v is not None]
-    return _total(UnifiedTotal(sum(counted), len(counted), 0), members)
+    return _total(
+        UnifiedTotal(sum(counted), len(counted), 0), numbers_measures(members)
+    )
 
 
 def test_a_total_is_hidden_when_a_member_is_under_the_floor() -> None:
@@ -64,25 +72,25 @@ def test_a_total_is_hidden_when_a_member_is_under_the_floor() -> None:
 def test_a_member_outside_the_total_does_not_hide_it() -> None:
     members = [metric(9), metric(4)]
     members[1] = ResolvedMetric("twitch", "Followers", "manual", 4, TODAY, False)
-    assert _total(UnifiedTotal(9, 1, 0), members) is not None
+    assert _total(UnifiedTotal(9, 1, 0), numbers_measures(members)) is not None
 
 
-class Row:
-    platform = "twitch"
-    synced_with = "Example Social API"
-    as_of = date(2027, 3, 8)
-
-    def __init__(self, followers: int, stat: int, pct: float = 50.0) -> None:
-        self.followers = followers
-        self.followers_30_day_percent = pct
-        self.stats = [type("S", (), {"label": "Example views", "value": stat})()]
+def analytics_row(followers: int, stat: int, pct: float = 50.0) -> PlatformAnalytics:
+    return PlatformAnalytics(
+        platform="twitch",
+        synced_with="Example Social API",
+        as_of=date(2027, 3, 8),
+        followers=followers,
+        followers_30_day_percent=pct,
+        stats=[AnalyticsStat(label="Example views", value=stat)],
+    )
 
 
 def test_analytics_followers_and_stats_follow_the_floor() -> None:
-    low = _analytics_rows([Row(4, 4)], TODAY)[0]
+    low = _analytics_rows(analytics_measures([analytics_row(4, 4)]), TODAY)[0]
     assert low["followers"] == UNDER_FLOOR
     assert low["stats"][0]["value"] == UNDER_FLOOR
-    ok = _analytics_rows([Row(5, 5)], TODAY)[0]
+    ok = _analytics_rows(analytics_measures([analytics_row(5, 5)]), TODAY)[0]
     assert ok["followers"] == "5"
     assert ok["stats"][0]["value"] == "5"
 
@@ -104,14 +112,21 @@ def test_analytics_followers_and_stats_follow_the_floor() -> None:
 def test_the_change_never_pins_a_count_under_the_floor(
     followers: int, pct: float, printed: bool
 ) -> None:
-    delta = _analytics_rows([Row(followers, 9, pct)], TODAY)[0]["delta"]
+    delta = _analytics_rows(
+        analytics_measures([analytics_row(followers, 9, pct)]), TODAY
+    )[0]["delta"]
     assert bool(delta) is printed
 
 
 def test_the_change_is_not_printed_when_the_followers_are_under_the_floor() -> None:
-    low = _analytics_rows([Row(4, 9, 33.3)], TODAY)[0]
+    low = _analytics_rows(analytics_measures([analytics_row(4, 9, 33.3)]), TODAY)[0]
     assert "33.3" not in low["delta"]
-    assert _analytics_rows([Row(50, 9, 33.3)], TODAY)[0]["delta"] == "+33.3%"
+    assert (
+        _analytics_rows(analytics_measures([analytics_row(50, 9, 33.3)]), TODAY)[0][
+            "delta"
+        ]
+        == "+33.3%"
+    )
 
 
 def flat(path: Path) -> str:
@@ -233,7 +248,12 @@ def pins_small_earlier_count(followers: int, text: str) -> bool:
 
 def test_a_typed_two_decimal_percent_cannot_pin_an_earlier_count() -> None:
     # the owner types 66.72 and the page prints +66.7%: 3 was the earlier count
-    assert _analytics_rows([Row(5, 9, 66.72)], TODAY)[0]["delta"] == ""
+    assert (
+        _analytics_rows(analytics_measures([analytics_row(5, 9, 66.72)]), TODAY)[0][
+            "delta"
+        ]
+        == ""
+    )
     checked = 0
     for followers in range(1, 401):
         for earlier in range(1, 5):
@@ -244,7 +264,9 @@ def test_a_typed_two_decimal_percent_cannot_pin_an_earlier_count() -> None:
                 typed = round(exact + step / 100, 2)
                 if typed < -100:
                     continue
-                delta = _analytics_rows([Row(followers, 9, typed)], TODAY)[0]["delta"]
+                delta = _analytics_rows(
+                    analytics_measures([analytics_row(followers, 9, typed)]), TODAY
+                )[0]["delta"]
                 checked += 1
                 if delta:
                     assert not pins_small_earlier_count(followers, delta), (
@@ -256,8 +278,18 @@ def test_a_typed_two_decimal_percent_cannot_pin_an_earlier_count() -> None:
 
 
 def test_a_large_change_still_prints() -> None:
-    assert _analytics_rows([Row(1000, 9, 0.5)], TODAY)[0]["delta"] == "+0.5%"
-    assert _analytics_rows([Row(400, 9, 10.0)], TODAY)[0]["delta"] == "+10.0%"
+    assert (
+        _analytics_rows(analytics_measures([analytics_row(1000, 9, 0.5)]), TODAY)[0][
+            "delta"
+        ]
+        == "+0.5%"
+    )
+    assert (
+        _analytics_rows(analytics_measures([analytics_row(400, 9, 10.0)]), TODAY)[0][
+            "delta"
+        ]
+        == "+10.0%"
+    )
 
 
 # --- every other printed count -------------------------------------------------
@@ -679,9 +711,9 @@ def test_a_kit_metric_under_the_floor_is_no_audience_base() -> None:
         return ResolvedMetric("instagram", "Followers", "manual", value, TODAY, True)
 
     demo = _demo(97, 97, 97)  # a 3 percent cell is pinned by base 100 only
-    assert audience_bases("instagram", [metric_of(4)], []) == []
-    assert audience_bases("instagram", [metric_of(5)], []) == [5]
-    small = audience_bases("instagram", [metric_of(4)], [])
+    assert audience_bases("instagram", numbers_measures([metric_of(4)])) == []
+    assert audience_bases("instagram", numbers_measures([metric_of(5)])) == [5]
+    small = audience_bases("instagram", numbers_measures([metric_of(4)]))
     assert demographic_withheld(demo, small) == frozenset()
     assert demographic_withheld(demo, [100]) == {"ages"}  # the demo does bite
 

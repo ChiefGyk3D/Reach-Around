@@ -47,6 +47,13 @@ _SECRET_NAME = re.compile(r"[A-Z][A-Z0-9_]{0,127}")
 _SCOPE_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}")
 MAX_VALUE = 8192
 MAX_VALUES = 8
+# The request is UTF-8 JSON (no ASCII escaping), so the largest legal batch is
+# eight values of 8192 four-byte characters plus a small envelope. The answer
+# echoes every value and may escape it (up to 12 bytes per character), so its
+# cap is sized for that and for the echo holding each value twice (raw and
+# computed), well above the default fetch cap.
+MAX_BODY = MAX_VALUES * MAX_VALUE * 4 + 4096
+MAX_RESPONSE = 2_097_152
 
 Fetch = Callable[..., dict[str, object]]
 
@@ -293,8 +300,11 @@ class DopplerSink:
                     "project": self._project,
                     "config": self._config,
                     "secrets": dict(values),
-                }
+                },
+                ensure_ascii=False,
             ).encode("utf-8")
+            if len(body) > MAX_BODY:
+                return "bad_input"
             try:
                 # The answer echoes every value. It is dropped at once: never
                 # kept, logged or returned. A POST is never replayed.
@@ -304,6 +314,7 @@ class DopplerSink:
                     body=body,
                     headers=self._headers(),
                     follow_redirects=False,
+                    max_bytes=MAX_RESPONSE,
                 )
             except Exception:
                 return "store_failed"
@@ -422,7 +433,7 @@ class MetaStyleSink:
         self._sink = sink
         self._stream = stream
 
-    def store(self, token: _Token, name: str, source: str, expires_on: date) -> None:
+    def store(self, token: _Token, name: str, source: str, expires_on: date) -> bool:
         kind = ""
         try:
             self._sink.put({name: token.value})
@@ -439,6 +450,7 @@ class MetaStyleSink:
             f"secret-sink: source={source} stored name={name}; set token_expires "
             f"to {expires_on.isoformat()} in the config",
         )
+        return True
 
     def alert(self, alert: _Line) -> None:
         _report(self._stream, alert.line())
