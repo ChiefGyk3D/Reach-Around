@@ -157,17 +157,16 @@ Every public route that writes data is limited. In words only:
 
 ## Reporting a vulnerability
 
-The repository does not have a `SECURITY.md` yet, and GitHub's private
-vulnerability reporting is not switched on for it as of this writing. This page
-does not invent a contact address. Until the project publishes one:
+Report a vulnerability privately through GitHub: on the repository's main page,
+open the **Security and quality** tab and click **Report a vulnerability**. The full
+policy, including supported versions and what to expect, is in
+[SECURITY.md](https://github.com/ChiefGyk3D/Reach-Around/blob/main/SECURITY.md).
 
 - Do not post exploit detail, proof-of-concept code or stolen data in a public
   issue, pull request or discussion.
-- If you must use the public tracker, open an issue that says only that you have a
-  security report and want a private channel, and wait for the maintainer to reply
-  with one.
-
-Publishing a security policy and a private reporting channel is on the list below.
+- If the **Report a vulnerability** button is not there, open a public issue that
+  says only that you have a security report and want a private channel, and wait for
+  the maintainer to reply.
 
 ## What is not done yet
 
@@ -203,7 +202,6 @@ against the code on main.
 - **No marketing mail to leads.** This is the owner's decision and is not enforced
   by code, because the engine has no feature to send marketing mail; the lead list
   is never exported or shared.
-- **Security policy and private reporting channel.** Planned (see above).
 - **Public threat-model summary.** The project keeps a threat model and a risk
   register. A public summary of the method and of closed findings is planned after
   the owner approves it. Open items are tracked privately and are not listed here.
