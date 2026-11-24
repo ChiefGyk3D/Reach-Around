@@ -372,6 +372,30 @@ def test_a_note_left_after_a_committed_run_does_not_rewrite_history(
     assert not pending_path(setup / "numbers.json").exists()
 
 
+def test_a_committed_run_whose_numbers_file_is_byte_identical_is_not_replayed(
+    setup: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    serve(monkeypatch, 100)
+    assert run(setup, DAY1) == 0
+    before = (setup / "numbers.json").read_bytes()
+    (setup / "history" / "social.jsonl").unlink()  # this run will record the day
+
+    def crash(paths: Any) -> None:
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(counts_cmd, "_settle_history", crash)
+    with pytest.raises(KeyboardInterrupt):
+        run(setup, DAY1)  # same count, same stamp: the rewrite changes no byte
+    assert (setup / "numbers.json").read_bytes() == before
+    assert pending_path(setup / "numbers.json").exists()
+    monkeypatch.undo()
+    monkeypatch.setattr(counts_cmd, "default_sleep", lambda seconds: None)
+    serve(monkeypatch, 105)
+    assert run(setup, DAY1_LATER) == 0
+    assert [p.value for p in points(setup, "bluesky", "followers")] == [100]
+    assert current(setup) == 105
+
+
 def test_a_note_that_cannot_be_removed_does_not_rewrite_committed_history(
     setup: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -516,3 +540,26 @@ def test_a_bad_policy_does_not_stop_a_refresh(
 def test_a_good_policy_still_warns() -> None:
     out = retention_warnings([old(25)], policy(30, 7), TODAY)
     assert [(w.platform, w.expiring) for w in out] == [("twitch", 1)]
+
+
+# ---- a change in the gap between the last size check and the write ----------
+
+
+@pytest.mark.parametrize("change", ["truncate", "grow"])
+def test_a_change_between_the_last_check_and_the_write_is_reported(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, change: str
+) -> None:
+    path = tmp_path / "h.jsonl"
+    _big_history(path, 50)
+
+    def foreign(stage: str) -> None:
+        if change == "truncate":
+            os.truncate(path, 0)
+        else:
+            with open(path, "ab") as stream:
+                stream.write(b"{}\n")
+
+    monkeypatch.setattr(hist, "_before_mutation", foreign)
+    new = rec(platform="new", as_of_utc="2026-11-09T09:00:00Z")
+    with pytest.raises(HistoryError, match="changed while it was written"):
+        append_records(path, [new], now=NOW)

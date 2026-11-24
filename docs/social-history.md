@@ -78,13 +78,22 @@ mark a fetched record with a correction (below).
   the scan runs) is refused with "changed while it was read". The lock is
   advisory: a writer that ignores it and changes bytes in place without changing
   the size cannot be detected here; the hash chain and git history catch that.
+  The check and the write cannot be one step against such a writer, so a change
+  in the short gap between them is not prevented; it is detected right after
+  the write (the size is not what the append should have produced) and reported
+  as "changed while it was written" instead of success. Nothing is rolled back
+  then, because the bytes on disk are not all ours: run `counts history-verify`
+  and restore from git if it reports damage.
 * A refresh or import that stops after history was written leaves a small
-  `.<numbers file>.pending` note (run ids and a digest of the numbers file, never
-  values). If that note exists but cannot be read or is not valid, the next run
+  `.<numbers file>.pending` note (run ids and the identity of the numbers file
+  (device, inode, time, size), never values). If that note exists but cannot be
+  read or is not valid, the next run
   stops before touching anything, prints a fixed message, and leaves the note
   as it is; inspect or remove it, then run again. A note left behind after the
-  numbers file was written is recognized (the digest no longer matches) and
-  ignored, so a committed day is never rewritten.
+  numbers file was written is recognized (the numbers file is a different file
+  now, even if its bytes are the same, because every write is a rename of a
+  new file) and ignored, so a committed day is never rewritten. A numbers file
+  put in place by other means (a checkout) counts as a change too.
 * It refuses a file that is already damaged, a duplicate
   (`platform`, `metric`, UTC day, `source`), a future time, and bad fields.
   A batch is all or nothing.

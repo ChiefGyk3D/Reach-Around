@@ -97,7 +97,7 @@ from reach_around.counts.pending import (
     clear_pending,
     live_ids,
     mark_pending,
-    numbers_digest,
+    numbers_identity,
     pending_path,
     read_note,
     reconcile,
@@ -367,7 +367,7 @@ def _stage_history(
     pending = pending_path(paths.target)
     note = read_note(pending)
     ids = live_ids(note, paths.target)  # [] when that run's numbers write landed
-    mark_pending(pending, ids, run_id, numbers_digest(paths.target))
+    mark_pending(pending, ids, run_id, numbers_identity(paths.target))
     if ids and history.exists():
         return reconcile(read_history(history), ids, records)
     return records

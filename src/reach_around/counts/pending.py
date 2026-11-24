@@ -16,7 +16,6 @@ Only run ids are stored (no values). Held under the same lock as the run.
 
 from __future__ import annotations
 
-import hashlib
 import os
 import re
 import stat
@@ -49,13 +48,13 @@ _UNUSABLE = (
     "the pending note next to the numbers file cannot be read or is not valid; "
     "it was left as it is; inspect or remove it, then run again"
 )
-_BASE = re.compile(r"^base ([0-9a-f]{64}|none)$")
+_BASE = re.compile(r"^base (none|[0-9a-f]{1,32}(?::[0-9a-f]{1,32}){3})$")
 
 
 @dataclass(frozen=True)
 class Note:
     ids: list[str]
-    base: str | None  # digest of the numbers file when the latest run began
+    base: str | None  # identity of the numbers file when the latest run began
 
 
 def read_note(path: Path) -> Note:
@@ -104,23 +103,32 @@ def read_pending(path: Path) -> list[str]:
     return read_note(path).ids
 
 
-def numbers_digest(numbers: Path) -> str:
-    """Digest of the numbers file as it is now, or ``none`` when absent."""
+def numbers_identity(numbers: Path) -> str:
+    """Which file the numbers path is right now, or ``none`` when absent.
+
+    Device, inode, modification time (ns) and size of the file itself (nothing is
+    read, no link followed). Every successful numbers write is a temp file
+    renamed over the old one, so it is a new file with a new identity even when
+    its bytes equal the old ones; a content digest cannot tell those apart.
+    """
     try:
-        data = numbers.read_bytes()
+        info = os.lstat(numbers)
     except FileNotFoundError:
         return "none"
-    return hashlib.sha256(data).hexdigest()
+    parts = (info.st_dev, info.st_ino, info.st_mtime_ns, info.st_size)
+    return ":".join(f"{part:x}" for part in parts)
 
 
 def live_ids(note: Note, numbers: Path) -> list[str]:
     """The ids whose numbers write may not have happened.
 
-    The note records the numbers file's digest from when its latest run began.
-    If the file has changed since, that run (and so every earlier one) committed
-    its numbers write and only the note's removal was lost; nothing is pending.
+    The note records the numbers file's identity from when its latest run began.
+    If the file is a different file now, that run (and so every earlier one)
+    committed its numbers write and only the note's removal was lost; nothing is
+    pending. (A file put there by other means, such as a checkout, also counts
+    as a change; the run then keeps the first history value of the day.)
     """
-    if note.base is not None and note.base != numbers_digest(numbers):
+    if note.base is not None and note.base != numbers_identity(numbers):
         return []
     return note.ids
 

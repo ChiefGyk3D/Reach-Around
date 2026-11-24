@@ -43,6 +43,7 @@ from reach_around.counts.youtube_analytics import (
     YoutubeAnalyticsError,
     collect_youtube,
 )
+from reach_around.net.fetch import TIMEOUT as FETCH_TIMEOUT
 from reach_around.net.fetch import FetchError
 
 Fetch = Callable[..., dict[str, object]]
@@ -245,6 +246,11 @@ class _Budget:
         def counted(*args: Any, **kwargs: Any) -> dict[str, object]:
             self.check()
             self.left -= 1
+            # A request may not run past the run's deadline: its own time limit
+            # is cut to what is left (the fetch layer enforces it as one total
+            # limit over connect, send and read).
+            own = kwargs.get("timeout", FETCH_TIMEOUT)
+            kwargs["timeout"] = max(0.001, min(own, self.deadline - self.clock()))
             return fetch(*args, **kwargs)
 
         return counted
@@ -285,7 +291,7 @@ def collect(
         try:
             _collect_one(source, ok_platforms, env, fetch, stamp, figures, failures)
         except _BudgetSpent:
-            pass  # budget.spent is set; reported once just below
+            budget.spent = True  # reported once just below
         if budget.spent and source.platform in ok_platforms:
             failures.append(InsightFailure(source.platform, "budget_exhausted"))
     return figures, failures

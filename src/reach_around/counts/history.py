@@ -908,6 +908,14 @@ def _append_locked(
         original = size
         _write_all(fd, new)
         os.fsync(fd)
+        if os.fstat(fd).st_size != size + len(new):
+            # Something that ignores the lock changed the file between the last
+            # check and the write. It cannot be undone safely (the bytes that
+            # are there are not all ours), so say so instead of claiming success.
+            raise HistoryError(
+                "the history file changed while it was written; run "
+                "history-verify and restore from git if it reports damage"
+            )
         if size == 0:
             os.fsync(dir_fd)
         if not _same_file(dir_fd, path.name, fd):

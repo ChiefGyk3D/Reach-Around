@@ -768,6 +768,55 @@ def test_a_spent_budget_is_reported_once_and_never_as_a_fetch_failure() -> None:
     ]
 
 
+def test_a_budget_spent_inside_a_collector_passes_every_generic_handler() -> None:
+    """The budget signal is raised from inside the collector's own fetch calls,
+    where broad ``except Exception`` handlers turn failures into fixed words.
+    It must get through them, run cleanup, and be reported once."""
+    from reach_around.counts.insights import _BudgetSpent
+
+    cleaned: list[int] = []
+
+    def fetch(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        try:
+            raise _BudgetSpent
+        finally:
+            cleaned.append(1)  # unwinding ran the cleanup
+
+    sources = _threads_sources(3)
+    ok = frozenset(s.platform for s in sources)
+    _, failures = collect(sources, ok, TH_ENV, fetch, NOW)
+    assert cleaned == [1]
+    assert [(f.platform, f.word) for f in failures] == [
+        ("threads0", "budget_exhausted"),
+        ("threads1", "budget_exhausted"),
+        ("threads2", "budget_exhausted"),
+    ]
+    assert not issubclass(_BudgetSpent, Exception)
+
+
+def test_every_request_is_given_no_more_time_than_the_run_has_left() -> None:
+    now = [0.0]
+    seen: list[float] = []
+
+    def fetch(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        seen.append(kwargs["timeout"])
+        now[0] += 3.0
+        return {"data": []}
+
+    sources = _threads_sources(3)
+    ok = frozenset(s.platform for s in sources)
+    collect(
+        sources,
+        ok,
+        TH_ENV,
+        fetch,
+        NOW,
+        deadline_seconds=8.0,
+        clock=lambda: now[0],
+    )
+    assert seen == [8.0, 5.0, 2.0]  # the remaining time, never the full 10 s
+
+
 def test_collect_looks_at_no_more_sources_than_the_cap() -> None:
     calls: list[int] = []
 
