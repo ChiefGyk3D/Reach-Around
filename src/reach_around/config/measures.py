@@ -172,8 +172,8 @@ def registry_problems(registry: Mapping[str, MeasureDef]) -> list[str]:
             found.append(f"{key}: the key field says {entry.key!r}")
         if entry.unit not in UNITS:
             found.append(f"{key}: unit {entry.unit!r} is not a known unit")
-        if entry.visibility not in ("public", "gated"):
-            found.append(f"{key}: visibility must be public or gated")
+        if entry.visibility not in _RANK:
+            found.append(f"{key}: visibility must be public, gated or private")
         if len(entry.definition.strip()) < 20:
             found.append(f"{key}: the definition text is missing or too short")
         if not entry.changelog.strip():

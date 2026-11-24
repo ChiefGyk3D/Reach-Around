@@ -1041,11 +1041,14 @@ def _project(
     api: frozenset[str] | None = None,
 ) -> dict[str, Any]:
     resolved = resolve_metrics(kit, numbers)
+    shown = visible(compile_measures(kit, numbers, api), allowed)
     values: dict[str, Any] = {
         # What the renderer reads: only the measures this audience may see.
-        "measures": visible(compile_measures(kit, numbers, api), allowed),
+        "measures": shown,
         "metrics": resolved,
-        "unified_total": unified_total(resolved),
+        # An aggregate is derived from the visible measures only, never from the
+        # unfiltered metrics, so a private or gated source adds nothing to it.
+        "unified_total": summary_total(shown),
         "audience_summary": kit.audience_summary,
         # The loaded numbers, never the path. Kept out of every total.
         "imported_history": imported,

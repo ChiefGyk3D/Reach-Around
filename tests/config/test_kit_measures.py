@@ -105,12 +105,12 @@ def test_the_registry_check_bites() -> None:
 
     base = REGISTRY["followers"]
     em_dash = chr(0x2014)
-    private: Any = "private"
+    odd_level: Any = "hidden"
     for broken, word in (
         (replace(base, definition=""), "definition"),
         (replace(base, changelog=""), "changelog"),
         (replace(base, unit="widgets"), "unit"),
-        (replace(base, visibility=private), "visibility"),
+        (replace(base, visibility=odd_level), "visibility"),
         (replace(base, definition=f"Counts {em_dash} followers, always."), "dash"),
         (replace(base, key="other"), "key"),
     ):

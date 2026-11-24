@@ -48,9 +48,12 @@ from pathlib import Path
 from types import FrameType
 from typing import Literal, NoReturn
 
+from reach_around.config.blocks import platform_name
 from reach_around.config.cutover import cutover_label, live_since, utc_today
+from reach_around.config.engagement import percent_text
 from reach_around.config.imported_history import ImportedHistory, expected_text
 from reach_around.config.kit import (
+    DISPLAY_POLICY,
     KitConfig,
     enforce_display_policy,
     pdf_excluded_values,
@@ -74,6 +77,7 @@ from reach_around.site.kit import (
     _analytics_rows,
     _case_rows,
     _community,
+    _compact_number,
     _engagement_rows,
     _gated_strings,
     _imported_block,
@@ -380,6 +384,34 @@ def scrub_pdf(data: bytes, *, title: str, created: date) -> bytes:
 # --- the checks on the text -------------------------------------------------------
 
 
+_FIELD_OF_BLOCK = {"headline": "metrics", "tile": "analytics", "derived": "engagement"}
+
+
+def private_measure_strings(kit: KitConfig, numbers: Numbers | None) -> dict[str, str]:
+    """Renderings of every figure of a private measure, as the page would print
+    them (label and value together, and a long bare number), keyed by the field
+    they came from. Private measures are never expected; these must be absent."""
+    found: dict[str, str] = {}
+    for m in compile_measures(kit, numbers, None):
+        if m.visibility != "private" or m.value is None:
+            continue
+        field = _FIELD_OF_BLOCK[m.block]
+        if m.block == "derived":
+            text = (
+                percent_text(m.value) if m.unit == "percent" else shown_count(m.value)
+            )
+        elif m.block == "tile":
+            text = _compact_number(m.value)
+        else:
+            text = shown_count(m.value)
+        key = f"{field}.{m.key}.{m.label}"
+        found[f"{key} (platform)"] = platform_name(m.platform) + m.label + text
+        for bare in {f"{m.value:,}", str(m.value), text}:
+            if len(bare) >= GUARD_MIN_LENGTH:
+                found[f"{key} ({bare})"] = bare
+    return found
+
+
 def _measures(
     kit: KitConfig, numbers: Numbers | None, config: SiteConfig | None, public: bool
 ) -> list[Measure]:
@@ -575,6 +607,10 @@ def _expected_text(
         "testimonials",
         "demographics",
     ):
+        # Policy-aware: a field the table no longer gives the gated page is not
+        # expected (a private engagement figure is checked as absent instead).
+        if DISPLAY_POLICY[name] != "gated":
+            continue
         for index, item in enumerate(getattr(kit, name)):
             withheld = (
                 demographic_withheld(
@@ -743,6 +779,12 @@ def check_text(
                 f"the private field {field} appears in the PDF text; nothing was "
                 "written"
             )
+    for field, value in private_measure_strings(kit, numbers).items():
+        if _flat(value) in flat:
+            raise PdfLeakError(
+                f"a figure of the private field {field} appears in the PDF text; "
+                "nothing was written"
+            )
     if public:
         allowed = _public_pdf_values(kit, numbers)
         contact = canonical(kit.contact) if kit.contact is not None else ""
@@ -825,7 +867,12 @@ def build_kit_pdf(
     """Make the private PDF; see the module doc. ``protect`` lists more
     directories the output may not be in (the config's directory)."""
     kit = config.kit
-    if kit is None or (not kit.has_gated_content and not kit.engagement):
+    if kit is None or (
+        not kit.has_gated_content
+        and not any(
+            m.block == "derived" for m in _measures(kit, numbers, config, False)
+        )
+    ):
         raise PdfError(
             "the config has no gated media kit content (partners, case studies, "
             "packages, rates, engagement, testimonials, demographics or a "
