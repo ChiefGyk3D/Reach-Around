@@ -657,9 +657,10 @@ S3 to S5 after S2. S7 to S9 are independent of S3 to S6 after S2. Owner-only ste
 resources, tokens, plan, billing alert) sit at the start of S3, S6, S7 and S8 and are not done
 by any agent.
 
-## 11. Owner-only questions
+## 11. Owner-only questions (answered 2026-11-24)
 
-Each has a recommended answer first.
+All ten questions below are answered. The answers are in the next section; the questions and
+recommendations stay for the record.
 
 1. **Reset the migration baseline now (option A) or add forward rebuilds (option B)?**
    Recommended: A. It breaks the "never edit a released migration" rule once, which is safe only
@@ -691,3 +692,25 @@ Each has a recommended answer first.
    `ROLLUP_GRACE_HOURS`.
 10. **Leads database.** Separate issue (not in this design): move `leads` to its own database so
     no read credential for analytics reaches it. Recommended: file it.
+
+## 12. Owner decisions (2026-11-24)
+
+These answer the ten questions in section 11, in the same order.
+
+1. Reset both migration baselines (Worker and store) now.
+2. Raw events: split marginal points in Analytics Engine, 90-day retention. The privacy text and
+   threat model are updated in the code PR to state 90 days and exact timestamps.
+3. Workers Paid is the baseline, Free is best-effort, and a billing alert is set before the
+   shadow period. Billing is the owner's step and is shown first.
+4. Public stats JSON in KV: likely-human totals for 7 and 30 days, top 5 countries, top 5
+   sources, all floored, plus `as_of` and coverage. No page, link or city rows.
+5. Two D1 databases (public and owner_authorized). Collectors write through an ingest route
+   behind Access using a scoped Access service token (a rotated a/b pair in the secret manager's
+   dev environment). Which platforms' owner-authorized data move to the cloud is decided one
+   platform at a time later.
+6. R2 private bucket with lifecycle expiry equal to each platform's window (90 days where terms
+   are silent); D1 keeps a manifest row. Check read-only first whether R2 needs a payment method.
+7. The owner creates the Analytics Engine read token (Account Analytics Read only) as a rotated
+   a/b pair in dev when that slice is reached.
+8. Seal window: 48 hours after `ROLLUP_GRACE_HOURS`.
+9. Leads move to their own D1 database (separate issue).
