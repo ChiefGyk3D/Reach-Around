@@ -65,7 +65,7 @@ describe("config (default off, fail closed)", () => {
   });
   it("parses a good value with defaults", () => {
     const c = parseAlertsConfig('{"channels":["discord"],"events":["kit_unlocked"]}');
-    expect(c?.visitorEmail).toBe("full");
+    expect(c?.visitorEmail).toBe("masked");
     expect(c?.maxPerMinute).toBe(5);
   });
   it("sends nothing and never calls fetch when off or when the event is not enabled", async () => {

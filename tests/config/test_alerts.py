@@ -26,9 +26,29 @@ def test_default_is_off() -> None:
     assert worker_value(a) is None
 
 
-def test_channels_without_events_is_off() -> None:
-    assert worker_value(Alerts(channels=["discord"])) is None
-    assert worker_value(Alerts(events=["kit_unlocked"])) is None
+@pytest.mark.parametrize(
+    "one_sided",
+    [{"channels": ["discord"]}, {"events": ["kit_unlocked"]}],
+)
+def test_channels_without_events_or_the_reverse_is_refused(
+    one_sided: dict[str, object],
+) -> None:
+    with pytest.raises(ValidationError) as err:
+        Alerts(**one_sided)  # type: ignore[arg-type]
+    # The message itself names no value (pydantic's own repr of the input is
+    # the loader's concern; it reports loc and msg only).
+    text = " ".join(e["msg"] for e in err.value.errors())
+    assert "channels and events" in text
+    assert "discord" not in text and "kit_unlocked" not in text
+
+
+def test_visitor_email_defaults_to_masked() -> None:
+    assert Alerts().visitor_email == "masked"
+    v = worker_value(Alerts(channels=["discord"], events=["kit_unlocked"]))
+    assert v is not None
+    assert json.loads(v)["visitor_email"] == "masked"
+    full = Alerts(channels=["discord"], events=["kit_unlocked"], visitor_email="full")
+    assert Alerts.model_validate(full.model_dump()).visitor_email == "full"
 
 
 def test_worker_value_is_the_json_the_worker_parses() -> None:
@@ -38,7 +58,7 @@ def test_worker_value_is_the_json_the_worker_parses() -> None:
     assert json.loads(v) == {
         "channels": ["discord", "email"],
         "events": ["kit_unlocked"],
-        "visitor_email": "full",
+        "visitor_email": "masked",
         "max_per_minute": DEFAULT_MAX_PER_MINUTE,
     }
 
@@ -152,3 +172,19 @@ def test_build_manifest_carries_alerts_only_when_on() -> None:
     assert json.loads(json.loads(manifest_json(on))["alerts_config"])["channels"] == [
         "discord"
     ]
+
+
+def test_loader_error_for_one_sided_alerts_shows_no_input_values(
+    tmp_path: Path,
+) -> None:
+    from reach_around.config import ConfigError, load_site_config
+
+    base = Path(__file__).resolve().parents[2] / "examples/instance-variants/minimal"
+    text = (base / "site.yaml").read_text(encoding="utf-8")
+    cfg = tmp_path / "site.yaml"
+    cfg.write_text(text + "\nalerts:\n  channels: [discord]\n", encoding="utf-8")
+    with pytest.raises(ConfigError) as err:
+        load_site_config(cfg)
+    shown = str(err.value)
+    assert "channels and events" in shown
+    assert "discord" not in shown

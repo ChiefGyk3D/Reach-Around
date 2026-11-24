@@ -83,7 +83,7 @@
           "type": "integer"
         },
         "visitor_email": {
-          "default": "full",
+          "default": "masked",
           "enum": [
             "full",
             "masked",
@@ -3779,7 +3779,7 @@
           "allowed_hosts": []
         },
         "max_per_minute": 5,
-        "visitor_email": "full"
+        "visitor_email": "masked"
       }
     },
     "analytics": {
