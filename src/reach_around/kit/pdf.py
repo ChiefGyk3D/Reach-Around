@@ -98,6 +98,7 @@ from reach_around.site.kit import (
     audience_bases,
     canonical,
     demographic_withheld,
+    live_block,
     platform_counts,
     section_cards,
     text_fields,
@@ -393,7 +394,12 @@ def scrub_pdf(data: bytes, *, title: str, created: date) -> bytes:
 # --- the checks on the text -------------------------------------------------------
 
 
-_FIELD_OF_BLOCK = {"headline": "metrics", "tile": "analytics", "derived": "engagement"}
+_FIELD_OF_BLOCK = {
+    "headline": "metrics",
+    "tile": "analytics",
+    "derived": "engagement",
+    "live": "live",
+}
 
 
 def private_measure_strings(kit: KitConfig, numbers: Numbers | None) -> dict[str, str]:
@@ -403,8 +409,9 @@ def private_measure_strings(kit: KitConfig, numbers: Numbers | None) -> dict[str
 
     The forms are the ones the templates render: a headline row (platform, label,
     value), an analytics panel (the sync line, "Followers" with its compact value
-    and the real 30-day text, each tile's label with its compact value) and an
-    engagement row (measure name and value). A labeled form is specific enough to
+    and the real 30-day text, each tile's label with its compact value), an
+    engagement row (measure name and value) and a live card row (label and
+    value). A labeled form is specific enough to
     search for whatever its length; a bare number is searched for only from
     ``GUARD_MIN_LENGTH`` characters. Owner-defined labels are searched for alone
     unless a visible measure prints the same word."""
@@ -438,6 +445,10 @@ def private_measure_strings(kit: KitConfig, numbers: Numbers | None) -> dict[str
                 lead = f"{m.provenance}." if m.provenance else ""
                 note = f"{m.note}." if m.note else ""
                 found[f"{key} (printed row)"] = name + m.label + lead + note + text
+            elif m.block == "live":
+                # a live card row prints the label and the shown count
+                text = shown_count(m.value)
+                found[f"{key} (live row)"] = m.label + text
             elif m.block == "tile" and m.key == "followers_change_30d":
                 change = _change_text(followers.get(m.platform, 0), m.value)
                 if change:
@@ -656,6 +667,17 @@ def _expected_text(
         labeled = labeled or config is not None
         lead = card["headline"]
         found.append((where, lead["value"] + lead["label"]))
+        for row in card["rows"]:
+            found.append((where, row["label"] + row["value"]))
+    # The live block (#629): each platform's seven fields, or its empty line.
+    live = live_block(kit.live, measures, config, None, live_day)
+    for card in live["cards"] if live else []:
+        where = f"the live block {card['name']!r}"
+        found.append((where, card["name"]))
+        if card["empty"]:
+            found.append((where, card["no_numbers"]))
+            continue
+        labeled = labeled or config is not None
         for row in card["rows"]:
             found.append((where, row["label"] + row["value"]))
     # Only the public page prints recent posts; the gated page has no such section.

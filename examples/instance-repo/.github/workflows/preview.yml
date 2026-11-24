@@ -83,6 +83,7 @@ jobs:
             scripts/validate.sh
             scripts/write-result.py
             engine.lock
+            engine.release.json
             site.yaml
           sparse-checkout-cone-mode: false
           persist-credentials: false
@@ -98,7 +99,18 @@ jobs:
           cp -R trusted-src/scripts "$dir/scripts"
           cp trusted-src/engine.lock "$dir/engine.lock"
           if [ -f trusted-src/site.yaml ]; then cp trusted-src/site.yaml "$dir/base-site.yaml"; fi
+          # The release manifest binds the image, repository, commit and tag
+          # (issue #768). A base commit from before the manifest existed has none
+          # yet: say so; the deploy workflow refuses a lock without it.
+          if [ -f trusted-src/engine.release.json ]; then
+            cp trusted-src/engine.release.json "$dir/engine.release.json"
+          else
+            echo "::notice::the base commit has no engine.release.json yet; the release check is skipped in this preview"
+          fi
           chmod -R a-w "$dir"
+          if [ -f "$dir/engine.release.json" ]; then
+            bash "$dir/scripts/read-lock.sh" --release "$dir/engine.lock"
+          fi
           image="$(bash "$dir/scripts/read-lock.sh" ENGINE_IMAGE)"
           results="$(mktemp -d "$RUNNER_TEMP/preview-results.XXXXXX")"
           {
