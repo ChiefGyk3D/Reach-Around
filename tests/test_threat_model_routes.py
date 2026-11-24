@@ -84,6 +84,13 @@ def test_prefix_pattern_drift_is_reported(tmp_path: Path) -> None:
         routes_in_code(tmp_path)
 
 
+def test_kill_switch_text_does_not_claim_a_variable_only_change() -> None:
+    text = MODEL.read_text(encoding="utf-8")
+
+    assert "without a code deploy" not in text
+    assert "--keep-vars" in text
+
+
 def test_threat_model_states_each_page_view_fact_once() -> None:
     text = MODEL.read_text(encoding="utf-8")
 
