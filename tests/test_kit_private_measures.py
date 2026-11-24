@@ -492,6 +492,34 @@ def test_the_needles_are_the_forms_the_fediverse_cards_print(
     assert "Mean replies per post (30 days)" + "6,667" in values
 
 
+def test_two_fediverse_platforms_with_the_same_label_keep_both_needles(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    doc = fediverse_kit()
+    doc["sections"] = [{"platform": "mastodon"}, {"platform": "bluesky"}]
+    doc["fediverse"] = [
+        {
+            "platform": "mastodon",
+            "profile_url": "https://social.example/@example",
+            "as_of": "2027-03-08",
+            "followers": 48213,
+        },
+        {
+            "platform": "bluesky",
+            "profile_url": "https://bsky.example/profile/example",
+            "as_of": "2027-03-08",
+            "followers": 31377,
+        },
+    ]
+    kit = KitConfig.model_validate(doc)
+    make_private(monkeypatch, "fediverse")
+    values = set(private_measure_strings(kit, None).values())
+    label = REGISTRY["followers"].label
+    # both platforms print "Followers": neither needle may overwrite the other
+    assert label + shown_count(48213) in values
+    assert label + shown_count(31377) in values
+
+
 def test_a_stale_public_pdf_with_now_private_fediverse_figures_is_refused(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -512,6 +540,100 @@ def test_a_stale_public_pdf_with_now_private_fediverse_figures_is_refused(
     assert "".join(("Median boosts per post (30 days)" + "7,778").split()) in flat
     out.unlink()
     make_private(monkeypatch, "fediverse")
+    bless(site, gated)
+    with pytest.raises(PdfError, match="private"):
+        make_public()
+
+
+# --- the PeerTube, Lemmy, podcast, newsletter and blog block (#633) ------------
+
+
+def channels_kit() -> dict[str, Any]:
+    doc = kit_doc()  # an unrelated gated partner keeps the full PDF eligible
+    doc["sections"] = [
+        {"platform": "peertube"},
+        {"platform": "newsletter"},
+        {"platform": "blog"},
+    ]
+    doc["channels"] = [
+        {
+            "platform": "peertube",
+            "url": "https://video.example/c/example",
+            "as_of": "2027-03-08",
+            "subscribers": 48213,
+            "watch_time_hours": 90417,
+            "avg_watch_seconds": 7777,
+            "unique_viewers": 6666,
+        },
+        {
+            "platform": "newsletter",
+            "as_of": "2027-03-08",
+            "subscribers": 5151,
+            "delivered": 4242,
+            "clicks": 313,
+        },
+        {
+            "platform": "blog",
+            "as_of": "2027-03-08",
+            "views": 12321,
+        },
+    ]
+    return doc
+
+
+def test_the_needles_are_the_forms_the_channel_cards_print(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    kit = KitConfig.model_validate(channels_kit())
+    assert private_measure_strings(kit, None) == {}
+    make_private(monkeypatch, "channels")
+    needles = private_measure_strings(kit, None)
+    assert {key.split(".")[0] for key in needles} == {"channels"}
+    assert all(needles.values())
+    values = set(needles.values())
+    assert REGISTRY["subscribers"].label + shown_count(48213) in values
+    # two platforms share the key and the label: both needles must survive
+    assert REGISTRY["subscribers"].label + shown_count(5151) in values
+    assert REGISTRY["peertube_watch_time_30d"].label + "90,417" in values
+    assert REGISTRY["peertube_avg_watch_time"].label + "7,777" in values
+    assert REGISTRY["newsletter_delivered"].label + "4,242" in values
+    assert REGISTRY["newsletter_clicks"].label + "313" in values
+    assert REGISTRY["blog_views_30d"].label + "12,321" in values
+
+
+def test_a_small_non_people_channel_figure_is_needled_as_it_prints(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    doc = channels_kit()
+    doc["channels"][1]["clicks"] = 3  # prints "3": only people counts take the floor
+    kit = KitConfig.model_validate(doc)
+    make_private(monkeypatch, "channels")
+    values = set(private_measure_strings(kit, None).values())
+    assert REGISTRY["newsletter_clicks"].label + "3" in values
+    assert REGISTRY["newsletter_clicks"].label + "Under 5" not in values
+
+
+def test_a_stale_public_pdf_with_now_private_channel_figures_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config, site, gated = build_instance(tmp_path, make_config(channels_kit()))
+
+    def make_public() -> Path:
+        return build_public_kit_pdf(
+            config,
+            site_dir=site,
+            out_dir=tmp_path / "private",
+            name="kit-public.pdf",
+            created=date(2027, 3, 10),
+            renderer=fake_renderer,
+        ).path
+
+    out = make_public()  # control: the channel cards print while they are public
+    flat = "".join(" ".join(extract_pages(out.read_bytes())).split())
+    label = REGISTRY["newsletter_delivered"].label
+    assert "".join((label + "4,242").split()) in flat
+    out.unlink()
+    make_private(monkeypatch, "channels")
     bless(site, gated)
     with pytest.raises(PdfError, match="private"):
         make_public()

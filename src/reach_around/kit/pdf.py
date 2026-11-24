@@ -49,6 +49,7 @@ from types import FrameType
 from typing import Literal, NoReturn
 
 from reach_around.config.blocks import platform_name
+from reach_around.config.channels import PEOPLE_KEYS
 from reach_around.config.cutover import cutover_label, live_since, utc_today
 from reach_around.config.engagement import percent_text
 from reach_around.config.imported_history import ImportedHistory, expected_text
@@ -400,6 +401,7 @@ _FIELD_OF_BLOCK = {
     "derived": "engagement",
     "live": "live",
     "fediverse": "fediverse",
+    "channels": "channels",
 }
 
 
@@ -429,7 +431,8 @@ def private_measure_strings(kit: KitConfig, numbers: Numbers | None) -> dict[str
         if m.visibility != "private":
             continue
         field = _FIELD_OF_BLOCK[m.block]
-        key = f"{field}.{m.key}.{m.label}"
+        # the platform is part of the key: two platforms may share a key and a label
+        key = f"{field}.{m.platform}.{m.key}.{m.label}"
         name = platform_name(m.platform)
         if m.value is not None:
             text = ""
@@ -456,6 +459,11 @@ def private_measure_strings(kit: KitConfig, numbers: Numbers | None) -> dict[str
                 # median/mean prints as it is
                 text = shown_count(m.value) if m.key == "followers" else f"{m.value:,}"
                 found[f"{key} (fediverse row)"] = m.label + text
+            elif m.block == "channels":
+                # a channel card row prints the label and the figure: a count of
+                # people keeps the floor, the rest prints as typed
+                text = shown_count(m.value) if m.key in PEOPLE_KEYS else f"{m.value:,}"
+                found[f"{key} (channel row)"] = m.label + text
             elif m.block == "tile" and m.key == "followers_change_30d":
                 change = _change_text(followers.get(m.platform, 0), m.value)
                 if change:
@@ -666,7 +674,7 @@ def _expected_text(
     # The platform cards (#628): each card's name, its "No numbers yet" line or
     # its numbers with their labels, from the same measures the page was built from.
     for card in section_cards(
-        kit.sections, measures, config, None, live_day, kit.fediverse
+        kit.sections, measures, config, None, live_day, kit.fediverse, kit.channels
     ):
         where = f"the platform card {card['name']!r}"
         found.append((where, card["name"] + (card["account"] or "")))
@@ -682,9 +690,10 @@ def _expected_text(
         # plain URL (a PDF is read on paper) and each "not provided" line.
         if card["server_note"]:
             found.append((where, card["server_note"]))
-        for url in {r["recheck"] for r in card["rows"] if r["recheck"]} | (
-            {card["recheck"]} if card["recheck"] else set()
-        ):
+        lead_link = card["headline"]["recheck"] if card["headline"] else ""
+        for url in {r["recheck"] for r in card["rows"] if r["recheck"]} | {
+            link for link in (card["recheck"], lead_link) if link
+        }:
             found.append((where, url))
         for line in card["not_provided"]:
             found.append((where, line))
