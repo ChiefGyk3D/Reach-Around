@@ -147,14 +147,17 @@ about one person.
    export. An event time that is not on the hour is shown as its hour.
 
    The command prints the database it expects the export to come from
-   (`database: reach-around-leads`) and refuses `--database` with a name that
-   does not contain `leads`, so an export taken from the analytics database is
-   not used. A wrangler export does not name its database, so this checks the
-   name you give, not the file: take the export from the leads database only.
+   (`database: reach-around-leads`) and accepts `--database` only with exactly
+   that name. A wrangler export does not name its database, so this is a guard
+   against naming the wrong one, not proof of where the file came from: take the
+   export from the leads database only.
 
    Typing the address on the command line is refused by this tool, but that does
    not undo what a shell already did: if you typed it after `--email`, your shell
    history and the process list already hold it. Use stdin or a file.
+   `leads delete` still accepts `--email ADDRESS` for compatibility and prints a
+   warning when you use it; the same history and process-list exposure applies,
+   so use `--email -`.
 
 3. Copy the printed lines into your written reply, and add the copies the tool
    cannot see (alert copies in your chat room or mailbox, inquiry text, hand-made

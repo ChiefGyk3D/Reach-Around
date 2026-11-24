@@ -177,7 +177,8 @@ class TestYes:
         # The address appears nowhere: not in the SQL, not in the messages.
         for stream in (out, err):
             assert "partner" not in stream and "example.test" not in stream
-        assert "1 lead" in err and "p***@***.test" in err
+        # Fixed message: no form of the address reaches stderr (it can be logged).
+        assert "1 lead matches." in err and "***" not in err
 
     def test_normalizes_before_matching(
         self, capsys: pytest.CaptureFixture[str], export: Path

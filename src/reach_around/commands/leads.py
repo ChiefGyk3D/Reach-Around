@@ -240,7 +240,12 @@ def _load_rows(path: Path) -> list[Any]:
 
 def load_leads(path: Path) -> list[tuple[str, str]]:
     """Validated ``(id, email)`` pairs from a ``wrangler d1 execute --json`` file."""
-    return [_check_row(row) for row in _load_rows(path)]
+    pairs = [_check_row(row) for row in _load_rows(path)]
+    # One id for two rows means a stale or joined export: refuse it before any
+    # address is matched, never pick one of the rows.
+    if len({lead_id for lead_id, _ in pairs}) != len(pairs):
+        raise LeadsError("export: a lead id appears more than once")
+    return pairs
 
 
 # ---------------------------------------------------------------------------
@@ -381,17 +386,20 @@ def _address_from_file(arg: str) -> str:
 # name that contains "leads", the convention docs/deploy.md and
 # scripts/backup-d1.sh also use, so the analytics database is refused.
 LEADS_DATABASE = "reach-around-leads"
-_DB_NAME = re.compile(r"[A-Za-z0-9._-]{1,64}")
 
 
 def _database(name: str | None) -> str:
-    name = LEADS_DATABASE if name is None else name
-    if not _DB_NAME.fullmatch(name) or "leads" not in name.lower():
+    """Only the one leads database name is accepted (an exact match).
+
+    This is a guard against a wrong name, not proof of where an export came
+    from: the export carries no database identity.
+    """
+    if name is not None and name != LEADS_DATABASE:
         raise LeadsError(
-            "--database must name the leads database (a name that contains "
-            "'leads'); an export from the analytics database is refused"
+            f"--database must be exactly {LEADS_DATABASE}; an export from any "
+            "other database is refused"
         )
-    return name
+    return LEADS_DATABASE
 
 
 def run_show(args: argparse.Namespace) -> int:
@@ -502,6 +510,13 @@ def run_delete(args: argparse.Namespace) -> int:
         print(f"error: {exc}", file=sys.stderr)
         return EXIT_USAGE
     print(f"database: {database} (the export must have come from it)", file=sys.stderr)
+    if args.email != "-":
+        print(
+            "warning: the address was given on the command line, so your shell "
+            "history and the process list hold it. Use --email - and type it on "
+            "stdin next time",
+            file=sys.stderr,
+        )
     ids = [lead_id for lead_id, stored in leads if stored == email]
     masked = mask_email(email)
     if not ids:
@@ -529,7 +544,7 @@ def run_delete(args: argparse.Namespace) -> int:
         print(f"error: {exc}", file=sys.stderr)
         return EXIT_USAGE
     print(
-        f"1 lead matches {masked}. The SQL for it is on stdout. Apply it to the "
+        "1 lead matches. The SQL for it is on stdout. Apply it to the "
         f"leads database {database} only, and check that the read-back says 0:\n"
         f"npx wrangler d1 execute {database} --remote --file delete-lead.sql",
         file=sys.stderr,
@@ -579,8 +594,8 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
         "--database",
         default=None,
         metavar="NAME",
-        help=f"the leads D1 database the export came from (default "
-        f"{LEADS_DATABASE}); a name without 'leads' is refused",
+        help=f"the database the export came from; only {LEADS_DATABASE} "
+        "(the default) is accepted",
     )
     delete.set_defaults(func=run_delete)
 
@@ -609,7 +624,7 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
         "--database",
         default=None,
         metavar="NAME",
-        help=f"the leads D1 database the export came from (default "
-        f"{LEADS_DATABASE}); a name without 'leads' is refused",
+        help=f"the database the export came from; only {LEADS_DATABASE} "
+        "(the default) is accepted",
     )
     show.set_defaults(func=run_show)

@@ -412,13 +412,26 @@ def test_show_database_is_named_and_defaults_to_the_leads_database(
     assert code == 0
     assert "database: reach-around-leads" in err
     code, out, err = show(
-        capsys, monkeypatch, export, ADDR + "\n", "--database", "my-leads-db"
+        capsys, monkeypatch, export, ADDR + "\n", "--database", "reach-around-leads"
     )
-    assert code == 0 and "database: my-leads-db" in err
+    assert code == 0 and "database: reach-around-leads" in err
 
 
 @pytest.mark.parametrize(
-    "name", ["reach-around-clicks", "analytics", "DB", "x;rm -rf", "leads" + "x" * 80]
+    "name",
+    [
+        "reach-around-clicks",
+        "analytics",
+        "DB",
+        "x;rm -rf",
+        "leads" + "x" * 80,
+        # contained "leads" but are not the leads database
+        "analytics-leads",
+        "leads",
+        "LEADS-backup",
+        "Reach-Around-Leads",
+        "my-leads-db",
+    ],
 )
 def test_show_refuses_an_export_from_a_database_that_is_not_the_leads_one(
     capsys: pytest.CaptureFixture[str],
@@ -473,6 +486,70 @@ def test_delete_names_the_leads_database_and_refuses_the_analytics_one(
         assert code == 2
         assert "DELETE" not in captured.out + captured.err
         assert ADDR not in captured.err
+
+
+@pytest.mark.parametrize("name", ["analytics-leads", "leads", "LEADS-backup"])
+def test_delete_refuses_a_database_name_that_only_contains_leads(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    delete_export: Path,
+    name: str,
+) -> None:
+    monkeypatch.setattr("sys.stdin", io.StringIO(ADDR + "\n"))
+    argv = ["leads", "delete", "--input", str(delete_export), "--email", "-", "--yes"]
+    code = main([*argv, "--database", name])
+    captured = capsys.readouterr()
+    assert code == 2
+    assert "DELETE" not in captured.out + captured.err
+    assert "wrangler" not in captured.out + captured.err
+
+
+@pytest.mark.parametrize("second_addr", [ADDR, "other@example.test"])
+def test_delete_refuses_a_lead_id_that_appears_twice(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    second_addr: str,
+) -> None:
+    rows = [{"id": ID_A, "email": ADDR}, {"id": ID_A, "email": second_addr}]
+    path = write(tmp_path / "d.json", blocks(rows))
+    monkeypatch.setattr("sys.stdin", io.StringIO(ADDR + "\n"))
+    code = main(["leads", "delete", "--input", str(path), "--email", "-", "--yes"])
+    captured = capsys.readouterr()
+    assert code == 2
+    assert "DELETE" not in captured.out
+    assert "a lead id appears more than once" in captured.err
+    for text in (ADDR, second_addr, ID_A):
+        assert text not in captured.err
+
+
+def test_delete_success_writes_no_form_of_the_address_to_stderr(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    delete_export: Path,
+) -> None:
+    monkeypatch.setattr("sys.stdin", io.StringIO(ADDR + "\n"))
+    argv = ["leads", "delete", "--input", str(delete_export), "--email", "-", "--yes"]
+    code = main(argv)
+    err = capsys.readouterr().err
+    assert code == 0
+    assert "***" not in err and "partner" not in err
+
+
+def test_delete_with_the_address_on_argv_warns_and_never_echoes_it(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    delete_export: Path,
+) -> None:
+    code = main(["leads", "delete", "--input", str(delete_export), "--email", ADDR])
+    err = capsys.readouterr().err
+    assert code == 0
+    assert "warning" in err.lower() and "shell history" in err
+    assert ADDR not in err
+    # The stdin form carries no warning.
+    monkeypatch.setattr("sys.stdin", io.StringIO(ADDR + "\n"))
+    main(["leads", "delete", "--input", str(delete_export), "--email", "-"])
+    assert "warning" not in capsys.readouterr().err.lower()
 
 
 def test_delete_errors_never_carry_the_masked_address(
