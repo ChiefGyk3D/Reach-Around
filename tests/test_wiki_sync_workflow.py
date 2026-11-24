@@ -14,7 +14,7 @@ WORKFLOW = (
 )
 
 
-def load() -> dict[str, Any]:
+def load() -> dict[Any, Any]:
     data = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
     assert isinstance(data, dict)
     return data
