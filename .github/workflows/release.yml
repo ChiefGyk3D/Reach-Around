@@ -48,24 +48,7 @@ jobs:
         env:
           TAG: ${{ github.ref_name }}
           REPO_URL: ${{ github.server_url }}/${{ github.repository }}
-        run: |
-          # Accepted grammar, exactly: v, then MAJOR.MINOR.PATCH, each an ASCII
-          # number with no leading zero (0 or 1-9 then digits). No prerelease,
-          # no build metadata, no uppercase V, no non-ASCII digits. Anything
-          # else fails closed: it could otherwise publish `latest` unordered.
-          export LC_ALL=C
-          semver='^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'
-          if ! [[ "$TAG" =~ $semver ]]; then
-            echo "tag '${TAG}' is not a plain vMAJOR.MINOR.PATCH tag (no prerelease, build metadata or leading zeros); refusing to publish it" >&2
-            exit 1
-          fi
-          tags="$(git ls-remote --tags --refs "$REPO_URL" 'refs/tags/v*')" || exit 1
-          highest="$(printf '%s\n' "$tags" | sed 's#.*refs/tags/##' |
-            grep -E "$semver" | sort -V | tail -n 1)"
-          if [ "$highest" != "$TAG" ]; then
-            echo "tag '${TAG}' is not the highest release tag ('${highest}'); refusing to publish it over a newer one" >&2
-            exit 1
-          fi
+        run: bash .github/scripts/check-release-tag.sh
 
   release:
     name: Build, scan, publish, sign
@@ -80,13 +63,12 @@ jobs:
     with:
       dockerfile: Containerfile
       push: true
-      # The version comes from the tag. Alpha: no major-only tag, and `latest`
-      # follows the newest release tag.
+      # The version comes from the tag. Only the immutable tags are written here;
+      # `latest` and MAJOR.MINOR move in the promote job below, after the
+      # release tag is checked again against the remote. Alpha: no major-only tag.
       tags: |
         type=semver,pattern={{version}}
-        type=semver,pattern={{major}}.{{minor}}
         type=sha
-        type=raw,value=latest
       docker-test-command: docker run --rm "$IMAGE" --version
       require-non-root: true
       probe-read-only: true
@@ -107,3 +89,28 @@ jobs:
       # a per-repository pin needs a GYST input (tracked there).
       identity-regexp: ^https://github.com/ChiefGyk3D/git-your-ship-together/\.github/workflows/container-release\.yml@
       test-command: docker run --rm "$IMAGE" --version
+
+  # Moves `latest` and MAJOR.MINOR to the verified image. The tag is checked
+  # again in the same step as the retag, so a newer tag pushed, or this tag
+  # moved, while the build ran stops the promotion. The runs share one
+  # repository-wide concurrency group, so no other release promotes meanwhile.
+  promote:
+    name: Promote the moving tags
+    needs: [check-version, release, verify]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      packages: write  # retag the already published image on GHCR
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Re-check the tag, then retag
+        env:
+          TAG: ${{ github.ref_name }}
+          REPO_URL: ${{ github.server_url }}/${{ github.repository }}
+          IMAGE: ${{ needs.release.outputs.image }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ACTOR: ${{ github.actor }}
+        run: bash .github/scripts/promote-release-tags.sh

@@ -29,36 +29,123 @@ def test_the_concurrency_group_is_repo_wide_and_never_cancels() -> None:
     assert conc["cancel-in-progress"] is False
 
 
-def _order_step() -> str:
-    steps = load()["jobs"]["check-version"]["steps"]
-    for step in steps:
-        if "highest release tag" in step.get("name", ""):
-            return str(step["run"])
-    raise AssertionError("no ordering step")
+SCRIPTS = ROOT / ".github" / "scripts"
+CHECK = SCRIPTS / "check-release-tag.sh"
+PROMOTE = SCRIPTS / "promote-release-tags.sh"
+SHA = "1" * 40
+OTHER_SHA = "2" * 40
+DIGEST = "sha256:" + "a" * 64
+IMAGE = f"ghcr.io/example/app@{DIGEST}"
+
+# A stand-in `git` that answers only `ls-remote [--tags] [--refs] URL PATTERN...`
+# from a fixture, and exits non-zero for any other argument or another URL, so a
+# wrong repository, a missing --refs or a stray option is a test failure.
+GIT_STUB = r"""#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$STUB_LOG"
+[ "$1" = ls-remote ] || exit 99
+shift
+refs=0; url=""; pats=()
+for a in "$@"; do
+  case "$a" in
+    --tags) ;;
+    --refs) refs=1 ;;
+    -*) exit 98 ;;
+    *) if [ -z "$url" ]; then url="$a"; else pats+=("$a"); fi ;;
+  esac
+done
+[ "$url" = "https://example.invalid/r" ] || exit 97
+while IFS=$'\t' read -r sha ref; do
+  [ -n "$ref" ] || continue
+  if [ "$refs" = 1 ] && [[ "$ref" == *'^{}' ]]; then continue; fi
+  for p in "${pats[@]}"; do
+    case "$ref" in $p) printf '%s\t%s\n' "$sha" "$ref"; break ;; esac
+  done
+done < "$STUB_REMOTE"
+"""
+
+DOCKER_STUB = r"""#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$STUB_DOCKER_LOG"
+if [ "$1" = login ]; then cat > "$STUB_DOCKER_LOGIN_STDIN"; fi
+"""
+
+
+def _env(
+    tmp_path: Path,
+    tag: str,
+    remote: list[str],
+    *,
+    sha: str = SHA,
+    points: dict[str, str] | None = None,
+    annotated: tuple[str, ...] = (),
+) -> dict[str, str]:
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir(exist_ok=True)
+    for name, body in (("git", GIT_STUB), ("docker", DOCKER_STUB)):
+        stub = bin_dir / name
+        stub.write_text(body)
+        stub.chmod(0o755)
+    lines: list[str] = []
+    for name in remote:
+        target = (points or {}).get(name, SHA)
+        if name in annotated:
+            lines.append(f"{'f' * 40}\trefs/tags/{name}")
+            lines.append(f"{target}\trefs/tags/{name}^{{}}")
+        else:
+            lines.append(f"{target}\trefs/tags/{name}")
+    (tmp_path / "remote.txt").write_text("\n".join(lines) + "\n")
+    return {
+        "PATH": f"{bin_dir}:{os.environ['PATH']}",
+        "TAG": tag,
+        "REPO_URL": "https://example.invalid/r",
+        "GITHUB_SHA": sha,
+        "STUB_REMOTE": str(tmp_path / "remote.txt"),
+        "STUB_LOG": str(tmp_path / "git.log"),
+        "STUB_DOCKER_LOG": str(tmp_path / "docker.log"),
+        "STUB_DOCKER_LOGIN_STDIN": str(tmp_path / "login.stdin"),
+        "IMAGE": IMAGE,
+        "GH_TOKEN": "synthetic-token-value",
+        "ACTOR": "someone",
+    }
 
 
 def _run(
-    tmp_path: Path, tag: str, remote: list[str]
+    tmp_path: Path,
+    tag: str,
+    remote: list[str],
+    *,
+    sha: str = SHA,
+    points: dict[str, str] | None = None,
+    annotated: tuple[str, ...] = (),
 ) -> subprocess.CompletedProcess[str]:
-    bin_dir = tmp_path / "bin"
-    bin_dir.mkdir(exist_ok=True)
-    git = bin_dir / "git"
-    lines = "\n".join(f"deadbeef\trefs/tags/{t}" for t in remote)
-    git.write_text(f"#!/usr/bin/env bash\ncat <<'EOF'\n{lines}\nEOF\n")
-    git.chmod(0o755)
-    script = tmp_path / "step.sh"
-    script.write_text(_order_step())
+    env = _env(tmp_path, tag, remote, sha=sha, points=points, annotated=annotated)
     return subprocess.run(  # noqa: S603 - fixed argv, stub git
-        ["/bin/bash", "-eo", "pipefail", str(script)],  # noqa: S607
-        env={
-            "PATH": f"{bin_dir}:{os.environ['PATH']}",
-            "TAG": tag,
-            "REPO_URL": "https://example.invalid/r",
-        },
+        ["/bin/bash", str(CHECK)],
+        env=env,
         capture_output=True,
         text=True,
         check=False,
     )
+
+
+def _promote(
+    tmp_path: Path,
+    tag: str,
+    remote: list[str],
+    **kwargs: Any,
+) -> subprocess.CompletedProcess[str]:
+    env = _env(tmp_path, tag, remote, **kwargs)
+    return subprocess.run(  # noqa: S603 - fixed argv, stub git and docker
+        ["/bin/bash", str(PROMOTE)],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+def _docker_calls(tmp_path: Path) -> list[str]:
+    log = tmp_path / "docker.log"
+    return log.read_text().splitlines() if log.exists() else []
 
 
 def test_the_highest_tag_may_publish(tmp_path: Path) -> None:
@@ -123,3 +210,130 @@ def test_the_trigger_is_narrowed_beyond_a_bare_v_glob() -> None:
     tags = cast("dict[Any, Any]", load())[True]["push"]["tags"]
     assert "v*" not in tags
     assert tags == ["v[0-9]*.[0-9]*.[0-9]*"]
+
+
+def test_a_tag_recreated_at_another_commit_is_refused(tmp_path: Path) -> None:
+    # The run was triggered for SHA; the tag now points at OTHER_SHA.
+    done = _run(tmp_path, "v2.0.0", ["v2.0.0"], points={"v2.0.0": OTHER_SHA})
+    assert done.returncode == 1, done.stdout + done.stderr
+    assert "not the triggering commit" in done.stderr
+
+
+def test_a_deleted_tag_is_refused(tmp_path: Path) -> None:
+    done = _run(tmp_path, "v2.0.0", ["v1.0.0"])
+    assert done.returncode == 1
+    assert "no longer exists" in done.stderr
+
+
+def test_an_annotated_tag_is_compared_by_its_peeled_commit(tmp_path: Path) -> None:
+    ok = _run(tmp_path, "v2.0.0", ["v2.0.0"], annotated=("v2.0.0",))
+    assert ok.returncode == 0, ok.stderr
+    moved = _run(
+        tmp_path,
+        "v2.0.0",
+        ["v2.0.0"],
+        annotated=("v2.0.0",),
+        points={"v2.0.0": OTHER_SHA},
+    )
+    assert moved.returncode == 1
+    assert "not the triggering commit" in moved.stderr
+
+
+def test_a_malformed_event_sha_is_refused(tmp_path: Path) -> None:
+    done = _run(tmp_path, "v2.0.0", ["v2.0.0"], sha="not-a-sha")
+    assert done.returncode == 1
+
+
+def test_the_check_queries_the_named_repository_for_tags_and_refs(
+    tmp_path: Path,
+) -> None:
+    done = _run(tmp_path, "v1.0.0", ["v1.0.0"])
+    assert done.returncode == 0, done.stderr
+    calls = (tmp_path / "git.log").read_text().splitlines()
+    assert (
+        "ls-remote https://example.invalid/r refs/tags/v1.0.0 refs/tags/v1.0.0^{}"
+        in calls
+    )
+    assert "ls-remote --tags --refs https://example.invalid/r refs/tags/v*" in calls
+
+
+def test_both_checks_run_the_same_script_from_the_workflow() -> None:
+    jobs = load()["jobs"]
+    check = [
+        s for s in jobs["check-version"]["steps"] if "highest" in s.get("name", "")
+    ]
+    assert check[0]["run"] == "bash .github/scripts/check-release-tag.sh"
+    promote = jobs["promote"]["steps"][-1]
+    assert promote["run"] == "bash .github/scripts/promote-release-tags.sh"
+    # The shipped script, not a copy, is what the promote script calls.
+    assert "check-release-tag.sh" in PROMOTE.read_text()
+
+
+def test_the_release_job_waits_for_the_checks_and_writes_no_moving_tag() -> None:
+    jobs = load()["jobs"]
+    assert "check-version" in jobs["release"]["needs"]
+    tags = jobs["release"]["with"]["tags"]
+    assert "latest" not in tags
+    assert "{{major}}" not in tags
+    assert "type=semver,pattern={{version}}" in tags
+
+
+def test_promotion_waits_for_every_job_and_keeps_least_privilege() -> None:
+    data = load()
+    promote = data["jobs"]["promote"]
+    assert set(promote["needs"]) == {"check-version", "release", "verify"}
+    assert promote["permissions"] == {"contents": "read", "packages": "write"}
+    assert data["permissions"] == {"contents": "read"}
+
+
+def test_promotion_retags_the_digest_after_a_passing_check(tmp_path: Path) -> None:
+    done = _promote(tmp_path, "v1.2.3", ["v1.2.3", "v1.2.2"])
+    assert done.returncode == 0, done.stdout + done.stderr
+    calls = _docker_calls(tmp_path)
+    assert any(c.startswith("login ghcr.io") and "--password-stdin" in c for c in calls)
+    assert "synthetic-token-value" not in "\n".join(calls)
+    create = [c for c in calls if c.startswith("buildx imagetools create")]
+    assert create == [
+        "buildx imagetools create --tag ghcr.io/example/app:latest "
+        f"--tag ghcr.io/example/app:1.2 {IMAGE}"
+    ]
+
+
+def test_promotion_is_refused_when_a_newer_tag_appeared_after_the_first_check(
+    tmp_path: Path,
+) -> None:
+    done = _promote(tmp_path, "v1.0.0", ["v1.0.0", "v2.0.0"])
+    assert done.returncode == 1
+    assert "not the highest" in done.stderr
+    assert _docker_calls(tmp_path) == []
+
+
+def test_promotion_is_refused_when_the_tag_moved(tmp_path: Path) -> None:
+    done = _promote(tmp_path, "v1.0.0", ["v1.0.0"], points={"v1.0.0": OTHER_SHA})
+    assert done.returncode == 1
+    assert _docker_calls(tmp_path) == []
+
+
+@pytest.mark.parametrize(
+    "image",
+    [
+        "",
+        "ghcr.io/example/app:latest",
+        f"docker.io/x/y@{DIGEST}",
+        "ghcr.io/E/x@sha256:ab",
+    ],
+)
+def test_promotion_refuses_an_image_that_is_not_a_ghcr_digest(
+    tmp_path: Path, image: str
+) -> None:
+    env = _env(tmp_path, "v1.0.0", ["v1.0.0"])
+    env["IMAGE"] = image
+    done = subprocess.run(  # noqa: S603 - fixed argv
+        ["/bin/bash", str(PROMOTE)],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert done.returncode == 1
+    assert _docker_calls(tmp_path) == []

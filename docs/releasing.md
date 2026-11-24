@@ -57,7 +57,9 @@ fragments folded into `[Unreleased]` and writes nothing. Only `release` (below) 
 4. Watch the `Release` run. The first job fails the release if the tag is not exactly
    `v` plus `__version__`.
 5. Image tags come from the tag: `0.1.0`, `0.1`, `latest` and `sha-<short>`. There is no
-   major-only tag while the project is `0.x`.
+   major-only tag while the project is `0.x`. `0.1.0` and `sha-<short>` are written by
+   the build; `0.1` and `latest` move in a last job, after the image is verified, and
+   only if the tag still points at the released commit and is still the highest tag.
 6. Confirm the package is visible the way you want it. A new GHCR package inherits
    the repository's visibility. This repository is public, so the image is public and
    pulling it needs no sign-in. A fork that is private gets a private image, and pulling
