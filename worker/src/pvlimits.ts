@@ -33,6 +33,8 @@ export const PV_FIXED_DAILY_WRITES = 2_540;
 
 /** The lane row an accepted view writes while BEACON_MODE is observe or enforce (view.ts, pvl-<lane>-<site>). */
 export const PV_LANE_ROWS_PER_VIEW = 1;
+/** The city counter row an accepted view writes while a site's geography level is city (view.ts, view_city_daily). */
+export const PV_CITY_ROWS_PER_VIEW = 1;
 /** The text-valued variable pageViewDailyWrites also reads (not a number, so the deploy gate checks it apart). */
 export const PAGE_VIEW_MODE_VARS = ["BEACON_MODE"] as const;
 
@@ -46,6 +48,8 @@ export interface PageViewBudgetEnv extends SitesEnv {
   ACCOUNT_BOT_VIEWS_PER_HOUR?: string;
   /** off (default), observe or enforce: observe and enforce add one lane row per accepted view. */
   BEACON_MODE?: string;
+  /** country, region (default) or city: city adds one counter row per accepted view. */
+  GEO_LEVEL?: string;
 }
 
 /**
@@ -63,6 +67,14 @@ export function pageViewSiteCount(env: SitesEnv): number {
 /** Accepted views per hour that can bind, for one class: the lower of all sites' budgets and the account ceiling. */
 function bindingPerHour(perSite: number, sites: number, account: number): number {
   return Math.min(sites * perSite, account);
+}
+
+/** True when any served view could be written at level city (the Worker reads an unusable level as region). */
+function cityLevelPossible(env: PageViewBudgetEnv): boolean {
+  if ((env.GEO_LEVEL ?? "").toLowerCase() === "city") return true;
+  const r = loadSites(env);
+  if (r.errors.length > 0) return true;
+  return r.sites.some((s) => s.geo === "city");
 }
 
 /**
@@ -89,5 +101,8 @@ export function pageViewDailyWrites(env: PageViewBudgetEnv, sites?: number): num
   // empty counts as on (the worst case, never zero).
   const m = e.BEACON_MODE;
   const lane = m === undefined || m === "" || m === "off" ? 0 : PV_LANE_ROWS_PER_VIEW;
-  return Math.ceil((views * (PV_WRITES_PER_VIEW.num + lane * PV_WRITES_PER_VIEW.den)) / PV_WRITES_PER_VIEW.den) + PV_FIXED_DAILY_WRITES;
+  // Likewise one city counter row per view when the level is city for the global default or any site; a
+  // configuration that does not load counts as city (the worst case).
+  const city = cityLevelPossible(e) ? PV_CITY_ROWS_PER_VIEW : 0;
+  return Math.ceil((views * (PV_WRITES_PER_VIEW.num + (lane + city) * PV_WRITES_PER_VIEW.den)) / PV_WRITES_PER_VIEW.den) + PV_FIXED_DAILY_WRITES;
 }

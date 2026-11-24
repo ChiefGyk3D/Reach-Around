@@ -98,6 +98,8 @@ jobs:
       - name: Read the engine pin
         run: |
           set -eu
+          # The image, repository, commit and tag must describe one release.
+          scripts/read-lock.sh --release
           {
             echo "ENGINE_REPO=$(scripts/read-lock.sh ENGINE_REPO)"
             echo "ENGINE_REF=$(scripts/read-lock.sh ENGINE_REF)"

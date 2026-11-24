@@ -1198,8 +1198,9 @@ def test_insights_never_send_the_old_token_after_a_rotation() -> None:
     stored: list[str] = []
 
     class Sink:
-        def store(self, token: Any, name: str, source: str, expires_on: Any) -> None:
+        def store(self, token: Any, name: str, source: str, expires_on: Any) -> bool:
             stored.append(token.value)
+            return True
 
         def alert(self, alert: Any) -> None:
             pass
