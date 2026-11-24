@@ -111,6 +111,27 @@ def test_errors_never_carry_page_content() -> None:
     assert "SECRET-BODY" not in str(exc.value)
 
 
+def test_missing_link_error_omits_target_text() -> None:
+    with pytest.raises(wf.FlattenError) as exc:
+        wf.flatten({"Home.md": b"[x](TOKEN-OR-SENSITIVE-VALUE)"})
+    assert exc.value.problems == [("Home.md", "relative link target not found")]
+    assert "TOKEN-OR-SENSITIVE-VALUE" not in str(exc.value)
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["_sidebar.md", "_SIDEBAR.md", "_footer.md", "_Footer.MD", "a/_sidebar.md"],
+)
+def test_reserved_names_reject_other_spellings(name: str) -> None:
+    with pytest.raises(wf.FlattenError):
+        wf.flatten({"Home.md": b"h", name: b"x"})
+
+
+def test_folder_page_cannot_shadow_generated_sidebar() -> None:
+    with pytest.raises(wf.FlattenError):
+        wf.flatten({"Home.md": b"h", "_Sidebar/index.md": b"x"})
+
+
 def test_collision_is_error() -> None:
     files = tree(Home_md="h", a__b_md="1", **{"a-b_md": "2"})
     with pytest.raises(wf.FlattenError) as exc:

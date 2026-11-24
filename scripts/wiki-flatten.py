@@ -47,6 +47,7 @@ PAGE_SUFFIXES = {".md"}
 ASSET_SUFFIXES = {".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp"}
 SEGMENT_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 ROOT_ONLY = {"_Sidebar.md", "_Footer.md"}
+RESERVED_LOWER = {n.lower() for n in ROOT_ONLY}
 FOLDER_PAGE_NAMES = {"index.md", "readme.md"}
 MAX_FILE_BYTES = 5 * 1024 * 1024
 
@@ -107,12 +108,18 @@ def _check_sources(
         if len(files[rel]) > MAX_FILE_BYTES:
             problems.append((rel, "file is larger than the size cap"))
             continue
-        if len(parts) > 1 and parts[-1] in ROOT_ONLY:
+        flat = flat_name(rel)
+        if (len(parts) > 1 and parts[-1].lower() in RESERVED_LOWER) or (
+            flat.lower() in RESERVED_LOWER and rel not in ROOT_ONLY
+        ):
             problems.append(
-                (rel, "_Sidebar.md and _Footer.md are allowed at the root only")
+                (
+                    rel,
+                    "_Sidebar.md and _Footer.md are allowed at the root only,"
+                    " in that exact spelling",
+                )
             )
             continue
-        flat = flat_name(rel)
         if flat.lower() in seen:
             problems.append((rel, f"flat name collides with {seen[flat.lower()]}"))
             continue
@@ -179,7 +186,7 @@ class _Rewriter:
             ]
         hit = next((c for c in candidates if c in self.mapping), None)
         if hit is None:
-            self.problems.append((src, f"relative link target not found: {resolved}"))
+            self.problems.append((src, "relative link target not found"))
             return None
         flat = self.mapping[hit]
         frag = f"#{parsed.fragment}" if parsed.fragment else ""
