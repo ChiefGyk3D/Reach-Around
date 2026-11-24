@@ -492,6 +492,34 @@ def test_the_needles_are_the_forms_the_fediverse_cards_print(
     assert "Mean replies per post (30 days)" + "6,667" in values
 
 
+def test_two_fediverse_platforms_with_the_same_label_keep_both_needles(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    doc = fediverse_kit()
+    doc["sections"] = [{"platform": "mastodon"}, {"platform": "bluesky"}]
+    doc["fediverse"] = [
+        {
+            "platform": "mastodon",
+            "profile_url": "https://social.example/@example",
+            "as_of": "2027-03-08",
+            "followers": 48213,
+        },
+        {
+            "platform": "bluesky",
+            "profile_url": "https://bsky.example/profile/example",
+            "as_of": "2027-03-08",
+            "followers": 31377,
+        },
+    ]
+    kit = KitConfig.model_validate(doc)
+    make_private(monkeypatch, "fediverse")
+    values = set(private_measure_strings(kit, None).values())
+    label = REGISTRY["followers"].label
+    # both platforms print "Followers": neither needle may overwrite the other
+    assert label + shown_count(48213) in values
+    assert label + shown_count(31377) in values
+
+
 def test_a_stale_public_pdf_with_now_private_fediverse_figures_is_refused(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
