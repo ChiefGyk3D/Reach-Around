@@ -748,12 +748,23 @@ class KitConfig(_Model):
     @model_validator(mode="after")
     def _metrics_are_unique(self) -> KitConfig:
         seen: set[tuple[str, str]] = set()
+        counted: set[str] = set()
         for metric in self.metrics:
-            key = (metric.platform, metric.label)
+            if metric.source == "counts":
+                # The numbers file holds one count per platform, so a second
+                # counts metric would read the same number again.
+                if metric.platform in counted:
+                    raise ValueError(
+                        f"the platform {metric.platform!r} has more than one "
+                        "counts metric; use one counts metric per platform"
+                    )
+                counted.add(metric.platform)
+            label = " ".join(unicodedata.normalize("NFKC", metric.label).split())
+            key = (metric.platform, label.casefold())
             if key in seen:
                 raise ValueError(
-                    f"the metric {metric.platform!r} / {metric.label!r} is listed "
-                    "more than once"
+                    f"a metric for {metric.platform!r} with the same label "
+                    "(ignoring case and spacing) is listed more than once"
                 )
             seen.add(key)
         return self

@@ -91,6 +91,10 @@ apply). Such a source does not need a platforms item, but it must have a
 `counts` metric here for its platform; without one the config is refused,
 because the number would be shown nowhere.
 
+**Metric rules.** A kit takes one `source: counts` metric per platform (the
+numbers file holds one count per platform). Two metrics on one platform may not
+share a label once case, Unicode compatibility forms and spacing are ignored.
+
 ## What the build writes
 
 | File | Where | Who sees it |

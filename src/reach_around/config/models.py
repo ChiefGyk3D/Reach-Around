@@ -67,6 +67,13 @@ from reach_around.site.theme import check_image_path
 _SLUG = re.compile(r"^[a-z0-9][a-z0-9-]{0,39}$")
 _ISO_DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 _MAX_URL = 2048
+# Size limits on the owner-written lists, so one file cannot grow without bound.
+MAX_TABS = 50
+MAX_BLOCKS_PER_TAB = 200
+MAX_LINKS_PER_SECTION = 200
+MAX_SOCIALS = 50
+# At most this many problems are printed; the rest are only counted.
+MAX_REPORTED_PROBLEMS = 20
 
 Title = Annotated[str, StringConstraints(min_length=1, max_length=200)]
 Subtitle = Annotated[str, StringConstraints(min_length=1, max_length=500)]
@@ -281,7 +288,7 @@ class Section(_Model):
     subtitle: Subtitle | None = None
     collapsed: bool = True
     layout: Layout = "list"
-    links: list[Link]
+    links: list[Link] = Field(max_length=MAX_LINKS_PER_SECTION)
 
 
 _NEW_BLOCK_KEYS = {
@@ -356,7 +363,7 @@ class Tab(_Model):
     # Only read by ``page.layout: stack``: render the group as its own page at
     # ``/<id>/`` with a single card on the home page that links to it.
     spoke: bool = False
-    blocks: list[Block]
+    blocks: list[Block] = Field(max_length=MAX_BLOCKS_PER_TAB)
 
 
 class Social(_Model):
@@ -378,7 +385,7 @@ class Creator(_Model):
     avatar: Annotated[str, Field(max_length=_MAX_URL)] | None = None
     favicon: str | None = None
     header: HeaderStyle = "compact"
-    socials: list[Social] = Field(default_factory=list)
+    socials: list[Social] = Field(default_factory=list, max_length=MAX_SOCIALS)
 
     @field_validator("avatar")
     @classmethod
@@ -537,7 +544,9 @@ class SupportPage(_Model):
     qr: StrictBool = False
     # The validator below refuses the other kinds; the schema says so too.
     blocks: list[Block] = Field(
-        min_length=1, json_schema_extra=lambda schema: _narrow_support_blocks(schema)
+        min_length=1,
+        max_length=MAX_BLOCKS_PER_TAB,
+        json_schema_extra=lambda schema: _narrow_support_blocks(schema),
     )
 
     @model_validator(mode="after")
@@ -560,7 +569,7 @@ class SupportPage(_Model):
 class SiteConfig(_Model):
     version: Literal[1]
     creator: Creator
-    tabs: list[Tab] = Field(min_length=1)
+    tabs: list[Tab] = Field(min_length=1, max_length=MAX_TABS)
     page: Page = Page()
     page_layout: PageLayout = "tabs"
     disclosure: DisclosureField | None = None
@@ -950,4 +959,8 @@ def load_site_config(path: Path) -> SiteConfig:
             where = _dotted(err["loc"])
             msg = err["msg"].removeprefix("Value error, ")
             problems.append(f"{where}: {msg}" if where else msg)
-        raise ConfigError(str(path), None, "; ".join(problems)) from None
+        extra = len(problems) - MAX_REPORTED_PROBLEMS
+        text = "; ".join(problems[:MAX_REPORTED_PROBLEMS])
+        if extra > 0:
+            text += f"; and {extra} more problems"
+        raise ConfigError(str(path), None, text) from None
