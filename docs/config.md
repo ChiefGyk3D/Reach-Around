@@ -266,9 +266,20 @@ keeps the existing tab or sections layout.
 
 With `layout: stack`, every tab needs a distinct `intent`, there must be exactly one `watch` tab, and the two `watch` links cannot be scheduled (`show_from`, `show_until`). The validator enforces these only for that layout. Tabs provide the group order and headings. The standard information order is
 `videos`, `follow`, `community`, `support`, `work`, `shop`, `blog`; config order
-is authoritative. The generated page uses one column on phones and two columns
-for group links on wider screens. Every link remains keyboard operable, targets
-stay at least 44 px tall, and the layout reflows at 320 px and 200% zoom.
+is authoritative. The generated page is a deck (#677): every region is a tile
+on the dark ground, with a small mono kicker for a heading.
+
+| Width | Arrangement |
+| --- | --- |
+| Under 48 rem (phones) | One column. The Watch tile (status text and the two Watch links) comes first, then the featured card, then a row of jump chips (in-page links, one per group, no script), then the groups in config order. |
+| 48 rem and up | Two columns. The Watch tile and the featured card run full width; groups pair up in config order. The jump chips are hidden. |
+| 64 rem and up | Twelve columns, up to 90 rem wide. With `featured`, the featured card takes four columns beside the Watch tile (eight); without it the Watch tile takes the row. `follow` spans eight columns and every other group four, in config order, so Follow pairs with Community. |
+
+Only the `support` tile uses the brand plate color; amber stays on the buttons,
+the kickers and the focus ring. Print drops the chips and the grid. The group
+sections carry a `smart-group-<intent>` class for site CSS. Every link remains
+keyboard operable, targets stay at least 44 px tall, and the layout reflows at
+320 px and 200% zoom.
 
 ```yaml
 page:
@@ -1860,6 +1871,7 @@ existed. Unknown keys are refused; there is deliberately nothing else to set.
 | `page_views` | boolean | `false` | Count one view per page load. Must be a real boolean. When on, the build ships `static/view.js`, links it from every tab page (not the privacy page), puts `data-page-id` and `data-view-route` on `<body>`, and adds the page-view item to the privacy page, which lists the referring site, the campaign label (`utm_source`, at most 30 characters), the source label (`s`, same form) and the window width among the rest. |
 | `beacon_token` | boolean | `false` | Ask the Worker for a short-lived signed token once per visit and send it with click pings and view beacons (`click.js` and `view.js` read `data-token-route="/e/t"` on `<body>`, set only on tab pages). Must be a real boolean. Off, the pages are identical to each other with and without the key, and differ from before this key existed only by the script file names (the scripts changed, so their content hashes did). Use it only with the Worker's `BEACON_MODE` set to `observe` (`docs/deploy.md`, "Beacon token"); the privacy page does not describe the token yet, so keep it off on a live site until that text is added. A visitor with Global Privacy Control or Do Not Track never asks for one or attaches one (that is all this setting covers; whether a click itself is sent under those signals is the click opt-out change's, #609), the token is held in page memory only (no cookie, no storage), and a failed request never delays a link. |
 | `raw_keep_days` | integer 1 to 90 | `7` | What the privacy page says about how long individual view records are kept. It does not change the Worker: keep it equal to the Worker's `RAW_KEEP_DAYS`. |
+| `geo_level` | `country`, `region` or `city` | `region` | What the privacy page says about location. It does not change the Worker: keep it equal to the Worker's `GEO_LEVEL` (or the site's own `geo`). A stored view holds the country and at most the region, never the city. At `city` the Worker also counts the city in a daily total (no page, source or device kind with it), small counts are combined into the region, and the page says so. |
 | `other_sites` | list of host names | none | Other sites counted by the same collector (the Worker's `SITES`), named on the privacy page. Lower-case host names only, at most 7, no scheme, port, path or wildcard. |
 | `route` | path | `/e/v/` | The same-origin path the Worker serves the page-view route on. Plain segments (`A-Z a-z 0-9 . _ ~ -`, no segment starting with a dot), starting and ending with `/`, at most 64 characters. No scheme, host, query, fragment, `.` or `..` segment, escape or space. The tab id is appended to it. |
 | `turnstile_beacon` | boolean | `false` | The invisible bot check (#610). Must be a real boolean. When on, the build adds one hidden, unlinked, `noindex` helper page at `/e-frame/` that loads Cloudflare Turnstile, and a small script (`static/beacon.js`) on every tab page that opens the helper in a hidden frame after the page has loaded, never for a visitor who sends Global Privacy Control or Do Not Track. Needs `analytics.page_views` or `features.click_tracking`. Off, the build is byte-for-byte what it was. **Do not turn it on for a live site until the privacy page says what the check does**; see `docs/deploy.md` ("The invisible bot check") and `docs/turnstile-storage-check.md`. |

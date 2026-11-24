@@ -65,12 +65,17 @@ CSP = (
     "object-src 'none'; base-uri 'none'; form-action 'none'"
 )
 
-# The printed page: white paper, no site chrome, no splitting a row or a card.
+# The printed page: dark like the screen (decision D9, #687), no site chrome, no
+# splitting a row or a card. Every color is a token the screen's own stylesheets
+# define (they travel inside the page), so the PDF and the screen cannot drift.
+# print-color-adjust:exact makes Chromium paint the dark background; without it
+# the browser drops backgrounds when it prints.
 PRINT_CSS = (
-    "@page{size:Letter;margin:0.6in}"
-    ":root{color-scheme:light!important}"
-    "html,body{background:#fff!important;margin:0!important}"
-    "*,*::before,*::after{color:#111!important;background:transparent!important;"
+    "@page{size:Letter;margin:0.6in;background:var(--ra-color-bg)}"
+    ":root{color-scheme:dark!important}"
+    "html,body{background:var(--ra-color-bg)!important;margin:0!important;"
+    "-webkit-print-color-adjust:exact;print-color-adjust:exact}"
+    "*,*::before,*::after{color:var(--ra-color-text)!important;background:transparent!important;"
     "box-shadow:none!important;text-shadow:none!important;min-height:0!important;"
     "backdrop-filter:none!important;filter:none!important;opacity:1!important;"
     "animation:none!important;transition:none!important}"
@@ -80,8 +85,8 @@ PRINT_CSS = (
     "{break-inside:avoid}"
     "h1,h2,h3,h4{break-after:avoid}"
     "table{width:100%;border-collapse:collapse}"
-    "th,td{border-bottom:1px solid #999!important}"
-    "a{color:#0645ad!important;text-decoration:underline}"
+    "th,td{border-bottom:1px solid var(--ra-brand-gray)!important}"
+    "a{color:var(--ra-color-link)!important;text-decoration:underline}"
 )
 
 # Tags whose presence means the page is not what the builder wrote.
