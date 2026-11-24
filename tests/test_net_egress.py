@@ -16,6 +16,7 @@ import reach_around
 import reach_around.net.egress as egress
 from fakenet import FakeSock, http_answer
 from reach_around.net.egress import (
+    MAX_CONNECT_ADDRESSES,
     EgressBlocked,
     HttpsTransport,
     TransportRequest,
@@ -731,6 +732,22 @@ def test_a_dead_first_address_falls_through_to_the_next_checked_one() -> None:
     )
     assert transport(_request()).status == 200
     assert tried == [PUBLIC, other]
+
+
+def test_a_huge_answer_set_is_capped_at_a_few_connection_attempts() -> None:
+    answers = [f"93.184.{i // 250}.{i % 250 + 1}" for i in range(2000)]
+    tried: list[str] = []
+
+    def connector(address: str, port: int, timeout: float) -> socket.socket:
+        tried.append(address)
+        raise ConnectionRefusedError("down")
+
+    transport = HttpsTransport(resolver=lambda h, p: answers, connector=connector)
+    with pytest.raises(EgressBlocked) as caught:
+        transport(_request())
+    assert caught.value.reason == "connect_failed"
+    assert tried == answers[:MAX_CONNECT_ADDRESSES]
+    assert len(tried) == 4
 
 
 def test_every_dead_address_is_a_typed_error_and_never_an_unchecked_one() -> None:

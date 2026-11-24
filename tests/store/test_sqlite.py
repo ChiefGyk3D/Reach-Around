@@ -112,6 +112,98 @@ class TestSqliteOnly:
             SqliteStore(link)
         assert stat.S_IMODE(target.stat().st_mode) == 0o644
 
+    @pytest.mark.parametrize("mode", [0o400, 0o200, 0o000, 0o640, 0o666])
+    def test_any_existing_mode_ends_as_a_usable_0600_file(
+        self, tmp_path: Path, mode: int
+    ) -> None:
+        path = tmp_path / "s.db"
+        path.write_bytes(b"")
+        path.chmod(mode)
+        store = SqliteStore(path)
+        store.migrate()
+        store.kv_set("a", "b")
+        store.close()
+        assert stat.S_IMODE(path.stat().st_mode) == 0o600
+
+    def test_file_swapped_for_a_symlink_after_the_check_is_not_opened(
+        self, tmp_path: Path
+    ) -> None:
+        victim = tmp_path / "victim.db"
+        victim.write_bytes(b"")
+        victim.chmod(0o644)
+        path = tmp_path / "s.db"
+        store = SqliteStore(path)
+        path.rename(tmp_path / "saved.db")
+        path.symlink_to(victim)
+        errors: list[BaseException] = []
+
+        def reopen() -> None:  # a new thread makes a new connection by pathname
+            try:
+                store.sqlite.query("SELECT 1")
+            except BaseException as exc:
+                errors.append(exc)
+
+        worker = threading.Thread(target=reopen)
+        worker.start()
+        worker.join()
+        assert len(errors) == 1 and isinstance(errors[0], PermissionError)
+        assert victim.read_bytes() == b""
+
+    def test_file_replaced_by_another_file_after_the_check_is_not_opened(
+        self, tmp_path: Path
+    ) -> None:
+        path = tmp_path / "s.db"
+        store = SqliteStore(path)
+        path.rename(tmp_path / "saved.db")
+        path.write_bytes(b"")
+        errors: list[BaseException] = []
+
+        def reopen() -> None:
+            try:
+                store.sqlite.query("SELECT 1")
+            except BaseException as exc:
+                errors.append(exc)
+
+        worker = threading.Thread(target=reopen)
+        worker.start()
+        worker.join()
+        assert len(errors) == 1 and isinstance(errors[0], PermissionError)
+
+    def test_intermediate_symlink_in_the_path_is_refused(self, tmp_path: Path) -> None:
+        real = tmp_path / "real"
+        real.mkdir(mode=0o700)
+        (tmp_path / "redirect").symlink_to(real)
+        with pytest.raises(StoreError):
+            SqliteStore(tmp_path / "redirect" / "s.db")
+        assert list(real.iterdir()) == []
+
+    def test_parent_writable_by_others_is_refused(self, tmp_path: Path) -> None:
+        parent = tmp_path / "shared"
+        parent.mkdir()
+        parent.chmod(0o777)
+        with pytest.raises(StoreError):
+            SqliteStore(parent / "s.db")
+        assert list(parent.iterdir()) == []
+
+    def test_group_writable_ancestor_is_refused(self, tmp_path: Path) -> None:
+        outer = tmp_path / "outer"
+        inner = outer / "inner"
+        inner.mkdir(parents=True)
+        inner.chmod(0o700)
+        outer.chmod(0o770)
+        with pytest.raises(StoreError):
+            SqliteStore(inner / "s.db")
+
+    def test_parent_owned_by_another_user_is_refused(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import os
+
+        owner = os.stat(tmp_path).st_uid
+        monkeypatch.setattr(os, "geteuid", lambda: owner + 1)
+        with pytest.raises(StoreError):
+            SqliteStore(tmp_path / "s.db")
+
     def test_non_regular_store_path_is_refused(self, tmp_path: Path) -> None:
         with pytest.raises(StoreError):
             SqliteStore(tmp_path)

@@ -45,35 +45,84 @@ class SqliteDb:
         self._all: list[sqlite3.Connection] = []
         self._all_lock = threading.Lock()
         self._shared: sqlite3.Connection | None = None
+        self._identity: tuple[int, int] | None = None
         if self._path is not None:
-            self._prepare_file(self._path)
+            self._identity = self._prepare_file(self._path)
         conn = self._conn()
         self._enable_wal(conn)
 
     # -- setup --------------------------------------------------------------
 
     @staticmethod
-    def _prepare_file(path: Path) -> None:
+    def _verify_parents(path: Path) -> None:
+        """Refuse a store path whose directories another user could swap.
+
+        sqlite3 can only open a pathname (not a descriptor), so the
+        check-to-use gap is closed by making the directory chain a trust
+        boundary: no component is a symlink, every one is owned by this user
+        or root, none is writable by group or other (a sticky directory is
+        tolerated above the immediate parent), and the immediate parent is
+        owned by this user. Nobody else can then rename or replace the
+        database between the check and SQLite's open.
+        """
+        parent = Path(os.path.abspath(path)).parent
+        me = os.geteuid()
+        chain = [parent, *parent.parents]
+        for directory in reversed(chain):
+            info = os.lstat(directory)
+            if stat.S_ISLNK(info.st_mode):
+                raise PermissionError("a store path component is a symlink")
+            if not stat.S_ISDIR(info.st_mode):
+                raise PermissionError("a store path component is not a directory")
+            last = directory == parent
+            if info.st_uid != me and (last or info.st_uid != 0):
+                raise PermissionError("a store directory belongs to another user")
+            loose = info.st_mode & 0o022
+            if loose and (last or not info.st_mode & stat.S_ISVTX):
+                raise PermissionError("a store directory is writable by others")
+
+    @classmethod
+    def _prepare_file(cls, path: Path) -> tuple[int, int]:
+        """Validate the path and file; return the file's (device, inode)."""
         parent = path.parent
         if not parent.exists():
             parent.mkdir(mode=0o700, parents=True)
             parent.chmod(0o700)
-        # never follow a final-component symlink; judge the opened file itself
-        fd = os.open(
-            path,
-            os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0),
-            0o600,
-        )
+        cls._verify_parents(path)
+        flags = os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
+        try:
+            fd = os.open(path, flags, 0o600)
+        except PermissionError:
+            # an owner-only file without a write bit (0400, 0200, 0000): make
+            # it usable (0600) first; the parent is trusted, so lstat-then-chmod
+            # cannot be raced by another user
+            info = os.lstat(path)
+            if not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid():
+                raise
+            os.chmod(path, 0o600)
+            fd = os.open(path, flags, 0o600)
         try:
             info = os.fstat(fd)
             if not stat.S_ISREG(info.st_mode):
                 raise PermissionError("the store path is not a regular file")
             if info.st_uid != os.geteuid():
                 raise PermissionError("the store file belongs to another user")
-            if stat.S_IMODE(info.st_mode) & 0o077:
+            if stat.S_IMODE(info.st_mode) != 0o600:
                 os.fchmod(fd, 0o600)
+            return info.st_dev, info.st_ino
         finally:
             os.close(fd)
+
+    def _same_file(self) -> None:
+        """Refuse a database whose pathname no longer names the checked file."""
+        if self._path is None or self._identity is None:
+            return
+        self._verify_parents(self._path)
+        info = os.lstat(self._path)
+        if (info.st_dev, info.st_ino) != self._identity or not stat.S_ISREG(
+            info.st_mode
+        ):
+            raise PermissionError("the store file changed after it was checked")
 
     def _enable_wal(self, conn: sqlite3.Connection) -> None:
         if self._memory:
@@ -90,6 +139,8 @@ class SqliteDb:
 
     def _connect(self) -> sqlite3.Connection:
         target = ":memory:" if self._path is None else str(self._path)
+        if self._path is not None:
+            self._same_file()
         conn = sqlite3.connect(
             target,
             timeout=self._busy,
@@ -97,6 +148,12 @@ class SqliteDb:
             check_same_thread=not self._memory,
         )
         conn.execute(f"PRAGMA busy_timeout={int(self._busy * 1000)}")
+        if self._path is not None:  # SQLite opens lazily; confirm what it opened
+            try:
+                self._same_file()
+            except BaseException:
+                conn.close()
+                raise
         conn.execute("PRAGMA foreign_keys=ON")
         with self._all_lock:
             self._all.append(conn)

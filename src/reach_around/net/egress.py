@@ -120,6 +120,9 @@ Resolver = Callable[[str, int], list[str]]
 # run against a black-holed resolver would pile up threads. Callers asking for the
 # same name while a lookup is in flight share that lookup instead of starting one.
 MAX_RESOLVER_THREADS = 8
+# At most this many distinct validated addresses are tried per fetch, so a
+# hostile answer set cannot fan one request out into many connections.
+MAX_CONNECT_ADDRESSES = 4
 
 
 class _Lookup:
@@ -373,7 +376,8 @@ class HttpsTransport:
         # every answer must be public; a mixed set is refused whole
         if not all(is_public_address(answer) for answer in answers):
             raise EgressBlocked("non_public_address", host)
-        addresses = list(dict.fromkeys(answers))  # checked answers only, in order
+        # checked answers only, in order, capped (the deadline stays the other bound)
+        addresses = list(dict.fromkeys(answers))[:MAX_CONNECT_ADDRESSES]
         remaining = deadline - self._clock()
         if remaining <= 0:
             raise EgressBlocked("timeout", host)
