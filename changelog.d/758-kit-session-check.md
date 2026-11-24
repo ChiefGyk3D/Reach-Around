@@ -1,0 +1,1 @@
+- Tighten session checks on the kit routes (#758, epic #244): the media kit inquiry route now applies the same session check as the gated view, through one shared helper (`worker/src/kit/session.ts`) used by both routes. New tests in `worker/test/kit/inquiry.test.ts` cover stored and unstored sessions, floors, and key rotation.

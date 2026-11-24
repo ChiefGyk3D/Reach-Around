@@ -11,7 +11,9 @@ import {
   handleInquiry,
   type InquiryEnv,
 } from "../../src/kit/inquiry";
+import { setSessionFloor, setUnstoredSessionFloor } from "../../src/kit/leads";
 import { COOKIE_NAME, signToken } from "../../src/kit/token";
+import { mintUnstoredId } from "../../src/kit/unstored";
 import { MAX_URL_LENGTH } from "../../src/click";
 import worker from "../../src/index";
 
@@ -21,6 +23,7 @@ const KEY = "k".repeat(40);
 const HOOK = "https://discord.com/api/webhooks/123456789012345678/SECRETtokenSECRETtokenSECRET0123456789";
 const T0 = Date.UTC(2026, 10, 9, 14, 3, 30);
 const NOW_SEC = Math.floor(T0 / 1000);
+const LEAD_ID = "a".repeat(32);
 
 type Call = { url: string; body: string };
 function mockFetch(status = 204) {
@@ -61,10 +64,10 @@ function baseEnv(over: Partial<InquiryEnv> = {}): InquiryEnv {
   } as InquiryEnv;
 }
 
-async function cookie(over: { iat?: number; exp?: number; key?: string } = {}): Promise<string> {
+async function cookie(over: { iat?: number; exp?: number; key?: string; lid?: string } = {}): Promise<string> {
   const iat = over.iat ?? NOW_SEC - 60;
   const exp = over.exp ?? iat + 3600;
-  return `${COOKIE_NAME}=${await signToken(over.key ?? KEY, { lid: "lead1", iat, exp, cc: "" })}`;
+  return `${COOKIE_NAME}=${await signToken(over.key ?? KEY, { lid: over.lid ?? LEAD_ID, iat, exp, cc: "" })}`;
 }
 
 const GOOD = { name: "Pat Example", email: "pat@example.com", brand: "Example Brand", budget: "5000 USD", details: "A sponsored stream." };
@@ -111,7 +114,60 @@ beforeEach(async () => {
     testEnv.DB.prepare("DELETE FROM alert_quota"),
     testEnv.DB.prepare("DELETE FROM alert_dedup"),
     testEnv.DB.prepare("DELETE FROM counters"),
+    testEnv.DB.prepare("DELETE FROM leads"),
+    testEnv.DB.prepare("DELETE FROM kit_meta"),
+    testEnv.DB.prepare("INSERT INTO leads (id, email, created_ts, last_seen_ts, source) VALUES (?1, 'pat@example.com', ?2, ?2, 'gate')").bind(LEAD_ID, T0 - 86_400_000),
   ]);
+});
+
+describe("session checks (the same rules as the view route)", () => {
+  const sessionCookie = async (over: { lid?: string; key?: string; iat?: number } = {}) => cookie(over);
+  async function refused(c: string, e: InquiryEnv = baseEnv()) {
+    const prior = await testEnv.DB.prepare("SELECT COALESCE(SUM(count), 0) AS n FROM counters WHERE key = 'inquiry'").first<{ n: number }>();
+    const before = prior?.n ?? 0;
+    const { res, f } = await post({ cookie: c }, e);
+    expect(res.status).toBe(303);
+    expect(res.headers.get("location")).toBe("/kit/retry/");
+    expect(f.calls).toHaveLength(0);
+    const row = await testEnv.DB.prepare("SELECT COALESCE(SUM(count), 0) AS n FROM counters WHERE key = 'inquiry'").first<{ n: number }>();
+    expect(row?.n).toBe(before);
+  }
+
+  it("accepts a stored lead with no floor", async () => {
+    const { res, f } = await post({ cookie: await sessionCookie() });
+    expect(res.headers.get("location")).toBe(INQUIRY_SENT_ROUTE);
+    expect(f.calls).toHaveLength(1);
+  });
+  it("refuses a cookie for a lead that no longer exists", async () => {
+    await testEnv.DB.prepare("DELETE FROM leads WHERE id = ?").bind(LEAD_ID).run();
+    await refused(await sessionCookie());
+  });
+  it("refuses a cookie whose lead id was never stored", async () => {
+    await refused(await sessionCookie({ lid: "b".repeat(32) }));
+  });
+  it("refuses a cookie issued at or before the lead's floor, accepts one issued after it", async () => {
+    await setSessionFloor(testEnv.DB, LEAD_ID, T0 - 30_000);
+    await refused(await sessionCookie({ iat: NOW_SEC - 30 }));
+    await refused(await sessionCookie({ iat: NOW_SEC - 60 }));
+    const { res } = await post({ cookie: await sessionCookie({ iat: NOW_SEC - 29 }) });
+    expect(res.headers.get("location")).toBe(INQUIRY_SENT_ROUTE);
+  });
+  it("applies the kit-wide floor to an unstored unlock", async () => {
+    const lid = await mintUnstoredId(KEY);
+    const ok = await post({ cookie: await sessionCookie({ lid }) });
+    expect(ok.res.headers.get("location")).toBe(INQUIRY_SENT_ROUTE);
+    await setUnstoredSessionFloor(testEnv.DB, T0);
+    await refused(await sessionCookie({ lid }));
+  });
+  it("recognizes an unstored unlock minted under the previous key", async () => {
+    const OLD = "o".repeat(40);
+    const lid = await mintUnstoredId(OLD);
+    const rotated = baseEnv({ TOKEN_HMAC_KEY: KEY, TOKEN_HMAC_KEY_PREVIOUS: OLD });
+    const c = await sessionCookie({ lid, key: OLD });
+    expect((await post({ cookie: c }, rotated)).res.headers.get("location")).toBe(INQUIRY_SENT_ROUTE);
+    await setUnstoredSessionFloor(testEnv.DB, T0);
+    await refused(c, rotated);
+  });
 });
 
 describe("gating (only a visitor who passed the gate can post)", () => {
