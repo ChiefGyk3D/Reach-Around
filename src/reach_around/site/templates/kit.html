@@ -61,7 +61,7 @@
 <h3 id="kit-gate-title"{% if frame_plan %} class="{{ frames.cls("head")|trim }}"{% endif %}>More details</h3>
 <p>{{ form.categories | capitalize }} are shown after a short check. Enter an email address and pass the check to see them.</p>
 <p class="kit-note">The address is not checked, and nothing is sent to it. It is kept for a limited time so the owner can follow up; see the <a href="{{ root }}privacy/">privacy page</a> for what is kept and for how long.</p>
-{{ gate_form(form, true) }}
+{{ gate_form(form, true, root) }}
 </section>
 {% endif %}
 </section>

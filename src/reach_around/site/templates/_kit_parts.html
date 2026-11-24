@@ -132,12 +132,15 @@
 {% endif %}
 {% endmacro %}
 
-{% macro gate_form(form, framed=false) %}
+{% macro gate_form(form, framed=false, root="") %}
 <form class="kit-gate" method="post" action="{{ form.action }}">
 <p class="kit-field">
 <label for="kit-email">Email address</label>
-<input{% if framed and frame_plan %} class="{{ frames.cls("field")|trim }}"{% endif %} id="kit-email" name="email" type="email" inputmode="email" autocomplete="email" maxlength="254" required>
+<input{% if framed and frame_plan %} class="{{ frames.cls("field")|trim }}"{% endif %} id="kit-email" name="email" type="email" inputmode="email" autocomplete="email" maxlength="254"{% if form.notice %} aria-describedby="kit-gate-notice"{% endif %} required>
 </p>
+{% if form.notice %}
+<p class="kit-note" id="kit-gate-notice">{{ form.notice[0] }}<a href="{{ root }}privacy/">privacy page</a>{{ form.notice[1] }}</p>
+{% endif %}
 <div class="kit-hp" aria-hidden="true">
 <label for="kit-website">Leave this field empty</label>
 <input id="kit-website" name="website" type="text" tabindex="-1" autocomplete="off">
