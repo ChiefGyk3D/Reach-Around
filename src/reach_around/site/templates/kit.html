@@ -1,6 +1,6 @@
 {# SPDX-License-Identifier: Apache-2.0 #}
 {% extends "base.html" %}
-{% from "_kit_parts.html" import analytics, legend, numbers, gate_form, imported_history, trust, range_line, actions %}
+{% from "_kit_parts.html" import analytics, sections, legend, numbers, gate_form, imported_history, trust, range_line, actions %}
 {% import "_frames.html" as frames with context %}
 {% set page_frames = frame_plan|length > 0 %}
 {% block content %}
@@ -29,7 +29,7 @@
 </div>
 {{ numbers(kit, "kit-numbers-title", true, zone_choices) }}
 </div>
-{{ legend(kit) }}
+{{ legend(kit) }}{{ sections(kit, "kit-sections-title") }}
 {{ imported_history(kit, "kit-imported-title", true)|trim }}{{ analytics(kit, "kit-analytics-title") }}
 {% if kit.recent_posts %}
 <section class="kit-recent" aria-labelledby="kit-recent-title">

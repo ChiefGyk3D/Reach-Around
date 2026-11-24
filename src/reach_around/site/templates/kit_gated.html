@@ -1,7 +1,7 @@
 {# SPDX-License-Identifier: Apache-2.0 #}
 {% extends "base.html" %}
 {% set page_frames = false %}{% set frame_plan = {} %}
-{% from "_kit_parts.html" import analytics, legend, numbers, engagement, imported_history, trust, range_line %}
+{% from "_kit_parts.html" import analytics, sections, legend, numbers, engagement, imported_history, trust, range_line %}
 {% block content %}
 <section class="kit" aria-labelledby="kit-title">
 <div class="kit-deck-intro">
@@ -27,7 +27,7 @@
 </div>
 {{ numbers(kit, "kit-numbers-title") }}
 </div>
-{{ legend(kit) }}
+{{ legend(kit) }}{{ sections(kit, "kit-sections-title") }}
 {{ analytics(kit, "kit-analytics-title") }}
 {{ engagement(kit, "kit-engagement-title") }}{{ imported_history(kit, "kit-imported-title")|trim }}
 {% if kit.partners %}
