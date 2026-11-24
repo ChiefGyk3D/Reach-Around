@@ -1453,8 +1453,9 @@ kit:
 **Consulting line.** `consulting_url` is optional. When set, both kit pages print
 one fixed line right after the contact block: "Consulting instead? Visit my
 consulting site." with "consulting site" as the link to your URL. The words are
-not a setting. Without the URL nothing is printed, not even the words. The PDFs
-do not print it (see [the kit page](kit.md#consulting-line)).
+not a setting. Without the URL nothing is printed, not even the words. The line
+is for the web pages only and is left out of both PDFs (see
+[the kit page](kit.md#consulting-line)).
 
 **Contact line.** `contact` is optional and is yours to decide: write whatever
 you are willing to publish, such as `Brand deals: partners at example.com`.

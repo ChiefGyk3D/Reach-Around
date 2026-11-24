@@ -1016,9 +1016,9 @@ set, the public page and the gated page print the fixed line "Consulting
 instead? Visit my consulting site." right after the contact block (or after the
 buttons when there is no contact line), with "consulting site" as a link to the
 URL. The field is public. Without it no line is printed. Neither PDF prints the
-line: a PDF may hold no link annotations, so on paper the link would be bare
-words with nothing to follow. The consulting site itself is not changed by this;
-it carries no line pointing back to the kit.
+line: it is a web-page line only, and the PDF builds drop it from the public and
+the gated print. The consulting site itself is not changed by this; it carries no
+line pointing back to the kit.
 
 ## Contact line
 

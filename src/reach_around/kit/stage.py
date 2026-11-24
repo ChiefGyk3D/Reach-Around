@@ -55,6 +55,9 @@ PUBLIC_FILE = "kit/index.html"
 # menu that needs a script). They are dropped whole in public mode, and only
 # there; any other form, input or script still stops the build.
 _PUBLIC_DROP = frozenset({"kit-gate-box", "kit-zone", "kit-actions"})
+# Lines that belong to the web pages only. They are dropped whole from both the
+# public and the gated PDF (the consulting line, #686).
+_WEB_ONLY = frozenset({"kit-consulting"})
 
 CSP = (
     "default-src 'none'; img-src data:; style-src 'unsafe-inline'; "
@@ -586,10 +589,9 @@ class _Rebuild(HTMLParser):
             if tag not in _VOID_ANY:
                 self._dropped.append(tag)
             return
-        if (
-            self.public
-            and self._in_body
-            and _PUBLIC_DROP & set((dict(attrs).get("class") or "").split())
+        classes_here = set((dict(attrs).get("class") or "").split())
+        if self._in_body and (
+            _WEB_ONLY & classes_here or (self.public and _PUBLIC_DROP & classes_here)
         ):
             if tag not in _VOID_ANY:
                 self._dropped.append(tag)
