@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-# ruff: noqa: S105
+# ruff: noqa: S105, S106
 """Twitch followers via a broadcaster user token. Mocked transport only.
 
 Fixtures follow the documented response shapes (docs read 2026-11-09). No
@@ -585,3 +585,72 @@ def test_client_secret_is_never_sent_as_the_bearer_token() -> None:
         PROVIDERS["twitch"](SRC, Context(fetch=fetch, env=env))
     for c in t.calls:
         assert c.headers.get("Authorization") != "Bearer SENTINEL-CSECRET"
+
+
+def _reply_with(**over: Any) -> Any:
+    body: dict[str, Any] = {
+        "access_token": "SENTINEL-ACCESS-NEW",
+        "refresh_token": "SENTINEL-REFRESH-NEW",
+        "expires_in": 14000,
+        "scope": ["moderator:read:followers"],
+        "token_type": "bearer",
+    }
+    body.update(over)
+    return reply({k: v for k, v in body.items() if v is not None})
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        _reply_with(token_type="mac"),
+        _reply_with(token_type=None),
+        _reply_with(expires_in=0),
+        _reply_with(expires_in=-5),
+        _reply_with(expires_in="14000"),
+        _reply_with(expires_in=True),
+        _reply_with(expires_in=10**12),
+        _reply_with(expires_in=None),
+        _reply_with(scope=["chat:read"]),
+        _reply_with(scope="moderator:read:followers"),
+        _reply_with(scope=[5]),
+        _reply_with(scope=None),
+    ],
+)
+def test_refresh_reply_metadata_is_checked_before_promotion(bad: Any) -> None:
+    t = FakeTransport(routes(**{FOLLOWERS: reply({}, status=401), OAUTH_URL: bad}))
+    sink = Sink()
+    text = kind(t, sink)
+    assert text == "refresh_failed"
+    assert sink.stored == []
+    assert [a.kind for a in sink.alerts] == ["refresh_failed"]
+    assert sum(c.host == "api.twitch.tv" for c in t.calls) == 2  # no retry with it
+    no_leak(text, *(a.line() for a in sink.alerts))
+
+
+def test_refresh_reply_with_bearer_in_any_case_is_accepted() -> None:
+    t = FakeTransport(
+        routes(
+            **{
+                FOLLOWERS: reply({}, status=401),
+                OAUTH_URL: _reply_with(token_type="Bearer"),
+            }
+        )
+    )
+    # the retry gets 401 again from the fake; reaching the store is the point
+    sink = Sink()
+    kind(t, sink)
+    assert len(sink.stored) == 1
+
+
+@pytest.mark.parametrize("size", [513, 100_000])
+def test_oversized_refresh_token_env_is_refused_before_any_request(size: int) -> None:
+    env = {**ENV, "TWITCH_USER_REFRESH_TOKEN": "R" * size}
+    t = FakeTransport(routes())
+    sink = Sink()
+    assert kind(t, sink, env) == "invalid_credential"
+    assert t.calls == []
+
+
+def test_refresh_token_env_with_a_space_is_refused() -> None:
+    env = {**ENV, "TWITCH_USER_REFRESH_TOKEN": "bad value"}
+    assert kind(FakeTransport(routes()), Sink(), env) == "invalid_credential"

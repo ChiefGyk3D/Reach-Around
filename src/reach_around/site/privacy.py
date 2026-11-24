@@ -44,7 +44,7 @@ VIEWS_WHAT = (
     "{SITES} Each view records the page, referring site’s name, campaign and "
     "source labels, one of four window sizes, and the hour. It keeps browser and "
     "version, operating system, device kind, language, and the location detail "
-    "enabled: country, region, and city. It marks the view as likely human or "
+    "enabled: {LOCATION}. It marks the view as likely human or "
     "automated and gives a short reason. Source labels outside the site’s "
     "list count as “other.” Labels use lower-case letters, digits, and "
     "hyphens, with a 30-character limit. The server creates a daily code from "
@@ -69,8 +69,23 @@ VIEWS_KEPT = (
     "The daily code is deleted at the end of each day. Abuse counters are "
     "deleted within about two hours. Anonymous totals are deleted after "
     "{AGGREGATE_KEEP_DAYS} days. Records do not identify anyone, so records "
-    "for a specific person cannot be deleted."
+    "for a specific person cannot be deleted.{CITY_KEPT}"
 )
+# TODO-copy (#778): the three location sentences below and CITY_KEPT are
+# visitor-facing; the owner has them authored by a general model later. The
+# facts they state are fixed by the Worker: a stored view holds the country and
+# at most the region; at level city the city is counted only in a daily total,
+# with small counts combined into the region, and that total follows the view
+# records' deletion schedule (worker/src/viewretention.ts).
+LOCATION_BY_LEVEL = {
+    "country": "country only",
+    "region": "country and region",
+    "city": (
+        "country and region with each view, and city only in a daily total that "
+        "is not linked to any other detail of the view"
+    ),
+}
+CITY_KEPT = " City totals are deleted on the same schedule as view records."
 # The Worker's multiplier for unrolled raw rows and its ceiling (kept equal by a test).
 RAW_HARD_CAP_FACTOR = 3
 
@@ -204,9 +219,14 @@ def _page_views(config: SiteConfig) -> Disclosure:
             "site, the counts are kept separately and this page names it."
         )
     return Disclosure(
-        what=VIEWS_WHAT.replace("{SITES}", sites),
+        what=VIEWS_WHAT.replace("{SITES}", sites).replace(
+            "{LOCATION}", LOCATION_BY_LEVEL[analytics.geo_level]
+        ),
         why=VIEWS_WHY,
-        kept=VIEWS_KEPT.replace("{RAW_KEEP_DAYS}", str(analytics.raw_keep_days))
+        kept=VIEWS_KEPT.replace(
+            "{CITY_KEPT}", CITY_KEPT if analytics.geo_level == "city" else ""
+        )
+        .replace("{RAW_KEEP_DAYS}", str(analytics.raw_keep_days))
         .replace(
             "{RAW_HARD_CAP_DAYS}",
             str(min(RAW_HARD_CAP_FACTOR * analytics.raw_keep_days, MAX_RAW_KEEP_DAYS)),
