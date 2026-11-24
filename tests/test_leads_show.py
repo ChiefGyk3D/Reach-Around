@@ -6,6 +6,7 @@ from __future__ import annotations
 import io
 import json
 import os
+import shlex
 import sqlite3
 import stat
 from pathlib import Path
@@ -755,6 +756,143 @@ def test_sql_out_refuses_an_existing_file_and_a_symlink(
     assert not (tmp_path / "not-there.txt").exists()
     captured = capsys.readouterr()
     assert "DELETE" not in captured.out and ADDR not in captured.err
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "delete lead.sql",
+        "delete.sql; touch PWNED",
+        "a'b\"c.sql",
+        "$(touch PWNED).sql",
+        "`touch PWNED`.sql",
+        "line1\nline2.sql",
+        "tab\there.sql",
+    ],
+)
+def test_the_printed_apply_command_is_shell_safe_for_any_file_name(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    delete_export: Path,
+    tmp_path: Path,
+    name: str,
+) -> None:
+    target = tmp_path / name
+    assert _delete_to(monkeypatch, delete_export, target) == 0
+    err = capsys.readouterr().err
+    command = err[err.index("npx wrangler") :]
+    tokens = shlex.split(command)
+    assert tokens == [
+        "npx",
+        "wrangler",
+        "d1",
+        "execute",
+        "reach-around-leads",
+        "--remote",
+        "--file",
+        str(target),
+    ]
+
+
+def test_sql_out_refuses_a_name_that_looks_like_an_option(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    delete_export: Path,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    # argparse already refuses "--sql-out -rf.sql"; the form "--sql-out=-rf.sql"
+    # reaches the tool, which refuses it too. Either way no file is made.
+    monkeypatch.setattr("sys.stdin", io.StringIO(ADDR + "\n"))
+    base = ["leads", "delete", "--input", str(delete_export), "--email", "-"]
+    code = cli([*base, "--yes", "--sql-out=-rf.sql"])
+    assert code == 2
+    assert not (tmp_path / "-rf.sql").exists()
+    assert "must not start with '-'" in capsys.readouterr().err
+
+
+def test_a_failed_sql_write_leaves_no_partial_file(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    delete_export: Path,
+    tmp_path: Path,
+) -> None:
+    from reach_around.commands import leads as leads_module
+
+    def short_write(fd: int, data: bytes) -> None:
+        os.write(fd, data[: len(data) // 2])  # part of the address lands on disk
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(leads_module, "_write_all", short_write)
+    target = tmp_path / "delete-lead.sql"
+    assert _delete_to(monkeypatch, delete_export, target) == 2
+    captured = capsys.readouterr()
+    assert not target.exists()
+    assert "removed" in captured.err
+    assert ADDR not in captured.err and "DELETE" not in captured.out
+    # A retry is possible: the path is free again.
+    monkeypatch.undo()
+    assert _delete_to(monkeypatch, delete_export, target) == 0
+
+
+def test_a_partial_file_that_cannot_be_removed_is_named_in_the_output(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    delete_export: Path,
+    tmp_path: Path,
+) -> None:
+    from reach_around.commands import leads as leads_module
+
+    def boom(fd: int, data: bytes) -> None:
+        raise OSError(28, "No space left on device")
+
+    def no_unlink(path: str) -> None:
+        raise OSError(1, "not permitted")
+
+    monkeypatch.setattr(leads_module, "_write_all", boom)
+    monkeypatch.setattr(leads_module, "_remove", no_unlink)
+    target = tmp_path / "keep me.sql"
+    assert _delete_to(monkeypatch, delete_export, target) == 2
+    err = capsys.readouterr().err
+    assert "may remain" in err and shlex.quote(str(target)) in err
+    assert ADDR not in err
+
+
+def test_the_output_and_docs_claim_only_a_point_in_time_check(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    delete_export: Path,
+    tmp_path: Path,
+) -> None:
+    assert _delete_to(monkeypatch, delete_export, tmp_path / "d.sql") == 0
+    err = capsys.readouterr().err.lower()
+    assert "no remaining rows at this moment" in err
+    assert "erased" not in err and "is deleted" not in err
+    docs = (Path(__file__).resolve().parents[1] / "docs" / "privacy.md").read_text(
+        encoding="utf-8"
+    )
+    flat = " ".join(docs.split())
+    assert "only `0` and `0` means erased" not in flat
+    assert "two consecutive" in flat and "no transaction" in flat
+    assert "after the read" in flat
+    assert "unverified" in flat.lower()
+    # The symlink claim matches the implementation: last component only.
+    assert "never through a symlink" not in flat and "last component" in flat
+
+
+def test_an_event_that_arrives_after_the_read_back_is_caught_by_a_rerun(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    sql = _printed_sql(capsys, monkeypatch, tmp_path)
+    live = _sqlite_with([(ID_A, ADDR)], [ID_A])
+    assert _apply(live, sql) == (0, 0)
+    # The normal event writer inserts after the read-back: a point-in-time
+    # check could not have seen it, and the rerun (the documented check) does.
+    live.execute("INSERT INTO kit_events (lead_id) VALUES (?)", (ID_A,))
+    assert live.execute(_statements(sql)[-1]).fetchone()[:2] == (0, 1)
+    assert _apply(live, sql) == (0, 0)
 
 
 def test_sql_out_needs_yes(

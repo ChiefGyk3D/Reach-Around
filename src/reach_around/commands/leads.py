@@ -40,6 +40,7 @@ import argparse
 import json
 import os
 import re
+import shlex
 import sys
 import unicodedata
 from datetime import UTC, datetime
@@ -385,9 +386,11 @@ _STATEMENTS = (
     # gone; it never touches the events of a lead that still exists.
     "DELETE FROM kit_events WHERE lead_id = '<ID>' AND NOT EXISTS "
     "(SELECT 1 FROM leads WHERE id = '<ID>');",
-    "-- read-back: BOTH numbers must be 0. leads_remaining 1 means the id does "
-    "not belong to that address in this database and nothing was deleted; "
-    "events_remaining above 0 means the erasure is incomplete: run the file again",
+    "-- read-back: 0 and 0 means no remaining rows AT THIS MOMENT, not proof of "
+    "completed erasure (no transaction in a file; an event can arrive after "
+    "the read). Run this file again after a wait until two consecutive runs "
+    "read 0 and 0. leads_remaining 1 means the id does not belong to that "
+    "address in this database and nothing was deleted",
     "SELECT (SELECT COUNT(*) FROM leads WHERE id = '<ID>') AS leads_remaining, "
     "(SELECT COUNT(*) FROM kit_events WHERE lead_id = '<ID>') AS events_remaining;",
 )
@@ -581,6 +584,13 @@ def run_delete(args: argparse.Namespace) -> int:
     if args.sql_out is not None and not args.yes:
         print("error: --sql-out needs --yes", file=sys.stderr)
         return EXIT_USAGE
+    if args.sql_out is not None and os.fspath(args.sql_out).startswith("-"):
+        print(
+            "error: --sql-out must not start with '-' (it could be read as an "
+            "option); give a path such as ./delete-lead.sql",
+            file=sys.stderr,
+        )
+        return EXIT_USAGE
     try:
         database = _database(args.database)
         email = _address(args.email)
@@ -626,19 +636,23 @@ def run_delete(args: argparse.Namespace) -> int:
         except LeadsError as exc:
             print(f"error: {exc}", file=sys.stderr)
             return EXIT_USAGE
+    quoted = shlex.quote(os.fspath(target))
     where = (
-        f"The SQL is in {target} (new file, mode 0600). "
+        f"The SQL is in {quoted} (new file, mode 0600). "
         if args.sql_out is not None
         else "The SQL is on stdout; prefer --sql-out, which creates a private "
-        "file and refuses a symlink. "
+        "file and refuses a path that exists or ends in a symlink. "
     )
     print(
         f"1 lead matches. {where}It holds the address, so delete it afterward. "
         "It deletes only a row in the live database that still pairs that id "
-        f"with that address. Apply it to the leads database {database} only, "
-        "and check that the read-back shows 0 and 0 (leads_remaining 1 means "
-        "nothing was deleted; events_remaining above 0 means run it again):\n"
-        f"npx wrangler d1 execute {database} --remote --file {target}",
+        f"with that address. Apply it to the leads database {database} only. "
+        "Reading 0 and 0 means no remaining rows at this moment; it is not proof "
+        "of completed erasure, because D1 offers no transaction in a file and "
+        "an event can arrive after the read. Run the file again after a wait "
+        "until two consecutive runs read 0 and 0 (leads_remaining 1 means "
+        "nothing was deleted):\n"
+        f"npx wrangler d1 execute {database} --remote --file {quoted}",
         file=sys.stderr,
     )
     if args.sql_out is None:
@@ -646,22 +660,51 @@ def run_delete(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def _write_all(fd: int, data: bytes) -> None:
+    view = memoryview(data)
+    while view:
+        view = view[os.write(fd, view) :]
+
+
+def _remove(path: str) -> None:
+    os.unlink(path)
+
+
 def _write_private(path: Path, text: str) -> None:
-    """Create ``path`` (mode 0600, exclusively, never through a symlink)."""
+    """Create ``path`` (mode 0600, exclusively) and write ``text`` to it.
+
+    ``O_EXCL`` refuses a path that exists, and ``O_NOFOLLOW`` refuses a path
+    whose LAST component is a symlink. Symlinks in the parent directories are
+    followed (not checked): use a directory you made yourself. If anything fails
+    after the file was created, the descriptor is closed and the file removed,
+    because it may already hold the address; if it cannot be removed, the
+    message names it.
+    """
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
     try:
         fd = os.open(path, flags, 0o600)
     except OSError:
         raise LeadsError(
-            "cannot create the SQL file: the path must not exist and must not "
-            "be a symlink"
+            "cannot create the SQL file: the path must not exist and its last "
+            "component must not be a symlink"
         ) from None
     try:
-        os.fchmod(fd, 0o600)
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            handle.write(text)
+        try:
+            os.fchmod(fd, 0o600)
+            _write_all(fd, text.encode("utf-8"))
+        finally:
+            os.close(fd)
     except OSError:
-        raise LeadsError("cannot write the SQL file") from None
+        try:
+            _remove(os.fspath(path))
+        except OSError:
+            raise LeadsError(
+                "cannot write the SQL file, and the partial file may remain at "
+                f"{shlex.quote(os.fspath(path))}: delete it, it may hold the address"
+            ) from None
+        raise LeadsError(
+            "cannot write the SQL file; the partial file was removed, no file remains"
+        ) from None
 
 
 def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
@@ -715,7 +758,8 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
         default=None,
         metavar="PATH",
         help="with --yes: write the SQL to a new file (mode 0600, created "
-        "exclusively, never through a symlink) instead of stdout",
+        "exclusively; refused if the path exists or its last component is a "
+        "symlink; parent directories are not checked) instead of stdout",
     )
     delete.set_defaults(func=run_delete)
 

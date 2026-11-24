@@ -233,22 +233,30 @@ You run a local command, and then apply the SQL it prints with `wrangler`.
    random id and its address: the live database deletes the lead and its kit
    events only if that row still pairs them. The file therefore holds the
    address (step 5 deletes it). `--sql-out` creates the file itself, new, mode
-   0600, and refuses a path that exists or is a symlink, so it never writes
-   through a link someone left; do not use a shell `>` redirect for this file:
+   0600, and refuses a path that already exists or whose last component is a
+   symlink. It does not check the parent directories for symlinks, so give it a
+   path inside the directory you just made. If the write fails, the tool
+   removes the partial file, or names it if it cannot, because it may hold the
+   address. Do not use a shell `>` redirect for this file; the tool also
+   refuses a name that starts with `-`:
 
    ```
    printf '%s\n' "$ADDR" | reach-around leads delete --input leads-export.json --email - --database reach-around-leads --yes --sql-out delete-lead.sql
    ```
 
 4. Apply it, then read the result back. The last statement shows two numbers,
-   `leads_remaining` and `events_remaining`, and only `0` and `0` means erased.
+   `leads_remaining` and `events_remaining`. `0` and `0` means no remaining
+   rows at that moment. It does not prove the erasure is complete: D1 offers no
+   transaction in a file, and the Worker can write an event after the read.
    `leads_remaining` 1 means the id did not belong to that address in the live
    database (a stale or wrong export): nothing was deleted, stop and re-export.
-   `events_remaining` above 0 means the erasure is incomplete (the lead row is
-   gone but events remain): run the same file again, it is safe to repeat. The
-   statements are not wrapped in a transaction, because D1 does not accept one in
-   a file; the second events delete and the two-number read-back are what make a
-   partial run visible:
+   `events_remaining` above 0 means events remain. In every case, run the same
+   file again (it is safe to repeat, and its cleanup statement removes events
+   left for a lead that is gone), wait a minute, and run it once more. Treat the
+   erasure as done only after two consecutive runs both read `0` and `0`, and
+   say in your reply that this is a point-in-time check. Whether the tables read
+   here are every place the Worker stores lead data is unverified against the
+   full schema:
 
    ```
    npx wrangler d1 execute reach-around-leads --remote --file delete-lead.sql
@@ -263,7 +271,7 @@ is not valid (ASCII, one `@`, a dotted domain; whitespace around it and upper
 case are normalized), and refuses an export that has a result block without
 `success: true`, a column other than the `leads` columns, a duplicate key, a
 lead id that appears twice, an id that is not 32 lowercase hex characters, or an
-export file that is a symlink. The address on the command line is refused:
+export file whose last component is a symlink. The address on the command line is refused:
 use `--email -`.
 
 After a deletion, a lead who comes back and types the address again is a new
