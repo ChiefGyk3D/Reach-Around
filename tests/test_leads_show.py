@@ -127,8 +127,11 @@ def test_show_no_match_exit_1(
     code, out, err = show(capsys, monkeypatch, export, "nobody@example.test\n")
     assert code == 1
     assert out == ""
+    # No form of the address, masked or not, is written to stderr (it can reach
+    # a log). The message is fixed.
     assert "nobody@example.test" not in err
-    assert "n***@***.test" in err
+    assert "n***" not in err and "***" not in err
+    assert "no lead matches the supplied address" in err
 
 
 def test_show_duplicate_match_refuses(
@@ -141,6 +144,8 @@ def test_show_duplicate_match_refuses(
     assert code == 2
     assert out == ""
     assert ADDR not in err
+    assert "***" not in err
+    assert "more than one lead matches the supplied address" in err
 
 
 def test_show_reads_address_from_a_file(
@@ -226,8 +231,6 @@ def test_show_no_sql_is_ever_printed(
         [event(ID_A, "view") | {"ua": "x"}],
         # an event with a kind outside the schema
         [event(ID_A, "purchase")],
-        # an event off the hour
-        [event(ID_A, "view", EVENT_TS + 5)],
         # an event with a bad lead id
         [event("NOT-HEX", "view")],
         # a negative or boolean timestamp
@@ -291,6 +294,209 @@ def test_existing_delete_still_rejects_the_richer_export(
     assert ADDR not in capsys.readouterr().err
 
 
+def wrangler_two_statement_output(
+    leads: list[dict[str, Any]], events: list[dict[str, Any]]
+) -> str:
+    """The shape of wrangler d1 execute --remote --json with two statements.
+
+    Sources: the D1 result object (success, meta with the keys below, results
+    as an array; developers.cloudflare.com/d1/worker-api/return-object, read
+    2026-11-24) and the wrangler `--command` flag, which takes several queries
+    separated by ';' (developers.cloudflare.com/d1/wrangler-commands, read
+    2026-11-24). INFERRED, not captured from a live run: that wrangler prints
+    one such object per statement, in one JSON array, with no other text on
+    stdout. If a live capture differs, replace this builder with the capture.
+    """
+
+    def result(rows: list[dict[str, Any]]) -> dict[str, Any]:
+        return {
+            "results": rows,
+            "success": True,
+            "meta": {
+                "served_by": "v3-prod",
+                "served_by_region": "ENAM",
+                "served_by_primary": True,
+                "timings": {"sql_duration_ms": 0.3},
+                "duration": 0.3,
+                "changes": 0,
+                "last_row_id": 0,
+                "changed_db": False,
+                "size_after": 28672,
+                "rows_read": len(rows),
+                "rows_written": 0,
+                "total_attempts": 1,
+            },
+        }
+
+    return json.dumps([result(leads), result(events)], indent=2)
+
+
+def test_show_reads_the_documented_wrangler_output_shape(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    leads = [
+        {
+            "id": ID_A,
+            "email": ADDR,
+            "created_ts": CREATED,
+            "verified_ts": None,
+            "country": "DE",
+        }
+    ]
+    events = [{"lead_id": ID_A, "kind": "view", "ts": EVENT_TS + 5}]
+    path = write(tmp_path / "w.json", wrangler_two_statement_output(leads, events))
+    code, out, _ = show(capsys, monkeypatch, path)
+    assert code == 0
+    assert "country: DE" in out
+    assert "view 2023-11-14T23:00Z" in out
+
+
+def test_show_lead_rows_must_have_exactly_the_documented_columns(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    # A column of the leads table that the access export does not select, and a
+    # missing selected column, are both a wrong export: refused.
+    extra = lead(ID_A, ADDR, last_seen_ts=CREATED)
+    missing = lead(ID_A, ADDR)
+    del missing["country"]
+    for row in (extra, missing):
+        path = write(tmp_path / "e.json", blocks([row]))
+        code, out, err = show(capsys, monkeypatch, path)
+        assert code == 2 and out == ""
+        assert ADDR not in err
+
+
+def test_show_accepts_event_times_that_are_not_on_the_hour(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    rows = [event(ID_A, "view", EVENT_TS + 2_800_005)]
+    path = write(tmp_path / "e.json", blocks([lead(ID_A, ADDR)], rows))
+    code, out, _ = show(capsys, monkeypatch, path)
+    assert code == 0
+    # Shown with its hour only; the minutes and seconds are dropped.
+    assert "view 2023-11-14T23:00Z" in out
+
+
+@pytest.mark.parametrize("second_addr", [ADDR, "other@example.test"])
+def test_show_refuses_a_lead_id_that_appears_twice(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    second_addr: str,
+) -> None:
+    for rows in (
+        [lead(ID_A, ADDR), lead(ID_A, second_addr, country="FR")],
+        [lead(ID_A, second_addr, country="FR"), lead(ID_A, ADDR)],
+    ):
+        path = write(tmp_path / "e.json", blocks(rows))
+        code, out, err = show(capsys, monkeypatch, path)
+        assert code == 2 and out == ""
+        assert "a lead id appears more than once" in err
+        # The warning never carries lead data.
+        for text in (ADDR, second_addr, ID_A, "FR", "***"):
+            assert text not in err
+
+
+def test_show_database_is_named_and_defaults_to_the_leads_database(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    export: Path,
+) -> None:
+    code, out, err = show(capsys, monkeypatch, export)
+    assert code == 0
+    assert "database: reach-around-leads" in err
+    code, out, err = show(
+        capsys, monkeypatch, export, ADDR + "\n", "--database", "my-leads-db"
+    )
+    assert code == 0 and "database: my-leads-db" in err
+
+
+@pytest.mark.parametrize(
+    "name", ["reach-around-clicks", "analytics", "DB", "x;rm -rf", "leads" + "x" * 80]
+)
+def test_show_refuses_an_export_from_a_database_that_is_not_the_leads_one(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    export: Path,
+    name: str,
+) -> None:
+    code, out, err = show(capsys, monkeypatch, export, ADDR + "\n", "--database", name)
+    assert code == 2 and out == ""
+    assert ADDR not in err and "***" not in err
+
+
+@pytest.fixture
+def delete_export(tmp_path: Path) -> Path:
+    """The two-column export that `leads delete` takes."""
+    rows = [{"id": ID_A, "email": ADDR}, {"id": ID_B, "email": "other@example.test"}]
+    return write(tmp_path / "d.json", blocks(rows))
+
+
+def test_delete_names_the_leads_database_and_refuses_the_analytics_one(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    delete_export: Path,
+) -> None:
+    export = delete_export
+    monkeypatch.setattr("sys.stdin", io.StringIO(ADDR + "\n"))
+    code = main(["leads", "delete", "--input", str(export), "--email", "-", "--yes"])
+    captured = capsys.readouterr()
+    assert code == 0
+    assert "database: reach-around-leads" in captured.err
+    assert (
+        "npx wrangler d1 execute reach-around-leads --remote --file delete-lead.sql"
+        in captured.err
+    )
+    assert "reach-around-clicks" not in captured.out + captured.err
+    for db in ("reach-around-clicks", "analytics"):
+        monkeypatch.setattr("sys.stdin", io.StringIO(ADDR + "\n"))
+        code = main(
+            [
+                "leads",
+                "delete",
+                "--input",
+                str(export),
+                "--email",
+                "-",
+                "--yes",
+                "--database",
+                db,
+            ]
+        )
+        captured = capsys.readouterr()
+        assert code == 2
+        assert "DELETE" not in captured.out + captured.err
+        assert ADDR not in captured.err
+
+
+def test_delete_errors_never_carry_the_masked_address(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    delete_export: Path,
+) -> None:
+    monkeypatch.setattr("sys.stdin", io.StringIO("nobody@example.test\n"))
+    code = main(["leads", "delete", "--input", str(delete_export), "--email", "-"])
+    err = capsys.readouterr().err
+    assert code == 1
+    assert "***" not in err and "nobody" not in err
+
+
+def test_checklist_names_the_leads_database_and_takes_no_database_option(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    code = main(["leads", "delete", "--checklist"])
+    assert code == 0
+    assert "reach-around-leads" in capsys.readouterr().out
+    code = main(["leads", "delete", "--checklist", "--database", "reach-around-leads"])
+    assert code == 2
+
+
 class TestChecklist:
     def test_names_every_copy(self, capsys: pytest.CaptureFixture[str]) -> None:
         code = main(["leads", "delete", "--checklist"])
@@ -313,7 +519,8 @@ class TestChecklist:
     def test_needs_no_input_and_prints_no_sql_or_address(
         self, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        main(["leads", "delete", "--checklist"])
+        code = main(["leads", "delete", "--checklist"])
+        assert code == 0
         out = capsys.readouterr().out
         assert "DELETE FROM" not in out
         assert "@" not in out

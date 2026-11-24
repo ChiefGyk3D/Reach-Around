@@ -257,15 +257,32 @@ _HOUR_MS = 3_600_000
 _MAX_TS = 253_402_300_799_000  # 9999-12-31T23:59:59Z, in milliseconds
 
 
-def _check_ts(value: Any, *, hour: bool = False) -> int:
+def _check_ts(value: Any) -> int:
     if (
         not isinstance(value, int)
         or isinstance(value, bool)
         or not 0 <= value <= _MAX_TS
-        or (hour and value % _HOUR_MS)
     ):
         raise LeadsError("export: a timestamp is not valid")
     return value
+
+
+# The lead columns the access export selects (docs/privacy.md). Exactly these.
+VIEW_LEAD_COLUMNS = frozenset({"id", "email", "created_ts", "verified_ts", "country"})
+
+
+def _check_view_lead_row(row: Any) -> tuple[str, str]:
+    """A row of the access export: exactly the selected columns, each checked."""
+    if not isinstance(row, dict) or set(row) != VIEW_LEAD_COLUMNS:
+        raise LeadsError("export: a lead row has unexpected columns")
+    lead_id, email = row["id"], row["email"]
+    if not isinstance(lead_id, str) or not _ID.fullmatch(lead_id):
+        raise LeadsError("export: a lead id is not 32 lowercase hex characters")
+    if not isinstance(email, str) or normalize_email(email) != email:
+        raise LeadsError("export: a stored address is not in normalized form")
+    for name in ("created_ts", "verified_ts", "country"):
+        _check_value(row[name])
+    return lead_id, email
 
 
 def _iso(ts_ms: int, *, hour: bool = False) -> str:
@@ -289,11 +306,14 @@ def load_lead_views(
                 raise LeadsError("export: a lead id is not 32 lowercase hex characters")
             if kind not in EVENT_KINDS:
                 raise LeadsError("export: an event kind is not known")
-            events.append((lead_id, kind, _check_ts(row["ts"], hour=True)))
+            ts = _check_ts(row["ts"])
+            # Stored times need not be on the hour; show only the hour.
+            events.append((lead_id, kind, ts - ts % _HOUR_MS))
             continue
-        lead_id, email = _check_row(row)
-        if "created_ts" not in row:
-            raise LeadsError("export: every lead row needs created_ts")
+        lead_id, email = _check_view_lead_row(row)
+        if lead_id in emails:
+            # Never keep one of two rows silently, and never print either.
+            raise LeadsError("export: a lead id appears more than once")
         country = row.get("country")
         if country is not None and not (
             isinstance(country, str) and _COUNTRY.fullmatch(country)
@@ -355,6 +375,25 @@ def _address_from_file(arg: str) -> str:
     return normalize_email(text)
 
 
+# The leads live in their own D1 database (#772, binding LEADS_DB). The owner
+# tools act on that one only. A wrangler export does not name its database, so
+# the name the owner says the export came from is checked: it must be a plain
+# name that contains "leads", the convention docs/deploy.md and
+# scripts/backup-d1.sh also use, so the analytics database is refused.
+LEADS_DATABASE = "reach-around-leads"
+_DB_NAME = re.compile(r"[A-Za-z0-9._-]{1,64}")
+
+
+def _database(name: str | None) -> str:
+    name = LEADS_DATABASE if name is None else name
+    if not _DB_NAME.fullmatch(name) or "leads" not in name.lower():
+        raise LeadsError(
+            "--database must name the leads database (a name that contains "
+            "'leads'); an export from the analytics database is refused"
+        )
+    return name
+
+
 def run_show(args: argparse.Namespace) -> int:
     if args.email is not None:
         print(
@@ -367,20 +406,24 @@ def run_show(args: argparse.Namespace) -> int:
         print("error: --email-file PATH (or -) is required", file=sys.stderr)
         return EXIT_USAGE
     try:
+        database = _database(args.database)
         email = _address_from_file(args.email_file)
         emails, fields, events = load_lead_views(args.input)
     except LeadsError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return EXIT_USAGE
+    print(f"database: {database} (the export must have come from it)", file=sys.stderr)
     ids = [lead_id for lead_id, stored in emails.items() if stored == email]
     masked = mask_email(email)
+    # Fixed messages: stderr can reach a log, and a masked address still
+    # identifies a person on a small domain.
     if not ids:
-        print(f"no lead matches {masked}", file=sys.stderr)
+        print("no lead matches the supplied address", file=sys.stderr)
         return EXIT_NO_MATCH
     if len(ids) > 1:
         print(
-            f"error: {len(ids)} leads match {masked}; expected one. "
-            "The export looks wrong; nothing printed",
+            "error: more than one lead matches the supplied address; the "
+            "export looks wrong; nothing printed",
             file=sys.stderr,
         )
         return EXIT_USAGE
@@ -406,7 +449,8 @@ CHECKLIST = """\
 Erasure checklist: every copy of a lead the owner must also clear.
 Deleting the database rows is one step of six. Tick each one in your reply.
 
-1. Database rows. The `leads` row and its `kit_events` rows in D1. Run
+1. Database rows. The `leads` row and its `kit_events` rows in the leads D1
+   database (reach-around-leads), never the analytics database. Run
    `reach-around leads delete ... --yes`, apply the SQL, and check that the
    read-back says 0 (docs/privacy.md).
 2. Alert copies. If owner alerts are on, delete the unlock and new-lead
@@ -433,7 +477,13 @@ Your reply to the person is due within one month of the request.
 
 def run_delete(args: argparse.Namespace) -> int:
     if args.checklist:
-        if args.input is not None or args.email is not None or args.yes or args.dry_run:
+        if (
+            args.input is not None
+            or args.email is not None
+            or args.yes
+            or args.dry_run
+            or args.database is not None
+        ):
             print(
                 "error: --checklist prints a fixed list and takes no other option",
                 file=sys.stderr,
@@ -445,19 +495,24 @@ def run_delete(args: argparse.Namespace) -> int:
         print("error: --input and --email are required", file=sys.stderr)
         return EXIT_USAGE
     try:
+        database = _database(args.database)
         email = _address(args.email)
         leads = load_leads(args.input)
     except LeadsError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return EXIT_USAGE
+    print(f"database: {database} (the export must have come from it)", file=sys.stderr)
     ids = [lead_id for lead_id, stored in leads if stored == email]
     masked = mask_email(email)
     if not ids:
-        print(f"no lead matches {masked}; nothing to delete", file=sys.stderr)
+        print(
+            "no lead matches the supplied address; nothing to delete",
+            file=sys.stderr,
+        )
         return EXIT_NO_MATCH
     if len(ids) > 1:
         print(
-            f"error: {len(ids)} leads match {masked}; expected one. "
+            f"error: {len(ids)} leads match the supplied address; expected one. "
             "The export looks wrong; nothing printed",
             file=sys.stderr,
         )
@@ -474,8 +529,9 @@ def run_delete(args: argparse.Namespace) -> int:
         print(f"error: {exc}", file=sys.stderr)
         return EXIT_USAGE
     print(
-        f"1 lead matches {masked}. The SQL for it is on stdout. Apply it with "
-        "wrangler (docs/privacy.md) and check that the read-back says 0.",
+        f"1 lead matches {masked}. The SQL for it is on stdout. Apply it to the "
+        f"leads database {database} only, and check that the read-back says 0:\n"
+        f"npx wrangler d1 execute {database} --remote --file delete-lead.sql",
         file=sys.stderr,
     )
     sys.stdout.write("\n".join(statements) + "\n")
@@ -519,6 +575,13 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
         help="print every copy of a lead you must also clear (no export, no "
         "address); takes no other option",
     )
+    delete.add_argument(
+        "--database",
+        default=None,
+        metavar="NAME",
+        help=f"the leads D1 database the export came from (default "
+        f"{LEADS_DATABASE}); a name without 'leads' is refused",
+    )
     delete.set_defaults(func=run_delete)
 
     show = actions.add_parser(
@@ -542,4 +605,11 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
     # Refused with a fixed message, so a typed address is never echoed back by
     # argparse's own usage error.
     show.add_argument("--email", default=None, help=argparse.SUPPRESS)
+    show.add_argument(
+        "--database",
+        default=None,
+        metavar="NAME",
+        help=f"the leads D1 database the export came from (default "
+        f"{LEADS_DATABASE}); a name without 'leads' is refused",
+    )
     show.set_defaults(func=run_show)

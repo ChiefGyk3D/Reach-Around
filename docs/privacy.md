@@ -124,7 +124,7 @@ about one person.
 
    ```
    umask 077
-   npx wrangler d1 execute reach-around-clicks --remote --json \
+   npx wrangler d1 execute reach-around-leads --remote --json \
      --command "SELECT id, email, created_ts, verified_ts, country FROM leads; SELECT lead_id, kind, ts FROM kit_events" > leads-export.json
    ```
 
@@ -140,8 +140,21 @@ about one person.
    (UTC) and each kit event kind with its hour (`unlock`, `view`, `verify`).
    It prints nothing else: no id, no other lead, no SQL, no last-seen time.
    Exit 1 means no lead has that address (it may already be gone, or the
-   spelling differs). It makes no network call and writes no file. An address on
-   the command line is refused so the shell history does not keep it.
+   spelling differs). It makes no network call and writes no file. Its error
+   messages are fixed and never carry the address, even masked, because stderr
+   can reach a log. The export must hold exactly the five lead columns and the
+   three event columns above, and a lead id that appears twice refuses the whole
+   export. An event time that is not on the hour is shown as its hour.
+
+   The command prints the database it expects the export to come from
+   (`database: reach-around-leads`) and refuses `--database` with a name that
+   does not contain `leads`, so an export taken from the analytics database is
+   not used. A wrangler export does not name its database, so this checks the
+   name you give, not the file: take the export from the leads database only.
+
+   Typing the address on the command line is refused by this tool, but that does
+   not undo what a shell already did: if you typed it after `--email`, your shell
+   history and the process list already hold it. Use stdin or a file.
 
 3. Copy the printed lines into your written reply, and add the copies the tool
    cannot see (alert copies in your chat room or mailbox, inquiry text, hand-made
@@ -178,7 +191,7 @@ You run a local command, and then apply the SQL it prints with `wrangler`.
 
    ```
    umask 077
-   npx wrangler d1 execute reach-around-clicks --remote --json \
+   npx wrangler d1 execute reach-around-leads --remote --json \
      --command "SELECT id, email FROM leads" > leads-export.json
    ```
 
@@ -206,7 +219,7 @@ You run a local command, and then apply the SQL it prints with `wrangler`.
    after the delete and must show `0`:
 
    ```
-   npx wrangler d1 execute reach-around-clicks --remote --file delete-lead.sql
+   npx wrangler d1 execute reach-around-leads --remote --file delete-lead.sql
    ```
 
 5. Delete `leads-export.json` and `delete-lead.sql`, and `unset ADDR`.
