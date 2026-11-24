@@ -51,11 +51,8 @@ jobs:
         ruff format --check .
         python3 -I scripts/check-token-drift
         python3 -I scripts/check-public-assets.py
-<<<<<<< HEAD
-        python3 -I scripts/check-wiki-scrub.py
-=======
         python3 -I .github/scripts/check-migrations.py
->>>>>>> origin/main
+        python3 -I scripts/check-wiki-scrub.py
         python3 -I scripts/changelog-assemble.py verify
         python3 -I scripts/changelog-assemble.py check-pr
       typecheck-install-command: |
