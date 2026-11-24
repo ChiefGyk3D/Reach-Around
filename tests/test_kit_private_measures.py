@@ -431,7 +431,7 @@ def test_the_needles_are_the_forms_the_live_cards_print(
 def test_a_stale_public_pdf_with_now_private_live_figures_is_refused(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    config, site, _ = build_instance(tmp_path, make_config(live_kit()))
+    config, site, gated = build_instance(tmp_path, make_config(live_kit()))
 
     def make_public() -> Path:
         return build_public_kit_pdf(
@@ -448,5 +448,6 @@ def test_a_stale_public_pdf_with_now_private_live_figures_is_refused(
     assert "".join((REGISTRY["peak_ccv"].label + shown_count(98765)).split()) in flat
     out.unlink()
     make_private(monkeypatch, "live")
+    bless(site, gated)
     with pytest.raises(PdfError, match="private"):
         make_public()
