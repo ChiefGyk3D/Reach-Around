@@ -64,7 +64,7 @@ switch.
 - [ ] The analytics health alert is on and a test alert reached your device.
 - [ ] The Worker's write-budget check printed under 80 percent of your plan quota.
       The Paid plan is the baseline; if you run on Free, the click ceiling does
-      not fit (see [Costs](../costs/README.md)).
+      not fit (see [Costs](../Costs.md)).
 
 ### Migrations with the Worker quiet
 

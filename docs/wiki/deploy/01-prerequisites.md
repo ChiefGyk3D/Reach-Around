@@ -30,7 +30,7 @@ default write quota, the click ceiling and the funnel caps are sized for it.
 `free` funnel cap profile and a one-site rollout on Free, decided 2026-11-08)
 are no longer the default. The long reference keeps them only for a deployment
 that deliberately sets the Free plan's quota. For what Paid costs and what
-breaks on Free, see [Costs](../costs/README.md).
+breaks on Free, see [Costs](../Costs.md).
 
 The cap-and-quota arithmetic is checked by the deploy workflow and refuses a
 combination that does not fit. It is in the long reference, under "Kit limits
