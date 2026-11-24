@@ -6,6 +6,7 @@ from __future__ import annotations
 import os
 import re
 import sqlite3
+import stat
 import threading
 import time
 import uuid
@@ -57,8 +58,22 @@ class SqliteDb:
         if not parent.exists():
             parent.mkdir(mode=0o700, parents=True)
             parent.chmod(0o700)
-        fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
-        os.close(fd)
+        # never follow a final-component symlink; judge the opened file itself
+        fd = os.open(
+            path,
+            os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0),
+            0o600,
+        )
+        try:
+            info = os.fstat(fd)
+            if not stat.S_ISREG(info.st_mode):
+                raise PermissionError("the store path is not a regular file")
+            if info.st_uid != os.geteuid():
+                raise PermissionError("the store file belongs to another user")
+            if stat.S_IMODE(info.st_mode) & 0o077:
+                os.fchmod(fd, 0o600)
+        finally:
+            os.close(fd)
 
     def _enable_wal(self, conn: sqlite3.Connection) -> None:
         if self._memory:

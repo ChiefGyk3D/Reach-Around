@@ -711,3 +711,39 @@ def test_a_socket_added_after_the_deadline_is_shut_down_at_once() -> None:
     assert sock.events == ["shutdown_start", "shutdown_end"]
     watchdog.stop()
     assert sock.events[-1] == "close"
+
+
+def test_a_dead_first_address_falls_through_to_the_next_checked_one() -> None:
+    other = "93.184.216.35"
+    sock = FakeSock(http_answer(b"{}"))
+    tried: list[str] = []
+
+    def connector(address: str, port: int, timeout: float) -> socket.socket:
+        tried.append(address)
+        if address == PUBLIC:
+            raise ConnectionRefusedError("down")
+        return cast(socket.socket, sock)
+
+    transport = HttpsTransport(
+        resolver=lambda h, p: [PUBLIC, PUBLIC, other],
+        connector=connector,
+        wrapper=lambda s, n: s,
+    )
+    assert transport(_request()).status == 200
+    assert tried == [PUBLIC, other]
+
+
+def test_every_dead_address_is_a_typed_error_and_never_an_unchecked_one() -> None:
+    tried: list[str] = []
+
+    def connector(address: str, port: int, timeout: float) -> socket.socket:
+        tried.append(address)
+        raise ConnectionRefusedError("down")
+
+    transport = HttpsTransport(
+        resolver=lambda h, p: [PUBLIC, "93.184.216.35"], connector=connector
+    )
+    with pytest.raises(EgressBlocked) as caught:
+        transport(_request())
+    assert caught.value.reason == "connect_failed"
+    assert tried == [PUBLIC, "93.184.216.35"]

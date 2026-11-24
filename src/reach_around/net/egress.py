@@ -373,14 +373,16 @@ class HttpsTransport:
         # every answer must be public; a mixed set is refused whole
         if not all(is_public_address(answer) for answer in answers):
             raise EgressBlocked("non_public_address", host)
-        address = answers[0]
+        addresses = list(dict.fromkeys(answers))  # checked answers only, in order
         remaining = deadline - self._clock()
         if remaining <= 0:
             raise EgressBlocked("timeout", host)
         watchdog = _Watchdog(remaining)
-        conn = _PinnedConnection(
-            host, address, remaining, self._connector, self._wrapper, watchdog
-        )
+        try:
+            conn = self._connect_any(host, addresses, deadline, watchdog)
+        except BaseException:
+            watchdog.stop()
+            raise
         try:
             try:
                 conn.request(
@@ -412,6 +414,43 @@ class HttpsTransport:
         finally:
             watchdog.stop()
             conn.close()
+
+    def _connect_any(
+        self,
+        host: str,
+        addresses: list[str],
+        deadline: float,
+        watchdog: _Watchdog,
+    ) -> _PinnedConnection:
+        """Connect (and finish TLS) to the first checked address that answers.
+
+        Only the connection step is retried: nothing has been sent yet, so a
+        request is never replayed. Every address comes from the one validated
+        answer set, and the one absolute deadline covers all attempts.
+        """
+        failure: EgressBlocked | None = None
+        for index, address in enumerate(addresses):
+            remaining = deadline - self._clock()
+            if remaining <= 0 or watchdog.fired:
+                raise EgressBlocked("timeout", host)
+            share = remaining / (len(addresses) - index)
+            conn = _PinnedConnection(
+                host, address, share, self._connector, self._wrapper, watchdog
+            )
+            try:
+                conn.connect()
+            except ssl.SSLError:
+                conn.close()
+                failure = EgressBlocked("tls_failed", host)
+            except (OSError, http.client.HTTPException, ValueError):
+                conn.close()
+                failure = EgressBlocked("connect_failed", host)
+            else:
+                conn.timeout = max(deadline - self._clock(), 0.001)
+                return conn
+        if watchdog.fired:
+            raise EgressBlocked("timeout", host)
+        raise failure or EgressBlocked("connect_failed", host)
 
     def _read(
         self,

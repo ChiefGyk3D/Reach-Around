@@ -14,7 +14,7 @@ import pytest
 from contract import StoreContract
 from migration_contract import MigrationContract
 
-from reach_around.store import SqliteStore, Store
+from reach_around.store import SqliteStore, Store, StoreError
 from reach_around.store.migrate import load_migrations
 
 
@@ -94,6 +94,51 @@ class TestSqliteOnly:
             assert stat.S_IMODE(path.stat().st_mode) == 0o600, path.name
         assert stat.S_IMODE(base.parent.stat().st_mode) == 0o700
         sqlite.close()
+
+    def test_existing_loose_file_is_tightened_to_0600(self, tmp_path: Path) -> None:
+        path = tmp_path / "s.db"
+        path.write_bytes(b"")
+        path.chmod(0o644)
+        SqliteStore(path).close()
+        assert stat.S_IMODE(path.stat().st_mode) == 0o600
+
+    def test_symlinked_store_path_is_refused(self, tmp_path: Path) -> None:
+        target = tmp_path / "elsewhere.db"
+        target.write_bytes(b"")
+        target.chmod(0o644)
+        link = tmp_path / "s.db"
+        link.symlink_to(target)
+        with pytest.raises(StoreError):
+            SqliteStore(link)
+        assert stat.S_IMODE(target.stat().st_mode) == 0o644
+
+    def test_non_regular_store_path_is_refused(self, tmp_path: Path) -> None:
+        with pytest.raises(StoreError):
+            SqliteStore(tmp_path)
+
+    def test_click_daily_rebuild_keeps_rows_and_enforces_integer_counts(
+        self, tmp_path: Path
+    ) -> None:
+        every = load_migrations()
+        first = SqliteStore(tmp_path / "s.db", migrations=every[:1])
+        first.migrate()
+        first.db.execute(
+            "INSERT INTO click_daily VALUES ('2026-10-22', 'UTC', 'docs', 'US', 7)"
+        )
+        full = SqliteStore(tmp_path / "s.db")
+        assert full.migrate() == 2
+        assert full.db.query("SELECT day, count FROM click_daily") == [
+            ("2026-10-22", 7)
+        ]
+        for bad in (1.5, 9007199254740992, -1, "x"):
+            with pytest.raises(sqlite3.IntegrityError):
+                full.db.execute(
+                    "INSERT INTO click_daily VALUES "
+                    "('2026-10-23', 'UTC', 'docs', 'US', ?)",
+                    (bad,),
+                )
+        first.close()
+        full.close()
 
     def test_wal_and_foreign_keys_are_on(self, tmp_path: Path) -> None:
         sqlite = SqliteStore(tmp_path / "s.db")

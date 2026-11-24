@@ -91,6 +91,47 @@ class StoreContract:
         second = store.write([snap(10, "2026-10-23T15:00:00Z")], now=NOW)
         assert (first.inserted, second.inserted, second.unchanged) == (1, 0, 1)
 
+    def test_a_renewed_expiry_or_note_is_not_discarded_as_unchanged(
+        self, store: Store
+    ) -> None:
+        first = snap(
+            4,
+            "2026-10-23T14:00:00Z",
+            access=Access.OWNER,
+            expires_at=date(2026, 11, 1),
+        )
+        later = snap(
+            4,
+            "2026-10-23T15:00:00Z",
+            access=Access.OWNER,
+            expires_at=date(2026, 12, 1),
+        )
+        noted = snap(
+            4,
+            "2026-10-23T16:00:00Z",
+            access=Access.OWNER,
+            expires_at=date(2026, 12, 1),
+            coverage_note="rebuilt",
+        )
+        assert store.write([first], now=NOW).inserted == 1
+        assert store.write([later], now=NOW).inserted == 1
+        assert store.write([later], now=NOW).inserted == 0
+        assert store.write([noted], now=NOW).inserted == 1
+        (current,) = store.series(KEY)
+        assert current.expires_at == date(2026, 12, 1)
+        assert current.coverage_note == "rebuilt"
+
+    def test_access_change_is_not_discarded_as_unchanged(self, store: Store) -> None:
+        store.write([snap(4, "2026-10-23T14:00:00Z")], now=NOW)
+        owner = snap(
+            4,
+            "2026-10-23T15:00:00Z",
+            access=Access.OWNER,
+            expires_at=date(2026, 12, 1),
+        )
+        assert store.write([owner], now=NOW).inserted == 1
+        assert store.series(KEY)[0].access is Access.OWNER
+
     def test_later_snapshot_same_day_replaces_on_read_and_keeps_history(
         self, store: Store
     ) -> None:
@@ -506,6 +547,59 @@ class StoreContract:
             store.apply_click_batch(self._rows(), lo=0, hi=10, source_total=11)
         assert store.click_cursor() == 0
         assert store.clicks(date(2026, 1, 1)) == []
+
+    def test_click_count_never_goes_past_the_exact_integer_bound(
+        self, store: Store
+    ) -> None:
+        top = 9_007_199_254_740_991
+        big = [ClickDay(date(2026, 10, 22), NY, "docs", "US", top)]
+        assert store.apply_click_batch(big, lo=0, hi=10, source_total=top)
+        more = [ClickDay(date(2026, 10, 22), NY, "docs", "US", 1)]
+        with pytest.raises(StoreError):
+            store.apply_click_batch(more, lo=10, hi=20, source_total=1)
+        assert store.click_cursor() == 10
+        (row,) = store.clicks(date(2026, 10, 1))
+        assert row.count == top and isinstance(row.count, int)
+        assert store.db.query("SELECT typeof(count) FROM click_daily") == [("integer",)]
+
+    def test_click_count_above_the_bound_is_refused(self, store: Store) -> None:
+        over = 9_007_199_254_740_992
+        rows = [ClickDay(date(2026, 10, 22), NY, "docs", "US", over)]
+        with pytest.raises(ValueError):
+            store.apply_click_batch(rows, lo=0, hi=10, source_total=over)
+
+    def test_reads_refuse_rather_than_materialize_past_the_page_cap(
+        self, store: Store, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import reach_around.store.base as base
+
+        monkeypatch.setattr(base, "MAX_SERIES_ROWS", 1)
+        monkeypatch.setattr(base, "MAX_KEYS", 1)
+        monkeypatch.setattr(base, "MAX_REVISIONS", 1)
+        monkeypatch.setattr(base, "MAX_DEAD_LETTERS", 1)
+        monkeypatch.setattr(base, "MAX_CLICK_ROWS", 1)
+        store.write(
+            [
+                snap(1, day=date(2026, 10, 22), source=Source.TYPED),
+                snap(2, day=date(2026, 10, 23), source=Source.TYPED),
+            ],
+            now=NOW,
+        )
+        store.write([snap(3, "2026-10-23T18:00:00Z")], now=NOW)
+        store.write([snap(1, metric="other")], now=NOW)
+        with pytest.raises(StoreError):
+            store.series(KEY)
+        with pytest.raises(StoreError):
+            store.keys()
+        with pytest.raises(StoreError):
+            store.revisions(KEY, date(2026, 10, 23))
+        for lo in (0, 10):
+            store.record_dead_letter(lo, lo + 5, "r", NOW)
+        with pytest.raises(StoreError):
+            store.dead_letters()
+        store.apply_click_batch(self._rows(), lo=0, hi=10, source_total=10)
+        with pytest.raises(StoreError):
+            store.clicks(date(2026, 10, 1))
 
     def test_dead_letter_upsert_counts_attempts_and_resolves_once(
         self, store: Store

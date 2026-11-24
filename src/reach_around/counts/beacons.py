@@ -122,17 +122,20 @@ def parse_beacons_csv(data: bytes) -> BeaconsExport:
         text = data.decode("utf-8")
     except UnicodeDecodeError:
         raise BeaconsImportError("file is not valid UTF-8") from None
+    reader = csv.reader(io.StringIO(text, newline=""), strict=True)
     try:
-        rows = list(csv.reader(io.StringIO(text, newline=""), strict=True))
+        header = next(reader, None)
+        if header is None or tuple(header) != _HEADER:
+            raise _fail(None, "expected Section,Item,Detail,Views,Clicks,CTR (%)")
+        data_rows: list[list[str]] = []
+        for cells in reader:  # streamed: the row cap applies before the next row
+            if len(data_rows) >= MAX_BEACONS_ROWS:
+                raise BeaconsImportError(
+                    f"file has too many data rows (limit {MAX_BEACONS_ROWS})"
+                )
+            data_rows.append(cells)
     except csv.Error:
         raise BeaconsImportError("file is not strict CSV") from None
-    if not rows or tuple(rows[0]) != _HEADER:
-        raise _fail(None, "expected Section,Item,Detail,Views,Clicks,CTR (%)")
-    data_rows = rows[1:]
-    if len(data_rows) > MAX_BEACONS_ROWS:
-        raise BeaconsImportError(
-            f"file has too many data rows (limit {MAX_BEACONS_ROWS})"
-        )
     if not data_rows:
         raise BeaconsImportError("file has no data rows")
 
