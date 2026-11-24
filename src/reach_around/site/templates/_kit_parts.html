@@ -117,6 +117,7 @@
 {% endmacro %}
 
 {% macro card_line(row) %}<time datetime="{{ row.as_of }}">{{ row.as_of }}</time> UTC{% if row.stale %} (out of date){% endif %}{% if row.period %}, period {{ row.period }} (UTC){% endif %}{% if row.era %} <span class="kit-era">{{ row.era }}</span>{% endif %}{% if row.trust %} {{ trust(row.trust) }}{% endif %}{% endmacro %}
+{% macro recheck_link(url) %}{% if url %} <a class="kit-recheck" href="{{ url }}" rel="noopener noreferrer">Re-check: {{ url }}</a>{% endif %}{% endmacro %}
 {% macro sections(kit, heading_id) %}
 {% if kit.sections %}
 <section class="kit-sections" aria-labelledby="{{ heading_id }}">
@@ -128,15 +129,18 @@
 <p class="kit-note kit-empty">{{ card.no_numbers }}</p>
 {% else %}
 <p class="kit-section-headline"><strong class="kit-figure">{{ card.headline.value }}</strong> {{ card.headline.label }}</p>
-<p class="kit-note">{{ card_line(card.headline) }}</p>
+<p class="kit-note">{{ card_line(card.headline) }}{{ recheck_link(card.headline.recheck) }}</p>
 {% if card.rows %}
 <ul class="kit-list">
 {% for row in card.rows %}
-<li><span>{{ row.label }}</span> <strong class="kit-figure">{{ row.value }}</strong> <span class="kit-note">{{ card_line(row) }}{% if row.formula %} {{ row.formula }}{% endif %}{% if row.note %} {{ row.note }}.{% endif %}</span></li>
+<li><span>{{ row.label }}</span> <strong class="kit-figure">{{ row.value }}</strong> <span class="kit-note">{{ card_line(row) }}{% if row.formula %} {{ row.formula }}{% endif %}{% if row.note %} {{ row.note }}.{% endif %}{{ recheck_link(row.recheck) }}</span></li>
 {% endfor %}
 </ul>
 {% endif %}
 {% endif %}
+{% if card.server_note %}<p class="kit-note kit-server-note">{{ card.server_note }}{{ recheck_link(card.recheck) }}</p>{% endif %}
+{% for line in card.not_provided %}<p class="kit-note kit-not-provided">{{ line }}</p>
+{% endfor %}
 </article>
 {% endfor %}
 </section>

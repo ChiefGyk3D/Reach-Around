@@ -56,6 +56,7 @@ from pydantic import (
 )
 
 from reach_around.config.blocks import MAX_COUNT, PLATFORM_SLUGS
+from reach_around.config.fediverse import FediverseEntry, entries_problem
 from reach_around.config.imported_history import ImportedHistory
 from reach_around.config.measures import (
     REGISTRY,
@@ -107,6 +108,9 @@ KIT_FIELD_POLICY: Mapping[str, FieldPolicy] = {
     # The live block (#629): hand-kept figures for Twitch and Kick. Each compiles
     # to a measure that is never wider than this level.
     "live": FieldPolicy("public"),
+    # The fediverse block (#630): public counts typed from a public profile, each
+    # with its re-check link. Public by nature (spec 14.2, decision 6).
+    "fediverse": FieldPolicy("public"),
     # The computed measure list the renderer reads. Not a config field.
     "measures": FieldPolicy("public"),
     "partners": FieldPolicy("gated"),
@@ -789,6 +793,9 @@ class KitConfig(_Model):
     sections: list[KitSection] = Field(default_factory=list, max_length=MAX_SECTIONS)
     # The live block (#629): hand-kept figures, Twitch and Kick, in config order.
     live: list[LiveRow] = Field(default_factory=list, max_length=len(LIVE_PLATFORMS))
+    # The fediverse block (#630): Mastodon, Bluesky and Pixelfed counts typed from
+    # the public profile, with its link and the per-post counts the medians use.
+    fediverse: list[FediverseEntry] = Field(default_factory=list, max_length=3)
     # Options for the audience summary (#627): the optional poll estimate line.
     audience_summary: AudienceSummary | None = None
     # A file of link-page numbers imported from the previous provider (see
@@ -902,6 +909,13 @@ class KitConfig(_Model):
                     f"the live row for {row.platform!r} is listed more than once"
                 )
             seen.add(row.platform)
+        return self
+
+    @model_validator(mode="after")
+    def _fediverse_is_unique(self) -> KitConfig:
+        problem = entries_problem(self.fediverse)
+        if problem:
+            raise ValueError(problem)
         return self
 
     @model_validator(mode="after")
