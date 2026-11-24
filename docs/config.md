@@ -266,9 +266,20 @@ keeps the existing tab or sections layout.
 
 With `layout: stack`, every tab needs a distinct `intent`, there must be exactly one `watch` tab, and the two `watch` links cannot be scheduled (`show_from`, `show_until`). The validator enforces these only for that layout. Tabs provide the group order and headings. The standard information order is
 `videos`, `follow`, `community`, `support`, `work`, `shop`, `blog`; config order
-is authoritative. The generated page uses one column on phones and two columns
-for group links on wider screens. Every link remains keyboard operable, targets
-stay at least 44 px tall, and the layout reflows at 320 px and 200% zoom.
+is authoritative. The generated page is a deck (#677): every region is a tile
+on the dark ground, with a small mono kicker for a heading.
+
+| Width | Arrangement |
+| --- | --- |
+| Under 48 rem (phones) | One column. The Watch tile (status text and the two Watch links) comes first, then the featured card, then a row of jump chips (in-page links, one per group, no script), then the groups in config order. |
+| 48 rem and up | Two columns. The Watch tile and the featured card run full width; groups pair up in config order. The jump chips are hidden. |
+| 64 rem and up | Twelve columns, up to 90 rem wide. With `featured`, the featured card takes four columns beside the Watch tile (eight); without it the Watch tile takes the row. `follow` spans eight columns and every other group four, in config order, so Follow pairs with Community. |
+
+Only the `support` tile uses the brand plate color; amber stays on the buttons,
+the kickers and the focus ring. Print drops the chips and the grid. The group
+sections carry a `smart-group-<intent>` class for site CSS. Every link remains
+keyboard operable, targets stay at least 44 px tall, and the layout reflows at
+320 px and 200% zoom.
 
 ```yaml
 page:
