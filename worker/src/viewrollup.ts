@@ -71,6 +71,14 @@
 // State is explicit: no log row = FRESH; a log row with raw rows above its
 // max_id = RE-ROLL. Nothing keys off max_id being zero.
 //
+// RE-ROLL CLOSED (migration 0018). A day is re-rolled for a late row only while it is
+// open: until its end + ROLLUP_GRACE_HOURS + 48 hours (SEAL_WINDOW_MS), and only while
+// the log row's reroll_closed is 0. A dropped late batch, or a late row after the
+// window, sets reroll_closed = 1 in the same statement that advances max_id, so no
+// later batch can make the day look safe to re-roll over aggregates that are right.
+// The hour table is written from the same rows as the daily tables (id <= max_id of
+// the read), so a row that arrives between the read and the seal is in neither.
+//
 // SITES. Everything here is per (site, day) (docs/analytics-design.md 3.6): a day
 // sealed for one site never seals it for another, each site has its own log row,
 // checkpoint, max_id and re-roll counter, a late row re-rolls only its own
@@ -101,6 +109,8 @@ export const DEFAULT_MIN_CELL = 3;
 export const MAX_MIN_CELL = 50;
 export const DEFAULT_GRACE_HOURS = 2;
 export const MAX_GRACE_HOURS = 12;
+/** A sealed day may be re-rolled for a late row until its end + ROLLUP_GRACE_HOURS + this window (owner decision, #759). */
+export const SEAL_WINDOW_MS = 48 * 3_600_000;
 export const DEFAULT_MAX_ROWS_PER_DAY = 3000;
 export const MAX_MAX_ROWS_PER_DAY = 20000;
 /** Input rows one invocation may roll in total, as a multiple of the per-day size. */
@@ -254,6 +264,8 @@ interface Work {
   /** For a re-roll: the logged max_id and raw_views. */
   oldMax: number;
   oldViews: number;
+  /** The log row says this day is never re-rolled again (a late row is only dropped). */
+  closed: boolean;
 }
 
 interface Lease {
@@ -514,10 +526,10 @@ async function writeDay(db: D1Database, w: Work, p: DayPlan, nowMs: number, leas
         .prepare(
           "INSERT INTO view_hour_daily (site, day, hour, bot_class, views, clicks) " +
             "SELECT ?1, ?2, CAST(strftime('%H', ts / 1000, 'unixepoch') AS INTEGER), bot_class, COUNT(*), 0 " +
-            `FROM view_events WHERE site = ?1 AND ts >= ?3 AND ts < ?4 AND ${guard.sql} GROUP BY 3, bot_class ` +
+            `FROM view_events WHERE site = ?1 AND ts >= ?3 AND ts < ?4 AND id <= ?5 AND ${guard.sql} GROUP BY 3, bot_class ` +
             "ON CONFLICT(site, day, hour, bot_class) DO UPDATE SET views = excluded.views",
         )
-        .bind(w.site, w.day, dayStartMs(w.day), dayStartMs(w.day) + DAY_MS, ...guard.args),
+        .bind(w.site, w.day, dayStartMs(w.day), dayStartMs(w.day) + DAY_MS, p.maxId, ...guard.args),
       db
         .prepare(`DELETE FROM view_hour_daily WHERE site = ?1 AND day = ?2 AND views = 0 AND clicks = 0 AND ${guard.sql}`)
         .bind(w.site, w.day, ...guard.args),
@@ -559,7 +571,7 @@ async function writeDay(db: D1Database, w: Work, p: DayPlan, nowMs: number, leas
   } else if (drop) {
     stmts.push(
       db
-        .prepare(`UPDATE view_rollup_log SET max_id = ?, rolled_at = ? WHERE site = ? AND day = ? AND max_id = ? AND ${LEASE_OK}`)
+        .prepare(`UPDATE view_rollup_log SET max_id = ?, rolled_at = ?, reroll_closed = 1 WHERE site = ? AND day = ? AND max_id = ? AND ${LEASE_OK}`)
         .bind(p.maxId, nowMs, w.site, w.day, w.oldMax, lease.token, leaseNow),
     );
   } else {
@@ -657,7 +669,7 @@ export async function rollupClosedDays(env: RollupEnv, nowMs: number): Promise<R
         .bind(todayStart, MAX_DAYS_PER_RUN + 1),
       db
         .prepare(
-          "SELECT l.site AS s, l.day AS d, l.max_id AS m, l.raw_views AS rv, " +
+          "SELECT l.site AS s, l.day AS d, l.max_id AS m, l.raw_views AS rv, l.reroll_closed AS cl, " +
             "(SELECT COUNT(*) FROM view_events x WHERE x.site = l.site AND x.ts >= (strftime('%s', l.day) * 1000) AND x.ts < (strftime('%s', l.day) * 1000 + 86400000)) AS n " +
             "FROM view_rollup_log l WHERE EXISTS (SELECT 1 FROM view_events e WHERE e.site = l.site AND e.ts >= (strftime('%s', l.day) * 1000) " +
             "AND e.ts < (strftime('%s', l.day) * 1000 + 86400000) AND e.id > l.max_id) ORDER BY l.day, l.site LIMIT ?1",
@@ -671,14 +683,16 @@ export async function rollupClosedDays(env: RollupEnv, nowMs: number): Promise<R
       mode: "fresh",
       oldMax: 0,
       oldViews: 0,
+      closed: false,
     }));
-    const redo: Work[] = ((found[1]?.results ?? []) as Array<{ s: string; d: string; m: number; rv: number; n: number }>).map((r) => ({
+    const redo: Work[] = ((found[1]?.results ?? []) as Array<{ s: string; d: string; m: number; rv: number; cl: number; n: number }>).map((r) => ({
       site: r.s,
       day: r.d,
       n: r.n,
       mode: "reroll",
       oldMax: r.m,
       oldViews: r.rv,
+      closed: r.cl === 1,
     }));
     const all = [...redo, ...fresh.slice(0, MAX_DAYS_PER_RUN)];
     work = all.slice(0, MAX_DAYS_PER_RUN);
@@ -736,8 +750,10 @@ export async function rollupClosedDays(env: RollupEnv, nowMs: number): Promise<R
         if (w.mode === "reroll") {
           const lateRows = plan.raw - plan.oldCount;
           if (lateRows <= 0) continue;
-          // Re-roll only while every originally counted raw row still exists.
-          const safe = plan.oldCount === w.oldViews;
+          // Re-roll only while the day is open (never closed by an earlier drop, still inside the
+          // seal window) and every originally counted raw row still exists.
+          const open = !w.closed && nowMs < dayStartMs(w.day) + DAY_MS + graceMs(env.ROLLUP_GRACE_HOURS) + SEAL_WINDOW_MS;
+          const safe = open && plan.oldCount === w.oldViews;
           rows += await writeDay(db, w, plan, nowMs, lease, !safe);
           if (safe) {
             late += lateRows;

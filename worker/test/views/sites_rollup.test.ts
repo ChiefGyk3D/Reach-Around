@@ -44,7 +44,7 @@ async function insert(list: Raw[]) {
 }
 const many = (site: string, ts: number, n: number, over: Partial<Raw> = {}): Raw[] => Array.from({ length: n }, () => ({ site, ts, ...over }));
 const sealed = async (site: string, day: string, maxId = 1_000_000_000, rolledAt = 0) =>
-  DB.prepare("INSERT INTO view_rollup_log VALUES (?, ?, 'UTC', 0, 0, 0, 0, 0, 0, ?, ?, 0)").bind(site, day, rolledAt, maxId).run();
+  DB.prepare("INSERT INTO view_rollup_log (site, day, day_tz, raw_views, views, uniques, rows_core, rows_dim, rows_geo, rolled_at, max_id, rerolls) VALUES (?, ?, 'UTC', 0, 0, 0, 0, 0, 0, ?, ?, 0)").bind(site, day, rolledAt, maxId).run();
 
 beforeEach(clearAll);
 
@@ -229,7 +229,7 @@ describe("retention per site", () => {
   it("aggregates_and_log_rows_of_every_site_age_out_after_90_days", async () => {
     await DB.batch([
       DB.prepare("INSERT INTO view_geo_daily VALUES ('links','2026-11-01','UTC','US','','','h',1,0), ('blog','2026-11-01','UTC','US','','','h',1,0), ('blog','2027-03-10','UTC','US','','','h',1,0)"),
-      DB.prepare("INSERT INTO view_rollup_log VALUES ('links','2026-11-01','UTC',1,1,0,1,1,1,0,0,0), ('blog','2026-11-01','UTC',1,1,0,1,1,1,0,0,0)"),
+      DB.prepare("INSERT INTO view_rollup_log (site, day, day_tz, raw_views, views, uniques, rows_core, rows_dim, rows_geo, rolled_at, max_id, rerolls) VALUES ('links','2026-11-01','UTC',1,1,0,1,1,1,0,0,0), ('blog','2026-11-01','UTC',1,1,0,1,1,1,0,0,0)"),
     ]);
     await purgeViews({ DB, SITES }, NOW);
     expect(await q("SELECT site, day FROM view_geo_daily")).toEqual([{ site: "blog", day: "2027-03-10" }]);

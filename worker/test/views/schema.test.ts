@@ -24,7 +24,7 @@ const EXPECTED_COLUMNS: Record<string, string[]> = {
   view_rollup_log: [
     "site",
     "day", "day_tz", "raw_views", "views", "uniques", "rows_core", "rows_dim", "rows_geo",
-    "rolled_at", "max_id", "rerolls",
+    "rolled_at", "max_id", "rerolls", "reroll_closed",
   ],
 };
 
@@ -143,7 +143,7 @@ describe("page view schema", () => {
         JSON.stringify(site),
       ).rejects.toThrow();
       await expect(
-        DB.prepare("INSERT INTO view_rollup_log VALUES (?, '2027-01-01', 'UTC', 1, 1, 0, 1, 1, 1, 0, 0, 0)").bind(site).run(),
+        DB.prepare("INSERT INTO view_rollup_log (site, day, day_tz, raw_views, views, uniques, rows_core, rows_dim, rows_geo, rolled_at, max_id, rerolls) VALUES (?, '2027-01-01', 'UTC', 1, 1, 0, 1, 1, 1, 0, 0, 0)").bind(site).run(),
         JSON.stringify(site),
       ).rejects.toThrow();
       await expect(

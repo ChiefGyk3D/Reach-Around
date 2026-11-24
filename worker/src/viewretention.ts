@@ -39,6 +39,9 @@
 // aggregate already holds the class, and the raw row goes back to 'unknown'
 // (decision D-A7). A late row above max_id keeps its class until it is counted.
 //
+// Every bounded delete is keyed by the whole primary key of its table (a day of
+// many sites is never taken in one statement).
+//
 // Deletes run in bounded batches so one run cannot hold the database for long,
 // and within the invocation's D1 query budget (src/d1budget.ts): round one is
 // ONE db.batch() holding the overdue check and every step's first bounded
@@ -90,6 +93,8 @@ function keepDays(raw: string | undefined): number {
 interface Step {
   sql: string;
   args: Array<string | number>;
+  /** Deletes rows no aggregate counts (the hard ceiling); its row count is recorded. */
+  emergency?: boolean;
 }
 
 /** Purge every view table, inside the invocation's D1 query budget. */
@@ -127,6 +132,7 @@ export async function purgeViews(env: RetentionEnv, nowMs: number, opts: PurgeOp
   const cutOf = "COALESCE((SELECT k.cut FROM k WHERE k.site = e.site), ?)";
   const hardOf = "COALESCE((SELECT k.hard FROM k WHERE k.site = e.site), ?)";
   const sealedJoin = "JOIN view_rollup_log l ON l.site = e.site AND l.day = strftime('%Y-%m-%d', e.ts / 1000, 'unixepoch')";
+  const leftJoin = sealedJoin.replace("JOIN view_rollup_log l", "LEFT JOIN view_rollup_log l");
   const steps: Step[] = [
     {
       // CONTROL:seen-purge  unconditional: pseudonymous, and the rollup never reads it.
@@ -141,10 +147,14 @@ export async function purgeViews(env: RetentionEnv, nowMs: number, opts: PurgeOp
       args: [...kArgs, cutoff],
     },
     {
-      // The hard ceiling: unrolled (and uncounted late) rows past min(3 x keep, 90 days) go, per site.
+      // The hard ceiling, UNCOUNTED rows only: unrolled days and late rows above a day's max_id,
+      // past min(3 x keep, 90 days), per site. Counted rows past the ceiling are already taken by
+      // the raw-purge step above (the ceiling is never shorter than the keep window), so this step
+      // is the only one that loses data no aggregate holds, and its row count is recorded.
+      emergency: true,
       sql:
-        `DELETE FROM view_events WHERE id IN (${kCte}SELECT e.id FROM view_events e ` +
-        `WHERE e.ts < ${hardOf} OR typeof(e.ts) <> 'integer' LIMIT ?)`,
+        `DELETE FROM view_events WHERE id IN (${kCte}SELECT e.id FROM view_events e ${leftJoin} ` +
+        `WHERE (e.ts < ${hardOf} AND (l.site IS NULL OR e.id > l.max_id)) OR typeof(e.ts) <> 'integer' LIMIT ?)`,
       args: [...kArgs, hardCutoff],
     },
     {
@@ -154,11 +164,12 @@ export async function purgeViews(env: RetentionEnv, nowMs: number, opts: PurgeOp
         "WHERE e.net <> 'unknown' AND e.id <= l.max_id AND l.rolled_at < ? LIMIT ?)",
       args: [Math.floor(nowMs - DAY_MS)],
     },
-    { sql: "DELETE FROM view_daily WHERE day IN (SELECT day FROM view_daily WHERE day < ? LIMIT ?)", args: [aggCutoff] },
-    { sql: "DELETE FROM view_dim_daily WHERE day IN (SELECT day FROM view_dim_daily WHERE day < ? LIMIT ?)", args: [aggCutoff] },
-    { sql: "DELETE FROM view_geo_daily WHERE day IN (SELECT day FROM view_geo_daily WHERE day < ? LIMIT ?)", args: [aggCutoff] },
-    { sql: "DELETE FROM view_hour_daily WHERE day IN (SELECT day FROM view_hour_daily WHERE day < ? LIMIT ?)", args: [aggCutoff] },
-    { sql: "DELETE FROM view_rollup_log WHERE day IN (SELECT day FROM view_rollup_log WHERE day < ? LIMIT ?)", args: [aggCutoff] },
+    // Keyed by the whole primary key, never by day: a day of many sites must not go in one statement.
+    { sql: "DELETE FROM view_daily WHERE (site, day, day_tz, page, src_kind, src, country, bot_class) IN (SELECT site, day, day_tz, page, src_kind, src, country, bot_class FROM view_daily WHERE day < ? LIMIT ?)", args: [aggCutoff] },
+    { sql: "DELETE FROM view_dim_daily WHERE (site, day, day_tz, dim, value, bot_class) IN (SELECT site, day, day_tz, dim, value, bot_class FROM view_dim_daily WHERE day < ? LIMIT ?)", args: [aggCutoff] },
+    { sql: "DELETE FROM view_geo_daily WHERE (site, day, day_tz, country, region, city, bot_class) IN (SELECT site, day, day_tz, country, region, city, bot_class FROM view_geo_daily WHERE day < ? LIMIT ?)", args: [aggCutoff] },
+    { sql: "DELETE FROM view_hour_daily WHERE (site, day, hour, bot_class) IN (SELECT site, day, hour, bot_class FROM view_hour_daily WHERE day < ? LIMIT ?)", args: [aggCutoff] },
+    { sql: "DELETE FROM view_rollup_log WHERE (site, day) IN (SELECT site, day FROM view_rollup_log WHERE day < ? LIMIT ?)", args: [aggCutoff] },
     {
       sql: "DELETE FROM view_meta WHERE key IN (SELECT key FROM view_meta WHERE key >= 'bud:' AND key < ? LIMIT ?)",
       args: [`bud:${padHour(hour - 48)}`],
@@ -173,26 +184,29 @@ export async function purgeViews(env: RetentionEnv, nowMs: number, opts: PurgeOp
   let failure: unknown = null;
   let backlog = false;
   let hardHit = false;
+  let emergencyRows = 0;
   let flagDay = "";
   try {
     // Round one: the overdue check, then every step once, in ONE query.
     const first = await db.batch([
       db
         .prepare(
-          `${kCte}SELECT 1 AS x FROM view_events e WHERE e.ts < ${hardOf} AND ` +
-            "NOT EXISTS (SELECT 1 FROM view_rollup_log l WHERE l.site = e.site AND l.day = strftime('%Y-%m-%d', e.ts / 1000, 'unixepoch')) LIMIT 1",
+          `${kCte}SELECT 1 AS x FROM view_events e ${leftJoin} WHERE e.ts < ${hardOf} AND ` +
+            "(l.site IS NULL OR e.id > l.max_id) LIMIT 1",
         )
         .bind(...kArgs, hardCutoff),
       db.prepare("SELECT value FROM view_meta WHERE key = 'rollup_overdue'"),
       ...steps.map(del),
     ]);
     hardHit = (first[0]?.results ?? []).length > 0;
+    emergencyRows += steps.reduce((n, st, i) => n + (st.emergency ? (first[2 + i]?.meta?.changes ?? 0) : 0), 0);
     flagDay = String(((first[1]?.results ?? [])[0] as { value?: string } | undefined)?.value ?? "");
     let open = steps.filter((_, i) => (first[2 + i]?.meta?.changes ?? 0) >= batch);
     // Later rounds repeat only the full steps; two queries stay free for the closing batch.
     for (let round = 1; open.length > 0 && round < maxRounds; round++) {
       if (meter.remaining() < 3) break;
       const res = await db.batch(open.map(del));
+      emergencyRows += open.reduce((n, st, i) => n + (st.emergency ? (res[i]?.meta?.changes ?? 0) : 0), 0);
       open = open.filter((_, i) => (res[i]?.meta?.changes ?? 0) >= batch);
     }
     backlog = open.length > 0;
@@ -214,7 +228,18 @@ export async function purgeViews(env: RetentionEnv, nowMs: number, opts: PurgeOp
     } else {
       close.push(db.prepare("DELETE FROM view_meta WHERE key = 'purge_backlog'"));
     }
-    if (hardHit) {
+    if (hardHit || emergencyRows > 0) {
+      if (emergencyRows > 0) {
+        // Rows deleted at the ceiling that no aggregate counted; the total clears with the flag.
+        close.push(
+          db
+            .prepare(
+              "INSERT INTO view_meta (key, value) VALUES ('rollup_overdue_rows', ?1) " +
+                "ON CONFLICT(key) DO UPDATE SET value = CAST(CAST(value AS INTEGER) + CAST(excluded.value AS INTEGER) AS TEXT)",
+            )
+            .bind(String(emergencyRows)),
+        );
+      }
       close.push(
         db
           .prepare(
@@ -225,7 +250,7 @@ export async function purgeViews(env: RetentionEnv, nowMs: number, opts: PurgeOp
       );
     } else if (flagDay !== "" && flagDay < today && !backlog) {
       // Nothing is beyond the ceiling any more and the flag is from an earlier day: clear it.
-      close.push(db.prepare("DELETE FROM view_meta WHERE key = 'rollup_overdue'"));
+      close.push(db.prepare("DELETE FROM view_meta WHERE key IN ('rollup_overdue', 'rollup_overdue_rows')"));
     }
     try {
       await db.batch(close);

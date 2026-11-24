@@ -248,7 +248,8 @@
       "rows_geo",
       "rolled_at",
       "max_id",
-      "rerolls"
+      "rerolls",
+      "reroll_closed"
     ],
     "visitor_seen": [
       "day",
@@ -366,6 +367,7 @@
     "view_meta.value": "ms_or_small",
     "view_rollup_log.max_id": "rowid",
     "view_rollup_log.raw_views": "small",
+    "view_rollup_log.reroll_closed": "small",
     "view_rollup_log.rerolls": "small",
     "view_rollup_log.rolled_at": "ms",
     "view_rollup_log.rows_core": "small",
