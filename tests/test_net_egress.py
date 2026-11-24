@@ -6,7 +6,7 @@ import socket
 import ssl
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import cast
 
@@ -17,6 +17,7 @@ import reach_around.net.egress as egress
 from fakenet import FakeSock, http_answer
 from reach_around.net.egress import (
     MAX_CONNECT_ADDRESSES,
+    MAX_DNS_ANSWERS,
     EgressBlocked,
     HttpsTransport,
     TransportRequest,
@@ -748,6 +749,26 @@ def test_a_huge_answer_set_is_capped_at_a_few_connection_attempts() -> None:
     assert caught.value.reason == "connect_failed"
     assert tried == answers[:MAX_CONNECT_ADDRESSES]
     assert len(tried) == 4
+
+
+def test_dns_answer_processing_stops_at_a_fixed_number_of_answers() -> None:
+    consumed = 0
+
+    def endless() -> Iterator[str]:
+        nonlocal consumed
+        for i in range(1_000_000):
+            consumed += 1
+            yield f"93.184.{i // 250 % 250}.{i % 250 + 1}"
+
+    def connector(address: str, port: int, timeout: float) -> socket.socket:
+        raise ConnectionRefusedError("down")
+
+    transport = HttpsTransport(
+        resolver=lambda h, p: cast(list[str], endless()), connector=connector
+    )
+    with pytest.raises(EgressBlocked):
+        transport(_request())
+    assert consumed <= MAX_DNS_ANSWERS
 
 
 def test_every_dead_address_is_a_typed_error_and_never_an_unchecked_one() -> None:

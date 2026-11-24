@@ -227,55 +227,100 @@ class TestSqliteOnly:
             with pytest.raises(PermissionError):
                 SqliteDb._check_file(bad)
 
-    def test_pathname_swapped_and_restored_around_the_open_is_not_followed(
+    @pytest.mark.parametrize("suffix", ["-wal", "-shm", "-journal"])
+    def test_symlinked_sidecar_is_refused_and_its_target_untouched(
+        self, tmp_path: Path, suffix: str
+    ) -> None:
+        victim = tmp_path / "victim.txt"
+        victim.write_bytes(b"keep")
+        victim.chmod(0o644)
+        path = tmp_path / "s.db"
+        SqliteStore(path).close()
+        Path(f"{path}{suffix}").symlink_to(victim)
+        with pytest.raises(StoreError):
+            SqliteStore(path)
+        assert victim.read_bytes() == b"keep"
+        assert stat.S_IMODE(victim.stat().st_mode) == 0o644
+
+    @pytest.mark.parametrize("suffix", ["-wal", "-shm", "-journal"])
+    def test_loose_or_non_regular_sidecar_is_refused(
+        self, tmp_path: Path, suffix: str
+    ) -> None:
+        path = tmp_path / "s.db"
+        SqliteStore(path).close()
+        side = Path(f"{path}{suffix}")
+        side.write_bytes(b"")
+        side.chmod(0o666)
+        with pytest.raises(StoreError):
+            SqliteStore(path)
+        side.unlink()
+        side.mkdir()
+        with pytest.raises(StoreError):
+            SqliteStore(path)
+
+    def test_sidecar_that_appears_later_is_refused_on_a_new_connection(
+        self, tmp_path: Path
+    ) -> None:
+        victim = tmp_path / "victim.txt"
+        victim.write_bytes(b"keep")
+        path = tmp_path / "s.db"
+        store = SqliteStore(path)
+        Path(f"{path}-journal").symlink_to(victim)
+        errors: list[BaseException] = []
+
+        def reopen() -> None:
+            try:
+                store.sqlite.query("SELECT 1")
+            except BaseException as exc:
+                errors.append(exc)
+
+        worker = threading.Thread(target=reopen)
+        worker.start()
+        worker.join()
+        assert len(errors) == 1 and isinstance(errors[0], PermissionError)
+        assert victim.read_bytes() == b"keep"
+
+    def test_unwritable_file_recovery_never_chmods_by_pathname(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         import os
-        from typing import Any
 
         path = tmp_path / "s.db"
-        store = SqliteStore(path)
-        store.migrate()
-        real_connect = sqlite3.connect
-        seen: dict[str, object] = {}
+        path.write_bytes(b"")
+        path.chmod(0o000)
+        real_chmod: Callable[..., None] = os.chmod
+        named: list[object] = []
 
-        def open_inodes() -> set[int]:
-            found: set[int] = set()
-            for name in os.listdir("/proc/self/fd"):
-                try:
-                    found.add(os.stat(f"/proc/self/fd/{name}").st_ino)
-                except OSError:
-                    pass
-            return found
+        def watching_chmod(target: object, mode: int, **kw: object) -> None:
+            if not str(target).startswith("/proc/self/fd/"):
+                named.append(target)
+            real_chmod(target, mode, **kw)
 
-        def swapping_connect(target: str, **kwargs: Any) -> sqlite3.Connection:
-            # same-user ABA: another file sits at the pathname while SQLite
-            # opens it, and the original is back before any later check
-            original = tmp_path / "orig.db"
-            path.rename(original)
-            path.write_bytes(b"")
-            seen["substitute"] = path.stat().st_ino
-            conn: sqlite3.Connection = real_connect(target, **kwargs)
-            try:
-                conn.execute("PRAGMA schema_version").fetchall()  # force the open
-            finally:
-                seen["open"] = open_inodes()
-                path.unlink()
-                original.rename(path)
-            return conn
+        monkeypatch.setattr(os, "chmod", watching_chmod)
+        SqliteStore(path).close()
+        assert named == []
+        assert stat.S_IMODE(path.stat().st_mode) == 0o600
 
-        monkeypatch.setattr(sqlite3, "connect", swapping_connect)
-        worker = threading.Thread(
-            target=lambda: _ignore_errors(store.sqlite.query, "SELECT 1")
-        )
-        worker.start()
-        worker.join()
-        monkeypatch.setattr(sqlite3, "connect", real_connect)
-        # SQLite must never have held the substitute file open
-        assert "substitute" in seen
-        open_now = seen["open"]
-        assert isinstance(open_now, set)
-        assert seen["substitute"] not in open_now
+    def test_unwritable_file_recovery_fails_closed_without_proc(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import os
+
+        path = tmp_path / "s.db"
+        path.write_bytes(b"")
+        path.chmod(0o000)
+        real_chmod: Callable[..., None] = os.chmod
+
+        def no_proc(target: object, mode: int, **kw: object) -> None:
+            if str(target).startswith("/proc/"):
+                raise FileNotFoundError("no procfs")
+            real_chmod(target, mode, **kw)
+
+        monkeypatch.setattr(os, "chmod", no_proc)
+        with pytest.raises(StoreError):
+            SqliteStore(path)
+        assert stat.S_IMODE(path.stat().st_mode) == 0o000
+        path.chmod(0o600)
 
     def test_non_regular_store_path_is_refused(self, tmp_path: Path) -> None:
         with pytest.raises(StoreError):

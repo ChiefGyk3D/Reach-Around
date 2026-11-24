@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import errno
 import os
 import re
 import sqlite3
@@ -47,7 +46,6 @@ class SqliteDb:
         self._all_lock = threading.Lock()
         self._shared: sqlite3.Connection | None = None
         self._identity: tuple[int, int] | None = None
-        self._fds: list[int] = []
         if self._path is not None:
             self._identity = self._prepare_file(self._path)
         conn = self._conn()
@@ -63,9 +61,17 @@ class SqliteDb:
         every one is owned by this user or root, none is writable by group or
         other (a sticky directory is tolerated above the immediate parent),
         and the immediate parent is owned by this user. A different user
-        cannot then rename or replace the database. A same-user swap is
-        handled separately by binding SQLite to the verified descriptor
-        (``_open_bound``).
+        cannot then rename or replace the database or its sidecars.
+
+        Threat model, stated precisely: sqlite3 opens the database and its
+        ``-wal``/``-shm``/``-journal`` files by pathname, and there is no
+        supported way to hand it a verified descriptor (opening
+        ``/proc/self/fd/N`` does not bind it: SQLite resolves that name to the
+        current pathname and reopens that). So a process running as the same
+        user can still race the open; that attacker is out of scope, because
+        it already owns the store directory and the database's contents. The
+        pre/post identity and sidecar checks below catch an ordinary swap but
+        are best-effort, not a guarantee against a same-user attacker.
         """
         parent = Path(os.path.abspath(path)).parent
         me = os.geteuid()
@@ -96,12 +102,22 @@ class SqliteDb:
             fd = os.open(path, flags, 0o600)
         except PermissionError:
             # an owner-only file without a write bit (0400, 0200, 0000): make
-            # it usable (0600) first; the parent is trusted, so lstat-then-chmod
-            # cannot be raced by another user
-            info = os.lstat(path)
-            if not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid():
+            # it usable (0600) first, through a descriptor that names the
+            # verified inode (O_PATH, never a symlink), not through the path
+            o_path = getattr(os, "O_PATH", None)
+            if o_path is None:
                 raise
-            os.chmod(path, 0o600)
+            held = os.open(path, o_path | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0))
+            try:
+                cls._check_file(os.fstat(held))
+                try:
+                    os.chmod(f"/proc/self/fd/{held}", 0o600)
+                except OSError:
+                    raise PermissionError(
+                        "cannot make the store file usable (no /proc)"
+                    ) from None
+            finally:
+                os.close(held)
             fd = os.open(path, flags, 0o600)
         try:
             info = os.fstat(fd)
@@ -119,38 +135,37 @@ class SqliteDb:
         if info.st_uid != os.geteuid():
             raise PermissionError("the store file belongs to another user")
 
-    def _open_bound(self) -> tuple[int, str]:
-        """Open the checked file and return (fd, the name SQLite should open).
+    @staticmethod
+    def _check_sidecars(path: Path) -> None:
+        """Refuse a pre-existing ``-wal``/``-shm``/``-journal`` that is not ours.
 
-        On Linux SQLite is given ``/proc/self/fd/N``, which names the opened
-        inode itself, so the connection is bound to the file that was verified
-        and a later swap of the pathname (even by the same user, even restored
-        afterward) cannot redirect it. Where /proc is not available the plain
-        pathname is used and only the trusted parent chain protects it; that
-        fallback is exposed to a same-user swap in the open window.
+        Each must be a regular file owned by this user, with one link and no
+        group or other access; a symlink, directory, other owner or loose mode
+        is refused before SQLite can open, write or remove it.
         """
-        if self._path is None:
-            raise StoreError("an in-memory store has no file to bind")
+        for suffix in ("-wal", "-shm", "-journal"):
+            try:
+                info = os.lstat(f"{path}{suffix}")
+            except FileNotFoundError:
+                continue
+            if (
+                not stat.S_ISREG(info.st_mode)
+                or info.st_uid != os.geteuid()
+                or info.st_nlink != 1
+                or stat.S_IMODE(info.st_mode) & 0o077
+            ):
+                raise PermissionError(f"the store sidecar {suffix} is not trusted")
+
+    def _same_file(self) -> None:
+        """Best-effort recheck that the path still names the checked file."""
+        if self._path is None or self._identity is None:
+            return
         self._verify_parents(self._path)
-        flags = os.O_RDWR | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
-        try:
-            fd = os.open(self._path, flags)
-        except OSError as exc:
-            if exc.errno == errno.ELOOP:
-                raise PermissionError("the store path is now a symlink") from None
-            raise
-        try:
-            info = os.fstat(fd)
-            self._check_file(info)
-            if (info.st_dev, info.st_ino) != self._identity:
-                raise PermissionError("the store file changed after it was checked")
-            proc = f"/proc/self/fd/{fd}"
-            if os.path.exists(proc):
-                return fd, proc
-            return fd, str(self._path)
-        except BaseException:
-            os.close(fd)
-            raise
+        info = os.lstat(self._path)
+        self._check_file(info)
+        if (info.st_dev, info.st_ino) != self._identity:
+            raise PermissionError("the store file changed after it was checked")
+        self._check_sidecars(self._path)
 
     def _enable_wal(self, conn: sqlite3.Connection) -> None:
         if self._memory:
@@ -166,27 +181,23 @@ class SqliteDb:
                 time.sleep(0.05)
 
     def _connect(self) -> sqlite3.Connection:
-        target = ":memory:"
-        fd: int | None = None
-        if self._path is not None:
-            fd, target = self._open_bound()
+        target = ":memory:" if self._path is None else str(self._path)
+        self._same_file()
+        conn = sqlite3.connect(
+            target,
+            timeout=self._busy,
+            isolation_level=None,
+            check_same_thread=not self._memory,
+        )
         try:
-            conn = sqlite3.connect(
-                target,
-                timeout=self._busy,
-                isolation_level=None,
-                check_same_thread=not self._memory,
-            )
             conn.execute(f"PRAGMA busy_timeout={int(self._busy * 1000)}")
+            self._same_file()  # SQLite opens lazily: look again once it has
             conn.execute("PRAGMA foreign_keys=ON")
         except BaseException:
-            if fd is not None:
-                os.close(fd)
+            conn.close()
             raise
         with self._all_lock:
             self._all.append(conn)
-            if fd is not None:
-                self._fds.append(fd)  # held for the connection's lifetime
         return conn
 
     def _conn(self) -> sqlite3.Connection:
@@ -288,16 +299,10 @@ class SqliteDb:
     def close(self) -> None:
         with self._all_lock:
             conns, self._all = self._all, []
-            fds, self._fds = self._fds, []
         for conn in conns:
             try:
                 conn.close()
             except sqlite3.Error:
-                pass
-        for fd in fds:
-            try:
-                os.close(fd)
-            except OSError:
                 pass
         self._local = threading.local()
         self._shared = None

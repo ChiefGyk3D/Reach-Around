@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import http.client
 import ipaddress
+import itertools
 import re
 import socket
 import ssl
@@ -123,6 +124,9 @@ MAX_RESOLVER_THREADS = 8
 # At most this many distinct validated addresses are tried per fetch, so a
 # hostile answer set cannot fan one request out into many connections.
 MAX_CONNECT_ADDRESSES = 4
+# At most this many resolver answers are read and validated at all; the rest
+# are dropped before any per-answer work (CPU and memory stay bounded).
+MAX_DNS_ANSWERS = 32
 
 
 class _Lookup:
@@ -149,7 +153,9 @@ def _start_lookup(host: str, port: int) -> _Lookup:
     def work() -> None:
         try:
             infos = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
-            lookup.answers = [str(info[4][0]) for info in infos]
+            lookup.answers = [
+                str(info[4][0]) for info in itertools.islice(infos, MAX_DNS_ANSWERS)
+            ]
         except Exception:
             lookup.failed = True
         finally:
@@ -371,6 +377,8 @@ class HttpsTransport:
             answers = system_resolver(host, 443, timeout=remaining)
         else:
             answers = self._resolver(host, 443)
+        # bound the work before touching any answer: read at most the cap
+        answers = list(itertools.islice(answers, MAX_DNS_ANSWERS))
         if not answers:
             raise EgressBlocked("no_address", host)
         # every answer must be public; a mixed set is refused whole
