@@ -47,6 +47,10 @@ from typing import Any
 from jinja2 import Environment
 
 from reach_around.config.blocks import Platforms, platform_name
+from reach_around.config.channels import NOTES as CHANNEL_NOTES
+from reach_around.config.channels import PEOPLE_KEYS, ChannelEntry
+from reach_around.config.channels import not_provided_text as channel_absent
+from reach_around.config.channels import stated_keys as channel_keys
 from reach_around.config.cutover import cutover_label, live_since, utc_today
 from reach_around.config.engagement import (
     ACROSS_PLATFORMS_NOTE,
@@ -1249,6 +1253,7 @@ def _content(
             today,
             live_day,
             projection.get("fediverse", []),
+            projection.get("channels", []),
         ),
         "live": live_block(
             projection.get("live", []), measures, config, today, live_day
@@ -1387,6 +1392,10 @@ def _card_value(m: Measure, followers: Mapping[str, int]) -> str:
     # per-post figure is not a count of people, so it prints as it is.
     if m.block == "fediverse" and m.key != "followers":
         return f"{m.value:,}"
+    # The channel block (#633): a count of people keeps the floor, the rest print
+    # as typed.
+    if m.block == "channels":
+        return shown_count(m.value) if m.key in PEOPLE_KEYS else f"{m.value:,}"
     if m.block == "tile":
         return _compact_number(m.value)
     return shown_count(m.value)
@@ -1414,6 +1423,28 @@ def _not_provided(
     return lines
 
 
+def _channel_not_provided(
+    entry: ChannelEntry | None, rows: list[dict[str, Any]]
+) -> list[str]:
+    """The "not provided" lines of a channel card: the figures the platform takes
+    but the owner did not type, then what the platform never gives."""
+    if entry is None:
+        return []
+    present = {row["key"] for row in rows}
+    missing = [
+        REGISTRY[key].label
+        for key in channel_keys(entry.platform)
+        if key not in present
+    ]
+    lines = []
+    if missing:
+        lines.append("Not provided: " + ", ".join(missing) + ".")
+    absent = channel_absent(entry.platform)
+    if absent:
+        lines.append(absent)
+    return lines
+
+
 def section_cards(
     sections: Sequence[KitSection],
     measures: Sequence[Measure],
@@ -1421,6 +1452,7 @@ def section_cards(
     today: date | None = None,
     live_day: date | None = None,
     fediverse: Sequence[FediverseEntry] = (),
+    channels: Sequence[ChannelEntry] = (),
 ) -> list[dict[str, Any]]:
     """The platform cards, and the one place the degrade rules (spec 7.4) apply.
 
@@ -1433,8 +1465,12 @@ def section_cards(
     * A platform with a fediverse entry (#630) says its counts are as reported by
       the server, links every count to the public profile, states what it did not
       get as "not provided" and what the platform never exposes.
+    * A platform with a channel entry (#633) says who reported its counts, links
+      the public page where there is one and states what it did not get the same
+      way.
     """
     entries: dict[str, FediverseEntry] = {item.platform: item for item in fediverse}
+    channel_entries: dict[str, ChannelEntry] = {i.platform: i for i in channels}
     followers = {
         m.platform: m.value
         for m in _of(measures, "tile")
@@ -1449,7 +1485,10 @@ def section_cards(
         )
         rows: list[dict[str, Any]] = []
         entry = entries.get(section.platform)
+        channel = channel_entries.get(section.platform)
         recheck = entry.profile_url if entry is not None else ""
+        if channel is not None and channel.url:
+            recheck = channel.url
         for key in keys:
             found = [
                 m
@@ -1478,7 +1517,11 @@ def section_cards(
                         "trust": None if m.trust is None else m.trust.view(),
                         "formula": m.formula,
                         "note": m.note,
-                        "recheck": recheck if m.key in STATED_KEYS else "",
+                        "recheck": (
+                            recheck
+                            if m.key in STATED_KEYS or m.block == "channels"
+                            else ""
+                        ),
                     }
                 )
         if not rows and section.hide_if_empty:
@@ -1491,9 +1534,19 @@ def section_cards(
             "no_numbers": NO_NUMBERS,
             "headline": None,
             "rows": rows,
-            "server_note": SERVER_NOTE if entry is not None else "",
+            "server_note": (
+                SERVER_NOTE
+                if entry is not None
+                else CHANNEL_NOTES[section.platform]
+                if channel is not None
+                else ""
+            ),
             "recheck": recheck if not rows else "",
-            "not_provided": _not_provided(entry, keys, rows),
+            "not_provided": (
+                _not_provided(entry, keys, rows)
+                if channel is None
+                else _channel_not_provided(channel, rows)
+            ),
         }
         if rows:
             lead = _headline_first(rows, section)

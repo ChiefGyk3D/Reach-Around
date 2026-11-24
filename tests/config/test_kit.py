@@ -446,6 +446,7 @@ def test_policy_classifies_every_field() -> None:
         "sections",
         "live",
         "fediverse",
+        "channels",
         "measures",
     }
     for name in ("partners", "case_studies", "rates", "demographics"):
@@ -504,6 +505,7 @@ def test_public_projection_has_only_header_and_headline_numbers() -> None:
         "sections",
         "live",
         "fediverse",
+        "channels",
         "measures",
     }
     assert CANARY not in json.dumps(out, default=str)
