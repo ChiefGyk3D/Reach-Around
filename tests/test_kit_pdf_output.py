@@ -144,3 +144,65 @@ def test_a_failed_write_leaves_no_partial_target(
     with pytest.raises(OutputError):
         write_private(d, "kit.pdf", b"%PDF-", overwrite=False)
     assert list(d.iterdir()) == []
+
+
+# --- the walk is descriptor-relative ------------------------------------------
+
+
+def test_an_ancestor_swapped_for_a_link_after_the_check_is_not_followed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Just before the last component is opened, the parent is renamed away and
+    replaced by a link to another private directory. The write goes where the
+    walk went (the real parent), never through the link."""
+    real = tmp_path / "race" / "private"
+    real.mkdir(parents=True, mode=0o700)
+    evil = tmp_path / "evil" / "private"
+    evil.mkdir(parents=True, mode=0o700)
+    original = os.open
+    swapped: list[bool] = []
+
+    def swap_then_open(
+        path: str | Path, flags: int, mode: int = 0o777, *, dir_fd: int | None = None
+    ) -> int:
+        if str(path) in (str(real), "private") and not swapped:
+            swapped.append(True)
+            os.rename(tmp_path / "race", tmp_path / "race.old")
+            os.symlink(tmp_path / "evil", tmp_path / "race")
+        return original(path, flags, mode, dir_fd=dir_fd)
+
+    monkeypatch.setattr(os, "open", swap_then_open)
+    write_private(real, "kit.pdf", b"%PDF-1", overwrite=False)
+    monkeypatch.undo()
+    assert swapped
+    assert list(evil.iterdir()) == []
+    assert (tmp_path / "race.old" / "private" / "kit.pdf").read_bytes() == b"%PDF-1"
+
+
+def test_intermediate_directories_are_created_owner_only(tmp_path: Path) -> None:
+    made = confine_out_dir(tmp_path / "a" / "b" / "c", forbidden=[])
+    for path in (made, made.parent, made.parent.parent):
+        assert stat.S_IMODE(path.stat().st_mode) == 0o700, path
+
+
+def test_a_directory_holding_a_work_tree_below_it_is_refused(tmp_path: Path) -> None:
+    d = out_dir(tmp_path)
+    (d / "nested" / "deeper" / ".git").mkdir(parents=True)
+    with pytest.raises(OutputError, match="git work tree"):
+        confine_out_dir(d, forbidden=[])
+    with pytest.raises(OutputError, match="git work tree"):
+        write_private(d, "kit.pdf", b"%PDF-", overwrite=False)
+
+
+def test_a_directory_with_no_work_tree_below_it_is_fine(tmp_path: Path) -> None:
+    d = out_dir(tmp_path)
+    (d / "nested" / "deeper").mkdir(parents=True)
+    (d / "old.pdf").write_bytes(b"%PDF-")
+    assert confine_out_dir(d, forbidden=[]) == d
+
+
+def test_a_forbidden_directory_is_rechecked_at_the_write(tmp_path: Path) -> None:
+    d = out_dir(tmp_path)
+    with pytest.raises(OutputError, match="published|inside|around|same"):
+        write_private(d, "kit.pdf", b"%PDF-", overwrite=False, forbidden=[d])
+    assert list(d.iterdir()) == []

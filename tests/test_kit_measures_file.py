@@ -16,16 +16,18 @@ import reach_around.commands.kit as kit_command
 from kitpdfharness import SITE_KEY, TODAY, build_instance, kit_doc, make_config
 from reach_around.cli import main
 from reach_around.config import SiteConfig
+from reach_around.config.kit import KitConfig
+from reach_around.kit.binding import BINDING_FILE
 from reach_around.kit.measures_file import (
     FILE_NAME,
     SCHEMA_VERSION,
     MeasuresFileError,
     build_measures_file,
+    check_no_private_values,
     load_measures_file,
+    private_scalars,
 )
 from reach_around.kit.output import OutputError
-from reach_around.kit.pdf import PdfError
-from reach_around.site.kit import GATED_POLICY_FILE
 from test_kit_private_measures import KIT as PRIVATE_KIT
 from test_kit_private_measures import SECRET_FOLLOWERS, make_private
 
@@ -141,18 +143,20 @@ def test_the_name_guard_bites(tmp_path: Path) -> None:
     assert {p.name for p in published_hits(site, gated)} == {FILE_NAME, "other.txt"}
 
 
-def test_a_stale_policy_record_is_refused(tmp_path: Path) -> None:
+def test_a_binding_with_another_policy_is_refused(tmp_path: Path) -> None:
     config, site, gated = instance(tmp_path)
-    (gated / GATED_POLICY_FILE).write_text("0" * 64, encoding="ascii")
-    with pytest.raises(PdfError, match="display policy"):
+    record = json.loads((gated / BINDING_FILE).read_text("utf-8"))
+    record["policy"] = "0" * 64
+    (gated / BINDING_FILE).write_text(json.dumps(record), encoding="utf-8")
+    with pytest.raises(MeasuresFileError, match="policy"):
         write(tmp_path, config, site, gated)
     assert not (tmp_path / "private" / FILE_NAME).exists()
 
 
-def test_a_missing_policy_record_is_refused(tmp_path: Path) -> None:
+def test_a_missing_binding_record_is_refused(tmp_path: Path) -> None:
     config, site, gated = instance(tmp_path)
-    (gated / GATED_POLICY_FILE).unlink()
-    with pytest.raises(PdfError, match="policy record"):
+    (gated / BINDING_FILE).unlink()
+    with pytest.raises(MeasuresFileError, match="binding record"):
         write(tmp_path, config, site, gated)
 
 
@@ -213,7 +217,7 @@ def test_a_stale_page_with_now_private_figures_is_refused(
 ) -> None:
     config, site, gated = instance(tmp_path, private_doc())
     make_private(monkeypatch, "engagement")
-    with pytest.raises(PdfError, match="display policy"):
+    with pytest.raises(MeasuresFileError, match="policy"):
         write(tmp_path, config, site, gated)
 
 
@@ -227,12 +231,12 @@ def test_a_private_small_figure_is_needled_before_write(
     config, site, gated = instance(tmp_path)
     monkeypatch.setattr(
         measures_file,
-        "private_measure_strings",
-        lambda kit, numbers: {"metrics.twitch.followers.Followers": "1200"},
+        "private_scalars",
+        lambda kit, numbers, api=None: [("kit.metrics.value", 1200)],
     )
     with pytest.raises(MeasuresFileError) as caught:
         write(tmp_path, config, site, gated)
-    assert "metrics.twitch.followers.Followers" in str(caught.value)
+    assert "kit.metrics.value" in str(caught.value)
     assert "1200" not in str(caught.value)
     assert not (tmp_path / "private" / FILE_NAME).exists()
 
@@ -245,8 +249,8 @@ def test_the_turnstile_key_is_a_needle(
     config, site, gated = instance(tmp_path)
     monkeypatch.setattr(
         measures_file,
-        "pdf_excluded_values",
-        lambda kit: {"turnstile_site_key": "Followers"},
+        "private_scalars",
+        lambda kit, numbers, api=None: [("turnstile_site_key", "Followers")],
     )
     with pytest.raises(MeasuresFileError, match="turnstile_site_key"):
         write(tmp_path, config, site, gated)
@@ -378,6 +382,225 @@ def test_the_command_refuses_a_published_directory(
     assert code == 1
     assert "error:" in capsys.readouterr().err
     assert published_hits(site, gated) == []
+
+
+# --- the build binding ---------------------------------------------------------
+
+
+def test_the_binding_is_in_the_gated_directory_only(tmp_path: Path) -> None:
+    config, site, gated = instance(tmp_path)
+    assert (gated / BINDING_FILE).is_file()
+    assert [p for p in site.rglob(BINDING_FILE.name)] == []
+    assert published_hits(site) == []
+    assert BINDING_FILE.name.encode() not in b"".join(
+        p.read_bytes() for p in site.rglob("*") if p.is_file()
+    )
+
+
+def test_changed_inputs_with_the_old_pages_are_refused(tmp_path: Path) -> None:
+    """The pages show 1200; a config that now says 999999 must not produce a file
+    that disagrees with them."""
+    config, site, gated = instance(tmp_path)
+    doc = kit_doc()
+    doc["metrics"][0]["value"] = 999999
+    with pytest.raises(MeasuresFileError, match="measures"):
+        write(tmp_path, make_config(doc), site, gated)
+    assert not (tmp_path / "private").exists()
+
+
+def test_a_site_and_a_gated_page_from_two_builds_are_refused(tmp_path: Path) -> None:
+    config, site, _ = instance(tmp_path / "a")
+    other = kit_doc()
+    other["title"] = "Another media kit"
+    _, _, gated = build_instance(tmp_path / "b", make_config(other))
+    with pytest.raises(MeasuresFileError, match="public page|gated page|measures"):
+        write(tmp_path, config, site, gated)
+
+
+def test_a_changed_page_is_refused(tmp_path: Path) -> None:
+    config, site, gated = instance(tmp_path)
+    page = site / "kit" / "index.html"
+    page.write_bytes(page.read_bytes() + b"<!-- x -->")
+    with pytest.raises(MeasuresFileError, match="public page"):
+        write(tmp_path, config, site, gated)
+    page = gated / "kit.html"
+    config, site, gated = instance(tmp_path / "again")
+    (gated / "kit.html").write_bytes((gated / "kit.html").read_bytes() + b" ")
+    with pytest.raises(MeasuresFileError, match="gated page"):
+        write(tmp_path / "again", config, site, gated)
+
+
+def test_the_file_records_the_binding_and_the_reader_checks_it(
+    tmp_path: Path,
+) -> None:
+    config, site, gated = instance(tmp_path)
+    path = write(tmp_path, config, site, gated)
+    recorded = json.loads((gated / BINDING_FILE).read_text("utf-8"))
+    doc = load_measures_file(path, expected_binding=recorded)
+    assert doc["binding"] == recorded
+    other = {**recorded, "measures": "1" * 64}
+    with pytest.raises(MeasuresFileError, match="expected"):
+        load_measures_file(path, expected_binding=other)
+
+
+# --- values compared decoded, not as JSON text --------------------------------
+
+
+def test_a_private_label_with_odd_characters_is_found_in_a_public_label(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The comparison is on decoded values: a quote and a non-ASCII letter are
+    escaped in the JSON text, so a text search would miss them."""
+    odd = 'Tïle "x" label'
+    doc = kit_doc()
+    doc["analytics"] = [
+        {
+            "platform": "tiktok",
+            "synced_with": "Example Social API",
+            "as_of": "2027-03-02",
+            "followers": 5555555,
+            "followers_30_day_percent": 12.3,
+            "stats": [{"label": odd, "value": 4242}],
+        }
+    ]
+    doc["metrics"][0]["label"] = f"About {odd} today"
+    make_private(monkeypatch, "analytics")
+    config, site, gated = build_instance(tmp_path, make_config(doc))
+    with pytest.raises(MeasuresFileError, match="kit.analytics") as caught:
+        write(tmp_path, config, site, gated)
+    assert "Tïle" not in str(caught.value)
+    assert not (tmp_path / "private" / FILE_NAME).exists()
+
+
+def test_the_compare_ignores_json_encoding() -> None:
+    document = {"measures": [{"note": 'Sëcret "rate"\ttab', "value": 1}]}
+    for private in ('Sëcret "rate"\ttab', "SËCRET   “rate”"[:0] + 'sëcret "rate" tab'):
+        with pytest.raises(MeasuresFileError, match="kit.x.note"):
+            check_no_private_values(document, [("kit.x.note", private)])
+    check_no_private_values(document, [("kit.x.note", "another text")])
+
+
+def test_a_private_number_is_found_as_a_value_and_inside_a_text() -> None:
+    inventory = [("kit.x.value", 9162534)]
+    for document in (
+        {"value": 9162534},
+        {"note": "reached 9162534 once"},
+    ):
+        with pytest.raises(MeasuresFileError, match="kit.x.value"):
+            check_no_private_values(document, inventory)
+    check_no_private_values({"note": "91625345 and 59162534"}, inventory)
+
+
+def test_the_inventory_holds_each_free_text_and_number_of_a_private_measure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    kit = KitConfig.model_validate(PRIVATE_KIT)
+    assert private_scalars(kit, None) == []
+    make_private(monkeypatch, "analytics")
+    inventory = dict(private_scalars(kit, None))
+    assert 9162534 in inventory.values()
+    assert 5555555 in inventory.values()
+    assert "Canary tile label" in inventory.values()
+    # names, dates and registry labels say nothing and are left out
+    assert not {"Followers", "tiktok", "2027-03-02"} & set(inventory.values())
+
+
+def test_a_private_free_text_is_found_in_a_note(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    kit = KitConfig.model_validate(PRIVATE_KIT)
+    make_private(monkeypatch, "analytics")
+    document = {"measures": [{"note": "see the Canary tile label here"}]}
+    with pytest.raises(MeasuresFileError, match="kit.analytics"):
+        check_no_private_values(document, private_scalars(kit, None))
+
+
+# --- the reader checks every field ----------------------------------------------
+
+
+def mutate(tmp_path: Path, change: Any) -> Path:
+    doc = good(tmp_path)
+    change(doc)
+    return put(tmp_path, doc, "m.json")
+
+
+BAD = {
+    "version is a bool": lambda d: d.update(schema_version=True),
+    "version is a float": lambda d: d.update(schema_version=1.0),
+    "notice is a list": lambda d: d.update(notice=[]),
+    "generated is an object": lambda d: d.update(generated={"not": "date"}),
+    "generated is not a day": lambda d: d.update(generated="2027-13-40"),
+    "generated has a time": lambda d: d.update(generated="2027-03-10T00:00:00"),
+    "policy is null": lambda d: d.update(policy=None),
+    "policy is not a digest": lambda d: d.update(policy="abc"),
+    "binding is null": lambda d: d.update(binding=None),
+    "binding differs from policy": lambda d: d["binding"].update(policy="1" * 64),
+    "measures is empty": lambda d: d.update(measures=[]),
+    "measures is an object": lambda d: d.update(measures={}),
+    "too many measures": lambda d: d.update(measures=d["measures"][:1] * 5001),
+    "value is negative": lambda d: d["measures"][0].update(value=-1),
+    "value is a float": lambda d: d["measures"][0].update(value=1.5),
+    "value is a bool": lambda d: d["measures"][0].update(value=True),
+    "value is huge": lambda d: d["measures"][0].update(value=10**16),
+    "value is a string": lambda d: d["measures"][0].update(value="12"),
+    "platform is a list": lambda d: d["measures"][0].update(platform=["x"]),
+    "key is not a slug": lambda d: d["measures"][0].update(key="A b"),
+    "label is empty": lambda d: d["measures"][0].update(label=""),
+    "label is an object": lambda d: d["measures"][0].update(label={}),
+    "unit is unknown": lambda d: d["measures"][0].update(unit="parsecs"),
+    "unit is a list": lambda d: d["measures"][0].update(unit=[]),
+    "as_of is invalid": lambda d: d["measures"][0].update(as_of="2027-02-30"),
+    "as_of is a number": lambda d: d["measures"][0].update(as_of=20270301),
+    "period is a day": lambda d: d["measures"][0].update(period="2027-03-01"),
+    "period has three": lambda d: d["measures"][0].update(period=["2027-03-01"] * 3),
+    "period is reversed": lambda d: d["measures"][0].update(
+        period=["2027-03-05", "2027-03-01"]
+    ),
+    "trust label is unknown": lambda d: d["measures"][0]["trust"].update(
+        label="verified"
+    ),
+    "trust method is an object": lambda d: d["measures"][0]["trust"].update(
+        method={"a": 1}
+    ),
+    "in_summary is an int": lambda d: d["measures"][0].update(in_summary=1),
+    "note is a list": lambda d: d["measures"][0].update(note=[]),
+    "note is huge": lambda d: d["measures"][0].update(note="x" * 4001),
+    "visibility is private": lambda d: d["measures"][0].update(visibility="private"),
+}
+
+
+@pytest.mark.parametrize("name", sorted(BAD))
+def test_the_reader_refuses_a_bad_field(tmp_path: Path, name: str) -> None:
+    path = mutate(tmp_path, BAD[name])
+    with pytest.raises(MeasuresFileError):
+        load_measures_file(path)
+
+
+def test_the_reader_refuses_nan_and_infinity(tmp_path: Path) -> None:
+    for number, constant in enumerate(("NaN", "Infinity", "-Infinity")):
+        path = tmp_path / "c.json"
+        text = json.dumps(good(tmp_path / str(number)))
+        path.write_text(text.replace('"value": 1200', f'"value": {constant}'))
+        assert constant in path.read_text(encoding="utf-8")
+        with pytest.raises(MeasuresFileError, match="not a number"):
+            load_measures_file(path)
+
+
+def test_the_reader_refuses_deep_nesting(tmp_path: Path) -> None:
+    doc = good(tmp_path)
+    nest: Any = "x"
+    for _ in range(100000):
+        nest = [nest]
+    path = tmp_path / "deep.json"
+    path.write_text(
+        json.dumps(doc)[:-1] + ', "x": ' + "[" * 100000 + "]" * 100000 + "}"
+    )
+    with pytest.raises(MeasuresFileError, match="deeply"):
+        load_measures_file(path)
+
+
+def test_the_reader_accepts_what_the_writer_wrote(tmp_path: Path) -> None:
+    assert load_measures_file(put(tmp_path, good(tmp_path)))["measures"]
 
 
 # --- the docs -------------------------------------------------------------------

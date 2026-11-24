@@ -111,6 +111,7 @@ from reach_around.config.trust import (
 from reach_around.config.zones import ZONES, utc_day_start_iso
 from reach_around.funnel.floor import FLOOR, share_pins_small_count, shown_count
 from reach_around.funnel.floor import UNDER_FLOOR as UNDER_FLOOR
+from reach_around.kit.binding import BINDING_FILE, rows_digest
 from reach_around.site.platforms import platform_rows
 
 KIT_PAGE = Path("kit") / "index.html"
@@ -163,6 +164,8 @@ class KitRender:
     warnings: list[str]
     # ``policy_fingerprint()`` at build time; "" when the build has no kit.
     policy: str = ""
+    # Digest of the gated projection's measures, for the build binding.
+    measures_digest: str = ""
 
 
 def has_gate_form(kit: KitConfig) -> bool:
@@ -590,12 +593,13 @@ class StagedGated:
     root: Path
     temp: Path | None
     policy: str | None = None
+    binding: str | None = None
 
     def commit(self) -> None:
         target = self.root / GATED_FILE
         record = self.root / GATED_POLICY_FILE
         if self.temp is None:
-            for path in (target, record):
+            for path in (target, record, self.root / BINDING_FILE):
                 if os.path.lexists(path):
                     path.unlink()
             return
@@ -607,6 +611,8 @@ class StagedGated:
         self.temp = None
         if self.policy is not None:
             _write_private_file(record, self.policy)
+        if self.binding is not None:
+            _write_private_file(self.root / BINDING_FILE, self.binding)
 
     def discard(self) -> None:
         if self.temp is not None:
@@ -768,7 +774,10 @@ def check_gated_requests(page: str, files: Mapping[Path, bytes]) -> None:
 
 
 def stage_gated(
-    gated_out: Path, page: str | None, policy: str | None = None
+    gated_out: Path,
+    page: str | None,
+    policy: str | None = None,
+    binding: str | None = None,
 ) -> StagedGated:
     """Prepare the gated page without touching the destination name.
 
@@ -799,7 +808,7 @@ def stage_gated(
     except BaseException:
         temp.unlink(missing_ok=True)
         raise
-    return StagedGated(gated_out, temp, policy)
+    return StagedGated(gated_out, temp, policy, binding)
 
 
 # --- content -----------------------------------------------------------------
@@ -1762,4 +1771,10 @@ def render_kit(
         gated = env.get_template("kit_gated.html").render(
             **{**ctx, "root": "/", "kit": content, "inquiry": inquiry, "noindex": True}
         )
-    return KitRender(pages, gated, warnings, policy_fingerprint())
+    return KitRender(
+        pages,
+        gated,
+        warnings,
+        policy_fingerprint(),
+        rows_digest(data["measures"]),
+    )

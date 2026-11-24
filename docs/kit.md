@@ -99,6 +99,7 @@ because the number would be shown nowhere.
 | `kit/retry/index.html` | `--out` (published) | everyone; only when the kit has gated content |
 | `kit.html` | `--gated-out` (never published) | a visitor who passed the gate, served by the Worker |
 | `kit.pdf` | `kit pdf --out-dir` (private, never published) | you, the owner (see [The private PDF](#the-private-pdf)) |
+| `kit-binding.json` | `--gated-out` (never published) | the tools; digests that tie a measures file to this build (see [The measures file](#the-measures-file)) |
 | `kit-measures.json` | `kit measures --out-dir` (private, never published, never in `--out` or `--gated-out`) | you, and the sponsor page work (see [The measures file](#the-measures-file)) |
 | `kit-public-YYYY-MM-DD.pdf` | `kit pdf --public --out-dir` (the public half; you decide where it goes) | anyone you give it to (see [The public PDF](#the-public-pdf)) |
 
@@ -108,8 +109,8 @@ reach-around build --config site.yaml --out site-out --gated-out gated-out
 
 `--gated-out` is required when the kit has partners, case studies, packages,
 rates, testimonials, demographics or a disclosure statement. It may not be the output directory, inside it, or a parent of it.
-The build writes only `kit.html` there (and removes it if the kit no longer has
-gated content); anything else in that directory is left alone. Upload the
+The build writes only `kit.html` there, with its two records `kit-policy.txt` and
+`kit-binding.json` (and removes all three if the kit no longer has gated content); anything else in that directory is left alone. Upload the
 gated file with the Worker deploy, never with the Pages deploy: the deploy
 publishes only `--out`.
 
@@ -934,7 +935,7 @@ What it guarantees, and how each part is checked:
   2 MiB, and the browser is stopped after 120 seconds.
 - **Where it may go.** The output directory may not be, hold or sit inside the
   public output, the gated directory or the directory of the config, may not
-  be inside a git work tree (a `.git` in it or any parent), and may not go
+  be inside a git work tree (a `.git` in it or any parent) or hold one below it, and may not go
   through a symbolic link. An existing directory must be yours and closed to
   others. The file is written owner-only to a temporary name and renamed into
   place. The work directory (the page, the browser profile, the unscrubbed
@@ -981,7 +982,7 @@ Where it may go, and what it holds:
 
 - **Owner-only, never published.** The directory follows the private PDF's rules:
   it may not be, hold or sit inside the public output, the gated directory, the
-  config directory or a git work tree, may not go through a link, and is created
+  config directory or a git work tree (nor hold one below it), may not go through a link, and is created
   owner-only (the file is mode 0600). The file name is in no page, sitemap or
   published list; a test fails if it is.
 - **Measures only.** It holds the public and gated measures and nothing else of
@@ -989,18 +990,33 @@ Where it may go, and what it holds:
   key. A measure of a field marked private is never in it, and the text is
   searched for every private figure and every not-for-PDF value before anything
   is written; a hit names the field, never the value, and writes nothing.
-- **Same policy as the pages.** The gated page's policy record must match the
-  current display policy, as for the PDF; a page built under an older policy is
-  refused until you rebuild. A kit with no measures writes no file.
+- **Tied to one build.** `build --gated-out` writes `kit-binding.json` beside
+  `kit.html` (never in the public output): digests of the display policy, of the
+  resolved measures, of the gated page and of the public kit page. `kit measures`
+  recomputes each one from the config and numbers you pass and from the two
+  directories, and writes nothing when any differs: a changed config or numbers
+  file, a `--site-out` and `--gated-out` from different builds, an edited page or
+  a changed display policy. Rebuild, then run it again with the same inputs. The
+  file records the same digests (`binding`), and the reader can compare them with
+  an expected binding. A kit with no measures writes no file.
+- **Compared as values.** Before the text is made, every string and number of the
+  document is compared, decoded and normalized (case, width and spacing folded),
+  with an inventory of the private-source values: each private field, each
+  number and free text of each private measure, and the not-for-PDF values. The
+  encoding of the file is never part of the comparison.
 - **Reproducible.** The same inputs and `--date` give the same bytes.
 
 ### Schema
 
 The file is JSON. `schema_version` is 1; a change that renames, removes or
 retypes a key raises it, and a reader refuses a version it does not know.
-`load_measures_file` in `reach_around.kit.measures_file` is the one reader: it
-refuses a link, a file over 4 MiB, a duplicate or unknown key, another version
-and a `private` row.
+`load_measures_file(path, expected_binding=None)` in
+`reach_around.kit.measures_file` is the one reader. It checks the type and format
+of every field (whole numbers only, not booleans; negative only for a `percent`
+change; real `YYYY-MM-DD` days and ordered periods; a known unit and trust label;
+slugs; text limits), and refuses a link, a file over 4 MiB, nesting over 8
+levels, more than 5000 rows or none, a duplicate or unknown key, `NaN` or
+`Infinity`, another version and a `private` row.
 
 | Key | Meaning |
 | --- | --- |
@@ -1009,6 +1025,7 @@ and a `private` row.
 | `notice` | the private reminder, printed in the file |
 | `generated` | the day the file was made, `YYYY-MM-DD` |
 | `policy` | the display-policy fingerprint the file was made under |
+| `binding` | `{policy, measures, gated_page, public_page}`: the SHA-256 digests of the build the file matches |
 | `measures` | a list, in page order, of the rows below |
 
 Each row of `measures` has these keys, all always present:

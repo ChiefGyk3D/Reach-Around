@@ -43,6 +43,7 @@ from reach_around.config.numbers import (
 from reach_around.config.page_title import DEFAULT_TEMPLATE, render_template
 from reach_around.config.profile_card import MEDIA_KIT_ID
 from reach_around.config.tablinks import is_tab_ref, parse_tab_ref
+from reach_around.kit.binding import binding_text, make_binding
 from reach_around.site.assets import collect_assets, collect_private_kit_assets
 from reach_around.site.beaconframe import (
     FRAME_PAGE as FRAME_PAGE_PATH,
@@ -67,6 +68,7 @@ from reach_around.site.frames import (
 from reach_around.site.inventory import InventoryEntry, build_inventory
 from reach_around.site.kit import (
     GATED_FILE,
+    KIT_PAGE,
     POLICY_FILE,
     check_gated_requests,
     check_no_gated_text,
@@ -1338,7 +1340,19 @@ def build_site(
         # exist and compare the two roots again by identity now that both do.
         out.mkdir(parents=True, exist_ok=True)
         check_roots(out, gated_root)
-        staged = stage_gated(gated_root, kit_render.gated, kit_render.policy or None)
+        record = None
+        if kit_render.gated is not None and kit_render.policy:
+            record = binding_text(
+                make_binding(
+                    kit_render.policy,
+                    kit_render.measures_digest,
+                    kit_render.gated,
+                    files[KIT_PAGE],
+                )
+            )
+        staged = stage_gated(
+            gated_root, kit_render.gated, kit_render.policy or None, record
+        )
     try:
         _empty(out)
         _write(out, files)

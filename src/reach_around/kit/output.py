@@ -4,12 +4,14 @@
 The PDF holds the gated kit, so the destination is checked before anything is
 rendered and the write is careful:
 
-* the directory and every parent of it must be free of symbolic links (a link is
-  refused, never followed);
+* the directory is reached one component at a time from the root with
+  ``openat(O_DIRECTORY | O_NOFOLLOW)``, and the descriptors stay open until the
+  file is written, so no ancestor can be swapped for a link after it was checked
+  (a link anywhere in the path is refused, never followed);
 * it may not be, contain or sit inside a directory that is published or kept in
   the repository: the public site output, the gated directory, or the directory
   of the config; and it may not be inside a git work tree at all (a ``.git``
-  entry in it or any parent);
+  entry in it or any parent) or hold a git work tree below it;
 * an existing directory must belong to the owner and be closed to everyone else;
   a missing one is created owner-only;
 * the file name is one plain component ending in ``.pdf``; an existing file is
@@ -22,11 +24,12 @@ rendered and the write is careful:
 from __future__ import annotations
 
 import contextlib
+import errno
 import os
 import re
 import secrets
 import stat
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from pathlib import Path
 
 NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,99}\.pdf")
@@ -49,62 +52,177 @@ def check_name(name: str, pattern: re.Pattern[str] = NAME) -> str:
     return name
 
 
-def _no_links(path: Path) -> None:
-    """Refuse a symbolic link in ``path`` or any parent that exists."""
-    probe = Path("/")
-    for part in path.parts[1:]:
-        probe = probe / part
-        try:
-            info = os.lstat(probe)
-        except FileNotFoundError:
-            return
-        if stat.S_ISLNK(info.st_mode):
-            raise OutputError(
-                "the output directory goes through a symbolic link; use the real path"
-            )
+_DIR_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+# A directory scan for a work tree below the output directory stops here.
+MAX_SCANNED_ENTRIES = 20000
+MAX_SCAN_DEPTH = 16
 
 
-def _check_owner_dir(path: Path) -> None:
-    info = os.lstat(path)
-    if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
-        raise OutputError("the output path is not a directory")
-    if info.st_uid != os.geteuid() or info.st_mode & 0o077:
+def _open_dir(name: str, parent_fd: int) -> int:
+    """Open one directory component below ``parent_fd``, never through a link."""
+    try:
+        return os.open(name, _DIR_FLAGS, dir_fd=parent_fd)
+    except FileNotFoundError:
+        raise
+    except OSError as exc:
+        if exc.errno in (errno.ELOOP, errno.ENOTDIR):
+            try:
+                info = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+            except OSError:
+                info = None
+            if info is not None and stat.S_ISLNK(info.st_mode):
+                raise OutputError(
+                    "the output directory goes through a symbolic link; use the "
+                    "real path"
+                ) from exc
+            raise OutputError("the output path is not a directory") from exc
         raise OutputError(
-            "the output directory is not owner-only; fix it with chmod 700 or "
-            "choose another directory"
-        )
+            f"the output directory cannot be used ({exc.strerror})"
+        ) from exc
+
+
+def _ident(fd: int) -> tuple[int, int]:
+    info = os.fstat(fd)
+    return (info.st_dev, info.st_ino)
+
+
+def _path_chain(path: Path) -> list[tuple[int, int]]:
+    """Identities of a (real) path and each of its parents, root first."""
+    found: list[tuple[int, int]] = []
+    probe = Path("/")
+    for part in ("", *Path(path).parts[1:]):
+        probe = probe / part if part else probe
+        try:
+            info = os.stat(probe)
+        except OSError:
+            break
+        found.append((info.st_dev, info.st_ino))
+    return found
+
+
+def _holds_worktree(fd: int) -> bool:
+    """True if a ``.git`` entry is anywhere below ``fd``. Links are not followed;
+    a tree too big to scan is refused, never assumed clean."""
+    budget = MAX_SCANNED_ENTRIES
+    stack: list[tuple[int, int]] = [(os.dup(fd), 0)]
+    try:
+        while stack:
+            current, depth = stack.pop()
+            try:
+                with os.scandir(current) as entries:
+                    for entry in entries:
+                        budget -= 1
+                        if budget < 0:
+                            raise OutputError(
+                                "the output directory has too many entries to check "
+                                "for a git work tree; choose an empty directory"
+                            )
+                        if entry.name == ".git":
+                            return True
+                        if entry.is_dir(follow_symlinks=False):
+                            if depth + 1 > MAX_SCAN_DEPTH:
+                                raise OutputError(
+                                    "the output directory is nested too deeply to "
+                                    "check for a git work tree"
+                                )
+                            stack.append((_open_dir(entry.name, current), depth + 1))
+            finally:
+                os.close(current)
+    finally:
+        for left, _depth in stack:
+            os.close(left)
+    return False
+
+
+def open_private_dir(
+    out_dir: Path, forbidden: Iterable[Path] = (), *, create: bool
+) -> int:
+    """Open the output directory and return its descriptor (the caller closes it).
+
+    The path is walked from the root with a descriptor per component, so what is
+    checked is what is used: nothing above the directory can be swapped for a
+    link in between. Every check runs before anything is created; a missing
+    directory (and its missing parents) is then made with ``mkdirat`` mode 0700
+    relative to the held parent. With ``create`` false a missing directory is an
+    error."""
+    target = Path(os.path.abspath(out_dir))
+    fds: list[int] = []
+    try:
+        fds.append(os.open("/", _DIR_FLAGS))
+        missing: list[str] = []
+        for index, part in enumerate(target.parts[1:]):
+            try:
+                fds.append(_open_dir(part, fds[-1]))
+            except FileNotFoundError:
+                missing = list(target.parts[1 + index :])
+                break
+        if missing and not create:
+            raise OutputError("the output directory does not exist")
+        chain = [_ident(fd) for fd in fds]
+        for other in forbidden:
+            try:
+                banned = Path(os.path.realpath(other))
+                banned_chain = _path_chain(banned)
+            except OSError:
+                continue
+            if len(banned_chain) != len(banned.parts):
+                # not there (yet): only the names can collide
+                inside = target == banned or banned in target.parents
+                around = target in banned.parents
+            else:
+                inside = banned_chain[-1] in chain
+                around = not missing and chain[-1] in banned_chain
+            if inside or around:
+                raise OutputError(
+                    f"the output directory {target} is the same as, inside or "
+                    f"around {banned}, which is published, gated or holds the "
+                    "config; choose a separate private directory"
+                )
+        for fd in fds:
+            if _has_entry(fd, ".git"):
+                raise OutputError(
+                    "the output directory is inside a git work tree; choose a "
+                    "directory outside every repository"
+                )
+        if not missing:
+            info = os.fstat(fds[-1])
+            if info.st_uid != os.geteuid() or info.st_mode & 0o077:
+                raise OutputError(
+                    "the output directory is not owner-only; fix it with chmod 700 "
+                    "or choose another directory"
+                )
+            if _holds_worktree(fds[-1]):
+                raise OutputError(
+                    "the output directory holds a git work tree; choose a "
+                    "directory with no repository in it"
+                )
+        for part in missing:
+            try:
+                os.mkdir(part, 0o700, dir_fd=fds[-1])
+            except OSError as exc:
+                raise OutputError(
+                    f"the output directory could not be created ({exc.strerror})"
+                ) from exc
+            fds.append(_open_dir(part, fds[-1]))
+            os.fchmod(fds[-1], 0o700)
+        return fds.pop()
+    finally:
+        for fd in fds:
+            os.close(fd)
+
+
+def _has_entry(fd: int, name: str) -> bool:
+    try:
+        os.stat(name, dir_fd=fd, follow_symlinks=False)
+    except OSError:
+        return False
+    return True
 
 
 def confine_out_dir(out_dir: Path, forbidden: Iterable[Path]) -> Path:
     """Validate (and create, owner-only) the output directory; return it."""
-    target = Path(os.path.abspath(out_dir))
-    _no_links(target)
-    for other in forbidden:
-        banned = Path(os.path.realpath(other))
-        if target == banned or banned in target.parents or target in banned.parents:
-            raise OutputError(
-                f"the output directory {target} is the same as, inside or around "
-                f"{banned}, which is published, gated or holds the config; choose "
-                "a separate private directory"
-            )
-    for candidate in (target, *target.parents):
-        if os.path.lexists(candidate / ".git"):
-            raise OutputError(
-                "the output directory is inside a git work tree; choose a "
-                "directory outside every repository"
-            )
-    if os.path.lexists(target):
-        _check_owner_dir(target)
-        return target
-    missing: list[Path] = []
-    for candidate in (target, *target.parents):
-        if os.path.lexists(candidate):
-            break
-        missing.append(candidate)
-    for candidate in reversed(missing):
-        os.mkdir(candidate, 0o700 if candidate == target else 0o777)
-    os.chmod(target, 0o700)
-    return target
+    os.close(open_private_dir(out_dir, forbidden, create=True))
+    return Path(os.path.abspath(out_dir))
 
 
 def write_private(
@@ -114,21 +232,15 @@ def write_private(
     *,
     overwrite: bool,
     pattern: re.Pattern[str] = NAME,
+    forbidden: Sequence[Path] = (),
 ) -> Path:
     """Write ``data`` to ``out_dir/name`` as described in the module doc. The name
-    must match ``pattern`` (a ``.pdf`` name unless the caller says otherwise)."""
+    must match ``pattern`` (a ``.pdf`` name unless the caller says otherwise).
+    The directory is opened again here, by the same descriptor-relative walk and
+    the same ``forbidden`` list, and the write goes through that descriptor."""
     check_name(name, pattern)
     directory = Path(os.path.abspath(out_dir))
-    _no_links(directory)
-    try:
-        _check_owner_dir(directory)
-        dir_fd = os.open(
-            directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
-        )
-    except OSError as exc:
-        raise OutputError(
-            f"the output directory cannot be used ({exc.strerror})"
-        ) from exc
+    dir_fd = open_private_dir(directory, forbidden, create=False)
     temp = f".{name}.{secrets.token_hex(8)}.tmp"
     try:
         try:

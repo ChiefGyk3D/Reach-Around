@@ -1021,6 +1021,7 @@ def build_kit_pdf(
         numbers=numbers,
         imported=imported,
         public=False,
+        forbidden=[gated_dir, site_dir, *protect],
     )
 
 
@@ -1062,6 +1063,7 @@ def build_public_kit_pdf(
         numbers=numbers,
         imported=imported,
         public=True,
+        forbidden=[site_dir, *protect],
     )
 
 
@@ -1090,6 +1092,7 @@ def _print(
     numbers: Numbers | None,
     imported: ImportedHistory | None,
     public: bool,
+    forbidden: Sequence[Path] = (),
 ) -> PdfResult:
     """Render, scrub, check and write one staged page. Shared by both kinds."""
     with private_workdir() as work:
@@ -1120,5 +1123,7 @@ def _print(
         config=config,
         check_days=(utc_today(), created),
     )
-    path = write_private(target_dir, name, final, overwrite=overwrite)
+    path = write_private(
+        target_dir, name, final, overwrite=overwrite, forbidden=forbidden
+    )
     return PdfResult(path=path, pages=len(pages), size=len(final))
