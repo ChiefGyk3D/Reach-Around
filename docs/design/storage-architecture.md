@@ -19,13 +19,16 @@
 
 Nothing is in production, so the storage shape can change now. The recommendation:
 
-1. **Raw events leave D1.** Views, clicks and kit events are written as Analytics Engine
-   data points. D1 keeps only rollups, written by the hourly job from an Analytics Engine
-   query. The raw tables `view_events`, `click_events` and `kit_events` are dropped.
-2. **Views are written as separate marginal data points** (a core point, one point per
-   dimension, one geography point), so no joint row of city, browser, system and language
-   exists in a store we cannot delete from (Analytics Engine keeps data three months and
-   stamps its own exact time).
+1. **Raw events stay in D1** (revised 2026-11-24, superseding an earlier plan to move them to
+   Analytics Engine). `view_events`, `click_events` and `kit_events` keep hour-rounded
+   timestamps and the existing purge (7 days by default, held up to 3x until rolled up,
+   maximum 90). Kit events stay with the lead and are deleted with it. A small `kit_daily`
+   rollup is added for the public stats.
+2. **Analytics Engine, if used at all, holds only counters that are safe in aggregate**:
+   daily, floored, closed-list totals written by the hourly job at seal time, with no
+   per-visitor or per-lead timing, no lead id, no visitor hash and no kit metric. It keeps
+   exact timestamps for a fixed three months with no early delete, so nothing per event goes
+   there. It is optional and off by default.
 3. **Public stats and the public kit JSON are pre-rendered by the hourly job into a
    separate KV namespace** that holds nothing gated, and read through one new GET route.
 4. **Collector snapshots move to two D1 databases**, one public and one owner-authorized, so
@@ -90,160 +93,163 @@ Schema inconsistencies found while reading (the input to item 5):
 | R2 free tier | 10 GB-month, 1 million Class A, 10 million Class B operations per month; egress free; Standard: $0.015 per GB-month, Class A $4.50 per million, Class B $0.36 per million. The page does not say whether a payment method is needed | VERIFIED, .../r2/pricing/ (2026-10-30) |
 | R2 limits and lifecycle | Object up to 5 TiB; 1 write per second per key; lifecycle rules delete objects after N days (removal within about 24 hours of expiry), up to 1,000 rules per bucket | VERIFIED, .../r2/platform/limits/ (2026-10-30), .../r2/buckets/object-lifecycles/ (2026-10-26) |
 
-## 3. Item 2: raw events to Analytics Engine, D1 keeps rollups only
+## 3. Item 2: raw events stay in D1 with a short purge window; Analytics Engine for safe aggregate counters only
+
+> **Revised 2026-11-24 (owner decision, after a GDPR read).** An earlier draft of this section
+> moved raw events to Analytics Engine as separate marginal points kept 90 days and dropped the
+> raw tables. That design is **superseded**. Analytics Engine keeps exact timestamps for a fixed
+> three months with no early delete (VERIFIED, section 2), which contradicts the 7-day promise
+> on the privacy page, prevents erasure for three months, and lets exact kit-unlock times be
+> matched to a lead's created time. Raw events therefore stay in D1 with hour-rounded
+> timestamps and the existing purge. Analytics Engine is used, if at all, only for counters
+> that are safe in aggregate (3.2).
 
 ### 3.1 Current state
 
 Section 1. Per accepted view the Worker writes about 5.6 D1 rows, of which the raw event row
 is roughly three (table plus two indexes) and its later purge delete is more (INFERRED: the
 D1 pricing page names the index row; the repository figure 5.6 is `docs/deploy.md`'s). Raw
-rows are kept 7 days by default, ceiling 90; timestamps are rounded to the hour; no row ever
-holds an address, user agent or referrer URL.
+rows are kept 7 days by default (`RAW_KEEP_DAYS`), held up to three times that long until
+rolled up, ceiling 90 days; timestamps are rounded to the hour; no row ever holds an address,
+user agent or referrer URL. Kit events carry `lead_id` and are deleted with the lead.
 
 ### 3.2 Target
 
-Datasets (one `[[analytics_engine_datasets]]` binding each; datasets are created by the first
-write, **VERIFIED**):
+**Raw events: unchanged in D1.** `view_events`, `click_events` and `kit_events` stay. They keep
+their rules:
 
-| Dataset | One point per | Blobs (fixed order, versioned in a TypeScript constant and a test) | Doubles | Index |
+- Timestamps rounded to the hour; closed-vocabulary values only; no address, user agent,
+  referrer URL, ASN or visitor hash in any row.
+- Purge: 7 days by default, held up to 3x that until rolled up, hard maximum 90 days. The
+  hourly job deletes rolled rows past the window.
+- `kit_events.lead_id` keeps its foreign key and cascade, so a lead's kit events are deleted
+  with the lead. Kit events never leave D1.
+- The rollup keeps reading raw rows (`rollupClosedDays`, sealing by `max_id`). Item 1's
+  counters feed the reconciliation in 3.7 and nothing else changes in the rollup path.
+
+What this item still changes in D1:
+
+- **`kit_daily` (new)**: per site, day and kind, a count with no lead id and no time finer
+  than the day, written by the hourly job from `kit_events` before the raw rows are purged.
+  The public stats (section 4) need 7 and 30 day kit totals, which outlast the raw window.
+  Counts below `MIN_CELL` are folded as elsewhere.
+- Schema cleanup of the raw tables follows item 5 (section 6), not a drop.
+
+**Analytics Engine: aggregate counters only, optional, off by default.**
+
+| Dataset | One point per | Blobs | Doubles | Index |
 |---|---|---|---|---|
-| `ra_view_core` | accepted view | `page`, `src_kind`, `src`, `country`, `bot_class` | `first` (0 or 1) | `site` |
-| `ra_view_dim` | accepted view and dimension (browser, os, device, lang, vp, reason) | `dim`, `value`, `bot_class` | none | `site` |
-| `ra_view_geo` | accepted view | `country`, `region`, `city`, `bot_class` | none | `site` |
-| `ra_click` | accepted click | `link_id`, `destination_kind`, `src_or_country_label`, `landing`, `hop` | none | `site` |
-| `ra_kit` | kit event | `kind` | none | `site` |
+| `ra_counters` | site, closed UTC day and metric, written once by the hourly job when the day is sealed | `metric` (closed list) | `n` | `site` |
 
 Rules:
 
-- **No joint row.** The existing marginal split (`view_daily`, `view_dim_daily`,
-  `view_geo_daily`) exists so a day's browsers, systems, languages and cities can never be
-  recombined into a visitor profile. Analytics Engine data cannot be deleted early and
-  carries an exact runtime timestamp the Worker cannot round (INFERRED: the page lists
-  `timestamp` as automatic and documents no override). A single wide point would hold city,
-  browser, system and language together, exactly, for three months. One point per marginal
-  keeps the existing guarantee. The residual risk is that points written in the same request
-  carry near-identical timestamps (section 3.8).
-- **No `lead_id`, no address, no hash.** Kit events carry only `kind` and `site`. The daily
-  visitor hash never enters Analytics Engine: `first` is computed at write time against the
-  daily dedupe store (section 7) and only the bit is written. `visitor_seen` therefore
-  keeps its end-of-UTC-day deletion.
-- **Index is `site`**, so a quiet site's points are not sampled away by a busy one
-  (INFERRED from "the index is the sampling key", **VERIFIED**).
-- Writes are not awaited and use at most 8 points per view (1 core, 6 dimension, 1 geo; `net`
-  stays out while it is always `unknown`), far under 250 per invocation.
-- All values pass the same closed-vocabulary normalizers the D1 insert uses today; the schema
-  guard test in `worker/test/views/schema.test.ts` is extended to the blob lists.
-
-D1 after the change keeps: `view_daily`, `view_dim_daily`, `view_geo_daily`,
-`view_hour_daily`, `view_rollup_log`, the click funnel tables, `kit_daily` (new, below),
-`analytics_coverage`, `leads` and the item 1 tables. It drops `view_events`, `click_events`,
-`kit_events`.
+- **Not written per event.** The Worker's request path never calls `writeDataPoint`. The hourly
+  job writes the point from sealed D1 rollups, so the runtime timestamp is the job's run time
+  and says nothing about when any visitor or lead acted.
+- **Metric list is closed**: accepted views (human, bot), clicks, rejected requests by reason,
+  budget trips. No page, source, country, city, browser, system, language, link id, lead id,
+  visitor hash or kit metric of any kind. Kit events are never counted in Analytics Engine,
+  because a small kit count on a given day can be matched to a lead.
+- A point is written only for a cell at or above `MIN_CELL`; smaller cells are not written.
+- Purpose: a 90-day trend and alert source that does not depend on the D1 purge. It is not
+  an input to any rollup of record, and nothing in the product requires it. Setting
+  `AE_COUNTERS = "1"` is an owner step.
+- Anything that cannot be shown to be safe in aggregate stays in D1, where the purge window
+  and the lead cascade apply.
 
 ### 3.3 Data flow
 
 ```text
 visit -> Worker (checks, normalize, closed values)
-           |-- writeDataPoint x N  (Analytics Engine, background, no ack)
-           |-- dedupe check for `first` (section 7)
-hourly cron -> for each site, each closed UTC day not yet sealed:
-           SQL query per dataset over the AE REST API (GROUP BY the key columns,
-           SUM(_sample_interval) for counts, SUM(first) for uniques)
-           -> fold small cells (MIN_CELL, TOP_SOURCES, ROLLUP_MAX_ROWS_PER_DAY, unchanged logic)
-           -> one D1 batch: replace (site, day) rows in the rollup tables, upsert view_rollup_log
+           |-- one atomic D1 batch: budget counters, raw event row (hour-rounded),
+           |   visitor_seen for a first human view (deleted at end of UTC day)
+hourly cron -> lead purge, health, raw purge past the window,
+           rollupClosedDays (raw rows -> view_daily, view_dim_daily, view_geo_daily,
+           view_hour_daily; kit_events -> kit_daily), click funnel seal and monthly roll,
+           PUB render (section 4)
+           -> optional: when a day is sealed and AE_COUNTERS = "1",
+              writeDataPoint for each closed metric at or above MIN_CELL
 ```
 
-Replace, not add: the job writes `views = excluded.views` for a `(site, day)` it recomputes
-from scratch. That makes a re-roll idempotent and removes the `max_id` mechanism. A day is
-re-rolled on every run until `ROLLUP_GRACE_HOURS` plus a seal window (default 48 hours, an
-open decision) has passed, then sealed. A point arriving after the seal is not counted; the
-reconciliation in 3.6 shows it.
+The existing guarantee is kept: no counter without its event row, because both are in one D1
+batch.
 
 ### 3.4 Cloudflare limits and costs
 
-- Points per month at the repository's configured ceilings (`docs/deploy.md`): views at 600 per
-  hour (480 human plus 120 bot) is at most 14,400 views a day, times 8 points, about 3.5
-  million a month; clicks at `CLICK_DAILY_WRITE_CEILING` 300,000 a day is about 9 million a
-  month. Together about 12.5 million at the ceilings, so about 2.5 million over the Paid
-  allowance, roughly $0.63 a month at $0.25 per million (INFERRED arithmetic on VERIFIED
-  prices). Real traffic is far below the ceilings.
-- Queries: about 4 per site-day per run times a few open days times 24 runs, a few thousand a
-  month, far under 1 million (Paid) and about 10,000 a day (Free).
-- Free fit: at real traffic the points fit the Free 100,000 a day. At the ceilings they do
-  not (clicks alone are 300,000). **Paid is needed only for the configured ceilings and for
-  CPU** (section 8).
-- The page says Analytics Engine is not billed yet. Treat the cost lines as a forecast.
-- D1 writes saved: the raw row and its index rows, plus the purge deletes, per event. The
-  remaining D1 writes per view belong to item 1.
-- A read token is required: API token, Account Analytics Read, stored as a Worker secret
-  `AE_READ_TOKEN`. It reads every dataset of the account (INFERRED: the permission pages show
-  no narrower scope). Owner step; rotated a/b pair in the secret manager, dev first.
+- D1 writes per view stay at the figure in section 1 (about 5.6). The saving this item once
+  claimed (raw row, index rows, purge deletes) is not taken. Item 1's hot counters are the
+  lever for D1 write volume.
+- D1 storage: raw rows are bounded by the purge window. At the configured ceilings (views 600
+  per hour, clicks `CLICK_DAILY_WRITE_CEILING` 300,000 a day) the seven-day raw tables stay far
+  under 500 MB per database on Free (VERIFIED limit; INFERRED arithmetic); the 3x hold and the
+  90 day maximum are the upper bound the owner can see in the coverage report.
+- Analytics Engine, if enabled: at most a few dozen points per site-day (closed metric list),
+  so a few thousand points a month, far under the Free 100,000 a day and the Paid 10 million
+  included. Queries: one dashboard or alert read at most a few times a day.
+- The page says Analytics Engine is not billed yet. Treat any cost line as a forecast.
+- A read token is needed only if the owner reads the counters back: API token, Account
+  Analytics Read, stored as a rotated a/b pair, dev first. It reads every dataset of the
+  account (INFERRED: the permission pages show no narrower scope). Not needed while
+  `AE_COUNTERS` is off.
 
 ### 3.5 Migration plan with rollback
 
-1. Add the bindings and the writer behind `EVENTS_SINK = "d1"` (default), `"both"`, `"ae"`.
-   Today's behavior is `d1`.
-2. `both` on the test deployment: every event goes to D1 raw and to Analytics Engine. The
-   rollup still reads D1. A shadow job also rolls from Analytics Engine into scratch tables
-   `*_shadow` and a comparison reports per day and table the difference.
-3. When the shadow matches (section 3.7 thresholds) for 7 closed days, switch the rollup to
-   Analytics Engine (`ROLLUP_SOURCE = "ae"`), keep `both`.
-4. After 7 more days, set `EVENTS_SINK = "ae"` and ship the migration that drops the raw tables
-   and their indexes.
+1. Nothing moves. The raw tables stay in the baseline reset (section 6) in their cleaned shape.
+2. Add `kit_daily` and the hourly step that fills it, ahead of the first raw purge that needs it.
+   Backfill from the raw kit rows still in the window.
+3. Optional: add the `ra_counters` binding and the sealed-day writer behind `AE_COUNTERS = "0"`;
+   turn it on for the test deployment first.
 
-Rollback: steps 1 to 3 flip a variable (`npx wrangler deploy --var ...`, the existing pattern
-for kill switches) and lose nothing. After step 4 the raw tables are gone, so rollback is
-forward: re-create them from the baseline file and set `EVENTS_SINK = "both"`; events written
-while on `ae` exist only in Analytics Engine and are rolled from there (rolled days are
-unaffected). Take a D1 export and a Time Travel bookmark before step 4 (D1 export blocks
-queries while it runs; do it in a quiet hour with the maintenance switch, **VERIFIED** page
-text).
+Rollback: set `AE_COUNTERS = "0"` (the existing variable pattern for kill switches). Counters
+already written expire on Cloudflare's three-month schedule and carry nothing that identifies
+a visitor or lead. `kit_daily` is derived data; dropping it needs a baseline change only.
 
 ### 3.6 Privacy impact
 
 | Rule | Before | After |
 |---|---|---|
-| No raw IP, user agent, referrer URL, ASN | Not stored | Unchanged. Points carry closed values only |
+| No raw IP, user agent, referrer URL, ASN | Not stored | Unchanged |
 | Daily hashed visitor, deleted at end of UTC day | `visitor_seen` | Unchanged; the hash never leaves it |
-| Raw retention | 7 days default, ceiling 90 | **Fixed three months** (VERIFIED) for event points; `RAW_KEEP_DAYS` stops applying to events. Within the existing 90-day hard ceiling, but longer than the 7-day default |
-| Raw timestamp | Rounded to the hour | **Exact**, set by the runtime (INFERRED) |
-| Joint rows (city with browser with language) | Existing for up to 7 days | **None**, by the split in 3.2 |
-| `lead_id` beside a kit event | Present, cascade delete | **Gone**; kit points carry no lead. Lead deletion has no event rows to cascade, and `leadretention.ts` loses a query |
-| Deletion on request | Not possible by design; short raw window | Same statement, longer window; privacy text changes |
-| Backups | Time Travel keeps raw rows 7 or 30 days | Raw rows are not in D1, so Time Travel no longer holds them (an improvement) |
+| Raw retention | 7 days default, held up to 3x until rolled up, ceiling 90 | Unchanged |
+| Raw timestamp | Rounded to the hour | Unchanged |
+| Joint rows (city with browser with language) | Existing for the raw window only | Unchanged; the marginal rollups stay the long-lived form |
+| `lead_id` beside a kit event | Present, cascade delete | Unchanged; kit events are deleted with the lead |
+| Deletion on request | Raw window plus lead cascade | Unchanged; nothing about a visitor or lead sits in a store that cannot delete early |
+| Backups | Time Travel keeps raw rows 7 or 30 days | Unchanged |
+| Aggregate counters in Analytics Engine | None | Optional: daily, closed list, floored, written at seal time, kept three months. Nothing per visitor or lead, no kit metric |
 
-The privacy page, `docs/privacy.md` and the threat model entries T-12 and T-17 change in the
-code PR (see the `analytics-design.md` rule that the privacy text moves with the code).
+The privacy page and the threat model gain one line each, only if `AE_COUNTERS` is enabled
+(the `analytics-design.md` rule that the privacy text moves with the code applies): the
+counter list, the three-month retention and the fact that it is aggregate. If it stays off,
+no privacy text changes.
 
 ### 3.7 Test strategy
 
-- Writer unit tests with a fake dataset binding: exact blob order and count, no field outside
-  the closed lists, at most 8 points per view, a sentinel test that no address, user agent,
-  referrer URL or hash value reaches any point (extends `dump_no_raw_ip.test.ts`).
-- Blob-order contract test: the TypeScript constant and the rollup SQL's column list are
-  generated from one table, and a test fails when they drift.
-- Rollup tests with a fake AE query client returning fixed rows, including `_sample_interval`
-  greater than 1, empty days, a late point after the seal, and a site sealed alone (the
-  per-site seal tests of `analytics-design.md` section 3.6 carry over).
-- Parity fixtures: the same synthetic events through the D1 path and the AE path give equal
-  rollups. Thresholds for the shadow period: counts equal for humans, within 2 percent for
-  bots (best-effort writes, INFERRED), zero unexplained days.
-- Reconciliation: the hourly accepted-view counter (item 1) against the points counted by the
+- Retention tests: raw rows older than the window and rolled are deleted; unrolled rows are
+  held to 3x and never past the 90-day maximum; a lead delete cascades to its kit events.
+- `kit_daily` tests: counts equal the raw kit rows for a day, no `lead_id` column, floor
+  applied, backfill idempotent, the day's row exists before the raw purge removes its rows.
+- Writer tests for the optional counters, with a fake dataset binding: the writer is called
+  only from the cron path (a test asserts the request path has no binding), blob list is the
+  closed metric list, no field outside it, cells under `MIN_CELL` are not written, kit metrics
+  never appear, a sentinel test that no lead id, hash, address, source or geography value
+  reaches any point.
+- Reconciliation: the hourly accepted-view counter (item 1) against the raw rows counted by the
   rollup, stored in `view_rollup_log.raw_views` and shown as coverage; a gap beyond a
   threshold sets a health flag in `analytics_coverage` terms.
-- Migration test: apply the drop migration to a seeded database, assert the raw tables are
-  gone and the rollups are byte-identical.
+- Migration test: apply the baseline to a seeded database, assert the raw tables and
+  `kit_daily` exist and the rollups are byte-identical to the chain's.
 
 ### 3.8 Risks
 
 | Risk | Mitigation |
 |---|---|
-| Points are best-effort and unacknowledged (INFERRED from "no confirmation"); a lost point is an undercount | Reconciliation against the accepted-view counter; report says "may undercount"; the old atomic guarantee ("no counter without an event") is relaxed and the doc says so |
-| Sampling at high volume | `_sample_interval` in every query; `view_rollup_log.sampled` flag; threshold is undocumented on the pages read (INFERRED), measure in the shadow period |
-| Timestamp correlation across the points of one view | Residual. An attacker needs the Account Analytics Read token. Option C in question 2 removes it |
-| REST query token is account-wide read | Secret in the secret manager, rotated pair, never in argv or logs, fetch only from the cron |
-| Analytics Engine outage or API change stops the rollup | Rollup fails closed, retries next hour, health alert; D1 raw stays available in `both` mode |
-| 3-month retention cannot be shortened | Question 2; do not write a field you would not keep three months |
-| 15 min CPU is only on Paid | Section 8 |
+| D1 write volume stays high (about 5.6 rows per view) | Item 1 hot counters; configured ceilings; Paid plan (section 8) |
+| Raw rows held up to 90 days if rollup stalls | Existing coverage report and health alert; the hold is bounded and visible; privacy text already states the ceiling |
+| A counter point is later made finer (hourly, per source) and becomes identifying | Closed metric list in a TypeScript constant and a test; adversarial review of any change to it; no per-event writes |
+| Counters of a small day matched to a person | `MIN_CELL` floor, daily granularity, no kit metric |
+| REST query token is account-wide read | Optional; secret in the secret manager, rotated pair, never in argv or logs |
+| Three-month Analytics Engine retention cannot be shortened | Only aggregate, floored, daily counters are written, so nothing needs an early delete |
 
 ## 4. Item 3: pre-rendered public stats and kit JSON in KV
 
@@ -412,8 +418,9 @@ large import -> Python uploads to R2 (presigned or ingest route) -> manifest row
 
 The local SQLite store stays as the offline and test implementation of the same `Store`
 protocol; `open_store` gains a `kind: d1_ingest`. `click_daily`, `click_cursor`,
-`click_batches`, `click_dead_letters` are dropped: raw clicks no longer exist (item 2), and
-per-link click totals come from the funnel rollups.
+`click_batches`, `click_dead_letters` are dropped: the store no longer pulls raw click
+rows (raw clicks stay in D1 for the short purge window only, item 2), and per-link click
+totals come from the funnel rollups.
 
 ### 5.4 Limits and costs
 
@@ -570,8 +577,8 @@ the recreate is repeatable. Rollback for B: restore from the export (the pre-ste
 
 The Python report's export contract (`funnel/export.py` `Spec` entries) is the consumer that
 must change with the schema: `day_tz` becomes optional and ignored, `click_events` and
-`kit_events` rows are replaced by rollup tables (`click_daily` per link, `kit_daily`), and an
-adapter keeps old exports loadable for one release. This is why the export contract is part
+`kit_events` stay as raw tables with their short purge (section 3), a `kit_daily` rollup is
+added, and an adapter keeps old exports loadable for one release. This is why the export contract is part
 of the slice list, not an afterthought.
 
 ### 6.5 Privacy impact and risks
@@ -599,38 +606,39 @@ This design only assumes these, and the item 1 design supplies them:
 - The budget and limiter state, wherever it lives, so the event write is skipped when a view is
   not accepted.
 
-If item 1 changes where the click funnel cells are incremented, the AE `ra_click` dataset and
+If item 1 changes where the click funnel cells are incremented, the raw `click_events` rows and
 the rollup are unaffected: the funnel tables stay the rollup of record and the rollup can fill
-them from Analytics Engine when the counters move.
+them from the raw rows when the counters move.
 
 ## 8. Free versus Paid, and what billing the owner decides
 
 | Piece | Fits Free? | Needs Paid for | Billable step |
 |---|---|---|---|
-| Hourly job reading Analytics Engine and writing D1 | No (INFERRED) | 10 ms CPU per cron run on Free is too small for HTTP fetches, parsing and several D1 batches; Paid allows up to 15 min (VERIFIED) | Plan change, owner |
+| Hourly job rolling raw D1 rows and writing D1 | No (INFERRED) | 10 ms CPU per cron run on Free is too small for the rollup, purge, KV render and several D1 batches; Paid allows up to 15 min (VERIFIED) | Plan change, owner |
 | D1 writes at the configured ceilings | No | 100,000 rows a day on Free; `docs/deploy.md` already refuses Free at the click ceiling | None beyond the plan |
-| Analytics Engine | At real traffic yes | Configured ceilings (about 12.5 million points a month, 10 million included) | None until billing starts (VERIFIED); then about $0.63 a month at the ceilings (INFERRED) |
+| Analytics Engine (optional aggregate counters) | Yes | Nothing: a few thousand points a month at most | None until billing starts (VERIFIED); negligible after (INFERRED) |
 | KV `PUB` | Yes by volume | Safety margin against the Free 100,000 requests a day shared by the whole Worker | None below the allowances |
 | Two D1 snapshot databases | Yes | Nothing | None below the allowances |
 | R2 bucket | Yes by volume | Nothing; payment method need is unknown (INFERRED) | Owner checks the dashboard |
 | Access service token for the ingest route | Unverified | Unverified | Owner checks the Cloudflare One plan |
 
 The cutover runbook already says the Workers paid plan is approved (#610); this page assumes
-that (INFERRED from `docs/cutover-runbook.md`). The owner sets a billing alert before the shadow
-period. Every create (datasets are created by first write, namespaces, databases, bucket) is
+that (INFERRED from `docs/cutover-runbook.md`). The owner sets a billing alert before the first billable
+step. Every create (datasets are created by first write, namespaces, databases, bucket) is
 shown to the owner first, as the issue requires.
 
 ## 9. INFERRED items to close
 
-1. The runtime timestamp of an Analytics Engine point cannot be set or rounded by the writer.
-2. Analytics Engine writes are best-effort and the sampling threshold; measure in the shadow
-   period.
+1. The runtime timestamp of an Analytics Engine point cannot be set or rounded by the writer
+   (the reason raw events stay in D1).
+2. Analytics Engine writes are best-effort and the sampling threshold; only matters if the
+   optional counters are enabled.
 3. Account Analytics Read, D1 Read and the Access service token have no per-dataset or
    per-database scope.
 4. D1 migration files are atomic; this design does not rely on it.
 5. The R2 payment-method requirement, and the Cloudflare One plan for Access.
 6. Time Travel holding deleted rows for its window after a purge.
-7. Analytics Engine query latency after a write (affects `ROLLUP_GRACE_HOURS`).
+7. Analytics Engine query latency after a write (only for reading the optional counters back).
 8. The volume estimates (series count for snapshots, real traffic).
 
 ## 10. Sliced build order
@@ -643,37 +651,38 @@ the owner's cyber-program tier (three rounds at most, fixtures proved by revert)
 |---|---|---|---|
 | S1 | Conventions page, migration lint, schema snapshot, rebuild pattern doc (item 5, no schema change yet) | Negative fixture per rule; lint runs on today's chain and lists the debt | Ordinary review |
 | S2 | New baseline for Worker and store (option A) or rebuild chain (option B); export contract adapter | Chain-versus-baseline `sqlite_master` diff; all existing Worker and `tests/funnel` suites; seeded rebuild checksums | Review plus a reviewer who reverts each lint rule |
-| S3 | Analytics Engine writer behind `EVENTS_SINK=d1\|both\|ae`; blob-order contract; sentinel tests | Section 3.7 writer tests | Adversarial review: no joint row, no hash or lead id in a point, closed values only |
-| S4 | Rollup from Analytics Engine (shadow, then `ROLLUP_SOURCE=ae`); reconciliation and `sampled` flag | Fake query client; parity fixtures; per-site seal tests | Adversarial review of the token handling and the replace-not-add idempotence |
-| S5 | Drop raw tables, retention simplification, `kit_daily`, lead purge loses its event delete; privacy text and threat model entries | Migration test on a seeded database; privacy-text coverage test | Adversarial review of the privacy delta |
+| S3 | Raw retention guard tests (window, 3x hold, 90 day maximum, lead cascade to kit events); reconciliation coverage flag | Section 3.7 retention and reconciliation tests | Adversarial review: no new field, no lead or hash in any rollup |
+| S4 | `kit_daily` table and the hourly step that fills it, with backfill; export contract entry | Section 3.7 `kit_daily` tests; migration test on a seeded database | Ordinary review plus a check that no `lead_id` or sub-day time reaches it |
+| S5 | Optional: `ra_counters` writer behind `AE_COUNTERS`, closed metric list, sentinel tests; privacy text and threat model entries only if enabled | Section 3.7 writer tests; privacy-text coverage test | Adversarial review of the closed list and the floor |
 | S6 | `PUB` namespace, renderer, `GET /e/stats/<site>`, kill switch; golden floor vectors | Section 4.7 | Adversarial review of the wall and the new public route |
 | S7 | Snapshot databases, baseline, ingest route, `D1IngestStore`, dual write | Section 5.7 | Adversarial review of the ingest validator and the access routing |
 | S8 | R2 imports: bucket binding, manifest, lifecycle, upload path | Fake R2; expiry fake clock | Ordinary plus the owner's per-platform terms sign-off |
 | S9 | Public snapshots JSON into `PUB`; drop the store's click pull tables | Wall sentinel test; store migration test | Review |
 
 S1 and S2 come first because every later table is written in the final shape once. S3 to S5 are
-one chain (flip, shadow, cut over) with the rollback points in 3.5. S6 can run in parallel with
+independent small slices after S2 (S5 is optional) with the rollback in 3.5. S6 can run in parallel with
 S3 to S5 after S2. S7 to S9 are independent of S3 to S6 after S2. Owner-only steps (account
-resources, tokens, plan, billing alert) sit at the start of S3, S6, S7 and S8 and are not done
+resources, tokens, plan, billing alert) sit at the start of S5 (if enabled), S6, S7 and S8 and are not done
 by any agent.
 
 ## 11. Owner-only questions (answered 2026-11-24)
 
 All ten questions below are answered. The answers are in the next section; the questions and
-recommendations stay for the record.
+recommendations stay for the record. Question 2 was later changed (section 12, item 10).
 
 1. **Reset the migration baseline now (option A) or add forward rebuilds (option B)?**
    Recommended: A. It breaks the "never edit a released migration" rule once, which is safe only
    if no release has shipped these files and the test database may be recreated. Confirm both.
 2. **How should raw events be kept given Analytics Engine's fixed three months and exact
    timestamps?**
-   Recommended: B, split marginal points, accept 90 days, update the privacy text.
+   Recommended at the time: B, split marginal points, accept 90 days, update the privacy text.
+   (Superseded 2026-11-24, section 12 item 10: raw events stay in D1.)
    A: one wide point per view (simplest, joint rows for 90 days, not recommended).
    C: keep only coarse fields in raw points (page, source, country, class) and aggregate city
    and fine dimensions only through counters (removes timestamp correlation; makes the geography
    rollup depend on item 1).
 3. **Billing.** Confirm the Workers Paid plan is the baseline for this design, and that you set
-   a billing alert before the shadow period. Recommended: yes, alert at a low monthly figure.
+   a billing alert before the first billable step. Recommended: yes, alert at a low monthly figure.
 4. **Which fields are public in `v1/stats/<site>.json`?**
    Recommended: likely-human totals for 7 and 30 days, top 5 countries and top 5 source labels,
    all floored, plus `as_of` and coverage. No page, link or city rows.
@@ -685,10 +694,11 @@ recommendations stay for the record.
 7. **R2.** Approve enabling R2 (check whether a payment method is required first), and the
    default retention for raw imports. Recommended: private bucket, lifecycle equal to each
    platform's retention window, 90 days where the terms are silent.
-8. **Analytics Engine read token.** You create a token with Account Analytics Read only, as a
+8. **Analytics Engine read token** (narrowed by section 12 item 10: optional counters only). You create a token with Account Analytics Read only, as a
    rotated a/b pair in the secret manager's dev environment, and set it as the Worker secret.
    Recommended: yes, nothing else on that token.
-9. **Seal window** for re-rolling a closed day from Analytics Engine. Recommended: 48 hours after
+9. **Seal window** for re-rolling a closed day from Analytics Engine (narrowed by section 12
+   item 10: the rollup now reads D1). Recommended: 48 hours after
    `ROLLUP_GRACE_HOURS`.
 10. **Leads database.** Separate issue (not in this design): move `leads` to its own database so
     no read credential for analytics reaches it. Recommended: file it.
@@ -698,10 +708,11 @@ recommendations stay for the record.
 These answer the ten questions in section 11, in the same order.
 
 1. Reset both migration baselines (Worker and store) now.
-2. Raw events: split marginal points in Analytics Engine, 90-day retention. The privacy text and
-   threat model are updated in the code PR to state 90 days and exact timestamps.
+2. ~~Raw events: split marginal points in Analytics Engine, 90-day retention. The privacy text
+   and threat model are updated in the code PR to state 90 days and exact timestamps.~~
+   **Superseded 2026-11-24, see item 10.**
 3. Workers Paid is the baseline, Free is best-effort, and a billing alert is set before the
-   shadow period. Billing is the owner's step and is shown first.
+   first billable step. Billing is the owner's step and is shown first.
 4. Public stats JSON in KV: likely-human totals for 7 and 30 days, top 5 countries, top 5
    sources, all floored, plus `as_of` and coverage. No page, link or city rows.
 5. Two D1 databases (public and owner_authorized). Collectors write through an ingest route
@@ -711,6 +722,16 @@ These answer the ten questions in section 11, in the same order.
 6. R2 private bucket with lifecycle expiry equal to each platform's window (90 days where terms
    are silent); D1 keeps a manifest row. Check read-only first whether R2 needs a payment method.
 7. The owner creates the Analytics Engine read token (Account Analytics Read only) as a rotated
-   a/b pair in dev when that slice is reached.
-8. Seal window: 48 hours after `ROLLUP_GRACE_HOURS`.
+   a/b pair in dev when that slice is reached. **Narrowed by item 10:** needed only if the
+   optional aggregate counters are enabled and read back.
+8. Seal window: 48 hours after `ROLLUP_GRACE_HOURS`. **Narrowed by item 10:** the rollup reads
+   D1, so the window applies only to when the optional counters are written.
 9. Leads move to their own D1 database (separate issue).
+10. **Change of 2026-11-24, after a GDPR read (supersedes item 2).** Raw events stay in D1 with
+    hour-rounded timestamps and a short purge window (as today: raw 7 days by default, held up
+    to 3x until rolled up, maximum 90). Analytics Engine is used only for counters that are safe
+    in aggregate: no per-visitor or per-lead timing, no lead id, no visitor hash. Reason:
+    Analytics Engine keeps exact timestamps for a fixed 90 days with no early delete, which
+    contradicts the 7-day promise on the privacy page, prevents erasure for three months, and
+    lets exact kit-unlock times be matched to a lead's created time. Kit events stay in D1 with
+    the lead and are deleted with it.
