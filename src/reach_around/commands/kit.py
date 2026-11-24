@@ -16,6 +16,7 @@ from reach_around.config.imported_history import (
     load_imported,
 )
 from reach_around.config.numbers import Numbers, load_numbers
+from reach_around.kit.measures_file import build_measures_file
 from reach_around.kit.pdf import (
     Isolation,
     build_kit_pdf,
@@ -105,7 +106,31 @@ def _run_public(args: argparse.Namespace) -> int:
     return 0
 
 
+def _run_measures(args: argparse.Namespace) -> int:
+    try:
+        config = load_site_config(args.config)
+        path = build_measures_file(
+            config,
+            site_dir=args.site_out,
+            gated_dir=args.gated_out,
+            out_dir=args.out_dir,
+            generated=_creation_date(args.date, args.gated_out),
+            overwrite=args.overwrite,
+            protect=[args.config.resolve().parent],
+            numbers=_numbers(args),
+            imported=_imported(args, config),
+        )
+    except (ConfigError, ValueError, OSError) as exc:
+        print("error: " + " ".join(str(exc).split()), file=sys.stderr)
+        return 1
+    print("private: do not publish or share this file", file=sys.stderr)
+    print(path)
+    return 0
+
+
 def _run(args: argparse.Namespace) -> int:
+    if args.kit_command == "measures":
+        return _run_measures(args)
     if args.public:
         return _run_public(args)
     try:
@@ -136,7 +161,7 @@ def _run(args: argparse.Namespace) -> int:
 
 
 def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
-    kit = subparsers.add_parser("kit", help="media kit tools (PDF)")
+    kit = subparsers.add_parser("kit", help="media kit tools (PDF, measures file)")
     actions = kit.add_subparsers(dest="kit_command", required=True)
     pdf = actions.add_parser(
         "pdf",
@@ -208,4 +233,48 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
         "(the browser sandbox is off in netns mode)",
     )
     pdf.add_argument("--overwrite", action="store_true", help="replace an existing PDF")
+    measures = actions.add_parser(
+        "measures",
+        help="write the owner-only measures file for the sponsor page",
+        description="Write kit-measures.json: the measures the gated kit shows, "
+        "each with its trust label and date, for the sponsor page and quote to "
+        "read. It is private: it goes to an owner-only directory outside the "
+        "site output, the gated directory, the config directory and any git "
+        "work tree, and is never published. Refused when the gated page was "
+        "built under another display policy. Prints the path on success.",
+    )
+    measures.add_argument("--config", type=Path, required=True, help="site config file")
+    measures.add_argument(
+        "--gated-out",
+        type=Path,
+        required=True,
+        help="the gated directory the build wrote",
+    )
+    measures.add_argument(
+        "--site-out",
+        type=Path,
+        required=True,
+        help="the public output directory of the same build",
+    )
+    measures.add_argument(
+        "--out-dir",
+        type=Path,
+        required=True,
+        help="private directory for the file (created owner-only if missing)",
+    )
+    measures.add_argument(
+        "--numbers",
+        type=Path,
+        help="the numbers file the build used (default: numbers.json beside "
+        "the config)",
+    )
+    measures.add_argument(
+        "--date",
+        type=_iso_date,
+        help="the 'generated' day, YYYY-MM-DD (default: SOURCE_DATE_EPOCH, else "
+        "the day the gated page was built)",
+    )
+    measures.add_argument(
+        "--overwrite", action="store_true", help="replace an existing file"
+    )
     kit.set_defaults(func=_run)

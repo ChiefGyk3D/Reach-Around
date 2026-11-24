@@ -36,11 +36,15 @@ class OutputError(ValueError):
     """The PDF may not be written there."""
 
 
-def check_name(name: str) -> str:
-    if not NAME.fullmatch(name) or ".." in name:
+JSON_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,99}\.json")
+
+
+def check_name(name: str, pattern: re.Pattern[str] = NAME) -> str:
+    if not pattern.fullmatch(name) or ".." in name:
+        ending = ".json" if pattern is JSON_NAME else ".pdf"
         raise OutputError(
             "the output name must be a plain file name made of letters, digits, "
-            "dot, dash and underscore, ending in .pdf"
+            f"dot, dash and underscore, ending in {ending}"
         )
     return name
 
@@ -103,9 +107,17 @@ def confine_out_dir(out_dir: Path, forbidden: Iterable[Path]) -> Path:
     return target
 
 
-def write_private(out_dir: Path, name: str, data: bytes, *, overwrite: bool) -> Path:
-    """Write ``data`` to ``out_dir/name`` as described in the module doc."""
-    check_name(name)
+def write_private(
+    out_dir: Path,
+    name: str,
+    data: bytes,
+    *,
+    overwrite: bool,
+    pattern: re.Pattern[str] = NAME,
+) -> Path:
+    """Write ``data`` to ``out_dir/name`` as described in the module doc. The name
+    must match ``pattern`` (a ``.pdf`` name unless the caller says otherwise)."""
+    check_name(name, pattern)
     directory = Path(os.path.abspath(out_dir))
     _no_links(directory)
     try:
@@ -149,7 +161,9 @@ def write_private(out_dir: Path, name: str, data: bytes, *, overwrite: bool) -> 
             if made:
                 with contextlib.suppress(OSError):
                     os.unlink(temp, dir_fd=dir_fd)
-            raise OutputError(f"the PDF could not be written ({exc.strerror})") from exc
+            raise OutputError(
+                f"the file could not be written ({exc.strerror})"
+            ) from exc
     finally:
         os.close(dir_fd)
     return directory / name

@@ -99,6 +99,7 @@ because the number would be shown nowhere.
 | `kit/retry/index.html` | `--out` (published) | everyone; only when the kit has gated content |
 | `kit.html` | `--gated-out` (never published) | a visitor who passed the gate, served by the Worker |
 | `kit.pdf` | `kit pdf --out-dir` (private, never published) | you, the owner (see [The private PDF](#the-private-pdf)) |
+| `kit-measures.json` | `kit measures --out-dir` (private, never published, never in `--out` or `--gated-out`) | you, and the sponsor page work (see [The measures file](#the-measures-file)) |
 | `kit-public-YYYY-MM-DD.pdf` | `kit pdf --public --out-dir` (the public half; you decide where it goes) | anyone you give it to (see [The public PDF](#the-public-pdf)) |
 
 ```sh
@@ -956,6 +957,73 @@ a local image beyond dropping its metadata; a browser bug (the sealed page, the
 policy and the optional namespace are the defenses); and what you do with the
 file afterwards. Exit code 0 on success, 1 for any refusal (one line on standard
 error), 2 for a usage error.
+
+## The measures file
+
+`reach-around kit measures` writes `kit-measures.json`: the measures the gated
+kit shows, each with its trust label and date. The sponsor page and the quote
+read this file, and nothing else, for a measure value, so a quoted number is the
+number the kit shows, with the same label and date. The kit computes no price.
+
+```sh
+reach-around build --config site.yaml --out site-out --gated-out gated-out
+reach-around kit measures --config site.yaml --site-out site-out \
+  --gated-out gated-out --out-dir ~/private/kit-measures
+```
+
+It prints the path and nothing else on standard output, and a reminder that the
+file is private on standard error. The options are `--config`, `--site-out`,
+`--gated-out`, `--out-dir` (all required), `--numbers` (as for the PDF),
+`--date` (the `generated` day; default `SOURCE_DATE_EPOCH`, else the day the
+gated page was built) and `--overwrite`. It needs no browser.
+
+Where it may go, and what it holds:
+
+- **Owner-only, never published.** The directory follows the private PDF's rules:
+  it may not be, hold or sit inside the public output, the gated directory, the
+  config directory or a git work tree, may not go through a link, and is created
+  owner-only (the file is mode 0600). The file name is in no page, sitemap or
+  published list; a test fails if it is.
+- **Measures only.** It holds the public and gated measures and nothing else of
+  the kit: no partner, rate, case study, demographic, inquiry detail or site
+  key. A measure of a field marked private is never in it, and the text is
+  searched for every private figure and every not-for-PDF value before anything
+  is written; a hit names the field, never the value, and writes nothing.
+- **Same policy as the pages.** The gated page's policy record must match the
+  current display policy, as for the PDF; a page built under an older policy is
+  refused until you rebuild. A kit with no measures writes no file.
+- **Reproducible.** The same inputs and `--date` give the same bytes.
+
+### Schema
+
+The file is JSON. `schema_version` is 1; a change that renames, removes or
+retypes a key raises it, and a reader refuses a version it does not know.
+`load_measures_file` in `reach_around.kit.measures_file` is the one reader: it
+refuses a link, a file over 4 MiB, a duplicate or unknown key, another version
+and a `private` row.
+
+| Key | Meaning |
+| --- | --- |
+| `schema_version` | 1 |
+| `kind` | `reach-around-kit-measures` |
+| `notice` | the private reminder, printed in the file |
+| `generated` | the day the file was made, `YYYY-MM-DD` |
+| `policy` | the display-policy fingerprint the file was made under |
+| `measures` | a list, in page order, of the rows below |
+
+Each row of `measures` has these keys, all always present:
+
+| Key | Meaning |
+| --- | --- |
+| `platform`, `key`, `label` | the platform slug, the registry key and the label the kit prints |
+| `unit` | the registry unit (`follows`, `percent`, `seconds`, and so on) |
+| `value` | a whole number, or `null` for not available (never zero for missing); a `percent` is an integer in tenths |
+| `as_of` | the day the figure is for, `YYYY-MM-DD`, or `null` |
+| `period` | `[start, end]` days, or `null` |
+| `visibility` | `public` or `gated` (never `private`) |
+| `trust` | `{label, method}` (the label is `api`, `hand-kept` or `estimate`), or `null` |
+| `in_summary` | whether the figure counts toward the audience summary |
+| `formula`, `note`, `provenance`, `source_note` | the text the kit prints beside the figure, empty when none |
 
 ## The public PDF
 
