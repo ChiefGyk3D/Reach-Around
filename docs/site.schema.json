@@ -1608,6 +1608,14 @@
           "title": "Recent Posts",
           "type": "array"
         },
+        "sections": {
+          "items": {
+            "$ref": "#/$defs/KitSection"
+          },
+          "maxItems": 20,
+          "title": "Sections",
+          "type": "array"
+        },
         "services": {
           "items": {
             "$ref": "#/$defs/ServicePackage"
@@ -1663,6 +1671,70 @@
         "title"
       ],
       "title": "KitConfig",
+      "type": "object"
+    },
+    "KitSection": {
+      "additionalProperties": false,
+      "description": "One platform card (kit v2 slice 3, #628).\n\n``show`` is ``default`` (the default set of the platform's group, see\n``reach_around.config.measures.DEFAULT_SETS``) or a list of registry keys, in\nprint order. A card holds no numbers: they come from the measures. A\nconfigured platform with no number to show prints \"No numbers yet\", or\nnothing when ``hide_if_empty`` is true.",
+      "properties": {
+        "account": {
+          "anyOf": [
+            {
+              "maxLength": 80,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Account"
+        },
+        "headline": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Headline"
+        },
+        "hide_if_empty": {
+          "default": false,
+          "title": "Hide If Empty",
+          "type": "boolean"
+        },
+        "platform": {
+          "title": "Platform",
+          "type": "string"
+        },
+        "show": {
+          "anyOf": [
+            {
+              "const": "default",
+              "type": "string"
+            },
+            {
+              "items": {
+                "type": "string"
+              },
+              "maxItems": 12,
+              "minItems": 1,
+              "type": "array"
+            }
+          ],
+          "default": "default",
+          "title": "Show"
+        }
+      },
+      "required": [
+        "platform"
+      ],
+      "title": "KitSection",
       "type": "object"
     },
     "Link": {

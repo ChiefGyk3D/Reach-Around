@@ -52,14 +52,13 @@ from reach_around.config.cutover import cutover_label, live_since, utc_today
 from reach_around.config.imported_history import ImportedHistory, expected_text
 from reach_around.config.kit import (
     KitConfig,
-    counts_in_summary,
     enforce_display_policy,
     pdf_excluded_values,
-    resolve_metrics,
-    unified_total,
+    summary_total,
 )
+from reach_around.config.measures import Measure, compile_measures, visible
 from reach_around.config.models import SiteConfig
-from reach_around.config.numbers import Numbers
+from reach_around.config.numbers import Numbers, source_platforms
 from reach_around.config.trust import (
     LEGEND_HEADING,
     LEGEND_SENTENCES,
@@ -87,6 +86,7 @@ from reach_around.site.kit import (
     canonical,
     demographic_withheld,
     platform_counts,
+    section_cards,
     text_fields,
 )
 
@@ -380,6 +380,16 @@ def scrub_pdf(data: bytes, *, title: str, created: date) -> bytes:
 # --- the checks on the text -------------------------------------------------------
 
 
+def _measures(
+    kit: KitConfig, numbers: Numbers | None, config: SiteConfig | None, public: bool
+) -> list[Measure]:
+    """The measures the page for this audience prints. With a config each carries
+    its trust label; without one the page is expected to print none."""
+    api = source_platforms(config) if config is not None else None
+    allowed = frozenset({"public"} if public else {"public", "gated"})
+    return visible(compile_measures(kit, numbers, api), allowed)
+
+
 def _expected_text(
     kit: KitConfig,
     numbers: Numbers | None,
@@ -402,7 +412,7 @@ def _expected_text(
         found.append(("kit.contact", kit.contact))
     for index, tag in enumerate(kit.tags):
         found.append((f"kit.tags[{index}]", tag))
-    resolved = resolve_metrics(kit, numbers)
+    measures = _measures(kit, numbers, config, public)
     # With the config the provenance of every number is known, and so is the
     # label the page must print beside it (#626). Without it none is expected.
     labeled = False
@@ -423,8 +433,8 @@ def _expected_text(
         if exact is not None:
             exact.append((where, text))
 
-    shown = [m for m in resolved if m.value is not None]
-    for m, row in zip(shown, _metric_rows(resolved, config), strict=True):
+    shown = [m for m in measures if m.block == "headline" and m.value is not None]
+    for m, row in zip(shown, _metric_rows(measures, config), strict=True):
         text = _trust_text(row["trust"])
         labeled = labeled or bool(text)
         where = f"the metric row {row['platform'] or row['label']!r}"
@@ -436,10 +446,10 @@ def _expected_text(
                 exact.append((where, row["value"] + text))
             if is_old(m.as_of, m.platform):
                 put(where, row["as_of"] + "UTC" + OUT_OF_DATE)
-    for number, row in enumerate(
-        () if public else _engagement_rows(kit.engagement, config, None)
+    derived = [m for m in measures if m.block == "derived"]
+    for entry, row in zip(
+        derived, _engagement_rows(measures, config, None), strict=True
     ):
-        entry = kit.engagement[number // 2]
         where = f"the engagement row {row['platform']!r} {row['measure']!r}"
         found.append((where, row["platform"] + row["measure"]))
         if row["provenance"]:
@@ -453,9 +463,9 @@ def _expected_text(
             old = OUT_OF_DATE if is_old(entry.as_of, entry.platform) else ""
             put(where, row["as_of"] + "UTC" + text + old)
     total = _total(
-        unified_total(resolved), resolved, None, config, None, kit.audience_summary
+        summary_total(measures), measures, None, config, None, kit.audience_summary
     )
-    community = _community(resolved)
+    community = _community(measures)
     if community is not None:
         found.append(
             ("the community members line", community["text"] + " " + community["note"])
@@ -489,9 +499,7 @@ def _expected_text(
             labeled = True
             old = (
                 OUT_OF_DATE
-                if any(
-                    is_old(m.as_of, m.platform) for m in shown if counts_in_summary(m)
-                )
+                if any(is_old(m.as_of, m.platform) for m in shown if m.in_summary)
                 else ""
             )
             put("the metric total label", text + old)
@@ -499,7 +507,7 @@ def _expected_text(
     # beside them, and each stat. Anchored on the sync line, which no headline
     # number row prints, so an unrelated row cannot satisfy them. A count under
     # the privacy floor is expected as "Under 5".
-    for card in _analytics_rows(kit.analytics, None):
+    for card in _analytics_rows(measures, None):
         where = f"the analytics row {card['platform_name']!r}"
         change = (
             f"{card['delta']} last 30 days"
@@ -529,6 +537,19 @@ def _expected_text(
                 else ""
             )
             put(where, tile + _trust_text(card["trust"]) + old)
+    # The platform cards (#628): each card's name, its "No numbers yet" line or
+    # its numbers with their labels, from the same measures the page was built from.
+    for card in section_cards(kit.sections, measures, config, None, live_day):
+        where = f"the platform card {card['name']!r}"
+        found.append((where, card["name"] + (card["account"] or "")))
+        if card["empty"]:
+            found.append((where, card["no_numbers"]))
+            continue
+        labeled = labeled or config is not None
+        lead = card["headline"]
+        found.append((where, lead["value"] + lead["label"]))
+        for row in card["rows"]:
+            found.append((where, row["label"] + row["value"]))
     # Only the public page prints recent posts; the gated page has no such section.
     if config is not None and public:
         for platform, trust in _post_trust(kit.recent_posts).items():
@@ -558,9 +579,7 @@ def _expected_text(
             withheld = (
                 demographic_withheld(
                     item,
-                    audience_bases(
-                        item.platform, resolved, kit.analytics, platform_counts
-                    ),
+                    audience_bases(item.platform, measures, platform_counts),
                 )
                 if name == "demographics"
                 else frozenset()
@@ -685,12 +704,12 @@ def _contains_exact(text: str, value: str) -> bool:
 def _public_pdf_values(kit: KitConfig, numbers: Numbers | None) -> set[str]:
     """Public values, including the resolved figures rendered in this PDF."""
     allowed = _public_values(kit)
-    resolved = resolve_metrics(kit, numbers)
-    for row in _metric_rows(resolved):
+    measures = _measures(kit, numbers, None, True)
+    for row in _metric_rows(measures):
         allowed.add(canonical(row["value"]))
         if row["as_of"]:
             allowed.add(canonical(row["as_of"]))
-    total = _total(unified_total(resolved), resolved)
+    total = _total(summary_total(measures), measures)
     if total is not None:
         allowed.add(canonical(total["value"]))
         allowed.add(canonical(total["sum"]))

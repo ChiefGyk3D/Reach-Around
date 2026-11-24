@@ -37,7 +37,7 @@ import re
 import secrets
 import unicodedata
 import urllib.parse
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date
 from html.parser import HTMLParser
@@ -52,6 +52,7 @@ from reach_around.config.engagement import (
     ACROSS_PLATFORMS_NOTE,
     FORMULAS,
     NOT_AVAILABLE,
+    percent_text,
     rows_for,
 )
 from reach_around.config.era import SPANS, classify_era, classify_window, era_text
@@ -66,14 +67,15 @@ from reach_around.config.kit import (
     COMMUNITY_PLATFORMS,
     AudienceSummary,
     KitConfig,
-    ResolvedMetric,
+    KitSection,
     UnifiedTotal,
-    counts_in_summary,
     enforce_display_policy,
     gated_projection,
     kit_warnings,
     public_projection,
+    summary_total,
 )
+from reach_around.config.measures import Measure, default_keys
 from reach_around.config.models import SiteConfig
 from reach_around.config.numbers import (
     STALE_DAYS,
@@ -82,16 +84,13 @@ from reach_around.config.numbers import (
     stale_limit,
 )
 from reach_around.config.trust import (
+    LABELS,
     LEGEND_HEADING,
     LEGEND_SENTENCES,
     LEGEND_SENTENCES_GATED,
-    Trust,
-    analytics_trust,
     case_trust,
     demographic_trust,
-    engagement_trust,
     imported_trust,
-    metric_trust,
     posts_trust,
     weakest,
 )
@@ -759,15 +758,18 @@ def stage_gated(gated_out: Path, page: str | None) -> StagedGated:
 # --- content -----------------------------------------------------------------
 
 
+def _of(measures: Sequence[Measure], block: str) -> list[Measure]:
+    return [m for m in measures if m.block == block]
+
+
 def _metric_rows(
-    metrics: list[ResolvedMetric],
+    measures: Sequence[Measure],
     config: Any = None,
     today: date | None = None,
     live_day: date | None = None,
 ) -> list[dict[str, Any]]:
-    # Without a config the provenance is unknown, so no label is attached (the
-    # PDF text check then expects none).
-    api = source_platforms(config) if config is not None else frozenset()
+    # A measure compiled without a config has no trust label, so none is printed
+    # (the PDF text check then expects none).
     return [
         {
             "platform": "" if m.platform == "other" else platform_name(m.platform),
@@ -776,22 +778,11 @@ def _metric_rows(
             "as_of": m.as_of.isoformat() if m.as_of is not None else "",
             "era": era_text(classify_era(m.as_of, live_day)),
             "stale": _is_stale(m.as_of, today, config, m.platform),
-            "trust": (None if config is None else _metric_trust(m, api).view()),
+            "trust": None if m.trust is None else m.trust.view(),
         }
-        for m in metrics
+        for m in _of(measures, "headline")
         if m.value is not None
     ]
-
-
-def _metric_trust(metric: ResolvedMetric, api: frozenset[str]) -> Trust:
-    return metric_trust(
-        metric.platform,
-        metric.source,
-        metric.estimate,
-        api,
-        metric.origin,
-        metric.as_of,
-    )
 
 
 def _is_stale(
@@ -836,19 +827,21 @@ ESTIMATE_METHOD = (
 )
 
 
-def _counted(metrics: list[ResolvedMetric]) -> list[ResolvedMetric]:
+def _counted(measures: Sequence[Measure]) -> list[Measure]:
     """The numbers the range is made of: valued, counted, not community."""
-    return [m for m in metrics if counts_in_summary(m) and m.value is not None]
+    return [
+        m for m in _of(measures, "headline") if m.in_summary and m.value is not None
+    ]
 
 
-def range_text(metrics: list[ResolvedMetric], total: UnifiedTotal) -> str | None:
+def range_text(measures: Sequence[Measure], total: UnifiedTotal) -> str | None:
     """The first-screen range line, or None when fewer than two numbers above
     zero are added up (one number has no range, and a zero would repeat the
     total). A set cannot be smaller than its largest member, so the largest
     counted number is the lower bound and the total the upper."""
     if total.total is None or total.counted < 2:
         return None
-    counted = [m.value for m in _counted(metrics) if m.value]
+    counted = [m.value for m in _counted(measures) if m.value]
     if len(counted) < 2:
         return None
     return RANGE_SENTENCE.format(
@@ -887,11 +880,11 @@ def _estimate_text(summary: AudienceSummary | None, total: int, low: int) -> str
     )
 
 
-def _community(metrics: list[ResolvedMetric]) -> dict[str, str] | None:
+def _community(measures: Sequence[Measure]) -> dict[str, str] | None:
     """Community members (Discord, Matrix) on their own line."""
     rows = [
         f"{platform_name(m.platform)} {shown_count(m.value)}"
-        for m in metrics
+        for m in _of(measures, "headline")
         if m.platform in COMMUNITY_PLATFORMS and m.value is not None
     ]
     if not rows:
@@ -904,7 +897,7 @@ def _community(metrics: list[ResolvedMetric]) -> dict[str, str] | None:
 
 def _total(
     total: UnifiedTotal,
-    metrics: list[ResolvedMetric],
+    measures: Sequence[Measure],
     live_day: date | None = None,
     config: Any = None,
     today: date | None = None,
@@ -914,15 +907,14 @@ def _total(
         return None
     # A printed total minus the printed members would isolate a member under
     # the floor, so one such member hides the total.
-    counted = _counted(metrics)
+    counted = _counted(measures)
     if any(0 < m.value < FLOOR for m in counted if m.value is not None):
         return None
     dates = [m.as_of for m in counted if m.as_of]
     trust: dict[str, str] | None = None
     stale = False
     if config is not None:
-        api = source_platforms(config)
-        weak = weakest(_metric_trust(m, api) for m in counted)
+        weak = weakest(m.trust for m in counted if m.trust is not None)
         trust = None if weak is None else weak.view()
         stale = any(_is_stale(m.as_of, today, config, m.platform) for m in counted)
     values = [m.value for m in counted if m.value]
@@ -948,7 +940,7 @@ def _total(
             f"{shown_count(low)} to {shown_sum}" if low is not None else shown_sum
         ),
         "value": shown_sum,
-        "range_text": range_text(metrics, total),
+        "range_text": range_text(measures, total),
         "sum": shown_sum,
         "platforms": platforms,
         "bounds_text": (
@@ -1014,8 +1006,7 @@ def platform_counts(
 
 def audience_bases(
     platform: str,
-    metrics: Any,
-    analytics: Any,
+    measures: Sequence[Measure],
     link_page: Mapping[str, list[int]] | None = None,
 ) -> list[int]:
     """Every count of one platform that is printed at 5 or more, anywhere a
@@ -1026,13 +1017,16 @@ def audience_bases(
     rule in, and a cell the reader could not call small is never hidden for it."""
     found = [
         m.value
-        for m in metrics
+        for m in _of(measures, "headline")
         if m.platform == platform and m.value is not None and m.value >= FLOOR
     ]
     found += [
-        row.followers
-        for row in analytics
-        if row.platform == platform and row.followers >= FLOOR
+        m.value
+        for m in _of(measures, "tile")
+        if m.key == "followers"
+        and m.platform == platform
+        and m.value is not None
+        and m.value >= FLOOR
     ]
     found += (link_page or {}).get(platform, [])
     return found
@@ -1107,34 +1101,52 @@ def _case_rows(cases: list[Any]) -> list[dict[str, Any]]:
     ]
 
 
+def _engagement_value(m: Measure) -> str:
+    if m.value is None:
+        return NOT_AVAILABLE
+    return percent_text(m.value) if m.unit == "percent" else shown_count(m.value)
+
+
 def _engagement_rows(
-    entries: list[Any], config: Any, today: date | None
+    measures: Sequence[Measure], config: Any, today: date | None
 ) -> list[dict[str, Any]]:
     """The printed engagement rows, each figure with its label and stale mark.
     A row that prints ``not available`` has no number, so no label."""
     out: list[dict[str, Any]] = []
-    for entry in entries:
-        trust = engagement_trust().view()
-        stale = _is_stale(entry.as_of, today, config, entry.platform)
-        for row in rows_for([entry]):
-            has_number = row["value"] != NOT_AVAILABLE
-            out.append(
-                {
-                    **row,
-                    "trust": trust if has_number else None,
-                    "stale": has_number and stale,
-                }
-            )
+    for m in _of(measures, "derived"):
+        has_number = m.value is not None
+        start, end = m.period if m.period is not None else (None, None)
+        out.append(
+            {
+                "platform": platform_name(m.platform),
+                "start": start.isoformat() if start is not None else "",
+                "end": end.isoformat() if end is not None else "",
+                "period": (
+                    f"{start.isoformat()} to {end.isoformat()}"
+                    if start is not None and end is not None
+                    else ""
+                ),
+                "as_of": m.as_of.isoformat() if m.as_of is not None else "",
+                "provenance": m.provenance,
+                "measure": m.label,
+                "formula": m.formula,
+                "value": _engagement_value(m),
+                "note": m.note,
+                "trust": m.trust.view() if has_number and m.trust else None,
+                "stale": has_number and _is_stale(m.as_of, today, config, m.platform),
+            }
+        )
     return out
 
 
 def _legend(content: dict[str, Any], gated: bool = False) -> dict[str, Any] | None:
     """The legend, printed once on every page that prints a labeled number."""
     labeled = (
-        any(row["trust"] for row in content["metrics"])
-        or content["analytics"]
+        any(row["trust"] for row in content["number_rows"])
+        or content["analytics_cards"]
         or (content["recent_posts"] and not gated)
-        or any(row["trust"] for row in content["engagement"])
+        or any(row["trust"] for row in content["engagement_rows"])
+        or any(not card["empty"] for card in content["sections"])
         or content["imported"]
         or content.get("case_studies")
         or content.get("demographics")
@@ -1151,7 +1163,8 @@ def _content(
     config: Any = None,
     today: date | None = None,
 ) -> dict[str, Any]:
-    metrics: list[ResolvedMetric] = projection["metrics"]
+    """What a page prints. The numbers come from ``projection["measures"]`` only."""
+    measures: list[Measure] = projection["measures"]
     posts = _post_rows(projection.get("recent_posts", []))
     content = {
         "live_since": (
@@ -1169,22 +1182,25 @@ def _content(
         "contact": projection["contact"],
         "tags": projection["tags"],
         "public_pdf": projection["public_pdf"],
-        "metrics": _metric_rows(metrics, config, today, live_day),
-        "analytics": _analytics_rows(projection["analytics"], today, config),
+        "number_rows": _metric_rows(measures, config, today, live_day),
+        "analytics_cards": _analytics_rows(measures, today, config),
         "recent_posts": posts,
         "recent_trust": _post_trust(projection.get("recent_posts", [])),
-        "engagement": _engagement_rows(projection.get("engagement", []), config, today),
+        "engagement_rows": _engagement_rows(measures, config, today),
         "engagement_note": ACROSS_PLATFORMS_NOTE,
         "engagement_formulas": FORMULAS,
         "total": _total(
-            projection["unified_total"],
-            metrics,
+            summary_total(measures),
+            measures,
             live_day,
             config,
             today,
             projection.get("audience_summary"),
         ),
-        "community": _community(metrics),
+        "community": _community(measures),
+        "sections": section_cards(
+            projection.get("sections", []), measures, config, today, live_day
+        ),
         "imported": _imported_block(projection.get("imported_history"), live_day),
     }
     content["legend"] = _legend(content)
@@ -1201,7 +1217,7 @@ def _compact_number(value: int) -> str:
     return str(value)
 
 
-def _change_text(followers: int, percent: float) -> str:
+def _change_text(followers: int, tenths: int) -> str:
     """The 30-day change, or "" when it would pin a count under the floor.
 
     The reader sees the text, one decimal, and can work back to an earlier
@@ -1213,7 +1229,7 @@ def _change_text(followers: int, percent: float) -> str:
     # nothing.
     if followers < FLOOR:
         return ""
-    text = f"{percent:+.1f}%"
+    text = f"{'-' if tenths < 0 else '+'}{abs(tenths) // 10}.{abs(tenths) % 10}%"
     shown = float(text[:-1])
     low, high = shown - 0.05 - 1e-6, shown + 0.05 + 1e-6
     if 1 + low / 100 > 0:
@@ -1225,29 +1241,180 @@ def _change_text(followers: int, percent: float) -> str:
 
 
 def _analytics_rows(
-    rows: list[Any], today: date | None, config: Any = None
+    measures: Sequence[Measure], today: date | None, config: Any = None
 ) -> list[dict[str, Any]]:
-    return [
-        {
-            "trust": analytics_trust(row.synced_with).view(),
-            "stale": _is_stale(row.as_of, today, config, row.platform),
-            "platform": row.platform,
-            "platform_name": platform_name(row.platform),
-            "synced_with": row.synced_with,
-            "as_of": row.as_of.isoformat(),
-            "followers": _compact_number(row.followers),
-            "delta": _change_text(row.followers, row.followers_30_day_percent),
-            "stats": [
-                {"label": stat.label, "value": _compact_number(stat.value)}
-                for stat in row.stats
-            ],
-            "updated": today.isoformat() if today is not None else "",
+    """One card per platform with analytics: its followers, the typed 30-day
+    change and its tiles, from the analytics measures."""
+    by_platform: dict[str, list[Measure]] = {}
+    for m in _of(measures, "tile"):
+        by_platform.setdefault(m.platform, []).append(m)
+    out: list[dict[str, Any]] = []
+    for platform, group in by_platform.items():
+        followers = next(m for m in group if m.key == "followers")
+        change = next(m for m in group if m.key == "followers_change_30d")
+        if (
+            followers.value is None
+            or change.value is None
+            or followers.as_of is None
+            or followers.trust is None
+        ):
+            continue  # not reachable: the shim always sets them
+        out.append(
+            {
+                "trust": followers.trust.view(),
+                "stale": _is_stale(followers.as_of, today, config, platform),
+                "platform": platform,
+                "platform_name": platform_name(platform),
+                "synced_with": followers.source_note,
+                "as_of": followers.as_of.isoformat(),
+                "followers": _compact_number(followers.value),
+                "delta": _change_text(followers.value, change.value),
+                "stats": [
+                    {"label": m.label, "value": _compact_number(m.value)}
+                    for m in group
+                    if m.key == "analytics_stat" and m.value is not None
+                ],
+                "updated": today.isoformat() if today is not None else "",
+            }
+        )
+    return out
+
+
+# --- platform cards (spec 7.1, 7.4) ------------------------------------------------
+
+NO_NUMBERS = "No numbers yet"
+# How strong a source is when two measures of one key and one day tie.
+_TRUST_RANK = {label: rank for rank, label in enumerate(LABELS)}
+
+
+def _headline_first(rows: list[dict[str, Any]], section: KitSection) -> int:
+    """The index of the row a card leads with: the owner's ``headline`` key, else
+    the platform's own count (followers or members), else the first row."""
+    wanted = [section.headline] if section.headline else ["followers", "members"]
+    for key in wanted:
+        for index, row in enumerate(rows):
+            if row["key"] == key:
+                return index
+    return 0
+
+
+def _one_per_label(found: list[Measure]) -> list[Measure]:
+    """When one key and label has several measures (the same follower count typed
+    in two places), the newest date wins, then the stronger source, then the
+    first listed. Order of first appearance is kept."""
+    best: dict[tuple[str, str], Measure] = {}
+    for m in found:
+        key = (m.key, m.label)
+        held = best.get(key)
+        if held is None or _prefer(m, held):
+            best[key] = m
+    return list(best.values())
+
+
+def _prefer(new: Measure, held: Measure) -> bool:
+    new_day = new.as_of or date.min
+    held_day = held.as_of or date.min
+    if new_day != held_day:
+        return new_day > held_day
+    rank = {"api": 0, "hand-kept": 1, "estimate": 2}
+    new_rank = rank.get(new.trust.label, 3) if new.trust else 3
+    held_rank = rank.get(held.trust.label, 3) if held.trust else 3
+    return new_rank < held_rank
+
+
+def _card_value(m: Measure, followers: Mapping[str, int]) -> str:
+    """One measure's printed value; an empty string means "leave the row out"
+    (a 30-day change that would pin a count under the floor)."""
+    if m.value is None:
+        return ""
+    if m.key == "followers_change_30d":
+        return _change_text(followers.get(m.platform, 0), m.value)
+    if m.unit == "percent":
+        return percent_text(m.value)
+    if m.block == "tile":
+        return _compact_number(m.value)
+    return shown_count(m.value)
+
+
+def section_cards(
+    sections: Sequence[KitSection],
+    measures: Sequence[Measure],
+    config: Any = None,
+    today: date | None = None,
+    live_day: date | None = None,
+) -> list[dict[str, Any]]:
+    """The platform cards, and the one place the degrade rules (spec 7.4) apply.
+
+    * A card shows the registry keys of its section, in the section's order, and
+      only the measures this audience may see (the caller filtered them).
+    * A key with no value is left out of the card; nothing is zeroed or guessed.
+    * A configured platform with no value to show prints "No numbers yet", the same
+      way for every platform; with ``hide_if_empty`` it prints nothing.
+    * Every printed number carries its own label, date and source line.
+    """
+    followers = {
+        m.platform: m.value
+        for m in _of(measures, "tile")
+        if m.key == "followers" and m.value is not None
+    }
+    cards: list[dict[str, Any]] = []
+    for section in sections:
+        keys = (
+            default_keys(section.platform)
+            if section.show == "default"
+            else tuple(section.show)
+        )
+        rows: list[dict[str, Any]] = []
+        for key in keys:
+            found = [
+                m
+                for m in measures
+                if m.platform == section.platform
+                and m.key == key
+                and m.value is not None
+            ]
+            for m in _one_per_label(found):
+                value = _card_value(m, followers)
+                if not value:
+                    continue
+                rows.append(
+                    {
+                        "key": m.key,
+                        "label": m.label,
+                        "value": value,
+                        "as_of": m.as_of.isoformat() if m.as_of is not None else "",
+                        "period": (
+                            f"{m.period[0].isoformat()} to {m.period[1].isoformat()}"
+                            if m.period is not None
+                            else ""
+                        ),
+                        "era": era_text(classify_era(m.as_of, live_day)),
+                        "stale": _is_stale(m.as_of, today, config, m.platform),
+                        "trust": None if m.trust is None else m.trust.view(),
+                        "formula": m.formula,
+                        "note": m.note,
+                    }
+                )
+        if not rows and section.hide_if_empty:
+            continue
+        card: dict[str, Any] = {
+            "platform": section.platform,
+            "name": platform_name(section.platform),
+            "account": section.account,
+            "empty": not rows,
+            "no_numbers": NO_NUMBERS,
+            "headline": None,
+            "rows": rows,
         }
-        for row in rows
-    ]
+        if rows:
+            lead = _headline_first(rows, section)
+            card["headline"] = rows[lead]
+            card["rows"] = [row for i, row in enumerate(rows) if i != lead]
+        cards.append(card)
+    return cards
 
 
-def _categories(kit: KitConfig) -> str:
+def _categories(kit: KitConfig, measures: Sequence[Measure]) -> str:
     names = [
         label
         for label, items in (
@@ -1255,7 +1422,7 @@ def _categories(kit: KitConfig) -> str:
             ("case studies", kit.case_studies),
             ("packages", kit.services),
             ("rates", kit.rates),
-            ("audience figures", kit.engagement),
+            ("audience figures", _of(measures, "derived")),
             (
                 "link-page history from the previous provider",
                 [kit.imported_history]
@@ -1314,16 +1481,19 @@ def render_kit(
     warnings = plan_warnings(config, numbers, today)
     # A UTC day, not ``today`` (the scheduling day in the config's time zone).
     live_day = live_since(config, utc_today())
+    # The platforms with a collector set each measure's trust label.
+    api = source_platforms(config)
     public = _content(
-        public_projection(kit, numbers, imported), live_day, config, today
+        public_projection(kit, numbers, imported, api), live_day, config, today
     )
+    data = gated_projection(kit, numbers, imported, api)
     form: dict[str, Any] | None = None
     if has_gate_form(kit):
         form = {
             "action": GATE_ACTION,
             "site_key": kit.turnstile_site_key,
             "script": TURNSTILE_SCRIPT,
-            "categories": _categories(kit),
+            "categories": _categories(kit, data["measures"]),
         }
     pages: dict[Path, str] = {}
     ctx = base("../", "Media kit", False)
@@ -1333,7 +1503,7 @@ def render_kit(
             "root": "../",
             "kit": public,
             "form": form,
-            "zone_choices": ZONES if public["metrics"] else None,
+            "zone_choices": ZONES if public["number_rows"] else None,
         }
     )
     if form is not None:
@@ -1342,10 +1512,7 @@ def render_kit(
             **{**ctx, "root": "../../", "kit": public, "form": form, "noindex": True}
         )
     gated: str | None = None
-    if has_gate_form(kit) or kit.engagement:
-        data = gated_projection(kit, numbers, imported)
-        if kit.engagement and not data["engagement"]:
-            data["engagement"] = kit.engagement
+    if has_gate_form(kit) or _of(data["measures"], "derived"):
         content = _content(data, live_day, config, today)
         link_counts = platform_counts(config, numbers, today)
         content.update(
@@ -1365,12 +1532,7 @@ def render_kit(
                     "withheld": sorted(
                         demographic_withheld(
                             d,
-                            audience_bases(
-                                d.platform,
-                                data["metrics"],
-                                data["analytics"],
-                                link_counts,
-                            ),
+                            audience_bases(d.platform, data["measures"], link_counts),
                         )
                     ),
                 }
