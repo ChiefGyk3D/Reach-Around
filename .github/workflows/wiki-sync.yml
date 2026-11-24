@@ -11,10 +11,11 @@
 # repository's code) pushes the tree to the .wiki repository as
 # github-actions[bot], with the job token only. It publishes only from a run on
 # the default branch and never from a pull request. This workflow has no
-# pull_request trigger at all, and its first job skips forks.
+# pull_request trigger at all, and both jobs skip forks and any run not on the
+# default branch. A run whose commit is no longer the default branch head is refused.
 #
-# Before generating, the generate command runs scripts/check-wiki-scrub.py when
-# that file exists on this commit (it lands with #800), then
+# Before generating, the generate command runs scripts/check-wiki-scrub.py and
+# fails closed when that file is missing (it lands with #800), then
 # scripts/wiki-flatten.py, which flattens docs/wiki/ into the wiki layout and
 # rewrites relative links. The naming rule is in that script's docstring.
 #
@@ -43,7 +44,7 @@ jobs:
   precheck:
     name: Is the wiki switched on
     # A fork has its own wiki and its own token; never publish from one.
-    if: ${{ !github.event.repository.fork }}
+    if: ${{ github.event.repository.fork == false && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -59,6 +60,22 @@ jobs:
             github.com:443
             results-receiver.actions.githubusercontent.com:443
           disable-sudo: true
+
+      # Stale-run protection: a re-run of an older run must not overwrite newer
+      # content, so the run's commit has to be the default branch's current head.
+      - name: Require this run's commit to be the default branch head
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          BRANCH: ${{ github.event.repository.default_branch }}
+          RUN_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          head=$(gh api "repos/$REPO/git/ref/heads/$BRANCH" --jq '.object.sha')
+          if [ "$head" != "$RUN_SHA" ]; then
+            echo "::error title=Wiki sync stale run::this run's commit is not the current head of the default branch; refusing to publish"
+            exit 1
+          fi
 
       - name: Read the wiki setting
         id: wiki
@@ -79,7 +96,7 @@ jobs:
   wiki:
     name: Publish docs/wiki to the wiki
     needs: precheck
-    if: ${{ needs.precheck.outputs.enabled == 'true' }}
+    if: ${{ needs.precheck.outputs.enabled == 'true' && github.event.repository.fork == false && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
     uses: ChiefGyk3D/git-your-ship-together/.github/workflows/wiki-publish.yml@01f397834f7acc553593abefbba135b18f580730 # v1.34.0
     permissions:
       contents: write # the reusable's publish job only; its generate job holds contents: read
@@ -88,10 +105,10 @@ jobs:
       publish: true
       egress-policy: block
       generate-command: |
-        if [ -f scripts/check-wiki-scrub.py ]; then
-          python scripts/check-wiki-scrub.py
-        else
-          echo "::notice title=Wiki scrub::scripts/check-wiki-scrub.py is not on this commit, so the scrub check did not run"
+        if [ ! -f scripts/check-wiki-scrub.py ]; then
+          echo "::error title=Wiki scrub::scripts/check-wiki-scrub.py is missing; refusing to publish unscanned content"
+          exit 1
         fi
+        python scripts/check-wiki-scrub.py
         python scripts/wiki-flatten.py --src docs/wiki --out "$OUT_DIR" \
           --asset-base "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/wiki/"

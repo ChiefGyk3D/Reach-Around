@@ -57,7 +57,41 @@ def test_no_secrets_and_every_use_pinned() -> None:
             assert re.search(r"# v\d+\.\d+\.\d+", m.group(3)), line
 
 
-def test_scrub_step_is_conditional_on_the_file() -> None:
+def test_scrub_step_is_fail_closed_when_the_file_is_missing() -> None:
     cmd = load()["jobs"]["wiki"]["with"]["generate-command"]
-    assert "[ -f scripts/check-wiki-scrub.py ]" in cmd
-    assert "scripts/wiki-flatten.py" in cmd
+    assert "[ ! -f scripts/check-wiki-scrub.py ]" in cmd
+    missing_branch = cmd.split("[ ! -f scripts/check-wiki-scrub.py ]")[1].split("fi")[0]
+    assert "::error" in missing_branch
+    assert "exit 1" in missing_branch
+    assert "::notice" not in cmd
+    assert cmd.index("python scripts/check-wiki-scrub.py") < cmd.index(
+        "scripts/wiki-flatten.py"
+    )
+
+
+DEFAULT_BRANCH_ONLY = (
+    "github.ref == format('refs/heads/{0}', github.event.repository.default_branch)"
+)
+
+
+def test_jobs_run_only_on_the_default_branch_and_never_on_forks() -> None:
+    jobs = load()["jobs"]
+    for name in ("precheck", "wiki"):
+        cond = jobs[name]["if"]
+        assert DEFAULT_BRANCH_ONLY in cond, name
+        assert "github.event.repository.fork == false" in cond, name
+
+
+def test_stale_run_is_refused_before_publishing() -> None:
+    steps = load()["jobs"]["precheck"]["steps"]
+    names = [s.get("name", "") for s in steps]
+    idx = next(i for i, n in enumerate(names) if "default branch head" in n)
+    step = steps[idx]
+    assert step["env"]["RUN_SHA"] == "${{ github.sha }}"
+    assert "git/ref/heads/$BRANCH" in step["run"]
+    assert '[ "$head" != "$RUN_SHA" ]' in step["run"]
+    assert "exit 1" in step["run"]
+    # It runs before the step that reports the wiki as enabled.
+    assert idx < names.index("Read the wiki setting")
+    # Read-only: the job token only has contents: read.
+    assert load()["jobs"]["precheck"]["permissions"] == {"contents": "read"}
