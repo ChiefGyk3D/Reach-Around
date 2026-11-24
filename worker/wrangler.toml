@@ -30,6 +30,23 @@ database_name = "reach-around-clicks"
 database_id = "00000000-0000-0000-0000-000000000000" # placeholder, not a real id
 migrations_dir = "migrations"
 
+# The leads database (issue #772, docs/deploy.md "The leads database"). A SECOND D1 database holding
+# only `leads` and `kit_events`, so leads have their own access, backup and erasure and no read
+# credential for the analytics database reaches them. Placeholders only; NOT enabled here, on purpose:
+# the committed file is the base of every deploy copy, and an enabled block would make a deploy bind
+# (or demand) a database before the owner has created it. The gate and the lead purge need it and fail
+# closed without it (the gate answers its usual retry redirect and stores nothing; the hourly job logs
+# one closed line and leaves leads alone); there is no fallback to DB. The owner creates the database,
+# adds this block to their deploy copy with the real id, and applies ITS migrations folder:
+#   npx wrangler d1 create reach-around-leads
+#   npx wrangler d1 migrations apply LEADS_DB --remote   (with the block below in the config used)
+# worker/vitest.config.ts declares the binding for the tests, with the folder applied by test/apply-migrations.ts.
+# [[d1_databases]]
+# binding = "LEADS_DB"
+# database_name = "reach-around-leads"
+# database_id = "00000000-0000-0000-0000-000000000000" # placeholder, not a real id
+# migrations_dir = "leads-migrations"
+
 # Workers Rate Limiting binding: 20 checks per client per 60 seconds.
 [[ratelimits]]
 name = "CLICK_LIMITER"

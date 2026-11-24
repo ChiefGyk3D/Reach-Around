@@ -10,11 +10,17 @@ export default defineConfig(async () => {
   // node:url's URL, so passing one to fileURLToPath fails type-checking.
   const here = dirname(fileURLToPath(import.meta.url));
   const migrations = await readD1Migrations(resolve(here, "migrations"));
+  // The leads database (issue #772) has its own migration folder and its own binding. The binding is
+  // declared HERE for the tests and only as a comment in wrangler.toml, so no deploy path creates it early.
+  const leadsMigrations = await readD1Migrations(resolve(here, "leads-migrations"));
   return {
     plugins: [
       cloudflareTest({
         wrangler: { configPath: "./wrangler.toml" },
-        miniflare: { bindings: { TEST_MIGRATIONS: migrations } },
+        miniflare: {
+          bindings: { TEST_MIGRATIONS: migrations, TEST_LEADS_MIGRATIONS: leadsMigrations },
+          d1Databases: { LEADS_DB: "00000000-0000-0000-0000-0000000000a2" },
+        },
       }),
     ],
     test: { setupFiles: ["./test/apply-migrations.ts"] },

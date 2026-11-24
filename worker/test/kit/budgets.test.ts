@@ -23,14 +23,16 @@ import {
 import { upsertLead } from "../../src/kit/leads";
 
 const DB = testEnv.DB;
+// Leads and kit events live in their own database (issue #772); counters stay in DB.
+const LEADS = testEnv.LEADS_DB;
 const T0 = Date.UTC(2027, 2, 14, 5, 30);
 const HOUR = 3_600_000;
 
 beforeEach(async () => {
   resetEventCapCache();
   await DB.prepare("DELETE FROM counters").run();
-  await DB.prepare("DELETE FROM kit_events").run();
-  await DB.prepare("DELETE FROM leads").run();
+  await LEADS.prepare("DELETE FROM kit_events").run();
+  await LEADS.prepare("DELETE FROM leads").run();
 });
 
 const L = (e: Record<string, unknown> = {}) => loadKitLimits(e as never);
@@ -243,6 +245,7 @@ describe("daily send and alert budgets", () => {
 });
 
 describe("recordKitEventCapped", () => {
+  const DB = LEADS; // the leads database, shadowing the analytics one on purpose
   async function lead(i: number): Promise<string> {
     const r = await upsertLead(DB, `u${i}@example.com`, "gate", null, T0, 5000);
     return r!.id;
@@ -346,6 +349,7 @@ describe("recordKitEventCapped", () => {
 });
 
 describe("lead cap at the boundary (existing upsertLead, new limits)", () => {
+  const DB = LEADS;
   it("MAX_LEADS 5 with 20 concurrent distinct addresses leaves exactly five rows", async () => {
     const r = await Promise.all(
       Array.from({ length: 20 }, (_, i) => upsertLead(DB, `c${i}@example.com`, "gate", null, T0, loadKitLimits({ MAX_LEADS: "5" } as never).maxLeads)),

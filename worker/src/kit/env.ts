@@ -8,6 +8,13 @@ import { MAX_TOKEN_AGE_SECONDS, MIN_KEY_BYTES } from "./token";
  */
 export interface KitEnv extends Env {
   KIT: KVNamespace;
+  /**
+   * The leads database (issue #772): leads and kit events, with their own backup, erasure and read
+   * access. Required for the gate and the view route. It must be a different database from `DB`;
+   * a missing or unusable binding refuses the route and stores nothing, and there is never a fallback
+   * to the analytics database. Declared in docs/deploy.md, not in the committed wrangler.toml.
+   */
+  LEADS_DB: D1Database;
   GATE_LIMITER: RateLimiter;
   /**
    * Optional. Not bound in v1, because the emailed-link flow (`/k/send`) is not
@@ -24,6 +31,18 @@ export interface KitEnv extends Env {
   TURNSTILE_SECRET: string;
   /** Unlock cookie lifetime in seconds. Default 86400; 3600 (1 h) to 604800 (168 h). */
   TOKEN_TTL_SECONDS?: string;
+}
+
+/**
+ * True when `v` looks like a usable D1 binding AND is not the analytics database `analytics`. Shape only:
+ * a database that exists but was never migrated fails at its first statement, and the gate then refuses.
+ * Never a fallback: the same object as DB is not a leads database.
+ */
+export function isLeadsDb(v: unknown, analytics?: unknown): v is D1Database {
+  if (v === undefined || v === null || typeof v !== "object") return false;
+  const d = v as { prepare?: unknown; batch?: unknown };
+  if (typeof d.prepare !== "function" || typeof d.batch !== "function") return false;
+  return v !== analytics;
 }
 
 export const DEFAULT_TOKEN_TTL_SECONDS = 86_400;
@@ -91,6 +110,7 @@ export function loadKitEnv(env: KitEnv): KitConfig {
   const e = (env ?? {}) as unknown as Record<string, unknown>;
 
   if (e.KIT === undefined || e.KIT === null || typeof e.KIT !== "object") bad.push("KIT");
+  if (!isLeadsDb(e.LEADS_DB, e.DB)) bad.push("LEADS_DB");
   const lim = e.GATE_LIMITER as { limit?: unknown } | undefined;
   if (lim === undefined || lim === null || typeof lim.limit !== "function") bad.push("GATE_LIMITER");
 

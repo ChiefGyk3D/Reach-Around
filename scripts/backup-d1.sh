@@ -1,7 +1,13 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: Apache-2.0
 #
-# Owner-run: export the analytics tables of the D1 database to a private folder.
+# Owner-run: export the analytics tables of the ANALYTICS D1 database (binding DB) to a private folder.
+#
+# WHICH DATABASE. Two D1 databases exist (issue #772): the analytics database this script exports, and
+# the leads database (binding LEADS_DB, holding leads and kit events) that it never exports. DATABASE
+# must be the analytics one; every run prints the name it acts on. A DATABASE name containing "leads"
+# is refused (exit 3): name the leads database accordingly (docs/deploy.md) and back it up by its own
+# procedure (docs/backup-restore.md), never through this allowlist.
 #
 # Usage: scripts/backup-d1.sh DATABASE DEST_DIR            # dry run: prints the plan
 #        scripts/backup-d1.sh DATABASE DEST_DIR --apply    # writes the export
@@ -62,6 +68,13 @@ case "$db" in
   ;;
 esac
 
+case "$(printf '%s' "$db" | tr '[:upper:]' '[:lower:]')" in
+*leads*)
+  echo "refused: DATABASE looks like the leads database. This script exports the analytics database only; the leads database has its own backup and erasure procedure (docs/backup-restore.md)." >&2
+  exit 3
+  ;;
+esac
+
 limit="${BACKUP_TIMEOUT:-120}"
 case "$limit" in
 "" | *[!0-9]* | 0*)
@@ -110,6 +123,7 @@ out="$dest/d1-$stamp"
 
 if [ "$apply" -eq 0 ]; then
   echo "dry run: nothing is written and no network call is made."
+  echo "database: $db (the analytics database; the leads database is never exported by this script)"
   echo "would create: $out (mode 700)"
   echo "would export ${#tables[@]} tables (those that exist), one file each, mode 600:"
   printf '  %s\n' "${tables[@]}"
@@ -201,7 +215,7 @@ rm -f -- "$out/.allowlist.json"
 (cd "$out" && sha256sum -- *.sql >SHA256SUMS)
 chmod 600 "$out/SHA256SUMS"
 ok=1
-echo "done: $count tables written to $out"
+echo "done: $count tables of the analytics database $db written to $out"
 echo "note: the tables are exported one call at a time, so this is not a single point-in-time snapshot."
 echo "      For one consistent copy, pause both write routes first (see docs/backup-restore.md)."
 echo "next: copy it to your offline copy, then run: (cd that folder && sha256sum -c SHA256SUMS)"

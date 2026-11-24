@@ -179,9 +179,9 @@ Run these steps in order:
    the refresh as complete.
 
    ```bash
-   npx wrangler d1 execute reach-around-clicks --remote \
+   npx wrangler d1 execute reach-around-leads --remote \
      --command "SELECT COUNT(*) AS lead_count FROM leads"
-   npx wrangler d1 execute reach-around-clicks --remote \
+   npx wrangler d1 execute reach-around-leads --remote \
      --command "SELECT value FROM kit_meta WHERE key = 'last_purge_ts'"
    ```
 

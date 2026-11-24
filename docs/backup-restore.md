@@ -55,6 +55,14 @@ Losing `kit_events` means the kit funnel counts before the loss are gone; that
 is the price of keeping lead data out of every copy. Lead data has its own
 retention, see [deploy.md](deploy.md) ("Lead retention").
 
+Which database. This script acts on the ANALYTICS database (binding `DB`) and
+prints the name it was given. Leads and kit events live in the separate leads
+database (`LEADS_DB`, [deploy.md](deploy.md) "The leads database"), which this
+script never exports: it refuses a database name containing "leads" (exit 3)
+before anything is written. The leads database has no export script on purpose;
+Time Travel on that database is its recovery path, with its own bookmark
+(`npx wrangler d1 time-travel info <LEADS DATABASE>`).
+
 After the export the script runs `scripts/check-dump.py` over everything it
 wrote, against the allowlist minus those four tables. It fails, and deletes the
 run, if it finds an unknown table or column, an address or a user agent. It

@@ -50,14 +50,14 @@ def strip_comments(sql: str) -> str:
     return re.sub(r"--[^\n]*", " ", sql)
 
 
-def problems(directory: Path) -> list[str]:
+def problems(directory: Path, legacy_through: int = LEGACY_THROUGH) -> list[str]:
     found: list[str] = []
     for path in sorted(directory.glob("*.sql")):
         match = NAME.match(path.name)
         if match is None:
             found.append(f"{path.name}: the name must be NNNN_name.sql")
             continue
-        if int(match.group(1)) <= LEGACY_THROUGH:
+        if int(match.group(1)) <= legacy_through:
             continue
         text = path.read_text(encoding="utf-8")
         if ANNOTATION.search(text):
@@ -74,11 +74,15 @@ def problems(directory: Path) -> list[str]:
 
 
 def main(argv: list[str]) -> int:
-    directory = Path(argv[1]) if len(argv) > 1 else Path("worker/migrations")
+    # `check-migrations.py [DIR] [--no-legacy]`. --no-legacy applies the rule to every
+    # file, for a folder that never had a pre-rule history (worker/leads-migrations).
+    args = [a for a in argv[1:] if a != "--no-legacy"]
+    legacy_through = 0 if "--no-legacy" in argv[1:] else LEGACY_THROUGH
+    directory = Path(args[0]) if args else Path("worker/migrations")
     if not directory.is_dir():
         print(f"error: {directory} is not a directory", file=sys.stderr)
         return 2
-    found = problems(directory)
+    found = problems(directory, legacy_through)
     for line in found:
         print(f"error: {line}")
     if not found:

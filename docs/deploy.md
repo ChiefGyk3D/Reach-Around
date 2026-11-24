@@ -320,6 +320,67 @@ The test deploy (`deploy-test.yml`) writes `BEACON_MODE = "observe"` and the `MI
 
 **Responses.** The mint answers `200` with `{"t": "<token>", "ttl": 900}` and `Cache-Control: no-store` only when it issues a token. Every other outcome, on every route, is the empty 204. The mint honors the same kill switches as the routes it serves: it issues nothing for a site whose click route and view route are both off (`CLICKS_KILL`, `CLICKS_KILL_SITES`, `VIEWS_KILL`, `VIEWS_KILL_SITES`), and a click-only (`edge`) site still gets a token because its clicks use one.
 
+## The leads database (`LEADS_DB`)
+
+Issue #772. Leads and kit events live in a SECOND D1 database, bound to the Worker as `LEADS_DB`, so
+that leads have their own access, backup and erasure and no read credential for the analytics
+database (`DB`) reaches an address. The analytics database keeps the counters (`counters`,
+`kit_meta` with the unstored session floor) and everything else; its old `leads` and `kit_events`
+tables stay where they are, unused (dropping them is a later, annotated contract migration), and the
+migration baseline reset means there is no data to carry over.
+
+What the Worker does without it. The binding is not in the committed `worker/wrangler.toml` (a
+commented block only), the same way the other bindings the owner has not created yet are held back,
+so no deploy copy creates or demands the database early. A missing `LEADS_DB`, one that is not a D1
+binding, or one that is the same object as `DB` is refused by the kit's environment check: the gate
+(`POST /k/gate`) answers its usual retry redirect and stores nothing, `GET /k/view` refuses with its
+usual redirect, and the hourly job skips the lead purge and logs one closed line (`purge`, `closed`,
+`binding`). There is no fallback to the analytics database, ever. The kit gate ships OFF at the
+cutover (`features.kit_gate`), so a deployment that has not created the second database loses nothing
+it was using.
+
+Create it, once (owner step, secrets in the secret manager (development environment before
+production); the database id is not a secret but stays out of the repository):
+
+```bash
+npx wrangler d1 create reach-around-leads
+```
+
+Add the block to the deploy copy of the wrangler config, with the id the command printed. The name
+`reach-around-leads` is a convention that `scripts/backup-d1.sh` relies on (it refuses a database name
+containing "leads"):
+
+```toml
+[[d1_databases]]
+binding = "LEADS_DB"
+database_name = "reach-around-leads"
+database_id = "<the id wrangler printed>"
+migrations_dir = "leads-migrations"
+```
+
+Apply ITS migrations, a separate folder (`worker/leads-migrations`), to it and only to it. The analytics
+migrations (`worker/migrations`, binding `DB`) are never applied to this database:
+
+```bash
+npx wrangler d1 migrations apply LEADS_DB --remote
+```
+
+Order. Create and migrate the database before enabling the kit gate. Because the migrations are
+additive and the Worker fails closed, the Worker may be deployed before or after.
+
+Which database each tool acts on:
+
+| Tool | Database | Notes |
+|---|---|---|
+| The Worker: gate, view route, lead purge | `LEADS_DB` | leads, kit events, purge heartbeat (`kit_meta last_purge_ts`) |
+| The Worker: everything else | `DB` | clicks, views, rollups, counters, health, alert dedup |
+| `scripts/backup-d1.sh DATABASE DEST` | the analytics database | prints the database name it acts on; refuses a name containing "leads"; never exports lead tables |
+| The lead export and erasure steps in [privacy.md](privacy.md) | `reach-around-leads` | name it in every `wrangler d1 execute` |
+
+Not done here: the deploy workflows (`deploy-worker.yml`, `deploy-test.yml`) do not write the binding or
+apply the leads migrations yet. That wiring creates a resource, so it is its own change, after the
+owner has created the database.
+
 ## Kit limits and the daily write budget
 
 The media kit Worker is sized for the Cloudflare paid plan (approved 2026-11-19; it was sized for the Free plan before, and the Free plan's 100,000 rows written a day no longer fits the click ceiling below), and the ruling is: **when a limit is reached the kit goes unavailable; the limits cap the bill.** Every limit below fails closed. A request over a route budget, a lead or event over its cap, an alert or email over the daily budget, and any invalid setting all get a refusal, never a pass. No paid feature is switched on by any of these settings.

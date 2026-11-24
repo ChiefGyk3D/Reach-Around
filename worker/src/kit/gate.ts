@@ -82,7 +82,7 @@ export const NEW_LEADS_PER_DAY = 100;
 
 export interface GateEnv
   extends AlertsEnv,
-    Pick<KitEnv, "KIT" | "GATE_LIMITER" | "KIT_KILL" | "TOKEN_HMAC_KEY" | "TOKEN_HMAC_KEY_PREVIOUS" | "TURNSTILE_SECRET" | "TOKEN_TTL_SECONDS"> {
+    Pick<KitEnv, "KIT" | "LEADS_DB" | "GATE_LIMITER" | "KIT_KILL" | "TOKEN_HMAC_KEY" | "TOKEN_HMAC_KEY_PREVIOUS" | "TURNSTILE_SECRET" | "TOKEN_TTL_SECONDS"> {
   /** Keys the limiter key hash, the same secret the click, view and inquiry routes use. */
   VIEW_HASH_SECRET?: string;
   /**
@@ -347,10 +347,12 @@ async function gate(request: Request, env: GateEnv, deps: GateDeps): Promise<Res
   let limits: ReturnType<typeof loadKitLimits>;
   try {
     limits = loadKitLimits(env);
-    const known = await getLeadByEmail(env.DB, form.email);
+    // Leads and kit events are in their own database (issue #772). loadKitEnv has already refused a
+    // missing LEADS_DB or one that is the analytics database; the counters stay in DB.
+    const known = await getLeadByEmail(env.LEADS_DB, form.email);
     let lead: { id: string } | null = null;
     if (known !== null) {
-      lead = await upsertLead(env.DB, form.email, "gate", countryOf(request), now, limits.maxLeads);
+      lead = await upsertLead(env.LEADS_DB, form.email, "gate", countryOf(request), now, limits.maxLeads);
     } else {
       // Admission and creation: the daily unit is taken atomically (one conditional upsert), the row is
       // created atomically (one statement that says whether it created it), and the unit is given back
@@ -361,7 +363,7 @@ async function gate(request: Request, env: GateEnv, deps: GateDeps): Promise<Res
       // exceeded; it can be above them after an ambiguous failure (a lost unit, never an extra row).
       const day = utcDay(now);
       if (await reserveBudget(env.DB, NEW_LEAD_KEY, day, deps.newLeadsPerDay ?? NEW_LEADS_PER_DAY)) {
-        const made = await upsertLead(env.DB, form.email, "gate", countryOf(request), now, limits.maxLeads);
+        const made = await upsertLead(env.LEADS_DB, form.email, "gate", countryOf(request), now, limits.maxLeads);
         if (made === null || !made.created) await refundNewLead(env.DB, day);
         lead = made;
       }
@@ -378,7 +380,7 @@ async function gate(request: Request, env: GateEnv, deps: GateDeps): Promise<Res
 
   if (stored) {
     try {
-      await recordKitEventCapped(env.DB, leadId, "unlock", now, limits.maxKitEvents);
+      await recordKitEventCapped(env.LEADS_DB, leadId, "unlock", now, limits.maxKitEvents);
     } catch {
       // The unlock event is a convenience for the owner; a full or failing table never blocks the visitor.
     }
@@ -459,7 +461,7 @@ async function view(request: Request, env: GateEnv, deps: GateDeps): Promise<Res
       floorMs = await getUnstoredSessionFloor(env.DB); // CONTROL:unstored-floor
     } else {
       // The lead must still exist (a deleted lead's cookie is dead).
-      const lead = await getLead(env.DB, claims.lid); // CONTROL:lead-exists
+      const lead = await getLead(env.LEADS_DB, claims.lid); // CONTROL:lead-exists
       if (lead === null) return back("expired");
       floorMs = lead.session_floor_ts;
     }

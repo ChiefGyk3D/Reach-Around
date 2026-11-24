@@ -27,7 +27,9 @@ or `auth_failed`; the code never contains platform or visitor data.
 
 ## What a lead is
 
-A lead is one row in the Worker's D1 `leads` table: the address as the visitor
+A lead is one row in the `leads` table of the leads D1 database (a separate
+database from the analytics one, see [deploy.md](deploy.md) "The leads
+database"): the address as the visitor
 typed it (lowercased), a two-letter country code the edge supplied, timestamps,
 and the kit events tied to that lead (an hour-rounded "unlocked", "viewed" or
 "verified" record). There is no column for an IP address, a user agent or a
@@ -78,7 +80,7 @@ The Worker reads the variable `LEAD_RETENTION_DAYS`:
 To check the last run (the query returns a time in milliseconds, not a person):
 
 ```
-npx wrangler d1 execute reach-around-clicks --remote --command "SELECT value FROM kit_meta WHERE key = 'last_purge_ts'"
+npx wrangler d1 execute reach-around-leads --remote --command "SELECT value FROM kit_meta WHERE key = 'last_purge_ts'"
 ```
 
 Not covered by this retention: Cloudflare's own recovery windows and logs for
@@ -107,7 +109,7 @@ You run a local command, and then apply the SQL it prints with `wrangler`.
 
    ```
    umask 077
-   npx wrangler d1 execute reach-around-clicks --remote --json \
+   npx wrangler d1 execute reach-around-leads --remote --json \
      --command "SELECT id, email FROM leads" > leads-export.json
    ```
 
@@ -135,7 +137,7 @@ You run a local command, and then apply the SQL it prints with `wrangler`.
    after the delete and must show `0`:
 
    ```
-   npx wrangler d1 execute reach-around-clicks --remote --file delete-lead.sql
+   npx wrangler d1 execute reach-around-leads --remote --file delete-lead.sql
    ```
 
 5. Delete `leads-export.json` and `delete-lead.sql`, and `unset ADDR`.

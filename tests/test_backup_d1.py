@@ -137,6 +137,38 @@ def test_dry_run_is_the_default_and_writes_nothing(tmp_path: Path) -> None:
     assert list(d.iterdir()) == []
 
 
+def test_the_dry_run_names_the_database_and_says_leads_are_not_exported(
+    tmp_path: Path,
+) -> None:
+    env = make(tmp_path)
+    d = dest(tmp_path)
+    dry = run(env, "reach-db", str(d))
+    assert dry.returncode == 0, dry.stderr
+    assert "database: reach-db" in dry.stdout
+    assert "leads database is never exported" in dry.stdout
+
+
+def test_the_finished_run_names_the_database_it_exported(tmp_path: Path) -> None:
+    env = make(tmp_path)
+    d = dest(tmp_path)
+    done = run(env, "reach-db", str(d), "--apply")
+    assert done.returncode == 0, done.stderr
+    assert "analytics database reach-db" in done.stdout
+
+
+@pytest.mark.parametrize("name", ["reach-around-leads", "LEADS_DB", "my.Leads.db"])
+def test_a_leads_database_name_is_refused_before_anything_is_written(
+    tmp_path: Path, name: str
+) -> None:
+    env = make(tmp_path)
+    d = dest(tmp_path)
+    for extra in ((), ("--apply",)):
+        r = run(env, name, str(d), *extra)
+        assert r.returncode == 3, r.stdout
+        assert "leads database" in r.stderr
+    assert list(d.iterdir()) == []
+
+
 def test_apply_writes_private_files_without_lead_tables(tmp_path: Path) -> None:
     env = make(tmp_path)
     d = dest(tmp_path)

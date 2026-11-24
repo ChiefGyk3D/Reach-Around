@@ -4,6 +4,7 @@ import { QueryMeter, meteredDb, queryBudget } from "./d1budget";
 import { handleClick, MAX_URL_LENGTH, type Env as ClickEnv } from "./click";
 import { HEALTH_MIN_BUDGET, HEALTH_QUERIES, runHealth, type HealthEnv } from "./health";
 import { handleLive, LIVE_CRON, LIVE_ROUTE, runLivePoller, type LiveEnv } from "./live";
+import { isLeadsDb } from "./kit/env";
 import { handleGate, isGateRoute, type GateEnv } from "./kit/gate";
 import { handleInquiry, isInquiryRoute, type InquiryEnv } from "./kit/inquiry";
 import { LEAD_PURGE_QUERIES, purgeExpiredLeads } from "./kit/leadretention";
@@ -24,7 +25,7 @@ type WorkerEnv = ClickEnv &
   Omit<ViewEnv, "DB" | "SITES" | "SITE_HOST" | "PAGE_IDS" | "LINK_IDS"> &
   LiveEnv &
   Partial<Pick<InquiryEnv, "INQUIRY_LIMITER" | "TOKEN_HMAC_KEY" | "TOKEN_HMAC_KEY_PREVIOUS" | "KIT_KILL" | "ALERTS_CONFIG">> &
-  Partial<Pick<GateEnv, "KIT" | "GATE_LIMITER" | "TURNSTILE_SECRET" | "TOKEN_TTL_SECONDS">>;
+  Partial<Pick<GateEnv, "KIT" | "LEADS_DB" | "GATE_LIMITER" | "TURNSTILE_SECRET" | "TOKEN_TTL_SECONDS">>;
 
 /** D1 queries the kit counter purge takes from the invocation's meter. */
 const COUNTER_PURGE_QUERIES = 1;
@@ -130,6 +131,8 @@ export default {
       ROLLUP_MAX_ROWS_PER_DAY?: string;
       UTM_ALLOWLIST?: string;
       LEAD_RETENTION_DAYS?: string;
+      /** The leads database (issue #772); optional here because the hourly job must still run without it. */
+      LEADS_DB?: D1Database;
       SCHEDULED_KILL?: string;
     },
     ctx: ExecutionContext,
@@ -164,9 +167,15 @@ export default {
         // (default 40); docs/deploy.md says so.
         const leadsFirst = budget >= LEAD_FIRST_MIN_BUDGET;
         const purgeLeads = async (): Promise<void> => {
+          // Leads are in their own database (issue #772). Unbound, or the same object as DB, there is
+          // nothing safe to purge: skip with one closed line. Never fall back to the analytics database.
+          if (!isLeadsDb(env.LEADS_DB, env.DB)) {
+            logEvent("purge", "closed", "binding");
+            return;
+          }
           try {
-            const leadDb = meteredDb(env.DB, meter.slice(LEAD_PURGE_QUERIES));
-            await purgeExpiredLeads({ DB: leadDb, LEAD_RETENTION_DAYS: env.LEAD_RETENTION_DAYS }, now);
+            const leadDb = meteredDb(env.LEADS_DB, meter.slice(LEAD_PURGE_QUERIES));
+            await purgeExpiredLeads({ LEADS_DB: leadDb, LEAD_RETENTION_DAYS: env.LEAD_RETENTION_DAYS }, now);
           } catch {
             logEvent("purge", "failed", "other");
           }
