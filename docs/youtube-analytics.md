@@ -161,3 +161,16 @@ attempts in a bad case. The token exchange is a POST and is never retried. There
 is no retry loop beyond the fetch layer's bound. The daily quota figure was not
 found on the vendor pages read, and whether a retried attempt counts again is not
 known.
+
+## Imports refuse person-level data
+
+Raw imports (the YouTube analytics CSV importer and the Beacons CSV importer)
+accept aggregate figures only. The shared guard in
+`reach_around.config.import_guard` checks each importer's header against a closed
+allowlist of aggregate columns, then against a denylist of person-level names
+(usernames, handles, emails, user ids, follower or commenter lists, IP addresses,
+precise places) as defense in depth. It also refuses a cell shaped like an email,
+an @handle, an IP address or a channel id. The Beacons importer additionally
+refuses a `Countries` row with 1 to 4 views (under the privacy floor). A refusal
+is a fixed message that never repeats the header or cell, so the value cannot
+reach a log. A new importer must declare its allowed columns and call the guard.
