@@ -236,7 +236,7 @@ jobs:
     outputs:
       engine_sha: ${{ steps.compare.outputs.engine_sha }}
     steps:
-      - uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43 # v2.22.3
+      - uses: step-security/harden-runner@1d88384fd173af6ecb012dfd0264a306b711241a # v2.22.4
         with:
           # block, explicit list. UNMEASURED, like the deploy job's list.
           egress-policy: block
@@ -307,7 +307,7 @@ jobs:
     # No job-level env: the Cloudflare token is fetched from Doppler only after
     # the last install step, so no install script ever runs with it present.
     steps:
-      - uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43 # v2.22.3
+      - uses: step-security/harden-runner@1d88384fd173af6ecb012dfd0264a306b711241a # v2.22.4
         with:
           # block, with an explicit list (no wildcards). The runner's own
           # infrastructure hosts are allowed by the agent. This list is
@@ -968,7 +968,7 @@ jobs:
       # when Doppler gives nothing.
       - name: Fetch Cloudflare credentials from Doppler
         id: cf_doppler
-        uses: ChiefGyk3D/git-your-ship-together/.github/actions/doppler-secrets@01f397834f7acc553593abefbba135b18f580730 # v1.34.0
+        uses: ChiefGyk3D/git-your-ship-together/.github/actions/doppler-secrets@ff658b7c11a55eea1394af5fd1a3a1b4b09d9cd0 # v1.36.0
         with:
           project: ${{ inputs.doppler_project }}
           config: ${{ inputs.doppler_config }}

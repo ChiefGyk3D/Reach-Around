@@ -43,7 +43,7 @@ jobs:
   release:
     name: Build, scan, publish, sign
     needs: [check-version]
-    uses: ChiefGyk3D/git-your-ship-together/.github/workflows/container-release.yml@01f397834f7acc553593abefbba135b18f580730 # v1.34.0
+    uses: ChiefGyk3D/git-your-ship-together/.github/workflows/container-release.yml@ff658b7c11a55eea1394af5fd1a3a1b4b09d9cd0 # v1.36.0
     permissions:
       contents: read
       packages: write  # push the image to GHCR
@@ -69,7 +69,7 @@ jobs:
   verify:
     name: Verify the published image
     needs: [release]
-    uses: ChiefGyk3D/git-your-ship-together/.github/workflows/verify-published.yml@01f397834f7acc553593abefbba135b18f580730 # v1.34.0
+    uses: ChiefGyk3D/git-your-ship-together/.github/workflows/verify-published.yml@ff658b7c11a55eea1394af5fd1a3a1b4b09d9cd0 # v1.36.0
     permissions:
       contents: read
       packages: read  # pull the published image to verify it
