@@ -55,6 +55,13 @@ def conn_spec() -> Callable[[Store], str]:
     return spec
 
 
+def _ignore_errors(call: Callable[..., object], *args: object) -> None:
+    try:
+        call(*args)
+    except Exception:  # only the files SQLite held open matter to the caller
+        return
+
+
 class TestSqliteStore(StoreContract):
     pass
 
@@ -203,6 +210,72 @@ class TestSqliteOnly:
         monkeypatch.setattr(os, "geteuid", lambda: owner + 1)
         with pytest.raises(StoreError):
             SqliteStore(tmp_path / "s.db")
+
+    def test_store_file_owned_by_another_user_is_refused(self) -> None:
+        import os
+        from types import SimpleNamespace
+        from typing import cast
+
+        from reach_around.store.sqlite import SqliteDb
+
+        def fake(mode: int, uid: int) -> os.stat_result:
+            return cast(os.stat_result, SimpleNamespace(st_mode=mode, st_uid=uid))
+
+        me = os.geteuid()
+        SqliteDb._check_file(fake(stat.S_IFREG | 0o600, me))
+        for bad in (fake(stat.S_IFREG | 0o600, me + 1), fake(stat.S_IFDIR | 0o700, me)):
+            with pytest.raises(PermissionError):
+                SqliteDb._check_file(bad)
+
+    def test_pathname_swapped_and_restored_around_the_open_is_not_followed(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import os
+        from typing import Any
+
+        path = tmp_path / "s.db"
+        store = SqliteStore(path)
+        store.migrate()
+        real_connect = sqlite3.connect
+        seen: dict[str, object] = {}
+
+        def open_inodes() -> set[int]:
+            found: set[int] = set()
+            for name in os.listdir("/proc/self/fd"):
+                try:
+                    found.add(os.stat(f"/proc/self/fd/{name}").st_ino)
+                except OSError:
+                    pass
+            return found
+
+        def swapping_connect(target: str, **kwargs: Any) -> sqlite3.Connection:
+            # same-user ABA: another file sits at the pathname while SQLite
+            # opens it, and the original is back before any later check
+            original = tmp_path / "orig.db"
+            path.rename(original)
+            path.write_bytes(b"")
+            seen["substitute"] = path.stat().st_ino
+            conn: sqlite3.Connection = real_connect(target, **kwargs)
+            try:
+                conn.execute("PRAGMA schema_version").fetchall()  # force the open
+            finally:
+                seen["open"] = open_inodes()
+                path.unlink()
+                original.rename(path)
+            return conn
+
+        monkeypatch.setattr(sqlite3, "connect", swapping_connect)
+        worker = threading.Thread(
+            target=lambda: _ignore_errors(store.sqlite.query, "SELECT 1")
+        )
+        worker.start()
+        worker.join()
+        monkeypatch.setattr(sqlite3, "connect", real_connect)
+        # SQLite must never have held the substitute file open
+        assert "substitute" in seen
+        open_now = seen["open"]
+        assert isinstance(open_now, set)
+        assert seen["substitute"] not in open_now
 
     def test_non_regular_store_path_is_refused(self, tmp_path: Path) -> None:
         with pytest.raises(StoreError):
