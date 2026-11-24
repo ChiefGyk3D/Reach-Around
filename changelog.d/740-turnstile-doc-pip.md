@@ -1,0 +1,1 @@
+- Fix the Turnstile storage check setup (#740): `docs/turnstile-storage-check.md` now installs with `pip install --require-hashes -r requirements-dev.txt`. The old line added an unpinned `playwright`, which pip rejects in `--require-hashes` mode. Playwright is pinned with hashes in `requirements-dev.txt`.

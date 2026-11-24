@@ -69,6 +69,7 @@ UNITS: tuple[str, ...] = (
 )
 
 _SLICE = "Added in kit v2 slice 3 (#628)"
+_SLICE6 = "Added in kit v2 slice 6 (#631)"
 _LIVE = "Added in kit v2 slice 4 (#629)"
 
 _SLICE5 = "Added in kit v2 slice 5 (#630)"
@@ -148,6 +149,30 @@ REGISTRY: Mapping[str, MeasureDef] = {
                 "own label; the label says what is counted."
             ),
             changelog=f"{_SLICE}: analytics_stat, a typed analytics tile.",
+            visibility="public",
+        ),
+        MeasureDef(
+            key="views",
+            label="Views",
+            unit="views",
+            definition=(
+                "The number of times the platform counted a video as viewed in "
+                "the period, as the platform's own analytics export shows it. "
+                "Added up by the importer from the daily rows of the export."
+            ),
+            changelog=f"{_SLICE6}: views, from a platform analytics export.",
+            visibility="public",
+        ),
+        MeasureDef(
+            key="watch_hours",
+            label="Watch time, hours",
+            unit="hours",
+            definition=(
+                "The total time viewers spent watching in the period, in whole "
+                "hours, as the platform's own analytics export shows it. Added "
+                "up by the importer from the daily rows and rounded half up."
+            ),
+            changelog=f"{_SLICE6}: watch_hours, from a platform analytics export.",
             visibility="public",
         ),
         MeasureDef(
