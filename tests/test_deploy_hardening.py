@@ -52,7 +52,11 @@ def test_the_deploy_job_blocks_egress_with_an_explicit_list() -> None:
     assert endpoints
     for endpoint in endpoints:
         # explicit host:port only, no wildcards
-        assert re.fullmatch(r"[a-z0-9.-]+:443", endpoint), endpoint
+        # the site host for the post-deploy probe (issue #768) is the one expression
+        assert (
+            re.fullmatch(r"[a-z0-9.-]+:443", endpoint)
+            or endpoint == "${{vars.SITE_HOST}}:443"
+        ), endpoint
     assert {
         "github.com:443",
         "api.github.com:443",

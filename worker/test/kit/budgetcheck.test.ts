@@ -59,6 +59,23 @@ describe("the beacon lane row (one more row per accepted view while BEACON_MODE 
   });
 });
 
+describe("the city counter row (one more row per accepted view while a site's level is city, #778)", () => {
+  const off = 22_700;
+  const city = Math.ceil((24 * 150 * 33) / 5) + 2_540; // 6.6 rows per view
+  const both = Math.ceil((24 * 150 * 38) / 5) + 2_540; // 7.6 rows per view
+  it("is unchanged at the default level (region) and for country and for a value the Worker cannot use", () => {
+    for (const g of [undefined, "", "region", "country", "junk"]) {
+      expect(pageViewDailyWrites({ GEO_LEVEL: g }), String(g)).toBe(off);
+    }
+  });
+  it("adds one row per view for the global level city and for any site at city", () => {
+    expect(pageViewDailyWrites({ GEO_LEVEL: "city" })).toBe(city);
+    const sites = JSON.stringify({ links: { hosts: ["links.example.test"], mode: "beacon", pages: ["home"], geo: "city" } });
+    expect(pageViewDailyWrites({ SITES: sites })).toBe(city);
+    expect(pageViewDailyWrites({ GEO_LEVEL: "city", BEACON_MODE: "observe" })).toBe(both);
+  });
+});
+
 describe("the page-view budget in the kit's combined check", () => {
   it("uses the configured budgets, not the fixed default", () => {
     const e = { VIEWS_PER_HOUR: "1000", BOT_VIEWS_PER_HOUR: "200" };
@@ -209,7 +226,9 @@ describe("pageViewDailyWrites uses the binding ceiling per class", () => {
   it("fails closed: a site list that does not load, or a bad count, is the worst case", () => {
     const worst = pageViewDailyWrites({}, MAX_SITES);
     expect(pageViewSiteCount({ SITES: "{not json" })).toBe(MAX_SITES);
-    expect(pageViewDailyWrites({ SITES: "{not json" })).toBe(worst);
+    // A list that does not load might serve a city-level site, so it counts the city counter row too.
+    expect(pageViewDailyWrites({ SITES: "{not json" })).toBe(pageViewDailyWrites({ GEO_LEVEL: "city" }, MAX_SITES));
+    expect(pageViewDailyWrites({ SITES: "{not json" })).toBeGreaterThan(worst);
     for (const bad of [0, -1, 1.5, Number.NaN, MAX_SITES + 1]) {
       expect(pageViewDailyWrites({}, bad)).toBe(worst);
     }
