@@ -1096,10 +1096,19 @@ def test_geography_pagination_has_a_hard_cap() -> None:
     transport, starts = geo_pages(600)
     measures, words = run(transport)
     assert len(starts) == GEO_MAX_PAGES
-    assert len([m for m in measures if m.metric.startswith("geo_")]) <= (
-        GEO_NAMED_MAX + 1
-    )
+    # every allowed page was full: the report is not stored as if it were complete
+    assert not [m for m in measures if m.metric.startswith("geo_")]
+    assert words == ["window_incomplete"]
+
+
+def test_a_full_last_page_is_incomplete_but_a_short_one_is_stored() -> None:
+    full, _ = geo_pages(GEO_MAX_PAGES * GEO_PAGE_SIZE)
+    _, words = run(full)
+    assert words == ["window_incomplete"]
+    short, _ = geo_pages(GEO_MAX_PAGES * GEO_PAGE_SIZE - 1)
+    measures, words = run(short)
     assert words == []
+    assert [m for m in measures if m.metric.startswith("geo_")]
 
 
 def test_a_page_larger_than_the_requested_size_fails_only_that_report() -> None:
@@ -1176,7 +1185,7 @@ def test_a_hostile_demographic_answer_cannot_exceed_the_cell_limit() -> None:
 
 
 def test_the_whole_run_fits_one_history_append() -> None:
-    transport, _ = geo_pages(500)
+    transport, _ = geo_pages(250)
     measures, words = run(transport)
     assert words == [] and len(measures) <= MAX_RUN_FIGURES < MAX_BATCH
     # and the writer accepts the batch as one append

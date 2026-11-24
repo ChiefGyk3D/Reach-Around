@@ -706,6 +706,90 @@ def test_threads_views_series_one_missing_edge_point_is_tolerated() -> None:
     assert threads_insights(TH, TH_ENV, fetch, date(2026, 11, 9)) == {"views_7d": 6}
 
 
+@pytest.mark.parametrize(
+    "days",
+    [(3, 4, 5, 7, 8, 9), (2, 3, 4, 6, 7, 8, 9), (3, 5, 6, 7, 8, 9)],
+    ids=["six_with_a_hole", "seven_with_a_hole", "hole_next_to_an_edge"],
+)
+def test_threads_views_series_with_an_interior_gap_is_not_verified(
+    days: tuple[int, ...],
+) -> None:
+    points = [(1, f"2026-11-{d:02d}T08:00:00+0000") for d in days]
+    fetch, _ = th_fetch(_views("day", points))
+    with pytest.raises(MetaError) as err:
+        threads_insights(TH, TH_ENV, fetch, date(2026, 11, 9))
+    assert err.value.kind == "window_mismatch"
+
+
+def _threads_sources(count: int) -> list[ThreadsSource]:
+    return [
+        ThreadsSource.model_validate(
+            {
+                "platform": f"threads{i}",
+                "kind": "threads",
+                "user_id": "42",
+                "insights": True,
+            }
+        )
+        for i in range(count)
+    ]
+
+
+def test_collect_stops_at_the_request_budget_and_names_what_was_left() -> None:
+    calls: list[int] = []
+
+    def fetch(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        calls.append(1)
+        return {"data": []}
+
+    sources = _threads_sources(6)
+    ok = frozenset(s.platform for s in sources)
+    _, failures = collect(sources, ok, TH_ENV, fetch, NOW, max_requests=2)
+    assert len(calls) == 2
+    words = [f.word for f in failures]
+    assert words.count("budget_exhausted") >= 1
+    assert {f.platform for f in failures if f.word == "budget_exhausted"} >= {
+        "threads3",
+        "threads5",
+    }
+
+
+def test_collect_looks_at_no_more_sources_than_the_cap() -> None:
+    calls: list[int] = []
+
+    def fetch(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        calls.append(1)
+        return {"data": []}
+
+    sources = _threads_sources(5)
+    ok = frozenset(s.platform for s in sources)
+    _, failures = collect(sources, ok, TH_ENV, fetch, NOW, max_sources=2)
+    assert len(calls) == 2
+    assert [f.platform for f in failures if f.word == "budget_exhausted"] == [
+        "threads2",
+        "threads3",
+        "threads4",
+    ]
+
+
+def test_collect_stops_at_the_deadline() -> None:
+    now = [0.0]
+    calls: list[int] = []
+
+    def fetch(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        calls.append(1)
+        now[0] += 100.0  # every request takes a long time
+        return {"data": []}
+
+    sources = _threads_sources(5)
+    ok = frozenset(s.platform for s in sources)
+    _, failures = collect(
+        sources, ok, TH_ENV, fetch, NOW, deadline_seconds=150.0, clock=lambda: now[0]
+    )
+    assert len(calls) == 2
+    assert any(f.word == "budget_exhausted" for f in failures)
+
+
 @pytest.mark.parametrize("cursor", [2**100, 2**63, 0, -5, True, 1.5, "7"], ids=repr)
 def test_tiktok_cursor_must_be_a_positive_int64(cursor: Any) -> None:
     first = page([video(1)], more=True, cursor=cursor)

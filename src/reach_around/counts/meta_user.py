@@ -483,6 +483,9 @@ def _series_total(
                 raise MetaError("window_mismatch")
             seen.add(when.date())
             total += number
+        days = sorted(seen)
+        if any((b - a).days != 1 for a, b in zip(days, days[1:], strict=False)):
+            raise MetaError("window_mismatch")  # an interior day is missing
         return total, True
     box = item.get("total_value")
     number = _insight_int(box.get("value")) if isinstance(box, dict) else None

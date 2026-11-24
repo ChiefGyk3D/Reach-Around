@@ -93,6 +93,13 @@ from reach_around.counts.instagram_insights import (
 from reach_around.counts.instagram_insights import (
     deletion_candidates as instagram_deletion_candidates,
 )
+from reach_around.counts.pending import (
+    clear_pending,
+    mark_pending,
+    pending_path,
+    read_pending,
+    reconcile,
+)
 from reach_around.counts.refresh import (
     SUSPECT_KINDS,
     Outcome,
@@ -337,6 +344,31 @@ def build_sinks(spec: DopplerSpec, transport: Transport | None) -> Sinks:
     return Sinks(PairStyleSink(sink), MetaStyleSink(sink))
 
 
+def _stage_history(
+    history: Path, paths: Paths, records: list[Record], run_id: str
+) -> list[Record]:
+    """Note this run as pending, then settle days an earlier attempt recorded.
+
+    History is written before the numbers file; if a later write fails, the
+    pending note lets the next run replace the value that attempt left behind
+    (see ``counts/pending.py``). Raises ``OSError`` before history is touched.
+    """
+    pending = pending_path(paths.target)
+    ids = read_pending(pending)
+    mark_pending(pending, ids, run_id)
+    if ids and history.exists():
+        return reconcile(read_history(history), ids, records)
+    return records
+
+
+def _settle_history(paths: Paths) -> None:
+    """The numbers file was written, so nothing is pending any more."""
+    try:
+        clear_pending(pending_path(paths.target))
+    except OSError:
+        pass  # a stale note only makes the next run compare its values
+
+
 def _write_failed(exc: Exception) -> None:
     reason = exc.strerror if isinstance(exc, OSError) else str(exc)
     print(f"error: cannot write the result files: {reason}", file=sys.stderr)
@@ -418,9 +450,12 @@ def _retention_checks(
         return  # a missing or damaged file is reported by the history work itself
     _retention_notice_for(records, stamp)
     if policy is not None and policy.retain_days:
-        for warning in retention_warnings(
-            records, policy, stamp.astimezone(UTC).date()
-        ):
+        try:
+            warnings = retention_warnings(records, policy, stamp.astimezone(UTC).date())
+        except ValueError as exc:
+            print(f"history: {exc}; the retention check was skipped", file=sys.stderr)
+            return
+        for warning in warnings:
             print(warning.line(), file=sys.stderr)
 
 
@@ -534,6 +569,17 @@ def _cycle(
             print(f"{platform}: insights error (too_large)", file=sys.stderr)
             insight_failures.append(InsightFailure(platform, "too_large"))
         try:
+            fetched = _stage_history(history, paths, fetched, run_id)
+        except OSError as exc:
+            _write_failed(exc)
+            return EXIT_WRITE
+        except HistoryError as exc:
+            print(
+                f"error: history not written, nothing else was changed: {exc}",
+                file=sys.stderr,
+            )
+            return EXIT_WRITE
+        try:
             kept = append_records(history, fetched, now=stamp, skip_days=True)
         except HistoryError as exc:
             print(
@@ -566,6 +612,7 @@ def _cycle(
                 pass  # the numbers file is untouched either way
             _write_failed(exc)
             return EXIT_WRITE
+        _settle_history(paths)
     failed = any(outcome.status == "error" for outcome in outcomes) or bool(
         insight_failures
     )
@@ -1052,8 +1099,9 @@ def run_import(
                 # and UTC day; a retry the same day keeps the first.
                 stamp = datetime.now(UTC)
                 run_id = new_run_id(stamp)
-                append_records(
+                staged = _stage_history(
                     history,
+                    paths,
                     [
                         Record(
                             platform=row.key,
@@ -1065,10 +1113,12 @@ def run_import(
                         )
                         for row in rows
                     ],
-                    now=stamp,
-                    skip_days=True,
+                    run_id,
                 )
+                append_records(history, staged, now=stamp, skip_days=True)
             write_atomic(paths.target, dump_numbers(merge(previous, rows)))
+            if history is not None:
+                _settle_history(paths)
     except ImportFailed as exc:
         print("error: the file was not imported; nothing was written", file=sys.stderr)
         for problem in exc.problems:

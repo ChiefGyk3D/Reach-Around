@@ -227,10 +227,9 @@ before the tag existed have none, so for an older file also run
    Run the same command with `--confirm` again: it removes that old copy at once,
    whatever its age, because its marker proves what it is. If that fails too,
    remove the named file by hand.
-   Where the system cannot do that, the name is checked once more and the new
-   file is renamed over it; a replacement in the very short gap between that
-   check and the rename cannot be detected there, so do not run `git pull` or
-   `git checkout` in that folder while a redaction runs.
+   Where the system cannot do that, the redaction is refused and nothing is
+   changed, because a plain rename cannot replace a file only while it is still
+   the locked one. Run it on a system with `renameat2` support.
    The new file is mode 0600 and keeps the old owner and group where the
    system permits (a notice says when it could not), whatever the umask. ACLs, extended attributes
    and security labels are not copied. Redaction needs a path with no symlinks: every

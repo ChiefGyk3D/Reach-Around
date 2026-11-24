@@ -432,6 +432,59 @@ def _parse_tombstone(
     return tomb, prev
 
 
+class _Chain:
+    """Line-by-line validation state: the hash chain and the uniqueness indexes.
+
+    Feeding lines one at a time lets a large file be checked without holding it
+    (or a copy of it) in memory; only the small key sets are kept.
+    """
+
+    def __init__(self, now: datetime | None = None, *, collect: bool = True) -> None:
+        self.now = now
+        self.entries: list[Record | Tombstone] | None = [] if collect else None
+        self.seen: dict[tuple[str, str, str, str], str | None] = {}
+        self.redacted: set[tuple[str, str, str, str]] = set()
+        self.days: set[tuple[str, str, str, str]] = set()
+        self.expect = GENESIS
+        self.number = 0
+
+    def feed(self, raw: bytes) -> None:
+        self.number += 1
+        number = self.number
+        entry, prev = _parse_line(raw, number, self.now)
+        if prev != self.expect:
+            raise HistoryError(f"line {number}: the hash chain is broken")
+        if isinstance(entry, Tombstone):
+            if entry.key in self.redacted:
+                raise HistoryError(f"line {number}: duplicate tombstone")
+            if entry.key in self.seen:
+                raise HistoryError(f"line {number}: a tombstone over a live record")
+            if entry.day_key in self.days:
+                raise HistoryError(f"line {number}: a second record for that UTC day")
+            self.redacted.add(entry.key)
+            self.days.add(entry.day_key)
+        elif entry.key in self.redacted:
+            raise HistoryError(f"line {number}: that record was redacted")
+        elif entry.type == "record":
+            if entry.key in self.seen:
+                raise HistoryError(f"line {number}: duplicate record")
+            if entry.day_key in self.days:
+                raise HistoryError(f"line {number}: a second record for that UTC day")
+            self.seen[entry.key] = entry.api_provider
+            self.days.add(entry.day_key)
+        elif entry.key not in self.seen:
+            raise HistoryError(f"line {number}: a correction with no earlier record")
+        elif self.seen[entry.key] != entry.api_provider:
+            # A correction keeps the provenance of the record it fixes, so
+            # deletion, revocation and the notice still find its value.
+            raise HistoryError(
+                f"line {number}: a correction's api_provider must match its original"
+            )
+        if self.entries is not None:
+            self.entries.append(entry)
+        self.expect = _digest(raw)
+
+
 def _parse(
     data: bytes, now: datetime | None = None
 ) -> tuple[tuple[Record | Tombstone, ...], str]:
@@ -440,44 +493,42 @@ def _parse(
         return (), GENESIS
     if not data.endswith(b"\n"):
         raise HistoryError("the last line is truncated (no newline); not repaired")
-    entries: list[Record | Tombstone] = []
-    seen: dict[tuple[str, str, str, str], str | None] = {}  # key -> its provider
-    redacted: set[tuple[str, str, str, str]] = set()
-    days: set[tuple[str, str, str, str]] = set()
-    expect = GENESIS
-    for number, raw in enumerate(data[:-1].split(b"\n"), start=1):
-        entry, prev = _parse_line(raw, number, now)
-        if prev != expect:
-            raise HistoryError(f"line {number}: the hash chain is broken")
-        if isinstance(entry, Tombstone):
-            if entry.key in redacted:
-                raise HistoryError(f"line {number}: duplicate tombstone")
-            if entry.key in seen:
-                raise HistoryError(f"line {number}: a tombstone over a live record")
-            if entry.day_key in days:
-                raise HistoryError(f"line {number}: a second record for that UTC day")
-            redacted.add(entry.key)
-            days.add(entry.day_key)
-        elif entry.key in redacted:
-            raise HistoryError(f"line {number}: that record was redacted")
-        elif entry.type == "record":
-            if entry.key in seen:
-                raise HistoryError(f"line {number}: duplicate record")
-            if entry.day_key in days:
-                raise HistoryError(f"line {number}: a second record for that UTC day")
-            seen[entry.key] = entry.api_provider
-            days.add(entry.day_key)
-        elif entry.key not in seen:
-            raise HistoryError(f"line {number}: a correction with no earlier record")
-        elif seen[entry.key] != entry.api_provider:
-            # A correction keeps the provenance of the record it fixes, so
-            # deletion, revocation and the notice still find its value.
-            raise HistoryError(
-                f"line {number}: a correction's api_provider must match its original"
-            )
-        entries.append(entry)
-        expect = _digest(raw)
-    return tuple(entries), expect
+    chain = _Chain(now)
+    for raw in data[:-1].split(b"\n"):
+        chain.feed(raw)
+    return tuple(chain.entries or ()), chain.expect
+
+
+def _chain_from_fd(fd: int, max_bytes: int) -> tuple[_Chain, int]:
+    """Validate the file behind ``fd`` a chunk at a time; return state and size.
+
+    Holds one chunk and one line at a time, never the whole file.
+    """
+    info = os.fstat(fd)
+    if not stat.S_ISREG(info.st_mode):
+        raise HistoryError("the history path is not a regular file")
+    if info.st_size > max_bytes:
+        raise HistoryError("the history file is too large")
+    chain = _Chain(collect=False)
+    pending = b""
+    offset = 0
+    while offset < info.st_size:
+        chunk = os.pread(fd, min(1 << 20, info.st_size - offset), offset)
+        if not chunk:
+            break
+        offset += len(chunk)
+        pending += chunk
+        while True:
+            cut = pending.find(b"\n")
+            if cut < 0:
+                break
+            chain.feed(pending[:cut])
+            pending = pending[cut + 1 :]
+        if len(pending) > MAX_LINE_BYTES:
+            raise HistoryError(f"line {chain.number + 1}: line too long")
+    if pending:
+        raise HistoryError("the last line is truncated (no newline); not repaired")
+    return chain, offset
 
 
 class Series:
@@ -816,14 +867,10 @@ def _append_locked(
                 "the history file was replaced while waiting (a redaction?); run again"
             )
         os.fchmod(fd, 0o600)  # a pre-created file may be wider
-        existing = _read_fd(fd, max_bytes)
-        before, prev = _parse(existing)
+        chain, size = _chain_from_fd(fd, max_bytes)
+        prev = chain.expect
         if skip_days:
-            have = {
-                r.day_key
-                for r in before
-                if isinstance(r, Tombstone) or r.type == "record"
-            }
+            have = set(chain.days)
             records = [
                 r for r in records if r.type != "record" or r.day_key not in have
             ]
@@ -834,18 +881,18 @@ def _append_locked(
             line = _line_bytes(record, prev)
             new += line + b"\n"
             prev = _digest(line)
-        _parse(existing + new)  # duplicates and corrections, before any write
-        if len(existing) + len(new) > max_bytes:
+            chain.feed(line)  # duplicates and corrections, before any write
+        if size + len(new) > max_bytes:
             raise HistoryError("the history file would be too large")
         if not _same_file(dir_fd, path.name, fd):
             raise HistoryError(
                 "the history file was replaced before the write; nothing written"
             )
         _before_mutation("append")
-        original = len(existing)
+        original = size
         _write_all(fd, new)
         os.fsync(fd)
-        if not existing:
+        if size == 0:
             os.fsync(dir_fd)
         if not _same_file(dir_fd, path.name, fd):
             # Replaced from outside after the last check: the lines went to a
@@ -1214,9 +1261,9 @@ def _replace_file(
     where permitted) and fsynced. It then replaces the old one by an atomic
     exchange of the two names, after which the old file is checked to be the one
     that was locked: if something else was swapped in meanwhile, the exchange is
-    undone and nothing is lost. Where the system cannot exchange, the name is
-    checked once more and the file renamed; a swap in the tiny gap between that
-    check and the rename cannot be detected there (see docs/social-history.md).
+    undone and nothing is lost. Where the system cannot exchange, the
+    redaction is refused and nothing is changed (a plain rename cannot replace
+    a file conditionally; see docs/social-history.md).
     """
     locked = os.fstat(locked_fd)
     locked_id = _identity(locked)
@@ -1296,12 +1343,12 @@ def _install(
     try:
         swapped = _exchange(dir_fd, temp, name)
         if not swapped:
-            if _identity_of(dir_fd, name) != locked_id:
-                raise HistoryError(
-                    "the history file was replaced while redacting; nothing "
-                    "was changed; run again"
-                )
-            os.rename(temp, name, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
+            # A plain rename cannot replace the name only while it is still the
+            # locked file, so a newer file could be overwritten. Refuse.
+            raise HistoryError(
+                "this file system cannot replace the history file atomically; "
+                "nothing was changed"
+            )
     except OSError:
         _after_failed_install(dir_fd, name, temp, temp_id, locked_id)
         raise  # not reached
