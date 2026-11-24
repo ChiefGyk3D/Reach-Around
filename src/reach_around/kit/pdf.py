@@ -98,6 +98,7 @@ from reach_around.site.kit import (
     audience_bases,
     canonical,
     demographic_withheld,
+    live_block,
     platform_counts,
     section_cards,
     text_fields,
@@ -656,6 +657,17 @@ def _expected_text(
         labeled = labeled or config is not None
         lead = card["headline"]
         found.append((where, lead["value"] + lead["label"]))
+        for row in card["rows"]:
+            found.append((where, row["label"] + row["value"]))
+    # The live block (#629): each platform's seven fields, or its empty line.
+    live = live_block(kit.live, measures, config, None, live_day)
+    for card in live["cards"] if live else []:
+        where = f"the live block {card['name']!r}"
+        found.append((where, card["name"]))
+        if card["empty"]:
+            found.append((where, card["no_numbers"]))
+            continue
+        labeled = labeled or config is not None
         for row in card["rows"]:
             found.append((where, row["label"] + row["value"]))
     # Only the public page prints recent posts; the gated page has no such section.

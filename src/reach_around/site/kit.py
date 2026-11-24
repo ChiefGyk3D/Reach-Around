@@ -68,6 +68,7 @@ from reach_around.config.kit import (
     AudienceSummary,
     KitConfig,
     KitSection,
+    LiveRow,
     UnifiedTotal,
     enforce_display_policy,
     gated_projection,
@@ -76,7 +77,7 @@ from reach_around.config.kit import (
     public_projection,
     summary_total,
 )
-from reach_around.config.measures import Measure, default_keys
+from reach_around.config.measures import LIVE_KEYS, REGISTRY, Measure, default_keys
 from reach_around.config.models import SiteConfig
 from reach_around.config.numbers import (
     STALE_DAYS,
@@ -1181,6 +1182,7 @@ def _legend(content: dict[str, Any], gated: bool = False) -> dict[str, Any] | No
         or (content["recent_posts"] and not gated)
         or any(row["trust"] for row in content["engagement_rows"])
         or any(not card["empty"] for card in content["sections"])
+        or (content["live"] and any(not c["empty"] for c in content["live"]["cards"]))
         or content["imported"]
         or content.get("case_studies")
         or content.get("demographics")
@@ -1234,6 +1236,9 @@ def _content(
         "community": _community(measures),
         "sections": section_cards(
             projection.get("sections", []), measures, config, today, live_day
+        ),
+        "live": live_block(
+            projection.get("live", []), measures, config, today, live_day
         ),
         "imported": _imported_block(projection.get("imported_history"), live_day),
     }
@@ -1446,6 +1451,74 @@ def section_cards(
             card["rows"] = [row for i, row in enumerate(rows) if i != lead]
         cards.append(card)
     return cards
+
+
+# --- the live block (spec 13 item 4, decisions 3 and 11) ----------------------------
+
+NO_LIVE_NUMBERS = "No live numbers yet"
+NOT_ENTERED = "Not entered"
+
+
+def _live_row(
+    key: str,
+    found: Sequence[Measure],
+    config: Any,
+    today: date | None,
+    live_day: date | None,
+) -> dict[str, Any]:
+    """One of the seven fields of a live card. The same keys, labels and markup
+    for every platform; a figure that is not entered says so."""
+    label = REGISTRY[key].label
+    best: Measure | None = None
+    for m in found:
+        if m.key == key and m.value is not None and (best is None or _prefer(m, best)):
+            best = m
+    if best is None:
+        return {"key": key, "label": label, "value": NOT_ENTERED, "entered": False}
+    return {
+        "key": key,
+        "label": label,
+        "value": shown_count(best.value) if best.value is not None else NOT_ENTERED,
+        "entered": True,
+        "as_of": best.as_of.isoformat() if best.as_of is not None else "",
+        "period": (
+            f"{best.period[0].isoformat()} to {best.period[1].isoformat()}"
+            if best.period is not None
+            else ""
+        ),
+        "era": era_text(classify_era(best.as_of, live_day)),
+        "stale": _is_stale(best.as_of, today, config, best.platform),
+        "trust": None if best.trust is None else best.trust.view(),
+    }
+
+
+def live_block(
+    rows: Sequence[LiveRow],
+    measures: Sequence[Measure],
+    config: Any = None,
+    today: date | None = None,
+    live_day: date | None = None,
+) -> dict[str, Any] | None:
+    """The live block: one card per platform in ``rows``, in config order and
+    never sorted by size, each with the seven fields in the same order. A platform
+    with no figure at all prints "No live numbers yet" in the same style."""
+    if not rows:
+        return None
+    cards: list[dict[str, Any]] = []
+    for row in rows:
+        found = [m for m in measures if m.platform == row.platform]
+        fields = [_live_row(key, found, config, today, live_day) for key in LIVE_KEYS]
+        empty = not any(f["entered"] for f in fields)
+        cards.append(
+            {
+                "platform": row.platform,
+                "name": platform_name(row.platform),
+                "empty": empty,
+                "no_numbers": NO_LIVE_NUMBERS,
+                "rows": [] if empty else fields,
+            }
+        )
+    return {"heading": "Live", "cards": cards}
 
 
 def _categories(kit: KitConfig, measures: Sequence[Measure]) -> str:

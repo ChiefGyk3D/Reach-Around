@@ -1551,6 +1551,14 @@
           ],
           "default": null
         },
+        "live": {
+          "items": {
+            "$ref": "#/$defs/LiveRow"
+          },
+          "maxItems": 2,
+          "title": "Live",
+          "type": "array"
+        },
         "metrics": {
           "items": {
             "$ref": "#/$defs/PlatformMetric"
@@ -1952,6 +1960,144 @@
         "platform"
       ],
       "title": "LivePlayer",
+      "type": "object"
+    },
+    "LiveRow": {
+      "additionalProperties": false,
+      "description": "Hand-kept live figures for one live platform and one UTC period (#629).\n\nTyped from the platform's own dashboard, the same fields for Twitch and Kick.\nThere is no source field: a figure beyond the follower count is never read\nfrom an API, so it is always labeled hand-kept. A figure left out is not\nshown as zero. The follower count is the platform's headline number.",
+      "properties": {
+        "as_of": {
+          "anyOf": [
+            {
+              "format": "date",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "As Of"
+        },
+        "avg_ccv": {
+          "anyOf": [
+            {
+              "maximum": 10000000000,
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Avg Ccv"
+        },
+        "followers_gained": {
+          "anyOf": [
+            {
+              "maximum": 10000000000,
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Followers Gained"
+        },
+        "hours_streamed_per_week": {
+          "anyOf": [
+            {
+              "maximum": 168,
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Hours Streamed Per Week"
+        },
+        "hours_watched": {
+          "anyOf": [
+            {
+              "maximum": 1000000000000,
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Hours Watched"
+        },
+        "peak_ccv": {
+          "anyOf": [
+            {
+              "maximum": 10000000000,
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Peak Ccv"
+        },
+        "period_end": {
+          "anyOf": [
+            {
+              "format": "date",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Period End"
+        },
+        "period_start": {
+          "anyOf": [
+            {
+              "format": "date",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Period Start"
+        },
+        "platform": {
+          "title": "Platform",
+          "type": "string"
+        },
+        "unique_chatters": {
+          "anyOf": [
+            {
+              "maximum": 10000000000,
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Unique Chatters"
+        }
+      },
+      "required": [
+        "platform"
+      ],
+      "title": "LiveRow",
       "type": "object"
     },
     "LiveVods": {
