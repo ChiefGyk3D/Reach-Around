@@ -121,7 +121,7 @@ def _check_sources(
             )
             continue
         if flat.lower() in seen:
-            problems.append((rel, f"flat name collides with {seen[flat.lower()]}"))
+            problems.append((rel, "flat output name collides with another source"))
             continue
         seen[flat.lower()] = rel
         mapping[rel] = flat
@@ -160,7 +160,11 @@ class _Rewriter:
         )
         if not raw or raw.startswith("#"):
             return target
-        parsed = urlsplit(raw)
+        try:
+            parsed = urlsplit(raw)
+        except Exception:  # noqa: BLE001 - parser errors can quote the link text
+            self.problems.append((src, "relative link target not valid"))
+            return None
         if parsed.scheme or parsed.netloc:
             return target
         path = unquote(parsed.path)
@@ -345,6 +349,9 @@ def main(argv: list[str]) -> int:
     except FlattenError as exc:
         for path, msg in exc.problems:
             print(f"{path}: {msg}", file=sys.stderr)
+        return 1
+    except Exception:  # noqa: BLE001 - never print a traceback that may quote content
+        print("wiki-flatten: unexpected error while flattening", file=sys.stderr)
         return 1
     out.mkdir(parents=True, exist_ok=True)
     for name, data in sorted(tree.items()):

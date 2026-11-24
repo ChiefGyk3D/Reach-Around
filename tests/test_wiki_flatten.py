@@ -217,6 +217,85 @@ def test_cli_refuses_symlink(
     assert not (tmp_path / "out").exists()
 
 
+@pytest.mark.parametrize(
+    "link",
+    ["//SENSITIVE-VALUE／path", "http://[", "//[::1", "//[SENSITIVE-VALUE"],
+)
+def test_malformed_link_error_carries_no_parser_text(link: str) -> None:
+    # "//X" + U+FF0F makes urlsplit raise a ValueError that quotes the text.
+    with pytest.raises(wf.FlattenError) as exc:
+        wf.flatten({"Home.md": f"[x]({link})".encode()})
+    if "SENSITIVE-VALUE" in link:
+        assert exc.value.problems == [("Home.md", "relative link target not valid")]
+    assert "SENSITIVE-VALUE" not in str(exc.value)
+
+
+def test_cli_malformed_link_prints_no_content_or_traceback(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "Home.md").write_text("[x](//SENSITIVE-VALUE／path)\n[y](http://[)")
+    assert wf.main(["--src", str(src), "--out", str(tmp_path / "out")]) == 1
+    cap = capsys.readouterr()
+    text = cap.out + cap.err
+    assert "SENSITIVE-VALUE" not in text
+    assert "Traceback" not in text
+    assert "Home.md: relative link target not valid" in cap.err
+
+
+def test_cli_unexpected_exception_prints_fixed_message(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "Home.md").write_text("h")
+
+    def boom(*_a: object, **_k: object) -> None:
+        raise RuntimeError("SENSITIVE-VALUE")
+
+    monkeypatch.setattr(wf, "flatten", boom)
+    assert wf.main(["--src", str(src), "--out", str(tmp_path / "out")]) == 1
+    cap = capsys.readouterr()
+    assert "SENSITIVE-VALUE" not in cap.out + cap.err
+    assert "Traceback" not in cap.out + cap.err
+    assert cap.err.strip() == "wiki-flatten: unexpected error while flattening"
+
+
+def test_collision_error_names_only_the_current_source() -> None:
+    files = {"Home.md": b"h", "SENSITIVE-NAME.md": b"a", "sensitive-name.md": b"b"}
+    with pytest.raises(wf.FlattenError) as exc:
+        wf.flatten(files)
+    assert exc.value.problems == [
+        ("sensitive-name.md", "flat output name collides with another source")
+    ]
+    assert "SENSITIVE-NAME" not in str(exc.value)
+
+
+def test_no_error_message_carries_a_path_component() -> None:
+    # Every message is a fixed string: no sentinel path component may appear
+    # in a message (the path column is the one allowed place for the source).
+    sent = "SENTINELPART"
+    files = {
+        "Home.md": b"[a](missing-SENTINELPART.md) [b](/SENTINELPART.md)"
+        b" [c](../SENTINELPART.md) [d](//SENTINELPART\xef\xbc\x8fx)",
+        f"{sent}/Dup.md": b"1",
+        f"{sent.lower()}/dup.md": b"2",
+        f"{sent}/_Sidebar.md": b"x",
+        f"{sent}/bad name.md": b"x",
+        f"{sent}/x.sh": b"x",
+        f"{sent}/big.md": b"x" * (wf.MAX_FILE_BYTES + 1),
+        f"{sent}/bin.md": b"\xff\xfe",
+    }
+    with pytest.raises(wf.FlattenError) as exc:
+        wf.flatten(files)
+    assert len(exc.value.problems) >= 6
+    for _path, msg in exc.value.problems:
+        assert sent not in msg.upper()
+
+
 def test_cli_missing_source(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     assert wf.main(["--src", str(tmp_path / "none"), "--out", str(tmp_path / "o")]) == 1
     capsys.readouterr()
