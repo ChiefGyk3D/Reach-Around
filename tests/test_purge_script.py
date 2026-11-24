@@ -26,6 +26,7 @@ printf '%s\n' "$@" > "$STUB_DIR/call-$n.args"
 cat > "$STUB_DIR/call-$n.stdin"
 prev=""
 for arg in "$@"; do
+  if [ "$prev" = "--dump-header" ]; then dump="$arg"; fi
   if [ "$prev" = "--header" ] && [ "${arg#@}" != "$arg" ] && [ "$arg" != "@-" ]; then
     file="${arg#@}"
     cat "$file" > "$STUB_DIR/call-$n.header"
@@ -39,6 +40,12 @@ case "${mode:-ok}" in
   ok) echo '{"success": true, "errors": [], "messages": [], "result": {"id": "x"}}' ;;
   denied) echo '{"success": false, "errors": [{"code": 10000,
     "message": "Authentication error"}]}' ;;
+  rl0)
+    printf 'HTTP/2 429\r\nretry-after: 0\r\n\r\n' > "$dump"
+    echo '{"success": false, "errors": [{"code": 971, "message": "Too many"}]}' ;;
+  rlbig)
+    printf 'HTTP/2 429\r\nretry-after: 500\r\n\r\n' > "$dump"
+    echo '{"success": false, "errors": [{"code": 971, "message": "Too many"}]}' ;;
   slow) sleep 2; echo '{"success": true}' ;;
   curlfail) echo "curl: (6) Could not resolve host" >&2; exit 6 ;;
 esac
@@ -232,6 +239,39 @@ def test_an_api_refusal_is_a_warning_and_never_fails_the_deploy(
     assert "Authentication error" in result.out
     assert "WARNING" in result.summary
     assert "3 URL(s) were not purged" in result.out
+
+
+def test_a_rate_limited_batch_is_retried_and_then_purged(tmp_path: Path) -> None:
+    result = run_script(tmp_path, urls(5), modes=["rl0", "rl0", "ok"])
+    assert result.code == 0
+    assert len(result.calls) == 3
+    assert [body_of(c) for c in result.calls][0] == [body_of(c) for c in result.calls][
+        2
+    ]
+    assert "rate limited (HTTP 429)" in result.out
+    assert "purged 5 URL(s)" in result.out
+    assert "not purged" not in result.out
+
+
+def test_a_rate_limit_that_never_clears_gives_up_after_three_tries(
+    tmp_path: Path,
+) -> None:
+    result = run_script(tmp_path, urls(5), modes=["rl0"] * 5)
+    assert result.code == 0
+    assert len(result.calls) == 3
+    assert "5 URL(s) were not purged" in result.out
+
+
+def test_a_retry_after_past_the_time_budget_is_not_waited_for(tmp_path: Path) -> None:
+    result = run_script(
+        tmp_path,
+        urls(5),
+        modes=["rlbig", "ok"],
+        env={"PURGE_BUDGET_SECONDS": "10"},
+    )
+    assert result.code == 0
+    assert len(result.calls) == 1
+    assert "5 URL(s) were not purged" in result.out
 
 
 def test_a_transport_failure_is_a_warning_and_later_batches_still_run(

@@ -106,9 +106,52 @@ schema_check() {
     return "$rc"
 }
 
-# worker_install: npm ci only when node_modules is missing.
+# worker_install: npm ci unless node_modules was installed from this exact
+# package-lock.json. A stamp inside node_modules holds the lockfile's SHA-256; a
+# missing directory, a missing stamp or a changed lockfile means a clean npm ci,
+# so the checks never run against stale dependencies.
 worker_install() {
-    (cd worker && { [ -d node_modules ] || npm ci; })
+    local want have=""
+    want="$(cd worker && sha256sum package-lock.json | cut -d' ' -f1)" || return 2
+    [ -n "$want" ] || return 2
+    (
+        cd worker || exit 2
+        if [ -d node_modules ] && [ -f node_modules/.gate-lock-sha256 ]; then
+            have="$(cat node_modules/.gate-lock-sha256)"
+        fi
+        if [ "$have" = "$want" ]; then
+            echo "worker: node_modules matches package-lock.json (sha256 $want)"
+            exit 0
+        fi
+        npm ci || exit $?
+        printf '%s\n' "$want" >node_modules/.gate-lock-sha256
+    )
+}
+
+# workflow_lint: run actionlint and zizmor (offline) over GATE_WORKFLOW_FILES
+# (one path per line). Whichever is installed runs; with neither, the step fails
+# rather than pass without checking anything.
+workflow_lint() {
+    local files=() f found=0 rc=0 bin
+    while IFS= read -r f; do
+        [ -n "$f" ] && files+=("$f")
+    done <<<"${GATE_WORKFLOW_FILES:-}"
+    [ "${#files[@]}" -gt 0 ] || return 0
+    bin="$(tool actionlint)"
+    if command -v "$bin" >/dev/null 2>&1; then
+        found=1
+        "$bin" "${files[@]}" || rc=1
+    fi
+    bin="$(tool zizmor)"
+    if command -v "$bin" >/dev/null 2>&1; then
+        found=1
+        "$bin" --offline "${files[@]}" || rc=1
+    fi
+    if [ "$found" -eq 0 ]; then
+        echo "gate: workflow files changed but neither actionlint nor zizmor is installed" >&2
+        return 2
+    fi
+    return "$rc"
 }
 worker_tsc() { (cd worker && npx tsc --noEmit); }
 worker_vitest() { (cd worker && npx vitest run); }
@@ -120,6 +163,10 @@ case "$internal" in
         ;;
     worker_install)
         worker_install
+        exit $?
+        ;;
+    workflow_lint)
+        workflow_lint
         exit $?
         ;;
     worker_tsc)
@@ -147,9 +194,7 @@ worker_steps() {
         echo "-- worker: skipped (no worker/ directory)"
         return 0
     fi
-    if [ ! -d worker/node_modules ] || [ "$plan" -eq 1 ]; then
-        step "worker install" bash "$0" --internal worker_install
-    fi
+    step "worker install" bash "$0" --internal worker_install
     step "worker tsc" bash "$0" --internal worker_tsc
     step "worker vitest" bash "$0" --internal worker_vitest
 }
@@ -180,6 +225,7 @@ else
     need_full_pytest=0
     need_schema=0
     need_worker=0
+    workflow_files=()
     heavy=0
     for f in "${changed[@]}"; do
         [ -n "$f" ] || continue
@@ -194,7 +240,10 @@ else
                 need_schema=1
                 heavy=1
                 ;;
-            .github/workflows/*) ;;
+            .github/workflows/*)
+                workflow_files+=("$f")
+                heavy=1
+                ;;
             tests/test_*.py)
                 py_files+=("$f")
                 mypy_files+=("$f")
@@ -234,7 +283,7 @@ else
     done
     echo "gate: fast mode against $base: ${#changed[@]} changed file(s)"
     if [ "$heavy" -eq 0 ]; then
-        echo "-- nothing heavy to run (docs, workflow or comment-level changes only)"
+        echo "-- nothing heavy to run (docs or comment-level changes only)"
     fi
     if [ "${#py_files[@]}" -gt 0 ]; then
         step "ruff check" "$ruff" check "${py_files[@]}"
@@ -254,6 +303,10 @@ else
     fi
     if [ "$need_worker" -eq 1 ]; then
         worker_steps
+    fi
+    if [ "${#workflow_files[@]}" -gt 0 ]; then
+        GATE_WORKFLOW_FILES="$(printf '%s\n' "${workflow_files[@]}")" \
+            step "workflow lint" bash "$0" --internal workflow_lint
     fi
 fi
 

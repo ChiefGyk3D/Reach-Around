@@ -30,7 +30,11 @@
 # 2000 characters is skipped. Shell tracing is never turned on here.
 set -u
 
-BATCH=30 # URLs per request (the Cloudflare limit this was written against)
+# URLs per request. Cloudflare's single-file purge allows 100 per request and
+# 800 URLs per second on the Free plan (docs read 2026-11-24); 30 stays well under.
+BATCH=30
+MAX_ATTEMPTS=3 # tries per batch when Cloudflare answers HTTP 429
+MAX_WAIT=60 # longest single wait, in seconds
 MAX_PATH_CHARS=2000
 MAX_DEFAULT=300
 MAX_CEILING=1000
@@ -99,7 +103,12 @@ header_file=$(mktemp "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/purge-header.XXXXXX") || {
   warn "could not create a private header file; skipping"
   exit 0
 }
-trap 'rm -f "$header_file"' EXIT
+resp_headers=$(mktemp "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/purge-resp.XXXXXX") || {
+  rm -f "$header_file"
+  warn "could not create a private response file; skipping"
+  exit 0
+}
+trap 'rm -f "$header_file" "$resp_headers"' EXIT
 printf 'Authorization: Bearer %s\n' "$CLOUDFLARE_PURGE_TOKEN" >"$header_file"
 
 batch_json=""
@@ -112,6 +121,23 @@ accepted=0
 seen=0
 out_of_time=0
 
+# Seconds to wait after a 429: the Retry-After header when it is a whole
+# number (capped at MAX_WAIT), else 2 seconds times the attempt number.
+retry_after_seconds() {
+  local value
+  value=$(grep -i '^retry-after:' "$resp_headers" | tail -n 1 | tr -d '\r ' | cut -d: -f2)
+  case "$value" in
+    '' | *[!0-9]*) echo $((2 * attempt)) ;;
+    *)
+      if [ "${#value}" -gt 3 ] || [ "$value" -gt "$MAX_WAIT" ]; then
+        echo "$MAX_WAIT"
+      else
+        echo "$value"
+      fi
+      ;;
+  esac
+}
+
 send() {
   [ "$batch_count" -gt 0 ] || return 0
   if [ $((SECONDS - started)) -ge "$budget" ]; then
@@ -120,27 +146,45 @@ send() {
     batch_count=0
     return 0
   fi
-  requests=$((requests + 1))
   body="{\"files\":[${batch_json}]}"
-  response=$(
-    printf '%s' "$body" |
-      curl --silent --show-error --proto '=https' --tlsv1.2 --max-time 30 \
-        --request POST \
-        --header "@${header_file}" \
-        --header 'Content-Type: application/json' \
-        --data-binary @- \
-        "${API}/zones/${ZONE_ID}/purge_cache" 2>&1
-  )
-  status=$?
-  if [ "$status" -eq 0 ] &&
-    printf '%s' "$response" | grep -Eq '"success"[[:space:]]*:[[:space:]]*true'; then
-    total=$((total + batch_count))
-  else
+  attempt=0
+  while :; do
+    attempt=$((attempt + 1))
+    requests=$((requests + 1))
+    : >"$resp_headers"
+    response=$(
+      printf '%s' "$body" |
+        curl --silent --show-error --proto '=https' --tlsv1.2 --max-time 30 \
+          --request POST \
+          --header "@${header_file}" \
+          --header 'Content-Type: application/json' \
+          --dump-header "$resp_headers" \
+          --data-binary @- \
+          "${API}/zones/${ZONE_ID}/purge_cache" 2>&1
+    )
+    status=$?
+    if [ "$status" -eq 0 ] &&
+      printf '%s' "$response" | grep -Eq '"success"[[:space:]]*:[[:space:]]*true'; then
+      total=$((total + batch_count))
+      break
+    fi
+    # HTTP 429: wait the Retry-After seconds Cloudflare names (else back off
+    # 2, 4 seconds), never past the time budget, then send the same batch again.
+    if [ "$status" -eq 0 ] && grep -Eq '^HTTP/[0-9.]+ 429' "$resp_headers" &&
+      [ "$attempt" -lt "$MAX_ATTEMPTS" ]; then
+      wait_for=$(retry_after_seconds)
+      if [ $((SECONDS - started + wait_for)) -lt "$budget" ]; then
+        warn "purge request ${requests} was rate limited (HTTP 429); waiting ${wait_for}s before trying again"
+        sleep "$wait_for"
+        continue
+      fi
+    fi
     failed=$((failed + batch_count))
     # The response holds Cloudflare's error list, never the token.
     detail=$(printf '%s' "$response" | tr -d '\r\n' | cut -c1-300)
     warn "purge request ${requests} (${batch_count} URLs) failed (curl exit ${status}): ${detail}"
-  fi
+    break
+  done
   batch_json=""
   batch_count=0
 }
