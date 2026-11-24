@@ -93,6 +93,9 @@ KIT_FIELD_POLICY: Mapping[str, FieldPolicy] = {
     "title": FieldPolicy("public"),
     "about": FieldPolicy("public"),
     "contact": FieldPolicy("public"),
+    # The "Consulting instead?" link (#686): one https URL printed on both kit
+    # pages beside the contact block. Public, since the line is on the public page.
+    "consulting_url": FieldPolicy("public"),
     "tags": FieldPolicy("public"),
     "photo": FieldPolicy("public"),
     "metrics": FieldPolicy("public"),
@@ -765,6 +768,10 @@ class KitConfig(_Model):
     # the page prints it escaped. The owner decides what goes here (an email
     # written as text is fine); no address or phone is required or checked.
     contact: Text200 | None = None
+    # Where the "Consulting instead?" line points (#686): an https URL, checked
+    # like ``public_pdf``. Left out: the line is not printed at all. The words of
+    # the line are fixed in the template; only the target is the owner's.
+    consulting_url: Annotated[str, Field(max_length=2048)] | None = None
     # A few content category chips for the header, public on every page.
     tags: list[Text30] = Field(default_factory=list, max_length=8)
     metrics: list[PlatformMetric] = Field(default_factory=list, max_length=30)
@@ -858,9 +865,9 @@ class KitConfig(_Model):
             )
         return self
 
-    @field_validator("public_pdf")
+    @field_validator("public_pdf", "consulting_url")
     @classmethod
-    def _public_pdf_is_https(cls, value: str | None) -> str | None:
+    def _kit_urls_are_https(cls, value: str | None) -> str | None:
         return None if value is None else _https(value)
 
     @field_validator("turnstile_site_key")

@@ -1228,6 +1228,7 @@ def _content(
         "about": projection["about"],
         "photo": projection["photo"],
         "contact": projection["contact"],
+        "consulting_url": projection["consulting_url"],
         "tags": projection["tags"],
         "public_pdf": projection["public_pdf"],
         "number_rows": _metric_rows(measures, config, today, live_day),

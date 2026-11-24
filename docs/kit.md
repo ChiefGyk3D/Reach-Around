@@ -766,7 +766,7 @@ cannot reach a gated field, and the two pages go to two separate directories.
 
 | Field | Visibility | Owner-report marker |
 | --- | --- | --- |
-| title, about, photo, contact, tags, metrics, analytics, unified_total, turnstile_site_key | public | no |
+| title, about, photo, contact, consulting_url, tags, metrics, analytics, unified_total, turnstile_site_key | public | no |
 | partners, case_studies, services, rates, testimonials, demographics, inquiry, disclosure | gated | no |
 | engagement | gated | `owner_report_only`; YouTube figures require `owner_supplied: true` |
 | imported_history | gated by default; public when `imported_history_public: true` | no |
@@ -1008,6 +1008,17 @@ the same removal of the work directory. Differences:
 Defaults the owner may change: the "Valid as of" day is the creation date, not
 the day the numbers were read (each row keeps its own "as of" date). The dated
 "valid as of" line for the deeper kit request flow is separate work (#426).
+
+## Consulting line
+
+`kit.consulting_url` is one optional https URL (checked like `kit.public_pdf`). When
+set, the public page and the gated page print the fixed line "Consulting
+instead? Visit my consulting site." right after the contact block (or after the
+buttons when there is no contact line), with "consulting site" as a link to the
+URL. The field is public. Without it no line is printed. Neither PDF prints the
+line: a PDF may hold no link annotations, so on paper the link would be bare
+words with nothing to follow. The consulting site itself is not changed by this;
+it carries no line pointing back to the kit.
 
 ## Contact line
 

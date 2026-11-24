@@ -525,6 +525,7 @@ KNOWN_FIELDS: frozenset[str] = frozenset(
         "colors",
         "column_width",
         "comments",
+        "consulting_url",
         "contact",
         "copyright",
         "count",
