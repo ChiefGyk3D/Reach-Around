@@ -735,6 +735,27 @@ def test_a_dead_first_address_falls_through_to_the_next_checked_one() -> None:
     assert tried == [PUBLIC, other]
 
 
+def test_system_lookup_keeps_only_the_first_answers_it_is_given(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # getaddrinfo builds its whole list before we see it (that allocation is
+    # not bounded here); what is bounded is everything done with the answers
+    infos = [
+        (
+            socket.AF_INET,
+            socket.SOCK_STREAM,
+            6,
+            "",
+            (f"93.184.{i // 250}.{i % 250 + 1}", 443),
+        )
+        for i in range(5000)
+    ]
+    monkeypatch.setattr(socket, "getaddrinfo", lambda *a, **k: infos)
+    answers = system_resolver("lookup-cap.example.org", 443, timeout=5.0)
+    assert len(answers) == MAX_DNS_ANSWERS
+    assert answers[0] == "93.184.0.1"
+
+
 def test_a_huge_answer_set_is_capped_at_a_few_connection_attempts() -> None:
     answers = [f"93.184.{i // 250}.{i % 250 + 1}" for i in range(2000)]
     tried: list[str] = []

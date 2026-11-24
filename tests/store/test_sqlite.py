@@ -326,6 +326,109 @@ class TestSqliteOnly:
         with pytest.raises(StoreError):
             SqliteStore(tmp_path)
 
+    @staticmethod
+    def _second_check_hook(
+        monkeypatch: pytest.MonkeyPatch, tamper: Callable[[], None]
+    ) -> list[sqlite3.Connection]:
+        """Run ``tamper`` between SQLite's open and the post-open recheck."""
+        from reach_around.store.sqlite import SqliteDb
+
+        opened: list[sqlite3.Connection] = []
+        real_connect = sqlite3.connect
+        real_check = SqliteDb._same_file
+        calls = {"n": 0}
+
+        def connect(*args: object, **kwargs: object) -> sqlite3.Connection:
+            conn: sqlite3.Connection = real_connect(*args, **kwargs)  # type: ignore[call-overload]  # test shim forwards the caller's exact arguments
+            opened.append(conn)
+            return conn
+
+        def check(self: SqliteDb) -> None:
+            calls["n"] += 1
+            if calls["n"] % 2 == 0:  # the second check of a connection
+                tamper()
+            real_check(self)
+
+        monkeypatch.setattr(sqlite3, "connect", connect)
+        monkeypatch.setattr(SqliteDb, "_same_file", check)
+        return opened
+
+    def test_swap_between_open_and_recheck_is_detected_and_conn_closed(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        path = tmp_path / "s.db"
+        store = SqliteStore(path)
+        store.close()
+        monkeypatch.undo()
+
+        def swap() -> None:
+            path.rename(tmp_path / "orig.db")
+            path.write_bytes(b"")
+            path.chmod(0o600)
+
+        opened = self._second_check_hook(monkeypatch, swap)
+        with pytest.raises(StoreError):
+            SqliteStore(path)
+        assert len(opened) == 1
+        with pytest.raises(sqlite3.ProgrammingError):
+            opened[0].execute("SELECT 1")
+
+    def test_sidecar_planted_between_open_and_recheck_is_detected(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        path = tmp_path / "s.db"
+        SqliteStore(path).close()
+        victim = tmp_path / "victim.txt"
+        victim.write_bytes(b"keep")
+
+        def plant() -> None:
+            link = Path(f"{path}-wal")
+            if not link.is_symlink():
+                link.symlink_to(victim)
+
+        opened = self._second_check_hook(monkeypatch, plant)
+        with pytest.raises(StoreError):
+            SqliteStore(path)
+        assert len(opened) == 1
+        with pytest.raises(sqlite3.ProgrammingError):
+            opened[0].execute("SELECT 1")
+        assert victim.read_bytes() == b"keep"
+
+    def test_migration_that_fails_midway_leaves_the_database_unchanged(
+        self, tmp_path: Path
+    ) -> None:
+        path = tmp_path / "s.db"
+        first = SqliteStore(path, migrations=load_migrations()[:1])
+        first.migrate()
+        first.db.execute(
+            "INSERT INTO click_daily VALUES ('2026-10-22', 'UTC', 'docs', 'US', 7)"
+        )
+        first.db.execute(
+            "INSERT INTO click_daily VALUES "
+            "('2026-10-23', 'UTC', 'docs', 'US', 9007199254740992)"
+        )
+        first.close()
+        full = SqliteStore(path)
+        with pytest.raises(sqlite3.IntegrityError):
+            full.migrate()
+        full.close()
+        again = SqliteStore(path, migrations=load_migrations()[:1])
+        tables = {
+            str(r[0])
+            for r in again.db.query("SELECT name FROM sqlite_master WHERE type='table'")
+        }
+        assert "click_daily_new" not in tables
+        assert again.db.query("SELECT version FROM schema_migrations") == [(1,)]
+        assert again.db.query("SELECT day, count FROM click_daily ORDER BY day") == [
+            ("2026-10-22", 7),
+            ("2026-10-23", 9007199254740992),
+        ]
+        sql = again.db.query(
+            "SELECT sql FROM sqlite_master WHERE name = 'click_daily'"
+        )[0][0]
+        assert "typeof(count)" not in str(sql)  # still the original table
+        again.close()
+
     def test_click_daily_rebuild_keeps_rows_and_enforces_integer_counts(
         self, tmp_path: Path
     ) -> None:

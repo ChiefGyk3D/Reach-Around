@@ -124,8 +124,11 @@ MAX_RESOLVER_THREADS = 8
 # At most this many distinct validated addresses are tried per fetch, so a
 # hostile answer set cannot fan one request out into many connections.
 MAX_CONNECT_ADDRESSES = 4
-# At most this many resolver answers are read and validated at all; the rest
-# are dropped before any per-answer work (CPU and memory stay bounded).
+# At most this many resolver answers are kept, validated and considered; the
+# rest are dropped. This bounds our own per-answer work (validation, dedupe,
+# connection attempts). It does NOT bound what socket.getaddrinfo allocates
+# or parses: that call builds its whole list before we see it, and the
+# resolve time is bounded only by the request deadline.
 MAX_DNS_ANSWERS = 32
 
 
@@ -377,7 +380,7 @@ class HttpsTransport:
             answers = system_resolver(host, 443, timeout=remaining)
         else:
             answers = self._resolver(host, 443)
-        # bound the work before touching any answer: read at most the cap
+        # keep at most the cap, so validation and dedupe below do bounded work
         answers = list(itertools.islice(answers, MAX_DNS_ANSWERS))
         if not answers:
             raise EgressBlocked("no_address", host)
