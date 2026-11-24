@@ -1012,8 +1012,17 @@ Where it may go, and what it holds:
   space, or one of these apostrophe-like marks: `'` (U+0027), U+2018, U+2019,
   U+201B, U+02BB, U+02BC, U+2032 and the grave accent `` ` ``. Digit groups
   joined by exactly one separator that is not a line break are also read as one
-  number ("1234 567"); two characters between them ("123, 456") or a blank line
-  keep them two numbers. Unrelated numbers and punctuation are left alone.
+  number ("1234 567"). **Fail closed (6 or more digits):** a private whole
+  number of 6 or more digits is also looked for with every separator between
+  two digits removed: any run of commas, periods used as group marks, spaces,
+  line breaks, apostrophe-like marks and invisible characters. So "9,162, 534",
+  "9162  534", "9162" newline "534" and "9.162.534" all match a private 9162534.
+  Letters are not separators ("123 apples, 456 pears" is two numbers). **The
+  price:** two unrelated numbers that only touch through punctuation ("results
+  were 123, 456 respectively" against a private 123456) are a false stop. The
+  build error says to reword the text that shows the number, in any spacing; do
+  that, since the rule is meant to err on the side of keeping a private figure
+  out. Unrelated numbers split by words are left alone.
   **Short figures:** a private whole number of fewer than 6 digits (3, 40) is in
   the inventory, but is matched in a text only when it is written with a unit: a
   percent sign, a currency sign or code before or after it (`$3`, `$-3`, `3
@@ -1022,8 +1031,10 @@ Where it may go, and what it holds:
   followers, subscribers, minutes, posts or episodes). "3%" and "40 subscribers"
   are refused; "3 platforms", "40 days" and a bare "40" in a sentence are not,
   because those say nothing alone. The numbers are read by the same rules as the
-  long ones, so "1,234 followers" is 1234 (and the 234 inside it is not a number
-  of its own). **Rows:** a measure row's numeric `value` always has a unit, so a
+  long ones, so "1,234 followers" is 1234 (and the 234 inside a true thousands
+  group is not a number of its own). The parts of a joined span do count beside
+  a unit: "20 40 subscribers" matches a private 40, as well as the joined 2040.
+  **Rows:** a measure row's numeric `value` always has a unit, so a
   row whose `unit` is a registry unit is compared with the short private figures
   as it is (a `percent` row is stored in tenths: 400 is 40). The encoding of the
   file is never part of the comparison.

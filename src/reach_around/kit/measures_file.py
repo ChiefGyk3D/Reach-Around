@@ -308,19 +308,31 @@ _JOINED = re.compile(
 )
 
 
-def _spans(folded: str) -> list[tuple[int, int, Decimal, bool]]:
-    """Every number in a folded text as (start, end, value, whole), where whole
-    is true for a grouped or joined number and false for a plain digit run. The
-    one place a text is read as numbers, so the long-figure match and the
-    short-figure match see the same spans."""
-    spans: list[tuple[int, int, Decimal, bool]] = []
-    for pattern in (_GROUPED, _JOINED):
+def _spans(folded: str) -> list[tuple[int, int, Decimal, str]]:
+    """Every number in a folded text as (start, end, value, kind). The kind is
+    "grouped" (true thousands groups), "joined" (digit groups with one separator
+    between) or "plain" (one digit run). The one place a text is read as numbers,
+    so the long-figure match and the short-figure match see the same spans."""
+    spans: list[tuple[int, int, Decimal, str]] = []
+    for kind, pattern in (("grouped", _GROUPED), ("joined", _JOINED)):
         for match in pattern.finditer(folded):
             value = Decimal(re.sub(_SEPARATOR, "", match.group()))
-            spans.append((match.start(), match.end(), value, True))
+            spans.append((match.start(), match.end(), value, kind))
     for match in _PLAIN.finditer(folded):
-        spans.append((match.start(), match.end(), Decimal(match.group()), False))
+        spans.append((match.start(), match.end(), Decimal(match.group()), "plain"))
     return spans
+
+
+def digit_runs(text: str) -> set[int]:
+    """Whole numbers as a fail-closed reader sees them: the text folded, then
+    every separator between two digits removed, whatever its length or kind (a
+    comma, a period used as a group mark, any space or line break, an
+    apostrophe), and the digit runs left read as whole numbers. Letters are not
+    separators, so "123 apples, 456 pears" stays two numbers. This also reads
+    "123, 456" as 123456: that false stop is the price of the rule."""
+    folded = _fold_text(text)
+    closed = re.sub(rf"(?<=[0-9])(?:{_SEPARATOR}|\.)+(?=[0-9])", "", folded)
+    return {int(run) for run in re.findall(r"[0-9]+", closed)}
 
 
 def number_tokens(text: str) -> set[Decimal]:
@@ -357,10 +369,12 @@ def unit_tokens(text: str) -> set[Decimal]:
     and "3 followers" are."""
     folded = _fold_text(text)
     spans = _spans(folded)
-    inside = [(s, e) for s, e, _v, whole in spans if whole]
+    # only true thousands groups hide their parts; the parts of a joined span
+    # ("20 40 subscribers") are numbers of their own as well
+    inside = [(s, e) for s, e, _v, kind in spans if kind == "grouped"]
     found: set[Decimal] = set()
-    for start, end, value, whole in spans:
-        if not whole and any(s <= start and end <= e for s, e in inside):
+    for start, end, value, kind in spans:
+        if kind == "plain" and any(s <= start and end <= e for s, e in inside):
             continue
         if _AFTER.match(folded, end) or _BEFORE.search(folded[:start]):
             found.add(value)
@@ -397,21 +411,29 @@ def check_no_private_values(
     strings = [_norm(v) for v in values if isinstance(v, str)]
     numbers = {Decimal(abs(v)) for v in values if isinstance(v, int)}
     figures: set[Decimal] = row_figures(document)
+    runs: set[int] = set()
     for text in values:
         if isinstance(text, str):
             numbers |= number_tokens(text)
             figures |= unit_tokens(text)
+            runs |= digit_runs(text)
     for path, value in inventory:
         if isinstance(value, str):
             needle = _norm(value)
             hit = any(needle in text for text in strings)
+        elif is_short(value):
+            hit = abs(Decimal(value)) in figures
         else:
-            seen = figures if is_short(value) else numbers
-            hit = abs(Decimal(value)) in seen
+            hit = abs(Decimal(value)) in numbers
+            if not hit and _whole(value):
+                # fail closed: a whole number of 6 or more digits is also
+                # looked for with every separator removed
+                hit = abs(int(value)) in runs
         if hit:
             raise MeasuresFileError(
                 f"a value of the private field {path} is in the measures file; "
-                "nothing was written"
+                "nothing was written. Reword the text that shows it so the "
+                "number does not appear, in any spacing"
             )
 
 

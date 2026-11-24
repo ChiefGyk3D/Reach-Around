@@ -866,18 +866,70 @@ def test_every_apostrophe_like_mark_separates_thousands(mark: str) -> None:
 @pytest.mark.parametrize(
     "text",
     [
-        "The two results were 123, 456 respectively",
-        "The two results were 123,\n456 respectively",
-        "The two results were 123\n\n456",
-        "The two results were 123  456",
         "ids 123 and 456",
+        "123 apples, 456 pears",
+        "1234567 and 7654321",
+        "page 123, line 456 of 7",
     ],
 )
-def test_neighboring_numbers_are_not_joined(text: str) -> None:
+def test_numbers_split_by_words_are_not_joined(text: str) -> None:
     check_no_private_values(a_note(text), [("kit.private.value", 123456)])
-    # a number with one separator is still read as one
-    with pytest.raises(MeasuresFileError):
-        check_no_private_values(a_note("it was 123 456"), [("k.p", 123456)])
+
+
+PRIVATE_9162534 = {
+    "comma and space": "reached 9,162, 534 people",
+    "double space": "reached 9162  534 people",
+    "line break": "reached 9162\n534 people",
+    "blank line": "reached 9162\n\n534 people",
+    "carriage return": "reached 9162\r\n534 people",
+    "periods as group marks": "reached 9.162.534 people",
+    "mixed marks": "reached 9 162,\n534 people",
+    "zero-width inside": "reached 9​162⁠, 534 people",
+    "apostrophes": "reached 9’162’ 534 people",
+    "fullwidth": "reached ９，１６２，　５３４",
+}
+
+
+@pytest.mark.parametrize("name", sorted(PRIVATE_9162534))
+def test_a_long_private_number_is_found_with_every_separator_removed(
+    name: str,
+) -> None:
+    with pytest.raises(MeasuresFileError, match="Reword"):
+        check_no_private_values(
+            a_note(PRIVATE_9162534[name]), [("kit.private.value", 9162534)]
+        )
+
+
+def test_the_separator_free_match_is_fail_closed_on_purpose() -> None:
+    """The price of the rule: two numbers that only look like one number split
+    by punctuation are refused, and the error says to reword."""
+    with pytest.raises(MeasuresFileError, match="Reword"):
+        check_no_private_values(
+            a_note("results were 123, 456 respectively"), [("k.p", 123456)]
+        )
+
+
+@pytest.mark.parametrize(
+    ("private", "text", "found"),
+    [
+        (40, "20 40 subscribers", True),
+        (40, "1234 40 followers", True),
+        (567, "1234 567 views", True),
+        (40, "20 40 platforms", False),
+        (234, "Reached 1,234 followers", False),
+        (234, "Reached 1 234 followers", False),
+        (40, "20 40 days", False),
+    ],
+)
+def test_a_short_figure_beside_a_unit_counts_inside_a_joined_span(
+    private: int, text: str, found: bool
+) -> None:
+    inventory: list[tuple[str, Any]] = [("kit.private.value", private)]
+    if found:
+        with pytest.raises(MeasuresFileError, match="kit.private"):
+            check_no_private_values(a_note(text), inventory)
+    else:
+        check_no_private_values(a_note(text), inventory)
 
 
 WRITTEN_1234567 = {
