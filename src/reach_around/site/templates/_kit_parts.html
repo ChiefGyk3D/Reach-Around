@@ -19,7 +19,7 @@
 {% endif %}
 {% endmacro %}
 {% macro numbers(kit, heading_id, framed=false, zones=none) %}
-{% if kit.metrics %}
+{% if kit.number_rows %}
 <section class="kit-numbers" aria-labelledby="{{ heading_id }}">
 <h3 id="{{ heading_id }}"{% if framed and frame_plan %} class="{{ frames.cls("head")|trim }}"{% endif %}>Audience numbers</h3>
 {% if kit.live_since %}
@@ -57,7 +57,7 @@
 <tr><th scope="col">Platform</th><th scope="col">Measure</th><th scope="col">Number</th><th scope="col">Source</th><th scope="col">As of</th></tr>
 </thead>
 <tbody>
-{% for row in kit.metrics %}
+{% for row in kit.number_rows %}
 <tr role="row"><th scope="row" role="rowheader">{{ row.platform or row.label }}</th><td role="cell" data-label="Measure">{{ row.label if row.platform else "" }}</td><td class="kit-figure" role="cell" data-label="Number">{{ row.value }}</td><td role="cell" data-label="Source">{% if row.trust %}{{ trust(row.trust) }}{% endif %}</td><td role="cell" data-label="As of"><time datetime="{{ row.as_of }}">{{ row.as_of }}</time> UTC{% if row.stale %} (out of date){% endif %}{% if row.era %} <span class="kit-era">{{ row.era }}</span>{% endif %}{% if zones and row.as_of %}<span class="kit-note kit-zone-note" data-zone-start="{{ row.as_of }}T00:00:00Z"></span>{% endif %}</td></tr>
 {% endfor %}
 </tbody>
@@ -67,13 +67,13 @@
 {% endmacro %}
 
 {% macro analytics(kit, heading_id) %}
-{% if kit.analytics %}
+{% if kit.analytics_cards %}
 <section class="kit-analytics" aria-labelledby="{{ heading_id }}">
 <h3 id="{{ heading_id }}">Platform analytics</h3>
 <nav class="kit-analytics-tabs" aria-label="Platform analytics">
-{% for row in kit.analytics %}<a href="#kit-analytics-{{ row.platform }}">{{ row.platform_name }}</a>{% endfor %}
+{% for row in kit.analytics_cards %}<a href="#kit-analytics-{{ row.platform }}">{{ row.platform_name }}</a>{% endfor %}
 </nav>
-{% for row in kit.analytics %}
+{% for row in kit.analytics_cards %}
 <article class="kit-analytics-panel" id="kit-analytics-{{ row.platform }}" aria-labelledby="kit-analytics-{{ row.platform }}-title">
 <div class="kit-analytics-head">
 <h4 id="kit-analytics-{{ row.platform }}-title">{{ row.platform_name }} analytics</h4>
@@ -92,7 +92,7 @@
 {% endmacro %}
 
 {% macro engagement(kit, heading_id, framed=false) %}
-{% if kit.engagement %}
+{% if kit.engagement_rows %}
 <section class="kit-engagement" aria-labelledby="{{ heading_id }}">
 <h3 id="{{ heading_id }}"{% if framed and frame_plan %} class="{{ frames.cls("head")|trim }}"{% endif %}>Engagement</h3>
 <p class="kit-note">{{ kit.engagement_note }}</p>
@@ -107,11 +107,60 @@
 <tr><th scope="col">Platform and measure</th><th scope="col">Value</th><th scope="col">Period (UTC) and as-of date</th><th scope="col">Source</th></tr>
 </thead>
 <tbody>
-{% for row in kit.engagement %}
+{% for row in kit.engagement_rows %}
 <tr role="row"><th scope="row" role="rowheader">{{ row.platform }}<span class="kit-formula kit-measure">{{ row.measure }}</span>{% if row.provenance %}<span class="kit-note kit-formula">{{ row.provenance }}.</span>{% endif %}{% if row.note %}<span class="kit-note kit-formula">{{ row.note }}.</span>{% endif %}</th><td class="kit-figure" role="cell" data-label="Value">{{ row.value }}</td><td role="cell" data-label="Period">{% if row.as_of %}<span class="kit-nowrap">{{ row.start }}</span> to <span class="kit-nowrap">{{ row.end }}</span><span class="kit-note kit-formula">As of <time datetime="{{ row.as_of }}">{{ row.as_of }}</time> UTC</span>{% endif %}</td><td role="cell" data-label="Source">{% if row.trust %}{{ trust(row.trust, row.stale) }}{% endif %}</td></tr>
 {% endfor %}
 </tbody>
 </table>
+</section>
+{% endif %}
+{% endmacro %}
+
+{% macro card_line(row) %}<time datetime="{{ row.as_of }}">{{ row.as_of }}</time> UTC{% if row.stale %} (out of date){% endif %}{% if row.period %}, period {{ row.period }} (UTC){% endif %}{% if row.era %} <span class="kit-era">{{ row.era }}</span>{% endif %}{% if row.trust %} {{ trust(row.trust) }}{% endif %}{% endmacro %}
+{% macro sections(kit, heading_id) %}
+{% if kit.sections %}
+<section class="kit-sections" aria-labelledby="{{ heading_id }}">
+<h3 id="{{ heading_id }}">Platforms</h3>
+{% for card in kit.sections %}
+<article class="kit-section-card kit-analytics-panel" aria-labelledby="{{ heading_id }}-{{ loop.index }}">
+<h4 id="{{ heading_id }}-{{ loop.index }}">{{ card.name }}{% if card.account %} <span class="kit-note">{{ card.account }}</span>{% endif %}</h4>
+{% if card.empty %}
+<p class="kit-note kit-empty">{{ card.no_numbers }}</p>
+{% else %}
+<p class="kit-section-headline"><strong class="kit-figure">{{ card.headline.value }}</strong> {{ card.headline.label }}</p>
+<p class="kit-note">{{ card_line(card.headline) }}</p>
+{% if card.rows %}
+<ul class="kit-list">
+{% for row in card.rows %}
+<li><span>{{ row.label }}</span> <strong class="kit-figure">{{ row.value }}</strong> <span class="kit-note">{{ card_line(row) }}{% if row.formula %} {{ row.formula }}{% endif %}{% if row.note %} {{ row.note }}.{% endif %}</span></li>
+{% endfor %}
+</ul>
+{% endif %}
+{% endif %}
+</article>
+{% endfor %}
+</section>
+{% endif %}
+{% endmacro %}
+
+{% macro live_block(kit, heading_id) %}
+{% if kit.live %}
+<section class="kit-live" aria-labelledby="{{ heading_id }}">
+<h3 id="{{ heading_id }}">{{ kit.live.heading }}</h3>
+{% for card in kit.live.cards %}
+<article class="kit-live-card kit-analytics-panel" aria-labelledby="{{ heading_id }}-{{ loop.index }}">
+<h4 id="{{ heading_id }}-{{ loop.index }}">{{ card.name }}</h4>
+{% if card.empty %}
+<p class="kit-note kit-empty">{{ card.no_numbers }}</p>
+{% else %}
+<ul class="kit-list">
+{% for row in card.rows %}
+<li class="kit-live-row"><span>{{ row.label }}</span> <strong class="kit-figure">{{ row.value }}</strong>{% if row.entered %} <span class="kit-note">{{ card_line(row) }}</span>{% endif %}</li>
+{% endfor %}
+</ul>
+{% endif %}
+</article>
+{% endfor %}
 </section>
 {% endif %}
 {% endmacro %}

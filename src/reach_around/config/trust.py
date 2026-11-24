@@ -123,6 +123,12 @@ def engagement_trust() -> Trust:
     return Trust(HAND_KEPT, "Worked out from figures typed by the owner")
 
 
+def live_trust() -> Trust:
+    """Every live figure beyond the follower count is typed from the platform's
+    own dashboard: there is no API path for it, so it is never labeled API."""
+    return Trust(HAND_KEPT, "Typed by the owner from the platform's own dashboard")
+
+
 def case_trust(start: date, end: date) -> Trust:
     return Trust(
         HAND_KEPT, f"Typed by the owner for {start.isoformat()} to {end.isoformat()}"

@@ -443,6 +443,9 @@ def test_policy_classifies_every_field() -> None:
         "turnstile_site_key",
         "public_pdf",
         "audience_summary",
+        "sections",
+        "live",
+        "measures",
     }
     for name in ("partners", "case_studies", "rates", "demographics"):
         assert visibility(name) == "gated"
@@ -497,6 +500,9 @@ def test_public_projection_has_only_header_and_headline_numbers() -> None:
         "turnstile_site_key",
         "public_pdf",
         "audience_summary",
+        "sections",
+        "live",
+        "measures",
     }
     assert CANARY not in json.dumps(out, default=str)
 

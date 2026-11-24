@@ -96,10 +96,11 @@ class Sink:
         self.alerts: list[HealthAlert] = []
         self.fail = fail
 
-    def store(self, token: NewToken, name: str, source: str, expires_on: date) -> None:
+    def store(self, token: NewToken, name: str, source: str, expires_on: date) -> bool:
         if self.fail:
             raise RuntimeError(token.value)
         self.stored.append((token.value, name, source, expires_on))
+        return True
 
     def alert(self, alert: HealthAlert) -> None:
         self.alerts.append(alert)
@@ -521,6 +522,35 @@ def test_a_failing_sink_keeps_the_original_token_and_says_so() -> None:
     assert [a.kind for a in sink.alerts] == ["refresh_store_failed"]
     assert token_of(transport.urls[-1]) == TOKEN  # the unstored token is not used
     assert NEW_TOKEN not in repr(sink.alerts)
+
+
+class _ReceiptSink(Sink):
+    def __init__(self, receipt: object) -> None:
+        super().__init__()
+        self.receipt = receipt
+
+    def store(self, token: NewToken, name: str, source: str, expires_on: date) -> Any:
+        return self.receipt
+
+
+@pytest.mark.parametrize("receipt", [None, False, 1, "yes", object()])
+def test_only_an_exact_true_receipt_counts_as_stored(receipt: object) -> None:
+    sink = _ReceiptSink(receipt)
+    source = ig(auto_refresh=True, token_expires=TODAY.isoformat())
+    transport = FakeTransport(routes_ig())
+    assert run(source, transport, sink=sink) == 1234
+    assert [a.kind for a in sink.alerts] == ["refresh_store_failed"]
+    assert token_of(transport.urls[-1]) == TOKEN
+    assert NEW_TOKEN not in repr(sink.alerts)
+
+
+def test_an_exact_true_receipt_promotes_the_new_token() -> None:
+    sink = _ReceiptSink(True)
+    source = ig(auto_refresh=True, token_expires=TODAY.isoformat())
+    transport = FakeTransport(routes_ig())
+    assert run(source, transport, sink=sink) == 1234
+    assert token_of(transport.urls[-1]) == NEW_TOKEN
+    assert sink.alerts == []
 
 
 def test_health_alert_line_shape() -> None:

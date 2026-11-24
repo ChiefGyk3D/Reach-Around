@@ -4,7 +4,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { purgeViews } from "../../src/viewretention";
 import { DIM_TOP, ROW_CAP_CORE, ROW_CAP_DIM, maxRowsPerDay, rollupClosedDays, utmAllowlist } from "../../src/viewrollup";
-import { DB, clearAll } from "./helpers";
+import { DB, clearAll, moveCityToCounters } from "./helpers";
 import { type RawRow, canon, oracleCore, oracleDim, oracleGeo } from "./oracle";
 
 const DAY = 86_400_000;
@@ -19,7 +19,8 @@ const DEF = {
   device: "desktop", lang: "en", vp: "l", net: "residential", bot_class: "h", reason: "ok", first: 0,
 };
 
-async function insert(list: R[]) {
+async function insert(wanted: R[]) {
+  const list = await moveCityToCounters(wanted);
   for (let i = 0; i < list.length; i += 25) {
     await DB.batch(
       list.slice(i, i + 25).map((r) => {
@@ -242,7 +243,9 @@ describe("SQL-side folding matches an independent model", () => {
         { DB, SITE_HOST: "links.example.test", TOP_SOURCES: String(opt.top), MIN_CELL: String(opt.min), GEO_LEVEL: opt.geoLevel, UTM_ALLOWLIST: opt.allow ? opt.allow.join(",") : undefined },
         NOW,
       );
-      const full = (await q<RawRow>("SELECT * FROM view_events")).map((x) => ({ ...x }));
+      // Raw rows hold no city (#778); the model gets it back from the fixture, row for row in insert order.
+      const stored = await q<RawRow>("SELECT * FROM view_events ORDER BY id");
+      const full = stored.map((x, i) => ({ ...x, city: raw[i]?.city ?? "" }));
       const strip = <T extends Record<string, unknown>>(rows: T[]) => rows.map(({ site: _s, day: _d, day_tz: _t, ...rest }) => rest);
       const sqlCore = strip(await q<Record<string, unknown>>("SELECT * FROM view_daily"));
       const sqlDim = strip(await q<Record<string, unknown>>("SELECT * FROM view_dim_daily"));

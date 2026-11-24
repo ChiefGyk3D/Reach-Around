@@ -122,6 +122,16 @@
           "title": "Beacon Token",
           "type": "boolean"
         },
+        "geo_level": {
+          "default": "region",
+          "enum": [
+            "country",
+            "region",
+            "city"
+          ],
+          "title": "Geo Level",
+          "type": "string"
+        },
         "other_sites": {
           "default": [],
           "items": {
@@ -1551,6 +1561,14 @@
           ],
           "default": null
         },
+        "live": {
+          "items": {
+            "$ref": "#/$defs/LiveRow"
+          },
+          "maxItems": 2,
+          "title": "Live",
+          "type": "array"
+        },
         "metrics": {
           "items": {
             "$ref": "#/$defs/PlatformMetric"
@@ -1608,6 +1626,14 @@
           "title": "Recent Posts",
           "type": "array"
         },
+        "sections": {
+          "items": {
+            "$ref": "#/$defs/KitSection"
+          },
+          "maxItems": 20,
+          "title": "Sections",
+          "type": "array"
+        },
         "services": {
           "items": {
             "$ref": "#/$defs/ServicePackage"
@@ -1663,6 +1689,70 @@
         "title"
       ],
       "title": "KitConfig",
+      "type": "object"
+    },
+    "KitSection": {
+      "additionalProperties": false,
+      "description": "One platform card (kit v2 slice 3, #628).\n\n``show`` is ``default`` (the default set of the platform's group, see\n``reach_around.config.measures.DEFAULT_SETS``) or a list of registry keys, in\nprint order. A card holds no numbers: they come from the measures. A\nconfigured platform with no number to show prints \"No numbers yet\", or\nnothing when ``hide_if_empty`` is true.",
+      "properties": {
+        "account": {
+          "anyOf": [
+            {
+              "maxLength": 80,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Account"
+        },
+        "headline": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Headline"
+        },
+        "hide_if_empty": {
+          "default": false,
+          "title": "Hide If Empty",
+          "type": "boolean"
+        },
+        "platform": {
+          "title": "Platform",
+          "type": "string"
+        },
+        "show": {
+          "anyOf": [
+            {
+              "const": "default",
+              "type": "string"
+            },
+            {
+              "items": {
+                "type": "string"
+              },
+              "maxItems": 12,
+              "minItems": 1,
+              "type": "array"
+            }
+          ],
+          "default": "default",
+          "title": "Show"
+        }
+      },
+      "required": [
+        "platform"
+      ],
+      "title": "KitSection",
       "type": "object"
     },
     "Link": {
@@ -1880,6 +1970,144 @@
         "platform"
       ],
       "title": "LivePlayer",
+      "type": "object"
+    },
+    "LiveRow": {
+      "additionalProperties": false,
+      "description": "Hand-kept live figures for one live platform and one UTC period (#629).\n\nTyped from the platform's own dashboard, the same fields for Twitch and Kick.\nThere is no source field: a figure beyond the follower count is never read\nfrom an API, so it is always labeled hand-kept. A figure left out is not\nshown as zero. The follower count is the platform's headline number.",
+      "properties": {
+        "as_of": {
+          "anyOf": [
+            {
+              "format": "date",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "As Of"
+        },
+        "avg_ccv": {
+          "anyOf": [
+            {
+              "maximum": 10000000000,
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Avg Ccv"
+        },
+        "followers_gained": {
+          "anyOf": [
+            {
+              "maximum": 10000000000,
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Followers Gained"
+        },
+        "hours_streamed_per_week": {
+          "anyOf": [
+            {
+              "maximum": 168,
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Hours Streamed Per Week"
+        },
+        "hours_watched": {
+          "anyOf": [
+            {
+              "maximum": 1000000000000,
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Hours Watched"
+        },
+        "peak_ccv": {
+          "anyOf": [
+            {
+              "maximum": 10000000000,
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Peak Ccv"
+        },
+        "period_end": {
+          "anyOf": [
+            {
+              "format": "date",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Period End"
+        },
+        "period_start": {
+          "anyOf": [
+            {
+              "format": "date",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Period Start"
+        },
+        "platform": {
+          "title": "Platform",
+          "type": "string"
+        },
+        "unique_chatters": {
+          "anyOf": [
+            {
+              "maximum": 10000000000,
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Unique Chatters"
+        }
+      },
+      "required": [
+        "platform"
+      ],
+      "title": "LiveRow",
       "type": "object"
     },
     "LiveVods": {
@@ -3786,6 +4014,7 @@
       "$ref": "#/$defs/Analytics",
       "default": {
         "beacon_token": false,
+        "geo_level": "region",
         "other_sites": [],
         "page_views": false,
         "raw_keep_days": 7,

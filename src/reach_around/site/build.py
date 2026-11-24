@@ -67,6 +67,7 @@ from reach_around.site.frames import (
 from reach_around.site.inventory import InventoryEntry, build_inventory
 from reach_around.site.kit import (
     GATED_FILE,
+    POLICY_FILE,
     check_gated_requests,
     check_no_gated_text,
     check_private_root,
@@ -1223,6 +1224,8 @@ def build_site(
     files.update(
         {page: html.encode("utf-8") for page, html in kit_render.public.items()}
     )
+    if kit_render.policy:
+        files[POLICY_FILE] = kit_render.policy.encode("ascii")
     files.update(named.files)
     check_frames(
         {
@@ -1335,7 +1338,7 @@ def build_site(
         # exist and compare the two roots again by identity now that both do.
         out.mkdir(parents=True, exist_ok=True)
         check_roots(out, gated_root)
-        staged = stage_gated(gated_root, kit_render.gated)
+        staged = stage_gated(gated_root, kit_render.gated, kit_render.policy or None)
     try:
         _empty(out)
         _write(out, files)
