@@ -199,6 +199,12 @@ known one. Each key has a unit, a definition, and a default audience.
 | `members` | follows | The number of members of a chat room or server, as the platform reports it. A member is not a follower, so it never enters the audience range. | everyone |
 | `followers_change_30d` | percent | The change in followers over the last 30 days, in percent, as the owner typed it from the platform's own analytics. It can be negative. | everyone |
 | `analytics_stat` | count | A count the owner typed from a platform's analytics, named by its own label; the label says what is counted. | everyone |
+| `avg_ccv` | viewers | The average number of people watching at the same moment while the channel was live in the period, as the platform's own dashboard shows it. Typed by the owner. | everyone |
+| `peak_ccv` | viewers | The highest number of people watching at the same moment while the channel was live in the period, as the platform's own dashboard shows it. Typed by the owner. | everyone |
+| `hours_watched` | hours | The total time viewers spent watching the channel in the period, in whole hours, as the platform's own dashboard shows it. Typed by the owner. | everyone |
+| `unique_chatters` | viewers | The number of different accounts that sent at least one chat message in the period, as the platform's own dashboard shows it. Typed by the owner. | everyone |
+| `followers_gained` | follows | The number of accounts that began following the channel in the period, as the platform's own dashboard shows it. Typed by the owner. | everyone |
+| `hours_streamed_per_week` | hours | The hours the channel was live in an average week of the period, in whole hours, as the platform's own dashboard shows it. Typed by the owner. | everyone |
 | `avg_views_per_item` | views | Views divided by posts in the period, worked out by the build from figures the owner typed. | after the gate |
 | `engagement_rate` | percent | Interactions divided by views in the period, as a percent, worked out by the build from figures the owner typed. | after the gate |
 
@@ -258,6 +264,45 @@ directory. `kit pdf` and `kit pdf --public` refuse a page whose record is missin
 or differs from the current policy ("rebuild the site first"), so a page built
 before a field moved to a narrower audience can never be printed. The hash holds
 no figure and no setting of yours.
+
+### The live block
+
+`kit.live` prints Twitch and Kick in one block of stacked, equal cards in config
+order (kit v2, #629). It
+holds the seven live measures: `followers` (the platform's headline number) and
+the six typed from the platform's own dashboard, `avg_ccv`, `peak_ccv`,
+`hours_watched`, `unique_chatters`, `followers_gained` and
+`hours_streamed_per_week`.
+
+```yaml
+kit:
+  live:
+    - platform: twitch
+      period_start: 2027-02-01
+      period_end: 2027-02-28
+      as_of: 2027-03-01
+      avg_ccv: 40
+      peak_ccv: 120
+      hours_watched: 900
+      unique_chatters: 75
+      followers_gained: 310
+      hours_streamed_per_week: 18
+    - {platform: kick}
+```
+
+- Both platforms print the same seven fields in the same order with the same
+  markup. The block follows the order you write the rows in; it is never sorted by
+  size, and reversing the rows reverses the block.
+- Each figure prints its UTC period and date and the label Hand-kept. A live
+  figure beyond the follower count is never read from an API, so there is no
+  `source` setting and no way to label one API. Anything else waits for the
+  platforms' developer terms.
+- A figure you leave out prints "Not entered", never zero. A platform with no
+  figure at all prints "No live numbers yet". Figures need a period, an `as_of`
+  on or after the period's end, and `peak_ccv` may not be below `avg_ccv`.
+- The rows are public like the other platform cards, and each measure is never
+  wider than that field. The block prints on the public page, the gated page and
+  both PDFs.
 
 ### Structured demographics
 

@@ -97,7 +97,9 @@ def test_every_registry_entry_has_a_definition_a_changelog_line_and_a_unit() -> 
     for key, entry in REGISTRY.items():
         assert entry.key == key
         assert entry.unit in UNITS, key
-        assert entry.changelog.startswith("Added in kit v2 slice 3 (#628)"), key
+        assert entry.changelog.startswith(
+            ("Added in kit v2 slice 3 (#628)", "Added in kit v2 slice 4 (#629)")
+        ), key
 
 
 def test_the_registry_check_bites() -> None:

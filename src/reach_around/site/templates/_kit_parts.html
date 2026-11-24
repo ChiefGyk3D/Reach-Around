@@ -143,6 +143,28 @@
 {% endif %}
 {% endmacro %}
 
+{% macro live_block(kit, heading_id) %}
+{% if kit.live %}
+<section class="kit-live" aria-labelledby="{{ heading_id }}">
+<h3 id="{{ heading_id }}">{{ kit.live.heading }}</h3>
+{% for card in kit.live.cards %}
+<article class="kit-live-card kit-analytics-panel" aria-labelledby="{{ heading_id }}-{{ loop.index }}">
+<h4 id="{{ heading_id }}-{{ loop.index }}">{{ card.name }}</h4>
+{% if card.empty %}
+<p class="kit-note kit-empty">{{ card.no_numbers }}</p>
+{% else %}
+<ul class="kit-list">
+{% for row in card.rows %}
+<li class="kit-live-row"><span>{{ row.label }}</span> <strong class="kit-figure">{{ row.value }}</strong>{% if row.entered %} <span class="kit-note">{{ card_line(row) }}</span>{% endif %}</li>
+{% endfor %}
+</ul>
+{% endif %}
+</article>
+{% endfor %}
+</section>
+{% endif %}
+{% endmacro %}
+
 {% macro imported_history(kit, heading_id, framed=false) %}
 {% if kit.imported %}
 <section class="kit-imported" aria-labelledby="{{ heading_id }}">

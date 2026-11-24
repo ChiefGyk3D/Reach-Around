@@ -104,6 +104,9 @@ KIT_FIELD_POLICY: Mapping[str, FieldPolicy] = {
     # measures, each of which carries its own visibility (never wider than the
     # field it was compiled from).
     "sections": FieldPolicy("public"),
+    # The live block (#629): hand-kept figures for Twitch and Kick. Each compiles
+    # to a measure that is never wider than this level.
+    "live": FieldPolicy("public"),
     # The computed measure list the renderer reads. Not a config field.
     "measures": FieldPolicy("public"),
     "partners": FieldPolicy("gated"),
@@ -550,6 +553,78 @@ class EngagementRow(_Model):
         return self
 
 
+LIVE_PLATFORMS: tuple[str, ...] = ("twitch", "kick")
+MAX_WEEK_HOURS = 168
+
+
+class LiveRow(_Model):
+    """Hand-kept live figures for one live platform and one UTC period (#629).
+
+    Typed from the platform's own dashboard, the same fields for Twitch and Kick.
+    There is no source field: a figure beyond the follower count is never read
+    from an API, so it is always labeled hand-kept. A figure left out is not
+    shown as zero. The follower count is the platform's headline number.
+    """
+
+    platform: str
+    period_start: date | None = None
+    period_end: date | None = None
+    as_of: date | None = None
+    avg_ccv: Annotated[StrictInt, Field(ge=0, le=MAX_COUNT)] | None = None
+    peak_ccv: Annotated[StrictInt, Field(ge=0, le=MAX_COUNT)] | None = None
+    hours_watched: Annotated[StrictInt, Field(ge=0, le=MAX_ENGAGEMENT_COUNT)] | None = (
+        None
+    )
+    unique_chatters: Annotated[StrictInt, Field(ge=0, le=MAX_COUNT)] | None = None
+    followers_gained: Annotated[StrictInt, Field(ge=0, le=MAX_COUNT)] | None = None
+    hours_streamed_per_week: (
+        Annotated[StrictInt, Field(ge=0, le=MAX_WEEK_HOURS)] | None
+    ) = None
+
+    @field_validator("platform")
+    @classmethod
+    def _live_platform(cls, value: str) -> str:
+        if value not in LIVE_PLATFORMS:
+            raise ValueError("platform must be twitch or kick")
+        return value
+
+    @field_validator("period_start", "period_end", "as_of", mode="before")
+    @classmethod
+    def _is_a_date(cls, value: object) -> object:
+        return _iso_date(value)
+
+    @model_validator(mode="after")
+    def _period_rules(self) -> LiveRow:
+        figures = (
+            self.avg_ccv,
+            self.peak_ccv,
+            self.hours_watched,
+            self.unique_chatters,
+            self.followers_gained,
+            self.hours_streamed_per_week,
+        )
+        if all(v is None for v in figures):
+            return self
+        if self.period_start is None or self.period_end is None or self.as_of is None:
+            raise ValueError(
+                "figures need a period (period_start and period_end, UTC days) "
+                "and an as_of date"
+            )
+        if self.period_end < self.period_start:
+            raise ValueError("period_end must not be before period_start")
+        if (self.period_end - self.period_start).days + 1 > MAX_PERIOD_DAYS:
+            raise ValueError(f"the period may be at most {MAX_PERIOD_DAYS} days")
+        if self.as_of < self.period_end:
+            raise ValueError("as_of must not be before the period ends")
+        if (
+            self.avg_ccv is not None
+            and self.peak_ccv is not None
+            and self.peak_ccv < self.avg_ccv
+        ):
+            raise ValueError("peak_ccv must not be below avg_ccv")
+        return self
+
+
 class RecentPost(_Model):
     """Public figures for one recent post with an instance-local thumbnail."""
 
@@ -712,6 +787,8 @@ class KitConfig(_Model):
     public_pdf: Annotated[str, Field(max_length=2048)] | None = None
     # Platform cards (#628); empty means the page has none.
     sections: list[KitSection] = Field(default_factory=list, max_length=MAX_SECTIONS)
+    # The live block (#629): hand-kept figures, Twitch and Kick, in config order.
+    live: list[LiveRow] = Field(default_factory=list, max_length=len(LIVE_PLATFORMS))
     # Options for the audience summary (#627): the optional poll estimate line.
     audience_summary: AudienceSummary | None = None
     # A file of link-page numbers imported from the previous provider (see
@@ -814,6 +891,17 @@ class KitConfig(_Model):
                     "once (give each an account to tell them apart)"
                 )
             seen.add(key)
+        return self
+
+    @model_validator(mode="after")
+    def _live_rows_are_unique(self) -> KitConfig:
+        seen: set[str] = set()
+        for row in self.live:
+            if row.platform in seen:
+                raise ValueError(
+                    f"the live row for {row.platform!r} is listed more than once"
+                )
+            seen.add(row.platform)
         return self
 
     @model_validator(mode="after")
