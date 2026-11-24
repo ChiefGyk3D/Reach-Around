@@ -291,10 +291,9 @@ def test_alerts_item_follows_the_alerts_section_only() -> None:
     assert "When alerts are on" in on
     assert "are not deleted automatically by this site" in on
     assert "When alerts are on" not in text_of(collected_items(make_config()))
-    # A channel with no event is not enabled, so nothing is said.
-    half = make_config(alerts={"channels": ["discord"]})
-    assert half.alerts.enabled is False
-    assert "When alerts are on" not in text_of(collected_items(half))
+    # A channel with no event is refused (#779), so no half-enabled state exists.
+    with pytest.raises(ValidationError):
+        make_config(alerts={"channels": ["discord"]})
 
 
 def test_alerts_item_says_an_alert_never_carries_an_ip_address() -> None:
