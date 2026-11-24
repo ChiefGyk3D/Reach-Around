@@ -239,11 +239,65 @@ def test_a_workflow_lint_failure_fails_the_gate(repo: Path) -> None:
         (bindir / name).chmod(0o755)
     ok = _gate(repo, "--fast")
     assert ok.returncode == 0, ok.stdout + ok.stderr
-    assert "stub-actionlint .github/workflows/ci.yml" in ok.stdout
-    assert "stub-zizmor --offline .github/workflows/ci.yml" in ok.stdout
+    # File names follow `--` so no operand can be read as an option.
+    assert "stub-actionlint -- .github/workflows/ci.yml" in ok.stdout
+    assert "stub-zizmor --offline -- .github/workflows/ci.yml" in ok.stdout
     bad = _gate(repo, "--fast", fail_tool="zizmor")
     assert bad.returncode == 1
     assert "workflow lint" in bad.stdout.strip().splitlines()[-1]
+
+
+def _lint_names(repo: Path, names: str) -> subprocess.CompletedProcess[str]:
+    assert BASH is not None
+    bindir = repo.parent / "venv" / "bin"
+    for name in ("actionlint", "zizmor"):
+        (bindir / name).write_text(STUB)
+        (bindir / name).chmod(0o755)
+    env = {
+        **os.environ,
+        "GATE_ROOT": str(repo),
+        "GATE_VENV": str(repo.parent / "venv"),
+        "GATE_WORKFLOW_FILES": names,
+    }
+    return subprocess.run(  # noqa: S603 - fixed argv
+        [BASH, str(SCRIPT), "--internal", "workflow_lint"],
+        capture_output=True,
+        text=True,
+        env=env,
+        check=False,
+    )
+
+
+@pytest.mark.parametrize(
+    "names",
+    [
+        ".github/workflows/probe.yml\n--config-file=attacker",
+        "--config-file=attacker",
+        "-h",
+        ".github/workflows/--x.yml\n.github/workflows/a b.yml",
+        ".github/workflows/sub/dir.yml",
+        "../outside.yml",
+        ".github/workflows/é.yml",
+    ],
+)
+def test_an_unexpected_workflow_file_name_is_never_given_to_a_linter(
+    repo: Path, names: str
+) -> None:
+    res = _lint_names(repo, names)
+    assert res.returncode == 1, res.stdout + res.stderr
+    assert "stub-" not in res.stdout
+    assert "unexpected workflow file name" in res.stderr
+
+
+def test_ordinary_workflow_names_reach_both_linters_after_the_separator(
+    repo: Path,
+) -> None:
+    res = _lint_names(repo, ".github/workflows/a-b_c.1.yml\n.github/workflows/d.yaml")
+    assert res.returncode == 0, res.stdout + res.stderr
+    assert (
+        "stub-actionlint -- .github/workflows/a-b_c.1.yml .github/workflows/d.yaml"
+        in res.stdout
+    )
 
 
 def test_workflow_change_without_any_linter_fails_not_passes(

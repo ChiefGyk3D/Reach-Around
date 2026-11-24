@@ -137,15 +137,25 @@ workflow_lint() {
         [ -n "$f" ] && files+=("$f")
     done <<<"${GATE_WORKFLOW_FILES:-}"
     [ "${#files[@]}" -gt 0 ] || return 0
+    # A name that is not a plain file under .github/workflows (an option-like
+    # fragment, a newline split, odd characters) is never handed to a linter:
+    # the step fails. Names also follow `--`, so no operand can act as an option.
+    for f in "${files[@]}"; do
+        # LC_ALL=C: ranges mean ASCII only, whatever locale the shell runs in.
+        if ! (export LC_ALL=C; [[ "$f" =~ ^\.github/workflows/[A-Za-z0-9._-]+$ ]]); then
+            echo "gate: refusing to lint an unexpected workflow file name" >&2
+            return 1
+        fi
+    done
     bin="$(tool actionlint)"
     if command -v "$bin" >/dev/null 2>&1; then
         found=1
-        "$bin" "${files[@]}" || rc=1
+        "$bin" -- "${files[@]}" || rc=1
     fi
     bin="$(tool zizmor)"
     if command -v "$bin" >/dev/null 2>&1; then
         found=1
-        "$bin" --offline "${files[@]}" || rc=1
+        "$bin" --offline -- "${files[@]}" || rc=1
     fi
     if [ "$found" -eq 0 ]; then
         echo "gate: workflow files changed but neither actionlint nor zizmor is installed" >&2

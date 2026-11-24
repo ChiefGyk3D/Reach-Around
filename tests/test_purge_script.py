@@ -40,6 +40,12 @@ case "${mode:-ok}" in
   ok) echo '{"success": true, "errors": [], "messages": [], "result": {"id": "x"}}' ;;
   denied) echo '{"success": false, "errors": [{"code": 10000,
     "message": "Authentication error"}]}' ;;
+  hostile)
+    printf 'HTTP/2 403\r\n\r\n' > "$dump"
+    printf '{"success": false, "errors": [{"code": 1001, "message": '
+    printf '"\n::error::forged secret-path <script>\033[2J"},'
+    printf '{"code": 1002},{"code": 1003},{"code": 1004},'
+    printf '{"code": 1005},{"code": 1006}]}\n' ;;
   rl0)
     printf 'HTTP/2 429\r\nretry-after: 0\r\n\r\n' > "$dump"
     echo '{"success": false, "errors": [{"code": 971, "message": "Too many"}]}' ;;
@@ -236,9 +242,24 @@ def test_an_api_refusal_is_a_warning_and_never_fails_the_deploy(
     result = run_script(tmp_path, urls(3), modes=["denied"])
     assert result.code == 0
     assert "::warning::" in result.out
-    assert "Authentication error" in result.out
+    # The server's message text is never logged; only its numeric code is.
+    assert "Authentication error" not in result.out
+    assert "Cloudflare error codes: 10000" in result.out
     assert "WARNING" in result.summary
     assert "3 URL(s) were not purged" in result.out
+
+
+def test_a_failure_logs_status_and_codes_only_never_the_body(tmp_path: Path) -> None:
+    result = run_script(tmp_path, urls(3), modes=["hostile"])
+    assert result.code == 0
+    combined = result.out + result.err + result.summary
+    for leaked in ("::error::", "forged", "\x1b", "<script>", "secret-path"):
+        assert leaked not in combined
+    assert "HTTP 403" in result.out
+    assert "Cloudflare error codes: 1001 1002 1003 1004 1005" in result.out
+    assert "1006" not in combined
+    warning = next(ln for ln in result.out.splitlines() if "failed (curl" in ln)
+    assert len(warning) < 200
 
 
 def test_a_rate_limited_batch_is_retried_and_then_purged(tmp_path: Path) -> None:

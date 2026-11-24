@@ -180,9 +180,15 @@ send() {
       fi
     fi
     failed=$((failed + batch_count))
-    # The response holds Cloudflare's error list, never the token.
-    detail=$(printf '%s' "$response" | tr -d '\r\n' | cut -c1-300)
-    warn "purge request ${requests} (${batch_count} URLs) failed (curl exit ${status}): ${detail}"
+    # The response body is server-controlled and is never printed. Only the HTTP
+    # status (three digits) and up to five numeric Cloudflare error codes (one
+    # to six digits each) are read out of it, so nothing else can reach the log.
+    http_status=$(grep -Eo '^HTTP/[0-9.]+ [0-9]{3}' "$resp_headers" 2>/dev/null |
+      tail -n 1 | grep -Eo '[0-9]{3}$')
+    codes=$(printf '%s' "$response" |
+      grep -Eo '"code"[[:space:]]*:[[:space:]]*[0-9]{1,6}' |
+      grep -Eo '[0-9]+$' | head -n 5 | tr '\n' ' ')
+    warn "purge request ${requests} (${batch_count} URLs) failed (curl exit ${status}; HTTP ${http_status:-none}; Cloudflare error codes: ${codes:-none})"
     break
   done
   batch_json=""

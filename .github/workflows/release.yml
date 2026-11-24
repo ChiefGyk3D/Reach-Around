@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-# Release: a `v*` tag builds, tests, scans, publishes and signs the container image
+# Release: a `vMAJOR.MINOR.PATCH` tag builds, tests, scans, publishes and signs the container image
 # on GHCR, then verifies it from the outside. Both legs are
 # ChiefGyk3D/git-your-ship-together reusable workflows (container-release.yml and
 # verify-published.yml), pinned by commit. Inputs match what those files declare at
@@ -10,7 +10,7 @@ name: Release
 on:
   push:
     tags:
-      - "v*"
+      - "v[0-9]*.[0-9]*.[0-9]*"
 
 permissions:
   contents: read
@@ -49,10 +49,15 @@ jobs:
           TAG: ${{ github.ref_name }}
           REPO_URL: ${{ github.server_url }}/${{ github.repository }}
         run: |
-          semver='^v[0-9]+\.[0-9]+\.[0-9]+$'
-          if ! printf '%s\n' "$TAG" | grep -Eq "$semver"; then
-            echo "tag '${TAG}' is not a plain vMAJOR.MINOR.PATCH tag; order not checked"
-            exit 0
+          # Accepted grammar, exactly: v, then MAJOR.MINOR.PATCH, each an ASCII
+          # number with no leading zero (0 or 1-9 then digits). No prerelease,
+          # no build metadata, no uppercase V, no non-ASCII digits. Anything
+          # else fails closed: it could otherwise publish `latest` unordered.
+          export LC_ALL=C
+          semver='^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'
+          if ! [[ "$TAG" =~ $semver ]]; then
+            echo "tag '${TAG}' is not a plain vMAJOR.MINOR.PATCH tag (no prerelease, build metadata or leading zeros); refusing to publish it" >&2
+            exit 1
           fi
           tags="$(git ls-remote --tags --refs "$REPO_URL" 'refs/tags/v*')" || exit 1
           highest="$(printf '%s\n' "$tags" | sed 's#.*refs/tags/##' |
