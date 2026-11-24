@@ -123,7 +123,7 @@ export async function budgets(): Promise<Array<{ key: string; value: string }>> 
 }
 
 export async function clearAll(): Promise<void> {
-  for (const t of ["view_events", "visitor_seen", "view_meta", "view_daily", "view_dim_daily", "view_geo_daily", "view_hour_daily", "view_rollup_log"]) {
+  for (const t of ["view_events", "visitor_seen", "view_meta", "view_daily", "view_dim_daily", "view_geo_daily", "view_hour_daily", "view_rollup_log", "view_city_daily"]) {
     await DB.prepare(`DELETE FROM ${t}`).run();
   }
 }
@@ -206,4 +206,23 @@ export function countingStream(bytes: number) {
     { highWaterMark: 0 },
   );
   return { stream, state };
+}
+
+/**
+ * The city-level fixture path (#778): raw rows never hold a city, so a fixture that wants one gets it in
+ * view_city_daily, the way the Worker writes it. Returns the rows with the city blanked, to insert as raw rows.
+ */
+export async function moveCityToCounters<T extends { site?: string; ts: number; country?: string; region?: string; city?: string; bot_class?: string; first?: number }>(
+  list: T[],
+): Promise<T[]> {
+  const stmts = list
+    .filter((r) => (r.city ?? "") !== "")
+    .map((r) =>
+      DB.prepare(
+        "INSERT INTO view_city_daily (site, day, country, region, city, bot_class, views, uniques) VALUES (?, ?, ?, ?, ?, ?, 1, ?) " +
+          "ON CONFLICT (site, day, country, region, city, bot_class) DO UPDATE SET views = views + 1, uniques = uniques + excluded.uniques",
+      ).bind(r.site ?? "links", new Date(r.ts).toISOString().slice(0, 10), r.country ?? "US", r.region ?? "", r.city, r.bot_class ?? "h", r.first ?? 0),
+    );
+  for (let i = 0; i < stmts.length; i += 50) await DB.batch(stmts.slice(i, i + 50));
+  return list.map((r) => ({ ...r, city: "" }));
 }

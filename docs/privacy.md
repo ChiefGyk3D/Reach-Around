@@ -202,6 +202,15 @@ comma-separated token, trimmed of spaces and tabs only, is `1`. The page is sile
 landing and hop counters because those tables are not collected yet; the
 sentence about them returns when they are switched on.
 
+Location follows `analytics.geo_level` (default `region`, the Worker's default
+`GEO_LEVEL`). A stored view record holds the country and at most the region; it never
+holds a city. At `city` the Worker also adds the view to a daily city total
+(`view_city_daily`, no page, source, device kind or time of day with it). The daily
+rollup combines a city with fewer than five views (or `MIN_CELL`, if larger) into its
+region before anything is exported or reported, and the city total is deleted on
+the same schedule as the view records. The page states which of the three applies.
+TODO-copy: the visitor-facing location sentences are authored separately.
+
 Page view records follow the same rule of stating the ceiling. The public page
 says view records are normally deleted after the configured number of days
 (`analytics.raw_keep_days`, default 7). A day's records stay longer until the

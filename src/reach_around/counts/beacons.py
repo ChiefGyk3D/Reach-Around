@@ -10,6 +10,13 @@ from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal, InvalidOperation
 
+from reach_around.config.import_guard import (
+    ImportGuardError,
+    check_cohort,
+    check_names,
+    check_value,
+)
+
 MAX_BEACONS_BYTES = 5 * 1024 * 1024
 MAX_BEACONS_ROWS = 100_000
 
@@ -126,6 +133,11 @@ def parse_beacons_csv(data: bytes) -> BeaconsExport:
         rows = list(csv.reader(io.StringIO(text, newline=""), strict=True))
     except csv.Error:
         raise BeaconsImportError("file is not strict CSV") from None
+    if rows:
+        try:
+            check_names(rows[0], frozenset(_HEADER))
+        except ImportGuardError as refused:
+            raise _fail(None, str(refused)) from None
     if not rows or tuple(rows[0]) != _HEADER:
         raise _fail(None, "expected Section,Item,Detail,Views,Clicks,CTR (%)")
     data_rows = rows[1:]
@@ -144,6 +156,13 @@ def parse_beacons_csv(data: bytes) -> BeaconsExport:
             raise _fail(number, "wrong number of columns")
         values = tuple(cells)
         section, item, detail, views, clicks, ctr = values
+        try:
+            for cell in values:
+                check_value(cell)
+            if section == "Countries" and _INTEGER.fullmatch(views):
+                check_cohort(int(views))
+        except ImportGuardError as refused:
+            raise _fail(number, str(refused)) from None
         if section not in _SECTIONS:
             raise _fail(number, "unknown section")
         _text(section, number, "Section")

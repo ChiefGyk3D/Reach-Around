@@ -208,7 +208,7 @@ The Worker also has a write-only page-view route (Plan 4 Tasks A3 and A4; the br
 | `MIN_CELL` | var | cells under this many views in a day fold into `other`, default 3, 1 to 50 |
 | `ROLLUP_GRACE_HOURS` | var | hours after UTC midnight before a day is rolled up, default 2, at most 12 |
 | `TOP_SOURCES` | var | referrer and utm labels kept per day in the rollup, default 50; the rest fold into `other` |
-| `GEO_LEVEL`, `BOTS_MODE`, `UV_ENABLED`, `UV_BITS` | var | `city` / `count` / on / `64` by default. `UV_BITS` has a minimum of 64 (open decision P-5): a lower value falls back to 64, and at most 128 is accepted |
+| `GEO_LEVEL`, `BOTS_MODE`, `UV_ENABLED`, `UV_BITS` | var | `region` / `count` / on / `64` by default. `UV_BITS` has a minimum of 64 (open decision P-5): a lower value falls back to 64, and at most 128 is accepted |
 
 Retention runs from the cron (`17 4 * * *` and `5 0 * * *`): `visitor_seen` rows before today's UTC date, raw view rows past `RAW_KEEP_DAYS`, hourly budget counters older than 48 hours and client-cap counters older than the previous hour. Counter keys are `bud:<hour>:<route>` and `cap:<hour>:<hash>` (the hash is 16 hex characters, 64 bits; counters from before the widening expire within the hour) with the hour zero-padded, so expiry is a range delete on the primary key. A run that hits its batch budget records `purge_backlog` in `view_meta` and the next run continues. The daily rollup that should run before the raw purge (Task A5) is not built yet, so raw rows are deleted by age alone for now.
 Cron order (`17 4 * * *` and `5 0 * * *`): click purge, then the **daily rollup**, then the view purge. Each step is isolated, so one failing never stops the others, and none of them throws out of the handler.
@@ -219,7 +219,7 @@ Cron: one hourly trigger, `5 * * * *` (so the pseudonymous daily visitor hash is
 
 Cost per invocation with the defaults: click purge 1; rollup 1 (one batch that finds the days to roll and the sealed days with late rows) + 1 (lease) + 2 per day (one read batch, one write batch) + 1 (heartbeat batch that also releases the lease); view purge 1 (one batch holding the overdue check and every step's first delete) + up to a few more rounds while the budget lasts + 1 (closing batch). The rollup therefore rolls up to about 6 days per invocation with the defaults (the purge uses 2 to 3 of the 40); the worst day (every cap and fold exercised, 3,600 raw rows) is still exactly those 2 queries, because the write batch holds up to about 370 statements (a batch of 2,000 statements is fine per the D1 page). An invocation with a tight budget rolls fewer days and stops; the next hourly run continues from the same raw rows, and a test proves repeated runs at budget 12 end with the same aggregates as one unbounded run. A day is one transaction (the write batch), so there is no half-sealed day and no stage marker is needed.
 
-**Rollup** (`worker/src/viewrollup.ts`). Every UTC day that has ended and whose grace period has passed (`ROLLUP_GRACE_HOURS`, default 2, ceiling 12, because a view that began before midnight can be written after it), and that still has raw rows in `view_events` and no row in `view_rollup_log`, is aggregated into three marginal tables: `view_daily` (page, source, country, bot class), `view_dim_daily` (one dimension at a time: browser, os, device, lang, vp, net, reason) and `view_geo_daily` (country, region, city). No address, user agent, referrer URL or browser version reaches them. `uniques` counts the raw rows whose `first` flag is exactly 1 (set from the daily hash at write time); a damaged or hostile value such as 1000000, -1, 2 or text counts as 0, so it cannot inflate uniques or fail a day. `bot_class` and `src_kind` are closed sets enforced by CHECK constraints. I did not add a `CHECK (first IN (0,1))` to the raw table: the aggregation is already safe against any value and tested with hostile rows, which a CHECK would make impossible to insert. A row whose timestamp is not an integer belongs to no day; the purge deletes such rows. The `view_rollup_log` row is the last statement of the day's write transaction and is the checkpoint, so running twice never double counts. A day with a log row is sealed. A day that fails (database error or a totals mismatch) is recorded and skipped: later days still roll, the run records `rollup_err` and `rollup_failed_day`, and the failed day is retried on the next run; it never blocks the purge of days that are already rolled. At most 14 days are rolled per run (the query budget and the input row budget usually stop it earlier). Ranking, top-N and every fold run in SQL (window functions in D1), so the Worker receives only the capped output rows. Sources beyond `TOP_SOURCES` (default 50) fold into `other`; per bot class, `browser` keeps 12 values, `lang` 10, `os` 10, `net` 10, `reason` 20, `device` and `vp` 6, the rest `other`; the core and geography tables are capped at 500 and 300 rows per day, and the dimension table has a real maximum of 324 rows (4 bot classes times the top values of all seven dimensions plus one `other` each; it follows from the per-dimension tops, a test reaches it exactly). The core cap is hard: overflow rows lose their page as well as their source and country, so they collapse to one `other` page row per bot class (readers must accept `other` as a page value). `GEO_LEVEL` is applied again at rollup, so a `country` setting never aggregates a region or city even if an older raw row has one.
+**Rollup** (`worker/src/viewrollup.ts`). Every UTC day that has ended and whose grace period has passed (`ROLLUP_GRACE_HOURS`, default 2, ceiling 12, because a view that began before midnight can be written after it), and that still has raw rows in `view_events` and no row in `view_rollup_log`, is aggregated into three marginal tables: `view_daily` (page, source, country, bot class), `view_dim_daily` (one dimension at a time: browser, os, device, lang, vp, net, reason) and `view_geo_daily` (country, region, city). No address, user agent, referrer URL or browser version reaches them. `uniques` counts the raw rows whose `first` flag is exactly 1 (set from the daily hash at write time); a damaged or hostile value such as 1000000, -1, 2 or text counts as 0, so it cannot inflate uniques or fail a day. `bot_class` and `src_kind` are closed sets enforced by CHECK constraints. I did not add a `CHECK (first IN (0,1))` to the raw table: the aggregation is already safe against any value and tested with hostile rows, which a CHECK would make impossible to insert. A row whose timestamp is not an integer belongs to no day; the purge deletes such rows. The `view_rollup_log` row is the last statement of the day's write transaction and is the checkpoint, so running twice never double counts. A day with a log row is sealed. A day that fails (database error or a totals mismatch) is recorded and skipped: later days still roll, the run records `rollup_err` and `rollup_failed_day`, and the failed day is retried on the next run; it never blocks the purge of days that are already rolled. At most 14 days are rolled per run (the query budget and the input row budget usually stop it earlier). Ranking, top-N and every fold run in SQL (window functions in D1), so the Worker receives only the capped output rows. Sources beyond `TOP_SOURCES` (default 50) fold into `other`; per bot class, `browser` keeps 12 values, `lang` 10, `os` 10, `net` 10, `reason` 20, `device` and `vp` 6, the rest `other`; the core and geography tables are capped at 500 and 300 rows per day, and the dimension table has a real maximum of 324 rows (4 bot classes times the top values of all seven dimensions plus one `other` each; it follows from the per-dimension tops, a test reaches it exactly). The core cap is hard: overflow rows lose their page as well as their source and country, so they collapse to one `other` page row per bot class (readers must accept `other` as a page value). `GEO_LEVEL` is applied again at rollup, so a `country` setting never aggregates a region or city even if an older raw row has one; at `city` the rollup reads the city from `view_city_daily`, never from a raw row.
 
 **Small cells.** `MIN_CELL` (default 3, 1 to 50) applies to every cell: a dimension value with fewer than `MIN_CELL` views in a day (per bot class) is folded into `other` for that dimension; a `view_daily` cell (page, source, country, bot class) under it folds its referrer or `utm` label into `other` first and then its country into `ZZ` (direct and internal visits only lose the country); geography folds a city into its region and a region into its country under `max(5, MIN_CELL)`. Totals always sum to the raw count. **This is label suppression, not k-anonymity.** One-view cells can still remain inside `other` and `ZZ`; the exact per-day and per-class totals in the aggregate tables and `view_rollup_log` are exact; and anyone with read access to the D1 database can read the raw rows for the whole raw retention window. So folding protects dashboards and exports, not people with database access. The tradeoff is privacy against detail: a rare browser, language, country or referrer cannot be singled out of a small day's published numbers, but a small site sees a large share of `other` and `ZZ`, and a long tail is never shown. `MIN_CELL=1` turns it off. Downstream readers must accept `other` as a value in every dimension, including the closed ones such as `reason`, `os` and `net`. The log table keeps overall per-day totals only (no per-class totals) for reconciliation; do not export more than a dashboard needs.
 
@@ -254,7 +254,7 @@ Convert `rollup_last_ok` with `date -u -d @$((VALUE/1000))`. More than about 2 d
 
 **Identifying labels.** Aggregates keep labels, and a label can identify a person: a referrer host such as `alice-smith.example.com`, a `utm_source` such as `john-doe`, or a small town's city name. MIN_CELL hides rare ones in a small day, not all of them. Set `UTM_ALLOWLIST` (comma-separated lower-case labels, for example `bluesky,mail,newsletter`) so any other `utm_source` is stored in the aggregates as `other`; it is applied at rollup, so the raw rows (kept for `RAW_KEEP_DAYS`) still hold the original label. There is no referrer allowlist; referrer hosts are bounded by `TOP_SOURCES` and `MIN_CELL`. The hourly cap keys in `view_meta` (`cap:<hour>:<hash>`) are keyed hashes of a client address and are kept as they are (deleted after the previous hour). Say all of this in the privacy text.
 
-**Geography is stored.** By the maintainer's decision `GEO_LEVEL` defaults to `city`: country, region code and city name are written to the raw rows (kept for `RAW_KEEP_DAYS`, default 7, ceiling 90) and, folded for small counts, to the daily geography aggregate. Set `GEO_LEVEL=region` to drop the city, or `GEO_LEVEL=country` to store the country only; in `country` mode no region or city is stored anywhere (a test dumps the whole database to prove it). Say this plainly in the privacy text.
+**Geography is stored at most to the region in a raw row.** `GEO_LEVEL` defaults to `region` (owner decision 2026-11-24): the country and region code are written to the raw rows (kept for `RAW_KEEP_DAYS`, default 7, ceiling 90) and, folded for small counts, to the daily geography aggregate. A raw row never holds a city, at any level. Set `GEO_LEVEL=city` (or a site's `geo`) knowingly to also get cities: the Worker then adds each view to a daily city counter (`view_city_daily`, migration 0019; site, UTC day, country, region, city, bot class, views, uniques, and nothing else), the rollup moves cities with at least five views (or `MIN_CELL`) into `view_geo_daily` and folds the rest into their region, and the counter is purged with the raw rows. Set `GEO_LEVEL=country` to store the country only; in `country` mode no region or city is stored anywhere (a test dumps the whole database to prove it). The privacy page follows `analytics.geo_level` and says which applies. The city counter is one more D1 row per accepted view, so the budget model counts 6.6 rows per view (7.6 with BEACON_MODE on) when any site is at city, and 5.6 otherwise: the default 22,700 a day does not move.
 
 **Atomic accept.** An accepted view is one D1 batch: the client counter, the global counter, the event row and the visitor row are written together only if both the global budget and the client cap have room, otherwise nothing is written; a failure rolls the whole batch back. After the budget is spent, extra clients create no rows.
 
@@ -775,12 +775,89 @@ way:
   reviewer (not the author). An environment that does not exist yet is created
   unprotected on first use, so create and protect it before the first call.
 - Concurrency: the called job takes the group `deploy-worker-<worker_name>`
-  with `cancel-in-progress: false`, so two calls for one Worker do not run at
-  the same time. It is not a queue: GitHub keeps at most one pending run per
+  with `cancel-in-progress: false`, so two calls for one Worker from ONE
+  repository do not run at the same time. GitHub scopes a concurrency group to
+  the repository that runs it, so two repositories deploying one Worker name are
+  NOT serialized; see "Single owner" below. It is not a queue: GitHub keeps at most one pending run per
   group and cancels an older pending one when a newer one arrives. Callers that
   need every call to run, in order, must serialize their own calls (for example
   one call per manual run, or a `needs` chain). A caller may add its own group
   (use a different name).
+
+### Deploy ordering and rollback
+
+The migrations, the Worker and Pages are three separate changes. A failure
+between them must not leave an old Worker on a schema it cannot read, so
+(issue #768):
+
+1. **Expand, migrate, contract.** The deploy applies migrations FIRST, so for a
+   moment (and after any failed deploy or rollback) the previous Worker runs on
+   the new schema. Every new migration must therefore be additive: create
+   table, create index, add column, insert.
+   `python3 -I .github/scripts/check-migrations.py` runs in CI and refuses a
+   new migration with `DROP`, `RENAME` or `DELETE FROM`. A migration that must
+   remove something carries the line `-- migration-phase: contract` and ships
+   in a release AFTER the Worker that stopped using the column or table
+   (contract comes last). Migrations 0001 to 0017 predate the rule and are
+   exempt.
+2. **Previous version recorded.** Before anything changes, the workflow reads
+   `wrangler deployments status --json` and keeps the version id that holds the
+   traffic.
+3. **Probe.** After the Worker deploy, a GET to `https://<site_host>/e/` must
+   answer 204 (up to 6 tries, 10 seconds apart). The Worker only counts a POST,
+   so the probe proves the Worker serves on its route, not that every feature
+   works. It runs only with `zone_name` set and no `route_pattern` (otherwise
+   the host to ask is not known here) and says so when skipped.
+4. **Rollback.** A failed probe runs
+   `wrangler rollback <recorded version> --name <worker> --message ...` and
+   fails the job. The schema stays migrated, which is safe only because of
+   rule 1. If no previous version could be read (a first deploy), the job says
+   so and you roll back by hand: Worker > Deployments > Rollback.
+5. **Test deploy, link ids.** `deploy-test.yml` deploys the UNION of the live
+   Worker's link ids and the new ones before Pages, then the new ids only after
+   Pages succeeded, so a failed Pages deploy never leaves the old site pinging
+   ids the Worker dropped. If the live ids cannot be read it deploys the new
+   ids only and warns.
+
+Sources: VERIFIED 2026-11-24 from
+<https://developers.cloudflare.com/workers/wrangler/commands/workers/>
+(`wrangler rollback [VERSION_ID] --name --message`,
+`deployments status|list --name --json`, `versions view <id> --json`,
+`deploy --message`) and
+<https://developers.cloudflare.com/workers/wrangler/commands/d1/> (a failing
+migration is rolled back on its own; an applied one is not, and a Worker
+rollback does not touch it). INFERRED: the field names inside the JSON that
+wrangler prints (`version_id`, a `LINK_IDS` binding with `text`) are not
+documented; the helper `.github/scripts/deploy-guard.py` searches for them and
+an empty answer means "unknown", which the workflow reports.
+
+### Single owner
+
+One Worker name has one deploying repository. The concurrency group cannot
+enforce that across repositories, so each deploy writes
+`reach-around-owner=<repository>` into the deployment message and the next
+deploy refuses when one of the last 10 deployments names a different
+repository. This narrows the window; it is not a lock (two simultaneous first
+deploys from two repositories both pass). To hand a Worker to another
+repository, deploy once from the new owner by hand (or wait until the old
+owner's messages leave the last 10 deployments), then deploy normally.
+
+### Engine release manifest (instance repositories)
+
+`engine.lock` pins the image digest, the repository and the commit, and each is
+only shape-checked on its own, so an image from release A with a commit from
+release B would pass. The instance template adds `engine.release.json` beside
+the lock: the image, repository, commit, tag and D1 schema (highest migration
+number) of ONE release. `scripts/read-lock.sh --release` checks that all of
+them agree with the lock, the image tag and the `# vX.Y.Z` comment on
+`ENGINE_REF`; the preview and deploy workflows and `scripts/deploy-local.sh`
+run it. `deploy-local.sh` also checks that a remote of `ENGINE_DIR` is
+`github.com/<ENGINE_REPO>`, that the tag in the manifest resolves to the pinned
+commit in that checkout, that the checkout's migrations end at the manifest's
+schema, and that tracked files are unmodified. The manifest is reviewed in the
+same pull request as the lock and is NOT signed: it ties the pins to each
+other, not to a publisher. Publishing it with each engine release, and signing
+it, is left for the release workflow.
 
 **Doppler identity pins** (one identity per tier, Viewer on one config only; a
 `dev` identity must not read `prd`). On the identity's OIDC claims, pin
@@ -1268,8 +1345,10 @@ set. The media kit page and PDF then print "Live since <date> (UTC)". See
 - **Site.** Pages project > Deployments > pick the previous deployment >
   Rollback to this deployment. Or re-run the workflow from an earlier good
   commit on `main`.
-- **Worker.** Worker > Deployments > Rollback, or `wrangler rollback` with the
-  token. Pause clicks entirely by deleting the Worker; links keep working
+- **Worker.** Worker > Deployments > Rollback, or `wrangler rollback
+  <version-id> --name <worker> --message <text>` with the token. The deploy
+  workflow does this itself after a failed probe (see "Deploy ordering and
+  rollback"); it restores code only, never the D1 schema. Pause clicks entirely by deleting the Worker; links keep working
   because the page uses `ping` plus a beacon, not a redirect.
 - **D1 migrations.** Migrations are forward only. Ship a new migration to
   undo a change; as a backstop, `wrangler d1 export reach-around-clicks
