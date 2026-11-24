@@ -153,8 +153,8 @@ def test_an_ancestor_swapped_for_a_link_after_the_check_is_not_followed(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Just before the last component is opened, the parent is renamed away and
-    replaced by a link to another private directory. The write goes where the
-    walk went (the real parent), never through the link."""
+    replaced by a link to another private directory. Nothing is written through
+    the link, and the directory the walk held is left with no file."""
     real = tmp_path / "race" / "private"
     real.mkdir(parents=True, mode=0o700)
     evil = tmp_path / "evil" / "private"
@@ -172,11 +172,73 @@ def test_an_ancestor_swapped_for_a_link_after_the_check_is_not_followed(
         return original(path, flags, mode, dir_fd=dir_fd)
 
     monkeypatch.setattr(os, "open", swap_then_open)
-    write_private(real, "kit.pdf", b"%PDF-1", overwrite=False)
+    with pytest.raises(OutputError, match="changed|symbolic"):
+        write_private(real, "kit.pdf", b"%PDF-1", overwrite=False)
     monkeypatch.undo()
     assert swapped
     assert list(evil.iterdir()) == []
-    assert (tmp_path / "race.old" / "private" / "kit.pdf").read_bytes() == b"%PDF-1"
+    assert list((tmp_path / "race.old" / "private").iterdir()) == []
+
+
+def test_a_directory_renamed_into_a_forbidden_tree_is_not_written_to(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """After the checks, the held directory is renamed into the published tree.
+    The write must fail and leave nothing there, temporary file included."""
+    site = tmp_path / "site"
+    site.mkdir(mode=0o700)
+    private = out_dir(tmp_path)
+    original = os.fsync
+    moved: list[bool] = []
+
+    def move_then_sync(fd: int) -> None:
+        if not moved:
+            moved.append(True)
+            os.rename(private, site / "uploaded")
+        original(fd)
+
+    monkeypatch.setattr(os, "fsync", move_then_sync)
+    with pytest.raises(OutputError, match="changed"):
+        write_private(private, "kit.pdf", b"%PDF-1", overwrite=False, forbidden=[site])
+    monkeypatch.undo()
+    assert moved
+    assert list((site / "uploaded").iterdir()) == []
+
+
+def test_a_directory_replaced_by_another_at_the_same_name_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    private = out_dir(tmp_path)
+    original = os.fsync
+    moved: list[bool] = []
+
+    def swap_then_sync(fd: int) -> None:
+        if not moved:
+            moved.append(True)
+            os.rename(private, tmp_path / "old")
+            os.mkdir(private, 0o700)
+        original(fd)
+
+    monkeypatch.setattr(os, "fsync", swap_then_sync)
+    with pytest.raises(OutputError, match="changed"):
+        write_private(private, "kit.pdf", b"%PDF-1", overwrite=False)
+    monkeypatch.undo()
+    assert list(private.iterdir()) == []
+    assert list((tmp_path / "old").iterdir()) == []
+
+
+def test_a_removed_directory_is_refused(tmp_path: Path) -> None:
+    from reach_around.kit.output import open_private_dir, verify_unchanged
+
+    private = out_dir(tmp_path)
+    fd = open_private_dir(private, [], create=False)
+    try:
+        verify_unchanged(private, fd, [])  # control: still there
+        private.rmdir()
+        with pytest.raises(OutputError, match="changed"):
+            verify_unchanged(private, fd, [])
+    finally:
+        os.close(fd)
 
 
 def test_intermediate_directories_are_created_owner_only(tmp_path: Path) -> None:

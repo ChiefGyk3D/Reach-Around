@@ -1002,8 +1002,19 @@ Where it may go, and what it holds:
 - **Compared as values.** Before the text is made, every string and number of the
   document is compared, decoded and normalized (case, width and spacing folded),
   with an inventory of the private-source values: each private field, each
-  number and free text of each private measure, and the not-for-PDF values. The
-  encoding of the file is never part of the comparison.
+  number and free text of each private measure, the loaded imported history when
+  its block is private, and the not-for-PDF values. Numbers are compared as
+  numbers: a private 12.3 matches 12.30 and "12.3%", and a private 1234567
+  matches "1,234,567" and "1 234 567" written in a text, while unrelated numbers
+  and punctuation are left alone. The encoding of the file is never part of the
+  comparison.
+- **The directory stays put.** The output directory is held open from the walk
+  to the write. Just before the file is renamed into place, and again after, the
+  path is resolved a second time and must be the same directory (same device and
+  inode, still linked) and still outside the forbidden directories; otherwise the
+  temporary file is removed and nothing is kept. Mount-namespace tricks (bind
+  mounts) are out of scope: this is an owner-local tool with a same-user threat
+  model.
 - **Reproducible.** The same inputs and `--date` give the same bytes.
 
 ### Schema

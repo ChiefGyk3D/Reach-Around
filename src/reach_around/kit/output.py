@@ -219,6 +219,29 @@ def _has_entry(fd: int, name: str) -> bool:
     return True
 
 
+def verify_unchanged(
+    directory: Path, dir_fd: int, forbidden: Iterable[Path] = ()
+) -> None:
+    """Fail unless ``directory`` still resolves, by the same descriptor-relative
+    walk and the same forbidden comparison, to the directory held in ``dir_fd``
+    (same device and inode) and that directory is still linked. A directory that
+    was renamed, replaced or removed after it was checked is refused."""
+    changed = OutputError(
+        "the output directory changed while the file was written; nothing was kept"
+    )
+    if os.fstat(dir_fd).st_nlink == 0:
+        raise changed
+    try:
+        again = open_private_dir(directory, forbidden, create=False)
+    except OutputError as exc:
+        raise changed from exc
+    try:
+        if _ident(again) != _ident(dir_fd):
+            raise changed
+    finally:
+        os.close(again)
+
+
 def confine_out_dir(out_dir: Path, forbidden: Iterable[Path]) -> Path:
     """Validate (and create, owner-only) the output directory; return it."""
     os.close(open_private_dir(out_dir, forbidden, create=True))
@@ -267,8 +290,20 @@ def write_private(
                 handle.write(data)
                 handle.flush()
                 os.fsync(handle.fileno())
+            verify_unchanged(directory, dir_fd, forbidden)
             os.replace(temp, name, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
             os.fsync(dir_fd)
+            try:
+                verify_unchanged(directory, dir_fd, forbidden)
+            except OutputError:
+                with contextlib.suppress(OSError):
+                    os.unlink(name, dir_fd=dir_fd)
+                raise
+        except OutputError:
+            if made:
+                with contextlib.suppress(OSError):
+                    os.unlink(temp, dir_fd=dir_fd)
+            raise
         except OSError as exc:
             if made:
                 with contextlib.suppress(OSError):

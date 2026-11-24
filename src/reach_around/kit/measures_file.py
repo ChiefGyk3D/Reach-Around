@@ -36,6 +36,7 @@ import stat
 import unicodedata
 from collections.abc import Iterable, Mapping, Sequence
 from datetime import date
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
@@ -152,8 +153,13 @@ def _norm(text: str) -> str:
     )
 
 
-def _leaves(value: Any, path: str) -> Iterable[tuple[str, str | int]]:
-    """Every string and whole number inside a config value, with its field path."""
+Scalar = str | int | Decimal
+
+
+def _leaves(value: Any, path: str) -> Iterable[tuple[str, Scalar]]:
+    """Every string and finite number inside a config value, with its field path.
+    A number is an ``int`` or a ``Decimal`` made from the float's shortest text,
+    so 12.3 stays 12.3."""
     if isinstance(value, bool) or value is None:
         return
     if isinstance(value, BaseModel):
@@ -168,8 +174,10 @@ def _leaves(value: Any, path: str) -> Iterable[tuple[str, str | int]]:
         yield path, value.isoformat()
     elif isinstance(value, (str, int)):
         yield path, value
-    elif isinstance(value, float) and math.isfinite(value) and value == int(value):
-        yield path, int(value)
+    elif isinstance(value, float) and math.isfinite(value):
+        yield path, Decimal(repr(value))
+    elif isinstance(value, Decimal) and value.is_finite():
+        yield path, value
 
 
 def _is_date(text: str) -> bool:
@@ -180,11 +188,16 @@ def _is_date(text: str) -> bool:
 
 
 def private_scalars(
-    kit: KitConfig, numbers: Numbers | None, api: frozenset[str] | None = None
-) -> list[tuple[str, str | int]]:
-    """The inventory: every string and whole number whose source is private. These
+    kit: KitConfig,
+    numbers: Numbers | None,
+    api: frozenset[str] | None = None,
+    imported: ImportedHistory | None = None,
+) -> list[tuple[str, Scalar]]:
+    """The inventory: every string and number whose source is private. These
     are the values of each config field the display policy marks private (or the
-    PDF never prints), and every number and free text of each private measure.
+    PDF never prints), read from the same sources the projection reads (the
+    loaded imported history included), and every number and free text of each
+    private measure.
     Values that are only names (a platform, a registry label, a label a visible
     measure also prints) or dates are left out: they say nothing."""
     measures = compile_measures(kit, numbers, api)
@@ -200,10 +213,15 @@ def private_scalars(
         for name in _FREE_TEXT
     }
     plain |= {text for _key, name, text in public_text if name == "label"}
-    found: list[tuple[str, str | int]] = []
+    found: list[tuple[str, Scalar]] = []
     for name, level in kit_module.DISPLAY_POLICY.items():
+        source: Any = getattr(kit, name, None)
+        if name == "imported_history":
+            # the loaded numbers, never the path, at the level the config gives
+            level = kit_module.imported_level(kit)
+            source = imported
         if level == "private" or name in PDF_EXCLUDED:
-            found.extend(_leaves(getattr(kit, name, None), f"kit.{name}"))
+            found.extend(_leaves(source, f"kit.{name}"))
     for m in measures:
         if m.visibility != "private":
             continue
@@ -214,7 +232,7 @@ def private_scalars(
             text = getattr(m, name)
             if text and (m.key, name, _norm(text)) not in public_text:
                 found.append((f"{where}.{name}", text))
-    out: list[tuple[str, str | int]] = []
+    out: list[tuple[str, Scalar]] = []
     for path, value in found:
         if isinstance(value, str):
             flat = _norm(value)
@@ -222,7 +240,9 @@ def private_scalars(
                 continue
             if len(flat) < GUARD_MIN_LENGTH and not path.endswith(_FREE_TEXT):
                 continue
-        elif len(str(abs(value))) < GUARD_MIN_LENGTH:
+        elif _whole(value) and len(str(abs(int(value)))) < GUARD_MIN_LENGTH:
+            # a short whole number is too common to mean anything; a number with
+            # a fraction is kept whatever its length
             continue
         out.append((path, value))
     return out
@@ -242,21 +262,53 @@ def _output_scalars(document: Any) -> Iterable[str | int]:
         yield document
 
 
+def _whole(value: Scalar) -> bool:
+    return isinstance(value, int) or (
+        isinstance(value, Decimal) and value == value.to_integral_value()
+    )
+
+
+# A number as people write it in a text: digits, optional thousands separators
+# (a comma, a space or a no-break space) and an optional decimal point. A
+# trailing percent sign or any other character is not part of the number, and no
+# punctuation is removed from the text.
+_SEPARATORS = ",   "
+_GROUPED = re.compile(
+    rf"(?<![0-9.,])[0-9]{{1,3}}(?:[{_SEPARATORS}][0-9]{{3}})+(?:\.[0-9]+)?(?![0-9])"
+)
+_PLAIN = re.compile(r"[0-9]+(?:\.[0-9]+)?")
+
+
+def number_tokens(text: str) -> set[Decimal]:
+    """The numbers a text holds, each read every way a reader could: as one
+    grouped number ("1,234" is 1234) and as separate plain numbers (1 and 234)."""
+    found: set[Decimal] = set()
+    for match in _GROUPED.finditer(text):
+        found.add(Decimal("".join(c for c in match.group() if c not in _SEPARATORS)))
+    for match in _PLAIN.finditer(text):
+        found.add(Decimal(match.group()))
+    return found
+
+
 def check_no_private_values(
-    document: Mapping[str, Any], inventory: Sequence[tuple[str, str | int]]
+    document: Mapping[str, Any], inventory: Sequence[tuple[str, Scalar]]
 ) -> None:
     """Refuse a document that holds any inventory value, compared as decoded,
-    normalized strings and as whole numbers (a number also as a whole digit run
-    inside a text). Names the field, never the value."""
-    strings = [_norm(v) for v in _output_scalars(document) if isinstance(v, str)]
-    numbers = {v for v in _output_scalars(document) if isinstance(v, int)}
+    normalized strings and as numbers (a number also as a number written in a
+    text, with or without thousands separators; 12.3 and 12.30 are one number).
+    Names the field, never the value."""
+    values = list(_output_scalars(document))
+    strings = [_norm(v) for v in values if isinstance(v, str)]
+    numbers = {Decimal(v) for v in values if isinstance(v, int)}
+    for text in values:
+        if isinstance(text, str):
+            numbers |= number_tokens(text)
     for path, value in inventory:
         if isinstance(value, str):
             needle = _norm(value)
             hit = any(needle in text for text in strings)
         else:
-            digits = re.compile(rf"(?<![0-9]){abs(value)}(?![0-9])")
-            hit = value in numbers or any(digits.search(t) for t in strings)
+            hit = Decimal(value) in numbers
         if hit:
             raise MeasuresFileError(
                 f"a value of the private field {path} is in the measures file; "
@@ -351,7 +403,7 @@ def build_measures_file(
     )
     document["binding"] = binding
     check_no_private_values(
-        document, private_scalars(kit, numbers, source_platforms(config))
+        document, private_scalars(kit, numbers, source_platforms(config), imported)
     )
     text = json.dumps(document, indent=2, sort_keys=True, ensure_ascii=True) + "\n"
     forbidden = [gated_dir, site_dir, *protect]

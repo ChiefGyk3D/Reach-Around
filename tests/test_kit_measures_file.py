@@ -6,7 +6,8 @@ from __future__ import annotations
 import json
 import os
 import stat
-from datetime import date
+from datetime import UTC, date, datetime
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
@@ -16,7 +17,11 @@ import reach_around.commands.kit as kit_command
 from kitpdfharness import SITE_KEY, TODAY, build_instance, kit_doc, make_config
 from reach_around.cli import main
 from reach_around.config import SiteConfig
+from reach_around.config import kit as kit_module
+from reach_around.config.imported_history import ImportedHistory
 from reach_around.config.kit import KitConfig
+from reach_around.config.numbers import Numbers, NumbersEntry
+from reach_around.counts.beacons import IMPORT_NOTE
 from reach_around.kit.binding import BINDING_FILE
 from reach_around.kit.measures_file import (
     FILE_NAME,
@@ -232,7 +237,7 @@ def test_a_private_small_figure_is_needled_before_write(
     monkeypatch.setattr(
         measures_file,
         "private_scalars",
-        lambda kit, numbers, api=None: [("kit.metrics.value", 1200)],
+        lambda kit, numbers, api=None, imported=None: [("kit.metrics.value", 1200)],
     )
     with pytest.raises(MeasuresFileError) as caught:
         write(tmp_path, config, site, gated)
@@ -250,7 +255,9 @@ def test_the_turnstile_key_is_a_needle(
     monkeypatch.setattr(
         measures_file,
         "private_scalars",
-        lambda kit, numbers, api=None: [("turnstile_site_key", "Followers")],
+        lambda kit, numbers, api=None, imported=None: [
+            ("turnstile_site_key", "Followers")
+        ],
     )
     with pytest.raises(MeasuresFileError, match="turnstile_site_key"):
         write(tmp_path, config, site, gated)
@@ -601,6 +608,135 @@ def test_the_reader_refuses_deep_nesting(tmp_path: Path) -> None:
 
 def test_the_reader_accepts_what_the_writer_wrote(tmp_path: Path) -> None:
     assert load_measures_file(put(tmp_path, good(tmp_path)))["measures"]
+
+
+# --- the inventory covers decimals, formats and every source ----------------------
+
+FORMS = {
+    "plain": "reached {v}",
+    "thousands comma": "reached {c}",
+    "thousands space": "reached {s}",
+    "with a percent sign": "reached {v}%",
+}
+
+
+def written(value: int | str) -> dict[str, str]:
+    text = str(value)
+    whole, _, frac = text.partition(".")
+    grouped = f"{int(whole):,}" + (f".{frac}" if frac else "")
+    return {"v": text, "c": grouped, "s": grouped.replace(",", " ")}
+
+
+def a_note(text: str) -> dict[str, Any]:
+    return {"measures": [{"note": text}]}
+
+
+@pytest.mark.parametrize("form", sorted(FORMS))
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("metrics", SECRET_FOLLOWERS),
+        ("analytics", 5555555),
+        ("analytics", 9162534),
+        ("engagement", 7654321),
+    ],
+)
+def test_a_private_whole_number_is_found_in_every_written_form(
+    field: str, value: int, form: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    kit = KitConfig.model_validate(PRIVATE_KIT)
+    text = FORMS[form].format(**written(value))
+    assert private_scalars(kit, None) == []  # control: nothing private yet
+    make_private(monkeypatch, field)
+    with pytest.raises(MeasuresFileError, match="private field kit"):
+        check_no_private_values(a_note(text), private_scalars(kit, None))
+
+
+@pytest.mark.parametrize("form", sorted(FORMS))
+@pytest.mark.parametrize("written_as", ["12.3", "12.30"])
+def test_a_private_decimal_is_found_however_it_is_written(
+    form: str, written_as: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    kit = KitConfig.model_validate(PRIVATE_KIT)
+    make_private(monkeypatch, "analytics")
+    inventory = private_scalars(kit, None)
+    assert ("kit.analytics.followers_30_day_percent", Decimal("12.3")) in inventory
+    text = FORMS[form].format(v=written_as, c=written_as, s=written_as)
+    with pytest.raises(MeasuresFileError, match="followers_30_day_percent"):
+        check_no_private_values(a_note(text), inventory)
+
+
+def test_unrelated_numbers_are_not_a_hit() -> None:
+    inventory: list[tuple[str, Any]] = [
+        ("kit.x.whole", 9162534),
+        ("kit.x.decimal", Decimal("12.3")),
+    ]
+    for text in (
+        "ids 91625345 and 59162534",
+        "split 9,162,53 and 1,916,253,4",
+        "12.35 and 112.3 and 12.4%",
+        "founded in 2027, 3 streams, 40 days",
+    ):
+        check_no_private_values(a_note(text), inventory)
+    check_no_private_values({"measures": [{"value": 9162535}]}, inventory)
+    with pytest.raises(MeasuresFileError, match="kit.x.whole"):
+        check_no_private_values({"measures": [{"value": 9162534}]}, inventory)
+
+
+def test_a_private_number_from_the_numbers_file_is_in_the_inventory(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    stamp = datetime(2027, 3, 9, 12, 0, tzinfo=UTC)
+    numbers = Numbers(entries={"twitch": NumbersEntry(count=9876543, as_of=stamp)})
+    kit = KitConfig.model_validate(
+        {
+            "title": "Example Creator media kit",
+            "about": "A fake creator used in tests.",
+            "metrics": [{"platform": "twitch", "label": "Reach", "source": "counts"}],
+        }
+    )
+    assert private_scalars(kit, numbers) == []
+    make_private(monkeypatch, "metrics")
+    inventory = private_scalars(kit, numbers)
+    assert 9876543 in [value for _path, value in inventory]
+    with pytest.raises(MeasuresFileError):
+        check_no_private_values(a_note("about 9,876,543 of them"), inventory)
+
+
+def imported_history() -> ImportedHistory:
+    return ImportedHistory.model_validate(
+        {
+            "version": 1,
+            "source": "imported",
+            "note": IMPORT_NOTE,
+            "platform": "link-page",
+            "periods": [
+                {
+                    "start": "2026-01-01",
+                    "end": "2026-01-31",
+                    "days": 31,
+                    "views": 1234567,
+                    "clicks": 7654321,
+                }
+            ],
+        }
+    )
+
+
+def test_imported_values_enter_the_inventory_when_the_block_is_private(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    kit = KitConfig.model_validate(PRIVATE_KIT)
+    history = imported_history()
+    shown = [v for _path, v in private_scalars(kit, None, None, history)]
+    assert 1234567 not in shown  # gated, not private: the page may show it
+    monkeypatch.setattr(kit_module, "imported_level", lambda kit: "private")
+    assert 1234567 not in [v for _p, v in private_scalars(kit, None)]  # none given
+    inventory = private_scalars(kit, None, None, history)
+    assert {1234567, 7654321} <= {v for _path, v in inventory}
+    assert any(path.startswith("kit.imported_history") for path, _v in inventory)
+    with pytest.raises(MeasuresFileError, match="kit.imported_history"):
+        check_no_private_values(a_note("1,234,567 views"), inventory)
 
 
 # --- the docs -------------------------------------------------------------------
