@@ -257,10 +257,14 @@ def test_two_failures_in_a_row_still_end_in_step(
 def test_the_pending_note_holds_run_ids_only_and_is_bounded(tmp_path: Path) -> None:
     path = tmp_path / ".numbers.json.pending"
     ids: list[str] = []
-    for n in range(MAX_IDS + 5):
+    for n in range(MAX_IDS):
         mark_pending(path, ids, f"refresh-{n}")
         ids = read_pending(path)
-    assert ids == [f"refresh-{n}" for n in range(5, MAX_IDS + 5)]
+    assert ids == [f"refresh-{n}" for n in range(MAX_IDS)]
+    before = path.read_bytes()
+    with pytest.raises(PendingError):  # an id is never dropped to make room
+        mark_pending(path, ids, "refresh-over")
+    assert path.read_bytes() == before
     path.write_text("good-1\n../etc/passwd\nbad id\n" + "x" * 5000, encoding="utf-8")
     with pytest.raises(PendingError):  # over the size cap: not trusted, not absent
         read_pending(path)
@@ -394,6 +398,45 @@ def test_a_committed_run_whose_numbers_file_is_byte_identical_is_not_replayed(
     assert run(setup, DAY1_LATER) == 0
     assert [p.value for p in points(setup, "bluesky", "followers")] == [100]
     assert current(setup) == 105
+
+
+def test_a_checkout_between_a_failed_run_and_its_retry_is_not_a_commit(
+    setup: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    serve(monkeypatch, 90)
+    assert run(setup, DAY1 - timedelta(days=1)) == 0
+    numbers = setup / "numbers.json"
+    old = numbers.read_bytes()
+    serve(monkeypatch, 100)
+    fail_numbers_once(monkeypatch)
+    assert run(setup, DAY1) == counts_cmd.EXIT_WRITE
+    # `git checkout -- numbers.json`: the old content, as a new file
+    copy = setup / "restore.tmp"
+    copy.write_bytes(old)
+    os.replace(copy, numbers)
+    assert numbers.read_bytes() == old
+    serve(monkeypatch, 105)
+    assert run(setup, DAY1_LATER) == 0
+    assert current(setup) == 105
+    assert [p.value for p in points(setup, "bluesky", "followers")][-1] == 105
+
+
+def test_the_pending_note_never_drops_an_id_to_make_room(
+    setup: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    note = pending_path(setup / "numbers.json")
+    serve(monkeypatch, 100)
+    ids = [f"refresh-{n}" for n in range(MAX_IDS)]
+    note.write_text("\n".join(ids) + "\n", encoding="utf-8")
+    before = note.read_bytes()
+    assert run(setup, DAY1) == counts_cmd.EXIT_WRITE  # a 17th id: stop
+    assert "pending note" in capsys.readouterr().err
+    assert note.read_bytes() == before
+    assert not (setup / "numbers.json").exists()
+    assert not (setup / "history" / "social.jsonl").exists()
+    note.write_text("\n".join(ids[:-1]) + "\n", encoding="utf-8")  # 15 + this run
+    assert run(setup, DAY1) == 0
+    assert current(setup) == 100
 
 
 def test_a_note_that_cannot_be_removed_does_not_rewrite_committed_history(

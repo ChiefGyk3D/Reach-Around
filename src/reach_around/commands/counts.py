@@ -36,7 +36,7 @@ from reach_around.config import ConfigError, SiteConfig, load_site_config
 from reach_around.config.cutover import utc_today
 from reach_around.config.imported_history import parse_imported
 from reach_around.config.loader import _read
-from reach_around.config.numbers import load_numbers
+from reach_around.config.numbers import NumbersEntry, load_numbers
 from reach_around.config.stale import REMIND_DAYS, due_numbers
 from reach_around.counts.beacons import (
     IMPORT_NOTE,
@@ -95,6 +95,7 @@ from reach_around.counts.instagram_insights import (
 )
 from reach_around.counts.pending import (
     clear_pending,
+    content_digest,
     live_ids,
     mark_pending,
     numbers_identity,
@@ -353,8 +354,21 @@ def build_sinks(spec: DopplerSpec, transport: Transport | None) -> Sinks:
     return Sinks(PairStyleSink(sink), MetaStyleSink(sink))
 
 
+def _expected_digest(entries: Mapping[str, NumbersEntry]) -> str | None:
+    """Digest of the numbers text this run is about to write (None if it cannot
+    be made; the write would fail too, so the run can never count as committed)."""
+    try:
+        return content_digest(dump_numbers(entries))
+    except ConfigError:
+        return None
+
+
 def _stage_history(
-    history: Path, paths: Paths, records: list[Record], run_id: str
+    history: Path,
+    paths: Paths,
+    records: list[Record],
+    run_id: str,
+    expect: str | None,
 ) -> list[Record]:
     """Note this run as pending, then settle days an earlier attempt recorded.
 
@@ -367,7 +381,7 @@ def _stage_history(
     pending = pending_path(paths.target)
     note = read_note(pending)
     ids = live_ids(note, paths.target)  # [] when that run's numbers write landed
-    mark_pending(pending, ids, run_id, numbers_identity(paths.target))
+    mark_pending(pending, ids, run_id, numbers_identity(paths.target), expect)
     if ids and history.exists():
         return reconcile(read_history(history), ids, records)
     return records
@@ -581,7 +595,9 @@ def _cycle(
             print(f"{platform}: insights error (too_large)", file=sys.stderr)
             insight_failures.append(InsightFailure(platform, "too_large"))
         try:
-            fetched = _stage_history(history, paths, fetched, run_id)
+            fetched = _stage_history(
+                history, paths, fetched, run_id, _expected_digest(numbers)
+            )
         except OSError as exc:
             _write_failed(exc)
             return EXIT_WRITE
@@ -1105,6 +1121,7 @@ def run_import(
                     f"dry run: {len(rows)} number(s) would be imported; nothing written"
                 )
                 return EXIT_OK
+            merged = merge(previous, rows)
             if history is not None:
                 # History first, as in refresh: if it cannot be written, the
                 # numbers file is left as it was. One value per platform, metric
@@ -1126,9 +1143,10 @@ def run_import(
                         for row in rows
                     ],
                     run_id,
+                    _expected_digest(merged),
                 )
                 append_records(history, staged, now=stamp, skip_days=True)
-            write_atomic(paths.target, dump_numbers(merge(previous, rows)))
+            write_atomic(paths.target, dump_numbers(merged))
             if history is not None:
                 _settle_history(paths)
     except ImportFailed as exc:

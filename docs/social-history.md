@@ -85,15 +85,20 @@ mark a fetched record with a correction (below).
   then, because the bytes on disk are not all ours: run `counts history-verify`
   and restore from git if it reports damage.
 * A refresh or import that stops after history was written leaves a small
-  `.<numbers file>.pending` note (run ids and the identity of the numbers file
-  (device, inode, time, size), never values). If that note exists but cannot be
-  read or is not valid, the next run
+  `.<numbers file>.pending` note (run ids, the identity of the numbers file
+  (device, inode, time, size) and a digest of the text the run was about to
+  write, never values). If that note exists but cannot be read or is not valid,
+  the next run
   stops before touching anything, prints a fixed message, and leaves the note
   as it is; inspect or remove it, then run again. A note left behind after the
-  numbers file was written is recognized (the numbers file is a different file
-  now, even if its bytes are the same, because every write is a rename of a
-  new file) and ignored, so a committed day is never rewritten. A numbers file
-  put in place by other means (a checkout) counts as a change too.
+  numbers file was written is recognized (the numbers file now holds exactly
+  the text that run was to write, and is a different file than before, even if
+  its bytes are the same) and ignored, so a committed day is never rewritten.
+  A numbers file put in place by other means (a checkout or a copy of an older
+  version) holds other content, proves nothing, and the attempt stays pending.
+  The note lists at most 16 attempts and never drops one: a 17th stops the run
+  with a fixed message and the note is left as it is; check that history
+  matches the numbers file, remove the note, then run again.
 * It refuses a file that is already damaged, a duplicate
   (`platform`, `metric`, UTC day, `source`), a future time, and bad fields.
   A batch is all or nothing.

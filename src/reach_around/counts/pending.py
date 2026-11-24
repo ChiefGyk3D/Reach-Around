@@ -16,6 +16,7 @@ Only run ids are stored (no values). Held under the same lock as the run.
 
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 import stat
@@ -23,6 +24,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
+from reach_around.config.numbers import MAX_NUMBERS_BYTES
 from reach_around.counts.files import write_atomic
 from reach_around.counts.history import History, HistoryError, Record
 
@@ -48,6 +50,12 @@ _UNUSABLE = (
     "the pending note next to the numbers file cannot be read or is not valid; "
     "it was left as it is; inspect or remove it, then run again"
 )
+_FULL = (
+    "the pending note already lists the most unfinished attempts it can hold; "
+    "it was left as it is; check that history matches the numbers file, remove "
+    "the note, then run again"
+)
+_EXPECT = re.compile(r"^expect ([0-9a-f]{64})$")
 _BASE = re.compile(r"^base (none|[0-9a-f]{1,32}(?::[0-9a-f]{1,32}){3})$")
 
 
@@ -55,6 +63,7 @@ _BASE = re.compile(r"^base (none|[0-9a-f]{1,32}(?::[0-9a-f]{1,32}){3})$")
 class Note:
     ids: list[str]
     base: str | None  # identity of the numbers file when the latest run began
+    expect: str | None = None  # digest of the text that run was about to write
 
 
 def read_note(path: Path) -> Note:
@@ -87,15 +96,21 @@ def read_note(path: Path) -> Note:
         raise PendingError(_UNUSABLE) from None
     ids: list[str] = []
     base: str | None = None
+    expect: str | None = None
     for line in lines:
         found = _BASE.fullmatch(line)
+        wanted = _EXPECT.fullmatch(line)
         if found is not None and base is None:
             base = found.group(1)
+        elif wanted is not None and expect is None:
+            expect = wanted.group(1)
         elif _ID.fullmatch(line):
             ids.append(line)
         else:
             raise PendingError(_UNUSABLE)
-    return Note(ids[-MAX_IDS:], base)
+    if len(ids) > MAX_IDS:
+        raise PendingError(_UNUSABLE)
+    return Note(ids, base, expect)
 
 
 def read_pending(path: Path) -> list[str]:
@@ -119,26 +134,70 @@ def numbers_identity(numbers: Path) -> str:
     return ":".join(f"{part:x}" for part in parts)
 
 
+def content_digest(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _numbers_text_digest(numbers: Path) -> str | None:
+    """Digest of the numbers file's bytes; ``None`` when absent or not a plain
+    file of a sane size (then it cannot be the file a run wrote)."""
+    try:
+        fd = os.open(numbers, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except OSError:
+        return None
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            return None
+        data = os.read(fd, MAX_NUMBERS_BYTES + 1)
+    except OSError:
+        return None
+    finally:
+        os.close(fd)
+    if len(data) > MAX_NUMBERS_BYTES:
+        return None
+    return hashlib.sha256(data).hexdigest()
+
+
 def live_ids(note: Note, numbers: Path) -> list[str]:
     """The ids whose numbers write may not have happened.
 
-    The note records the numbers file's identity from when its latest run began.
-    If the file is a different file now, that run (and so every earlier one)
-    committed its numbers write and only the note's removal was lost; nothing is
-    pending. (A file put there by other means, such as a checkout, also counts
-    as a change; the run then keeps the first history value of the day.)
+    A run is shown to have committed only when the numbers file now holds exactly
+    the text that run was about to write (``expect``, a digest) AND is a
+    different file than when the run began (``base``, its identity; this
+    separates a rewrite of identical bytes from an untouched file). A file
+    restored by other means (a checkout, a copy of an older version) holds other
+    content, so it proves nothing and the ids stay pending.
     """
-    if note.base is not None and note.base != numbers_identity(numbers):
+    if (
+        note.base is not None
+        and note.expect is not None
+        and note.base != numbers_identity(numbers)
+        and note.expect == _numbers_text_digest(numbers)
+    ):
         return []
     return note.ids
 
 
 def mark_pending(
-    path: Path, ids: Sequence[str], run_id: str, base: str | None = None
+    path: Path,
+    ids: Sequence[str],
+    run_id: str,
+    base: str | None = None,
+    expect: str | None = None,
 ) -> None:
-    """List ``run_id`` after the ids already pending; raises ``OSError``."""
-    kept = [*ids, run_id][-MAX_IDS:]
-    lines = kept if base is None else [*kept, f"base {base}"]
+    """List ``run_id`` after the ids already pending; raises ``OSError``.
+
+    Raises ``PendingError`` when the list would pass ``MAX_IDS``: an id is never
+    dropped to make room (it may be the only one that can be corrected), so the
+    run stops and the note is left as it is.
+    """
+    if len(ids) + 1 > MAX_IDS:
+        raise PendingError(_FULL)
+    lines = [*ids, run_id]
+    if base is not None:
+        lines.append(f"base {base}")
+        if expect is not None:
+            lines.append(f"expect {expect}")
     write_atomic(path, "\n".join(lines) + "\n")
 
 
