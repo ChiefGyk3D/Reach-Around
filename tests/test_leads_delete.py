@@ -6,6 +6,7 @@ from __future__ import annotations
 import io
 import json
 import os
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -45,7 +46,25 @@ def export(tmp_path: Path) -> Path:
 
 
 def run(capsys: pytest.CaptureFixture[str], *argv: str) -> tuple[int, str, str]:
-    code = main(["leads", "delete", *argv])
+    """Run `leads delete`. Since round 3 the address is accepted only from stdin
+    (`--email -`) and `--database` is mandatory, so this helper moves a value
+    given as `--email ADDRESS` onto stdin and adds the database name. The
+    assertions of the tests that use it are unchanged."""
+    args = list(argv)
+    stdin: str | None = None
+    if "--email" in args:
+        at = args.index("--email") + 1
+        if args[at] != "-":
+            stdin, args[at] = args[at] + "\n", "-"
+    if "--checklist" not in args and "--database" not in args:
+        args += ["--database", "reach-around-leads"]
+    old = sys.stdin
+    if stdin is not None:
+        sys.stdin = io.StringIO(stdin)
+    try:
+        code = main(["leads", "delete", *args])
+    finally:
+        sys.stdin = old
     captured = capsys.readouterr()
     return code, captured.out, captured.err
 
@@ -166,17 +185,20 @@ class TestYes:
         code, out, err = run(capsys, "--input", str(export), "--email", ADDR, "--yes")
         assert code == 0
         statements = [ln for ln in out.splitlines() if ln and not ln.startswith("--")]
-        assert statements == [
-            "DELETE FROM kit_events WHERE lead_id = '?';".replace("?", ID_A),
-            "DELETE FROM leads WHERE id = '?';".replace("?", ID_A),
-            "SELECT COUNT(*) AS remaining FROM leads WHERE id = '?';".replace(
-                "?", ID_A
-            ),
+        # Round 3: every statement is bound to the id AND the normalized address,
+        # so the SQL deletes only if the live row still pairs them. The address
+        # is therefore in the SQL (stdout) but never in the messages (stderr).
+        pair = f"id = '{ID_A}' AND email = '{ADDR}'"
+        # The strings below are expected text, never executed.
+        expected = [
+            "DELETE FROM kit_events WHERE lead_id IN "  # noqa: S608
+            f"(SELECT id FROM leads WHERE {pair});",  # noqa: S608
+            f"DELETE FROM leads WHERE {pair};",  # noqa: S608
+            f"SELECT COUNT(*) AS remaining FROM leads WHERE id = '{ID_A}';",  # noqa: S608
         ]
+        assert statements == expected
         assert ID_B not in out
-        # The address appears nowhere: not in the SQL, not in the messages.
-        for stream in (out, err):
-            assert "partner" not in stream and "example.test" not in stream
+        assert "partner" not in err and "example.test" not in err
         # Fixed message: no form of the address reaches stderr (it can be logged).
         assert "1 lead matches." in err and "***" not in err
 

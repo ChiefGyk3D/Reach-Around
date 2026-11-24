@@ -133,7 +133,7 @@ about one person.
 
    ```
    read -r ADDR   # type the address, press Enter
-   printf '%s\n' "$ADDR" | reach-around leads show --input leads-export.json --email-file -
+   printf '%s\n' "$ADDR" | reach-around leads show --input leads-export.json --email-file - --database reach-around-leads
    ```
 
    It prints the masked address, the country, the created and verified times
@@ -147,27 +147,30 @@ about one person.
    export. An event time that is not on the hour is shown as its hour.
 
    The command prints the database it expects the export to come from
-   (`database: reach-around-leads`) and accepts `--database` only with exactly
-   that name. A wrangler export does not name its database, so this is a guard
-   against naming the wrong one, not proof of where the file came from: take the
-   export from the leads database only.
+   (`database: reach-around-leads`) and requires `--database reach-around-leads`
+   every time, with exactly that name. What this proves and what it does not: a
+   wrangler export does not name its database, so the flag is your statement of
+   where the file came from. It stops a wrong or missing name; it cannot prove
+   the file came from the leads database. Take the export from the leads
+   database only.
 
-   Typing the address on the command line is refused by this tool, but that does
-   not undo what a shell already did: if you typed it after `--email`, your shell
-   history and the process list already hold it. Use stdin or a file.
-   `leads delete` still accepts `--email ADDRESS` for compatibility and prints a
-   warning when you use it; the same history and process-list exposure applies,
-   so use `--email -`.
+   An address on the command line is refused by both `leads show` and
+   `leads delete` (for `delete`, only `--email -` is accepted), before the
+   export is read. That does not undo what a shell already did: if you typed it
+   after `--email`, your shell history and the process list already hold it.
+   Use stdin or a file.
 
 3. Copy the printed lines into your written reply, and add the copies the tool
    cannot see (alert copies in your chat room or mailbox, inquiry text, hand-made
    exports; the list is below).
 
-### Erasure: clear every copy
+### Erasure: the known copies, and what you must check by hand
 
 `reach-around leads delete --checklist` prints this list and needs no export and
-no address. Deleting the database rows (the steps in the next section) is only
-the first item:
+no address. It checks nothing: it does not find copies and cannot confirm a
+deletion outside the SQL it prints, so it is not proof that no other copy
+exists. Deleting the database rows (the steps in the next section) is only the
+first item:
 
 1. The `leads` row and its `kit_events` rows in D1.
 2. Alert copies in the Discord room, the Matrix room or the mailbox, when owner
@@ -180,6 +183,12 @@ the first item:
 5. Hand-made exports, dumps and spreadsheets (including the files you made for
    the steps above).
 6. Shell history, tickets and notes that hold the address.
+7. By hand, where neither this list nor the tool can look: Worker logs and any
+   collector logs or exception output; alert delivery logs at the chat or mail
+   provider; automated backups and exports of the database beyond Time Travel;
+   CI artifacts and deploy logs; monitoring and error-tracking systems; any
+   system wired to the Worker that stores request or alert payloads. Record the
+   result of each check, even "nothing found".
 
 TODO-copy: the visitor-facing sentence for the right of access, the right to
 erasure, the one-month answer and the Art. 11 position on page view rows.
@@ -203,7 +212,7 @@ You run a local command, and then apply the SQL it prints with `wrangler`.
 
    ```
    read -r ADDR   # type the address, press Enter
-   printf '%s\n' "$ADDR" | reach-around leads delete --input leads-export.json --email -
+   printf '%s\n' "$ADDR" | reach-around leads delete --input leads-export.json --email - --database reach-around-leads
    ```
 
    It prints, for example, `dry run: 1 lead matches p***@***.test`. Exit 1 means
@@ -211,15 +220,20 @@ You run a local command, and then apply the SQL it prints with `wrangler`.
    More than one match refuses and prints nothing, because the table cannot
    hold two.
 
-3. Print the delete SQL with `--yes`. The SQL names the lead by its random id,
-   not by the address:
+3. Print the delete SQL with `--yes`. The export is a local file and cannot be
+   trusted to say who owns an id, so every deleting statement names the lead's
+   random id and its address: the live database deletes the lead and its kit
+   events only if that row still pairs them. The file therefore holds the
+   address (step 5 deletes it):
 
    ```
-   printf '%s\n' "$ADDR" | reach-around leads delete --input leads-export.json --email - --yes > delete-lead.sql
+   printf '%s\n' "$ADDR" | reach-around leads delete --input leads-export.json --email - --database reach-around-leads --yes > delete-lead.sql
    ```
 
-4. Apply it, then read the result back. The last statement counts the lead
-   after the delete and must show `0`:
+4. Apply it, then read the result back. The last statement counts the rows left
+   for that id. `0` means deleted. `1` means the id did not belong to that
+   address in the live database (a stale or wrong export), nothing was deleted,
+   and you stop and re-export:
 
    ```
    npx wrangler d1 execute reach-around-leads --remote --file delete-lead.sql

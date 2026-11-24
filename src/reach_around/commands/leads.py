@@ -12,11 +12,15 @@ Safety rules, all tested:
 
 * The default is a dry run. It prints how many leads match, with the address
   masked, and no SQL. ``--yes`` is required to print the SQL.
-* The SQL names the lead by its random id, never by the address, so the
-  address does not travel into the SQL, a file or a shell history. The only
-  value in the SQL is a 32-character lowercase hex id that passed a full-match
-  check (the export is semi-trusted input; wrangler cannot bind parameters on
-  the command line, so the id is the one validated constant).
+* The SQL names the lead by its random id AND its normalized address, in every
+  deleting statement, so the live database deletes only a row that still pairs
+  them (a forged or stale export deletes nothing and the read-back says 1).
+  The only values in the SQL are a 32-character lowercase hex id and an
+  address that passed the strict grammar (the export is semi-trusted input;
+  wrangler cannot bind parameters on the command line). The SQL file holds
+  the address, so it is deleted with the export; the messages never carry it.
+* ``--database`` is mandatory and exact; it is the owner's attestation of
+  where the export came from, not proof (the export names no database).
 * The address is validated and normalized the way the Worker does it (ASCII,
   lowercase, one ``@``, dotted domain, ``xn--`` labels checked by the same
   round-trip A-label rules as worker/src/kit/punycode.ts). A bad address is
@@ -334,24 +338,37 @@ def load_lead_views(
     return emails, fields, events
 
 
-# Constant statements with one `?` placeholder. wrangler cannot bind parameters
-# on the command line, so `_sql` renders the placeholder with the single
-# validated id literal. No other value ever reaches a statement.
+# Constant statements with two placeholders. wrangler cannot bind parameters on
+# the command line, so `_sql` renders them with the one validated id literal and
+# the one validated, normalized address literal; no other value ever reaches a
+# statement. Both are in every deleting statement, so the live database deletes
+# only a row that still pairs that id with that address: a forged or stale
+# export that names another person's id deletes nothing, and the read-back
+# says 1 instead of 0. The SQL file therefore holds the address (docs/privacy.md
+# says to delete it with the export).
 _STATEMENTS = (
-    "-- reach-around leads delete: one lead and its kit events",
-    "DELETE FROM kit_events WHERE lead_id = '?';",
-    "DELETE FROM leads WHERE id = '?';",
-    "-- read-back: remaining must be 0",
-    "SELECT COUNT(*) AS remaining FROM leads WHERE id = '?';",
+    "-- reach-around leads delete: one lead and its kit events, only if the id "
+    "still belongs to the address",
+    "DELETE FROM kit_events WHERE lead_id IN "
+    "(SELECT id FROM leads WHERE id = '<ID>' AND email = '<EMAIL>');",
+    "DELETE FROM leads WHERE id = '<ID>' AND email = '<EMAIL>';",
+    "-- read-back: remaining must be 0 (1 means the id does not belong to that "
+    "address in this database: nothing was deleted, stop)",
+    "SELECT COUNT(*) AS remaining FROM leads WHERE id = '<ID>';",
 )
+_SQL_EMAIL = re.compile(r"[a-z0-9_+.@-]{6,254}")
 
 
-def _sql(lead_id: str) -> list[str]:
-    # It already matched [0-9a-f]{32}; check again at the point of use so a
+def _sql(lead_id: str, email: str) -> list[str]:
+    # Both already passed validation; check again at the point of use so a
     # future edit cannot route anything else here.
     if not _ID.fullmatch(lead_id):
         raise LeadsError("internal: refusing to build SQL from a non-id value")
-    return [line.replace("?", lead_id) for line in _STATEMENTS]
+    if not _SQL_EMAIL.fullmatch(email) or normalize_email(email) != email:
+        raise LeadsError("internal: refusing to build SQL from a non-address value")
+    return [
+        line.replace("<ID>", lead_id).replace("<EMAIL>", email) for line in _STATEMENTS
+    ]
 
 
 def _address(arg: str) -> str:
@@ -382,24 +399,30 @@ def _address_from_file(arg: str) -> str:
 
 # The leads live in their own D1 database (#772, binding LEADS_DB). The owner
 # tools act on that one only. A wrangler export does not name its database, so
-# the name the owner says the export came from is checked: it must be a plain
-# name that contains "leads", the convention docs/deploy.md and
-# scripts/backup-d1.sh also use, so the analytics database is refused.
+# the owner must say, every time, which database it came from, and only the
+# exact leads name is accepted. This is an attestation by the owner: it stops a
+# wrong name, and it proves nothing about the file. What protects the live
+# database is that the delete SQL pairs the id with the address (see _sql).
 LEADS_DATABASE = "reach-around-leads"
+DATABASE_NOTE = (
+    "(named by you; this does not prove the export came from it, the file "
+    "carries no database name)"
+)
 
 
 def _database(name: str | None) -> str:
-    """Only the one leads database name is accepted (an exact match).
-
-    This is a guard against a wrong name, not proof of where an export came
-    from: the export carries no database identity.
-    """
-    if name is not None and name != LEADS_DATABASE:
+    """The database the owner says the export came from; mandatory, exact."""
+    if name is None:
+        raise LeadsError(
+            f"--database is required: name the database the export came from "
+            f"({LEADS_DATABASE})"
+        )
+    if name != LEADS_DATABASE:
         raise LeadsError(
             f"--database must be exactly {LEADS_DATABASE}; an export from any "
             "other database is refused"
         )
-    return LEADS_DATABASE
+    return name
 
 
 def run_show(args: argparse.Namespace) -> int:
@@ -420,7 +443,7 @@ def run_show(args: argparse.Namespace) -> int:
     except LeadsError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return EXIT_USAGE
-    print(f"database: {database} (the export must have come from it)", file=sys.stderr)
+    print(f"database: {database} {DATABASE_NOTE}", file=sys.stderr)
     ids = [lead_id for lead_id, stored in emails.items() if stored == email]
     masked = mask_email(email)
     # Fixed messages: stderr can reach a log, and a masked address still
@@ -454,8 +477,10 @@ def run_show(args: argparse.Namespace) -> int:
 
 
 CHECKLIST = """\
-Erasure checklist: every copy of a lead the owner must also clear.
-Deleting the database rows is one step of six. Tick each one in your reply.
+Erasure checklist: the known places an address can be besides the database
+rows. This tool does not check any of them, does not find copies and does not
+confirm a deletion outside the SQL it prints; the list is not proof that no
+other copy exists. Tick each item in your reply and say what you checked.
 
 1. Database rows. The `leads` row and its `kit_events` rows in the leads D1
    database (reach-around-leads), never the analytics database. Run
@@ -475,7 +500,13 @@ Deleting the database rows is one step of six. Tick each one in your reply.
 5. Hand-made exports. Every `leads-export.json`, `delete-lead.sql`, backup dump
    or spreadsheet you made holds addresses. Delete them and empty the trash.
 6. Shell history and notes. Check that the address is not in your shell
-   history, a ticket or a note (use `--email -` or `--email-file`).
+   history, a ticket or a note (the tools take it from stdin or a file only).
+7. By hand, places this tool and this list cannot see. Look in each and
+   record the result, even when it is "nothing found": Worker logs and any
+   collector logs or exception output; alert delivery logs at the chat or mail
+   provider; automated backups and exports of the database beyond Time Travel;
+   CI artifacts and deploy logs; monitoring and error-tracking systems; any
+   system you wired to the Worker that stores request or alert payloads.
 
 Raw page view rows carry no address and cannot be matched to a person by
 design, so there is nothing to find or erase there (docs/privacy.md).
@@ -502,6 +533,15 @@ def run_delete(args: argparse.Namespace) -> int:
     if args.input is None or args.email is None:
         print("error: --input and --email are required", file=sys.stderr)
         return EXIT_USAGE
+    if args.email != "-":
+        # Refused before the export is read, so the address spends no time in
+        # the process list. It is still in the shell history if it was typed.
+        print(
+            "error: the address is not accepted on the command line; "
+            "use --email - and type it on stdin",
+            file=sys.stderr,
+        )
+        return EXIT_USAGE
     try:
         database = _database(args.database)
         email = _address(args.email)
@@ -509,14 +549,7 @@ def run_delete(args: argparse.Namespace) -> int:
     except LeadsError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return EXIT_USAGE
-    print(f"database: {database} (the export must have come from it)", file=sys.stderr)
-    if args.email != "-":
-        print(
-            "warning: the address was given on the command line, so your shell "
-            "history and the process list hold it. Use --email - and type it on "
-            "stdin next time",
-            file=sys.stderr,
-        )
+    print(f"database: {database} {DATABASE_NOTE}", file=sys.stderr)
     ids = [lead_id for lead_id, stored in leads if stored == email]
     masked = mask_email(email)
     if not ids:
@@ -539,13 +572,19 @@ def run_delete(args: argparse.Namespace) -> int:
         )
         return EXIT_OK
     try:
-        statements = _sql(ids[0])
+        # The id must be one the export itself assigned to this very address.
+        if (ids[0], email) not in leads:
+            raise LeadsError("internal: the matched id is not in the export")
+        statements = _sql(ids[0], email)
     except LeadsError as exc:  # pragma: no cover - guarded by load_leads
         print(f"error: {exc}", file=sys.stderr)
         return EXIT_USAGE
     print(
-        "1 lead matches. The SQL for it is on stdout. Apply it to the "
-        f"leads database {database} only, and check that the read-back says 0:\n"
+        "1 lead matches. The SQL for it is on stdout and holds the address, so "
+        "delete the file afterward. It deletes only a row in the live database "
+        "that still pairs that id with that address. Apply it to the "
+        f"leads database {database} only, and check that the read-back says 0 "
+        "(1 means nothing was deleted):\n"
         f"npx wrangler d1 execute {database} --remote --file delete-lead.sql",
         file=sys.stderr,
     )
@@ -564,16 +603,17 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
         description="Read a local export of the leads table (made with wrangler "
         "d1 execute --json, see docs/privacy.md), find the lead for one email "
         "address and print the SQL that deletes it. Dry run by default; --yes "
-        "prints the SQL. No network call, no file written; the SQL names the "
-        "lead by id, never by address. Exit 0 done, 1 no match, 2 usage problem "
-        "or a refused export.",
+        "prints the SQL. No network call, no file written; the SQL pairs "
+        "the lead id with its address, so it deletes only a row that still "
+        "matches both. --database and --email - are required. Exit 0 done, "
+        "1 no match, 2 usage problem or a refused export.",
     )
     delete.add_argument("--input", type=Path, metavar="PATH", help="leads export, JSON")
     delete.add_argument(
         "--email",
         metavar="ADDRESS",
-        help="the address to delete, or - to read it from stdin (keeps it out "
-        "of shell history)",
+        help="must be - : the address is read from stdin; an address on the "
+        "command line is refused",
     )
     mode = delete.add_mutually_exclusive_group()
     mode.add_argument(
@@ -594,8 +634,8 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
         "--database",
         default=None,
         metavar="NAME",
-        help=f"the database the export came from; only {LEADS_DATABASE} "
-        "(the default) is accepted",
+        help=f"required: the database the export came from; only "
+        f"{LEADS_DATABASE} is accepted (your attestation, not proof)",
     )
     delete.set_defaults(func=run_delete)
 
@@ -624,7 +664,7 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
         "--database",
         default=None,
         metavar="NAME",
-        help=f"the database the export came from; only {LEADS_DATABASE} "
-        "(the default) is accepted",
+        help=f"required: the database the export came from; only "
+        f"{LEADS_DATABASE} is accepted (your attestation, not proof)",
     )
     show.set_defaults(func=run_show)
