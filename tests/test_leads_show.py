@@ -5,7 +5,9 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import sqlite3
+import stat
 from pathlib import Path
 from typing import Any
 
@@ -123,15 +125,26 @@ def test_show_unverified_and_no_events(
     assert "events: none" in out
 
 
-def test_show_works_with_a_leads_only_export(
+def test_show_refuses_an_export_that_lacks_the_kit_events_result(
     capsys: pytest.CaptureFixture[str],
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    path = write(tmp_path / "e.json", blocks([lead(ID_A, ADDR)]))
-    code, out, _ = show(capsys, monkeypatch, path)
-    assert code == 0
-    assert "events: none" in out
+    # Only the leads query was exported: "events: none" would be a false
+    # statement, so the export is refused. An empty second result is fine.
+    cases = {
+        "leads-only": blocks([lead(ID_A, ADDR)]),
+        "three-blocks": blocks([lead(ID_A, ADDR)], [], []),
+        "swapped": blocks([event(ID_A, "view")], [lead(ID_A, ADDR)]),
+        "events-in-first": blocks([lead(ID_A, ADDR), event(ID_A, "view")], []),
+        "bare-rows": [lead(ID_A, ADDR)],
+    }
+    for name, data in cases.items():
+        path = write(tmp_path / f"{name}.json", data)
+        code, out, err = show(capsys, monkeypatch, path)
+        assert code == 2 and out == "", name
+        assert ADDR not in err and "events: none" not in out, name
+        assert "two result sets" in err, name
 
 
 def test_show_no_match_exit_1(
@@ -154,7 +167,7 @@ def test_show_duplicate_match_refuses(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    path = write(tmp_path / "e.json", blocks([lead(ID_A, ADDR), lead(ID_B, ADDR)]))
+    path = write(tmp_path / "e.json", blocks([lead(ID_A, ADDR), lead(ID_B, ADDR)], []))
     code, out, err = show(capsys, monkeypatch, path)
     assert code == 2
     assert out == ""
@@ -264,8 +277,11 @@ def test_show_refuses_a_hostile_export(
     tmp_path: Path,
     rows: list[dict[str, Any]],
 ) -> None:
-    base = [lead(ID_A, ADDR)] if rows and "lead_id" in rows[0] else []
-    path = write(tmp_path / "e.json", blocks(base + rows))
+    if rows and "lead_id" in rows[0]:
+        data = blocks([lead(ID_A, ADDR)], rows)
+    else:
+        data = blocks(rows, [])
+    path = write(tmp_path / "e.json", data)
     code, out, err = show(capsys, monkeypatch, path)
     assert code == 2
     assert out == ""
@@ -277,8 +293,8 @@ def test_show_refuses_failed_result_block(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    data = blocks([lead(ID_A, ADDR)])
-    data[0]["success"] = False
+    data = blocks([lead(ID_A, ADDR)], [])
+    data[1]["success"] = False
     code, out, _ = show(capsys, monkeypatch, write(tmp_path / "e.json", data))
     assert code == 2 and out == ""
 
@@ -379,7 +395,7 @@ def test_show_lead_rows_must_have_exactly_the_documented_columns(
     missing = lead(ID_A, ADDR)
     del missing["country"]
     for row in (extra, missing):
-        path = write(tmp_path / "e.json", blocks([row]))
+        path = write(tmp_path / "e.json", blocks([row], []))
         code, out, err = show(capsys, monkeypatch, path)
         assert code == 2 and out == ""
         assert ADDR not in err
@@ -409,7 +425,7 @@ def test_show_refuses_a_lead_id_that_appears_twice(
         [lead(ID_A, ADDR), lead(ID_A, second_addr, country="FR")],
         [lead(ID_A, second_addr, country="FR"), lead(ID_A, ADDR)],
     ):
-        path = write(tmp_path / "e.json", blocks(rows))
+        path = write(tmp_path / "e.json", blocks(rows, []))
         code, out, err = show(capsys, monkeypatch, path)
         assert code == 2 and out == ""
         assert "a lead id appears more than once" in err
@@ -582,19 +598,31 @@ def _sqlite_with(rows: list[tuple[str, str]], events: list[str]) -> sqlite3.Conn
     return conn
 
 
-def _apply(conn: sqlite3.Connection, sql: str) -> int:
-    """Run the printed SQL; return the read-back `remaining` value."""
-    remaining = -1
+def _statements(sql: str) -> list[str]:
+    out = []
     for statement in [s for s in sql.split(";\n") if s.strip()]:
         body = "\n".join(
             ln for ln in statement.splitlines() if not ln.startswith("--")
         ).strip()
-        if not body:
+        if body:
+            out.append(body)
+    return out
+
+
+def _apply(
+    conn: sqlite3.Connection, sql: str, *, only: tuple[int, ...] | None = None
+) -> tuple[int, int]:
+    """Run the printed SQL (or only the numbered statements); return the
+    read-back as (leads remaining, kit events remaining). Success is (0, 0)."""
+    result = (-1, -1)
+    for index, body in enumerate(_statements(sql)):
+        if only is not None and index not in only:
             continue
         cursor = conn.execute(body)
         if body.startswith("SELECT"):
-            remaining = cursor.fetchone()[0]
-    return remaining
+            row = cursor.fetchone()
+            result = (row[0], row[1])
+    return result
 
 
 def test_delete_sql_deletes_only_the_row_that_still_pairs_the_id_and_address(
@@ -611,16 +639,159 @@ def test_delete_sql_deletes_only_the_row_that_still_pairs_the_id_and_address(
     assert code == 0
     live = _sqlite_with([(ID_A, "someone-else@example.test")], [ID_A, ID_A])
     remaining = _apply(live, sql)
-    # Nothing was deleted, and the read-back says so (1, not 0).
-    assert remaining == 1
+    # Nothing was deleted, and the read-back says so (not (0, 0)).
+    assert remaining == (1, 2)
     assert live.execute("SELECT COUNT(*) FROM kit_events").fetchone()[0] == 2
     # The honest case: the live row still pairs the id and the address.
     honest = _sqlite_with(
-        [(ID_A, ADDR), (ID_B, "other@example.test")], [ID_A, ID_B, ID_B]
+        [(ID_A, ADDR), (ID_B, "other@example.test")], [ID_A, ID_A, ID_A, ID_B, ID_B]
     )
-    assert _apply(honest, sql) == 0
+    assert _apply(honest, sql) == (0, 0)
     assert honest.execute("SELECT id FROM leads").fetchall() == [(ID_B,)]
     assert honest.execute("SELECT COUNT(*) FROM kit_events").fetchone()[0] == 2
+
+
+def _printed_sql(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> str:
+    path = write(tmp_path / "ok.json", blocks([{"id": ID_A, "email": ADDR}]))
+    monkeypatch.setattr("sys.stdin", io.StringIO(ADDR + "\n"))
+    assert cli(["leads", "delete", "--input", str(path), "--email", "-", "--yes"]) == 0
+    return capsys.readouterr().out
+
+
+def test_the_read_back_is_not_zero_when_only_the_lead_row_was_deleted(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    sql = _printed_sql(capsys, monkeypatch, tmp_path)
+    statements = _statements(sql)
+    # Run only the lead deletion and the read-back: events remain, so the
+    # read-back must not say success.
+    leads_delete = next(
+        i for i, s in enumerate(statements) if s.startswith("DELETE FROM leads")
+    )
+    last = len(statements) - 1
+    live = _sqlite_with([(ID_A, ADDR)], [ID_A, ID_A, ID_A])
+    assert _apply(live, sql, only=(leads_delete, last)) == (0, 3)
+
+
+def test_events_added_between_the_deletes_are_cleaned_up_by_the_statements(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    sql = _printed_sql(capsys, monkeypatch, tmp_path)
+    statements = _statements(sql)
+    live = _sqlite_with([(ID_A, ADDR)], [ID_A, ID_A])
+    # Run every statement but let an event arrive after the first delete.
+    for index, body in enumerate(statements):
+        live.execute(body)
+        if index == 0:
+            live.execute("INSERT INTO kit_events (lead_id) VALUES (?)", (ID_A,))
+    row = live.execute(statements[-1]).fetchone()
+    assert (row[0], row[1]) == (0, 0)
+
+
+def _delete_to(monkeypatch: pytest.MonkeyPatch, export_path: Path, target: Path) -> int:
+    monkeypatch.setattr("sys.stdin", io.StringIO(ADDR + "\n"))
+    return cli(
+        [
+            "leads",
+            "delete",
+            "--input",
+            str(export_path),
+            "--email",
+            "-",
+            "--yes",
+            "--sql-out",
+            str(target),
+        ]
+    )
+
+
+def test_sql_out_creates_a_private_file_and_prints_no_sql(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    delete_export: Path,
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "delete-lead.sql"
+    old = os.umask(0)  # the tool must not depend on the shell's umask
+    try:
+        code = _delete_to(monkeypatch, delete_export, target)
+    finally:
+        os.umask(old)
+    captured = capsys.readouterr()
+    assert code == 0
+    assert "DELETE" not in captured.out
+    assert stat.S_IMODE(target.stat().st_mode) == 0o600
+    assert "DELETE FROM leads" in target.read_text(encoding="utf-8")
+    assert ADDR not in captured.err
+
+
+def test_sql_out_refuses_an_existing_file_and_a_symlink(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    delete_export: Path,
+    tmp_path: Path,
+) -> None:
+    existing = tmp_path / "exists.sql"
+    existing.write_text("keep", encoding="utf-8")
+    assert _delete_to(monkeypatch, delete_export, existing) == 2
+    assert existing.read_text(encoding="utf-8") == "keep"
+    victim = tmp_path / "victim.txt"
+    victim.write_text("precious", encoding="utf-8")
+    link = tmp_path / "link.sql"
+    os.symlink(victim, link)
+    assert _delete_to(monkeypatch, delete_export, link) == 2
+    assert victim.read_text(encoding="utf-8") == "precious"
+    dangling = tmp_path / "dangling.sql"
+    os.symlink(tmp_path / "not-there.txt", dangling)
+    assert _delete_to(monkeypatch, delete_export, dangling) == 2
+    assert not (tmp_path / "not-there.txt").exists()
+    captured = capsys.readouterr()
+    assert "DELETE" not in captured.out and ADDR not in captured.err
+
+
+def test_sql_out_needs_yes(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    delete_export: Path,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr("sys.stdin", io.StringIO(ADDR + "\n"))
+    target = tmp_path / "x.sql"
+    argv = ["leads", "delete", "--input", str(delete_export), "--email", "-"]
+    code = cli([*argv, "--sql-out", str(target)])
+    assert code == 2 and not target.exists()
+    capsys.readouterr()
+
+
+def test_show_refuses_an_export_that_is_a_symlink(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    export: Path,
+    tmp_path: Path,
+) -> None:
+    link = tmp_path / "link.json"
+    os.symlink(export, link)
+    code, out, err = show(capsys, monkeypatch, link)
+    assert code == 2 and out == ""
+    assert ADDR not in err
+
+
+def test_cleanup_never_deletes_events_of_a_lead_that_still_exists(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    sql = _printed_sql(capsys, monkeypatch, tmp_path)
+    live = _sqlite_with([(ID_A, "someone-else@example.test")], [ID_A, ID_A])
+    assert _apply(live, sql) == (1, 2)
 
 
 @pytest.mark.parametrize(

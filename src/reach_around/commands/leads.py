@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import sys
 import unicodedata
@@ -200,8 +201,23 @@ def _check_row(row: Any) -> tuple[str, str]:
     return lead_id, email
 
 
+_TWO_SETS = (
+    "export: expected exactly two result sets in order, the leads query and "
+    "the kit events query (the second may be empty)"
+)
+
+
 def _load_rows(path: Path) -> list[Any]:
     """Unchecked rows from the result blocks of a wrangler ``--json`` export."""
+    return [row for block in _load_blocks(path) for row in block]
+
+
+def _load_blocks(path: Path, *, wrapped: bool = False) -> list[list[Any]]:
+    """The result blocks of an export, boundaries kept (one list per block).
+
+    With ``wrapped`` every item must be a result block; a bare row is refused.
+    Without it a bare row counts as a block of its own (the delete export).
+    """
     try:
         raw = _read(path, MAX_EXPORT_BYTES)
     except ConfigError as exc:
@@ -222,7 +238,8 @@ def _load_rows(path: Path) -> list[Any]:
         raise LeadsError("export: not valid JSON") from None
     if not isinstance(data, list) or not data:
         raise LeadsError("export: expected a non-empty JSON list")
-    rows: list[Any] = []
+    blocks: list[list[Any]] = []
+    total = 0
     for item in data:
         if isinstance(item, dict) and "results" in item:
             if not set(item) <= {"results", "success", "meta"}:
@@ -234,12 +251,16 @@ def _load_rows(path: Path) -> list[Any]:
             results = item["results"]
             if not isinstance(results, list):
                 raise LeadsError("export: 'results' must be a list")
-            rows.extend(results)
+            blocks.append(results)
+            total += len(results)
+        elif wrapped:
+            raise LeadsError(_TWO_SETS)
         else:
-            rows.append(item)
-        if len(rows) > MAX_ROWS:
+            blocks.append([item])
+            total += 1
+        if total > MAX_ROWS:
             raise LeadsError("export: too many rows")
-    return rows
+    return blocks
 
 
 def load_leads(path: Path) -> list[tuple[str, str]]:
@@ -306,19 +327,27 @@ def load_lead_views(
     emails: dict[str, str] = {}
     fields: dict[str, dict[str, Any]] = {}
     events: list[tuple[str, str, int]] = []
-    for row in _load_rows(path):
-        if isinstance(row, dict) and "lead_id" in row:
-            if set(row) != EVENT_COLUMNS:
-                raise LeadsError("export: an event row has unexpected columns")
-            lead_id, kind = row["lead_id"], row["kind"]
-            if not isinstance(lead_id, str) or not _ID.fullmatch(lead_id):
-                raise LeadsError("export: a lead id is not 32 lowercase hex characters")
-            if kind not in EVENT_KINDS:
-                raise LeadsError("export: an event kind is not known")
-            ts = _check_ts(row["ts"])
-            # Stored times need not be on the hour; show only the hour.
-            events.append((lead_id, kind, ts - ts % _HOUR_MS))
-            continue
+    blocks = _load_blocks(path, wrapped=True)
+    if len(blocks) != 2:
+        raise LeadsError(_TWO_SETS)
+    lead_rows, event_rows = blocks
+    # An event row in the leads result (or the reverse) is a wrong export.
+    if any(isinstance(r, dict) and "lead_id" in r for r in lead_rows) or any(
+        not (isinstance(r, dict) and "lead_id" in r) for r in event_rows
+    ):
+        raise LeadsError(_TWO_SETS)
+    for row in event_rows:
+        if set(row) != EVENT_COLUMNS:
+            raise LeadsError("export: an event row has unexpected columns")
+        lead_id, kind = row["lead_id"], row["kind"]
+        if not isinstance(lead_id, str) or not _ID.fullmatch(lead_id):
+            raise LeadsError("export: a lead id is not 32 lowercase hex characters")
+        if kind not in EVENT_KINDS:
+            raise LeadsError("export: an event kind is not known")
+        ts = _check_ts(row["ts"])
+        # Stored times need not be on the hour; show only the hour.
+        events.append((lead_id, kind, ts - ts % _HOUR_MS))
+    for row in lead_rows:
         lead_id, email = _check_view_lead_row(row)
         if lead_id in emails:
             # Never keep one of two rows silently, and never print either.
@@ -352,9 +381,15 @@ _STATEMENTS = (
     "DELETE FROM kit_events WHERE lead_id IN "
     "(SELECT id FROM leads WHERE id = '<ID>' AND email = '<EMAIL>');",
     "DELETE FROM leads WHERE id = '<ID>' AND email = '<EMAIL>';",
-    "-- read-back: remaining must be 0 (1 means the id does not belong to that "
-    "address in this database: nothing was deleted, stop)",
-    "SELECT COUNT(*) AS remaining FROM leads WHERE id = '<ID>';",
+    # An event that arrived between the two deletes is removed once the lead is
+    # gone; it never touches the events of a lead that still exists.
+    "DELETE FROM kit_events WHERE lead_id = '<ID>' AND NOT EXISTS "
+    "(SELECT 1 FROM leads WHERE id = '<ID>');",
+    "-- read-back: BOTH numbers must be 0. leads_remaining 1 means the id does "
+    "not belong to that address in this database and nothing was deleted; "
+    "events_remaining above 0 means the erasure is incomplete: run the file again",
+    "SELECT (SELECT COUNT(*) FROM leads WHERE id = '<ID>') AS leads_remaining, "
+    "(SELECT COUNT(*) FROM kit_events WHERE lead_id = '<ID>') AS events_remaining;",
 )
 _SQL_EMAIL = re.compile(r"[a-z0-9_+.@-]{6,254}")
 
@@ -484,8 +519,8 @@ other copy exists. Tick each item in your reply and say what you checked.
 
 1. Database rows. The `leads` row and its `kit_events` rows in the leads D1
    database (reach-around-leads), never the analytics database. Run
-   `reach-around leads delete ... --yes`, apply the SQL, and check that the
-   read-back says 0 (docs/privacy.md).
+   `reach-around leads delete ... --yes --sql-out FILE`, apply the SQL, and
+   check that the read-back shows 0 leads and 0 events (docs/privacy.md).
 2. Alert copies. If owner alerts are on, delete the unlock and new-lead
    notices that carry the address from the Discord room, the Matrix room or the
    mailbox you chose. The retention purge does not reach them.
@@ -522,6 +557,7 @@ def run_delete(args: argparse.Namespace) -> int:
             or args.yes
             or args.dry_run
             or args.database is not None
+            or args.sql_out is not None
         ):
             print(
                 "error: --checklist prints a fixed list and takes no other option",
@@ -541,6 +577,9 @@ def run_delete(args: argparse.Namespace) -> int:
             "use --email - and type it on stdin",
             file=sys.stderr,
         )
+        return EXIT_USAGE
+    if args.sql_out is not None and not args.yes:
+        print("error: --sql-out needs --yes", file=sys.stderr)
         return EXIT_USAGE
     try:
         database = _database(args.database)
@@ -579,17 +618,50 @@ def run_delete(args: argparse.Namespace) -> int:
     except LeadsError as exc:  # pragma: no cover - guarded by load_leads
         print(f"error: {exc}", file=sys.stderr)
         return EXIT_USAGE
+    text = "\n".join(statements) + "\n"
+    target = args.sql_out if args.sql_out is not None else "delete-lead.sql"
+    if args.sql_out is not None:
+        try:
+            _write_private(args.sql_out, text)
+        except LeadsError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return EXIT_USAGE
+    where = (
+        f"The SQL is in {target} (new file, mode 0600). "
+        if args.sql_out is not None
+        else "The SQL is on stdout; prefer --sql-out, which creates a private "
+        "file and refuses a symlink. "
+    )
     print(
-        "1 lead matches. The SQL for it is on stdout and holds the address, so "
-        "delete the file afterward. It deletes only a row in the live database "
-        "that still pairs that id with that address. Apply it to the "
-        f"leads database {database} only, and check that the read-back says 0 "
-        "(1 means nothing was deleted):\n"
-        f"npx wrangler d1 execute {database} --remote --file delete-lead.sql",
+        f"1 lead matches. {where}It holds the address, so delete it afterward. "
+        "It deletes only a row in the live database that still pairs that id "
+        f"with that address. Apply it to the leads database {database} only, "
+        "and check that the read-back shows 0 and 0 (leads_remaining 1 means "
+        "nothing was deleted; events_remaining above 0 means run it again):\n"
+        f"npx wrangler d1 execute {database} --remote --file {target}",
         file=sys.stderr,
     )
-    sys.stdout.write("\n".join(statements) + "\n")
+    if args.sql_out is None:
+        sys.stdout.write(text)
     return EXIT_OK
+
+
+def _write_private(path: Path, text: str) -> None:
+    """Create ``path`` (mode 0600, exclusively, never through a symlink)."""
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
+    try:
+        fd = os.open(path, flags, 0o600)
+    except OSError:
+        raise LeadsError(
+            "cannot create the SQL file: the path must not exist and must not "
+            "be a symlink"
+        ) from None
+    try:
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(text)
+    except OSError:
+        raise LeadsError("cannot write the SQL file") from None
 
 
 def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
@@ -636,6 +708,14 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
         metavar="NAME",
         help=f"required: the database the export came from; only "
         f"{LEADS_DATABASE} is accepted (your attestation, not proof)",
+    )
+    delete.add_argument(
+        "--sql-out",
+        type=Path,
+        default=None,
+        metavar="PATH",
+        help="with --yes: write the SQL to a new file (mode 0600, created "
+        "exclusively, never through a symlink) instead of stdout",
     )
     delete.set_defaults(func=run_delete)
 

@@ -119,11 +119,15 @@ about one person.
 
 ### Access: what you hold about one address
 
-1. Export the lead and its events to a private local file (a directory only you
-   can read; the file holds every address, so delete it when you are done):
+1. Export the lead and its events to a private local file in a fresh private
+   directory (the file holds every address, so delete the directory when you
+   are done). The export must be these two queries, in this order: the tool
+   refuses an export with a missing, extra or swapped result set, because a
+   missing events result would otherwise read as "no events":
 
    ```
    umask 077
+   WORK=$(mktemp -d "$HOME/leads-request-XXXXXX") && cd "$WORK" && set -o noclobber
    npx wrangler d1 execute reach-around-leads --remote --json \
      --command "SELECT id, email, created_ts, verified_ts, country FROM leads; SELECT lead_id, kind, ts FROM kit_events" > leads-export.json
    ```
@@ -198,11 +202,15 @@ erasure, the one-month answer and the Art. 11 position on page view rows.
 There is no web route that deletes a lead, on purpose: anyone could call it.
 You run a local command, and then apply the SQL it prints with `wrangler`.
 
-1. Export the `leads` table to a private local file. Use a directory only you
-   can read, and delete the file when you are done (it holds every address):
+1. Make a fresh private working directory and export the `leads` table into it
+   (the files hold addresses; delete the directory when you are done). The
+   `umask` makes new files private, `mktemp -d` makes a new directory only you
+   can enter, and `noclobber` makes `>` refuse an existing file or symlink
+   instead of writing through it:
 
    ```
    umask 077
+   WORK=$(mktemp -d "$HOME/leads-request-XXXXXX") && cd "$WORK" && set -o noclobber
    npx wrangler d1 execute reach-around-leads --remote --json \
      --command "SELECT id, email FROM leads" > leads-export.json
    ```
@@ -224,31 +232,39 @@ You run a local command, and then apply the SQL it prints with `wrangler`.
    trusted to say who owns an id, so every deleting statement names the lead's
    random id and its address: the live database deletes the lead and its kit
    events only if that row still pairs them. The file therefore holds the
-   address (step 5 deletes it):
+   address (step 5 deletes it). `--sql-out` creates the file itself, new, mode
+   0600, and refuses a path that exists or is a symlink, so it never writes
+   through a link someone left; do not use a shell `>` redirect for this file:
 
    ```
-   printf '%s\n' "$ADDR" | reach-around leads delete --input leads-export.json --email - --database reach-around-leads --yes > delete-lead.sql
+   printf '%s\n' "$ADDR" | reach-around leads delete --input leads-export.json --email - --database reach-around-leads --yes --sql-out delete-lead.sql
    ```
 
-4. Apply it, then read the result back. The last statement counts the rows left
-   for that id. `0` means deleted. `1` means the id did not belong to that
-   address in the live database (a stale or wrong export), nothing was deleted,
-   and you stop and re-export:
+4. Apply it, then read the result back. The last statement shows two numbers,
+   `leads_remaining` and `events_remaining`, and only `0` and `0` means erased.
+   `leads_remaining` 1 means the id did not belong to that address in the live
+   database (a stale or wrong export): nothing was deleted, stop and re-export.
+   `events_remaining` above 0 means the erasure is incomplete (the lead row is
+   gone but events remain): run the same file again, it is safe to repeat. The
+   statements are not wrapped in a transaction, because D1 does not accept one in
+   a file; the second events delete and the two-number read-back are what make a
+   partial run visible:
 
    ```
    npx wrangler d1 execute reach-around-leads --remote --file delete-lead.sql
    ```
 
-5. Delete `leads-export.json` and `delete-lead.sql`, and `unset ADDR`.
+5. Leave the directory, delete it with its two files, and `unset ADDR`:
+   `cd "$HOME" && rm -r -- "$WORK" && unset ADDR WORK`.
 
 The command reads only the file you give it. It makes no network call, needs no
-token and writes no file. It refuses an address that is not valid (ASCII, one
-`@`, a dotted domain; whitespace around it and upper case are normalized), and
-refuses an export that has a result block without `success: true`, a column other than the `leads` columns, a duplicate
-key, or an id that is not 32 lowercase hex characters. If you type the address
-on the command line (`--email ADDR`) instead of through stdin, your shell keeps
-it in its history; argparse can also repeat an unrecognized extra word in its
-own usage error. Prefer `--email -`.
+token and writes no file except the `--sql-out` file. It refuses an address that
+is not valid (ASCII, one `@`, a dotted domain; whitespace around it and upper
+case are normalized), and refuses an export that has a result block without
+`success: true`, a column other than the `leads` columns, a duplicate key, a
+lead id that appears twice, an id that is not 32 lowercase hex characters, or an
+export file that is a symlink. The address on the command line is refused:
+use `--email -`.
 
 After a deletion, a lead who comes back and types the address again is a new
 lead. Remove copies that sit outside D1 yourself: see the inventory in

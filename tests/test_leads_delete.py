@@ -194,7 +194,14 @@ class TestYes:
             "DELETE FROM kit_events WHERE lead_id IN "  # noqa: S608
             f"(SELECT id FROM leads WHERE {pair});",  # noqa: S608
             f"DELETE FROM leads WHERE {pair};",  # noqa: S608
-            f"SELECT COUNT(*) AS remaining FROM leads WHERE id = '{ID_A}';",  # noqa: S608
+            # Round 4: events that arrive after the first delete are removed once
+            # the lead is gone, and the read-back counts both tables.
+            f"DELETE FROM kit_events WHERE lead_id = '{ID_A}' AND NOT EXISTS "  # noqa: S608
+            f"(SELECT 1 FROM leads WHERE id = '{ID_A}');",
+            f"SELECT (SELECT COUNT(*) FROM leads WHERE id = '{ID_A}') "  # noqa: S608
+            "AS leads_remaining, "
+            f"(SELECT COUNT(*) FROM kit_events WHERE lead_id = '{ID_A}') "  # noqa: S608
+            "AS events_remaining;",
         ]
         assert statements == expected
         assert ID_B not in out
