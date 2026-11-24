@@ -37,6 +37,7 @@ import json
 import re
 import sys
 import unicodedata
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -195,8 +196,8 @@ def _check_row(row: Any) -> tuple[str, str]:
     return lead_id, email
 
 
-def load_leads(path: Path) -> list[tuple[str, str]]:
-    """Validated ``(id, email)`` pairs from a ``wrangler d1 execute --json`` file."""
+def _load_rows(path: Path) -> list[Any]:
+    """Unchecked rows from the result blocks of a wrangler ``--json`` export."""
     try:
         raw = _read(path, MAX_EXPORT_BYTES)
     except ConfigError as exc:
@@ -234,7 +235,78 @@ def load_leads(path: Path) -> list[tuple[str, str]]:
             rows.append(item)
         if len(rows) > MAX_ROWS:
             raise LeadsError("export: too many rows")
-    return [_check_row(row) for row in rows]
+    return rows
+
+
+def load_leads(path: Path) -> list[tuple[str, str]]:
+    """Validated ``(id, email)`` pairs from a ``wrangler d1 execute --json`` file."""
+    return [_check_row(row) for row in _load_rows(path)]
+
+
+# ---------------------------------------------------------------------------
+# leads show: the access-request view (GDPR Art. 15). Same trust rules as
+# delete: the export is semi-trusted, every column is checked, and the only
+# things printed are the masked address, the country, two timestamps and the
+# kit event kinds with their hours.
+# ---------------------------------------------------------------------------
+
+EVENT_COLUMNS = frozenset({"lead_id", "kind", "ts"})
+EVENT_KINDS = frozenset({"unlock", "view", "verify"})
+_COUNTRY = re.compile(r"[A-Z]{2}")
+_HOUR_MS = 3_600_000
+_MAX_TS = 253_402_300_799_000  # 9999-12-31T23:59:59Z, in milliseconds
+
+
+def _check_ts(value: Any, *, hour: bool = False) -> int:
+    if (
+        not isinstance(value, int)
+        or isinstance(value, bool)
+        or not 0 <= value <= _MAX_TS
+        or (hour and value % _HOUR_MS)
+    ):
+        raise LeadsError("export: a timestamp is not valid")
+    return value
+
+
+def _iso(ts_ms: int, *, hour: bool = False) -> str:
+    moment = datetime.fromtimestamp(ts_ms // 1000, tz=UTC)
+    return moment.strftime("%Y-%m-%dT%H:%MZ" if hour else "%Y-%m-%dT%H:%M:%SZ")
+
+
+def load_lead_views(
+    path: Path,
+) -> tuple[dict[str, str], dict[str, dict[str, Any]], list[tuple[str, str, int]]]:
+    """``(email by id, lead fields by id, events)`` from a leads plus events export."""
+    emails: dict[str, str] = {}
+    fields: dict[str, dict[str, Any]] = {}
+    events: list[tuple[str, str, int]] = []
+    for row in _load_rows(path):
+        if isinstance(row, dict) and "lead_id" in row:
+            if set(row) != EVENT_COLUMNS:
+                raise LeadsError("export: an event row has unexpected columns")
+            lead_id, kind = row["lead_id"], row["kind"]
+            if not isinstance(lead_id, str) or not _ID.fullmatch(lead_id):
+                raise LeadsError("export: a lead id is not 32 lowercase hex characters")
+            if kind not in EVENT_KINDS:
+                raise LeadsError("export: an event kind is not known")
+            events.append((lead_id, kind, _check_ts(row["ts"], hour=True)))
+            continue
+        lead_id, email = _check_row(row)
+        if "created_ts" not in row:
+            raise LeadsError("export: every lead row needs created_ts")
+        country = row.get("country")
+        if country is not None and not (
+            isinstance(country, str) and _COUNTRY.fullmatch(country)
+        ):
+            raise LeadsError("export: a country is not two capital letters")
+        verified = row.get("verified_ts")
+        fields[lead_id] = {
+            "country": country,
+            "created": _check_ts(row["created_ts"]),
+            "verified": None if verified is None else _check_ts(verified),
+        }
+        emails[lead_id] = email
+    return emails, fields, events
 
 
 # Constant statements with one `?` placeholder. wrangler cannot bind parameters
@@ -266,7 +338,112 @@ def _address(arg: str) -> str:
     return normalize_email(text)
 
 
+def _address_from_file(arg: str) -> str:
+    """The address from a file or stdin (``-``). Errors never name the file."""
+    if arg == "-":
+        return _address("-")
+    try:
+        raw = _read(Path(arg), MAX_STDIN_CHARS * 4)
+    except ConfigError:
+        raise LeadsError("cannot read the address file") from None
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        raise LeadsError("not a valid email address (not UTF-8)") from None
+    if len(text.strip()) > MAX_STDIN_CHARS:
+        raise LeadsError("not a valid email address (too long)")
+    return normalize_email(text)
+
+
+def run_show(args: argparse.Namespace) -> int:
+    if args.email is not None:
+        print(
+            "error: the address is not accepted on the command line; "
+            "use --email-file PATH or --email-file - (stdin)",
+            file=sys.stderr,
+        )
+        return EXIT_USAGE
+    if args.email_file is None:
+        print("error: --email-file PATH (or -) is required", file=sys.stderr)
+        return EXIT_USAGE
+    try:
+        email = _address_from_file(args.email_file)
+        emails, fields, events = load_lead_views(args.input)
+    except LeadsError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return EXIT_USAGE
+    ids = [lead_id for lead_id, stored in emails.items() if stored == email]
+    masked = mask_email(email)
+    if not ids:
+        print(f"no lead matches {masked}", file=sys.stderr)
+        return EXIT_NO_MATCH
+    if len(ids) > 1:
+        print(
+            f"error: {len(ids)} leads match {masked}; expected one. "
+            "The export looks wrong; nothing printed",
+            file=sys.stderr,
+        )
+        return EXIT_USAGE
+    lead_id = ids[0]
+    info = fields[lead_id]
+    mine = sorted((ts, kind) for owner, kind, ts in events if owner == lead_id)
+    lines = [
+        f"email match: {masked}",
+        f"country: {info['country'] or 'unknown'}",
+        f"created: {_iso(info['created'])}",
+        "verified: " + ("no" if info["verified"] is None else _iso(info["verified"])),
+    ]
+    if mine:
+        lines.append("events:")
+        lines.extend(f"  {kind} {_iso(ts, hour=True)}" for ts, kind in mine)
+    else:
+        lines.append("events: none")
+    print("\n".join(lines))
+    return EXIT_OK
+
+
+CHECKLIST = """\
+Erasure checklist: every copy of a lead the owner must also clear.
+Deleting the database rows is one step of six. Tick each one in your reply.
+
+1. Database rows. The `leads` row and its `kit_events` rows in D1. Run
+   `reach-around leads delete ... --yes`, apply the SQL, and check that the
+   read-back says 0 (docs/privacy.md).
+2. Alert copies. If owner alerts are on, delete the unlock and new-lead
+   notices that carry the address from the Discord room, the Matrix room or the
+   mailbox you chose. The retention purge does not reach them.
+3. Inquiry text. A kit inquiry or a reply the person sent you lives in your
+   mailbox or inbox, outside the Worker. Find it by the address and delete it,
+   or record why you keep it.
+4. D1 Time Travel. D1 can restore the database to any minute in its window:
+   7 days on the Free plan, 30 days on the Paid plan. The deleted rows stay
+   restorable until the window ends. Do not restore to a point before the
+   deletion without deleting the lead again afterward. Say in your reply that
+   the copy ages out on its own, and the date.
+5. Hand-made exports. Every `leads-export.json`, `delete-lead.sql`, backup dump
+   or spreadsheet you made holds addresses. Delete them and empty the trash.
+6. Shell history and notes. Check that the address is not in your shell
+   history, a ticket or a note (use `--email -` or `--email-file`).
+
+Raw page view rows carry no address and cannot be matched to a person by
+design, so there is nothing to find or erase there (docs/privacy.md).
+Your reply to the person is due within one month of the request.
+"""
+
+
 def run_delete(args: argparse.Namespace) -> int:
+    if args.checklist:
+        if args.input is not None or args.email is not None or args.yes or args.dry_run:
+            print(
+                "error: --checklist prints a fixed list and takes no other option",
+                file=sys.stderr,
+            )
+            return EXIT_USAGE
+        sys.stdout.write(CHECKLIST)
+        return EXIT_OK
+    if args.input is None or args.email is None:
+        print("error: --input and --email are required", file=sys.stderr)
+        return EXIT_USAGE
     try:
         email = _address(args.email)
         leads = load_leads(args.input)
@@ -320,12 +497,9 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
         "lead by id, never by address. Exit 0 done, 1 no match, 2 usage problem "
         "or a refused export.",
     )
-    delete.add_argument(
-        "--input", type=Path, required=True, metavar="PATH", help="leads export, JSON"
-    )
+    delete.add_argument("--input", type=Path, metavar="PATH", help="leads export, JSON")
     delete.add_argument(
         "--email",
-        required=True,
         metavar="ADDRESS",
         help="the address to delete, or - to read it from stdin (keeps it out "
         "of shell history)",
@@ -339,4 +513,33 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
     mode.add_argument(
         "--yes", action="store_true", help="print the delete SQL (required to emit it)"
     )
+    mode.add_argument(
+        "--checklist",
+        action="store_true",
+        help="print every copy of a lead you must also clear (no export, no "
+        "address); takes no other option",
+    )
     delete.set_defaults(func=run_delete)
+
+    show = actions.add_parser(
+        "show",
+        help="print what is stored about one lead (access request)",
+        description="Read a local export of the leads table and the kit events "
+        "(see docs/privacy.md) and print what an access request needs for one "
+        "address: the masked address, country, created and verified times and "
+        "the kit event kinds with their hours. Nothing else, no SQL, no network "
+        "call. The address comes from a file or stdin, never from the command "
+        "line. Exit 0 done, 1 no match, 2 usage problem or a refused export.",
+    )
+    show.add_argument(
+        "--input", type=Path, required=True, metavar="PATH", help="export, JSON"
+    )
+    show.add_argument(
+        "--email-file",
+        metavar="PATH",
+        help="a file holding the address, or - to read it from stdin",
+    )
+    # Refused with a fixed message, so a typed address is never echoed back by
+    # argparse's own usage error.
+    show.add_argument("--email", default=None, help=argparse.SUPPRESS)
+    show.set_defaults(func=run_show)

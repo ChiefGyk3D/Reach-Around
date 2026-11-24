@@ -97,6 +97,77 @@ Worker's retention: the `LEAD_RETENTION_DAYS` purge does not reach it, so delete
 it there when you honor a deletion request, and mention the channel in your own
 privacy wording. With alerts off (the default) nothing leaves the Worker.
 
+## Access and erasure requests (GDPR)
+
+This section is the factual procedure. The notice sentences that tell visitors
+about these rights are TODO-copy: they are written separately and are not part
+of this procedure.
+
+**Response time.** Answer an access or erasure request within one month of
+receiving it. State the date you received it, and put the reply and what you did
+in writing. If you cannot finish in the month, say so inside the month. Only
+you can send the answer: the tools below print what you need, they send nothing.
+
+**What can be found.** A lead (the address someone typed into the gate, with the
+country, created and verified times, and the kit events tied to it) can be
+found, because it holds the address. The raw page view rows and click rows hold
+no address, no IP address and no identifier, so a request cannot be matched to
+them by design (Art. 11: you are not required to collect more data to identify
+a person only to answer a request). Say that in your reply instead of
+searching. The hour-rounded counters are aggregate and are not personal data
+about one person.
+
+### Access: what you hold about one address
+
+1. Export the lead and its events to a private local file (a directory only you
+   can read; the file holds every address, so delete it when you are done):
+
+   ```
+   umask 077
+   npx wrangler d1 execute reach-around-clicks --remote --json \
+     --command "SELECT id, email, created_ts, verified_ts, country FROM leads; SELECT lead_id, kind, ts FROM kit_events" > leads-export.json
+   ```
+
+2. Put the address in a file or on stdin, never on the command line, and show
+   the lead:
+
+   ```
+   read -r ADDR   # type the address, press Enter
+   printf '%s\n' "$ADDR" | reach-around leads show --input leads-export.json --email-file -
+   ```
+
+   It prints the masked address, the country, the created and verified times
+   (UTC) and each kit event kind with its hour (`unlock`, `view`, `verify`).
+   It prints nothing else: no id, no other lead, no SQL, no last-seen time.
+   Exit 1 means no lead has that address (it may already be gone, or the
+   spelling differs). It makes no network call and writes no file. An address on
+   the command line is refused so the shell history does not keep it.
+
+3. Copy the printed lines into your written reply, and add the copies the tool
+   cannot see (alert copies in your chat room or mailbox, inquiry text, hand-made
+   exports; the list is below).
+
+### Erasure: clear every copy
+
+`reach-around leads delete --checklist` prints this list and needs no export and
+no address. Deleting the database rows (the steps in the next section) is only
+the first item:
+
+1. The `leads` row and its `kit_events` rows in D1.
+2. Alert copies in the Discord room, the Matrix room or the mailbox, when owner
+   alerts are on.
+3. Inquiry text the person sent you, in your mailbox or inbox.
+4. D1 Time Travel. D1 keeps point-in-time recovery for 7 days on the Free plan
+   and 30 days on the Paid plan. Deleted rows stay restorable in that window and
+   age out on their own. Say so in your reply, with the date they are gone. Do
+   not restore to a point before the deletion without deleting the lead again.
+5. Hand-made exports, dumps and spreadsheets (including the files you made for
+   the steps above).
+6. Shell history, tickets and notes that hold the address.
+
+TODO-copy: the visitor-facing sentence for the right of access, the right to
+erasure, the one-month answer and the Art. 11 position on page view rows.
+
 ## Honoring a deletion request
 
 There is no web route that deletes a lead, on purpose: anyone could call it.
