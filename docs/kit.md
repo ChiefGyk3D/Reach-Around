@@ -178,6 +178,180 @@ kit:
       avg_other_platforms: 0.5  # 0 to 100, typed by you
 ```
 
+### Platform cards and the measure registry
+
+Every number the kit prints is a **measure**: one value, one unit, one date and one
+trust label (kit v2, #628). The headline numbers (`metrics`), the analytics tiles
+(`analytics`) and the engagement inputs (`engagement`) keep working exactly as
+before; the build compiles them into measures once, and the pages read the
+measures only. A config that built before builds the same pages.
+
+A measure is never visible to a wider audience than the field it came from: the
+registry can only narrow, so an engagement figure stays on the gated page and in
+the owner PDF whatever a card asks for.
+
+**The registry.** A config picks keys; it does not rewrite the definition of a
+known one. Each key has a unit, a definition, and a default audience.
+
+| Key | Unit | Definition | Shown to |
+| --- | --- | --- | --- |
+| `followers` | follows | The number of accounts that follow the platform account, as the platform reports it. | everyone |
+| `members` | follows | The number of members of a chat room or server, as the platform reports it. A member is not a follower, so it never enters the audience range. | everyone |
+| `followers_change_30d` | percent | The change in followers over the last 30 days, in percent, as the owner typed it from the platform's own analytics. It can be negative. | everyone |
+| `analytics_stat` | count | A count the owner typed from a platform's analytics, named by its own label; the label says what is counted. | everyone |
+| `views` | views | The number of times the platform counted a video as viewed in the period, as the platform's own analytics export shows it. Added up by the importer from the daily rows of the export. | everyone |
+| `watch_hours` | hours | The total time viewers spent watching in the period, in whole hours, as the platform's own analytics export shows it. Added up by the importer from the daily rows and rounded half up. | everyone |
+| `avg_ccv` | viewers | The average number of people watching at the same moment while the channel was live in the period, as the platform's own dashboard shows it. Typed by the owner. | everyone |
+| `peak_ccv` | viewers | The highest number of people watching at the same moment while the channel was live in the period, as the platform's own dashboard shows it. Typed by the owner. | everyone |
+| `hours_watched` | hours | The total time viewers spent watching the channel in the period, in whole hours, as the platform's own dashboard shows it. Typed by the owner. | everyone |
+| `unique_chatters` | viewers | The number of different accounts that sent at least one chat message in the period, as the platform's own dashboard shows it. Typed by the owner. | everyone |
+| `followers_gained` | follows | The number of accounts that began following the channel in the period, as the platform's own dashboard shows it. Typed by the owner. | everyone |
+| `hours_streamed_per_week` | hours | The hours the channel was live in an average week of the period, in whole hours, as the platform's own dashboard shows it. Typed by the owner. | everyone |
+| `posts_total` | count | The number of public posts the account has made, as the server reports it on the public profile and the owner typed it. | everyone |
+| `median_boosts_30d` | interactions | The middle count of boosts across the public posts of the last 30 days, worked out by the build from per-post counts the owner typed from the public profile. Bluesky reads reposts, likes and replies; Pixelfed shares, likes and comments. | everyone |
+| `median_favorites_30d` | interactions | The middle count of favorites across the public posts of the last 30 days, worked out by the build from per-post counts the owner typed from the public profile. Bluesky reads reposts, likes and replies; Pixelfed shares, likes and comments. | everyone |
+| `median_replies_30d` | interactions | The middle count of replies across the public posts of the last 30 days, worked out by the build from per-post counts the owner typed from the public profile. Bluesky reads reposts, likes and replies; Pixelfed shares, likes and comments. | everyone |
+| `mean_boosts_30d` | interactions | The average count of boosts across the public posts of the last 30 days, shown only beside the median and only when the owner turns it on; one viral post can pull it far above the median. | everyone |
+| `mean_favorites_30d` | interactions | The average count of favorites across the public posts of the last 30 days, shown only beside the median and only when the owner turns it on; one viral post can pull it far above the median. | everyone |
+| `mean_replies_30d` | interactions | The average count of replies across the public posts of the last 30 days, shown only beside the median and only when the owner turns it on; one viral post can pull it far above the median. | everyone |
+| `avg_views_per_item` | views | Views divided by posts in the period, worked out by the build from figures the owner typed. | after the gate |
+| `engagement_rate` | percent | Interactions divided by views in the period, as a percent, worked out by the build from figures the owner typed. | after the gate |
+
+A percent value is kept in tenths of a percent. The unit `count` is for the
+owner-named analytics tiles, whose unit the old config never recorded; the label
+says what is counted. A typed 30-day change that rounds to zero prints `+0.0%`.
+
+**Cards.** `kit.sections` lists the platforms that get a card, in the order you
+write them. Nothing about a card is typed except its presentation:
+
+```yaml
+kit:
+  sections:
+    - {platform: twitch, account: example_twitch}
+    - {platform: kick, account: example_kick}
+    - {platform: instagram, show: [followers, followers_change_30d], headline: followers}
+    - {platform: mastodon, hide_if_empty: true}
+```
+
+- `show: default` prints the default set of the platform's group, in this order.
+  Twitch and Kick are one group, so they always show the same fields in the same
+  order.
+- A key the platform has no number for is left out of the card. Nothing is zeroed,
+  guessed or filled in.
+- When one key has two numbers with the same label for one platform (the same
+  follower count typed in two places), the newest date wins, then the stronger
+  source, then the first listed.
+- The card leads with `headline`, else the platform's own count (followers or
+  members), else its first number. Every printed number carries its source label,
+  its date in UTC and the out-of-date mark; a computed number prints its formula.
+- A configured platform with no number to show prints "No numbers yet", the same
+  way for every platform. With `hide_if_empty: true` it prints nothing. "No number
+  to show" is judged for the page being built: a platform whose only numbers are
+  gated prints "No numbers yet" on the public page and its numbers on the gated page.
+- Cards print on the public page, the gated page and both PDFs (the PDF text check
+  expects each card's name, its line and its numbers).
+
+| Group | Platforms |
+| --- | --- |
+| live | twitch, kick |
+| video | youtube, tiktok, instagram, threads |
+| open | mastodon, bluesky, pixelfed |
+| community | discord, matrix |
+| other | every other platform |
+
+| Group | Default set (`show: default`) |
+| --- | --- |
+| live | `followers`, `followers_change_30d`, `analytics_stat`, `avg_views_per_item`, `engagement_rate` |
+| video | `followers`, `followers_change_30d`, `analytics_stat`, `avg_views_per_item`, `engagement_rate` |
+| open | `followers`, `posts_total`, `followers_change_30d`, `median_boosts_30d`, `median_favorites_30d`, `median_replies_30d`, `mean_boosts_30d`, `mean_favorites_30d`, `mean_replies_30d`, `analytics_stat`, `avg_views_per_item`, `engagement_rate` |
+| community | `members` |
+| other | `followers`, `followers_change_30d`, `analytics_stat`, `avg_views_per_item`, `engagement_rate` |
+
+**Policy record.** Every build writes a hash of the display policy beside the
+kit pages: `kit/policy.txt` in the public output and `kit-policy.txt` in the gated
+directory. `kit pdf` and `kit pdf --public` refuse a page whose record is missing
+or differs from the current policy ("rebuild the site first"), so a page built
+before a field moved to a narrower audience can never be printed. The hash holds
+no figure and no setting of yours.
+
+### The live block
+
+`kit.live` prints Twitch and Kick in one block of stacked, equal cards in config
+order (kit v2, #629). It
+holds the seven live measures: `followers` (the platform's headline number) and
+the six typed from the platform's own dashboard, `avg_ccv`, `peak_ccv`,
+`hours_watched`, `unique_chatters`, `followers_gained` and
+`hours_streamed_per_week`.
+
+```yaml
+kit:
+  live:
+    - platform: twitch
+      period_start: 2027-02-01
+      period_end: 2027-02-28
+      as_of: 2027-03-01
+      avg_ccv: 40
+      peak_ccv: 120
+      hours_watched: 900
+      unique_chatters: 75
+      followers_gained: 310
+      hours_streamed_per_week: 18
+    - {platform: kick}
+```
+
+- Both platforms print the same seven fields in the same order with the same
+  markup. The block follows the order you write the rows in; it is never sorted by
+  size, and reversing the rows reverses the block.
+- Each figure prints its UTC period and date and the label Hand-kept. A live
+  figure beyond the follower count is never read from an API, so there is no
+  `source` setting and no way to label one API. Anything else waits for the
+  platforms' developer terms.
+- A figure you leave out prints "Not entered", never zero. A platform with no
+  figure at all prints "No live numbers yet". Figures need a period, an `as_of`
+  on or after the period's end, and `peak_ccv` may not be below `avg_ccv`.
+- The rows are public like the other platform cards, and each measure is never
+  wider than that field. The block prints on the public page, the gated page and
+  both PDFs.
+
+### The fediverse block
+
+Mastodon, Bluesky and Pixelfed publish their follower and post counts and the
+interaction counts of each public post. `kit.fediverse` holds what the public
+profile shows, typed by you on a date, one entry per platform (#630). It is hand-kept
+until a collector for public post data has its own design; nothing is fetched.
+
+```yaml
+kit:
+  fediverse:
+    - platform: mastodon
+      profile_url: https://social.example/@example
+      as_of: 2027-03-08
+      followers: 1900
+      posts: 4321
+      show_mean: false
+      interactions:        # one row per public post in the 30 days ending on as_of
+        - {boosts: 2, favorites: 10, replies: 0}
+        - {boosts: 9, favorites: 14, replies: 3}
+```
+
+- **Re-check link.** `profile_url` (https) is printed beside every count and median
+  in the card, as a plain URL so it reads on paper, so a sponsor can look for
+  themselves.
+- **As reported by the server.** A card with an entry says "Counts are as reported by
+  the server." A server can hide or filter a count, and a Mastodon-compatible server
+  can report any number.
+- **Median first.** The build works out the median of each per-post count (boosts,
+  favorites, replies; Bluesky reposts, likes, replies; Pixelfed shares, likes,
+  comments). With an even number of posts the two middle values are averaged and
+  rounded half up. The mean prints only when `show_mean` is true, after the medians.
+  Both are whole numbers and carry the formula.
+- **Not provided, never zero.** A value you did not type prints in one "Not provided"
+  line. A post with no replies is a real 0 and you type it. Each platform's known
+  absences print too: impressions, reach and demographics on Mastodon and Bluesky;
+  those and any insights on Pixelfed.
+- A card shows these only when its platform has an entry. All of it is public
+  (spec decision 6) and prints on the public page, the gated page and both PDFs.
+
 ### Structured demographics
 
 Each demographics entry is for one configured platform and one UTC `as_of`
@@ -782,6 +956,50 @@ is escaped text, never a `mailto:` or `tel:` link. The owner decides what goes
 there; an email address as plain text is acceptable, and no postal address or
 phone number is required or checked (the Beacons kit publishes a postal address;
 Reach Around does not need one). Left out, nothing is printed.
+
+## Hand-kept entries and imports
+
+A number with no collector is kept by hand. Each one is an entry in
+`hand-kept.json`, beside your config: a registry key (see
+[the registry](#platform-cards-and-the-measure-registry)), a whole-number value, a
+UTC day (`as_of`), optionally the period it covers and a short note. The unit, the
+definition and the default audience come from the registry; you never restate them.
+An entry is labeled hand-kept. One made by an importer says which export in its
+method line ("Imported from the YouTube analytics export"); there is no fourth
+label.
+
+```
+reach-around kit measure add --file hand-kept.json --platform bluesky \
+  --key followers --value 120 --as-of 2027-02-20
+reach-around kit measure import-youtube --file hand-kept.json \
+  --export "Chart data.csv"
+```
+
+`measure add` refuses an unknown key, a unit that is not the key's unit (`--unit`,
+optional), a measure the build works out itself, a negative value for a key that
+cannot fall, a day in the future and a repeat of the same platform, key, day and
+period. Its output is a count, never a value. A percent is typed in tenths.
+
+**The wall.** A measure is never visible more widely than the display policy of
+the field it came from. An entry names that field (`analytics` unless you say
+otherwise) and takes the narrower of it and the registry default. An import adds a
+floor that the file cannot change: the figures of a YouTube analytics export stay
+private (owner decision of 2026-11-19, see [YouTube analytics](youtube-analytics.md)),
+so no page or PDF shows them.
+
+**The YouTube analytics export.** The CSV from YouTube Studio's analytics ("Chart
+data"): a header naming exactly `Date`, `Views` and `Watch time (hours)`, then one
+row per UTC day. A `Total` row is skipped. The importer adds the days up (`views`
+and `watch_hours`, hours rounded half up), sets the period to the first and last
+day, and writes nothing if any row is bad. It reads one regular file of at most
+256 KiB and 1,100 rows, opens no network connection, and never prints a cell. The
+column names are assumed from a sample export, not read from a vendor page.
+
+**Stale reminders.** The instance repository example has a scheduled workflow,
+`Check hand-kept freshness`, that opens one issue when a hand-kept measure is older
+than its limit (30 days) and closes it when everything is fresh again. It reads
+only `hand-kept.json`, uses no secret and sends nothing anywhere else. See
+[the instance repository README](../examples/instance-repo/README.md).
 
 ## Old numbers
 

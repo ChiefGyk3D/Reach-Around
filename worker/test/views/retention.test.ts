@@ -50,6 +50,20 @@ describe("view retention", () => {
     expect((await rows()).map((r) => r.ts)).toEqual([NOW - 6 * DAY, NOW]);
   });
 
+  it("city_counters_follow_the_raw_window_per_site_and_an_unrolled_day_waits_for_the_ceiling", async () => {
+    const add = (site: string, day: string) =>
+      DB.prepare("INSERT INTO view_city_daily VALUES (?, ?, 'US', 'EX', 'Exampleton', 'h', 3, 1)").bind(site, day).run();
+    const day = (ms: number) => new Date(ms).toISOString().slice(0, 10);
+    await markRolled(day(NOW - 8 * DAY)); // rolled and past the keep: goes
+    await add("links", day(NOW - 8 * DAY));
+    await add("links", day(NOW - 10 * DAY)); // not rolled, before the 21 day ceiling: waits
+    await add("links", day(NOW - 30 * DAY)); // past the ceiling: goes
+    await add("links", day(NOW - 2 * DAY)); // inside the window: stays
+    await purgeViews(env(), NOW);
+    const left = await DB.prepare("SELECT day FROM view_city_daily ORDER BY day").all<{ day: string }>();
+    expect(left.results.map((r) => r.day)).toEqual([day(NOW - 10 * DAY), day(NOW - 2 * DAY)]);
+  });
+
   it("raw_keep_days_override_is_honored_and_capped", async () => {
     await addEvent(NOW - 2 * DAY);
     await purgeViews({ ...env(), RAW_KEEP_DAYS: "1" }, NOW);
