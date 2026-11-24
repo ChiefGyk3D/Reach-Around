@@ -229,21 +229,43 @@ def test_a_stale_page_with_now_private_figures_is_refused(
 def test_a_private_small_figure_is_needled_before_write(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The last check: a private figure that reaches the document anyway stops
-    the write, naming the field and never the value."""
-    from reach_around.kit import measures_file
-
-    config, site, gated = instance(tmp_path)
-    monkeypatch.setattr(
-        measures_file,
-        "private_scalars",
-        lambda kit, numbers, api=None, imported=None: [("kit.metrics.value", 1200)],
+    """The last check, through the real inventory: a small private figure (40)
+    that reaches a public label with a unit stops the write, naming the field and
+    never the value; the same figure without a unit does not."""
+    doc = kit_doc()
+    doc["analytics"] = [
+        {
+            "platform": "tiktok",
+            "synced_with": "Example Social API",
+            "as_of": "2027-03-02",
+            "followers": 5555555,
+            "followers_30_day_percent": 12.3,
+            "stats": [{"label": "Canary tile label", "value": 40}],
+        }
+    ]
+    make_private(monkeypatch, "analytics")
+    doc["metrics"][0]["label"] = "Gained 40 subscribers"
+    config, site, gated = build_instance(tmp_path / "unit", make_config(doc))
+    with pytest.raises(MeasuresFileError, match="kit.analytics") as caught:
+        build_measures_file(
+            config,
+            site_dir=site,
+            gated_dir=gated,
+            out_dir=tmp_path / "unit" / "private",
+            generated=CREATED,
+        )
+    assert "40" not in str(caught.value)
+    assert not (tmp_path / "unit" / "private" / FILE_NAME).exists()
+    doc["metrics"][0]["label"] = "Gained 40 platforms"
+    config, site, gated = build_instance(tmp_path / "bare", make_config(doc))
+    path = build_measures_file(
+        config,
+        site_dir=site,
+        gated_dir=gated,
+        out_dir=tmp_path / "bare" / "private",
+        generated=CREATED,
     )
-    with pytest.raises(MeasuresFileError) as caught:
-        write(tmp_path, config, site, gated)
-    assert "kit.metrics.value" in str(caught.value)
-    assert "1200" not in str(caught.value)
-    assert not (tmp_path / "private" / FILE_NAME).exists()
+    assert path.is_file()
 
 
 def test_the_turnstile_key_is_a_needle(
@@ -664,6 +686,147 @@ def test_a_private_decimal_is_found_however_it_is_written(
     text = FORMS[form].format(v=written_as, c=written_as, s=written_as)
     with pytest.raises(MeasuresFileError, match="followers_30_day_percent"):
         check_no_private_values(a_note(text), inventory)
+
+
+@pytest.mark.parametrize("form", sorted(FORMS))
+@pytest.mark.parametrize("sign", ["-", "−"])
+@pytest.mark.parametrize(
+    ("private", "written_as"),
+    [
+        (Decimal("-12.3"), "12.30"),
+        (Decimal("-12.3"), "12.3"),
+        (-1234567, "1234567"),
+    ],
+)
+def test_a_private_negative_number_is_found_when_reformatted(
+    private: Any, written_as: str, sign: str, form: str
+) -> None:
+    forms = written(written_as)
+    text = FORMS[form].format(**{k: f"{sign}{v}" for k, v in forms.items()})
+    with pytest.raises(MeasuresFileError, match="kit.x.n"):
+        check_no_private_values(a_note(text), [("kit.x.n", private)])
+    # the same text without a sign is the same magnitude: found as well
+    unsigned = FORMS[form].format(**forms)
+    with pytest.raises(MeasuresFileError, match="kit.x.n"):
+        check_no_private_values(a_note(unsigned), [("kit.x.n", private)])
+
+
+def short_kit(value: int) -> KitConfig:
+    return KitConfig.model_validate(
+        {
+            "title": "Example Creator media kit",
+            "about": "A fake creator used in tests.",
+            "analytics": [
+                {
+                    "platform": "tiktok",
+                    "synced_with": "Example Social API",
+                    "as_of": "2027-03-02",
+                    "followers": 5555555,
+                    "followers_30_day_percent": 12.3,
+                    "stats": [{"label": "Canary tile label", "value": value}],
+                }
+            ],
+        }
+    )
+
+
+@pytest.mark.parametrize("value", [3, 40])
+def test_a_short_private_whole_number_is_in_the_real_inventory(
+    value: int, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    kit = short_kit(value)
+    assert value not in [v for _p, v in private_scalars(kit, None)]  # not private yet
+    make_private(monkeypatch, "analytics")
+    assert value in [v for _p, v in private_scalars(kit, None)]
+
+
+@pytest.mark.parametrize(
+    ("value", "text", "found"),
+    [
+        (3, "up 3% on last month", True),
+        (3, "3 % more", True),
+        (3, "paid $3 each", True),
+        (3, "about 3 USD", True),
+        (3, "3 followers", True),
+        (3, "3 platforms", False),
+        (3, "3 streams a week", False),
+        (3, "version 3", False),
+        (3, "a 3-part series", False),
+        (3, "13% and 30%", False),
+        (40, "40 subscribers", True),
+        (40, "40 Subscribers gained", True),
+        (40, "40 views", True),
+        (40, "４０ hours", True),
+        (40, "€40", True),
+        (40, "40 platforms", False),
+        (40, "40 days", False),
+        (40, "40", False),
+        (40, "140 subscribers", False),
+        (40, "40.5 subscribers", False),
+    ],
+)
+def test_a_short_private_number_is_found_only_with_a_unit(
+    value: int,
+    text: str,
+    found: bool,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Driven through the real inventory, not a stand-in."""
+    kit = short_kit(value)
+    make_private(monkeypatch, "analytics")
+    inventory = private_scalars(kit, None)
+    if found:
+        with pytest.raises(MeasuresFileError, match="kit.analytics"):
+            check_no_private_values(a_note(text), inventory)
+    else:
+        check_no_private_values(a_note(text), inventory)
+
+
+def test_a_short_private_number_as_a_bare_output_value_is_not_a_hit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    kit = short_kit(40)
+    make_private(monkeypatch, "analytics")
+    check_no_private_values({"measures": [{"value": 40}]}, private_scalars(kit, None))
+
+
+WRITTEN_1234567 = {
+    "zero-width characters": "1​234‍567",
+    "zero-width inside a decimal": "1234⁠567",
+    "no-break space grouping": "1 234 567",
+    "thin space grouping": "1 234 567",
+    "narrow no-break space grouping": "1 234 567",
+    "figure space grouping": "1 234 567",
+    "ideographic space grouping": "1　234　567",
+    "newline grouping": "1\n234\n567",
+    "apostrophe grouping": "1'234'567",
+    "typographic apostrophe grouping": "1’234’567",
+    "fullwidth digits": "１２３４５６７",
+    "fullwidth digits and commas": "１，２３４，５６７",
+    "a space inside the number": "1234 567",
+    "a comma inside the number": "1234,567",
+}
+
+
+@pytest.mark.parametrize("name", sorted(WRITTEN_1234567))
+def test_a_private_number_is_found_in_unusual_written_forms(name: str) -> None:
+    text = f"we reached {WRITTEN_1234567[name]} in total"
+    with pytest.raises(MeasuresFileError, match="kit.x.n"):
+        check_no_private_values(a_note(text), [("kit.x.n", 1234567)])
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "12​.30",
+        "12.3​0",
+        "１２．３０",
+        "12.30％",
+    ],
+)
+def test_a_private_decimal_is_found_in_unusual_written_forms(text: str) -> None:
+    with pytest.raises(MeasuresFileError, match="kit.x.n"):
+        check_no_private_values(a_note(text), [("kit.x.n", Decimal("12.3"))])
 
 
 def test_unrelated_numbers_are_not_a_hit() -> None:

@@ -1004,17 +1004,33 @@ Where it may go, and what it holds:
   with an inventory of the private-source values: each private field, each
   number and free text of each private measure, the loaded imported history when
   its block is private, and the not-for-PDF values. Numbers are compared as
-  numbers: a private 12.3 matches 12.30 and "12.3%", and a private 1234567
-  matches "1,234,567" and "1 234 567" written in a text, while unrelated numbers
-  and punctuation are left alone. The encoding of the file is never part of the
+  numbers, by magnitude: a private 12.3 or -12.3 matches 12.30, "-12.30%" and
+  "12.3%", and a private 1234567 matches "1,234,567", "1 234 567", "1'234'567"
+  and "1234 567" written in a text. Before numbers are read, the text is folded
+  (Unicode NFKC, so fullwidth digits count; invisible characters such as zero
+  width joiners are dropped), and any Unicode space, a comma or an apostrophe
+  separates thousands. Unrelated numbers and punctuation are left alone.
+  **Short figures:** a private whole number of fewer than 6 digits (3, 40) is in
+  the inventory, but is matched in a text only when it is written with a unit: a
+  percent sign, a currency sign or code (`$3`, `3 USD`), or a unit word such as
+  followers, subscribers, views, hours, minutes, posts or episodes. "3%" and "40
+  subscribers" are refused; "3 platforms", "40 days" and a bare "40" are not,
+  because those say nothing alone. The encoding of the file is never part of the
   comparison.
 - **The directory stays put.** The output directory is held open from the walk
-  to the write. Just before the file is renamed into place, and again after, the
-  path is resolved a second time and must be the same directory (same device and
-  inode, still linked) and still outside the forbidden directories; otherwise the
-  temporary file is removed and nothing is kept. Mount-namespace tricks (bind
-  mounts) are out of scope: this is an owner-local tool with a same-user threat
-  model.
+  to the write, and the temporary file is made and installed only through that
+  descriptor (`openat` and `renameat`, never by path). Just before the install,
+  and twice in a row after it, the path is resolved again and must be the same
+  directory (same device and inode, still linked) and still outside the
+  forbidden directories; otherwise the installed file and the temporary file are
+  removed through the held descriptor and nothing is kept. **Residual:** no
+  check of a path can see a rename that happens after the last check returns, so
+  a process of the same user that moves the folder in that instant, into a
+  published tree, leaves the file there. Closing that needs the kernel to refuse
+  the move, which a user-space tool cannot ask for. Mount tricks (bind mounts,
+  mount namespaces) are out of scope as well. This is an owner-local tool with a
+  same-user threat model: such a process can already read the file and the
+  private data it was made from.
 - **Reproducible.** The same inputs and `--date` give the same bytes.
 
 ### Schema

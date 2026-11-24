@@ -240,12 +240,19 @@ def private_scalars(
                 continue
             if len(flat) < GUARD_MIN_LENGTH and not path.endswith(_FREE_TEXT):
                 continue
-        elif _whole(value) and len(str(abs(int(value)))) < GUARD_MIN_LENGTH:
-            # a short whole number is too common to mean anything; a number with
-            # a fraction is kept whatever its length
-            continue
         out.append((path, value))
     return out
+
+
+def is_short(value: Scalar) -> bool:
+    """A whole number of fewer than ``GUARD_MIN_LENGTH`` digits. It is in the
+    inventory, but a bare short number is too common to mean anything, so it is
+    matched in a text only when written with a unit."""
+    return (
+        not isinstance(value, str)
+        and _whole(value)
+        and len(str(abs(int(value)))) < GUARD_MIN_LENGTH
+    )
 
 
 def _output_scalars(document: Any) -> Iterable[str | int]:
@@ -268,25 +275,69 @@ def _whole(value: Scalar) -> bool:
     )
 
 
+def _fold_text(text: str) -> str:
+    """A text as a reader sees it: Unicode NFKC (fullwidth digits, signs and
+    separators become plain ones) with the invisible format characters (zero
+    width joiners and the like) removed."""
+    folded = unicodedata.normalize("NFKC", text)
+    return "".join(ch for ch in folded if unicodedata.category(ch) != "Cf")
+
+
 # A number as people write it in a text: digits, optional thousands separators
 # (a comma, a space or a no-break space) and an optional decimal point. A
 # trailing percent sign or any other character is not part of the number, and no
 # punctuation is removed from the text.
 _SEPARATORS = ",   "
+# Any Unicode space, a comma or an apostrophe also separates thousands.
+_SEPARATOR = rf"[{_SEPARATORS}'’ʼ\s]"
 _GROUPED = re.compile(
-    rf"(?<![0-9.,])[0-9]{{1,3}}(?:[{_SEPARATORS}][0-9]{{3}})+(?:\.[0-9]+)?(?![0-9])"
+    rf"(?<![0-9.,])[0-9]{{1,3}}(?:{_SEPARATOR}[0-9]{{3}})+(?:\.[0-9]+)?(?![0-9])"
 )
 _PLAIN = re.compile(r"[0-9]+(?:\.[0-9]+)?")
 
 
 def number_tokens(text: str) -> set[Decimal]:
-    """The numbers a text holds, each read every way a reader could: as one
-    grouped number ("1,234" is 1234) and as separate plain numbers (1 and 234)."""
+    """The magnitudes of the numbers a text holds, each read every way a reader
+    could: as one grouped number ("1,234" is 1234), as separate plain numbers (1
+    and 234) and as the digit runs left when every separator is removed ("1234
+    567" is 1234567). The text is folded first (NFKC, invisible characters
+    dropped). A sign is not part of a magnitude, so -12.30 and 12.3 are the same
+    number."""
+    folded = _fold_text(text)
     found: set[Decimal] = set()
-    for match in _GROUPED.finditer(text):
-        found.add(Decimal("".join(c for c in match.group() if c not in _SEPARATORS)))
-    for match in _PLAIN.finditer(text):
-        found.add(Decimal(match.group()))
+    for match in _GROUPED.finditer(folded):
+        found.add(Decimal(re.sub(_SEPARATOR, "", match.group())))
+    for source in (folded, re.sub(_SEPARATOR, "", folded)):
+        for match in _PLAIN.finditer(source):
+            found.add(Decimal(match.group()))
+    return found
+
+
+# What makes a short number a figure: a percent sign, a currency sign or code
+# before or after it, or a word that counts an audience or an amount.
+_CURRENCY = r"(?:[$€£¥₹]|\b(?:usd|eur|gbp|cad|aud|jpy)\b)"
+UNIT_WORDS = (
+    "followers follower subscribers subscriber views view viewers viewer "
+    "hours hour minutes minute seconds second posts post episodes episode "
+    "downloads download clicks click members member likes like comments comment "
+    "shares share plays play videos video impressions impression interactions "
+    "interaction emails email listeners listener fans fan users user"
+).split()
+_UNITS = "|".join(UNIT_WORDS)
+_FIGURE = r"(?<![0-9.,])([0-9]+(?:\.[0-9]+)?)(?![0-9])"
+_AFTER = re.compile(rf"{_FIGURE}\s*(?:%|{_CURRENCY}|\b(?:{_UNITS})\b)", re.IGNORECASE)
+_BEFORE = re.compile(rf"{_CURRENCY}\s*{_FIGURE}", re.IGNORECASE)
+
+
+def unit_tokens(text: str) -> set[Decimal]:
+    """The magnitudes of the numbers a text writes with a unit (see
+    ``is_short``), after the same folding as ``number_tokens``. "3 platforms" is
+    not one; "3%", "$3", "3 USD" and "3 followers" are."""
+    folded = _fold_text(text)
+    found: set[Decimal] = set()
+    for pattern in (_AFTER, _BEFORE):
+        for match in pattern.finditer(folded):
+            found.add(Decimal(match.group(1)))
     return found
 
 
@@ -299,16 +350,19 @@ def check_no_private_values(
     Names the field, never the value."""
     values = list(_output_scalars(document))
     strings = [_norm(v) for v in values if isinstance(v, str)]
-    numbers = {Decimal(v) for v in values if isinstance(v, int)}
+    numbers = {Decimal(abs(v)) for v in values if isinstance(v, int)}
+    figures: set[Decimal] = set()
     for text in values:
         if isinstance(text, str):
             numbers |= number_tokens(text)
+            figures |= unit_tokens(text)
     for path, value in inventory:
         if isinstance(value, str):
             needle = _norm(value)
             hit = any(needle in text for text in strings)
         else:
-            hit = Decimal(value) in numbers
+            seen = figures if is_short(value) else numbers
+            hit = abs(Decimal(value)) in seen
         if hit:
             raise MeasuresFileError(
                 f"a value of the private field {path} is in the measures file; "

@@ -56,6 +56,9 @@ _DIR_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
 # A directory scan for a work tree below the output directory stops here.
 MAX_SCANNED_ENTRIES = 20000
 MAX_SCAN_DEPTH = 16
+# How many times in a row the held directory is compared with a fresh resolution
+# of its path after the target is installed.
+INSTALLED_CHECKS = 2
 
 
 def _open_dir(name: str, parent_fd: int) -> int:
@@ -294,7 +297,13 @@ def write_private(
             os.replace(temp, name, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
             os.fsync(dir_fd)
             try:
-                verify_unchanged(directory, dir_fd, forbidden)
+                # The target is installed through the held descriptor; what
+                # follows only confirms where that directory now is. Two checks
+                # in a row, so a move that lands between the first and the last
+                # is seen by the last. A move after the last one cannot be seen
+                # by any path check (see docs/kit.md).
+                for _ in range(INSTALLED_CHECKS):
+                    verify_unchanged(directory, dir_fd, forbidden)
             except OutputError:
                 with contextlib.suppress(OSError):
                     os.unlink(name, dir_fd=dir_fd)

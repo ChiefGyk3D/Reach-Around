@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import os
 import stat
+from collections.abc import Sequence
 from pathlib import Path
 
 import pytest
@@ -202,6 +203,37 @@ def test_a_directory_renamed_into_a_forbidden_tree_is_not_written_to(
         write_private(private, "kit.pdf", b"%PDF-1", overwrite=False, forbidden=[site])
     monkeypatch.undo()
     assert moved
+    assert list((site / "uploaded").iterdir()) == []
+
+
+def test_a_move_right_after_the_first_check_of_the_installed_file_is_caught(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The folder is renamed into the published tree right after the first
+    verification that follows the install returns. The next verification sees it
+    and removes the installed target through the held descriptor."""
+    from reach_around.kit import output
+
+    site = tmp_path / "site"
+    site.mkdir(mode=0o700)
+    private = out_dir(tmp_path)
+    real = output.verify_unchanged
+    calls: list[int] = []
+
+    def verify_then_move(
+        directory: Path, fd: int, forbidden: Sequence[Path] = ()
+    ) -> None:
+        calls.append(1)
+        real(directory, fd, forbidden)
+        # call 1 is before the install, call 2 is the first one after it
+        if len(calls) == 2:
+            os.rename(private, site / "uploaded")
+
+    monkeypatch.setattr(output, "verify_unchanged", verify_then_move)
+    with pytest.raises(OutputError, match="changed"):
+        write_private(private, "kit.pdf", b"%PDF-1", overwrite=False, forbidden=[site])
+    monkeypatch.undo()
+    assert len(calls) >= 3
     assert list((site / "uploaded").iterdir()) == []
 
 
