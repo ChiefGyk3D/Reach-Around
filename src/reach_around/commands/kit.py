@@ -238,9 +238,10 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
         "private-measures",
         help="write the OWNER-ONLY private measures file for the sponsor page",
         description="Write the OWNER-ONLY private file kit-measures.json: the "
-        "measures the gated kit shows, each with its trust label and date, for the sponsor page and quote to "
-        "read. This is not `kit measure`, which writes hand-kept public "
-        "entries. The private file: it goes to an owner-only directory outside the "
+        "measures the gated kit shows, each with its trust label and date, "
+        "for the sponsor page and quote to read. This is not `kit measure`, "
+        "which writes hand-kept public entries. The private file goes to an "
+        "owner-only directory outside the "
         "site output, the gated directory, the config directory and any git "
         "work tree, and is never published. Refused when the gated page was "
         "built under another display policy. Prints the path on success.",
