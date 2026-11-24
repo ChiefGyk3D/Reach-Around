@@ -151,7 +151,10 @@ CATEGORIES = (
 
 
 def test_privacy_lists_every_derived_category_when_on() -> None:
-    items = collected_items(make_config(analytics={"page_views": True}))
+    # Level city names every category; the default (region) leaves the city out on purpose (#778).
+    items = collected_items(
+        make_config(analytics={"page_views": True, "geo_level": "city"})
+    )
     views = [i for i in items if "Each view records" in i.what]
     assert len(views) == 1
     text = f"{views[0].what} {views[0].why} {views[0].kept}"

@@ -91,6 +91,7 @@ def test_the_section_has_exactly_these_fields() -> None:
         "beacon_token",
         "route",
         "raw_keep_days",
+        "geo_level",
         "other_sites",
         "turnstile_beacon",
         "turnstile_site_key",

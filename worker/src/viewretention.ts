@@ -16,6 +16,8 @@
 //                  is dropped and view_meta('rollup_overdue') records the
 //                  date. The flag is cleared by the first later run (a later
 //                  UTC day) that finds nothing left beyond the ceiling.
+//   view_city_daily  the city counters (migration 0018): a sealed day past the raw keep, or any day past
+//                  the hard ceiling, per site like the raw rows.
 //   view_daily, view_dim_daily, view_geo_daily, view_rollup_log
 //                  rows older than 90 days.
 //   view_meta      hourly counters. Their keys are `bud:<hour>:<route>` and
@@ -156,6 +158,17 @@ export async function purgeViews(env: RetentionEnv, nowMs: number, opts: PurgeOp
     },
     { sql: "DELETE FROM view_daily WHERE day IN (SELECT day FROM view_daily WHERE day < ? LIMIT ?)", args: [aggCutoff] },
     { sql: "DELETE FROM view_dim_daily WHERE day IN (SELECT day FROM view_dim_daily WHERE day < ? LIMIT ?)", args: [aggCutoff] },
+    {
+      // CONTROL:city-counter-purge  the city counters follow the raw window of their site: a sealed day past the
+      // keep, or any day past the hard ceiling.
+      sql:
+        `DELETE FROM view_city_daily WHERE (site, day, country, region, city, bot_class) IN (${kCte}` +
+        "SELECT c.site, c.day, c.country, c.region, c.city, c.bot_class FROM view_city_daily c WHERE " +
+        "(c.day < strftime('%Y-%m-%d', COALESCE((SELECT k.cut FROM k WHERE k.site = c.site), ?) / 1000, 'unixepoch') " +
+        "AND EXISTS (SELECT 1 FROM view_rollup_log l WHERE l.site = c.site AND l.day = c.day)) " +
+        "OR c.day < strftime('%Y-%m-%d', COALESCE((SELECT k.hard FROM k WHERE k.site = c.site), ?) / 1000, 'unixepoch') LIMIT ?)",
+      args: [...kArgs, cutoff, hardCutoff],
+    },
     { sql: "DELETE FROM view_geo_daily WHERE day IN (SELECT day FROM view_geo_daily WHERE day < ? LIMIT ?)", args: [aggCutoff] },
     { sql: "DELETE FROM view_hour_daily WHERE day IN (SELECT day FROM view_hour_daily WHERE day < ? LIMIT ?)", args: [aggCutoff] },
     { sql: "DELETE FROM view_rollup_log WHERE day IN (SELECT day FROM view_rollup_log WHERE day < ? LIMIT ?)", args: [aggCutoff] },
