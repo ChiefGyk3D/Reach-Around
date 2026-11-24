@@ -16,7 +16,7 @@
 //                  is dropped and view_meta('rollup_overdue') records the
 //                  date. The flag is cleared by the first later run (a later
 //                  UTC day) that finds nothing left beyond the ceiling.
-//   view_city_daily  the city counters (migration 0018): a sealed day past the raw keep, or any day past
+//   view_city_daily  the city counters (migration 0019): a sealed day past the raw keep, or any day past
 //                  the hard ceiling, per site like the raw rows.
 //   view_daily, view_dim_daily, view_geo_daily, view_rollup_log
 //                  rows older than 90 days.
