@@ -59,7 +59,12 @@ from reach_around.config.kit import (
     pdf_excluded_values,
     summary_total,
 )
-from reach_around.config.measures import Measure, compile_measures, visible
+from reach_around.config.measures import (
+    REGISTRY,
+    Measure,
+    compile_measures,
+    visible,
+)
 from reach_around.config.models import SiteConfig
 from reach_around.config.numbers import Numbers, source_platforms
 from reach_around.config.trust import (
@@ -76,6 +81,7 @@ from reach_around.site.kit import (
     GUARD_MIN_LENGTH,
     _analytics_rows,
     _case_rows,
+    _change_text,
     _community,
     _compact_number,
     _engagement_rows,
@@ -388,27 +394,69 @@ _FIELD_OF_BLOCK = {"headline": "metrics", "tile": "analytics", "derived": "engag
 
 
 def private_measure_strings(kit: KitConfig, numbers: Numbers | None) -> dict[str, str]:
-    """Renderings of every figure of a private measure, as the page would print
-    them (label and value together, and a long bare number), keyed by the field
-    they came from. Private measures are never expected; these must be absent."""
+    """The text a page would print for every figure of a private measure, keyed
+    by the field it came from (the key starts with that field's name). Private
+    measures are never expected; these must be absent from the PDF text.
+
+    The forms are the ones the templates render: a headline row (platform, label,
+    value), an analytics panel (the sync line, "Followers" with its compact value
+    and the real 30-day text, each tile's label with its compact value) and an
+    engagement row (measure name and value). A labeled form is specific enough to
+    search for whatever its length; a bare number is searched for only from
+    ``GUARD_MIN_LENGTH`` characters. Owner-defined labels are searched for alone
+    unless a visible measure prints the same word."""
+    measures = compile_measures(kit, numbers, None)
+    shown_labels = {m.label.casefold() for m in measures if m.visibility != "private"}
+    shown_labels |= {entry.label.casefold() for entry in REGISTRY.values()}
+    followers = {
+        m.platform: m.value
+        for m in measures
+        if m.block == "tile" and m.key == "followers" and m.value is not None
+    }
     found: dict[str, str] = {}
-    for m in compile_measures(kit, numbers, None):
-        if m.visibility != "private" or m.value is None:
+    for m in measures:
+        if m.visibility != "private":
             continue
         field = _FIELD_OF_BLOCK[m.block]
-        if m.block == "derived":
-            text = (
-                percent_text(m.value) if m.unit == "percent" else shown_count(m.value)
-            )
-        elif m.block == "tile":
-            text = _compact_number(m.value)
-        else:
-            text = shown_count(m.value)
         key = f"{field}.{m.key}.{m.label}"
-        found[f"{key} (platform)"] = platform_name(m.platform) + m.label + text
-        for bare in {f"{m.value:,}", str(m.value), text}:
-            if len(bare) >= GUARD_MIN_LENGTH:
-                found[f"{key} ({bare})"] = bare
+        name = platform_name(m.platform)
+        if m.value is not None:
+            text = ""
+            if m.block == "derived":
+                text = (
+                    percent_text(m.value)
+                    if m.unit == "percent"
+                    else shown_count(m.value)
+                )
+                found[f"{key} (row)"] = m.label + text
+                found[f"{key} (platform row)"] = name + m.label + text
+            elif m.block == "tile" and m.key == "followers_change_30d":
+                change = _change_text(followers.get(m.platform, 0), m.value)
+                if change:
+                    found[f"{key} (change)"] = change
+            elif m.block == "tile":
+                text = _compact_number(m.value)
+                found[f"{key} (tile)"] = m.label + text
+            else:
+                text = shown_count(m.value)
+                found[f"{key} (platform row)"] = name + m.label + text
+                found[f"{key} (row)"] = m.label + text
+            if m.key != "followers_change_30d":
+                for bare in {f"{m.value:,}", str(m.value), text}:
+                    if len(bare) >= GUARD_MIN_LENGTH:
+                        found[f"{key} ({bare})"] = bare
+        if m.block == "tile" and m.key == "followers" and m.as_of is not None:
+            found[f"{key} (sync line)"] = (
+                f"Synced with {m.source_note} on {m.as_of.isoformat()}"
+            )
+            found[f"{key} (source)"] = f"Typed by the owner from {m.source_note}"
+        owner_label = m.block == "headline" or m.key == "analytics_stat"
+        if (
+            owner_label
+            and len(m.label) >= GUARD_MIN_LENGTH
+            and m.label.casefold() not in shown_labels
+        ):
+            found[f"{key} (label)"] = m.label
     return found
 
 

@@ -20,7 +20,12 @@ from reach_around.config.kit import (
 )
 from reach_around.config.measures import REGISTRY, registry_problems
 from reach_around.kit import pdf as pdf_module
-from reach_around.kit.pdf import PdfError, build_kit_pdf, private_measure_strings
+from reach_around.kit.pdf import (
+    PdfError,
+    build_kit_pdf,
+    build_public_kit_pdf,
+    private_measure_strings,
+)
 from reach_around.kit.pdftext import extract_pages
 
 SECRET_FOLLOWERS = 481516234
@@ -182,3 +187,69 @@ def test_a_fresh_build_with_private_engagement_prints_and_expects_none(
     config, site, gated = build_instance(tmp_path, make_config(pdf_kit()))
     out = make_pdf(tmp_path, config, site, gated)
     assert "765,432" not in "".join(" ".join(extract_pages(out.read_bytes())).split())
+
+
+# --- compact analytics figures (Daybreak round 3) ----------------------------
+
+
+def analytics_kit() -> dict[str, Any]:
+    doc = kit_doc()  # an unrelated gated partner keeps the full PDF eligible
+    doc["analytics"] = [
+        {
+            "platform": "tiktok",
+            "synced_with": "Example Social API",
+            "as_of": "2027-03-08",
+            "followers": 1200,
+            "followers_30_day_percent": 12.3,
+            "stats": [{"label": "Example views", "value": 1300}],
+        }
+    ]
+    return doc
+
+
+def test_the_needles_are_the_forms_the_analytics_panel_prints(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    kit = KitConfig.model_validate(analytics_kit())
+    make_private(monkeypatch, "analytics")
+    needles = set(private_measure_strings(kit, None).values())
+    assert {"Followers1.2k", "Example views1.3k", "+12.3%"} <= needles
+    assert "Synced with Example Social API on 2027-03-08" in needles
+    assert all(needles)
+
+
+def test_a_stale_full_pdf_with_now_private_analytics_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config, site, gated = build_instance(tmp_path, make_config(analytics_kit()))
+    out = make_pdf(tmp_path, config, site, gated)  # control: it prints
+    flat = "".join(" ".join(extract_pages(out.read_bytes())).split())
+    assert "Followers1.2k" in flat and "+12.3%" in flat
+    out.unlink()
+    make_private(monkeypatch, "analytics")
+    with pytest.raises(PdfError, match="private"):
+        make_pdf(tmp_path, config, site, gated)
+
+
+def test_a_stale_public_pdf_with_now_private_analytics_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config, site, _ = build_instance(tmp_path, make_config(analytics_kit()))
+
+    def make_public() -> Path:
+        return build_public_kit_pdf(
+            config,
+            site_dir=site,
+            out_dir=tmp_path / "private",
+            name="kit-public.pdf",
+            created=date(2027, 3, 10),
+            renderer=fake_renderer,
+        ).path
+
+    out = make_public()
+    flat = "".join(" ".join(extract_pages(out.read_bytes())).split())
+    assert "Followers1.2k" in flat
+    out.unlink()
+    make_private(monkeypatch, "analytics")
+    with pytest.raises(PdfError, match="private"):
+        make_public()
