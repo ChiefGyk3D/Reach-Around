@@ -151,7 +151,7 @@ CATEGORIES = (
 
 
 def test_privacy_lists_every_derived_category_when_on() -> None:
-    # Level city names every category; the default (region) leaves the city out on purpose (#778).
+    # Level city names every category; the default (region) omits the city (#778).
     items = collected_items(
         make_config(analytics={"page_views": True, "geo_level": "city"})
     )
