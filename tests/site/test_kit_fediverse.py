@@ -132,7 +132,11 @@ def test_bluesky_and_pixelfed_use_their_own_words() -> None:
 
 def test_medians_are_never_zero_for_missing_data() -> None:
     found = fediverse_measures(
-        [FediverseEntry(platform="mastodon", profile_url=PROFILE, as_of="2027-03-08")]
+        [
+            FediverseEntry.model_validate(
+                {"platform": "mastodon", "profile_url": PROFILE, "as_of": "2027-03-08"}
+            )
+        ]
     )
     assert found == []
 
