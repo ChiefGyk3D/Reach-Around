@@ -36,6 +36,7 @@ import { createMatrixChannel } from "./matrix";
 import {
   claimDedup,
   dedupKey,
+  pruneAlertState,
   eventHash,
   MAX_WHO_CHARS,
   MINUTE_MS,
@@ -286,6 +287,8 @@ export function createDispatcher() {
       let errored = false;
       try {
         const dailyBudget = loadKitLimits(env).dailyAlertBudget;
+        // Housekeeping first, whether or not dedup is configured, so the row cap never fills with expired rows.
+        await pruneAlertState(env.DB, now);
         if (hash !== null) {
           if (!(await claimDedup(env.DB, site, hash, now, DEDUP_MS))) {
             status.deduped++;

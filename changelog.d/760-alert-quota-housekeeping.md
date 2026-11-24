@@ -1,0 +1,1 @@
+- Make alert quota housekeeping independent of optional settings (#760, epic #244): expired quota and dedup rows are now pruned on every admitted alert, not only when the optional dedup key is configured, so the quota table stays below its row cap in every configuration. No schema change, nothing deployed.
