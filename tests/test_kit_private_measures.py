@@ -573,6 +573,18 @@ def test_the_needles_are_the_forms_the_channel_cards_print(
     assert REGISTRY["blog_views_30d"].label + "12,321" in values
 
 
+def test_a_small_non_people_channel_figure_is_needled_as_it_prints(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    doc = channels_kit()
+    doc["channels"][1]["clicks"] = 3  # prints "3": only people counts take the floor
+    kit = KitConfig.model_validate(doc)
+    make_private(monkeypatch, "channels")
+    values = set(private_measure_strings(kit, None).values())
+    assert REGISTRY["newsletter_clicks"].label + "3" in values
+    assert REGISTRY["newsletter_clicks"].label + "Under 5" not in values
+
+
 def test_a_stale_public_pdf_with_now_private_channel_figures_is_refused(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
