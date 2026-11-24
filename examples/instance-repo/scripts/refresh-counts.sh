@@ -63,6 +63,18 @@ while [ $# -gt 0 ]; do
   esac
 done
 
+# The refresh deadline in seconds (see the block before the engine runs). Checked
+# first so a bad value is refused before anything starts.
+deadline="${REFRESH_TIMEOUT_SECONDS:-480}"
+case "$deadline" in
+  *[!0-9]* | "") deadline=bad ;;
+  *) if [ "$deadline" -lt 30 ] || [ "$deadline" -gt 480 ]; then deadline=bad; fi ;;
+esac
+if [ "$deadline" = bad ]; then
+  echo "error: REFRESH_TIMEOUT_SECONDS must be digits, 30 to 480" >&2
+  exit 2
+fi
+
 runtime=""
 for candidate in docker podman; do
   if command -v "$candidate" >/dev/null 2>&1; then
@@ -166,8 +178,24 @@ for name in YOUTUBE_API_KEY YOUTUBE_USERNAME TWITCH_CLIENT_ID TWITCH_CLIENT_SECR
   if [ -n "${!name:-}" ]; then keys+=(-e "$name"); fi
 done
 
+# Hard deadline for the refresh container (issue #768, F-59). A platform that
+# accepts a connection and never answers, or an engine that hangs, must not hold
+# the runner until the job's own limit (10 minutes in the example workflow, which
+# stays as the second boundary). 480 seconds leaves the report and the publish
+# step room inside it. REFRESH_TIMEOUT_SECONDS may LOWER it (digits only, 30 to
+# 480); a larger or malformed value is refused, never used. `timeout` sends TERM
+# (the runtime passes it to the container) and KILL 20 seconds later. Where
+# `timeout` is missing (a stock macOS) the refresh runs without the deadline and
+# says so; the CI runner has it.
+refresh_limit=()
+if command -v timeout >/dev/null 2>&1; then
+  refresh_limit=(timeout --kill-after=20 "$deadline")
+else
+  echo "refresh-counts: warning: no 'timeout' command, the refresh has no hard deadline" >&2
+fi
+
 set +e
-"$runtime" run --rm --read-only --cap-drop ALL \
+${refresh_limit[@]+"${refresh_limit[@]}"} "$runtime" run --rm --read-only --cap-drop ALL \
   --security-opt no-new-privileges:true --pids-limit 256 --memory 1g \
   --tmpfs /tmp \
   --user "$(id -u):$(id -g)" ${userns[@]+"${userns[@]}"} \
@@ -180,6 +208,10 @@ set -e
 case "$status" in
   0) failed=false ;;
   3) failed=true ;;
+  124 | 137)
+    echo "refresh-counts: the engine did not finish within ${deadline} seconds and was stopped; nothing was changed." >&2
+    exit 1
+    ;;
   *)
     echo "refresh-counts: the engine stopped with exit code $status; nothing was changed." >&2
     exit "$status"
