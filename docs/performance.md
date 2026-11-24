@@ -80,7 +80,7 @@ Measured 2026-11-20 on the built example instance (`examples/instance`) and a me
 | spoke | 7400 | 60000 | 13000 | 1300 | 81500 | 163000 | 81500 | 11 | 0 |
 | tab | 3600 | 59000 | 13000 | 1300 | 82000 | 158000 | 81000 | 11 | 0 |
 | kit | 11800 | 72000 | 3300 | 500 | 33300 | 123000 | 57000 | 11 | 0 |
-| support | 4600 | 72000 | 13000 | 1300 | 82000 | 148000 | 78000 | 10 | 0 |
+| support | 8000 | 72000 | 13000 | 1300 | 82000 | 148000 | 78000 | 10 | 0 |
 | support-page | 5100 | 65300 | 16700 | 1300 | 81500 | 169700 | 84800 | 14 | 0 |
 
 Bytes, except Requests and Third party. Page types: `hub` is the first-tab page (`index.html`), `hub-stack` the smart-stack home page (`page.layout: stack`), `hub-live` the same page with `page.live_badges: true`, `spoke` a stack tab drawn as its own page (`spoke: true`, #676), `tab` any other tab page, `kit` the public media kit page, `support` the pages around them (privacy, `/kit/retry/` and 404), `support-page` the configured support page (`support:` in the site config, built at `/support/`; #683). Total is HTML, CSS, JS, images and fonts before compression. Compressed is the estimate described below. Requests counts the page and each distinct file it links. Third party is zero requests to any other origin.
