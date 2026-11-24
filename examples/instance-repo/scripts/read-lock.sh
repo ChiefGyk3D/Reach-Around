@@ -4,6 +4,10 @@
 # Print one value from engine.lock after checking its shape.
 # Usage: scripts/read-lock.sh ENGINE_IMAGE|ENGINE_REPO|ENGINE_REF [LOCK_FILE]
 #        scripts/read-lock.sh --verify ENGINE_IMAGE|ENGINE_REPO|ENGINE_REF VALUE
+#        scripts/read-lock.sh --release [LOCK_FILE]
+#
+# --release checks that engine.release.json (beside the lock) and the lock name
+# one release: see the block below.
 #
 # --verify only checks VALUE against the same shape and prints it; the
 # preview workflow computes the image once from the trusted lock and hands
@@ -16,6 +20,50 @@
 # The file is parsed, never sourced, so a bad edit cannot run code. The
 # shape checks also make the printed value safe to append to $GITHUB_ENV.
 set -euo pipefail
+
+# --release [LOCK_FILE]: prove the three pins describe ONE release (issue #768,
+# F-11). engine.release.json, next to the lock, lists the image digest, the
+# repository, the commit, the tag and the D1 schema (highest migration number)
+# of that release. Every field must match the lock, and the image tag (a label
+# in ENGINE_IMAGE) and the "# vX.Y.Z" comment on ENGINE_REF must name the manifest's
+# tag, so an image from release A with a commit from release B fails here.
+# The manifest is reviewed in the same pull request as the lock; it is NOT
+# signed, so it binds the pins to each other, not to a publisher. The deploy
+# script also checks the commit against the checkout (deploy-local.sh).
+if [ "${1:-}" = "--release" ]; then
+  self="${BASH_SOURCE[0]}"
+  lock_arg="${2:-}"
+  here_dir="$(cd "$(dirname "$self")/.." && pwd)"
+  lock_file="${lock_arg:-$here_dir/engine.lock}"
+  manifest="$(dirname "$lock_file")/engine.release.json"
+  fail_release() {
+    echo "error: engine.release.json does not match engine.lock: $*" >&2
+    exit 1
+  }
+  command -v jq >/dev/null || fail_release "jq is required"
+  [ -f "$manifest" ] && [ ! -L "$manifest" ] || fail_release "engine.release.json not found beside the lock"
+  m_image="$(jq -er '.image | strings' "$manifest")" || fail_release "image missing"
+  m_repo="$(jq -er '.repo | strings' "$manifest")" || fail_release "repo missing"
+  m_commit="$(jq -er '.commit | strings' "$manifest")" || fail_release "commit missing"
+  m_tag="$(jq -er '.tag | strings' "$manifest")" || fail_release "tag missing"
+  m_schema="$(jq -er '.d1_schema | strings' "$manifest")" || fail_release "d1_schema missing"
+  [ "$(jq -er '.manifest_version' "$manifest")" = "1" ] || fail_release "manifest_version must be 1"
+  printf '%s' "$m_tag" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$' || fail_release "tag has the wrong shape"
+  printf '%s' "$m_schema" | grep -Eq '^[0-9]{4}$' || fail_release "d1_schema has the wrong shape"
+  l_image="$("$self" ENGINE_IMAGE "$lock_file")"
+  l_repo="$("$self" ENGINE_REPO "$lock_file")"
+  l_ref="$("$self" ENGINE_REF "$lock_file")"
+  [ "$m_image" = "$l_image" ] || fail_release "image differs"
+  [ "$m_repo" = "$l_repo" ] || fail_release "repo differs"
+  [ "$m_commit" = "$l_ref" ] || fail_release "commit differs"
+  l_tag="$(sed -n 's/^ENGINE_REF=[0-9a-f]\{40\} *# *\(v[0-9.]*\) *$/\1/p' "$lock_file")"
+  [ "$l_tag" = "$m_tag" ] || fail_release "the tag comment on ENGINE_REF is not ${m_tag}"
+  image_tag="${l_image#*:}"
+  image_tag="${image_tag%%@*}"
+  [ "v$image_tag" = "$m_tag" ] || fail_release "the image tag is not ${m_tag}"
+  echo "engine release ${m_tag} (schema ${m_schema}): image, repo and commit agree"
+  exit 0
+fi
 
 verify=""
 if [ "${1:-}" = "--verify" ]; then

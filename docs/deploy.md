@@ -775,12 +775,89 @@ way:
   reviewer (not the author). An environment that does not exist yet is created
   unprotected on first use, so create and protect it before the first call.
 - Concurrency: the called job takes the group `deploy-worker-<worker_name>`
-  with `cancel-in-progress: false`, so two calls for one Worker do not run at
-  the same time. It is not a queue: GitHub keeps at most one pending run per
+  with `cancel-in-progress: false`, so two calls for one Worker from ONE
+  repository do not run at the same time. GitHub scopes a concurrency group to
+  the repository that runs it, so two repositories deploying one Worker name are
+  NOT serialized; see "Single owner" below. It is not a queue: GitHub keeps at most one pending run per
   group and cancels an older pending one when a newer one arrives. Callers that
   need every call to run, in order, must serialize their own calls (for example
   one call per manual run, or a `needs` chain). A caller may add its own group
   (use a different name).
+
+### Deploy ordering and rollback
+
+The migrations, the Worker and Pages are three separate changes. A failure
+between them must not leave an old Worker on a schema it cannot read, so
+(issue #768):
+
+1. **Expand, migrate, contract.** The deploy applies migrations FIRST, so for a
+   moment (and after any failed deploy or rollback) the previous Worker runs on
+   the new schema. Every new migration must therefore be additive: create
+   table, create index, add column, insert.
+   `python3 -I .github/scripts/check-migrations.py` runs in CI and refuses a
+   new migration with `DROP`, `RENAME` or `DELETE FROM`. A migration that must
+   remove something carries the line `-- migration-phase: contract` and ships
+   in a release AFTER the Worker that stopped using the column or table
+   (contract comes last). Migrations 0001 to 0017 predate the rule and are
+   exempt.
+2. **Previous version recorded.** Before anything changes, the workflow reads
+   `wrangler deployments status --json` and keeps the version id that holds the
+   traffic.
+3. **Probe.** After the Worker deploy, a GET to `https://<site_host>/e/` must
+   answer 204 (up to 6 tries, 10 seconds apart). The Worker only counts a POST,
+   so the probe proves the Worker serves on its route, not that every feature
+   works. It runs only with `zone_name` set and no `route_pattern` (otherwise
+   the host to ask is not known here) and says so when skipped.
+4. **Rollback.** A failed probe runs
+   `wrangler rollback <recorded version> --name <worker> --message ...` and
+   fails the job. The schema stays migrated, which is safe only because of
+   rule 1. If no previous version could be read (a first deploy), the job says
+   so and you roll back by hand: Worker > Deployments > Rollback.
+5. **Test deploy, link ids.** `deploy-test.yml` deploys the UNION of the live
+   Worker's link ids and the new ones before Pages, then the new ids only after
+   Pages succeeded, so a failed Pages deploy never leaves the old site pinging
+   ids the Worker dropped. If the live ids cannot be read it deploys the new
+   ids only and warns.
+
+Sources: VERIFIED 2026-11-24 from
+<https://developers.cloudflare.com/workers/wrangler/commands/workers/>
+(`wrangler rollback [VERSION_ID] --name --message`,
+`deployments status|list --name --json`, `versions view <id> --json`,
+`deploy --message`) and
+<https://developers.cloudflare.com/workers/wrangler/commands/d1/> (a failing
+migration is rolled back on its own; an applied one is not, and a Worker
+rollback does not touch it). INFERRED: the field names inside the JSON that
+wrangler prints (`version_id`, a `LINK_IDS` binding with `text`) are not
+documented; the helper `.github/scripts/deploy-guard.py` searches for them and
+an empty answer means "unknown", which the workflow reports.
+
+### Single owner
+
+One Worker name has one deploying repository. The concurrency group cannot
+enforce that across repositories, so each deploy writes
+`reach-around-owner=<repository>` into the deployment message and the next
+deploy refuses when one of the last 10 deployments names a different
+repository. This narrows the window; it is not a lock (two simultaneous first
+deploys from two repositories both pass). To hand a Worker to another
+repository, deploy once from the new owner by hand (or wait until the old
+owner's messages leave the last 10 deployments), then deploy normally.
+
+### Engine release manifest (instance repositories)
+
+`engine.lock` pins the image digest, the repository and the commit, and each is
+only shape-checked on its own, so an image from release A with a commit from
+release B would pass. The instance template adds `engine.release.json` beside
+the lock: the image, repository, commit, tag and D1 schema (highest migration
+number) of ONE release. `scripts/read-lock.sh --release` checks that all of
+them agree with the lock, the image tag and the `# vX.Y.Z` comment on
+`ENGINE_REF`; the preview and deploy workflows and `scripts/deploy-local.sh`
+run it. `deploy-local.sh` also checks that a remote of `ENGINE_DIR` is
+`github.com/<ENGINE_REPO>`, that the tag in the manifest resolves to the pinned
+commit in that checkout, that the checkout's migrations end at the manifest's
+schema, and that tracked files are unmodified. The manifest is reviewed in the
+same pull request as the lock and is NOT signed: it ties the pins to each
+other, not to a publisher. Publishing it with each engine release, and signing
+it, is left for the release workflow.
 
 **Doppler identity pins** (one identity per tier, Viewer on one config only; a
 `dev` identity must not read `prd`). On the identity's OIDC claims, pin
@@ -1268,8 +1345,10 @@ set. The media kit page and PDF then print "Live since <date> (UTC)". See
 - **Site.** Pages project > Deployments > pick the previous deployment >
   Rollback to this deployment. Or re-run the workflow from an earlier good
   commit on `main`.
-- **Worker.** Worker > Deployments > Rollback, or `wrangler rollback` with the
-  token. Pause clicks entirely by deleting the Worker; links keep working
+- **Worker.** Worker > Deployments > Rollback, or `wrangler rollback
+  <version-id> --name <worker> --message <text>` with the token. The deploy
+  workflow does this itself after a failed probe (see "Deploy ordering and
+  rollback"); it restores code only, never the D1 schema. Pause clicks entirely by deleting the Worker; links keep working
   because the page uses `ping` plus a beacon, not a redirect.
 - **D1 migrations.** Migrations are forward only. Ship a new migration to
   undo a change; as a backstop, `wrangler d1 export reach-around-clicks
