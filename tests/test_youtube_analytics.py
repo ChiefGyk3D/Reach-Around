@@ -1185,7 +1185,8 @@ def test_a_hostile_demographic_answer_cannot_exceed_the_cell_limit() -> None:
 
 
 def test_the_whole_run_fits_one_history_append() -> None:
-    transport, _ = geo_pages(250)
+    # the most the hard cap lets through as a complete report
+    transport, _ = geo_pages(GEO_MAX_PAGES * GEO_PAGE_SIZE - 1)
     measures, words = run(transport)
     assert words == [] and len(measures) <= MAX_RUN_FIGURES < MAX_BATCH
     # and the writer accepts the batch as one append

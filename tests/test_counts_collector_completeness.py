@@ -8,6 +8,7 @@ write, and a retention policy built without the config model.
 from __future__ import annotations
 
 import json
+import os
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -27,6 +28,7 @@ from reach_around.counts.history import (
 )
 from reach_around.counts.pending import (
     MAX_IDS,
+    PendingError,
     mark_pending,
     pending_path,
     read_pending,
@@ -260,9 +262,182 @@ def test_the_pending_note_holds_run_ids_only_and_is_bounded(tmp_path: Path) -> N
         ids = read_pending(path)
     assert ids == [f"refresh-{n}" for n in range(5, MAX_IDS + 5)]
     path.write_text("good-1\n../etc/passwd\nbad id\n" + "x" * 5000, encoding="utf-8")
-    assert read_pending(path) == []  # over the size cap: not trusted
+    with pytest.raises(PendingError):  # over the size cap: not trusted, not absent
+        read_pending(path)
     path.write_text("good-1\n../etc/passwd\nbad id\n", encoding="utf-8")
-    assert read_pending(path) == ["good-1"]
+    with pytest.raises(PendingError):  # an invalid line is not skipped
+        read_pending(path)
+    path.write_text("good-1\ngood-2\n", encoding="utf-8")
+    assert read_pending(path) == ["good-1", "good-2"]
+    path.unlink()
+    assert read_pending(path) == []  # only an absent note means nothing pending
+
+
+# ---- an unusable pending note stops the run; it is never treated as absent ---
+
+
+def _stop_after_history_write(setup: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    serve(monkeypatch, 100)
+    fail_numbers_once(monkeypatch)
+    assert run(setup, DAY1) == counts_cmd.EXIT_WRITE
+    assert [p.value for p in points(setup, "bluesky", "followers")] == [100]
+
+
+@pytest.mark.parametrize(
+    "damage", ["oversize", "garbage", "binary", "empty", "directory", "symlink"]
+)
+def test_an_unusable_pending_note_stops_the_run_and_is_kept(
+    setup: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    damage: str,
+) -> None:
+    _stop_after_history_write(setup, monkeypatch)
+    note = pending_path(setup / "numbers.json")
+    secret = "ZZ-PRIVATE-ZZ"  # noqa: S105
+    if damage == "oversize":
+        note.write_text(f"{secret}\n" + "x" * 5000, encoding="utf-8")
+    elif damage == "garbage":
+        note.write_text(f"{secret} not an id\n", encoding="utf-8")
+    elif damage == "binary":
+        note.write_bytes(b"\xff\xfe" + secret.encode())
+    elif damage == "empty":
+        note.write_bytes(b"")
+    elif damage == "directory":
+        note.unlink()
+        note.mkdir()
+    else:
+        note.unlink()
+        note.symlink_to(setup / "site.yaml")
+    before = (setup / "history" / "social.jsonl").read_bytes()
+    capsys.readouterr()
+    serve(monkeypatch, 105)
+    assert run(setup, DAY1_LATER) == counts_cmd.EXIT_WRITE
+    err = capsys.readouterr().err
+    assert "pending note" in err and secret not in err
+    assert not (setup / "numbers.json").exists()  # nothing else was changed
+    assert (setup / "history" / "social.jsonl").read_bytes() == before
+    assert note.is_symlink() or note.exists()  # kept, never deleted or rewritten
+    if damage in ("oversize", "garbage", "binary"):
+        assert secret.encode() in note.read_bytes()
+    # A person clears it; the next run then ends in step.
+    if note.is_dir():
+        note.rmdir()
+    else:
+        note.unlink()
+    assert run(setup, DAY1_LATER) == 0
+    assert current(setup) == 105
+
+
+def test_an_import_with_an_unusable_pending_note_stops_the_same_way(
+    setup: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    csv = setup / "in.csv"
+    csv.write_text(
+        "platform,metric,value,as_of\nkick,subscribers,41,2026-11-20\n",
+        encoding="utf-8",
+    )
+    pending_path(setup / "numbers.json").write_text("not an id\n", encoding="utf-8")
+    day = date(2026, 11, 20)
+    assert (
+        counts_cmd.run_import(setup / "site.yaml", csv, None, False, today=day)
+        == counts_cmd.EXIT_WRITE
+    )
+    assert not (setup / "numbers.json").exists()
+    assert not (setup / "history" / "social.jsonl").exists()
+
+
+# ---- a committed run is never replayed because its note was not removed -----
+
+
+def test_a_note_left_after_a_committed_run_does_not_rewrite_history(
+    setup: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    serve(monkeypatch, 100)
+
+    def crash(paths: Any) -> None:  # the process dies after the numbers write
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(counts_cmd, "_settle_history", crash)
+    with pytest.raises(KeyboardInterrupt):
+        run(setup, DAY1)
+    assert current(setup) == 100
+    assert pending_path(setup / "numbers.json").exists()  # stale, but committed
+    monkeypatch.undo()
+    monkeypatch.setattr(counts_cmd, "default_sleep", lambda seconds: None)
+    serve(monkeypatch, 105)
+    assert run(setup, DAY1_LATER) == 0
+    assert [p.value for p in points(setup, "bluesky", "followers")] == [100]
+    assert current(setup) == 105
+    assert not pending_path(setup / "numbers.json").exists()
+
+
+def test_a_note_that_cannot_be_removed_does_not_rewrite_committed_history(
+    setup: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    serve(monkeypatch, 100)
+
+    def refuse(path: Path) -> None:
+        raise OSError(13, "Permission denied")
+
+    monkeypatch.setattr(counts_cmd, "clear_pending", refuse)
+    assert run(setup, DAY1) == 0
+    assert pending_path(setup / "numbers.json").exists()
+    monkeypatch.undo()
+    monkeypatch.setattr(counts_cmd, "default_sleep", lambda seconds: None)
+    serve(monkeypatch, 105)
+    assert run(setup, DAY1_LATER) == 0
+    assert [p.value for p in points(setup, "bluesky", "followers")] == [100]
+    assert current(setup) == 105
+
+
+# ---- the held history file may not change size during an append -------------
+
+
+def test_a_history_file_truncated_during_the_scan_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "h.jsonl"
+    _big_history(path, 50)
+    good = path.read_bytes()
+    first_line = good.index(b"\n") + 1
+    real = hist.os.pread
+    armed = [True]
+
+    def pread(fd: int, length: int, offset: int) -> bytes:
+        if armed[0]:
+            armed[0] = False
+            os.truncate(path, first_line)  # same inode, cut at a newline
+        return real(fd, length, offset)
+
+    monkeypatch.setattr(hist.os, "pread", pread)
+    new = rec(platform="new", as_of_utc="2026-11-09T09:00:00Z")
+    with pytest.raises(HistoryError, match="changed while it was read"):
+        append_records(path, [new], now=NOW)
+    assert path.stat().st_size == first_line  # nothing was appended
+
+
+def test_a_history_file_that_grows_before_the_write_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "h.jsonl"
+    _big_history(path, 50)
+    real = hist._same_file
+    calls = [0]
+
+    def same(dir_fd: int, name: str, fd: int) -> bool:
+        calls[0] += 1
+        if calls[0] == 3:  # the check just before the write
+            with open(path, "ab") as grow:
+                grow.write(b"{}\n")
+        return real(dir_fd, name, fd)
+
+    monkeypatch.setattr(hist, "_same_file", same)
+    size = path.stat().st_size
+    new = rec(platform="new", as_of_utc="2026-11-09T09:00:00Z")
+    with pytest.raises(HistoryError, match="changed while it was read"):
+        append_records(path, [new], now=NOW)
+    assert path.stat().st_size == size + 3  # only the foreign bytes are there
 
 
 def test_an_import_retry_after_a_failed_numbers_write_corrects_the_history(

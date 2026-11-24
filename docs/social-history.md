@@ -72,6 +72,19 @@ mark a fetched record with a correction (below).
   `git checkout` or `git pull` in the same folder) replaced the file in
   between, the append reports it instead of claiming success, and the file that
   was swapped in is left as it was.
+  The same check covers the file's size: it is read to exactly the size it had
+  when first looked at, and looked at again just before the write. A write by
+  something that ignores the lock (it grows or shortens the locked file while
+  the scan runs) is refused with "changed while it was read". The lock is
+  advisory: a writer that ignores it and changes bytes in place without changing
+  the size cannot be detected here; the hash chain and git history catch that.
+* A refresh or import that stops after history was written leaves a small
+  `.<numbers file>.pending` note (run ids and a digest of the numbers file, never
+  values). If that note exists but cannot be read or is not valid, the next run
+  stops before touching anything, prints a fixed message, and leaves the note
+  as it is; inspect or remove it, then run again. A note left behind after the
+  numbers file was written is recognized (the digest no longer matches) and
+  ignored, so a committed day is never rewritten.
 * It refuses a file that is already damaged, a duplicate
   (`platform`, `metric`, UTC day, `source`), a future time, and bad fields.
   A batch is all or nothing.

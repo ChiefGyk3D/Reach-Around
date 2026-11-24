@@ -515,7 +515,9 @@ def _chain_from_fd(fd: int, max_bytes: int) -> tuple[_Chain, int]:
     while offset < info.st_size:
         chunk = os.pread(fd, min(1 << 20, info.st_size - offset), offset)
         if not chunk:
-            break
+            # The file shrank under the scan (same inode): never accept a
+            # shorter file as the validated one.
+            raise HistoryError("the history file changed while it was read")
         offset += len(chunk)
         pending += chunk
         while True:
@@ -528,7 +530,20 @@ def _chain_from_fd(fd: int, max_bytes: int) -> tuple[_Chain, int]:
             raise HistoryError(f"line {chain.number + 1}: line too long")
     if pending:
         raise HistoryError("the last line is truncated (no newline); not repaired")
+    _require_size(fd, offset)
     return chain, offset
+
+
+def _require_size(fd: int, size: int) -> None:
+    """The held file is still exactly ``size`` bytes (no growth or truncation).
+
+    Advisory locks bind only cooperating writers; a writer that ignores the
+    lock can still change the inode we hold. This detects a size change between
+    the scan and the write; it cannot defend against a writer that changes
+    bytes in place without changing the size.
+    """
+    if os.fstat(fd).st_size != size:
+        raise HistoryError("the history file changed while it was read")
 
 
 class Series:
@@ -888,6 +903,7 @@ def _append_locked(
             raise HistoryError(
                 "the history file was replaced before the write; nothing written"
             )
+        _require_size(fd, size)
         _before_mutation("append")
         original = size
         _write_all(fd, new)

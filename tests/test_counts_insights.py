@@ -754,6 +754,20 @@ def test_collect_stops_at_the_request_budget_and_names_what_was_left() -> None:
     }
 
 
+def test_a_spent_budget_is_reported_once_and_never_as_a_fetch_failure() -> None:
+    def fetch(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        raise AssertionError("no request may be sent")
+
+    sources = _threads_sources(3)
+    ok = frozenset(s.platform for s in sources)
+    _, failures = collect(sources, ok, TH_ENV, fetch, NOW, max_requests=0)
+    assert [(f.platform, f.word) for f in failures] == [
+        ("threads0", "budget_exhausted"),
+        ("threads1", "budget_exhausted"),
+        ("threads2", "budget_exhausted"),
+    ]
+
+
 def test_collect_looks_at_no_more_sources_than_the_cap() -> None:
     calls: list[int] = []
 

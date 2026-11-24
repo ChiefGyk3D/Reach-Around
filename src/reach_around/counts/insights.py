@@ -213,8 +213,14 @@ def _instagram(
     )
 
 
-class _BudgetSpent(Exception):
-    """The run's request count or time is used up; fixed word, no detail."""
+class _BudgetSpent(BaseException):  # noqa: N818
+    """The run's request count or time is used up; fixed word, no detail.
+
+    A BaseException on purpose: the collectors turn every ``Exception`` into a
+    fixed failure word (to keep tokens out of messages), which would report a
+    spent budget as ``fetch_failed``. ``collect`` is the only place that catches
+    this and reports it once.
+    """
 
     kind = "budget_exhausted"
 
@@ -276,7 +282,10 @@ def collect(
                 if s.platform in ok_platforms
             )
             break
-        _collect_one(source, ok_platforms, env, fetch, stamp, figures, failures)
+        try:
+            _collect_one(source, ok_platforms, env, fetch, stamp, figures, failures)
+        except _BudgetSpent:
+            pass  # budget.spent is set; reported once just below
         if budget.spent and source.platform in ok_platforms:
             failures.append(InsightFailure(source.platform, "budget_exhausted"))
     return figures, failures

@@ -16,13 +16,16 @@ Only run ids are stored (no values). Held under the same lock as the run.
 
 from __future__ import annotations
 
+import hashlib
 import os
 import re
+import stat
 from collections.abc import Sequence
+from dataclasses import dataclass
 from pathlib import Path
 
 from reach_around.counts.files import write_atomic
-from reach_around.counts.history import History, Record
+from reach_around.counts.history import History, HistoryError, Record
 
 MAX_IDS = 16
 MAX_BYTES = 2048
@@ -34,32 +37,101 @@ def pending_path(numbers: Path) -> Path:
     return numbers.with_name(f".{numbers.name}.pending")
 
 
-def read_pending(path: Path) -> list[str]:
-    """The run ids listed, oldest first; empty when there is no usable file."""
+class PendingError(HistoryError):
+    """The pending note is there but cannot be trusted. Never quotes content.
+
+    The note is left exactly as it is (nothing is deleted or rewritten), so no
+    information is lost; a person inspects or removes it and runs again.
+    """
+
+
+_UNUSABLE = (
+    "the pending note next to the numbers file cannot be read or is not valid; "
+    "it was left as it is; inspect or remove it, then run again"
+)
+_BASE = re.compile(r"^base ([0-9a-f]{64}|none)$")
+
+
+@dataclass(frozen=True)
+class Note:
+    ids: list[str]
+    base: str | None  # digest of the numbers file when the latest run began
+
+
+def read_note(path: Path) -> Note:
+    """The note; empty only when there is no note. Anything else unusable raises.
+
+    An absent note is the only state that means "nothing pending". A note that
+    cannot be opened or read, is not a regular file, is too large, is not
+    ASCII, or holds a line that is neither a run id nor the digest line raises
+    ``PendingError`` so the run stops before history or the note is touched.
+    """
     try:
         fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except FileNotFoundError:
+        return Note([], None)
     except OSError:
-        return []
+        raise PendingError(_UNUSABLE) from None
     try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise PendingError(_UNUSABLE)
         raw = os.read(fd, MAX_BYTES + 1)
     except OSError:
-        return []
+        raise PendingError(_UNUSABLE) from None
     finally:
         os.close(fd)
-    if len(raw) > MAX_BYTES:
+    if not raw or len(raw) > MAX_BYTES:
+        raise PendingError(_UNUSABLE)
+    try:
+        lines = raw.decode("ascii").splitlines()
+    except UnicodeDecodeError:
+        raise PendingError(_UNUSABLE) from None
+    ids: list[str] = []
+    base: str | None = None
+    for line in lines:
+        found = _BASE.fullmatch(line)
+        if found is not None and base is None:
+            base = found.group(1)
+        elif _ID.fullmatch(line):
+            ids.append(line)
+        else:
+            raise PendingError(_UNUSABLE)
+    return Note(ids[-MAX_IDS:], base)
+
+
+def read_pending(path: Path) -> list[str]:
+    """The run ids listed, oldest first; raises ``PendingError`` if unusable."""
+    return read_note(path).ids
+
+
+def numbers_digest(numbers: Path) -> str:
+    """Digest of the numbers file as it is now, or ``none`` when absent."""
+    try:
+        data = numbers.read_bytes()
+    except FileNotFoundError:
+        return "none"
+    return hashlib.sha256(data).hexdigest()
+
+
+def live_ids(note: Note, numbers: Path) -> list[str]:
+    """The ids whose numbers write may not have happened.
+
+    The note records the numbers file's digest from when its latest run began.
+    If the file has changed since, that run (and so every earlier one) committed
+    its numbers write and only the note's removal was lost; nothing is pending.
+    """
+    if note.base is not None and note.base != numbers_digest(numbers):
         return []
-    ids = [
-        line
-        for line in raw.decode("ascii", "ignore").splitlines()
-        if _ID.fullmatch(line)
-    ]
-    return ids[-MAX_IDS:]
+    return note.ids
 
 
-def mark_pending(path: Path, ids: Sequence[str], run_id: str) -> None:
+def mark_pending(
+    path: Path, ids: Sequence[str], run_id: str, base: str | None = None
+) -> None:
     """List ``run_id`` after the ids already pending; raises ``OSError``."""
     kept = [*ids, run_id][-MAX_IDS:]
-    write_atomic(path, "\n".join(kept) + "\n")
+    lines = kept if base is None else [*kept, f"base {base}"]
+    write_atomic(path, "\n".join(lines) + "\n")
 
 
 def clear_pending(path: Path) -> None:

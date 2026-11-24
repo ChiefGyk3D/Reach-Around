@@ -95,9 +95,11 @@ from reach_around.counts.instagram_insights import (
 )
 from reach_around.counts.pending import (
     clear_pending,
+    live_ids,
     mark_pending,
+    numbers_digest,
     pending_path,
-    read_pending,
+    read_note,
     reconcile,
 )
 from reach_around.counts.refresh import (
@@ -351,11 +353,14 @@ def _stage_history(
 
     History is written before the numbers file; if a later write fails, the
     pending note lets the next run replace the value that attempt left behind
-    (see ``counts/pending.py``). Raises ``OSError`` before history is touched.
+    (see ``counts/pending.py``). Raises ``OSError`` before history is touched,
+    and ``PendingError`` (a ``HistoryError``) when the note is there but cannot
+    be trusted; the note is then left as it is and nothing is written.
     """
     pending = pending_path(paths.target)
-    ids = read_pending(pending)
-    mark_pending(pending, ids, run_id)
+    note = read_note(pending)
+    ids = live_ids(note, paths.target)  # [] when that run's numbers write landed
+    mark_pending(pending, ids, run_id, numbers_digest(paths.target))
     if ids and history.exists():
         return reconcile(read_history(history), ids, records)
     return records
