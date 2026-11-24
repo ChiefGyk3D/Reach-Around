@@ -912,6 +912,109 @@
       "title": "Features",
       "type": "object"
     },
+    "FediverseEntry": {
+      "additionalProperties": false,
+      "description": "What one public profile shows, typed by the owner on ``as_of``.\n\n``profile_url`` is the re-check link every number of the card carries.\n``followers`` and ``posts`` are the profile's own counts. ``interactions`` is\none row per public post in the 30 days ending on ``as_of``. Anything left out\nprints \"not provided\", never zero.",
+      "properties": {
+        "as_of": {
+          "format": "date",
+          "title": "As Of",
+          "type": "string"
+        },
+        "followers": {
+          "anyOf": [
+            {
+              "maximum": 10000000000,
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Followers"
+        },
+        "interactions": {
+          "items": {
+            "$ref": "#/$defs/FediversePost"
+          },
+          "maxItems": 200,
+          "title": "Interactions",
+          "type": "array"
+        },
+        "platform": {
+          "enum": [
+            "mastodon",
+            "bluesky",
+            "pixelfed"
+          ],
+          "title": "Platform",
+          "type": "string"
+        },
+        "posts": {
+          "anyOf": [
+            {
+              "maximum": 10000000000,
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Posts"
+        },
+        "profile_url": {
+          "title": "Profile Url",
+          "type": "string"
+        },
+        "show_mean": {
+          "default": false,
+          "title": "Show Mean",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "as_of",
+        "platform",
+        "profile_url"
+      ],
+      "title": "FediverseEntry",
+      "type": "object"
+    },
+    "FediversePost": {
+      "additionalProperties": false,
+      "description": "The public counts of one post in the 30 days ending on ``as_of``. All\nthree are typed: a post with no replies has 0 replies, a real zero.",
+      "properties": {
+        "boosts": {
+          "maximum": 1000000000,
+          "minimum": 0,
+          "title": "Boosts",
+          "type": "integer"
+        },
+        "favorites": {
+          "maximum": 1000000000,
+          "minimum": 0,
+          "title": "Favorites",
+          "type": "integer"
+        },
+        "replies": {
+          "maximum": 1000000000,
+          "minimum": 0,
+          "title": "Replies",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "boosts",
+        "favorites",
+        "replies"
+      ],
+      "title": "FediversePost",
+      "type": "object"
+    },
     "FontStack": {
       "additionalProperties": false,
       "description": "System font stacks or font files that ship with the instance.",
@@ -1529,6 +1632,14 @@
           },
           "maxItems": 30,
           "title": "Engagement",
+          "type": "array"
+        },
+        "fediverse": {
+          "items": {
+            "$ref": "#/$defs/FediverseEntry"
+          },
+          "maxItems": 3,
+          "title": "Fediverse",
           "type": "array"
         },
         "imported_history": {

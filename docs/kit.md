@@ -207,6 +207,13 @@ known one. Each key has a unit, a definition, and a default audience.
 | `unique_chatters` | viewers | The number of different accounts that sent at least one chat message in the period, as the platform's own dashboard shows it. Typed by the owner. | everyone |
 | `followers_gained` | follows | The number of accounts that began following the channel in the period, as the platform's own dashboard shows it. Typed by the owner. | everyone |
 | `hours_streamed_per_week` | hours | The hours the channel was live in an average week of the period, in whole hours, as the platform's own dashboard shows it. Typed by the owner. | everyone |
+| `posts_total` | count | The number of public posts the account has made, as the server reports it on the public profile and the owner typed it. | everyone |
+| `median_boosts_30d` | interactions | The middle count of boosts across the public posts of the last 30 days, worked out by the build from per-post counts the owner typed from the public profile. Bluesky reads reposts, likes and replies; Pixelfed shares, likes and comments. | everyone |
+| `median_favorites_30d` | interactions | The middle count of favorites across the public posts of the last 30 days, worked out by the build from per-post counts the owner typed from the public profile. Bluesky reads reposts, likes and replies; Pixelfed shares, likes and comments. | everyone |
+| `median_replies_30d` | interactions | The middle count of replies across the public posts of the last 30 days, worked out by the build from per-post counts the owner typed from the public profile. Bluesky reads reposts, likes and replies; Pixelfed shares, likes and comments. | everyone |
+| `mean_boosts_30d` | interactions | The average count of boosts across the public posts of the last 30 days, shown only beside the median and only when the owner turns it on; one viral post can pull it far above the median. | everyone |
+| `mean_favorites_30d` | interactions | The average count of favorites across the public posts of the last 30 days, shown only beside the median and only when the owner turns it on; one viral post can pull it far above the median. | everyone |
+| `mean_replies_30d` | interactions | The average count of replies across the public posts of the last 30 days, shown only beside the median and only when the owner turns it on; one viral post can pull it far above the median. | everyone |
 | `avg_views_per_item` | views | Views divided by posts in the period, worked out by the build from figures the owner typed. | after the gate |
 | `engagement_rate` | percent | Interactions divided by views in the period, as a percent, worked out by the build from figures the owner typed. | after the gate |
 
@@ -256,7 +263,7 @@ kit:
 | --- | --- |
 | live | `followers`, `followers_change_30d`, `analytics_stat`, `avg_views_per_item`, `engagement_rate` |
 | video | `followers`, `followers_change_30d`, `analytics_stat`, `avg_views_per_item`, `engagement_rate` |
-| open | `followers`, `followers_change_30d`, `analytics_stat`, `avg_views_per_item`, `engagement_rate` |
+| open | `followers`, `posts_total`, `followers_change_30d`, `median_boosts_30d`, `median_favorites_30d`, `median_replies_30d`, `mean_boosts_30d`, `mean_favorites_30d`, `mean_replies_30d`, `analytics_stat`, `avg_views_per_item`, `engagement_rate` |
 | community | `members` |
 | other | `followers`, `followers_change_30d`, `analytics_stat`, `avg_views_per_item`, `engagement_rate` |
 
@@ -305,6 +312,45 @@ kit:
 - The rows are public like the other platform cards, and each measure is never
   wider than that field. The block prints on the public page, the gated page and
   both PDFs.
+
+### The fediverse block
+
+Mastodon, Bluesky and Pixelfed publish their follower and post counts and the
+interaction counts of each public post. `kit.fediverse` holds what the public
+profile shows, typed by you on a date, one entry per platform (#630). It is hand-kept
+until a collector for public post data has its own design; nothing is fetched.
+
+```yaml
+kit:
+  fediverse:
+    - platform: mastodon
+      profile_url: https://social.example/@example
+      as_of: 2027-03-08
+      followers: 1900
+      posts: 4321
+      show_mean: false
+      interactions:        # one row per public post in the 30 days ending on as_of
+        - {boosts: 2, favorites: 10, replies: 0}
+        - {boosts: 9, favorites: 14, replies: 3}
+```
+
+- **Re-check link.** `profile_url` (https) is printed beside every count and median
+  in the card, as a plain URL so it reads on paper, so a sponsor can look for
+  themselves.
+- **As reported by the server.** A card with an entry says "Counts are as reported by
+  the server." A server can hide or filter a count, and a Mastodon-compatible server
+  can report any number.
+- **Median first.** The build works out the median of each per-post count (boosts,
+  favorites, replies; Bluesky reposts, likes, replies; Pixelfed shares, likes,
+  comments). With an even number of posts the two middle values are averaged and
+  rounded half up. The mean prints only when `show_mean` is true, after the medians.
+  Both are whole numbers and carry the formula.
+- **Not provided, never zero.** A value you did not type prints in one "Not provided"
+  line. A post with no replies is a real 0 and you type it. Each platform's known
+  absences print too: impressions, reach and demographics on Mastodon and Bluesky;
+  those and any insights on Pixelfed.
+- A card shows these only when its platform has an entry. All of it is public
+  (spec decision 6) and prints on the public page, the gated page and both PDFs.
 
 ### Structured demographics
 

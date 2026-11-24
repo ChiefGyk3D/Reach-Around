@@ -1317,6 +1317,7 @@ end. Text must be quoted if YAML would read it as a number.
 | `public_pdf` | https URL | none | where you published the public PDF (`kit pdf --public`); adds a "Download Public PDF" button to the first screen of the public kit page. The page, the gated page and both PDFs never print the URL itself, and the PDFs drop the buttons. Without it there is no button |
 | `audience_summary` | block | none | options for the audience summary ([guide](kit.md#the-audience-summary)): `poll` (`respondents` at least 5, `as_of` date, `avg_other_platforms` 0 to 100, all typed by you) and `show_estimate` (`false` by default; `true` needs `poll` and adds one labeled "Estimate from a poll" line beside the range). The range itself needs no setting |
 | `sections` | list of section | none | at most 20 platform cards ([guide](kit.md#platform-cards-and-the-measure-registry)): `platform` (required), `account` (public handle text, at most 80 characters), `show` (`default`, or a list of registry keys in print order), `headline` (a registry key the card shows) and `hide_if_empty` (`false` by default). A card holds no numbers: they come from `metrics`, `analytics` and `engagement`. Each platform and account once |
+| `fediverse` | list of entry | none | at most 3 entries, one per platform ([guide](kit.md#the-fediverse-block)): `platform` (`mastodon`, `bluesky` or `pixelfed`), `profile_url` (https; the re-check link printed with every count), `as_of` (date), `followers` and `posts` (whole numbers, optional), `interactions` (one row of `boosts`, `favorites` and `replies` per public post in the 30 days ending on `as_of`, at most 200) and `show_mean` (`false` by default). A value left out prints "not provided", never zero |
 | `unlock_link` | true or false | `false` | v1 has no emailed unlock link, so `true` is refused with a clear error until it exists |
 
 A **metric** is one headline number: `platform` (a platform name such as
@@ -1406,6 +1407,7 @@ nothing is printed.
 | `public_pdf` | public (it is a link on the first screen of the public page) |
 | `audience_summary` | public (the poll estimate line is printed on every page and both PDFs) |
 | `sections` | public (a card holds no numbers; each number in it keeps the audience of the field it came from, so an engagement figure in a card shows on the gated page only) |
+| `fediverse` | public (counts typed from a public profile, each with its re-check link) |
 | `unlock_link` | private (configuration, never shown) |
 
 The public half therefore shows the header and the headline numbers and nothing

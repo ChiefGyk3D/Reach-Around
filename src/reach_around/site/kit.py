@@ -56,6 +56,14 @@ from reach_around.config.engagement import (
     rows_for,
 )
 from reach_around.config.era import SPANS, classify_era, classify_window, era_text
+from reach_around.config.fediverse import (
+    MEAN_KEYS,
+    SERVER_NOTE,
+    STATED_KEYS,
+    FediverseEntry,
+    label_of,
+    not_provided_text,
+)
 from reach_around.config.imported_history import (
     IMPORTED_HEADING,
     IMPORTED_NOTE,
@@ -1235,7 +1243,12 @@ def _content(
         ),
         "community": _community(measures),
         "sections": section_cards(
-            projection.get("sections", []), measures, config, today, live_day
+            projection.get("sections", []),
+            measures,
+            config,
+            today,
+            live_day,
+            projection.get("fediverse", []),
         ),
         "live": live_block(
             projection.get("live", []), measures, config, today, live_day
@@ -1370,9 +1383,35 @@ def _card_value(m: Measure, followers: Mapping[str, int]) -> str:
         return _change_text(followers.get(m.platform, 0), m.value)
     if m.unit == "percent":
         return percent_text(m.value)
+    # The fediverse block: a follower count keeps the floor; a post count or a
+    # per-post figure is not a count of people, so it prints as it is.
+    if m.block == "fediverse" and m.key != "followers":
+        return f"{m.value:,}"
     if m.block == "tile":
         return _compact_number(m.value)
     return shown_count(m.value)
+
+
+def _not_provided(
+    entry: FediverseEntry | None, keys: Sequence[str], rows: list[dict[str, Any]]
+) -> list[str]:
+    """The "not provided" lines of a fediverse card: the values this card would
+    show but the owner did not type, then what the platform never exposes."""
+    if entry is None:
+        return []
+    present = {row["key"] for row in rows}
+    missing = [
+        label_of(entry.platform, key)
+        for key in STATED_KEYS
+        if key in keys
+        and key not in present
+        and (entry.show_mean or key not in MEAN_KEYS)
+    ]
+    lines = []
+    if missing:
+        lines.append("Not provided: " + ", ".join(missing) + ".")
+    lines.append(not_provided_text(entry.platform))
+    return lines
 
 
 def section_cards(
@@ -1381,6 +1420,7 @@ def section_cards(
     config: Any = None,
     today: date | None = None,
     live_day: date | None = None,
+    fediverse: Sequence[FediverseEntry] = (),
 ) -> list[dict[str, Any]]:
     """The platform cards, and the one place the degrade rules (spec 7.4) apply.
 
@@ -1390,7 +1430,11 @@ def section_cards(
     * A configured platform with no value to show prints "No numbers yet", the same
       way for every platform; with ``hide_if_empty`` it prints nothing.
     * Every printed number carries its own label, date and source line.
+    * A platform with a fediverse entry (#630) says its counts are as reported by
+      the server, links every count to the public profile, states what it did not
+      get as "not provided" and what the platform never exposes.
     """
+    entries: dict[str, FediverseEntry] = {item.platform: item for item in fediverse}
     followers = {
         m.platform: m.value
         for m in _of(measures, "tile")
@@ -1404,6 +1448,8 @@ def section_cards(
             else tuple(section.show)
         )
         rows: list[dict[str, Any]] = []
+        entry = entries.get(section.platform)
+        recheck = entry.profile_url if entry is not None else ""
         for key in keys:
             found = [
                 m
@@ -1432,6 +1478,7 @@ def section_cards(
                         "trust": None if m.trust is None else m.trust.view(),
                         "formula": m.formula,
                         "note": m.note,
+                        "recheck": recheck if m.key in STATED_KEYS else "",
                     }
                 )
         if not rows and section.hide_if_empty:
@@ -1444,6 +1491,9 @@ def section_cards(
             "no_numbers": NO_NUMBERS,
             "headline": None,
             "rows": rows,
+            "server_note": SERVER_NOTE if entry is not None else "",
+            "recheck": recheck if not rows else "",
+            "not_provided": _not_provided(entry, keys, rows),
         }
         if rows:
             lead = _headline_first(rows, section)
