@@ -63,10 +63,10 @@ BUDGET: dict[str, dict[str, int]] = {
     "hub-live": {
         "html": 11700,
         "css": 65300,
-        "js": 29000,
+        "js": 28100,
         "images": 1300,
         "fonts": 81500,
-        "total": 191300,
+        "total": 190400,
         "compressed": 89300,
         "requests": 14,
     },

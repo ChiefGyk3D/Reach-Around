@@ -233,7 +233,7 @@ def test_staleness_matches_the_worker_when_the_worker_is_present() -> None:
 
 # --- the size budget (#699) ------------------------------------------------------
 
-LIVE_JS_MAX_BYTES = 16000
+LIVE_JS_MAX_BYTES = 12300
 
 
 def check_size(text: str) -> None:
