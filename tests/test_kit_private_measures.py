@@ -451,3 +451,67 @@ def test_a_stale_public_pdf_with_now_private_live_figures_is_refused(
     bless(site, gated)
     with pytest.raises(PdfError, match="private"):
         make_public()
+
+
+# --- the fediverse block (#630) -----------------------------------------------
+
+
+def fediverse_kit() -> dict[str, Any]:
+    doc = kit_doc()  # an unrelated gated partner keeps the full PDF eligible
+    doc["sections"] = [{"platform": "mastodon"}]  # the card the entry prints in
+    doc["fediverse"] = [
+        {
+            "platform": "mastodon",
+            "profile_url": "https://social.example/@example",
+            "as_of": "2027-03-08",
+            "followers": 48213,
+            "posts": 90417,
+            "show_mean": True,
+            "interactions": [
+                {"boosts": 7777, "favorites": 8888, "replies": 6666},
+                {"boosts": 7779, "favorites": 8890, "replies": 6668},
+            ],
+        }
+    ]
+    return doc
+
+
+def test_the_needles_are_the_forms_the_fediverse_cards_print(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    kit = KitConfig.model_validate(fediverse_kit())
+    assert private_measure_strings(kit, None) == {}
+    make_private(monkeypatch, "fediverse")
+    needles = private_measure_strings(kit, None)
+    assert {key.split(".")[0] for key in needles} == {"fediverse"}
+    assert all(needles.values())
+    values = set(needles.values())
+    assert REGISTRY["followers"].label + shown_count(48213) in values
+    assert REGISTRY["posts_total"].label + "90,417" in values
+    assert "Median boosts per post (30 days)" + "7,778" in values
+    assert "Mean replies per post (30 days)" + "6,667" in values
+
+
+def test_a_stale_public_pdf_with_now_private_fediverse_figures_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config, site, gated = build_instance(tmp_path, make_config(fediverse_kit()))
+
+    def make_public() -> Path:
+        return build_public_kit_pdf(
+            config,
+            site_dir=site,
+            out_dir=tmp_path / "private",
+            name="kit-public.pdf",
+            created=date(2027, 3, 10),
+            renderer=fake_renderer,
+        ).path
+
+    out = make_public()  # control: the fediverse card prints while it is public
+    flat = "".join(" ".join(extract_pages(out.read_bytes())).split())
+    assert "".join(("Median boosts per post (30 days)" + "7,778").split()) in flat
+    out.unlink()
+    make_private(monkeypatch, "fediverse")
+    bless(site, gated)
+    with pytest.raises(PdfError, match="private"):
+        make_public()

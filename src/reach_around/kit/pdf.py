@@ -399,6 +399,7 @@ _FIELD_OF_BLOCK = {
     "tile": "analytics",
     "derived": "engagement",
     "live": "live",
+    "fediverse": "fediverse",
 }
 
 
@@ -410,10 +411,10 @@ def private_measure_strings(kit: KitConfig, numbers: Numbers | None) -> dict[str
     The forms are the ones the templates render: a headline row (platform, label,
     value), an analytics panel (the sync line, "Followers" with its compact value
     and the real 30-day text, each tile's label with its compact value), an
-    engagement row (measure name and value) and a live card row (label and
-    value). A labeled form is specific enough to
-    search for whatever its length; a bare number is searched for only from
-    ``GUARD_MIN_LENGTH`` characters. Owner-defined labels are searched for alone
+    engagement row (measure name and value), a live card row (label and
+    value) and a fediverse card row (label and figure). A labeled form is specific
+    enough to search for whatever its length; a bare number is searched for only
+    from ``GUARD_MIN_LENGTH`` characters. Owner-defined labels are searched for alone
     unless a visible measure prints the same word."""
     measures = compile_measures(kit, numbers, None)
     shown_labels = {m.label.casefold() for m in measures if m.visibility != "private"}
@@ -449,6 +450,12 @@ def private_measure_strings(kit: KitConfig, numbers: Numbers | None) -> dict[str
                 # a live card row prints the label and the shown count
                 text = shown_count(m.value)
                 found[f"{key} (live row)"] = m.label + text
+            elif m.block == "fediverse":
+                # a fediverse card row prints the label and the figure: the
+                # follower count keeps the floor, a post count or per-post
+                # median/mean prints as it is
+                text = shown_count(m.value) if m.key == "followers" else f"{m.value:,}"
+                found[f"{key} (fediverse row)"] = m.label + text
             elif m.block == "tile" and m.key == "followers_change_30d":
                 change = _change_text(followers.get(m.platform, 0), m.value)
                 if change:
