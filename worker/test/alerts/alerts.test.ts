@@ -103,14 +103,14 @@ describe("Discord adapter", () => {
   });
   it("sends the full address when visitor_email is set to full, and masks it when not set", async () => {
     const dflt = mockFetch();
-    await createDispatcher().notify({ ...BASE, ALERTS_CONFIG: '{"channels":["discord"],"events":["kit_unlocked"]}' }, unlock(), { fetchFn: dflt.fn, nowMs: T0 });
+    await createDispatcher().notify({ ...BASE, ALERTS_CONFIG: '{"channels":["discord"],"events":["kit_unlocked"]}' }, unlock("dflt@example.com"), { fetchFn: dflt.fn, nowMs: T0 });
     // not set: masked, so the whole local part is absent (fails if the default reverts to full)
-    expect(JSON.parse(String(dflt.calls[0]!.init.body)).content).not.toContain("partner");
+    expect(JSON.parse(String(dflt.calls[0]!.init.body)).content).not.toContain("dflt");
     const m = mockFetch();
     const d = createDispatcher();
-    await d.notify({ ...BASE, ALERTS_CONFIG: '{"channels":["discord"],"events":["kit_unlocked"],"visitor_email":"full"}' }, unlock(), { fetchFn: m.fn, nowMs: T0 });
+    await d.notify({ ...BASE, ALERTS_CONFIG: '{"channels":["discord"],"events":["kit_unlocked"],"visitor_email":"full"}' }, unlock("fulladdr@example.com"), { fetchFn: m.fn, nowMs: T0 });
     const body = JSON.parse(String(m.calls[0]!.init.body));
-    expect(body.content).toContain("partner(at)example(dot)com");
+    expect(body.content).toContain("fulladdr(at)example(dot)com");
   });
 });
 
@@ -132,14 +132,14 @@ describe("Matrix adapter", () => {
   });
   it("sends the full address to Matrix when visitor_email is set to full, and masks it when not set", async () => {
     const dflt = mockFetch(() => new Response("{}", { status: 200 }));
-    await createDispatcher().notify({ ...BASE, ALERTS_CONFIG: cfgMatrix }, unlock(), { fetchFn: dflt.fn, nowMs: T0 });
-    expect(JSON.parse(String(dflt.calls[0]!.init.body)).body).not.toContain("partner");
+    await createDispatcher().notify({ ...BASE, ALERTS_CONFIG: cfgMatrix }, unlock("mdflt@example.com"), { fetchFn: dflt.fn, nowMs: T0 });
+    expect(JSON.parse(String(dflt.calls[0]!.init.body)).body).not.toContain("mdflt");
     const m = mockFetch(() => new Response("{}", { status: 200 }));
     const d = createDispatcher();
     const full = JSON.stringify({ ...JSON.parse(cfgMatrix), visitor_email: "full" });
-    await d.notify({ ...BASE, ALERTS_CONFIG: full }, unlock(), { fetchFn: m.fn, nowMs: T0 });
+    await d.notify({ ...BASE, ALERTS_CONFIG: full }, unlock("mfull@example.com"), { fetchFn: m.fn, nowMs: T0 });
     const body = JSON.parse(String(m.calls[0]!.init.body));
-    expect(body.body).toContain("partner(at)example(dot)com");
+    expect(body.body).toContain("mfull(at)example(dot)com");
   });
   it("uses a new transaction id for each send", async () => {
     const m = mockFetch();
