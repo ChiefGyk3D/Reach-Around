@@ -37,15 +37,29 @@ import sys
 # and a non-isolated interpreter has already honored PYTHONPATH, PYTHONHOME and
 # user site files by now, so an attacker-controlled module (a json.py on
 # PYTHONPATH, say) would run before any check below could see the token. Running
-# under `python3 -I` ignores them; anything else is refused before the token is
-# read or any further module is imported. Importing the file from another
-# process skips this entry check, so live() refuses again unless isolated.
+# under `python3 -I` ignores them; anything else is refused before any further
+# module is imported. The guard runs when the file is run AND when it is
+# imported: a non-isolated interpreter that holds the token in its environment
+# is refused at import (SystemExit before the next import line), so no later
+# import can hand the token to a planted module. It looks at the environment
+# through the already loaded `os` module (sys.modules, never a fresh import, so
+# a planted os.py cannot stand in). A non-isolated import with no token in the
+# environment is allowed, for the pure helpers and the tests; it has nothing to
+# expose. What Python cannot protect: code that ran before this line (a
+# sitecustomize, a usercustomize, a .pth file, an already imported hostile
+# module) and a process that sets the token only after importing. Every
+# function that reads the token checks isolation itself as well (read_token).
+TOKEN_ENV = "CLOUDFLARE_EDGE_READ_TOKEN"  # noqa: S105 (the variable name)
 ISOLATION_MESSAGE = (
     "REFUSED run this checker as: /usr/bin/python3 -I scripts/check-edge.py\n"
 )
-if __name__ == "__main__" and sys.flags.isolated != 1:
+_loaded_os = sys.modules.get("os")
+if sys.flags.isolated != 1 and (
+    __name__ == "__main__" or _loaded_os is None or TOKEN_ENV in _loaded_os.environ
+):
     sys.stderr.write(ISOLATION_MESSAGE)
     sys.exit(2)
+del _loaded_os
 
 import argparse  # noqa: E402
 import ast  # noqa: E402
@@ -67,7 +81,6 @@ from typing import Any  # noqa: E402
 ROOT = Path(__file__).resolve().parent.parent
 EDGE = Path("deploy/edge")
 API = "https://api.cloudflare.com/client/v4"
-TOKEN_ENV = "CLOUDFLARE_EDGE_READ_TOKEN"  # noqa: S105 (the variable name)
 MAX_BYTES = 1_048_576
 TIMEOUT = 20
 # The robots.txt check is bounded as a whole: at most this many addresses are
@@ -344,7 +357,10 @@ def handoff_problems(edge: Path) -> list[str]:
 TOKEN_CHECKER = "scripts/check-edge.py"  # noqa: S105 (a path)
 TOKEN_TEST_FILE = "tests/test_edge_settings.py"  # noqa: S105 (a path)
 DOC_PATHS = frozenset({"docs/edge.md"})
-SKIP_SUFFIXES = frozenset({".pyc", ".pyo"})  # ignored bytecode, never tracked
+# Bytecode is scanned like any other file (it is executable and can hold the
+# name). The one exemption is the checker's own cache entry, which holds the name
+# by construction and which importing the checker writes next to it.
+OWN_BYTECODE = re.compile(r"scripts/__pycache__/check-edge\.[^/]+\.py[co]")
 ROOT_SKIP_DIRS = frozenset(
     {".git", "node_modules", ".venv", "venv", ".terraform"}
     | {".mypy_cache", ".ruff_cache", ".pytest_cache", "__pycache__"}
@@ -510,7 +526,7 @@ def repo_handoff_problems(root: Path) -> list[str]:
         for name in sorted(files):
             path = Path(current) / name
             rel = path.relative_to(root).as_posix()
-            if rel == TOKEN_CHECKER or path.suffix.lower() in SKIP_SUFFIXES:
+            if rel == TOKEN_CHECKER or OWN_BYTECODE.fullmatch(rel):
                 continue
             scanned = path
             try:
@@ -1402,13 +1418,19 @@ def load_desired() -> dict[str, Any]:
     return result
 
 
-def live(args: argparse.Namespace) -> int:
-    # Importing this file from a non-isolated interpreter skips the entry guard
-    # above, so the token-reading path checks again before it touches the token.
+def read_token() -> str | None:
+    """The one place the read token is read: None unless the interpreter is
+    isolated (an empty string when isolated and the variable is unset)."""
     if not _isolated():
+        return None
+    return os.environ.get(TOKEN_ENV, "")
+
+
+def live(args: argparse.Namespace) -> int:
+    token = read_token()
+    if token is None:
         sys.stderr.write(ISOLATION_MESSAGE)
         return 2
-    token = os.environ.get(TOKEN_ENV, "")
     zone = args.zone_id or ""
     if not token or not re.fullmatch(r"[0-9a-f]{32}", zone):
         print(f"usage: need {TOKEN_ENV} and --zone-id (32 hex)", file=sys.stderr)

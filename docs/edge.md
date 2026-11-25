@@ -221,16 +221,23 @@ applied from here" is structural:
   one the deployment image provides) whenever the token is in the environment. A
   normal interpreter honors `PYTHONPATH`, `PYTHONHOME` and site files before any
   line of the script, so a planted module could read the token first. The refusal
-  comes before the token is read or any other module is imported. Importing the
-  file from another process skips that entry guard, so the live path checks again
-  and refuses before it reads the token; importing it that way for the pure helpers
-  is allowed, and a process that imports it is trusted for what it has already
-  loaded. CI runs the offline step as `/usr/bin/python3 -I` (no `PATH` lookup)
-  and holds no read token.
-- The honest limit of that scan: it finds the literal name only. A name built at
-  run time, or a token handed on through the environment of another process, is
-  not found, so the scan is a tripwire for review, not a proof. The real control
-  is that no other process is ever started with the token in its environment.
+  comes before any other module is imported, and it runs on import as well as on
+  execution: a non-isolated interpreter that holds the read token in its
+  environment is refused at import (exit 2) before the next import line, so a
+  planted `json.py` is never loaded. Every function that reads the token
+  (`read_token`) checks isolation itself. A non-isolated import with no token in
+  the environment is allowed, for the pure helpers and the tests. Python cannot
+  protect what ran before the guard (a `sitecustomize`, a `.pth` file or a module
+  already imported by the caller) or a caller that sets the token only after
+  importing; those are the caller's trust. CI runs the offline step as
+  `/usr/bin/python3 -I` (no `PATH` lookup) and holds no read token.
+- The honest limit of that scan: it finds the literal name only (bytecode files
+  are scanned like any other file; only the checker's own cache entry is exempt).
+  A name built at run time, such as two string pieces joined, is not found and is
+  out of scope; a test pins that limit. A token handed on through the
+  environment of another process is not found either, so the scan is a tripwire
+  for review, not a proof. The real control is that no other process is ever
+  started with the token in its environment.
 - `.github/CODEOWNERS` names `deploy/edge/`, the checker and its tests, but it
   only names a reviewer. It becomes a control only when the repository has a
   branch protection rule or ruleset on the default branch with "Require review

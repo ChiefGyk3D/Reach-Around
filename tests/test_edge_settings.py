@@ -1908,6 +1908,68 @@ def test_importing_the_checker_without_isolation_fails_closed_before_any_token_r
     assert "REFUSED" in err and "secret" not in err
 
 
+def import_checker(
+    tmp_path: Path, env: dict[str, str]
+) -> subprocess.CompletedProcess[str]:
+    import sys
+
+    code = (
+        "from importlib.machinery import SourceFileLoader as L\n"
+        "from importlib.util import module_from_spec, spec_from_loader\n"
+        f"s = spec_from_loader('c', L('c', {str(CHECKER)!r}))\n"
+        "m = module_from_spec(s)\n"
+        "s.loader.exec_module(m)\n"
+        "print('imported')\n"
+    )
+    return subprocess.run(  # noqa: S603
+        [sys.executable, "-c", code],
+        capture_output=True,
+        text=True,
+        env=env,
+        cwd=tmp_path,
+        timeout=60,
+    )
+
+
+def test_a_non_isolated_import_with_the_token_set_is_refused_before_any_module_runs(
+    tmp_path: Path,
+) -> None:
+    result = import_checker(tmp_path, hostile_env(tmp_path))
+    assert result.returncode == 2, result.stderr
+    assert "REFUSED" in result.stderr
+    assert "imported" not in result.stdout
+    assert not (tmp_path / "stolen").exists()  # the hostile json.py never ran
+    assert "secret" not in result.stdout + result.stderr
+
+
+def test_a_non_isolated_import_without_the_token_is_allowed_and_holds_none(
+    tmp_path: Path,
+) -> None:
+    env = {"PATH": "/usr/bin:/bin"}
+    result = import_checker(tmp_path, env)
+    assert result.returncode == 0, result.stderr
+    assert "imported" in result.stdout
+
+
+def test_the_token_reader_checks_isolation_itself(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(check, "_isolated", REAL_ISOLATED)
+    monkeypatch.setenv(NAME, "secret")
+    reads: list[str] = []
+    real_get = check.os.environ.get
+
+    def spy(key: str, default: Any = None) -> Any:
+        reads.append(key)
+        return real_get(key, default)
+
+    monkeypatch.setattr(check.os.environ, "get", spy)
+    assert check.read_token() is None
+    assert reads == []
+    monkeypatch.setattr(check, "_isolated", lambda: True)
+    assert check.read_token() == "secret"
+
+
 def test_the_entry_point_has_no_shebang_and_no_executable_bit() -> None:
     assert not CHECKER.read_bytes().startswith(b"#!")
     assert not CHECKER.stat().st_mode & 0o111
@@ -1996,7 +2058,22 @@ def test_the_handoff_scan_skips_ignored_directories_only_at_the_root(
 ) -> None:
     assert not scan(root, "node_modules/x.py", f"{NAME}\n".encode())
     assert not scan(root, "docs/edge.md", f"{NAME}\n".encode())
-    assert not scan(root, "scripts/__pycache__/x.pyc", NAME.encode())
+    assert scan(root, "scripts/__pycache__/x.pyc", NAME.encode())
+    assert scan(root, "lib/payload.pyo", NAME.encode())
+    assert scan(root, "payload.pyc", NAME.encode("utf-16-le"))
+    # only the checker's own cache entry (the name is in its bytecode) is exempt
+    assert not scan(
+        root, "scripts/__pycache__/check-edge.cpython-312.pyc", NAME.encode()
+    )
+    assert scan(root, "tests/__pycache__/check-edge.cpython-312.pyc", NAME.encode())
+
+
+def test_a_computed_name_is_outside_the_documented_scan_limit(root: Path) -> None:
+    """Pins the documented limit: only the literal name (UTF-8/16/32) is found."""
+    split = 'import os\nn = "CLOUDFLARE_EDGE_" + "READ_TOKEN"\nos.environ[n]\n'
+    assert scan(root, "computed.py", split.encode()) == []
+    doc = " ".join((REPO / "docs" / "edge.md").read_text("utf-8").split())
+    assert "A name built at run time" in doc
 
 
 def test_the_real_test_file_passes_its_own_narrow_exemption() -> None:
@@ -2191,6 +2268,24 @@ def test_a_new_hardlink_during_the_scan_is_reported(
     assert check._names_token(target) is None
 
 
+def test_the_file_identity_compares_the_link_count_on_its_own() -> None:
+    from types import SimpleNamespace
+
+    base = {
+        "st_dev": 1,
+        "st_ino": 2,
+        "st_size": 3,
+        "st_nlink": 1,
+        "st_mtime_ns": 4,
+        "st_ctime_ns": 5,
+    }
+    same = SimpleNamespace(**base)
+    assert check._same_file(SimpleNamespace(**base), same)
+    # Only st_nlink differs (ctime, mtime, size and inode equal): without the
+    # link-count comparison this would read as the same file.
+    assert not check._same_file(SimpleNamespace(**{**base, "st_nlink": 2}), same)
+
+
 @pytest.mark.parametrize("enc", ["utf-16-le", "utf-16-be", "utf-32-le", "utf-32-be"])
 def test_the_scan_finds_the_name_in_wide_encodings(root: Path, enc: str) -> None:
     data = ("$x = $env:" + NAME + "\n").encode(enc)
@@ -2232,9 +2327,11 @@ def test_a_file_past_the_size_bound_is_reported_without_being_read(
     monkeypatch.setattr(check, "MAX_SCAN_FILE_BYTES", 100)
     problems = scan(root, "huge.bin", b"A" * 300 + NAME.encode())
     assert problems and "too large" in problems[0]
+    # The cap is injected and small, so a reverted cap reads a few KB and the
+    # assertion below fails promptly; nothing here can run away.
     sparse = root / "sparse.bin"
     with open(sparse, "wb") as handle:
-        handle.truncate(10**12)  # sparse: no disk used, never read
+        handle.truncate(100_000)  # sparse: no disk used
     assert any(
         p.startswith("sparse.bin:") and "too large" in p
         for p in check.repo_handoff_problems(root)
@@ -2249,6 +2346,8 @@ def test_a_file_that_grows_while_read_is_cut_off_at_the_bound(
     monkeypatch.setattr(check, "MAX_SCAN_FILE_BYTES", 50)
 
     class Endless:
+        reads = 0
+
         def __enter__(self) -> Endless:
             return self
 
@@ -2256,7 +2355,12 @@ def test_a_file_that_grows_while_read_is_cut_off_at_the_bound(
             return None
 
         def read(self, size: int) -> bytes:
-            return b"A" * 8  # a file that keeps growing as it is read
+            # A file that keeps growing as it is read. Bounded for the test: if
+            # the cap were reverted this fails after a few reads, never hangs.
+            Endless.reads += 1
+            if Endless.reads > 100:
+                raise AssertionError("the byte bound was not enforced")
+            return b"A" * 8
 
     monkeypatch.setattr(check.os, "fdopen", lambda *a, **k: Endless())
     with pytest.raises(check.ScanTooLarge):
