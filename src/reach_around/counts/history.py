@@ -499,9 +499,11 @@ def _parse(
     return tuple(chain.entries or ()), chain.expect
 
 
-def _chain_from_fd(fd: int, max_bytes: int) -> tuple[_Chain, int]:
-    """Validate the file behind ``fd`` a chunk at a time; return state and size.
+def _chain_from_fd(fd: int, max_bytes: int) -> tuple[_Chain, int, bytes]:
+    """Validate the file behind ``fd`` a chunk at a time.
 
+    Returns the state, the size and the SHA-256 of exactly the bytes that were
+    validated (so a later look can tell if any of them changed, even in place).
     Holds one chunk and one line at a time, never the whole file.
     """
     info = os.fstat(fd)
@@ -512,6 +514,7 @@ def _chain_from_fd(fd: int, max_bytes: int) -> tuple[_Chain, int]:
     chain = _Chain(collect=False)
     pending = b""
     offset = 0
+    seen = hashlib.sha256()
     while offset < info.st_size:
         chunk = os.pread(fd, min(1 << 20, info.st_size - offset), offset)
         if not chunk:
@@ -519,6 +522,7 @@ def _chain_from_fd(fd: int, max_bytes: int) -> tuple[_Chain, int]:
             # shorter file as the validated one.
             raise HistoryError("the history file changed while it was read")
         offset += len(chunk)
+        seen.update(chunk)
         pending += chunk
         while True:
             cut = pending.find(b"\n")
@@ -531,7 +535,24 @@ def _chain_from_fd(fd: int, max_bytes: int) -> tuple[_Chain, int]:
     if pending:
         raise HistoryError("the last line is truncated (no newline); not repaired")
     _require_size(fd, offset)
-    return chain, offset
+    return chain, offset, seen.digest()
+
+
+def _prefix_digest(fd: int, size: int) -> bytes:
+    """SHA-256 of the first ``size`` bytes of the held file, a chunk at a time.
+
+    A file that is now shorter than ``size`` gives a different digest, never an
+    error, so the caller reports it like any other change.
+    """
+    digest = hashlib.sha256()
+    offset = 0
+    while offset < size:
+        chunk = os.pread(fd, min(1 << 20, size - offset), offset)
+        if not chunk:
+            break
+        digest.update(chunk)
+        offset += len(chunk)
+    return digest.digest()
 
 
 def _require_size(fd: int, size: int) -> None:
@@ -539,8 +560,8 @@ def _require_size(fd: int, size: int) -> None:
 
     Advisory locks bind only cooperating writers; a writer that ignores the
     lock can still change the inode we hold. This detects a size change between
-    the scan and the write; it cannot defend against a writer that changes
-    bytes in place without changing the size.
+    the scan and the write; a change in place that keeps the size is caught
+    after the write by comparing the digest of the validated bytes.
     """
     if os.fstat(fd).st_size != size:
         raise HistoryError("the history file changed while it was read")
@@ -882,7 +903,7 @@ def _append_locked(
                 "the history file was replaced while waiting (a redaction?); run again"
             )
         os.fchmod(fd, 0o600)  # a pre-created file may be wider
-        chain, size = _chain_from_fd(fd, max_bytes)
+        chain, size, validated = _chain_from_fd(fd, max_bytes)
         prev = chain.expect
         if skip_days:
             have = set(chain.days)
@@ -912,6 +933,14 @@ def _append_locked(
             # Something that ignores the lock changed the file between the last
             # check and the write. It cannot be undone safely (the bytes that
             # are there are not all ours), so say so instead of claiming success.
+            raise HistoryError(
+                "the history file changed while it was written; run "
+                "history-verify and restore from git if it reports damage"
+            )
+        if _prefix_digest(fd, size) != validated:
+            # A byte that was validated was changed in place (same size) by
+            # something that ignores the lock. The chain now on disk is not the
+            # one that was checked; do not claim success.
             raise HistoryError(
                 "the history file changed while it was written; run "
                 "history-verify and restore from git if it reports damage"

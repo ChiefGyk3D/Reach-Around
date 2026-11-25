@@ -94,6 +94,7 @@ from reach_around.counts.instagram_insights import (
     deletion_candidates as instagram_deletion_candidates,
 )
 from reach_around.counts.pending import (
+    Note,
     clear_pending,
     content_digest,
     live_ids,
@@ -102,6 +103,7 @@ from reach_around.counts.pending import (
     pending_path,
     read_note,
     reconcile,
+    withdraw_pending,
 )
 from reach_around.counts.refresh import (
     SUSPECT_KINDS,
@@ -363,13 +365,46 @@ def _expected_digest(entries: Mapping[str, NumbersEntry]) -> str | None:
         return None
 
 
+@dataclass(frozen=True)
+class Staged:
+    """What ``_stage_history`` decided: the records to append and the note this
+    run wrote (its nonce), with what is needed to take the note back."""
+
+    records: list[Record]
+    nonce: str
+    previous: Note  # the note's live content before this run listed itself
+    history_before: tuple[int, ...] | None
+
+
+def _history_state(history: Path) -> tuple[int, ...] | None:
+    """Identity, size and modification time of the history file (``None`` when
+    absent). Equal before and after a failed append means it was not touched."""
+    try:
+        info = os.lstat(history)
+    except FileNotFoundError:
+        return None
+    return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns)
+
+
+def _withdraw(paths: Paths, history: Path, staged: Staged) -> None:
+    """Take this run's id back out of the note after a failure, but only when
+    the history file is exactly as it was before (nothing of this run is in it).
+    When it is not, or that cannot be told, the id stays: it may be the only
+    way to correct a value that did land."""
+    try:
+        if _history_state(history) == staged.history_before:
+            withdraw_pending(pending_path(paths.target), staged.nonce, staged.previous)
+    except (OSError, HistoryError):
+        pass  # the note stays; the next run compares its values
+
+
 def _stage_history(
     history: Path,
     paths: Paths,
     records: list[Record],
     run_id: str,
     expect: str | None,
-) -> list[Record]:
+) -> Staged:
     """Note this run as pending, then settle days an earlier attempt recorded.
 
     History is written before the numbers file; if a later write fails, the
@@ -381,17 +416,26 @@ def _stage_history(
     pending = pending_path(paths.target)
     note = read_note(pending)
     ids = live_ids(note, paths.target)  # [] when that run's numbers write landed
-    mark_pending(pending, ids, run_id, numbers_identity(paths.target), expect)
+    before = _history_state(history)
+    nonce = mark_pending(pending, ids, run_id, numbers_identity(paths.target), expect)
+    staged = Staged(
+        records, nonce, Note(ids, note.base, note.expect, note.nonce), before
+    )
     if ids and history.exists():
-        return reconcile(read_history(history), ids, records)
-    return records
+        try:
+            fixed = reconcile(read_history(history), ids, records)
+        except (OSError, HistoryError):
+            _withdraw(paths, history, staged)  # read only: history is untouched
+            raise
+        return Staged(fixed, nonce, staged.previous, before)
+    return staged
 
 
-def _settle_history(paths: Paths) -> None:
+def _settle_history(paths: Paths, nonce: str) -> None:
     """The numbers file was written, so nothing is pending any more."""
     try:
-        clear_pending(pending_path(paths.target))
-    except OSError:
+        clear_pending(pending_path(paths.target), nonce)
+    except (OSError, HistoryError):
         pass  # a stale note only makes the next run compare its values
 
 
@@ -547,6 +591,7 @@ def _cycle(
     # leave new numbers with no record of the run. If the numbers write fails, the
     # status is rewritten with ``committed: false`` (best effort) and the exit is 1.
     changed = any(outcome.status == "ok" for outcome in outcomes)
+    staged: Staged | None = None
     figures, insight_failures = _insights(
         sources, outcomes, environment, transport, now(), history
     )
@@ -595,9 +640,10 @@ def _cycle(
             print(f"{platform}: insights error (too_large)", file=sys.stderr)
             insight_failures.append(InsightFailure(platform, "too_large"))
         try:
-            fetched = _stage_history(
+            staged = _stage_history(
                 history, paths, fetched, run_id, _expected_digest(numbers)
             )
+            fetched = staged.records
         except OSError as exc:
             _write_failed(exc)
             return EXIT_WRITE
@@ -610,6 +656,7 @@ def _cycle(
         try:
             kept = append_records(history, fetched, now=stamp, skip_days=True)
         except HistoryError as exc:
+            _withdraw(paths, history, staged)
             print(
                 f"error: history not written, nothing else was changed: {exc}",
                 file=sys.stderr,
@@ -640,7 +687,8 @@ def _cycle(
                 pass  # the numbers file is untouched either way
             _write_failed(exc)
             return EXIT_WRITE
-        _settle_history(paths)
+        if staged is not None:
+            _settle_history(paths, staged.nonce)
     failed = any(outcome.status == "error" for outcome in outcomes) or bool(
         insight_failures
     )
@@ -1122,6 +1170,7 @@ def run_import(
                 )
                 return EXIT_OK
             merged = merge(previous, rows)
+            staged = None
             if history is not None:
                 # History first, as in refresh: if it cannot be written, the
                 # numbers file is left as it was. One value per platform, metric
@@ -1145,10 +1194,14 @@ def run_import(
                     run_id,
                     _expected_digest(merged),
                 )
-                append_records(history, staged, now=stamp, skip_days=True)
+                try:
+                    append_records(history, staged.records, now=stamp, skip_days=True)
+                except (OSError, HistoryError):
+                    _withdraw(paths, history, staged)
+                    raise
             write_atomic(paths.target, dump_numbers(merged))
-            if history is not None:
-                _settle_history(paths)
+            if staged is not None:
+                _settle_history(paths, staged.nonce)
     except ImportFailed as exc:
         print("error: the file was not imported; nothing was written", file=sys.stderr)
         for problem in exc.problems:

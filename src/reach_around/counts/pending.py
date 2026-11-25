@@ -19,6 +19,7 @@ from __future__ import annotations
 import hashlib
 import os
 import re
+import secrets
 import stat
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -57,6 +58,7 @@ _FULL = (
 )
 _EXPECT = re.compile(r"^expect ([0-9a-f]{64})$")
 _BASE = re.compile(r"^base (none|[0-9a-f]{1,32}(?::[0-9a-f]{1,32}){3})$")
+_NONCE = re.compile(r"^nonce ([0-9a-f]{32})$")
 
 
 @dataclass(frozen=True)
@@ -64,6 +66,31 @@ class Note:
     ids: list[str]
     base: str | None  # identity of the numbers file when the latest run began
     expect: str | None = None  # digest of the text that run was about to write
+    nonce: str | None = None  # names this very note; only its writer removes it
+
+
+def _read_exactly(fd: int, limit: int) -> bytes | None:
+    """The whole regular file behind ``fd``, or ``None`` if it is not one, is
+    over ``limit`` bytes, or changed size while it was read.
+
+    Reads in a loop until the size ``fstat`` reported (one ``os.read`` may
+    return less) and then requires end of file, so a short read is never taken
+    for the whole file.
+    """
+    info = os.fstat(fd)
+    if not stat.S_ISREG(info.st_mode) or info.st_size > limit:
+        return None
+    chunks: list[bytes] = []
+    total = 0
+    while total < info.st_size:
+        chunk = os.read(fd, info.st_size - total)
+        if not chunk:
+            return None  # shorter than it was a moment ago
+        chunks.append(chunk)
+        total += len(chunk)
+    if os.read(fd, 1):
+        return None  # longer than it was a moment ago
+    return b"".join(chunks)
 
 
 def read_note(path: Path) -> Note:
@@ -81,14 +108,12 @@ def read_note(path: Path) -> Note:
     except OSError:
         raise PendingError(_UNUSABLE) from None
     try:
-        if not stat.S_ISREG(os.fstat(fd).st_mode):
-            raise PendingError(_UNUSABLE)
-        raw = os.read(fd, MAX_BYTES + 1)
+        raw = _read_exactly(fd, MAX_BYTES)
     except OSError:
         raise PendingError(_UNUSABLE) from None
     finally:
         os.close(fd)
-    if not raw or len(raw) > MAX_BYTES:
+    if not raw:
         raise PendingError(_UNUSABLE)
     try:
         lines = raw.decode("ascii").splitlines()
@@ -97,25 +122,34 @@ def read_note(path: Path) -> Note:
     ids: list[str] = []
     base: str | None = None
     expect: str | None = None
+    nonce: str | None = None
     for line in lines:
         found = _BASE.fullmatch(line)
         wanted = _EXPECT.fullmatch(line)
+        named = _NONCE.fullmatch(line)
         if found is not None and base is None:
             base = found.group(1)
         elif wanted is not None and expect is None:
             expect = wanted.group(1)
+        elif named is not None and nonce is None:
+            nonce = named.group(1)
         elif _ID.fullmatch(line):
             ids.append(line)
         else:
             raise PendingError(_UNUSABLE)
     if len(ids) > MAX_IDS:
         raise PendingError(_UNUSABLE)
-    return Note(ids, base, expect)
+    return Note(ids, base, expect, nonce)
 
 
 def read_pending(path: Path) -> list[str]:
     """The run ids listed, oldest first; raises ``PendingError`` if unusable."""
     return read_note(path).ids
+
+
+def _identity_of(info: os.stat_result) -> str:
+    parts = (info.st_dev, info.st_ino, info.st_mtime_ns, info.st_size)
+    return ":".join(f"{part:x}" for part in parts)
 
 
 def numbers_identity(numbers: Path) -> str:
@@ -127,55 +161,71 @@ def numbers_identity(numbers: Path) -> str:
     its bytes equal the old ones; a content digest cannot tell those apart.
     """
     try:
-        info = os.lstat(numbers)
+        return _identity_of(os.lstat(numbers))
     except FileNotFoundError:
         return "none"
-    parts = (info.st_dev, info.st_ino, info.st_mtime_ns, info.st_size)
-    return ":".join(f"{part:x}" for part in parts)
 
 
 def content_digest(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
-def _numbers_text_digest(numbers: Path) -> str | None:
-    """Digest of the numbers file's bytes; ``None`` when absent or not a plain
-    file of a sane size (then it cannot be the file a run wrote)."""
+def _numbers_state(numbers: Path) -> tuple[str, str | None]:
+    """Identity and content digest of ONE open numbers file.
+
+    The file is opened once (no link followed) and both are taken from that
+    descriptor, so they describe the same file even if the path is swapped
+    meanwhile. The digest is ``None`` when the file is absent, not a plain file,
+    too large or changed while read (then it cannot be the file a run wrote).
+    """
     try:
         fd = os.open(numbers, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except FileNotFoundError:
+        return "none", None
     except OSError:
-        return None
+        return numbers_identity(numbers), None
     try:
-        if not stat.S_ISREG(os.fstat(fd).st_mode):
-            return None
-        data = os.read(fd, MAX_NUMBERS_BYTES + 1)
-    except OSError:
-        return None
+        identity = _identity_of(os.fstat(fd))
+        try:
+            data = _read_exactly(fd, MAX_NUMBERS_BYTES)
+        except OSError:
+            return identity, None
     finally:
         os.close(fd)
-    if len(data) > MAX_NUMBERS_BYTES:
-        return None
-    return hashlib.sha256(data).hexdigest()
+    if data is None:
+        return identity, None
+    return identity, hashlib.sha256(data).hexdigest()
 
 
 def live_ids(note: Note, numbers: Path) -> list[str]:
     """The ids whose numbers write may not have happened.
 
-    A run is shown to have committed only when the numbers file now holds exactly
+    A run is shown to have committed only when ONE numbers file now holds exactly
     the text that run was about to write (``expect``, a digest) AND is a
     different file than when the run began (``base``, its identity; this
-    separates a rewrite of identical bytes from an untouched file). A file
-    restored by other means (a checkout, a copy of an older version) holds other
-    content, so it proves nothing and the ids stay pending.
+    separates a rewrite of identical bytes from an untouched file). Identity and
+    digest come from one open descriptor. A file restored by other means (a
+    checkout, a copy of an older version) holds other content, so it proves
+    nothing and the ids stay pending.
     """
-    if (
-        note.base is not None
-        and note.expect is not None
-        and note.base != numbers_identity(numbers)
-        and note.expect == _numbers_text_digest(numbers)
-    ):
+    if note.base is None or note.expect is None:
+        return note.ids
+    identity, digest = _numbers_state(numbers)
+    if note.base != identity and note.expect == digest:
         return []
     return note.ids
+
+
+def _render(
+    ids: Sequence[str], base: str | None, expect: str | None, nonce: str
+) -> str:
+    lines = list(ids)
+    if base is not None:
+        lines.append(f"base {base}")
+        if expect is not None:
+            lines.append(f"expect {expect}")
+    lines.append(f"nonce {nonce}")
+    return "\n".join(lines) + "\n"
 
 
 def mark_pending(
@@ -184,8 +234,11 @@ def mark_pending(
     run_id: str,
     base: str | None = None,
     expect: str | None = None,
-) -> None:
-    """List ``run_id`` after the ids already pending; raises ``OSError``.
+) -> str:
+    """List ``run_id`` after the ids already pending; returns the note's nonce.
+
+    The nonce is written into the note; ``clear_pending`` and ``withdraw_pending``
+    act only on a note that still carries it. Raises ``OSError``.
 
     Raises ``PendingError`` when the list would pass ``MAX_IDS``: an id is never
     dropped to make room (it may be the only one that can be corrected), so the
@@ -193,19 +246,70 @@ def mark_pending(
     """
     if len(ids) + 1 > MAX_IDS:
         raise PendingError(_FULL)
-    lines = [*ids, run_id]
-    if base is not None:
-        lines.append(f"base {base}")
-        if expect is not None:
-            lines.append(f"expect {expect}")
-    write_atomic(path, "\n".join(lines) + "\n")
+    nonce = secrets.token_hex(16)
+    write_atomic(path, _render([*ids, run_id], base, expect, nonce))
+    return nonce
 
 
-def clear_pending(path: Path) -> None:
+def _take(path: Path, nonce: str) -> Path | None:
+    """Take the note at ``path`` out of the way if it is the one named ``nonce``.
+
+    The name is renamed to a private one first (one atomic step that moves
+    whatever is there), and only then read. A note that is not ours (another
+    process put one in its place) is linked back and left alone; it is never
+    deleted. Returns the private path of our note, ``None`` when there is no
+    note, and raises ``PendingError`` for one that is not ours.
+    """
+    taken = path.with_name(f"{path.name}.{secrets.token_hex(8)}.take")
     try:
-        os.unlink(path)
+        os.rename(path, taken)
     except FileNotFoundError:
-        pass
+        return None
+    try:
+        mine = read_note(taken).nonce == nonce
+    except PendingError:
+        mine = False
+    if mine:
+        return taken
+    try:
+        os.link(taken, path, follow_symlinks=False)  # never replaces a new note
+    except FileExistsError:
+        raise PendingError(_UNUSABLE) from None  # both are kept; a person decides
+    os.unlink(taken)
+    raise PendingError(_UNUSABLE)
+
+
+def clear_pending(path: Path, nonce: str) -> None:
+    """Remove the note this run wrote (``nonce``); never another process's note."""
+    taken = _take(path, nonce)
+    if taken is not None:
+        os.unlink(taken)
+
+
+def withdraw_pending(path: Path, nonce: str, previous: Note) -> None:
+    """Undo ``mark_pending`` after a failure that left history untouched.
+
+    Puts back what the note held before this run listed itself (``previous``,
+    with its own base and digest), or removes the note when it listed nothing
+    live. Acts only on the note that carries ``nonce``.
+    """
+    taken = _take(path, nonce)
+    if taken is None:
+        return
+    os.unlink(taken)
+    if not previous.ids:
+        return
+    fresh = path.with_name(f"{path.name}.{secrets.token_hex(8)}.new")
+    write_atomic(
+        fresh,
+        _render(
+            previous.ids, previous.base, previous.expect, previous.nonce or "0" * 32
+        ),
+    )
+    try:
+        os.link(fresh, path, follow_symlinks=False)
+    finally:
+        os.unlink(fresh)
 
 
 def reconcile(

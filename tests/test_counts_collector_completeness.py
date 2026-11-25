@@ -17,6 +17,7 @@ import pytest
 
 import reach_around.commands.counts as counts_cmd
 import reach_around.counts.history as hist
+import reach_around.counts.pending as pending_mod
 from fakenet import FakeTransport, reply
 from reach_around.counts.files import write_atomic
 from reach_around.counts.history import (
@@ -29,8 +30,12 @@ from reach_around.counts.history import (
 from reach_around.counts.pending import (
     MAX_IDS,
     PendingError,
+    clear_pending,
+    live_ids,
     mark_pending,
+    numbers_identity,
     pending_path,
+    read_note,
     read_pending,
 )
 from reach_around.counts.retention import RetentionPolicy, retention_warnings
@@ -359,7 +364,9 @@ def test_a_note_left_after_a_committed_run_does_not_rewrite_history(
 ) -> None:
     serve(monkeypatch, 100)
 
-    def crash(paths: Any) -> None:  # the process dies after the numbers write
+    def crash(
+        paths: Any, nonce: str
+    ) -> None:  # the process dies after the numbers write
         raise KeyboardInterrupt
 
     monkeypatch.setattr(counts_cmd, "_settle_history", crash)
@@ -384,7 +391,7 @@ def test_a_committed_run_whose_numbers_file_is_byte_identical_is_not_replayed(
     before = (setup / "numbers.json").read_bytes()
     (setup / "history" / "social.jsonl").unlink()  # this run will record the day
 
-    def crash(paths: Any) -> None:
+    def crash(paths: Any, nonce: str) -> None:
         raise KeyboardInterrupt
 
     monkeypatch.setattr(counts_cmd, "_settle_history", crash)
@@ -444,7 +451,7 @@ def test_a_note_that_cannot_be_removed_does_not_rewrite_committed_history(
 ) -> None:
     serve(monkeypatch, 100)
 
-    def refuse(path: Path) -> None:
+    def refuse(path: Path, nonce: str) -> None:
         raise OSError(13, "Permission denied")
 
     monkeypatch.setattr(counts_cmd, "clear_pending", refuse)
@@ -607,3 +614,177 @@ def test_a_change_between_the_last_check_and_the_write_is_reported(
     new = rec(platform="new", as_of_utc="2026-11-09T09:00:00Z")
     with pytest.raises(HistoryError, match="changed while it was written"):
         append_records(path, [new], now=NOW)
+
+
+# ---- round 4: bytes bound to the scan, notes bound to their writer ----------
+
+
+def test_a_same_size_change_to_validated_bytes_is_reported(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "h.jsonl"
+    _big_history(path, 50)
+
+    def foreign(stage: str) -> None:
+        fd = os.open(path, os.O_WRONLY)
+        try:
+            os.pwrite(fd, b"X", 3)  # one byte in place: the size does not move
+        finally:
+            os.close(fd)
+
+    monkeypatch.setattr(hist, "_before_mutation", foreign)
+    new = rec(platform="new", as_of_utc="2026-11-09T09:00:00Z")
+    with pytest.raises(HistoryError, match="changed while it was written"):
+        append_records(path, [new], now=NOW)
+
+
+def test_a_note_is_cleared_only_by_the_run_that_wrote_it(tmp_path: Path) -> None:
+    path = tmp_path / ".numbers.json.pending"
+    mine = mark_pending(path, [], "run-mine")
+    foreign = "run-other\nnonce " + "a" * 32 + "\n"
+    path.write_text(foreign, encoding="ascii")  # another process replaced it
+    with pytest.raises(PendingError):
+        clear_pending(path, mine)
+    assert path.read_text("ascii") == foreign  # never deleted
+    assert [p.name for p in tmp_path.iterdir()] == [path.name]  # no leftovers
+    path.write_text("run-mine\nnonce " + mine + "\n", encoding="ascii")
+    clear_pending(path, mine)
+    assert not path.exists()
+
+
+def test_a_run_does_not_delete_a_note_another_process_put_in_place(
+    setup: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    serve(monkeypatch, 100)
+    note = pending_path(setup / "numbers.json")
+    foreign = "other-run\nnonce " + "b" * 32 + "\n"
+    real = write_atomic
+
+    def write(path: Path, text: str, **kwargs: Any) -> None:
+        real(path, text, **kwargs)
+        if path.name == "numbers.json":
+            note.write_text(foreign, encoding="ascii")  # after our numbers write
+
+    monkeypatch.setattr(counts_cmd, "write_atomic", write)
+    assert run(setup, DAY1) == 0
+    assert note.read_text("ascii") == foreign
+
+
+def test_identity_and_digest_describe_one_open_numbers_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    numbers = tmp_path / "numbers.json"
+    wanted = "right\n"
+    numbers.write_text("old\n", encoding="utf-8")
+    base = numbers_identity(numbers)
+    other = tmp_path / "other.tmp"
+    other.write_text("wrong\n", encoding="utf-8")
+    os.replace(other, numbers)  # a different file with other content
+    note = pending_mod.Note(
+        ["run-1"], base, pending_mod.content_digest(wanted), "c" * 32
+    )
+    real = pending_mod._identity_of
+
+    def swap_after_identity(info: os.stat_result) -> str:
+        got = real(info)
+        swapped = tmp_path / "swap.tmp"
+        swapped.write_text(wanted, encoding="utf-8")
+        os.replace(swapped, numbers)  # now the path holds the expected bytes
+        return got
+
+    monkeypatch.setattr(pending_mod, "_identity_of", swap_after_identity)
+    assert live_ids(note, numbers) == ["run-1"]  # the file that was measured lacked it
+
+
+def test_a_failed_history_attempt_does_not_use_up_a_pending_slot(
+    setup: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    serve(monkeypatch, 100)
+    history = setup / "history" / "social.jsonl"
+    history.write_text("not a history\n", encoding="ascii")
+    note = pending_path(setup / "numbers.json")
+    for _ in range(MAX_IDS + 3):
+        assert run(setup, DAY1) == counts_cmd.EXIT_WRITE
+        assert not note.exists()  # nothing of the attempt is in history
+    history.unlink()
+    assert run(setup, DAY1) == 0  # never blocked by the full note
+
+
+def test_a_failed_attempt_leaves_the_earlier_unfinished_ids_as_they_were(
+    setup: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _stop_after_history_write(setup, monkeypatch)
+    note = pending_path(setup / "numbers.json")
+    before = note.read_text("ascii")
+    history = setup / "history" / "social.jsonl"
+    good = history.read_bytes()
+    history.write_bytes(good + b"garbage\n")  # unreadable, so reconcile fails
+    snapshot = history.read_bytes()
+    serve(monkeypatch, 105)
+    assert run(setup, DAY1_LATER) == counts_cmd.EXIT_WRITE
+    assert note.read_text("ascii") == before  # this run's id is gone again
+    assert history.read_bytes() == snapshot
+
+
+def test_an_attempt_that_may_have_written_history_keeps_its_id(
+    setup: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    serve(monkeypatch, 100)
+    history = setup / "history" / "social.jsonl"
+
+    def foreign(stage: str) -> None:
+        with open(history, "ab") as stream:
+            stream.write(b"{}\n")  # something else changes the file mid-append
+
+    monkeypatch.setattr(hist, "_before_mutation", foreign)
+    assert run(setup, DAY1) == counts_cmd.EXIT_WRITE
+    assert len(read_pending(pending_path(setup / "numbers.json"))) == 1
+
+
+def test_a_short_read_is_never_taken_for_the_whole_note_or_numbers_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / ".numbers.json.pending"
+    nonce = mark_pending(path, ["run-1"], "run-2", "none", "d" * 64)
+    real = os.read
+
+    def dribble(fd: int, length: int) -> bytes:
+        return real(fd, min(length, 3))
+
+    monkeypatch.setattr(os, "read", dribble)
+    got = read_note(path)
+    assert (got.ids, got.base, got.expect, got.nonce) == (
+        ["run-1", "run-2"],
+        "none",
+        "d" * 64,
+        nonce,
+    )
+    numbers = tmp_path / "numbers.json"
+    numbers.write_text("x" * 100, encoding="ascii")
+    _, digest = pending_mod._numbers_state(numbers)
+    assert digest == pending_mod.content_digest("x" * 100)
+
+
+def test_a_file_that_ends_early_or_grows_is_unusable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / ".numbers.json.pending"
+    mark_pending(path, [], "run-1")
+    real = os.read
+    calls = [0]
+
+    def early_end(fd: int, length: int) -> bytes:
+        calls[0] += 1
+        return real(fd, min(length, 3)) if calls[0] == 1 else b""
+
+    monkeypatch.setattr(os, "read", early_end)
+    with pytest.raises(PendingError):  # "run" alone would be a valid id
+        read_note(path)
+
+    def grows(fd: int, length: int) -> bytes:
+        got = real(fd, length)
+        return got if length != 1 else b"x"  # one more byte after the whole file
+
+    monkeypatch.setattr(os, "read", grows)
+    with pytest.raises(PendingError):
+        read_note(path)

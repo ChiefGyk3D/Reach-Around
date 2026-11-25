@@ -76,17 +76,17 @@ mark a fetched record with a correction (below).
   when first looked at, and looked at again just before the write. A write by
   something that ignores the lock (it grows or shortens the locked file while
   the scan runs) is refused with "changed while it was read". The lock is
-  advisory: a writer that ignores it and changes bytes in place without changing
-  the size cannot be detected here; the hash chain and git history catch that.
-  The check and the write cannot be one step against such a writer, so a change
-  in the short gap between them is not prevented; it is detected right after
-  the write (the size is not what the append should have produced) and reported
+  advisory. The SHA-256 of the bytes that were validated is kept, and after the
+  write the same range is hashed again. The check and the write cannot be one
+  step against a writer that ignores the lock, so a change in the short gap
+  between them (growth, truncation, or bytes changed in place at the same size)
+  is not prevented; it is detected right after the write and reported
   as "changed while it was written" instead of success. Nothing is rolled back
   then, because the bytes on disk are not all ours: run `counts history-verify`
   and restore from git if it reports damage.
 * A refresh or import that stops after history was written leaves a small
   `.<numbers file>.pending` note (run ids, the identity of the numbers file
-  (device, inode, time, size) and a digest of the text the run was about to
+  (device, inode, time, size), a random nonce and a digest of the text the run was about to
   write, never values). If that note exists but cannot be read or is not valid,
   the next run
   stops before touching anything, prints a fixed message, and leaves the note
@@ -98,7 +98,12 @@ mark a fetched record with a correction (below).
   version) holds other content, proves nothing, and the attempt stays pending.
   The note lists at most 16 attempts and never drops one: a 17th stops the run
   with a fixed message and the note is left as it is; check that history
-  matches the numbers file, remove the note, then run again.
+  matches the numbers file, remove the note, then run again. An attempt that
+  fails while history is provably untouched (the file is exactly as it was)
+  takes its id back out of the note, so repeated failures do not fill it. A
+  run removes only the note it wrote (it carries a random nonce); if another
+  process put a different note in its place, that note is kept and the run
+  says so.
 * It refuses a file that is already damaged, a duplicate
   (`platform`, `metric`, UTC day, `source`), a future time, and bad fields.
   A batch is all or nothing.
