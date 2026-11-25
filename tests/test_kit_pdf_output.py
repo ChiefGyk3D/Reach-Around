@@ -12,7 +12,6 @@ import pytest
 
 from reach_around.kit.output import (
     OutputError,
-    OutputWarning,
     confine_out_dir,
     write_private,
 )
@@ -242,24 +241,6 @@ def test_a_move_right_after_the_first_check_of_the_installed_file_is_caught(
     assert list((site / "uploaded").iterdir()) == []
 
 
-@pytest.mark.parametrize("mode", [0o770, 0o707, 0o777])
-def test_a_parent_others_can_write_to_is_warned_about(
-    tmp_path: Path, mode: int
-) -> None:
-    parent = tmp_path / "parent"
-    parent.mkdir(mode=0o700)
-    private = parent / "private"
-    private.mkdir(mode=0o700)
-    parent.chmod(mode)
-    try:
-        with pytest.warns(OutputWarning, match="parent") as caught:
-            write_private(private, "kit.pdf", b"%PDF-1", overwrite=False)
-    finally:
-        parent.chmod(0o700)
-    assert (private / "kit.pdf").read_bytes() == b"%PDF-1"
-    assert str(parent) not in str(caught[0].message)
-
-
 def test_an_owner_only_parent_gives_no_warning(tmp_path: Path) -> None:
     import warnings
 
@@ -357,11 +338,11 @@ def test_a_writable_ancestor_above_the_parent_is_refused(
     top, private = _deep(tmp_path)
     top.chmod(mode)
     try:
-        with pytest.raises(OutputError, match="above the output directory"):
+        with pytest.raises(OutputError, match="or one above it"):
             write_private(private, "kit.pdf", b"%PDF-1", overwrite=False)
         assert not (private / "kit.pdf").exists()
         # a missing directory below it is not created either
-        with pytest.raises(OutputError, match="above the output directory"):
+        with pytest.raises(OutputError, match="or one above it"):
             confine_out_dir(top / "mid" / "private" / "new" / "deeper", [])
         assert not (private / "new").exists()
     finally:
@@ -392,12 +373,47 @@ def test_an_ancestor_owned_by_someone_else_is_refused(
     assert not (private / "kit.pdf").exists()
 
 
-def test_the_parent_itself_is_still_only_a_warning(tmp_path: Path) -> None:
+@pytest.mark.parametrize("mode", [0o770, 0o707, 0o777, 0o720, 0o702])
+def test_a_parent_others_can_write_to_is_refused(tmp_path: Path, mode: int) -> None:
+    """Renaming a directory needs write on its parent, not on itself: a 0700
+    folder under a writable parent can be moved by someone else."""
     _top, private = _deep(tmp_path)
     parent = private.parent
-    parent.chmod(0o770)
+    parent.chmod(mode)
     try:
-        with pytest.warns(OutputWarning, match="parent"):
+        with pytest.raises(OutputError, match="parent of the output directory"):
             write_private(private, "kit.pdf", b"%PDF-1", overwrite=False)
+        assert list(private.iterdir()) == []
+        with pytest.raises(OutputError, match="parent of the output directory"):
+            confine_out_dir(private, [])
+        # a missing directory is not created under it either
+        with pytest.raises(OutputError, match="parent of the output directory"):
+            confine_out_dir(parent / "new", [])
+        assert not (parent / "new").exists()
     finally:
         parent.chmod(0o700)
+    write_private(private, "kit.pdf", b"%PDF-1", overwrite=False)  # control
+
+
+def test_a_sticky_writable_parent_is_allowed(tmp_path: Path) -> None:
+    """The /tmp rule: in a sticky directory only the owner of an entry (this
+    user, who owns the output folder) may rename it."""
+    _top, private = _deep(tmp_path)
+    parent = private.parent
+    parent.chmod(0o1777)
+    try:
+        write_private(private, "kit.pdf", b"%PDF-1", overwrite=False)
+    finally:
+        parent.chmod(0o700)
+    assert (private / "kit.pdf").read_bytes() == b"%PDF-1"
+
+
+def test_a_parent_owned_by_someone_else_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    private = out_dir(tmp_path)
+    monkeypatch.setattr(os, "geteuid", lambda: os.getuid() + 1)
+    with pytest.raises(OutputError, match="belongs to another user"):
+        write_private(private, "kit.pdf", b"%PDF-1", overwrite=False)
+    monkeypatch.undo()
+    assert list(private.iterdir()) == []

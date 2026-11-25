@@ -26,10 +26,12 @@ and back between two samples (or after the last one) is not seen, because the
 directory is where it should be at every sample. No number of extra samples
 closes that; only a folder that no other process can rename closes it. So the
 output must go to a folder only the owner can write, whose parent directory
-no one else can write either (a directory further up that another user owns or
-that the group or others can write, unless it is sticky, is refused);
-``write_private`` warns (``OutputWarning``) when the parent can be written by the
-group or by others.
+no one else can write either. The rule is the same for the parent and for every
+directory above it: each existing directory above the output folder must belong
+to this user or root, and must not be writable by the group or others unless it
+is sticky (only the owner of an entry may rename it there, as in ``/tmp``; the
+output folder is checked to be owned by this user, so a sticky parent protects
+it). Anything else is refused, never only warned about.
 """
 
 from __future__ import annotations
@@ -40,7 +42,6 @@ import os
 import re
 import secrets
 import stat
-import warnings
 from collections.abc import Iterable, Sequence
 from pathlib import Path
 
@@ -49,10 +50,6 @@ NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,99}\.pdf")
 
 class OutputError(ValueError):
     """The PDF may not be written there."""
-
-
-class OutputWarning(UserWarning):
-    """The file was written, but where it went is weaker than it should be."""
 
 
 JSON_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,99}\.json")
@@ -232,31 +229,33 @@ def open_private_dir(
 
 
 def _check_ancestors(fds: Sequence[int], depth: int) -> None:
-    """Refuse a chain whose directories above the output directory's parent could
-    be renamed or replaced by someone else. ``fds`` are the directories opened so
-    far (root first), ``depth`` the number of components of the whole path.
+    """Refuse a chain whose directories above the output directory (its parent
+    included) could be renamed or replaced by someone else. ``fds`` are the
+    directories opened so far (root first), ``depth`` the number of components
+    of the whole path.
 
     Holding a descriptor stops a link being swapped in, but not the rename of a
     directory higher up, which moves the whole private subtree. So each existing
     ancestor must belong to this user or root, and must not be writable by the
     group or others unless it is sticky (only the owner of an entry may rename it
-    there, as in a normal temporary directory). The output directory itself has
-    its own owner-only check, and its parent gets the warning in
-    ``write_private``; a directory this call creates is owner-only."""
+    there, as in a normal temporary directory). This includes the immediate
+    parent: renaming a directory is allowed by its parent's permissions, not its
+    own. The output directory itself has its own owner-only check; a directory
+    this call creates is owner-only."""
     me = os.geteuid()
-    for fd in fds[: max(depth - 2, 0)]:
+    for fd in fds[: max(depth - 1, 0)]:
         info = os.fstat(fd)
         if info.st_uid not in (me, 0):
             raise OutputError(
-                "a directory above the output directory belongs to another user; "
-                "choose a path whose directories only you (or root) own"
+                "the parent of the output directory, or one above it, belongs to "
+                "another user; choose a path whose directories only you (or root) own"
             )
         if info.st_mode & (stat.S_IWGRP | stat.S_IWOTH) and not info.st_mode & (
             stat.S_ISVTX
         ):
             raise OutputError(
-                "a directory above the output directory can be written by the "
-                "group or by others, so the folder could be moved; remove that "
+                "the parent of the output directory, or one above it, can be written "
+                "by the group or by others, so the folder could be moved; remove that "
                 "write permission or choose another path"
             )
 
@@ -267,23 +266,6 @@ def _has_entry(fd: int, name: str) -> bool:
     except OSError:
         return False
     return True
-
-
-def _warn_if_parent_is_open(dir_fd: int) -> None:
-    """Warn when the group or others can write to the parent of the held
-    directory: they could rename the folder (see the module doc)."""
-    try:
-        parent = os.stat("..", dir_fd=dir_fd)
-    except OSError:
-        return
-    if parent.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
-        warnings.warn(
-            "the parent of the output directory can be written by the group or by "
-            "others, so the folder could be moved; keep private output in a "
-            "folder whose parent only you can write to",
-            OutputWarning,
-            stacklevel=3,
-        )
 
 
 def verify_unchanged(
@@ -331,7 +313,6 @@ def write_private(
     check_name(name, pattern)
     directory = Path(os.path.abspath(out_dir))
     dir_fd = open_private_dir(directory, forbidden, create=False)
-    _warn_if_parent_is_open(dir_fd)
     temp = f".{name}.{secrets.token_hex(8)}.tmp"
     try:
         try:

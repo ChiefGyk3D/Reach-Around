@@ -352,6 +352,27 @@ def test_the_reader_refuses_a_duplicate_key(tmp_path: Path) -> None:
         load_measures_file(path)
 
 
+def test_a_hostile_key_is_not_echoed_whole(tmp_path: Path) -> None:
+    """A duplicate or unexpected key can be megabytes long (the file limit is
+    4 MiB); the error carries a short escaped prefix, never the key."""
+    key = "A" * 2_000_000
+    path = tmp_path / "dup.json"
+    path.write_text('{"' + key + '":1,"' + key + '":2}', encoding="utf-8")
+    with pytest.raises(MeasuresFileError, match="duplicate") as caught:
+        load_measures_file(path)
+    assert len(str(caught.value)) < 200
+    doc = good(tmp_path)
+    for index in range(2000):
+        doc[f"{index}" + chr(10) + chr(0x202E) + "K" * 1000] = 1
+    with pytest.raises(MeasuresFileError, match="unexpected keys") as caught:
+        load_measures_file(put(tmp_path, doc, "many.json"))
+    text = str(caught.value)
+    assert len(text) < 600
+    assert "1995 more" in text
+    assert chr(10) not in text
+    assert chr(0x202E) not in text
+
+
 # --- the command ----------------------------------------------------------------
 
 

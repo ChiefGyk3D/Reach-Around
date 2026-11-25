@@ -1089,12 +1089,12 @@ Where it may go, and what it holds:
   kernel to refuse the move, which a user-space tool cannot ask for. So the rule
   is on the owner's side: **write private output to a folder only you can write
   to, and whose parent directory (and every directory above it) no other user can
-  write**, so that nobody else can rename it. The tool warns (`OutputWarning`,
-  printed on standard error) when the parent of the output folder is writable by
-  the group or by others, and refuses when any directory above that parent is
-  owned by another user (root is fine) or is writable by the group or others
-  without the sticky bit (a sticky directory such as `/tmp` is accepted: only the
-  owner of an entry can rename it there). Mount tricks (bind mounts, mount namespaces) are out of
+  write**, so that nobody else can rename it (renaming a folder is allowed by the
+  permissions of its parent, not of the folder). The tool refuses when the parent
+  of the output folder, or any directory above it, is owned by another user (root
+  is fine) or is writable by the group or others without the sticky bit (a sticky
+  directory such as `/tmp` is accepted: only the owner of an entry can rename it
+  there, and the output folder must be yours). Mount tricks (bind mounts, mount namespaces) are out of
   scope as well. This is an owner-local tool with a same-user threat model: a
   process running as you can already read the file and the private data it was
   made from.

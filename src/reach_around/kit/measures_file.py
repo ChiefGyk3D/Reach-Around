@@ -619,11 +619,31 @@ def build_measures_file(
 # --- the reader the sponsor page uses -----------------------------------------
 
 
+ECHO_KEY = 40
+ECHO_KEYS = 5
+
+
+def _shown(key: str) -> str:
+    """A key from the file, safe to put in an error: escaped to ASCII (no control
+    or bidirectional characters) and cut short, so a hostile file cannot flood a
+    log through its own keys."""
+    text = ascii(key)
+    return text if len(text) <= ECHO_KEY else text[:ECHO_KEY] + "..."
+
+
+def _shown_all(keys: list[str]) -> str:
+    more = len(keys) - ECHO_KEYS
+    text = ", ".join(_shown(key) for key in keys[:ECHO_KEYS])
+    return f"[{text}]" if more <= 0 else f"[{text}] and {more} more"
+
+
 def _no_duplicates(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     out: dict[str, Any] = {}
     for key, value in pairs:
         if key in out:
-            raise MeasuresFileError(f"the measures file has a duplicate key {key!r}")
+            raise MeasuresFileError(
+                f"the measures file has a duplicate key {_shown(key)}"
+            )
         out[key] = value
     return out
 
@@ -661,7 +681,8 @@ def _exact(found: object, allowed: frozenset[str], where: str) -> dict[str, Any]
     missing = sorted(allowed - set(found))
     if extra or missing:
         raise MeasuresFileError(
-            f"the measures file {where} has unexpected keys {extra} or lacks {missing}"
+            f"the measures file {where} has unexpected keys {_shown_all(extra)} "
+            f"or lacks {_shown_all(missing)}"
         )
     return found
 
