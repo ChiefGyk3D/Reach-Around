@@ -506,6 +506,9 @@ class Manifest:
         self.bookmarks: list[str] = []
         self.bookmark_attempts: list[dict[str, str]] = []
         self.recovery_exports: list[str] = []
+        # Digests this manifest once held for a row that was re-moved with new data:
+        # an export made before the re-move is stale, not foreign.
+        self.superseded: dict[str, dict[str, list[str]]] = {t: {} for t, _ in TABLES}
         self.run_id = secrets.token_hex(16)
         self.exists = False
 
@@ -576,6 +579,19 @@ class Manifest:
             isinstance(x, str) for x in exports
         ):
             raise Refused("the manifest is unreadable; resolve it by hand.")
+        old = data.get("superseded", {})
+        if not isinstance(old, dict) or not all(
+            isinstance(old.get(t, {}), dict)
+            and all(
+                isinstance(v, list) and all(isinstance(d, str) for d in v)
+                for v in old.get(t, {}).values()
+            )
+            for t, _ in TABLES
+        ):
+            raise Refused("the manifest is unreadable; resolve it by hand.")
+        self.superseded = {
+            t: {k: list(v) for k, v in old.get(t, {}).items()} for t, _ in TABLES
+        }
         self.bookmark_attempts = list(attempts)
         self.recovery_exports = list(exports)
         self.run_id = run_id if isinstance(run_id, str) else self.run_id
@@ -596,6 +612,7 @@ class Manifest:
                 "bookmarks": self.bookmarks,
                 "bookmark_attempts": self.bookmark_attempts,
                 "recovery_exports": self.recovery_exports,
+                "superseded": self.superseded,
                 "run_id": self.run_id,
                 "state": self.state,
                 "cursor": self.cursor,
@@ -617,7 +634,18 @@ class Manifest:
     def record(self, table: str, row: dict[str, Any]) -> None:
         """Record (or replace) a row's digest. Called only after the read-back proved
         DEST holds the row exactly as SOURCE has it now."""
-        self.digests[table][str(row.get("id"))] = digest(table, row)
+        key = str(row.get("id"))
+        new = digest(table, row)
+        old = self.digests[table].get(key)
+        if old is not None and old != new:
+            trail = self.superseded[table].setdefault(key, [])
+            if old not in trail:
+                trail.append(old)
+        self.digests[table][key] = new
+
+    def is_stale(self, table: str, key: str, row_digest: str) -> bool:
+        """True when this digest was this row's recorded one before a re-move."""
+        return row_digest in self.superseded[table].get(key, [])
 
 
 def check_ancestors(path: str) -> None:
@@ -1062,9 +1090,9 @@ def validate_export(data: object, m: Manifest) -> list[dict[str, Any]]:
         table = item["table"]
         row = item["row"]
         key = str(row.get("id"))
-        if (
-            digest(table, row) != item["digest"]
-            or m.digests[table].get(key) != item["digest"]
+        if digest(table, row) != item["digest"] or not (
+            m.digests[table].get(key) == item["digest"]
+            or m.is_stale(table, key, item["digest"])
         ):
             raise Refused("the recovery export does not match the manifest.")
         rows.append(item)
@@ -1153,7 +1181,14 @@ def restore_from_exports(
     for name in m.recovery_exports:
         if Path(name).name != name or not name.startswith(EXPORT_PREFIX):
             raise Refused("the manifest contains an invalid recovery export name.")
-        items = read_recovery_export(work / name, m)
+        # A row re-moved with new data after this export was made is exported again
+        # with its new digest; the older copy is stale and is not restored over it.
+        items = [
+            item
+            for item in read_recovery_export(work / name, m)
+            if m.digests[item["table"]].get(str(item["row"].get("id")))
+            == item["digest"]
+        ]
         for table, _ in TABLES:
             table_rows = [item["row"] for item in items if item["table"] == table]
             if not table_rows:

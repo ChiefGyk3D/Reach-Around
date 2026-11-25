@@ -1792,3 +1792,31 @@ def test_resume_with_an_intact_destination_prefix_continues(
     assert "resuming an unfinished copy from the recorded cursor" in resumed.stdout
     assert rows(env["STUB_SRC"], "leads") == rows(env["STUB_DEST"], "leads")
     assert rows(env["STUB_SRC"], "kit_events") == rows(env["STUB_DEST"], "kit_events")
+
+
+def test_an_export_made_before_a_row_was_re_moved_is_stale_not_foreign(
+    tmp_path: Path,
+) -> None:
+    mod = load_script()
+    uid = "a" * 8 + "-aaaa-aaaa-aaaa-" + "a" * 12
+    m = mod.Manifest(tmp_path, "src", "dst", uid, uid)
+    old_row = {c: None for c in mod.COLUMNS["leads"]} | {"id": "1" * 32}
+    new_row = old_row | {"last_seen_ts": 99999}
+    m.record("leads", old_row)
+    # No re-move yet: an export holding a changed row is foreign and is refused.
+    stale = {"table": "leads", "row": old_row, "digest": mod.digest("leads", old_row)}
+    data = {"version": 1, "run_id": m.run_id, "src_id": uid, "dst_id": uid}
+    m.record("leads", new_row)  # the rerun re-moves the changed row
+    assert mod.digest("leads", old_row) in m.superseded["leads"]["1" * 32]
+    assert len(mod.validate_export(data | {"rows": [stale]}, m)) == 1
+    forged_row = old_row | {"last_seen_ts": 7}
+    forged = {
+        "table": "leads",
+        "row": forged_row,
+        "digest": mod.digest("leads", forged_row),
+    }
+    with pytest.raises(mod.Refused):
+        mod.validate_export(data | {"rows": [forged]}, m)
+    lied = stale | {"row": forged_row}  # row text altered, digest kept
+    with pytest.raises(mod.Refused):
+        mod.validate_export(data | {"rows": [lied]}, m)
