@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 /* The production smart stack inherits the site's dark palette and tokens. */
 .smart-stack,
+.smart-onair,
 .smart-groups,
 .smart-group,
 .smart-group-links {
@@ -11,7 +12,7 @@
 }
 .smart-stack {
   flex: 1 0 auto;
-  gap: var(--ra-space-5);
+  gap: var(--ra-deck-gap, var(--ra-space-3));
   width: 100%;
   padding-inline: var(--ra-gutter);
 }
@@ -25,6 +26,14 @@
   border-radius: var(--ra-card-radius);
   background-color: var(--ra-color-surface);
   box-shadow: var(--ra-shadow-card);
+}
+/* Inside the deck's Watch tile the status is plain text on the tile; a frame
+   (theme.frame) keeps its own box. */
+.smart-onair .smart-status:not(.ra-bx) {
+  padding: 0;
+  border: 0;
+  background: none;
+  box-shadow: none;
 }
 .smart-status p { margin: 0; }
 .smart-status-text { font-size: var(--ra-text-md); font-weight: 700; }
@@ -48,12 +57,70 @@
   letter-spacing: 0.06em;
 }
 .smart-live-badge[hidden] { display: none; }
-.smart-featured { display: flex; min-width: 0; max-width: 100%; flex-direction: column; gap: var(--ra-space-2); }
+/* The deck (#677, Direction B): every region is a tile on the dark ground.
+   Tiles use the surface and border tokens; only the Support tile takes the
+   brand plate, and amber stays on the buttons, the kickers and the focus ring. */
+.smart-onair,
+.smart-featured,
+.smart-group {
+  padding: var(--ra-space-3) var(--ra-space-4) var(--ra-space-4);
+  border: var(--ra-rule-width) solid var(--ra-color-border);
+  border-radius: var(--ra-tile-radius, var(--ra-card-radius));
+  background-color: var(--ra-color-surface);
+}
+.smart-group-support { background-color: var(--ra-brand-plate); }
+.smart-featured {
+  display: flex;
+  min-width: 0;
+  max-width: 100%;
+  flex-direction: column;
+  gap: var(--ra-space-2);
+  border-inline-start: var(--ra-rule-accent-width) solid var(--ra-color-accent);
+}
+/* Small mono kickers: the tile headings, with a hairline that runs to the edge. */
+.smart-kicker,
+.smart-featured-kicker,
+.smart-group h2 {
+  display: flex;
+  align-items: center;
+  gap: var(--ra-space-3);
+  margin: 0 0 var(--ra-space-2);
+  color: var(--ra-color-accent);
+  font-family: var(--ra-font-mono);
+  font-size: var(--ra-text-xs);
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  line-height: 1.2;
+  text-transform: uppercase;
+}
+.smart-kicker::after,
+.smart-featured-kicker::after,
+.smart-group h2::after {
+  content: "";
+  flex: 1 1 auto;
+  height: var(--ra-rule-width);
+  background-color: var(--ra-brand-rule);
+}
+.smart-collapse > summary h2 { flex: 1 1 auto; }
+/* Jump chips, phones only: in-page anchors, no script. */
+.smart-jump ul { display: flex; flex-wrap: wrap; gap: var(--ra-space-2); }
+.smart-jump a {
+  display: inline-flex;
+  align-items: center;
+  min-width: var(--ra-tap);
+  min-height: var(--ra-tap);
+  padding-inline: var(--ra-space-4);
+  border: var(--ra-rule-width) solid var(--ra-color-accent);
+  border-radius: var(--ra-button-radius);
+  background-color: var(--ra-color-surface);
+  color: var(--ra-color-text);
+  font-size: var(--ra-text-sm);
+  font-weight: 700;
+  text-decoration: none;
+}
 .smart-featured p { margin: 0; }
-.smart-featured-kicker { color: var(--ra-color-muted); font-size: var(--ra-text-sm); font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; }
 .smart-groups, .smart-group, .smart-group-links { gap: var(--ra-space-2); }
 .smart-group { scroll-margin-top: calc(var(--ra-tap) + var(--ra-space-5) + env(safe-area-inset-top, 0rem)); }
-.smart-group h2 { margin: var(--ra-space-4) 0 var(--ra-space-2); font-size: var(--ra-text-lg); }
 /* A collapsed group is a native details element: no script, keyboard and touch
    work as the browser provides. The heading lives inside the summary, and the
    whole row is the target. The focus ring comes from the site-wide
@@ -71,7 +138,7 @@
   overflow-wrap: anywhere;
 }
 .smart-collapse > summary::-webkit-details-marker { display: none; }
-.smart-collapse > summary h2 { margin: var(--ra-space-2) 0; }
+.smart-collapse > summary h2 { margin: var(--ra-space-1) 0; }
 .smart-collapse > summary::after {
   content: "";
   flex: none;
@@ -112,6 +179,51 @@
 }
 .smart-style-rows .link-title { font-size: var(--ra-text-md); text-wrap: wrap; }
 .smart-style-rows .link-subtitle { margin-top: 0; text-wrap: wrap; }
+/* Dark link cards (owner decision 2026-11-23, "dark rows like the mock"): a
+   mark, the label with a short description under it, and a chevron. Amber fills
+   stay on the primary buttons only (the Watch links and the Support buttons).
+   Cards take no frame art and use the theme tokens. */
+.smart-stack a.link.smart-card {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  column-gap: var(--ra-space-3);
+  min-height: var(--ra-tap);
+  height: auto;
+  padding: var(--ra-space-2) var(--ra-space-3);
+  border: var(--ra-rule-width) solid var(--ra-color-border);
+  border-radius: min(var(--ra-button-radius), var(--ra-card-radius));
+  background-color: var(--ra-color-raised);
+  box-shadow: none;
+  color: var(--ra-color-text);
+  text-align: start;
+}
+.smart-stack a.link.smart-card:not(:has(.link-chip, .link-thumb)) { grid-template-columns: minmax(0, 1fr) auto; }
+.smart-stack a.link.smart-card:not(:has(.link-chip, .link-thumb)) .link-text { grid-column: 1; }
+.smart-stack a.link.smart-card::after {
+  display: block;
+  grid-column: -2 / -1;
+  grid-row: 1;
+  width: 0.5rem;
+  height: 0.5rem;
+  margin-inline-end: var(--ra-space-1);
+  border-top: var(--ra-rule-accent-width) solid var(--ra-color-muted);
+  border-right: var(--ra-rule-accent-width) solid var(--ra-color-muted);
+  background: none;
+  transform: rotate(45deg);
+}
+.smart-stack .smart-card .link-chip,
+.smart-stack .smart-card .link-thumb {
+  width: 2rem;
+  height: 2rem;
+  border: var(--ra-rule-width) solid var(--ra-color-border);
+  border-radius: 0.4rem;
+  background-color: var(--ra-color-bg);
+}
+.smart-stack .smart-card .link-text { display: block; }
+.smart-stack .smart-card .link-title { font-size: var(--ra-text-base); font-weight: 600; text-wrap: wrap; }
+.smart-stack .smart-card .link-subtitle { margin-top: 0; color: var(--ra-color-muted); text-wrap: wrap; }
+.smart-stack a.link.smart-card:is(:hover, :focus-visible) { border-color: var(--ra-color-accent); filter: none; transform: none; box-shadow: none; }
+.smart-stack .smart-featured a.link.smart-card { min-height: var(--ra-tap); }
 /* icons: the Follow group as an icon-only row. Each icon is the site's own
    social link (a full-size tap target with a name for assistive technology). */
 .smart-icons {
@@ -130,12 +242,55 @@
   .smart-watch-link { flex-basis: 100%; width: 100%; }
 }
 @media (min-width: 48rem) {
-  .smart-stack { width: min(100%, var(--ra-column-tablet)); align-self: center; }
-  .smart-group-links { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  /* Two columns: the Watch tile and the featured card run full width, the
+     groups pair up in source order. The jump chips are for phones. */
+  main.main-deck { max-width: min(90rem, 100%); }
+  .smart-stack {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    align-content: start;
+    width: 100%;
+  }
+  .smart-groups { display: contents; }
+  .smart-onair,
+  .smart-featured { grid-column: 1 / -1; }
+  .smart-jump { display: none; }
+  .smart-group-links { display: grid; grid-template-columns: minmax(0, 1fr); }
+}
+/* Desktop: twelve columns. Watch beside the featured card, then Follow (wide)
+   with Community, then the rest four columns each. */
+@media (min-width: 64rem) {
+  .smart-stack { grid-template-columns: repeat(12, minmax(0, 1fr)); }
+  .smart-group { grid-column: span 4; }
+  .smart-group-follow { grid-column: span 8; }
+  .smart-group-community { grid-column: span 4; }
+  .smart-onair { grid-column: 1 / -1; }
+  .smart-has-featured .smart-featured { grid-column: 1 / span 4; grid-row: 1; }
+  .smart-has-featured .smart-onair { grid-column: 5 / span 8; grid-row: 1; }
+  .smart-group-links { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .smart-group-links.smart-style-rows { grid-template-columns: minmax(0, 1fr); }
+  .smart-group-follow .smart-group-links { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  /* Fit one screen: a tighter header and footer, with the privacy and credit
+     links on one line (#677). */
+  main.main-deck { padding-bottom: var(--ra-space-3); }
+  main.main-deck > .site-header { padding-top: var(--ra-space-4); }
+  main.main-deck > footer {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: center;
+    column-gap: var(--ra-space-5);
+    margin-top: var(--ra-space-2);
+  }
+  main.main-deck > footer p { margin: 0; }
+  main.main-deck > footer > .disclosure,
+  main.main-deck > footer > .site-nav,
+  main.main-deck > footer > .cookie-banner { flex: 0 0 100%; }
 }
 /* Print opens every collapsed group, so no link is lost on paper. */
 @media print {
+  .smart-jump { display: none; }
+  .smart-stack, .smart-groups { display: flex; }
   .smart-collapse::details-content { block-size: auto; opacity: 1; content-visibility: visible; }
   .smart-collapse > summary::after { display: none; }
   .smart-group-links.smart-style-rows a.link { display: block; }

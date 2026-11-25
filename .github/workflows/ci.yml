@@ -35,6 +35,9 @@ jobs:
       # pytest-xdist: the suite is ~6,600 tests and ran serially (3.12 took 13m22s of a 15m
       # limit). Coverage is only uploaded from the coverage leg (3.13), so the other legs skip
       # it: settrace coverage made 3.12 2.7x slower than 3.13 (802s vs 301s).
+      # `xdist-workers` alone does nothing: python-ci only installs pytest-xdist and sets
+      # PYTEST_ADDOPTS=-n when `xdist: true` (#826; the 3.13 leg logged `xdist: false`).
+      xdist: true
       xdist-workers: auto
       test-command: |
         if [ "$(python -c 'import sys; print(f"{sys.version_info[0]}.{sys.version_info[1]}")')" = "3.13" ]; then
@@ -48,6 +51,8 @@ jobs:
         ruff format --check .
         python3 -I scripts/check-token-drift
         python3 -I scripts/check-public-assets.py
+        python3 -I .github/scripts/check-migrations.py
+        python3 -I scripts/check-wiki-scrub.py
         python3 -I scripts/changelog-assemble.py verify
         python3 -I scripts/changelog-assemble.py check-pr
       typecheck-install-command: |

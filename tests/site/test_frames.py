@@ -165,6 +165,10 @@ def _all_blocks_config(frame: str | None, **theme: Any) -> SiteConfig:
     ]
     data["profile_card"] = {"tags": ["One", "Two"]}
     data["features"] = {"kit_gate": True}
+    data["privacy"] = {
+        "controller_name": "Example Creator",
+        "contact": "example.com/contact",
+    }
     data["kit"]["partners"] = [{"name": "Acme Fake Co"}]
     blocks = data["tabs"][0]["blocks"]
     blocks[2]["title"] = "Find me"
@@ -353,6 +357,10 @@ def test_the_gated_page_carries_no_frame(tmp_path: Path) -> None:
     cfg = config("faithful")
     data = cfg.model_dump(mode="json", exclude_none=True)
     data["features"] = {"kit_gate": True}
+    data["privacy"] = {
+        "controller_name": "Example Creator",
+        "contact": "example.com/contact",
+    }
     data["kit"]["partners"] = [{"name": "Acme Fake Co"}]
     out, gated = tmp_path / "out", tmp_path / "gated"
     build_site(SiteConfig.model_validate(data), out, today=TODAY, gated_out=gated)

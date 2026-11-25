@@ -312,8 +312,18 @@ PLATFORM_ICONS = {
     "linkedin": "linkedin",
     "rss": "rss",
 }
+# Platforms the kit measures by hand (#633): no link-hub icon, no collector.
+CHANNEL_SLUGS = ("peertube", "lemmy", "podcast", "newsletter", "blog")
 PLATFORM_SLUGS = frozenset({*PLATFORM_ICONS, "other"})
+# The names the kit accepts for a card, a metric or an analytics row: the link-hub
+# platforms plus the hand-measured ones. The link hub itself keeps PLATFORM_SLUGS.
+KIT_PLATFORM_SLUGS = frozenset({*PLATFORM_SLUGS, *CHANNEL_SLUGS})
 _PLATFORM_NAMES = {
+    "peertube": "PeerTube",
+    "lemmy": "Lemmy",
+    "podcast": "Podcast",
+    "newsletter": "Newsletter",
+    "blog": "Blog",
     "twitch": "Twitch",
     "kick": "Kick",
     "youtube": "YouTube",

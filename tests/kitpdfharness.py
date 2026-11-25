@@ -106,6 +106,10 @@ def make_config(kit: dict[str, Any] | None = None) -> SiteConfig:
                 }
             ],
             "features": {"kit_gate": True},
+            "privacy": {
+                "controller_name": "Example Creator",
+                "contact": "example.com/contact",
+            },
             "kit": kit if kit is not None else kit_doc(),
         }
     )

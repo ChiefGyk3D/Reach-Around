@@ -88,7 +88,7 @@ describe("nothing identifying is stored", () => {
     const r = await rows();
     expect(r.length).toBe(2);
     expect(r[0]).toMatchObject({
-      city: "Exampleton",
+      city: "",
       region: "EX",
       country: "US",
       browser: "chrome",

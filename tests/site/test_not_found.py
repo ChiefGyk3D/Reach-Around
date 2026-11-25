@@ -113,7 +113,16 @@ def test_hostile_creator_name_is_escaped(tmp_path: Path) -> None:
 
 
 def test_footer_privacy_link_and_cookie_notice(tmp_path: Path) -> None:
-    text = build(tmp_path, make_config(features={"kit_gate": True}))
+    text = build(
+        tmp_path,
+        make_config(
+            features={"kit_gate": True},
+            privacy={
+                "controller_name": "Example Creator",
+                "contact": "example.com/contact",
+            },
+        ),
+    )
     assert '<a href="/privacy/">Privacy</a>' in text
     assert 'action="/privacy/#cookies"' in text
     assert "disclosure" not in text.replace("disclosure-", "")
