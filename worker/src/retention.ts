@@ -29,10 +29,11 @@ export interface ClickPurgeOptions {
  *
  * Deletes run in fixed batches of at most `batch` rows, one query each, and
  * stop after `maxBatches` of them or when the invocation's query meter is low.
- * A run that stops with a full batch behind it records `click_purge_backlog`
- * (the UTC date) in view_meta, best effort, and the next run simply continues: every delete
+ * A run that leaves an expired row behind records `click_purge_backlog`
+ * (the UTC date) in view_meta, and the next run simply continues: every delete
  * is a predicate on age, so it resumes where this one stopped. A run that
- * finishes clears the marker.
+ * finishes clears the marker. The marker is written best effort but reconciled on every run
+ * (one extra query), so it is never left missing or stale for longer than one run.
  */
 export async function purgeOldEvents(
   env: Env,
@@ -62,10 +63,12 @@ export async function purgeOldEvents(
     deleted += n;
     if (n < batch) break;
   }
-  // The marker can only change when this run deleted something (an idle run costs the one query
-  // above). It is decided in one transaction by whether an expired row is really left, and it is
-  // best effort: the click purge never depends on the view tables, so a failure here is swallowed.
-  if (deleted > 0 && (meter === undefined || meter.remaining() >= 1)) {
+  // The marker is reconciled on EVERY run that has a query left, whether or not it deleted
+  // anything: a run cut short by the shared meter, a run that finds nothing, and a run after a
+  // failed marker write all converge on the truth, so a missing or stale marker heals on the next
+  // run. It is decided in one transaction by whether an expired row is really left. A failure here
+  // is swallowed (the click purge never depends on the view tables) and costs only a late marker.
+  if (meter === undefined || meter.remaining() >= 1) {
     try {
       await env.DB.batch([
         env.DB.prepare(
@@ -77,7 +80,7 @@ export async function purgeOldEvents(
         ).bind(cutoff),
       ]);
     } catch {
-      // Next run retries; the deletes above already happened.
+      // The next run reconciles again, deleted or not.
     }
   }
   return deleted;

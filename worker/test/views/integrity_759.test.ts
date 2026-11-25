@@ -3,6 +3,7 @@
 // id, the re-roll closed state, key-bounded aggregate deletes, bounded click
 // retention and the hour table staying in step with the daily tables.
 import { beforeEach, describe, expect, it } from "vitest";
+import { QueryMeter, meteredDb } from "../../src/d1budget";
 import { purgeOldEvents } from "../../src/retention";
 import { purgeViews } from "../../src/viewretention";
 import { rollupClosedDays } from "../../src/viewrollup";
@@ -67,6 +68,60 @@ describe("F-02 hard ceiling and uncounted rows", () => {
     const m = await meta();
     expect(m.rollup_overdue).toBeUndefined();
     expect(m.rollup_overdue_rows).toBeUndefined();
+  });
+});
+
+describe("F-02 the overdue count cannot be lost to a failure after the delete", () => {
+  const old = NOW - 30 * DAY;
+  async function oneLateRow(): Promise<void> {
+    await addRaw(old, 2);
+    const ids = (await q<{ id: number }>("SELECT id FROM view_events ORDER BY id")).map((r) => r.id);
+    await sealDay(day(old), ids[0] as number); // the second row is above max_id: never counted
+  }
+
+  it("a_failed_closing_batch_after_the_delete_still_leaves_the_count_and_the_flag", async () => {
+    await oneLateRow();
+    let calls = 0;
+    const failing = new Proxy(DB, {
+      get(t, p) {
+        if (p === "batch") {
+          return async (stmts: D1PreparedStatement[]) => {
+            calls += 1;
+            if (calls === 2) throw new Error("injected: closing batch failed");
+            return t.batch(stmts);
+          };
+        }
+        const v = Reflect.get(t, p, t);
+        return typeof v === "function" ? v.bind(t) : v;
+      },
+    }) as D1Database;
+    await expect(purgeViews({ DB: failing }, NOW)).rejects.toThrow("injected");
+    expect(calls).toBe(2);
+    expect(await q("SELECT id FROM view_events")).toEqual([]); // the delete went through
+    const m = await meta();
+    expect(m.rollup_overdue_rows).toBe("1");
+    expect(m.rollup_overdue).toBe("2027-03-14");
+    // The next run neither loses nor doubles it.
+    await purgeViews({ DB }, NOW);
+    expect((await meta()).rollup_overdue_rows).toBe("1");
+  });
+
+  it("a_bookkeeping_statement_that_fails_rolls_the_delete_back_and_the_next_run_recovers_the_count", async () => {
+    await oneLateRow();
+    await DB.prepare(
+      "CREATE TRIGGER fail_overdue_rows BEFORE INSERT ON view_meta WHEN NEW.key = 'rollup_overdue_rows' BEGIN SELECT RAISE(ABORT, 'injected'); END",
+    ).run();
+    try {
+      await expect(purgeViews({ DB }, NOW)).rejects.toThrow();
+      // The delete shared the failed statement's transaction: the row is still there to count.
+      expect((await q<{ n: number }>("SELECT COUNT(*) AS n FROM view_events"))[0]?.n).toBe(2);
+      expect((await meta()).rollup_overdue_rows).toBeUndefined();
+    } finally {
+      await DB.prepare("DROP TRIGGER IF EXISTS fail_overdue_rows").run();
+    }
+    await purgeViews({ DB }, NOW);
+    expect(await q("SELECT id FROM view_events")).toEqual([]);
+    expect((await meta()).rollup_overdue_rows).toBe("1");
   });
 });
 
@@ -159,6 +214,46 @@ describe("F-23 click retention is bounded", () => {
     expect(second).toBe(13);
     expect((await q<{ n: number }>("SELECT COUNT(*) AS n FROM click_events"))[0]?.n).toBe(1);
     expect((await meta()).click_purge_backlog).toBeUndefined();
+  });
+
+  const expired = (n: number) => DB.batch(Array.from({ length: n }, (_, i) => click(NOW - 200 * DAY + i)));
+  const marker = async () => (await meta()).click_purge_backlog;
+
+  it("a_run_cut_short_by_the_shared_meter_still_records_the_backlog", async () => {
+    await expired(4);
+    const tight = meteredDb(DB, new QueryMeter(11)); // below the reserve: no delete runs, one query is left
+    expect(await purgeOldEvents({ ...env, DB: tight }, NOW, 90, { batch: 5 })).toBe(0);
+    expect(await marker()).toBe("2027-03-14");
+  });
+
+  it("a_stale_marker_is_cleared_by_a_run_that_deletes_nothing", async () => {
+    await DB.prepare("INSERT INTO view_meta (key, value) VALUES ('click_purge_backlog', '2027-03-01')").run();
+    expect(await purgeOldEvents(env, NOW, 90)).toBe(0);
+    expect(await marker()).toBeUndefined();
+  });
+
+  it("a_failed_marker_write_is_repaired_by_the_next_run_even_with_nothing_to_delete", async () => {
+    await expired(12);
+    let calls = 0;
+    const failing = new Proxy(DB, {
+      get(t, p) {
+        if (p === "batch") {
+          return async () => {
+            calls += 1;
+            throw new Error("injected: marker batch failed");
+          };
+        }
+        const v = Reflect.get(t, p, t);
+        return typeof v === "function" ? v.bind(t) : v;
+      },
+    }) as D1Database;
+    expect(await purgeOldEvents({ ...env, DB: failing }, NOW, 90, { batch: 5, maxBatches: 1 })).toBe(5);
+    expect(calls).toBe(1);
+    expect(await marker()).toBeUndefined(); // the advisory write was lost while 7 expired rows remain
+    // The next run deletes nothing (the shared meter is low) but reconciles the marker.
+    const tight = meteredDb(DB, new QueryMeter(11));
+    expect(await purgeOldEvents({ ...env, DB: tight }, NOW, 90, { batch: 5 })).toBe(0);
+    expect(await marker()).toBe("2027-03-14");
   });
 });
 

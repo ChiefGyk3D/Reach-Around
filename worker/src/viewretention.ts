@@ -193,6 +193,38 @@ export async function purgeViews(env: RetentionEnv, nowMs: number, opts: PurgeOp
     },
   ];
   const del = (st: Step) => db.prepare(st.sql).bind(...st.args, batch);
+  // An emergency delete carries its own bookkeeping in the SAME db.batch() (one transaction): the
+  // two statements after it read changes(), the row count of the delete just before, so the count
+  // and the flag commit with the delete or not at all. A failure after the delete can no longer
+  // lose the count, because there is no "after": the rows come back and the next run takes them
+  // again. changes() is only the previous statement's count, so the order is load-bearing: delete,
+  // counter, flag (the counter's own write makes changes() 1 for the flag, and 0 if it was skipped).
+  const unit = (st: Step): D1PreparedStatement[] =>
+    st.emergency
+      ? [
+          del(st),
+          db.prepare(
+            "INSERT INTO view_meta (key, value) SELECT 'rollup_overdue_rows', CAST(changes() AS TEXT) WHERE changes() > 0 " +
+              "ON CONFLICT(key) DO UPDATE SET value = CAST(CAST(view_meta.value AS INTEGER) + CAST(excluded.value AS INTEGER) AS TEXT)",
+          ),
+          db
+            .prepare(
+              "INSERT INTO view_meta (key, value) SELECT 'rollup_overdue', ?1 WHERE changes() > 0 " +
+                "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            )
+            .bind(today),
+        ]
+      : [del(st)];
+  /** Index of each step's delete inside the flattened statement list of one batch. */
+  const flatten = (set: Step[], head: D1PreparedStatement[]) => {
+    const stmts = [...head];
+    const at: number[] = [];
+    for (const st of set) {
+      at.push(stmts.length);
+      stmts.push(...unit(st));
+    }
+    return { stmts, at };
+  };
 
   let failure: unknown = null;
   let backlog = false;
@@ -201,7 +233,7 @@ export async function purgeViews(env: RetentionEnv, nowMs: number, opts: PurgeOp
   let flagDay = "";
   try {
     // Round one: the overdue check, then every step once, in ONE query.
-    const first = await db.batch([
+    const head = [
       db
         .prepare(
           `${kCte}SELECT 1 AS x FROM view_events e ${leftJoin} WHERE e.ts < ${hardOf} AND ` +
@@ -209,18 +241,21 @@ export async function purgeViews(env: RetentionEnv, nowMs: number, opts: PurgeOp
         )
         .bind(...kArgs, hardCutoff),
       db.prepare("SELECT value FROM view_meta WHERE key = 'rollup_overdue'"),
-      ...steps.map(del),
-    ]);
+    ];
+    const f = flatten(steps, head);
+    const first = await db.batch(f.stmts);
+    const changed = (r: D1Result | undefined) => r?.meta?.changes ?? 0;
     hardHit = (first[0]?.results ?? []).length > 0;
-    emergencyRows += steps.reduce((n, st, i) => n + (st.emergency ? (first[2 + i]?.meta?.changes ?? 0) : 0), 0);
+    emergencyRows += steps.reduce((n, st, i) => n + (st.emergency ? changed(first[f.at[i] as number]) : 0), 0);
     flagDay = String(((first[1]?.results ?? [])[0] as { value?: string } | undefined)?.value ?? "");
-    let open = steps.filter((_, i) => (first[2 + i]?.meta?.changes ?? 0) >= batch);
+    let open = steps.filter((_, i) => changed(first[f.at[i] as number]) >= batch);
     // Later rounds repeat only the full steps; two queries stay free for the closing batch.
     for (let round = 1; open.length > 0 && round < maxRounds; round++) {
       if (meter.remaining() < 3) break;
-      const res = await db.batch(open.map(del));
-      emergencyRows += open.reduce((n, st, i) => n + (st.emergency ? (res[i]?.meta?.changes ?? 0) : 0), 0);
-      open = open.filter((_, i) => (res[i]?.meta?.changes ?? 0) >= batch);
+      const g = flatten(open, []);
+      const res = await db.batch(g.stmts);
+      emergencyRows += open.reduce((n, st, i) => n + (st.emergency ? changed(res[g.at[i] as number]) : 0), 0);
+      open = open.filter((_, i) => changed(res[g.at[i] as number]) >= batch);
     }
     backlog = open.length > 0;
   } catch (e) {
@@ -242,17 +277,8 @@ export async function purgeViews(env: RetentionEnv, nowMs: number, opts: PurgeOp
       close.push(db.prepare("DELETE FROM view_meta WHERE key = 'purge_backlog'"));
     }
     if (hardHit || emergencyRows > 0) {
-      if (emergencyRows > 0) {
-        // Rows deleted at the ceiling that no aggregate counted; the total clears with the flag.
-        close.push(
-          db
-            .prepare(
-              "INSERT INTO view_meta (key, value) VALUES ('rollup_overdue_rows', ?1) " +
-                "ON CONFLICT(key) DO UPDATE SET value = CAST(CAST(value AS INTEGER) + CAST(excluded.value AS INTEGER) AS TEXT)",
-            )
-            .bind(String(emergencyRows)),
-        );
-      }
+      // The count and the flag for deleted rows were committed with the delete itself; this write
+      // only covers rows still beyond the ceiling (hardHit) and is idempotent.
       close.push(
         db
           .prepare(
