@@ -293,3 +293,19 @@ def test_other_image_types_are_refused(tmp_path: Path, name: str) -> None:
 def test_the_site_key_is_not_in_the_staged_page(tmp_path: Path) -> None:
     # the gated page has no form; this guards the staging against gaining one
     assert SITE_KEY not in staged_html(tmp_path)
+
+
+def test_print_does_not_hold_the_whole_audience_section_together() -> None:
+    """The audience section is taller than the rest of page 1, so holding it whole
+    left page 1 mostly empty (#866). Its parts stay whole instead."""
+    from reach_around.kit.stage import PRINT_CSS
+
+    rules = re.findall(r"([^{}]*)\{break-inside:(avoid|auto)\}", PRINT_CSS)
+    state: dict[str, str] = {}
+    for selectors, value in rules:  # later rules win, as in the cascade
+        for selector in selectors.split(","):
+            state[selector.strip()] = value
+    assert state[".kit-numbers"] == "auto"
+    assert state[".kit-summary"] == "avoid"
+    assert state[".kit-legend"] == "avoid"
+    assert state["tr"] == "avoid"

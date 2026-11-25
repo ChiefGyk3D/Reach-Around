@@ -27,6 +27,7 @@ from reach_around.kit.pdf import (
     find_chromium,
 )
 from reach_around.kit.pdftext import extract_pages
+from reach_around.kit.stage import stage_page
 
 pytestmark = pytest.mark.visual
 
@@ -137,3 +138,15 @@ def test_network_namespace_isolation_renders_too(
     data = render(chromium, tmp_path, isolation="netns").read_bytes()
     flat = "".join(" ".join(extract_pages(data)).split())
     assert "Exampleland40%" in flat
+
+
+def test_the_first_page_holds_the_first_section(chromium: Path, tmp_path: Path) -> None:
+    """Page 1 was header, summary and contact only, with 'Audience numbers'
+    pushed to page 2 (#866). This renders the staged page directly, so it does
+    not depend on the legend text check of build_kit_pdf."""
+    _config, site, gated = build_instance(tmp_path)
+    work = tmp_path / "work"
+    work.mkdir(mode=0o700)
+    data = chromium_renderer(chromium)(stage_page(gated, site).html, work)
+    pages = extract_pages(data)
+    assert "Audience numbers" in " ".join(pages[0].split())
