@@ -142,7 +142,10 @@ def test_local_close_fails_loudly_when_a_handler_is_stuck() -> None:
 
 def test_drip_close_fails_loudly_when_a_worker_is_stuck() -> None:
     release = threading.Event()
-    server = DripServer(lambda _conn: release.wait(10) and None)
+    def stuck(_conn: socket.socket) -> None:
+        release.wait(10)
+
+    server = DripServer(stuck)
     client = socket.create_connection(("127.0.0.1", server.port))
     try:
         time.sleep(0.2)
