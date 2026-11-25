@@ -358,6 +358,45 @@ describe("quota housekeeping does not depend on optional settings", () => {
     expect(m.calls).toHaveLength(1);
     expect(await rows("alert_quota")).toBeLessThan(10);
   });
+  async function fillExpiredDedup(): Promise<void> {
+    const stmt = DB.prepare("INSERT INTO alert_dedup (site, event_hash, expires_at) VALUES ('default', ?1, ?2)");
+    const batch = [];
+    for (let i = 0; i < DEDUP_ROW_CAP; i++) batch.push(stmt.bind(String(i).padStart(32, "0"), T0 - 1000 - i));
+    await DB.batch(batch);
+  }
+  // A database wrapper that records every statement text prepared through it.
+  function recording(): { db: D1Database; sql: string[] } {
+    const sql: string[] = [];
+    // The alert code uses only prepare and batch on the database (grep src/alerts).
+    const db = {
+      prepare: (q: string) => (sql.push(q), DB.prepare(q)),
+      batch: (stmts: D1PreparedStatement[]) => DB.batch(stmts),
+    } as unknown as D1Database;
+    return { db, sql };
+  }
+  const dedupDeletes = (sql: string[]) => sql.filter((q) => q.startsWith("DELETE FROM alert_dedup")).length;
+  it("without a dedup key, expired dedup rows are pruned too, once", async () => {
+    await fillExpiredDedup();
+    expect(await rows("alert_dedup")).toBe(DEDUP_ROW_CAP);
+    const { db, sql } = recording();
+    const m = mockFetch();
+    const e: AlertsEnv = { DB: db, ALERT_DISCORD_WEBHOOK: DISCORD, ALERTS_CONFIG: cfg({ max_per_minute: 30 }), DAILY_ALERT_BUDGET: "50" };
+    await createDispatcher().notify(e, unlock("a@example.com"), { fetchFn: m.fn, nowMs: T0 });
+    expect(m.calls).toHaveLength(1);
+    expect(await rows("alert_dedup")).toBe(0);
+    expect(dedupDeletes(sql)).toBe(1);
+  });
+  it("with a dedup key, housekeeping runs once, expired dedup rows go and the claim succeeds", async () => {
+    await fillExpiredDedup();
+    const { db, sql } = recording();
+    const m = mockFetch();
+    const e: AlertsEnv = { DB: db, ALERT_DEDUP_KEY: KEY, ALERT_DISCORD_WEBHOOK: DISCORD, ALERTS_CONFIG: cfg({ max_per_minute: 30 }), DAILY_ALERT_BUDGET: "50" };
+    await createDispatcher().notify(e, unlock("a@example.com"), { fetchFn: m.fn, nowMs: T0 });
+    expect(m.calls).toHaveLength(1);
+    expect(await rows("alert_dedup")).toBe(1);
+    expect(dedupDeletes(sql)).toBe(1);
+    expect(sql.filter((q) => q.startsWith("DELETE FROM alert_quota"))).toHaveLength(1);
+  });
   it("a health event is not starved by expired rows when the key is short", async () => {
     await fillStale();
     const m = mockFetch();
