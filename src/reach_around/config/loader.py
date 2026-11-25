@@ -24,6 +24,22 @@ from yaml.nodes import MappingNode, Node
 _MERGE_TAG = "tag:yaml.org,2002:merge"
 
 
+MAX_ECHO_CHARS = 40
+MAX_PROBLEM_CHARS = 120
+
+
+def safe_text(text: object, limit: int = MAX_ECHO_CHARS) -> str:
+    """Text from a file, made safe to print: printable ASCII only, cut short.
+
+    Used wherever an error must name something the file said (a YAML tag, a
+    parser's own sentence); a key or value is otherwise never echoed.
+    """
+    raw = str(text)[: limit + 1]
+    out = raw.encode("ascii", "backslashreplace").decode("ascii")
+    out = "".join(c if c.isprintable() else f"\\x{ord(c):02x}" for c in out)
+    return out[:limit] + "..." if len(str(text)) > limit or len(out) > limit else out
+
+
 class ConfigError(Exception):
     """Raised for every malformed or hostile config input."""
 
@@ -85,7 +101,7 @@ class _HardenedLoader(yaml.SafeLoader):
             except TypeError:
                 raise _Refusal(line, "mapping key is not hashable") from None
             if duplicate:
-                raise _Refusal(line, f"duplicate key {key!r}")
+                raise _Refusal(line, "duplicate key in a mapping")
             seen.add(key)
         return super().construct_mapping(node, deep=deep)
 
@@ -137,12 +153,14 @@ def load_yaml(path: Path, *, max_bytes: int = 1_048_576, max_depth: int = 64) ->
     except yaml.MarkedYAMLError as exc:
         mark = exc.problem_mark or exc.context_mark
         line = None if mark is None else mark.line + 1
-        problem = exc.problem or "invalid YAML"
+        problem = safe_text(exc.problem or "invalid YAML", MAX_PROBLEM_CHARS)
         if "could not determine a constructor for the tag" in problem:
-            problem = f"tag not allowed: {problem.split('tag ')[-1]}"
+            problem = f"tag not allowed: {safe_text(problem.split('tag ')[-1])}"
         raise ConfigError(name, line, problem) from None
     except yaml.YAMLError as exc:
-        raise ConfigError(name, None, f"invalid YAML: {exc}") from None
+        raise ConfigError(
+            name, None, f"invalid YAML: {safe_text(exc, MAX_PROBLEM_CHARS)}"
+        ) from None
     except RecursionError:
         raise ConfigError(name, None, "nesting is too deep") from None
     finally:

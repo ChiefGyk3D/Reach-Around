@@ -599,6 +599,7 @@
           "items": {
             "$ref": "#/$defs/Social"
           },
+          "maxItems": 50,
           "title": "Socials",
           "type": "array"
         },
@@ -3493,6 +3494,7 @@
           "items": {
             "$ref": "#/$defs/Link"
           },
+          "maxItems": 200,
           "title": "Links",
           "type": "array"
         },
@@ -3732,6 +3734,7 @@
               }
             ]
           },
+          "maxItems": 200,
           "minItems": 1,
           "title": "Blocks",
           "type": "array"
@@ -3804,6 +3807,7 @@
               }
             ]
           },
+          "maxItems": 200,
           "title": "Blocks",
           "type": "array"
         },
@@ -4568,6 +4572,7 @@
       "items": {
         "$ref": "#/$defs/Tab"
       },
+      "maxItems": 50,
       "minItems": 1,
       "title": "Tabs",
       "type": "array"

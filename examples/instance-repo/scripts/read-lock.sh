@@ -25,8 +25,9 @@ set -euo pipefail
 # F-11). engine.release.json, next to the lock, lists the image digest, the
 # repository, the commit, the tag and the D1 schema (highest migration number)
 # of that release. Every field must match the lock, and the image tag (a label
-# in ENGINE_IMAGE) and the "# vX.Y.Z" comment on ENGINE_REF must name the manifest's
+# in ENGINE_IMAGE) and the "# vX.Y.Z[-rc.N]" comment on ENGINE_REF must name the manifest's
 # tag, so an image from release A with a commit from release B fails here.
+# The tag is vX.Y.Z or a release candidate vX.Y.Z-rc.N, and nothing else.
 # The manifest is reviewed in the same pull request as the lock; it is NOT
 # signed, so it binds the pins to each other, not to a publisher. The deploy
 # script also checks the commit against the checkout (deploy-local.sh).
@@ -45,10 +46,17 @@ if [ "${1:-}" = "--release" ]; then
   m_image="$(jq -er '.image | strings' "$manifest")" || fail_release "image missing"
   m_repo="$(jq -er '.repo | strings' "$manifest")" || fail_release "repo missing"
   m_commit="$(jq -er '.commit | strings' "$manifest")" || fail_release "commit missing"
-  m_tag="$(jq -er '.tag | strings' "$manifest")" || fail_release "tag missing"
+  # Read the tag raw (jq -j, a trailing x guards the end) so a newline or space
+  # inside the JSON string is seen by the shape check, not trimmed away.
+  m_tag="$(jq -ej '.tag | strings' "$manifest"; printf x)" || fail_release "tag missing"
+  m_tag="${m_tag%x}"
   m_schema="$(jq -er '.d1_schema | strings' "$manifest")" || fail_release "d1_schema missing"
   [ "$(jq -er '.manifest_version' "$manifest")" = "1" ] || fail_release "manifest_version must be 1"
-  printf '%s' "$m_tag" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$' || fail_release "tag has the wrong shape"
+  # Tag grammar, whole string (bash =~ is not line-based): "v" MAJOR.MINOR.PATCH,
+  # then optionally "-rc." N. MAJOR, MINOR, PATCH and N are ASCII digits only.
+  # Nothing else (no other suffix, no whitespace, no newline) is accepted.
+  tag_re='^v[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$'
+  [[ "$m_tag" =~ $tag_re ]] || fail_release "tag has the wrong shape"
   printf '%s' "$m_schema" | grep -Eq '^[0-9]{4}$' || fail_release "d1_schema has the wrong shape"
   l_image="$("$self" ENGINE_IMAGE "$lock_file")"
   l_repo="$("$self" ENGINE_REPO "$lock_file")"
@@ -56,7 +64,7 @@ if [ "${1:-}" = "--release" ]; then
   [ "$m_image" = "$l_image" ] || fail_release "image differs"
   [ "$m_repo" = "$l_repo" ] || fail_release "repo differs"
   [ "$m_commit" = "$l_ref" ] || fail_release "commit differs"
-  l_tag="$(sed -n 's/^ENGINE_REF=[0-9a-f]\{40\} *# *\(v[0-9.]*\) *$/\1/p' "$lock_file")"
+  l_tag="$(sed -n 's/^ENGINE_REF=[0-9a-f]\{40\} *# *\(v[0-9]\{1,\}\.[0-9]\{1,\}\.[0-9]\{1,\}\(-rc\.[0-9]\{1,\}\)\{0,1\}\) *$/\1/p' "$lock_file")"
   [ "$l_tag" = "$m_tag" ] || fail_release "the tag comment on ENGINE_REF is not ${m_tag}"
   image_tag="${l_image#*:}"
   image_tag="${image_tag%%@*}"
@@ -75,8 +83,11 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 lock="${2:-$here/engine.lock}"
 
 case "$key" in
-  ENGINE_IMAGE) shape='^[a-z0-9./_-]+:[A-Za-z0-9._-]+@sha256:[0-9a-f]{64}$' ;;
-  ENGINE_REPO) shape='^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$' ;;
+  # The engine repository and image path are fixed to the upstream project:
+  # the repository slug and the registry path are literals here, not values
+  # read from the lock.
+  ENGINE_IMAGE) shape='^ghcr\.io/chiefgyk3d/reach-around:[A-Za-z0-9._-]+@sha256:[0-9a-f]{64}$' ;;
+  ENGINE_REPO) shape='^ChiefGyk3D/Reach-Around$' ;;
   ENGINE_REF) shape='^[0-9a-f]{40}$' ;;
   *)
     echo "usage: $0 ENGINE_IMAGE|ENGINE_REPO|ENGINE_REF" >&2

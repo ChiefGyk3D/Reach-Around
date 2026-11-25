@@ -94,6 +94,86 @@ apply). Such a source does not need a platforms item, but it must have a
 `counts` metric here for its platform; without one the config is refused,
 because the number would be shown nowhere.
 
+**Metric rules.** A kit takes one `source: counts` metric per platform (the
+numbers file holds one count per platform). Two metrics on one platform may not
+share a label once case, Unicode compatibility forms and spacing are ignored.
+
+**Size limits.** The site config file is refused above 256 KiB before it is parsed.
+A parsed config is then checked before any of it is validated, and refused when it:
+
+- holds more than 20,000 values (every scalar, list, mapping and mapping key counts
+  as one, and a value reached twice, such as a YAML alias, counts each time),
+- is nested more than 64 levels deep,
+- holds anything but mappings with text keys, lists and plain values (a tuple, a
+  set or a pydantic model instance is refused, so a container cannot hide its size
+  from the count). Only exact text, integer, float, boolean, date and null values
+  count as plain; a subclass (an enum that is also text, for example) is refused,
+- holds one text, mapping key or integer longer than 65,536 characters (an
+  integer counts by its decimal digits), or more than 262,144 characters of text,
+  keys and integer digits in all (a value reached twice counts twice). This is
+  checked in the same pass, at the one entry point every load goes through, so
+  the work to validate and print is bounded by size as well as by value count.
+
+The per-list caps still apply on top: 50 tabs, 200 blocks per tab, 200 links per
+section, 50 socials.
+
+**Error output.** At most 20 problems print (a validator that names several settings counts each
+setting as one), then a count of the rest. Pydantic
+builds every error before it can be sliced, so the list is only built when the
+config has at most 1,000 problems; a config with more prints one sentence with the
+count and nothing else. This bounds the memory the error list can use, and that
+cap is enforced. The work of validating and counting the errors is bounded by the
+20,000-value budget (enforced) times the most errors one value can raise. That
+second factor is a property of the schema and is **measured, not enforced**: a
+test samples it (at most 8 per value on the worst shapes we built, a seeded
+sample over the block kinds, and one hostile document per block tag read from
+the schema's own union). That is a regression heuristic, not a proof of a worst
+case, and nothing in production caps the factor; a schema change that raises it
+fails the sample, but a shape the sample misses could still raise more. What is
+**enforced**, and tested at the boundary (one under passes, one over is
+refused), is the byte cap (256 KiB, before parsing), the node cap, the depth
+cap, the per-scalar and total character caps, and the 1,000-entry materialization
+cap on the error list. The text of each
+problem is a fixed sentence chosen by the error type (pydantic's own message is
+never printed, because it can repeat what you wrote; a validator's reason is only
+matched against a short list of known reasons and otherwise prints a generic
+sentence, and `reach-around check` gives the specific one). No message repeats a
+value from the file. An error path prints only names the schema defines: any
+other segment (an unknown field, or a key you used in a mapping) shows as
+`<key>` (the last segment of an unknown-field error shows as `<unknown field>`),
+a path shows at most 8 segments plus a count of the rest, and
+`reach-around check` names an unknown setting by its position. The YAML loader
+never echoes a key either (a duplicate key says so and gives the line; a YAML
+tag or a parser sentence is escaped to ASCII and cut).
+
+**Every way in.** The budget runs from a before-validator on the root model, so
+`SiteConfig(...)` and `SiteConfig.model_validate(...)` both pass through it, and
+the loaders (`load_site_config`, `reach-around check`) all call one function,
+`validate_site_config`. An existing `SiteConfig` is revalidated and refused, so a
+model made with `model_construct` cannot be passed back in. `model_construct`
+itself skips every validator by design; it is unsupported for external data.
+`model_validate_json` on either model is the one supported way to parse JSON: it
+refuses a document over the byte cap (measured in encoded UTF-8 bytes, not
+characters) before pydantic parses it, and the node and depth budget then runs on
+the parsed value, so the parse is bounded too. `TypeAdapter(SiteConfig).validate_json`
+(or the same for `ImportedHistory`) does not go through that method and so skips the
+byte cap; it is unsupported for external data, and a source guard fails if code in
+`src` uses `TypeAdapter` or `validate_json` at all. The same guard fails if code in
+`src` builds either model any other way: a direct call (including a module-qualified
+one such as `models.SiteConfig(...)`), an import rename, an alias, `getattr` with a raw
+entry-point name or a computed name, a reference to `model_construct`, or a string
+import of the config modules (a name joined from constant strings is resolved too).
+Each of the two modules may build only its own class. The guard is a syntactic lint,
+not a sandbox: `eval`, `exec`, a class reached through `globals()` or `vars()`, and a
+module name computed from something other than constants are an unsupported boundary,
+and a test pins that limit. A config problem list that is cut at 20 entries counts
+every omitted entry (each named setting is one); when a single message holds more named
+settings than are read, it says "and more problems" without a number. The imported-history file is held to
+the same kind of budget at its own entry (`ImportedHistory(...)` and
+`ImportedHistory.model_validate(...)`): 4,000 values, 6 levels, 256 characters per
+scalar, 32,768 in all, applied before any period is validated, on top of the
+256 KiB file cap and the 120-period cap.
+
 ## What the build writes
 
 | File | Where | Who sees it |

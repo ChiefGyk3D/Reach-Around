@@ -19,7 +19,7 @@ engine repository for the reasoning.
 | `engine.lock` | The pinned engine: container image by digest, plus the matching source commit for the Worker. |
 | `engine.release.json` | The image, repository, commit, tag and D1 schema of that one release. `scripts/read-lock.sh --release` fails when it disagrees with `engine.lock`; update both in the same pull request (Renovate moves only the lock, so a Renovate pull request fails this check until the manifest is updated). |
 | `.github/workflows/preview.yml` | On a pull request: check the config, build a preview artifact, and comment on the pull request with the result in plain language and the list of changed blocks. Also lints the scripts and workflows (GYST `bash-ci`). Deploys nothing. Its gate job is named `CI green`. |
-| `.github/workflows/deploy.yml` | On a push to `main`: check, validate, then deploy to Cloudflare after a reviewer approves. |
+| `.github/workflows/deploy.yml` | On a push to `main` or a manual run: check and validate always; deploy staging only while `ALLOW_STAGING_DEPLOY` is exactly `true`; production only by a manual run with target `production` while `ALLOW_PRODUCTION_DEPLOY` is exactly `true`. Each deploy waits for its environment's reviewer. |
 | `.github/workflows/refresh-counts.yml` | Once a day (and by hand): refresh follower counts with the pinned engine and open a pull request with the new `numbers.json`. Optional; see "Daily follower counts". |
 | `.github/workflows/check-hand-kept-freshness.yml` | Once a week (and by hand): check `hand-kept.json` and keep one issue open while a number you keep by hand is past its limit. Optional; see "Hand-kept numbers". |
 | `renovate.json` | Keeps `engine.lock` and the Actions pins current. |
@@ -61,8 +61,14 @@ engine repository for the reasoning.
    documents this, and an optional cache purge, in `docs/deploy.md` under
    "Caching and stale files". This template does not run the purge step.
 
-4. Commit and push to `main`. The deploy job will stop at the `production`
-   environment until you finish the setup below, which is expected.
+4. Do not push to `main` yet. Finish the one-time setup below first, in its
+   order: create and protect both environments, then add the variables, and set
+   the variable that switches staging on last. GitHub creates a missing
+   environment with no protection the first time a job names it, so the
+   environments must exist, with their reviewers and the `main`-only branch
+   rule, before any run can start. Until the staging switch is set, a push runs
+   only the `validate` job (which holds no environment and no secret). Then
+   commit and push. Production never runs on a push.
 
 ## One-time setup
 
@@ -71,30 +77,106 @@ scopes, production branch) is described step by step in the engine's
 `docs/deploy.md`. Follow its sections 1 and "Token type", using your own
 names. Every name here is a placeholder.
 
-On GitHub: **Settings > Environments > New environment** named `production`.
+**Step 1: the environments, before anything else.** On GitHub:
+**Settings > Environments > New environment**, twice: `staging` and
+`production`. For each one:
 
-- Add yourself (or a second person) under **Required reviewers**. Every deploy
-  then waits for a click before the token is released to the job.
-- Under **Deployment branches**, allow only `main`.
-- Add this **secret**: `CLOUDFLARE_API_TOKEN`. Create the token as a user
-  token with only: Account Cloudflare Pages Edit, D1 Edit, Workers Scripts
-  Edit, User Details Read, and an expiry. Add Workers Routes Edit and Zone
-  Read on the one zone only if you set `ZONE_NAME`.
-- Add these **variables** (not secret, but keep real values out of commits and
-  issues):
+- Turn on **Required reviewers** and name at least one reviewer who is a
+  different human from the person who will start deployments. Then turn on
+  **Prevent self-review** (the setting is under the required reviewers). Every
+  deploy then waits for that reviewer's approval before the job runs.
+- Under **Deployment branches and tags**, allow only `main`.
+- Add no secret. The token comes only from the secret manager, over OIDC.
 
-  | Variable | Example (placeholder) |
-  |---|---|
-  | `CLOUDFLARE_ACCOUNT_ID` | `00000000000000000000000000000000` |
-  | `PAGES_PROJECT` | `my-links` |
-  | `D1_DATABASE_ID` | `00000000-0000-0000-0000-000000000000` |
-  | `RATELIMIT_NAMESPACE_ID` | `1001` |
-  | `SITE_HOST` | `links.example.invalid` |
-  | `ZONE_NAME` (optional) | `example.invalid` |
+**What environment protection can and cannot guarantee.** It is the real gate
+on the branch and on who approves: GitHub enforces the reviewer and the
+deployment branch rule, and a workflow file cannot override them. **Prevent
+self-review** only stops the person who started a deployment from approving that
+same deployment. Environment protection and **Prevent self-review** do not
+establish that the approver did not author the commit being deployed: one person
+can write and push the code, a different login can start the deployment, and the
+first login can approve it. A login is not a person, so a second login you
+control is not independent control either. Independent approval needs a
+second human. If you are the sole owner, there is no independent approval to
+configure: treat the approval as a confirmation pause (a moment to look before
+the job runs), never as separation of duties, and do not describe it as one. If
+you must be able to say "the approver did not author the change", enforce it
+outside the environment: protected-branch pull-request review on `main` (a
+required approving review from someone other than the author) or an external
+policy, in addition to the environment approval. Also check what your GitHub
+plan offers for environments on a private repository, and whether an
+administrator can bypass the rules there (look at each environment's settings;
+this README does not assume either). The workflow's own `main` checks, and the
+variables `ALLOW_STAGING_DEPLOY` and `ALLOW_PRODUCTION_DEPLOY`, are operational
+switches that fail closed: they are not an approval control, and anyone who can
+edit repository variables can flip them. The workflow cannot check that an
+environment is protected, because that needs an administrator token that no job
+here holds.
+
+**Step 2: the repository variables.** Add these **repository variables**
+(**Settings > Secrets and variables > Actions > Variables**) only after both
+environments are protected. They are not secret, but keep real values out of
+commits and issues. They are repository level, not environment level, because
+the Worker call is made by a job that holds no environment and so cannot read an
+environment's own variables. Set `ALLOW_STAGING_DEPLOY` last: it is what lets a
+push start the first run.
+
+| Variable | Used by | Example (placeholder) |
+|---|---|---|
+| `CLOUDFLARE_ACCOUNT_ID` | both tiers | `00000000000000000000000000000000` |
+| `DOPPLER_PROJECT` | both tiers | `my-links` |
+| `STAGING_WORKER_NAME` | staging | `my-links-clicks-staging` |
+| `STAGING_PAGES_PROJECT` | staging | `my-links-staging` |
+| `STAGING_D1_DATABASE_ID` | staging | `00000000-0000-0000-0000-000000000000` |
+| `STAGING_RATELIMIT_NAMESPACE_ID` | staging | `1001` |
+| `STAGING_SITE_HOST` | staging | `staging.links.example.invalid` |
+| `STAGING_ZONE_NAME` (optional) | staging | `example.invalid` |
+| `DOPPLER_IDENTITY_ID_STAGING` | staging | an identity id (not a secret) |
+| `ALLOW_STAGING_DEPLOY` | staging | absent by default; exactly `true` lets a push (or a manual run) deploy staging; set it last |
+| `PRODUCTION_WORKER_NAME` | production | `my-links-clicks` |
+| `PRODUCTION_PAGES_PROJECT` | production | `my-links` |
+| `PRODUCTION_D1_DATABASE_ID` | production | `00000000-0000-0000-0000-000000000000` |
+| `PRODUCTION_RATELIMIT_NAMESPACE_ID` | production | `1001` |
+| `PRODUCTION_SITE_HOST` | production | `links.example.invalid` |
+| `PRODUCTION_ZONE_NAME` (optional) | production | `example.invalid` |
+| `DOPPLER_IDENTITY_ID_PRODUCTION` | production | a different identity id |
+| `ALLOW_PRODUCTION_DEPLOY` | production | absent by default; exactly `true` turns production on |
+
+  The `validate` job checks these values once, with `scripts/check-tiers.sh`,
+  and the four deploy jobs read only the values it checked (its job outputs),
+  never the variables again. Staging settings are required (the zone name is
+  optional). Production settings are required together as soon as any one is set
+  or `ALLOW_PRODUCTION_DEPLOY` is `true`. Staging and production settings must
+  differ after normalization: names are lowercased, a host or zone loses one
+  trailing dot and a default port, a name with non-ASCII characters must be given
+  in its `xn--` form, and a namespace id is digits only and compared as a number
+  (`01002` equals `1002`).
+
+  The two tiers must use different Worker names, and neither may be the
+  engine's own test Worker (`reach-around-clicks`); the `validate` job fails the
+  run otherwise. They must also use different Pages projects (the names are
+  compared after lowercasing, and `validate` fails when they are equal), and the
+  staging Pages job refuses to publish into the production project. Do not rely
+  on the branch name: `--branch staging` makes a preview deployment only when
+  the project's production branch is something else, and a project has one
+  production branch, so give staging its own Pages project and check the
+  production branch of each project in Cloudflare (the engine's `docs/deploy.md`,
+  "Production branch"). The placeholder ids (`1001`, the all-zero database id) are
+  refused by the called workflow, so each tier needs its own real D1 database and
+  rate limit namespace.
 
   Unlike the engine's own test workflow, there is no `LINK_IDS` variable: the
-  workflow reads the link ids from the build, so the Worker and the page cannot
-  disagree.
+  workflow reads the link ids from the build manifest, so the Worker and the page
+  cannot disagree.
+
+**To deploy.** With `ALLOW_STAGING_DEPLOY` set to `true`, a push to `main`
+deploys staging. To run it by hand, open **Actions > Deploy > Run workflow** on
+`main` and pick the target. Production runs only from a manual run on `main` with
+target `production` while `ALLOW_PRODUCTION_DEPLOY` is exactly `true`; set it
+when you are ready and remove it again to turn production off. Remove
+`ALLOW_STAGING_DEPLOY` to stop staging. Moving `engine.lock` moves the two reusable
+`uses:` pins in `deploy.yml` with it (Renovate does both in one pull request, and
+a test fails if they differ).
 
 Also turn on **Settings > Code security > Secret scanning** and push
 protection, and protect `main` (require the `CI green` check from the `Preview` workflow, no
@@ -242,17 +324,24 @@ in the engine repo); without it that source is reported as skipped
 
 ## The token
 
-The token reaches only the three wrangler steps in `deploy.yml` (migrations,
-Worker deploy, Pages deploy). It is never in workflow or job `env`, never in
-the install steps, and the build job has no environment at all.
+There is no Cloudflare token in GitHub. Each deploy job reads it from the secret
+manager (Doppler) with a short-lived GitHub OIDC identity, one identity per tier.
+It reaches only two kinds of step: the wrangler steps inside the engine's
+reusable Worker workflow (migrations, Worker deploy) and the one Pages publish
+step of each `pages-*` job. It is never in workflow or job `env`, never in an
+install step, and the `validate` job has no environment and no `id-token`
+permission at all. Only the four deploy jobs (`worker-staging`, `pages-staging`,
+`worker-production`, `pages-production`) hold `id-token: write`.
 
-**Option: Doppler by OIDC (disabled).** Instead of a GitHub secret, the deploy
-job can read the token from Doppler with a short-lived OIDC identity, so no
-long-lived Cloudflare token is stored in GitHub. The engine's issue #98 tracks
-the supported workflow for this. Until it lands, the commented block in
-`deploy.yml` marks where it goes, and you should use the environment secret.
-Do not enable it by guessing: it needs a Doppler service-account identity
-scoped to this repository and the `production` environment.
+In the secret manager, put the Cloudflare token (as `CLOUDFLARE_KEY_VALUE`) in
+the `dev` config for staging and the `prd` config for production, and make one
+service-account identity per tier, each pinned to this repository and its own
+environment (the OIDC subject ends `:environment:staging` or
+`:environment:production`) and able to read only its own config. The token is a
+user token with only: Account Cloudflare Pages Edit, D1 Edit, Workers Scripts
+Edit, User Details Read, and an expiry (add Workers Routes Edit and Zone Read on
+the one zone only if you set a zone). Use the secret manager's `prd` config only
+after you have decided the site is live.
 
 For deploys from your own machine, `scripts/deploy-local.sh` reads the token
 from Doppler per command (see the comments at the top of that script).
