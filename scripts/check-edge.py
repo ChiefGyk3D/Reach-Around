@@ -32,6 +32,7 @@ Exit 0 agrees, 1 differs, 2 usage or could not read (never read as green).
 from __future__ import annotations
 
 import argparse
+import hashlib
 import http.client
 import ipaddress
 import json
@@ -108,6 +109,27 @@ RL_KEYS = (
 RL_REF = "reach_around_mint_cap"  # the rule's identity in the zone
 PIN = re.compile(r'version\s*=\s*"= (\d+\.\d+\.\d+)"')
 
+# Reviewed policy. These values live here, not in the files they judge, so a change
+# to a judged file cannot also change the rule it is judged by. This file and
+# deploy/edge/ are owned in .github/CODEOWNERS; a change to a value below is a
+# reviewed change (docs/edge.md, "Structural controls").
+PROVIDER_SOURCE = "registry.opentofu.org/cloudflare/cloudflare"
+MIN_TOFU_VERSION = '">= 1.9.0"'  # exact: lowering or loosening it fails the check
+MANIFEST_COMMAND = (
+    "tofu providers schema -json | python3 -I scripts/gen-provider-fields.py "
+    "5.29.0 > deploy/edge/provider-fields.json"
+)
+MANIFEST_COMPUTED_ONLY = ["id", "stale_zone_configuration", "using_latest_model"]
+# sha256 of the files that receive or shape the API token. plan.sh gets the token;
+# tofu.rc decides which provider binary tofu installs. Any change to either needs
+# the new digest recorded here in the same change, which CODEOWNERS routes to the
+# owner. The digest is an integrity pin, not a proof the script is safe: the
+# structural scan in launcher_problems() is a second, weaker layer.
+LAUNCHER_PINS = {
+    "plan.sh": "ae61dea66bfca6df395c77f76b323b5d35f1a48606d36c8bb573e754a64de03e",
+    "tofu.rc": "fdbdca281d88fab3f0efa566da7689e9653a98ae98818192acf018717624ca82",
+}
+
 
 class Unreadable(Exception):
     """The live zone could not be read; the caller must not treat it as green."""
@@ -175,6 +197,7 @@ def offline_problems(root: Path) -> list[str]:
         problems += rate_limit_problems(rl)
 
     problems += module_problems(edge)
+    problems += launcher_problems(edge)
     if "NOT approved" not in main_tf:
         problems.append("main.tf header must say the apply path is NOT approved")
     if "desired-state.json" not in main_tf:
@@ -184,11 +207,115 @@ def offline_problems(root: Path) -> list[str]:
     problems += wording_problems(root, desired)
 
     pin = PIN.search(versions)
-    locked = re.search(r'version\s*=\s*"(\d+\.\d+\.\d+)"', lock)
     if pin is None:
         problems.append("versions.tf: provider is not pinned to an exact version")
-    elif locked is None or locked.group(1) != pin.group(1):
-        problems.append("lock file version differs from the provider pin")
+    problems += lock_problems(lock, pin)
+    return problems
+
+
+_LOCK_HASH = re.compile(r'"(?:h1:[A-Za-z0-9+/]{43}=|zh:[0-9a-f]{64})"')
+
+
+def lock_problems(lock: str, pin: Any) -> list[str]:
+    """The lock file must hold exactly one entry of the reviewed shape (tokenized)."""
+    try:
+        blocks = hcl_blocks(lock)
+    except HclError as exc:
+        return [f".terraform.lock.hcl: cannot be parsed safely ({exc})"]
+    if len(blocks) != 1 or blocks[0].kind != "provider" or blocks[0].children:
+        return [".terraform.lock.hcl: must hold exactly one provider entry"]
+    entry = blocks[0]
+    attrs = dict(entry.attrs)
+    problems: list[str] = []
+    if entry.labels != (PROVIDER_SOURCE,):
+        problems.append(f".terraform.lock.hcl: the entry must be for {PROVIDER_SOURCE}")
+    if len(entry.attrs) != 3 or set(attrs) != {"version", "constraints", "hashes"}:
+        return problems + [
+            ".terraform.lock.hcl: the entry must set version, constraints and hashes"
+        ]
+    version = attrs["version"].strip('"')
+    if not re.fullmatch(r'"\d+\.\d+\.\d+"', attrs["version"]):
+        problems.append(".terraform.lock.hcl: version is not an exact version")
+    if attrs["constraints"].strip('"') != version:
+        problems.append(".terraform.lock.hcl: constraints differ from the version")
+    if pin is not None and version != pin.group(1):
+        problems.append(".terraform.lock.hcl: version differs from the provider pin")
+    hashes = attrs["hashes"]
+    items = hashes[1:-1].split(",") if hashes[:1] == "[" and hashes[-1:] == "]" else []
+    items = [i.strip("\n") for i in items if i.strip("\n")]
+    if not items or not all(_LOCK_HASH.fullmatch(i) for i in items):
+        problems.append(".terraform.lock.hcl: hashes must be h1: and zh: digests")
+    elif not any(i.startswith('"h1:') for i in items) or not any(
+        i.startswith('"zh:') for i in items
+    ):
+        problems.append(".terraform.lock.hcl: hashes need both h1: and zh: entries")
+    return problems
+
+
+# plan.sh scan: a second layer behind the digest pin. It refuses what a token-
+# bearing launcher has no reason to use. It cannot prove a shell script safe.
+_PLAN_FORBIDDEN = re.compile(
+    r"(?<![\w$-])(?:eval|source|curl|wget|nc|ncat|netcat|socat|ssh|scp|sftp|telnet|ftp"
+    r"|python3?|perl|ruby|node|php|lua|awk|gawk|openssl|base64|xxd|od|dd|tee|nohup"
+    r"|declare|typeset|nameref|apply|destroy|import|console|taint|workspace|state"
+    r"|force-unlock|login|logout)(?![\w=-])"
+    r"|/dev/(?:tcp|udp)|\+=|\$\{!|printf\s+-v|`|>>|\bexec\s+(?!\"\$@\" 3<&-)"
+    r"|>\s*(?!&2\b|/dev/null\b)|\bcommand\b|\balias\b|\.\s+[/\"$]"
+)
+_PLAN_TOKEN_LINES = frozenset(
+    {
+        "HOME | CLOUDFLARE_API_TOKEN | TF_VAR_zone_id | TOFU_BIN) ;;",
+        'if [ -z "${CLOUDFLARE_API_TOKEN:-}" ]; then',
+        'echo "plan: CLOUDFLARE_API_TOKEN is not set" >&2',
+        "'IFS= read -r CLOUDFLARE_API_TOKEN <&3 || exit 70",
+        "export CLOUDFLARE_API_TOKEN",
+        'bash "$here" "$tofu_bin" "$@" 3<<<"$CLOUDFLARE_API_TOKEN"',
+    }
+)
+_PLAN_RUN = re.compile(r"^\s*run_tofu\s+(\S+)")
+_PLAN_VERBS = ("init", "plan")
+
+
+def plan_script_problems(text: str) -> list[str]:
+    """Structural scan of plan.sh: allowlisted tofu verbs, no network or eval."""
+    problems: list[str] = []
+    verbs: list[str] = []
+    for number, raw in enumerate(text.splitlines(), 1):
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if "CLOUDFLARE_API_TOKEN" in line and line not in _PLAN_TOKEN_LINES:
+            problems.append(
+                f"plan.sh:{number}: the token appears on a line that is not reviewed"
+            )
+        hit = _PLAN_FORBIDDEN.search(line)
+        if hit is not None:
+            problems.append(f"plan.sh:{number}: refused construct {hit.group(0)!r}")
+        run = _PLAN_RUN.match(raw)
+        if run is not None:
+            verbs.append(run.group(1))
+    if verbs != list(_PLAN_VERBS):
+        problems.append(f"plan.sh: run_tofu may only run {list(_PLAN_VERBS)}")
+    return problems
+
+
+def launcher_problems(edge: Path) -> list[str]:
+    """plan.sh and tofu.rc must match the reviewed digest and pass the scan."""
+    problems: list[str] = []
+    for name, want in LAUNCHER_PINS.items():
+        try:
+            data = (edge / name).read_bytes()
+        except OSError:
+            problems.append(f"deploy/edge/{name}: cannot be read")
+            continue
+        if hashlib.sha256(data).hexdigest() != want:
+            problems.append(
+                f"deploy/edge/{name}: differs from the reviewed digest pinned in "
+                "scripts/check-edge.py (LAUNCHER_PINS); a change needs the new "
+                "digest recorded there in the same reviewed change"
+            )
+        if name == "plan.sh":
+            problems += plan_script_problems(data.decode("utf-8", "replace"))
     return problems
 
 
@@ -418,7 +545,6 @@ EXPECTED_LOCALS = {
     "bot": "local.desired.bot_management",
 }
 EXPECTED_CONDITION = 'can(regex("^[0-9a-f]+$",var.zone_id))&&length(var.zone_id)==32'
-_REQUIRED_VERSION = re.compile(r'">= \d+\.\d+\.\d+"')
 _CLOUDFLARE_PIN = re.compile(
     r'\{source="cloudflare/cloudflare"\nversion="= \d+\.\d+\.\d+"\}'
 )
@@ -430,8 +556,11 @@ def terraform_problems(name: str, block: Block) -> list[str]:
     attrs = dict(block.attrs)
     if len(block.attrs) != 1 or set(attrs) != {"required_version"}:
         problems.append(f"{name}: terraform may only set required_version")
-    elif not _REQUIRED_VERSION.fullmatch(attrs["required_version"]):
-        problems.append(f"{name}: terraform required_version is not a plain minimum")
+    elif attrs["required_version"] != MIN_TOFU_VERSION:
+        problems.append(
+            f"{name}: terraform required_version must be exactly {MIN_TOFU_VERSION} "
+            "(the reviewed minimum; lowering or loosening it is a policy change)"
+        )
     kids = block.children
     if len(kids) != 1 or kids[0].kind != "required_providers" or kids[0].labels:
         problems.append(f"{name}: terraform may only hold required_providers")
@@ -564,6 +693,21 @@ def manifest_problems(manifest: Any, desired_keys: set[str], pin: Any) -> list[s
         return ["provider-fields.json: not a provider manifest"]
     fields = set(manifest["sendable_fields"])
     problems: list[str] = []
+    expected = {
+        "schema": 1,
+        "provider": PROVIDER_SOURCE,
+        "resource": RESOURCE[0],
+        "command": MANIFEST_COMMAND,
+        "computed_only": MANIFEST_COMPUTED_ONLY,
+    }
+    for key, want in expected.items():
+        got = manifest.get(key)
+        if got != want or type(got) is not type(want):
+            problems.append(
+                f"provider-fields.json (manifest) {key} must be {want!r}, found {got!r}"
+            )
+    if set(manifest) != set(expected) | {"provider_version", "sendable_fields"}:
+        problems.append("provider-fields.json (manifest) holds unexpected keys")
     if fields != set(PROVIDER_FIELDS):
         problems.append(
             "provider-fields.json (manifest) and PROVIDER_FIELDS differ: "
@@ -838,7 +982,8 @@ def rate_differences(desired: dict[str, Any], live: Any) -> list[str]:
     ours = [r for r in rules or [] if isinstance(r, dict)]
     by_ref = [r for r in ours if r.get("ref") == desired["ref"]]
     by_expression = [r for r in ours if r.get("expression") == desired["expression"]]
-    if len(by_ref) > 1 or (not by_ref and len(by_expression) > 1):
+    claimants = {id(r): r for r in by_ref + by_expression}
+    if len(claimants) > 1:  # duplicate ref, duplicate expression or a mix of both
         return [
             "rate_limit: more than one rule claims this rule's identity "
             f"({desired['ref']!r}); ambiguous, so not trusted"

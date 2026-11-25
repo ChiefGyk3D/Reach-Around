@@ -191,6 +191,18 @@ applied from here" is structural:
   same cleaned environment. Exit 65 means no trusted binary.
 - The module has no rules resource, so even a mistaken run cannot touch other
   sites' rate rules.
+- `plan.sh` and `tofu.rc` receive or shape the token, so `scripts/check-edge.py`
+  pins each by sha256 (`LAUNCHER_PINS`) and fails on any difference. A change to
+  either file needs the new digest recorded in the checker in the same change;
+  `.github/CODEOWNERS` routes `deploy/edge/` and the checker to the owner. Honest
+  limit: the pin proves the file is the one that was reviewed, not that it is
+  safe, and CODEOWNERS only names a reviewer (branch protection does not require
+  a code owner review). A structural scan of `plan.sh` (no eval, network tool,
+  interpreter, apply-like verb or unreviewed use of the token; `run_tofu` only
+  runs `init` and `plan`) is a weaker second layer that a determined edit can
+  still dodge, which is why the digest and the review are the real control.
+- The checker also pins the minimum OpenTofu version, the provider manifest's
+  identity and computed-only fields, and the shape of the lock file entry.
 
 ## Run order (each step needs the owner's explicit word)
 

