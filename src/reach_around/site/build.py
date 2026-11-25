@@ -86,7 +86,12 @@ from reach_around.site.overrides import (
     warn_about_javascript,
 )
 from reach_around.site.platforms import platform_rows
-from reach_around.site.privacy import collected_items, intro_text, sets_cookies
+from reach_around.site.privacy import (
+    collected_items,
+    intro_text,
+    notice_blocks,
+    sets_cookies,
+)
 from reach_around.site.qr import BORDER as QR_BORDER
 from reach_around.site.qr import qr_file_name, qr_matrix, qr_svg
 from reach_around.site.redirects import render_redirects
@@ -583,6 +588,7 @@ def _render_smart_stack_page(
         featured=featured,
         creator=config.creator,
         tab=tab,
+        watch_title=next(t.title for t in config.tabs if t.intent == "watch"),
         blocks=every,
         groups=groups,
         watch=[links[ident] for ident in config.page.watch],
@@ -804,6 +810,7 @@ def _render_privacy(
         single_page=config.page_layout == "sections",
         intro=intro_text(config),
         items=collected_items(config),
+        notice=notice_blocks(config),
         contact=config.privacy.contact,
         custom_css=custom_css,
     )

@@ -178,7 +178,14 @@ def test_body_over_cap_is_refused(serve: Serve) -> None:
 def test_timeout_is_enforced(serve: Serve, monkeypatch: pytest.MonkeyPatch) -> None:
     def slow(r: BaseHTTPRequestHandler) -> None:
         time.sleep(1.5)
-        reply(GOOD)(r)  # a valid answer, but too late
+        try:
+            reply(GOOD)(r)  # a valid answer, but too late
+        except OSError:
+            # The client already gave up (that is the point of the test). The
+            # late write must not print a traceback from this server thread
+            # into whatever test runs by then (CI flake: it landed in the
+            # stderr check of tests/test_platforms_cli.py).
+            pass
 
     monkeypatch.setattr(mod, "TIMEOUT", 0.3)
     serve(slow)

@@ -1764,6 +1764,19 @@
           "title": "Channels",
           "type": "array"
         },
+        "consulting_url": {
+          "anyOf": [
+            {
+              "maxLength": 2048,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Consulting Url"
+        },
         "contact": {
           "anyOf": [
             {
@@ -3130,6 +3143,26 @@
           "default": null,
           "title": "Contact"
         },
+        "controller_name": {
+          "anyOf": [
+            {
+              "maxLength": 200,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Controller Name"
+        },
+        "dpa_note": {
+          "default": "",
+          "maxLength": 500,
+          "title": "Dpa Note",
+          "type": "string"
+        },
         "intro": {
           "anyOf": [
             {
@@ -3157,6 +3190,12 @@
           "minimum": 90,
           "title": "Retention Days",
           "type": "integer"
+        },
+        "turnstile_storage_note": {
+          "default": "",
+          "maxLength": 500,
+          "title": "Turnstile Storage Note",
+          "type": "string"
         }
       },
       "title": "Privacy",
@@ -4401,9 +4440,12 @@
       "$ref": "#/$defs/Privacy",
       "default": {
         "contact": null,
+        "controller_name": null,
+        "dpa_note": "",
         "intro": null,
         "lead_retention_days": 30,
-        "retention_days": 90
+        "retention_days": 90,
+        "turnstile_storage_note": ""
       }
     },
     "profile_card": {

@@ -7,12 +7,20 @@ so it cannot say less than the site actually does.
 
 from __future__ import annotations
 
+import re
+from collections.abc import Mapping
 from dataclasses import dataclass
+from typing import Literal
 
 from reach_around.config.analytics import AGGREGATE_KEEP_DAYS, MAX_RAW_KEEP_DAYS
 from reach_around.config.blocks import Live
 from reach_around.config.models import SiteConfig
-from reach_around.config.privacy import RAW_CLICK_KEEP_DAYS
+from reach_around.config.privacy import (
+    DEFAULT_GEO_LEVEL,
+    MONTHLY_KEEP_MONTHS,
+    RAW_CLICK_KEEP_DAYS,
+    missing_notice_fields,
+)
 
 # The wording below is owner-approved copy (issue #598), used verbatim. Only the
 # {...} placeholders are filled from the config. Do not reword it here; change
@@ -250,3 +258,191 @@ def intro_text(config: SiteConfig) -> str:
 def sets_cookies(config: SiteConfig) -> bool:
     """True when an enabled feature stores a cookie in the visitor's browser."""
     return config.features.kit_gate
+
+
+# --- the fixed notice (issues #777 and #780) ----------------------------------
+#
+# NOTICE_TEMPLATE (BLOCK A) and GATE_NOTICE_TEMPLATE (BLOCK B) are owner-approved
+# copy, authored by Codex and used verbatim. Only the {placeholders} are filled,
+# from the config or from the same constants the Worker tests pin. Do not reword
+# them here; change the approved copy first. The notice cannot be turned off.
+NOTICE_TEMPLATE = """\
+## Who we are
+
+{controller_name} is the controller for this site. For privacy requests, contact {contact}.
+
+## What this site measures
+
+This site measures page views and link clicks in aggregate. Measurement is designed so the site cannot tell who you are.
+
+- No cookies are set for measurement.
+- Your IP address is not stored.
+- A daily hash helps avoid counting one visit twice and limit abuse. It rotates and exists only for that UTC day.
+- If your browser sends Global Privacy Control or Do Not Track, the site does not record the view or click.
+
+Raw records store location at most to the level of {geo_level}. If city-level totals are enabled, they appear only in daily aggregate counters and are hidden below a minimum count.
+
+## Media-kit unlock cookie
+
+When you unlock the media kit, the gate sets one cookie. It is HttpOnly, secure, and limited to this host. It lasts 24 hours. It is signed so the site can recognize that you unlocked the kit. It contains no analytics.
+
+## How long records are kept
+
+- Raw view records are kept for {raw_view_days} days by default. They may remain until they are rolled into daily totals, up to {raw_view_max_days} days.
+- Click records are kept for {click_days} days.
+- Daily totals are kept for {daily_totals_days} days.
+- Monthly totals are kept for {monthly_totals_months} months.
+
+## Why information is processed
+
+In GDPR terms, the legal basis for measurement is legitimate interest. The site owner has a legitimate interest in understanding which pages and links are used, keeping the site working, and limiting abuse. Consent is not used for measurement because the measurements do not identify you.
+
+For the media-kit gate, the legal basis is the site owner’s legitimate interest in sending the kit you requested and replying to you.
+
+## Who receives information
+
+Cloudflare provides hosting, database services, rate limiting, and the bot check. The site owner’s chosen alert services, {alert_providers}, receive notices when someone unlocks the media kit or sends an inquiry.
+
+No one else receives visitor data. The site owner does not sell or share visitor data, including the lead list.
+
+Cloudflare is a US company. Cloudflare states that it relies on the EU-US Data Privacy Framework and standard contractual clauses as a fallback. {dpa_note}
+
+## Bot checks
+
+The beacon bot check protects page-view and click measurement. It never runs for visitors whose browsers send Global Privacy Control or Do Not Track.
+
+The media-kit gate form uses Cloudflare Turnstile when you use the form. This user-requested step needs a bot check. Turnstile receives your IP address, browser fingerprint signals, and user agent to distinguish people from bots.
+
+The site may also use a small proof-of-work puzzle. It runs in your browser and needs nothing from you. Neither type of bot check is used to track you. {turnstile_storage_note}
+
+## Your rights
+
+You may ask what identifying information is held about you, request correction or deletion, object to processing, or ask for a copy. Where applicable, you may also complain to your data protection authority.
+
+Measurement records cannot be matched to a person. Access and deletion requests can therefore be fulfilled only for information that identifies you, such as a media-kit lead. Privacy requests receive a reply within one month.
+
+## Children
+
+The media-kit gate is intended for business contacts. If you are a minor and entered an address, contact {contact} and ask for it to be deleted.
+
+## About this notice
+
+This is not legal advice. It describes what the software does by default. The site owner’s settings may narrow what is collected or enabled.
+"""  # noqa: E501 (approved copy, one line per paragraph)
+
+GATE_NOTICE_TEMPLATE = (
+    "Your address is used only to deliver the media kit and reply to you. It is "
+    "stored for {lead_days} days, then deleted. It is not verified when entered, "
+    "shared, sold, or used for marketing. You may request deletion at any time at "
+    "{contact}. This form uses a bot check and sets a secure 24-hour unlock "
+    "cookie with no analytics. Privacy details: {privacy_link}."
+)
+
+# The one sentence of the notice that is true only when alerts are on. With
+# alerts off the sentence is dropped, not filled with a made-up value.
+_ALERT_SENTENCE = (
+    " The site owner’s chosen alert services, {alert_providers}, receive notices "
+    "when someone unlocks the media kit or sends an inquiry."
+)
+# With neither the gate nor alerts on, a site may leave the controller and the
+# contact unset; the notice then points at the site owner.
+_OWNER_FALLBACK = "the site owner"
+_ALERT_NAMES = {"discord": "Discord", "matrix": "Matrix", "email": "email"}
+_PLACEHOLDER = re.compile(r"\{([a-z_]+)\}")
+
+
+class NoticeError(ValueError):
+    """The notice cannot be built. The message names fields, never values."""
+
+
+def _fill(template: str, values: Mapping[str, str]) -> str:
+    """Replace every {name} in one pass; refuse a placeholder with no value.
+
+    One pass, so a value that contains a brace is never read as a placeholder.
+    """
+    unknown = sorted(set(_PLACEHOLDER.findall(template)) - values.keys())
+    if unknown:
+        raise NoticeError("the privacy notice has no value for: " + ", ".join(unknown))
+    return _PLACEHOLDER.sub(lambda m: values[m.group(1)], template)
+
+
+def _alert_providers(config: SiteConfig) -> str:
+    names = [_ALERT_NAMES[c] for c in config.alerts.channels]
+    if len(names) <= 1:
+        return "".join(names)
+    return ", ".join(names[:-1]) + " and " + names[-1]
+
+
+def _geo_level(config: SiteConfig) -> str:
+    # analytics.geo_level does not exist on every branch; read it when present.
+    level = getattr(config.analytics, "geo_level", None)
+    return level if isinstance(level, str) and level else DEFAULT_GEO_LEVEL
+
+
+def _notice_values(config: SiteConfig) -> dict[str, str]:
+    missing = missing_notice_fields(
+        config.privacy,
+        kit_gate=config.features.kit_gate,
+        alerts_enabled=config.alerts.enabled,
+    )
+    if missing:
+        raise NoticeError("the privacy notice needs " + " and ".join(missing))
+    raw = config.analytics.raw_keep_days
+    return {
+        "controller_name": config.privacy.controller_name or _OWNER_FALLBACK,
+        "contact": config.privacy.contact or _OWNER_FALLBACK,
+        "geo_level": _geo_level(config),
+        "raw_view_days": str(raw),
+        "raw_view_max_days": str(min(RAW_HARD_CAP_FACTOR * raw, MAX_RAW_KEEP_DAYS)),
+        "click_days": str(RAW_CLICK_KEEP_DAYS),
+        "daily_totals_days": str(AGGREGATE_KEEP_DAYS),
+        "monthly_totals_months": str(MONTHLY_KEEP_MONTHS),
+        "alert_providers": _alert_providers(config),
+        "turnstile_storage_note": config.privacy.turnstile_storage_note,
+        "dpa_note": config.privacy.dpa_note,
+        "lead_days": str(config.privacy.lead_retention_days),
+    }
+
+
+def notice_markdown(config: SiteConfig) -> str:
+    """BLOCK A with every placeholder filled, as Markdown."""
+    template = NOTICE_TEMPLATE
+    if not config.alerts.enabled:
+        template = template.replace(_ALERT_SENTENCE, "")
+    return _fill(template, _notice_values(config))
+
+
+@dataclass(frozen=True)
+class NoticeBlock:
+    """One part of the notice: a heading, a paragraph or a bullet list."""
+
+    kind: Literal["h", "p", "ul"]
+    text: str = ""
+    items: tuple[str, ...] = ()
+
+
+def notice_blocks(config: SiteConfig) -> list[NoticeBlock]:
+    """The notice split for the template, which escapes every string."""
+    blocks: list[NoticeBlock] = []
+    for chunk in notice_markdown(config).strip().split("\n\n"):
+        lines = chunk.split("\n")
+        if chunk.startswith("## "):
+            blocks.append(NoticeBlock("h", chunk[3:].rstrip()))
+        elif all(line.startswith("- ") for line in lines):
+            blocks.append(NoticeBlock("ul", items=tuple(x[2:].rstrip() for x in lines)))
+        else:
+            blocks.append(NoticeBlock("p", chunk.rstrip()))
+    return blocks
+
+
+def gate_notice_parts(config: SiteConfig) -> tuple[str, str] | None:
+    """BLOCK B split around the privacy link, or None when the gate is off.
+
+    The template renders the link between the two parts, so the link is a real
+    anchor to the generated privacy page.
+    """
+    if not config.features.kit_gate:
+        return None
+    values = _notice_values(config)
+    before, after = GATE_NOTICE_TEMPLATE.split("{privacy_link}")
+    return _fill(before, values), _fill(after, values)

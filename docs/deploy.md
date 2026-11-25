@@ -1,5 +1,7 @@
 # Deploying to the test subdomain
 
+> **Stale in parts (state STALE, issue #801). Written for the test subdomain and Free-first profiles. The 2026-11-19 decision to use the Paid plan as the baseline, and the 2026-11-24 storage and domain decisions (Durable Objects, Analytics Engine daily counters, two D1 databases, a separate frame domain), supersede those parts. Do not rewrite from this page alone. See the ADR index in `docs/wiki/adr/` once merged (PR #835).**
+
 This is the one-time setup the maintainer does in Cloudflare and GitHub, and
 how the manual workflow `.github/workflows/deploy-test.yml` uses it. The
 workflow deploys the click-counting Worker and the static link page to a

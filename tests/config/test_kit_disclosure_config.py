@@ -76,7 +76,16 @@ def test_a_gated_statement_needs_the_gate_switch() -> None:
     }
     with pytest.raises(ValidationError, match="kit_gate"):
         SiteConfig.model_validate(doc)
-    SiteConfig.model_validate({**doc, "features": {"kit_gate": True}})
+    SiteConfig.model_validate(
+        {
+            **doc,
+            "features": {"kit_gate": True},
+            "privacy": {
+                "controller_name": "Example Creator",
+                "contact": "example.com/contact",
+            },
+        }
+    )
 
 
 @pytest.mark.parametrize("text", HOSTILE)

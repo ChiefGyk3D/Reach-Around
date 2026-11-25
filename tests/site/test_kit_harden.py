@@ -198,6 +198,10 @@ def write_instance(tmp_path: Path, kit: dict[str, Any], gate: bool = True) -> Pa
             }
         ],
         "features": {"kit_gate": gate},
+        "privacy": {
+            "controller_name": "Example Creator",
+            "contact": "example.com/contact",
+        },
         "kit": kit,
     }
     path = tmp_path / "instance" / "site.yaml"

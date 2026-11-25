@@ -233,8 +233,7 @@ Order of preference, least damage first:
    because links carry their real address.
 
    ```bash
-   npx wrangler deploy --var CLICKS_KILL:1
-   npx wrangler deploy --var VIEWS_KILL:1
+   npx wrangler deploy --var CLICKS_KILL:1 --var VIEWS_KILL:1
    ```
 
    `SCHEDULED_KILL:1` is a separate maintenance switch for the hourly jobs
