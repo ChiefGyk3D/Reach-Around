@@ -120,7 +120,7 @@ tabs:
         url: https://example.invalid/support-ko-fi
         icon: kofi
       - id: support-stream-tip
-        title: Stream tip
+        title: StreamElements
         url: https://example.invalid/support-stream-tip
         icon: streamelements
       - id: support-merch
