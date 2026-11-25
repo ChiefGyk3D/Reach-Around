@@ -5,10 +5,13 @@
 
 from __future__ import annotations
 
+import copy
 import json
 import os
+import re
 import shutil
 import subprocess
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -212,6 +215,207 @@ def test_deploy_worker_records_probes_and_rolls_back_in_order() -> None:
     assert steps[rollback]["if"] and "failure()" in str(steps[rollback]["if"])
     assert "rollback" in str(steps[rollback]["run"])
     assert "reach-around-owner=" in json.dumps(steps[deploy])
+
+
+@pytest.mark.parametrize("workflow", ["deploy-worker.yml", "deploy-test.yml"])
+def test_the_migrations_are_applied_before_the_new_worker_is_deployed(
+    workflow: str,
+) -> None:
+    # The Worker reads columns that migrations add (view_rollup_log.reroll_closed,
+    # migration 0018), so a Worker deployed ahead of its migration would fail every
+    # rollup. Migrations are additive (see the check above): the old Worker keeps
+    # working on the new schema, and this order is the guarantee.
+    steps = _steps(WORKFLOWS / workflow, "deploy")
+    assert _index(steps, "Apply D1 migrations") < _index(steps, "Deploy the Worker")
+
+
+QUIET_SKIP = "${{ !inputs.quiet }}"
+
+
+def _step_runs(step: dict[str, object], quiet: bool) -> bool:
+    """Whether a step runs for this value of inputs.quiet. Only the two documented
+    conditions are understood: anything else fails closed, so a new condition must
+    teach this model what it means."""
+    cond = step.get("if")
+    if cond is None:
+        return True
+    if cond == QUIET_SKIP:
+        return not quiet
+    raise AssertionError(f"unmodeled step condition {cond!r}")
+
+
+def _config_of(command: str) -> str:
+    found = re.findall(r"--config\s+(\S+)", command)
+    assert len(found) == 1, command
+    return str(found[0])
+
+
+def _assert_migration_covers_deploy(steps: list[dict[str, object]]) -> None:
+    """The deploy step never runs without the migration step, except on the one
+    documented path (quiet), where every job that could read the new schema is off."""
+    migrate = steps[_index(steps, "Apply D1 migrations")]
+    deploy = steps[_index(steps, "Deploy the Worker")]
+    for quiet in (False, True):
+        if not _step_runs(deploy, quiet) or _step_runs(migrate, quiet):
+            continue
+        assert quiet, "migrations skipped on a non-quiet deploy"
+        generator = steps[_index(steps, "Write deploy config")]
+        env = generator["env"]
+        assert isinstance(env, dict)
+        for kill in ("CLICKS_KILL", "VIEWS_KILL", "SCHEDULED_KILL"):
+            assert "inputs.quiet" in str(env.get(kill)), kill
+        assert "for name in CLICKS_KILL VIEWS_KILL SCHEDULED_KILL" in str(
+            generator["run"]
+        )
+
+
+def _assert_deployed_config_has_the_migration(
+    steps: list[dict[str, object]], root: Path
+) -> None:
+    """Resolve the config both commands name, find the step that writes it, and check
+    the template that step copies and the substitutions it applies."""
+    migrate = steps[_index(steps, "Apply D1 migrations")]
+    deploy = steps[_index(steps, "Deploy the Worker")]
+    mig_cmd = " ".join(str(migrate["run"]).split())
+    dep_cmd = " ".join(str(deploy["run"]).split())
+    config = _config_of(dep_cmd)
+    assert _config_of(mig_cmd) == config
+    assert "wrangler d1 migrations apply DB --remote" in mig_cmd
+    assert "--local" not in mig_cmd
+    gen_i = _index(steps, "Write deploy config")
+    assert gen_i < _index(steps, "Apply D1 migrations")
+    generator = steps[gen_i]
+    assert generator["working-directory"] == deploy["working-directory"]
+    assert migrate["working-directory"] == deploy["working-directory"]
+    script = str(generator["run"])
+    written = re.findall(
+        r"(\S+\.toml)\s*>\s*" + re.escape(config) + r"(?:\s|$)", script
+    )
+    assert len(written) == 1, f"{config} is not written once by the generator step"
+    template = root / "worker" / written[0]
+    text = template.read_text(encoding="utf-8")
+    # Only the database id is rewritten; the binding and the migrations directory come
+    # through the copy untouched, so the template's values are the deployed ones.
+    seds = re.findall(r'-e "s\|\^(\w+)', script)
+    assert "database_id" in seds
+    assert "binding" not in seds and "migrations_dir" not in seds
+    text = re.sub(
+        r'^database_id = "[^"]*"',
+        'database_id = "11111111-2222-3333-4444-555555555555"',
+        text,
+        flags=re.M,
+    )
+    d1 = tomllib.loads(text)["d1_databases"]
+    assert [d["binding"] for d in d1] == ["DB"]
+    assert d1[0]["migrations_dir"] == "migrations"
+    assert d1[0]["database_id"] == "11111111-2222-3333-4444-555555555555"
+    migration = list((root / "worker" / d1[0]["migrations_dir"]).glob("0018_*.sql"))
+    assert len(migration) == 1
+    assert "reroll_closed" in migration[0].read_text(encoding="utf-8")
+
+
+def _real_steps(workflow: str) -> list[dict[str, object]]:
+    return _steps(WORKFLOWS / workflow, "deploy")
+
+
+@pytest.mark.parametrize("workflow", ["deploy-worker.yml", "deploy-test.yml"])
+def test_the_migration_step_targets_the_database_the_worker_is_deployed_to(
+    workflow: str,
+) -> None:
+    # Order alone is not enough: a migration step that targets another database or
+    # config, drops --remote, runs from another directory or account would still pass.
+    # The migration and the deploy must name the same generated config, and the template
+    # that config is generated from must carry binding DB, the migrations directory and
+    # migration 0018 (which the Worker's rollup needs).
+    steps = _real_steps(workflow)
+    migrate = steps[_index(steps, "Apply D1 migrations")]
+    deploy = steps[_index(steps, "Deploy the Worker")]
+    m_env, d_env = migrate["env"], deploy["env"]
+    assert isinstance(m_env, dict) and isinstance(d_env, dict)
+    for key in ("CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID"):
+        assert m_env[key] == d_env[key]
+    _assert_deployed_config_has_the_migration(steps, ROOT)
+
+
+@pytest.mark.parametrize("workflow", ["deploy-worker.yml", "deploy-test.yml"])
+def test_the_deploy_never_runs_without_its_migration_except_when_quiet(
+    workflow: str,
+) -> None:
+    _assert_migration_covers_deploy(_real_steps(workflow))
+
+
+def test_a_conditional_migration_with_an_unconditional_deploy_is_refused() -> None:
+    # Mutation: the migration is skipped on quiet but the quiet path does not turn the
+    # scheduled jobs off, so the deploy would run without its migration.
+    steps = copy.deepcopy(_real_steps("deploy-test.yml"))
+    steps[_index(steps, "Apply D1 migrations")]["if"] = QUIET_SKIP
+    with pytest.raises(AssertionError):
+        _assert_migration_covers_deploy(steps)
+    # Mutation: an unmodeled condition on the migration fails closed.
+    steps = copy.deepcopy(_real_steps("deploy-worker.yml"))
+    steps[_index(steps, "Apply D1 migrations")]["if"] = "${{ inputs.skip_migrations }}"
+    with pytest.raises(AssertionError):
+        _assert_migration_covers_deploy(steps)
+    # Mutation: quiet no longer turns the scheduled jobs off.
+    steps = copy.deepcopy(_real_steps("deploy-worker.yml"))
+    gen = steps[_index(steps, "Write deploy config")]
+    assert isinstance(gen["env"], dict)
+    gen["env"]["SCHEDULED_KILL"] = "${{ inputs.scheduled_kill }}"
+    with pytest.raises(AssertionError):
+        _assert_migration_covers_deploy(steps)
+    # A deploy that carries the same condition is fine.
+    steps = copy.deepcopy(_real_steps("deploy-test.yml"))
+    steps[_index(steps, "Apply D1 migrations")]["if"] = QUIET_SKIP
+    steps[_index(steps, "Deploy the Worker")]["if"] = QUIET_SKIP
+    _assert_migration_covers_deploy(steps)
+
+
+def test_the_deployed_config_check_is_pointed_at_the_config_the_deploy_names(
+    tmp_path: Path,
+) -> None:
+    # Revert proofs: the deploy names another config, the template loses its binding
+    # or migrations directory, the generator rewrites the binding, or 0018 is empty.
+    base = _real_steps("deploy-worker.yml")
+    _assert_deployed_config_has_the_migration(base, ROOT)
+
+    steps = copy.deepcopy(base)
+    deploy = steps[_index(steps, "Deploy the Worker")]
+    deploy["run"] = str(deploy["run"]).replace(
+        "--config wrangler.deploy.toml", "--config other.toml"
+    )
+    with pytest.raises(AssertionError):
+        _assert_deployed_config_has_the_migration(steps, ROOT)
+
+    steps = copy.deepcopy(base)
+    gen = steps[_index(steps, "Write deploy config")]
+    gen["run"] = str(gen["run"]).replace(
+        '-e "s|^database_id',
+        '-e "s|^binding = \\"DB\\"|binding = \\"X\\"|" -e "s|^database_id',
+    )
+    with pytest.raises(AssertionError):
+        _assert_deployed_config_has_the_migration(steps, ROOT)
+
+    for old, new in (
+        ('binding = "DB"', 'binding = "OTHER"'),
+        ('migrations_dir = "migrations"', 'migrations_dir = "elsewhere"'),
+    ):
+        root = tmp_path / new.split('"')[1]
+        shutil.copytree(ROOT / "worker" / "migrations", root / "worker" / "migrations")
+        text = (ROOT / "worker" / "wrangler.toml").read_text(encoding="utf-8")
+        assert old in text
+        (root / "worker" / "wrangler.toml").write_text(
+            text.replace(old, new), encoding="utf-8"
+        )
+        with pytest.raises((AssertionError, KeyError)):
+            _assert_deployed_config_has_the_migration(base, root)
+
+    root = tmp_path / "empty0018"
+    shutil.copytree(ROOT / "worker" / "migrations", root / "worker" / "migrations")
+    shutil.copy(ROOT / "worker" / "wrangler.toml", root / "worker" / "wrangler.toml")
+    for f in (root / "worker" / "migrations").glob("0018_*.sql"):
+        f.write_text("-- nothing\n", encoding="utf-8")
+    with pytest.raises(AssertionError):
+        _assert_deployed_config_has_the_migration(base, root)
 
 
 def test_deploy_test_widens_before_pages_and_narrows_after() -> None:
