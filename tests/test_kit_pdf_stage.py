@@ -295,6 +295,25 @@ def test_the_site_key_is_not_in_the_staged_page(tmp_path: Path) -> None:
     assert SITE_KEY not in staged_html(tmp_path)
 
 
+def test_print_does_not_hold_the_whole_audience_section_together() -> None:
+    """The audience section is taller than the rest of page 1, so holding it whole
+    left page 1 mostly empty (#866). Its parts stay whole instead."""
+    from reach_around.kit.stage import PRINT_CSS
+
+    rules = re.findall(r"([^{}]*)\{break-inside:(avoid|auto)\}", PRINT_CSS)
+    state: dict[str, str] = {}
+    seen: dict[str, set[str]] = {}
+    for selectors, value in rules:  # later rules win, as in the cascade
+        for selector in selectors.split(","):
+            state[selector.strip()] = value
+            seen.setdefault(selector.strip(), set()).add(value)
+    assert all(len(v) == 1 for v in seen.values())  # no selector both ways
+    assert state[".kit-numbers"] == "auto"
+    assert state[".kit-summary"] == "avoid"
+    assert state[".kit-legend"] == "avoid"
+    assert state["tr"] == "avoid"
+
+
 def _no_split_selectors() -> list[str]:
     """Selectors the print stylesheet keeps whole across a page break."""
     from reach_around.kit.stage import PRINT_CSS
@@ -310,5 +329,6 @@ def test_print_keeps_the_trust_legend_whole() -> None:
     (#749)."""
     selectors = _no_split_selectors()
     assert ".kit-legend" in selectors
-    assert ".kit-numbers" in selectors  # the guard reads the right rule
+    assert "tr" in selectors  # the guard reads the right rule
+    assert ".kit-numbers" not in selectors  # the section may break (#866)
     assert ".kit-not-a-section" not in selectors  # and it can say no
