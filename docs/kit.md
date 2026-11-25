@@ -98,6 +98,11 @@ because the number would be shown nowhere.
 numbers file holds one count per platform). Two metrics on one platform may not
 share a label once case, Unicode compatibility forms and spacing are ignored.
 
+**Size limits.** The site config file is refused above 256 KiB before it is parsed,
+and a parsed config with more than 20,000 values (every scalar, list, mapping and
+key counts as one) is refused before any of it is validated, on top of the per-list
+caps (50 tabs, 200 blocks per tab, 200 links per section, 50 socials).
+
 ## What the build writes
 
 | File | Where | Who sees it |

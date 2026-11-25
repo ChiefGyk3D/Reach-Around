@@ -8,6 +8,7 @@ Every model refuses unknown keys and is frozen. Later phases extend
 
 from __future__ import annotations
 
+import itertools
 import re
 from collections.abc import Iterator
 from datetime import date
@@ -74,6 +75,14 @@ MAX_LINKS_PER_SECTION = 200
 MAX_SOCIALS = 50
 # At most this many problems are printed; the rest are only counted.
 MAX_REPORTED_PROBLEMS = 20
+# The per-list caps above multiply (50 tabs x 200 blocks x 200 links), so the
+# whole document is also held to one budget. The file is refused before it is
+# parsed when it is larger than MAX_CONFIG_BYTES; the parsed tree is refused
+# before any model is built when it holds more than MAX_CONFIG_NODES values
+# (every scalar, list, mapping and mapping key counts as one). A real site is a
+# few hundred nodes.
+MAX_CONFIG_BYTES = 262_144
+MAX_CONFIG_NODES = 20_000
 
 Title = Annotated[str, StringConstraints(min_length=1, max_length=200)]
 Subtitle = Annotated[str, StringConstraints(min_length=1, max_length=500)]
@@ -566,6 +575,29 @@ class SupportPage(_Model):
         return self
 
 
+def check_config_budget(raw: object, limit: int = MAX_CONFIG_NODES) -> None:
+    """Refuse a parsed document with more than ``limit`` nodes.
+
+    Iterative (no recursion), and it stops at the first node over the limit, so
+    the work is bounded by ``limit`` whatever the input. The message is fixed:
+    it never repeats a value from the document.
+    """
+    seen = 0
+    stack: list[object] = [raw]
+    while stack:
+        node = stack.pop()
+        seen += 1
+        if isinstance(node, dict):
+            seen += len(node)
+            stack.extend(node.values())
+        elif isinstance(node, list):
+            stack.extend(node)
+        if seen > limit:
+            raise ValueError(
+                f"the config holds more than {limit} values; split it or remove entries"
+            )
+
+
 class SiteConfig(_Model):
     version: Literal[1]
     creator: Creator
@@ -592,6 +624,15 @@ class SiteConfig(_Model):
     alerts: Alerts = Alerts()
     # The UTC calendar day the site went live; see reach_around.config.cutover.
     cutover_date: date | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _within_budget(cls, data: object) -> object:
+        # Runs before any field is validated: an over-budget document never
+        # builds the models
+        # (or the error list that goes with them).
+        check_config_budget(data)
+        return data
 
     @field_validator("cutover_date", mode="before")
     @classmethod
@@ -965,17 +1006,20 @@ def _dotted(loc: tuple[int | str, ...]) -> str:
 
 def load_site_config(path: Path) -> SiteConfig:
     """Load and validate ``path``; every failure is a ``ConfigError``."""
-    raw = load_yaml(path)
+    raw = load_yaml(path, max_bytes=MAX_CONFIG_BYTES)
     try:
         return SiteConfig.model_validate(raw)
     except ValidationError as exc:
         problems = []
-        for err in exc.errors(include_url=False):
+        # Format only the printed entries; the total comes from the count.
+        for err in itertools.islice(
+            exc.errors(include_url=False), MAX_REPORTED_PROBLEMS
+        ):
             where = _dotted(err["loc"])
             msg = err["msg"].removeprefix("Value error, ")
             problems.append(f"{where}: {msg}" if where else msg)
-        extra = len(problems) - MAX_REPORTED_PROBLEMS
-        text = "; ".join(problems[:MAX_REPORTED_PROBLEMS])
+        extra = exc.error_count() - len(problems)
+        text = "; ".join(problems)
         if extra > 0:
             text += f"; and {extra} more problems"
         raise ConfigError(str(path), None, text) from None
