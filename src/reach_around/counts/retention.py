@@ -53,10 +53,34 @@ class RetentionWarning:
         )
 
 
+MAX_WINDOW_DAYS = 3650
+MAX_WARN_DAYS = 365
+
+
+def _whole(value: object, low: int, high: int) -> bool:
+    return type(value) is int and low <= value <= high
+
+
+def check_policy(policy: RetentionPolicy) -> None:
+    """Refuse a policy the config model would have refused (a built one may differ).
+
+    ``ValueError`` with a fixed message; no value is put in it.
+    """
+    if not _whole(policy.warn_days, 1, MAX_WARN_DAYS):
+        raise ValueError("retention policy: warn days must be a whole number 1 to 365")
+    for window in policy.retain_days.values():
+        if not _whole(window, 1, MAX_WINDOW_DAYS) or window <= policy.warn_days:
+            raise ValueError(
+                "retention policy: each window must be a whole number of days, "
+                "more than the warn days and at most 3650"
+            )
+
+
 def retention_warnings(
     records: Sequence[Record], policy: RetentionPolicy, today: date
 ) -> list[RetentionWarning]:
     """One warning per platform with rows near or past its window, by name."""
+    check_policy(policy)
     expiring: dict[str, int] = {}
     past: dict[str, int] = {}
     for record in records:
