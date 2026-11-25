@@ -129,6 +129,14 @@ def test_rejects_oversized_file_and_row_count() -> None:
         parse_beacons_csv(data)
 
 
+def test_row_cap_stops_the_reader_before_later_rows_are_read() -> None:
+    rows = "Daily,2026-10-01,,0,0,\n" * (MAX_BEACONS_ROWS + 1)
+    data = (HEADER + rows + 'Daily,"x"y,,,,\n').encode()
+    assert len(data) < MAX_BEACONS_BYTES
+    with pytest.raises(BeaconsImportError, match="too many data rows"):
+        parse_beacons_csv(data)
+
+
 def test_rejects_integer_over_python_digit_limit_as_import_error() -> None:
     oversized_integer = "9" * 5_000
     data = (

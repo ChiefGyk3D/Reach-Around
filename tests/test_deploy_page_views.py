@@ -656,3 +656,21 @@ def test_an_invalid_kit_override_fails_closed(
     extra = {**ON, name: bad}
     assert _check(extra).returncode != 0
     assert _write(tmp_path, extra).returncode != 0
+
+
+def test_a_page_over_the_size_cap_is_refused_not_truncated(tmp_path: Path) -> None:
+    # The tab id sits past the cap: reading only the start would miss it and pass.
+    big = "<p>" + "a" * 2_000_001 + "</p>" + _page("late-tab")
+    done = _verify(
+        tmp_path, {"index.html": _page("start-here"), "big.html": big}, '["start-here"]'
+    )
+    assert done.returncode == 1
+    assert "over 2000000 bytes" in done.stdout
+
+
+def test_a_page_exactly_at_the_size_cap_is_read(tmp_path: Path) -> None:
+    tag = _page("start-here")
+    body = tag + "a" * (2_000_000 - len(tag))
+    assert len(body.encode()) == 2_000_000
+    done = _verify(tmp_path, {"index.html": body}, '["start-here"]')
+    assert done.returncode == 0, done.stdout
