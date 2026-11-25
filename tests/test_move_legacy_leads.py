@@ -49,9 +49,14 @@ if any(a.startswith("--file=") for a in args):
     if inject and name == "analytics-db" and "DELETE FROM" in sql and not done:
         # An older Worker writes analytics between the copy and the delete. The freeze
         # would refuse an insert, so "insert" stands for a freeze someone removed.
-        if inject == "insert":
+        if inject in ("insert", "unfreeze"):
+            saved = db.execute(
+                "SELECT sql FROM sqlite_master WHERE type = 'trigger' "
+                "AND name IN ('leads_frozen', 'kit_events_frozen')"
+            ).fetchall()
             db.execute("DROP TRIGGER IF EXISTS leads_frozen")
             db.execute("DROP TRIGGER IF EXISTS kit_events_frozen")
+        if inject == "insert":
             db.execute(
                 "INSERT INTO leads (id, email, created_ts, last_seen_ts, source) "
                 "VALUES ('" + "f" * 32 + "', 'late@example.test', 1, 1, 'gate')"
@@ -61,6 +66,8 @@ if any(a.startswith("--file=") for a in args):
                 + format(1, "032x")
                 + "', 'view')"
             )
+            for (trigger_sql,) in saved:  # frozen again, as the freeze would have it
+                db.execute(trigger_sql)
         if inject == "edit":
             db.execute(
                 "UPDATE leads SET last_seen_ts = 99999 WHERE id = '"
@@ -235,7 +242,7 @@ def test_a_second_run_finds_nothing_to_move(tmp_path: Path) -> None:
     assert purge(env, workdir(tmp_path)).returncode == 0
     again = run(env, tmp_path / "work", "--purge")
     assert again.returncode == 0
-    assert "nothing to move" in again.stdout
+    assert "cutover verified" in again.stdout  # done only because verify passed
     assert count(env["STUB_DEST"], "leads") == 3
 
 
@@ -835,3 +842,276 @@ def test_a_crash_mid_copy_resumes_from_the_cursor_and_is_idempotent(
     once = run(env, work, "--copy")  # idempotent: a third run changes nothing
     assert once.returncode == 0
     assert count(env["STUB_DEST"], "leads") == 5
+
+
+# ---- round 9: delete is conditional on the destination and the freeze at delete -----
+
+
+def load_with_env(env: dict[str, str], monkeypatch: pytest.MonkeyPatch) -> Any:
+    for k, v in env.items():
+        monkeypatch.setenv(k, v)
+    return load_script()
+
+
+def main_args(work: Path, *flags: str) -> list[str]:
+    return [
+        "--source",
+        "analytics-db",
+        "--dest",
+        "leads-db",
+        "--workdir",
+        str(work),
+        *flags,
+    ]
+
+
+def test_a_dest_row_lost_after_the_proof_stops_before_that_rows_delete(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    env = make(tmp_path)
+    work = workdir(tmp_path)
+    assert run(env, work, "--freeze").returncode == 0
+    mod = load_with_env(env, monkeypatch)
+    real = mod.check_dest
+
+    def then_lose(*a: Any, **k: Any) -> None:
+        real(*a, **k)  # the whole-destination proof passes ...
+        i = format(1, "032x")  # ... and then another process removes a row
+        dest_exec(env, f"DELETE FROM kit_events WHERE lead_id = '{i}'")
+        dest_exec(env, f"DELETE FROM leads WHERE id = '{i}'")
+
+    monkeypatch.setattr(mod, "check_dest", then_lose)
+    assert mod.main(main_args(work, "--purge")) == 1
+    assert src_rows(env) == 6  # nothing was deleted: the lost row still has a copy
+
+
+def test_a_dest_row_altered_between_chunks_stops_the_purge_there(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    env = make(tmp_path, count=4)
+    env["MOVE_BATCH"] = "2"
+    work = workdir(tmp_path)
+    assert run(env, work, "--freeze").returncode == 0
+    mod = load_with_env(env, monkeypatch)
+    real = mod.run_file
+    deletes = []
+
+    def spy(w: Any, db: str, wd: Path, sql: str) -> None:
+        real(w, db, wd, sql)
+        if db == "analytics-db" and sql.startswith("DELETE"):
+            deletes.append(sql)
+            if len(deletes) == 1:  # after the first delete chunk: alter a later row
+                dest_exec(
+                    env,
+                    "UPDATE kit_events SET ts = ts + 1 WHERE lead_id = '"
+                    + format(4, "032x")
+                    + "'",
+                )
+
+    monkeypatch.setattr(mod, "run_file", spy)
+    assert mod.main(main_args(work, "--purge")) == 1
+    assert len(deletes) == 1  # no delete was sent after the change
+    assert count(env["STUB_SRC"], "kit_events") == 2  # the second chunk survives
+    assert count(env["STUB_SRC"], "leads") == 4
+
+
+def test_the_freeze_removed_just_before_the_delete_deletes_nothing(
+    tmp_path: Path,
+) -> None:
+    env = make(tmp_path)
+    env["STUB_INJECT"] = "unfreeze"  # the triggers vanish as the DELETE arrives
+    r = purge(env, workdir(tmp_path))
+    assert r.returncode == 1
+    assert "freeze is gone" in r.stderr
+    assert src_rows(env) == 6
+    assert count(env["STUB_DEST"], "leads") == 3
+
+
+def test_the_freeze_is_inside_every_delete_statement() -> None:
+    mod = load_script()
+    guard = mod.guard_sql({"leads", "kit_events"})
+    sql = mod.delete_sql("leads", [{"id": "a" * 32}], guard)
+    assert sql.count(guard) == 1 and "sqlite_master" in sql
+    assert "leads_frozen" in guard and "kit_events_frozen" in guard
+    assert "sqlite_master" in mod.delete_sql("kit_events", [{"id": 1}], guard)
+
+
+@pytest.mark.parametrize(
+    "case", ["unfrozen", "missing", "extra", "unfinished", "nomanifest"]
+)
+def test_purge_of_an_empty_source_still_needs_the_freeze_and_the_proof(
+    tmp_path: Path, case: str
+) -> None:
+    env = make(tmp_path)
+    work = workdir(tmp_path)
+    moved(env, work)
+    if case != "unfrozen":
+        assert run(env, work, "--freeze").returncode == 0
+    one = format(1, "032x")
+    if case == "missing":
+        dest_exec(env, f"DELETE FROM kit_events WHERE lead_id = '{one}'")
+        dest_exec(env, f"DELETE FROM leads WHERE id = '{one}'")
+    if case == "extra":
+        with closing(sqlite3.connect(env["STUB_DEST"])) as db:
+            lead(db, 50)
+            db.commit()
+    manifest = work / "move-manifest.json"
+    if case == "unfinished":
+        manifest.write_text(
+            manifest.read_text().replace('"state": "copied"', '"state": "copying"')
+        )
+    if case == "nomanifest":
+        manifest.unlink()
+    r = run(env, work, "--purge")
+    assert r.returncode in (1, 3), r.stdout
+    assert "done:" not in r.stdout
+    assert "example.test" not in r.stdout + r.stderr
+
+
+def test_purge_of_an_empty_source_reports_done_only_when_the_proof_passes(
+    tmp_path: Path,
+) -> None:
+    env = make(tmp_path)
+    work = workdir(tmp_path)
+    moved(env, work)
+    assert run(env, work, "--freeze").returncode == 0
+    r = run(env, work, "--purge")
+    assert r.returncode == 0, r.stderr
+    assert "cutover verified" in r.stdout and "done:" in r.stdout
+
+
+def two_runs(tmp_path: Path) -> tuple[dict[str, str], dict[str, str], Path, Path]:
+    one, two = tmp_path / "a", tmp_path / "b"
+    one.mkdir(mode=0o700)
+    two.mkdir(mode=0o700)
+    ea, eb = make(one), make(two)
+    wa, wb = workdir(one), workdir(two)
+    for e, w in ((ea, wa), (eb, wb)):
+        moved(e, w)
+        assert run(e, w, "--freeze").returncode == 0
+        assert run(e, w, "--verify").returncode == 0
+    return ea, eb, wa, wb
+
+
+def test_a_manifest_from_another_run_or_database_is_refused(tmp_path: Path) -> None:
+    # Same names, same rows, same schema: only the databases' own ids differ.
+    ea, eb, wa, wb = two_runs(tmp_path)
+    (wa / "move-manifest.json").unlink()
+    (wa / "move-manifest.json").write_text((wb / "move-manifest.json").read_text())
+    (wa / "move-manifest.json").chmod(0o600)
+    r = run(ea, wa, "--verify")
+    assert r.returncode == 3
+    assert "another run or other databases" in r.stderr
+
+
+def test_a_manifest_whose_run_id_the_databases_do_not_hold_is_refused(
+    tmp_path: Path,
+) -> None:
+    env = make(tmp_path)
+    work = workdir(tmp_path)
+    frozen_and_moved(env, work)
+    dest_exec(env, "UPDATE move_identity SET run_id = '" + "0" * 32 + "'")
+    r = run(env, work, "--verify")
+    assert r.returncode == 3
+    assert "another run" in r.stderr
+
+
+def test_a_manifest_with_no_identity_in_the_databases_is_refused(
+    tmp_path: Path,
+) -> None:
+    env = make(tmp_path)
+    work = workdir(tmp_path)
+    frozen_and_moved(env, work)
+    dest_exec(env, "DROP TABLE move_identity")
+    assert run(env, work, "--verify").returncode == 3
+
+
+# ---- round 9: manifest file and directory ownership --------------------------------
+
+
+@pytest.mark.parametrize("mode", [0o644, 0o640, 0o604, 0o400, 0o700])
+def test_an_existing_manifest_must_be_mode_600(tmp_path: Path, mode: int) -> None:
+    env = make(tmp_path)
+    work = workdir(tmp_path)
+    frozen_and_moved(env, work)
+    (work / "move-manifest.json").chmod(mode)
+    r = run(env, work, "--verify")
+    assert r.returncode == 3
+    assert "mode 600" in r.stderr
+
+
+def test_a_manifest_that_is_a_symlink_or_a_hard_link_is_refused(
+    tmp_path: Path,
+) -> None:
+    env = make(tmp_path)
+    work = workdir(tmp_path)
+    frozen_and_moved(env, work)
+    path = work / "move-manifest.json"
+    real = tmp_path / "real.json"
+    real.write_text(path.read_text())
+    real.chmod(0o600)
+    path.unlink()
+    path.symlink_to(real)
+    assert run(env, work, "--verify").returncode == 3
+    path.unlink()
+    path.hardlink_to(real)
+    r = run(env, work, "--verify")
+    assert r.returncode == 3
+    assert "plain regular file" in r.stderr
+
+
+def test_a_manifest_owned_by_another_user_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import os
+
+    env = make(tmp_path)
+    work = workdir(tmp_path)
+    frozen_and_moved(env, work)
+    mod = load_script()
+    uid = os.getuid()
+    monkeypatch.setattr(mod.os, "getuid", lambda: uid + 1)
+    m = mod.Manifest(work, "analytics-db", "leads-db")
+    with pytest.raises(mod.Refused, match="not owned by you"):
+        m.load()
+
+
+def test_a_workdir_under_a_group_writable_parent_is_refused(tmp_path: Path) -> None:
+    env = make(tmp_path)
+    parent = tmp_path / "shared"
+    parent.mkdir(mode=0o700)
+    work = parent / "work"
+    work.mkdir(mode=0o700)
+    parent.chmod(0o770)
+    r = run(env, work, "--purge")
+    assert r.returncode == 3
+    assert "writable by group or others" in r.stderr
+    assert src_rows(env) == 6
+
+
+def test_a_workdir_reached_through_a_symlinked_parent_is_refused(
+    tmp_path: Path,
+) -> None:
+    env = make(tmp_path)
+    real = tmp_path / "real"
+    real.mkdir(mode=0o700)
+    (real / "work").mkdir(mode=0o700)
+    link = tmp_path / "link"
+    link.symlink_to(real)
+    r = run(env, link / "work", "--purge")
+    assert r.returncode == 3
+    assert "symlink" in r.stderr
+    assert src_rows(env) == 6
+
+
+def test_a_workdir_under_a_parent_owned_by_another_user_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import os
+
+    mod = load_script()
+    work = workdir(tmp_path)
+    uid = os.getuid()
+    monkeypatch.setattr(mod.os, "getuid", lambda: uid + 12345)
+    with pytest.raises(mod.Refused, match="owned by another user"):
+        mod.check_ancestors(str(work))

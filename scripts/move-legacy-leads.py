@@ -41,8 +41,12 @@ and says to run it again. Last, in the same run, it runs the --verify check belo
 fails unless that passes. Stop every older Worker that writes the analytics database
 first.
 
-Manifest. WORKDIR/move-manifest.json (mode 600, written atomically): the two database
-names, the state ("copying" or "copied"), a cursor per table, and one SHA-256 digest
+Manifest. WORKDIR/move-manifest.json (mode 600, written atomically; an existing one is
+read only if it is a plain file you own with mode 600 and one link): the two database
+names, each database's own random instance id (a small move_identity table this tool
+adds to both) and a random run id written into both databases and re-checked on every
+use, so a manifest of another run or database is refused, the state ("copying" or
+"copied"), a cursor per table, and one SHA-256 digest
 per row ever copied (the table and id as the key; no address, no column value). It is
 the only record that survives the delete, so it is what lets --verify prove DEST still
 holds every lead after the analytics rows are gone. A crash mid-copy resumes from the
@@ -58,12 +62,19 @@ the gate is enabled, while DEST holds nothing but the moved rows). With no manif
 passes only if DEST also holds no lead row (nothing was ever moved).
 
 No data is lost: the delete is reachable only after the read-back check and the
-manifest proof, in the same run, and the script stops at the first error. Re-running
+manifest proof, in the same run, and the script stops at the first error. No two
+databases share a transaction, so each delete chunk is proved again where it counts:
+its rows are read back from DEST right before the delete (a missing or different row
+stops the purge with nothing more deleted), and every DELETE statement itself carries
+the freeze check (a dropped or altered trigger makes it match nothing). Run it with
+every writer stopped. --purge on an already empty source still needs the freeze and
+reports done only if the final verification passes. Re-running
 after a failure is safe.
 
 Privacy. Rows are held in memory one chunk at a time and in one file inside a fresh
 private directory made under WORKDIR (an existing directory you own, mode 700, outside
-any git work tree); the file is created exclusively, never through a symlink, and
+any git work tree, no symlink or group/other writable parent); the file is created
+exclusively, never through a symlink, and
 removed with its directory when the chunk is done. The manifest holds digests only.
 It prints counts and fixed messages only, never a row or wrangler's own output. Every
 wrangler call is bounded by MOVE_TIMEOUT seconds (default 120, 1 to 900). WRANGLER
@@ -77,10 +88,12 @@ Exit: 0 done or dry run, 1 a step failed (nothing deleted unless it says so), 2 
 from __future__ import annotations
 
 import argparse
+import errno
 import hashlib
 import json
 import os
 import re
+import secrets
 import shlex
 import shutil
 import stat
@@ -236,12 +249,30 @@ def where(columns: tuple[str, ...], row: dict[str, Any]) -> str:
     return " AND ".join(f"{c} IS {literal(row.get(c))}" for c in columns)
 
 
-def delete_sql(table: str, rows: list[dict[str, Any]]) -> str:
+def guard_sql(tables: set[str]) -> str:
+    """True only while every present lead table still has its exact freeze trigger.
+
+    Part of each DELETE, so the freeze and the delete are one statement: a trigger
+    dropped or replaced at any moment before it makes the delete match nothing."""
+    parts = [
+        f"(name = {literal(FROZEN[t][0])} AND tbl_name = {literal(t)} "
+        f"AND sql = {literal(create_sql(t))})"
+        for t in sorted(tables)
+    ]
+    return (
+        "(SELECT COUNT(*) FROM sqlite_master WHERE type = 'trigger' AND ("
+        + " OR ".join(parts)
+        + f")) = {len(parts)}"
+    )
+
+
+def delete_sql(table: str, rows: list[dict[str, Any]], guard: str) -> str:
     """Delete exactly the verified rows; a lead goes only with no event left."""
-    tail = ";"
+    tail = f" AND {guard};"
     if table == "leads":
         tail = (
-            " AND NOT EXISTS (SELECT 1 FROM kit_events e WHERE e.lead_id = leads.id);"
+            " AND NOT EXISTS (SELECT 1 FROM kit_events e WHERE e.lead_id = leads.id)"
+            f" AND {guard};"
         )
     return (
         "\n".join(
@@ -285,8 +316,54 @@ def digest(table: str, row: dict[str, Any]) -> str:
     return hashlib.sha256(json.dumps(parts, separators=(",", ":")).encode()).hexdigest()
 
 
+BINDING_TABLE = "move_identity"
+HEX32 = re.compile(r"^[0-9a-f]{32}$")
+
+
+def read_binding(w: Wrangler, db: str) -> tuple[str, str | None] | None:
+    """(instance id, run id) this tool wrote into `db`, or None when it wrote none."""
+    found = w.execute(
+        db,
+        command="SELECT name FROM sqlite_master WHERE type = 'table' "
+        f"AND name = '{BINDING_TABLE}'",
+    )
+    if not found:
+        return None
+    rows = w.execute(db, command=f"SELECT instance, run_id FROM {BINDING_TABLE}")
+    inst = rows[0].get("instance") if len(rows) == 1 else None
+    run_id = rows[0].get("run_id") if len(rows) == 1 else None
+    if not isinstance(inst, str) or not HEX32.match(inst):
+        raise Refused("a database holds a malformed move identity; resolve by hand.")
+    if run_id is not None and not (isinstance(run_id, str) and HEX32.match(run_id)):
+        raise Refused("a database holds a malformed move identity; resolve by hand.")
+    return inst, run_id
+
+
+def ensure_binding(w: Wrangler, db: str) -> str:
+    """Give `db` a random instance id once (never changed), and return it."""
+    w.execute(
+        db,
+        command=f"CREATE TABLE IF NOT EXISTS {BINDING_TABLE} "
+        "(instance TEXT NOT NULL, run_id TEXT)",
+    )
+    w.execute(
+        db,
+        command=f"INSERT INTO {BINDING_TABLE} (instance) SELECT "
+        f"{literal(secrets.token_hex(16))} "
+        f"WHERE NOT EXISTS (SELECT 1 FROM {BINDING_TABLE})",
+    )
+    got = read_binding(w, db)
+    if got is None:
+        raise Failed("the move identity could not be written")
+    return got[0]
+
+
 class Manifest:
-    """The private record of what was copied: digests and cursors, never a row."""
+    """The private record of what was copied: digests and cursors, never a row.
+
+    Bound to the two databases' own instance ids and to a random run id that is also
+    written into both databases, so a manifest of another run or database is refused
+    (names are only labels)."""
 
     def __init__(self, work: Path, source: str, dest: str) -> None:
         self.path = work / MANIFEST
@@ -296,15 +373,27 @@ class Manifest:
         self.cursor: dict[str, Any] = {}
         self.digests: dict[str, dict[str, str]] = {t: {} for t, _ in TABLES}
         self.exists = False
+        self.src_id = ""
+        self.dst_id = ""
+        self.run_id = ""
 
     def load(self) -> None:
         try:
             fd = os.open(self.path, os.O_RDONLY | os.O_NOFOLLOW)
         except FileNotFoundError:
             return
+        except OSError as exc:
+            if exc.errno == errno.ELOOP:
+                raise Refused("the manifest is a symbolic link.") from exc
+            raise
         with os.fdopen(fd, "r", encoding="utf-8") as fh:
-            if not stat.S_ISREG(os.fstat(fh.fileno()).st_mode):
-                raise Refused("the manifest is not a regular file.")
+            st = os.fstat(fh.fileno())
+            if not stat.S_ISREG(st.st_mode) or st.st_nlink != 1:
+                raise Refused("the manifest is not a plain regular file.")
+            if st.st_uid != os.getuid():
+                raise Refused("the manifest is not owned by you.")
+            if stat.S_IMODE(st.st_mode) != 0o600:
+                raise Refused("the manifest must be mode 600 (chmod 600).")
             try:
                 data = json.load(fh)
             except ValueError as exc:
@@ -313,11 +402,15 @@ class Manifest:
                 ) from exc
         ok = (
             isinstance(data, dict)
-            and data.get("version") == 1
+            and data.get("version") == 2
             and data.get("state") in ("copying", "copied")
             and isinstance(data.get("cursor"), dict)
             and isinstance(data.get("digests"), dict)
             and all(isinstance(data["digests"].get(t), dict) for t, _ in TABLES)
+            and all(
+                isinstance(data.get(k), str) and HEX32.match(data[k])
+                for k in ("src_id", "dst_id", "run_id")
+            )
         )
         if not ok:
             raise Refused("the manifest is unreadable; resolve it by hand.")
@@ -326,7 +419,39 @@ class Manifest:
         self.state = data["state"]
         self.cursor = data["cursor"]
         self.digests = {t: dict(data["digests"][t]) for t, _ in TABLES}
+        self.src_id, self.dst_id, self.run_id = (
+            data["src_id"],
+            data["dst_id"],
+            data["run_id"],
+        )
         self.exists = True
+
+    def attach(self, w: Wrangler, *, create: bool) -> None:
+        """Bind to the databases: check an existing manifest, or start a new run."""
+        if self.exists:
+            s, d = read_binding(w, self.source), read_binding(w, self.dest)
+            if (
+                s is None
+                or d is None
+                or (s[0], d[0]) != (self.src_id, self.dst_id)
+                or s[1] != self.run_id
+                or d[1] != self.run_id
+            ):
+                raise Refused(
+                    "the manifest belongs to another run or other databases; "
+                    "resolve by hand."
+                )
+            return
+        if not create:
+            return
+        self.src_id = ensure_binding(w, self.source)
+        self.dst_id = ensure_binding(w, self.dest)
+        self.run_id = secrets.token_hex(16)
+        for db in (self.source, self.dest):
+            w.execute(
+                db,
+                command=f"UPDATE {BINDING_TABLE} SET run_id = {literal(self.run_id)}",
+            )
 
     def save(self) -> None:
         tmp = self.path.with_name(MANIFEST + ".tmp")
@@ -335,9 +460,12 @@ class Manifest:
         )  # a crashed run's leftover (a link goes, not its target)
         body = json.dumps(
             {
-                "version": 1,
+                "version": 2,
                 "source": self.source,
                 "dest": self.dest,
+                "src_id": self.src_id,
+                "dst_id": self.dst_id,
+                "run_id": self.run_id,
                 "state": self.state,
                 "cursor": self.cursor,
                 "digests": self.digests,
@@ -359,11 +487,40 @@ class Manifest:
             )
 
 
+def check_ancestors(path: str) -> None:
+    """Every directory from / down to `path`: a real directory (no symlink), owned by
+    you or root, and not writable by group or others (a sticky root-owned directory
+    such as /tmp is allowed). Walked with directory descriptors and O_NOFOLLOW, so
+    the answer is about the directories actually opened, not about a name."""
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    names = [p for p in path.split(os.sep) if p]
+    fd = os.open(os.sep, flags)
+    try:
+        for name in [None, *names]:
+            if name is not None:
+                try:
+                    nxt = os.open(name, flags, dir_fd=fd)
+                except OSError as exc:
+                    raise Refused("WORKDIR has a symlink or missing parent.") from exc
+                os.close(fd)
+                fd = nxt
+            st = os.fstat(fd)
+            if st.st_uid not in (0, os.getuid()):
+                raise Refused("a parent of WORKDIR is owned by another user.")
+            open_to_others = bool(st.st_mode & 0o022)
+            sticky_root = bool(st.st_mode & stat.S_ISVTX) and st.st_uid == 0
+            if open_to_others and not sticky_root:
+                raise Refused("a parent of WORKDIR is writable by group or others.")
+    finally:
+        os.close(fd)
+
+
 def check_workdir(path: str) -> Path:
-    work = Path(path)
+    absolute = os.path.abspath(path)  # lexical; the walk below proves no symlink
+    work = Path(absolute)
     if not work.is_dir() or work.is_symlink():
         raise Refused("WORKDIR is not a real directory.")
-    work = work.resolve()
+    check_ancestors(absolute)
     if work.stat().st_uid != os.getuid():
         raise Refused("WORKDIR is not owned by you.")
     if stat.S_IMODE(work.stat().st_mode) & 0o077:
@@ -490,6 +647,7 @@ def verify(w: Wrangler, source: str, dest: str, work: Path) -> int:
     elif manifest.state != "copied":
         raise Failed("the manifest says a copy did not finish; run the move again")
     else:
+        manifest.attach(w, create=False)
         check_dest(w, dest, manifest, size)
     print("cutover verified: moved completely, and no older Worker can store a lead.")
     return 0
@@ -498,6 +656,7 @@ def verify(w: Wrangler, source: str, dest: str, work: Path) -> int:
 def copy_chunks(w: Wrangler, args: argparse.Namespace, work: Path, m: Manifest) -> None:
     """Copy and read back in bounded chunks, recording each chunk before the next."""
     size = batch_size()
+    m.attach(w, create=True)
     if m.state == "copying" and m.exists:
         print("resuming an unfinished copy from the recorded cursor")
     else:
@@ -532,11 +691,38 @@ def copy_chunks(w: Wrangler, args: argparse.Namespace, work: Path, m: Manifest) 
     )
 
 
+def require_frozen(w: Wrangler, db: str) -> None:
+    """The freeze must still be there; a purge in progress stops when it is not."""
+    if present_tables(w, db) - frozen_tables(w, db):
+        raise Failed("the freeze is gone; nothing more was deleted. Freeze and rerun")
+
+
+def confirm_dest(
+    w: Wrangler, dest: str, table: str, rows: list[dict[str, Any]], m: Manifest
+) -> None:
+    """Right before a delete: DEST holds each of these rows, equal to the manifest."""
+    back = {
+        str(r.get("id")): r for r in by_ids(w, dest, table, [r.get("id") for r in rows])
+    }
+    for r in rows:
+        key = str(r.get("id"))
+        got = back.get(key)
+        if got is None or digest(table, got) != m.digests[table].get(key):
+            raise Failed(
+                "the leads database no longer holds a row about to be deleted; "
+                "nothing more was deleted"
+            )
+
+
 def purge_chunks(
     w: Wrangler, args: argparse.Namespace, work: Path, m: Manifest
 ) -> None:
-    """Delete only rows whose every column matches a recorded digest, in chunks."""
+    """Delete only rows whose every column matches a recorded digest, in chunks.
+
+    Each chunk is proved again where it matters: the rows are read back from DEST
+    immediately before their delete, and the delete itself carries the freeze check."""
     size = batch_size()
+    guard = guard_sql(present_tables(w, args.source))
     for table in ("kit_events", "leads"):  # events first: a lead goes with none left
         after: object | None = None
         while True:
@@ -550,7 +736,10 @@ def purge_chunks(
                 if m.digests[table].get(str(r.get("id"))) == digest(table, r)
             ]
             if known:
-                run_file(w, args.source, work, delete_sql(table, known))
+                require_frozen(w, args.source)
+                confirm_dest(w, args.dest, table, known, m)
+                run_file(w, args.source, work, delete_sql(table, known, guard))
+                require_frozen(w, args.source)
 
 
 def run(args: argparse.Namespace) -> int:
@@ -568,6 +757,15 @@ def run(args: argparse.Namespace) -> int:
 
     held = counts(w, args.source)
     print(f"source holds {held['leads']} leads and {held['kit_events']} kit events")
+    if args.purge:
+        check_frozen(w, args.source)  # before any copy or delete, even when empty
+        if not any(held.values()):
+            # An empty source proves nothing by itself: a rerun after a purge is done
+            # only if the same final check passes (manifest, destination, freeze).
+            print("nothing left to move: proving the earlier move instead")
+            verify(w, args.source, args.dest, work)
+            print("done: the lead rows live only in the leads database now.")
+            return 0
     if not any(held.values()):
         print("nothing to move: the analytics database holds no lead rows")
         return 0
@@ -575,8 +773,6 @@ def run(args: argparse.Namespace) -> int:
         print("dry run: nothing was written or deleted.")
         print("run again with --copy, or --purge to also delete the analytics rows.")
         return 0
-    if args.purge:
-        check_frozen(w, args.source)  # before any copy or delete
 
     manifest = Manifest(work, args.source, args.dest)
     manifest.load()
@@ -585,7 +781,8 @@ def run(args: argparse.Namespace) -> int:
         print("copied and verified. Nothing was deleted; --purge deletes the copies.")
         return 0
 
-    # Frozen again and DEST proved complete from the manifest, right before the delete.
+    # Frozen and DEST proved complete from the manifest; purge_chunks then re-proves
+    # each chunk's rows in DEST and the freeze at the delete itself.
     check_frozen(w, args.source)
     check_dest(w, args.dest, manifest, batch_size())
     purge_chunks(w, args, work, manifest)
