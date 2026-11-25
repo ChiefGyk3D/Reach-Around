@@ -1,12 +1,81 @@
 {
   "pages": {
-    "Costs.md": {
-      "verified": "2026-11-24",
-      "sources": ["scripts/cost_estimate.py", "worker/wrangler.toml"]
+    "Architecture.md": {
+      "verified": "2026-11-25",
+      "sources": [
+        "worker/src/index.ts",
+        "worker/wrangler.toml",
+        "docs/design.md",
+        "docs/instance-repos.md"
+      ]
+    },
+    "Comparison-Beacons-AI.md": {
+      "verified": "2026-11-25",
+      "sources": [
+        "docs/parity.md",
+        "docs/research/beacons-parity.md",
+        "README.md"
+      ]
+    },
+    "Concepts.md": {
+      "verified": "2026-11-25",
+      "sources": [
+        "docs/config.md",
+        "docs/instance-repos.md",
+        "docs/kit.md",
+        "docs/failure-modes.md"
+      ]
     },
     "Costs-Worksheet.md": {
       "verified": "2026-11-24",
-      "sources": ["scripts/cost_estimate.py"]
+      "sources": [
+        "scripts/cost_estimate.py"
+      ]
+    },
+    "Costs.md": {
+      "verified": "2026-11-24",
+      "sources": [
+        "scripts/cost_estimate.py",
+        "worker/wrangler.toml"
+      ]
+    },
+    "Glossary.md": {
+      "verified": "2026-11-25",
+      "sources": [
+        "docs/config.md",
+        "docs/kit.md"
+      ]
+    },
+    "Operations.md": {
+      "verified": "2026-11-25",
+      "sources": [
+        "docs/failure-modes.md",
+        "docs/backup-restore.md",
+        "docs/cutover-runbook.md",
+        "scripts/check-dump.py",
+        "scripts/smoke.sh"
+      ]
+    },
+    "README.md": {
+      "verified": "2026-11-25",
+      "sources": [
+        "scripts/check-wiki-freshness.py",
+        "scripts/check-wiki-scrub.py"
+      ]
+    },
+    "Security-and-Privacy.md": {
+      "verified": "2026-11-25",
+      "sources": [
+        "docs/privacy.md",
+        "docs/kit.md",
+        "worker/wrangler.toml"
+      ]
+    },
+    "_Sidebar.md": {
+      "verified": "2026-11-25",
+      "sources": [
+        "docs/wiki/README.md"
+      ]
     }
   }
 }

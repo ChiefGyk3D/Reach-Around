@@ -1,0 +1,1 @@
+- Wiki freshness registry complete (#861, epic #795): `docs/wiki/FRESHNESS.json` now has an entry for every top-level wiki page, which fixes `tests/test_check_wiki_freshness.py::test_repo_registry_is_valid` on main. The Beacons.AI comparison page is still a draft for owner review; its entry records the date of its last check against the parity research, not an owner sign-off.
