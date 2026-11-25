@@ -596,3 +596,23 @@ def test_the_stored_other_beside_a_named_cell_follows_the_floor_rule(
         assert g["rows"] == [] and g["other"] == 40 + value
     else:
         assert rows_of(g) == {"18-24": 40} and g["other"] == value
+
+
+def test_platforms_without_a_figure_say_not_available_with_equal_wording() -> None:
+    b = block(ages(("18_24", 50)))
+    text = "\n".join(private_lines(b))
+    assert "Twitch: not available (" in text and "Kick: not available (" in text
+    twitch, kick = (e["reason"] for e in b["not_available"])
+    assert twitch == kick  # equal treatment
+    assert b["not_available"][0]["platform"] == "Twitch"
+
+
+def test_not_available_shows_even_with_no_private_data() -> None:
+    b = block([])
+    assert [e["platform"] for e in b["not_available"]] == ["Twitch", "Kick"]
+    assert "Twitch: not available" in "\n".join(private_lines(b))
+
+
+def test_a_platform_with_collected_figures_is_not_listed_not_available() -> None:
+    b = block([rec("fdemo_age_18_24", 50, platform="twitch", provider=YT)])
+    assert [e["platform"] for e in b["not_available"]] == ["Kick"]

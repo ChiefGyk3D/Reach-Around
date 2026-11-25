@@ -65,6 +65,22 @@ NOTES = (
     "line pins no single cell.",
 )
 
+# Platforms with no collected views, watch time or demographics figure, and why.
+# Twitch and Kick use the same wording and sit side by side (equal treatment). The
+# list says "not available" plainly instead of leaving a platform out (#397).
+NOT_AVAILABLE = (
+    (
+        "Twitch",
+        "no figure collected: live measures are hand-kept (owner decision "
+        "2026-11-20); the API offers no watch time or demographics",
+    ),
+    (
+        "Kick",
+        "no figure collected: live measures are hand-kept (owner decision "
+        "2026-11-20); the API offers no watch time or demographics",
+    ),
+)
+
 # metric prefix -> what it counts
 ACTIVITY = {
     "views": "views",
@@ -279,6 +295,11 @@ def build_private(
         "floor": floor,
         "sections": [sections[k] for k in sorted(sections)],
         "unrecognized": unrecognized,
+        "not_available": [
+            {"platform": p, "reason": r}
+            for p, r in NOT_AVAILABLE
+            if p.lower() not in {sec["platform"].lower() for sec in sections.values()}
+        ],
         "notes": list(NOTES),
     }
 
@@ -332,6 +353,8 @@ def private_lines(block: dict[str, Any]) -> list[str]:
                 lines.append(
                     f"      {'(other, below the floor)':<22} {group['other']:>12,}"
                 )
+    for entry in block["not_available"]:
+        lines.append(f"  {entry['platform']}: not available ({entry['reason']})")
     if block["unrecognized"]:
         lines.append(
             f"  {block['unrecognized']} private metric(s) not recognized; not shown"
