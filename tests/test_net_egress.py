@@ -354,6 +354,7 @@ class DripServer:
         self._lock = threading.Lock()
         self._conns: list[socket.socket] = []
         self._workers: list[threading.Thread] = []
+        self._start_errors: list[BaseException] = []  # a worker thread never ran
         self._thread = threading.Thread(
             target=self._serve, daemon=True, name="fake-drip-accept"
         )
@@ -369,7 +370,6 @@ class DripServer:
                 target=self._run, args=(conn,), daemon=True, name="fake-drip-worker"
             )
             with self._lock:
-                self._workers = [w for w in self._workers if w.is_alive()]
                 self._workers.append(worker)
                 self._conns.append(conn)
             try:
@@ -378,10 +378,10 @@ class DripServer:
                 with self._lock:
                     self._workers.remove(worker)
                     self._conns.remove(conn)
+                    self._start_errors.append(exc)  # close() reports it
                 conn.close()
                 if not isinstance(exc, Exception):
-                    raise  # an interrupt is not swallowed; an ordinary failure
-                    # drops this request only and the server keeps accepting
+                    raise  # an interrupt is not swallowed
 
     def _run(self, conn: socket.socket) -> None:
         raw = conn
@@ -426,6 +426,10 @@ class DripServer:
         stuck = [t.name for t in (self._thread, *workers) if t.is_alive()]
         if stuck:
             raise AssertionError(f"fake drip server threads did not stop: {stuck}")
+        if self._start_errors:
+            raise AssertionError(
+                f"fake drip server could not start a worker: {self._start_errors!r}"
+            ) from self._start_errors[0]
 
 
 def hold(conn: socket.socket, seconds: float = 30) -> None:

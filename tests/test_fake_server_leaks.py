@@ -7,8 +7,9 @@ unrelated stderr assertion (tests/test_report.py flaked this way). These tests
 count threads before and after, so a server left running fails here.
 
 Invariants of the fake servers: every accepted socket is closed exactly once,
-close() takes one global deadline (not one per thread), and every helper thread
-is named ``fake-*``.
+close() takes one global deadline (not one per thread), and a failure in a
+handler (or in starting one) fails close() unless it is the client hanging up
+while its request was being read.
 """
 
 from __future__ import annotations
@@ -16,6 +17,7 @@ from __future__ import annotations
 import contextlib
 import os
 import socket
+import struct
 import threading
 import time
 from http.server import BaseHTTPRequestHandler
@@ -27,34 +29,18 @@ from test_net_egress import DripServer, _silent, _slow_body
 
 
 def leaked(before: set[threading.Thread], wait: float = 1.0) -> list[threading.Thread]:
-    """Fake-server threads started since ``before`` that are still alive.
+    """Every thread started since ``before`` that is still alive.
 
-    Only threads this module's servers create (named ``fake-*``) count, so a pytest
-    plugin or other background thread cannot make the check flake. A bounded
-    settle loop gives a thread that is just exiting up to ``wait`` seconds.
+    Counted by identity, not by name, so a server that leaks an unnamed thread is
+    caught too. A bounded settle loop gives a thread that is just exiting up to
+    ``wait`` seconds.
     """
     deadline = time.monotonic() + wait
     while True:
-        left = [
-            t
-            for t in threading.enumerate()
-            if t not in before and t.is_alive() and t.name.startswith("fake-")
-        ]
+        left = [t for t in threading.enumerate() if t not in before and t.is_alive()]
         if not left or time.monotonic() >= deadline:
             return left
         time.sleep(0.05)
-
-
-def test_an_unrelated_thread_is_not_a_leak() -> None:
-    before = set(threading.enumerate())
-    gate = threading.Event()
-    other = threading.Thread(target=gate.wait, args=(5,), daemon=True, name="plugin-x")
-    other.start()
-    try:
-        assert leaked(before, wait=0) == []
-    finally:
-        gate.set()
-        other.join(5)
 
 
 def test_the_detector_sees_a_server_left_running() -> None:
@@ -159,7 +145,8 @@ def test_local_start_failure_drops_one_request_and_close_still_works(
         sock.sendall(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n")
         sock.settimeout(5)
         assert sock.recv(1) == b""  # the request socket was closed, not leaked
-        loc.close()
+        with pytest.raises(AssertionError, match="start new thread"):
+            loc.close()  # the infrastructure failure is not swallowed
     finally:
         sock.close()
     assert failed
@@ -289,7 +276,8 @@ def test_drip_start_failure_closes_the_request_and_close_still_works(
     try:
         client.settimeout(5)
         assert client.recv(1) == b""  # server side closed it
-        server.close()
+        with pytest.raises(AssertionError, match="start new thread"):
+            server.close()
     finally:
         client.close()
     assert failed
@@ -330,8 +318,7 @@ def test_local_interrupt_during_start_closes_the_request_and_propagates(
         assert sock.recv(1) == b""  # closed, not leaked
         loc.thread.join(5)
         assert [type(d) for d in deaths] == [_Interrupt]  # it was not swallowed
-        with contextlib.suppress(AssertionError):
-            loc.close()
+        loc.close()  # an interrupt kills the accept loop; teardown still works
     finally:
         sock.close()
 
@@ -360,7 +347,8 @@ def test_drip_interrupt_during_start_closes_the_request_and_propagates(
         assert server._conns == [] and server._workers == []
     finally:
         client.close()
-        server.close()
+        with pytest.raises(AssertionError, match="could not start a worker"):
+            server.close()
 
 
 def test_local_close_fails_when_a_handler_raises() -> None:
@@ -377,29 +365,69 @@ def test_local_close_fails_when_a_handler_raises() -> None:
         assert sock.recv(1) == b""
         with pytest.raises(AssertionError, match="unexpected credentials"):
             loc.close()
-        loc.close()  # the error was reported once; a second close is clean
+        with pytest.raises(AssertionError, match="unexpected credentials"):
+            loc.close()  # idempotent: the same outcome again
     finally:
         sock.close()
 
 
-def test_local_close_ignores_a_client_that_hangs_up() -> None:
-    done = threading.Event()
-
-    def write_late(r: BaseHTTPRequestHandler) -> None:
-        try:
-            time.sleep(0.2)
-            for _ in range(500):  # the client is gone: a socket error follows
-                r.wfile.write(b"x" * 65536)
-                r.wfile.flush()
-        finally:
-            done.set()
-
-    loc = Local(write_late)
+def test_local_close_ignores_a_client_that_resets_mid_request() -> None:
+    """A client hang-up raised while the request is read is expected noise."""
+    loc = Local(reply(GOOD))
     sock = socket.create_connection(("127.0.0.1", loc.srv.server_address[1]))
-    sock.sendall(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n")
+    sock.sendall(b"GET / HT")  # the handler is reading the request line
+    time.sleep(0.2)
+    # SO_LINGER 0: close() sends an RST, so the handler's read raises
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
     sock.close()
-    assert done.wait(5)  # the error happened before close() began (not closing)
-    loc.close()  # a hang-up is expected noise, not a failure
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline and any(
+        c.thread.is_alive() for c in loc.srv.conns.values()
+    ):
+        time.sleep(0.05)
+    assert [c.hung_up for c in loc.srv.conns.values()] != [None]  # raised on read
+    loc.close()
+
+
+def test_local_close_fails_when_the_handler_itself_raises_a_hang_up() -> None:
+    """The same exception type, raised by the handler, is a failure (by origin)."""
+
+    def broken(_r: BaseHTTPRequestHandler) -> None:
+        raise ConnectionResetError("not from the client")
+
+    loc = Local(broken)
+    sock = socket.create_connection(("127.0.0.1", loc.srv.server_address[1]))
+    try:
+        sock.sendall(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n")
+        sock.settimeout(5)
+        assert sock.recv(1) == b""
+        with pytest.raises(AssertionError, match="not from the client"):
+            loc.close()
+    finally:
+        sock.close()
+
+
+def test_local_close_fails_when_a_handler_hits_a_socket_error_while_closing() -> None:
+    """Closing does not excuse an OSError the handler raised (no 'closing' flag)."""
+    entered = threading.Event()
+    release = threading.Event()
+
+    def slow_then_fail(_r: BaseHTTPRequestHandler) -> None:
+        entered.set()
+        release.wait(5)
+        raise OSError("handler bug")
+
+    loc = Local(slow_then_fail)
+    sock = socket.create_connection(("127.0.0.1", loc.srv.server_address[1]))
+    try:
+        sock.sendall(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n")
+        assert entered.wait(5)
+        threading.Timer(0.2, release.set).start()
+        with pytest.raises(AssertionError, match="handler bug"):
+            loc.close()
+    finally:
+        release.set()
+        sock.close()
 
 
 def test_local_close_deadline_bounds_a_stalled_accept_loop() -> None:
@@ -419,9 +447,39 @@ def test_local_close_deadline_bounds_a_stalled_accept_loop() -> None:
         with pytest.raises(AssertionError, match="did not stop"):
             loc.close(join_timeout=0.3)
         assert time.monotonic() - start < 2.0
+        with pytest.raises(AssertionError, match="did not stop"):
+            loc.close(join_timeout=0.1)  # again: still reported, still bounded
+        helpers = [t for t in threading.enumerate() if t.name == "fake-http-shutdown"]
+        assert len(helpers) == 1  # one tracked helper, not one per call
     finally:
         gate.set()
-        loc.close()
+        loc.close()  # the tracked helper finishes; the outcome is clean
+
+
+def test_local_close_joins_a_handler_started_while_it_runs() -> None:
+    """The accept loop is stopped before handlers are snapshotted (no late miss)."""
+    entered = threading.Event()
+    gate = threading.Event()
+    loc = Local(reply(GOOD))
+    real = loc.srv.process_request
+
+    def paused(request: socket.socket, client_address: object) -> None:
+        entered.set()
+        gate.wait(5)  # the accept thread is mid-dispatch while close() starts
+        real(request, client_address)
+
+    loc.srv.process_request = paused  # type: ignore[method-assign]
+    sock = socket.create_connection(("127.0.0.1", loc.srv.server_address[1]))
+    try:
+        assert entered.wait(5)
+        threading.Timer(0.3, gate.set).start()  # released after close() began
+        loc.close()  # blocks until the late handler exists, wakes it, joins it
+        late = [c.thread for c in loc.srv.conns.values()]
+        assert len(late) == 1
+        assert not late[0].is_alive()
+    finally:
+        gate.set()
+        sock.close()
 
 
 def test_drip_server_drops_finished_workers() -> None:

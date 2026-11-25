@@ -16,7 +16,7 @@ from collections.abc import Callable, Iterator
 from datetime import date
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -38,12 +38,57 @@ def out_dir(tmp_path: Path) -> Path:
     return d
 
 
+_HANG_UPS = (
+    ConnectionResetError,
+    BrokenPipeError,
+    ConnectionAbortedError,
+    TimeoutError,
+)
+
+
+class _Conn:
+    """One handled connection: its thread, its socket and what went wrong."""
+
+    def __init__(self, sock: socket.socket, run: Callable[[_Conn], None]) -> None:
+        self.sock = sock
+        self.thread = threading.Thread(
+            target=run, args=(self,), daemon=True, name="fake-http-handler"
+        )
+        self.hung_up: BaseException | None = None  # raised reading the client
+        self.error: BaseException | None = None  # anything else: a real failure
+
+
+class _ClientReads:
+    """Wraps the request reader: a hang-up raised here came from the client."""
+
+    def __init__(self, raw: Any, conn: _Conn) -> None:
+        self._raw = raw
+        self._conn = conn
+
+    def _guard(self, call: Callable[..., Any], *args: Any) -> Any:
+        try:
+            return call(*args)
+        except _HANG_UPS as exc:
+            self._conn.hung_up = exc
+            raise
+
+    def read(self, *args: Any) -> Any:
+        return self._guard(self._raw.read, *args)
+
+    def readline(self, *args: Any) -> Any:
+        return self._guard(self._raw.readline, *args)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._raw, name)
+
+
 class _TrackingServer(ThreadingHTTPServer):
-    """Handlers are our own named daemon threads, so close() can bound the join.
+    """Handlers are our own daemon threads, one record per connection.
 
     socketserver's block_on_close joins without a timeout, which would hang the
-    run on a handler stuck in a read; here close() shuts every open request
-    socket down first and then joins with a deadline.
+    run on a handler stuck in a read; here Local.close() wakes every open
+    socket and joins with a deadline. A handler failure is kept on its record
+    and fails close(), unless it is the client hanging up mid-request.
     """
 
     daemon_threads = True
@@ -51,60 +96,36 @@ class _TrackingServer(ThreadingHTTPServer):
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
-        self._lock = threading.Lock()
-        self._open: list[tuple[threading.Thread, socket.socket]] = []
-        self.closing = False
-        self.errors: list[BaseException] = []  # unexpected handler failures
+        self.conns: dict[socket.socket, _Conn] = {}
+        self.start_errors: list[BaseException] = []  # a handler thread never ran
 
     def process_request(self, request: Any, client_address: Any) -> None:
-        t = threading.Thread(
-            target=self.process_request_thread,
-            args=(request, client_address),
-            daemon=True,
-            name="fake-http-handler",
-        )
-        with self._lock:
-            # drop finished handlers
-            self._open = [(h, s) for h, s in self._open if h.is_alive()]
-            self._open.append((t, request))
+        conn = _Conn(request, lambda c: self._handle(c, client_address))
+        # drop finished, clean connections; a failed one stays for close()
+        self.conns = {
+            s: c for s, c in self.conns.items() if c.error or c.thread.is_alive()
+        }
+        self.conns[request] = conn
         try:
-            t.start()
-        except BaseException as exc:  # whatever the failure, close this request
-            with self._lock:
-                self._open.remove((t, request))
-            self.shutdown_request(request)
-            if not isinstance(exc, Exception):
-                raise  # an interrupt is not swallowed; an ordinary failure drops
-                # this request only and the server keeps serving
+            conn.thread.start()
+        except BaseException:
+            del self.conns[request]
+            raise  # socketserver closes the request and calls handle_error
 
-    def handlers(self) -> list[threading.Thread]:
-        with self._lock:
-            return [h for h, _ in self._open]
-
-    def wake_handlers(self) -> None:
-        with self._lock:
-            socks = [s for _, s in self._open]
-        for s in socks:
-            with contextlib.suppress(OSError):
-                s.shutdown(socket.SHUT_RDWR)
+    def _handle(self, conn: _Conn, client_address: Any) -> None:
+        try:
+            self.finish_request(conn.sock, client_address)
+        except Exception as exc:
+            if exc is not conn.hung_up:  # only a client-side read hang-up is noise
+                conn.error = exc
+        finally:
+            self.shutdown_request(conn.sock)
 
     def handle_error(self, request: Any, client_address: Any) -> None:
-        """Record a handler failure so close() can fail the test (#859).
-
-        Only socket errors are expected: a client that hangs up (a connection
-        error or a timeout) at any time, or any OSError once close() has begun
-        cutting handlers off. Everything else, such as an AssertionError in a
-        test handler, is kept and re-raised from close().
-        """
+        """Only process_request failures arrive here (see _handle)."""
         exc = sys.exception()
-        if exc is None:
-            return
-        if isinstance(exc, (ConnectionError, TimeoutError)):
-            return
-        if self.closing and isinstance(exc, OSError):
-            return
-        with self._lock:
-            self.errors.append(exc)
+        if exc is not None:
+            self.start_errors.append(exc)
 
 
 class Local:
@@ -117,6 +138,11 @@ class Local:
 
         class H(BaseHTTPRequestHandler):
             timeout = handler_timeout  # a stalled client cannot hold a handler
+
+            def setup(self) -> None:
+                super().setup()
+                conn = outer.srv.conns[self.request]
+                self.rfile = cast(Any, _ClientReads(self.rfile, conn))
 
             def do_POST(self) -> None:  # noqa: N802 - http.server API
                 outer.hits += 1
@@ -140,6 +166,7 @@ class Local:
             name="fake-http-accept",
         )
         self.thread.start()
+        self._stopper: threading.Thread | None = None
 
     @property
     def url(self) -> str:
@@ -148,31 +175,37 @@ class Local:
     def close(self, join_timeout: float = 5.0) -> None:
         """Stop the server and every handler, or fail the test loudly (#859).
 
-        One deadline bounds the whole call, shutdown() included: it runs in a
-        helper thread, so a stalled accept loop cannot hold close() past
-        join_timeout. An unexpected handler exception also fails the call.
+        One deadline bounds the call. The accept loop stops first (shutdown
+        runs in one retained helper, so a stalled loop cannot hold close() and
+        repeated calls never start another), then the handlers are snapshotted,
+        woken and joined. Calling close() again returns the same outcome.
         """
         deadline = time.monotonic() + join_timeout
-        self.srv.closing = True
-        stopper = threading.Thread(
-            target=self.srv.shutdown, daemon=True, name="fake-http-shutdown"
-        )
-        stopper.start()
-        stopper.join(max(0.0, deadline - time.monotonic()))
-        self.srv.wake_handlers()  # a handler blocked in a read sees EOF now
-        self.srv.server_close()
-        stuck = [stopper, self.thread, *self.srv.handlers()]
-        for t in stuck:
+        if self._stopper is None:
+            self._stopper = threading.Thread(
+                target=self.srv.shutdown, daemon=True, name="fake-http-shutdown"
+            )
+            self._stopper.start()
+        for t in (self._stopper, self.thread):
             t.join(max(0.0, deadline - time.monotonic()))
-        alive = [t.name for t in stuck if t.is_alive()]
-        if alive:
-            raise AssertionError(f"fake HTTP server threads did not stop: {alive}")
-        with self.srv._lock:
-            errors, self.srv.errors = self.srv.errors, []
+        stuck = [t for t in (self._stopper, self.thread) if t.is_alive()]
+        if not stuck:  # no new handler can start now: snapshot, wake, join
+            self.srv.server_close()
+            conns = list(self.srv.conns.values())
+            for c in conns:  # a blocked read sees EOF; writes still work, so
+                with contextlib.suppress(OSError):  # waking adds no error of its own
+                    c.sock.shutdown(socket.SHUT_RD)
+            for c in conns:
+                c.thread.join(max(0.0, deadline - time.monotonic()))
+            stuck = [c.thread for c in conns if c.thread.is_alive()]
+        if stuck:
+            raise AssertionError(
+                f"fake HTTP server threads did not stop: {[t.name for t in stuck]}"
+            )
+        errors = [*self.srv.start_errors, *(c.error for c in conns if c.error)]
         if errors:
             raise AssertionError(
-                f"fake HTTP handler raised {len(errors)} unexpected error(s): "
-                f"{[repr(e) for e in errors]}"
+                f"fake HTTP server failed: {[repr(e) for e in errors]}"
             ) from errors[0]
 
 
