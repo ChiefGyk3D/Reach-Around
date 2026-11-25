@@ -274,10 +274,10 @@ async function gate(request: Request, env: GateEnv, deps: GateDeps): Promise<Res
   // Configuration: any missing or malformed binding closes the route (same answer, nothing spent).
   let cfg: ReturnType<typeof loadKitEnv>;
   try {
+    // Shape and presence only: NO D1 query here. This check runs before the per-IP limiters, so anything
+    // it did would be paid for by unauthenticated traffic. The separation proof (separation.ts) runs
+    // after the limiters, below, and again right before each lead read or write.
     cfg = loadKitEnv(env as unknown as KitEnv);
-    // The shape check above is cheap; this proves the two databases are different by what each states
-    // it is, and that analytics holds no lead rows (separation.ts). Before anything is spent.
-    await assertLeadsSeparated(env);
   } catch {
     log.log("gate", "closed", "binding");
     return redirect(GATE_FAIL_PAGE);
@@ -332,6 +332,16 @@ async function gate(request: Request, env: GateEnv, deps: GateDeps): Promise<Res
     }
   }
 
+  // The separation proof, once the per-IP and network limiters have passed and before the vendor call is
+  // spent: leads must not be served beside lead rows in analytics, or with the same database under two
+  // names. A refusal is remembered for a few seconds, so a refused deployment does not re-probe per request.
+  try {
+    await assertLeadsSeparated(env);
+  } catch {
+    log.log("gate", "closed", "binding");
+    return redirect(GATE_FAIL_PAGE);
+  }
+
   const verdict = await challengePassed({ ...env, DB: env.DB }, form.turnstile, fetchFn, now);
   if (verdict !== "ok") return fail(verdict === "budget" ? "route_budget" : "turnstile"); // CONTROL:gate-route-budget
 
@@ -353,12 +363,15 @@ async function gate(request: Request, env: GateEnv, deps: GateDeps): Promise<Res
     limits = loadKitLimits(env);
     // Leads and kit events are in their own database (issue #772). loadKitEnv has already refused a
     // missing LEADS_DB or one that is the analytics database; the counters stay in DB.
-    // Proved again here, right before the first lead read or write: the early proof ran before the vendor
-    // call, and an approval is never trusted for later (separation.ts).
-    await assertLeadsSeparated(env);
+    // D1 QUERY BOUND (public route): the separation proof ran once after the limiters (above). The only
+    // other proof is the one immediately before the lead WRITE, after every other await of this path
+    // (the lookup, the daily-unit reservation), so a request pays for at most 2 proofs, and only once
+    // it has passed the limiters and the vendor challenge. The read and the unlock event do not prove
+    // again: they are read-only or follow the write that was just proved.
     const known = await getLeadByEmail(env.LEADS_DB, form.email);
     let lead: { id: string } | null = null;
     if (known !== null) {
+      await assertLeadsSeparated(env);
       lead = await upsertLead(env.LEADS_DB, form.email, "gate", countryOf(request), now, limits.maxLeads);
     } else {
       // Admission and creation: the daily unit is taken atomically (one conditional upsert), the row is
@@ -370,6 +383,7 @@ async function gate(request: Request, env: GateEnv, deps: GateDeps): Promise<Res
       // exceeded; it can be above them after an ambiguous failure (a lost unit, never an extra row).
       const day = utcDay(now);
       if (await reserveBudget(env.DB, NEW_LEAD_KEY, day, deps.newLeadsPerDay ?? NEW_LEADS_PER_DAY)) {
+        await assertLeadsSeparated(env); // after the reservation, immediately before the write
         const made = await upsertLead(env.LEADS_DB, form.email, "gate", countryOf(request), now, limits.maxLeads);
         if (made === null || !made.created) await refundNewLead(env.DB, day);
         lead = made;
@@ -387,7 +401,6 @@ async function gate(request: Request, env: GateEnv, deps: GateDeps): Promise<Res
 
   if (stored) {
     try {
-      await assertLeadsSeparated(env); // a fresh proof for this write too
       await recordKitEventCapped(env.LEADS_DB, leadId, "unlock", now, limits.maxKitEvents);
     } catch {
       // The unlock event is a convenience for the owner; a full or failing table never blocks the visitor.
@@ -433,8 +446,8 @@ async function view(request: Request, env: GateEnv, deps: GateDeps): Promise<Res
 
   let cfg: ReturnType<typeof loadKitEnv>;
   try {
+    // Shape only, no D1 query (it runs before the limiter); the proof is right before the lead read.
     cfg = loadKitEnv(env as unknown as KitEnv);
-    await assertLeadsSeparated(env); // same proof as the gate (separation.ts)
   } catch {
     log.log("link", "closed", "binding");
     return redirect(VIEW_FAIL_PAGE);

@@ -351,17 +351,42 @@ closed line (`purge`, `closed`, `binding`). There is no fallback to the analytic
 3. The analytics database holds no lead rows (`leads` and `kit_events` empty or gone).
 
 The proof is shared by every path (the gate, the view route, the exported `purgeExpiredLeads`). An
-approval is NEVER remembered: each lead operation proves it again right before it reads or writes (the
-gate proves it before the vendor call, again before its first lead query and again before the unlock
-event write; the view route before its lead lookup; the purge before its batch). Only a refusal is
-remembered, for 10 seconds per isolate (fail closed, so a refused deployment does not pay the probes on
-every request; after the move, allow 10 seconds). Each proof costs at most 3 D1 queries (1 on `LEADS_DB`,
-1 batch and 1 row look on `DB`; 2 once the legacy tables are gone), all counted; the hourly job counts
-them against `QUERY_BUDGET`, which is why the lead-purge guarantee now starts at `QUERY_BUDGET` 12.
-The window that remains is the few milliseconds between the proof's last query and the operation's own
-query, which a check through a separate query cannot close: stop every older Worker that writes the
-analytics database before the move, and run the move before enabling the kit gate. The kit gate ships OFF at the cutover (`features.kit_gate`), so a
-deployment that has not created the second database loses nothing it was using.
+approval is NEVER remembered. D1 query bound of the public routes: the configuration check at the top of
+the gate and the view route makes NO D1 query (shape and presence only), so a request that is rate
+limited, malformed or has a closed binding costs none. The gate then proves separation once after the
+per-IP and network limiters and before the vendor call, and once more immediately before its lead write
+(after the lookup and the daily-unit reservation): at most 2 proofs. The view route proves once,
+immediately before the lead read, and not at all for an unstored token. The purge proves once before its
+batch. The unlock event write does not prove again (it follows the write that was just proved). Only a
+refusal is remembered, for 10 seconds per isolate (fail closed, so a refused deployment does not pay the
+probes on every request; after the move, allow 10 seconds). Each proof costs at most 3 D1 queries (1 on
+`LEADS_DB`, 1 batch and 1 row look on `DB`; 2 once the legacy tables are gone), all counted; the hourly
+job counts them against `QUERY_BUDGET`, which is why the lead-purge guarantee now starts at
+`QUERY_BUDGET` 12.
+
+The residual race, exactly. A proof and the write it protects are separate D1 operations. In the
+new-lead path the proof is the last await before the write, but an older Worker that still writes the
+analytics database can insert a lead after the proof returned and before (or right after) the write, so
+a lead can be stored while separation has just become false, and the same visitor's data can then be in
+both databases. No application check can close that. It is closed only by the cutover below: a hard
+precondition, enforced at the database, not a best effort.
+
+**Ordered cutover (required before enabling `features.kit_gate`)**, from the folder whose wrangler
+config names both databases, with the private work directory from the move section:
+
+1. Freeze the analytics lead tables. From this point the database itself aborts any INSERT into
+   `leads` or `kit_events`, so an older Worker cannot store a lead there whatever version is deployed:
+   `python3 -I scripts/move-legacy-leads.py --source <ANALYTICS DATABASE> --dest reach-around-leads --workdir ~/lead-move-work --freeze`
+2. Move (dry run, `--copy`, `--purge`; see below).
+3. Verify. Exit 0 only when the analytics lead tables hold no row and are frozen (or are gone). A
+   non-zero exit blocks enabling the gate:
+   `python3 -I scripts/move-legacy-leads.py --source <ANALYTICS DATABASE> --dest reach-around-leads --workdir ~/lead-move-work --verify`
+4. Only then deploy the new Worker and enable `features.kit_gate`.
+
+This repository does not run the freeze or the verification from CI (they act on live databases and need
+your login); step 3 is the gate on step 4 and its output belongs in the change record. Until the freeze
+has been applied, the window above is open. The kit gate ships OFF at the cutover (`features.kit_gate`),
+so a deployment that has not created the second database loses nothing it was using.
 
 Create it, once (owner step, secrets in the secret manager (development environment before
 production); the database id is not a secret but stays out of the repository):
@@ -395,8 +420,8 @@ checks it is deployed; until then the Worker refuses the lead paths (closed, not
 
 ### The one-time move of existing leads
 
-Skip this only when you are sure no lead was ever collected (an empty `leads` in the analytics database,
-checked below). Otherwise run it once, after creating and migrating the leads database and before
+This is step 2 of the ordered cutover above (the freeze and the verification are never skipped; the
+dry run tells you whether there is anything to move). Run it once, after creating and migrating the leads database and before
 enabling the kit gate. It copies every lead and kit event to the leads database, reads them back, and
 only then deletes the analytics copies. Run it from the folder whose wrangler config names both
 databases, with a private directory outside any git work tree (mode 700); the script makes a fresh

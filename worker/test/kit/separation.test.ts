@@ -293,12 +293,138 @@ describe("lead rows left in the analytics database", () => {
 });
 
 // MEDIUM 3. The exported purge is a path of its own; it proves the separation itself.
+// Round 3 (automated review): the proof ran in the early configuration check, before the per-IP limiters,
+// so unauthenticated traffic could cost D1 queries. A request that is limited or has a closed binding
+// must make ZERO D1 calls.
+describe("a request that never reaches a lead operation makes no D1 call", () => {
+  const calls = { n: 0 };
+  const counting = (db: D1Database): D1Database =>
+    new Proxy(db, {
+      get(t, key) {
+        if (key === "prepare" || key === "batch" || key === "exec") {
+          return (...a: unknown[]) => {
+            calls.n++;
+            return (t as never as Record<string, (...b: unknown[]) => unknown>)[key as string]!(...a);
+          };
+        }
+        const v = Reflect.get(t, key, t);
+        return typeof v === "function" ? v.bind(t) : v;
+      },
+    });
+  const denied = { limit: async () => ({ success: false }) };
+  const post = (env: GateEnv): Promise<Response> =>
+    handleGate(
+      new Request(`https://links.example.test${GATE_ROUTE}`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/x-www-form-urlencoded",
+          origin: "https://links.example.test",
+          "user-agent": "Mozilla/5.0 (X11; Linux x86_64) Firefox/130.0",
+          "cf-connecting-ip": "203.0.113.9",
+        },
+        body: new URLSearchParams({ email: "new@example.test", "cf-turnstile-response": "ok" }).toString(),
+      }),
+      env,
+      { nowMs: NOW, fetchFn: (async () => new Response("{}")) as typeof fetch },
+    );
+  const view = (env: GateEnv): Promise<Response> =>
+    handleGate(
+      new Request(`https://links.example.test/k/view`, {
+        method: "GET",
+        headers: { cookie: "unlock=abc", "cf-connecting-ip": "203.0.113.9", "user-agent": "Mozilla/5.0 Firefox/130.0" },
+      }),
+      env,
+      { nowMs: NOW },
+    );
+  beforeEach(() => {
+    calls.n = 0;
+  });
+
+  it("a gate request stopped by the per-IP limiter", async () => {
+    await addLegacyLead(); // the proof would refuse and cost queries if it ran
+    const env = gateEnv({ DB: counting(ANALYTICS), LEADS_DB: counting(LEADS), GATE_LIMITER: denied });
+    for (let i = 0; i < 20; i++) expect((await post(env)).status).toBe(303);
+    expect(calls.n).toBe(0);
+  });
+
+  it("a gate request stopped by the network ceiling", async () => {
+    await addLegacyLead();
+    const env = gateEnv({ DB: counting(ANALYTICS), LEADS_DB: counting(LEADS), GATE_CHECK_LIMITER: denied });
+    for (let i = 0; i < 20; i++) expect((await post(env)).status).toBe(303);
+    expect(calls.n).toBe(0);
+  });
+
+  it("a flood of gate requests with a closed binding", async () => {
+    const same = counting(ANALYTICS);
+    for (const [db, leads] of [
+      [counting(ANALYTICS), undefined],
+      [counting(ANALYTICS), "reach-around-leads"],
+      [same, same], // the same object under both names: refused by the shape check
+    ] as const) {
+      const env = gateEnv({ DB: db, LEADS_DB: leads });
+      for (let i = 0; i < 20; i++) expect((await post(env)).status).toBe(303);
+    }
+    expect(calls.n).toBe(0);
+  });
+
+  it("a view request stopped by the per-IP limiter, and one with a closed binding", async () => {
+    await addLegacyLead();
+    const limited = gateEnv({ DB: counting(ANALYTICS), LEADS_DB: counting(LEADS), KIT_VIEW_LIMITER: denied });
+    for (let i = 0; i < 20; i++) expect((await view(limited)).status).toBe(303);
+    const closed = gateEnv({ DB: counting(ANALYTICS), LEADS_DB: undefined });
+    for (let i = 0; i < 20; i++) expect((await view(closed)).status).toBe(303);
+    expect(calls.n).toBe(0);
+  });
+
+  it("a request that passes the limiters pays for the proof once, and the refusal memory makes the repeats free", async () => {
+    await addLegacyLead();
+    const env = gateEnv({ DB: counting(ANALYTICS), LEADS_DB: counting(LEADS) });
+    expect((await post(env)).status).toBe(303); // refused by the proof: a few queries, once
+    const first = calls.n;
+    expect(first).toBeGreaterThan(0);
+    // The proof and nothing else. This proxy counts prepare() and batch() calls, and the batch prepares
+    // two statements that are not queries of their own: 3 queries are 5 calls.
+    expect(first).toBeLessThanOrEqual(SEPARATION_QUERIES + 2);
+    for (let i = 0; i < 20; i++) expect((await post(env)).status).toBe(303);
+    expect(calls.n).toBe(first); // the remembered refusal costs no query
+  });
+});
+
 describe("the lead purge called directly", () => {
   async function seedOld(db: D1Database): Promise<void> {
     await db.prepare("INSERT INTO leads (id, email, created_ts, last_seen_ts, source) VALUES (?, 'old@example.test', 1, 1, 'gate')")
       .bind("c".repeat(32))
       .run();
   }
+
+  it("pays for exactly one proof, within its declared queries, plus its own single batch", async () => {
+    let proofs = 0;
+    let all = 0;
+    const count = (db: D1Database, isLeads: boolean): D1Database =>
+      new Proxy(db, {
+        get(t, key) {
+          if (key === "prepare") {
+            return (q: string) => {
+              if (isLeads && q.includes("FROM db_identity")) proofs++;
+              return t.prepare(q);
+            };
+          }
+          if (key === "batch") {
+            return (s: D1PreparedStatement[]) => {
+              if (isLeads) all++;
+              return t.batch(s);
+            };
+          }
+          const v = Reflect.get(t, key, t);
+          return typeof v === "function" ? v.bind(t) : v;
+        },
+      });
+    const meter = new QueryMeter(SEPARATION_QUERIES);
+    await purgeExpiredLeads({ DB: count(ANALYTICS, false), LEADS_DB: count(LEADS, true) }, NOW, { separationMeter: meter });
+    expect(proofs).toBe(1);
+    expect(all).toBe(1); // the purge's own one batch
+    expect(meter.used).toBeLessThanOrEqual(SEPARATION_QUERIES);
+  });
 
   it("refuses the analytics database handed in as LEADS_DB, and deletes nothing there", async () => {
     await seedOld(ANALYTICS);
@@ -320,7 +446,7 @@ describe("the lead purge called directly", () => {
   });
 });
 
-function gateEnv(): GateEnv {
+function gateEnv(over: Record<string, unknown> = {}): GateEnv {
   const limiter = { limit: async () => ({ success: true }) };
   return {
     DB: ANALYTICS,
@@ -333,5 +459,6 @@ function gateEnv(): GateEnv {
     TOKEN_HMAC_KEY: "k".repeat(40),
     TURNSTILE_SECRET: "1x0000000000000000000000000000000AA",
     VIEW_HASH_SECRET: btoa("s".repeat(40)),
+    ...over,
   } as unknown as GateEnv;
 }

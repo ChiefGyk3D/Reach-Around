@@ -351,3 +351,144 @@ def test_a_bad_database_name_is_a_usage_error(tmp_path: Path) -> None:
     env = make(tmp_path)
     r = run(env, workdir(tmp_path), source="a b")
     assert r.returncode == 2
+
+
+# ---- the cutover: freeze, then move, then verify (round 3) ----------------------
+
+
+def test_freeze_makes_the_database_refuse_a_lead_from_an_older_worker(
+    tmp_path: Path,
+) -> None:
+    env = make(tmp_path)
+    work = workdir(tmp_path)
+    assert run(env, work, "--freeze").returncode == 0
+    assert run(env, work, "--freeze").returncode == 0  # idempotent
+    with closing(sqlite3.connect(env["STUB_SRC"])) as db:
+        with pytest.raises(sqlite3.IntegrityError):
+            db.execute(
+                "INSERT INTO leads (id, email, created_ts, last_seen_ts, source)"
+                " VALUES (?, 'old@example.test', 1, 1, 'gate')",
+                ("e" * 32,),
+            )
+        with pytest.raises(sqlite3.IntegrityError):
+            db.execute(
+                "INSERT INTO kit_events (ts, lead_id, kind)"
+                " VALUES (3600000, ?, 'unlock')",
+                (format(1, "032x"),),
+            )
+    assert count(env["STUB_SRC"], "leads") == 3  # nothing deleted by freezing
+
+
+def test_verify_passes_only_when_empty_and_frozen(tmp_path: Path) -> None:
+    env = make(tmp_path)
+    work = workdir(tmp_path)
+    rows = run(env, work, "--verify")
+    assert rows.returncode == 1
+    assert "lead rows remain" in rows.stderr
+    assert run(env, work, "--purge").returncode == 0
+    open_ = run(env, work, "--verify")  # empty, but an older Worker could still insert
+    assert open_.returncode == 1
+    assert "older Worker" in open_.stderr
+    assert run(env, work, "--freeze").returncode == 0
+    done = run(env, work, "--verify")
+    assert done.returncode == 0, done.stderr
+    assert "cutover verified" in done.stdout
+
+
+def test_verify_passes_when_the_lead_tables_are_gone(tmp_path: Path) -> None:
+    env = make(tmp_path)
+    with closing(sqlite3.connect(env["STUB_SRC"])) as db:
+        db.execute("DROP TABLE kit_events")
+        db.execute("DROP TABLE leads")
+        db.commit()
+    assert run(env, workdir(tmp_path), "--verify").returncode == 0
+
+
+def test_freeze_and_verify_refuse_a_database_that_is_not_analytics(
+    tmp_path: Path,
+) -> None:
+    env = make(tmp_path)
+    work = workdir(tmp_path)
+    for flag in ("--freeze", "--verify"):
+        r = run(env, work, flag, source="leads-db", dest="analytics-db")
+        assert r.returncode == 3
+
+
+# ---- the temporary file guarantees, proved at the call (round 3) ----------------
+
+
+def load_script():  # noqa: ANN201
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("move_legacy_leads", SCRIPT)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+class RecordingWrangler:
+    """Stands in for Wrangler: records what the statement file looked like."""
+
+    def __init__(self) -> None:
+        self.seen: list[tuple[int, int, str]] = []
+
+    def execute(self, db: str, *, command: str | None = None, file: Path | None = None):
+        assert file is not None
+        self.seen.append(
+            (
+                stat.S_IMODE(file.stat().st_mode),
+                stat.S_IMODE(file.parent.stat().st_mode),
+                file.read_text(),
+            )
+        )
+        return []
+
+
+def test_the_statement_file_is_opened_exclusive_nofollow_and_private(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import os
+
+    mod = load_script()
+    opened: list[tuple[int, int]] = []
+    real_open = os.open
+
+    def spy(path, flags, mode=0o777, *a, **k):  # noqa: ANN001, ANN002, ANN003, ANN202
+        if str(path).endswith("statements.sql"):
+            opened.append((flags, mode))
+        return real_open(path, flags, mode, *a, **k)
+
+    monkeypatch.setattr(mod.os, "open", spy)
+    w = RecordingWrangler()
+    mod.run_file(w, "db", workdir(tmp_path), "SELECT 1;\n")
+    ((flags, mode),) = opened
+    assert flags & os.O_EXCL and flags & os.O_CREAT
+    assert flags & os.O_NOFOLLOW
+    assert not flags & os.O_TRUNC
+    assert mode == 0o600
+    assert w.seen == [(0o600, 0o700, "SELECT 1;\n")]
+    assert list((tmp_path / "work").iterdir()) == []  # directory removed
+
+
+@pytest.mark.parametrize("kind", ["file", "symlink"])
+def test_a_file_or_symlink_already_at_the_target_is_refused_untouched(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, kind: str
+) -> None:
+    mod = load_script()
+    work = workdir(tmp_path)
+    victim = tmp_path / "victim.txt"
+    victim.write_text("keep me")
+    scratch = work / "fixed-scratch"
+    scratch.mkdir(mode=0o700)
+    target = scratch / "statements.sql"
+    if kind == "file":
+        target.write_text("keep me")
+    else:
+        target.symlink_to(victim)
+    monkeypatch.setattr(mod.tempfile, "mkdtemp", lambda **_: str(scratch))
+    w = RecordingWrangler()
+    with pytest.raises(OSError):  # noqa: PT011 - FileExistsError, or ELOOP
+        mod.run_file(w, "db", work, "DROP TABLE x;\n")
+    assert w.seen == []  # nothing was executed
+    assert victim.read_text() == "keep me"

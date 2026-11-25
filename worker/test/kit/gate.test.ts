@@ -271,6 +271,75 @@ const FAILURES: { name: string; opts?: Opts; env?: () => GateEnv; f?: () => Fake
   { name: "LEADS_DB is the analytics database", env: () => baseEnv({ LEADS_DB: testEnv.DB }) },
 ];
 
+/**
+ * Counts separation proofs: every proof prepares the identity read once on LEADS_DB, so the number of
+ * those prepares is the number of proofs a request paid for (each proof is at most SEPARATION_QUERIES
+ * D1 queries).
+ */
+function proofCounter(): { env: Partial<GateEnv>; proofs: () => number } {
+  let n = 0;
+  const leads = new Proxy(testEnv.LEADS_DB, {
+    get(t, key) {
+      if (key === "prepare") {
+        return (q: string) => {
+          if (q.includes("FROM db_identity")) n++;
+          return t.prepare(q);
+        };
+      }
+      const v = Reflect.get(t, key, t);
+      return typeof v === "function" ? v.bind(t) : v;
+    },
+  });
+  return { env: { LEADS_DB: leads } as unknown as Partial<GateEnv>, proofs: () => n };
+}
+
+describe("D1 query bound of the separation proof on the public routes (issue #772, round 3)", () => {
+  it("a new lead through the gate pays for at most 2 proofs, and only after the limiters", async () => {
+    const c = proofCounter();
+    const { res } = await post({}, baseEnv(c.env));
+    expect(res.headers.get("set-cookie")).not.toBeNull();
+    expect(c.proofs()).toBe(2); // after the limiters; right before the lead write
+  });
+
+  it("a returning lead through the gate pays for the early proof and the write proof", async () => {
+    const id = await seedLead({ id: "c".repeat(32) });
+    await testEnv.LEADS_DB.prepare("UPDATE leads SET email = ? WHERE id = ?").bind(EMAIL, id).run();
+    const c = proofCounter();
+    const { res } = await post({}, baseEnv(c.env));
+    expect(res.headers.get("set-cookie")).not.toBeNull();
+    expect(c.proofs()).toBe(2); // after the limiters, and right before the refresh write
+  });
+
+  it("a gate request stopped by a limiter or a bad form pays for no proof", async () => {
+    const c = proofCounter();
+    await post({}, baseEnv({ ...c.env, GATE_LIMITER: limiter(false) }));
+    expect(c.proofs()).toBe(0);
+    const bad = await post({ fields: "not a form" }, baseEnv(c.env));
+    expect(bad.res.status).toBe(303);
+    expect(c.proofs()).toBe(0);
+  });
+
+  it("the view route pays for 1 proof, right before the lead read, and 0 for an unstored token", async () => {
+    await seedLead();
+    const c = proofCounter();
+    const ok = await view({ cookie: await unlockCookieFor() }, baseEnv(c.env));
+    expect(ok.status).toBe(200);
+    expect(c.proofs()).toBe(1);
+    const none = proofCounter();
+    const unstored = await view({ cookie: await unlockCookieFor({ lid: await mintUnstoredId(KEY) }) }, baseEnv(none.env));
+    expect(unstored.status).toBe(200);
+    expect(none.proofs()).toBe(0);
+  });
+
+  it("the view route stopped by its limiter makes no proof", async () => {
+    await seedLead();
+    const c = proofCounter();
+    const res = await view({ cookie: await unlockCookieFor() }, baseEnv({ ...c.env, KIT_VIEW_LIMITER: limiter(false) }));
+    expect(res.status).toBe(303);
+    expect(c.proofs()).toBe(0);
+  });
+});
+
 describe("the leads database is separate (issue #772)", () => {
   const analyticsLeads = async () =>
     (await testEnv.DB.prepare("SELECT (SELECT COUNT(*) FROM leads) + (SELECT COUNT(*) FROM kit_events) AS n").first<{ n: number }>())!.n;

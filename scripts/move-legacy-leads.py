@@ -16,6 +16,13 @@ credential.
 
 With neither flag it is a dry run: it reads and counts, writes and deletes nothing.
 
+Cutover, in this order (docs/deploy.md): --freeze makes the analytics database itself
+refuse every new lead or kit event row (a BEFORE INSERT trigger), so an older Worker
+can no longer store a lead there; the move; then --verify, which exits 0 only when the
+tables are empty (or gone) and frozen. No application-level check can stop an older
+writer; the freeze is what does, and --verify is the check to run before enabling the
+gate. Both take the same --source, --dest and --workdir arguments as the move.
+
 Steps. 1 Identity: SOURCE must answer 'analytics' and DEST 'leads' from their own
 db_identity tables (a name proves nothing), else it refuses (exit 3). 2 Count what
 SOURCE holds. 3 (--copy or --purge) write every lead and kit event to DEST with
@@ -242,6 +249,52 @@ def check_workdir(path: str) -> Path:
     return work
 
 
+FREEZE_SQL = {
+    "leads": "CREATE TRIGGER IF NOT EXISTS leads_frozen BEFORE INSERT ON leads "
+    "BEGIN SELECT RAISE(ABORT, 'leads moved to the leads database'); END",
+    "kit_events": "CREATE TRIGGER IF NOT EXISTS kit_events_frozen "
+    "BEFORE INSERT ON kit_events "
+    "BEGIN SELECT RAISE(ABORT, 'leads moved to the leads database'); END",
+}
+FROZEN_NAMES = {"leads": "leads_frozen", "kit_events": "kit_events_frozen"}
+TRIGGERS_SQL = (
+    "SELECT name FROM sqlite_master WHERE type = 'trigger' "
+    "AND name IN ('leads_frozen', 'kit_events_frozen')"
+)
+
+
+def present_tables(w: Wrangler, db: str) -> set[str]:
+    return {str(r.get("name")) for r in w.execute(db, command=EXISTS_SQL)}
+
+
+def freeze(w: Wrangler, db: str) -> int:
+    """Make the database refuse a new lead row: an older Worker's INSERT fails."""
+    tables = present_tables(w, db)
+    for table in sorted(tables):
+        w.execute(db, command=FREEZE_SQL[table])
+    if not tables:
+        print("nothing to freeze: the analytics database has no lead tables")
+        return 0
+    print(f"frozen: {len(tables)} lead table(s) in analytics now refuse inserts")
+    return 0
+
+
+def verify(w: Wrangler, db: str) -> int:
+    """The cutover check: exit 0 only when no older writer can store a lead there."""
+    tables = present_tables(w, db)
+    leads, events = read_all(w, db)
+    have = {str(r.get("name")) for r in w.execute(db, command=TRIGGERS_SQL)}
+    unfrozen = [t for t in sorted(tables) if FROZEN_NAMES[t] not in have]
+    print(f"analytics holds {len(leads)} leads and {len(events)} kit events")
+    print(f"lead tables not frozen against inserts: {len(unfrozen)}")
+    if leads or events:
+        raise Failed("lead rows remain in the analytics database; run the move")
+    if unfrozen:
+        raise Failed("a lead table can still take inserts from an older Worker; freeze")
+    print("cutover verified: empty, and no older Worker can store a lead there.")
+    return 0
+
+
 def run(args: argparse.Namespace) -> int:
     w = Wrangler()
     work = check_workdir(args.workdir)
@@ -249,6 +302,11 @@ def run(args: argparse.Namespace) -> int:
         raise Refused("SOURCE did not identify itself as the analytics database.")
     if roles(w, args.dest) != ["leads"]:
         raise Refused("DEST did not identify itself as the leads database.")
+
+    if args.freeze:
+        return freeze(w, args.source)
+    if args.verify:
+        return verify(w, args.source)
 
     leads, events = read_all(w, args.source)
     print(f"source holds {len(leads)} leads and {len(events)} kit events")
@@ -296,6 +354,10 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--workdir", required=True, help="private (mode 700) dir")
     parser.add_argument("--copy", action="store_true", help="copy and verify only")
     parser.add_argument("--purge", action="store_true", help="copy, verify, delete")
+    parser.add_argument(
+        "--freeze", action="store_true", help="refuse new rows (step 1)"
+    )
+    parser.add_argument("--verify", action="store_true", help="the cutover check")
     args = parser.parse_args(argv)
     for value in (args.source, args.dest):
         if not NAME.match(value):
