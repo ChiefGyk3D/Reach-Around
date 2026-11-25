@@ -140,13 +140,16 @@ def test_svg_is_inert_markup_only() -> None:
         assert banned not in svg
 
 
-def test_svg_tile_is_not_a_bright_fill() -> None:
-    # dark modules on a soft gray tile: scanners need the contrast, the page
-    # must not carry a white block
-    tile = re.search(r'<rect [^>]*fill="#([0-9a-f]{6})"', qr_svg(BTC))
-    assert tile
-    r, g, b = (int(tile.group(1)[i : i + 2], 16) for i in (0, 2, 4))
-    assert max(r, g, b) <= 0xD8
+def test_svg_tile_is_not_a_white_fill() -> None:
+    # dark modules on an amber tile: scanners need the contrast, the page
+    # must not carry a white or near-white block
+    tile, _ = _colors(qr_svg(BTC))
+    r, g, b = _rgb(tile)
+    assert min(r, g, b) <= 0x60 and _luminance(tile) <= 0.6
+    # the guard bites: white and the old pale gray both fail it
+    for pale in ("#ffffff", "#e8e8e8", "#c8ccd4"):
+        pr, pg, pb = _rgb(pale)
+        assert not (min(pr, pg, pb) <= 0x60 and _luminance(pale) <= 0.6)
 
 
 # --- the build
@@ -2022,3 +2025,83 @@ def test_a_permuted_mask_label_is_caught() -> None:
     swapped = [(first[0], second[1], first[2], first[3])]
     for _, mask, _, rows in swapped:
         assert read_format(_matrix_from(rows))[1] != mask
+
+
+# --- the tile color (#688, owner decision D10): dark modules on an amber tile
+
+
+def _rgb(color: str) -> tuple[int, int, int]:
+    return int(color[1:3], 16), int(color[3:5], 16), int(color[5:7], 16)
+
+
+def _luminance(color: str) -> float:
+    def lin(c: int) -> float:
+        s = c / 255
+        return s / 12.92 if s <= 0.03928 else ((s + 0.055) / 1.055) ** 2.4
+
+    r, g, b = (lin(c) for c in _rgb(color))
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b
+
+
+def _contrast(a: str, b: str) -> float:
+    hi, lo = sorted((_luminance(a), _luminance(b)), reverse=True)
+    return (hi + 0.05) / (lo + 0.05)
+
+
+def _token(name: str) -> str:
+    css = (ROOT / "src/reach_around/site/static/tokens.css").read_text()
+    found = re.search(rf"--{name}:\s*(#[0-9A-Fa-f]{{6}})\s*;", css)
+    assert found, name
+    return found.group(1).lower()
+
+
+def _colors(svg: str) -> tuple[str, str]:
+    found = re.fullmatch(
+        r'.*<rect [^>]*fill="(#[0-9a-f]{6})"/><path fill="(#[0-9a-f]{6})".*',
+        svg,
+        re.DOTALL,
+    )
+    assert found
+    return found.group(1), found.group(2)
+
+
+def _scan_from_colors(svg: str) -> bytes:
+    """Decode as a camera would: from the luminance of what is drawn.
+
+    Every drawn module gets the luminance of its color, the threshold sits
+    halfway between the two, and the decoder reads the thresholded grid.
+    """
+    tile, ink = _colors(svg)
+    matrix, border = parse_svg(svg)
+    cut = (_luminance(tile) + _luminance(ink)) / 2
+    grid = [[_luminance(ink if m else tile) < cut for m in row] for row in matrix]
+    payload, level, _ = decode(grid)
+    assert level == LEVEL_BITS["Q"] and border >= 4
+    return payload
+
+
+def test_tile_is_the_brand_amber_and_ink_is_dark() -> None:
+    tile, ink = _colors(qr_svg(BTC))
+    assert tile == _token("ra-brand-amber")
+    assert _luminance(ink) < 0.02
+    # a light module color stays one small tile (the image is capped at 14rem);
+    # it is never a page-wide fill
+    css = (ROOT / "src/reach_around/site/static/crypto.css").read_text()
+    assert re.search(r"\.crypto-qr-image\s*\{[^}]*width:\s*min\(100%, 14rem\)", css)
+
+
+def test_tile_contrast_is_enough_for_a_phone_camera() -> None:
+    tile, ink = _colors(qr_svg(BTC))
+    assert _contrast(tile, ink) >= 7
+
+
+@pytest.mark.parametrize("address", [BTC, ETH, "x", "bc1q" + "x7Kp" * 36])
+def test_colors_alone_round_trip_to_the_address(address: str) -> None:
+    assert _scan_from_colors(qr_svg(address)) == address.encode()
+
+
+def test_the_contrast_guard_bites_on_a_dim_tile() -> None:
+    # the old gray tile, and an amber that is too dark, must fail the bar
+    assert _contrast("#c8ccd4", "#0b0e14") >= 7  # sanity: helper agrees on gray
+    assert _contrast("#af6a0e", "#0b0e14") < 7
+    assert _contrast("#fbb03b", "#fbb03b") == pytest.approx(1)

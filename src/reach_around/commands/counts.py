@@ -134,6 +134,8 @@ from reach_around.net.fetch import fetch_json
 # What each kind of source counts, as named in the history file.
 HISTORY_METRIC = {"youtube": "subscribers", "discord": "members", "matrix": "members"}
 
+MAX_STDIN_TOKEN = 1024  # a Doppler token is far shorter
+
 EXIT_OK = 0
 EXIT_WRITE = 1
 EXIT_USAGE = 2
@@ -183,9 +185,14 @@ def doppler_spec(
     project = args.doppler_project or env.get(DOPPLER_PROJECT_ENV, "")
     config = args.doppler_config or env.get(DOPPLER_CONFIG_ENV, "")
     if args.doppler_token_stdin:
-        token = TokenHolder(stdin.readline())
+        # A bounded read: one line of at most MAX_STDIN_TOKEN characters. A
+        # longer line is refused, never accumulated.
+        token = TokenHolder(stdin.readline(MAX_STDIN_TOKEN + 2))
         token.strip()
         from_env.clear()
+        if len(token.get()) > MAX_STDIN_TOKEN:
+            token.clear()
+            raise ValueError("--doppler-token-stdin input is too long")
         source = "stdin"
     else:
         token = from_env
