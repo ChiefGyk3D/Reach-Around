@@ -278,3 +278,47 @@ def test_a_long_label_stays_inside_its_tile_on_a_screen(
         server.shutdown()
         server.server_close()
         thread.join()
+
+
+GRID = EXAMPLE.parent / "site-link-grid.yaml"
+
+
+def test_the_tab_bar_gives_its_row_back_on_a_tall_phone_with_eight_rows(
+    tmp_path_factory: pytest.TempPathFactory, browser: Browser
+) -> None:
+    """The 26-tile home grid of #879 plus one Contact screen: the tab bar costs a
+    row, and the tiles give it back at 390x844 instead of scrolling."""
+    out = tmp_path_factory.mktemp("screenseight") / "out"
+    doc = yaml.safe_load(GRID.read_text(encoding="utf-8"))
+    doc["tabs"].append(
+        {
+            "id": "say",
+            "title": "Get in touch",
+            "intent": "contact",
+            "screen": "contact",
+            "blocks": [
+                {
+                    "id": f"say-{n}",
+                    "title": f"Say {n}",
+                    "url": f"https://example.invalid/{n}",
+                }
+                for n in (1, 2)
+            ],
+        }
+    )
+    build_site(SiteConfig.model_validate(doc), out, today=TODAY, assets_dir=GRID.parent)
+    handler = functools.partial(_Quiet, directory=str(out))
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        url = f"http://127.0.0.1:{server.server_address[1]}/"
+        page, _foreign = open_page(browser, url, (390, 844))
+        got = page.evaluate(MEASURE)
+        assert len(got["tiles"]) == 26 and len(got["tabs"]) == 2
+        assert got["scrollH"] <= got["h"], (got["scrollH"], got["h"])
+        page.context.close()
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join()
