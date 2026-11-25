@@ -63,6 +63,7 @@ from reach_around.kit.binding import (
     measure_row,
     read_binding,
     rows_digest,
+    rows_digest_of,
     sha256_text,
 )
 from reach_around.kit.output import JSON_NAME, confine_out_dir, write_private
@@ -115,7 +116,7 @@ def measures_document(
     numbers: Numbers | None,
     imported: ImportedHistory | None,
     generated: date,
-    binding: Mapping[str, str] | None = None,
+    binding: Mapping[str, str | None] | None = None,
 ) -> dict[str, Any]:
     """The document: the gated projection's measures (public and gated, never
     private), in page order, each with its trust label and date."""
@@ -278,9 +279,14 @@ def _whole(value: Scalar) -> bool:
 def _fold_text(text: str) -> str:
     """A text as a reader sees it: Unicode NFKC (fullwidth digits, signs and
     separators become plain ones) with the invisible format characters (zero
-    width joiners and the like) removed."""
+    width joiners and the like) removed, and every other script's decimal digit
+    (Arabic-Indic, Devanagari and so on) written as the plain digit it means."""
     folded = unicodedata.normalize("NFKC", text)
-    return "".join(ch for ch in folded if unicodedata.category(ch) != "Cf")
+    return "".join(
+        str(unicodedata.decimal(ch)) if unicodedata.category(ch) == "Nd" else ch
+        for ch in folded
+        if unicodedata.category(ch) != "Cf"
+    )
 
 
 # A number as people write it in a text: digits, optional thousands separators
@@ -294,6 +300,16 @@ _GROUPED = re.compile(
     rf"(?<![0-9.,])[0-9]{{1,3}}(?:{_SEPARATOR}[0-9]{{3}})+(?:\.[0-9]+)?(?![0-9])"
 )
 _PLAIN = re.compile(r"[0-9]+(?:\.[0-9]+)?")
+# A decimal as other conventions write it: a comma or a period with spaces
+# around it ("12,3", "12 .3", "12. 3"). Both parts are digit runs; read as the
+# decimal they could mean. A false stop ("12. 3 more") is the price of the rule.
+_SPLIT_DECIMAL = re.compile(r"(?<![0-9.,])([0-9]+)[ \t]*[.,][ \t]*([0-9]+)(?![0-9])")
+# Scientific notation: 1.23e1, 1.23 E+1, 1.23x10^1, 1.23 * 10 ** 1, 1.23×10^1.
+_SCIENTIFIC = re.compile(
+    r"(?<![0-9.,])([0-9]+(?:[.,][0-9]+)?)[ \t]*"
+    r"(?:[eE]|[x×*][ \t]*10[ \t]*(?:\^|\*\*))[ \t]*([+-]?[0-9]{1,4})(?![0-9])"
+)
+MAX_EXPONENT = 40
 
 
 # Digit groups joined by exactly ONE separator that is not a line break ("1234
@@ -311,8 +327,10 @@ _JOINED = re.compile(
 def _spans(folded: str) -> list[tuple[int, int, Decimal, str]]:
     """Every number in a folded text as (start, end, value, kind). The kind is
     "grouped" (true thousands groups), "joined" (digit groups with one separator
-    between) or "plain" (one digit run). The one place a text is read as numbers,
-    so the long-figure match and the short-figure match see the same spans."""
+    between), "plain" (one digit run), "decimal" (a decimal written with a comma
+    or spaces) or "scientific" (a number with an exponent). The one place a text
+    is read as numbers, so the long-figure match and the short-figure match see
+    the same spans."""
     spans: list[tuple[int, int, Decimal, str]] = []
     for kind, pattern in (("grouped", _GROUPED), ("joined", _JOINED)):
         for match in pattern.finditer(folded):
@@ -320,6 +338,17 @@ def _spans(folded: str) -> list[tuple[int, int, Decimal, str]]:
             spans.append((match.start(), match.end(), value, kind))
     for match in _PLAIN.finditer(folded):
         spans.append((match.start(), match.end(), Decimal(match.group()), "plain"))
+    for match in _SPLIT_DECIMAL.finditer(folded):
+        value = Decimal(f"{match.group(1)}.{match.group(2)}")
+        spans.append((match.start(), match.end(), value, "decimal"))
+    for match in _SCIENTIFIC.finditer(folded):
+        exponent = int(match.group(2))
+        if abs(exponent) > MAX_EXPONENT:
+            continue
+        mantissa = Decimal(match.group(1).replace(",", "."))
+        spans.append(
+            (match.start(), match.end(), mantissa.scaleb(exponent), "scientific")
+        )
     return spans
 
 
@@ -464,10 +493,11 @@ def check_binding(
     gated_dir: Path,
     numbers: Numbers | None,
     imported: ImportedHistory | None,
-) -> dict[str, str]:
+) -> dict[str, str | None]:
     """Recompute the build binding from the inputs and directories given and
     compare it with the record the build wrote. Returns the binding; refuses on
-    any difference."""
+    any difference. A build of a kit with no gated content records no gated page
+    (null); the gated directory must then hold none either."""
     kit = config.kit
     if kit is None:
         raise MeasuresFileError("the config has no media kit")
@@ -478,12 +508,13 @@ def check_binding(
     shown = gated_projection(kit, numbers, imported, source_platforms(config))[
         "measures"
     ]
+    gated_page: str | None = None
+    if recorded["gated_page"] is not None or os.path.lexists(gated_dir / GATED_FILE):
+        gated_page = _digest_file(gated_dir / GATED_FILE, MAX_PAGE_BYTES, "gated page")
     now = {
         "policy": policy_fingerprint(),
         "measures": rows_digest(shown),
-        "gated_page": _digest_file(
-            gated_dir / GATED_FILE, MAX_PAGE_BYTES, "gated page"
-        ),
+        "gated_page": gated_page,
         "public_page": _digest_file(site_dir / KIT_PAGE, MAX_PAGE_BYTES, "public page"),
     }
     for key in BINDING_KEYS:
@@ -651,14 +682,16 @@ def _row(row: Any, number: int) -> None:
 
 
 def load_measures_file(
-    path: Path, expected_binding: Mapping[str, str] | None = None
+    path: Path, expected_binding: Mapping[str, str | None] | None = None
 ) -> dict[str, Any]:
     """Read and validate a measures file. The sponsor page reads measure values
     through this and nothing else. Every field is checked for type and format; a
     link, a large or deeply nested file, a duplicate or unknown key, NaN or
     Infinity, another version or a private row is refused. With
     ``expected_binding`` (the binding record of the build the page came from) a
-    file made from another build is refused too."""
+    file made from another build is refused too. In every case the rows must
+    digest to the binding's ``measures`` digest (recomputed here), so an edited
+    row is refused even when the binding is a genuine one."""
     try:
         fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
     except OSError as exc:
@@ -716,4 +749,11 @@ def load_measures_file(
         raise MeasuresFileError("the measures file has no valid list of measures")
     for number, row in enumerate(rows):
         _row(row, number)
+    # The binding authenticates only itself: the rows being consumed must digest
+    # to what the build recorded, or an edited value would carry a genuine binding.
+    if rows_digest_of(rows) != bound["measures"]:
+        raise MeasuresFileError(
+            "the measures file rows are not the measures its binding records; "
+            "the file was changed after the build. Make it again"
+        )
     return doc

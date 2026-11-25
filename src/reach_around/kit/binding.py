@@ -60,39 +60,56 @@ def sha256_text(text: str | bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
+def rows_digest_of(rows: Iterable[Mapping[str, Any]]) -> str:
+    """A digest of measure rows as ``measure_row`` prints them, in page order. The
+    one canonical form: the build, the writer and the reader all use it, so a
+    row read back from a file digests exactly as the measure it came from."""
+    return sha256_text(
+        json.dumps([dict(r) for r in rows], sort_keys=True, ensure_ascii=True)
+    )
+
+
 def rows_digest(measures: Iterable[Measure]) -> str:
     """A digest of the resolved measures, in page order."""
-    rows = [measure_row(m) for m in measures]
-    return sha256_text(json.dumps(rows, sort_keys=True, ensure_ascii=True))
+    return rows_digest_of(measure_row(m) for m in measures)
 
 
 def make_binding(
-    policy: str, measures: str, gated_page: str | bytes, public_page: str | bytes
-) -> dict[str, str]:
+    policy: str,
+    measures: str,
+    gated_page: str | bytes | None,
+    public_page: str | bytes,
+) -> dict[str, str | None]:
+    """The binding of one build. A kit with no gated content has no gated page:
+    ``gated_page`` is then None (null in the record), and the reader requires that
+    the gated directory holds no page either."""
     return {
         "policy": policy,
         "measures": measures,
-        "gated_page": sha256_text(gated_page),
+        "gated_page": None if gated_page is None else sha256_text(gated_page),
         "public_page": sha256_text(public_page),
     }
 
 
-def binding_text(binding: Mapping[str, str]) -> str:
+def binding_text(binding: Mapping[str, str | None]) -> str:
     return json.dumps(dict(binding), sort_keys=True, indent=2) + "\n"
 
 
-def check_binding_shape(found: object) -> dict[str, str]:
-    """``found`` as a binding: exactly the four keys, each a SHA-256 hex digest."""
+def check_binding_shape(found: object) -> dict[str, str | None]:
+    """``found`` as a binding: exactly the four keys, each a SHA-256 hex digest
+    (``gated_page`` may be null: a kit with no gated page)."""
     if not isinstance(found, dict) or set(found) != set(BINDING_KEYS):
         raise ValueError("the build binding does not have the expected keys")
     for key in BINDING_KEYS:
         value = found[key]
+        if value is None and key == "gated_page":
+            continue
         if not isinstance(value, str) or not _HEX.fullmatch(value):
             raise ValueError(f"the build binding {key} is not a SHA-256 digest")
     return {key: found[key] for key in BINDING_KEYS}
 
 
-def read_binding(path: Path) -> dict[str, str]:
+def read_binding(path: Path) -> dict[str, str | None]:
     """Read the binding record of a build. A missing, linked or malformed record
     is refused with a message that says to rebuild."""
     rebuild = "rebuild the site first (reach-around build --gated-out)"

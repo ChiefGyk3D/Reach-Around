@@ -1348,7 +1348,7 @@ def build_site(
         out.mkdir(parents=True, exist_ok=True)
         check_roots(out, gated_root)
         record = None
-        if kit_render.gated is not None and kit_render.policy:
+        if kit_render.policy:
             record = binding_text(
                 make_binding(
                     kit_render.policy,

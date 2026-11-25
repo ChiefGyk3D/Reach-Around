@@ -1011,7 +1011,11 @@ Where it may go, and what it holds:
   file, a `--site-out` and `--gated-out` from different builds, an edited page or
   a changed display policy. Rebuild, then run it again with the same inputs. The
   file records the same digests (`binding`), and the reader can compare them with
-  an expected binding. A kit with no measures writes no file.
+  an expected binding, and recomputes the digest of the rows it loads: a row edited
+  after the build is refused even when the binding is a genuine one. A kit with no
+  gated content (public measures only) has no gated page; its binding records
+  `gated_page` as null, and the command then requires that the gated directory
+  holds no `kit.html` either. A kit with no measures writes no file.
 - **Compared as values.** Before the text is made, every string and number of the
   document is compared, decoded and normalized (case, width and spacing folded),
   with an inventory of the private-source values: each private field, each
@@ -1036,6 +1040,12 @@ Where it may go, and what it holds:
   build error says to reword the text that shows the number, in any spacing; do
   that, since the rule is meant to err on the side of keeping a private figure
   out. Unrelated numbers split by words are left alone.
+  **Other ways of writing a decimal:** a decimal comma ("12,3%"), a comma or
+  period with spaces around it ("12 . 3"), digits of other scripts (Arabic-Indic,
+  Devanagari and so on, read as the plain digits) and scientific notation
+  ("1.23e1", "1.23E+1", "123e-1", "1.23x10^1", "1.23 × 10^1", "1.23 * 10 ** 1";
+  exponents up to 40) are read as the numbers they mean, so a private 12.3 is
+  found in all of them. A false stop ("12. 3 more") is the price.
   **Short figures:** a private whole number of fewer than 6 digits (3, 40) is in
   the inventory, but is matched in a text only when it is written with a unit: a
   percent sign, a currency sign or code before or after it (`$3`, `$-3`, `3
@@ -1068,7 +1078,10 @@ Where it may go, and what it holds:
   to, and whose parent directory (and every directory above it) no other user can
   write**, so that nobody else can rename it. The tool warns (`OutputWarning`,
   printed on standard error) when the parent of the output folder is writable by
-  the group or by others. Mount tricks (bind mounts, mount namespaces) are out of
+  the group or by others, and refuses when any directory above that parent is
+  owned by another user (root is fine) or is writable by the group or others
+  without the sticky bit (a sticky directory such as `/tmp` is accepted: only the
+  owner of an entry can rename it there). Mount tricks (bind mounts, mount namespaces) are out of
   scope as well. This is an owner-local tool with a same-user threat model: a
   process running as you can already read the file and the private data it was
   made from.

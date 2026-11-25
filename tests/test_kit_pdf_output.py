@@ -335,3 +335,69 @@ def test_a_forbidden_directory_is_rechecked_at_the_write(tmp_path: Path) -> None
     with pytest.raises(OutputError, match="published|inside|around|same"):
         write_private(d, "kit.pdf", b"%PDF-", overwrite=False, forbidden=[d])
     assert list(d.iterdir()) == []
+
+
+# --- the directories above the parent (#632) -------------------------------------
+
+
+def _deep(tmp_path: Path) -> tuple[Path, Path]:
+    """tmp_path/top/mid/private; returns (top, private)."""
+    top = tmp_path / "top"
+    private = top / "mid" / "private"
+    private.mkdir(parents=True, mode=0o700)
+    for part in (top, top / "mid"):
+        part.chmod(0o700)
+    return top, private
+
+
+@pytest.mark.parametrize("mode", [0o770, 0o707, 0o777])
+def test_a_writable_ancestor_above_the_parent_is_refused(
+    tmp_path: Path, mode: int
+) -> None:
+    top, private = _deep(tmp_path)
+    top.chmod(mode)
+    try:
+        with pytest.raises(OutputError, match="above the output directory"):
+            write_private(private, "kit.pdf", b"%PDF-1", overwrite=False)
+        assert not (private / "kit.pdf").exists()
+        # a missing directory below it is not created either
+        with pytest.raises(OutputError, match="above the output directory"):
+            confine_out_dir(top / "mid" / "private" / "new" / "deeper", [])
+        assert not (private / "new").exists()
+    finally:
+        top.chmod(0o700)
+    write_private(private, "kit.pdf", b"%PDF-1", overwrite=False)  # control
+
+
+def test_a_sticky_writable_ancestor_is_allowed(tmp_path: Path) -> None:
+    """Like a normal temporary directory: only the owner of an entry may rename
+    it, so the sticky bit closes the move."""
+    top, private = _deep(tmp_path)
+    top.chmod(0o1777)
+    try:
+        write_private(private, "kit.pdf", b"%PDF-1", overwrite=False)
+    finally:
+        top.chmod(0o700)
+    assert (private / "kit.pdf").read_bytes() == b"%PDF-1"
+
+
+def test_an_ancestor_owned_by_someone_else_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _top, private = _deep(tmp_path)
+    monkeypatch.setattr(os, "geteuid", lambda: os.getuid() + 1)
+    with pytest.raises(OutputError, match="belongs to another user"):
+        write_private(private, "kit.pdf", b"%PDF-1", overwrite=False)
+    monkeypatch.undo()
+    assert not (private / "kit.pdf").exists()
+
+
+def test_the_parent_itself_is_still_only_a_warning(tmp_path: Path) -> None:
+    _top, private = _deep(tmp_path)
+    parent = private.parent
+    parent.chmod(0o770)
+    try:
+        with pytest.warns(OutputWarning, match="parent"):
+            write_private(private, "kit.pdf", b"%PDF-1", overwrite=False)
+    finally:
+        parent.chmod(0o700)

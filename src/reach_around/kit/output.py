@@ -26,8 +26,10 @@ and back between two samples (or after the last one) is not seen, because the
 directory is where it should be at every sample. No number of extra samples
 closes that; only a folder that no other process can rename closes it. So the
 output must go to a folder only the owner can write, whose parent directory
-no one else can write either; ``write_private`` warns (``OutputWarning``) when
-the parent can be written by the group or by others.
+no one else can write either (a directory further up that another user owns or
+that the group or others can write, unless it is sticky, is refused);
+``write_private`` warns (``OutputWarning``) when the parent can be written by the
+group or by others.
 """
 
 from __future__ import annotations
@@ -175,6 +177,7 @@ def open_private_dir(
                 break
         if missing and not create:
             raise OutputError("the output directory does not exist")
+        _check_ancestors(fds, len(target.parts))
         chain = [_ident(fd) for fd in fds]
         for other in forbidden:
             try:
@@ -226,6 +229,36 @@ def open_private_dir(
     finally:
         for fd in fds:
             os.close(fd)
+
+
+def _check_ancestors(fds: Sequence[int], depth: int) -> None:
+    """Refuse a chain whose directories above the output directory's parent could
+    be renamed or replaced by someone else. ``fds`` are the directories opened so
+    far (root first), ``depth`` the number of components of the whole path.
+
+    Holding a descriptor stops a link being swapped in, but not the rename of a
+    directory higher up, which moves the whole private subtree. So each existing
+    ancestor must belong to this user or root, and must not be writable by the
+    group or others unless it is sticky (only the owner of an entry may rename it
+    there, as in a normal temporary directory). The output directory itself has
+    its own owner-only check, and its parent gets the warning in
+    ``write_private``; a directory this call creates is owner-only."""
+    me = os.geteuid()
+    for fd in fds[: max(depth - 2, 0)]:
+        info = os.fstat(fd)
+        if info.st_uid not in (me, 0):
+            raise OutputError(
+                "a directory above the output directory belongs to another user; "
+                "choose a path whose directories only you (or root) own"
+            )
+        if info.st_mode & (stat.S_IWGRP | stat.S_IWOTH) and not info.st_mode & (
+            stat.S_ISVTX
+        ):
+            raise OutputError(
+                "a directory above the output directory can be written by the "
+                "group or by others, so the folder could be moved; remove that "
+                "write permission or choose another path"
+            )
 
 
 def _has_entry(fd: int, name: str) -> bool:

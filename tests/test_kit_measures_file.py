@@ -33,6 +33,7 @@ from reach_around.kit.measures_file import (
     private_scalars,
 )
 from reach_around.kit.output import OutputError
+from reach_around.site.build import build_site
 from test_kit_private_measures import KIT as PRIVATE_KIT
 from test_kit_private_measures import SECRET_FOLLOWERS, make_private
 
@@ -1056,3 +1057,169 @@ def test_the_schema_is_documented() -> None:
 
 
 _ = (TODAY, SECRET_FOLLOWERS)
+
+
+# --- the reader recomputes the measures digest (#632) -----------------------------
+
+
+def edited(path: Path, change: Any) -> Path:
+    doc = json.loads(path.read_text("utf-8"))
+    change(doc)
+    out = path.with_name("edited.json")
+    out.write_text(json.dumps(doc), encoding="utf-8")
+    return out
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        lambda d: d["measures"][0].__setitem__("value", 999999),
+        lambda d: d["measures"][0].__setitem__("label", "Another label"),
+        lambda d: d["measures"][0].__setitem__("note", "Injected note"),
+        lambda d: d["measures"][0].__setitem__("as_of", "2027-01-01"),
+        lambda d: d["measures"][0]["trust"].__setitem__("method", "invented"),
+        lambda d: d["measures"].reverse(),
+        lambda d: d["measures"].pop(),
+    ],
+    ids=["value", "label", "note", "date", "trust", "order", "dropped row"],
+)
+def test_an_edited_row_with_the_original_binding_is_refused(
+    tmp_path: Path, change: Any
+) -> None:
+    config, site, gated = instance(tmp_path)
+    path = write(tmp_path, config, site, gated)
+    recorded = json.loads((gated / BINDING_FILE).read_text("utf-8"))
+    assert load_measures_file(path, expected_binding=recorded)  # control
+    bad = edited(path, change)
+    with pytest.raises(MeasuresFileError, match="binding records"):
+        load_measures_file(bad, expected_binding=recorded)
+    with pytest.raises(MeasuresFileError, match="binding records"):
+        load_measures_file(bad)
+
+
+def test_the_reader_and_the_build_digest_rows_the_same_way(tmp_path: Path) -> None:
+    from reach_around.kit.binding import rows_digest_of
+
+    config, site, gated = instance(tmp_path)
+    doc = load_measures_file(write(tmp_path, config, site, gated))
+    assert rows_digest_of(doc["measures"]) == doc["binding"]["measures"]
+
+
+# --- a kit with public measures only (#632) ---------------------------------------
+
+
+PUBLIC_ONLY = {
+    "title": "Example Creator media kit",
+    "about": "A fake creator.",
+    "metrics": [
+        {
+            "platform": "twitch",
+            "label": "Followers",
+            "value": 1200,
+            "as_of": "2027-03-01",
+        }
+    ],
+}
+
+
+def test_a_public_only_kit_gets_a_binding_and_a_measures_file(tmp_path: Path) -> None:
+    config, site, gated = instance(tmp_path, PUBLIC_ONLY)
+    assert not (gated / "kit.html").exists()  # no gated page for this kit
+    recorded = json.loads((gated / BINDING_FILE).read_text("utf-8"))
+    assert recorded["gated_page"] is None
+    path = write(tmp_path, config, site, gated)
+    doc = load_measures_file(path, expected_binding=recorded)
+    assert [m["value"] for m in doc["measures"]] == [1200]
+    assert doc["binding"]["gated_page"] is None
+
+
+def test_a_public_only_binding_refuses_a_gated_page_in_the_directory(
+    tmp_path: Path,
+) -> None:
+    """A page from another build left in the directory is not the one the build
+    recorded (none): refused, never ignored."""
+    config, site, gated = instance(tmp_path, PUBLIC_ONLY)
+    (gated / "kit.html").write_text("<p>other build</p>", encoding="utf-8")
+    with pytest.raises(MeasuresFileError, match="gated page"):
+        write(tmp_path, config, site, gated)
+    assert not (tmp_path / "private").exists()
+
+
+def test_a_recorded_gated_page_that_is_missing_is_refused(tmp_path: Path) -> None:
+    config, site, gated = instance(tmp_path)
+    (gated / "kit.html").unlink()
+    with pytest.raises(MeasuresFileError, match="gated page"):
+        write(tmp_path, config, site, gated)
+
+
+def test_a_rebuild_as_public_only_replaces_the_old_binding(tmp_path: Path) -> None:
+    """The gated directory of an earlier, gated build is cleaned by the next
+    build: the old page and its record do not outlive it."""
+    config, site, gated = instance(tmp_path)
+    assert (gated / "kit.html").is_file()
+    config2 = make_config(PUBLIC_ONLY)
+    # same directories, different config
+    build_site(
+        config2,
+        site,
+        today=TODAY,
+        gated_out=gated,
+        assets_dir=tmp_path / "assets",
+    )
+    assert not (gated / "kit.html").exists()
+    recorded = json.loads((gated / BINDING_FILE).read_text("utf-8"))
+    assert recorded["gated_page"] is None
+    assert write(tmp_path, config2, site, gated).is_file()
+
+
+# --- decimals written another way (#632) ------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "growth was 12,3%",
+        "growth was 12,30 %",
+        "growth was 12 ,3 percent",
+        "growth was 12 . 3%",
+        "growth was 12. 3%",
+        "growth was １２，３％",
+        "growth was 1.23e1%",
+        "growth was 1.23E+1 percent",
+        "growth was 1,23e1%",
+        "growth was 123e-1%",
+        "growth was 0.123e2%",
+        "growth was 1.23 x 10^1%",
+        "growth was 1.23×10^1%",
+        "growth was 1.23 * 10 ** 1%",
+        "growth was ١٢.٣%",  # Arabic-Indic digits
+        "growth was १२.३%",  # Devanagari digits
+    ],
+)
+def test_a_private_decimal_is_found_in_locale_and_scientific_forms(text: str) -> None:
+    with pytest.raises(MeasuresFileError, match="kit.x.n"):
+        check_no_private_values(a_note(text), [("kit.x.n", Decimal("12.3"))])
+
+
+def test_a_private_whole_number_is_found_in_scientific_form() -> None:
+    for text in ("reached 1.234567e6 in total", "reached 1234567e0", "1.234567×10^6"):
+        with pytest.raises(MeasuresFileError, match="kit.x.n"):
+            check_no_private_values(a_note(text), [("kit.x.n", 1234567)])
+
+
+def test_a_short_private_figure_is_found_in_locale_and_scientific_forms() -> None:
+    for text in ("up 3,0%", "up 3e0%", "$3 . 0"):
+        with pytest.raises(MeasuresFileError, match="kit.x.n"):
+            check_no_private_values(a_note(text), [("kit.x.n", Decimal("3"))])
+
+
+def test_other_exponents_and_decimals_are_not_a_hit() -> None:
+    inventory: list[tuple[str, Any]] = [("kit.x.n", Decimal("12.3"))]
+    for text in (
+        "12,4% and 13,3%",
+        "1.23e2% and 1.24e1%",
+        "1.23e99999 is huge",
+        "e1 and 12e",
+        "version 1.23.1",
+    ):
+        check_no_private_values(a_note(text), inventory)

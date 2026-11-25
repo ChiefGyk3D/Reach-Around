@@ -603,6 +603,10 @@ class StagedGated:
             for path in (target, record, self.root / BINDING_FILE):
                 if os.path.lexists(path):
                     path.unlink()
+            if self.binding is not None:
+                # no gated page, but a kit: the binding records that, so the
+                # measures file can be made for a kit with public measures only
+                _write_private_file(self.root / BINDING_FILE, self.binding)
             return
         try:
             os.replace(self.temp, target)
@@ -795,7 +799,9 @@ def stage_gated(
     if gated_out.is_dir():
         _remove_stale_staging(gated_out)
     if page is None:
-        return StagedGated(gated_out, None)
+        if binding is not None and not gated_out.exists():
+            gated_out.mkdir(parents=True, mode=0o700)
+        return StagedGated(gated_out, None, None, binding)
     if not gated_out.exists():
         gated_out.mkdir(parents=True, mode=0o700)
     temp = gated_out / f".{GATED_FILE.name}.{secrets.token_hex(8)}.tmp"
