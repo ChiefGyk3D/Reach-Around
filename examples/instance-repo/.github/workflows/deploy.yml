@@ -91,6 +91,8 @@ jobs:
         id: lock
         run: |
           set -eu
+          # The image, repository, commit and tag must describe one release.
+          scripts/read-lock.sh --release
           {
             echo "engine_repo=$(scripts/read-lock.sh ENGINE_REPO)"
             echo "engine_ref=$(scripts/read-lock.sh ENGINE_REF)"

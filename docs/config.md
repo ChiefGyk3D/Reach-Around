@@ -266,9 +266,20 @@ keeps the existing tab or sections layout.
 
 With `layout: stack`, every tab needs a distinct `intent`, there must be exactly one `watch` tab, and the two `watch` links cannot be scheduled (`show_from`, `show_until`). The validator enforces these only for that layout. Tabs provide the group order and headings. The standard information order is
 `videos`, `follow`, `community`, `support`, `work`, `shop`, `blog`; config order
-is authoritative. The generated page uses one column on phones and two columns
-for group links on wider screens. Every link remains keyboard operable, targets
-stay at least 44 px tall, and the layout reflows at 320 px and 200% zoom.
+is authoritative. The generated page is a deck (#677): every region is a tile
+on the dark ground, with a small mono kicker for a heading.
+
+| Width | Arrangement |
+| --- | --- |
+| Under 48 rem (phones) | One column. The Watch tile (status text and the two Watch links) comes first, then the featured card, then a row of jump chips (in-page links, one per group, no script), then the groups in config order. |
+| 48 rem and up | Two columns. The Watch tile and the featured card run full width; groups pair up in config order. The jump chips are hidden. |
+| 64 rem and up | Twelve columns, up to 90 rem wide. With `featured`, the featured card takes four columns beside the Watch tile (eight); without it the Watch tile takes the row. `follow` spans eight columns and every other group four, in config order, so Follow pairs with Community. |
+
+Only the `support` tile uses the brand plate color; amber stays on the buttons,
+the kickers and the focus ring. Print drops the chips and the grid. The group
+sections carry a `smart-group-<intent>` class for site CSS. Every link remains
+keyboard operable, targets stay at least 44 px tall, and the layout reflows at
+320 px and 200% zoom.
 
 ```yaml
 page:
@@ -1300,6 +1311,7 @@ end. Text must be quoted if YAML would read it as a number.
 | `title` | text | required | at most 120 characters |
 | `about` | text | required | at most 1000 characters |
 | `contact` | text | none | one plain-text line for brands, at most 200 characters; see the note below |
+| `consulting_url` | https URL | none | where the "Consulting instead?" line on both kit pages points, at most 2048 characters; public; without it no line is printed; see the note below |
 | `tags` | list of text | none | at most 8 content category tags, each 1 to 30 characters, none repeated (compared ignoring case and width, so `Tech` and `Ｔech` count as the same tag); public |
 | `metrics` | list of metric | none | at most 30; each `platform` and `label` pair once |
 | `engagement` | list of engagement row | none | at most 30; each platform and period once; gated; see below |
@@ -1315,6 +1327,10 @@ end. Text must be quoted if YAML would read it as a number.
 | `disclosure` | text | none | a short statement, at most 500 characters; gated; see the note below |
 | `turnstile_site_key` | text | none | public key of the Turnstile widget on the gate form; 1 to 64 letters, digits, `-` or `_`. Without it the form has an empty widget slot and the build warns |
 | `public_pdf` | https URL | none | where you published the public PDF (`kit pdf --public`); adds a "Download Public PDF" button to the first screen of the public kit page. The page, the gated page and both PDFs never print the URL itself, and the PDFs drop the buttons. Without it there is no button |
+| `audience_summary` | block | none | options for the audience summary ([guide](kit.md#the-audience-summary)): `poll` (`respondents` at least 5, `as_of` date, `avg_other_platforms` 0 to 100, all typed by you) and `show_estimate` (`false` by default; `true` needs `poll` and adds one labeled "Estimate from a poll" line beside the range). The range itself needs no setting |
+| `sections` | list of section | none | at most 20 platform cards ([guide](kit.md#platform-cards-and-the-measure-registry)): `platform` (required), `account` (public handle text, at most 80 characters), `show` (`default`, or a list of registry keys in print order), `headline` (a registry key the card shows) and `hide_if_empty` (`false` by default). A card holds no numbers: they come from `metrics`, `analytics` and `engagement`. Each platform and account once |
+| `fediverse` | list of entry | none | at most 3 entries, one per platform ([guide](kit.md#the-fediverse-block)): `platform` (`mastodon`, `bluesky` or `pixelfed`), `profile_url` (https; the re-check link printed with every count), `as_of` (date), `followers` and `posts` (whole numbers, optional), `interactions` (one row of `boosts`, `favorites` and `replies` per public post in the 30 days ending on `as_of`, at most 200) and `show_mean` (`false` by default). A value left out prints "not provided", never zero |
+| `channels` | list of entry | none | at most 5 entries, one per platform ([guide](kit.md#the-channel-block)): `platform` (`peertube`, `lemmy`, `podcast`, `newsletter` or `blog`), `as_of` (date), `url` (https; required for PeerTube and Lemmy, optional for the rest) and the whole-number figures the platform takes (`subscribers`, `active_users_month`, `watch_time_hours`, `avg_watch_seconds`, `unique_viewers`, `downloads`, `delivered`, `clicks`, `views`). A figure left out prints "not provided", never zero |
 | `unlock_link` | true or false | `false` | v1 has no emailed unlock link, so `true` is refused with a clear error until it exists |
 
 A **metric** is one headline number: `platform` (a platform name such as
@@ -1398,10 +1414,14 @@ nothing is printed.
 
 | Field | Shown |
 | --- | --- |
-| `title`, `about`, `photo`, `contact`, `tags`, `metrics`, the unified total | public |
+| `title`, `about`, `photo`, `contact`, `consulting_url`, `tags`, `metrics`, the unified total | public |
 | `partners`, `case_studies`, `services`, `rates`, `engagement`, `demographics`, `disclosure`, `inquiry`, `testimonials` | gated (only after the gate) |
 | `turnstile_site_key` | public (it ships in the gate form; the key is public by design) |
 | `public_pdf` | public (it is a link on the first screen of the public page) |
+| `audience_summary` | public (the poll estimate line is printed on every page and both PDFs) |
+| `sections` | public (a card holds no numbers; each number in it keeps the audience of the field it came from, so an engagement figure in a card shows on the gated page only) |
+| `fediverse` | public (counts typed from a public profile, each with its re-check link) |
+| `channels` | public (figures typed from the instance, host, sending service or site analytics; the page says who reported them) |
 | `unlock_link` | private (configuration, never shown) |
 
 The public half therefore shows the header and the headline numbers and nothing
@@ -1441,6 +1461,13 @@ kit:
     pgp_fingerprint: 0123 4567 89AB CDEF 0123 4567 89AB CDEF 0123 4567
 ```
 
+**Consulting line.** `consulting_url` is optional. When set, both kit pages print
+one fixed line right after the contact block: "Consulting instead? Visit my
+consulting site." with "consulting site" as the link to your URL. The words are
+not a setting. Without the URL nothing is printed, not even the words. The line
+is for the web pages only and is left out of both PDFs (see
+[the kit page](kit.md#consulting-line)).
+
 **Contact line.** `contact` is optional and is yours to decide: write whatever
 you are willing to publish, such as `Brand deals: partners at example.com`.
 An email address written as plain text is fine. It is printed escaped as text on
@@ -1467,6 +1494,9 @@ never stored.
 ```yaml
 features:
   kit_gate: true
+privacy:
+  controller_name: Example Creator LLC
+  contact: privacy@example.com
 kit:
   title: Example Creator media kit
   about: A fake creator used to show the settings.
@@ -1698,6 +1728,23 @@ parser. A manual or item-id entry in the file that no source touches is kept.
 (1 to 365) after which a hand-kept number for it counts as stale; platforms not
 listed use 30. Example: `stale_days: {kick: 14}`.
 
+`numbers.retain_days` (optional) maps a platform name to a retention window in
+days (1 to 3650, whole numbers only) for the `api` rows of that platform in the
+history file. `numbers.retain_warn_days` (optional, 1 to 365, default 7) is the
+margin. When `counts refresh` has a history file, it prints one warning per
+listed platform that has `api` rows within the margin of the window, or past it:
+`bluesky: retention warning: 2 api record(s) expire within 7 days of the 30 day
+window, 1 are past it; ...`. The line is a count, never a value. It is a warning
+only: nothing is stored differently and nothing is deleted. The remedy is to
+redact the old rows with the history tombstone tool (see
+[Social-stats history](social-history.md)). A refresh only appends a new current
+row; it does not replace or remove the old one, so the warning stays until the
+old rows are redacted. Hand-kept and imported rows are not counted. Every `retain_days`
+value must be more than the margin, and a quoted number or a boolean is refused.
+Example: `retain_days: {youtube: 30}`. The windows come from the platform terms
+you read (see [platform terms](research/platform-terms-retention.md)); nothing
+here sets one for you.
+
 ### Hand-kept numbers
 
 A number is **hand-kept** when a person maintains it: a `count` typed on a
@@ -1750,7 +1797,10 @@ Wording and retention for the generated privacy page. Unknown keys are refused.
 
 | Key | Type | Default | Meaning |
 | --- | --- | --- | --- |
-| `contact` | text, 1-200 characters | none | How visitors can reach you about privacy. Shown as plain text. |
+| `controller_name` | text, 1-200 characters | none | Who the fixed privacy notice names as the controller. Required, with `contact`, when `features.kit_gate` is on or alerts are on (channels and events both set); the config is refused otherwise, and the error names the field, never a value. |
+| `contact` | text, 1-200 characters | none | How visitors can reach you about privacy. Shown as plain text, in the privacy notice and next to the kit gate form. Required with `controller_name` when the gate or alerts are on. |
+| `dpa_note` | text, up to 500 characters | empty | Optional sentences added after the processor statement in the fixed notice. |
+| `turnstile_storage_note` | text, up to 500 characters | empty | Optional sentences added at the end of the bot check section of the fixed notice. |
 | `intro` | text, 1-2000 characters | neutral default | Replaces the opening text of the privacy page and the cookie notice. Escaped, never treated as HTML. |
 | `retention_days` | integer, exactly `90` | `90` | How long the hourly click records are kept. The Worker deletes them at one fixed 90-day window and no deploy variable changes it, so the only value accepted is 90; any other number is refused because the privacy page would promise what the Worker does not do. |
 | `lead_retention_days` | integer, 1-365 | `30` | How long a kit email address is kept. This is the one lead retention setting: the privacy page prints it and the deploy gives the same number to the Worker as `LEAD_RETENTION_DAYS`. The range and default are the Worker's own. Quoted numbers and booleans are refused. A value above 365 (allowed before this change, up to 3650) is now an error, because the Worker deletes leads after at most 365 days. |
@@ -1760,6 +1810,7 @@ features:
   click_tracking: true
   kit_gate: true
 privacy:
+  controller_name: Example Creator LLC
   contact: privacy@example.com
   intro: Here is exactly what this site collects.
   retention_days: 90
@@ -1767,7 +1818,13 @@ privacy:
 ```
 
 The privacy page at `/privacy/` and the cookie notice are generated from the
-enabled features, so they cannot claim less than the site does. See
+enabled features, so they cannot claim less than the site does. The page also
+carries a fixed privacy notice that cannot be turned off: controller, what is
+measured, retention, legal basis, recipients, bot checks, rights and a complaint
+route. Its retention numbers come from the same constants the Worker tests pin
+(`analytics.raw_keep_days`, the click window, the daily and monthly totals); the
+alert services are the names of the configured `alerts.channels`, and the sentence
+that names them is left out when alerts are off. See
 [privacy by construction](education/privacy-by-construction.md).
 
 ## `alerts`
@@ -1827,6 +1884,7 @@ existed. Unknown keys are refused; there is deliberately nothing else to set.
 | `page_views` | boolean | `false` | Count one view per page load. Must be a real boolean. When on, the build ships `static/view.js`, links it from every tab page (not the privacy page), puts `data-page-id` and `data-view-route` on `<body>`, and adds the page-view item to the privacy page, which lists the referring site, the campaign label (`utm_source`, at most 30 characters), the source label (`s`, same form) and the window width among the rest. |
 | `beacon_token` | boolean | `false` | Ask the Worker for a short-lived signed token once per visit and send it with click pings and view beacons (`click.js` and `view.js` read `data-token-route="/e/t"` on `<body>`, set only on tab pages). Must be a real boolean. Off, the pages are identical to each other with and without the key, and differ from before this key existed only by the script file names (the scripts changed, so their content hashes did). Use it only with the Worker's `BEACON_MODE` set to `observe` (`docs/deploy.md`, "Beacon token"); the privacy page does not describe the token yet, so keep it off on a live site until that text is added. A visitor with Global Privacy Control or Do Not Track never asks for one or attaches one (that is all this setting covers; whether a click itself is sent under those signals is the click opt-out change's, #609), the token is held in page memory only (no cookie, no storage), and a failed request never delays a link. |
 | `raw_keep_days` | integer 1 to 90 | `7` | What the privacy page says about how long individual view records are kept. It does not change the Worker: keep it equal to the Worker's `RAW_KEEP_DAYS`. |
+| `geo_level` | `country`, `region` or `city` | `region` | What the privacy page says about location. It does not change the Worker: keep it equal to the Worker's `GEO_LEVEL` (or the site's own `geo`). A stored view holds the country and at most the region, never the city. At `city` the Worker also counts the city in a daily total (no page, source or device kind with it), small counts are combined into the region, and the page says so. |
 | `other_sites` | list of host names | none | Other sites counted by the same collector (the Worker's `SITES`), named on the privacy page. Lower-case host names only, at most 7, no scheme, port, path or wildcard. |
 | `route` | path | `/e/v/` | The same-origin path the Worker serves the page-view route on. Plain segments (`A-Z a-z 0-9 . _ ~ -`, no segment starting with a dot), starting and ending with `/`, at most 64 characters. No scheme, host, query, fragment, `.` or `..` segment, escape or space. The tab id is appended to it. |
 | `turnstile_beacon` | boolean | `false` | The invisible bot check (#610). Must be a real boolean. When on, the build adds one hidden, unlinked, `noindex` helper page at `/e-frame/` that loads Cloudflare Turnstile, and a small script (`static/beacon.js`) on every tab page that opens the helper in a hidden frame after the page has loaded, never for a visitor who sends Global Privacy Control or Do Not Track. Needs `analytics.page_views` or `features.click_tracking`. Off, the build is byte-for-byte what it was. **Do not turn it on for a live site until the privacy page says what the check does**; see `docs/deploy.md` ("The invisible bot check") and `docs/turnstile-storage-check.md`. |

@@ -17,11 +17,13 @@ engine repository for the reasoning.
 | `media/` | Your images (avatar, favicon, background). |
 | `overrides/` | Optional. Template and `custom.css` overrides; create it when you need it. |
 | `engine.lock` | The pinned engine: container image by digest, plus the matching source commit for the Worker. |
+| `engine.release.json` | The image, repository, commit, tag and D1 schema of that one release. `scripts/read-lock.sh --release` fails when it disagrees with `engine.lock`; update both in the same pull request (Renovate moves only the lock, so a Renovate pull request fails this check until the manifest is updated). |
 | `.github/workflows/preview.yml` | On a pull request: check the config, build a preview artifact, and comment on the pull request with the result in plain language and the list of changed blocks. Also lints the scripts and workflows (GYST `bash-ci`). Deploys nothing. Its gate job is named `CI green`. |
 | `.github/workflows/deploy.yml` | On a push to `main`: check, validate, then deploy to Cloudflare after a reviewer approves. |
 | `.github/workflows/refresh-counts.yml` | Once a day (and by hand): refresh follower counts with the pinned engine and open a pull request with the new `numbers.json`. Optional; see "Daily follower counts". |
+| `.github/workflows/check-hand-kept-freshness.yml` | Once a week (and by hand): check `hand-kept.json` and keep one issue open while a number you keep by hand is past its limit. Optional; see "Hand-kept numbers". |
 | `renovate.json` | Keeps `engine.lock` and the Actions pins current. |
-| `scripts/` | `validate-numbers.py` (the strict check on `numbers.json` the counts refresh runs twice), `refresh-counts.sh`, `verify-history.sh` (the engine's `counts history-verify` on the history file, offline), `check-config.sh` (the plain-language config check), `validate.sh` (the build CI runs), `write-result.py` (bundles the preview job's results into the one data file the comment job reads), `render-comment.py` (run by the comment job from the base commit: validates that file and writes the pull request comment from fixed text), `check-repo.sh`, `read-lock.sh`, `deploy-local.sh`. |
+| `scripts/` | `check-freshness.py` (the stale check of the hand-kept file, standard library only), `validate-numbers.py` (the strict check on `numbers.json` the counts refresh runs twice), `refresh-counts.sh`, `verify-history.sh` (the engine's `counts history-verify` on the history file, offline), `check-config.sh` (the plain-language config check), `validate.sh` (the build CI runs), `write-result.py` (bundles the preview job's results into the one data file the comment job reads), `render-comment.py` (run by the comment job from the base commit: validates that file and writes the pull request comment from fixed text), `check-repo.sh`, `read-lock.sh`, `deploy-local.sh`. |
 | `docs/EDITING.md` | How to change the page without touching code. |
 
 ## Adopt it
@@ -207,6 +209,21 @@ a `CODEOWNERS` file and a branch rule that requires a code owner's review:
 branch, not the one in the pull request. A change to `engine.lock` takes effect
 for previews only after it is merged. (The merge itself is still checked: the
 pull request's own `Preview` run builds with the old engine.)
+
+## Hand-kept numbers
+
+Optional. Numbers for a platform with no collector live in `hand-kept.json` (see
+the engine's `docs/kit.md`, "Hand-kept entries and imports"; the engine's
+`kit measure add` and `kit measure import-youtube` write it). The workflow
+`.github/workflows/check-hand-kept-freshness.yml` runs `scripts/check-freshness.py`
+every Monday at 07:41 UTC and from the **Actions** tab. For each platform and key
+it judges the newest entry against a 30 day limit. While any number is older it
+keeps one open issue, "Hand-kept numbers are out of date", that lists platform
+names, keys and ages (never a value); when all are fresh it closes the issue.
+
+It uses no secret and no Cloudflare token, runs only on `main`, and its token
+can write issues and nothing else. If you keep nothing by hand, delete the
+workflow and the script. There is no Worker route for this.
 
 ## Daily follower counts
 

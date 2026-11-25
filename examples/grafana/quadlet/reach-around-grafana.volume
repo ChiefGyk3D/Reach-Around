@@ -1,0 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Grafana's own state (its database, installed plugin). Dashboards and the
+# data source are not kept here: they are provisioned from files on every start.
+[Volume]
+VolumeName=reach-around-grafana

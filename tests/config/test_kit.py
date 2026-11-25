@@ -435,6 +435,7 @@ def test_policy_classifies_every_field() -> None:
         "about",
         "photo",
         "contact",
+        "consulting_url",
         "tags",
         "metrics",
         "analytics",
@@ -442,6 +443,12 @@ def test_policy_classifies_every_field() -> None:
         "unified_total",
         "turnstile_site_key",
         "public_pdf",
+        "audience_summary",
+        "sections",
+        "live",
+        "fediverse",
+        "channels",
+        "measures",
     }
     for name in ("partners", "case_studies", "rates", "demographics"):
         assert visibility(name) == "gated"
@@ -488,6 +495,7 @@ def test_public_projection_has_only_header_and_headline_numbers() -> None:
         "about",
         "photo",
         "contact",
+        "consulting_url",
         "tags",
         "metrics",
         "analytics",
@@ -495,6 +503,12 @@ def test_public_projection_has_only_header_and_headline_numbers() -> None:
         "unified_total",
         "turnstile_site_key",
         "public_pdf",
+        "audience_summary",
+        "sections",
+        "live",
+        "fediverse",
+        "channels",
+        "measures",
     }
     assert CANARY not in json.dumps(out, default=str)
 
@@ -598,6 +612,22 @@ def test_unified_total_is_the_sum_of_valued_metrics() -> None:
     assert total.ignored == 2
 
 
+def test_community_platforms_are_never_added_to_the_total() -> None:
+    kit = KitConfig.model_validate(
+        kit_doc(
+            metrics=[
+                manual("twitch", 100),
+                manual("kick", 50),
+                manual("discord", 900),
+                manual("matrix", 70),
+            ]
+        )
+    )
+    total = unified_total(resolve_metrics(kit, None))
+    assert total.total == 150
+    assert total.counted == 2
+
+
 def test_unified_total_is_none_when_nothing_has_a_value() -> None:
     kit = KitConfig.model_validate(kit_doc(metrics=[manual(value=None)]))
     total = unified_total(resolve_metrics(kit, None))
@@ -679,7 +709,11 @@ def test_gated_content_needs_the_kit_gate_feature(extra: dict[str, Any]) -> None
     with pytest.raises(ValidationError, match=r"features\.kit_gate"):
         SiteConfig.model_validate(site_doc(kit=kit_doc(**extra)))
     cfg = SiteConfig.model_validate(
-        site_doc(kit=kit_doc(**extra), features={"kit_gate": True})
+        site_doc(
+            kit=kit_doc(**extra),
+            features={"kit_gate": True},
+            privacy={"controller_name": "Example", "contact": "example.com/contact"},
+        )
     )
     assert cfg.features.kit_gate
 

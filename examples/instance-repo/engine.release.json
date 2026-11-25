@@ -1,0 +1,8 @@
+{
+  "manifest_version": 1,
+  "image": "ghcr.io/chiefgyk3d/reach-around:0.3.0-rc.6@sha256:5754bfcbcfb60c2eff8973e13b6fb257f0aee7f9bdf3816f852da7ca12fd7870",
+  "repo": "ChiefGyk3D/Reach-Around",
+  "commit": "16efbd68a535b0bdd3dc96b5d7684e61d82bf609",
+  "tag": "v0.3.0-rc.6",
+  "d1_schema": "0017"
+}

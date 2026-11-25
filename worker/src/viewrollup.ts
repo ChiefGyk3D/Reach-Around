@@ -178,7 +178,7 @@ function dayStartMs(day: string): number {
 
 function geoLevel(raw: string | undefined): "country" | "region" | "city" {
   const v = (raw ?? "").toLowerCase();
-  return v === "country" || v === "region" ? v : "city";
+  return v === "country" || v === "city" ? v : "region"; // default region (#778): city only when configured
 }
 
 function topSources(raw: string | undefined): number {
@@ -314,13 +314,33 @@ function coreSql(allowN: number): string {
   );
 }
 
-/** SQL for geography at a level; ?3 is the site; city under ?5 folds to region, region under ?5 to country. */
+/**
+ * SQL for geography at a level; ?3 is the site, ?4 the UTC day (for the city counters), ?5 the floor:
+ * city under ?5 folds to region, region under ?5 to country. Raw rows never hold a city (#778), so at level
+ * city the city rows come from view_city_daily and are taken OUT of their region's raw count. A (country,
+ * region, bot class) whose city counters exceed its raw count (a raw row purged first) is left uncut: the
+ * counters are ignored there, never subtracted below zero.
+ */
 function geoSql(level: "country" | "region" | "city"): string {
-  const city = level === "city" ? "city" : "''";
   const region = level === "country" ? "''" : "region";
+  const rg =
+    `rg AS (SELECT country, ${region} AS region, bot_class, COUNT(*) AS v, SUM(CASE WHEN first = 1 THEN 1 ELSE 0 END) AS u ` +
+    "FROM view_events WHERE site = ?3 AND ts >= ?1 AND ts < ?2 GROUP BY country, 2, bot_class), ";
+  const g =
+    level === "city"
+      ? rg +
+        "cg AS (SELECT country, region, bot_class, SUM(views) AS cv, SUM(uniques) AS cu FROM view_city_daily " +
+        "WHERE site = ?3 AND day = ?4 GROUP BY country, region, bot_class), " +
+        "ok AS (SELECT rg.country, rg.region, rg.bot_class, cg.cv, cg.cu FROM rg JOIN cg ON cg.country = rg.country " +
+        "AND cg.region = rg.region AND cg.bot_class = rg.bot_class WHERE cg.cv <= rg.v AND cg.cu <= rg.u), " +
+        "g AS (SELECT rg.country, rg.region, '' AS city, rg.bot_class, rg.v - COALESCE(ok.cv, 0) AS v, rg.u - COALESCE(ok.cu, 0) AS u " +
+        "FROM rg LEFT JOIN ok ON ok.country = rg.country AND ok.region = rg.region AND ok.bot_class = rg.bot_class " +
+        "WHERE rg.v - COALESCE(ok.cv, 0) > 0 " +
+        "UNION ALL SELECT c.country, c.region, c.city, c.bot_class, c.views, c.uniques FROM view_city_daily c " +
+        "WHERE c.site = ?3 AND c.day = ?4 AND EXISTS (SELECT 1 FROM ok WHERE ok.country = c.country AND ok.region = c.region AND ok.bot_class = c.bot_class)), "
+      : rg + "g AS (SELECT country, region, '' AS city, bot_class, v, u FROM rg), ";
   return (
-    `WITH g AS (SELECT country, ${region} AS region, ${city} AS city, bot_class, COUNT(*) AS v, SUM(CASE WHEN first = 1 THEN 1 ELSE 0 END) AS u ` +
-    "FROM view_events WHERE site = ?3 AND ts >= ?1 AND ts < ?2 GROUP BY country, 2, 3, bot_class), " +
+    `WITH ${g}` +
     // CONTROL:small-count-fold
     "f1 AS (SELECT country, region, CASE WHEN city <> '' AND v < ?5 THEN '' ELSE city END AS city, bot_class, SUM(v) AS v, SUM(u) AS u " +
     "FROM g GROUP BY country, region, 3, bot_class), " +
@@ -421,7 +441,7 @@ async function readDay(env: RollupEnv, db: D1Database, w: Work, lease: Lease, re
       .bind(lo, hi, w.oldMax, w.site),
     db.prepare(coreSql(allow.length)).bind(...coreArgs),
     ...DIM_COLUMNS.map((c) => db.prepare(dimSql(c, DIM_TOP[c] as number)).bind(lo, hi, min, w.site)),
-    db.prepare(geoSql(level)).bind(lo, hi, w.site, 0, geoMin),
+    db.prepare(geoSql(level)).bind(lo, hi, w.site, w.day, geoMin),
     db
       .prepare(
         "SELECT CAST(strftime('%H', ts / 1000, 'unixepoch') AS INTEGER) AS hour, bot_class, COUNT(*) AS views " +

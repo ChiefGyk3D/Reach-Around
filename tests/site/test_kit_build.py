@@ -109,6 +109,10 @@ def make_config(kit: dict[str, Any] | None = None, **extra: Any) -> SiteConfig:
             }
         ],
         "features": {"kit_gate": True},
+        "privacy": {
+            "controller_name": "Example Creator",
+            "contact": "example.com/contact",
+        },
         "kit": kit if kit is not None else gated_doc(),
     }
     data.update(extra)
@@ -187,7 +191,7 @@ def test_press_deck_headline_total_always_carries_its_source_date(
         html = page.read_text(encoding="utf-8")
         match = re.search(
             r'<p class="kit-headline-number[^>]*>.*?'
-            r"<strong[^>]*>4,600</strong>.*?"
+            r"<strong[^>]*>3,400 to 4,600</strong>.*?"
             r'<time datetime="2027-03-01">2027-03-01</time> UTC.*?</p>',
             html,
             re.S,
@@ -696,6 +700,10 @@ def test_cli_prints_kit_warnings_and_takes_gated_out(
             }
         ],
         "features": {"kit_gate": True},
+        "privacy": {
+            "controller_name": "Example Creator",
+            "contact": "example.com/contact",
+        },
         "kit": gated_doc(),
     }
     raw["kit"]["metrics"][0]["as_of"] = "2020-01-01"

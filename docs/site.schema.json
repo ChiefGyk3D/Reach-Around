@@ -122,6 +122,16 @@
           "title": "Beacon Token",
           "type": "boolean"
         },
+        "geo_level": {
+          "default": "region",
+          "enum": [
+            "country",
+            "region",
+            "city"
+          ],
+          "title": "Geo Level",
+          "type": "string"
+        },
         "other_sites": {
           "default": [],
           "items": {
@@ -188,6 +198,67 @@
         "value"
       ],
       "title": "AnalyticsStat",
+      "type": "object"
+    },
+    "AudiencePoll": {
+      "additionalProperties": false,
+      "description": "The owner's one-question poll (\"where else do you follow me?\"), typed by\nhand. Only used for the labeled estimate line, and only when\n``show_estimate`` is true.",
+      "properties": {
+        "as_of": {
+          "format": "date",
+          "title": "As Of",
+          "type": "string"
+        },
+        "avg_other_platforms": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "ge": 0,
+          "le": 100,
+          "title": "Avg Other Platforms"
+        },
+        "respondents": {
+          "maximum": 1000000,
+          "minimum": 5,
+          "title": "Respondents",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "as_of",
+        "avg_other_platforms",
+        "respondents"
+      ],
+      "title": "AudiencePoll",
+      "type": "object"
+    },
+    "AudienceSummary": {
+      "additionalProperties": false,
+      "description": "Options for the audience summary block. The range itself needs no\nsetting: it is computed from the headline numbers.",
+      "properties": {
+        "poll": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AudiencePoll"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "show_estimate": {
+          "default": false,
+          "title": "Show Estimate",
+          "type": "boolean"
+        }
+      },
+      "title": "AudienceSummary",
       "type": "object"
     },
     "BlueskySource": {
@@ -272,6 +343,172 @@
         "views"
       ],
       "title": "CaseStudy",
+      "type": "object"
+    },
+    "ChannelEntry": {
+      "additionalProperties": false,
+      "description": "What one channel shows, typed by the owner on ``as_of``.\n\n``url`` is the public page the re-check link points at (required for PeerTube\nand Lemmy, which have one; optional for the rest). The 30-day figures cover the\n30 days ending on ``as_of``. A figure left out prints \"not provided\", never zero.",
+      "properties": {
+        "active_users_month": {
+          "anyOf": [
+            {
+              "maximum": 10000000000,
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Active Users Month"
+        },
+        "as_of": {
+          "format": "date",
+          "title": "As Of",
+          "type": "string"
+        },
+        "avg_watch_seconds": {
+          "anyOf": [
+            {
+              "maximum": 10000000000,
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Avg Watch Seconds"
+        },
+        "clicks": {
+          "anyOf": [
+            {
+              "maximum": 10000000000,
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Clicks"
+        },
+        "delivered": {
+          "anyOf": [
+            {
+              "maximum": 10000000000,
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Delivered"
+        },
+        "downloads": {
+          "anyOf": [
+            {
+              "maximum": 10000000000,
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Downloads"
+        },
+        "platform": {
+          "enum": [
+            "peertube",
+            "lemmy",
+            "podcast",
+            "newsletter",
+            "blog"
+          ],
+          "title": "Platform",
+          "type": "string"
+        },
+        "subscribers": {
+          "anyOf": [
+            {
+              "maximum": 10000000000,
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Subscribers"
+        },
+        "unique_viewers": {
+          "anyOf": [
+            {
+              "maximum": 10000000000,
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Unique Viewers"
+        },
+        "url": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Url"
+        },
+        "views": {
+          "anyOf": [
+            {
+              "maximum": 10000000000,
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Views"
+        },
+        "watch_time_hours": {
+          "anyOf": [
+            {
+              "maximum": 10000000000,
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Watch Time Hours"
+        }
+      },
+      "required": [
+        "as_of",
+        "platform"
+      ],
+      "title": "ChannelEntry",
       "type": "object"
     },
     "Creator": {
@@ -841,6 +1078,109 @@
       "title": "Features",
       "type": "object"
     },
+    "FediverseEntry": {
+      "additionalProperties": false,
+      "description": "What one public profile shows, typed by the owner on ``as_of``.\n\n``profile_url`` is the re-check link every number of the card carries.\n``followers`` and ``posts`` are the profile's own counts. ``interactions`` is\none row per public post in the 30 days ending on ``as_of``. Anything left out\nprints \"not provided\", never zero.",
+      "properties": {
+        "as_of": {
+          "format": "date",
+          "title": "As Of",
+          "type": "string"
+        },
+        "followers": {
+          "anyOf": [
+            {
+              "maximum": 10000000000,
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Followers"
+        },
+        "interactions": {
+          "items": {
+            "$ref": "#/$defs/FediversePost"
+          },
+          "maxItems": 200,
+          "title": "Interactions",
+          "type": "array"
+        },
+        "platform": {
+          "enum": [
+            "mastodon",
+            "bluesky",
+            "pixelfed"
+          ],
+          "title": "Platform",
+          "type": "string"
+        },
+        "posts": {
+          "anyOf": [
+            {
+              "maximum": 10000000000,
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Posts"
+        },
+        "profile_url": {
+          "title": "Profile Url",
+          "type": "string"
+        },
+        "show_mean": {
+          "default": false,
+          "title": "Show Mean",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "as_of",
+        "platform",
+        "profile_url"
+      ],
+      "title": "FediverseEntry",
+      "type": "object"
+    },
+    "FediversePost": {
+      "additionalProperties": false,
+      "description": "The public counts of one post in the 30 days ending on ``as_of``. All\nthree are typed: a post with no replies has 0 replies, a real zero.",
+      "properties": {
+        "boosts": {
+          "maximum": 1000000000,
+          "minimum": 0,
+          "title": "Boosts",
+          "type": "integer"
+        },
+        "favorites": {
+          "maximum": 1000000000,
+          "minimum": 0,
+          "title": "Favorites",
+          "type": "integer"
+        },
+        "replies": {
+          "maximum": 1000000000,
+          "minimum": 0,
+          "title": "Replies",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "boosts",
+        "favorites",
+        "replies"
+      ],
+      "title": "FediversePost",
+      "type": "object"
+    },
     "FontStack": {
       "additionalProperties": false,
       "description": "System font stacks or font files that ship with the instance.",
@@ -1397,6 +1737,17 @@
           "title": "Analytics",
           "type": "array"
         },
+        "audience_summary": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AudienceSummary"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
         "case_studies": {
           "items": {
             "$ref": "#/$defs/CaseStudy"
@@ -1404,6 +1755,27 @@
           "maxItems": 20,
           "title": "Case Studies",
           "type": "array"
+        },
+        "channels": {
+          "items": {
+            "$ref": "#/$defs/ChannelEntry"
+          },
+          "maxItems": 5,
+          "title": "Channels",
+          "type": "array"
+        },
+        "consulting_url": {
+          "anyOf": [
+            {
+              "maxLength": 2048,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Consulting Url"
         },
         "contact": {
           "anyOf": [
@@ -1449,6 +1821,14 @@
           "title": "Engagement",
           "type": "array"
         },
+        "fediverse": {
+          "items": {
+            "$ref": "#/$defs/FediverseEntry"
+          },
+          "maxItems": 3,
+          "title": "Fediverse",
+          "type": "array"
+        },
         "imported_history": {
           "anyOf": [
             {
@@ -1478,6 +1858,14 @@
             }
           ],
           "default": null
+        },
+        "live": {
+          "items": {
+            "$ref": "#/$defs/LiveRow"
+          },
+          "maxItems": 2,
+          "title": "Live",
+          "type": "array"
         },
         "metrics": {
           "items": {
@@ -1536,6 +1924,14 @@
           "title": "Recent Posts",
           "type": "array"
         },
+        "sections": {
+          "items": {
+            "$ref": "#/$defs/KitSection"
+          },
+          "maxItems": 20,
+          "title": "Sections",
+          "type": "array"
+        },
         "services": {
           "items": {
             "$ref": "#/$defs/ServicePackage"
@@ -1591,6 +1987,70 @@
         "title"
       ],
       "title": "KitConfig",
+      "type": "object"
+    },
+    "KitSection": {
+      "additionalProperties": false,
+      "description": "One platform card (kit v2 slice 3, #628).\n\n``show`` is ``default`` (the default set of the platform's group, see\n``reach_around.config.measures.DEFAULT_SETS``) or a list of registry keys, in\nprint order. A card holds no numbers: they come from the measures. A\nconfigured platform with no number to show prints \"No numbers yet\", or\nnothing when ``hide_if_empty`` is true.",
+      "properties": {
+        "account": {
+          "anyOf": [
+            {
+              "maxLength": 80,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Account"
+        },
+        "headline": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Headline"
+        },
+        "hide_if_empty": {
+          "default": false,
+          "title": "Hide If Empty",
+          "type": "boolean"
+        },
+        "platform": {
+          "title": "Platform",
+          "type": "string"
+        },
+        "show": {
+          "anyOf": [
+            {
+              "const": "default",
+              "type": "string"
+            },
+            {
+              "items": {
+                "type": "string"
+              },
+              "maxItems": 12,
+              "minItems": 1,
+              "type": "array"
+            }
+          ],
+          "default": "default",
+          "title": "Show"
+        }
+      },
+      "required": [
+        "platform"
+      ],
+      "title": "KitSection",
       "type": "object"
     },
     "Link": {
@@ -1810,6 +2270,144 @@
       "title": "LivePlayer",
       "type": "object"
     },
+    "LiveRow": {
+      "additionalProperties": false,
+      "description": "Hand-kept live figures for one live platform and one UTC period (#629).\n\nTyped from the platform's own dashboard, the same fields for Twitch and Kick.\nThere is no source field: a figure beyond the follower count is never read\nfrom an API, so it is always labeled hand-kept. A figure left out is not\nshown as zero. The follower count is the platform's headline number.",
+      "properties": {
+        "as_of": {
+          "anyOf": [
+            {
+              "format": "date",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "As Of"
+        },
+        "avg_ccv": {
+          "anyOf": [
+            {
+              "maximum": 10000000000,
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Avg Ccv"
+        },
+        "followers_gained": {
+          "anyOf": [
+            {
+              "maximum": 10000000000,
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Followers Gained"
+        },
+        "hours_streamed_per_week": {
+          "anyOf": [
+            {
+              "maximum": 168,
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Hours Streamed Per Week"
+        },
+        "hours_watched": {
+          "anyOf": [
+            {
+              "maximum": 1000000000000,
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Hours Watched"
+        },
+        "peak_ccv": {
+          "anyOf": [
+            {
+              "maximum": 10000000000,
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Peak Ccv"
+        },
+        "period_end": {
+          "anyOf": [
+            {
+              "format": "date",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Period End"
+        },
+        "period_start": {
+          "anyOf": [
+            {
+              "format": "date",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Period Start"
+        },
+        "platform": {
+          "title": "Platform",
+          "type": "string"
+        },
+        "unique_chatters": {
+          "anyOf": [
+            {
+              "maximum": 10000000000,
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Unique Chatters"
+        }
+      },
+      "required": [
+        "platform"
+      ],
+      "title": "LiveRow",
+      "type": "object"
+    },
     "LiveVods": {
       "additionalProperties": false,
       "description": "One VOD link per platform, all three or none: equal weight.",
@@ -1922,6 +2520,25 @@
           ],
           "default": null,
           "title": "History File"
+        },
+        "retain_days": {
+          "maxProperties": 50,
+          "patternProperties": {
+            "^[a-z0-9][a-z0-9-]{0,39}$": {
+              "maximum": 3650,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          "title": "Retain Days",
+          "type": "object"
+        },
+        "retain_warn_days": {
+          "default": 7,
+          "maximum": 365,
+          "minimum": 1,
+          "title": "Retain Warn Days",
+          "type": "integer"
         },
         "sources": {
           "items": {
@@ -2526,6 +3143,26 @@
           "default": null,
           "title": "Contact"
         },
+        "controller_name": {
+          "anyOf": [
+            {
+              "maxLength": 200,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Controller Name"
+        },
+        "dpa_note": {
+          "default": "",
+          "maxLength": 500,
+          "title": "Dpa Note",
+          "type": "string"
+        },
         "intro": {
           "anyOf": [
             {
@@ -2553,6 +3190,12 @@
           "minimum": 90,
           "title": "Retention Days",
           "type": "integer"
+        },
+        "turnstile_storage_note": {
+          "default": "",
+          "maxLength": 500,
+          "title": "Turnstile Storage Note",
+          "type": "string"
         }
       },
       "title": "Privacy",
@@ -3695,6 +4338,7 @@
       "$ref": "#/$defs/Analytics",
       "default": {
         "beacon_token": false,
+        "geo_level": "region",
         "other_sites": [],
         "page_views": false,
         "raw_keep_days": 7,
@@ -3796,9 +4440,12 @@
       "$ref": "#/$defs/Privacy",
       "default": {
         "contact": null,
+        "controller_name": null,
+        "dpa_note": "",
         "intro": null,
         "lead_retention_days": 30,
-        "retention_days": 90
+        "retention_days": 90,
+        "turnstile_storage_note": ""
       }
     },
     "profile_card": {

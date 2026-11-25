@@ -803,7 +803,8 @@ def test_the_callee_reads_no_github_secret_and_takes_none() -> None:
         if not ln.lstrip().startswith("#")
     )
     assert "secrets." not in text  # the Doppler output is `steps.<id>.outputs.secrets)`
-    assert text.count("outputs.secrets") == 3, "the three token mappings"
+    # require-token, read-live-version, migrate, deploy and rollback (issue #768)
+    assert text.count("outputs.secrets") == 5, "the five token mappings"
     assert "secrets:" not in text
     assert "inherit" not in text
     spec = call_spec()
@@ -822,8 +823,10 @@ def test_the_callee_reads_no_github_secret_and_takes_none() -> None:
     ]
     assert carriers == [
         "Require the Cloudflare token",
+        "Read the live Worker version and deployment owners",
         "Apply D1 migrations",
         "Deploy the Worker",
+        "Roll back the Worker after a failed probe",
     ]
 
 
@@ -925,7 +928,12 @@ def test_the_deploy_job_keeps_its_hardening() -> None:
         assert first["uses"].startswith("step-security/harden-runner@"), name
         assert first["with"]["egress-policy"] == "block", name
         hosts = str(first["with"]["allowed-endpoints"]).split()
-        assert hosts and all(re.fullmatch(r"[a-z0-9.-]+:443", h) for h in hosts), name
+        # The caller's own site host, for the post-deploy probe, is the one
+        # expression allowed in the list (issue #768).
+        probe_host = "${{inputs.site_host}}:443" if name == "deploy" else None
+        assert hosts and all(
+            re.fullmatch(r"[a-z0-9.-]+:443", h) or h == probe_host for h in hosts
+        ), name
     install = step("Install Worker dependencies")
     assert install["run"].strip() == "npm ci --ignore-scripts"
     checkouts = [

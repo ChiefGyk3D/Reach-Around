@@ -347,7 +347,25 @@ class NumbersConfig(BaseModel):
         Field(default_factory=dict, max_length=MAX_SOURCES)
     )
 
+    # Per-platform retention window in days for stored ``api`` history rows
+    # (#620). Only a warning reads it: ``counts refresh`` counts the rows within
+    # ``retain_warn_days`` of the window; nothing is stored or deleted for it.
+    retain_days: dict[Platform, Annotated[int, Field(strict=True, ge=1, le=3650)]] = (
+        Field(default_factory=dict, max_length=MAX_SOURCES)
+    )
+    retain_warn_days: Annotated[int, Field(strict=True, ge=1, le=365)] = 7
+
     history_file: str | None = Field(default=None, min_length=1, max_length=300)
+
+    @model_validator(mode="after")
+    def _margin_under_every_window(self) -> NumbersConfig:
+        for platform, days in self.retain_days.items():
+            if days <= self.retain_warn_days:
+                raise ValueError(
+                    f"retain_days for {platform!r} ({days}) must be more than "
+                    f"retain_warn_days ({self.retain_warn_days})"
+                )
+        return self
 
     @field_validator("history_file")
     @classmethod

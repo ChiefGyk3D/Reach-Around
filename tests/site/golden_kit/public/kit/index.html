@@ -10,7 +10,7 @@
 <link rel="stylesheet" href="../static/tokens.d0c7809a44429f3609ea.css">
 <link rel="stylesheet" href="../static/site.abee3f6ec3420f4e7e3c.css">
 <link rel="stylesheet" href="../static/theme.71ca8fb8f7b69ca52f1f.css">
-<link rel="stylesheet" href="../static/kit.9f83b4bf071d0ecdb9fd.css">
+<link rel="stylesheet" href="../static/kit.9f9cbe924358b15fde5f.css">
 <link rel="stylesheet" href="../static/components.fef7bc6b1817ae139f93.css">
 <script src="../static/zone.83e1025518ab22b4b9cc.js" defer></script>
 </head>
@@ -42,12 +42,16 @@
 <h3 id="kit-numbers-title">Audience numbers</h3>
 <p class="kit-note kit-zone-fixed">Dates here are UTC days.</p>
 <p class="kit-zone" data-zone-control hidden><label for="kit-zone">Also show when each UTC day begins in</label> <select id="kit-zone" data-zone-select><option value="UTC">UTC</option><option value="Pacific/Honolulu">Pacific/Honolulu</option><option value="America/Anchorage">America/Anchorage</option><option value="America/Los_Angeles">America/Los_Angeles</option><option value="America/Denver">America/Denver</option><option value="America/Chicago">America/Chicago</option><option value="America/New_York">America/New_York</option><option value="America/Sao_Paulo">America/Sao_Paulo</option><option value="Europe/London">Europe/London</option><option value="Europe/Berlin">Europe/Berlin</option><option value="Europe/Moscow">Europe/Moscow</option><option value="Africa/Johannesburg">Africa/Johannesburg</option><option value="Asia/Dubai">Asia/Dubai</option><option value="Asia/Kolkata">Asia/Kolkata</option><option value="Asia/Shanghai">Asia/Shanghai</option><option value="Asia/Tokyo">Asia/Tokyo</option><option value="Australia/Sydney">Australia/Sydney</option><option value="Pacific/Auckland">Pacific/Auckland</option></select></p>
+<section class="kit-summary" aria-labelledby="kit-numbers-title-summary">
 <div class="kit-headline ra-c-plate ra-c-plate--amber ra-c-ticks">
-<p class="kit-headline-label">Combined audience</p>
-<p class="kit-headline-number"><strong>4,600</strong> <span>Figures dated <time datetime="2027-03-01">2027-03-01</time> UTC</span></p>
+<p class="kit-headline-label" id="kit-numbers-title-summary">Audience across platforms</p>
+<p class="kit-headline-number"><strong>3,400 to 4,600</strong> <span>Figures dated <time datetime="2027-03-01">2027-03-01</time> UTC</span></p>
 </div>
-<p class="kit-note">Added up from 2 numbers; the oldest is dated 2027-03-01 (UTC). People who follow on more than one platform are counted more than once.</p>
-<p class="kit-note"><span class="kit-trust kit-trust-hand-kept">Hand-kept</span> <span class="kit-note kit-method">Weakest label among the numbers added</span></p><table class="kit-table" role="table">
+<p class="kit-note">2 platforms, 4,600 follows. Added up from 2 numbers; the oldest is dated 2027-03-01 (UTC).</p>
+<p class="kit-note">Largest single audience: 3,400 (YouTube).</p><p class="kit-note">People who follow on more than one platform are counted more than once. Unique people are somewhere between 3,400 and 4,600.</p>
+<p class="kit-note">Follower counts include inactive and automated accounts, because platforms do not remove them from the counts.</p>
+<p class="kit-note"><span class="kit-trust kit-trust-hand-kept">Hand-kept</span> <span class="kit-note kit-method">Weakest label among the numbers added</span></p></section>
+<table class="kit-table" role="table">
 <caption class="sr-only">Audience numbers by platform, each with its source and the date it was read</caption>
 <thead>
 <tr><th scope="col">Platform</th><th scope="col">Measure</th><th scope="col">Number</th><th scope="col">Source</th><th scope="col">As of</th></tr>
@@ -74,8 +78,9 @@
 <form class="kit-gate" method="post" action="/k/gate">
 <p class="kit-field">
 <label for="kit-email">Email address</label>
-<input id="kit-email" name="email" type="email" inputmode="email" autocomplete="email" maxlength="254" required>
+<input id="kit-email" name="email" type="email" inputmode="email" autocomplete="email" maxlength="254" aria-describedby="kit-gate-notice" required>
 </p>
+<p class="kit-note" id="kit-gate-notice">Your address is used only to deliver the media kit and reply to you. It is stored for 30 days, then deleted. It is not verified when entered, shared, sold, or used for marketing. You may request deletion at any time at example.com/contact. This form uses a bot check and sets a secure 24-hour unlock cookie with no analytics. Privacy details: <a href="../privacy/">privacy page</a>.</p>
 <div class="kit-hp" aria-hidden="true">
 <label for="kit-website">Leave this field empty</label>
 <input id="kit-website" name="website" type="text" tabindex="-1" autocomplete="off">
