@@ -3849,7 +3849,11 @@
                 "blog",
                 "gear",
                 "more",
-                "hire"
+                "hire",
+                "free",
+                "paid",
+                "crypto",
+                "contact"
               ],
               "type": "string"
             },
@@ -3869,6 +3873,20 @@
           ],
           "title": "Layout",
           "type": "string"
+        },
+        "note": {
+          "anyOf": [
+            {
+              "maxLength": 160,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Note"
         },
         "open": {
           "anyOf": [
@@ -3895,6 +3913,22 @@
           ],
           "default": null,
           "title": "Page Title"
+        },
+        "screen": {
+          "anyOf": [
+            {
+              "enum": [
+                "support",
+                "contact"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Screen"
         },
         "spoke": {
           "default": false,

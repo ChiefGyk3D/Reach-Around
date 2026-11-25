@@ -115,6 +115,8 @@ def test_the_new_group_intents_are_accepted_once_each(intent: str) -> None:
     data = compact()
     group = copy.deepcopy(data["tabs"][1])
     group.update(id=intent, title=intent.title(), intent=intent)
+    if intent == "hire":  # a hire group is one button
+        group["blocks"] = group["blocks"][:1]
     for link in group["blocks"]:
         link["id"] = f"{intent}-{link['id']}"
     data["tabs"].append(group)
