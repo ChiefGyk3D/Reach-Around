@@ -34,7 +34,7 @@ flowchart LR
   rep -. "never crosses" .-> gp
 ```
 
-## Text description
+Text description of this diagram, for readers who cannot see it.
 
 Three levels, from most to least restricted.
 
