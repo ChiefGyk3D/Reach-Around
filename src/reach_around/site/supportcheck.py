@@ -590,3 +590,65 @@ def _check_shown_text(scan: _Check) -> None:
             check_no_address_shape(value)
     except ValueError as exc:
         _fail(f"shown text that looks like an address ({exc})")
+
+
+# The Crypto tips group of a compact Support screen (#873): it points inside the
+# site and nothing else. A tile may be a link only to a path or fragment of this
+# site, so payment instructions never sit behind an outbound link, a form, a
+# frame or an image.
+_CRYPTO_GROUP_TAGS = frozenset(
+    {"section", "h2", "p", "div", "a", "span", "nav", "ul", "li"}
+)
+_CRYPTO_GROUP_ATTRS = frozenset(
+    {"class", "id", "href", "aria-labelledby", "aria-hidden", "rel"}
+)
+_INSIDE_HREF = re.compile(r"(?:\.\./|\./)?[A-Za-z0-9._/-]*(?:#[A-Za-z0-9_-]*)?")
+
+
+class _CryptoGroupReader(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.depth = 0
+        self.found = False
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        mapping = dict(attrs)
+        if self.depth == 0:
+            if tag == "section" and mapping.get("id") == "group-crypto":
+                self.depth = 1
+                self.found = True
+            return
+        if tag == "section":
+            self.depth += 1
+        if tag not in _CRYPTO_GROUP_TAGS:
+            _fail(f"a <{tag}> inside the crypto group")
+        for name, value in attrs:
+            if name not in _CRYPTO_GROUP_ATTRS:
+                _fail(f"the attribute {name!r} inside the crypto group")
+            if name == "href" and (
+                value is None
+                or value.startswith("//")
+                or _INSIDE_HREF.fullmatch(value) is None
+            ):
+                _fail("a link that leaves the site inside the crypto group")
+
+    def handle_endtag(self, tag: str) -> None:
+        if self.depth and tag == "section":
+            self.depth -= 1
+
+    def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        self.handle_starttag(tag, attrs)
+        self.handle_endtag(tag)
+
+    def handle_comment(self, data: str) -> None:
+        if self.depth:
+            _fail("a comment inside the crypto group")
+
+
+def check_crypto_group_html(html: str) -> None:
+    """Refuse a Support screen whose crypto group holds anything but inside links."""
+    reader = _CryptoGroupReader()
+    reader.feed(html)
+    reader.close()
+    if reader.depth:
+        _fail("the crypto group is not closed")

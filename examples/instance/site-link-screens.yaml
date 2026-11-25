@@ -1,0 +1,264 @@
+# Synthetic example of the compact link grid with a Support screen and a Contact
+# screen (#873). Every name and URL here is made up. Build it with:
+#   reach-around build examples/instance/site-link-screens.yaml
+# See docs/config.md, "Compact grid" and "Screens" under `page`.
+#
+# The home screen is the compact grid of site-link-grid.yaml without its Support
+# group (that lives on the Support screen). Two more screens
+# hang off a tab bar: /support/ (free ways to help, then paid ways, then crypto)
+# and /contact/ (ways to get in touch, then a separate hire block). Every screen
+# fits a phone without scrolling at 390x844, 390x664 and 360x640. Dark only.
+version: 1
+timezone: America/New_York
+creator:
+  name: Example Creator
+  header: compact
+  avatar: media/mascot.svg
+  favicon: media/mascot.svg
+theme:
+  mode: dark
+  mascot: media/mascot.svg
+  mascot_opacity: 0.08
+  button_style: square
+  radius: 0.25rem
+disclosure: This page uses affiliate links. Example Creator may earn a commission.
+features:
+  click_tracking: true
+page:
+  layout: stack
+  # compact: icon-over-label tiles that fit one phone screen. The default,
+  # comfortable, is the deck with link cards and subtitles.
+  density: compact
+  status:
+    text: Live Friday at 8 PM Eastern
+  # The Twitch and Kick tiles carry the same treatment (and the LIVE badge when
+  # live_badges is on). Other links in the watch group, such as YouTube Live,
+  # get the same tile.
+  watch: [live-twitch, live-kick]
+tabs:
+  - id: watch
+    title: Live now
+    intent: watch
+    blocks:
+      - id: live-twitch
+        title: Twitch
+        url: https://example.invalid/live-twitch
+        icon: twitch
+      - id: live-kick
+        title: Kick
+        url: https://example.invalid/live-kick
+        icon: kick
+      - id: live-youtube
+        title: YouTube Live
+        url: https://example.invalid/live-youtube
+        icon: youtube
+  - id: videos
+    title: Videos
+    intent: videos
+    blocks:
+      - id: videos-youtube
+        title: YouTube
+        url: https://example.invalid/videos-youtube
+        icon: youtube
+      - id: videos-tiktok
+        title: TikTok
+        url: https://example.invalid/videos-tiktok
+        icon: tiktok
+      - id: videos-instagram
+        title: Instagram
+        url: https://example.invalid/videos-instagram
+        icon: instagram
+  - id: follow
+    title: Follow
+    intent: follow
+    blocks:
+      - id: follow-bluesky
+        title: Bluesky
+        url: https://example.invalid/follow-bluesky
+        icon: bluesky
+      - id: follow-mastodon
+        title: Mastodon
+        url: https://example.invalid/follow-mastodon
+        icon: mastodon
+      - id: follow-x
+        title: X
+        url: https://example.invalid/follow-x
+        icon: x
+      - id: follow-threads
+        title: Threads
+        url: https://example.invalid/follow-threads
+        icon: threads
+      - id: follow-facebook
+        title: Facebook
+        url: https://example.invalid/follow-facebook
+        icon: facebook
+  - id: community
+    title: Chat
+    intent: community
+    blocks:
+      - id: community-discord
+        title: Discord
+        url: https://example.invalid/community-discord
+        icon: discord
+      - id: community-matrix
+        title: Matrix
+        url: https://example.invalid/community-matrix
+        icon: matrix
+      - id: community-telegram
+        title: Telegram
+        url: https://example.invalid/community-telegram
+        icon: telegram
+  - id: gear
+    title: Gear I Use
+    intent: gear
+    blocks:
+      - id: gear-radio
+        title: Radio
+        url: https://example.invalid/gear-radio
+        icon: radio
+      - id: gear-security
+        title: Security
+        url: https://example.invalid/gear-security
+        icon: shield
+      - id: gear-creator
+        title: Creator
+        url: https://example.invalid/gear-creator
+        icon: tools
+  - id: more
+    title: More
+    intent: more
+    blocks:
+      - id: more-website
+        title: Website
+        url: https://example.invalid/more-website
+        icon: website
+      - id: more-github
+        title: GitHub
+        url: https://example.invalid/more-github
+        icon: github
+      - id: more-email
+        title: Email
+        url: https://example.invalid/more-email
+        icon: email
+      - id: more-rss
+        title: RSS
+        url: https://example.invalid/more-rss
+        icon: rss
+  # ---- Support screen (/support/): free ways first, then paid ways, then crypto.
+  - id: help-free
+    title: Free ways to help
+    intent: free
+    screen: support
+    columns: 3
+    # Plain text, escaped. The gear links are affiliate links, so the page also
+    # shows the site-wide disclosure line below.
+    note: Gear I Use is free for you. Use my links and I may earn a commission.
+    blocks:
+      - id: free-twitch
+        title: Follow on Twitch
+        url: https://example.invalid/free-twitch
+        icon: twitch
+      - id: free-kick
+        title: Follow on Kick
+        url: https://example.invalid/free-kick
+        icon: kick
+      - id: free-youtube
+        title: Subscribe on YouTube
+        url: https://example.invalid/free-youtube
+        icon: youtube
+      - id: free-gear-radio
+        title: Radio
+        url: https://example.invalid/free-gear-radio
+        icon: radio
+        affiliate: true
+      - id: free-gear-security
+        title: Security
+        url: https://example.invalid/free-gear-security
+        icon: shield
+        affiliate: true
+      - id: free-gear-creator
+        title: Creator
+        url: https://example.invalid/free-gear-creator
+        icon: tools
+        affiliate: true
+  - id: help-paid
+    title: Paid ways to help
+    intent: paid
+    screen: support
+    columns: 4
+    blocks:
+      - id: paid-patreon
+        title: Patreon
+        url: https://example.invalid/paid-patreon
+        icon: patreon
+      - id: paid-ko-fi
+        title: Ko-fi
+        url: https://example.invalid/paid-ko-fi
+        icon: kofi
+      - id: paid-stream-tip
+        title: StreamElements
+        url: https://example.invalid/paid-stream-tip
+        icon: streamelements
+      - id: paid-merch
+        title: Merch
+        url: https://example.invalid/paid-merch
+        icon: merch
+  - id: help-crypto
+    title: Crypto tips
+    intent: crypto
+    screen: support
+    columns: 4
+    blocks:
+      - id: crypto-bitcoin
+        title: Bitcoin
+        url: "tab:help-crypto"
+        icon: bitcoin
+      - id: crypto-monero
+        title: Monero
+        url: "tab:help-crypto"
+        icon: monero
+      - id: crypto-ethereum
+        title: Ethereum
+        url: "tab:help-crypto"
+        icon: ethereum
+      - id: crypto-solana
+        title: Solana
+        url: "tab:help-crypto"
+        icon: solana
+  # ---- Contact screen (/contact/): ways to get in touch, then a separate hire block.
+  - id: contact-say
+    title: Get in touch
+    intent: contact
+    screen: contact
+    columns: 3
+    blocks:
+      - id: say-email
+        title: Email
+        url: https://example.invalid/say-email
+        icon: email
+      - id: say-discord
+        title: Discord
+        url: https://example.invalid/say-discord
+        icon: discord
+      - id: say-matrix
+        title: Matrix
+        url: https://example.invalid/say-matrix
+        icon: matrix
+      - id: say-bluesky
+        title: Bluesky
+        url: https://example.invalid/say-bluesky
+        icon: bluesky
+      - id: say-mastodon
+        title: Mastodon
+        url: https://example.invalid/say-mastodon
+        icon: mastodon
+  - id: contact-hire
+    title: Hire me
+    intent: hire
+    screen: contact
+    note: Work and hiring requests go through the company, not the social accounts above.
+    blocks:
+      - id: hire-company
+        title: example-company.invalid
+        url: https://example.invalid/hire-company
+        icon: website

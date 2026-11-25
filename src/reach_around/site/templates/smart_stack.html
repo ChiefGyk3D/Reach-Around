@@ -36,7 +36,17 @@
 {%- endmacro %}
 {% block content %}
 {% if compact %}
-<div class="smart-stack smart-compact{% if page.status.schedule %} smart-has-schedule{% endif %}">
+<div class="smart-stack smart-compact{% if screen %} smart-screen smart-screen-{{ screen }}{% endif %}{% if screen_nav %} smart-has-tabs{% endif %}{% if page.status.schedule and not screen %} smart-has-schedule{% endif %}">
+{% if screen_nav %}
+<nav class="smart-screens" aria-label="Pages">
+<ul>
+{% for item in screen_nav %}
+<li><a class="smart-screen-tab" href="{{ item.href }}"{% if item.current %} aria-current="page"{% endif %}>{{ item.title }}</a></li>
+{% endfor %}
+</ul>
+</nav>
+{% endif %}
+{% if not screen %}
 <section class="smart-group smart-onair smart-group-watch" id="group-watch" aria-labelledby="group-watch-title">
 <h2 id="group-watch-title">{{ watch_title }}</h2>
 <section class="smart-status{{ frames.cls("hero") }}" aria-labelledby="smart-status-title">
@@ -47,10 +57,12 @@
 {{ tile_grid(watch_all, watch_columns, page.watch) }}
 {% if page.live_badges %}<p class="sr-only" data-watch-status role="status" aria-live="polite" aria-atomic="true"></p>{% endif %}
 </section>
+{% endif %}
 <div class="smart-groups">
 {% for item in groups %}
-<section class="smart-group smart-group-{{ item.tab.intent }}" id="group-{{ item.tab.intent }}" aria-labelledby="group-{{ item.tab.intent }}-title">
+<section class="smart-group smart-group-{{ item.tab.intent }}{% if item.tab.intent == "hire" %} smart-hire{% endif %}" id="group-{{ item.tab.intent }}" aria-labelledby="group-{{ item.tab.intent }}-title">
 <h2 id="group-{{ item.tab.intent }}-title">{{ item.tab.title }}</h2>
+{% if item.tab.note %}<p class="smart-note">{{ item.tab.note }}</p>{% endif %}
 {{ tile_grid(item.links, item.tab.columns) }}
 </section>
 {% endfor %}
