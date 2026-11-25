@@ -415,7 +415,7 @@ def _run_mutation(tmp_path: Path, old: str, new: str) -> int:
         (
             "a badge on a guess (unknown counts as live)",
             ': v === false ? WORD_OFFLINE : "";',
-            ': v === false ? WORD_OFFLINE : WORD_LIVE;',
+            ": v === false ? WORD_OFFLINE : WORD_LIVE;",
         ),
         (
             "a badge for one platform only",
