@@ -83,6 +83,10 @@ if [ "$sub" = inspect ]; then
   if [ "${STUB_INSPECT_ERROR_TAG:-}" = "${ref##*:}" ]; then
     echo "ERROR: dial tcp: i/o timeout" >&2; exit 1
   fi
+  if [ "${STUB_LOOKALIKE_TAG:-}" = "${ref##*:}" ]; then
+    # A transport failure whose text merely contains "not found".
+    echo "ERROR: ${ref}: dial tcp: lookup registry: host not found" >&2; exit 1
+  fi
   [ -f "$f" ] || { echo "ERROR: ${ref}: not found" >&2; exit 1; }
   cat "$f"
   exit 0
@@ -393,6 +397,8 @@ def test_a_failed_second_write_rolls_the_first_tag_back(tmp_path: Path) -> None:
     assert (reg / "1.2").read_text() == OLD
     assert (reg / "latest").read_text() == OLD
     assert "rolled ghcr.io/example/app:1.2 back" in done.stderr
+    assert "rollback finished" in done.stderr
+    assert "ROLLBACK INCOMPLETE" not in done.stderr
 
 
 def test_a_partial_promotion_with_no_previous_digest_is_named_for_cleanup(
@@ -401,6 +407,8 @@ def test_a_partial_promotion_with_no_previous_digest_is_named_for_cleanup(
     done = _promote_with(tmp_path, {"STUB_FAIL_TAG": "latest"})
     assert done.returncode == 1
     assert "had no previous digest" in done.stderr
+    assert "ROLLBACK INCOMPLETE" in done.stderr
+    assert "rollback finished" not in done.stderr
     assert "ghcr.io/example/app:1.2" in done.stderr
 
 
@@ -433,6 +441,15 @@ def test_an_unreadable_previous_digest_blocks_every_write(tmp_path: Path) -> Non
     assert (tmp_path / "registry" / "1.2").read_text() == OLD
 
 
+def test_a_look_alike_not_found_error_is_not_an_absent_tag(tmp_path: Path) -> None:
+    # "not found" inside another error must not fabricate an absent baseline.
+    _seed(tmp_path, latest=OLD, **{"1_2": OLD})
+    done = _promote_with(tmp_path, {"STUB_LOOKALIKE_TAG": "latest"})
+    assert done.returncode == 1, done.stdout + done.stderr
+    assert "without a rollback baseline" in done.stderr
+    assert not any(" create " in c for c in _docker_calls(tmp_path))
+
+
 def test_a_malformed_previous_digest_blocks_every_write(tmp_path: Path) -> None:
     _seed(tmp_path, latest="not-a-digest", **{"1_2": OLD})
     done = _promote_with(tmp_path, {})
@@ -447,10 +464,19 @@ def test_a_rollback_that_does_not_stick_is_reported_as_failed(tmp_path: Path) ->
     done = _promote_with(tmp_path, {"STUB_FAIL_TAG": "latest", "STUB_NOOP_DIGEST": OLD})
     assert done.returncode == 1, done.stdout + done.stderr
     assert "ROLLBACK FAILED" in done.stderr
+    assert "ROLLBACK INCOMPLETE" in done.stderr
+    assert "rollback finished" not in done.stderr
     assert "rolled ghcr.io/example/app:1.2 back" not in done.stderr
 
 
-def test_a_rollback_never_overwrites_a_concurrent_update(tmp_path: Path) -> None:
+def test_the_script_does_not_claim_an_atomic_rollback() -> None:
+    # The registry has no compare-and-swap; the residual race must be stated.
+    text = PROMOTE.read_text()
+    assert "NOT atomic" in text
+    assert "A rollback is conditional" not in text
+
+
+def test_a_rollback_skips_a_tag_it_sees_changed_by_someone_else(tmp_path: Path) -> None:
     # The write to latest fails and lands nothing, while someone else sets it to NEW.
     new = "sha256:" + "c" * 64
     _seed(tmp_path, latest=OLD, **{"1_2": OLD})
@@ -460,6 +486,8 @@ def test_a_rollback_never_overwrites_a_concurrent_update(tmp_path: Path) -> None
     assert done.returncode == 1, done.stdout + done.stderr
     assert (tmp_path / "registry" / "latest").read_text() == new
     assert "changed by someone else" in done.stderr
+    assert "ROLLBACK INCOMPLETE" in done.stderr
+    assert "rollback finished" not in done.stderr
     assert (tmp_path / "registry" / "1.2").read_text() == OLD
 
 

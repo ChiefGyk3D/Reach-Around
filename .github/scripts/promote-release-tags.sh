@@ -13,17 +13,21 @@
 #     after the last one. A registry write and a tag check are separate network
 #     operations, so a tag moved or a newer tag pushed in the seconds between the
 #     first check and the writes cannot be prevented. It is detected by the second
-#     check, the moving tags are put back to their previous digests, and the job
-#     fails. Between the writes and that rollback the moving tags can briefly point
+#     check, a rollback to the previous digests is attempted, and the job fails. Between the writes and that rollback the moving tags can briefly point
 #     at the new image. The only full fix is immutable release tags (a tag ruleset).
 #   * The two moving tags are written one at a time (MAJOR.MINOR first, latest
 #     last) with their previous digests recorded. A failed write, a tag that does
 #     not read back as the new digest, or a failed second check rolls back every tag
-#     attempted. If a previous digest cannot be read (anything but a confirmed
-#     "not found"), nothing is written. A rollback is conditional: a tag is
-#     restored only while it still holds this run's digest, then read back; a tag
-#     someone else changed is left alone and reported. A tag that had no previous
-#     digest cannot be removed here and is named for manual cleanup.
+#     attempted. If a previous digest cannot be read (anything but the registry's
+#     exact "not found" answer), nothing is written. A rollback reads a tag first
+#     and restores it only if it still holds this run's digest, then reads it back;
+#     a tag someone else changed is left alone and reported. That read-then-write
+#     is NOT atomic: the registry offers no compare-and-swap for a tag (an OCI
+#     manifest PUT is unconditional), so a writer who changes a tag between the
+#     rollback's read and its write can be overwritten. The release workflow's
+#     repository-wide concurrency group stops other releases; nothing here stops a
+#     manual push by someone with write access to the package. A tag that had no
+#     previous digest cannot be removed here and is named for manual cleanup.
 set -euo pipefail
 export LC_ALL=C
 
@@ -69,18 +73,20 @@ digest_re='^sha256:[0-9a-f]{64}$'
 safe() { printf '%s' "${1:0:80}" | tr -c 'A-Za-z0-9:._/@-' '?'; }
 
 # Read one tag's digest. Prints the digest, or nothing when the registry
-# confirms the tag does not exist. Any other failure (transport, auth, parse) or
-# a malformed digest returns non-zero: callers must not treat it as "absent".
+# confirms the tag does not exist. "Confirms" is exact: the command failed and its
+# whole stderr is the single line `ERROR: <repo>:<tag>: not found`. Any other
+# failure or wording (transport, auth, a longer message that merely contains
+# "not found"), or a malformed digest, returns non-zero: callers must not treat
+# it as "absent".
 read_tag() {
   local out err rc=0
   err="$(mktemp)"
   out="$(docker buildx imagetools inspect "${repo}:$1" --format '{{.Manifest.Digest}}' 2>"$err")" || rc=$?
   if [ "$rc" -ne 0 ]; then
-    if grep -qiE 'not found|manifest unknown|name unknown' "$err"; then
-      rm -f "$err"
-      return 0
-    fi
+    local msg
+    msg="$(cat "$err")"
     rm -f "$err"
+    [ "$msg" = "ERROR: ${repo}:$1: not found" ] && return 0
     return 1
   fi
   rm -f "$err"
@@ -98,10 +104,11 @@ for t in "${moving[@]}"; do
 done
 
 written=()
-# Undo only what this promotion still owns. A tag is restored only when it still
-# holds the digest this run was installing; a tag that holds anything else was
-# changed by someone else and is left alone and reported. Every restore is read
-# back.
+# Undo only what this promotion still appears to own. A tag is restored only when
+# a fresh read shows it holds the digest this run was installing; a tag that holds
+# anything else is left alone and reported. Every restore is read back. The read
+# and the restore are separate registry calls, so this narrows but does not close
+# the window for a concurrent writer (see the header).
 rollback() {
   local t cur rc=0 now
   for t in "${written[@]}"; do
@@ -136,7 +143,11 @@ rollback() {
 }
 fail() {
   echo "$1" >&2
-  rollback || true
+  if rollback; then
+    echo "rollback finished: every tag this run wrote holds its previous state" >&2
+  else
+    echo "ROLLBACK INCOMPLETE: at least one moving tag was not restored; see the lines above and fix it by hand" >&2
+  fi
   exit 1
 }
 
@@ -145,7 +156,7 @@ for t in "${moving[@]}"; do
   # Rollback reads the tag first, so an attempt that never landed is not undone.
   written+=("$t")
   if ! docker buildx imagetools create --tag "${repo}:${t}" "$IMAGE"; then
-    fail "writing ${repo}:${t} failed; promotion is partial or absent, see the rollback lines above"
+    fail "writing ${repo}:${t} failed; promotion is partial or absent"
   fi
 done
 
@@ -158,6 +169,6 @@ done
 
 # The tag may have moved while the writes ran. Detect it, undo, and fail.
 if ! bash "$here/check-release-tag.sh"; then
-  fail "the release tag changed while the moving tags were written; they were put back"
+  fail "the release tag changed while the moving tags were written"
 fi
 echo "promoted ${IMAGE} to ${repo}:latest and ${repo}:${minor}"

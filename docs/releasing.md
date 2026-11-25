@@ -62,8 +62,10 @@ fragments folded into `[Unreleased]` and writes nothing. Only `release` (below) 
    only if the tag still points at the released commit and is still the highest tag.
    The check runs before the first write and again after the last one. If the tag moved
    in between, or a write fails, the job fails and puts the tags back to their previous
-   digests (best effort; a tag with no previous digest is named in the log for manual
-   cleanup). A moving tag can point at the new image for a few seconds before such a
+   digests (best effort and not atomic: the registry has no compare-and-swap for a tag,
+   so a manual push by someone with package write access between the rollback's read
+   and write can be overwritten; a tag with no previous digest is named in the log for
+   manual cleanup, and the job says plainly when the rollback was incomplete). A moving tag can point at the new image for a few seconds before such a
    rollback. Only immutable release tags (a tag ruleset) close that window.
 6. Confirm the package is visible the way you want it. A new GHCR package inherits
    the repository's visibility. This repository is public, so the image is public and
