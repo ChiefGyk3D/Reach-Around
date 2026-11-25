@@ -811,18 +811,18 @@ class SiteConfig(_Model):
                 raise ValueError("page.live_badges needs page.layout: stack")
             if page.url is not None:
                 raise ValueError("page.url needs page.layout: stack")
-            for tab in self.tabs:
+            for position, tab in enumerate(self.tabs, 1):
                 if tab.columns is not None:
                     raise ValueError(
                         f"tab {tab.id!r}: columns needs page.density: compact"
                     )
                 if tab.screen is not None:
                     raise ValueError(
-                        f"tab {tab.id!r}: screen needs page.density: compact"
+                        f"tab #{position}: screen needs page.density: compact"
                     )
                 if tab.note is not None:
                     raise ValueError(
-                        f"tab {tab.id!r}: note needs page.density: compact"
+                        f"tab #{position}: note needs page.density: compact"
                     )
                 if tab.spoke:
                     raise ValueError(f"tab {tab.id!r}: spoke needs page.layout: stack")
@@ -864,21 +864,21 @@ class SiteConfig(_Model):
                 f"a {route_root} screen cannot take the path of analytics.route; "
                 "rename the route"
             )
-        for tab in self.tabs:
+        for position, tab in enumerate(self.tabs, 1):
             if tab.intent is None:
                 raise ValueError(f"tab {tab.id!r} needs intent for page.layout: stack")
             if (tab.screen, tab.intent) in intents:
                 raise ValueError(f"tab intent {tab.intent!r} may appear only once")
             intents.add((tab.screen, tab.intent))
             if compact:
-                _check_screen_intent(tab, screen_order)
+                _check_screen_intent(tab, position, screen_order)
             if not compact and tab.screen is not None:
-                raise ValueError(f"tab {tab.id!r}: screen needs page.density: compact")
+                raise ValueError(f"tab #{position}: screen needs page.density: compact")
             if not compact and tab.note is not None:
-                raise ValueError(f"tab {tab.id!r}: note needs page.density: compact")
+                raise ValueError(f"tab #{position}: note needs page.density: compact")
             if compact and tab.intent == "watch" and (tab.screen or tab.note):
                 raise ValueError(
-                    f"tab {tab.id!r}: the Watch group stays on the home screen "
+                    f"tab #{position}: the Watch group stays on the home screen "
                     "and takes no note"
                 )
             if tab.columns is not None and not compact:
@@ -951,18 +951,18 @@ class SiteConfig(_Model):
                     for link in group_links
                 ):
                     raise ValueError(
-                        f"tab {tab.id!r}: a crypto group links inside this site "
+                        f"tab #{position}: a crypto group links inside this site "
                         "only (tab: links, no image); payment instructions never "
                         "sit behind an outbound link"
                     )
             if compact and tab.intent == "hire":
                 if len(group_links) != 1:
                     raise ValueError(
-                        f"tab {tab.id!r}: a hire group takes exactly 1 link "
+                        f"tab #{position}: a hire group takes exactly 1 link "
                         "for page.density: compact"
                     )
                 if tab.columns is not None:
-                    raise ValueError(f"tab {tab.id!r}: a hire group sets no columns")
+                    raise ValueError(f"tab #{position}: a hire group sets no columns")
             elif compact and not 2 <= len(group_links) <= 6:
                 raise ValueError(
                     f"tab {tab.id!r} must contain 2 to 6 links "
@@ -1121,11 +1121,12 @@ class SiteConfig(_Model):
         return self
 
 
-def _check_screen_intent(tab: Tab, last: dict[str | None, int]) -> None:
+def _check_screen_intent(tab: Tab, position: int, last: dict[str | None, int]) -> None:
     """Refuse an intent on the wrong screen, or out of its screen's order (#873).
 
-    ``last`` holds the position of the latest intent seen on each screen. The
-    reasons are fixed text: no value from the config is printed.
+    ``position`` is the tab's 1-based place in the list. ``last`` holds the
+    index of the latest intent seen on each screen. The reasons are fixed text:
+    no value from the config is printed.
     """
     if tab.intent == "watch":
         return  # the Watch group has its own refusal
@@ -1133,22 +1134,22 @@ def _check_screen_intent(tab: Tab, last: dict[str | None, int]) -> None:
     if allowed is None:
         if tab.intent in SCREEN_ONLY_INTENTS:
             raise ValueError(
-                f"tab {tab.id!r}: this intent belongs on a screen "
+                f"tab #{position}: this intent belongs on a screen "
                 "(free, paid and crypto on support; contact on contact)"
             )
         return
     if tab.intent not in allowed:
         raise ValueError(
-            f"tab {tab.id!r}: this intent is not allowed on that screen "
+            f"tab #{position}: this intent is not allowed on that screen "
             "(support takes free, paid, crypto; contact takes contact, hire)"
         )
-    position = allowed.index(tab.intent)
-    if position < last.get(tab.screen, -1):
+    index = allowed.index(tab.intent)
+    if index < last.get(tab.screen, -1):
         raise ValueError(
-            f"tab {tab.id!r}: groups on a screen keep their order "
+            f"tab #{position}: groups on a screen keep their order "
             "(support: free, paid, crypto; contact: contact, hire)"
         )
-    last[tab.screen] = position
+    last[tab.screen] = index
 
 
 def _internal_urls(config: SiteConfig) -> list[tuple[str, str]]:

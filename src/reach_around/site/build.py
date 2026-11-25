@@ -149,6 +149,38 @@ def _links_in(blocks: Iterable[Block]) -> list[Link]:
     return links
 
 
+def _check_screen_links(config: SiteConfig, shown: list[list[Block]]) -> None:
+    """Refuse a visible ``tab:`` link whose screen group was not built (#873).
+
+    A date window can leave a screen group with no visible link, and a screen
+    with none is not written. A link to it would be dead, so the build stops.
+    The reason is fixed text: no id or value from the config is printed.
+    """
+    if config.page.layout != "stack":
+        return
+    built = {
+        tab.id
+        for tab, blocks in zip(config.tabs, shown, strict=True)
+        if tab.screen is not None and _links_in(blocks)
+    }
+    on_screen = {tab.id for tab in config.tabs if tab.screen is not None}
+    urls = [social.url for social in config.creator.socials]
+    for blocks in shown:
+        for block in blocks:
+            if isinstance(block, Platforms):
+                urls.extend(entry.url for entry in block.items)
+        urls.extend(link.url for link in _links_in(blocks))
+    for url in urls:
+        if is_tab_ref(url):
+            target = parse_tab_ref(url)[0]
+            if target in on_screen and target not in built:
+                raise ValueError(
+                    "a tab: link points at a screen group with no visible link "
+                    "(its date windows have ended or not begun), so that screen "
+                    "or group is not built; remove the link or widen the window"
+                )
+
+
 def _page_has_frames(config: SiteConfig, blocks: Iterable[Block]) -> bool:
     """Whether a link page has an element that can carry a frame."""
     return bool(_frame_plan(config))
@@ -1223,6 +1255,7 @@ def build_site(
             f"as_of is in the future (more than one day after {today}) for: {names}"
         )
     shown = [list(visible_blocks(tab.blocks, today)) for tab in config.tabs]
+    _check_screen_links(config, shown)
     support_blocks = config.support.blocks if config.support is not None else []
     # Blocks that bring files (crypto script and style, email) count the
     # support page's too.

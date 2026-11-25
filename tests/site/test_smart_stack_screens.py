@@ -504,6 +504,56 @@ def test_a_future_window_hides_a_screen_until_it_opens(tmp_path: Path) -> None:
     assert "contact/index.html" not in written(out)
 
 
+def _link_home_to(data: dict[str, Any], target: str) -> None:
+    data["tabs"][1]["blocks"].append(
+        block("to-target", "Go", url=f"tab:{target}", icon="link")
+    )
+
+
+def test_a_tab_link_to_an_all_expired_screen_fails_the_build(tmp_path: Path) -> None:
+    data = raw()
+    _link_home_to(data, "help-free")
+    for ident in ("help-free", "help-paid", "help-crypto"):
+        expire(data, ident)
+    with pytest.raises(ValueError, match="no visible link") as caught:
+        build(tmp_path, data)
+    assert "help-free" not in str(caught.value)
+
+
+def test_a_tab_link_to_an_expired_group_on_a_built_screen_fails_the_build(
+    tmp_path: Path,
+) -> None:
+    data = raw()
+    _link_home_to(data, "help-paid")
+    expire(data, "help-paid")
+    with pytest.raises(ValueError, match="no visible link") as caught:
+        build(tmp_path, data)
+    assert "help-paid" not in str(caught.value)
+
+
+def test_a_crypto_group_tab_link_to_an_expired_target_fails_the_build(
+    tmp_path: Path,
+) -> None:
+    data = raw()
+    group(data, "help-crypto")["blocks"].append(
+        block("crypto-ltc", "Litecoin", icon="bitcoin", url="tab:help-free")
+    )
+    expire(data, "help-free")
+    with pytest.raises(ValueError, match="no visible link"):
+        build(tmp_path, data)
+
+
+def test_a_tab_link_that_is_itself_hidden_does_not_fail_the_build(
+    tmp_path: Path,
+) -> None:
+    data = raw()
+    _link_home_to(data, "help-free")
+    data["tabs"][1]["blocks"][-1]["show_until"] = "2027-03-01"
+    for ident in ("help-free", "help-paid", "help-crypto"):
+        expire(data, ident)
+    assert "support/index.html" not in written(build(tmp_path, data))
+
+
 # ---- The crypto group is inside links only, checked on the built page ----
 
 

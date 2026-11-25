@@ -381,17 +381,69 @@ def test_a_support_screen_may_hold_a_subset_in_order(keep: list[str]) -> None:
     SiteConfig.model_validate(data)
 
 
-def test_the_refusals_are_fixed_text_and_never_echo_a_config_value() -> None:
+# A slug-valid id is the only kind that reaches the screen rules; the others
+# (HTML, newline, very long, unicode) stop at the id pattern, whose message
+# must not echo them either.
+HOSTILE_IDS = [
+    "zz-secret-id",
+    "token-ghp-example",
+    "customer-email-alice-example-test",
+    "a" * 40,
+    "a" * 400,
+    "x<script>alert(1)</script>",
+    "line\nbreak",
+    "café-über",
+]
+
+
+def _bad_configs(secret: str) -> list[dict[str, Any]]:
+    """Configs that each break one screen rule on the tab named ``secret``."""
+    cases: list[dict[str, Any]] = []
+
+    def case(target: str, change: dict[str, Any]) -> dict[str, Any]:
+        data = screens()
+        tab(data, target).update(change)
+        tab(data, target)["id"] = secret
+        return data
+
+    cases.append(case("help-paid", {"screen": "contact"}))
+    cases.append(case("help-free", {"screen": None}))
+    cases.append(case("hire", {"columns": 2}))
+    cases.append(case("say", {"screen": None, "intent": "free"}))
+    out_of_order = reorder(screens(), ["help-crypto", "help-paid", "help-free"])
+    tab(out_of_order, "help-paid")["id"] = secret
+    cases.append(out_of_order)
+    outbound = screens()
+    tab(outbound, "help-crypto")["blocks"][0]["url"] = "https://example.com/pay"
+    tab(outbound, "help-crypto")["id"] = secret
+    cases.append(outbound)
+    two = screens()
+    tab(two, "hire")["blocks"].append(dict(tab(two, "hire")["blocks"][0], id="h2"))
+    tab(two, "hire")["id"] = secret
+    cases.append(two)
+    return cases
+
+
+@pytest.mark.parametrize("secret", HOSTILE_IDS)
+def test_the_refusals_are_fixed_text_and_never_echo_a_config_value(
+    secret: str,
+) -> None:
+    refused = 0
+    for data in _bad_configs(secret):
+        try:
+            SiteConfig.model_validate(data)
+        except ValidationError as exc:
+            refused += 1
+            found = " ".join(e["msg"] for e in exc.errors(include_url=False))
+            assert secret not in found, found
+    assert refused >= 1
+
+
+def test_a_refusal_names_the_tab_by_its_place_in_the_list() -> None:
     data = screens()
-    for t in data["tabs"]:
-        if t["id"] == "help-paid":
-            t["title"] = "ZZ-secret-title"
-            t["id"] = "zz-secret-id"
-    reorder(data, ["help-crypto", "zz-secret-id", "help-free"])
-    found = " ".join(messages(data))
-    assert "ZZ-secret-title" not in found
-    assert "zz-secret-id" in found or "tab '" in found  # the tab id is the locator
-    assert "ZZ-secret" not in found.replace("zz-secret-id", "")
+    tab(data, "help-paid")["screen"] = "contact"
+    found = messages(data)
+    assert any("tab #" in m for m in found), found
 
 
 # ---- The crypto group never sits behind an outbound link ----
