@@ -11,7 +11,9 @@ for stdin. Reads only; stdlib only. The dump is parsed, not grepped:
   * Schema. Every CREATE TABLE is parsed. A table or a column that is not in
     the allowlist (scripts/dump-schema.json, kept equal to the Worker's
     migrations by a test) fails, whatever it is called. A view, a trigger or a
-    table created by SELECT fails. This is what catches a renamed column.
+    table created by SELECT fails; the one exception is a trigger whose whole
+    text (whitespace runs folded, comments and case kept) equals an entry of the
+    allowlist's "triggers". This is what catches a renamed column.
   * Rows. Every INSERT is parsed into values (strings, numbers, NULL, X'..'
     blobs, ``||`` concatenation joined). Any other expression fails. A value
     count that does not match the columns fails. Any blob fails.
@@ -112,7 +114,13 @@ def name_for_report(name: str) -> str:
 
 def statements(text: str) -> list[tuple[int, str]]:
     """Split on ';' outside quotes and comments. Returns (first line, text)."""
-    out: list[tuple[int, str]] = []
+    return [(line, stmt) for line, stmt, _raw in split_raw(text)]
+
+
+def split_raw(text: str) -> list[tuple[int, str, str]]:
+    """As statements(), plus each statement's raw source (comments kept)."""
+    out: list[tuple[int, str, str]] = []
+    raw_start = 0
     buf: list[str] = []
     start = 1
     line = 1
@@ -157,17 +165,19 @@ def statements(text: str) -> list[tuple[int, str]]:
         if c == ";" and not quote:
             s = "".join(buf).strip()
             if s:
-                out.append((start, s))
+                out.append((start, s, text[raw_start:i].strip()))
             buf = []
             i += 1
             continue
+        if not buf:
+            raw_start = i
         buf.append(c)
         if c == "\n":
             line += 1
         i += 1
     s = "".join(buf).strip()
     if s:
-        out.append((start, s))
+        out.append((start, s, text[raw_start:].strip()))
     return out
 
 
@@ -542,6 +552,7 @@ def load_cfg(path: Path) -> dict[str, Any]:
     }
     if not set(cfg["numeric"].values()) <= set(cfg["numeric_kinds"]):
         raise ValueError("numeric rule names an unknown kind")
+    cfg["triggers"] = {" ".join(v.split()) for v in cfg.get("triggers", {}).values()}
     cfg["spaces_ok"] = set(cfg["spaces_ok"])
     cfg["patterns"] = dict(cfg["patterns"])
     return cfg
@@ -605,6 +616,20 @@ def scan_insert(
     return out
 
 
+def trigger_allowed(
+    stmts: list[tuple[int, str, str]], k: int, cfg: dict[str, Any]
+) -> bool:
+    """True only when the whole trigger is an allowlist entry: its first
+    statement, ';' and the next statement (which must be the END), compared as
+    raw source with whitespace runs collapsed. Case and string literals are
+    compared as they are, and a comment stays in the raw text, so a comment, a
+    second statement or any other change makes the text differ."""
+    if k + 1 >= len(stmts):
+        return False
+    whole = f"{stmts[k][2]}; {stmts[k + 1][2]}"
+    return " ".join(whole.split()) in cfg["triggers"]
+
+
 def scan(
     text: str, cfg: dict[str, Any], forbid: list[str], data_only: bool = False
 ) -> tuple[list[tuple[int, str]], int]:
@@ -613,7 +638,13 @@ def scan(
     seen_cols: dict[str, list[str]] = {}
     findings: list[tuple[int, str]] = []
     rows = 0
-    for line, stmt in statements(text):
+    stmts = split_raw(text)
+    skip_next = False
+    for k, (line, stmt, _raw) in enumerate(stmts):
+        if skip_next:
+            # The END of an accepted trigger, already compared as part of it.
+            skip_next = False
+            continue
         upper = " ".join(stmt[:40].upper().split())
         try:
             if upper.startswith(("CREATE TABLE", "CREATE TEMP")):
@@ -626,6 +657,11 @@ def scan(
                 seen_cols[table.lower()] = [c.lower() for c in cols]
                 findings += check_columns(line, table, cols, tables)
             elif upper.startswith(SKIP_CREATE):
+                continue
+            elif upper.startswith("CREATE TRIGGER") and trigger_allowed(stmts, k, cfg):
+                # The body's own ';' split the trigger in two; the END was
+                # compared with it and is skipped.
+                skip_next = True
                 continue
             elif upper.startswith("INSERT"):
                 rows += 1
