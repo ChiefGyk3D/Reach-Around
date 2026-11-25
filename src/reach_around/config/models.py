@@ -44,7 +44,11 @@ from reach_around.config.blocks import (
     Platforms,
     Text,
 )
-from reach_around.config.budget import Budget, check_budget
+from reach_around.config.budget import (
+    Budget,
+    check_budget,
+    json_over_limit,
+)
 from reach_around.config.cutover import check_cutover_day
 from reach_around.config.disclosure import DisclosureField
 from reach_around.config.footer import Footer
@@ -647,6 +651,32 @@ class SiteConfig(_Model):
         check_config_budget(data)
         return data
 
+    @classmethod
+    def model_validate_json(
+        cls, json_data: str | bytes | bytearray, **kwargs: Any
+    ) -> SiteConfig:
+        # Pydantic parses JSON before a before-validator runs, so the byte cap is
+        # applied here, ahead of the parse; the node and depth budget then runs
+        # on the parsed value as for every other way in.
+        if json_over_limit(json_data, MAX_CONFIG_BYTES):
+            raise ValidationError.from_exception_data(
+                cls.__name__,
+                [
+                    {
+                        "type": "value_error",
+                        "loc": (),
+                        "input": None,
+                        "ctx": {
+                            "error": ValueError(
+                                "the config file is larger than "
+                                f"{MAX_CONFIG_BYTES} bytes"
+                            )
+                        },
+                    }
+                ],
+            )
+        return super().model_validate_json(json_data, **kwargs)
+
     @field_validator("cutover_date", mode="before")
     @classmethod
     def _cutover_is_a_day(cls, value: object) -> object:
@@ -1134,6 +1164,10 @@ _REASONS: tuple[tuple[re.Pattern[str], str], ...] = tuple(
     (re.compile(pattern), text)
     for pattern, text in (
         (
+            r"^the config file is larger than",
+            f"the config file is larger than {MAX_CONFIG_BYTES} bytes",
+        ),
+        (
             r"^the config holds more than \d+ values",
             f"the config holds more than {MAX_CONFIG_NODES} values; "
             "split it or remove entries",
@@ -1217,7 +1251,7 @@ def _located_reasons(reason: str) -> list[tuple[str, str]]:
     """
     head = reason[:MAX_LOCATED_SCAN].removeprefix("Value error, ")
     found: list[tuple[str, str]] = []
-    for piece in head.split("; ")[:MAX_LOCATED_REASONS]:
+    for piece in head.split("; ")[: MAX_LOCATED_REASONS + 1]:
         hit = _REASON_PATH.match(piece)
         if hit is None:
             # A continuation (``valid tab ids: ...``) belongs to the piece before.
@@ -1260,25 +1294,36 @@ def problem_text(exc: ValidationError) -> str:
             f"the config has {total} problems, too many to list; "
             "fix the first ones and run the check again"
         )
-    problems = []
+    problems: list[str] = []
+    seen = 0
     for err in itertools.islice(
         exc.errors(include_url=False, include_input=False, include_context=False),
         MAX_REPORTED_PROBLEMS,
     ):
         where = _dotted(err["loc"], unknown_last=err.get("type") == "extra_forbidden")
+        seen += 1
         kind, reason = str(err.get("type", "")), str(err.get("msg", ""))
         located = _located_reasons(reason) if kind == "value_error" else []
         if located:
             for path, text in located:
                 full = f"{where}.{path}" if where else path
                 problems.append(f"{full}: {text}")
-            continue
-        msg = error_message(kind, reason)
-        problems.append(f"{where}: {msg}" if where else msg)
-    extra = total - len(problems)
+        else:
+            msg = error_message(kind, reason)
+            problems.append(f"{where}: {msg}" if where else msg)
+        if len(problems) >= MAX_REPORTED_PROBLEMS:
+            break
+    # One cap for every printed entry, located reasons included: a validator's
+    # located reasons are cut at the cap, and the rest of that error is counted
+    # as omitted (never a negative count).
+    cut = len(problems) > MAX_REPORTED_PROBLEMS
+    problems = problems[:MAX_REPORTED_PROBLEMS]
+    extra = total - seen
     text = "; ".join(problems)
     if extra > 0:
         text += f"; and {extra} more problems"
+    elif cut:
+        text += "; and more problems"
     return text
 
 

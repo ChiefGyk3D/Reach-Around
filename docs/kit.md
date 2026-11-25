@@ -117,7 +117,8 @@ A parsed config is then checked before any of it is validated, and refused when 
 The per-list caps still apply on top: 50 tabs, 200 blocks per tab, 200 links per
 section, 50 socials.
 
-**Error output.** At most 20 problems print, then a count of the rest. Pydantic
+**Error output.** At most 20 problems print (a validator that names several settings counts each
+setting as one), then a count of the rest. Pydantic
 builds every error before it can be sliced, so the list is only built when the
 config has at most 1,000 problems; a config with more prints one sentence with the
 count and nothing else. This bounds the memory the error list can use, and that
@@ -150,8 +151,15 @@ tag or a parser sentence is escaped to ASCII and cut).
 the loaders (`load_site_config`, `reach-around check`) all call one function,
 `validate_site_config`. An existing `SiteConfig` is revalidated and refused, so a
 model made with `model_construct` cannot be passed back in. `model_construct`
-itself skips every validator by design; it is unsupported for external data, and
-a test fails if any code in `src` calls it. The imported-history file is held to
+itself skips every validator by design; it is unsupported for external data.
+`model_validate_json` on either model refuses a document over the byte cap before
+pydantic parses it (the node and depth budget then runs on the parsed value), so
+the parse is bounded too. A source guard fails if code in `src` builds either model
+any other way: a direct call, an import rename, an alias, `getattr` with a raw
+entry-point name or a computed name, a reference to `model_construct`, or a string
+import of the config modules. The guard is a syntactic lint, not a sandbox: `eval`,
+`exec`, and a class reached through `globals()` or `vars()` are an unsupported
+boundary, and a test pins that limit. The imported-history file is held to
 the same kind of budget at its own entry (`ImportedHistory(...)` and
 `ImportedHistory.model_validate(...)`): 4,000 values, 6 levels, 256 characters per
 scalar, 32,768 in all, applied before any period is validated, on top of the

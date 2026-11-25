@@ -133,45 +133,16 @@ def test_every_construction_path_runs_the_budget(how: str) -> None:
     assert f"more than {MAX_CONFIG_NODES} values" in problem_text(exc.value)
 
 
-def _calls_in_src() -> list[tuple[Path, ast.Call]]:
-    found = []
-    for path in sorted(SRC.rglob("*.py")):
-        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
-            if isinstance(node, ast.Call):
-                found.append((path, node))
-    return found
-
-
-def test_src_never_calls_model_construct() -> None:
-    # model_construct skips every validator, so it is unsupported for any model
-    # built from outside data; nothing in src may call it (a docstring may name it).
-    hits = [
-        f"{path.relative_to(SRC)}:{node.lineno}"
-        for path, node in _calls_in_src()
-        if isinstance(node.func, ast.Attribute) and node.func.attr == "model_construct"
-    ]
-    assert hits == []
-
-
-def test_every_loader_builds_a_site_config_through_one_function() -> None:
-    hits = []
-    for path, node in _calls_in_src():
-        func = node.func
-        direct = isinstance(func, ast.Name) and func.id == "SiteConfig"
-        method = (
-            isinstance(func, ast.Attribute)
-            and isinstance(func.value, ast.Name)
-            and func.value.id == "SiteConfig"
-            and func.attr in {"model_validate", "model_validate_json"}
-        )
-        if (direct or method) and path.name != "models.py":
-            hits.append(f"{path.relative_to(SRC)}:{node.lineno}")
-    assert hits == []
-
-
 def test_check_command_uses_the_one_function() -> None:
-    source = Path(check_cmd.__file__).read_text(encoding="utf-8")
-    assert "validate_site_config(raw)" in source
+    tree = ast.parse(Path(check_cmd.__file__).read_text(encoding="utf-8"))
+    calls = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "validate_site_config"
+    ]
+    assert calls
 
 
 # ---- 2. ImportedHistory is budgeted at its own entry ------------------------

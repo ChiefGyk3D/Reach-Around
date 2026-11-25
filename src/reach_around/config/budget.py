@@ -3,8 +3,10 @@
 
 Both raw-data models (``SiteConfig`` and ``ImportedHistory``) run this from a
 ``model_validator(mode="before")``, so ``Model(...)`` and ``Model.model_validate(...)``
-both pass through it (no code in ``src`` calls ``model_validate_json``; pydantic
-would parse that input before this check ran). A model instance is
+both pass through it. ``model_validate_json`` parses before any validator runs, so
+both models override it to refuse an over-size document before the parse (see
+``json_over_limit``); the node and depth budget then runs on the parsed value.
+A model instance is
 refused by the check itself: pydantic does not revalidate an instance of the
 model (unless ``revalidate_instances="always"`` is set, which both models do), so
 an instance built with ``model_construct`` would otherwise hide any amount of
@@ -33,6 +35,17 @@ class Budget:
     scalar_chars: int
     total_chars: int
     what: str = "config"
+
+
+def json_over_limit(json_data: str | bytes | bytearray, limit: int) -> bool:
+    """Whether raw JSON is larger than ``limit`` bytes.
+
+    ``model_validate_json`` parses before any validator runs, so the models refuse
+    an over-size document here, before pydantic reads it. A text is measured in
+    characters (a lower bound of its UTF-8 size), which keeps the check O(1); the
+    parse of what passes is bounded by ``limit`` times a small constant.
+    """
+    return len(json_data) > limit
 
 
 def _refuse(message: str) -> None:
