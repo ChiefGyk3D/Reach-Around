@@ -128,11 +128,12 @@ a mutation, so nothing can be replayed after an ambiguous outcome.
   (The note says `period=day` and `metric_type` are parameters; it does not give
   the value for this use.)
 * That `reach` is a unique count over a window, not additive.
-* The `follower_demographics` request (`period=lifetime`, `timeframe=last_30_days`,
+* The `follower_demographics` request (`period=lifetime`, `timeframe=this_month`,
   one `breakdown` per call) and the answer shape (`total_value.breakdowns[]` with
-  `dimension_keys` and `results[]` of `dimension_values` and `value`). The note
-  says `timeframe` is required and that some timeframe values are deprecated, so
-  the value used is a guess.
+  `dimension_keys` and `results[]` of `dimension_values` and `value`). The vendor
+  page (read 2026-11-24) lists `this_month` and `this_week` as supported and
+  `last_14_days`, `last_30_days`, `last_90_days` and `prev_month` as unsupported
+  from API v20.0, so `this_month` is used (VERIFIED on the page; not yet called live).
 * The label spellings: ages `13-17` ... `65+`, genders `F`/`M`/`U`, upper-case ISO
   country codes. An unrecognized label is a bad row, never folded.
 * The route `/v27.0/<IG_ID>/insights` for an Instagram-Login token and a numeric

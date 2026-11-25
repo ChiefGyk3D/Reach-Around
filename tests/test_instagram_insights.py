@@ -207,7 +207,9 @@ def test_requests_are_gets_to_one_host_with_the_documented_parameters() -> None:
     assert activity["since"] == [str(since)] and activity["until"] == [str(until)]
     demos = [q for q in queries if q["metric"] == ["follower_demographics"]]
     assert sorted(q["breakdown"][0] for q in demos) == ["age", "country", "gender"]
-    assert all(q["metric_type"] == ["total_value"] and "timeframe" in q for q in demos)
+    assert all(q["metric_type"] == ["total_value"] for q in demos)
+    # the vendor page lists last_30_days as unsupported from v20.0; this_month is valid
+    assert all(q["timeframe"] == ["this_month"] for q in demos)
 
 
 def test_no_request_follows_a_redirect_and_none_is_a_mutation() -> None:

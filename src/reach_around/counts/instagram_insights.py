@@ -29,8 +29,7 @@ below is marked UNVERIFIED and is tied to #552 (live verification by the owner):
 * UNVERIFIED: the answer shape of ``follower_demographics`` (``total_value.
   breakdowns[].dimension_keys`` and ``results[].dimension_values``/``value``),
   the label spellings (age ``13-17`` ... ``65+``, gender ``F``/``M``/``U``,
-  ISO country code), and the accepted ``timeframe`` value (the note records that
-  some timeframe values are deprecated).
+  ISO country code). The ``timeframe`` value is verified: this_month (see TIMEFRAME).
 * UNVERIFIED: the Instagram-Login route with a numeric account id (the note
   names ``<IG_ID>``; ``me`` is not used here for insights).
 * "Profile visits" is not in the note's metric table, so it is not collected.
@@ -91,8 +90,12 @@ ACTIVITY_METRICS = {
     "profile_links_taps": "link_taps_7d",
 }
 DEMOGRAPHICS_METRIC = "follower_demographics"
-# UNVERIFIED: the timeframe value (the note: required, some values deprecated).
-TIMEFRAME = "last_30_days"
+# VERIFIED (developers.facebook.com instagram-user insights page, read 2026-11-24):
+# the demographic ``timeframe`` values this_month and this_week are supported;
+# last_14_days, last_30_days, last_90_days and prev_month are NOT supported from
+# API v20.0 (this code calls v27.0). The value is vendor-defined: the current
+# calendar month so far, not a rolling 30 days.
+TIMEFRAME = "this_month"
 # UNVERIFIED: label spellings of the breakdown answers.
 AGE_LABELS = {
     "13-17": "13_17",

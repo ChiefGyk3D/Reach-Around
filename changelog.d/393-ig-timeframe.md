@@ -1,0 +1,1 @@
+- Instagram insights (#393): the follower demographics request now sends `timeframe=this_month`; the vendor page (read 2026-11-24) lists `last_30_days` as unsupported from API v20.0. The stored note names the window as vendor-defined, so a stored figure covers the calendar month so far, not a rolling 30 days.
