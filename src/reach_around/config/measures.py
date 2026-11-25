@@ -38,6 +38,7 @@ from reach_around.config.trust import (
     Trust,
     analytics_trust,
     engagement_trust,
+    live_trust,
     metric_trust,
 )
 
@@ -45,18 +46,20 @@ if TYPE_CHECKING:
     from reach_around.config.kit import (
         EngagementRow,
         KitConfig,
+        LiveRow,
         PlatformAnalytics,
         ResolvedMetric,
     )
     from reach_around.config.numbers import Numbers
 
 MeasureVisibility = Literal["public", "gated", "private"]
-Block = Literal["headline", "tile", "derived"]
+Block = Literal["headline", "tile", "derived", "live", "fediverse", "channels"]
 
 UNITS: tuple[str, ...] = (
     "follows",
     "viewers",
     "hours",
+    "seconds",
     "views",
     "interactions",
     "downloads",
@@ -67,6 +70,22 @@ UNITS: tuple[str, ...] = (
 )
 
 _SLICE = "Added in kit v2 slice 3 (#628)"
+_SLICE6 = "Added in kit v2 slice 6 (#631)"
+_LIVE = "Added in kit v2 slice 4 (#629)"
+
+_SLICE5 = "Added in kit v2 slice 5 (#630)"
+_SLICE8 = "Added in kit v2 slice 8 (#633)"
+
+# The formulas of the fediverse block's computed measures (spec 6.3).
+MEDIAN_FORMULA = (
+    "The middle value of the per-post counts over the 30 days ending on the date "
+    "shown; with an even number of posts, the two middle values averaged and "
+    "rounded half up."
+)
+MEAN_FORMULA = (
+    "The per-post counts added up and divided by the number of posts over the 30 "
+    "days ending on the date shown, rounded half up."
+)
 
 
 @dataclass(frozen=True)
@@ -135,6 +154,307 @@ REGISTRY: Mapping[str, MeasureDef] = {
             visibility="public",
         ),
         MeasureDef(
+            key="views",
+            label="Views",
+            unit="views",
+            definition=(
+                "The number of times the platform counted a video as viewed in "
+                "the period, as the platform's own analytics export shows it. "
+                "Added up by the importer from the daily rows of the export."
+            ),
+            changelog=f"{_SLICE6}: views, from a platform analytics export.",
+            visibility="public",
+        ),
+        MeasureDef(
+            key="watch_hours",
+            label="Watch time, hours",
+            unit="hours",
+            definition=(
+                "The total time viewers spent watching in the period, in whole "
+                "hours, as the platform's own analytics export shows it. Added "
+                "up by the importer from the daily rows and rounded half up."
+            ),
+            changelog=f"{_SLICE6}: watch_hours, from a platform analytics export.",
+            visibility="public",
+        ),
+        MeasureDef(
+            key="avg_ccv",
+            label="Average concurrent viewers",
+            unit="viewers",
+            definition=(
+                "The average number of people watching at the same moment while "
+                "the channel was live in the period, as the platform's own "
+                "dashboard shows it. Typed by the owner."
+            ),
+            changelog=f"{_LIVE}: avg_ccv, the typed average concurrent viewers.",
+            visibility="public",
+        ),
+        MeasureDef(
+            key="peak_ccv",
+            label="Peak concurrent viewers",
+            unit="viewers",
+            definition=(
+                "The highest number of people watching at the same moment while "
+                "the channel was live in the period, as the platform's own "
+                "dashboard shows it. Typed by the owner."
+            ),
+            changelog=f"{_LIVE}: peak_ccv, the typed peak concurrent viewers.",
+            visibility="public",
+        ),
+        MeasureDef(
+            key="hours_watched",
+            label="Hours watched",
+            unit="hours",
+            definition=(
+                "The total time viewers spent watching the channel in the "
+                "period, in whole hours, as the platform's own dashboard shows "
+                "it. Typed by the owner."
+            ),
+            changelog=f"{_LIVE}: hours_watched, the typed hours watched.",
+            visibility="public",
+        ),
+        MeasureDef(
+            key="unique_chatters",
+            label="Unique chatters",
+            unit="viewers",
+            definition=(
+                "The number of different accounts that sent at least one chat "
+                "message in the period, as the platform's own dashboard shows "
+                "it. Typed by the owner."
+            ),
+            changelog=f"{_LIVE}: unique_chatters, the typed unique chatters.",
+            visibility="public",
+        ),
+        MeasureDef(
+            key="followers_gained",
+            label="Followers gained",
+            unit="follows",
+            definition=(
+                "The number of accounts that began following the channel in the "
+                "period, as the platform's own dashboard shows it. Typed by the "
+                "owner."
+            ),
+            changelog=f"{_LIVE}: followers_gained, the typed followers gained.",
+            visibility="public",
+        ),
+        MeasureDef(
+            key="hours_streamed_per_week",
+            label="Hours streamed per week",
+            unit="hours",
+            definition=(
+                "The hours the channel was live in an average week of the "
+                "period, in whole hours, as the platform's own dashboard shows "
+                "it. Typed by the owner."
+            ),
+            changelog=(
+                f"{_LIVE}: hours_streamed_per_week, the typed weekly hours live."
+            ),
+            visibility="public",
+        ),
+        MeasureDef(
+            key="posts_total",
+            label="Public posts",
+            unit="count",
+            definition=(
+                "The number of public posts the account has made, as the server "
+                "reports it on the public profile and the owner typed it."
+            ),
+            changelog=f"{_SLICE5}: posts_total, the typed public post count.",
+            visibility="public",
+        ),
+        MeasureDef(
+            key="median_boosts_30d",
+            label="Median boosts per post",
+            unit="interactions",
+            definition=(
+                "The middle count of boosts across the public posts of the last 30 "
+                "days, worked out by the build from per-post counts the owner typed "
+                "from the public profile. Bluesky reads reposts, likes and replies; "
+                "Pixelfed shares, likes and comments."
+            ),
+            changelog=f"{_SLICE5}: median_boosts_30d, the per-post median.",
+            visibility="public",
+            computed=True,
+            formula=MEDIAN_FORMULA,
+        ),
+        MeasureDef(
+            key="median_favorites_30d",
+            label="Median favorites per post",
+            unit="interactions",
+            definition=(
+                "The middle count of favorites across the public posts of the last 30 "
+                "days, worked out by the build from per-post counts the owner typed "
+                "from the public profile. Bluesky reads reposts, likes and replies; "
+                "Pixelfed shares, likes and comments."
+            ),
+            changelog=f"{_SLICE5}: median_favorites_30d, the per-post median.",
+            visibility="public",
+            computed=True,
+            formula=MEDIAN_FORMULA,
+        ),
+        MeasureDef(
+            key="median_replies_30d",
+            label="Median replies per post",
+            unit="interactions",
+            definition=(
+                "The middle count of replies across the public posts of the last 30 "
+                "days, worked out by the build from per-post counts the owner typed "
+                "from the public profile. Bluesky reads reposts, likes and replies; "
+                "Pixelfed shares, likes and comments."
+            ),
+            changelog=f"{_SLICE5}: median_replies_30d, the per-post median.",
+            visibility="public",
+            computed=True,
+            formula=MEDIAN_FORMULA,
+        ),
+        MeasureDef(
+            key="mean_boosts_30d",
+            label="Mean boosts per post",
+            unit="interactions",
+            definition=(
+                "The average count of boosts across the public posts of the last "
+                "30 days, shown only beside the median and only when the owner "
+                "turns it on; one viral post can pull it far above the median."
+            ),
+            changelog=f"{_SLICE5}: mean_boosts_30d, the optional per-post mean.",
+            visibility="public",
+            computed=True,
+            formula=MEAN_FORMULA,
+        ),
+        MeasureDef(
+            key="mean_favorites_30d",
+            label="Mean favorites per post",
+            unit="interactions",
+            definition=(
+                "The average count of favorites across the public posts of the last "
+                "30 days, shown only beside the median and only when the owner "
+                "turns it on; one viral post can pull it far above the median."
+            ),
+            changelog=f"{_SLICE5}: mean_favorites_30d, the optional per-post mean.",
+            visibility="public",
+            computed=True,
+            formula=MEAN_FORMULA,
+        ),
+        MeasureDef(
+            key="mean_replies_30d",
+            label="Mean replies per post",
+            unit="interactions",
+            definition=(
+                "The average count of replies across the public posts of the last "
+                "30 days, shown only beside the median and only when the owner "
+                "turns it on; one viral post can pull it far above the median."
+            ),
+            changelog=f"{_SLICE5}: mean_replies_30d, the optional per-post mean.",
+            visibility="public",
+            computed=True,
+            formula=MEAN_FORMULA,
+        ),
+        MeasureDef(
+            key="subscribers",
+            label="Subscribers",
+            unit="follows",
+            definition=(
+                "The number of accounts subscribed to a PeerTube channel, a Lemmy "
+                "community or a newsletter, as the instance or the sending service "
+                "reports it and the owner typed it. A subscriber is not a follower, so "
+                "it never enters the audience range."
+            ),
+            changelog=f"{_SLICE8}: subscribers, the typed figure.",
+            visibility="public",
+        ),
+        MeasureDef(
+            key="lemmy_active_users_month",
+            label="Active users per month",
+            unit="count",
+            definition=(
+                "The number of active users the Lemmy community reports for the last "
+                "month, as the instance reports it and the owner typed it."
+            ),
+            changelog=f"{_SLICE8}: lemmy_active_users_month, the typed figure.",
+            visibility="public",
+        ),
+        MeasureDef(
+            key="peertube_watch_time_30d",
+            label="Watch time, hours (30 days)",
+            unit="hours",
+            definition=(
+                "The hours watched across the channel's videos in the last 30 days, in "
+                "whole hours, as the instance's video statistics report it and the "
+                "owner typed it."
+            ),
+            changelog=f"{_SLICE8}: peertube_watch_time_30d, the typed figure.",
+            visibility="public",
+        ),
+        MeasureDef(
+            key="peertube_avg_watch_time",
+            label="Average watch time (seconds)",
+            unit="seconds",
+            definition=(
+                "The average time one view of the channel's videos lasted, in whole "
+                "seconds, as the instance's video statistics report it and the owner "
+                "typed it."
+            ),
+            changelog=f"{_SLICE8}: peertube_avg_watch_time, the typed figure.",
+            visibility="public",
+        ),
+        MeasureDef(
+            key="peertube_unique_viewers_30d",
+            label="Unique viewers (30 days)",
+            unit="viewers",
+            definition=(
+                "The number of different viewers of the channel's videos in the last "
+                "30 days, as the instance's video statistics report it and the owner "
+                "typed it."
+            ),
+            changelog=f"{_SLICE8}: peertube_unique_viewers_30d, the typed figure.",
+            visibility="public",
+        ),
+        MeasureDef(
+            key="downloads_30d",
+            label="Downloads (30 days)",
+            unit="downloads",
+            definition=(
+                "The number of downloads of the podcast's episodes in the last 30 "
+                "days, as the podcast host counts them and the owner typed it."
+            ),
+            changelog=f"{_SLICE8}: downloads_30d, the typed figure.",
+            visibility="public",
+        ),
+        MeasureDef(
+            key="newsletter_delivered",
+            label="Emails delivered (30 days)",
+            unit="emails",
+            definition=(
+                "The number of newsletter emails delivered in the last 30 days, as the "
+                "sending service reports it and the owner typed it."
+            ),
+            changelog=f"{_SLICE8}: newsletter_delivered, the typed figure.",
+            visibility="public",
+        ),
+        MeasureDef(
+            key="newsletter_clicks",
+            label="Email clicks (30 days)",
+            unit="clicks",
+            definition=(
+                "The number of clicks on links in the newsletter in the last 30 days, "
+                "as the sending service reports it and the owner typed it. Clicks are "
+                "shown instead of opens, which are unreliable."
+            ),
+            changelog=f"{_SLICE8}: newsletter_clicks, the typed figure.",
+            visibility="public",
+        ),
+        MeasureDef(
+            key="blog_views_30d",
+            label="Blog views (30 days)",
+            unit="views",
+            definition=(
+                "The number of page views of the blog in the last 30 days, as the "
+                "site's own analytics report them and the owner typed it."
+            ),
+            changelog=f"{_SLICE8}: blog_views_30d, the typed figure.",
+            visibility="public",
+        ),
+        MeasureDef(
             key="avg_views_per_item",
             label="Average views per post",
             unit="views",
@@ -187,6 +507,20 @@ def registry_problems(registry: Mapping[str, MeasureDef]) -> list[str]:
     return found
 
 
+# The seven live measures, in the one order both live platforms print them (spec
+# 6.3). ``followers`` is the platform's headline count; the other six are typed
+# from the platform's own dashboard (``kit.live``).
+LIVE_KEYS: tuple[str, ...] = (
+    "followers",
+    "avg_ccv",
+    "peak_ccv",
+    "hours_watched",
+    "unique_chatters",
+    "followers_gained",
+    "hours_streamed_per_week",
+)
+
+
 # --- groups and default sets (spec 7.1) ---------------------------------------
 
 # The groups the page sorts platforms into. Live platforms share one set, so
@@ -194,7 +528,8 @@ def registry_problems(registry: Mapping[str, MeasureDef]) -> list[str]:
 GROUPS: Mapping[str, tuple[str, ...]] = {
     "live": ("twitch", "kick"),
     "video": ("youtube", "tiktok", "instagram", "threads"),
-    "open": ("mastodon", "bluesky", "pixelfed"),
+    "open": ("mastodon", "bluesky", "pixelfed", "peertube", "lemmy"),
+    "audio": ("podcast", "newsletter", "blog"),
     "community": ("discord", "matrix"),
 }
 
@@ -218,10 +553,29 @@ DEFAULT_SETS: Mapping[str, tuple[str, ...]] = {
     ),
     "open": (
         "followers",
+        "subscribers",
+        "posts_total",
         "followers_change_30d",
+        "median_boosts_30d",
+        "median_favorites_30d",
+        "median_replies_30d",
+        "mean_boosts_30d",
+        "mean_favorites_30d",
+        "mean_replies_30d",
+        "peertube_watch_time_30d",
+        "peertube_avg_watch_time",
+        "peertube_unique_viewers_30d",
+        "lemmy_active_users_month",
         "analytics_stat",
         "avg_views_per_item",
         "engagement_rate",
+    ),
+    "audio": (
+        "subscribers",
+        "downloads_30d",
+        "newsletter_delivered",
+        "newsletter_clicks",
+        "blog_views_30d",
     ),
     "community": ("members",),
     "other": (
@@ -379,6 +733,42 @@ def analytics_measures(rows: Iterable[PlatformAnalytics]) -> list[Measure]:
     return out
 
 
+def live_measures(rows: Iterable[LiveRow]) -> list[Measure]:
+    """The typed live figures: one measure per figure the owner entered, each with
+    its period and the hand-kept label. A figure left out is not a measure; it is
+    never zeroed."""
+    from reach_around.config.kit import KIT_FIELD_POLICY
+
+    source = KIT_FIELD_POLICY["live"].visibility
+    out: list[Measure] = []
+    for row in rows:
+        period = (
+            (row.period_start, row.period_end)
+            if row.period_start and row.period_end
+            else None
+        )
+        for key in LIVE_KEYS[1:]:
+            value = getattr(row, key)
+            if value is None:
+                continue
+            reg = _entry(key)
+            out.append(
+                Measure(
+                    platform=row.platform,
+                    key=key,
+                    label=reg.label,
+                    unit=reg.unit,
+                    value=value,
+                    as_of=row.as_of,
+                    visibility=narrow(reg.visibility, source),
+                    block="live",
+                    trust=live_trust(),
+                    period=period,
+                )
+            )
+    return out
+
+
 def engagement_measures(entries: Iterable[EngagementRow]) -> list[Measure]:
     """Each engagement row: average views and the engagement rate, two measures
     whose value is ``None`` when an input is missing."""
@@ -428,13 +818,19 @@ def compile_measures(
     kit: KitConfig, numbers: Numbers | None, api: frozenset[str] | None = None
 ) -> list[Measure]:
     """Every measure the kit config holds, in page order: headline numbers,
-    analytics, engagement. The one place the old fields are read."""
+    analytics, engagement, the fediverse and channel blocks. The one place the
+    old fields are read."""
+    from reach_around.config.channels import channel_measures
+    from reach_around.config.fediverse import fediverse_measures
     from reach_around.config.kit import resolve_metrics
 
     return [
         *numbers_measures(resolve_metrics(kit, numbers), api),
         *analytics_measures(kit.analytics),
+        *live_measures(kit.live),
         *engagement_measures(kit.engagement),
+        *fediverse_measures(kit.fediverse),
+        *channel_measures(kit.channels),
     ]
 
 

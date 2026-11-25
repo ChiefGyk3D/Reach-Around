@@ -5,6 +5,7 @@ Everything is synthetic."""
 from __future__ import annotations
 
 import json
+import re
 from datetime import date
 from pathlib import Path
 from typing import Any
@@ -97,7 +98,7 @@ def test_every_registry_entry_has_a_definition_a_changelog_line_and_a_unit() -> 
     for key, entry in REGISTRY.items():
         assert entry.key == key
         assert entry.unit in UNITS, key
-        assert entry.changelog.startswith("Added in kit v2 slice 3 (#628)"), key
+        assert re.match(r"Added in kit v2 slice \d+ \(#\d+\)", entry.changelog), key
 
 
 def test_the_registry_check_bites() -> None:

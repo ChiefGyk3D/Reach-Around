@@ -435,6 +435,7 @@ def test_policy_classifies_every_field() -> None:
         "about",
         "photo",
         "contact",
+        "consulting_url",
         "tags",
         "metrics",
         "analytics",
@@ -444,6 +445,9 @@ def test_policy_classifies_every_field() -> None:
         "public_pdf",
         "audience_summary",
         "sections",
+        "live",
+        "fediverse",
+        "channels",
         "measures",
     }
     for name in ("partners", "case_studies", "rates", "demographics"):
@@ -491,6 +495,7 @@ def test_public_projection_has_only_header_and_headline_numbers() -> None:
         "about",
         "photo",
         "contact",
+        "consulting_url",
         "tags",
         "metrics",
         "analytics",
@@ -500,6 +505,9 @@ def test_public_projection_has_only_header_and_headline_numbers() -> None:
         "public_pdf",
         "audience_summary",
         "sections",
+        "live",
+        "fediverse",
+        "channels",
         "measures",
     }
     assert CANARY not in json.dumps(out, default=str)

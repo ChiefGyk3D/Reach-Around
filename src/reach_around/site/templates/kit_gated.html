@@ -1,7 +1,7 @@
 {# SPDX-License-Identifier: Apache-2.0 #}
 {% extends "base.html" %}
 {% set page_frames = false %}{% set frame_plan = {} %}
-{% from "_kit_parts.html" import analytics, sections, legend, numbers, engagement, imported_history, trust, range_line %}
+{% from "_kit_parts.html" import analytics, sections, live_block, legend, numbers, engagement, imported_history, trust, range_line %}
 {% block content %}
 <section class="kit" aria-labelledby="kit-title">
 <div class="kit-deck-intro">
@@ -23,11 +23,14 @@
 {% if kit.contact %}
 <p class="kit-about kit-contact">{{ kit.contact }}</p>
 {% endif %}
+{% if kit.consulting_url %}
+<p class="kit-about kit-consulting">Consulting instead? Visit my <a href="{{ kit.consulting_url }}" rel="noopener noreferrer">consulting site</a>.</p>
+{% endif %}
 </div>
 </div>
 {{ numbers(kit, "kit-numbers-title") }}
 </div>
-{{ legend(kit) }}{{ sections(kit, "kit-sections-title") }}
+{{ legend(kit) }}{{ sections(kit, "kit-sections-title") }}{{ live_block(kit, "kit-live-title") }}
 {{ analytics(kit, "kit-analytics-title") }}
 {{ engagement(kit, "kit-engagement-title") }}{{ imported_history(kit, "kit-imported-title")|trim }}
 {% if kit.partners %}
