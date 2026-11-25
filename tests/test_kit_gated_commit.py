@@ -155,7 +155,8 @@ def test_the_reader_still_reads_an_ordinary_file(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize(
-    "step", ["staged", "marker", "kit.html", "kit-policy.txt", "kit-binding.json", "done"]
+    "step",
+    ["staged", "marker", "kit.html", "kit-policy.txt", "kit-binding.json", "done"],
 )
 def test_a_failure_after_any_commit_step_restores_the_previous_build(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, step: str
@@ -186,7 +187,8 @@ def test_a_failure_after_any_commit_step_restores_the_previous_build(
 
 
 @pytest.mark.parametrize(
-    "step", ["staged", "marker", "kit.html", "kit-policy.txt", "kit-binding.json", "done"]
+    "step",
+    ["staged", "marker", "kit.html", "kit-policy.txt", "kit-binding.json", "done"],
 )
 def test_a_failure_while_removing_the_page_keeps_the_old_deployment(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, step: str
@@ -327,7 +329,9 @@ def test_a_build_waits_for_a_build_in_progress(
     second.start()
     time.sleep(0.5)
     assert second.is_alive()  # blocked on the lock, not interleaving
-    assert log == []  # nothing committed yet by anyone
+    # the first build staged and is held at the marker step; neither build has
+    # committed anything, and the second has not even staged
+    assert log == ["staged"]
     assert (gated / PENDING_FILE).exists()
     release.set()
     first.join(20)

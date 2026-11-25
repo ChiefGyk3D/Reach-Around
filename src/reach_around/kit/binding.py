@@ -283,6 +283,16 @@ def acquire_gated_lock(gated_dir: Path, *, exclusive: bool) -> int:
     try:
         dir_fd = os.open(gated_dir, _DIR_FLAGS)
     except OSError as exc:
+        linked = exc.errno == errno.ELOOP
+        if exc.errno == errno.ENOTDIR:
+            try:
+                linked = stat.S_ISLNK(os.lstat(gated_dir).st_mode)
+            except OSError:
+                linked = False
+        if linked:
+            raise GatedLockError(
+                "the gated directory is a symbolic link; it is not followed"
+            ) from exc
         raise GatedLockError(
             f"the gated directory cannot be opened ({exc.strerror})"
         ) from exc
